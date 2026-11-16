@@ -5,8 +5,9 @@
             ...
 
 Who calls it: scripts, through `flnd.open`; the CLI calls the engine directly until it is
-rebuilt on this module. What it calls: `flnd.engine.Engine` for every command, and today's
-stores (`metadata/history.db`, `targets.db`, the vault) for the reads.
+rebuilt on this module. What it calls: `flnd.engine.Engine` for every command, `flnd._home`
+(the home's `flnd.db`) for the reads, and the home's `config.toml` for settings past the five
+options a call takes.
 
 How a call flows:
 1. The method checks its arguments at once: targets are resolved, `only`, `when` and `limit`
@@ -21,7 +22,7 @@ Rules a change must keep:
 - Importing this module imports nothing heavy: the engine, httpx, Playwright and Rich load on
   the first call that needs them, so `import flnd` stays fast.
 - Options are keyword-only and at most five per call; a setting past that belongs in the
-  config file.
+  config file (`[defaults] again`, read by `_settings`).
 - No callbacks: a run reports through its events alone.
 """
 
@@ -31,6 +32,7 @@ import datetime
 import os
 import re
 import threading
+import tomllib
 import weakref
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -52,6 +54,8 @@ HOME_VARIABLE = "FLND_HOME"
 DEFAULT_HOME = ".flnd"
 # The kinds `files(kind=...)` filters by.
 KINDS = ("image", "video", "audio")
+# The home's settings file; `again` under `[defaults]` is the one setting the library reads.
+CONFIG = "config.toml"
 # What `when` takes; the message of its usage error.
 WHEN_USAGE = ("when takes a year (2026), a month (2026-06), a day (2026-06-15), a range of "
               "those (2026-01..2026-03, 2026-01.., ..2026-03), or a span back from today "
@@ -62,7 +66,7 @@ SPAN = re.compile(r"(\d+)([dwy])")
 SPAN_DAYS = {"d": 1, "w": 7, "y": 365}
 
 
-def open(home: str | os.PathLike[str] | None = None) -> Flnd:
+def open(home: str | os.PathLike[str] | None = None, *, again: bool | None = None) -> Flnd:
     """Open a home folder: the one place flnd keeps downloads, history and logins.
 
     Nothing is written until a command needs to: opening a new folder doesn't create it.
@@ -70,6 +74,10 @@ def open(home: str | os.PathLike[str] | None = None) -> Flnd:
     Args:
         home: the home folder; `~` is expanded. None takes `$FLND_HOME`, else `.flnd` in the
             current folder.
+        again: whether every `download` and `follow` lists each post again, past the stop at
+            saved posts and the saved cursors, and asks again for files the site answered 404
+            or 410 for (recorded as gone). None reads `again` under `[defaults]` in the home's
+            `config.toml` (false without one); the CLI's `--again` sets it.
 
     Returns:
         The `Flnd` of that home, to use in a `with` block.
@@ -80,7 +88,7 @@ def open(home: str | os.PathLike[str] | None = None) -> Flnd:
         ...     fl.targets()
         []
     """
-    return Flnd(home)
+    return Flnd(home, again=again)
 
 
 class Flnd:
@@ -92,6 +100,7 @@ class Flnd:
     Args:
         home: the home folder; `~` is expanded. None takes `$FLND_HOME`, else `.flnd` in the
             current folder.
+        again: as `open` reads it.
 
     Example:
         >>> import flnd
@@ -100,10 +109,13 @@ class Flnd:
         'example-home'
     """
 
-    def __init__(self, home: str | os.PathLike[str] | None = None) -> None:
+    def __init__(self, home: str | os.PathLike[str] | None = None, *,
+                 again: bool | None = None) -> None:
         chosen = home if home is not None else os.environ.get(HOME_VARIABLE) or DEFAULT_HOME
         # The folder the home is.
         self.home = Path(chosen).expanduser()
+        # Whether downloads ask again for everything; None reads the home's config.toml.
+        self._again = again
         self._added: dict[str, type[Source]] = {}
         self._runs: weakref.WeakSet[Run] = weakref.WeakSet()
         self._closed = threading.Event()
@@ -178,9 +190,10 @@ class Flnd:
         if limit is not None and limit < 1:
             raise UsageError("limit must be at least 1")
         resolved = self._checked(targets, only)
+        again = _settings(self.home) if self._again is None else self._again
         return self._run(f"download {_names(resolved)}", lambda engine: engine.download(
             resolved, categories=only, time=span, limit=limit, dry=dry, every=True,
-            compress=compress))
+            compress=compress, again=again))
 
     def follow(
         self, targets: str | Target | Sequence[str | Target], *,
@@ -216,9 +229,10 @@ class Flnd:
         """
         span = _when(when)
         resolved = self._checked(targets, only)
+        again = _settings(self.home) if self._again is None else self._again
         return self._run(f"follow {_names(resolved)}", lambda engine: engine.download(
             resolved, categories=only, time=span, sync=True, every=True, keep=True,
-            compress=compress))
+            compress=compress, again=again))
 
     def sync(self, targets: str | Target | Sequence[str | Target] = (), *,
              compress: bool = False) -> Run:
@@ -327,7 +341,7 @@ class Flnd:
         self, *, target: str | Target | None = None, kind: str | None = None,
         since: str | None = None,
     ) -> list[Record]:
-        """The saved files, from the home's history, oldest saved first.
+        """The saved files, read from the home's `flnd.db`, oldest saved first.
 
         Args:
             target: only this target's files; None for every target.
@@ -350,19 +364,19 @@ class Flnd:
         """
         if kind is not None and kind not in KINDS:
             raise UsageError(f"kind is one of {', '.join(KINDS)}, not {kind!r}")
-        first = None if since is None else _period(since)[0]
-        folder = None
-        if target is not None:
-            from flnd.common.paths import target_folder
+        from flnd import _home
 
+        first = None if since is None else _period(since)[0]
+        owner = None
+        if target is not None:
             [resolved] = self._resolve(target)
-            folder = os.path.abspath(target_folder(self.home, resolved))
+            owner = _home.key(resolved)
+        with _home.open(self.home) as db:
+            rows = db.records(target=owner, kind=kind)
         found = []
-        for record in _records(self.home):
-            if folder is not None and not os.path.abspath(record.path).startswith(folder + os.sep):
-                continue
-            if kind is not None and record.kind != kind:
-                continue
+        for row in rows:
+            record = Record(row.key, Path(row.path), row.size, post=row.post_id,
+                            category=row.category, date=_home._date(row.date), at=row.at)
             if first is not None and (_day(record) or first) < first:
                 continue
             found.append(record)
@@ -422,7 +436,7 @@ class Flnd:
             ...
             flnd.errors.UsageError: ins logs in by a browser (chrome, ...) or a cookie file's ...
         """
-        from flnd.common.auth import BROWSERS
+        from flnd._home import BROWSERS
 
         cls = self._source(source)
         engine = self._engine()
@@ -524,7 +538,7 @@ class Flnd:
 
         cls = self._source(source)
         with stopping() as stop:
-            settings = RunShared(home=self.home, history={}, stop=stop)
+            settings = RunShared(home=self.home, stop=stop)
             with source_run(settings, cls()) as run:
                 opened = TargetSite(run, Target(cls.code, "account", ""))
                 try:
@@ -647,6 +661,37 @@ def _names(targets: Sequence[Target]) -> str:
     return shown if len(targets) <= 2 else f"{shown} and {len(targets) - 2} more"
 
 
+def _settings(home: Path) -> bool:
+    """Read the home's `config.toml` for `again`: whether a download asks again for everything.
+
+    `[defaults] again = true` makes every download and follow list each post again, past the
+    stop at saved posts and the saved cursors, and ask again for files the site answered 404 or
+    410 for (recorded as gone). The CLI's `--again` does the same for one run; the library's
+    calls keep their five options, so the setting lives here.
+
+    Args:
+        home: the home folder; a home without the file reads as `again = false`.
+
+    Returns:
+        The setting.
+
+    Raises:
+        UsageError: the file isn't TOML, or `again` isn't true or false.
+    """
+    path = home / CONFIG
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise UsageError(f"{path}: {error}", hint="fix the file, or move it away") from None
+    defaults = data.get("defaults", {})
+    again = defaults.get("again", False) if isinstance(defaults, dict) else False
+    if not isinstance(again, bool):
+        raise UsageError(f"{path}: again is true or false, not {again!r}")
+    return again
+
+
 def _when(text: str | None) -> Range:
     """Read `when`: a period, a range of periods, or a span back from today.
 
@@ -715,38 +760,8 @@ def _period(text: str) -> tuple[datetime.date, datetime.date]:
 
 
 # ---------------------------------------------------------------------------------------------
-# Reading the history
+# Reading saved files
 # ---------------------------------------------------------------------------------------------
-
-def _records(home: Path) -> list[Record]:
-    """Every history row of a home as a `Record`; none when it has no history yet.
-
-    Args:
-        home: the home folder. Its history is read, never created.
-
-    Returns:
-        The records, in the order the rows were saved.
-    """
-    from flnd.common import paths
-
-    if not (home / paths.HISTORY).is_file():
-        return []
-    # The history's one table; the engine names it, and it stays the same until flnd.db.
-    with paths.table(home / paths.HISTORY, "downloads") as table:
-        rows = list(table.items())
-    found = []
-    for key, row in rows:
-        if not isinstance(row, dict) or not row.get("path"):
-            continue
-        date = row.get("date")
-        found.append(Record(
-            key, Path(row["path"]), int(row.get("size") or 0), post=str(row.get("id", "")),
-            category=str(row.get("category", "")),
-            date=datetime.date.fromisoformat(date) if isinstance(date, str) else None,
-            at=str(row.get("at", "")),
-        ))
-    return found
-
 
 def _day(record: Record) -> datetime.date | None:
     """The day a record counts by for `since`: its post's, else the day it was saved.

@@ -1,314 +1,302 @@
-"""A key-value store in one SQLite file: tables of JSON values, or of typed `Row` records.
+"""A store in one SQLite file: WAL, one connection shared by threads, explicit transactions.
 
-    db = store.open("state.db")
-    db["state"]["cursor"] = "abc"
+What it offers, for any caller:
+- `connect(path)`: a connection in WAL mode with `synchronous = NORMAL` (and `fullfsync` on
+  macOS), a busy timeout, autocommit, usable from any thread.
+- `Db(path, schema=…, setup=…)`: one database file with its tables, connected on first use. A
+  read of a file that doesn't exist yet returns nothing and creates nothing; the first write
+  makes the file and runs `schema`, then `setup`.
+- `Db.transaction()`: `BEGIN IMMEDIATE` … `COMMIT`, rolled back on an error; nested blocks join
+  the outer one. `Db.one`, `Db.all` and `Db.write` run single statements.
+- `read_only(path)`: another program's SQLite file, opened so that nothing on disk changes.
 
-    class File(store.Row):
-        table = "files"
-        state: str
-        size: int
+    db = Db(Path("notes.db"), schema="CREATE TABLE IF NOT EXISTS notes (key TEXT, text TEXT)")
+    with db.transaction() as sql:
+        sql.execute("INSERT INTO notes VALUES (?, ?)", ("a", "hello"))
+    db.one("SELECT text FROM notes WHERE key = ?", ("a",))      # ("hello",)
 
-    files = db[File]
-    files["a.jpg"] = File("kept", 1000)
-    files.prefixed("a")                                 # [("a.jpg", File(...))], read in SQL
-    with db.batch():                                    # one transaction for many writes
-        ...
+Rules a change must keep:
+- Every statement runs under the `Db`'s lock, so threads share its one connection safely.
+- A transaction takes the write lock at its start (`IMMEDIATE`), so two processes never read a
+  row, change it and write it back over each other: the second waits up to `BUSY_MS`.
+- It imports only the stdlib and `flnd.errors`: SQLite failures are `DiskError`s naming the file.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import sqlite3
+import sys
 import threading
-from collections.abc import Iterator, MutableMapping
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar, Union
+from typing import Any
 
-import msgspec
-
-from flnd import _files
 from flnd.errors import DiskError
 
-__all__ = ["Db", "Row", "Table", "open"]
+__all__ = ["Db", "connect", "read_only"]
 
-PathLike = Union[str, "os.PathLike[str]"]
-V = TypeVar("V")
-
-# A table's rows live in an SQL table of this name, so a user's name never meets SQL's own.
-PREFIX = "t_"
 # How long a writer waits for another process's transaction before giving up, in ms.
 BUSY_MS = 30_000
-# SQLite's header; a store file without it is a JSON store from before, converted on open.
-SQLITE_MAGIC = b"SQLite format 3\x00"
+# How often `_wal` tries again while another process is making the same database, in seconds.
+WAL_POLL = 0.01
 
 
-# Errors: a file SQLite can't open, read or write, and a row that no longer decodes, are a
-# `DiskError` naming the file. Using a closed `Db`, a bad table name, a key that isn't a string
-# or a value JSON can't hold are bugs in the caller, so they raise the builtin errors.
+def connect(path: Path) -> sqlite3.Connection:
+    """A connection to a database file, in WAL mode, made with its folder.
+
+    WAL keeps the file whole through a crash: a power cut may lose the last commits, never
+    corrupt it. `synchronous = NORMAL` syncs at checkpoints only, which a commit per small
+    batch needs (2.9 µs a row against 39 µs with FULL). On macOS `fsync` stops at the drive's
+    cache, so `fullfsync` makes SQLite's own syncs reach the disk.
+
+    Args:
+        path: the database's file.
+
+    Returns:
+        The connection, in autocommit mode (transactions are explicit), usable from any thread.
+
+    Raises:
+        DiskError: the folder can't be made, or the file isn't a database.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        sql = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    except (OSError, sqlite3.Error) as error:
+        raise DiskError(f"{path}: cannot open: {error}") from error
+    try:
+        sql.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
+        _wal(sql)
+        sql.execute("PRAGMA synchronous = NORMAL")
+        if sys.platform == "darwin":
+            sql.execute("PRAGMA fullfsync = ON")
+            sql.execute("PRAGMA checkpoint_fullfsync = ON")
+        return sql
+    except sqlite3.Error as error:
+        sql.close()
+        raise DiskError(f"{path}: cannot open: {error}") from error
 
 
-class Row(msgspec.Struct):
-    """A typed record for `db[RowType]`; a subclass names its table with `table = "..."`."""
+def _wal(sql: sqlite3.Connection) -> None:
+    """Put a database in WAL mode, waiting while another process makes the same file.
 
-    table: ClassVar[str]
+    Switching to WAL needs a moment alone with the file, and SQLite doesn't wait for that with
+    its busy timeout: a second process opening a new file at the same instant gets "database is
+    locked" at once. It tries again every `WAL_POLL` seconds, for up to `BUSY_MS`. Once a file is
+    in WAL mode the setting is kept in it, and the pragma returns at once.
+
+    Args:
+        sql: a new connection.
+
+    Raises:
+        sqlite3.Error: the file is still locked after `BUSY_MS`, or isn't a database.
+    """
+    deadline = time.monotonic() + BUSY_MS / 1000
+    while True:
+        try:
+            sql.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error) or time.monotonic() >= deadline:
+                raise
+            time.sleep(WAL_POLL)
 
 
 class Db:
-    """An open store file; `db[name]` and `db[RowType]` are its tables."""
+    """One SQLite file with its tables, connected on first use and shared by threads.
 
-    def __init__(self, path: Path) -> None:
+    Args:
+        path: the database's file; made, with its folder, on the first write.
+        schema: SQL run on every first connection, to make the tables (`CREATE … IF NOT
+            EXISTS`); "" for none.
+        setup: called with the connection after `schema`, before anything else uses it; a
+            failure closes the connection and is raised. None for nothing.
+
+    Example:
+        >>> import tempfile
+        >>> db = Db(Path(tempfile.mkdtemp()) / "a.db", schema="CREATE TABLE t (k TEXT)")
+        >>> db.all("SELECT k FROM t"), db.path.exists()
+        ([], False)
+        >>> db.write("INSERT INTO t VALUES (?)", ("x",))
+        >>> db.one("SELECT k FROM t", ())
+        ('x',)
+        >>> db.close()
+    """
+
+    def __init__(self, path: Path, *, schema: str = "",
+                 setup: Callable[[sqlite3.Connection], None] | None = None) -> None:
         self.path = path
+        self._schema, self._setup = schema, setup
         self._lock = threading.RLock()
-        self._tables: dict[Any, Table[Any]] = {}
-        self._depth = 0
-        self._closed = False
-        # Connected on first use, so opening a store that is only read never creates its file.
         self._sql: sqlite3.Connection | None = None
+        self._closed = False
 
     def __enter__(self) -> Db:
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def __getitem__(self, key: str | type[Row]) -> Table[Any]:
-        with self._lock:
-            found = self._tables.get(key)
-            if found is None:
-                name, kind = (key, None) if isinstance(key, str) else (key.table, key)
-                found = self._tables[key] = Table(self, name, kind)
-            return found
-
-    @property
-    def tables(self) -> list[str]:
-        """The names of the tables that hold rows."""
-        cursor = self._run("SELECT name FROM sqlite_master WHERE type = 'table'", read=True)
-        return sorted(name[len(PREFIX):] for (name,) in cursor if name.startswith(PREFIX))
-
-    @contextmanager
-    def batch(self) -> Iterator[None]:
-        """Run the writes inside the block as one transaction, rolled back on an error."""
-        with self._lock:
-            # Counted only once BEGIN worked, so a busy file never leaves later batches unwrapped.
-            if self._depth == 0:
-                self._run("BEGIN IMMEDIATE")
-            self._depth += 1
-            try:
-                yield
-                if self._depth == 1:
-                    self._run("COMMIT")
-            except BaseException:
-                if self._depth == 1:
-                    self._rollback()
-                raise
-            finally:
-                self._depth -= 1
-
-    def _rollback(self) -> None:
-        # A failed COMMIT may have ended the transaction already.
-        if self._sql is not None and self._sql.in_transaction:
-            self._run("ROLLBACK")
-        # The rollback undid any CREATE TABLE in the batch too.
-        for table in self._tables.values():
-            table._made = False
-
     def close(self) -> None:
-        """Close the file; later calls raise `RuntimeError`."""
+        """Close the connection; closing twice is harmless, and later calls raise."""
         with self._lock:
             self._closed = True
             if self._sql is not None:
                 self._sql.close()
                 self._sql = None
 
-    def _run(self, sql: str, args: tuple[Any, ...] = (), *, read: bool = False) -> list[Any]:
+    def connection(self) -> sqlite3.Connection:
+        """The connection, made (with the file, its tables and its `setup`) on first use.
+
+        Returns:
+            The one connection of this `Db`.
+
+        Raises:
+            RuntimeError: the `Db` is closed: a bug in the caller.
+            DiskError: the file can't be opened or made, or `setup` failed in SQLite.
+        """
         with self._lock:
             if self._closed:
-                raise RuntimeError(f"{self.path}: store is closed")
+                raise RuntimeError(f"{self.path}: closed")
             if self._sql is None:
-                if read and not self.path.exists():
-                    return []
-                self._sql = _connect(self.path)
+                sql = connect(self.path)
+                try:
+                    if self._schema:
+                        sql.executescript(self._schema)
+                    if self._setup is not None:
+                        self._setup(sql)
+                except sqlite3.Error as error:
+                    sql.close()
+                    raise DiskError(f"{self.path}: {error}") from error
+                except BaseException:
+                    sql.close()
+                    raise
+                self._sql = sql
+            return self._sql
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """One `BEGIN IMMEDIATE` … `COMMIT`, rolled back on an error; nested blocks join it.
+
+        Yields:
+            The connection, inside the transaction.
+
+        Raises:
+            DiskError: SQLite failed (a full disk, a lock held past `BUSY_MS`); nothing is kept.
+        """
+        with self._lock:
+            sql = self.connection()
+            if sql.in_transaction:
+                yield sql
+                return
             try:
-                return self._sql.execute(sql, args).fetchall()
+                sql.execute("BEGIN IMMEDIATE")
+                yield sql
+                sql.execute("COMMIT")
+            except sqlite3.Error as error:
+                if sql.in_transaction:
+                    sql.execute("ROLLBACK")
+                raise DiskError(f"{self.path}: {error}") from error
+            except BaseException:
+                if sql.in_transaction:
+                    sql.execute("ROLLBACK")
+                raise
+
+    def write(self, query: str, args: tuple[Any, ...] = ()) -> None:
+        """Run one statement that writes, in the caller's transaction or as its own.
+
+        Outside a transaction the statement runs in autocommit mode: SQLite makes it a
+        transaction of its own, as whole as one with `BEGIN` and `COMMIT`, in one call.
+
+        Args:
+            query: the statement.
+            args: its parameters.
+
+        Raises:
+            DiskError: SQLite failed; nothing of the statement is kept.
+        """
+        with self._lock:
+            sql = self.connection()
+            try:
+                sql.execute(query, args)
+            except sqlite3.Error as error:
+                raise DiskError(f"{self.path}: {error}") from error
+
+    def one(self, query: str, args: tuple[Any, ...]) -> tuple[Any, ...] | None:
+        """Run one read and return its first row; None for no row, or a file not made yet.
+
+        Args:
+            query: the statement.
+            args: its parameters.
+
+        Returns:
+            The row's columns, in the statement's order.
+
+        Raises:
+            DiskError: SQLite failed.
+        """
+        # The hot path: an open `Db` is already connected, so this is one prepared statement
+        # (sqlite3 caches it) and one row.
+        with self._lock:
+            sql = self._sql
+            if sql is None:
+                if self._closed or not self.path.is_file():
+                    return None
+                sql = self.connection()
+            try:
+                return sql.execute(query, args).fetchone()
+            except sqlite3.Error as error:
+                raise DiskError(f"{self.path}: {error}") from error
+
+    def all(self, query: str, args: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+        """Run one read and return every row; none for a file not made yet.
+
+        Args:
+            query: the statement.
+            args: its parameters.
+
+        Returns:
+            The rows, each its columns in the statement's order.
+
+        Raises:
+            DiskError: SQLite failed.
+        """
+        with self._lock:
+            if self._sql is None and (self._closed or not self.path.is_file()):
+                return []
+            try:
+                return self.connection().execute(query, args).fetchall()
             except sqlite3.Error as error:
                 raise DiskError(f"{self.path}: {error}") from error
 
 
-class Table(MutableMapping[str, V], Generic[V]):
-    """One table: a mapping of string keys to JSON values, or to one `Row` type."""
+@contextmanager
+def read_only(path: Path) -> Iterator[sqlite3.Connection]:
+    """Another program's SQLite file, opened so that nothing on disk changes.
 
-    def __init__(self, db: Db, name: str, kind: type[V] | None) -> None:
-        if not name or '"' in name:
-            raise ValueError(f"{db.path}: bad table name {name!r}")
-        self.db, self.name = db, name
-        self._sql_name = f'"{PREFIX}{name}"'
-        self._decode = msgspec.json.Decoder(kind) if kind is not None else msgspec.json.Decoder()
-        self._made = False
-
-    def __getitem__(self, key: str) -> V:
-        found = self._select("SELECT value FROM {} WHERE key = ?", (key,))
-        if not found:
-            raise KeyError(key)
-        return self._load(found[0][0])
-
-    def __setitem__(self, key: str, value: V) -> None:
-        if not isinstance(key, str):
-            raise TypeError(f"{self.db.path}: keys must be strings, not {type(key).__name__}")
-        self._write("INSERT OR REPLACE INTO {} (key, value) VALUES (?, ?)", (key, _encode(value)))
-
-    def __delitem__(self, key: str) -> None:
-        if key not in self:
-            raise KeyError(key)
-        self._write("DELETE FROM {} WHERE key = ?", (key,))
-
-    def __contains__(self, key: object) -> bool:
-        return bool(self._select("SELECT 1 FROM {} WHERE key = ?", (key,)))
-
-    def __iter__(self) -> Iterator[str]:
-        return iter([key for (key,) in self._select("SELECT key FROM {} ORDER BY key")])
-
-    def __len__(self) -> int:
-        found = self._select("SELECT count(*) FROM {}")
-        return found[0][0] if found else 0
-
-    def items(self) -> Any:
-        """Every (key, value) pair, read in one query."""
-        return dict(self._pairs("SELECT key, value FROM {} ORDER BY key")).items()
-
-    def values(self) -> Any:
-        """Every value, read in one query."""
-        return [value for _, value in self._pairs("SELECT key, value FROM {} ORDER BY key")]
-
-    def clear(self) -> None:
-        """Remove every row."""
-        self._write("DELETE FROM {}", ())
-
-    def prefixed(self, text: str) -> list[tuple[str, V]]:
-        """Every (key, value) pair whose key starts with `text`, in key order, read in SQL.
-
-        The history keeps one source's rows under `<code>:`, and the vault one source's
-        secrets under its slot, so this is how either reads one source without the others.
-
-        Args:
-            text: the start of the keys; "" for every row.
-
-        Returns:
-            The pairs, sorted by key.
-        """
-        # A range on the primary key, so SQLite reads only those rows: every key that starts
-        # with `text` sorts between `text` and `text` followed by the highest code point.
-        return self._pairs("SELECT key, value FROM {} WHERE key >= ? AND key < ? ORDER BY key",
-                           (text, text + "\U0010ffff"))
-
-    def _pairs(self, sql: str, args: tuple[Any, ...] = ()) -> list[tuple[str, V]]:
-        return [(key, self._load(raw)) for key, raw in self._select(sql, args)]
-
-    def _load(self, raw: str) -> V:
-        try:
-            return self._decode.decode(raw)
-        # A row written before its type gained a required field no longer fits it.
-        except msgspec.DecodeError as error:
-            raise DiskError(f"{self.db.path}: {self.name}: {error}") from error
-
-    def _select(self, sql: str, args: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
-        try:
-            return self.db._run(sql.format(self._sql_name), args, read=True)
-        except DiskError as error:
-            # A table nothing was written to yet reads as empty.
-            if not self._made and "no such table" in str(error):
-                return []
-            raise
-
-    def _write(self, sql: str, args: tuple[Any, ...]) -> None:
-        if not self._made:
-            self.db._run(
-                f"CREATE TABLE IF NOT EXISTS {self._sql_name} "
-                "(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID"
-            )
-            self._made = True
-        self.db._run(sql.format(self._sql_name), args)
-
-
-def open(path: PathLike) -> Db:
-    """Open the store at `path`, creating it, and converting a JSON store from before."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_file() and target.stat().st_size and not _is_sqlite(target):
-        _convert(target)
-    return Db(target)
-
-
-def _connect(path: Path) -> sqlite3.Connection:
-    try:
-        sql = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
-    except sqlite3.Error as error:
-        raise DiskError(f"{path}: cannot open store: {error}") from error
-    try:
-        sql.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
-        sql.execute("PRAGMA journal_mode = WAL")
-        # WAL keeps the file whole; a power cut may lose the last commits, never corrupt them.
-        sql.execute("PRAGMA synchronous = NORMAL")
-        return sql
-    except sqlite3.Error as error:
-        sql.close()
-        raise DiskError(f"{path}: cannot open store: {error}") from error
-
-
-def _encode(value: Any) -> str:
-    try:
-        return msgspec.json.encode(value).decode()
-    except (TypeError, msgspec.EncodeError) as error:
-        raise TypeError(f"cannot store a {type(value).__name__}: {error}") from error
-
-
-def _is_sqlite(path: Path) -> bool:
-    with path.open("rb") as handle:
-        return handle.read(len(SQLITE_MAGIC)) == SQLITE_MAGIC
-
-
-def _convert(path: Path) -> None:
-    """Rewrite a JSON store (`{table: {key: value}}`) as SQLite, in place and atomically.
-
-    Two openers of one old store would each rebuild it, so the store's part is held as a lock
-    while one does: the second waits, then finds the store converted. The part only locks: on
-    macOS a `flock` and SQLite's own locks on one file exclude each other, so the SQLite file is
-    built beside it, as `.<name>.convert`, and renamed over the JSON.
-    """
-    with _files.part(path) as held:
-        held.drop()
-        if not _is_sqlite(path):
-            _rewrite(path)
-
-
-def _rewrite(path: Path) -> None:
-    """Write the JSON store at `path` as SQLite, beside it, then rename it over `path`.
+    `immutable=1` reads the file as it is, with no lock, no `-shm` and no `-wal`. A program that
+    stopped without a checkpoint leaves rows in `<file>-wal`, which only a normal read-only
+    connection sees; SQLite may then make a `-shm` beside it, but the file itself is unchanged.
 
     Args:
-        path: the old JSON store, which its caller holds the part of.
+        path: the database's file.
+
+    Yields:
+        A connection that can only read it.
 
     Raises:
-        DiskError: the JSON can't be read, or isn't an object of tables.
+        DiskError: SQLite can't open or read it.
     """
+    wal = Path(f"{path}-wal")
+    mode = "mode=ro" if wal.is_file() and wal.stat().st_size else "immutable=1"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        raise DiskError(f"{path}: cannot read store: {error}") from error
-    if not isinstance(data, dict):
-        raise DiskError(f"{path}: expected a JSON object")
-    staged = path.with_name(f".{path.name}.convert")
-    staged.unlink(missing_ok=True)
-    db = Db(staged)
+        old = sqlite3.connect(f"{path.absolute().as_uri()}?{mode}", uri=True)
+    except sqlite3.Error as error:
+        raise DiskError(f"{path}: cannot read: {error}") from error
     try:
-        with db.batch():
-            for name, rows in data.items():
-                if isinstance(rows, dict):
-                    table = db[str(name)]
-                    for key, value in rows.items():
-                        table[str(key)] = value
+        yield old
+    except sqlite3.Error as error:
+        raise DiskError(f"{path}: cannot read: {error}") from error
     finally:
-        db.close()
-    for suffix in ("-wal", "-shm"):
-        Path(f"{staged}{suffix}").unlink(missing_ok=True)
-    os.replace(staged, path)
+        old.close()

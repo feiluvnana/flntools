@@ -19,10 +19,10 @@ here also changes this page, so the page always describes the code you have chec
                   ▼
    flnd/engine.py    Engine: resolves targets, checks options, runs each target in turn
         │
-        ├── flnd/targets.py     targets.db: each target's settings, cursors and failures
+        ├── flnd/_home.py       the home: flnd.db (files, targets, runs, failures), the logins
         ├── flnd/options.py     Options: what one target downloads; RunShared: what a run shares
         ├── flnd/site.py        SourceRun and TargetSite: what a source acts through
-        │       └── flnd/common/  auth (logins), net (HTTP and downloads), paths (the home)
+        │       └── flnd/common/  net (HTTP and downloads), paths (what a file is)
         └── flnd/job.py         one target: list its posts, plan its files, download, record
                 │
                 └── flnd/sources/<code>.py   one class per site (flnd/source.py is their API)
@@ -44,10 +44,10 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/source.py` | the source API: `Source`, `@target`, `Post`, `File`, `Site`, `Target`, errors | every source |
 | `flnd/sources/` | the seven built-in sources and their shared helpers (`sources/common/`) | the engine, through `SOURCES` |
 | `flnd/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
-| `flnd/targets.py` | the rows of `targets.db`, and the checks of `--only` before any work | the engine, the job |
-| `flnd/options.py` | `Options` and `RunShared` | the engine, the job |
-| `flnd/common/` | `auth` (the login vault), `net` (the HTTP client and file downloads), `paths` (the home's layout and content sniffing) | the engine, the site, the job |
-| `flnd/_*.py` | the private toolkit: HTTP over httpx (`_http`), the run's browser on async Playwright (`_browser`), SQLite stores (`_db`), atomic files (`_files`), the run's asyncio loop and a thread pool (`_loop`), the terminal UI (`_ui`) | everything above |
+| `flnd/_home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the job, the site, `Flnd` |
+| `flnd/options.py` | `Options` and `RunShared`, and the checks of `--only` and folder templates before any work | the engine, the job |
+| `flnd/common/` | `net` (the HTTP client and file downloads), `paths` (content sniffing) | the engine, the site, the job |
+| `flnd/_*.py` | the private toolkit: HTTP over httpx (`_http`), the run's browser on async Playwright (`_browser`), a SQLite store (`_db`), sealed secrets (`_vault`), atomic files (`_files`), the run's asyncio loop and a thread pool (`_loop`), the terminal UI (`_ui`) | everything above |
 | `flnd/_steps.py`, `_unpack.py`, `_shrink.py`, `_media.py`, `_tools.py` | the steps after a file lands ([media.md](media.md)): the chain and its lanes, archive extraction, `--compress`, probes and ffmpeg runs, and finding ffmpeg and 7zz | the job and the engine |
 
 The rule between them: a source imports `flnd.source`, its helpers in `flnd/sources/common/`,
@@ -64,11 +64,11 @@ only through `flnd.sources.SOURCES`.
    by its code (or a bare link by its `domains`), and calls `Source.resolve`. The first route
    whose pattern matches gives `Target("ins", "user", "example_user")`. A short link no route
    reads is followed once with a HEAD request, and the link it leads to is resolved instead.
-3. **Checking.** Before any request, `options.categories_by_source` and `targets.validate` check
+3. **Checking.** Before any request, `options.categories_by_source` and `options.validate` check
    `--only` against the target's route, and every folder template against its fields. A mistake
    is a usage error (exit code 2).
-4. **Recording the target.** `targets.record` writes the target's row in `targets.db`, with
-   `sync` on because it is followed, keeping its cursors and failures from earlier runs.
+4. **Recording the target.** `Home.record` writes the target's row in `flnd.db`, followed when
+   `follow` asked, keeping its cursors and found targets from earlier runs.
 5. **Grouping by source.** The engine runs the targets of one source together, one after
    another, inside one `source_run`: the source's saved cookies are read from the vault, its
    HTTP client is made (paced to `Source.pace` on its own domains), and its `connect` hook runs
@@ -93,14 +93,16 @@ only through `flnd.sources.SOURCES`.
    with its audio through ffmpeg, checks the content (a web page instead of a photo is a
    failure, not a file) and gives it the extension its content calls for. The part gets its
    post's date (at noon UTC) as its modified time and is renamed onto the real name.
-10. **Finishing a file.** Its history row is written: path, size and modified time (from the
-    part, so nothing stats the file again), post id, category and date. The same file in two
-    categories is saved once and linked from the second (a relative symlink, or a hard link where
-    symlinks aren't allowed). The file is then handed to the run's step chain (`flnd._steps`),
-    which extracts an archive and, with `--compress`, compresses a photo or video on threads of
-    its own ([media.md](media.md)).
-11. **Ending the target.** The job saves the categories it listed to their end, the cursors of
-    those it didn't, and the files that failed, all in `targets.db`, then prints one summary line.
+10. **Finishing a file.** Once every file of its post is in place, the post's rows are written
+    to `flnd.db` in one statement: path, size and modified time (from the part, so nothing stats
+    the file again), post id, category and date. The same file in two categories is saved once
+    and linked from the second (a relative symlink, or a hard link where symlinks aren't
+    allowed). The file is then handed to the run's step chain (`flnd._steps`), which extracts an
+    archive and, with `--compress`, compresses a photo or video on threads of its own
+    ([media.md](media.md)).
+11. **Ending the target.** The job saves the categories it listed to their end and the cursors
+    of those it didn't in `flnd.db` (each failed file was written there as it failed), counts the
+    target's files for `flnd ls`, then prints one summary line.
 12. **The end.** The engine writes refreshed cookies back to the vault, prints "Complete" with the
     count of files, and the CLI exits with 0, or 1 if a target failed.
 
@@ -175,8 +177,8 @@ mouse events. An element that scrolls on its own (`scroll(within=…)`) gets rea
 ## Where things are kept
 
 Everything lives in the home folder, `.flnd` in the current folder:
-`media/<code>/<target>/<category>/…` for the files, and `metadata/` for the history, the
-targets, each source's state and the login vault. [storage.md](storage.md) lists every file and
+`media/<code>/<target>/<category>/…` for the files, `flnd.db` for the history, the targets,
+the runs and each source's state, and `secrets.db` with `secret.key` for the login vault. [storage.md](storage.md) lists every file and
 what its rows hold.
 
 ## Errors

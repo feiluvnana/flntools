@@ -257,9 +257,15 @@
       "unit": "s",
       "better": "lower",
       "baseline": 0.0042,
+      "note": "a home of 4,000 files; e2e.sync_nothing_new_100k carries the gate"
+    },
+    "e2e.sync_nothing_new_100k": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 0.0044,
       "target": 0.3,
       "gate": "refactor:store history, targets and runs in one flnd.db, and migrate old homes",
-      "note": "the gate is for a home of 100k files; this run's home holds 4,000"
+      "note": "baseline measured A/B under load on 1ddc1ec (the history store), not recorded quiet"
     },
     "e2e.latency_500_posts": {
       "unit": "s",

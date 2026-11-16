@@ -25,10 +25,10 @@ from typing import (
 
 import httpx
 
-from flnd.common import auth, net, paths
+from flnd.common import net
 from flnd.errors import Blocked, SourceError, Stopped, UsageError
 from flnd.source import Range, Source, Target
-from flnd import _browser, _db, _http, _loop, _prompt, _text, _time
+from flnd import _browser, _home, _http, _loop, _prompt, _text, _time, _vault
 from flnd._ui import ui
 
 if TYPE_CHECKING:
@@ -55,7 +55,7 @@ class SourceRun:
 
     # The source, as one instance for the whole run.
     source: Source
-    # What the run shares across sources: flnd's folder, the history, targets.db, the stop flag.
+    # What the run shares across sources: the home, its database, the stop flag.
     settings: RunShared
     # The login's cookies.
     jar: _cookies.Jar
@@ -65,8 +65,8 @@ class SourceRun:
     files: _http.Client
     # What the source's `connect` gave, entered once for the run.
     client: Any = None
-    _state: _db.Db | None = field(default=None, repr=False)
-    _secrets: auth.Vault | None = field(default=None, repr=False)
+    _state: _home.Home | None = field(default=None, repr=False)
+    _secrets: _vault.Vault | None = field(default=None, repr=False)
     # A loop of the source's own, made only outside a run (`shared_browser` gives the run's).
     _own_loop: _loop.Loop | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
@@ -82,17 +82,19 @@ class SourceRun:
         return self._own_loop
 
     @property
-    def state(self) -> _db.Table[Any]:
-        """The source's `store` table in `.flnd/metadata/sources.db`, opened on first use."""
+    def state(self) -> _home.State:
+        """The source's own values in the home's `flnd.db`: the run's, or one opened here."""
+        if self.settings.db is not None:
+            return self.settings.db.state(self.source.code)
         if self._state is None:
-            self._state = _db.open(self.settings.home / paths.SOURCE_STATE)
-        return self._state[self.source.code]
+            self._state = _home.open(self.settings.home)
+        return self._state.state(self.source.code)
 
     @property
-    def secrets(self) -> auth.Vault:
-        """The source's encrypted secrets in `.flnd/metadata/secrets.db`, opened on first use."""
+    def secrets(self) -> _vault.Vault:
+        """The source's encrypted secrets in the home's `secrets.db`, opened on first use."""
         if self._secrets is None:
-            self._secrets = auth.secrets(self.settings.home, self.source.code)
+            self._secrets = _home.secrets(self.settings.home, self.source.code)
         return self._secrets
 
     def run_async(self, coroutine: Coroutine[Any, Any, T]) -> T:
@@ -134,7 +136,7 @@ def _matches_domain(source: Source, host: str | None) -> bool:
 @contextmanager
 def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     """Open one source's resources for a run, and close them however the block ends."""
-    jar = auth.load(settings.home, source.code)
+    jar = _home.load(settings.home, source.code)
     _warn_expiring(source, jar)
     rate = 1.0 / source.pace if source.pace > 0 else None
 
@@ -145,13 +147,11 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
                 request.headers.update(signed.headers)
 
     raw = net.client(user_agent=source.user_agent, jar=jar, sign=sign)
-    state = _db.open(settings.home / paths.SOURCE_STATE)
     stop: Stop | None = getattr(settings, "stop", None)
     run = SourceRun(
         source, settings, jar,
         _make_client(raw, rate=rate, stop=stop.soon if stop else None),
         _make_client(raw, rate=None, stop=stop.now if stop else None),
-        _state=state,
     )
     try:
         yield run
@@ -465,7 +465,7 @@ class LoginSite:
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
-        """This source's secrets, encrypted in `.flnd/metadata/secrets.db`."""
+        """This source's secrets, encrypted in the home's `secrets.db`."""
         return self._run.secrets
 
     def info(self, message: str, **fields: Any) -> None:

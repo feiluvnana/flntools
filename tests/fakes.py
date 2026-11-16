@@ -300,3 +300,31 @@ def _answer(answers: Mapping[str, Answer], url: str, request: dict[str, Any]) ->
     """The fixture for `url` without its query, called when it's a function; a 404 `NotFound` for one not given."""
     answer = answers.get(url.split("?")[0], NotFound(f"HTTP 404 for {url}", status=404))
     return answer(url, request) if callable(answer) else answer
+
+
+def history(home) -> dict[str, dict[str, Any]]:
+    """Every saved file's row in a home's `flnd.db`, by key, with its post's file count.
+
+    A test reads what a run saved through this, as a dict per row, the way it reads JSON.
+    """
+    from pathlib import Path
+
+    import msgspec
+
+    from flnd import _home
+
+    with _home.open(Path(home)) as db:
+        rows = {row.key: msgspec.structs.asdict(row) for row in db.records()}
+        for item, row in rows.items():
+            row["files"] = db.files_of_post(item)
+    return rows
+
+
+def targets(home) -> dict[str, Any]:
+    """Every target row in a home's `flnd.db`, by key (`flnd._db.TargetRow`)."""
+    from pathlib import Path
+
+    from flnd import _home
+
+    with _home.open(Path(home)) as db:
+        return db.targets()

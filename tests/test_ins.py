@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import fakes
 import httpx
 from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
-from flnd import targets as db_targets
 from flnd.common import net
 from flnd.engine import Engine
 from flnd.options import Options
@@ -850,7 +850,7 @@ class MeTest(unittest.TestCase):
             list(Instagram().me(site, "me"))
 
     def test_engine_treats_ins_me_as_query_target(self):
-        from flnd.common import auth
+        from flnd import _home
         from flnd.source import File, Post
         from flnd import _cookies as cookies
 
@@ -876,7 +876,7 @@ class MeTest(unittest.TestCase):
                 yield Post(code, [File(f"https://cdn.example/{code.lower()}.jpg")], date=day(STAMP))
 
             transport = httpx.MockTransport(handler)
-            auth.save(home, "ins", cookies.Jar([
+            _home.save(home, "ins", cookies.Jar([
                 {"name": "sessionid", "value": "99:abc:1", "domain": ".instagram.com", "path": "/"},
             ]))
             engine = Engine(home=home, sources={"ins": Instagram})
@@ -886,13 +886,13 @@ class MeTest(unittest.TestCase):
                     mock.patch("flnd.sources.ins.Profile.read_tab", fake_read_tab):
                 dry = engine.download(["ins:me"], categories="posts", dry=True)
                 self.assertTrue(dry.ok)
-                self.assertEqual(db_targets.rows(home), {})
+                self.assertEqual(fakes.targets(home), {})
 
                 report = engine.download(["ins:me"], categories="posts", sync=True)
                 self.assertTrue(report.ok)
-                rows = db_targets.rows(home)
+                rows = fakes.targets(home)
                 self.assertEqual(list(rows), ["ins:me"])
-                self.assertEqual(db_targets.seen(rows, Target("ins", "me", "me")), ("ins:example_user",))
+                self.assertEqual(rows["ins:me"].seen, ["ins:example_user"])
                 ls = engine.target_ls()
                 self.assertEqual(len(ls), 1)
                 self.assertEqual(str(ls[0].target), "ins:me")
@@ -905,7 +905,7 @@ class MeTest(unittest.TestCase):
                 self.assertTrue(sync_report.ok)
                 self.assertEqual(len(sync_report.targets), 1)
                 self.assertEqual(str(sync_report.targets[0].target), "ins:me")
-                self.assertEqual(list(db_targets.rows(home)), ["ins:me"])
+                self.assertEqual(list(fakes.targets(home)), ["ins:me"])
                 self.assertTrue((home / "media" / "ins" / "example_creator" / "posts" / f"{DAY}_B1.jpg").exists())
 
 

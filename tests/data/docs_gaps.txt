@@ -79,18 +79,6 @@ flnd/_cookies.py:load: Args: no profile
 flnd/_cookies.py:load: Args: no source
 flnd/_cookies.py:load: no Raises:
 flnd/_cookies.py:load: no Returns:
-flnd/_db.py:Db._run: no docstring
-flnd/_db.py:Db.batch: no Yields:
-flnd/_db.py:Db: Args: no path
-flnd/_db.py:Table._select: no docstring
-flnd/_db.py:Table._write: no docstring
-flnd/_db.py:Table: Args: no db
-flnd/_db.py:Table: Args: no kind
-flnd/_db.py:Table: Args: no name
-flnd/_db.py:_connect: no docstring
-flnd/_db.py:_convert: Args: no path
-flnd/_db.py:open: Args: no path
-flnd/_db.py:open: no Returns:
 flnd/_files.py:_scan: Args: no folder
 flnd/_files.py:_scan: no Raises:
 flnd/_files.py:_scan: no Yields:
@@ -243,53 +231,6 @@ flnd/_ui.py:_format_count: no docstring
 flnd/_vault.py:_aes_gcm: Args: no key
 flnd/_vault.py:_aes_gcm: no Raises:
 flnd/_vault.py:_aes_gcm: no Returns:
-flnd/_vault.py:decrypt: Args: no blob
-flnd/_vault.py:decrypt: Args: no context
-flnd/_vault.py:decrypt: Args: no key
-flnd/_vault.py:decrypt: no Raises:
-flnd/_vault.py:decrypt: no Returns:
-flnd/_vault.py:digest: Args: no algorithm
-flnd/_vault.py:digest: Args: no data
-flnd/_vault.py:digest: no Raises:
-flnd/_vault.py:digest: no Returns:
-flnd/_vault.py:encrypt: Args: no context
-flnd/_vault.py:encrypt: Args: no data
-flnd/_vault.py:encrypt: Args: no key
-flnd/_vault.py:encrypt: no Returns:
-flnd/common/auth.py:Vault: Args: no code
-flnd/common/auth.py:Vault: Args: no home
-flnd/common/auth.py:_create_key: Args: no path
-flnd/common/auth.py:_create_key: no Returns:
-flnd/common/auth.py:_move: Args: no code
-flnd/common/auth.py:_move: Args: no home
-flnd/common/auth.py:_refresh_cookie: Args: no cookie
-flnd/common/auth.py:_refresh_cookie: Args: no fresh
-flnd/common/auth.py:_refresh_cookie: no Returns:
-flnd/common/auth.py:_remove_if_empty: Args: no folder
-flnd/common/auth.py:expiring: Args: no home
-flnd/common/auth.py:expiring: Args: no source
-flnd/common/auth.py:expiring: Args: no within
-flnd/common/auth.py:expiring: no Returns:
-flnd/common/auth.py:fix_domains: Args: no jar
-flnd/common/auth.py:fix_domains: no Returns:
-flnd/common/auth.py:from_browser: Args: no browser
-flnd/common/auth.py:from_browser: Args: no profile
-flnd/common/auth.py:from_browser: Args: no source
-flnd/common/auth.py:from_browser: no Raises:
-flnd/common/auth.py:from_browser: no Returns:
-flnd/common/auth.py:key: Args: no home
-flnd/common/auth.py:key: no Raises:
-flnd/common/auth.py:key: no Returns:
-flnd/common/auth.py:logout: Args: no code
-flnd/common/auth.py:logout: Args: no home
-flnd/common/auth.py:logout: no Returns:
-flnd/common/auth.py:origin: no Returns:
-flnd/common/auth.py:secrets: no Returns:
-flnd/common/auth.py:store: no Returns:
-flnd/common/auth.py:write_back: Args: no code
-flnd/common/auth.py:write_back: Args: no current
-flnd/common/auth.py:write_back: Args: no home
-flnd/common/auth.py:write_back: no Returns:
 flnd/common/net.py:_Row.grow: Args: no new
 flnd/common/net.py:_Row.grow: Args: no old
 flnd/common/net.py:_Row.start: no docstring
@@ -382,13 +323,9 @@ flnd/engine.py:Engine._sync_query_run: Args: no seen_keys
 flnd/engine.py:Engine._sync_query_run: Args: no stop
 flnd/engine.py:Engine._sync_query_run: Args: no target
 flnd/engine.py:Engine._sync_query_run: no Returns:
-flnd/engine.py:Engine._target_info: Args: no rows
-flnd/engine.py:Engine._target_info: Args: no target
-flnd/engine.py:Engine._target_info: no Returns:
 flnd/engine.py:Engine._unrecorded: Args: no known
 flnd/engine.py:Engine._unrecorded: Args: no rows
 flnd/engine.py:Engine._unrecorded: no Yields:
-flnd/engine.py:Engine._warn_unsynced: no docstring
 flnd/engine.py:Engine.auth_ls: no Returns:
 flnd/engine.py:Engine.login: Args: no browser
 flnd/engine.py:Engine.login: Args: no code
@@ -408,7 +345,6 @@ flnd/engine.py:Engine.target_sync: Args: no targets
 flnd/engine.py:Engine.target_sync: no Raises:
 flnd/engine.py:Engine.target_sync: no Returns:
 flnd/engine.py:_connected: no docstring
-flnd/engine.py:_folder_stats: no docstring
 flnd/engine.py:_log_totals: no docstring
 flnd/engine.py:_require_auth: no docstring
 flnd/engine.py:_split_target: Args: no cleaned
@@ -435,9 +371,6 @@ flnd/job.py:Board.start: Args: no slots
 flnd/job.py:Board.start: Args: no target
 flnd/job.py:Board.totals: Args: no target
 flnd/job.py:Board.totals: no Returns:
-flnd/job.py:Downloads._build_row: Args: no queued
-flnd/job.py:Downloads._build_row: Args: no saved
-flnd/job.py:Downloads._build_row: no Returns:
 flnd/job.py:Downloads._dispatch_refresh: Args: no refresh
 flnd/job.py:Downloads._dispatch_refresh: no Raises:
 flnd/job.py:Downloads._download: Args: no queued
@@ -488,7 +421,6 @@ flnd/job.py:Ledger._queue_post_files: no Returns:
 flnd/job.py:Ledger._saved_first: Args: no category
 flnd/job.py:Ledger._saved_first: Args: no post
 flnd/job.py:Ledger._saved_first: no Returns:
-flnd/job.py:Ledger._target_undated_rows: no Returns:
 flnd/job.py:Ledger.is_saved: Args: no category
 flnd/job.py:Ledger.is_saved: Args: no post_id
 flnd/job.py:Ledger.is_saved: Args: no posted
@@ -623,8 +555,6 @@ flnd/job.py:_retry_failed: Args: no options
 flnd/job.py:_retry_failed: Args: no run
 flnd/job.py:_retry_failed: Args: no target
 flnd/job.py:_retry_failed: Args: no work
-flnd/job.py:_row_day: Args: no row
-flnd/job.py:_row_day: no Returns:
 flnd/job.py:_run_discovered: Args: no board
 flnd/job.py:_run_discovered: Args: no items
 flnd/job.py:_run_discovered: Args: no options
@@ -1286,50 +1216,3 @@ flnd/sources/twt.py:tweet_posts: Args: no part
 flnd/sources/twt.py:tweet_posts: Args: no tweet
 flnd/sources/twt.py:tweet_posts: Args: no user_id
 flnd/sources/twt.py:tweet_posts: no Yields:
-flnd/targets.py:_check_from_entry: Args: no by_code
-flnd/targets.py:_check_from_entry: Args: no entry
-flnd/targets.py:_check_from_entry: Args: no known
-flnd/targets.py:_check_from_entry: no Raises:
-flnd/targets.py:_check_template: Args: no allowed
-flnd/targets.py:_check_template: Args: no source
-flnd/targets.py:_check_template: Args: no template
-flnd/targets.py:_check_template: no Raises:
-flnd/targets.py:_kept_fields: Args: no old
-flnd/targets.py:_kept_fields: Args: no options
-flnd/targets.py:_kept_fields: no Returns:
-flnd/targets.py:_next_sync: Args: no old
-flnd/targets.py:_next_sync: Args: no sync
-flnd/targets.py:_next_sync: no Returns:
-flnd/targets.py:_route_fields: Args: no route
-flnd/targets.py:_route_fields: no Returns:
-flnd/targets.py:_target_routes: Args: no by_code
-flnd/targets.py:_target_routes: Args: no targets
-flnd/targets.py:_target_routes: no Returns:
-flnd/targets.py:_validate_folders: Args: no sources
-flnd/targets.py:_validate_from: Args: no by_code
-flnd/targets.py:_validate_from: Args: no from_selection
-flnd/targets.py:_validate_from: Args: no targets
-flnd/targets.py:_validate_from: no Raises:
-flnd/targets.py:_write_sync: Args: no enabled
-flnd/targets.py:_write_sync: Args: no home
-flnd/targets.py:_write_sync: Args: no target
-flnd/targets.py:_write_sync: no Returns:
-flnd/targets.py:complete: Args: no categories
-flnd/targets.py:complete: Args: no saved
-flnd/targets.py:complete: Args: no target
-flnd/targets.py:delete: Args: no home
-flnd/targets.py:delete: Args: no target
-flnd/targets.py:delete: no Returns:
-flnd/targets.py:keep_cursors: Args: no changed
-flnd/targets.py:keep_cursors: Args: no saved
-flnd/targets.py:keep_cursors: Args: no target
-flnd/targets.py:keep_failed: Args: no failed
-flnd/targets.py:keep_failed: Args: no saved
-flnd/targets.py:keep_failed: Args: no succeeded
-flnd/targets.py:keep_failed: Args: no target
-flnd/targets.py:mark_seen: Args: no home
-flnd/targets.py:mark_seen: Args: no keys
-flnd/targets.py:mark_seen: Args: no target
-flnd/targets.py:validate: Args: no from_selection
-flnd/targets.py:validate: Args: no sources
-flnd/targets.py:validate: Args: no targets

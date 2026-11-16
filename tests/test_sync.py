@@ -1,4 +1,4 @@
-"""`Engine.sync` and the saved target settings (flnd/targets.py): the plan, the records,
+"""`Engine.sync` and the saved targets (`flnd.db`'s `targets`): the plan, the records,
 `Engine.download`'s use of them, the fetch and the summary.
 
 Each test runs on a temporary `.flnd` with test sources on `httpx.MockTransport` (see `EngineCase`),
@@ -9,15 +9,15 @@ import datetime
 import unittest
 from unittest import mock
 
+import fakes
 import httpx
 from test_engine import CDN, EngineCase, make_source, noise
 
 from flnd.engine import Engine, TargetReport
 from flnd.source import Range
-from flnd.common import paths
 from flnd.options import Options
 from flnd.source import File, Post, Source, Target, target
-from flnd import _db as store
+from flnd import _home
 
 class Site:
     """A test source's posts: `files` maps a name to its body; its `posts` category yields every one."""
@@ -68,8 +68,7 @@ class SyncCase(EngineCase):
         return self.engine()._plan(list(targets))
 
     def saved(self):
-        with paths.table(self.home / paths.TARGETS, "targets") as targets:
-            return dict(targets.items())
+        return fakes.targets(self.home)
 
     def folder(self):
         return self.target_dir("aaa", "a")
@@ -83,26 +82,31 @@ class SettingsTest(SyncCase):
         self.download(Options(categories=("posts",), since=datetime.date(2026, 1, 1), until=datetime.date(2026, 6, 30)))
         row = self.saved()["aaa:a"]
         # `complete` is what was listed to its end, not a setting: here the one category, `posts`.
-        self.assertEqual(sorted(row), ["at", "complete", "kind", "sync"])
-        self.assertEqual(sorted(row["complete"]), ["posts"])
+        self.assertEqual((row.kind, row.follow, row.only, row.cursors), ("user", True, None, {}))
+        self.assertEqual(sorted(row.complete), ["posts"])
         self.assertEqual(self.plan()[0][1], Options())
 
     def test_every_recorded_target_and_unrecorded_folders(self):
         self.download()
-        (self.home / paths.MEDIA / "aaa" / "older").mkdir(parents=True)
-        (self.home / paths.MEDIA / "aaa" / "older" / "x.jpg").write_bytes(b"x")
+        (self.home / _home.MEDIA / "aaa" / "older").mkdir(parents=True)
+        (self.home / _home.MEDIA / "aaa" / "older" / "x.jpg").write_bytes(b"x")
         chosen = dict(self.plan())
         self.assertEqual(chosen[Target("aaa", "user", "older")], Options())
         # A folder of a source flnd doesn't have, or a file beside the folders, isn't a target.
-        (self.home / paths.MEDIA / "zzz" / "b").mkdir(parents=True)
-        (self.home / paths.MEDIA / "aaa" / "a.zip").write_bytes(b"")
+        (self.home / _home.MEDIA / "zzz" / "b").mkdir(parents=True)
+        (self.home / _home.MEDIA / "aaa" / "a.zip").write_bytes(b"")
         self.assertEqual(len(self.plan()), 2)
         self.sync()
         self.assertEqual(sorted(self.saved()), ["aaa:a", "aaa:older"])
 
+    def test_a_target_followed_with_compress_syncs_with_it(self):
+        self.engine().download(["aaa:a"], sync=True, keep=True, compress=True, every=True)
+        self.assertTrue(self.saved()["aaa:a"].compress)
+        self.assertEqual(self.plan()[0][1], Options(compress=True))
+
     def test_planning_creates_no_file(self):
         self.assertEqual(self.plan(), [])
-        self.assertFalse((self.home / paths.TARGETS).exists())
+        self.assertFalse((self.home / _home.DB).exists())
 
 
 class FetchTest(SyncCase):
@@ -116,27 +120,12 @@ class FetchTest(SyncCase):
 
 
 class HistoryTest(SyncCase):
-    def test_the_history_is_read_once_per_run(self):
+    def test_a_sync_never_reads_every_saved_file(self):
         """Fix 12: repair, compress and the tally each scanned the whole history, per target."""
         self.download(texts=("aaa:a", "aaa:b", "aaa:c"))
-        real_iter, real_items, scans = store.Table.__iter__, store.Table.items, []
-
-        def counted_iter(s):
-            scans.append(s)
-            return real_iter(s)
-
-        def counted_items(s):
-            scans.append(s)
-            return real_items(s)
-
-        with (
-            mock.patch.object(store.Table, "__iter__", counted_iter),
-            mock.patch.object(store.Table, "items", counted_items),
-        ):
+        with mock.patch.object(_home.Home, "records", side_effect=AssertionError("a full scan")):
             lines = self.sync()
-        history_scans = [s for s in scans if s.name == "downloads"]
         self.assertEqual(len(lines), 3)
-        self.assertLessEqual(len(history_scans), 1)
 
 
 class SummaryTest(SyncCase):
@@ -190,18 +179,12 @@ class SavedRunStopTest(SyncCase):
 
 
 class SyncOptInTest(SyncCase):
-    def test_download_without_sync_is_not_synced_and_legacy_rows_count_as_on(self):
+    def test_download_without_sync_is_not_synced(self):
         self.download(sync=False)
-        self.assertIs(self.saved()["aaa:a"]["sync"], False)
+        self.assertIs(self.saved()["aaa:a"].follow, False)
         self.assertEqual(self.plan(), [])
         self.assertEqual(self.sync(), [])
         self.assertIn("* nothing to sync", self.lines())
-        # A legacy row without a `sync` key counts as synced.
-        with paths.table(self.home / paths.TARGETS, "targets") as targets:
-            row = dict(targets["aaa:a"])
-            del row["sync"]
-            targets["aaa:a"] = row
-        self.assertEqual([t for t, _ in self.plan()], [Target("aaa", "user", "a")])
 
     def test_target_sync_ls_and_del(self):
         self.download(sync=False)
@@ -211,7 +194,7 @@ class SyncOptInTest(SyncCase):
         self.assertEqual([t for t, _ in self.plan()], [Target("aaa", "user", "a")])
         # Re-downloading without --sync preserves sync=True.
         self.download(sync=False)
-        self.assertIs(self.saved()["aaa:a"]["sync"], True)
+        self.assertIs(self.saved()["aaa:a"].follow, True)
         items = self.engine().target_ls()
         self.assertEqual(len(items), 1)
         self.assertTrue(items[0].sync)

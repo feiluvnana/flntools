@@ -243,7 +243,7 @@ def history_breaches(source: str) -> list[str]:
 TRANSITIONAL_ALIASES = {
     ("clock", "_time"), ("cookies", "_cookies"), ("crypto", "_vault"),
     ("http", "_http"), ("selector", "_html"),
-    ("store", "_db"), ("text", "_text"), ("worker", "_loop"),
+    ("text", "_text"), ("worker", "_loop"),
 }
 
 

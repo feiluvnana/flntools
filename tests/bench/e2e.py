@@ -8,7 +8,10 @@ leaves the process, and the pace between API requests is the real one.
 The runs:
 1. 2,000 posts with no latency and no pace: the engine's own cost, per file;
 2. the same target again with nothing new (`stop_at_saved`): the cost of a sync;
-3. 500 posts with 150 ms per API page and 40 ms per file, at the source defaults for pace and
+3. the same sync once the home's `flnd.db` holds 100,000 files: the 96,000 rows past the 4,000
+   downloaded are written straight into the database (`grow`), so the case stays quick. Their
+   files aren't on disk, which a sync never looks at: it stops at the first saved posts;
+4. 500 posts with 150 ms per API page and 40 ms per file, at the source defaults for pace and
    concurrency: what a real run is bound by.
 
 Each run is timed once: they are long enough that noise is small.
@@ -28,11 +31,13 @@ import httpx
 import kit
 from flnd.engine import Engine
 from flnd.options import Options
-from flnd.source import File, Post, Site, Source, pages, target
-from flnd import _run
+from flnd.source import File, Post, Site, Source, Target, pages, target
+from flnd import _home, _run
 from flnd._ui import ui
 
 API, CDN, PER_PAGE = "https://api.bench.example", "https://cdn.bench.example", 50
+# The files the home of run 3 holds: the size of a large followed account.
+LARGE = 100_000
 BODY = b"\0" * (100 * 1024)
 # The first bytes of a JPEG and of an MP4, so the engine's type sniffing sees real media.
 HEADS = {".jpg": (b"\xff\xd8\xff\xe0", "image/jpeg"), ".mp4": (b"\0\0\0\x18ftypmp42", "video/mp4")}
@@ -109,6 +114,31 @@ def run(home: Path, *, again: bool = False) -> float:
     return time.perf_counter() - start
 
 
+def grow(home: Path, files: int) -> None:
+    """Add file rows to a home's database until it holds `files`, as downloads would have.
+
+    Run 1 saved posts `p0` to `p1999`, two files each; the rows added go on from `p2000`, with
+    the keys, target and paths a download would give them.
+
+    Args:
+        home: the home of run 1.
+        files: how many file rows the home holds after.
+    """
+    folder = _home.target_folder(home, Target("bnc", "user", "example_user")) / "posts"
+    with _home.open(home) as db:
+        held = db.count("bnc:example_user")[0]
+        rows = [
+            _home.FileRow(f"bnc:p{n}_{num}", "bnc:example_user",
+                          str(folder / f"2026-01-01_p{n}_{num}{('.jpg', '.mp4')[num]}"),
+                          len(BODY) + 4, post_id=f"p{n}", category="posts", date="2026-01-01",
+                          kind=("image", "video")[num], files=2 if num == 0 else None)
+            for n in range(held // 2, files // 2) for num in (0, 1)
+        ]
+        # A transaction per 1,000 rows: the same rows a long run commits post by post.
+        for start in range(0, len(rows), 1000):
+            db.save(rows[start:start + 1000])
+
+
 def main() -> None:
     """Run the three scenarios and emit the report."""
     report = kit.Report("e2e")
@@ -126,7 +156,10 @@ def main() -> None:
             raise SystemExit(f"e2e: expected {2 * Fake.posts} files, found {files}")
         report.add("per_file", took / files * 1e3, "ms")
         report.add("sync_nothing_new", run(home, again=True), "s")
-        # 3: latency, at the defaults.
+        # 3: the same sync over a home of 100k files.
+        grow(home, LARGE)
+        report.add("sync_nothing_new_100k", run(home, again=True), "s")
+        # 4: latency, at the defaults.
         Fake.posts, Bench.pace = 500, default_pace
         Fake.page_latency, Fake.file_latency = 0.150, 0.040
         report.add("latency_500_posts", run(Path(scratch, "slow", ".flnd")), "s")

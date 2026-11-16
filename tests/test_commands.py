@@ -25,7 +25,7 @@ from flnd import Blocked, Target, sources
 from flnd import cli as flnd_cli
 from flnd import _cookies as cookies
 from flnd._ui import ui
-from flnd.common import auth, paths
+from flnd import _home
 from flnd.engine import Engine, TargetReport
 from flnd.options import Options
 from flnd.source import Source
@@ -89,7 +89,7 @@ class FlndCase(unittest.TestCase):
     def saved(self, code):
         """The cookies the vault holds for a source; no plain cookie file is ever written."""
         self.assertFalse(Path(".flnd/cookies").exists())
-        return auth.load(Path(".flnd"), code).list
+        return _home.load(Path(".flnd"), code).list
 
 
 class RunsCase(FlndCase):
@@ -161,7 +161,7 @@ class DownloadTest(RunsCase):
             self.assertIn(message, out)
             self.assertNotIn("Traceback", out)
         self.assertEqual(self.runs, [])
-        self.assertFalse((Path(".flnd") / paths.MEDIA).exists())
+        self.assertFalse((Path(".flnd") / _home.MEDIA).exists())
 
     def test_bad_flags(self):
         message = ("no source here has 'reels': use all, or tik: videos, stories, playlists, "
@@ -169,7 +169,7 @@ class DownloadTest(RunsCase):
                    "replies, profile")
         self.assertIn(message, self.run_app("download", "tik:a", "twt:b", "--only", "videos,reels")[2])
         for argv in (("--limit", "0"), ("--limit", "five"), ("--when", "yesterday"),
-                     ("--from", "posts"), ("--time", "2026-01-01,"), ("--sync",), ("--again",)):
+                     ("--from", "posts"), ("--time", "2026-01-01,"), ("--sync",)):
             with self.subTest(argv=argv):
                 code, _, out = self.run_app("download", "ins:a", *argv)
                 self.assertEqual(code, 2)
@@ -358,7 +358,7 @@ class OutputTest(FlndCase):
         planned = [line for line in out.splitlines() if line.startswith("new ")]
         self.assertEqual(len(planned), 3)
         self.assertEqual(out.splitlines()[-1], "planned 3 files; nothing was downloaded")
-        self.assertFalse((Path(".flnd") / paths.MEDIA).exists())
+        self.assertFalse((Path(".flnd") / _home.MEDIA).exists())
 
     def test_a_failed_file_prints_its_line_and_exits_1(self):
         self.listing[("example_user", "posts")] = ["p1", "bad"]
@@ -435,10 +435,10 @@ class HelpTest(FlndCase):
         code, out, _ = self.run_app("download", "--help")
         self.assertEqual(code, 0)
         self.assertIn("Download what the targets have now, once.", out)
-        for flag in ("--only", "--when", "--limit", "--compress", "--dry", "--exec", "--home",
-                     "--ui", "--json"):
+        for flag in ("--only", "--when", "--limit", "--compress", "--dry", "--again", "--exec",
+                     "--home", "--ui", "--json"):
             self.assertIn(flag, out)
-        for gone in ("--from", "--time", "--sync", "--again", "Args:"):
+        for gone in ("--from", "--time", "--sync", "Args:"):
             self.assertNotIn(gone, out)
 
     def test_help_imports_no_source_engine_or_rich(self):
@@ -495,9 +495,9 @@ class LoginFileTest(FlndCase):
                          {"sessionid": ".instagram.com", "ds_user_id": ".www.instagram.com"})
         # Sealed in the vault, whose key is private; nothing else is written.
         self.assertEqual(sorted(path.name for path in Path(".flnd").rglob("*") if path.is_file()),
-                         ["secret.key", "secrets.db"])
+                         ["flnd.db", "secret.key", "secrets.db"])
         if os.name != "nt":
-            self.assertEqual(stat.S_IMODE((Path(".flnd") / paths.KEY).stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE((Path(".flnd") / _home.KEY).stat().st_mode), 0o600)
 
     def test_a_json_export(self):
         path = self.cookie_file(json.dumps([{"domain": ".tiktok.com", "name": "sid_tt",
@@ -539,7 +539,7 @@ class LoginQuestionsTest(FlndCase):
 
     def test_a_wrong_answer_is_asked_again(self):
         self.answer("9", "nope", "2")
-        with mock.patch("flnd.engine.auth.from_browser", return_value=cookies.Jar(
+        with mock.patch("flnd.engine._home.from_browser", return_value=cookies.Jar(
                 [{"name": "auth_token", "value": "t", "domain": ".x.com", "path": "/"}])) as read:
             code, out, err = self.run_app("login", "twt")
         self.assertEqual(code, 0, err)
@@ -581,8 +581,8 @@ class LoginsTest(FlndCase):
 
         jar = cookies.Jar([{"name": "sessionid", "value": "secret-val", "domain": ".instagram.com",
                             "expires": time.time() - 10}])
-        auth.store(sources.SOURCES["ins"](), jar, home=Path(".flnd"), origin="cookies.txt")
-        with auth.secrets(Path(".flnd"), "tlg") as secrets:
+        _home.store(sources.SOURCES["ins"](), jar, home=Path(".flnd"), origin="cookies.txt")
+        with _home.secrets(Path(".flnd"), "tlg") as secrets:
             secrets["api_id"] = "1"
         code, out, _ = self.run_app("login")
         self.assertEqual(code, 0)
@@ -598,11 +598,11 @@ class LoginsTest(FlndCase):
 
 class LogoutTest(FlndCase):
     def test_logout(self):
-        auth.save(Path(".flnd"), "ins", cookies.Jar([{"name": "a", "value": "1",
+        _home.save(Path(".flnd"), "ins", cookies.Jar([{"name": "a", "value": "1",
                                                      "domain": ".x.example"}]))
         code, out, _ = self.run_app("logout", "ins")
         self.assertEqual((code, out), (0, "ins: logged out\n"))
-        self.assertEqual(auth.load(Path(".flnd"), "ins"), cookies.Jar())
+        self.assertEqual(_home.load(Path(".flnd"), "ins"), cookies.Jar())
         self.assertEqual(self.run_app("logout", "ins")[1], "ins: was not logged in\n")
 
     def test_logout_takes_one_known_source(self):

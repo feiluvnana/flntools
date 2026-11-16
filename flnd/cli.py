@@ -456,6 +456,7 @@ def parser() -> argparse.ArgumentParser:
     _compress(sub)
     sub.add_argument("--dry", action="store_true",
                      help="list what would be downloaded, and download and write nothing")
+    _again(sub)
     _exec(sub)
 
     sub = command(follow)
@@ -464,6 +465,7 @@ def parser() -> argparse.ArgumentParser:
     _only(sub)
     _when(sub)
     _compress(sub)
+    _again(sub)
 
     sub = command(sync)
     sub.add_argument("targets", nargs="*", metavar="target",
@@ -530,6 +532,17 @@ def _when(sub: argparse.ArgumentParser) -> None:
                      help="posts from 2026, 2026-06, 2026-06-15, 2026-01..2026-03, or 30d")
 
 
+def _again(sub: argparse.ArgumentParser) -> None:
+    """Add `--again` to a command that downloads.
+
+    Args:
+        sub: the command's parser.
+    """
+    sub.add_argument("--again", action="store_true",
+                     help="list every post again, and ask again for files the site said are "
+                          "gone (404 or 410)")
+
+
 def _compress(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--compress", action="store_true",
                      help="shrink photos and videos as they land when a smaller copy looks the "
@@ -590,7 +603,7 @@ def _open(args: argparse.Namespace) -> flnd.Flnd:
     """The library over `--home`; the caller uses it in a `with`."""
     import flnd
 
-    return flnd.open(args.home)
+    return flnd.open(args.home, again=True if getattr(args, "again", False) else None)
 
 
 def _targets(given: Sequence[str]) -> list[str]:

@@ -7,7 +7,7 @@ Every saved file goes through the same chain (the architecture guide, docs/media
 Each step is on or off by its flag or setting; the order never changes, so no combination can,
 say, compress a file before dedupe has linked it. Where each step runs today:
 - download, date, place and record run on the download's own thread, in `flnd.job`: the part
-  is renamed into place, dated, and its history row written;
+  is renamed into place and dated, and its row written to `flnd.db`;
 - unpack and compress are slow (seconds for a video, minutes for a big archive), so the job
   hands the recorded file to this module's `Chain`, which runs them on lanes of their own
   threads, and they re-run place and record for the file they change. A slow encode never
@@ -21,18 +21,17 @@ How a landed file goes through the chain:
    `QUEUE` items, far more than downloads produce while one encode runs.
 2. A lane thread runs `_run`: unpack an archive (`flnd._unpack.extract`), or compress a media
    file (`flnd._shrink.shrink`) when its target asked for `--compress`.
-3. Each result is written to the file's history row by `record`, the one function that knows
-   where the row lives.
+3. Each result is written to the file's row of `flnd.db` by `record` (`Home.update`).
 4. `close` waits for the lanes, or, after Ctrl-C, drops what hasn't started and lets running
    steps end (a second Ctrl-C kills a running ffmpeg). It logs one summary line.
 
-`backlog` feeds the same lanes from history: `flnd sync --compress` uses it to compress files
-saved before, skipping each file already done (one read of history, no `stat` per done file).
+`backlog` feeds the same lanes from `flnd.db`: `flnd sync --compress` uses it to compress files
+saved before, skipping each file already done (one query, no `stat` per done file).
 
 Rules a change must keep:
-- every history write goes through `record`, so the store can move without touching the steps;
+- every write to `flnd.db` goes through `record`;
 - a step's failure is the file's, never the run's: it is logged and recorded as `failed`;
-- `Chain` is closed before the history it writes to (`attached` does both in order);
+- `Chain` is closed before the database it writes to (`attached` does both in order);
 - `flnd._unpack`, `flnd._shrink` and what they import (zipfile, tarfile, Pillow) are imported
   inside the functions that use them, so `flnd --help` never loads them.
 """
@@ -41,15 +40,18 @@ from __future__ import annotations
 
 import queue
 import threading
-from collections.abc import Iterable, Iterator, MutableMapping
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from flnd import _text
 from flnd.errors import DiskError, Error
 from flnd._ui import ui
+
+if TYPE_CHECKING:
+    from flnd._home import FileRow, Home
 
 __all__ = ["Chain", "Landed", "attached", "landed", "record"]
 
@@ -57,7 +59,7 @@ __all__ = ["Chain", "Landed", "attached", "landed", "record"]
 QUEUE = 10_000
 # Threads per lane (see stage 1).
 LANES = {"archive": 1, "photo": 2, "video": 1}
-# The history fields this module writes.
+# The `files` columns this module writes.
 SHRINK, TOOLS, BEFORE, UNPACKED, FOLDER = "shrink", "tools", "before", "unpacked", "folder"
 EXTRACTED, FAILED = "extracted", "failed"
 
@@ -93,34 +95,30 @@ class _Tally:
     unpack_failed: int = 0
 
 
-def record(history: MutableMapping[str, Any], key: str, **fields: Any) -> None:
-    """Merge `fields` into the history row at `key`, in one write.
-
-    This is the only place the steps write history, so moving history to another store (one
-    `flnd.db` with a column per field) changes this function and nothing else.
+def record(db: Home | None, key: str, **fields: Any) -> None:
+    """Set `fields` on the file's row of `flnd.db`, in one statement (`Home.update`).
 
     Args:
-        history: the run's history table.
-        key: the file's history key; a key with no row is left alone.
-        **fields: the fields to set, such as `shrink="compressed"`.
+        db: the run's database; None records nothing.
+        key: the file's key; a key with no row is left alone.
+        **fields: the columns to set, such as `shrink="compressed"`.
     """
-    row = history.get(key)
-    if isinstance(row, dict):
-        history[key] = {**row, **fields}
+    if db is not None:
+        db.update(key, **fields)
 
 
 class Chain:
-    """The lanes that run unpack and compress for one run, writing to its history.
+    """The lanes that run unpack and compress for one run, writing to its `flnd.db`.
 
     Args:
-        history: the run's history table.
+        db: the run's database; None records nothing.
         stop: the run's Ctrl-C signal (`soon` and `now` events); None never stops.
     """
 
-    def __init__(self, history: MutableMapping[str, Any], stop: Any = None) -> None:
+    def __init__(self, db: Home | None, stop: Any = None) -> None:
         from flnd import _shrink
 
-        self.history, self.stop = history, stop
+        self.db, self.stop = db, stop
         self.savings = _shrink.Savings()
         self.tally = _Tally()
         self._lanes: dict[str, _Lane] = {}
@@ -145,17 +143,14 @@ class Chain:
             return
         self._lane("photo" if of in _shrink.PHOTOS else "video").put(item)
 
-    def backlog(
-        self, rows: Iterable[tuple[str, Any]], folders: Iterable[Path], *, video: str = "av1",
-    ) -> int:
-        """Queue saved files under `folders` that still need unpacking or compressing.
+    def backlog(self, rows: Iterable[FileRow], *, video: str = "av1") -> int:
+        """Queue saved files that still need unpacking or compressing.
 
         A file is done when it was compressed, or kept or failed with today's tools. Its kind
         comes from its suffix, so a done file costs no `stat`.
 
         Args:
-            rows: history's (key, row) pairs, read once.
-            folders: the target folders whose files to take.
+            rows: the targets' file rows (`Home.unfinished`), read once.
             video: "av1" or "hevc".
 
         Returns:
@@ -163,16 +158,12 @@ class Chain:
         """
         from flnd import _shrink, _unpack
 
-        prefixes = tuple(f"{folder}/" for folder in folders)
         queued = 0
-        for key, row in rows:
-            path = row.get("path") if isinstance(row, dict) else None
-            if not isinstance(path, str) or not path.startswith(prefixes):
-                continue
+        for row in rows:
             self._seed_one(row)
-            item = Landed(key, Path(path), compress=True, video=video)
+            item = Landed(row.key, Path(row.path), compress=True, video=video)
             if _unpack.is_archive(item.path):
-                if UNPACKED not in row:
+                if not row.unpacked:
                     self.landed(item)
                     queued += 1
                 continue
@@ -253,10 +244,10 @@ class Chain:
         except Error as error:
             self.tally.unpack_failed += 1
             ui.warn("{name}: not extracted: {error}", name=item.path.name, error=error)
-            record(self.history, item.key, **{UNPACKED: FAILED})
+            record(self.db, item.key, **{UNPACKED: FAILED})
             return
         self.tally.unpacked += 1
-        record(self.history, item.key, **{UNPACKED: EXTRACTED, FOLDER: str(folder)})
+        record(self.db, item.key, **{UNPACKED: EXTRACTED, FOLDER: str(folder)})
         ui.debug("{name}: extracted to {folder}", name=item.path.name, folder=folder.name)
         # The archive goes only after the extract was verified and recorded.
         if item.compress:
@@ -265,7 +256,7 @@ class Chain:
     def _compress(self, item: Landed) -> None:
         """The compress step, for a file whose kind is still worth it.
 
-        The history row moves with the file inside `shrink`'s `record` call, before the
+        The file's row moves with the file inside `shrink`'s `record` call, before the
         original is removed. A full disk fails this file only; the next run retries it.
 
         Args:
@@ -288,7 +279,7 @@ class Chain:
                 found = outcome.path.stat()
                 fields.update(path=str(outcome.path), size=found.st_size,
                               mtime=found.st_mtime_ns, **{BEFORE: outcome.before})
-            record(self.history, item.key, **fields)
+            record(self.db, item.key, **fields)
 
         kill = self.stop.now if self.stop is not None else None
         try:
@@ -315,32 +306,31 @@ class Chain:
     # -- savings and the summary ------------------------------------------------------------
 
     def _seed(self) -> None:
-        """Fill `savings` from history's earlier results, once, before the first compress."""
+        """Fill `savings` from earlier results in `flnd.db`, once, before the first compress."""
         with self._lock:
             if self._seeded:
                 return
             self._seeded = True
-        for _, row in self.history.items():
+        for row in self.db.shrunk() if self.db is not None else ():
             self._seed_one(row)
 
-    def _seed_one(self, row: Any) -> None:
-        """Count one history row's earlier compress result in `savings`.
+    def _seed_one(self, row: FileRow) -> None:
+        """Count one file's earlier compress result in `savings`.
 
         Args:
-            row: a history row; one without a compress result counts for nothing.
+            row: the file's row; one without a compress result counts for nothing.
         """
         from flnd import _shrink
 
-        if not isinstance(row, dict) or row.get(SHRINK) not in ("compressed", "kept"):
+        if row.shrink not in ("compressed", "kept"):
             return
-        of = _shrink.kind(Path(str(row.get("path", ""))))
-        before, size = row.get(BEFORE), row.get("size")
+        of = _shrink.kind(Path(row.path))
         if of is None:
             return
-        if row[SHRINK] == "kept" or not isinstance(before, int) or not isinstance(size, int):
+        if row.shrink == "kept" or row.before is None:
             self.savings.add(of, 0.0)
-        elif before > 0:
-            self.savings.add(of, 1 - size / before)
+        elif row.before > 0:
+            self.savings.add(of, 1 - row.size / row.before)
 
     def _summary(self) -> None:
         """Log one line for what the chain did, when it did anything."""
@@ -362,12 +352,11 @@ class Chain:
                 "Media: {line}", line="; ".join(parts))
 
 
-def _done(row: dict[str, Any], tools: str) -> bool:
-    """Whether a history row's file needs no compress: compressed, or kept/failed by `tools`."""
-    state = row.get(SHRINK)
-    if state == "compressed":
+def _done(row: FileRow, tools: str) -> bool:
+    """Whether a file needs no compress: compressed, or kept or failed by `tools`."""
+    if row.shrink == "compressed":
         return True
-    return state in ("kept", "failed") and row.get(TOOLS) == tools
+    return row.shrink in ("kept", "failed") and row.tools == tools
 
 
 class _Lane:
@@ -430,15 +419,15 @@ class _Lane:
 def attached(settings: Any) -> Iterator[Chain]:
     """Give a run's settings their chain for the block, and close it at the end.
 
-    The chain is closed before the block's caller closes history, which it writes to.
+    The chain is closed before the block's caller closes the database, which it writes to.
 
     Args:
-        settings: the run's `RunShared`, whose `history` and `stop` the chain uses.
+        settings: the run's `RunShared`, whose `db` and `stop` the chain uses.
 
     Yields:
         The chain, also set as `settings.chain`.
     """
-    chain = Chain(settings.history, settings.stop)
+    chain = Chain(settings.db, settings.stop)
     settings.chain = chain
     try:
         yield chain

@@ -55,7 +55,7 @@ the way is asked with numbered choices:
 - **From a cookie file**: reads a Netscape `cookies.txt` or a JSON export.
 
 The login is accepted only when the cookies hold `auth_token`. They are stored encrypted in
-`.flnd/metadata/secrets.db`, loaded into the HTTP client and the browser each run, and any the
+`.flnd/secrets.db`, loaded into the HTTP client and the browser each run, and any the
 site refreshed are written back at the end. API calls also need the `ct0` cookie, which X sets
 and checks as a CSRF token.
 

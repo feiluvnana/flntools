@@ -56,7 +56,7 @@ Download what the targets have now, once. Nothing is followed: a later `flnd syn
 these targets (`flnd follow` does).
 
 ```sh
-flnd download <targets…> [--only CATS] [--when WHEN] [--limit N] [--compress] [--dry] [--exec CMD]
+flnd download <targets…> [--only CATS] [--when WHEN] [--limit N] [--compress] [--dry] [--again] [--exec CMD]
 ```
 
 | flag | default | what it does |
@@ -67,6 +67,7 @@ flnd download <targets…> [--only CATS] [--when WHEN] [--limit N] [--compress] 
 | `--limit N` | no limit | at most N posts per target, or N targets found by a search; at least 1 |
 | `--compress` | off | replace each saved photo and video by a smaller copy that looks the same, when one passes every check, and remove each archive once it is extracted ([media.md](media.md)) |
 | `--dry` | off | list what would be downloaded (each file `new` or `saved`, or the targets a search finds), and download and write nothing |
+| `--again` | off | list every post again, past the stop at saved posts and the saved cursors, and ask again for files the site answered 404 or 410 for, which are otherwise recorded gone and skipped ([storage.md](storage.md)); `again = true` under `[defaults]` in the home's `config.toml` makes it the default |
 | `--exec CMD` | none | run a command for each saved file, without a shell. Not built yet: a usage error |
 
 Archives (`.zip`, `.7z`, `.rar`, `.tar*`) are always extracted beside themselves, into a folder
@@ -91,11 +92,12 @@ A file already saved is skipped, so downloading a target again fetches only what
 Follow targets, so `flnd sync` keeps them up to date, and download what they have now.
 
 ```sh
-flnd follow <targets…> [--only CATS] [--when WHEN] [--compress]
+flnd follow <targets…> [--only CATS] [--when WHEN] [--compress] [--again]
 ```
 
-`--only` is kept with each target for later syncs; following again replaces it. `--when` bounds
-this first download only. The flags read as `download`'s do.
+`--only` and `--compress` are kept with each target for later syncs (a target followed with
+`--compress` has its new files compressed by every sync); following again replaces them.
+`--when` bounds this first download only. The flags read as `download`'s do.
 
 ## `flnd sync`
 

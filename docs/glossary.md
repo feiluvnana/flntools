@@ -42,8 +42,8 @@ function (Telegram's), or a video URL with a separate audio URL (DASH), which fl
 ffmpeg. `File.text(name, text)` is a small text file the source writes itself.
 
 ## History
-What flnd remembers about each saved file, so a second run skips it. Today it is the `downloads`
-table of `<home>/metadata/history.db`, one row per file, keyed `<code>:<key>` (see
+What flnd remembers about each saved file, so a second run skips it: the `files` table of
+`<home>/flnd.db`, one row per file, keyed `<code>:<key>` (see
 [storage.md](storage.md)). A file's **key** comes from the source's `key` template, `{id}_{num}`
 by default.
 
@@ -78,7 +78,7 @@ which is also the CLI's. Its layout is in [storage.md](storage.md).
 
 ## Login
 A source's saved credentials: browser cookies for most sites, a session for Telegram. Logins are
-encrypted in the home's vault (`metadata/secrets.db`, with its key in `metadata/secret.key`).
+encrypted in the home's vault (`secrets.db`, with its key in `secret.key`).
 
 ## Pace
 The least time between two requests to a source's own domains, in seconds (`Source.pace`, 0.5 by

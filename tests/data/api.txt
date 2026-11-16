@@ -26,7 +26,7 @@ flnd.Failed.error: attribute -> Error
 flnd.Failed.path: attribute -> Path | None
 flnd.Failed.post: attribute -> str
 flnd.Failed.target: attribute -> Target
-flnd.Flnd(home: str | os.PathLike[str] | None = None)
+flnd.Flnd(home: str | os.PathLike[str] | None = None, *, again: bool | None = None)
 flnd.Flnd.add(source: type[Source]) -> None
 flnd.Flnd.check(*, fix: bool = False) -> list[Record]
 flnd.Flnd.close() -> None
@@ -144,7 +144,7 @@ flnd.UsageError.hint: attribute
 flnd.UsageError.retryable: attribute
 flnd.UsageError.target: attribute
 flnd.__version__: str
-flnd.open(home: str | os.PathLike[str] | None = None) -> Flnd
+flnd.open(home: str | os.PathLike[str] | None = None, *, again: bool | None = None) -> Flnd
 flnd.source: module
 flnd.source.Blocked(flnd.SiteError)
 flnd.source.Blocked.hint: attribute

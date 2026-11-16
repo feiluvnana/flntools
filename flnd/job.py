@@ -1,4 +1,4 @@
-"""The job: one target of a source, from its route to its history rows."""
+"""The job: one target of a source, from its route to its rows in `flnd.db`."""
 
 from __future__ import annotations
 
@@ -19,9 +19,6 @@ from typing import (
 )
 from urllib.parse import urlsplit
 
-import msgspec
-
-from flnd import targets
 from flnd.common import net, paths
 from flnd.options import Options, selected
 from flnd.site import SourceRun, TargetSite
@@ -31,9 +28,9 @@ from flnd.errors import (
 from flnd.source import (
     Category, File, Post, Range, Resume, Route, Site, Source, Target, day, fill, listing,
 )
-from flnd import _files, _db, _text, _loop
+from flnd import _files, _home, _text, _loop
 from flnd._events import Failed, Progress, Saved, Skipped
-from flnd._steps import FOLDER, Landed, landed
+from flnd._steps import Landed, landed
 from flnd._ui import ui
 
 if TYPE_CHECKING:
@@ -45,14 +42,12 @@ __all__ = [
     "wanted",
 ]
 
-ID, DATE, ESTIMATED, CATEGORY = "id", "date", "estimated", "category"
 # The statuses that end a listing as a login problem when the site's own domain answers them.
 LOGIN_WALLS = frozenset({401, 403})
 # The statuses that stop asking a site for dates for the rest of the run.
 BLOCKS = LOGIN_WALLS | {429}
 LEADING_DAY = re.compile(r"\d{4}-\d\d-\d\d_")
 NOON = 12
-FILES = "files"
 OLDER_IN_A_ROW = 5
 SAVED_IN_A_ROW = 5
 LISTED_FIELDS = frozenset({"count", "index", "extension", "path"})
@@ -67,20 +62,6 @@ ALL = "all"
 _FORMATTER = string.Formatter()
 
 RunAsync = Callable[[Coroutine[Any, Any, Any]], Any]
-
-
-class _HistoryRow(msgspec.Struct, omit_defaults=True):
-    """Serialized metadata for one downloaded file in `history.db`."""
-
-    path: str
-    size: int
-    at: str
-    id: str
-    category: str = ""
-    date: str | None = None
-    estimated: bool = False
-    files: int | None = None
-    mtime: int | None = None
 
 
 @dataclass(frozen=True)
@@ -515,7 +496,11 @@ class Ledger:
         """Initialize a target ledger with its stores, dates, and category state."""
         self.source, self.settings, self.site = run.source, run.settings, site
         self.target, self.board, self._options = target, board, options
-        self.folder = paths.target_folder(self.settings.home, target)
+        self.folder = _home.target_folder(self.settings.home, target)
+        # The home's database; None for a plan with nothing to read (`flnd.dry`).
+        self._db = self.settings.db
+        # Told to ask again for everything: files recorded gone are asked for once more.
+        self._again = options is not None and options.again
         self._route = next((r for r in self.source.routes if r.kind == target.kind), None)
         self._categories = {c.name: c for r in self.source.routes for c in r.categories}
         self._queued: dict[Path | str, str] = {}
@@ -602,9 +587,9 @@ class Ledger:
         for dest, item_key, category in self._later:
             holder = written.get(item_key)
             # The compress step may have moved the file to a new suffix; its row says where.
-            row = self.settings.history.get(item_key) if holder is not None else None
-            if isinstance(row, dict) and row.get("path"):
-                holder = Path(row["path"])
+            found = self._db.held(item_key) if holder is not None and self._db else None
+            if found is not None and found[0]:
+                holder = Path(found[0])
             if holder is not None:
                 self._link(dest.with_suffix(holder.suffix), holder, category)
             self.board.count(self.target, category, later=-1)
@@ -643,49 +628,28 @@ class Ledger:
         """Date undated or estimated saved files of this target using the site's `date` hook."""
         if not self._asking:
             return 0
+        if self._db is None:
+            return 0
         dated = 0
-        for item_key, row in self._target_undated_rows():
-            post_id = row[ID]
-            if post_id in self._asked:
+        # A partial index holds only undated rows, so a target with none costs one lookup.
+        for row in self._db.undated(_home.key(self.target)):
+            if row.post_id in self._asked:
                 continue
-            found = self._ask(Post(post_id))
+            found = self._ask(Post(row.post_id))
             if found is None:
                 continue
-            cat = self._categories.get(str(row.get(CATEGORY, "")))
+            cat = self._categories.get(row.category)
             filename_tpl = _format(self.source, cat, "filename")
-            path = _redated(
-                Path(row["path"]), found, filename_tpl, estimated=bool(row.get(ESTIMATED)),
-            )
+            path = _redated(Path(row.path), found, filename_tpl, estimated=row.estimated)
             if path is None:
                 continue
             _set_mtime(path, found)
-            fresh = {k: v for k, v in row.items() if k != ESTIMATED}
-            self.settings.history[item_key] = {
-                **fresh, "path": str(path), DATE: found.isoformat(), **paths.stamp(path),
-            }
+            self._db.redate(row.key, path, found)
             dated += 1
         self._save_asked()
         if dated:
             self.site.info("{files} dated", files=_text.count(dated, "saved file"))
         return dated
-
-    def _target_undated_rows(self) -> list[tuple[str, dict[str, Any]]]:
-        """Return undated or estimated history rows belonging to this target's folder."""
-        history = self.settings.history
-        prefix = f"{self.target.source}:"
-        # A store reads only this source's rows, in SQL; any other mapping is filtered here.
-        rows = (
-            history.prefixed(prefix) if isinstance(history, _db.Table)
-            else [(k, r) for k, r in list(history.items()) if k.startswith(prefix)]
-        )
-        return [(k, r) for k, r in rows if self._undated(r)]
-
-    def _undated(self, row: Any) -> bool:
-        """Return whether `row` is an undated or estimated file in this target's folder."""
-        if not isinstance(row, dict) or not isinstance(row.get(ID), str):
-            return False
-        in_folder = Path(row.get("path", "")).is_relative_to(self.folder)
-        return in_folder and (row.get(DATE) is None or bool(row.get(ESTIMATED)))
 
     def _load_asked(self) -> dict[str, float]:
         """Load non-expired 30-day `asked` cache entries from `site.state`."""
@@ -757,7 +721,9 @@ class Ledger:
             self._dates[item_key] = known
             self._waiting.pop(item_key, None)
             return post
-        found = self._dates.get(item_key) or _row_day(self.settings.history.get(item_key))
+        found = self._dates.get(item_key)
+        if found is None and self._db is not None:
+            found = self._db.day(item_key)
         if found is not None:
             self._dates[item_key] = found
             return post.replace(date=found)
@@ -812,8 +778,7 @@ class Ledger:
         ]
         if keys[0] == f"{self.source.code}:" or self._held(None, keys[0]) is None:
             return None
-        row = self.settings.history.get(keys[0])
-        count = row.get(FILES) if isinstance(row, dict) else None
+        count = self._db.files_of_post(keys[0]) if self._db is not None else None
         checked = [keys[0]]
         if isinstance(count, int) and count > 1 and keys[1] != keys[0]:
             checked += [
@@ -836,19 +801,26 @@ class Ledger:
         self.settings.emit(Skipped(self.target, category, post, path))
 
     def _held(self, dest: Path | None, item_key: str) -> str | None:
-        """Return the name holding a file if queued, on disk, or in history, else None."""
+        """Return the name holding a file if queued, on disk, saved or gone, else None.
+
+        A file the site answered 404 or 410 for is recorded gone, and held by its planned name,
+        so it isn't asked for again unless the run was told to (`again`). An archive removed
+        once extracted is held by the folder it was extracted to.
+        """
         for known in (dest, item_key):
             if known is not None and known in self._queued:
                 return self._queued[known]
         if dest is not None and dest.is_file() and dest.stat().st_size > 0:
             return self._name(dest)
-        row = self.settings.history.get(item_key)
-        found = Path(row.get("path", "")) if isinstance(row, dict) and row.get("path") else None
-        # An archive `--compress` removed after extracting it is held by its folder.
-        if found is not None and not found.is_file() and row.get(FOLDER):
-            found = Path(row[FOLDER])
-            return self._name(found) if found.is_dir() else None
-        return self._name(found) if found is not None and found.is_file() else None
+        found = self._db.held(item_key) if self._db is not None else None
+        if found is None:
+            return None
+        path, state, folder = found
+        if state == _home.GONE:
+            return None if self._again else self._name(Path(path))
+        if Path(path).is_file():
+            return self._name(Path(path))
+        return self._name(Path(folder)) if folder and Path(folder).is_dir() else None
 
     def _name(self, path: Path) -> str:
         """Return `path` relative to `self.folder` when inside it, else as a full string."""
@@ -904,8 +876,10 @@ class Downloads:
         self.source, self.settings = run.source, run.settings
         self._pool: _loop.Pool | None = None
         self._written: dict[str, Path] = {}
-        self._failed: dict[str, dict[str, Any]] = {}
-        self._succeeded: set[str] = set()
+        # Each post's files submitted and not settled yet, and those that landed meanwhile: a
+        # post's rows commit together when its last file settles (`_settle`).
+        self._open: dict[str, int] = {}
+        self._landed: dict[str, list[_Landed]] = {}
         self._writing = threading.Lock()
         self._changed = threading.Condition()
         self._pending = 0
@@ -920,27 +894,19 @@ class Downloads:
         with self._writing:
             return dict(self._written)
 
-    @property
-    def failed(self) -> dict[str, dict[str, Any]]:
-        """Return each failed serializable download request by its history key."""
-        with self._writing:
-            return dict(self._failed)
-
-    @property
-    def succeeded(self) -> set[str]:
-        """Return history keys of files downloaded in this run."""
-        with self._writing:
-            return set(self._succeeded)
-
     def submit(self, queued: _Queued) -> bool:
         """Submit one file for download once pool capacity allows; False on stop."""
         if not self._room():
             return False
         self._count(queued, queued=1)
+        with self._writing:
+            post = queued.placed.post.id
+            self._open[post] = self._open.get(post, 0) + 1
         try:
             self._downloads().submit(self._task, queued)
         except BaseException:
             self._count(queued, queued=-1)
+            self._settle(queued)
             self._ended()
             raise
         return True
@@ -975,6 +941,12 @@ class Downloads:
             self._cancel_refreshes()
         if self._pool is not None:
             self._drain_pool(self._pool, error)
+        # Tasks a stop cancelled never settled: the files of their posts that did land are in
+        # place, so their rows are written now.
+        with self._writing:
+            left, self._landed, self._open = list(self._landed.values()), {}, {}
+        for items in left:
+            self._commit(items)
         with self._writing:
             return tuple(self._written.values())
 
@@ -1044,7 +1016,62 @@ class Downloads:
                 with self._changed:
                     self._running -= 1
         finally:
-            self._ended()
+            try:
+                self._settle(queued)
+            finally:
+                self._ended()
+
+    def _settle(self, queued: _Queued) -> None:
+        """Count one submitted file of a post as done; the post's last one commits its rows.
+
+        Runs on the download's worker thread. The count and the landed list change under
+        `_writing`; the commit runs outside it, since `flnd.db` has its own lock.
+
+        Args:
+            queued: the file whose task ended, saved, failed or never started.
+        """
+        post = queued.placed.post.id
+        with self._writing:
+            left = self._open.get(post, 1) - 1
+            if left > 0:
+                self._open[post] = left
+                return
+            self._open.pop(post, None)
+            items = self._landed.pop(post, [])
+        self._commit(items)
+
+    def _commit(self, items: list[_Landed]) -> None:
+        """Write one post's landed files in one transaction, then count and report each.
+
+        Each file is already in place, so a row is never written before its file. The `Saved`
+        events follow the commit, so a script that reads `fl.files()` on one finds its row.
+
+        Args:
+            items: the post's files in place; empty does nothing.
+
+        Raises:
+            DiskError: the rows can't be written; the files count as failed.
+        """
+        if not items:
+            return
+        try:
+            if self.settings.db is not None:
+                self.settings.db.save([item.row for item in items])
+        except BaseException:
+            with self._writing:
+                for item in items:
+                    self._written.pop(item.queued.key, None)
+            for item in items:
+                self._count(item.queued, downloading=-1, failed=1)
+            raise
+        for item in items:
+            self._count(item.queued, downloading=-1, saved=1, bytes=item.row.size)
+            placed = item.queued.placed
+            self.settings.emit(Saved(self.target, placed.post.category, placed.post.id,
+                                     item.path, item.day, item.row.size))
+            # The slow steps (unpack, compress) run on the chain's own threads from here.
+            landed(self.settings, Landed(item.queued.key, item.path,
+                                         password=placed.file.password, compress=self.compress))
 
     def _download(self, queued: _Queued) -> bool:
         """Download one file, refreshing an expired lazy link once if needed."""
@@ -1065,7 +1092,7 @@ class Downloads:
             return False
         # A file the site or the network failed fails alone; the run goes on (docs/errors).
         except (SiteError, NetworkError) as error:
-            self._record_failed(queued)
+            self._record_failed(queued, error)
             self._count(queued, downloading=-1, failed=1)
             self.settings.emit(Failed(self.target, error, post=placed.post.id, path=queued.dest))
             ui.debug("{name}: {error}", name=placed.path, error=error)
@@ -1076,8 +1103,8 @@ class Downloads:
             if self.settings.stop.soon.is_set() and not self.settings.stop.now.is_set():
                 return False
             raise
-        except BaseException:
-            self._record_failed(queued)
+        except BaseException as error:
+            self._record_failed(queued, error)
             self._count(queued, downloading=-1, failed=1)
             raise
         if saved is None:
@@ -1089,28 +1116,43 @@ class Downloads:
     def _downloaded(
         self, queued: _Queued, saved: _files.Saved, received: Mapping[str, str]
     ) -> None:
-        """Record a downloaded file's history row."""
+        """Hold a landed file's row until its post's last file settles, which commits it.
+
+        It stays "downloading" on the board until then, which is one board update less.
+
+        Args:
+            queued: the file's queue entry.
+            saved: where it landed, with its size and modified time from the landing.
+            received: the response's headers; `Last-Modified` dates a post the site gave
+                no day.
+        """
         post = queued.placed.post
         dated = day(post.date) or net.served_day(received.get("last-modified"))
-        self._finish(queued, saved.path, self._build_row(queued, saved), dated)
+        row = self._row(queued, saved)
+        with self._writing:
+            self._written[queued.key] = saved.path
+            self._landed.setdefault(post.id, []).append(_Landed(queued, saved.path, dated, row))
 
-    def _build_row(self, queued: _Queued, saved: _files.Saved) -> dict[str, Any]:
-        """Build the initial history dict for one downloaded file via `msgspec.Struct`."""
+    def _row(self, queued: _Queued, saved: _files.Saved) -> _home.FileRow:
+        """The `files` row of a landed file.
+
+        Args:
+            queued: the file's queue entry.
+            saved: where it landed, with its size and modified time.
+
+        Returns:
+            The row; only a post's first file of several holds the post's count.
+        """
         placed = queued.placed
         posted = day(placed.post.date)
         count = placed.values.get("count", 1)
-        record = _HistoryRow(
-            path=str(saved.path),
-            size=saved.size,
-            mtime=saved.mtime,
-            at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-            id=placed.post.id,
-            category=placed.post.category,
+        return _home.FileRow(
+            queued.key, _home.key(self.target), str(saved.path), saved.size, saved.mtime,
+            post_id=placed.post.id, category=placed.post.category,
             date=posted.isoformat() if posted is not None else None,
-            estimated=queued.estimated,
+            estimated=queued.estimated, kind=paths.kind_of(saved.path.name), at=_home.now(),
             files=count if placed.num == 0 and isinstance(count, int) and count > 1 else None,
         )
-        return msgspec.structs.asdict(record)
 
     def _fetch(
         self, queued: _Queued, file: File, received: dict[str, str]
@@ -1182,41 +1224,21 @@ class Downloads:
                 refresh = self._refreshes.popleft()
             refresh.run()
 
-    def _finish(self, queued: _Queued, path: Path, row: dict[str, Any],
-                dated: datetime.date | None) -> None:
-        """Write a landed file's history row, count it saved, and emit `Saved`.
+    def _record_failed(self, queued: _Queued, error: BaseException) -> None:
+        """Write a file's failure to `flnd.db`; a 404 or 410 records the file as gone.
 
         Args:
             queued: the file's queue entry.
-            path: where it landed.
-            row: its history row, with its size and modified time from the landing.
-            dated: the day its modified time was set to; None when it kept the write's.
+            error: what failed it.
         """
-        try:
-            with self._writing:
-                self._written[queued.key] = path
-                self._succeeded.add(queued.key)
-                self._failed.pop(queued.key, None)
-            self.settings.history[queued.key] = row
-        except BaseException:
-            with self._writing:
-                self._written.pop(queued.key, None)
-                self._succeeded.discard(queued.key)
-            self._count(queued, downloading=-1, failed=1)
-            raise
-        size = row.get("size", 0)
-        self._count(queued, downloading=-1, saved=1, bytes=size)
-        post = queued.placed.post
-        self.settings.emit(Saved(self.target, post.category, post.id, path, dated, size))
-        # The slow steps (unpack, compress) run on the chain's own threads from here.
-        landed(self.settings, Landed(
-            queued.key, path, password=queued.placed.file.password, compress=self.compress,
-        ))
-
-    def _record_failed(self, queued: _Queued) -> None:
-        if (entry := _serialize_failed(queued)) is not None:
-            with self._writing:
-                self._failed[queued.key] = entry
+        db = self.settings.db
+        if db is None:
+            return
+        placed = queued.placed
+        url = placed.file.url if isinstance(placed.file.url, str) else ""
+        db.fail(run=self.settings.run, item=queued.key, target=_home.key(self.target),
+                error=error, post=placed.post.id, file=str(queued.dest), url=url,
+                request=_serialize_failed(queued))
 
     def _sync_fetch(self, fetch: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap a `Fetch` callable so coroutines run on the source's event loop."""
@@ -1233,7 +1255,7 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
         return TargetReport(target, (), 0, error=Stopped(STOPPED))
     # No lock on the target: each file's part locks itself, so two runs may share a target and
     # the sweep passes over the parts another run holds.
-    _files.sweep(paths.target_folder(run.settings.home, target))
+    _files.sweep(_home.target_folder(run.settings.home, target))
     return _run_download(run, target, board, options)
 
 
@@ -1247,8 +1269,9 @@ def _run_download(
     downloads = Downloads(run, target, board, compress=options.compress)
     work = _Work(ledger, downloads)
     complete: list[str] = []
-    saved = run.settings.targets
-    listed = {} if options.again else targets.listed(saved, target)
+    db = run.settings.db
+    row = db.target(target) if db is not None else None
+    listed = {} if options.again or row is None else row.complete
     resumes: dict[str, Resume] = {}
     _retry_failed(work, run, target, options)
     error = _execute_listing(work, run, site, target, options, listed, resumes, complete)
@@ -1258,12 +1281,13 @@ def _run_download(
         name: None if name in complete else resume.cursor
         for name, resume in resumes.items()
     }
-    if not options.query:
-        targets.keep_cursors(saved, target, cursors)
-        targets.complete(saved, target, complete)
-        targets.keep_failed(
-            saved, target, failed=downloads.failed, succeeded=downloads.succeeded,
-        )
+    # A target a search found has no row of its own: the search's row keeps what it found.
+    if db is not None and not options.query:
+        db.progress(target, cursors=cursors, complete=complete)
+        # Counting reads every row of the target (35 ms for 100,000), so a run that saved
+        # nothing keeps the count it has, unless it has none yet.
+        if written or row is None or not row.files:
+            db.tally(target)
     report = TargetReport(target, written, board.totals(target).skipped)
     return _ended(
         run, board, report, error, complete=", ".join(complete) or "none", started=started,
@@ -1271,7 +1295,7 @@ def _run_download(
 
 
 def _serialize_failed(queued: _Queued) -> dict[str, Any] | None:
-    """Serialize a failed `_Queued` download with a string URL for direct retry."""
+    """What the next run needs to retry a failed file from its URL; None without one."""
     placed = queued.placed
     if not isinstance(placed.file.url, str):
         return None
@@ -1297,9 +1321,9 @@ def _serialize_failed(queued: _Queued) -> dict[str, Any] | None:
 
 def _retry_failed(work: _Work, run: SourceRun, target: Target, options: Options) -> None:
     """Enqueue previously failed downloads for `target` before listing."""
-    if run.settings.dry or options.again:
+    if run.settings.dry or options.again or run.settings.db is None:
         return
-    pending = targets.failed(run.settings.targets, target)
+    pending = run.settings.db.pending(_home.key(target))
     if not pending:
         return
     allowed = set(selected(options, type(run.source))) if options.categories else None
@@ -1313,7 +1337,6 @@ def _retry_failed(work: _Work, run: SourceRun, target: Target, options: Options)
             continue
         dest = Path(dest_raw)
         if work.ledger._held(dest, item_key) is not None:
-            work.downloads._succeeded.add(item_key)
             continue
         post = Post(
             str(entry.get("id") or ""), (),
@@ -1371,6 +1394,9 @@ def _ended(
             raise error
         failed = failure(error, target, run.source)
         tell(target, failed, run.settings.emit)
+        if run.settings.db is not None:
+            run.settings.db.fail(run=run.settings.run, item=_home.key(target),
+                                 target=_home.key(target), error=failed)
         board.end(target, failed=True)
         return replace(report, error=failed)
     if run.settings.stop.soon.is_set():
@@ -1442,15 +1468,6 @@ def _redated(
     return dest
 
 
-def _row_day(row: Any) -> datetime.date | None:
-    """Return the ISO date stored in a history row, or None."""
-    value = row.get(DATE) if isinstance(row, dict) else None
-    try:
-        return datetime.date.fromisoformat(value) if isinstance(value, str) else None
-    except ValueError:
-        return None
-
-
 def _set_mtime(path: Path, dated: datetime.date) -> None:
     """Set `path`'s modified time to noon UTC of `dated`."""
     noon = datetime.datetime.combine(dated, datetime.time(NOON), tzinfo=datetime.timezone.utc)
@@ -1459,6 +1476,17 @@ def _set_mtime(path: Path, dated: datetime.date) -> None:
         os.utime(path, (stamp, stamp))
     except OSError as error:
         ui.debug("{name}: modified time not set: {error}", name=path.name, error=error)
+
+
+@dataclass
+class _Landed:
+    """A downloaded file in place, waiting for its post's other files before its row commits."""
+
+    queued: _Queued
+    path: Path
+    # The day its modified time was set to; None when neither the post nor the server had one.
+    day: datetime.date | None
+    row: _home.FileRow
 
 
 @dataclass
@@ -1604,7 +1632,7 @@ def _yield_arg_targets(
             if run.settings.stop.soon.is_set():
                 return
             child = item if isinstance(item, Target) else run.source.resolve(str(item))
-            if targets.key(child) in seen_keys:
+            if _home.key(child) in seen_keys:
                 break
             if child in yielded:
                 continue
@@ -1722,7 +1750,9 @@ def _read_categories(
 ) -> None:
     """List each wanted category of `route`, resuming from saved cursors when present."""
     context = _context(run.source, route, site, target, run.run_async)
-    cursors = {} if options.again else targets.cursors(run.settings.targets, target)
+    db = run.settings.db
+    row = db.target(target) if db is not None and not options.again else None
+    cursors = row.cursors if row is not None else {}
     remaining = options.limit
     for category in categories:
         if remaining is not None and remaining <= 0:

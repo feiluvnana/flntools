@@ -1,12 +1,8 @@
 # Storage: the home folder
 
-Everything flnd keeps lives in one folder, the **home**. Today it is `.flnd` in the folder flnd
-runs from; the library calls take `home=` to use another. This page lists every file in it and
-what each holds, so you can back it up, move it, or read it with your own tools.
-
-The rebuild moves the history, targets and runs into one `flnd.db` with real columns, and
-migrates an old home on first open without changing its files. That isn't built yet; the commit
-that builds it rewrites this page and adds the migration.
+Everything flnd keeps lives in one folder, the **home**: `$FLND_HOME`, else `.flnd` in the folder
+flnd runs from; the library takes `flnd.open(home)`. This page lists every file in it and what
+each holds, so you can back it up, move it, or read it with your own tools.
 
 Never share a home with someone you wouldn't give your logins to: the vault and its key sit
 side by side in it.
@@ -15,21 +11,23 @@ side by side in it.
 
 ```
 .flnd/
+  flnd.db          what the home remembers: files, posts, targets, runs, failures, …
+  secrets.db       the vault: logins and tokens, each sealed (AES-256-GCM)
+  secret.key       the vault's key (mode 0600)
+  config.toml      settings (optional)
   media/
     <code>/<target>/<category>/…   the downloaded files
-  metadata/
-    history.db                     every saved file, by history key
-    targets.db                     every target's settings, cursors and failures
-    sources.db                     each source's own state
-    secrets.db                     logins, encrypted
-    secret.key                     the key to secrets.db (mode 0600)
+  cache/           things safe to delete
+  logs/            each run's log, once runs write one
 ```
 
-There is no lock file anywhere: each file being written locks itself (see
-[Sharing a home](#sharing-a-home)).
+A home made by flnd before `flnd.db` also has `metadata/` (see [Migrating an old
+home](#migrating-an-old-home)).
 
-`paths.LOGS` names a `log/` folder, but nothing writes there yet: today a run logs to the
-terminal only (`-v` for debug lines).
+The code: `flnd/_home.py` is flnd's storage (the layout, `flnd.db`'s tables and queries, the
+migration, the logins). It is built on two library modules: `flnd/_db.py`, a SQLite store (WAL,
+one connection shared by threads, transactions), and `flnd/_vault.py`, sealed secrets in a
+database under a key file.
 
 ## `media/`
 
@@ -61,7 +59,7 @@ A download's part:
 3. gets its post's day, at noon UTC, as its modified time, set on the open file just before it
    closes (the rename keeps it); with no post date, the server's `Last-Modified` day;
 4. is renamed under the name its content calls for (`a.jpg` holding a WebP lands as `a.webp`);
-5. and only then gets its history row. A crash between the rename and the row leaves a whole
+5. and only then gets its row in `flnd.db`, with the other files of its post. A crash between the rename and the row leaves a whole
    file without a row.
 
 Nothing is flushed to the disk per file (no `fsync`): a power cut may lose the last files, which
@@ -93,75 +91,142 @@ touched for 7 days and that no run holds, with their `.part.json`. A `.part.json
 part goes after an hour. The hidden `.<name>.stage` files older versions of flnd left go like
 parts, and their `.lock` files like a `.part.json`.
 
-## The stores
+## `flnd.db`
 
-Each `.db` file is an SQLite database in WAL mode, made by `flnd._db`. A store holds named
-tables, and every table has the same two columns: `key` (text, the primary key) and `value`
-(JSON text). Read one with any SQLite tool:
+One SQLite file in WAL mode, with real columns and indexes, so `sync`, `ls` and the reads of
+the library are queries, never walks of `media/`. Read it with any SQLite tool:
 
 ```sh
-sqlite3 .flnd/metadata/history.db "SELECT key, value FROM t_downloads LIMIT 3"
+sqlite3 .flnd/flnd.db "SELECT key, path, size, date FROM files LIMIT 3"
 ```
 
-A table's SQL name is its name with a `t_` prefix.
+How it is written:
 
-### `history.db`, table `downloads`
+- **One transaction per post.** A post's files are downloaded side by side; their rows are
+  committed together, in one statement, once the post's last file is in place. A row is never written before its
+  file, so a crash leaves at worst a whole file without a row, which the next run finds on disk
+  and skips. The `flnd.Saved` events of a post follow its commit.
+- **WAL with `synchronous = NORMAL`.** A power cut can lose the last commits, never corrupt the
+  file. On macOS, `fullfsync` makes SQLite's own syncs reach the disk. Those syncs happen at
+  checkpoints, when the log (`flnd.db-wal`) is copied into the database: every 10,000 pages
+  (40 MB), since each full sync costs milliseconds.
+- **Two runs can share a home** ([Sharing a home](#sharing-a-home)).
 
-One row per saved file. The key is `<code>:<key>`, where `<key>` comes from the source's `key`
-template (`{id}_{num}` by default): `ins:C1abc_0`. A later run skips a file whose key is here
-while the file at its `path` still exists, and also a file already on disk at its planned path.
-The value:
+### `files`
 
-| field | what it holds |
+One row per file, keyed `<code>:<key>`, where `<key>` comes from the source's `key` template
+(`{id}_{num}` by default): `ins:C1abc_0`. A later run skips a file whose row says it is saved
+while the file at its `path` is there, and also a file already on disk at its planned path.
+
+| column | what it holds |
 | --- | --- |
-| `path` | the file's path as flnd saved it, under the home |
-| `size` | its size in bytes |
-| `mtime` | its modified time, in nanoseconds, when it was saved |
+| `key` | `<code>:<key>` |
+| `target` | the target it was saved for, `<code>:<value>` |
+| `source` | the source's code |
+| `post_id`, `category` | its post, and the category it was listed in ("" for a single post) |
+| `path` | where the file is, as flnd saved it |
+| `size`, `mtime` | its size in bytes, and its modified time in nanoseconds, when saved |
+| `date` | its post's day, `YYYY-MM-DD`; empty when the site gave none |
+| `estimated` | 1 when the day was guessed from the posts around it |
+| `kind` | `image`, `video` or `audio`, by its name |
+| `files` | on the first file of a post of several, how many files the post has: it tells a run whether a post listed again is whole |
+| `state` | where it stands with the site: `saved`, or `gone` when the site answered 404 or 410 |
 | `at` | when it was saved, in UTC, ISO 8601 |
-| `id` | its post's id |
-| `category` | the category it was listed in; empty for a single post |
-| `date` | its post's day, `YYYY-MM-DD`; absent when the post had none |
-| `estimated` | true when the day was guessed from the posts around it |
-| `files` | on a post's first file, how many files the post has, when more than one |
-| `shrink` | what `--compress` did: `compressed`, `kept` (nothing smaller passed) or `failed`; absent when it never ran ([media.md](media.md)) |
+| `shrink` | what `--compress` did: `compressed`, `kept` (nothing smaller passed) or `failed`; empty when it never ran ([media.md](media.md)) |
 | `tools` | with `shrink`: the encoders and versions it ran with, such as `pillow 13.0.0 libavif 1.4.2`; a `kept` or `failed` file is tried again when these change |
 | `before` | on a compressed file: the original's size in bytes (`size` is the new one, and `path` the new path when the suffix changed) |
 | `unpacked` | on an archive: `extracted`, or `failed` (a wrong password, a damaged or unsafe archive, no 7-Zip) |
 | `folder` | on an extracted archive: the folder it was extracted into. With `--compress` the archive itself is removed, and this folder counts as the saved file |
+| `hash`, `format`, `sidecar` | for steps that don't exist yet; empty |
 
-### `targets.db`, table `targets`
+Indexed on `(target, post_id)`, on `hash` where there is one, and on the undated rows of each
+target, so the source's `date` hook finds them without reading the rest. There is no index on
+`path` yet: nothing looks a file up by its path, and each index costs every commit a page.
 
-One row per target ever downloaded, keyed `<code>:<value>` (`ins:example_user`). `flnd target`
-reads and changes these rows. The value:
+**Gone files.** When the site answers 404 or 410 for a file (deleted, private, never there), its
+row is `gone`: later runs skip it without asking. The CLI's `--again`, or `again = true` under
+`[defaults]` in `config.toml` for the library, asks for it again (and lists every post again).
 
-| field | what it holds |
+### `posts`
+
+A view of `files`: one row per post with saved files, by `(target, post_id)`, with its
+`category`, its `date`, how many `files` it has, and `at`. It is a view, not a table, so a
+post's commit is one statement: a table of its own would cost each commit another statement
+and another page.
+
+### `targets`
+
+One row per target the home knows, keyed `<code>:<value>` (`ins:example_user`).
+
+| column | what it holds |
 | --- | --- |
-| `kind` | the route that read it: `user`, `post`, `chat`, … |
-| `sync` | whether `flnd sync` updates it |
-| `at` | when it was last recorded, in UTC |
-| `complete` | each category listed to its end, with the day it was |
-| `cursors` | each category's cursor, saved when a listing was cut short, so the next run resumes |
-| `failed` | the files that failed, by history key, with what is needed to try them again |
-| `seen` | for a search: the targets it has found, so a sync downloads only new ones |
-| `query` | for a target found by a search: the search's text |
+| `source`, `value`, `kind` | the target: its source, its value, and the route that reads it (`user`, `post`, `query`, …) |
+| `follow` | 1 when `sync` takes it |
+| `options` | JSON: `only`, the categories a followed target syncs, and `compress`, whether `sync` compresses its new files (`flnd follow --compress`) |
+| `query` | for a target a search found: the search's words |
+| `complete` | JSON: each category listed to its end, with the day it was |
+| `cursors` | JSON: each category's cursor, saved when a listing was cut short, so the next run resumes |
+| `seen` | JSON: for a search, the targets it found, so a sync downloads only new ones |
+| `last_sync` | when it was last downloaded or synced, in UTC |
+| `files`, `bytes` | its saved files and their bytes, counted at the end of each of its runs; `flnd ls` shows them |
 
-### `sources.db`
+### `runs` and `failures`
 
-One table per source, named by its code, which the source uses as `site.state`: things worth
-keeping between runs, such as a resolved user id. The engine keeps one entry there too:
-`redate.asked`, the posts whose date a source's `date` hook couldn't find, so they aren't asked
-again for 30 days.
+`runs` has one row per command that downloads: `id`, `command`, `started`, `ended`, the files
+it `saved`, and how many `failed`.
 
-### `secrets.db` and `secret.key`
+`failures` has one row per failure: the `run`, the file's `key`, its `target`, `post_id` and
+`file` (where it would have gone), the `url` with its query and user info removed, the error's
+`class`, `message` and `hint`, `attempts`, and `at`. A failure of a whole target has the target's
+key and no post. `request` keeps what the next run needs to try the file again from its URL,
+with the headers that log a request in (`Cookie`, `Authorization`) removed. An archive's
+password is never in `flnd.db`: it is sealed in the vault, as the source's
+`password:<key>` secret, and `request` only says that there is one. The next download or sync
+of the target tries again every failed file that has no row in `files` since.
 
-The vault, table `secrets`. Each row is one secret of one source, keyed `<code>:<name>`: a
-cookie source's jar (`cookies`), how it logged in (`origin`), or Telegram's session and API
-credentials. Each value is sealed with AES-GCM under the 32-byte key in `secret.key`, bound to
-its own key, so a value copied to another row doesn't decrypt. The key file is made on first use
-with mode 0600.
+### `state`, `logins`, `probes`, `meta`
+
+- `state`: each source's own values between runs (`site.state`), as JSON, keyed `(source,
+  key)`. The engine keeps one entry there too: `redate.asked`, the posts whose date a source's
+  `date` hook couldn't find, so they aren't asked again for 30 days.
+- `logins`: how each source logged in (`origin`: "Chrome", "cookies.txt", "qr") and `at`. No
+  secret is ever here.
+- `probes`: what ffmpeg found in a file; safe to empty.
+- `meta`: the schema's `version`, and `migrated`, when an old home was migrated.
+
+## The vault: `secrets.db` and `secret.key`
+
+`secrets.db` has one table, `secrets`: a row per secret of a source, keyed `(slot, name)`, where
+the slot is the source's code. A cookie source keeps its jar as `cookies`; Telegram keeps its
+session and API credentials. Each value is sealed with AES-256-GCM under the 32-byte key in
+`secret.key`, with `<slot>\0<name>` as associated data, so a value copied to another row doesn't
+open. The key file is made on first use with mode 0600.
 
 `flnd logout <code>` removes a source's rows. Deleting `secret.key` makes every saved login
 unreadable; log in again after.
+
+## Migrating an old home
+
+A home made before `flnd.db` kept its stores in `metadata/`: `history.db` (every saved file),
+`targets.db` (every target, with its cursors and failed files), `sources.db` (each source's
+state), `secrets.db` and `secret.key`. They are SQLite tables of JSON values (or JSON files, in
+the oldest homes).
+
+The first time flnd opens such a home, it migrates it:
+
+1. It takes `flnd.db`'s write lock (`BEGIN IMMEDIATE`). A second run opening the home at the same
+   time waits, then finds the work done.
+2. It reads every old store, opened so that nothing on disk changes, and writes their rows into
+   `flnd.db`: files keep their paths, and each gets the target whose folder its path is in;
+   targets keep whether they were followed (a row from before following existed counts as
+   followed), their categories, cursors and found targets; failed files become `failures`.
+3. It copies `metadata/secret.key` to `secret.key` and the sealed logins into the new
+   `secrets.db`, as they are: the same key opens them, and nothing is decrypted on the way.
+4. It records the migration in `meta` and commits. Every later open skips it.
+
+**The old files are never changed or deleted**, so the previous flnd still runs on the home if
+you go back to it (it won't see what the new one downloaded). Once you're sure you won't go back,
+delete `metadata/`.
 
 ## Sharing a home
 
@@ -177,14 +242,14 @@ during a manual run. Nothing makes the second run wait for the first.
   and skips it too.
 - flnd's own small files (a cache, a sidecar, a cookie file) wait for each other instead of
   skipping.
-- The stores are SQLite, which serializes writers; a writer waits up to 30 s for another.
-- Two runs that record the same target in `targets.db` at once each write their own view of it,
-  and the last one wins.
+- `flnd.db` and `secrets.db` are SQLite, which serializes writers; a writer waits up to 30 s
+  for another run's transaction, which lasts microseconds. Each change of a target's row reads
+  and writes it in one transaction, so two runs never write over each other's changes.
 - On a file system without locks (some network shares), files are written unlocked.
 
 ## Backing up and moving
 
 The home is self-contained: copy the whole folder while no run is going. To start over on a
-target, `flnd unfollow` it; its files and history stay, so a new download skips them. To
-download a file again, delete it, then download its target again: a file that is not on disk
-is fetched again.
+target, unfollow it; its files and their rows stay, so a new download skips them. To download a
+file again, delete it, then download its target: a file whose row's path is missing is
+downloaded again.

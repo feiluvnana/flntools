@@ -1,13 +1,14 @@
-"""Benchmark group `db`: the history store over 100k rows, and what a commit costs per row.
+"""Benchmark group `db`: a home's `flnd.db` over 100k files, and what a commit costs per file.
 
-Part one is `flnd._db`, which flnd keeps its history in today: inserts, point reads,
-membership, a prefix scan and a filter, over 100,000 rows shaped like history entries.
+Part one is `flnd._home` over 100,000 file rows of 10 targets: inserting them, the point read
+every listed file makes (`Home.held`: its path and state by key), one target's 10,000 rows, and
+a filter on a column (`size`), which SQL runs.
 
-Part two is raw SQLite in WAL mode, the way the new `flnd.db` will run it: 50,000 rows of a
-`files` table committed one per row, one per post (2 files), and one per 500 rows. 50,000 rows
-make the WAL pass its automatic checkpoint (1,000 pages) many times, so the cost of checkpoints
-is inside the numbers rather than after them. `synchronous=FULL` is timed once per row, to show
-what durability on every commit would cost.
+Part two is what commits cost: 50,000 files saved through `Home.save`, one transaction per post
+of 2 files (`commit_per_post`, the run's real pattern), and raw SQLite in WAL mode committing
+one per row, one per 500 rows, and one per row with `synchronous=FULL`, for comparison. 50,000
+rows make the WAL pass its automatic checkpoint (1,000 pages) many times, so the cost of
+checkpoints is inside the numbers rather than after them.
 
 Every number is the best of 3 runs, each run on a fresh database in a scratch folder.
 """
@@ -21,7 +22,7 @@ import tempfile
 from pathlib import Path
 
 import kit
-from flnd import _db as store
+from flnd import _home
 
 ROWS = 100_000
 # 10,000 random keys read back, seeded so every run reads the same ones.
@@ -32,42 +33,44 @@ FILES = ("CREATE TABLE files (key TEXT PRIMARY KEY, target TEXT, post_id TEXT, p
 INSERT = "INSERT INTO files VALUES (?,?,?,?,?,?,?)"
 
 
+def files(n: int, *, post_files: int = 1) -> _home.FileRow:
+    """File `n` of the benchmark's homes: target `n % 10`, `post_files` files per post."""
+    user = f"ins:example_user{n % 10}"
+    return _home.FileRow(f"ins:{n:08d}", user, f"/m/ins/example_user{n % 10}/{n}.jpg", n,
+                         post_id=str(n // post_files), category="posts", date="2026-01-02",
+                         kind="image", at="2026-01-02T00:00:00+00:00")
+
+
 def history(report: kit.Report, scratch: Path) -> None:
-    """Time `flnd._db` over 100k history-shaped rows.
+    """Time `flnd._home` over 100k file rows.
 
     Args:
         report: where the numbers go.
-        scratch: a folder for the database files.
+        scratch: a folder for the homes.
     """
-    rows = {f"ins:{n:08d}": {"path": f"/m/ins/example_user/{n}.jpg", "size": n,
-                             "date": "2026-01-02", "id": str(n)} for n in range(ROWS)}
-    probes = random.Random(1).sample(list(rows), PROBES)
+    rows = [files(n) for n in range(ROWS)]
+    probes = random.Random(1).sample([row.key for row in rows], PROBES)
     made = 0
 
     def fill() -> None:
         nonlocal made
         made += 1
-        with store.open(scratch / f"fill{made}.db") as db, db.batch():
-            table = db["history"]
-            for key, value in rows.items():
-                table[key] = value
+        with _home.open(scratch / f"fill{made}") as db:
+            db.save(rows)
 
     report.add("insert", kit.best(fill) / ROWS * 1e6, "us")
-    with store.open(scratch / "history.db") as db:
-        table = db["history"]
-        with db.batch():
-            for key, value in rows.items():
-                table[key] = value
-        report.add("point_read", kit.best(lambda: [table[k] for k in probes]) / PROBES * 1e6, "us")
-        report.add("contains", kit.best(lambda: [k in table for k in probes]) / PROBES * 1e6, "us")
-        # Keys "ins:00000000" to "ins:00009999": 10,000 rows.
+    with _home.open(scratch / "home") as db:
+        db.save(rows)
+        report.add("point_read", kit.best(lambda: [db.held(k) for k in probes]) / PROBES * 1e6,
+                   "us")
+        report.add("contains", kit.best(
+            lambda: [db.held(k) is not None for k in probes]) / PROBES * 1e6, "us")
+        # One target's rows: every tenth file, 10,000 rows.
         report.add("prefix_scan_10k",
-                   kit.best(lambda: table.prefixed("ins:0000")) * 1e3, "ms")
-        # `size` lives inside the JSON value, so this filter decodes every row's JSON. The
-        # store has no SQL filter any more: flnd's reads filter in Python until flnd.db's
-        # real columns.
-        report.add("filter_json", kit.best(
-            lambda: [key for key, value in table.items() if value["size"] == 5]) * 1e3, "ms")
+                   kit.best(lambda: db.records(target="ins:example_user0")) * 1e3, "ms")
+        # `size` is a column now, so SQL filters it; the name stays for the comparison.
+        report.add("filter_json", kit.best(lambda: db._store.all(
+            "SELECT key FROM files WHERE size = ?", (5,))) * 1e3, "ms")
 
 
 def commits(report: kit.Report, scratch: Path) -> None:
@@ -107,7 +110,17 @@ def commits(report: kit.Report, scratch: Path) -> None:
         return took / COMMIT_ROWS * 1e6
 
     report.add("commit_per_file", timed("NORMAL", 1), "us")
-    report.add("commit_per_post", timed("NORMAL", 2), "us")
+    # The run's real pattern: `Home.save` per post of 2 files, through flnd's own code.
+    posts = [[files(n, post_files=2), files(n + 1, post_files=2)]
+             for n in range(0, COMMIT_ROWS, 2)]
+    homes = iter(range(10))
+
+    def saved() -> None:
+        with _home.open(scratch / f"posts{next(homes)}") as db:
+            for post in posts:
+                db.save(post)
+
+    report.add("commit_per_post", kit.best(saved) / COMMIT_ROWS * 1e6, "us")
     report.add("commit_per_500", timed("NORMAL", 500), "us")
     report.add("commit_per_file_full", timed("FULL", 1), "us")
 

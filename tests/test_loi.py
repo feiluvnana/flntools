@@ -13,7 +13,8 @@ from cryptography.hazmat.primitives.padding import PKCS7
 from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
-from flnd.common import auth
+from flnd import _vault
+from flnd import _home
 from flnd.options import Options
 from flnd.source import SiteError, Target, UsageError
 from flnd.sources.loi import API, SITE_IV, SITE_KEY, Loibus, decode_token, decrypt_field, sign_request
@@ -318,7 +319,7 @@ class EngineTest(EngineCase):
     def setUp(self):
         super().setUp()
         jar = [{"name": "access-token", "value": "Bearer%20tok", "domain": ".loix.cc", "path": "/"}]
-        auth.save(self.home, "loi", cookies.Jar(jar))
+        _home.save(self.home, "loi", cookies.Jar(jar))
         self.routes.update({f"{API}lois/5930": httpx.Response(200, json={"data": {**POST, "images": []}}),
                             f"{API}user/info": httpx.Response(200, json=USER)})
 
@@ -372,26 +373,26 @@ class LoginTest(unittest.TestCase):
         return path
 
     def test_a_cookie_file(self):
-        jar = auth.from_file(Loibus(), self.export("access-token", "user-level"))
-        self.assertEqual(auth.store(Loibus(), jar, home=self.home, origin="cookies.txt"),
+        jar = _home.from_file(Loibus(), self.export("access-token", "user-level"))
+        self.assertEqual(_home.store(Loibus(), jar, home=self.home, origin="cookies.txt"),
                          "loi: logged in from cookies.txt (2 cookies)")
-        self.assertEqual({cookie["domain"] for cookie in auth.load(self.home, "loi")}, {".loix.cc"})
+        self.assertEqual({cookie["domain"] for cookie in _home.load(self.home, "loi")}, {".loix.cc"})
 
     def test_a_cookie_file_without_the_token(self):
-        jar = auth.from_file(Loibus(), self.export("user-level"))
-        with self.assertRaisesRegex(auth.LoginError, "no access-token for loix.cc in cookies.txt"):
-            auth.store(Loibus(), jar, home=self.home, origin="cookies.txt")
+        jar = _home.from_file(Loibus(), self.export("user-level"))
+        with self.assertRaisesRegex(_vault.LoginError, "no access-token for loix.cc in cookies.txt"):
+            _home.store(Loibus(), jar, home=self.home, origin="cookies.txt")
 
     def test_the_browser(self):
         store = {"loix.cc": [{"name": "access-token", "value": "v", "domain": ".loix.cc", "path": "/"}]}
         with mock.patch("flnd._cookies.load",
                         lambda browser="chrome", *, profile=None: cookies.Jar(c for jar in store.values() for c in jar)):
-            jar = auth.from_browser(Loibus(), browser="chrome")
-            self.assertEqual(auth.store(Loibus(), jar, home=self.home, origin="Chrome"),
+            jar = _home.from_browser(Loibus(), browser="chrome")
+            self.assertEqual(_home.store(Loibus(), jar, home=self.home, origin="Chrome"),
                              "loi: logged in from Chrome (1 cookie)")
             store.clear()
-            with self.assertRaisesRegex(auth.LoginError, "no access-token"):
-                auth.store(Loibus(), auth.from_browser(Loibus(), browser="chrome"), home=self.home, origin="Chrome")
+            with self.assertRaisesRegex(_vault.LoginError, "no access-token"):
+                _home.store(Loibus(), _home.from_browser(Loibus(), browser="chrome"), home=self.home, origin="Chrome")
 
 
 if __name__ == "__main__":

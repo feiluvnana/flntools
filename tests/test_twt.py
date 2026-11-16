@@ -15,7 +15,7 @@ import httpx
 from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
-from flnd.common import auth
+from flnd import _home
 from flnd.options import Options
 from flnd.source import SiteError, LoginError, Target, UsageError
 from flnd.sources.twt import QUERIES, TWITTER_BEARER, Twitter, read_timeline_page, tweet_posts
@@ -550,7 +550,7 @@ class LoginStaysAtHomeTest(EngineCase):
         super().setUp()
         jar = [{"name": name, "value": value, "domain": ".x.com", "path": "/"}
                for name, value in {"auth_token": "secret", "ct0": "old"}.items()]
-        auth.save(self.home, "twt", cookies.Jar(jar))
+        _home.save(self.home, "twt", cookies.Jar(jar))
         self.routes[url("UserByScreenName")] = httpx.Response(
             200, json=USER, headers={"set-cookie": "ct0=new; Domain=x.com; Path=/"})
         self.routes[url("TweetResultByRestId")] = lambda request: httpx.Response(

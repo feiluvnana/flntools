@@ -9,6 +9,7 @@ a CDN that blocks on events, and the run on a thread of its own). No network, no
 import datetime
 import io
 import os
+import sqlite3
 import threading
 import time
 import unittest
@@ -19,6 +20,7 @@ from unittest import mock
 import httpx
 
 from example_source import API, CDN, FIXTURES, Example
+import fakes
 from fakes import FakeSite, collect
 from test_commands import FlndCase
 from test_engine import EngineCase, make_source
@@ -27,7 +29,7 @@ from flnd import sources
 from flnd import engine as engine_module
 from flnd import job
 from flnd.engine import Engine
-from flnd.common import paths
+from flnd import _home
 from flnd.options import Options
 from flnd.source import (
     File, LoginError, NotFound, Post, SiteError, Source, SourceError, Target, pages, target,
@@ -53,8 +55,15 @@ class JobCase(EngineCase):
         return respond
 
     def history(self):
-        with paths.table(self.home / paths.HISTORY, "downloads") as history:
-            return dict(history.items())
+        return fakes.history(self.home)
+
+    def sql(self, statement, *args):
+        """Run one statement on the home's `flnd.db`, as another tool might."""
+        db = sqlite3.connect(self.home / _home.DB, isolation_level=None)
+        try:
+            db.execute(statement, args)
+        finally:
+            db.close()
 
     def fetched(self, url):
         return [request for request in self.requests if str(request.url).split("?")[0] == url]
@@ -76,10 +85,12 @@ class CategoriesTest(JobCase):
         # Today's row format: where it is, its size and modified time, and when.
         # The first file of a post of several holds their count (fixes #2).
         self.assertEqual(sorted(rows["exm:C1abc_0"]),
-                         ["at", "category", "date", "estimated", "files", "id", "mtime", "path", "size"])
+                         ["at", "before", "category", "date", "estimated", "files", "folder", "key", "kind", "mtime", "path",
+                          "post_id", "shrink", "size", "state", "target", "tools", "unpacked"])
         self.assertEqual(rows["exm:C1abc_0"]["files"], 2)
         self.assertEqual(sorted(rows["exm:C1abc_1"]),
-                         ["at", "category", "date", "estimated", "files", "id", "mtime", "path", "size"])
+                         ["at", "before", "category", "date", "estimated", "files", "folder", "key", "kind", "mtime", "path",
+                          "post_id", "shrink", "size", "state", "target", "tools", "unpacked"])
         # The route is called once for its three categories.
         self.assertEqual(len(self.fetched(f"{API}/users/example_user")), 1)
 
@@ -347,9 +358,11 @@ class FilesTest(JobCase):
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
         row = self.history()["exm:C1abc_0"]
         saved = self.target_dir("exm", "example_user") / "posts" / "2026-01-02_C1abc_0.jpg"
-        self.assertEqual(sorted(row), ["at", "category", "date", "estimated", "files", "id", "mtime", "path", "size"])
+        self.assertEqual(sorted(row), ["at", "before", "category", "date", "estimated", "files", "folder", "key", "kind", "mtime", "path",
+                          "post_id", "shrink", "size", "state", "target", "tools", "unpacked"])
         self.assertEqual(sorted(self.history()["exm:B2def_0"]),
-                         ["at", "category", "date", "estimated", "files", "id", "mtime", "path", "size"])
+                         ["at", "before", "category", "date", "estimated", "files", "folder", "key", "kind", "mtime", "path",
+                          "post_id", "shrink", "size", "state", "target", "tools", "unpacked"])
         self.assertEqual((row["path"], row["size"]), (str(saved), len(b"/C1abc_0.jpg")))
         written = datetime.datetime.fromisoformat(row["at"])
         self.assertEqual(written.utcoffset(), datetime.timedelta(0))
@@ -454,14 +467,11 @@ class SyncStopTest(JobCase):
         self.engine = Engine(home=self.home, sources={"fed": Feed})
 
     def record(self):
-        with paths.table(self.home / paths.TARGETS, "targets") as rows:
-            return rows.get("fed:example_user", {}).get("complete")
+        row = fakes.targets(self.home).get("fed:example_user")
+        return (row.complete or None) if row is not None else None
 
     def forget_record(self):
-        with paths.table(self.home / paths.TARGETS, "targets") as rows:
-            row = dict(rows["fed:example_user"])
-            row.pop("complete")
-            rows["fed:example_user"] = row
+        self.sql("UPDATE targets SET complete = '{}' WHERE key = ?", "fed:example_user")
 
     def test_sync_stops_after_5_saved_posts_in_a_row_with_a_record_and_closes_the_listing(self):
         self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
@@ -485,8 +495,7 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
         self.assertEqual(report.files, 0)
         self.assertIn("posts", self.record())
-        with paths.table(self.home / paths.TARGETS, "targets") as rows:
-            self.assertNotIn("cursors", rows.get("fed:example_user", {}))
+        self.assertEqual(fakes.targets(self.home)["fed:example_user"].cursors, {})
         self.listed.clear()
         report2 = self.engine.sync(["fed:example_user"])
         self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
@@ -543,9 +552,8 @@ class SyncStopTest(JobCase):
         # Remove two saved files in the middle: the 4 saved ones before it never reach 5, then a new one resets.
         for name in ("p2", "p3"):
             next(self.target_dir("fed", "example_user").rglob(f"*{name}.jpg")).unlink()
-        with paths.table(self.home / paths.HISTORY, "downloads") as history:
-            for name in ("p2", "p3"):
-                del history[f"fed:{name}"]
+        for name in ("p2", "p3"):
+            self.sql("DELETE FROM files WHERE key = ?", f"fed:{name}")
         self.listed.clear()
         report = self.engine.sync(["fed:example_user"])
         self.assertEqual(len(report.targets[0].written), 2)
@@ -1045,14 +1053,13 @@ class ResumeTest(JobCase):
         self.engine = Engine(home=self.home, sources={"pgd": Paged})
 
     def row(self):
-        with paths.table(self.home / paths.TARGETS, "targets") as rows:
-            return rows.get("pgd:example_user", {})
+        return fakes.targets(self.home)["pgd:example_user"]
 
     def interrupted(self):
         self.fail_on = "c2"
         self.assertFalse(self.engine.download(["pgd:example_user"], categories="all").ok)
-        self.assertEqual(self.row()["cursors"], {"posts": "c2"})
-        self.assertNotIn("complete", self.row())
+        self.assertEqual(self.row().cursors, {"posts": "c2"})
+        self.assertEqual(self.row().complete, {})
         self.fail_on, self.cursors_fetched = None, []
 
     def test_the_next_run_starts_at_the_saved_cursor_then_reads_the_newest(self):
@@ -1068,8 +1075,8 @@ class ResumeTest(JobCase):
         folder = self.target_dir("pgd", "example_user")
         saved = {path.stem.split("_")[-1] for path in folder.rglob("*.jpg")}
         self.assertLessEqual({"n1", "n2", "p8", "p9"}, saved)
-        self.assertNotIn("cursors", self.row())
-        self.assertIn("posts", self.row()["complete"])
+        self.assertEqual(self.row().cursors, {})
+        self.assertIn("posts", self.row().complete)
 
     def test_the_newest_are_read_only_down_to_5_saved_posts_in_a_row(self):
         self.interrupted()
@@ -1078,10 +1085,7 @@ class ResumeTest(JobCase):
         self.engine.download(["pgd:example_user"], categories="all")
         self.feed[None] = (["n1", "n2"], "c0")
         self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
-        with paths.table(self.home / paths.TARGETS, "targets") as rows:
-            row = dict(rows["pgd:example_user"])
-            row["cursors"] = {"posts": "c2"}
-            rows["pgd:example_user"] = row
+        self.sql("UPDATE targets SET cursors = ? WHERE key = ?", '{"posts":"c2"}', "pgd:example_user")
         self.cursors_fetched = []
         self.engine.download(["pgd:example_user"], categories="all")
         self.assertEqual(self.cursors_fetched, ["c2", None, "c0"])
@@ -1095,15 +1099,15 @@ class ResumeTest(JobCase):
         self.assertEqual(self.cursors_fetched, ["c2", None])
         self.assertIn("* pgd:example_user: posts: the cursor an interrupted run saved was refused; "
                       "listing from the newest", self.lines())
-        self.assertNotIn("cursors", self.row())
+        self.assertEqual(self.row().cursors, {})
 
     def test_again_ignores_saved_cursors_and_complete_listing_from_newest(self):
         self.interrupted()
         report = self.engine.download(["pgd:example_user"], categories="all", again=True)
         self.assertTrue(report.ok)
         self.assertEqual(self.cursors_fetched, [None, "c1", "c2"])
-        self.assertNotIn("cursors", self.row())
-        self.assertIn("posts", self.row()["complete"])
+        self.assertEqual(self.row().cursors, {})
+        self.assertIn("posts", self.row().complete)
         self.cursors_fetched.clear()
         self.engine.download(["pgd:example_user"], categories="all", again=True)
         self.assertEqual(self.cursors_fetched, [None, "c1", "c2"])
@@ -1154,10 +1158,10 @@ class MemoryTest(JobCase):
         dated = Post("A1", [File(f"{CDN}/a.jpg")], date=datetime.date(2026, 1, 2))
         undated = Post("B2", [File(f"{CDN}/b.jpg")])
         self.run_feed([dated])
-        # B2's day is known from an earlier run's history row for its key.
-        with paths.table(self.home / paths.HISTORY, "downloads") as history:
-            history["mem:B2_0"] = {"path": "/gone.jpg", "size": 1,
-                                   "at": "2026-01-03T00:00:00+00:00", "date": "2026-01-03"}
+        # B2's day is known from an earlier run's row for its key.
+        with _home.open(self.home) as db:
+            db.save([_home.FileRow("mem:B2_0", "mem:example_user", "/gone.jpg", 1, post_id="B2",
+                                 at="2026-01-03T00:00:00+00:00", date="2026-01-03")])
         self.assertIn("2026-01-03_B2.jpg", self.run_feed([undated]))
 
     def test_a_name_the_site_built_from_the_format_takes_the_day_found(self):
@@ -1202,7 +1206,7 @@ class MemoryTest(JobCase):
         engine.sync()
         self.assertEqual(self.files("mem"), ["2026-01-04_A1.jpg"])
         row = self.history()["mem:A1_0"]
-        self.assertEqual((Path(row["path"]).name, row["date"], row["id"]),
+        self.assertEqual((Path(row["path"]).name, row["date"], row["post_id"]),
                          ("2026-01-04_A1.jpg", "2026-01-04", "A1"))
 
     def test_a_second_undated_copy_counts_as_a_skip(self):

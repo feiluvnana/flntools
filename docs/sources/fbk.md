@@ -55,7 +55,7 @@ the way is asked with numbered choices:
 - **From a cookie file**: reads a Netscape `cookies.txt` or a JSON export.
 
 The login is accepted when the cookies hold `c_user` or `xs`. They are stored encrypted in
-`.flnd/metadata/secrets.db`, loaded into the browser each run, and any the site refreshed are
+`.flnd/secrets.db`, loaded into the browser each run, and any the site refreshed are
 written back at the end.
 
 Without a login, flnd opens the same pages and gets what Facebook shows a logged-out visitor.

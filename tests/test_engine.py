@@ -20,17 +20,19 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest import mock
 
+import fakes
 import httpx
 
 from flnd import job
-from flnd.common import auth, net, paths
+from flnd.common import net
+from flnd import _home
 from flnd import Blocked, LoginError, Target, UsageError
 from flnd.engine import Engine, Report, TargetReport
 from flnd.source import Range
 from flnd.options import Options
 from flnd.site import LoginSite
 from flnd.source import SiteError, File, Post, Source, target
-from flnd import _run, _time as clock, _cookies as cookies, _db as store
+from flnd import _run, _time as clock, _cookies as cookies
 from flnd._events import Failed, Progress
 from flnd._ui import ui
 from flnd.errors import Error
@@ -130,7 +132,7 @@ class EngineCase(unittest.TestCase):
 
     def log_in(self, code, **values):
         jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
-        auth.save(self.home, code, cookies.Jar(jar))
+        _home.save(self.home, code, cookies.Jar(jar))
 
     def lines(self):
         return self.dest.getvalue().splitlines()
@@ -146,7 +148,7 @@ class EngineCase(unittest.TestCase):
                 if isinstance(event, Progress) and event.listed}
 
     def target_dir(self, code, name):
-        return self.home / paths.MEDIA / code / name
+        return self.home / _home.MEDIA / code / name
 
 
 class GroupsTest(EngineCase):
@@ -170,25 +172,25 @@ class GroupsTest(EngineCase):
 
     def test_targets_with_their_own_options_run_sequentially_and_targets_db_opens_once(self):
         seen, opened = [], []
-        real_download, real_open = job.download, store.open
+        real_download, real_open = job.download, _home.open
 
         def download(run, target, row, options):
             seen.append((target.value, options.again))
             return real_download(run, target, row, options)
 
-        def opening(path, **kwargs):
-            opened.append(Path(path).name)
-            return real_open(path, **kwargs)
+        def opening(home):
+            opened.append(home)
+            return real_open(home)
 
         sources = {"aaa": make_source("aaa"), "bbb": make_source("bbb")}
         engine = Engine(home=self.home, sources=sources)
         chosen = [(Target("aaa", "user", "a"), Options(again=True)),
                   (Target("aaa", "user", "b"), Options()), (Target("bbb", "user", "c"), Options())]
         stop = _run.Stop()
-        with mock.patch.object(job, "download", download), mock.patch.object(store, "open", opening):
+        with mock.patch.object(job, "download", download), mock.patch.object(_home, "open", opening):
             reports = engine._run(chosen, stop=stop)
         self.assertEqual(seen, [("a", True), ("b", False), ("c", False)])
-        self.assertEqual(opened.count(paths.TARGETS.name), 1)
+        self.assertEqual(opened, [self.home])
         self.assertEqual([report.target for report in reports], [target for target, _ in chosen])
 
     def test_rows_end_at_ok_or_error_and_the_run_goes_on(self):
@@ -265,7 +267,7 @@ class LoginStateTest(EngineCase):
             ("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/"),
             ("set-cookie", "_tracker=t1; Domain=.aaa.example; Path=/")])
         self.run_engine(source, targets=["aaa:a", "aaa:b"])
-        saved = auth.load(self.home, "aaa")
+        saved = _home.load(self.home, "aaa")
         self.assertEqual((saved["ct0"], saved["sid"], "_tracker" in saved), ("new-ct0", "1", False))
         self.assertNotIn("new-ct0", "\n".join(self.lines()))
 
@@ -279,7 +281,7 @@ class LoginStateTest(EngineCase):
         self.routes["https://api.aaa.example/me"] = httpx.Response(
             200, json={}, headers=[("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/")])
         self.run_engine(make_source("aaa", route, needs=("sid",)), targets=["aaa:a"])
-        self.assertEqual(auth.load(self.home, "aaa")["ct0"], "new-ct0")
+        self.assertEqual(_home.load(self.home, "aaa")["ct0"], "new-ct0")
 
     def test_requires_login_fails_the_targets(self):
         ran = []
@@ -397,8 +399,7 @@ class CtrlCTest(unittest.TestCase):
 
 
 def history(home):
-    with paths.table(home / paths.HISTORY, "downloads") as rows:
-        return dict(rows.items())
+    return fakes.history(home)
 
 
 class ClientTest(EngineCase):
@@ -471,8 +472,8 @@ class EngineLoginTest(EngineCase):
         source = make_source("aaa", login=own_login, login_methods=("qr",))
         self.assertEqual(Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr"), "")
         self.assertEqual(seen, [("qr", LoginSite)])
-        from flnd.common import auth
-        with auth.secrets(self.home, "aaa") as secrets:
+        from flnd import _home
+        with _home.secrets(self.home, "aaa") as secrets:
             self.assertEqual(secrets["session"], "s")
 
     def test_interactive_only_during_login_in_a_terminal(self):
@@ -513,8 +514,7 @@ class ApiTest(EngineCase):
         return Engine(home=self.home, sources={source.code: source for source in sources})
 
     def saved(self):
-        with paths.table(self.home / paths.TARGETS, "targets") as targets:
-            return dict(targets.items())
+        return fakes.targets(self.home)
 
     def test_flnd_exports_exactly_the_library(self):
         import flnd
@@ -565,11 +565,11 @@ class ApiTest(EngineCase):
 
         self.engine(make_source("aaa", files=files)).download(["aaa:whole", "aaa:cut"], categories="all")
         rows = self.saved()
-        self.assertEqual(rows["aaa:whole"]["complete"], {"posts": datetime.date.today().isoformat()})
-        self.assertNotIn("complete", rows["aaa:cut"])
+        self.assertEqual(rows["aaa:whole"].complete, {"posts": datetime.date.today().isoformat()})
+        self.assertEqual(rows["aaa:cut"].complete, {})
         # Re-running keeps the record.
         self.engine(make_source("aaa")).download(["aaa:whole"], categories="all")
-        self.assertIn("complete", self.saved()["aaa:whole"])
+        self.assertIn("posts", self.saved()["aaa:whole"].complete)
 
     def test_text_and_values_are_read_alike(self):
         runs = []
@@ -606,8 +606,8 @@ class ApiTest(EngineCase):
             self.assertTrue(str(caught.exception).startswith(message), caught.exception)
         with self.assertRaisesRegex(UsageError, "unknown source 'zzz'"):
             engine.download(["zzz:a"])
-        self.assertFalse((self.home / paths.MEDIA).exists())
-        self.assertFalse((self.home / paths.METADATA).exists())
+        self.assertFalse((self.home / _home.MEDIA).exists())
+        self.assertFalse((self.home / _home.DB).exists())
 
     def test_from_with_a_post_link_is_refused_before_any_request(self):
         from flnd.sources import SOURCES
@@ -621,8 +621,8 @@ class ApiTest(EngineCase):
             with self.subTest(targets=targets), self.assertRaisesRegex(UsageError, f"^{message}$"):
                 engine.download(targets, categories="all")
         self.assertEqual(self.requests, [])
-        self.assertFalse((self.home / paths.MEDIA).exists())
-        self.assertFalse((self.home / paths.METADATA).exists())
+        self.assertFalse((self.home / _home.MEDIA).exists())
+        self.assertFalse((self.home / _home.DB).exists())
         # Without --from the same link downloads whole.
         runs = []
         def run(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
@@ -667,16 +667,16 @@ class ApiLoginTest(EngineCase):
     def test_a_browser_login_lives_only_in_the_vault(self):
         self.assertEqual(self.engine.cookie_logins, ("aaa", "bbb"))
         self.assertEqual(self.engine.login("aaa", "browser", browser="chrome"), "aaa: logged in from Chrome (1 cookie)")
-        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
+        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.key", "secrets.db"])
         self.assertEqual(self.engine.logins, {"aaa": "logged in"})
-        self.assertEqual({cookie["name"] for cookie in auth.load(self.home, "aaa")}, {"sid"})
+        self.assertEqual({cookie["name"] for cookie in _home.load(self.home, "aaa")}, {"sid"})
 
     def test_a_file_login_reads_the_file_once_and_never_copies_it(self):
         path = self.home.parent / "cookies.txt"
         path.write_text("# Netscape HTTP Cookie File\n.aaa.example\tTRUE\t/\tTRUE\t1825861327\tsid\tv\n")
         self.assertEqual(self.engine.login("aaa", "file", path=path), "aaa: logged in from cookies.txt (1 cookie)")
         self.assertTrue(path.is_file())
-        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
+        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.key", "secrets.db"])
 
     def test_a_failed_login_and_bad_answers(self):
         with mock.patch("flnd._cookies.load", lambda browser="chrome", *, profile=None: cookies.Jar()):
@@ -692,7 +692,7 @@ class ApiLoginTest(EngineCase):
         self.engine.login("aaa", "browser", browser="chrome")
         self.assertEqual(self.engine.logout(["bbb", "aaa", "aaa"]), ["aaa"])
         self.assertEqual(self.engine.logins, {})
-        self.assertEqual(auth.load(self.home, "aaa"), cookies.Jar())
+        self.assertEqual(_home.load(self.home, "aaa"), cookies.Jar())
         self.engine.login("aaa", "browser", browser="chrome")
         self.assertEqual(self.engine.logout(["all"]), ["aaa"])
         self.assertEqual(self.engine.logout(["all"]), [])
@@ -800,14 +800,14 @@ class QueryAndLimitDryTest(EngineCase):
         output = "\n".join(self.lines())
         self.assertIn("srch:1", output)
         self.assertIn("srch:2", output)
-        self.assertFalse((self.home / paths.TARGETS).exists())
-        self.assertFalse((self.home / paths.HISTORY).exists())
-        self.assertFalse((self.home / paths.MEDIA).exists())
+        self.assertFalse((self.home / _home.DB).exists())
+        self.assertFalse((self.home / _home.DB).exists())
+        self.assertFalse((self.home / _home.MEDIA).exists())
 
         report_normal = engine.download(["srch:1"], categories="photo", dry=True)
         self.assertTrue(report_normal.ok)
         self.assertIn("1.jpg", "\n".join(self.lines()))
-        self.assertFalse((self.home / paths.MEDIA).exists())
+        self.assertFalse((self.home / _home.MEDIA).exists())
 
     def test_limit_on_normal_target_and_target_yielding_route(self):
         class Multi(Source):
@@ -886,9 +886,7 @@ class SyncedQueryTest(EngineCase):
         self.assertTrue(report1.ok)
         self.assertEqual(len(report1.targets[0].written), 25)
         self.assertEqual(closed, [True])
-        from flnd import targets as targets_db
-        rows = targets_db.rows(self.home)
-        self.assertEqual(len(targets_db.seen(rows, Target("pgd", "query", "cats"))), 25)
+        self.assertEqual(len(fakes.targets(self.home)["pgd:cats"].seen), 25)
 
         closed.clear()
         seen_pages.clear()
@@ -900,11 +898,9 @@ class SyncedQueryTest(EngineCase):
         self.assertEqual(len(report2.targets[0].written), 5)
         # Stopped at pgd:1 on page 1 without asking for page 2.
         self.assertEqual(seen_pages, [0, 1])
-        rows = targets_db.rows(self.home)
-        self.assertEqual(len(targets_db.seen(rows, Target("pgd", "query", "cats"))), 30)
+        self.assertEqual(len(fakes.targets(self.home)["pgd:cats"].seen), 30)
 
     def test_already_known_target_is_marked_seen_and_not_touched(self):
-        from flnd import targets as targets_db
         pages = [[1, 2]]
         closed, seen_pages = [], []
         src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
@@ -923,8 +919,7 @@ class SyncedQueryTest(EngineCase):
         self.assertTrue(report.ok)
         # Only pgd:2 was downloaded; pgd:1 was not touched and was marked seen.
         self.assertEqual([p.name for p in report.targets[0].written], ["2.jpg"])
-        rows = targets_db.rows(self.home)
-        self.assertEqual(targets_db.seen(rows, Target("pgd", "query", "cats")), ("pgd:1", "pgd:2"))
+        self.assertEqual(fakes.targets(self.home)["pgd:cats"].seen, ["pgd:1", "pgd:2"])
 
     def test_dry_lists_targets_and_marks_no_result_seen(self):
         pages = [[1, 2]]
@@ -933,10 +928,9 @@ class SyncedQueryTest(EngineCase):
         engine = Engine(home=self.home, sources={"pgd": src})
         report = engine.download(["pgd?cats"], categories="photo", dry=True, sync=True)
         self.assertTrue(report.ok)
-        self.assertFalse((self.home / paths.TARGETS).exists())
+        self.assertFalse((self.home / _home.DB).exists())
 
     def test_ctrl_c_and_limit_close_generator_and_keep_partial_seen(self):
-        from flnd import targets as targets_db
         pages = [[1], [2], [3]]
         closed, seen_pages = [], []
         src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
@@ -948,8 +942,7 @@ class SyncedQueryTest(EngineCase):
         self.assertTrue(report.ok)
         self.assertEqual(seen_pages, [0])
         self.assertEqual(closed, [True])
-        rows = targets_db.rows(self.home)
-        self.assertEqual(targets_db.seen(rows, Target("pgd", "query", "cats")), ("pgd:1",))
+        self.assertEqual(fakes.targets(self.home)["pgd:cats"].seen, ["pgd:1"])
 
         # Ctrl-C during item 2 stops before page 2 and keeps item 1 seen.
         closed.clear()
@@ -975,8 +968,7 @@ class SyncedQueryTest(EngineCase):
             engine.download(["pgd?dogs"], categories="photo", sync=True)
         self.assertEqual(seen_pages, [0, 1])
         self.assertEqual(closed, [True])
-        rows = targets_db.rows(self.home)
-        self.assertEqual(targets_db.seen(rows, Target("pgd", "query", "dogs")), ("pgd:1",))
+        self.assertEqual(fakes.targets(self.home)["pgd:dogs"].seen, ["pgd:1"])
 
     def test_failing_route_fails_target_and_next_target_still_runs(self):
         pages = [[1]]

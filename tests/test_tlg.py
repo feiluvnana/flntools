@@ -28,7 +28,8 @@ from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswo
 from test_commands import FlndCase, Stdin
 from test_engine import EngineCase, make_source
 
-from flnd.common import auth, net
+from flnd.common import net
+from flnd import _home
 from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import LoginError, Target, UsageError
@@ -236,12 +237,12 @@ class FakeQR:
 
 
 def store(home, **values):
-    with auth.secrets(home, "tlg") as secrets:
+    with _home.secrets(home, "tlg") as secrets:
         secrets.update(values)
 
 
 def stored(home):
-    with auth.secrets(home, "tlg") as secrets:
+    with _home.secrets(home, "tlg") as secrets:
         return dict(secrets)
 
 
@@ -504,7 +505,7 @@ class LoginTest(LoginCase):
                         LoginError, f"the {method} login asks questions; run flnd login tlg {method} in a terminal"):
                 self.log_in(method)
         self.assertEqual(self.telegram.clients, [])
-        with auth.secrets(self.home, "tlg") as secrets:
+        with _home.secrets(self.home, "tlg") as secrets:
             secrets.clear()
         with mock.patch("sys.stdin.isatty", return_value=False), \
                 self.assertRaisesRegex(
@@ -543,7 +544,7 @@ class LoginCommandTest(FlndCase):
         self.assertIn("error: tlg: no QR code was scanned; run flnd login tlg qr again", out)
 
     def test_a_stored_session_is_listed_as_logged_in(self):
-        with auth.secrets(Path(".flnd"), "tlg") as secrets:
+        with _home.secrets(Path(".flnd"), "tlg") as secrets:
             secrets.update(session=SESSION, **CREDENTIALS)
         code, out, _ = self.run_app("login")
         self.assertEqual(code, 0)
@@ -676,7 +677,7 @@ class DownloadTest(DownloadCase):
         self.assertTrue(all(size >= done for size, done in on_disk), on_disk)
 
     def test_not_logged_in_fails_the_target(self):
-        with auth.secrets(self.home, "tlg") as secrets:
+        with _home.secrets(self.home, "tlg") as secrets:
             secrets.clear()
         self.assertEqual(self.download(), 0)
         self.assertIn("tlg:examplechannel: not logged in", self.failures())

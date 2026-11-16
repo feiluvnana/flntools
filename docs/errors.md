@@ -76,8 +76,10 @@ declared twice) raises `SourceError` when its class is made.
 
 What "fails" means at each level:
 
-- **A file** that fails (after its tries) is counted as failed, saved in `targets.db` with its
-  request, and tried again first on the target's next run. The rest of the target goes on.
+- **A file** that fails (after its tries) is counted as failed, written to `flnd.db`'s
+  `failures` with its request, and tried again first on the target's next run. A 404 or 410
+  (`NotFound`) records the file as gone instead: it isn't asked for again unless told to
+  (`--again`). The rest of the target goes on.
 - **A target** whose listing fails ends with its error printed, then its hint on the next line,
   and `TargetReport.error` holds the error. The other targets still run.
 - **A source** whose login fails, or that can't start (its `connect` fails), fails each of its

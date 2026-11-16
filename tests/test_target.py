@@ -2,7 +2,6 @@
 
 import unittest
 
-from flnd import targets
 from flnd.engine import resolve
 from flnd.source import Target, UsageError
 from flnd.sources import SOURCES
@@ -185,23 +184,6 @@ class RefusedTest(unittest.TestCase):
 class TargetTest(unittest.TestCase):
     def test_target_prints_as_code_and_value(self):
         self.assertEqual(str(Target("tik", "video", "1")), "tik:1")
-
-
-class FailedTest(unittest.TestCase):
-    def test_a_failed_download_never_keeps_a_login_header_on_disk(self):
-        target = Target("tik", "user", "example_user")
-        saved: dict = {}
-        # An old row from before login headers were dropped is cleaned on the next change too.
-        old = {"url": "https://example.com/old.mp4", "headers": {"Cookie": "sessionid=old"}}
-        saved[targets.key(target)] = {targets.FAILED: {"tik/old": old}}
-        headers = {"Referer": "https://example.com/", "Cookie": "sessionid=secret",
-                   "authorization": "Bearer secret"}
-        new = {"url": "https://example.com/a.mp4", "headers": headers}
-        targets.keep_failed(saved, target, failed={"tik/a": new}, succeeded=())
-        kept = targets.failed(saved, target)
-        self.assertEqual(kept["tik/a"]["headers"], {"Referer": "https://example.com/"})
-        self.assertEqual(kept["tik/old"]["headers"], {})
-        self.assertNotIn("secret", repr(saved))
 
 
 if __name__ == "__main__":

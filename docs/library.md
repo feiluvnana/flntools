@@ -202,7 +202,7 @@ with flnd.open(home) as fl:
 | read | returns |
 | --- | --- |
 | `fl.targets(source=None)` | a `flnd.Tracked` per target the home knows: `target`, `follow`, `at` (last sync), `files`, `size`, `seen` (for a search), `categories` (each one's state), `query` |
-| `fl.files(target=None, kind=None, since=None)` | a `flnd.Record` per saved file: `key`, `path`, `size`, `post`, `category`, `date`, `at`, and `kind` (`"image"`, `"video"`, `"audio"`) |
+| `fl.files(target=None, kind=None, since=None)` | read from the home's `flnd.db`: a `flnd.Record` per saved file: `key`, `path`, `size`, `post`, `category`, `date`, `at`, and `kind` (`"image"`, `"video"`, `"audio"`) |
 | `fl.logins` | a `flnd.Login` per source: `source`, `name`, `state`, `origin`, `expiring` |
 | `fl.check(fix=False)` | **not built yet** |
 
@@ -238,9 +238,12 @@ This block isn't run by the docs test: it reads a real browser's cookies and ask
 | `flnd logout S` | `fl.logout(S)` |
 | `flnd login` (no source) | `fl.logins` |
 
-`--again` has no spelling: a run always skips what is saved. A run draws nothing on the
-terminal: the CLI draws it from the run's events, and flnd's own warnings (a wait a site asked
-for, a login about to expire) go to standard error.
+`--again` (the CLI's flag on `download` and `follow`) is `flnd.open(home, again=True)`: every
+`download` and `follow` then lists each post again and asks again for files the site answered
+404 or 410 for (recorded as gone, [storage.md](storage.md)). Without it, `again = true` under
+`[defaults]` in the home's `config.toml` does the same. A run draws nothing on the terminal:
+the CLI draws it from the run's events, and flnd's own warnings (a wait a site asked for, a
+login about to expire) go to standard error.
 
 ## Errors
 

@@ -22,7 +22,8 @@ from example_source import API, CDN, Example
 from fakes import FakeSite
 
 from flnd import _browser
-from flnd.common import auth, net, paths
+from flnd.common import net
+from flnd import _home
 from flnd.options import RunShared
 from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import SiteError, File, Site, Target
@@ -155,9 +156,9 @@ class SiteCase(unittest.TestCase):
     def open(self, source=Example, *, state=None):
         """A `TargetSite` for `exm:example_user` on a run closed at the end of the test."""
         if state:
-            with paths.table(self.home / paths.SOURCE_STATE, source.code) as db:
-                db.update(state)
-        opened = source_run(RunShared(home=self.home, history={}, stop=self.stop), source())
+            with _home.open(self.home) as db:
+                db.state(source.code).update(state)
+        opened = source_run(RunShared(home=self.home, stop=self.stop), source())
         run = opened.__enter__()
         self.addCleanup(opened.__exit__, None, None, None)
         site = TargetSite(run, Target(source.code, "user", "example_user"))
@@ -174,7 +175,7 @@ class ExpiringLoginTest(SiteCase):
     def save(self, **expires):
         jar = [{"name": name, "value": "secret-value", "domain": ".example.com", "path": "/", "expires": when}
                for name, when in expires.items()]
-        auth.save(self.home, Example.code, cookies.Jar(jar))
+        _home.save(self.home, Example.code, cookies.Jar(jar))
 
     def test_soon_and_expired_login_cookies_are_named_never_their_value(self):
         now = clock.wall()
@@ -288,7 +289,7 @@ class FetchTest(SiteCase):
 
     def test_prepare_runs_for_the_sources_own_domains_only(self):
         jar = [{"name": "token", "value": "t0k", "domain": ".example.com", "path": "/"}]
-        auth.save(self.home, "exm", cookies.Jar(jar))
+        _home.save(self.home, "exm", cookies.Jar(jar))
         _, site = self.open()
         site.fetch(f"{API}/users/example_user")
         site.fetch(f"{CDN}/a.jpg")
@@ -321,7 +322,7 @@ class FetchTest(SiteCase):
         class Wide(Example):
             stealth = False
 
-        auth.save(self.home, "exm", cookies.Jar([{"name": "token", "value": "t", "domain": ".example.com",
+        _home.save(self.home, "exm", cookies.Jar([{"name": "token", "value": "t", "domain": ".example.com",
                                                   "path": "/"}]))
         _, site = self.open(Wide)
         # Nothing opens until a source asks for the page.
@@ -552,7 +553,7 @@ class TabTest(SiteCase):
         class InstagramLike(Example):
             code = "ins"
 
-        settings = RunShared(home=self.home, history={}, stop=self.stop)
+        settings = RunShared(home=self.home, stop=self.stop)
         failures = []
         with shared_browser(settings):
             def run_target(source_cls, target, warm_url):

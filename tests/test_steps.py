@@ -12,11 +12,11 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
+import fakes
 import httpx
 
-from flnd import _steps, _tools
+from flnd import _home, _steps, _tools
 from flnd.engine import Engine
-from flnd.common import paths
 from flnd.source import File
 from test_archive import CRYPTO_ZIP
 from test_engine import CDN, EngineCase, make_source
@@ -49,8 +49,7 @@ class StepsCase(EngineCase):
         return Engine(home=self.home, sources={"aaa": source})
 
     def history(self) -> dict:
-        with paths.table(self.home / paths.HISTORY, "downloads") as table:
-            return dict(table.items())
+        return fakes.history(self.home)
 
     @property
     def folder(self) -> Path:
@@ -109,7 +108,7 @@ class CompressTest(StepsCase):
         body = jpeg()
         self.engine(self.serve_files({"a.jpg": body})).download(["aaa:a"], categories="all")
         self.assertEqual((self.folder / "a.jpg").read_bytes(), body)
-        self.assertNotIn("shrink", self.history()["aaa:a.jpg"])
+        self.assertEqual(self.history()["aaa:a.jpg"]["shrink"], "")
 
     def test_compress_moves_the_file_and_its_row_together(self):
         engine = self.engine(self.serve_files({"a.jpg": jpeg()}))
@@ -140,38 +139,40 @@ class CompressTest(StepsCase):
 
 
 class BacklogTest(StepsCase):
-    def chain(self, history):
-        settings = mock.Mock(history=history, stop=None)
+    def chain(self):
+        settings = mock.Mock(db=None, stop=None)
         return _steps.attached(settings)
+
+    def rows(self, **found):
+        """The file rows `Home.unfinished` would give, from `key=(name, fields)` pairs."""
+        folder = self.home / "media" / "aaa" / "a"
+        return [_home.FileRow(item, "aaa:a", f"{folder}/{name}", 10, **fields)
+                for item, (name, fields) in found.items()]
 
     def test_a_done_file_is_skipped_without_a_stat(self):
         from flnd import _shrink
 
         tools = _shrink.tools(_shrink.Kind.JPEG)
-        folder = self.home / "media" / "aaa" / "a"
-        rows = {f"aaa:{n}": {"path": f"{folder}/{n}.jpg", "shrink": "compressed"} for n in range(50)}
-        rows["aaa:kept"] = {"path": f"{folder}/kept.jpg", "shrink": "kept", "tools": tools}
-        rows["aaa:other"] = {"path": f"{self.home}/media/bbb/x/1.jpg"}
+        rows = self.rows(**{f"n{n}": (f"{n}.jpg", {"shrink": "compressed"}) for n in range(50)},
+                         kept=("kept.jpg", {"shrink": "kept", "tools": tools}))
         with mock.patch("pathlib.Path.stat", side_effect=AssertionError("stat")), \
-                self.chain(rows) as chain:
-            self.assertEqual(chain.backlog(rows.items(), [folder]), 0)
+                self.chain() as chain:
+            self.assertEqual(chain.backlog(rows), 0)
 
     def test_a_tool_upgrade_retries_kept_and_failed_files(self):
-        folder = self.home / "media" / "aaa" / "a"
-        rows = {"aaa:kept": {"path": f"{folder}/kept.jpg", "shrink": "kept", "tools": "old"},
-                "aaa:failed": {"path": f"{folder}/f.mp4", "shrink": "failed", "tools": "old"},
-                "aaa:new": {"path": f"{folder}/new.png"},
-                "aaa:zip": {"path": f"{folder}/a.zip"},
-                "aaa:zipped": {"path": f"{folder}/b.zip", "unpacked": "extracted"}}
-        with mock.patch.object(_steps.Chain, "landed") as landed, self.chain(rows) as chain:
-            self.assertEqual(chain.backlog(rows.items(), [folder]), 4)
+        rows = self.rows(**{"aaa:kept": ("kept.jpg", {"shrink": "kept", "tools": "old"}),
+                            "aaa:failed": ("f.mp4", {"shrink": "failed", "tools": "old"}),
+                            "aaa:new": ("new.png", {}), "aaa:zip": ("a.zip", {}),
+                            "aaa:zipped": ("b.zip", {"unpacked": "extracted"})})
+        with mock.patch.object(_steps.Chain, "landed") as landed, self.chain() as chain:
+            self.assertEqual(chain.backlog(rows), 4)
         self.assertEqual(sorted(call.args[0].key for call in landed.call_args_list),
                          ["aaa:failed", "aaa:kept", "aaa:new", "aaa:zip"])
 
     def test_after_ctrl_c_queued_files_are_dropped(self):
         stop = mock.Mock(soon=threading.Event(), now=threading.Event())
         stop.soon.set()
-        chain = _steps.Chain({}, stop)
+        chain = _steps.Chain(None, stop)
         with mock.patch.object(_steps.Chain, "_run") as run:
             chain.landed(_steps.Landed("aaa:a", Path("a.jpg"), compress=True))
             chain.close()

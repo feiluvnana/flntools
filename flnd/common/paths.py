@@ -1,42 +1,19 @@
-"""flnd's files on disk: layout of `.flnd/`, target directories, and media validation.
-
-`.flnd/` holds three folders: `media/` with every target's files, `metadata/` with stores
-and secrets, and `log/` with one log per run. Every module takes its path from the table
-below, joined onto flnd's home folder, and never hardcodes paths.
+"""What a downloaded file is: media kinds by name and by content, and the error for a web page.
 
 Every file is written as a part, `<name>.part`, beside it (`flnd._files.part`); the names
-match `PART_GLOB`, and `flnd._files.sweep` removes the stale ones.
-
-`checked` provides media validation used by `net` and the job.
+match `PART_GLOB`, and `flnd._files.sweep` removes the stale ones. `net` asks `checked` whether
+what came is the media it expected or a login wall. The home's layout and its database are
+`flnd._home`'s.
 
     extension = paths.checked(folder / "a.jpg", "image")
-    paths.target_folder(Path(".flnd"), target)
-    Path(".flnd") / paths.HISTORY
 """
 
 from __future__ import annotations
 
 import mimetypes
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
 
-from flnd import _db as store, _text as text
 from flnd.errors import SiteError
-
-if TYPE_CHECKING:
-    from flnd.source import Target
-
-# `.flnd/`'s three folders: the media, the stores, and a log of each run.
-MEDIA, METADATA, LOGS = Path("media"), Path("metadata"), Path("log")
-# Each store in `metadata/`: saved files by key, target settings, complete listings,
-# source state (table per source), and the vault with the key beside the store it opens.
-HISTORY = METADATA / "history.db"
-TARGETS = METADATA / "targets.db"
-SOURCE_STATE = METADATA / "sources.db"
-SECRETS = METADATA / "secrets.db"
-KEY = METADATA / "secret.key"
 
 # What a part's name looks like (`flnd._files.part`), which `flnd._files.sweep` removes when stale.
 PART_GLOB = "*.part"
@@ -49,24 +26,6 @@ IMAGE, VIDEO, AUDIO = "image", "video", "audio"
 SNIFF = "sniff"
 # How an error names each kind.
 NOUNS = {IMAGE: "a photo", VIDEO: "a video", AUDIO: "an audio file"}
-# The history fields of a finished file's size and modified time (ns), which `flnd sync` trusts
-# while the file still has them.
-SIZE, MTIME = "size", "mtime"
-
-
-@contextmanager
-def table(path: Path, name: str) -> Iterator[store.Table[Any]]:
-    """One table of the store at `path`, open for the block."""
-    with store.open(path) as db:
-        yield db[name]
-
-
-def stamp(path: Path) -> dict[str, int]:
-    """A finished file's size and modified time (ns), as its history row keeps them."""
-    found = path.stat()
-    return {SIZE: found.st_size, MTIME: found.st_mtime_ns}
-
-
 # What a web page where media was expected says to do: such a page is most often a login wall.
 NOT_MEDIA_HINT = "it is usually a login wall: run flnd login <source>, then try again"
 
@@ -106,11 +65,6 @@ def kind_of(name: str) -> str | None:
         if head in (IMAGE, VIDEO, AUDIO):
             return head
     return None
-
-
-def target_folder(home: Path, target: Target) -> Path:
-    """A target's folder: `<home>/media/<code>/<value>`, with value made safe."""
-    return home / MEDIA / target.source / text.filename(target.value)
 
 
 def sniff(path: Path | bytes) -> str | None:

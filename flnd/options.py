@@ -1,12 +1,15 @@
-"""Each target's options, and the settings every source of a run shares."""
+"""Each target's options, the settings every source of a run shares, and their checks."""
 
 from __future__ import annotations
 
 import datetime
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequence
+from string import Formatter
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
+from flnd import _home
 from flnd.errors import UsageError
 from flnd.source import Source, Target
 
@@ -41,13 +44,14 @@ class Options:
 
 @dataclass
 class RunShared:
-    """What all sources of a run share: the folder, both stores, the stop signal, the browser."""
+    """What all sources of a run share: the home, its database, the stop signal, the browser."""
 
     home: Path
-    history: MutableMapping[str, Any]
     stop: Stop
-    # `targets.db`'s rows: each target's complete categories and cursors.
-    targets: MutableMapping[str, Any] = field(default_factory=dict)
+    # The home's `flnd.db`, open for the run; None where nothing is read or saved (a login).
+    db: _home.Home | None = None
+    # The `runs` row the run's failures name; None outside a recorded run (a dry run).
+    run: int | None = None
     # Whether a person can be asked a question, which a source's own login needs.
     interactive: bool = False
     # List what would be downloaded without writing or downloading anything.
@@ -167,3 +171,208 @@ def _names(
 
 def _lists(sources: Sequence[type[Source]]) -> str:
     return "; ".join(f"{source.code}: {', '.join(source.categories)}" for source in sources)
+
+
+# ---------------------------------------------------------------------------------------------
+# Folder templates and --only, checked before a run
+# ---------------------------------------------------------------------------------------------
+
+# The fields every folder template may name, and the extra ones a folder may (not a file name).
+COMMON_FIELDS = frozenset({
+    "source", "site", "query", "target", "user", "id", "category", "path",
+    "name", "date", "extension", "num", "count", "index",
+})
+FOLDER_FIELDS = COMMON_FIELDS | frozenset({
+    "title", "order", "author", "genres", "chapters", "album", "part", "chat", "n",
+})
+_FORMATTER = Formatter()
+# A Windows drive at a template's start (`C:`), which would leave the target's folder.
+_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+
+def validate(
+    sources: Mapping[str, type[Source]] | Sequence[type[Source]],
+    from_selection: str | Sequence[str] | None = None,
+    targets: Sequence[Target] = (),
+) -> None:
+    """Check the sources' folder templates and the categories asked for, before any request.
+
+    Args:
+        sources: the sources, by code or as a list.
+        from_selection: the categories asked for (`--only`, or the library's `only`); None
+            checks the templates alone.
+        targets: the run's targets, whose routes say which categories they have.
+
+    Raises:
+        UsageError: a template leaves the target's folder or names an unknown field, or a
+            category is unknown or given for a single post.
+    """
+    by_code = ({code: src for code, src in sources.items()} if isinstance(sources, Mapping)
+               else {src.code: src for src in sources})
+    _validate_folders(list(by_code.values()))
+    if from_selection is not None:
+        _validate_from(by_code, from_selection, targets)
+
+
+def _validate_folders(sources: Sequence[type[Source]]) -> None:
+    """Check every source's, route's and category's `folder` template.
+
+    Args:
+        sources: the sources to check.
+
+    Raises:
+        UsageError: a template leaves the target's folder or names an unknown field.
+    """
+    for source in sources:
+        allowed = COMMON_FIELDS | FOLDER_FIELDS | frozenset(source.fields)
+        for route in source.routes:
+            route_fields = allowed | _route_fields(route)
+            folder = getattr(route, "folder", None)
+            _check_template(folder if folder is not None else source.folder, route_fields, source)
+            for category in route.categories:
+                if category.folder is not None:
+                    _check_template(category.folder, route_fields, source)
+
+
+def _route_fields(route: Any) -> frozenset[str]:
+    """The fields a route adds to its templates: its patterns' names and its params.
+
+    Args:
+        route: the route.
+
+    Returns:
+        The field names.
+    """
+    names: set[str] = set()
+    for pat in getattr(route, "_patterns", ()):
+        names.update(getattr(pat, "names", ()))
+    names.update(getattr(route, "params", {}).keys())
+    return frozenset(names)
+
+
+def _check_template(template: str, allowed: frozenset[str], source: type[Source]) -> None:
+    """Refuse a folder template that leaves the target's folder or names an unknown field.
+
+    Args:
+        template: the template; "" passes.
+        allowed: the fields it may name.
+        source: its source, which the message names.
+
+    Raises:
+        UsageError: what is wrong with it.
+    """
+    if not template:
+        return
+    if "\\" in template or template.startswith("/") or _DRIVE_RE.match(template):
+        raise UsageError(f"folder template {template!r} must be relative using '/' separators")
+    if any(seg in ("", ".", "..") for seg in template.split("/")):
+        raise UsageError(f"folder template {template!r} cannot contain empty, '.', or '..'")
+    try:
+        parsed = list(_FORMATTER.parse(template))
+    except ValueError as error:
+        raise UsageError(f"folder template {template!r} is invalid: {error}") from None
+    for _, field_name, format_spec, conversion in parsed:
+        if field_name is None:
+            continue
+        if not field_name or conversion is not None or format_spec:
+            raise UsageError(
+                f"folder template {template!r} has invalid placeholder {{{field_name}}}"
+            )
+        if field_name not in allowed:
+            raise UsageError(
+                f"folder template {template!r} has unknown field {{{field_name}}} for {source.code}"
+            )
+
+
+def _validate_from(
+    by_code: Mapping[str, type[Source]],
+    from_selection: str | Sequence[str],
+    targets: Sequence[Target],
+) -> None:
+    """Check the categories asked for against the categories the targets' routes have.
+
+    Args:
+        by_code: the sources, by code.
+        from_selection: the categories asked for, one text or several.
+        targets: the run's targets; none checks against every source's categories.
+
+    Raises:
+        UsageError: a category is unknown, or asked of a single post.
+    """
+    raw = [from_selection] if isinstance(from_selection, str) else list(from_selection)
+    if not raw:
+        return
+    routes = _target_routes(by_code, targets)
+    for target, route in routes:
+        if not _route_from(route) and not route.discovers:
+            raise UsageError(
+                f"--only applies to profiles and chats; {target} is one post, downloaded whole"
+            )
+    if routes:
+        known = {cat for target, route in routes for cat in (
+            {c for r in by_code[target.source].routes for c in _route_from(r)}
+            if route.discovers else _route_from(route)
+        )}
+    else:
+        known = {cat for src in by_code.values() for route in src.routes
+                 for cat in _route_from(route)}
+    for entry in raw:
+        _check_from_entry(entry, by_code, known)
+
+
+def _check_from_entry(
+    entry: str, by_code: Mapping[str, type[Source]], known: set[str]
+) -> None:
+    """Check one entry of `--only`: `<cats>` or `<source>:<cats>`, comma-separated.
+
+    Args:
+        entry: the entry.
+        by_code: the sources, by code.
+        known: every category the run's targets have.
+
+    Raises:
+        UsageError: the entry names no category, or one no source here has.
+    """
+    code, sep, rest = entry.partition(":")
+    if sep and code in by_code:
+        src_cats = {cat for route in by_code[code].routes for cat in _route_from(route)}
+        names = [part.strip() for part in rest.split(",") if part.strip()]
+        bad = [name for name in names if name != ALL and name not in src_cats]
+    else:
+        names = [part.strip() for part in entry.split(",") if part.strip()]
+        bad = [name for name in names if name != ALL and name not in known]
+    if not names:
+        raise UsageError(f"--only {entry!r} has no category name")
+    if bad:
+        raise UsageError(f"unknown --only category {', '.join(map(repr, bad))}")
+
+
+def _target_routes(
+    by_code: Mapping[str, type[Source]], targets: Sequence[Target]
+) -> list[tuple[Target, Any]]:
+    """Pair each target with the route of its kind.
+
+    Args:
+        by_code: the sources, by code.
+        targets: the targets; one whose source or route is unknown is left out.
+
+    Returns:
+        Each target with its route.
+    """
+    pairs: list[tuple[Target, Any]] = []
+    for target in targets:
+        source = by_code.get(target.source)
+        if source is None:
+            continue
+        route = next((r for r in source.routes if r.kind == target.kind), None)
+        if route is not None:
+            pairs.append((target, route))
+    return pairs
+
+
+def _route_from(route: Any) -> frozenset[str]:
+    """Return a route's `from_` category set, falling back to declared category names."""
+    declared = getattr(route, "from_", None)
+    if declared is not None:
+        return frozenset(declared)
+    return frozenset(category.name for category in route.categories)
