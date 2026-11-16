@@ -206,20 +206,33 @@ class Part:
         _write_side(self.side_path, self.meta)
         self.side = True
 
-    def write(self, data: bytes) -> None:
+    def write(self, data: bytes, *, fed: bool = False) -> None:
         """Append `data` after the part's bytes, through a 1 MiB buffer.
 
         Args:
-            data: the bytes, which reach the file by 1 MiB at a time or at `flush`.
+            data: the bytes, which reach the file through the buffer, or at once for a piece
+                larger than it.
+            fed: the caller hashes `data` itself, with `feed`, so the hash and the write can
+                run on two threads at once. Every appended byte must reach `feed` in order.
         """
         if self._buffer is None:
             self._buffer = open(self.fd, "r+b", buffering=BUFFER, closefd=False)  # noqa: SIM115
             self._buffer.seek(self.size)
         self._buffer.write(data)
         self.size += len(data)
-        if self._sha is not None:
+        if not fed:
+            self.feed(data)
+
+    def feed(self, data: bytes) -> None:
+        """Add appended bytes to the part's running SHA-256 (see `write`'s `fed`).
+
+        Args:
+            data: the bytes just appended, or about to be, in the order they are appended.
+        """
+        sha = self._sha
+        if sha is not None:
             # hashlib lets go of the GIL for a chunk this size, so other downloads go on.
-            self._sha.update(data)
+            sha.update(data)
 
     def write_at(self, offset: int, data: bytes) -> None:
         """Write `data` at `offset`, unbuffered; safe from several threads at once.

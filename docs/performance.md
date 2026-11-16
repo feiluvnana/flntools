@@ -108,18 +108,27 @@ on the M5 above while other work ran (load about 8), the median of 3 alternating
 
 How a file is written, and why:
 
-- **Bytes go to one writer thread, a MiB at a time.** curl hands the loop 16 KiB chunks; they
-  are gathered, and each full MiB is written on the `flnd-writer` thread while the loop goes
-  on. Measured with the writes on the loop, four files onto a disk throttled to 20 MB/s held the
-  loop up for 1.2 s at a time; on the writer thread, 15 ms. The last piece of a file, under a
-  MiB, is copied into the part's own buffer on the loop and reaches the disk when the part
-  lands, so a small file costs no hop to the writer at all.
-- **A transfer waits for the disk with at most 4 MiB in memory.** curl_cffi queues every chunk
+- **Bytes go to one writer thread, 4 MiB at a time, and are hashed beside it.** curl hands
+  the loop 16 KiB chunks; they are gathered, and each full 4 MiB piece is written on the
+  `flnd-writer` thread while the `flnd-hasher` thread adds it to the file's SHA-256 (for
+  dedupe and `check`), both while the loop goes on. Measured with the writes on the loop, four
+  files onto a disk throttled to 20 MB/s held the loop up for 1.2 s at a time; on the writer
+  thread, 15 ms. The last piece of a file, when it fits the part's 1 MiB buffer, is copied
+  there on the loop and reaches the disk when the part lands, so a small file costs no hop to
+  the writer at all.
+- **Why 4 MiB and two threads.** SHA-256 runs at about 3.3 GiB/s on one M5 core, so hashing
+  after each write on the writer thread capped one transfer at about 1.9 GiB/s. And every hop
+  to a thread waits for the GIL when it comes back, which takes up to the switch interval
+  (5 ms) while the loop runs Python: a thread hashing 1 MiB pieces beside a busy Python thread
+  managed 0.13 GiB/s. Hashing beside the write, and handing off 4 MiB instead of 1 MiB, took
+  `net.big_rate` from 1.91 to 2.35 GiB/s (median of 3 alternating runs).
+- **A transfer waits for the disk with at most 8 MiB in memory.** curl_cffi queues every chunk
   curl receives, with no bound; on a disk slower than the network a whole file would wait
-  there. Once 4 MiB of a transfer wait, flnd pauses it (`curl_easy_pause`) until the writer
-  has taken them down to 2 MiB, and TCP holds the server back meanwhile. Measured with two
-  64 MiB files onto a disk throttled to 20 MB/s: at most 4.0 MiB waited per transfer, against
-  62.9 MiB unpaused, in the same time (7.3 s against 7.2 s).
+  there. Once 8 MiB of a transfer wait (4 MiB before the pieces grew), flnd pauses it
+  (`curl_easy_pause`) until the writer has taken them down to half, and TCP holds the server
+  back meanwhile. Measured at 4 MiB with two 64 MiB files onto a disk throttled to 20 MB/s: at
+  most 4.0 MiB waited per transfer, against 62.9 MiB unpaused, in the same time (7.3 s against
+  7.2 s).
 - **A part's open and rename run on worker threads.** Each is a file-system call of 50 to 150
   µs, more on a busy disk; on the loop they would run one at a time.
 - **Small files are bound by the disk bookkeeping**, not the client: the client alone fetches

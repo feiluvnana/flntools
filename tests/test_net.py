@@ -668,14 +668,14 @@ class DownloadTest(NetCase):
         self.assertEqual((sink.total, sink.count), (len(BODY), len(BODY)))
         self.assertFalse(self.stage.exists())
 
-    def test_writes_go_to_the_part_1_mib_at_a_time_on_the_writer_thread(self):
-        size = 3 << 20
+    def test_writes_go_to_the_part_a_buffer_at_a_time_on_the_writer_thread(self):
+        size = 3 * _net.BUFFER
         threads: list[str] = []
         real = _files.Part.write
 
-        def write(held, data):
+        def write(held, data, **how):
             threads.append(threading.current_thread().name)
-            return real(held, data)
+            return real(held, data, **how)
 
         route = lambda request: _net.reply(200, headers={"content-length": str(size)},
                                            chunks=(bytes(65536) for _ in range(size // 65536)))
@@ -684,6 +684,35 @@ class DownloadTest(NetCase):
         self.assertEqual(self.dest.stat().st_size, size)
         self.assertEqual(len(threads), 3)
         self.assertTrue(all(name.startswith("flnd-writer") for name in threads), threads)
+
+    def test_a_large_body_is_hashed_beside_its_writes_without_reading_back(self):
+        import hashlib
+
+        body = bytes(range(256)) * (10 * _net.BUFFER // 256 // 4)
+        threads: list[str] = []
+        real = _files.Part.feed
+
+        def feed(held, data):
+            threads.append(threading.current_thread().name)
+            return real(held, data)
+
+        async def fill():
+            session = _net.Session()
+            try:
+                with _files.part(self.dest, resume=True, digest=True) as held:
+                    await _net.Client(session).fill(FILE, held)
+            finally:
+                await session.close()
+            return held.saved
+
+        route = lambda request: _net.reply(200, headers={"content-length": str(len(body))},
+                                           chunks=(body[at:at + 65536]
+                                                   for at in range(0, len(body), 65536)))
+        with _net.fake({FILE: route}), mock.patch.object(_files.Part, "feed", feed), \
+                mock.patch("flnd._files._digest_fd", side_effect=AssertionError("read back")):
+            saved = asyncio.run(fill())
+        self.assertEqual(saved.hash, hashlib.sha256(body).digest())
+        self.assertIn("flnd-hasher", " ".join(threads))
 
     def test_resumes_a_partial_part_with_a_range(self):
         self.stage.write_bytes(BODY[:6])
@@ -798,9 +827,9 @@ class SlowDiskTest(unittest.TestCase):
     def test_the_loop_never_stalls_100_ms(self):
         real = _files.Part.write
 
-        def slow(held, data):
+        def slow(held, data, **how):
             time.sleep(len(data) / self.RATE)
-            return real(held, data)
+            return real(held, data, **how)
 
         async def run(folder):
             lags, done = [], asyncio.Event()

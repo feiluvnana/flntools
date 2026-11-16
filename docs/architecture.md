@@ -284,7 +284,8 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
     Telethon), and any `async def` route or category, which reaches the browser by awaiting
     `site.tab` instead of calling the verbs.
 
-  What would block the loop runs off it: a part's bytes go to one writer thread a MiB at a time,
+  What would block the loop runs off it: a part's bytes go to one writer thread 4 MiB at a time
+  (and to one hasher thread for their SHA-256, beside the write),
   a part's open and rename and dedupe's hard link to worker threads, a source's blocking
   `fetch` function and ffmpeg's DASH merge to worker threads too.
 - **A lazy post's expired link.** A source's code runs on the listing thread only, so a

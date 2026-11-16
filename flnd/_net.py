@@ -68,9 +68,10 @@ Every message names the URL redacted (`flnd._text.redact`), and any secret the r
 
 Rules a change must keep:
 - A session belongs to one asyncio loop: every coroutine here runs on it, and nothing here
-  blocks it. File writes go to one writer thread, `BUFFER` bytes at a time, so a slow disk never
-  stalls the loop (and the browser and every other transfer on it); see docs/performance.
-- A write in flight on the writer thread always finishes before its transfer gives the part
+  blocks it. File writes go to one writer thread, `BUFFER` bytes at a time, and each piece of an
+  appended body is hashed on one hasher thread beside its write, so a slow disk never stalls
+  the loop (and the browser and every other transfer on it); see docs/performance.
+- A write or hash in flight on those threads always finishes before its transfer gives the part
   back, even when the transfer is cancelled: the part's descriptor is closed only after it.
 - `Limits`, its buckets and its caps are used from the loop's thread only, so they need no
   lock.
@@ -163,10 +164,12 @@ PAGES = 4
 SPREAD = 8
 # Seconds before a connection counts as dead: to connect, or with no byte received.
 TIMEOUT = 30.0
-# The file system's writes go to the writer thread this many bytes at a time.
-BUFFER = 1 << 20
+# The file system's writes go to the writer thread this many bytes at a time. Each hand-off to
+# a thread waits for the GIL when it comes back, which on a busy loop can take milliseconds, so
+# fewer, larger pieces pay: 4 MiB moved 1 GiB 15% faster than 1 MiB (docs/performance).
+BUFFER = 4 << 20
 # The most bytes of one transfer that wait in memory for the disk before curl pauses it.
-HELD = 4 << 20
+HELD = 8 << 20
 # A file this big, on a server that serves ranges, may come in SEGMENTS parallel ranges.
 SEGMENTED = 64 << 20
 SEGMENTS = 4
@@ -1488,12 +1491,30 @@ def _writer_thread() -> ThreadPoolExecutor:
     return _writer
 
 
+# The one thread every appended part is hashed on, beside the writer: SHA-256 is the slowest
+# step of a fast transfer, so it runs at the same time as the write instead of after it.
+_hasher: ThreadPoolExecutor | None = None
+
+
+def _hasher_thread() -> ThreadPoolExecutor:
+    global _hasher
+    if _hasher is None:
+        _hasher = ThreadPoolExecutor(1, thread_name_prefix="flnd-hasher")
+    return _hasher
+
+
 class _Sink:
     """A transfer's bytes on their way to its part: gathered on the loop, written on the writer.
 
-    Chunks (16 KiB from curl) are gathered until `BUFFER` bytes, then written on the writer
-    thread while the loop goes on; the transfer waits only for its own write. A slow disk (a USB
-    drive, a network share) then slows that transfer, not the loop.
+    Chunks (16 KiB from curl) are gathered until `BUFFER` bytes, then handed to two threads
+    while the loop goes on: the writer thread writes the piece, and for an appended body the
+    hasher thread adds it to the part's SHA-256 at the same time (`Part.feed`). The transfer
+    waits only for its own piece. A slow disk (a USB drive, a network share) then slows that
+    transfer, not the loop; and the hash, the slowest step of a fast transfer (about 3 GiB/s on
+    one core), runs beside the write instead of after it.
+
+    Each of the two is one thread, and a transfer hands off a piece only after the last one is
+    done, so a part's pieces reach the disk and its hash in order.
 
     Args:
         held: the part.
@@ -1516,10 +1537,10 @@ class _Sink:
     async def flush(self, *, last: bool = False) -> None:
         """Write what is gathered, and wait for it, even through a cancel.
 
-        The last piece of an appended body, under `BUFFER`, goes into the part's own buffer on
-        the loop instead: a copy in memory, no system call, since that buffer holds `BUFFER`
-        and the full pieces before it went to the disk. The part's landing (or its `head`)
-        writes it, off the loop. A small file then costs no hop to the writer at all.
+        The last piece of an appended body, when it fits the part's own buffer
+        (`flnd._files.BUFFER`), goes there on the loop instead: a copy in memory, no system
+        call, since the full pieces before it went to the disk. The part's landing (or its
+        `head`) writes it, off the loop. A small file then costs no hop to the writer at all.
 
         Args:
             last: the body ended (or failed): this is its last piece.
@@ -1531,21 +1552,27 @@ class _Sink:
             return
         data = self._chunks[0] if len(self._chunks) == 1 else b"".join(self._chunks)
         self._chunks, self._size = [], 0
-        if last and self._offset is None and len(data) < BUFFER:
+        if last and self._offset is None and len(data) < _files.BUFFER:
             self._held.write(data)
             self.written += len(data)
             return
         loop = asyncio.get_running_loop()
         if self._offset is None:
             work = loop.run_in_executor(_writer_thread(), self._append, data)
+            fed = loop.run_in_executor(_hasher_thread(), self._held.feed, data)
+            # Both are waited for, whatever the other did: a thread still holding the part
+            # when its transfer ends would write or hash after the part is gone.
+            try:
+                await _settle(work)
+            finally:
+                await _settle(fed)
         else:
             at = self._offset + self.written
-            work = loop.run_in_executor(_writer_thread(), self._held.write_at, at, data)
-        await _settle(work)
+            await _settle(loop.run_in_executor(_writer_thread(), self._held.write_at, at, data))
         self.written += len(data)
 
     def _append(self, data: bytes) -> None:
-        self._held.write(data)
+        self._held.write(data, fed=True)
         self._held.flush()
 
 

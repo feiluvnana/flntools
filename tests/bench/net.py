@@ -131,9 +131,9 @@ def main() -> None:
 
             real = _files.Part.write
 
-            def slow(held: _files.Part, chunk: bytes) -> None:
+            def slow(held: _files.Part, chunk: bytes, **how: bool) -> None:
                 time.sleep(len(chunk) / DISK_RATE)
-                real(held, chunk)
+                real(held, chunk, **how)
 
             empty()
             medium = [f"{base}/m{n}.bin" for n in range(SLOW_FILES)]
