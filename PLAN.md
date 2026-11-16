@@ -9,7 +9,8 @@ The user, 2026-11-16:
   - it compresses images, video and audio as far as it can, changing format (WebP, AVIF) when that is smaller;
   - it archives and extracts with 7zz;
   - it keeps a store of what it has done.
-- **flnd and flnc are libraries first**; each CLI is a thin layer.
+- **flns** is a new tool that makes slideshows with animations, photobooth cards, albums and collages from flnd's media, with ffmpeg and Pillow (§5).
+- **flnd, flnc and flns are libraries first**; each CLI is a thin layer.
 - **Performance, simplicity and DX** are first-class: code is concise, short and intuitive, and annotations and decorators carry intent where that reads better than options.
 
 Decisions (user, 2026-11-16):
@@ -557,7 +558,172 @@ class File(store.Row):
 - `flnc = "flnc.cli:app"` in `pyproject.toml`.
 - It imports `shared`, the stdlib and flnd's public API only, which `test_layers` checks.
 
-## 5. Steps
+## 5. flns: slideshows, cards, albums
+
+flns turns flnd's media into things to watch, print or share. It is a library first, with a thin CLI, and imports `shared`, the stdlib and flnd's public API only. The user, 2026-11-16: "I can generate slideshow with different animation from cli … like slideshow, create album, create a photobooth card".
+
+Defaults adopted without asking (the user may reverse any): verb `slideshow`; a plain fade, 3 s, no motion; H.264; hardware encoding only with `--hw`; video clips in shows (≤ 4 s, sound ducked under music); no smart crop in the MVP; one bundled OFL font (Inter); PDF/JPG albums first; output in `<home>/made/<kind>/`; a top-level `flns/` package.
+
+### 5.1 Scope
+
+| product | what it makes | output | phase |
+| --- | --- | --- | --- |
+| `slideshow` | photos and short clips with transitions, optional motion, title card, music | `.mp4` | MVP |
+| `card` | photobooth strip (1×3, 1×4), 2×2 grid, polaroid, postcard, date captions | `.jpg`/`.png` at 300 dpi | MVP |
+| `album` | justified-row pages with dates and a title page | `.pdf`, `.jpg` pages | MVP |
+| `collage` | one grid or mosaic of N photos | `.jpg`/`.png` | MVP |
+| motion | Ken Burns, zoom, pan (`zoompan`) | option of `slideshow` | later |
+| `loop` | a looping animation | `.gif`, `.webp` | later |
+| album HTML, smart/face crop, `reel` (scene cuts to music), `recap` (year in review) | | | later |
+
+### 5.2 Tools
+**ffmpeg + Pillow only.**
+- **ffmpeg**: `xfade` (57 transitions), `zoompan`, the concat demuxer with stream copy, audio fades/mix, every encoder, `-progress pipe:1`.
+- **Pillow**: stills, text, EXIF rotation, `draft()` downscale, PDF, WebP.
+
+Homebrew's ffmpeg has no `drawtext` and no `libwebp`, so all text is drawn by Pillow into a transparent PNG and laid on with `overlay`, and WebP goes through Pillow. The transition list is read from the installed ffmpeg (`ffmpeg -h filter=xfade`), so an older build offers only what it has.
+
+Optional later: libvips (`attention` smart crop, huge albums) and OpenCV YuNet (face crop).
+
+Rejected:
+- ImageMagick: Pillow covers it in-process.
+- ffmpeg-gl-transition: needs a patched ffmpeg build.
+- editly / ffmpeg-concat: need Node, and `headless-gl` is hard to build on Apple Silicon.
+- MLT: a second video engine.
+- dvd-slideshow: unmaintained.
+- Remotion / Motion Canvas: need Node and a headless Chromium per render.
+
+### 5.3 The library
+```python
+import flns
+
+ns = flns.Flns(".flnd")                    # store .flnd/metadata/flns.db, cache .flnd/cache/flns/
+photos = ns.photos.filter(target="ins:example_user", kind="image").sort("date").limit(60).get()
+show = flns.Show(transition="random", duration=3.0, fade=0.75, size="1080p")
+r = ns.slideshow(photos, dest="show.mp4", style=show, music="song.mp3")
+r.path, r.duration, r.skipped
+ns.card(photos[:4], dest="strip.jpg", layout="strip-4", theme=flns.themes.film)
+ns.card(photos[0], dest="polaroid.jpg", layout="polaroid", caption="{date:%d %b %Y}")
+ns.album(photos, dest="2026.pdf", page=flns.Page(size="a4", row_height=320), title="2026")
+ns.collage(photos[:9], dest="grid.jpg", layout="grid-3x3")
+ns.preview(photos, style=show)             # Plan: slides, seconds, pieces cached or to render
+ns.outputs.filter(kind="slideshow").sort("at", desc=True).get()
+ns.forget("show.mp4"); ns.tools
+```
+- `Show` is a frozen record:
+  - `size` (1080p, 4k, square, story, `W×H`), `fps` 30;
+  - `duration` 3 s, `fade` 0.75 s, `transition` (an xfade name, `cut` or `random`);
+  - `motion` (`Motion` enum), `fit` (FILL | FIT | BLUR, default BLUR), `crop` (CENTER; SMART and FACE later);
+  - `codec` (H264 | HEVC | AV1), `title`, `clip` 4 s;
+  - `seed`, derived from the inputs, so reruns match.
+- `Theme` covers the background, frame, text, font and caption. The themes are `plain`, `film`, `polaroid`, `dark` and `pastel`.
+- `Photo` is `(path, target, date, kind, width, height, rotation)`; `date` is the mtime flnd set.
+- Every verb returns a `Result(path, skipped, seconds, …)`.
+- Progress goes to the sink given to `Flns(progress=…)`, keeping the 4-option rule.
+- Errors: `flns.Error`, and `flns.MissingError` naming the fix.
+
+### 5.4 The CLI
+```
+flns slideshow <paths|targets…> [-o] [--transition fade|wipeleft|…|random|cut] [--duration] [--fade]
+               [--motion none|kenburns|zoom-in|…|random] [--size] [--fps] [--fit] [--music]
+               [--title] [--codec h264|hevc|av1] [--hw] [--seed]
+flns card <…> --layout strip-3|strip-4|grid-4|polaroid|postcard [--theme] [--caption] [--dpi 300]
+flns album <…> [-o album.pdf] [--page a4|letter|square] [--per-page N] [--title]
+flns collage <…> [--layout grid-3x3|mosaic] [--size WxH]
+flns transitions | outputs [--kind] | forget <outputs…> | tools
+Selection on every maker: --from-target ins:example_user --time 2026-01-01, --kind --limit --order date|random --dry
+Global: --ui, -v, --home
+```
+A positional is a file, a folder (`fs.walk`), or a flnd target (through `flnd.Flnd.files`).
+
+### 5.5 Animations
+**Transitions** (`xfade`, `duration=fade`):
+
+| group | names | in `random` |
+| --- | --- | --- |
+| fades | fade, fadefast, fadeslow, fadeblack, fadewhite, fadegrays, dissolve | fade, fadeblack, dissolve |
+| wipes | wipeleft, wiperight, wipeup, wipedown, wipetl, wipetr, wipebl, wipebr | wipeleft, wiperight |
+| slides | slideleft, slideright, slideup, slidedown | all |
+| smooth | smoothleft, smoothright, smoothup, smoothdown | all |
+| cover, reveal | coverleft/right/up/down, revealleft/right/up/down | coverleft, revealright |
+| shapes | circleopen, circleclose, circlecrop, rectcrop, radial, vertopen, vertclose, horzopen, horzclose | circleopen, radial, horzopen |
+| diagonals | diagtl, diagtr, diagbl, diagbr | diagtl, diagbr |
+| slices, wind | hlslice, hrslice, vuslice, vdslice, hlwind, hrwind, vuwind, vdwind | — |
+| effects | distance, pixelize, hblur, squeezeh, squeezev, zoomin | zoomin |
+| special | `cut`, and `random` (a seeded pick, never the same twice in a row) | — |
+
+**Motion** (`zoompan`, later):
+- `zoom-in` is `z=1+0.12*on/d`, centred; `zoom-out` is the reverse;
+- `pan-*` holds `z=1.1` and moves `x` or `y` with `on/d`;
+- `kenburns` alternates in and out toward the point of interest.
+
+`zoompan` jitters because it rounds to whole pixels, so frames are prescaled to 2× before it. That costs about 4× the pixels, which is why motion is opt-in.
+
+**Text and audio**:
+- Title cards and captions are Pillow PNGs, laid on with `overlay` and `fade=t=in:alpha=1`.
+- Music:
+  - the track loops (`-stream_loop -1`) and is trimmed to the show (`atrim`);
+  - `afade` in 1 s and out 2 s, then `loudnorm=I=-16`;
+  - `acrossfade` between several tracks.
+- Clips keep their sound, ducked with `sidechaincompress` and mixed with `amix`. Without music, an `anullsrc` silent track is added.
+
+### 5.6 Pipeline and performance
+`select → probe → normalize (Pool, cached) → pieces (Pool, cached) → concat (copy) → mux audio (copy video)`
+1. **Normalize** each photo to one output-size frame with `media.fit`:
+   - EXIF transpose, then `draft()` downscale;
+   - fill, fit or blur-pad, then crop;
+   - cached at `.flnd/cache/flns/frames/<digest>.png`, keyed by (path, mtime, size, fit, crop), on `worker.Pool(jobs="cpu")`.
+2. **Pieces, not one graph.** One graph holds N decoders open, can't resume, and gets slow past about 30 slides. Instead:
+   - each slide is a **hold** piece (`duration − fade`);
+   - each pair is a **transition** piece (`fade`, xfade of the tail and the head);
+   - each piece is one small ffmpeg run on `worker.Pool(jobs=cpu//2)` with `-threads 2`, with identical encode parameters;
+   - pieces are cached at `.flnd/cache/flns/pieces/<digest>.mp4`.
+
+   Adding one photo re-renders three pieces.
+3. **Concat** with the concat demuxer and `-c copy`.
+4. **Mux audio** with `-c:v copy` and `+faststart` into `fs.stage(dest)`. `fs.touch` sets the mtime to the newest input's date.
+
+Encoders:
+
+| encoder | when | settings |
+| --- | --- | --- |
+| `libx264` | the default | `-preset medium -crf 20 -pix_fmt yuv420p` |
+| `h264_videotoolbox` / `hevc_videotoolbox` | `--hw` on macOS | `-q:v 65` (`-tag:v hvc1` for HEVC) |
+| nvenc, qsv, vaapi | `--hw` elsewhere, when listed | quality 23 |
+| `libsvtav1` | `--codec av1` | `-preset 8 -crf 32` |
+
+- **Progress**: each piece writes `-progress pipe:1`, and `media.render` turns it into `row.advance(Δframes)`. The total frames are known up front, and cached pieces advance at once.
+- **Stills**: a pure `layout()` returns boxes, then `draw()` pastes. Album pages render on the pool, and the PDF is written with `save_all=True`.
+- **Cache**: `fs.sweep` keeps 30 days.
+- **Targets**, on an 8-core Mac:
+  - 100 photos at 1080p with fade, cold, in < 60 s with `--hw`;
+  - a rerun with one photo added in < 5 s;
+  - `flns --help` in < 150 ms.
+
+### 5.7 `shared` additions, kept general
+- **`media.render(*args, seconds=, progress=)`**: runs ffmpeg with `-progress`, feeding a sink. Its error carries the last stderr lines. flnc's video path uses it too.
+- **`media.concat(parts, dest)`**: the concat demuxer with stream copy, staged.
+- **`media.fit(src, size, *, mode=, focus=)`** returns a `PIL.Image`.
+- **`media.font(name=None)`** returns a `Path` to a system or bundled font.
+- **`media.probe`** gains `rotation`, and `media.encoders` lists hardware encoders.
+
+### 5.8 Store
+```python
+class Output(store.Row):          # key: dest relative to the home, or absolute
+    table = "outputs"
+    kind: str; inputs: str        # digest of [(path, mtime, size), …]
+    options: str; tools: str      # the record's JSON; "ffmpeg 9.0.2; Pillow 11.3"
+    count: int; seconds: float; size: int; mtime: int; at: float
+```
+- A rerun is skipped when `inputs`, `options` and `tools` match and `dest` still has its size and mtime. `--again` forces it.
+- Frames and pieces need no rows: the digest is the file name.
+
+### 5.9 Layout
+- A top-level `flns/`: `__init__` (`Flns`), `cli`, `select`, `slideshow`, `stills` (card, album, collage), `themes`.
+- `flns = "flns.cli:app"`.
+- Pillow joins flnd's dependencies, and goes into a `media` extra for `shared`.
+
+## 6. Steps
 
 Each step is one logical commit as `feiluvnana`, with `check` green, `api.txt` regenerated and its diff read, and a push after it. Mechanical work goes to a Haiku subagent: call-site renames, the snapshot, README edits.
 
@@ -574,8 +740,14 @@ Each step is one logical commit as `feiluvnana`, with `check` green, `api.txt` r
 11. `feat:` flnc video and audio.
 12. `feat:` flnc archive and extract.
 13. `docs:` README and AGENTS.md for flnc, the UI modes and the API rules.
+14. `feat:` `media.render`, `media.concat`, `media.fit`, `media.font`, probe rotation.
+15. `feat:` flns: library, selection and store.
+16. `feat:` flns slideshow: pieces, transitions, cache, concat, audio, CLI.
+17. `feat:` flns cards and collages: layouts and themes.
+18. `feat:` flns album PDF: justified rows and pages.
+19. `docs:` README for flns. Later, one commit each: motion, clip ducking, `loop`, album HTML, smart/face crop, `reel`, `recap`.
 
-## 6. Verification
+## 7. Verification
 
 - `uv run --no-project scripts/dev.py check` at every commit: lint, pyright 0/0, unittest and the counters.
 - `scripts/dev.py bench` before and after each `perf:` commit, run offline: store, walk, worker, ui frames, `probe` cache and flnc rerun.
@@ -586,3 +758,5 @@ Each step is one logical commit as `feiluvnana`, with `check` green, `api.txt` r
   - `uv run flnd download <target> --limit 5` with `--ui inline` and `--ui full`: press `p`, `v`, `f`, `m`, then `q` twice, and check that the terminal is restored. Pipe the same command to a file to check that it falls back to `plain`.
   - On a copy of `.flnd/media`, run `flnc compress --dry`, then for real, then again. The rerun must skip everything in < 3 s. Check that mtimes are kept, and that `flnd sync` doesn't download the `.avif`/`.webp` files again.
   - `flnc archive`/`extract` round trip, with a password, a split and a sibling `info.md`.
+  - flns: render a 20-photo show with `--transition random --music`, add one photo and rerun (only three pieces re-render), and make a `strip-4` card at 300 dpi.
+- flns tests fake ffmpeg with `sh.fake` and check filter strings and layout boxes; nothing is rendered for real.
