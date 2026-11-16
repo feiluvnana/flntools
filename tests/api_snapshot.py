@@ -1,35 +1,35 @@
-"""Every development task of flntools, the same on macOS, Linux and Windows, with nothing but uv.
+"""The API snapshot: every public name of flnd, one line each, as `tests/data/api.txt` holds it.
 
-    uv run --no-project scripts/dev.py setup
-    uv run --no-project scripts/dev.py check --python 3.11
-    uv run --no-project scripts/dev.py flnd download ins:example_user
+    make api                              # write tests/data/api.txt
+    uv run python tests/api_snapshot.py   # print the snapshot instead
 
-`main` takes the task name from `sys.argv[1]`, then an optional `--python X` (the environment's
-`PYTHON` otherwise, 3.14 by default), and hands the rest to the task function of that name. Every
-task takes the same two arguments: `python`, the version passed to uv's `--python`, and `args`,
-the command-line arguments after the task name, which `setup`, `test`, `type`, `bench` and `flnd` pass on. Each
-task runs uv commands in the project root; uv creates and syncs `.venv` from `uv.lock`, so this
-script only uses the stdlib and runs under `--no-project`, outside the environment it manages.
-The Makefile is a shortcut to it and holds no logic of its own.
+The snapshot is how a change to the public surface is reviewed: a rename, a new option or a new
+error shows as a one-line diff of `tests/data/api.txt`. Three tests read this module:
+`tests/test_api.py` checks that the file matches the code, `tests/test_names.py` checks the names
+against the naming rules of AGENTS.md, and `tests/test_docs.py` finds the public names that must
+have docstrings. They import it as `api_snapshot`, since `tests/` is on the path of a test run.
 
-`api` is the one task that needs the project's own code: it writes the API snapshot, which imports
-`flnd`, so it runs `api_text` inside the environment through `uv run python`. The same
-`api_names` feed `tests/test_api.py` (the snapshot is current) and `tests/test_names.py` (it follows
-the naming conventions of AGENTS.md › API and naming).
+How the snapshot is made:
+1. `api_names` imports each module of `API_MODULES` and walks its `__all__`.
+2. Each name becomes an `ApiName`: a module, a function, a class or an error, and, inside a
+   class, its methods, properties, fields and the attributes its `__init__` sets.
+3. Each line is the name plus a detail: a signature for a function or class, the bases for an
+   error, a kind and a type for the rest. `_signature` and `_default_text` draw them so that
+   the text is the same on every OS, every Python from 3.11 and every run.
+4. `api_text` sorts the lines, and `--write` saves them with Unix line ends.
 
-An unknown or missing task prints the task list to stderr and exits 2. A failing command stops
-the task and exits with that command's own code, so make and CI see the failure.
+It imports `flnd`, so it runs inside the project environment (`uv run`). It reads only the
+public modules and what they expose: nothing here reaches into a private module.
 """
 
+from __future__ import annotations
+
+import argparse
 import ast
 import builtins
-import hashlib
 import importlib
 import inspect
-import json
-import os
 import re
-import subprocess
 import sys
 import textwrap
 import types
@@ -40,96 +40,14 @@ from pathlib import Path, PurePath
 from typing import Any, NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
-# The Python setup builds .venv with when neither --python nor PYTHON says otherwise; releases also check 3.11.
-DEFAULT_PYTHON = "3.14"
 
-# The modules the API snapshot lists, each through its `__all__`: the toolkit, the module sources
-# are written against, and the engine API (`flnd`'s own `__all__`, redesign B1).
+# The modules the snapshot lists, each through its `__all__`: the API a source is written
+# against, and the library a script imports.
 API_MODULES = ("flnd.source", "flnd")
 API_FILE = ROOT / "tests" / "data" / "api.txt"
 # Classes whose members are listed: the project's own. A base from the stdlib (MutableMapping,
 # NamedTuple, Exception) adds its own methods, which aren't this project's API.
 PROJECT_PACKAGES = ("flnd",)
-# What `api` runs inside the environment: this file, imported from scripts/, writing the snapshot.
-WRITE_API = "import sys; sys.path.insert(0, 'scripts'); import dev; dev.write_api()"
-
-
-def setup(python: str, args: list[str]) -> None:
-    """Create or update `.venv` from `uv.lock`, with the dev group; downloads no browser.
-
-    A second run checks the lock and installs nothing, well under a second.
-    """
-    run(["uv", "sync", "--python", python, *args])
-
-
-def test(python: str, args: list[str]) -> None:
-    """Run every unittest under `tests/`."""
-    run(["uv", "run", "--python", python, "python", "-m", "unittest", "discover", "-s", "tests", *args])
-
-
-def lint(python: str, args: list[str]) -> None:
-    """Byte-compile `flnd`."""
-    run(["uv", "run", "--python", python, "python", "-m", "compileall", "-q", "flnd"])
-
-
-def type(python: str, args: list[str]) -> None:  # noqa: A001 - the task's name; the snapshot code says `builtins.type`
-    """Type-check with pyright, whose Node.js comes from the `pyright[nodejs]` wheel."""
-    run(["uv", "run", "--python", python, "pyright", *args])
-
-
-def check(python: str, args: list[str]) -> None:
-    """Run `lint`, `type` and `test` in that order, stopping at the first failure."""
-    for step in (lint, type, test):
-        step(python, [])
-
-
-def flnd(python: str, args: list[str]) -> None:
-    """Run `flnd` from the project environment, passing every remaining argument through."""
-    run(["uv", "run", "--python", python, "flnd", *args])
-
-
-def try_(python: str, args: list[str]) -> None:
-    """Run a source for real on one target and print what it would save, downloading and recording nothing.
-
-        dev.py try ins:example_user --from reels --time 2026-01-01,
-
-    The listing is live (network, browser, login) with the saved login of the `.flnd` in this
-    folder; the post tree comes out with each file's planned path and its URL without the query,
-    so no signed token is printed. This is gallery-dl's `--simulate`, kept out of `flnd` itself.
-    The work is `flnd/dry.py`, which needs the project's code, so it runs inside the environment.
-    """
-    run(["uv", "run", "--python", python, "python", "-m", "flnd.dry", *args])
-
-
-def api(python: str, args: list[str]) -> None:
-    """Write `tests/data/api.txt`, the API snapshot, from inside the project environment.
-
-    The snapshot imports `flnd`, which this script can't do under `--no-project`, so it
-    runs `write_api` through `uv run python`. Commit the file with the change it shows: a rename is a
-    one-line diff there, and `tests/test_api.py` fails until the file matches the code.
-    """
-    run(["uv", "run", "--python", python, "python", "-c", WRITE_API])
-
-
-def bench(python: str, args: list[str]) -> None:
-    """Run the offline benchmarks of `tests/bench/`, passing every remaining argument through.
-
-        dev.py bench net disk --gate
-
-    The runner imports `flnd`, so it runs inside the environment. It is never part
-    of `check`: it takes minutes, and its timings are noisy. `tests/bench/run.py` says what the
-    groups and the flags are, and `docs/performance.md` how to read the numbers.
-    """
-    run(["uv", "run", "--python", python, "python", "tests/bench/run.py", *args])
-
-
-def dist(python: str, args: list[str]) -> None:
-    """Build the one-folder bundle `dist/flnd/`."""
-    # PyInstaller lives in the `dist` group, which `setup` leaves out; `uv run` below keeps it installed.
-    run(["uv", "sync", "--python", python, "--group", "dist"])
-    # This script runs outside the project environment, so the build runs inside it, through uv.
-    build = "from flnd import _bundler as bundler; bundler.build('flnd/__main__.py', name='flnd', dest='dist')"
-    run(["uv", "run", "--python", python, "--group", "dist", "python", "-c", build])
 
 
 class ApiName(NamedTuple):
@@ -451,46 +369,25 @@ def _typed(kind: str, annotation: Any) -> str:
     return f"{kind} -> {text}" if text else kind
 
 
-def run(command: list[str], *, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
-    """Run `command` in the project root, raising CalledProcessError when it fails.
 
-    Always a list of arguments, never a shell string, so quoting can't differ between sh and cmd.exe.
-    """
-    return subprocess.run(command, cwd=ROOT, check=True, capture_output=capture_output, text=True)
-
-
-TASKS: dict[str, Callable[[str, list[str]], None]] = {
-    # `try` is a keyword, so its function is `try_` and the task keeps the plain name.
-    task.__name__.rstrip("_"): task for task in (setup, test, lint, type, check, api, bench, flnd, dist, try_)
-}
-
-
-def main(argv: list[str]) -> int:
-    """Run the task `argv[0]` with the rest of `argv`, and return the exit code.
-
-        main(["check", "--python", "3.11"])
+def main(argv: list[str] | None = None) -> int:
+    """Print the snapshot, or write it to `tests/data/api.txt` with `--write`.
 
     Args:
-        argv: the task name, then an optional `--python X`, then the task's own arguments.
+        argv: the command-line arguments; `None` reads `sys.argv`.
 
     Returns:
-        0 on success, 2 for an unknown or missing task, or the failing command's own exit code.
+        0, the exit code.
     """
-    if not argv or argv[0] not in TASKS:
-        print(f"usage: dev.py <task> [--python X] [args...]\ntasks: {' '.join(TASKS)}", file=sys.stderr)
-        return 2
-    name, args = argv[0], argv[1:]
-    python = os.environ.get("PYTHON") or DEFAULT_PYTHON
-    # Only right after the task, so `flnd`'s own arguments are passed through untouched.
-    if args[:1] == ["--python"] and len(args) > 1:
-        python, args = args[1], args[2:]
-    try:
-        TASKS[name](python, args)
-    except subprocess.CalledProcessError as error:
-        # The command already printed its own error; a traceback here would only bury it.
-        return error.returncode
+    parser = argparse.ArgumentParser(description="Print or write the public API snapshot.")
+    parser.add_argument("--write", action="store_true", help=f"write {API_FILE.relative_to(ROOT)}")
+    args = parser.parse_args(argv)
+    if args.write:
+        write_api()
+    else:
+        sys.stdout.write(api_text())
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

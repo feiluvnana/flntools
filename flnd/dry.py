@@ -83,7 +83,7 @@ def render_tree(target_text: str, placed: Iterable[job.Placed]) -> Tree:
 def main(argv: Sequence[str] | None = None) -> int:
     """Print the post tree of one target and return 0, or 1 on failure."""
     parser = argparse.ArgumentParser(
-        prog="dev.py try", description="List what a download would save, without downloading."
+        prog="make try", description="List what a download would save, without downloading."
     )
     parser.add_argument("target")
     parser.add_argument("--from", dest="categories", default=None, metavar="CATEGORIES")

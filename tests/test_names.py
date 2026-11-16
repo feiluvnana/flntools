@@ -1,6 +1,6 @@
 """The naming conventions of AGENTS.md › API and naming, checked over the API snapshot.
 
-The names are the ones `scripts/dev.py api` writes to tests/data/api.txt (test_api.py keeps that
+The names are the ones `make api` writes to tests/data/api.txt (test_api.py keeps that
 file current), read from the same `api_names()` with their objects, so a check can look at a real
 signature. Nothing is faked: the names come from importing `flnd`.
 
@@ -20,10 +20,9 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from test_packaging import load_dev
+import api_snapshot as snapshot
 
-dev = load_dev()
-NAMES = dev.api_names()
+NAMES = snapshot.api_names()
 
 # W7: prefixes that only say "this is a function".
 PREFIXES = ("get_", "do_", "to_", "try_", "load_from_", "make_", "create_")
@@ -66,7 +65,7 @@ def option_breaches(name: Any) -> set[str]:
     overloads = typing.get_overloads(name.obj) if name.kind != "class" else []
     for function in [None, *overloads]:
         try:
-            parameters = dev.parameters(name, function)
+            parameters = snapshot.parameters(name, function)
         except ValueError:  # no signature to read: a class whose constructor is a builtin's
             continue
         # S3, for functions and methods; a constructor's fields are its data, so they may be positional.
@@ -96,7 +95,7 @@ def follows_protocol(name: Any) -> bool:
         return False
     member = name.name.rsplit(".", 1)[-1]
     return any(member in vars(base) for base in name.owner.__mro__[1:]
-               if base.__module__.split(".")[0] not in dev.PROJECT_PACKAGES)
+               if base.__module__.split(".")[0] not in snapshot.PROJECT_PACKAGES)
 
 
 def expanded(parameters: list[inspect.Parameter], obj: Any, function: Any) -> list[tuple[inspect.Parameter, dict]]:
@@ -104,13 +103,13 @@ def expanded(parameters: list[inspect.Parameter], obj: Any, function: Any) -> li
 
     `worker`'s functions take their options as a TypedDict, so its keys are the real option names.
     """
-    scope = dev._scope(function or obj)
+    scope = snapshot._scope(function or obj)
     found = []
     for parameter in parameters:
         unpacked = re.fullmatch(r"Unpack\[(\w+)\]", str(parameter.annotation))
         if parameter.kind is inspect.Parameter.VAR_KEYWORD and unpacked and unpacked.group(1) in scope:
             options = scope[unpacked.group(1)]
-            options_scope = dev._scope(options)
+            options_scope = snapshot._scope(options)
             found += [(inspect.Parameter(key, inspect.Parameter.KEYWORD_ONLY, annotation=annotation), options_scope)
                       for key, annotation in inspect.get_annotations(options).items()]
         else:
@@ -125,12 +124,12 @@ def progress_callback(annotation: Any, scope: dict) -> bool:
         annotation: the annotation as written, such as "Progress | None"; a bare alias is looked up.
         scope: the globals of the function's module, where an alias like `Progress` is defined.
     """
-    kinds = [part for part in split_top_level(dev._annotation_text(annotation), "|") if part != "None"]
+    kinds = [part for part in split_top_level(snapshot._annotation_text(annotation), "|") if part != "None"]
     if len(kinds) != 1:
         return False
     kind = kinds[0]
     if kind.isidentifier() and kind in scope:  # an alias: `Progress = Callable[..., Any]`
-        kind = dev._annotation_text(scope[kind])
+        kind = snapshot._annotation_text(scope[kind])
     kind = re.sub(r"^(typing\.|collections\.abc\.)", "", kind)
     if not kind.startswith("Callable[") or not kind.endswith("]"):
         return False
@@ -243,7 +242,7 @@ def history_breaches(source: str) -> list[str]:
 # that renames the uses removes its pairs here, so the list can only shrink. AGENTS.md says no
 # aliases; this is the one exception, and it is temporary.
 TRANSITIONAL_ALIASES = {
-    ("archive", "_unpack"), ("browser", "_browser"), ("bundler", "_bundler"), ("cli", "_cli"),
+    ("archive", "_unpack"), ("browser", "_browser"), ("cli", "_cli"),
     ("clock", "_time"), ("cookies", "_cookies"), ("crypto", "_vault"), ("fs", "_files"),
     ("http", "_http"), ("prompt", "_prompt"), ("selector", "_html"), ("sh", "_tools"),
     ("store", "_db"), ("text", "_text"), ("worker", "_loop"),
@@ -305,16 +304,16 @@ class LibraryErrorTest(unittest.TestCase):
         from playwright.sync_api import Error
 
         self.assertTrue(from_a_library(Error))
-        self.assertFalse(from_a_library(dev.ApiName))
+        self.assertFalse(from_a_library(snapshot.ApiName))
         self.assertFalse(from_a_library(LibraryErrorTest))
 
 
 class PrivateImportTest(unittest.TestCase):
-    def test_scripts_import_no_private_module_of_flnd(self):
-        # flnd's own modules may import each other's private modules; the scripts are outside flnd.
-        for path in sorted((dev.ROOT / "scripts").rglob("*.py")):
-            with self.subTest(str(path.relative_to(dev.ROOT))):
-                self.assertEqual(private_imports(path.read_text(encoding="utf-8")), [])
+    def test_the_snapshot_imports_no_private_module_of_flnd(self):
+        # flnd's own modules may import each other's private modules; the snapshot reads only
+        # what a script can reach, so it may not.
+        path = snapshot.ROOT / "tests" / "api_snapshot.py"
+        self.assertEqual(private_imports(path.read_text(encoding="utf-8")), [])
 
     def test_every_spelling_of_a_private_import_is_found(self):
         source = ("import flnd._http\nfrom flnd._browser import Page\n"
@@ -325,9 +324,9 @@ class PrivateImportTest(unittest.TestCase):
 
 def _source_files() -> list[str]:
     return sorted(
-        path.relative_to(dev.ROOT).as_posix()
-        for pkg in dev.PROJECT_PACKAGES
-        for path in (dev.ROOT / pkg).rglob("*.py")
+        path.relative_to(snapshot.ROOT).as_posix()
+        for pkg in snapshot.PROJECT_PACKAGES
+        for path in (snapshot.ROOT / pkg).rglob("*.py")
     )
 
 
@@ -335,18 +334,18 @@ class ReadableTest(unittest.TestCase):
     def test_no_plan_or_history_references_in_code(self):
         for path in _source_files():
             with self.subTest(path):
-                self.assertEqual(history_breaches((dev.ROOT / path).read_text(encoding="utf-8")), [])
+                self.assertEqual(history_breaches((snapshot.ROOT / path).read_text(encoding="utf-8")), [])
 
     def test_no_flnd_import_aliases(self):
-        for path in sorted((dev.ROOT / "flnd").rglob("*.py")):
-            rel = path.relative_to(dev.ROOT).as_posix()
+        for path in sorted((snapshot.ROOT / "flnd").rglob("*.py")):
+            rel = path.relative_to(snapshot.ROOT).as_posix()
             with self.subTest(rel):
                 self.assertEqual(flnd_import_aliases(path.read_text(encoding="utf-8")), [])
 
     def test_lines_are_at_most_100_characters(self):
         for path in _source_files():
             with self.subTest(path):
-                self.assertEqual(line_length_breaches((dev.ROOT / path).read_text(encoding="utf-8")), [])
+                self.assertEqual(line_length_breaches((snapshot.ROOT / path).read_text(encoding="utf-8")), [])
 
     def test_history_and_alias_checks_catch_breaches(self):
         bad = ('"""See plan/phase-6/redesign.md (B3)."""\n'
@@ -370,7 +369,7 @@ class ChecksTest(unittest.TestCase):
     """The checks themselves, on made-up names, so a check that silently passes everything fails here."""
 
     def name(self, kind: str, obj: Any, *, owner: Any = None, bound: bool = False, name: str = "flnd.x.f") -> Any:
-        return dev.ApiName(name, kind, obj, owner, bound)
+        return snapshot.ApiName(name, kind, obj, owner, bound)
 
     def test_prefix(self):
         self.assertEqual(prefix_breaches(self.name("function", None, name="flnd.x.get_keys")),

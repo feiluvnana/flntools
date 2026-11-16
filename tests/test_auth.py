@@ -19,7 +19,7 @@ import httpx
 
 from flnd.common import auth, paths
 from flnd.sources.ins import Instagram
-from flnd import _cookies as cookies, _vault as crypto, _db as store
+from flnd import _cookies as cookies, _vault as crypto
 from flnd._ui import ui
 
 NETSCAPE = ("# Netscape HTTP Cookie File\n"

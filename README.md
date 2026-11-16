@@ -152,7 +152,7 @@ The code itself is commented for people to read: every module starts with what i
 | `make api` | regenerates `tests/data/api.txt`, the public API snapshot |
 | `make docs` | builds the API reference into `build/docs/` |
 | `make type` | checks the public API's type hints with pyright (informational, not part of `check`) |
-| `make try ARGS=…` | runs flnd against a scratch home, `.try/` |
+| `make try ARGS=…` | lists, live, the files one target would save, downloading nothing |
 | `make dist` | a single-file `flnd` binary for this OS (PyInstaller) |
 
 Each target is one `uv` command, listed in the `Makefile`, so it can also be typed by hand on a machine without make. Contributors and coding agents: read [AGENTS.md](AGENTS.md) first.

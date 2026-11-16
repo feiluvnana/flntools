@@ -118,20 +118,6 @@ flnd/_browser.py:open: Args: no headless
 flnd/_browser.py:open: Args: no profile
 flnd/_browser.py:open: Args: no stealth
 flnd/_browser.py:open: no Returns:
-flnd/_bundler.py:_arguments: Args: no dest
-flnd/_bundler.py:_arguments: Args: no entry
-flnd/_bundler.py:_arguments: Args: no hidden
-flnd/_bundler.py:_arguments: Args: no name
-flnd/_bundler.py:_arguments: Args: no work
-flnd/_bundler.py:_arguments: no Returns:
-flnd/_bundler.py:_run: no docstring
-flnd/_bundler.py:build: Args: no data
-flnd/_bundler.py:build: Args: no dest
-flnd/_bundler.py:build: Args: no entry
-flnd/_bundler.py:build: Args: no hidden
-flnd/_bundler.py:build: Args: no name
-flnd/_bundler.py:build: no Raises:
-flnd/_bundler.py:build: no Returns:
 flnd/_cli.py:App.group: Args: no default
 flnd/_cli.py:App.group: Args: no help
 flnd/_cli.py:App.group: Args: no name

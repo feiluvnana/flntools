@@ -24,7 +24,7 @@ import threading
 from collections.abc import Iterator, MutableMapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar, Union, overload
+from typing import Any, ClassVar, Generic, TypeVar, Union
 
 import msgspec
 
@@ -36,7 +36,6 @@ __all__ = ["ClosedError", "Db", "Error", "Row", "Rows", "Table", "open"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 V = TypeVar("V")
-R = TypeVar("R", bound="Row")
 
 # A table's rows live in an SQL table of this name, so a user's name never meets SQL's own.
 PREFIX = "t_"
@@ -78,10 +77,6 @@ class Db:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    @overload
-    def __getitem__(self, key: str) -> Table[Any]: ...
-    @overload
-    def __getitem__(self, key: type[R]) -> Table[R]: ...
     def __getitem__(self, key: str | type[Row]) -> Table[Any]:
         with self._lock:
             found = self._tables.get(key)

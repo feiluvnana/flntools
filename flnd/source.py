@@ -18,7 +18,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from types import MappingProxyType, MethodType
 from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, Mapping,
-                    MutableMapping, Protocol, Sequence, Union, overload)
+                    MutableMapping, Protocol, Sequence, Union)
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from flnd import _text as text
@@ -311,11 +311,6 @@ class Route:
             return self._from
         return frozenset(category.name for category in self._categories)
 
-    @overload
-    def category(self, function: Callable[..., Any], /) -> Callable[..., Any]: ...
-    @overload
-    def category(self, /, *, newest_first: bool = False, folder: str | None = None,
-                 key: str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
     def category(self, function: Callable[..., Any] | None = None, /, *, newest_first: bool = False,
                  folder: str | None = None, key: str | None = None) -> Any:
         """Mark a method as one of this route's categories, with or without options.
@@ -1206,13 +1201,13 @@ def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
         TypeError: the segment, or a placeholder's regex, is malformed.
     """
     regex = ""
-    for kind, text, custom in _tokens(segment, pattern):
+    for kind, token, custom in _tokens(segment, pattern):
         if kind == "text":
-            regex += re.escape(text)
+            regex += re.escape(token)
         elif kind == "any":
             regex += "[^/]*"
         else:
-            names.append(text)
+            names.append(token)
             # Only the first placeholder is captured: a second one is refused once they're counted.
             group = "(?P<value>" if len(names) == 1 else "(?:"
             regex += f"@?{group}{NAME})" if not custom else f"{group}{custom})"

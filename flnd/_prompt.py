@@ -11,7 +11,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from types import ModuleType
-from typing import Any, Callable, Literal, TypeVar, cast, overload
+from typing import Any, Callable, TypeVar, cast
 
 import questionary
 
@@ -69,22 +69,6 @@ def confirm(message: str, *, default: bool = True) -> bool:
     )))
 
 
-@overload
-def choose(
-    message: str,
-    choices: Sequence[T] | Mapping[str, T],
-    *,
-    many: Literal[False] = False,
-    default: T | None = None,
-) -> T: ...
-@overload
-def choose(
-    message: str,
-    choices: Sequence[T] | Mapping[str, T],
-    *,
-    many: Literal[True],
-    default: Iterable[T] = (),
-) -> list[T]: ...
 def choose(
     message: str,
     choices: Sequence[Any] | Mapping[str, Any],

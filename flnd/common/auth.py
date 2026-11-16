@@ -434,7 +434,7 @@ def key(home: Path) -> bytes:
                 raise ValueError(
                     f"{path} is damaged: exists but cannot be read (e.g. broken link); "
                     "delete it, then log in again"
-                )
+                ) from None
             time.sleep(KEY_POLL)
             continue
         if len(secret) == KEY_SIZE:

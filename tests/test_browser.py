@@ -859,7 +859,7 @@ class PageContextTest(unittest.TestCase):
         for fails in (False, True):
             with self.subTest(fails=fails):
                 closed = []
-                tab = browser.Page(SimpleNamespace(close=lambda: closed.append(1)), None)  # type: ignore[arg-type]
+                tab = browser.Page(SimpleNamespace(close=lambda closed=closed: closed.append(1)), None)  # type: ignore[arg-type]
                 try:
                     with tab as inside:
                         self.assertIs(inside, tab)

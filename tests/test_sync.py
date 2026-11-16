@@ -6,21 +6,17 @@ and the fake screen. `sync=True` marks the target for `flnd sync`; the default k
 """
 
 import datetime
-import os
-import time
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest import mock
 
 import httpx
-from test_engine import CDN, EngineCase, history, make_source, noise
+from test_engine import CDN, EngineCase, make_source, noise
 
 from flnd import Engine, Range, TargetReport
 from flnd.common import paths
 from flnd.options import Options
 from flnd.source import File, Post, Source, Target, target
-from flnd import _time as clock, _db as store
+from flnd import _db as store
 
 class Site:
     """A test source's posts: `files` maps a name to its body; its `posts` category yields every one."""

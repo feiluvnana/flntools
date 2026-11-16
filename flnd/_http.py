@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import atexit
 import email.utils
+import functools
 import http.cookiejar
 import math
 import os
@@ -267,7 +268,8 @@ class Client:
         with fs.stage(target, keep=resume) as part:
             for mirror in mirrors[:-1]:
                 try:
-                    self._call(mirror, lambda: self._file(mirror, part, headers, resume, meter))
+                    attempt = functools.partial(self._file, mirror, part, headers, resume, meter)
+                    self._call(mirror, attempt)
                     return target
                 except StoppedError:
                     raise
@@ -412,11 +414,11 @@ def fake(routes: Mapping[str, Any]) -> Iterator[None]:
     """
     transport = httpx.MockTransport(_Router(routes))
     original = httpx.Client._transport_for_url
-    setattr(httpx.Client, "_transport_for_url", lambda self, url: transport)
+    httpx.Client._transport_for_url = lambda self, url: transport
     try:
         yield
     finally:
-        setattr(httpx.Client, "_transport_for_url", original)
+        httpx.Client._transport_for_url = original
 
 
 class _Pace:

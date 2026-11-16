@@ -17,13 +17,12 @@ import unittest
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
 import httpx
 
-from flnd import job, targets as targets_mod
+from flnd import job
 from flnd.common import auth, net, paths
 from flnd import Engine, LoginError, Range, Report, Target, TargetReport
 from flnd.options import Options
@@ -714,7 +713,7 @@ class QueryAndLimitDryTest(EngineCase):
             @target("list/{name}")
             def listing(self, site, name):
                 yield Target("srch", "post", "1")
-                yield f"srch:2"
+                yield "srch:2"
 
             @target("?{query}", from_=["photo"])
             def query(self, site, query: str):

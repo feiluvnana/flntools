@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from urllib.parse import urlsplit
 
 import httpx
@@ -18,7 +18,7 @@ from flnd.options import Options, RunShared, categories_by_source
 from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.source import Range, Source, Target, TargetError
 from flnd.sources import SOURCES
-from flnd import _cli as cli, _files as fs, _db as store, _text as text
+from flnd import _cli as cli, _files as fs, _db as store
 from flnd._ui import ui
 
 __all__ = ["AuthInfo", "Engine", "Error", "Report", "TargetInfo", "TargetReport"]

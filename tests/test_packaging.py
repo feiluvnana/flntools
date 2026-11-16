@@ -1,13 +1,9 @@
-import importlib.util
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
-import types
 import unittest
 import zipfile
-from importlib import metadata
 from pathlib import Path
 
 
@@ -55,15 +51,6 @@ class MissingDependencyTest(unittest.TestCase):
         message = missing_dependency_message("_html", "parsel")
         self.assertEqual(message, "flnd._html needs parsel: pip install parsel")
 
-
-
-def load_dev() -> types.ModuleType:
-    """scripts/dev.py as a module; scripts/ is not a package, so it is loaded from its path."""
-    spec = importlib.util.spec_from_file_location("dev", ROOT / "scripts" / "dev.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ def download(
         cyclopts.Parameter(
             help="Targets (source:value, source?query, or URL); reads stdin if empty."
         ),
-    ] = [],
+    ] = [],  # noqa: B006 - cyclopts reads it; nothing mutates it
     *,
     categories: Annotated[
         Optional[list[str]],
@@ -108,7 +108,7 @@ def download(
 
 @app.command("sync")
 def sync(
-    targets: list[str] = [],
+    targets: list[str] = [],  # noqa: B006 - cyclopts reads it; nothing mutates it
     *,
     verbose: Annotated[
         bool, cyclopts.Parameter(name=["-v", "--verbose"], negative="")
@@ -220,7 +220,7 @@ def login_command() -> int:
 
 
 @auth_group.command("logout")
-def logout(sources: list[str] = []) -> int:
+def logout(sources: list[str] = []) -> int:  # noqa: B006 - never mutated
     """Remove saved logins for the given sources, or `all`."""
     engine = Engine(home=HOME)
     if not sources:

@@ -21,7 +21,7 @@ from flnd import sources
 from flnd.common import auth, paths
 from flnd.options import Options
 from flnd.source import Source
-from flnd import _cookies as cookies, _db as store
+from flnd import _cookies as cookies
 from flnd._ui import ui
 
 NETSCAPE = (

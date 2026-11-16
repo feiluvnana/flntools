@@ -32,7 +32,6 @@ from flnd.common import auth, net
 from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import LoginError, Target, TargetError
-from flnd.sources import SOURCES
 from flnd.sources import tlg
 from flnd.sources.tlg import QR_CODES, Telegram, fetcher, from_web_storage, half_blocks, read_telegram_web
 from flnd import _text as text
@@ -247,9 +246,9 @@ def stored(home):
 
 class RoutesTest(unittest.TestCase):
     def test_every_form(self):
-        for text, expected in ROUTES:
-            with self.subTest(text=text):
-                value = text.removeprefix("tlg:")
+        for given, expected in ROUTES:
+            with self.subTest(text=given):
+                value = given.removeprefix("tlg:")
                 if isinstance(expected, tuple):
                     self.assertEqual(Telegram().resolve(value), Target("tlg", *expected))
                 else:

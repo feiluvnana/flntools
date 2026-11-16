@@ -4,8 +4,6 @@
   keyed by URL without its query, and recording what the source did in a `Seen`.
 - `collect(source, text, …)` resolves a target, runs its route and wanted categories on a
   `FakeSite`, lists lazy files, and names and keys each file as the job would: a list of `Saved`.
-
-pyright checks that both match their protocols (see tests/typing/usage.py).
 """
 
 from __future__ import annotations

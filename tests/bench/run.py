@@ -6,10 +6,10 @@
     make bench ARGS="db --gate --tolerance 5"
     make bench ARGS=--record                  # store this run as the new baseline
 
-Today the Makefile forwards to `scripts/dev.py bench`, which runs this file inside the project
-environment (`uv run python tests/bench/run.py …`). The suite is offline: a loopback server,
-synthetic data and scratch folders. It is never part of `make check`, because timings are noisy
-and the suite takes minutes; `check` guards performance with counts instead.
+The Makefile runs this file inside the project environment (`uv run python tests/bench/run.py …`).
+The suite is offline: a loopback server, synthetic data and scratch folders. It is never part of
+`make check`, because timings are noisy and the suite takes minutes; `check` guards performance
+with counts instead.
 
 How a run goes:
 1. Each group named on the command line (all of `GROUPS` by default) runs as its own script in

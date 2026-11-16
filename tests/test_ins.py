@@ -420,9 +420,9 @@ class NamesAndKeysTest(unittest.TestCase):
         pages = {f"{SITE}/p/LATE/": shortcode_page({"code": "LATE", "taken_at": late,
                                                     **image("https://cdn.example/l.jpg")})}
         with mock.patch.dict(os.environ, {"TZ": "Pacific/Auckland"}):
-            getattr(time, "tzset")()
+            time.tzset()
             saved = read("https://www.instagram.com/p/LATE/", pages=pages)
-        getattr(time, "tzset")()
+        time.tzset()
         self.assertEqual([(item.path, item.key) for item in saved], [("2023-11-14_LATE.jpg", "LATE_0")])
 
 

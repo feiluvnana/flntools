@@ -437,14 +437,14 @@ class far_off_timezone:
             raise unittest.SkipTest("no time.tzset on this platform")
         self.previous = os.environ.get("TZ")
         os.environ["TZ"] = self.name
-        getattr(time, "tzset")()
+        time.tzset()
 
     def __exit__(self, *exc_info):
         if self.previous is None:
             os.environ.pop("TZ", None)
         else:
             os.environ["TZ"] = self.previous
-        getattr(time, "tzset")()
+        time.tzset()
 
 class ScrollTest(unittest.TestCase):
     def test_multi_page_scroll_collects_all_pages_before_yielding_videos_and_playlists(self):

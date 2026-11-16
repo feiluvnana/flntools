@@ -154,6 +154,6 @@ gives every failure its own class and code ([errors.md](errors.md)).
 
 ## For contributors
 
-`uv run --no-project scripts/dev.py try <target> [--from …] [--time …]` lists, live, the files one
+`make try ARGS="<target> [--from …] [--time …]"` lists, live, the files one
 target would save, with each file's planned path, and downloads and records nothing
 (`flnd/dry.py`). It uses the login saved in the current folder's `.flnd`.

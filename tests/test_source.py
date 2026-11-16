@@ -301,7 +301,7 @@ class ClassCreationTest(unittest.TestCase):
                                  ("{user}?id={user}", "only a URL pattern can name a query"),
                                  ("example.com/profile.php?id", "write a query as")]:
             with self.subTest(pattern=pattern):
-                self.assertRefused(message, lambda: target(pattern)(lambda self, session, user: None))
+                self.assertRefused(message, lambda pattern=pattern: target(pattern)(lambda self, session, user: None))
 
     def test_a_pattern_on_another_site(self):
         self.assertRefused("isn't on its domains",

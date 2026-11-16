@@ -22,12 +22,12 @@ from fakes import FakeSite
 
 from flnd import site as site_module
 from flnd.common import auth, net, paths
-from flnd.options import Options, RunShared
+from flnd.options import RunShared
 from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import FetchError, File, Site, Target
 from flnd.sources.common.feed import warm_tabs, watch_responses
 from flnd.sources.common.relay import meta_results
-from flnd import _cli as cli, _time as clock, _cookies as cookies, _http as http, _db as store
+from flnd import _cli as cli, _time as clock, _cookies as cookies, _http as http
 from flnd._ui import ui
 from flnd._browser import Page
 

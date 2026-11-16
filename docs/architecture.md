@@ -42,7 +42,7 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/targets.py` | the rows of `targets.db`, and the checks of `--from` before any work | the engine, the job |
 | `flnd/options.py` | `Options` and `RunShared` | the engine, the job |
 | `flnd/common/` | `auth` (the login vault), `net` (the HTTP client and file downloads), `paths` (the home's layout and content sniffing) | the engine, the site, the job |
-| `flnd/dry.py` | a contributor's tool: prints the files one target would save | `scripts/dev.py try` |
+| `flnd/dry.py` | a contributor's tool: prints the files one target would save | `make try` |
 | `flnd/_*.py` | the private toolkit: HTTP over httpx (`_http`), Playwright (`_browser`), SQLite stores (`_db`), atomic files (`_files`), a thread pool (`_loop`), the terminal UI (`_ui`) | everything above |
 
 The rule between them: a source imports `flnd.source`, its helpers in `flnd/sources/common/`,

@@ -44,14 +44,15 @@ import unittest
 from collections.abc import Iterator
 from pathlib import Path
 
-from test_packaging import ROOT, load_dev
+import api_snapshot
+from test_packaging import ROOT
 
 # ---------------------------------------------------------------------------------------------
 # What is checked, and where
 # ---------------------------------------------------------------------------------------------
 
-# The packages whose modules must document themselves. `scripts/` and `tests/` are tools for
-# contributors, not the product, so they are left out.
+# The packages whose modules must document themselves. `tests/` is for contributors, not the
+# product, so it is left out.
 PACKAGES = ("flnd",)
 DOCS = ROOT / "docs"
 GAPS_FILE = ROOT / "tests" / "data" / "docs_gaps.txt"
@@ -73,7 +74,7 @@ TERMS = ("target", "source", "route", "category", "post", "file", "event", "home
 def public_names() -> dict[tuple[str, str], str]:
     """The public functions, methods, classes, errors and properties, by where they are defined.
 
-    "Public" means listed in the API snapshot (`scripts/dev.py api`), which is what a script or
+    "Public" means listed in the API snapshot (`make api`), which is what a script or
     a source author can reach. A name the snapshot reaches through a re-export points at the
     file that defines it, so the AST walk below can match it.
 
@@ -83,7 +84,7 @@ def public_names() -> dict[tuple[str, str], str]:
         `property`).
     """
     found: dict[tuple[str, str], str] = {}
-    for name in load_dev().api_names():
+    for name in api_snapshot.api_names():
         if name.kind not in ("function", "method", "class", "error", "property"):
             continue
         obj = name.obj.fget if isinstance(name.obj, property) else name.obj

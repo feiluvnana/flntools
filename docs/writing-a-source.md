@@ -190,4 +190,4 @@ add it to `SOURCES`. Then:
 2. write `docs/sources/<code>.md`, in the shape of the other pages there (the docs test fails
    until it exists);
 3. run `make check`;
-4. try it by hand on a test account: `uv run --no-project scripts/dev.py try exm:example_user`.
+4. try it by hand on a test account: `make try ARGS=exm:example_user`.

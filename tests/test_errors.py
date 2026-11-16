@@ -7,10 +7,10 @@ ValueError, so every `except` written before still catches what it caught. Nothi
 import unittest
 
 from flnd import _base
-from flnd import _unpack as archive, _browser as browser, _bundler as bundler, _cli as cli, _time as clock, _cookies as cookies, _vault as crypto, _files as fs, _http as http, _prompt as prompt, _html as selector, _tools as sh, _db as store, _text as text, _loop as worker
+from flnd import _unpack as archive, _browser as browser, _cli as cli, _time as clock, _cookies as cookies, _vault as crypto, _files as fs, _http as http, _prompt as prompt, _html as selector, _tools as sh, _db as store, _text as text, _loop as worker
 from flnd._ui import ui
 
-MODULES = {"archive": archive, "browser": browser, "bundler": bundler, "cli": cli, "clock": clock,
+MODULES = {"archive": archive, "browser": browser, "cli": cli, "clock": clock,
            "cookies": cookies, "crypto": crypto, "fs": fs, "http": http,
            "prompt": prompt, "selector": selector, "sh": sh, "store": store, "text": text, "ui": ui,
            "worker": worker}

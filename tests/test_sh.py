@@ -10,7 +10,6 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-import httpx
 
 from flnd import _tools as sh
 

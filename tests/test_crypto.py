@@ -119,7 +119,8 @@ class CipherTest(unittest.TestCase):
 
     def test_only_a_32_byte_key(self):
         for size in (16, 20, 24, 33):
-            for call in (lambda: crypto.encrypt("x", b"k" * size), lambda: crypto.decrypt(b"x" * 40, b"k" * size)):
+            for call in (lambda size=size: crypto.encrypt("x", b"k" * size),
+                         lambda size=size: crypto.decrypt(b"x" * 40, b"k" * size)):
                 with self.subTest(size=size), self.assertRaises(crypto.Error):
                     call()
 
