@@ -9,8 +9,8 @@ The user, 2026-11-16:
   - `--compress` makes every saved image, video and audio file visually lossless and as small as it goes, changing format (WebP, AVIF) when that is smaller;
   - archives a source downloads (loi's) are extracted automatically, with the password the source knows;
   - the history remembers what was compressed, so nothing is done twice.
-- **flns** is a new tool that makes slideshows with animations, photobooth cards, albums and collages from flnd's media, with ffmpeg and Pillow (§5).
-- **flnd and flns are libraries first**; flnd's CLI is the only command, and it carries flns's commands (`show`, `card`, `album`).
+- **flnd makes slideshows, cards and albums** from its media, with ffmpeg and Pillow: `flnd media show|card|album` (§5). There is no separate flns (user, 2026-11-16).
+- **flnd is a library first**; its CLI is a thin layer and the only command.
 - **Performance, simplicity and DX** are first-class: code is concise, short and intuitive, and annotations and decorators carry intent where that reads better than options.
 
 Decisions (user, 2026-11-16):
@@ -79,7 +79,7 @@ q.first; q.count
   - `sort(by, desc=False)` and `limit(n)`.
   - `get() -> list[T]`, `first -> T | None`, `count -> int`.
 - **Performance**: a source may implement `Query.push(filters, sort, limit)`. `store` pushes all three into SQL, and `count` becomes `SELECT count(*)`. Plain iterables are filtered lazily, with `heapq.nsmallest` for sort with limit.
-- **Change**: new; every collection read in `shared`, flnd and flns returns one.
+- **Change**: new; every collection read in `shared` and flnd returns one.
 
 ### 2.2 `text`
 ```python
@@ -465,8 +465,8 @@ for saved in fl.download("ins:example_user", only=["reels"], when="2026", compre
     saved.path, saved.target, saved.post, saved.kind     # each file as it lands
 report = flnd.Report.of(fl.download("twt:example_handle"))   # totals: ok, files, failed
 fl.preview("twt:example_handle")             # list[Item]: what download would take, nothing saved
-fl.track("ins:example_user"); fl.untrack("ins:example_user"); fl.forget("ins:example_user")
-fl.sync()                                    # every tracked target; yields Saved too
+fl.forget("twt:example_handle")             # stop syncing; download syncs by default
+fl.sync()                                    # every followed target; yields Saved too
 fl.targets.filter(source="ins", sync=True).get()
 fl.files.filter(target="ins:example_user", kind="image").sort("date").get()
 fl.move(old, new)                            # keep history true when a file is renamed
@@ -477,13 +477,13 @@ with fl.connect("ins") as site:              # a Site for scripting
 flnd.resolve("https://x.com/example_handle") # Target
 ```
 - **`download` is a generator** of `Saved` events, so a script can act on each file as it lands (make a card per post, say). `compress=True` compresses each file in the downloader itself (§4). The CLI consumes the same events to feed `ui.live`, which makes progress a consumer, not a callback.
-- `flnd.Home` (`media`, `metadata`, `cache`, `made`) is the layout flns's commands reuse.
+- `flnd.Home` (`media`, `metadata`, `cache`, `made`) is the home's layout.
 
 | before | after |
 | --- | --- |
 | `Engine` and the module-level `download`/`open` | `Flnd(home)` |
-| `download(..., dry=, sync=) -> Report` | `download(...) -> Iterator[Saved]`, `preview`, `track`; `Report.of(events)` |
-| `target_ls`/`target_sync`/`target_del` | `targets`, `track`/`untrack`, `forget` |
+| `download(..., dry=, sync=) -> Report` | `download(...) -> Iterator[Saved]` (follows the target), `preview`; `Report.of(events)` |
+| `target_ls`/`target_sync`/`target_del` | `targets`, `forget` |
 | `auth_ls`, `logins`, `cookie_logins` | `logins` (`Query[Login]`) |
 | `login(code, method, browser=, profile=, path=)` | `login(code, how)` |
 | `TargetInfo`, `AuthInfo`, `TargetReport` | `Target`, `Login`, `Saved`, `Report` |
@@ -601,23 +601,26 @@ Flnd.download ─┬─ resolve + check --from once
 - Playwright must stay on one thread, so the browser change lands after `shared.browser`/`worker`.
 
 ### 3.4 The CLI
-Eleven commands, few flags and good defaults; every other knob is a library option.
+Three groups and two commands, few flags and good defaults; every other knob is a library option.
 
 ```
 flnd download <targets…> [--from CATS] [--when WHEN] [--limit N] [--compress] [--dry]
 flnd sync [targets…] [--compress]
-flnd list [targets…]                 # what you follow: files, size, last sync
-flnd forget <targets…>               # stop syncing a target; files stay
-flnd login <source> [how]            # how: chrome | firefox | cookies.txt | qr; asked when left out
-flnd logout <source>
 
-flnd show  <targets|paths…> [--by post|day|month|year|all] [--style classic|fun|calm|story] [--music FILE] [--when WHEN]
-flnd card  <targets|paths…> [--by post|day|month] [--style strip|grid|polaroid|postcard] [--when WHEN]
-flnd album <targets|paths…> [--by month|year|all] [--when WHEN]
+flnd target ls [targets…]            # what you follow: files, size, last sync
+flnd target forget <targets…>        # stop syncing a target; files stay
+
+flnd auth login <source> [how]       # how: chrome | firefox | cookies.txt | qr; asked when left out
+flnd auth logout <source>
+flnd auth ls                         # each source's login state and expiring cookies
+
+flnd media show  <targets|paths…> [--by post|day|month|year|all] [--style classic|fun|calm|story] [--music FILE] [--when WHEN]
+flnd media card  <targets|paths…> [--by post|day|month] [--style strip|grid|polaroid|postcard] [--when WHEN]
+flnd media album <targets|paths…> [--by month|year|all] [--when WHEN]
 
 global: -v, --ui plain|inline|full, --home DIR
 ```
-- **`download` remembers.** Every downloaded target is followed, and `flnd sync` updates them all. `forget` stops following. `--sync`, `track`/`untrack` and `--again` are gone.
+- **`download` syncs by default.** Every downloaded target is followed, and `flnd sync` updates them all. `target forget` stops syncing a target; its files stay. `--sync`, `track`/`untrack` and `--again` are gone.
 - **`--from` is optional.** The default is the target's own content (posts, reels, videos); `--from all` adds tagged posts, reposts and the rest.
 - **`--when`** takes `2026`, `2026-06`, `2026-06-15`, `2026-01..2026-03`, or `30d` (the last 30 days). It replaces `--time SINCE,UNTIL`.
 - **`--compress`** makes each saved file visually lossless and as small as it goes, as it lands (§4). `sync --compress` also compresses files saved before that aren't compressed yet.
@@ -628,26 +631,27 @@ global: -v, --ui plain|inline|full, --home DIR
   - On `card`: the layout.
 - **Output** goes to `<home>/made/<target>/<command>/…`, named by group (`2026-06.mp4`, `post_C1abc.jpg`). A rerun skips any output whose inputs are unchanged.
 - **Tools install themselves.** A missing ffmpeg, caesiumclt, avifenc, oxipng or 7zz is offered for download the first time it's needed.
-- `download`, `sync` and the makers iterate the library's events inside `ui.live`, so the library has no TUI code.
+- `download`, `sync` and the `media` commands iterate the library's events inside `ui.live`, so the library has no TUI code.
 
 ```bash
-flnd login ins
+flnd auth login ins
 flnd download ins:example_user --compress
 flnd sync --compress
-flnd show ins:example_user --when 2026
-flnd show ins:example_user --by month --style fun --music song.mp3
-flnd card ins:example_user --by day --style strip
-flnd album twt:example_handle
-flnd list
+flnd target ls
+flnd target forget twt:example_handle
+flnd media show ins:example_user --when 2026
+flnd media show ins:example_user --by month --style fun --music song.mp3
+flnd media card ins:example_user --by day --style strip
+flnd media album twt:example_handle
 ```
 
 | today | after |
 | --- | --- |
-| `download --time A,B --sync --again` | `download --when …` (always followed) |
-| `target ls`, `sync-on`, `sync-off`, `del` | `list`, `forget` |
-| `auth login`, `logout`, `ls` | `login`, `logout` (`list` shows login state) |
+| `download --time A,B --sync --again` | `download --when …` (synced by default) |
+| `target ls`, `sync-on`, `sync-off`, `del` | `target ls`, `target forget` |
+| `auth login`, `logout`, `ls` | unchanged, with `login <source> [how]` |
 | `--from` required on profiles | optional; own content by default |
-| PLAN's `flnc` and `flns` binaries | `--compress`, automatic extraction, `show`, `card`, `album` |
+| PLAN's `flnc` and `flns` binaries | `--compress`, automatic extraction, `flnd media show/card/album` |
 
 ### 3.5 Performance
 - **History** moves to SQLite: a lookup per file instead of loading the whole JSON at start. Target: 50k-file history, start < 100 ms.
@@ -716,11 +720,11 @@ fl.compress("ins:example_user")                         # files saved before; yi
 - `flnd/shrink.py` (compress a file: plan, encode, verify, place) and `flnd/unpack.py` (extract a saved archive). Both are called by the job, and both are under 200 lines (est.).
 - The history row gains `state` (`compressed | kept | failed | extracted`), `before`, `format` and `tools`.
 
-## 5. flns: slideshows, cards, albums
+## 5. Slideshows, cards and albums (`flnd media`)
 
-flns turns flnd's media into things to watch, print or share. It is a plain library (`flns.slideshow`, `card`, `album`, `plan`); its commands are flnd's `show`, `card` and `album` (§3.4). It imports `shared`, the stdlib and flnd's public API only. The user, 2026-11-16: "I can generate slideshow with different animation from cli … like slideshow, create album, create a photobooth card".
+flnd turns its media into things to watch, print or share: `fl.show`, `fl.card`, `fl.album` and `fl.plan` in the library, and `flnd media show|card|album` on the CLI (§3.4). There is no separate flns (user, 2026-11-16: "maybe also not keep flns, fold it into flnd"). The user, 2026-11-16: "I can generate slideshow with different animation from cli … like slideshow, create album, create a photobooth card".
 
-Defaults adopted without asking (the user may reverse any): verb `slideshow`; a plain fade, 3 s, no motion; H.264; hardware encoding only with `--hw`; video clips in shows (≤ 4 s, sound ducked under music); no smart crop in the MVP; one bundled OFL font (Inter); PDF/JPG albums first; output in `<home>/made/<kind>/`; a top-level `flns/` package.
+Defaults adopted without asking (the user may reverse any): verb `slideshow`; a plain fade, 3 s, no motion; H.264; hardware encoding only with `--hw`; video clips in shows (≤ 4 s, sound ducked under music); no smart crop in the MVP; one bundled OFL font (Inter); PDF/JPG albums first; output in `<home>/made/<target>/<command>/`; modules inside flnd (§5.9).
 
 ### 5.1 Scope
 
@@ -753,19 +757,19 @@ Rejected:
 
 ### 5.3 The library
 ```python
-import flns
+fl = flnd.Flnd(".flnd")
 
-show = flns.Show(transition="random", duration=3.0, fade=0.75, size="1080p")
-r = flns.slideshow(paths, "show.mp4", style=show, music="song.mp3")   # Result(path, duration, skipped)
-flns.card(paths[:4], "strip.jpg", layout="strip-4", theme=flns.themes.film)
-flns.card(paths[:9], "grid.jpg", layout="grid-3x3")         # collages are card layouts
-flns.card(paths[0], "polaroid.jpg", layout="polaroid", caption="{date:%d %b %Y}")
-flns.album(paths, "2026.pdf", page="a4", title="2026")
-flns.plan(paths, style=show)                                # slides, seconds, pieces cached
+show = flnd.Show(transition="random", duration=3.0, fade=0.75, size="1080p")
+r = fl.show(paths, "show.mp4", style=show, music="song.mp3")   # Result(path, duration, skipped)
+fl.card(paths[:4], "strip.jpg", layout="strip-4", theme=flnd.themes.film)
+fl.card(paths[:9], "grid.jpg", layout="grid-3x3")         # collages are card layouts
+fl.card(paths[0], "polaroid.jpg", layout="polaroid", caption="{date:%d %b %Y}")
+fl.album(paths, "2026.pdf", page="a4", title="2026")
+fl.plan(paths, style=show)                                # slides, seconds, pieces cached
 
 # composed with flnd
 images = [f.path for f in fl.files.filter(target="ins:example_user", kind="image").sort("date").get()]
-flns.slideshow(images, "example_user.mp4", memo=memo)
+fl.show(images, "example_user.mp4")                         # skipped when unchanged
 ```
 - Public: `slideshow`, `card`, `album`, `plan`, `Show`, `Theme`, `themes`, `Result`, `Done`. Four functions, down from a class with 9 members.
   - `collage` folds into `card`'s layouts: `strip-3/4`, `grid-4`, `polaroid`, `postcard`, `grid-NxM` and `mosaic`.
@@ -779,10 +783,10 @@ flns.slideshow(images, "example_user.mp4", memo=memo)
 
   `motion` and `crop` come with their later features.
 - `Theme` covers the background, frame, text, font and caption. The themes are `plain`, `film`, `polaroid`, `dark` and `pastel`.
-- Errors: `flns.Error`, and `flns.MissingError` naming the fix.
+- Errors: `flnd.MediaError`, under `shared.BrokenError`; a missing tool is offered for download.
 
 ### 5.4 The CLI
-flns's commands are flnd's `show`, `card` and `album` (§3.4). Each takes `--by` to group photos (post, day, month, year, all) and `--style` to pick a preset, so one command makes many outputs.
+The commands are `flnd media show`, `flnd media card` and `flnd media album` (§3.4). Each takes `--by` to group photos (post, day, month, year, all) and `--style` to pick a preset, so one command makes many outputs.
 - `show`'s styles map onto `Show`: `classic` (fade, 3 s), `fun` (random transitions, 2 s), `calm` (dissolve, 5 s, 1.5 s fades) and `story` (9:16, blur fit).
 - `card`'s styles are its layouts.
 - The groups come from flnd's history: a post's files, or the files saved on a day or in a month.
@@ -824,12 +828,12 @@ flns's commands are flnd's `show`, `card` and `album` (§3.4). Each takes `--by`
 1. **Normalize** each photo to one output-size frame with `media.fit`:
    - EXIF transpose, then `draft()` downscale;
    - fill, fit or blur-pad, then crop;
-   - cached at `.flnd/cache/flns/frames/<digest>.png`, keyed by (path, mtime, size, fit, crop), on `worker.Pool(jobs="cpu")`.
+   - cached at `.flnd/cache/media/frames/<digest>.png`, keyed by (path, mtime, size, fit, crop), on `worker.Pool(jobs="cpu")`.
 2. **Pieces, not one graph.** One graph holds N decoders open, can't resume, and gets slow past about 30 slides. Instead:
    - each slide is a **hold** piece (`duration − fade`);
    - each pair is a **transition** piece (`fade`, xfade of the tail and the head);
    - each piece is one small ffmpeg run on `worker.Pool(jobs=cpu//2)` with `-threads 2`, with identical encode parameters;
-   - pieces are cached at `.flnd/cache/flns/pieces/<digest>.mp4`.
+   - pieces are cached at `.flnd/cache/media/pieces/<digest>.mp4`.
 
    Adding one photo re-renders three pieces.
 3. **Concat** with the concat demuxer and `-c copy`.
@@ -850,7 +854,7 @@ Encoders:
 - **Targets**, on an 8-core Mac:
   - 100 photos at 1080p with fade, cold, in < 60 s with `--hw`;
   - a rerun with one photo added in < 5 s;
-  - `flns --help` in < 150 ms.
+  - `flnd media --help` in < 150 ms.
 
 ### 5.7 `shared` additions, kept general
 - **`media.render(*args, seconds=, progress=)`**: runs ffmpeg with `-progress`, feeding a sink. Its error carries the last stderr lines. `--compress`'s video path uses it too.
@@ -871,8 +875,8 @@ class Done(store.Row):            # a Memo row; key: dest relative to the home, 
 - Frames and pieces need no rows: the digest is the file name.
 
 ### 5.9 Layout
-- A top-level `flns/`: `__init__` (`Flns`), `cli`, `select`, `slideshow`, `stills` (card, album, collage), `themes`.
-- `flns = "flns.cli:app"`.
+- Inside flnd: `flnd/show.py` (slideshow pieces, concat, audio), `flnd/stills.py` (card and album layouts and drawing), `flnd/themes.py`, and the `media` group in `flnd/cli.py`.
+- Outputs are recorded as history rows of kind `made`, keyed by the output path, with the inputs digest, options and tools, so a rerun skips unchanged outputs.
 - Pillow joins flnd's dependencies, and goes into a `media` extra for `shared`.
 
 ## 6. Steps
@@ -896,17 +900,17 @@ Each step is one logical commit as `feiluvnana`, with `check` green, `api.txt` r
    - I `refactor:` sources own login through `Auth`, and `auth.py` shrinks to the vault and helpers.
 7. `refactor:` flnd's library as `Flnd`: `Run`, `Session`, `Job`, the cursor in `Job` (`site.pages`), `download` yielding `Saved`, `Report.of`, `move`, `Home`, `files`.
 8. `perf:` flnd's history and targets on typed `store.Row`s, the `_held` fix, segmented downloads, the import-time test.
-9. `feat:` flnd's new CLI (§3.4: 11 commands, `--when`, `download` remembers, optional `--from`) on the library and `ui.live`; README.
+9. `feat:` flnd's new CLI (§3.4: `download`, `sync`, the `target`, `auth` and `media` groups, `--when`, sync by default, optional `--from`) on the library and `ui.live`; README.
 10. `feat:` `shared.media` with pinned tool specs and self-install on first use, plus `store.Memo`, `shared.Report`, and the `--when`/`--by` parsers in `shared.cli`.
 11. `feat:` `--compress` for images: `flnd/shrink.py`, history states, `fl.compress`, `download`/`sync --compress`.
 12. `feat:` `--compress` for video and audio.
 13. `feat:` automatic extraction: `File.password`, `flnd/unpack.py`, loi passing its password, the archive removed under `--compress`.
 14. `docs:` README and AGENTS.md for the new CLI, the UI modes and the API rules.
 15. `feat:` `media.render`, `media.concat`, `media.fit`, `media.font`, probe rotation.
-16. `feat:` flns `slideshow` (pieces, transitions, cache, concat, audio) and `plan`; flnd `show` with `--by` and `--style`.
-17. `feat:` flns `card` (layouts, themes, collages); flnd `card`.
-18. `feat:` flns `album` PDF; flnd `album`.
-19. `docs:` README for `show`, `card` and `album`. Later, one commit each: motion, crop, clip ducking, `loop`, album HTML, `reel`, `recap`.
+16. `feat:` `fl.show` (pieces, transitions, cache, concat, audio) and `fl.plan`; `flnd media show` with `--by` and `--style`.
+17. `feat:` `fl.card` (layouts, themes, collages); `flnd media card`.
+18. `feat:` `fl.album` PDF; `flnd media album`.
+19. `docs:` README for `flnd media`. Later, one commit each: motion, crop, clip ducking, `loop`, album HTML, `reel`, `recap`.
 
 ## 7. Verification
 
@@ -920,5 +924,5 @@ Each step is one logical commit as `feiluvnana`, with `check` green, `api.txt` r
   - `uv run flnd download <target> --limit 5` with `--ui inline` and `--ui full`: press `p`, `v`, `f`, `m`, then `q` twice, and check that the terminal is restored. Pipe the same command to a file to check that it falls back to `plain`.
   - On a copy of `.flnd`, run `flnd sync --compress`, then again. The rerun must add < 3 s. Check that mtimes are kept, and that `flnd sync` doesn't download the `.avif`/`.webp` files again.
   - `flnd download loi:<id> --compress` on the authorized account: the archive is extracted with its password and removed, and its photos are compressed.
-  - flns: render a 20-photo show with `--transition random --music`, add one photo and rerun (only three pieces re-render), and make a `strip-4` card at 300 dpi.
-- flns tests fake ffmpeg with `sh.fake` and check filter strings and layout boxes; nothing is rendered for real.
+  - `flnd media show`: render a 20-photo show with `--transition random --music`, add one photo and rerun (only three pieces re-render), and make a `strip-4` card at 300 dpi.
+- The media tests fake ffmpeg with `sh.fake` and check filter strings and layout boxes; nothing is rendered for real.
