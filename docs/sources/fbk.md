@@ -25,9 +25,8 @@ before the name form, so neither is read as a user name.
 
 ## Categories
 
-A *category* is one part of a profile that can be downloaded on its own. Today
-[`--from`](../cli.md) is required for a profile: name the categories, or `--from all` for every
-one.
+A *category* is one part of a profile that can be downloaded on its own. Without
+[`--only`](../cli.md) a profile gets every category; `--only` names some of them.
 
 | Category | What it holds |
 | --- | --- |
@@ -48,7 +47,8 @@ names its album under `albums/<album>/`, whichever tab found it.
 
 ## Logging in
 
-`flnd auth login` asks for the site, then for a method:
+`flnd login fbk <how>` takes a browser or a cookie file's path. Left out in a terminal,
+the way is asked with numbered choices:
 
 - **From your browser**: reads Facebook's cookies from Chrome, Firefox, Edge, Brave or
   Chromium.
@@ -62,7 +62,7 @@ Without a login, flnd opens the same pages and gets what Facebook shows a logged
 
 When a run starts, flnd warns if `c_user` or `xs` has expired or will expire within a day. When a
 page lands on `/login` or `/login.php` (a *login wall*), flnd waits and loads it again, at most
-twice, then stops with "Facebook kept asking for a login; run flnd auth login fbk".
+twice, then stops with "Facebook kept asking for a login; run flnd login fbk, then try again".
 
 ## How it fetches
 

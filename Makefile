@@ -22,6 +22,9 @@ test:     ; $(RUN) python -m unittest discover -s tests $(ARGS)
 lint:     ; $(RUN) ruff check flnd tests
 check: lint test
 api:      ; $(RUN) python tests/api_snapshot.py --write
+# The data `flnd --help` and target resolution read instead of importing every source; run it
+# after changing a source's domains, routes or categories (tests/test_manifest.py checks it).
+manifest: ; $(RUN) python tests/source_manifest.py --write
 bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
 # A hand check, never part of `bench`: --compress's savings and SSIM on real samples kept
 # outside the repo: `make media-real ARGS="~/flnd-samples"` (docs/performance.md).
@@ -29,9 +32,10 @@ media-real: ; $(RUN) python tests/bench/media_real.py $(ARGS)
 # pdoc walks a package's public submodules, so `flnd` covers `flnd.source` too.
 docs:     ; $(RUN) pdoc -d google flnd -o build/docs
 type:     ; $(RUN) pyright flnd/__init__.py flnd/source.py
-# Lists, live, what a download of one target would save, without saving or recording anything:
-# `make try ARGS="ins:example_user --from reels"`. It uses the login saved in `./.flnd`.
-try:      ; $(RUN) python -m flnd.dry $(ARGS)
+# Lists, live, what a download would save, without saving anything, in a scratch home `.try`:
+# `make try ARGS="ins:example_user --only reels"`. Log in there first for a site that needs it
+# (`uv run flnd --home .try login ins chrome`); `make clean` removes it.
+try:      ; $(RUN) flnd --home .try download --dry $(ARGS)
 dist:     ; $(RUN) --group dist pyinstaller --onefile --noconfirm --name flnd --specpath build --workpath build/pyinstaller flnd/__main__.py
-clean:    ; $(RUN) python -c "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist')]"
-.PHONY: setup test lint check api bench media-real docs type try dist clean
+clean:    ; $(RUN) python -c "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
+.PHONY: setup test lint check api manifest bench media-real docs type try dist clean

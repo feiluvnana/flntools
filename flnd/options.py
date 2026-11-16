@@ -5,13 +5,15 @@ from __future__ import annotations
 import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, MutableMapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequence
 
-from flnd import _cli
 from flnd.errors import UsageError
 from flnd.source import Source, Target
 
-# `--from all` takes every category of every source.
+if TYPE_CHECKING:
+    from flnd._run import Stop
+
+# `--only all` takes every category of every source.
 ALL = "all"
 
 
@@ -43,7 +45,7 @@ class RunShared:
 
     home: Path
     history: MutableMapping[str, Any]
-    stop: _cli.Stopping
+    stop: Stop
     # `targets.db`'s rows: each target's complete categories and cursors.
     targets: MutableMapping[str, Any] = field(default_factory=dict)
     # Whether a person can be asked a question, which a source's own login needs.
@@ -62,7 +64,7 @@ class RunShared:
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
-    """The categories `--from` takes from one source, in the source's order."""
+    """The categories `--only` takes from one source, in the source's order."""
     names = options.categories
     if names is None or ALL in names:
         return source.categories
@@ -76,20 +78,20 @@ def categories_by_source(
     *,
     every: bool = False,
 ) -> dict[str, tuple[str, ...] | None]:
-    """Check `--from` (plain or `<source>:<cats>`) and give each target source its categories.
+    """Check `--only` (plain or `<source>:<cats>`) and give each target source its categories.
 
     Args:
-        categories: what `--from` (or the library's `only`) names; None when it names nothing.
+        categories: what `--only` (or the library's `only`) names; None when it names nothing.
         targets: the run's targets, resolved.
         sources: the sources by code.
         every: whether naming nothing means every category of every target, as the library's
-            `only=None` does; False makes `--from` required for a profile, as today's CLI does.
+            `only=None` does; False makes `--only` required for a profile, as today's CLI does.
 
     Returns:
         Each source's categories by its code; None means every category.
 
     Raises:
-        UsageError: `--from` is missing where it is required, names a category no source here
+        UsageError: `--only` is missing where it is required, names a category no source here
             has, or is given for a single post.
     """
     used = list(dict.fromkeys(sources[target.source] for target in targets))
@@ -97,24 +99,24 @@ def categories_by_source(
     singles = [t for t in targets if t.kind in sources[t.source].single_kinds]
     if categories is None:
         if not every and len(singles) < len(targets):
-            raise UsageError(f"--from is required (use all, or {_lists(used)})")
+            raise UsageError(f"--only is required (use all, or {_lists(used)})")
         return {source.code: None for source in used}
     if singles:
         raise UsageError(
-            f"--from applies to profiles and chats; {singles[0]} is one post, downloaded whole: "
-            "give it without --from"
+            f"--only applies to profiles and chats; {singles[0]} is one post, downloaded whole: "
+            "give it without --only"
         )
     items = [categories] if isinstance(categories, str) else list(categories)
     plain, scoped = _split(items, {source.code for source in used}, sources)
     if not plain and not scoped:
-        raise UsageError("--from must name at least one category, or all")
+        raise UsageError("--only must name at least one category, or all")
     if problem := unknown(plain, used):
         raise UsageError(problem)
     return {source.code: _names(source, plain, scoped) for source in used}
 
 
 def unknown(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None:
-    """Why `--from names` fits none of these sources; None when it fits."""
+    """Why `--only names` fits none of these sources; None when it fits."""
     known = {category for source in sources for category in source.categories}
     missing = [name for name in names if name != ALL and name not in known]
     if not missing:
@@ -125,7 +127,7 @@ def unknown(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None
 def _split(
     items: Sequence[str], used: set[str], sources: Mapping[str, type[Source]],
 ) -> tuple[list[str], dict[str, list[str]]]:
-    """Split `--from` tokens into plain names and `<source>:<cats>` buckets."""
+    """Split `--only` tokens into plain names and `<source>:<cats>` buckets."""
     plain: list[str] = []
     scoped: dict[str, list[str]] = {}
     for item in items:
@@ -136,9 +138,9 @@ def _split(
             continue
         code = code.strip()
         if code not in used:
-            raise UsageError(f"--from {item!r}: no target from source {code!r}")
+            raise UsageError(f"--only {item!r}: no target from source {code!r}")
         if not names:
-            raise UsageError(f"--from {item!r} must name at least one category, or all")
+            raise UsageError(f"--only {item!r} must name at least one category, or all")
         scoped.setdefault(code, []).extend(names)
     return plain, scoped
 
@@ -153,7 +155,7 @@ def _names(
     names = tuple(dict.fromkeys([*plain, *own]))
     if not names:
         raise UsageError(
-            f"--from is required for {source.code} (use all, or {', '.join(source.categories)})"
+            f"--only is required for {source.code} (use all, or {', '.join(source.categories)})"
         )
     if ALL not in names and not any(name in names for name in source.categories):
         raise UsageError(

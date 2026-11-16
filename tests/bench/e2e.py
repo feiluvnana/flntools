@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import io
 import tempfile
-import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -30,7 +29,7 @@ import kit
 from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import File, Post, Site, Source, pages, target
-from flnd import _cli as cli
+from flnd import _run
 from flnd._ui import ui
 
 API, CDN, PER_PAGE = "https://api.bench.example", "https://cdn.bench.example", 50
@@ -102,7 +101,7 @@ def run(home: Path, *, again: bool = False) -> float:
         again: stop at the first saved post, as a sync does.
     """
     engine = Engine(home=home, sources={"bnc": Bench})
-    stop = cli.Stopping(threading.Event(), threading.Event())
+    stop = _run.Stop()
     options = Options(categories=("posts",), stop_at_saved=again)
     start = time.perf_counter()
     for _ in engine._run([(t, options) for t in engine.resolve(["bnc:example_user"])], stop=stop):

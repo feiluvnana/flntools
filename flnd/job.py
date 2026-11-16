@@ -37,7 +37,7 @@ from flnd._steps import FOLDER, Landed, landed
 from flnd._ui import ui
 
 if TYPE_CHECKING:
-    from flnd import _cli
+    from flnd._run import Stop
 
 __all__ = [
     "STOPPED", "Board", "Counts", "Downloads", "Ledger", "Placed", "TargetReport",
@@ -137,9 +137,9 @@ def failure(error: BaseException, target: Target, source: Source | None = None) 
 
 
 def tell(target: Target, error: Error, emit: Callable[[Any], None]) -> None:
-    """Report the failure that ended `target`: a `Failed` event, and its log lines.
+    """Report the failure that ended `target`: a `Failed` event, and debug lines for `-v`.
 
-    The log lines are its message, its hint, and with `-v` its causes.
+    The event is what the CLI and a script show; the debug lines add the error's causes.
 
     Args:
         target: the target it ended.
@@ -147,9 +147,7 @@ def tell(target: Target, error: Error, emit: Callable[[Any], None]) -> None:
         emit: the run's event sink (`RunShared.emit`), which gets one `Failed` event.
     """
     emit(Failed(target, error))
-    ui.error("{target}: {error}", target=str(target), error=error)
-    if error.hint:
-        ui.info("{target}: {hint}", target=str(target), hint=error.hint)
+    ui.debug("{target}: {error}", target=str(target), error=error)
     ui.debug("{target}: {chain}", target=str(target), chain=causes(error))
 
 
@@ -164,7 +162,8 @@ def logged_out(target: Target, message: str | None = None) -> LoginError:
     Returns:
         A `LoginError` whose hint is the command that logs in again.
     """
-    return LoginError(message or "not logged in", hint="run flnd auth login", target=str(target))
+    return LoginError(message or "not logged in", hint=f"run flnd login {target.source}",
+                      target=str(target))
 
 
 def _on_domains(error: SiteError, domains: Sequence[str]) -> bool:
@@ -1069,7 +1068,7 @@ class Downloads:
             self._record_failed(queued)
             self._count(queued, downloading=-1, failed=1)
             self.settings.emit(Failed(self.target, error, post=placed.post.id, path=queued.dest))
-            ui.error("{name}: {error}", name=placed.path, error=error)
+            ui.debug("{name}: {error}", name=placed.path, error=error)
             ui.debug("{name}: {chain}", name=placed.path, chain=causes(error))
             return False
         except KeyboardInterrupt:
@@ -1375,7 +1374,7 @@ def _ended(
         board.end(target, failed=True)
         return replace(report, error=failed)
     if run.settings.stop.soon.is_set():
-        ui.error("{target}: stopped", target=str(target))
+        ui.debug("{target}: stopped", target=str(target))
         board.end(target, failed=True)
         return replace(report, error=Stopped(STOPPED))
     board.end(target, failed=False)
@@ -1389,7 +1388,10 @@ def _ended(
 
 
 def _summary(totals: Counts, target: Target, seconds: float) -> None:
-    """Log one line for a finished target: files saved, size, skips, failures and time."""
+    """A debug line for a finished target: files saved, size, skips, failures and time.
+
+    The CLI prints its own line from the target's `Progress` events; this one adds the time.
+    """
     parts = [_text.count(totals.saved, "file") + " saved"] if totals.saved else []
     if totals.bytes:
         parts.append(_text.size(totals.bytes))
@@ -1401,7 +1403,7 @@ def _summary(totals: Counts, target: Target, seconds: float) -> None:
         parts.append(f"{totals.failed} failed (retried next run)")
     body = ", ".join(parts) or "nothing new"
     line = f"{body} in {_text.duration(seconds)}"
-    (ui.warn if totals.failed else ui.ok)("{target}: {line}", target=str(target), line=line)
+    ui.debug("{target}: {line}", target=str(target), line=line)
 
 
 def causes(error: BaseException) -> str:
@@ -1478,7 +1480,7 @@ class _Refresh:
     """A download's request for a lazy post's files on the lister thread."""
 
     post: Post
-    stop: _cli.Stopping
+    stop: Stop
     done: threading.Event = field(default_factory=threading.Event)
     files: list[File] | None = None
     error: Exception | None = None

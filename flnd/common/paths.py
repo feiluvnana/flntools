@@ -68,7 +68,7 @@ def stamp(path: Path) -> dict[str, int]:
 
 
 # What a web page where media was expected says to do: such a page is most often a login wall.
-NOT_MEDIA_HINT = "it is usually a login wall: run flnd auth login, then try again"
+NOT_MEDIA_HINT = "it is usually a login wall: run flnd login <source>, then try again"
 
 
 def not_media(noun: str) -> SiteError:

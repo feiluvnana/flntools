@@ -543,7 +543,7 @@ class ScrollTest(unittest.TestCase):
         with self.assertRaisesRegex(LoginError, "fbk: Facebook kept asking for a login") as caught:
             read("fbk:a", pages={}, seen=seen, categories=("posts",),
                  redirects={f"{SITE}/a": f"{SITE}/login/?next=%2Fa"})
-        self.assertIn("flnd auth login", caught.exception.hint)
+        self.assertIn("flnd login fbk", caught.exception.hint)
         self.assertEqual(len(seen.back_offs), 2)
 
 

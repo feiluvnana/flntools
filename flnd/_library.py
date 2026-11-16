@@ -32,7 +32,7 @@ import os
 import re
 import threading
 import weakref
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -517,13 +517,13 @@ class Flnd:
             ...     str(site.target)
             'ins'
         """
-        from flnd import _cli
+        from flnd._run import stopping
         from flnd.options import RunShared
         from flnd.site import TargetSite, source_run
         from flnd.source import Target
 
         cls = self._source(source)
-        with _cli.stopping() as stop:
+        with stopping() as stop:
             settings = RunShared(home=self.home, history={}, stop=stop)
             with source_run(settings, cls()) as run:
                 opened = TargetSite(run, Target(cls.code, "account", ""))
@@ -536,11 +536,20 @@ class Flnd:
     # Helpers
     # -----------------------------------------------------------------------------------------
 
-    def _sources(self) -> dict[str, type[Source]]:
-        """The built-in sources, then the ones `add` added."""
+    def _sources(self) -> Mapping[str, type[Source]]:
+        """The built-in sources, then the ones `add` added.
+
+        A view, not a copy: a built-in source is imported only when its code is looked up, so
+        resolving `ins:example_user` imports Instagram's module and no other.
+
+        Returns:
+            The sources by code; an added source comes first when looked up.
+        """
+        from collections import ChainMap
+
         from flnd.sources import SOURCES
 
-        return {**SOURCES, **self._added}
+        return ChainMap(self._added, SOURCES)
 
     def _source(self, code: str) -> type[Source]:
         """The source of a code, built-in or added.

@@ -19,7 +19,8 @@ from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_r
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.source import Range, Source, Target, _Unmatched
 from flnd.sources import SOURCES
-from flnd import _cli, _db, _text
+from flnd import _db, _text
+from flnd._run import Stop, stopping
 from flnd._events import Failed, Planned
 from flnd import _steps
 from flnd._ui import ui
@@ -97,7 +98,7 @@ class Engine:
         home: Path = Path(".flnd"),
         sources: Mapping[str, type[Source]] = SOURCES,
         emit: Callable[[Any], None] | None = None,
-        stop: _cli.Stopping | None = None,
+        stop: Stop | None = None,
     ) -> None:
         """Make the engine of one home.
 
@@ -172,7 +173,7 @@ class Engine:
             code: replace(base, categories=cats_map.get(code))
             for code in {t.source for t in resolved}
         }
-        with _cli.stopping(self.stop) as stop:
+        with stopping(self.stop) as stop:
             if dry:
                 return self._finish_report(self._dry_run(resolved, by_source, span, stop), stop)
             ui.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
@@ -201,7 +202,7 @@ class Engine:
             ui.info("nothing to sync")
             return Report(())
         _validate_targets(self.sources, None, [t for t, _ in chosen])
-        with _cli.stopping(self.stop) as stop:
+        with stopping(self.stop) as stop:
             results: dict[int, TargetReport] = {}
             pool_settings = RunShared(home=self.home, history={}, stop=stop, emit=self.emit)
             with shared_browser(pool_settings):
@@ -322,7 +323,7 @@ class Engine:
         return tuple(code for code, source in self.sources.items() if source.login is Source.login)
 
     def _interactive_login(self, code: str, source: Source, method: str) -> str:
-        with _cli.stopping() as stop:
+        with stopping() as stop:
             settings = RunShared(home=self.home, history={}, stop=stop, interactive=True)
             with source_run(settings, source) as run:
                 source.login(LoginSite(run), method)
@@ -336,7 +337,7 @@ class Engine:
         by_source: Mapping[str, Options],
         *,
         sync: bool,
-        stop: _cli.Stopping,
+        stop: Stop,
         keep: bool = False,
     ) -> Report:
         """Download non-query targets in order, recording each in targets.db first.
@@ -382,7 +383,7 @@ class Engine:
         reports: Sequence[TargetReport],
         *,
         sync: bool,
-        stop: _cli.Stopping,
+        stop: Stop,
         rows: Mapping[str, Any] | None = None,
     ) -> Report:
         report = self._finish_report(Report(tuple(reports)), stop)
@@ -390,7 +391,7 @@ class Engine:
             self._warn_unsynced(resolved, rows=rows)
         return report
 
-    def _finish_report(self, report: Report, stop: _cli.Stopping) -> Report:
+    def _finish_report(self, report: Report, stop: Stop) -> Report:
         if stop.soon.is_set():
             raise KeyboardInterrupt
         _log_totals(report)
@@ -401,7 +402,7 @@ class Engine:
         chosen: Sequence[tuple[Target, Options]],
         results: dict[int, TargetReport],
         pool_settings: RunShared,
-        stop: _cli.Stopping,
+        stop: Stop,
     ) -> None:
         """Sync non-query targets and store their `TargetReport` entries in `results`."""
         indices = [i for i, (target, _) in enumerate(chosen) if not self._is_query(target)]
@@ -424,7 +425,7 @@ class Engine:
         chosen: Sequence[tuple[Target, Options]],
         results: dict[int, TargetReport],
         pool_settings: RunShared,
-        stop: _cli.Stopping,
+        stop: Stop,
     ) -> None:
         """Sync query targets and store their `TargetReport` entries in `results`."""
         indices = [i for i, (target, _) in enumerate(chosen) if self._is_query(target)]
@@ -478,7 +479,7 @@ class Engine:
         resolved: Sequence[Target],
         by_source: Mapping[str, Options],
         span: Range,
-        stop: _cli.Stopping,
+        stop: Stop,
     ) -> Report:
         reports: list[TargetReport] = []
         # A dry run reads the history to tell "saved" from "new", but never makes it: a home
@@ -506,7 +507,7 @@ class Engine:
         target: Target,
         options: Options,
         span: Range,
-        stop: _cli.Stopping,
+        stop: Stop,
     ) -> TargetReport:
         """Run a dry-run plan for a single target."""
         source = self.sources[target.source]()
@@ -536,7 +537,7 @@ class Engine:
         *,
         span: Range,
         sync: bool,
-        stop: _cli.Stopping,
+        stop: Stop,
     ) -> list[TargetReport]:
         """Download a mix of discovering and normal targets in caller order."""
         reports: list[TargetReport] = []
@@ -564,14 +565,15 @@ class Engine:
         *,
         span: Range,
         sync: bool,
-        stop: _cli.Stopping,
+        stop: Stop,
         browser_pool: Any = None,
     ) -> list[TargetReport]:
         """Discover targets from a discovering route and download each one."""
         source = self.sources[target.source]()
         flnd.targets.record(self.home, [(target, options)], sync=sync)
         reports: list[TargetReport] = []
-        with self._history() as history, self._targets() as saved_targets, ui.group() as group:
+        with self._history() as history, self._targets() as saved_targets, \
+                ui.group(drawn=False) as group:
             settings = RunShared(
                 home=self.home, history=history, targets=saved_targets,
                 stop=stop, browser_pool=browser_pool, emit=self.emit,
@@ -599,7 +601,7 @@ class Engine:
         reports: list[TargetReport],
         *,
         span: Range,
-        stop: _cli.Stopping,
+        stop: Stop,
     ) -> None:
         """Discover query children, download each, and record the query's seen set."""
         seen_keys: list[str] = []
@@ -637,7 +639,7 @@ class Engine:
         child: Target,
         board: job.Board,
         child_opts: Options,
-        stop: _cli.Stopping,
+        stop: Stop,
     ) -> TargetReport:
         if child.source == parent.source:
             return job.download(run, child, board, child_opts)
@@ -651,7 +653,7 @@ class Engine:
         target: Target,
         options: Options,
         *,
-        stop: _cli.Stopping,
+        stop: Stop,
         browser_pool: Any = None,
     ) -> TargetReport:
         """Run a dry-run plan for a single target."""
@@ -659,7 +661,8 @@ class Engine:
         rows = flnd.targets.rows(self.home)
         seen_keys = set(flnd.targets.seen(rows, target))
         known_keys = set(rows)
-        with self._history() as history, self._targets() as saved_targets, ui.group() as group:
+        with self._history() as history, self._targets() as saved_targets, \
+                ui.group(drawn=False) as group:
             settings = RunShared(
                 home=self.home, history=history, targets=saved_targets,
                 stop=stop, browser_pool=browser_pool, emit=self.emit,
@@ -685,7 +688,7 @@ class Engine:
         board: job.Board,
         seen_keys: set[str],
         known_keys: set[str],
-        stop: _cli.Stopping,
+        stop: Stop,
     ) -> TargetReport:
         """Run discovery and download for a synced query target."""
         written: list[Path] = []
@@ -718,7 +721,7 @@ class Engine:
         board: job.Board,
         seen_keys: set[str],
         known_keys: set[str],
-        stop: _cli.Stopping,
+        stop: Stop,
         written: list[Path],
         seen_to_mark: list[str],
     ) -> tuple[int, Error | Stopped | None]:
@@ -756,7 +759,7 @@ class Engine:
             not flnd.targets.sync_enabled(saved.get(flnd.targets.key(t), {"sync": False}))
             for t in resolved
         ):
-            ui.info("not synced; add --sync to keep it up to date")
+            ui.info("not followed; flnd follow keeps it up to date")
 
     def _recorded(self, rows: Mapping[str, Any]) -> list[Target]:
         return [
@@ -828,7 +831,7 @@ class Engine:
         self,
         chosen: Sequence[tuple[Target, Options]],
         *,
-        stop: _cli.Stopping,
+        stop: Stop,
         browser_pool: Any = None,
     ) -> list[TargetReport]:
         """Run each target sequentially 1 by 1, grouped by site session."""
@@ -836,7 +839,7 @@ class Engine:
         for number, (target, _) in enumerate(chosen):
             groups.setdefault(target.source, []).append(number)
         reports: dict[int, TargetReport] = {}
-        with self._history() as history, self._targets() as saved, ui.group() as rows:
+        with self._history() as history, self._targets() as saved, ui.group(drawn=False) as rows:
             run_settings = RunShared(
                 home=self.home, history=history, targets=saved,
                 stop=stop, browser_pool=browser_pool, emit=self.emit,
@@ -875,7 +878,7 @@ class Engine:
             ]
         return max(map(len, labels), default=0)
 
-    def _compress_saved(self, targets: Sequence[Target], stop: _cli.Stopping) -> None:
+    def _compress_saved(self, targets: Sequence[Target], stop: Stop) -> None:
         """Compress (and extract) what `targets` saved before and isn't done yet.
 
         One read of history picks the files under the targets' folders; a done file costs no
@@ -918,7 +921,8 @@ def _require_auth(source: Source, run: SourceRun, target: Target) -> TargetRepor
         job.tell(target, failed, run.settings.emit)
         return TargetReport(target, (), 0, error=failed)
     if not source.logged_in(account):
-        ui.warn("{code}: not logged in, using public access; run flnd auth login", code=source.code)
+        ui.warn("{code}: not logged in, using public access; run flnd login {code}",
+                code=source.code)
     return None
 
 
@@ -1028,8 +1032,26 @@ def _owner_source(cleaned: str, sources: Mapping[str, type[Source]]) -> Source:
 
 
 def owner(target_text: str, sources: Mapping[str, type[Source]]) -> type[Source] | None:
-    """Return the source whose domains `target_text` belongs to, or None."""
-    return next((source for source in sources.values() if _on(target_text, source.domains)), None)
+    """Return the source whose domains `target_text` belongs to, or None.
+
+    A built-in source's domains come from the manifest, so matching a link imports only the
+    source that owns it; a source added at run time is asked for its own.
+
+    Args:
+        target_text: a link, or a target written without its source.
+        sources: the sources to ask, by code.
+
+    Returns:
+        The class of the source whose domains the link is on; None when no source's are.
+    """
+    from flnd.sources import _manifest
+
+    for code in sources:
+        known = _manifest.SOURCES.get(code)
+        domains = known["domains"] if known is not None else sources[code].domains
+        if _on(target_text, domains):  # type: ignore[arg-type]
+            return sources[code]
+    return None
 
 
 def _on(target_text: str, domains: Sequence[str]) -> bool:
@@ -1082,7 +1104,8 @@ def _run_site(
             return
         if not source.logged_in(account):
             ui.warn(
-                "{code}: not logged in, using public access; run flnd auth login", code=source.code
+                "{code}: not logged in, using public access; run flnd login {code}",
+                code=source.code,
             )
         with _written_back(run), _connected(run, account):
             login: LoginError | None = None
@@ -1118,7 +1141,7 @@ def _fail_unreached(
         board: the run's progress rows, which end failed; its sink gets one `Failed` per target.
     """
     source, group = work
-    ui.error("{source}: {error}", source=source.code, error=error)
+    ui.debug("{source}: {error}", source=source.code, error=error)
     for planned in group:
         board.end(planned.target, failed=True)
         if planned.number not in reports:

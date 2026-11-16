@@ -297,7 +297,7 @@ class Twitter(Source):
             if any(path == wall or path.startswith(f"{wall}/") for wall in WALLS):
                 raise LoginError(
                     "twt: X asked for a login or locked this account; "
-                    "check it in a browser or run flnd auth login twt"
+                    "check it in a browser or run flnd login twt"
                 )
             names = list(TIMELINES)
             later = names[names.index(timeline.category) + 1:]

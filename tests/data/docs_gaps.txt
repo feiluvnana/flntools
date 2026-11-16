@@ -19,16 +19,6 @@ flnd/_browser.py:_raw_error: no Returns:
 flnd/_browser.py:_raw_timeout: no Returns:
 flnd/_browser.py:_start_playwright: no Raises:
 flnd/_browser.py:_start_playwright: no Returns:
-flnd/_cli.py:App.group: Args: no default
-flnd/_cli.py:App.group: Args: no help
-flnd/_cli.py:App.group: Args: no name
-flnd/_cli.py:App.group: no Returns:
-flnd/_cli.py:_cyclopts_app: Args: no default
-flnd/_cli.py:_cyclopts_app: Args: no help
-flnd/_cli.py:_cyclopts_app: Args: no name
-flnd/_cli.py:_cyclopts_app: no Returns:
-flnd/_cli.py:_exit_code: Args: no result
-flnd/_cli.py:_exit_code: no Returns:
 flnd/_cookies.py:Jar.filter: Args: no domains
 flnd/_cookies.py:Jar.filter: Args: no names
 flnd/_cookies.py:Jar.filter: no Returns:
@@ -194,34 +184,6 @@ flnd/_loop.py:_Task: no docstring
 flnd/_loop.py:_answer: no docstring
 flnd/_loop.py:_cancel_pending: no docstring
 flnd/_loop.py:_size: no docstring
-flnd/_prompt.py:_choose_many: Args: no default
-flnd/_prompt.py:_choose_many: Args: no message
-flnd/_prompt.py:_choose_many: Args: no pairs
-flnd/_prompt.py:_choose_many: no Raises:
-flnd/_prompt.py:_choose_many: no Returns:
-flnd/_prompt.py:_live_paused: no Returns:
-flnd/_prompt.py:_pause_live: Args: no live
-flnd/_prompt.py:_pause_live: no Yields:
-flnd/_prompt.py:_run: Args: no question
-flnd/_prompt.py:_run: no Raises:
-flnd/_prompt.py:_run: no Returns:
-flnd/_prompt.py:_validator: Args: no validate
-flnd/_prompt.py:_validator: no Returns:
-flnd/_prompt.py:ask: Args: no default
-flnd/_prompt.py:ask: Args: no message
-flnd/_prompt.py:ask: Args: no secret
-flnd/_prompt.py:ask: Args: no validate
-flnd/_prompt.py:ask: no Returns:
-flnd/_prompt.py:autofill: no Yields:
-flnd/_prompt.py:choose: Args: no choices
-flnd/_prompt.py:choose: Args: no default
-flnd/_prompt.py:choose: Args: no many
-flnd/_prompt.py:choose: Args: no message
-flnd/_prompt.py:choose: no Raises:
-flnd/_prompt.py:choose: no Returns:
-flnd/_prompt.py:confirm: Args: no default
-flnd/_prompt.py:confirm: Args: no message
-flnd/_prompt.py:confirm: no Returns:
 flnd/_text.py:_rough_redact: Args: no url
 flnd/_text.py:_rough_redact: no Returns:
 flnd/_text.py:duration: Args: no seconds
@@ -254,8 +216,6 @@ flnd/_ui.py:Group.add: Args: no label
 flnd/_ui.py:Group.add: Args: no total
 flnd/_ui.py:Group.add: Args: no unit
 flnd/_ui.py:Group.add: no Returns:
-flnd/_ui.py:Group: Args: no owner
-flnd/_ui.py:Group: Args: no title
 flnd/_ui.py:Row._render: no docstring
 flnd/_ui.py:Row.part: no Returns:
 flnd/_ui.py:Row: Args: no group
@@ -264,12 +224,6 @@ flnd/_ui.py:Row: Args: no total
 flnd/_ui.py:Row: Args: no unit
 flnd/_ui.py:UI._log: no docstring
 flnd/_ui.py:UI._make_console: no docstring
-flnd/_ui.py:UI.group: Args: no title
-flnd/_ui.py:UI.group: no Yields:
-flnd/_ui.py:UI.progress: Args: no label
-flnd/_ui.py:UI.progress: Args: no total
-flnd/_ui.py:UI.progress: Args: no unit
-flnd/_ui.py:UI.progress: no Yields:
 flnd/_ui.py:UI.scope: Args: no color
 flnd/_ui.py:UI.scope: Args: no dest
 flnd/_ui.py:UI.scope: Args: no level
@@ -303,27 +257,6 @@ flnd/_vault.py:encrypt: Args: no context
 flnd/_vault.py:encrypt: Args: no data
 flnd/_vault.py:encrypt: Args: no key
 flnd/_vault.py:encrypt: no Returns:
-flnd/cli.py:_ask_source: no docstring
-flnd/cli.py:_read_targets: no docstring
-flnd/cli.py:auth_ls: no Returns:
-flnd/cli.py:download: no Returns:
-flnd/cli.py:epilog: no Returns:
-flnd/cli.py:login_command: no Raises:
-flnd/cli.py:login_command: no Returns:
-flnd/cli.py:logout: Args: no sources
-flnd/cli.py:logout: no Raises:
-flnd/cli.py:logout: no Returns:
-flnd/cli.py:sync: no Returns:
-flnd/cli.py:target_del: Args: no targets
-flnd/cli.py:target_del: no Raises:
-flnd/cli.py:target_del: no Returns:
-flnd/cli.py:target_ls: no Returns:
-flnd/cli.py:target_sync_off: Args: no targets
-flnd/cli.py:target_sync_off: no Raises:
-flnd/cli.py:target_sync_off: no Returns:
-flnd/cli.py:target_sync_on: Args: no targets
-flnd/cli.py:target_sync_on: no Raises:
-flnd/cli.py:target_sync_on: no Returns:
 flnd/common/auth.py:Vault: Args: no code
 flnd/common/auth.py:Vault: Args: no home
 flnd/common/auth.py:_create_key: Args: no path
@@ -379,23 +312,6 @@ flnd/common/net.py:follow: Args: no url
 flnd/common/net.py:follow: no Returns:
 flnd/common/paths.py:kind_of: Args: no name
 flnd/common/paths.py:kind_of: no Returns:
-flnd/dry.py:_validate_dry: no docstring
-flnd/dry.py:_where: Args: no file
-flnd/dry.py:_where: no Returns:
-flnd/dry.py:main: Args: no argv
-flnd/dry.py:main: no Returns:
-flnd/dry.py:plan: Args: no categories
-flnd/dry.py:plan: Args: no home
-flnd/dry.py:plan: Args: no sources
-flnd/dry.py:plan: Args: no target_text
-flnd/dry.py:plan: Args: no time
-flnd/dry.py:plan: no Raises:
-flnd/dry.py:plan: no Yields:
-flnd/dry.py:render_tree: Args: no placed
-flnd/dry.py:render_tree: Args: no target_text
-flnd/dry.py:render_tree: no Returns:
-flnd/dry.py:tree: Args: no placed
-flnd/dry.py:tree: no Yields:
 flnd/engine.py:Engine._discover_and_run: Args: no board
 flnd/engine.py:Engine._discover_and_run: Args: no options
 flnd/engine.py:Engine._discover_and_run: Args: no reports

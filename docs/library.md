@@ -227,21 +227,20 @@ This block isn't run by the docs test: it reads a real browser's cookies and ask
 
 ## The CLI's commands, through the library
 
-| CLI today | library |
+| CLI | library |
 | --- | --- |
-| `flnd download T --from C --time S,U --limit N --dry` | `fl.download(T, only=C, when="S..U", limit=N, dry=True)` |
-| `flnd download T --sync` | `fl.follow(T)` |
+| `flnd download T --only C --when W --limit N --dry` | `fl.download(T, only=C, when=W, limit=N, dry=True)` |
+| `flnd follow T` | `fl.follow(T)` |
 | `flnd sync [T]` | `fl.sync(T)` |
-| `flnd target ls` | `fl.targets()` |
-| `flnd target sync-on T` | `fl.follow(T)` (which also downloads what is new) |
-| `flnd target sync-off T`, `flnd target del T` | `fl.unfollow(T)` (files, history and the target's row stay) |
-| `flnd auth login` | `fl.login(source, how)` |
-| `flnd auth logout S` | `fl.logout(S)` |
-| `flnd auth ls` | `fl.logins` |
+| `flnd ls` | `fl.targets()` |
+| `flnd unfollow T` | `fl.unfollow(T)` |
+| `flnd login S HOW` | `fl.login(S, HOW)` |
+| `flnd logout S` | `fl.logout(S)` |
+| `flnd login` (no source) | `fl.logins` |
 
-`--again` has no library spelling: a run always skips what is saved, and the rebuilt CLI drops
-the flag. Until the CLI is rebuilt on the library, a run also logs its progress lines on the
-terminal, as the CLI does.
+`--again` has no spelling: a run always skips what is saved. A run draws nothing on the
+terminal: the CLI draws it from the run's events, and flnd's own warnings (a wait a site asked
+for, a login about to expire) go to standard error.
 
 ## Errors
 

@@ -453,7 +453,10 @@ def same_extension(one: str, other: str) -> bool:
 
 
 class _Row:
-    """One progress bar for a file, or for DASH video and audio, opened on first response."""
+    """One file's progress (or DASH video and audio's), opened on its first response.
+
+    The row only counts (`drawn=False`): a run's progress is shown from its events.
+    """
 
     def __init__(self, label: str):
         self.label, self.stack, self.base = label, ExitStack(), 0.0
@@ -470,7 +473,7 @@ class _Row:
         with self._lock:
             if self.bar is None:
                 self.bar = self.stack.enter_context(
-                    ui.progress(self.label, total=total, unit="bytes"),
+                    ui.progress(self.label, total=total, unit="bytes", drawn=False),
                 )
                 return
             self.base = self.bar.count
@@ -502,7 +505,7 @@ class _Row:
         with self._lock:
             if self.bar is None:
                 self.bar = self.stack.enter_context(
-                    ui.progress(self.label, total=new, unit="bytes"),
+                    ui.progress(self.label, total=new, unit="bytes", drawn=False),
                 )
             elif new is None or self.bar.total is None:
                 self.bar.total = None

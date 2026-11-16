@@ -62,7 +62,7 @@ What each part does:
   receives what the route returned. A route that yields `Post`s itself (a single post's link)
   has none.
 - **`newest_first=True`** promises that the category lists the newest posts first. Only then
-  may a sync stop after 5 saved posts in a row, and `--time` stop after 5 posts older than its
+  may a sync stop after 5 saved posts in a row, and `--when` stop after 5 posts older than its
   range. Without it, flnd reads the whole listing: slower, but never wrong.
 - **`pages(fetch, cursor)`** walks a paged listing. It also saves the cursor when a run is
   interrupted, so the next run resumes there.
@@ -140,7 +140,7 @@ File.text("info.md", "# Example title\n")                        # written by th
 ```
 
 - **`date`** takes a date, a datetime, Unix seconds or milliseconds, or an ISO string. An undated
-  post is always kept by `--time`, and its files get the date the source's `date` hook finds, if
+  post is always kept by `--when`, and its files get the date the source's `date` hook finds, if
   it has one.
 - **`files`** may be a function. It is called only for a post that isn't saved yet, so a source
   never spends a request on a post flnd already has.
@@ -164,7 +164,7 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 | `site.cookies`, `site.secrets` | the login's cookies, and the source's encrypted secrets |
 | `site.state` | a small store of the source's own, kept between runs |
 | `site.client` | what the source's `connect` hook gave, such as Telegram's client |
-| `site.time` | `--time`, for a site that can query a date range itself |
+| `site.time` | `--when`, for a site that can query a date range itself |
 | `site.info(…)`, `site.warn(…)` | a line naming the target |
 | `site.back_off(reason, retry_after=…)` | wait out a rate limit the site reported in its own way |
 
@@ -178,7 +178,7 @@ A source can override a few methods of `Source`:
 | --- | --- | --- |
 | `prepare(request, cookies)` | before each request to the source's domains: add headers or a signature | ins, twt, loi |
 | `connect(site)` | once per run: a context manager whose value is `site.client` | tlg |
-| `login(login, method)` | `flnd auth login` for a source with its own login flow | tlg |
+| `login(login, method)` | `flnd login <code>` for a source with its own login flow | tlg |
 | `date(site, post)` | for an undated post, once its category ends: one paced request for its day | fbk |
 | `logged_in(site)` | whether a login is saved; by default, one of `needs` is in the cookies | tlg |
 | `resolve(text)` | for target forms no pattern can say | tlg |

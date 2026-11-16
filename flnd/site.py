@@ -32,7 +32,8 @@ from flnd import _browser, _db, _http, _loop, _prompt, _text, _time
 from flnd._ui import ui
 
 if TYPE_CHECKING:
-    from flnd import _cli, _cookies
+    from flnd import _cookies
+    from flnd._run import Stop
     from flnd._html import Selection
 
     from flnd.options import RunShared
@@ -145,7 +146,7 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
 
     raw = net.client(user_agent=source.user_agent, jar=jar, sign=sign)
     state = _db.open(settings.home / paths.SOURCE_STATE)
-    stop: _cli.Stopping | None = getattr(settings, "stop", None)
+    stop: Stop | None = getattr(settings, "stop", None)
     run = SourceRun(
         source, settings, jar,
         _make_client(raw, rate=rate, stop=stop.soon if stop else None),
@@ -449,10 +450,10 @@ class LoginSite:
         return self._run.settings.interactive and _prompt.interactive()
 
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
-        """Ask a question with `prompt.ask`, and return what was typed."""
+        """Ask a question in the terminal (`flnd._prompt.ask`), and return what was typed."""
         if not self.interactive:
             raise UsageError(f"{self._run.source.code}: logging in needs a terminal to ask in",
-                             hint="run flnd auth login in a terminal")
+                             hint=f"run flnd login {self._run.source.code} in a terminal")
         if description:
             ui.info(description)
         return _prompt.ask(message, secret=secret)
@@ -515,12 +516,13 @@ def _warn_expiring(source: Source, jar: Any) -> None:
             continue
         if expires <= now:
             ui.warn(
-                "{code}: the login cookie {name} has expired; run flnd login again",
+                "{code}: the login cookie {name} has expired; run flnd login {code} again",
                 code=source.code, name=cookie["name"],
             )
         elif expires - now <= EXPIRY_WARNING:
             ui.warn(
-                "{code}: the login cookie {name} expires in {time}; run flnd login again soon",
+                "{code}: the login cookie {name} expires in {time}; "
+                "run flnd login {code} again soon",
                 code=source.code, name=cookie["name"], time=_text.duration(expires - now),
             )
 

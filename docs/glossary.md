@@ -23,8 +23,8 @@ returns a context for its categories (a profile).
 
 ## Category
 One part of a target, such as a profile's `posts`, `reels` or `stories`. It is a method made
-with `@<route>.category`, and it receives what its route returned. Today the CLI picks
-categories with `--from`; `--from all` takes every one. The rebuild renames the flag to `--only`.
+with `@<route>.category`, and it receives what its route returned. The CLI picks
+categories with `--only`; leaving it out takes every one.
 
 ## Query
 A route whose pattern starts with `?`, such as `mht?{words}`. It yields other targets instead of
@@ -48,8 +48,9 @@ table of `<home>/metadata/history.db`, one row per file, keyed `<code>:<key>` (s
 by default.
 
 ## Sync
-Downloading only what is new. A target downloaded with `--sync` is remembered as synced, and
-`flnd sync` downloads what is new for every synced target. On a sync, a category marked
+Downloading only what is new, for followed targets. `flnd follow` follows a target, and
+`flnd sync` updates them: it downloads what is new for every followed target. On a sync, a
+category marked
 `newest_first` stops after 5 saved posts in a row.
 
 ## Cursor

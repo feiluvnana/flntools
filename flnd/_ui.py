@@ -1,4 +1,18 @@
-"""Terminal output and progress bars backed by Rich."""
+"""Terminal output: log lines and progress rows, on a Rich console.
+
+A library module: it imports only the stdlib, Rich and other library modules (`_time`,
+`_text`), so any program can log through it. The questions a program asks are `_prompt`'s.
+
+What it holds:
+1. `ui`, the log: one line per message at a level (`debug`, `info`, `ok`, `warn`, `error`),
+   with control codes stripped from every field, so a name from a site can't move the cursor.
+2. Progress rows (`ui.group`, `ui.progress`). A group made with `drawn=False` only counts and
+   shows nothing, for a caller that draws progress its own way (flnd's CLI draws a run from
+   its events).
+
+Rule a change must keep: `_log` holds the lock while it prints, so lines of two threads never
+interleave.
+"""
 
 from __future__ import annotations
 
@@ -274,16 +288,25 @@ def _brief(error: BaseException, *, limit: int = 100) -> str:
 
 
 class Group:
-    """A Rich progress group holding one or more `Row` bars."""
+    """A Rich progress group holding one or more `Row` bars.
 
-    def __init__(self, owner: UI, title: str) -> None:
+    Args:
+        owner: the `UI` it draws on.
+        title: a line logged above the rows; "" for none.
+        drawn: whether the rows show; False keeps their counts and shows nothing.
+    """
+
+    def __init__(self, owner: UI, title: str, *, drawn: bool = True) -> None:
         self._ui = owner
         self.title = title
+        # Whether the rows show at all: an undrawn group only counts (the engine's rows, which
+        # the CLI draws from events instead).
+        self.drawn = drawn
         self._lock = threading.Lock()
         self._rows: list[Row] = []
         self._tasks: dict[TaskID, Row] = {}
         self._progress: RichProgress | None = None
-        if owner._progress_enabled():
+        if drawn and owner._progress_enabled():
             self._progress = RichProgress(
                 _RowColumn(owner, self._tasks.get),
                 console=owner.raw,
@@ -291,7 +314,7 @@ class Group:
             )
 
     def _start(self) -> None:
-        if self.title and self._ui._allows("info"):
+        if self.title and self.drawn and self._ui._allows("info"):
             self._ui.info(self.title)
         if self._progress is not None:
             self._progress.start()
@@ -306,6 +329,8 @@ class Group:
                 for row in self._rows:
                     if row._outcome is not None and self._ui._allows(row._outcome):
                         self._ui._console.print(row._render(self._ui))
+            return
+        if not self.drawn:
             return
         for row in self._rows:
             self._ui._log(row._outcome or outcome, row.label)
@@ -476,9 +501,18 @@ class UI:
             self._console, self._level = old_console, old_level
 
     @contextmanager
-    def group(self, title: str = "") -> Iterator[Group]:
-        """Context manager yielding a `Group` of progress rows."""
-        grp = Group(self, title)
+    def group(self, title: str = "", *, drawn: bool = True) -> Iterator[Group]:
+        """Context manager yielding a `Group` of progress rows.
+
+        Args:
+            title: a line logged above the rows; "" for none.
+            drawn: whether the rows show: as live bars on a terminal, else as a line each when
+                the group ends. False keeps the counts and shows nothing.
+
+        Yields:
+            The group, whose `add` makes a row.
+        """
+        grp = Group(self, title, drawn=drawn)
         grp._start()
         try:
             yield grp
@@ -490,9 +524,23 @@ class UI:
     @contextmanager
     def progress(
         self, label: str, *, total: float | None = None, unit: str | None = None,
+        drawn: bool = True,
     ) -> Iterator[Row]:
-        """Context manager yielding a single `Row` progress bar; `unit="bytes"` shows sizes."""
-        with self.group() as grp:
+        """Context manager yielding a single `Row` progress bar.
+
+        `drawn=False` makes a row that only counts, as `group` does: a file a run downloads,
+        whose progress the CLI shows from the run's events.
+
+        Args:
+            label: what the row is about, such as a file's name.
+            total: the units expected; None when unknown (a spinner).
+            unit: "bytes" to show the counts as sizes; None for plain numbers.
+            drawn: whether the row shows.
+
+        Yields:
+            The row; it ends failed when the block raises, else finished.
+        """
+        with self.group(drawn=drawn) as grp:
             row = grp.add(label, total=total, unit=unit)
             try:
                 yield row

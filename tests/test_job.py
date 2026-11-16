@@ -23,7 +23,7 @@ from fakes import FakeSite, collect
 from test_commands import FlndCase
 from test_engine import EngineCase, make_source
 
-from flnd import cli as flnd_cli
+from flnd import sources
 from flnd import engine as engine_module
 from flnd import job
 from flnd.engine import Engine
@@ -32,7 +32,7 @@ from flnd.options import Options
 from flnd.source import (
     File, LoginError, NotFound, Post, SiteError, Source, SourceError, Target, pages, target,
 )
-from flnd import _cli as cli, _time as clock
+from flnd import _run, _time as clock
 from flnd._ui import ui
 from flnd.errors import UsageError
 
@@ -130,17 +130,17 @@ class CategoriesTest(JobCase):
             Engine(home=self.home, sources={"exm": Example}).download(
                 ["https://www.example.com/p/C1abc/"], categories="posts"
             )
-        self.assertEqual(str(ctx.exception), "--from applies to profiles and chats; exm:C1abc is one post, downloaded whole: "
-                                               "give it without --from")
+        self.assertEqual(str(ctx.exception), "--only applies to profiles and chats; exm:C1abc is one post, downloaded whole: "
+                                               "give it without --only")
 
 
 class FromCommandTest(FlndCase):
     def test_from_with_a_post_link_exits_2_through_the_command(self):
-        with mock.patch.dict(flnd_cli.SOURCES, {"exm": Example}), \
+        with mock.patch.dict(sources.SOURCES, {"exm": Example}), \
                 mock.patch.object(engine_module.Engine, "_run") as run:
-            code, _, out = self.run_app("download", "--from", "posts", "https://www.example.com/p/C1abc/")
+            code, _, out = self.run_app("download", "--only", "posts", "https://www.example.com/p/C1abc/")
         self.assertEqual(code, 2)
-        self.assertIn("--from applies to profiles and chats; exm:C1abc is one post", out)
+        self.assertIn("--only applies to profiles and chats; exm:C1abc is one post", out)
         run.assert_not_called()
 
 
@@ -648,9 +648,9 @@ class FailureTest(JobCase):
                 raise RuntimeError("the feed broke")
 
         self.run_engine(Broken, targets=["brk:example_user"])
-        # A bug in a listing is a SourceError: one line naming it and what to do, no traceback.
-        self.assertIn("x brk:example_user: unexpected RuntimeError: the feed broke", self.lines())
-        self.assertIn("* brk:example_user: this is a bug; run with -v and report it", self.lines())
+        # A bug in a listing is a SourceError: its message names it, its hint says what to do.
+        self.assertEqual(self.failures(), ["brk:example_user: unexpected RuntimeError: the feed broke"])
+        self.assertEqual(self.events[-1].error.hint, "this is a bug; run with -v and report it")
         report = self.report(Broken, targets=["brk:example_user"])
         self.assertEqual(report.failed, (Target("brk", "user", "example_user"),))
         self.assertIsInstance(report.targets[0].error, SourceError)
@@ -667,7 +667,7 @@ class FailureTest(JobCase):
                 if user == "gone":
                     raise NotFound("HTTP 404 for https://example.com/gone", status=404)
                 if user == "locked":
-                    raise LoginError("err: the saved login expired", hint="run flnd auth login")
+                    raise LoginError("err: the saved login expired", hint="run flnd login err")
                 return user
 
             @user.category
@@ -680,15 +680,12 @@ class FailureTest(JobCase):
         report = self.report(Errors, targets=[f"err:{name}" for name in names])
         self.assertEqual(report.files, 1)
         self.assertEqual([target.value for target in report.failed], ["gone", "cut", "locked", "last"])
-        lines = self.lines()
-        for line in ("x err:gone: HTTP 404 for https://example.com/gone",
-                     "x err:cut: HTTP 500 for https://example.com/cut",
-                     "x err:locked: err: the saved login expired", "* err:locked: run flnd auth login"):
-            self.assertIn(line, lines)
+        self.assertEqual(self.failures(), ["err:gone: HTTP 404 for https://example.com/gone",
+                                           "err:cut: HTTP 500 for https://example.com/cut",
+                                           "err:locked: err: the saved login expired",
+                                           "err:last: err: the saved login expired"])
         # A site's refusal fails its own target; the targets after it still run.
-        self.assertTrue(any(line.startswith("x err:cut ") for line in lines), lines)
-        self.assertTrue(any(line.startswith("+ ") and "err:good " in line and "1 saved" in line
-                            for line in lines))
+        self.assertIn(("err:good", "posts"), self.listed())
         self.assertEqual(self.files("err", "good"), ["good.jpg"])
         # A refused login stops the source: the target after it fails with the same error, unasked.
         last = report.targets[-1]
@@ -768,12 +765,12 @@ class RefreshTest(JobCase):
         self.cdn(lambda request, headers: httpx.Response(410))
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("albums",)))
         self.assertEqual(self.listings, 2)
-        self.assertIn("x albums/Summer_2026/A1.jpg: GET https://cdn.example/A1/1.jpg: HTTP 410", self.lines())
+        self.assertIn("A1.jpg: GET https://cdn.example/A1/1.jpg: HTTP 410", self.failures())
         self.assertNotIn("exm:A1_0", self.history())
 
     def test_a_first_ctrl_c_during_a_refresh_is_no_fresh_link_and_the_target_stops(self):
         """A rate-limit wait inside `files` that the first Ctrl-C cuts short is the graceful stop, not a failure."""
-        stop = cli.Stopping(threading.Event(), threading.Event())
+        stop = _run.Stop()
         self.cdn(lambda request, headers: httpx.Response(500))
 
         def album(request):
@@ -789,7 +786,7 @@ class RefreshTest(JobCase):
         self.assertEqual(self.listings, 2)
 
     def test_a_refresh_cut_by_the_first_ctrl_c_answers_no_link_and_one_by_the_second_raises(self):
-        stop = cli.Stopping(threading.Event(), threading.Event())
+        stop = _run.Stop()
 
         def files():
             raise KeyboardInterrupt
@@ -810,7 +807,7 @@ class RefreshTest(JobCase):
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
         self.assertEqual(len(self.fetched(f"{CDN}/C1abc_0.jpg")), 1)
         self.assertEqual(len(self.fetched(f"{API}/users/42/posts")), 2)
-        self.assertIn("x posts/2026-01-02_C1abc_0.jpg: GET https://cdn.example/C1abc_0.jpg: HTTP 403", self.lines())
+        self.assertIn("2026-01-02_C1abc_0.jpg: GET https://cdn.example/C1abc_0.jpg: HTTP 403", self.failures())
 
 
 class CtrlCTest(JobCase):
@@ -823,7 +820,7 @@ class CtrlCTest(JobCase):
 
     def setUp(self):
         super().setUp()
-        self.stop = cli.Stopping(threading.Event(), threading.Event())
+        self.stop = _run.Stop()
         self.boards = []
         real = job.download
 
@@ -903,7 +900,6 @@ class CtrlCTest(JobCase):
         # Post 2 was queued but not started, so it was dropped; nothing past post 3 was listed.
         self.assertEqual(self.fetched(f"{CDN}/2.7z"), [])
         self.assertEqual(listed, [1, 2, 3])
-        self.assertIn("x slw:example_user: stopped", self.lines())
 
     def note(self, board, target):
         """The note under the target's posts line, or None before it opens."""
@@ -1318,7 +1314,7 @@ class BoardTest(unittest.TestCase):
 
 
 class VerboseTest(EngineCase):
-    """Without -v only the status lines; with it, every file's line and each skip as well."""
+    """The engine logs no rows (the CLI draws a run from its events); -v adds its debug lines."""
 
     def setUp(self):
         super().setUp()
@@ -1327,16 +1323,18 @@ class VerboseTest(EngineCase):
         self.source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg"),
                                                 File(f"{CDN}/b.jpg", name="b.jpg")])
 
-    def test_at_info_a_run_prints_its_status_lines_only(self):
+    def test_at_info_a_run_prints_no_rows_and_no_debug_lines(self):
         self.run_engine(self.source, targets=["aaa:example_user"])
         lines = self.lines()
         self.assertFalse(any(line.startswith(". ") for line in lines), lines)
-        self.assertTrue(any("aaa:example_user posts" in line for line in lines), lines)
+        self.assertFalse(any("a.jpg" in line or "posts" in line for line in lines), lines)
+        self.assertIn(("aaa:example_user", "posts"), self.listed())
 
-    def test_under_v_each_file_and_skip_is_written_too(self):
+    def test_under_v_each_target_and_skip_is_written(self):
         ui.level = "debug"
         self.run_engine(self.source, targets=["aaa:example_user"])
-        self.assertIn("+ a.jpg", self.lines())
+        self.assertTrue(any(line.startswith(". aaa:example_user: 2 files saved")
+                            for line in self.lines()), self.lines())
         self.dest.truncate(0)
         self.dest.seek(0)
         self.run_engine(self.source, targets=["aaa:example_user"])

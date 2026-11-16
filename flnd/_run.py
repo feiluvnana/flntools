@@ -44,7 +44,7 @@ from flnd._events import Failed, Planned, Report, Saved, Skipped
 if TYPE_CHECKING:
     from flnd._events import Event
 
-__all__ = ["Run", "Stop"]
+__all__ = ["Run", "Stop", "stopping"]
 
 # How many events wait for the reader before the run waits for it. Large enough that a reader
 # printing a line per event never slows a download down; small enough to bound memory.
@@ -60,8 +60,9 @@ STOPPED = "stopped by Ctrl-C"
 class Stop:
     """A run's two-stage stop state: `soon` stops listing, `now` cancels what is in flight.
 
-    It has the shape of the engine's `Stopping` (two events) without importing the CLI's
-    module, which imports a command-line framework.
+    The engine, the job and the sites all watch the same `Stop`: a listing checks `soon`
+    between posts, and a transfer checks `now` between chunks. Who sets it: `stopping`'s
+    Ctrl-C handler, `Run.stop()`, or a test.
 
     Example:
         >>> stop = Stop()
@@ -371,26 +372,40 @@ class Run:
             raise Stopped(STOPPED) from None
         raise error
 
-    @contextlib.contextmanager
-    def _interrupts(self) -> Iterator[None]:
-        """While the reader waits on the main thread, Ctrl-C stops the run in two stages.
+    def _interrupts(self) -> contextlib.AbstractContextManager[Stop]:
+        """While the reader waits on the main thread, Ctrl-C stops the run in two stages."""
+        return stopping(self._stop)
 
-        On any other thread nothing is installed: Python runs signal handlers on the main
-        thread alone, and there Ctrl-C is the caller's to handle.
 
-        Yields:
-            Nothing; the handler is in place for the block, and the old one comes back after.
-        """
-        if threading.current_thread() is not threading.main_thread():
-            yield
-            return
-        stop = self._stop
+@contextlib.contextmanager
+def stopping(state: Stop | None = None) -> Iterator[Stop]:
+    """Make Ctrl-C stop in two stages for the block: the first sets `soon`, the second `now`.
 
-        def handle(_signum: int, _frame: Any) -> None:
-            (stop.now if stop.soon.is_set() else stop.soon).set()
+    Only the main thread can install a signal handler: Python runs handlers there alone. On
+    any other thread (a run's worker) the state is yielded as it is, and whoever owns it sets
+    it: the reader of the run, which installs the handler on its own thread, or `Run.stop()`.
 
-        previous = signal.signal(signal.SIGINT, handle)
-        try:
-            yield
-        finally:
-            signal.signal(signal.SIGINT, previous)
+    Args:
+        state: the stop state to set; None makes a new one.
+
+    Yields:
+        The state. The old handler comes back when the block ends.
+
+    Example:
+        >>> with stopping() as stop:
+        ...     stop.soon.is_set()
+        False
+    """
+    state = state or Stop()
+    if threading.current_thread() is not threading.main_thread():
+        yield state
+        return
+
+    def handle(_signum: int, _frame: Any) -> None:
+        (state.now if state.soon.is_set() else state.soon).set()
+
+    previous = signal.signal(signal.SIGINT, handle)
+    try:
+        yield state
+    finally:
+        signal.signal(signal.SIGINT, previous)

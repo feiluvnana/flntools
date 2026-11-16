@@ -509,33 +509,32 @@ class LinkTest(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------
 
 def cli_words() -> list[str]:
-    """Every command the CLI has, as typed (`flnd target ls`), and every option it parses.
+    """Every command the CLI has, as typed (`flnd download`), and every flag it parses.
 
-    The CLI is built on cyclopts today. An option is a keyword-only parameter's own names
-    (`--from`, `-v`, `--verbose`); the negatives cyclopts adds by itself (`--no-sync`,
-    `--empty-from`) and a positional's `--targets` spelling are left out, since nobody types
-    them. When the CLI moves to argparse, only this function changes.
+    Read from the argparse parser itself (`flnd.cli.parser`): the top parser's flags, then each
+    command's name and its own flags (`--only`, `-v`, `--verbose`). Positionals (`target`) and
+    `--help`'s `-h` spelling are left out: the page shows them in each command's usage line.
 
     Returns:
         The words `docs/cli.md` must contain, in command order.
     """
-    from flnd.cli import app
+    import argparse
 
-    words = ["--help", "--version"]
+    from flnd.cli import parser
 
-    def walk(command, path: list[str]) -> None:
-        for name in command:
-            if name.startswith("-") or command[name] is command:
-                continue
-            sub = command[name]
-            words.append(" ".join(["flnd", *path, name]))
-            with contextlib.suppress(ValueError):  # a group without a default command
-                for argument in sub.assemble_argument_collection():
-                    if argument.field_info.kind is inspect.Parameter.KEYWORD_ONLY:
-                        words.extend(argument.parameter.name)
-            walk(sub, [*path, name])
+    top = parser()
+    words: list[str] = []
 
-    walk(app.raw, [])
+    def flags(command: argparse.ArgumentParser) -> None:
+        for action in command._actions:
+            words.extend(flag for flag in action.option_strings if flag != "-h")
+
+    flags(top)
+    for action in top._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, command in action.choices.items():
+                words.append(f"flnd {name}")
+                flags(command)
     return list(dict.fromkeys(words))
 
 

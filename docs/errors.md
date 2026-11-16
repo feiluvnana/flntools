@@ -26,7 +26,7 @@ flnd.Stopped               Ctrl-C: a KeyboardInterrupt, never an Error
 Each error has:
 
 - **its message**, `str(error)`: one line, with no secret in it;
-- **`hint`**: what to do, as a command when there is one (`run flnd auth login`); `""` when
+- **`hint`**: what to do, as a command when there is one (`run flnd login <code>`); `""` when
   there is nothing to suggest;
 - **`target`**: the target it is about, as written (`ins:example_user`), or `None`;
 - **`retryable`**: whether trying again later may work. Whoever raises the error sets it, from
@@ -95,7 +95,7 @@ and one line saying what to do:
 
 ```
 x ins:example_user: not logged in
-• ins:example_user: run flnd auth login
+• ins:example_user: run flnd login ins
 ```
 
 An unexpected exception is a bug. The CLI prints one line naming a crash file,
@@ -118,7 +118,7 @@ prints instead. A bug inside one target's listing doesn't stop the run: it becom
   summary at the end of a run.
 - A sample of a response that didn't parse, saved scrubbed to `logs/<run>/samples/`.
 - One cookie refresh from the browser before a 401 or 403 becomes a `LoginError`.
-- Recording a `NotFound` item as gone, so a later run doesn't ask again unless `--again`.
+- Recording a `NotFound` item as gone, so a later run doesn't ask again.
 - The third stage of Ctrl-C; today the first stops listing and finishes the files in progress,
   and the second stops at once ([cli.md](cli.md#ctrl-c)).
 
@@ -126,10 +126,10 @@ prints instead. A bug inside one target's listing doesn't stop the run: it becom
 
 | message | meaning | fix |
 | --- | --- | --- |
-| `--from is required (use all, or …)` | a profile, chat or search needs its categories | add `--from all`, or name the categories |
-| `<target>: not logged in` | the source requires a login | `flnd auth login` |
+| `--only applies to profiles and chats; <target> is one post` | a single post has no categories | leave `--only` out |
+| `<target>: not logged in` | the source requires a login | `flnd login <code>` |
 | `<code>: not logged in, using public access` | a warning: only public posts are listed | log in to get more |
-| `<code>: the site refused the login (HTTP 403)` | the saved login expired or was revoked | `flnd auth login` |
+| `<code>: the site refused the login (HTTP 403)` | the saved login expired or was revoked | `flnd login <code>` |
 | `which source is "<text>"?` | a bare name, not a link, without a source | write it as `<code>:<text>` |
 | `got a web page instead of a photo` | the site answered a file request with a page | usually a login wall: log in again |
 | `held by another writer` | another flnd run is using the same home | wait for it to end |

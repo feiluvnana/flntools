@@ -116,7 +116,8 @@ class Telegram(Source):
         """Log in by browser, qr, or phone, and keep the session."""
         # qr and phone ask questions, which a run with no terminal can't answer.
         if method != "browser" and not login.interactive:
-            msg = f"tlg: the {method} login asks questions; run flnd login in a terminal"
+            msg = (f"tlg: the {method} login asks questions; "
+                   f"run flnd login tlg {method} in a terminal")
             raise LoginError(msg)
         api_id, api_hash = credentials(login)
         # Browser login starts from Telegram Web's session; qr and phone add a new device.
@@ -140,7 +141,7 @@ class Telegram(Source):
         try:
             # The stored session can be revoked (a logout elsewhere); then only a new login helps.
             if not await client.is_user_authorized():
-                raise LoginError("the saved login no longer works; run flnd login")
+                raise LoginError("the saved login no longer works; run flnd login tlg")
             yield client
         # Disconnected even when the run stops early, so no connection outlives the source.
         finally:
@@ -394,7 +395,7 @@ def credentials(login: Login) -> tuple[int, str]:
     if "api_id" in secrets and "api_hash" in secrets:
         return int(secrets["api_id"]), secrets["api_hash"]
     if not login.interactive:
-        raise LoginError("tlg: no api_id and api_hash yet; run flnd login in a terminal")
+        raise LoginError("tlg: no api_id and api_hash yet; run flnd login tlg in a terminal")
     where = "From my.telegram.org, under API development tools"
     api_id = login.ask("Telegram api_id", description=where).strip()
     if not api_id.isdigit():
@@ -447,7 +448,7 @@ async def by_qr(login: Login, client: Any) -> None:
             await qr.recreate()
         except SessionPasswordNeededError:
             return await two_step(login, client)
-    raise LoginError("tlg: no QR code was scanned; run flnd login again")
+    raise LoginError("tlg: no QR code was scanned; run flnd login tlg qr again")
 
 
 async def by_phone(login: Login, client: Any) -> None:

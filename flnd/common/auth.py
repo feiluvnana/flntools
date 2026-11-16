@@ -61,7 +61,7 @@ KEY_WAIT = 2.0
 # How often a short key file is read again while waiting, in seconds.
 KEY_POLL = 0.01
 # What a damaged key file says to do. Every login sealed with it is lost with it.
-DAMAGED_KEY = "delete it, then log in again: flnd auth login"
+DAMAGED_KEY = "delete it, then log in again: flnd login <source>"
 
 
 def from_browser(source: Source, *, browser: str, profile: str | None = None) -> _cookies.Jar:

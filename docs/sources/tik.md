@@ -7,7 +7,7 @@ from TikTok's public embed page over plain HTTP, without a browser. No login is 
 one, flnd warns and uses public access.
 
 A *target* is what you give `flnd download`; a *category* is one part of a target, chosen with
-`--from`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
+`--only`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
 
@@ -28,7 +28,7 @@ matches no route; the engine follows its redirect once and reads the link it lan
 ## Categories
 
 These belong to the `user` route. A single post (`video`) has no categories and is downloaded
-whole; `--from` with one is a usage error.
+whole; `--only` with one is a usage error.
 
 | Category | What it holds |
 | --- | --- |
@@ -40,13 +40,14 @@ whole; `--from` with one is a usage error.
 | `favorites` | the Favorites tab, when the account made it public |
 | `profile` | the profile picture |
 
-There is no default category. For a profile, `--from` is required: name one or more categories,
-or `all` for every one, in the order above.
+Without `--only` a profile gets every category, in the order above; `--only` names one or
+more of them.
 
 ## Logging in
 
-`flnd auth login` offers two methods: `browser` (read the cookies of an installed browser) and
-`file` (a Netscape `cookies.txt` or JSON cookie file). A login is proven by a `sessionid` or
+`flnd login tik <how>` takes a browser (read the cookies of an installed browser, such as
+`chrome`) or a cookie file's path (a Netscape `cookies.txt` or JSON cookie file). A login is
+proven by a `sessionid` or
 `sid_tt` cookie for `tiktok.com`.
 
 Nothing in the source needs a login. Without one, flnd prints a warning and reads what is public.
@@ -54,7 +55,7 @@ With one, the saved cookies are loaded into the browser, and the `sessionid` (wi
 `tt_chain_token` when the jar has one) is sent to TikTok's CDN with every file.
 
 When a run starts, flnd warns if a login cookie has expired or expires within 24 hours. After a
-run, cookies the site refreshed are written back into the saved login. `flnd auth ls` shows which
+run, cookies the site refreshed are written back into the saved login. `flnd login` shows which
 login cookies are about to expire. An expired login is not detected otherwise: TikTok then serves
 what a logged-out visitor sees.
 
@@ -127,7 +128,7 @@ Files go under `.flnd/media/tik/<target>/`, where `<target>` is the user name or
   unsolved captcha fails the target. Captcha detection handled since 2026-11-11; the back-off
   and reload since 2026-11-12.
 - **Pinned videos** sit at the top of the post list, out of date order. `videos` stops scrolling
-  only after 5 posts in a row older than `--time`'s start, or 5 already-saved posts in a row, so
+  only after 5 posts in a row older than `--when`'s start, or 5 already-saved posts in a row, so
   a few old pinned posts don't end the list. Handled since 2026-11-14.
 - **Photo posts** come as one item per photo, all with the post's id. Each post counts once toward
   those streaks. Handled since 2026-11-16.

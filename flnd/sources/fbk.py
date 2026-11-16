@@ -302,7 +302,7 @@ def read_page(site: Site, url: str) -> list[Any] | None:
         if urlsplit(site.url).path.split("/")[1:2] in (["login"], ["login.php"]):
             if walls >= WALL_ATTEMPTS:
                 raise LoginError("fbk: Facebook kept asking for a login",
-                                 hint="run flnd auth login, then try again")
+                                 hint="run flnd login fbk, then try again")
             walls += 1
             site.back_off(LOGIN_WALL)
             continue

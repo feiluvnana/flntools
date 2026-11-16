@@ -5,8 +5,8 @@ Three groups of tests:
    the tree and its `hint`, `target` and `retryable`.
 2. `PolicyTest`: one test per row of the policy table, through the real HTTP client, the job
    and the engine, on a fake network and a fake clock.
-3. `CliTest`: the exit code of each class, and that a person's mistake (usage, login, disk, a
-   tool) prints one line and a hint, never a traceback, while a bug writes a crash file.
+3. `CliTest`: a usage error, and a login a source needs, through a whole download; the exit
+   code of each class and the crash file are tests/test_cli.py's.
 
 The network, the clock and the browser are faked; nothing here touches a real site.
 """
@@ -25,7 +25,7 @@ import httpx
 import flnd
 from flnd import job, sources
 from flnd import _files
-from flnd import _cli as cli, _http as http, _time as clock, _tools
+from flnd import _http as http, _time as clock, _tools
 from flnd.errors import (
     Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError, SourceError,
     Stopped, ToolError, UsageError, classify, disk,
@@ -99,7 +99,7 @@ class ClassesTest(HttpCase):
         made = job.failure(self.refusal(403, "https://api.aaa.example/me"),
                            Target("aaa", "user", "example_user"), make_source("aaa")())
         self.assertIsInstance(made, LoginError)
-        self.assertIn("flnd auth login", made.hint)
+        self.assertIn("flnd login aaa", made.hint)
         self.assertEqual(made.target, "aaa:example_user")
         self.assertFalse(made.retryable)
 
@@ -300,7 +300,7 @@ class PolicyEngineTest(EngineCase):
         report = self.report(source, targets=["aaa:example_user"])
         self.assertEqual([path.name for path in report.targets[0].written], ["good.jpg"])
         self.assertIsNone(report.targets[0].error)
-        self.assertIn("x bad.jpg: GET https://cdn.example/bad.jpg: HTTP 503", self.lines())
+        self.assertEqual(self.failures(), ["bad.jpg: GET https://cdn.example/bad.jpg: HTTP 503"])
 
     def test_a_refused_login_stops_its_source_and_the_others_go_on(self):
         self.routes["https://api.aaa.example/me"] = httpx.Response(403)
@@ -331,57 +331,15 @@ class PolicyEngineTest(EngineCase):
 # ---------------------------------------------------------------------------------------------
 
 class CliTest(FlndCase):
+    """The exit code of each class is `tests/test_cli.py`'s; these go through a whole download."""
+
     def setUp(self):
         super().setUp()
         self.enterContext(clock.use(clock.Fake()))
 
-    def app(self, error: BaseException) -> cli.App:
-        """An app whose one command raises `error`, crashing into `.flnd/logs`."""
-        app = cli.App(name="demo", logs=Path(".flnd/logs"))
-
-        @app.command
-        def fail(*, verbose: bool = False) -> int:
-            raise error
-
-        return app
-
-    def run_demo(self, error: BaseException, *argv: str) -> tuple[int, str]:
-        code, _, out = self.run_with(self.app(error), "fail", *argv)
-        return code, out
-
-    def run_with(self, app: cli.App, *argv: str) -> tuple[int, str, str]:
-        stdout = io.StringIO()
-        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", self.dest):
-            code = app.run(list(argv))
-        return code, stdout.getvalue(), self.dest.getvalue()
-
-    def test_each_class_has_its_exit_code(self):
-        cases = [(UsageError("bad flag"), 2), (LoginError("not logged in"), 3),
-                 (SiteError("refused"), 1), (NotFound("gone"), 1), (NetworkError("reset"), 1),
-                 (DiskError("full"), 4), (ToolError("no ffmpeg"), 4), (SourceError("bug"), 4),
-                 (Stopped("stopped"), 130), (KeyboardInterrupt(), 130), (RuntimeError("bug"), 4)]
-        for error, code in cases:
-            with self.subTest(type(error).__name__):
-                self.assertEqual(self.run_demo(error)[0], code)
-                self.assertEqual(cli.exit_code(error), code)
-        self.assertEqual(cli.exit_code(None), 0)
-
-    def test_a_persons_mistake_is_one_line_and_a_hint_never_a_traceback(self):
-        for error in (UsageError("give at least one target", hint="flnd download ins:example_user"),
-                      LoginError("ins: not logged in", hint="run flnd auth login"),
-                      DiskError("media: No space left on device", hint="free some space"),
-                      ToolError("ffmpeg: executable not found", hint="install ffmpeg")):
-            self.dest.seek(0)
-            self.dest.truncate()
-            with self.subTest(type(error).__name__):
-                _, out = self.run_demo(error)
-                self.assertEqual(out.splitlines(), [f"x {error}", f"* {error.hint}"])
-                self.assertNotIn("Traceback", out)
-                self.assertFalse(Path(".flnd/logs").exists())
-
     def test_a_usage_error_from_flnd_itself_has_no_traceback(self):
         with mock.patch.dict(sources.SOURCES, {"aaa": make_source("aaa")}):
-            for argv in (("download", "aaa:example_user", "--time", "yesterday"),
+            for argv in (("download", "aaa:example_user", "--when", "yesterday"),
                          ("download", "nosuchsource:example_user"), ("download", "--no-such-flag")):
                 self.dest.seek(0)
                 self.dest.truncate()
@@ -389,33 +347,16 @@ class CliTest(FlndCase):
                     code, _, out = self.run_app(*argv)
                     self.assertEqual(code, 2)
                     self.assertNotIn("Traceback", out)
-                    errors = [line for line in out.splitlines() if line.startswith("x ")]
+                    errors = [line for line in out.splitlines() if "error: " in line]
                     self.assertEqual(len(errors), 1)
 
     def test_a_login_the_source_needs_exits_3(self):
         source = make_source("aaa", needs=("sid",), requires_login=True)
         with mock.patch.dict(sources.SOURCES, {"aaa": source}):
-            code, _, out = self.run_app("download", "aaa:example_user", "--from", "all")
+            code, out, err = self.run_app("download", "aaa:example_user", "--ui", "plain")
         self.assertEqual(code, 3)
-        self.assertIn("* aaa:example_user: run flnd auth login", out)
-        self.assertNotIn("Traceback", out)
-
-    def test_a_bug_writes_a_crash_file_and_exits_4(self):
-        code, out = self.run_demo(RuntimeError("an example bug"))
-        self.assertEqual(code, 4)
-        crashes = list(Path(".flnd/logs").glob("crash-*.txt"))
-        self.assertEqual(len(crashes), 1)
-        self.assertIn("Traceback", crashes[0].read_text(encoding="utf-8"))
-        self.assertEqual(out.splitlines(),
-                         ["x unexpected RuntimeError: an example bug; "
-                          f"the details are in {crashes[0]}"])
-
-    def test_with_verbose_a_bug_prints_its_traceback_instead(self):
-        code, out = self.run_demo(RuntimeError("an example bug"), "--verbose")
-        self.assertEqual(code, 4)
-        self.assertIn("Traceback", out)
-        self.assertIn("RuntimeError: an example bug", out)
-        self.assertFalse(Path(".flnd/logs").exists())
+        self.assertIn("  run flnd login aaa", out)
+        self.assertNotIn("Traceback", out + err)
 
 
 def _folder():

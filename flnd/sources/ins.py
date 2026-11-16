@@ -427,7 +427,7 @@ class Api:
         found = user.get("pk") or user.get("id") if isinstance(user, dict) else None
         if found:
             return str(found)
-        raise LoginError("ins: not logged in; run flnd auth login")
+        raise LoginError("ins: not logged in; run flnd login ins")
 
     def _refused(self, site: Site, api: str) -> bool:
         """Whether `api` was refused this run, or in an earlier run less than a day ago."""
@@ -476,7 +476,7 @@ class Api:
                 # A SiteError, not a LoginError: the caller falls back to the post's page, which
                 # a wall on the API alone doesn't stop. A listing it ends is a login problem.
                 raise SiteError(f"{who}: Instagram showed a login wall",
-                                hint="run flnd auth login, then try again")
+                                hint="run flnd login ins, then try again")
             site.back_off("Instagram showed a login wall")
             return walls + 1
         return None
@@ -631,7 +631,7 @@ def load(site: Site, url: str) -> bool:
         if walls >= WALL_ATTEMPTS:
             raise LoginError(
                 "ins: Instagram kept showing a login wall or challenge; "
-                "check it in a browser or run flnd auth login ins"
+                "check it in a browser or run flnd login ins"
             )
         walls += 1
         # Throttled session is sent to login wall or challenge; lifts after wait.

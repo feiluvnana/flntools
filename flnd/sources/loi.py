@@ -122,7 +122,7 @@ class Loibus(Source):
     def _links(self, site: Site, post: dict[str, Any]) -> dict[str, Any] | None:
         """The post's decrypted download links, or None with a warning when unavailable."""
         if not decode_token(site.cookies.get("access-token", "")):
-            site.warn("archives need a login; run flnd auth login")
+            site.warn("archives need a login; run flnd login loi")
             return None
         used, limit = quota(site, post["id"])
         # A limit of 0 means unknown (see `quota`), so only a known, used-up quota stops links.

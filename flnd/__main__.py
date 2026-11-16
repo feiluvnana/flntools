@@ -1,6 +1,6 @@
-"""Entrypoint for `python -m flnd`."""
+"""`python -m flnd`: the command line, as the `flnd` script runs it."""
 
-from flnd.cli import app
+from flnd.cli import main
 
 if __name__ == "__main__":
-    raise SystemExit(app.run())
+    raise SystemExit(main())

@@ -278,7 +278,7 @@ def validate(
     from_selection: str | Sequence[str] | None = None,
     targets: Sequence[Target] = (),
 ) -> None:
-    """Validate `--from` categories and `@target` folder templates before any run work."""
+    """Validate `--only` categories and `@target` folder templates before any run work."""
     by_code = ({code: src for code, src in sources.items()} if isinstance(sources, Mapping)
                else {src.code: src for src in sources})
     _validate_folders(list(by_code.values()))
@@ -338,7 +338,7 @@ def _validate_from(
     from_selection: str | Sequence[str],
     targets: Sequence[Target],
 ) -> None:
-    """Validate `--from` category names against target routes' `from_` sets."""
+    """Validate `--only` category names against target routes' `from_` sets."""
     raw = [from_selection] if isinstance(from_selection, str) else list(from_selection)
     if not raw:
         return
@@ -346,7 +346,7 @@ def _validate_from(
     for target, route in routes:
         if not _route_from(route) and not route.discovers:
             raise UsageError(
-                f"--from applies to profiles and chats; {target} is one post, downloaded whole"
+                f"--only applies to profiles and chats; {target} is one post, downloaded whole"
             )
     if routes:
         known = {cat for target, route in routes for cat in (
@@ -363,7 +363,7 @@ def _validate_from(
 def _check_from_entry(
     entry: str, by_code: Mapping[str, type[Source]], known: set[str]
 ) -> None:
-    """Validate one `--from` entry (`<cat>` or `<source>:<cats>`)."""
+    """Validate one `--only` entry (`<cat>` or `<source>:<cats>`)."""
     code, sep, rest = entry.partition(":")
     if sep and code in by_code:
         src_cats = {cat for route in by_code[code].routes for cat in _route_from(route)}
@@ -373,9 +373,9 @@ def _check_from_entry(
         names = [part.strip() for part in entry.split(",") if part.strip()]
         bad = [name for name in names if name != ALL and name not in known]
     if not names:
-        raise UsageError(f"--from {entry!r} has no category name")
+        raise UsageError(f"--only {entry!r} has no category name")
     if bad:
-        raise UsageError(f"unknown --from category {', '.join(map(repr, bad))}")
+        raise UsageError(f"unknown --only category {', '.join(map(repr, bad))}")
 
 
 def _target_routes(

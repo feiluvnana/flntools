@@ -10,9 +10,9 @@ The rules:
    `flnd.sources.common` package, `flnd` itself (its version) and the toolkit: the private
    `flnd._x` modules that used to be the `shared` package;
 2. `flnd.source` imports nothing from flnd but the toolkit: it is what sources see, not the engine;
-3. `flnd/cli.py` imports from flnd only `flnd` (the library), `flnd.engine` (until the CLI is
-   rebuilt on the library), `flnd.sources` (for help and login's list) and the toolkit: every
-   decision is the engine's, so the CLI only parses, asks and prints;
+3. `flnd/cli.py` imports from flnd only `flnd` (the library), `flnd.sources._manifest` (the
+   sources as data, for help) and the toolkit (`flnd._prompt`, `flnd._ui`, `flnd._events` for
+   JSON): every decision is the library's, so the CLI only parses, asks and prints;
 4. nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it;
 5. a library module (`LIBRARIES` below: HTTP, browser, files, archives, tools, cookies, vault,
    store, HTML, text, time, prompts, progress, media) imports from flnd only other library modules
@@ -30,9 +30,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FLND = ROOT / "flnd"
 
-# Rule 3: everything cli.py may import from flnd, besides the toolkit. `flnd.engine` is there
-# until the CLI is rebuilt on the library (`flnd.open`), which then has every command.
-CLI_ALLOWED = {"flnd", "flnd.sources", "flnd.engine"}
+# Rule 3: everything cli.py may import from flnd, besides the toolkit.
+CLI_ALLOWED = {"flnd", "flnd.sources._manifest"}
 
 
 def toolkit(name: str) -> bool:
@@ -112,7 +111,7 @@ class LayersTest(unittest.TestCase):
     def test_flnd_source_imports_nothing_from_the_engine_side(self):
         self.assertEqual(sorted(found for found in flnd_imports(FLND / "source.py") if not toolkit(found)), [])
 
-    def test_the_cli_imports_the_engine_api_the_toolkit_and_the_sources(self):
+    def test_the_cli_imports_the_library_the_toolkit_and_the_manifest(self):
         self.assertEqual(sorted(found for found in flnd_imports(FLND / "cli.py")
                                 if found not in CLI_ALLOWED and not toolkit(found)), [])
 

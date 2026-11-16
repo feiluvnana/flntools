@@ -26,9 +26,9 @@ Every `x.com` form also works on `twitter.com`. The `post` patterns are tried be
 
 ## Categories
 
-A *category* is one part of a profile that can be downloaded on its own. Today
-[`--from`](../cli.md) is required for a profile: name the categories, or `--from all` for every
-one. `--from` is refused for a `post` target, which is always downloaded whole.
+A *category* is one part of a profile that can be downloaded on its own. Without
+[`--only`](../cli.md) a profile gets every category; `--only` names some of them.
+`--only` is refused for a `post` target, which is always downloaded whole.
 
 | Category | What it holds |
 | --- | --- |
@@ -40,7 +40,7 @@ one. `--from` is refused for a `post` target, which is always downloaded whole.
 | `profile` | The avatar at its original size and the banner at its largest |
 
 The *newest first* categories stop early after 5 tweets with media in a row that are already
-saved, or 5 tweets in a row older than the start of `--time` (which covers a pinned tweet).
+saved, or 5 tweets in a row older than the start of `--when` (which covers a pinned tweet).
 `highlights` and `reposts` come in the order they were added, so they are read to the end.
 
 Every category but `reposts` leaves retweets out. A tweet's files include the media of a tweet
@@ -48,7 +48,8 @@ it quotes and its card's image.
 
 ## Logging in
 
-`flnd auth login` asks for the site, then for a method:
+`flnd login twt <how>` takes a browser or a cookie file's path. Left out in a terminal,
+the way is asked with numbered choices:
 
 - **From your browser**: reads X's cookies from Chrome, Firefox, Edge, Brave or Chromium.
 - **From a cookie file**: reads a Netscape `cookies.txt` or a JSON export.
@@ -61,7 +62,7 @@ and checks as a CSRF token.
 Without a login, flnd still tries the API and the pages. When a run starts, flnd warns if
 `auth_token` has expired or will expire within a day. When a tab lands on `/i/flow/login`,
 `/login` or `/account/access`, the run stops at once with "X asked for a login or locked this
-account; check it in a browser or run flnd auth login twt".
+account; check it in a browser or run flnd login twt".
 
 ## How it fetches
 

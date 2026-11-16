@@ -54,10 +54,10 @@ def loaded_after(code: str) -> set[str]:
     return set(result.stdout.split())
 
 
-# What only a command may load: the engine, the network, the browser, the screen and the CLI's
-# framework. `import flnd` must load none of them, or every script and `flnd --help` pays.
-HEAVY = {"flnd.engine", "flnd.job", "flnd.site", "httpx", "playwright", "rich", "cyclopts",
-         "curl_cffi", "msgspec"}
+# What only a command may load: the engine, the network, the browser and the screen. `import
+# flnd` must load none of them, or every script and `flnd --help` pays.
+HEAVY = {"flnd.engine", "flnd.job", "flnd.site", "httpx", "playwright", "rich", "curl_cffi",
+         "msgspec"}
 
 
 class LazyImportTest(unittest.TestCase):

@@ -50,7 +50,7 @@ class SyncCase(EngineCase):
 
     def engine(self, source=None):
         source = source or self.site.source()
-        return Engine(home=self.home, sources={source.code: source})
+        return Engine(home=self.home, sources={source.code: source}, emit=self.events.append)
 
     def download(self, options=Options(), source=None, texts=("aaa:a",), sync=True):
         """`Engine.download` with `options`' --from and --time."""
@@ -150,8 +150,8 @@ class SummaryTest(SyncCase):
         lines = self.sync(source=gone.source())
         self.assertEqual([(str(line.target), len(line.written)) for line in lines],
                          [("aaa:a", 0), ("aaa:b", 0)])
-        summary = [line for line in self.lines() if "aaa:a posts |" in line or "aaa:b posts |" in line]
-        self.assertEqual(len(summary), 2, self.lines())
+        # Each target's listing ends with its counts, which the CLI shows as its line.
+        self.assertTrue({("aaa:a", "posts"), ("aaa:b", "posts")} <= self.listed())
 
 
 class SavedRunStopTest(SyncCase):

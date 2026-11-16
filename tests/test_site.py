@@ -28,7 +28,7 @@ from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import SiteError, File, Site, Target
 from flnd.sources.common.feed import warm_tabs
 from flnd.sources.common.relay import meta_results
-from flnd import _cli as cli, _time as clock, _cookies as cookies, _http as http
+from flnd import _run, _time as clock, _cookies as cookies, _http as http
 from flnd._ui import ui
 from flnd._browser import Page
 from flnd.errors import Blocked, SourceError, UsageError
@@ -121,7 +121,7 @@ class SiteCase(unittest.TestCase):
         folder = TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.home = Path(folder.name) / ".flnd"
-        self.stop = cli.Stopping(soon=threading.Event(), now=threading.Event())
+        self.stop = _run.Stop()
         self.requests = []
         self.raw = FakeRaw([200])
         # What each tab gets: this test's `raw` by default; a fresh one per tab for the tab tests.
@@ -180,10 +180,10 @@ class ExpiringLoginTest(SiteCase):
         now = clock.wall()
         self.save(token=now + 3600, other=now + 60)
         self.open()
-        self.assertEqual(self.lines(), ["! exm: the login cookie token expires in 1h; run flnd login again soon"])
+        self.assertEqual(self.lines(), ["! exm: the login cookie token expires in 1h; run flnd login exm again soon"])
         self.save(token=now - 1000)
         self.open()
-        self.assertEqual(self.lines()[-1], "! exm: the login cookie token has expired; run flnd login again")
+        self.assertEqual(self.lines()[-1], "! exm: the login cookie token has expired; run flnd login exm again")
         self.assertNotIn("secret-value", "\n".join(self.lines()))
 
     def test_a_login_cookie_far_from_expiry_or_for_the_session_says_nothing(self):

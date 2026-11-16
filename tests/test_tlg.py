@@ -25,7 +25,7 @@ from unittest import mock
 from fakes import FakeSite, collect
 from playwright.sync_api import Error as PlaywrightError
 from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswordNeededError
-from test_commands import FlndCase
+from test_commands import FlndCase, Stdin
 from test_engine import EngineCase, make_source
 
 from flnd.common import auth, net
@@ -35,6 +35,7 @@ from flnd.source import LoginError, Target, UsageError
 from flnd.sources import tlg
 from flnd.sources.tlg import QR_CODES, Telegram, fetcher, from_web_storage, half_blocks, read_telegram_web
 from flnd import _text as text
+from flnd._events import Progress
 
 DAY = datetime.date(2026, 1, 5)
 SESSION = "1FAKE-SESSION-aGVsbG8"
@@ -460,7 +461,7 @@ class LoginTest(LoginCase):
     def test_qr_never_scanned(self):
         self.telegram.qr_outcomes = ["timeout"] * QR_CODES
         self.answer(*CREDENTIALS.values())
-        with self.assertRaisesRegex(LoginError, "no QR code was scanned; run flnd login again"):
+        with self.assertRaisesRegex(LoginError, "no QR code was scanned; run flnd login tlg qr again"):
             self.log_in("qr")
         self.assertEqual(stored(self.home), {})
 
@@ -500,14 +501,14 @@ class LoginTest(LoginCase):
             with self.subTest(method=method), \
                     mock.patch("sys.stdin.isatty", return_value=False), \
                     self.assertRaisesRegex(
-                        LoginError, f"the {method} login asks questions; run flnd login in a terminal"):
+                        LoginError, f"the {method} login asks questions; run flnd login tlg {method} in a terminal"):
                 self.log_in(method)
         self.assertEqual(self.telegram.clients, [])
         with auth.secrets(self.home, "tlg") as secrets:
             secrets.clear()
         with mock.patch("sys.stdin.isatty", return_value=False), \
                 self.assertRaisesRegex(
-                    LoginError, "no api_id and api_hash yet; run flnd login in a terminal"):
+                    LoginError, "no api_id and api_hash yet; run flnd login tlg in a terminal"):
             self.log_in("browser")
 
     def test_logged_in_is_a_stored_session(self):
@@ -519,51 +520,35 @@ class LoginTest(LoginCase):
 
 
 class LoginCommandTest(FlndCase):
-    def choose_telegram(self, *choices):
-        """Pick Telegram and then `choices` in `flnd auth login`."""
-        from flnd._ui import ui
-
-        p = mock.patch("flnd._prompt.choose", side_effect=["tlg", *choices])
-        tty = mock.patch.object(ui.raw, "_force_terminal", True)
-        p.start()
-        tty.start()
-        self.addCleanup(tty.stop)
-        self.addCleanup(p.stop)
-
-    def test_the_source_then_the_method_is_asked(self):
+    def test_the_way_is_named_or_asked(self):
         methods = []
-        self.choose_telegram("qr")
         with mock.patch.object(Telegram, "login", lambda self, session, method: methods.append(method)):
-            self.assertEqual(self.run_app("auth", "login")[0], 0)
-        self.assertEqual(methods, ["qr"])
+            self.assertEqual(self.run_app("login", "tlg", "qr")[0], 0)
+            # Left out, the way is asked with numbered choices: tlg's own ways.
+            self.stdin.stop()
+            self.stdin = mock.patch("sys.stdin", Stdin("3\n", tty=True))
+            self.stdin.start()
+            code, _, err = self.run_app("login", "tlg")
+        self.assertEqual(code, 0)
+        self.assertIn("  1. browser\n  2. qr\n  3. phone", err)
+        self.assertEqual(methods, ["qr", "phone"])
 
     def test_a_failed_login_is_reported(self):
         def refuse(self, session, method):
-            raise LoginError("tlg: no QR code was scanned; run flnd login again")
+            raise LoginError("tlg: no QR code was scanned; run flnd login tlg qr again")
 
-        self.choose_telegram("qr")
         with mock.patch.object(Telegram, "login", refuse):
-            code, _, out = self.run_app("auth", "login")
+            code, _, out = self.run_app("login", "tlg", "qr")
         self.assertEqual(code, 3)
-        self.assertIn("tlg: no QR code was scanned; run flnd login again", out)
+        self.assertIn("error: tlg: no QR code was scanned; run flnd login tlg qr again", out)
 
-    def test_a_stored_session_is_marked_logged_in(self):
-        from flnd._ui import ui
-
+    def test_a_stored_session_is_listed_as_logged_in(self):
         with auth.secrets(Path(".flnd"), "tlg") as secrets:
             secrets.update(session=SESSION, **CREDENTIALS)
-        seen = []
-        answers = iter(["tlg", "browser"])
-
-        def fake_choose(message, choices, **kw):
-            seen.append(choices)
-            return next(answers)
-
-        with mock.patch("flnd._prompt.choose", fake_choose), \
-                mock.patch.object(ui.raw, "_force_terminal", True), \
-                mock.patch.object(Telegram, "login", lambda self, session, method: None):
-            self.run_app("auth", "login")
-        self.assertTrue(any("Telegram (tlg) · logged in" in c for c in seen), seen)
+        code, out, _ = self.run_app("login")
+        self.assertEqual(code, 0)
+        row = next(line for line in out.splitlines() if line.startswith("tlg "))
+        self.assertIn("logged in", row)
 
 
 class DownloadCase(LoginCase):
@@ -694,7 +679,7 @@ class DownloadTest(DownloadCase):
         with auth.secrets(self.home, "tlg") as secrets:
             secrets.clear()
         self.assertEqual(self.download(), 0)
-        self.assertIn("x tlg:examplechannel: not logged in", self.lines())
+        self.assertIn("tlg:examplechannel: not logged in", self.failures())
         self.assertEqual(self.telegram.clients, [])
 
     def test_many_files_on_the_async_loop(self):
@@ -770,22 +755,22 @@ class ChatTest(DownloadCase):
         by_title = self.target_dir("tlg", text.filename("example channel"))
         self.assertTrue((by_title / "Example_Channel" / "photo" / "2026-01-05_11.jpg").is_file())
         self.assertEqual(self.download("tlg:-1001001"), 0)
-        # The file is already saved under the title, so the id run's photo line counts it skipped.
-        self.assertTrue(any("tlg:-1001001 photo " in line and "1 skipped" in line
-                            for line in self.lines()), self.lines())
-        self.assertFalse(any(line.startswith("↷") for line in self.lines()), self.lines())
+        # The file is already saved under the title, so the id run's photo counts it skipped.
+        steps = [event for event in self.events if isinstance(event, Progress)
+                 and str(event.target) == "tlg:-1001001" and event.category == "photo"]
+        self.assertEqual((steps[-1].skipped, steps[-1].saved), (1, 0))
 
     def test_an_ambiguous_title_fails_listing_ids(self):
         other = chat(1002, "Example Channel")
         self.telegram.dialogs.append(SimpleNamespace(id=-1001002, name="Example Channel", entity=other))
         self.assertEqual(self.download("tlg:Example Channel"), 0)
-        self.assertIn("x tlg:Example Channel: 2 chats are titled 'Example Channel': -1001001, -1001002",
-                      self.lines())
-        self.assertIn("* tlg:Example Channel: pass one as tlg:<id>", self.lines())
+        self.assertEqual(self.failures(), ["tlg:Example Channel: 2 chats are titled "
+                                           "'Example Channel': -1001001, -1001002"])
+        self.assertEqual(self.events[-1].error.hint, "pass one as tlg:<id>")
 
     def test_a_chat_that_isnt_there(self):
         self.assertEqual(self.download("tlg:nochat"), 0)
-        self.assertIn("x tlg:nochat: no chat 'nochat' among your chats", self.lines())
+        self.assertEqual(self.failures(), ["tlg:nochat: no chat 'nochat' among your chats"])
 
 
 def zipped(name, text):

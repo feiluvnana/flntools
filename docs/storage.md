@@ -160,7 +160,7 @@ credentials. Each value is sealed with AES-GCM under the 32-byte key in `secret.
 its own key, so a value copied to another row doesn't decrypt. The key file is made on first use
 with mode 0600.
 
-`flnd auth logout` removes a source's rows. Deleting `secret.key` makes every saved login
+`flnd logout <code>` removes a source's rows. Deleting `secret.key` makes every saved login
 unreadable; log in again after.
 
 ## Sharing a home
@@ -185,6 +185,6 @@ during a manual run. Nothing makes the second run wait for the first.
 ## Backing up and moving
 
 The home is self-contained: copy the whole folder while no run is going. To start over on a
-target, `flnd target del` it; its files and history stay, so a new download skips them. To
-download a file again, delete it, then download its target with `--again`, so the listing
-doesn't stop at saved posts before reaching it.
+target, `flnd unfollow` it; its files and history stay, so a new download skips them. To
+download a file again, delete it, then download its target again: a file that is not on disk
+is fetched again.

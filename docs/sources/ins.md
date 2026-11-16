@@ -26,10 +26,10 @@ A post's *code* is the short text in its link. The `post` patterns are tried bef
 
 ## Categories
 
-A *category* is one part of a profile that can be downloaded on its own. Today
-[`--from`](../cli.md) is required for a profile: name the categories, or `--from all` for every
-one. `--from` is refused for a `post` target, which is always downloaded whole. For `ins:me`, `--from` applies
-to each followed account it finds.
+A *category* is one part of a profile that can be downloaded on its own. Without
+[`--only`](../cli.md) a profile gets every category; `--only` names some of them.
+`--only` is refused for a `post` target, which is always downloaded whole. For `ins:me`,
+`--only` applies to each followed account it finds.
 
 | Category | What it holds |
 | --- | --- |
@@ -42,12 +42,13 @@ to each followed account it finds.
 | `profile` | The profile picture, at its largest size |
 
 `posts`, `reels` and `reposts` are *newest first*: a listing stops early after 5 posts in a row
-that are already saved, or 5 in a row older than the start of `--time`. `tagged` is always read
+that are already saved, or 5 in a row older than the start of `--when`. `tagged` is always read
 to its end.
 
 ## Logging in
 
-`flnd auth login` asks for the site, then for a method:
+`flnd login ins <how>` takes a browser or a cookie file's path. Left out in a terminal,
+the way is asked with numbered choices:
 
 - **From your browser**: reads Instagram's cookies from Chrome, Firefox, Edge, Brave or
   Chromium.
@@ -60,7 +61,7 @@ end writes back any of those cookies the site refreshed.
 Without a login, flnd still tries: it opens the same pages, and gets what Instagram shows a
 logged-out visitor. `ins:me` needs the logged-in account's id, read from the `ds_user_id` or
 `sessionid` cookie or from `/api/v1/accounts/current_user/`; without one it stops with
-"not logged in; run flnd auth login".
+"not logged in; run flnd login ins".
 
 When a run starts, flnd warns if `sessionid` has expired or will expire within a day. When the
 session stops working mid-run:
@@ -157,7 +158,7 @@ Example:
   again. Handled since 2026-11-12.
 - **Dates from ids.** An Instagram id holds its creation time (milliseconds since
   2011-08-24 21:07:01.721 UTC, above its lowest 23 bits). flnd dates a not-yet-read grid item
-  this way, so `--time` can skip it without a request; file names still use the post's own
+  this way, so `--when` can skip it without a request; file names still use the post's own
   `taken_at`. Handled since 2026-11-12.
 - **Codes and private posts.** A code is the post's id in base 64. A private post's longer code
   (over 11 characters) does not decode, and a decoded post whose code differs is never taken for
@@ -165,7 +166,7 @@ Example:
 - **Tab result names.** Instagram has used two names for the reels and reposts tabs' result
   lists; flnd reads either. The reels tab wraps each post as `{"media": post}`, and reposts may
   come as `repost_grid_items`. Handled since 2026-11-11.
-- **Pinned posts.** Up to 3 pinned posts sit above newer ones, so the "older than `--time`"
+- **Pinned posts.** Up to 3 pinned posts sit above newer ones, so the "older than `--when`"
   stop waits for 5 in a row. Handled since 2026-11-14.
 - **Story ids** carry their owner after an `_`; only the part before it is used. Handled since
   2026-11-11.

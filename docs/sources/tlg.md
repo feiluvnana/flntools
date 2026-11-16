@@ -6,7 +6,7 @@ SDK for Telegram's MTProto protocol), not through a web page. A login is require
 used to download, only, if you choose it, to read an existing Telegram Web login.
 
 A *target* is what you give `flnd download`; a *category* is one part of a target, chosen with
-`--from`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
+`--only`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
 
@@ -44,12 +44,12 @@ How a chat is found:
 | `video` | the chat's videos |
 | `file` | the chat's other files (documents, archives, audio) |
 
-Each is newest first. There is no default category: `--from` is required, with one or more of
-these, or `all`.
+Each is newest first. Without `--only` a chat gets every category; `--only` names one or more
+of these.
 
 ## Logging in
 
-`flnd auth login` offers three methods:
+`flnd login tlg <how>` takes one of three ways:
 
 - `browser`: reads Telegram Web's login from Chrome's `Default` profile, in a headless browser,
   and turns it into a Telethon session. This reuses that login and adds no new device. You must
@@ -65,7 +65,7 @@ The first login also asks for an `api_id` and `api_hash`, which you create at `m
 under API development tools. They are kept with the session in flnd's encrypted secrets store.
 What proves a login is the stored `session`; the API pair alone does not.
 
-Without a login, a `tlg` target fails with "not logged in; run flnd auth login". Each run checks
+Without a login, a `tlg` target fails with "not logged in; run flnd login tlg". Each run checks
 the session when it connects. If it was revoked (a logout from another device, for example), the
 run fails with "the saved login no longer works", and only a new login helps.
 
@@ -77,7 +77,7 @@ even when it stops early.
 
 1. **Listing.** Each category asks Telegram for the chat's messages with a server-side filter
    (`InputMessagesFilterPhotos`, `InputMessagesFilterVideo` or `InputMessagesFilterDocument`), so
-   Telegram sends only messages of that type, newest first. With `--time`, the listing starts
+   Telegram sends only messages of that type, newest first. With `--when`, the listing starts
    just after its end day (UTC); the engine stops it once 5 posts in a row are older than its
    start.
 2. **Photos** are downloaded whole with Telethon's `download_media`.

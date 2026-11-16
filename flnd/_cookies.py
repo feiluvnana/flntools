@@ -25,7 +25,7 @@ from flnd import _files
 from flnd._ui import ui
 from flnd.errors import LoginError, UsageError
 
-__all__ = ["Jar", "load"]
+__all__ = ["BROWSERS", "Jar", "load"]
 
 Cookie = dict[str, Any]
 PathLike = Union[str, Path]
@@ -45,7 +45,8 @@ _CHROMIUM = {
     "brave": ("Brave", "BraveSoftware/Brave-Browser", "BraveSoftware/Brave-Browser", "brave",
               "BraveSoftware/Brave-Browser/User Data"),
 }
-_BROWSERS = (*_CHROMIUM, "firefox")
+# Every browser `load` reads cookies from, by the name `flnd login <source> <browser>` takes.
+BROWSERS = (*_CHROMIUM, "firefox")
 # Chromium and Firefox `samesite`: 0 none, 1 lax, 2 strict; -1 (unspecified) is Lax.
 _SAME_SITE = {0: "None", 1: "Lax", 2: "Strict"}
 # The spellings JSON exports use: Playwright and extensions ("no_restriction" in Chrome).
@@ -228,12 +229,12 @@ def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
     """Load cookies from a `cookies.txt` file, a browser name, or raw cookie text."""
     if isinstance(source, str):
         lower = source.lower()
-        if lower in _BROWSERS:
+        if lower in BROWSERS:
             if lower == "firefox":
                 return Jar(_load_firefox(profile))
             return Jar(_load_chromium(lower, profile or "Default"))
         if profile is not None:
-            raise UsageError(f"unknown browser {source!r}: use one of {', '.join(_BROWSERS)}")
+            raise UsageError(f"unknown browser {source!r}: use one of {', '.join(BROWSERS)}")
         if "\n" in source or "\r" in source or "\t" in source or source.lstrip()[:1] in ("[", "{"):
             return _load_text(source, "<text>")
     path = Path(source)

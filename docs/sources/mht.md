@@ -6,7 +6,7 @@ genre or a search query, downloading each one found. It reads the site's public 
 plain HTTP. It needs no login and no browser.
 
 A *target* is what you give `flnd download`; a *category* is one part of a target, chosen with
-`--from`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
+`--only`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
 
@@ -55,16 +55,17 @@ These belong to the `manga` route, and through it to `author`, `genre` and `quer
 | `chapters` | every chapter's pages |
 | `cover` | the manga's cover image |
 
-- `mht:<id>` and manga links: `--from` is required, with one or both, or `all`.
-- `mht?<query>`: `--from` is required too, and applies to each manga found.
-- A chapter link is one post, downloaded whole: `--from` with it is a usage error.
-- Author and genre links take no `--from` (the CLI calls them one post), and each manga they
+- `mht:<id>` and manga links: without `--only` each gets both categories. `--only` names
+  one or both.
+- `mht?<query>`: `--only` applies to each manga found; without it each gets both categories.
+- A chapter link is one post, downloaded whole: `--only` with it is a usage error.
+- Author and genre links take no `--only` (the CLI calls them one post), and each manga they
   find is downloaded with both categories.
 
 ## Logging in
 
 The source declares no login cookie, so flnd always counts it as logged in and never warns.
-`flnd auth login` still offers the default `browser` and `file` methods, and a saved cookie jar
+`flnd login mht <how>` still takes a browser or a cookie file's path, and a saved cookie jar
 is sent with requests, but nothing in the source depends on it.
 
 ## How it fetches

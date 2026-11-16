@@ -585,7 +585,7 @@ class LoginStaysAtHomeTest(EngineCase):
                         pages={"https://x.com/example_handle": "<html></html>"})
         with mock.patch.object(FakeSite, "open",
                                side_effect=lambda url: (site._seen.visited.append("https://x.com/i/flow/login"), True)[1]):
-            with self.assertRaisesRegex(LoginError, "flnd auth login twt"):
+            with self.assertRaisesRegex(LoginError, "flnd login twt"):
                 list(Twitter().read_browser(
                     site, Account("example_handle", {"rest_id": "42"}), Timeline("posts", "UserTweets", ""),
                 ))

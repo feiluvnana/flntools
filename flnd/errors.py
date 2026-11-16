@@ -22,7 +22,7 @@ The hierarchy:
 Rules a change must keep:
 1. The message is `str(e)`, one line, with no secret in it: a URL in a message goes through
    `flnd._text.redact` first, and a cookie or token never appears at all.
-2. `hint` says what to do, as a command when there is one (`flnd auth login ins`); "" when
+2. `hint` says what to do, as a command when there is one (`flnd login ins`); "" when
    there is nothing to suggest.
 3. `retryable` is set by whoever raises, from the policy in `docs/errors`, and never implied
    by the class: a `NetworkError` for a name that doesn't resolve won't heal, and a 403 may be a

@@ -7,7 +7,7 @@ count against its daily quota. The source never opens a browser: a code comment 
 blocks one.
 
 A *target* is what you give `flnd download`; a *category* is one part of a target, chosen with
-`--from`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
+`--only`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
 
@@ -26,7 +26,7 @@ A post that the API doesn't return, or that has no title, fails with "post <id> 
 | `photo` | `info.md` without download links, and the preview images |
 | `archive` | `info.md` with the download links, and the archives (VIP quota applies) |
 
-There is no default category: `--from` is required, with one or both, or `all`. When both run,
+Without `--only` a post gets every category; `--only` names one or both. When both run,
 `archive` runs second and its `info.md`, with links, replaces the one `photo` wrote.
 
 `info.md` is a table of the post's fields (id, author, date, link, file size, VIP level needed,
@@ -35,15 +35,16 @@ description, its download sources (in `archive` only) and links to its preview i
 
 ## Logging in
 
-`flnd auth login` offers two methods: `browser` (read the cookies of an installed browser) and
-`file` (a Netscape `cookies.txt` or JSON cookie file). The `access-token` cookie proves a login;
+`flnd login loi <how>` takes a browser (read the cookies of an installed browser, such as
+`chrome`) or a cookie file's path (a Netscape `cookies.txt` or JSON cookie file). The
+`access-token` cookie proves a login;
 flnd sends its value as a Bearer token to the API.
 
 Without a login, flnd warns once that it is using public access. `photo` works in full. `archive`
 warns "archives need a login" and writes `info.md` without links.
 
 When a run starts, flnd warns if the `access-token` cookie has expired or expires within 24
-hours, and `flnd auth ls` shows the same. An expired or refused token is not detected as such:
+hours, and `flnd login` shows the same. An expired or refused token is not detected as such:
 the site gives no links, and flnd warns that the post's VIP level or a login is needed.
 
 ## How it fetches
@@ -113,7 +114,7 @@ Files go under `.flnd/media/loi/<id>/`:
 - **Quota and rate-limit answers.** The API reports both as JSON, sometimes in Chinese. flnd reads
   a 429 code or words like "rate" and "too many" as a rate limit, and an error with words like
   "quota", "limit" or "exceeded" as the daily quota. Handled since 2026-11-15.
-- **Quota before time.** `archive` checks `--time` before fetching links, so a post outside the
+- **Quota before time.** `archive` checks `--when` before fetching links, so a post outside the
   range doesn't use quota. Handled since 2026-11-12.
 
 ## Limits

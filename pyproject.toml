@@ -18,8 +18,6 @@ dependencies = [
     "cryptg>=0.5",
     "qrcode>=7.4",
     "rich",
-    "questionary",
-    "cyclopts",
     "msgspec",
     # Image compression (AVIF, WebP, JPEG) and PNG optimisation, in-process: imported only by
     # `flnd._shrink`, so `flnd --help` never loads them.
@@ -28,7 +26,7 @@ dependencies = [
 ]
 
 [project.scripts]
-flnd = "flnd.cli:app"
+flnd = "flnd.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["flnd"]

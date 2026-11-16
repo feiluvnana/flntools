@@ -114,7 +114,7 @@ class CipherTest(unittest.TestCase):
             with self.subTest(name), self.assertRaises(LoginError) as caught:
                 crypto.decrypt(damaged_blob, key, context=context)
             # What the vault held was a login, so the hint is to log in again.
-            self.assertIn("flnd auth login", caught.exception.hint)
+            self.assertIn("flnd login", caught.exception.hint)
 
     def test_only_a_32_byte_key(self):
         for size in (16, 20, 24, 33):

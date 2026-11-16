@@ -13,7 +13,7 @@ here also changes this page, so the page always describes the code you have chec
 ```
                  you
                   │
-   flnd/cli.py ───┤  the command line (cyclopts): flags in, progress lines out
+   flnd/cli.py ───┤  the command line (argparse): flags in, progress lines out
    flnd/__init__  │  the library: flnd.open, Flnd, Run, events (names load lazily)
    flnd/_library  │  Flnd's methods; flnd/_run.py: Run; flnd/_events.py: events, Report
                   ▼
@@ -33,20 +33,20 @@ here also changes this page, so the page always describes the code you have chec
 
 | part | what it holds | who calls it |
 | --- | --- | --- |
-| `flnd/cli.py` | the commands: `download`, `sync`, `target …`, `auth …` | the `flnd` script |
+| `flnd/cli.py` | the commands: `download`, `follow`, `sync`, `ls`, `login`, `logout` and the rest | the `flnd` script |
 | `flnd/__init__.py` | the public names, each imported from its module on first use | scripts |
 | `flnd/_library.py` | `open` and `Flnd`: each command as a method, over the engine | scripts |
 | `flnd/_run.py` | `Run`: a command on its own thread, read as a stream of events | `Flnd` |
 | `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), `Report`, `Login`, `Record`, `Tracked` | the engine, the job, `Run` |
-| `flnd/engine.py` | `Engine`: every command as a method, and target resolution | the CLI, `Flnd` |
+| `flnd/engine.py` | `Engine`: every command as a method, and target resolution | `Flnd` |
 | `flnd/job.py` | one target's run: listing, planning, the download pool, history rows | the engine |
 | `flnd/site.py` | `SourceRun` (a source's cookies, clients and browser for a run) and `TargetSite` (the `Site` a route sees) | the engine, the job |
 | `flnd/source.py` | the source API: `Source`, `@target`, `Post`, `File`, `Site`, `Target`, errors | every source |
 | `flnd/sources/` | the seven built-in sources and their shared helpers (`sources/common/`) | the engine, through `SOURCES` |
-| `flnd/targets.py` | the rows of `targets.db`, and the checks of `--from` before any work | the engine, the job |
+| `flnd/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
+| `flnd/targets.py` | the rows of `targets.db`, and the checks of `--only` before any work | the engine, the job |
 | `flnd/options.py` | `Options` and `RunShared` | the engine, the job |
 | `flnd/common/` | `auth` (the login vault), `net` (the HTTP client and file downloads), `paths` (the home's layout and content sniffing) | the engine, the site, the job |
-| `flnd/dry.py` | a contributor's tool: prints the files one target would save | `make try` |
 | `flnd/_*.py` | the private toolkit: HTTP over httpx (`_http`), the run's browser on async Playwright (`_browser`), SQLite stores (`_db`), atomic files (`_files`), the run's asyncio loop and a thread pool (`_loop`), the terminal UI (`_ui`) | everything above |
 | `flnd/_steps.py`, `_unpack.py`, `_shrink.py`, `_media.py`, `_tools.py` | the steps after a file lands ([media.md](media.md)): the chain and its lanes, archive extraction, `--compress`, probes and ffmpeg runs, and finding ffmpeg and 7zz | the job and the engine |
 
@@ -56,20 +56,19 @@ only through `flnd.sources.SOURCES`.
 
 ## One download, start to finish
 
-`flnd download ins:example_user --from posts --sync`:
+`flnd follow ins:example_user --only posts`:
 
-1. **The CLI** (`flnd/cli.py`) parses the flags with cyclopts and calls
-   `Engine(home=Path(".flnd")).download(["ins:example_user"], categories=["posts"], sync=True)`.
-   With no targets on the command line, it reads them from standard input, one per line.
+1. **The CLI** (`flnd/cli.py`) parses the flags with argparse and calls `fl.follow(...)` of
+   the library (`flnd.open`), which runs the engine with the target and `--only posts`.
 2. **Resolving.** `engine.resolve` splits the text at `:` (or `?` for a query), finds the source
    by its code (or a bare link by its `domains`), and calls `Source.resolve`. The first route
    whose pattern matches gives `Target("ins", "user", "example_user")`. A short link no route
    reads is followed once with a HEAD request, and the link it leads to is resolved instead.
 3. **Checking.** Before any request, `options.categories_by_source` and `targets.validate` check
-   `--from` against the target's route, and every folder template against its fields. A mistake
+   `--only` against the target's route, and every folder template against its fields. A mistake
    is a usage error (exit code 2).
 4. **Recording the target.** `targets.record` writes the target's row in `targets.db`, with
-   `sync` on because of `--sync`, keeping its cursors and failures from earlier runs.
+   `sync` on because it is followed, keeping its cursors and failures from earlier runs.
 5. **Grouping by source.** The engine runs the targets of one source together, one after
    another, inside one `source_run`: the source's saved cookies are read from the vault, its
    HTTP client is made (paced to `Source.pace` on its own domains), and its `connect` hook runs
@@ -80,7 +79,7 @@ only through `flnd.sources.SOURCES`.
    time, so they are tried first. Nothing locks the target: each file's part locks itself.
 7. **Listing.** The route runs and returns the profile; then each wanted category yields its
    posts, page by page. A category whose listing was interrupted resumes from its saved cursor,
-   then catches up from the newest post. `--time` drops posts outside the range; after 5 posts
+   then catches up from the newest post. `--when` drops posts outside the range; after 5 posts
    in a row older than the range, a `newest_first` category stops.
 8. **Planning each post** (`Ledger.take`). Each file is given its path (from the source's
    `folder` and `filename` templates) and its history key (`<code>:<key>`). A file whose key is
@@ -135,7 +134,7 @@ A run uses a few threads, and every rule below protects one of them:
   for videos, fed by bounded queues once a file's history row is written. They update that row
   when they change the file; the engine closes the chain, waiting for them, before it closes
   history.
-- **Ctrl-C** is handled by `flnd._cli.stopping`: the first one sets `stop.soon` (stop listing,
+- **Ctrl-C** is handled by `flnd._run.stopping`: the first one sets `stop.soon` (stop listing,
   let running files finish), the second sets `stop.now` (stop at once, keep the parts).
 
 ## Where things are kept

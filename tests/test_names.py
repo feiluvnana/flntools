@@ -241,9 +241,8 @@ def history_breaches(source: str) -> list[str]:
 # that renames the uses removes its pairs here, so the list can only shrink. AGENTS.md says no
 # aliases; this is the one exception, and it is temporary.
 TRANSITIONAL_ALIASES = {
-    ("cli", "_cli"),
     ("clock", "_time"), ("cookies", "_cookies"), ("crypto", "_vault"),
-    ("http", "_http"), ("prompt", "_prompt"), ("selector", "_html"),
+    ("http", "_http"), ("selector", "_html"),
     ("store", "_db"), ("text", "_text"), ("worker", "_loop"),
 }
 

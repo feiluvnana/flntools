@@ -40,7 +40,7 @@ KEY_SIZE = 32
 # One message for every way decryption fails, so it says nothing about the key or the data.
 DECRYPT_FAILED = "cannot decrypt: wrong key or damaged data"
 # What a blob that doesn't open says to do: the vault holds logins only, so log in again.
-LOG_IN_AGAIN = "log in again: flnd auth login"
+LOG_IN_AGAIN = "log in again: flnd login <source>"
 MISSING_CRYPTOGRAPHY = "flnd._vault needs cryptography"
 
 # Errors: a blob that doesn't open is a `LoginError`, since what it held was a login; a missing

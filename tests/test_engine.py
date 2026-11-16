@@ -30,7 +30,8 @@ from flnd.source import Range
 from flnd.options import Options
 from flnd.site import LoginSite
 from flnd.source import SiteError, File, Post, Source, target
-from flnd import _cli as cli, _time as clock, _cookies as cookies, _db as store
+from flnd import _run, _time as clock, _cookies as cookies, _db as store
+from flnd._events import Failed, Progress
 from flnd._ui import ui
 from flnd.errors import Error
 
@@ -100,6 +101,8 @@ class EngineCase(unittest.TestCase):
         self.addCleanup(patcher.stop)
         # Every wait (pacing, back-offs, retries) passes at once on the fake clock.
         self.fake = self.enterContext(clock.use(clock.Fake()))
+        # The events of the runs `report` makes: what the CLI shows, now that the engine logs no rows.
+        self.events = []
 
     @property
     def now(self):
@@ -119,9 +122,10 @@ class EngineCase(unittest.TestCase):
         return self.report(*sources, targets=targets, options=options, **settings).files
 
     def report(self, *sources, targets, options=Options(), stop=None, **settings):
-        """Run the targets, each with `options`, and return the `Report`."""
+        """Run the targets, each with `options`, and return the `Report`; its events go in `events`."""
+        settings.setdefault("emit", self.events.append)
         engine = Engine(home=self.home, sources={source.code: source for source in sources}, **settings)
-        stop = stop or cli.Stopping(threading.Event(), threading.Event())
+        stop = stop or _run.Stop()
         return Report(tuple(engine._run([(target, options) for target in engine.resolve(targets)], stop=stop)))
 
     def log_in(self, code, **values):
@@ -130,6 +134,16 @@ class EngineCase(unittest.TestCase):
 
     def lines(self):
         return self.dest.getvalue().splitlines()
+
+    def failures(self):
+        """Each `Failed` event of the runs so far, as `<target>: <message>` (a file's: `<name>: ...`)."""
+        return [f"{event.path.name if event.path else event.target}: {event.error}"
+                for event in self.events if isinstance(event, Failed)]
+
+    def listed(self):
+        """Each `(target, category)` whose listing ended, from the `Progress` events."""
+        return {(str(event.target), event.category) for event in self.events
+                if isinstance(event, Progress) and event.listed}
 
     def target_dir(self, code, name):
         return self.home / paths.MEDIA / code / name
@@ -170,7 +184,7 @@ class GroupsTest(EngineCase):
         engine = Engine(home=self.home, sources=sources)
         chosen = [(Target("aaa", "user", "a"), Options(again=True)),
                   (Target("aaa", "user", "b"), Options()), (Target("bbb", "user", "c"), Options())]
-        stop = cli.Stopping(threading.Event(), threading.Event())
+        stop = _run.Stop()
         with mock.patch.object(job, "download", download), mock.patch.object(store, "open", opening):
             reports = engine._run(chosen, stop=stop)
         self.assertEqual(seen, [("a", True), ("b", False), ("c", False)])
@@ -187,9 +201,8 @@ class GroupsTest(EngineCase):
 
         total = self.run_engine(make_source("aaa", run, files=files), targets=["aaa:bad", "aaa:good"])
         self.assertEqual(total, 1)
-        lines = self.lines()
-        self.assertTrue(any(line.endswith("aaa:bad: blocked") for line in lines), lines)
-        self.assertTrue(any("aaa:good posts " in line for line in lines), lines)
+        self.assertEqual(self.failures(), ["aaa:bad: blocked"])
+        self.assertIn(("aaa:good", "posts"), self.listed())
 
 
     def test_a_group_whose_connect_fails_ends_its_rows_failed(self):
@@ -198,10 +211,9 @@ class GroupsTest(EngineCase):
             raise LoginError("tlg: the saved login no longer works")
 
         report = self.report(make_source("aaa", connect=connect), make_source("bbb"), targets=["aaa:a", "aaa:b", "bbb:c"])
-        lines = self.lines()
-        self.assertTrue(any(line.endswith("aaa: tlg: the saved login no longer works") for line in lines), lines)
-        self.assertFalse(any("aaa:" in line and "posts " in line for line in lines), lines)
-        self.assertTrue(any("bbb:c posts " in line for line in lines), lines)
+        self.assertEqual(self.failures(), ["aaa:a: tlg: the saved login no longer works",
+                                           "aaa:b: tlg: the saved login no longer works"])
+        self.assertEqual(self.listed(), {("bbb:c", "posts")})
         self.assertEqual([str(target) for target in report.failed], ["aaa:a", "aaa:b"])
         self.assertEqual(str(report.targets[0].error), "tlg: the saved login no longer works")
 
@@ -232,7 +244,7 @@ class LoginStateTest(EngineCase):
         ran = []
         self.run_engine(make_source("aaa", ran.append, needs=("sid",)), targets=["aaa:a"])
         self.assertEqual(len(ran), 1)
-        self.assertIn("! aaa: not logged in, using public access; run flnd auth login", self.lines())
+        self.assertIn("! aaa: not logged in, using public access; run flnd login aaa", self.lines())
 
     def test_logged_in_has_no_hint_and_cookies_reach_the_client(self):
         self.log_in("aaa", sid="1", other="2")
@@ -274,9 +286,10 @@ class LoginStateTest(EngineCase):
         self.run_engine(make_source("aaa", ran.append, needs=("sid",), requires_login=True), targets=["aaa:a", "aaa:b"])
         self.assertEqual(ran, [])
         for name in ("aaa:a", "aaa:b"):
-            # The message, then the hint on its own line: what to do, never a traceback.
-            self.assertIn(f"x {name}: not logged in", self.lines())
-            self.assertIn(f"* {name}: run flnd auth login", self.lines())
+            # The message, and the hint: what to do, never a traceback.
+            self.assertIn(f"{name}: not logged in", self.failures())
+        self.assertEqual({event.error.hint for event in self.events if isinstance(event, Failed)},
+                         {"run flnd login aaa"})
 
     def test_download_never_asks(self):
         # The `Site` a download gives has no `ask`, so a source can't stop to ask a question.
@@ -334,19 +347,19 @@ class HttpTest(EngineCase):
         self.run_engine(make_source("aaa", run), targets=["aaa:a", "aaa:b", "aaa:c"])
         self.assertEqual(ran, [("a", {"ok": 1}), ("b", {"ok": 1}), ("c", {"ok": 1})])
         self.assertIn("rate limited; waiting", " ".join(self.lines()))
-        self.assertTrue(any("aaa:c posts " in line for line in self.lines()), self.lines())
+        self.assertIn(("aaa:c", "posts"), self.listed())
 
     def test_challenges_are_waited_out(self):
         self.run_engine(make_source("aaa", lambda site: site.back_off("challenged")),
                         targets=["aaa:a", "aaa:b", "aaa:c", "aaa:d"])
         waits = [line for line in self.lines() if "challenged; waiting" in line]
         self.assertEqual(len(waits), 4)
-        self.assertTrue(any("aaa:d posts " in line for line in self.lines()), self.lines())
+        self.assertIn(("aaa:d", "posts"), self.listed())
 
     def test_ctrl_c_during_a_wait_stops_the_run(self):
         """The first Ctrl-C ends a rate-limit wait at once; the target ends as stopped and the command as Ctrl-C."""
-        stop_ref: list[cli.Stopping] = []
-        real_stopping = cli.stopping
+        stop_ref: list[_run.Stop] = []
+        real_stopping = _run.stopping
 
         @contextmanager
         def capture_stopping(state=None):
@@ -361,7 +374,8 @@ class HttpTest(EngineCase):
         self.routes["https://api.aaa.example/feed"] = limited
         source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/feed").json)
         engine = Engine(home=self.home, sources={"aaa": source})
-        with mock.patch.object(cli, "stopping", capture_stopping), self.assertRaises(KeyboardInterrupt):
+        with mock.patch("flnd.engine.stopping", capture_stopping), self.assertRaises(KeyboardInterrupt), \
+                ui.scope(level="debug"):
             engine.download(["aaa:a"], categories="all")
         self.assertTrue(any(line.endswith("aaa:a: stopped") for line in self.lines()), self.lines())
 
@@ -370,7 +384,7 @@ class CtrlCTest(unittest.TestCase):
     def test_the_first_ctrl_c_stops_gracefully_and_the_second_interrupts(self):
         """D8: the first only sets `soon`, so the running downloads finish; the second stops now."""
         before = signal.getsignal(signal.SIGINT)
-        with cli.stopping() as stop:
+        with _run.stopping() as stop:
             self.assertFalse(stop.soon.is_set() or stop.now.is_set())
             handler = signal.getsignal(signal.SIGINT)
             assert callable(handler)
@@ -598,8 +612,8 @@ class ApiTest(EngineCase):
     def test_from_with_a_post_link_is_refused_before_any_request(self):
         from flnd.sources import SOURCES
 
-        message = ("--from applies to profiles and chats; ins:C1abcDEFghi is one post, downloaded whole: "
-                   "give it without --from")
+        message = ("--only applies to profiles and chats; ins:C1abcDEFghi is one post, downloaded whole: "
+                   "give it without --only")
         engine = Engine(home=self.home, sources=SOURCES)
         for targets in (["https://www.instagram.com/p/C1abcDEFghi/"],
                         ["ins:example_user", "https://www.instagram.com/p/C1abcDEFghi/"],
@@ -941,8 +955,8 @@ class SyncedQueryTest(EngineCase):
         closed.clear()
         seen_pages.clear()
         real_download = job.download
-        stop_ref: list[cli.Stopping] = []
-        real_stopping = cli.stopping
+        stop_ref: list[_run.Stop] = []
+        real_stopping = _run.stopping
 
         @contextmanager
         def capture_stopping(state=None):
@@ -956,7 +970,7 @@ class SyncedQueryTest(EngineCase):
             return real_download(run, child, board, opts)
 
         with mock.patch("flnd.job.download", stop_on_second), \
-                mock.patch.object(cli, "stopping", capture_stopping), \
+                mock.patch("flnd.engine.stopping", capture_stopping), \
                 self.assertRaises(KeyboardInterrupt):
             engine.download(["pgd?dogs"], categories="photo", sync=True)
         self.assertEqual(seen_pages, [0, 1])
