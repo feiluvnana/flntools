@@ -99,20 +99,28 @@ class Db:
     def batch(self) -> Iterator[None]:
         """Run the writes inside the block as one transaction, rolled back on an error."""
         with self._lock:
-            self._depth += 1
-            if self._depth == 1:
+            # Counted only once BEGIN worked, so a busy file never leaves later batches unwrapped.
+            if self._depth == 0:
                 self._run("BEGIN IMMEDIATE")
+            self._depth += 1
             try:
                 yield
-            except BaseException:
-                if self._depth == 1:
-                    self._run("ROLLBACK")
-                raise
-            else:
                 if self._depth == 1:
                     self._run("COMMIT")
+            except BaseException:
+                if self._depth == 1:
+                    self._rollback()
+                raise
             finally:
                 self._depth -= 1
+
+    def _rollback(self) -> None:
+        # A failed COMMIT may have ended the transaction already.
+        if self._sql is not None and self._sql.in_transaction:
+            self._run("ROLLBACK")
+        # The rollback undid any CREATE TABLE in the batch too.
+        for table in self._tables.values():
+            table._made = False
 
     def close(self) -> None:
         """Close the file; later calls raise `ClosedError`."""

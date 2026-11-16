@@ -7,7 +7,9 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 import shared
 from shared import store
@@ -142,6 +144,31 @@ class BatchTest(StoreCase):
                 self.kv["c"] = 3
                 raise RuntimeError("boom")
         self.assertNotIn("c", self.kv)
+
+    def test_a_begin_that_fails_leaves_later_batches_whole(self):
+        with mock.patch("shared._store.BUSY_MS", 50), store.open(self.file.with_name("busy.db")) as db:
+            db["kv"]["a"] = 1
+            with closing(sqlite3.connect(db.path, isolation_level=None)) as other:
+                # Another writer holds the file past the busy timeout, so BEGIN fails.
+                other.execute("BEGIN IMMEDIATE")
+                with self.assertRaises(store.Error):
+                    with db.batch():
+                        pass
+                other.execute("ROLLBACK")
+            with self.assertRaises(RuntimeError):
+                with db.batch():
+                    db["kv"]["b"] = 2
+                    raise RuntimeError("boom")
+            self.assertNotIn("b", db["kv"])
+
+    def test_a_table_made_in_a_rolled_back_batch_works_after(self):
+        with self.assertRaises(RuntimeError):
+            with self.db.batch():
+                self.db["new"]["k"] = 1
+                raise RuntimeError("boom")
+        self.assertNotIn("k", self.db["new"])
+        self.db["new"]["k"] = 2
+        self.assertEqual(self.db["new"]["k"], 2)
 
     def test_threads_write_without_losing_rows(self):
         def write(start):
