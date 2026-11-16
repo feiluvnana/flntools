@@ -331,13 +331,21 @@ def place(
     filename, key = (_format(source, category, name) for name in ("filename", "key"))
     posted = day(post.date)
     placed: list[Placed] = []
+    used: set[str] = set()
     for num, file in enumerate(files):
         extension, kind = _extension(file)
         values = _file_values(
             source, post, file, num, len(files), posted, extension, target, options,
         )
         name = _resolve_name(post, file, filename, values, extension)
-        path = "/".join(part for part in (fill(folder, values), name) if part)
+        where = fill(folder, values)
+        path = "/".join(part for part in (where, name) if part)
+        # Files of one post may share a name (`cover.jpg`): a later one takes its number, or it
+        # would be skipped as already queued.
+        if path in used:
+            name = f"{PurePosixPath(name).stem}_{num}{PurePosixPath(name).suffix}"
+            path = "/".join(part for part in (where, name) if part)
+        used.add(path)
         resolved_key = fill(key, {**values, "path": path}, safe=False) or path
         placed.append(Placed(post, file, num, path, resolved_key, kind, values))
     return placed

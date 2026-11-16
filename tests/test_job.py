@@ -355,6 +355,15 @@ class FilesTest(JobCase):
         self.assertEqual(sorted(self.history()), ["exm:B2def_0", "exm:C1abc_0", "exm:C1abc_1"])
 
 
+class PlaceTest(unittest.TestCase):
+    def test_two_files_of_one_post_with_one_name_get_two_paths(self):
+        files = [File(f"{CDN}/a/cover.jpg", name="cover.jpg"), File(f"{CDN}/b/cover.jpg", name="cover.jpg"),
+                 File(f"{CDN}/c/cover.jpg", name="cover.jpg")]
+        post = Post("p1", files, date="2026-01-02").filed("posts")
+        paths = [placed.path for placed in job.place(Example(), post, files)]
+        self.assertEqual(paths, ["posts/cover.jpg", "posts/cover_1.jpg", "posts/cover_2.jpg"])
+
+
 class TimeTest(unittest.TestCase):
     """`--time` and the `newest_first` early stop, on a `FakeSite`: nothing is downloaded."""
 
