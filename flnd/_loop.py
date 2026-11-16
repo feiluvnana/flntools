@@ -25,11 +25,10 @@ from collections.abc import Awaitable, Iterator
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, Literal, TypeVar
 
-from flnd import _base
 from flnd import _time as clock
 from flnd._sink import Sink
 
-__all__ = ["ClosedError", "Error", "Pool", "Result"]
+__all__ = ["Pool", "Result"]
 
 R = TypeVar("R")
 
@@ -41,14 +40,8 @@ WAKE = 0.1
 LOOP_GRACE = 10.0
 
 
-class Error(_base.Error):
-    """The base of every error `flnd._loop` raises."""
-
-
-class ClosedError(Error, RuntimeError):
-    """Raised when using a `Pool` that is closed or stopped."""
-
-
+# Using a `Pool` after it closed or stopped is a bug in the caller, so it raises the builtin
+# `RuntimeError("pool is closed")`, never a `flnd.Error`.
 @dataclass
 class Result(Generic[R]):
     """Outcome record for a single completed task."""
@@ -149,7 +142,7 @@ class Pool:
         with self._changed:
             self._block(lambda: self._closing or len(self._queue) + self._running < 2 * self._jobs)
             if self._closing or self.stopping:
-                raise ClosedError("pool is closed")
+                raise RuntimeError("pool is closed")
             self._queue.append(task)
             self._total += 1
             if self._progress is not None:
@@ -170,7 +163,7 @@ class Pool:
         future: concurrent.futures.Future[R] = concurrent.futures.Future()
         with self._changed:
             if self._shut:
-                raise ClosedError("pool is closed")
+                raise RuntimeError("pool is closed")
             self._calls.append(_Call(fn, future))
             self._changed.notify_all()
         return future.result()
@@ -205,7 +198,7 @@ class Pool:
             self._shut = True
             calls, self._calls = list(self._calls), deque()
         for call in calls:
-            call.future.set_exception(ClosedError("pool is closed"))
+            call.future.set_exception(RuntimeError("pool is closed"))
         for thread in self._threads:
             thread.join()
         self._close_loop()
@@ -295,7 +288,7 @@ class Pool:
     def _event_loop(self) -> asyncio.AbstractEventLoop:
         with self._changed:
             if self._shut:
-                raise ClosedError("pool is closed")
+                raise RuntimeError("pool is closed")
             if self._loop is None:
                 self._loop = asyncio.new_event_loop()
                 self._loop_thread = threading.Thread(

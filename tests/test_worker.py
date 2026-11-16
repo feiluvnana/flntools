@@ -8,7 +8,6 @@ import threading
 import unittest
 import warnings
 
-from flnd import _base
 from flnd import _loop as worker
 from flnd import _time as clock
 
@@ -114,10 +113,6 @@ class ResultsTest(unittest.TestCase):
         self.assertGreaterEqual(worker.Pool(jobs="cpu")._jobs, 1)
         self.assertLessEqual(worker.Pool(jobs="io")._jobs, 32)
 
-    def test_error_hierarchy(self) -> None:
-        self.assertTrue(issubclass(worker.Error, _base.Error))
-        self.assertTrue(issubclass(worker.ClosedError, RuntimeError))
-
 
 class BackpressureTest(unittest.TestCase):
     def test_submit_blocks_at_twice_the_jobs(self) -> None:
@@ -182,7 +177,7 @@ class StopTest(unittest.TestCase):
         results = {repr(r.item): r for r in pool.results}
         self.assertEqual(ran, ["slow"])
         self.assertIsInstance(results["'queued'"].error, InterruptedError)
-        with self.assertRaises(worker.ClosedError):
+        with self.assertRaises(RuntimeError):
             pool.submit(square, 1)
         pool.close()
 
@@ -208,7 +203,7 @@ class StopTest(unittest.TestCase):
         pool = worker.Pool()
         pool.close()
         pool.close()
-        with self.assertRaises(worker.ClosedError):
+        with self.assertRaises(RuntimeError):
             pool.submit(square, 1)
         self.assertEqual(list(pool.results), [])
 
@@ -285,7 +280,7 @@ class AsyncTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "bad"):
                 pool.wait(fail)
             self.assertEqual(pool.wait(async_square, 5), 25)
-        with self.assertRaises(worker.ClosedError):
+        with self.assertRaises(RuntimeError):
             pool.wait(async_square, 1)
 
     def test_close_cancels_pending_loop_tasks_without_warnings(self) -> None:
@@ -344,7 +339,7 @@ class CallTest(unittest.TestCase):
         def other() -> None:
             try:
                 pool.call(lambda: None)
-            except worker.ClosedError as error:
+            except RuntimeError as error:
                 errors.append(error)
 
         thread = threading.Thread(target=other)

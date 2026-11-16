@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Sequence
 
-from flnd.source import Source, Target
 from flnd import _cli as cli
+from flnd.errors import UsageError
+from flnd.source import Source, Target
 
 # `--from all` takes every category of every source.
 ALL = "all"
@@ -69,19 +70,19 @@ def categories_by_source(
     singles = [t for t in targets if t.kind in sources[t.source].single_kinds]
     if categories is None:
         if len(singles) < len(targets):
-            raise cli.UsageError(f"--from is required (use all, or {_lists(used)})")
+            raise UsageError(f"--from is required (use all, or {_lists(used)})")
         return {source.code: None for source in used}
     if singles:
-        raise cli.UsageError(
+        raise UsageError(
             f"--from applies to profiles and chats; {singles[0]} is one post, downloaded whole: "
             "give it without --from"
         )
     items = [categories] if isinstance(categories, str) else list(categories)
     plain, scoped = _split(items, {source.code for source in used}, sources)
     if not plain and not scoped:
-        raise cli.UsageError("--from must name at least one category, or all")
+        raise UsageError("--from must name at least one category, or all")
     if problem := unknown(plain, used):
-        raise cli.UsageError(problem)
+        raise UsageError(problem)
     return {source.code: _names(source, plain, scoped) for source in used}
 
 
@@ -108,9 +109,9 @@ def _split(
             continue
         code = code.strip()
         if code not in used:
-            raise cli.UsageError(f"--from {item!r}: no target from source {code!r}")
+            raise UsageError(f"--from {item!r}: no target from source {code!r}")
         if not names:
-            raise cli.UsageError(f"--from {item!r} must name at least one category, or all")
+            raise UsageError(f"--from {item!r} must name at least one category, or all")
         scoped.setdefault(code, []).extend(names)
     return plain, scoped
 
@@ -121,14 +122,14 @@ def _names(
     """The validated categories one source takes."""
     own = tuple(dict.fromkeys(scoped.get(source.code, ())))
     if own and (problem := unknown(own, [source])):
-        raise cli.UsageError(problem)
+        raise UsageError(problem)
     names = tuple(dict.fromkeys([*plain, *own]))
     if not names:
-        raise cli.UsageError(
+        raise UsageError(
             f"--from is required for {source.code} (use all, or {', '.join(source.categories)})"
         )
     if ALL not in names and not any(name in names for name in source.categories):
-        raise cli.UsageError(
+        raise UsageError(
             f"{source.code} has none of {', '.join(map(repr, names))}: "
             f"use all, or {source.code}: {', '.join(source.categories)}"
         )

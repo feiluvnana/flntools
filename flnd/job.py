@@ -26,9 +26,11 @@ from flnd import targets
 from flnd.common import net, paths
 from flnd.options import Options, selected
 from flnd.site import SourceRun, TargetSite
+from flnd.errors import (
+    Blocked, Error, LoginError, NetworkError, SiteError, Stopped, classify,
+)
 from flnd.source import (
-    Category, FetchError, File, LoginError, Post, Range, Resume, Route, Site, Source, Target,
-    day, fill, listing,
+    Category, File, Post, Range, Resume, Route, Site, Source, Target, day, fill, listing,
 )
 from flnd import _vault as crypto, _files as fs, _db as store, _text as text, _loop as worker
 from flnd._ui import ui
@@ -38,11 +40,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "STOPPED", "Board", "Counts", "Downloads", "Ledger", "Placed", "TargetReport",
-    "causes", "discover", "download", "place", "plan", "posts", "wanted",
+    "causes", "discover", "download", "failure", "logged_out", "place", "plan", "posts", "tell",
+    "wanted",
 ]
 
 ID, DATE, ESTIMATED, CATEGORY = "id", "date", "estimated", "category"
-BLOCKS = frozenset({401, 403, 429})
+# The statuses that end a listing as a login problem when the site's own domain answers them.
+LOGIN_WALLS = frozenset({401, 403})
+# The statuses that stop asking a site for dates for the rest of the run.
+BLOCKS = LOGIN_WALLS | {429}
 LEADING_DAY = re.compile(r"\d{4}-\d\d-\d\d_")
 NOON = 12
 FILES = "files"
@@ -91,12 +97,87 @@ class Placed:
 
 @dataclass(frozen=True)
 class TargetReport:
-    """Summary of one command's execution for a single target."""
+    """Summary of one command's execution for a single target.
+
+    `error` is what ended the target: a `flnd.Error` (`str(error)` is its message), `Stopped`
+    when Ctrl-C ended it, or None when it finished. A file that failed alone doesn't set it.
+    """
 
     target: Target
     written: tuple[Path, ...]
     skipped: int
-    error: str | None = None
+    error: Error | Stopped | None = None
+
+
+def failure(error: BaseException, target: Target, source: Source | None = None) -> Error:
+    """What a failure that ended `target` is, as a `flnd.Error` (see `flnd.errors.classify`).
+
+    One more rule than `classify`'s: a 401 or 403 from the source's own domains that a listing
+    let escape is a `LoginError` for that source, since that is what a site's login wall
+    answers. The same status from another host (a CDN's expired link) stays a `SiteError`.
+
+    Args:
+        error: what ended the target; never a `KeyboardInterrupt` (the caller re-raises those).
+        target: the target it ended.
+        source: the target's source, whose `domains` tell a login wall; None to skip that rule.
+
+    Returns:
+        The `Error`, with `target` set.
+    """
+    made = classify(error, target=str(target))
+    assert isinstance(made, Error), made
+    if (source is not None and type(made) is SiteError and made.status in LOGIN_WALLS
+            and _on_domains(made, source.domains)):
+        login = logged_out(target, f"{source.code}: the site refused the login "
+                                   f"(HTTP {made.status})")
+        login.__cause__ = made
+        return login
+    return made
+
+
+def tell(target: Target, error: Error) -> None:
+    """Log the failure that ended `target`: its message, its hint, and with `-v` its causes.
+
+    Args:
+        target: the target it ended.
+        error: the failure, as `failure` made it.
+    """
+    ui.error("{target}: {error}", target=str(target), error=error)
+    if error.hint:
+        ui.info("{target}: {hint}", target=str(target), hint=error.hint)
+    ui.debug("{target}: {chain}", target=str(target), chain=causes(error))
+
+
+def logged_out(target: Target, message: str | None = None) -> LoginError:
+    """The `LoginError` of a target whose source needs a login it doesn't have, or lost.
+
+    Args:
+        target: the target that can't go on.
+        message: what happened; None for "not logged in". The target isn't in it: it is the
+            error's `target`, and `tell` puts it in front.
+
+    Returns:
+        A `LoginError` whose hint is the command that logs in again.
+    """
+    return LoginError(message or "not logged in", hint="run flnd auth login", target=str(target))
+
+
+def _on_domains(error: SiteError, domains: Sequence[str]) -> bool:
+    """Whether the response `error` carries came from one of `domains`.
+
+    Args:
+        error: a refusal, with the response it came with.
+        domains: the source's domains; a host matches one, or is under it.
+
+    Returns:
+        True when the response's host is on `domains`, and when there is no response to tell by
+        (a browser page's status): a source's own pages are what it mostly asks.
+    """
+    url = getattr(error.response, "url", None)
+    if not isinstance(url, str):
+        return True
+    host = (urlsplit(url).hostname or "").lower()
+    return any(host == domain or host.endswith("." + domain) for domain in domains)
 
 
 @dataclass
@@ -576,8 +657,9 @@ class Ledger:
             return None
         try:
             found = day(self.source.date(self.site, post))
-        except (FetchError, LoginError) as error:
-            if isinstance(error, LoginError) or error.status in BLOCKS:
+        except (SiteError, NetworkError, LoginError) as error:
+            blocked = isinstance(error, (LoginError, Blocked))
+            if blocked or getattr(error, "status", None) in BLOCKS:
                 self._asking = False
                 self.site.warn("dating stopped: {error}; the rest are estimated", error=error)
             else:
@@ -895,7 +977,8 @@ class Downloads:
             if saved is None and queued.refreshed is not None:
                 refreshed = self._expired(queued)
                 saved = self._fetch(queued, refreshed, received) if refreshed is not None else None
-        except FetchError as error:
+        # A file the site or the network failed fails alone; the run goes on (docs/errors).
+        except (SiteError, NetworkError) as error:
             self._record_failed(queued)
             self._count(queued, downloading=-1, failed=1)
             ui.error("{name}: {error}", name=placed.path, error=error)
@@ -955,7 +1038,7 @@ class Downloads:
                 self.run.files, file, queued.dest, label=placed.path,
                 headers=placed.post.headers, kind=placed.kind, received=received,
             )
-        except FetchError as error:
+        except SiteError as error:
             if error.status not in EXPIRED or not callable(placed.post.files) or queued.refreshed:
                 raise
             ui.info("{name}: HTTP {status}, asking for a fresh link",
@@ -1042,7 +1125,7 @@ class Downloads:
 def download(run: SourceRun, target: Target, board: Board, options: Options) -> TargetReport:
     """Download one target of a source, counting progress on `board`."""
     if run.settings.stop.soon.is_set():
-        return TargetReport(target, (), 0, error=STOPPED)
+        return TargetReport(target, (), 0, error=Stopped(STOPPED))
     folder = paths.target_folder(run.settings.home, target)
     # The lock lives in metadata, not the target folder, so media folders hold only media.
     lock = run.settings.home / paths.METADATA / "locks" / f"{crypto.digest(str(folder))[:16]}.lock"
@@ -1181,14 +1264,14 @@ def _ended(
     if error is not None:
         if not isinstance(error, Exception):
             raise error
-        ui.error("{target}: {error}", target=str(target), error=error)
-        ui.debug("{target}: {chain}", target=str(target), chain=causes(error))
+        failed = failure(error, target, run.source)
+        tell(target, failed)
         board.end(target, failed=True)
-        return replace(report, error=str(error))
+        return replace(report, error=failed)
     if run.settings.stop.soon.is_set():
         ui.error("{target}: stopped", target=str(target))
         board.end(target, failed=True)
-        return replace(report, error=STOPPED)
+        return replace(report, error=Stopped(STOPPED))
     board.end(target, failed=False)
     _summary(board.totals(target), target, time.monotonic() - started)
     ui.debug(
@@ -1299,7 +1382,7 @@ class _Queued:
     dest: Path
     key: str
     estimated: bool = False
-    refreshed: FetchError | None = None
+    refreshed: SiteError | None = None
 
     def __str__(self) -> str:
         return self.placed.path

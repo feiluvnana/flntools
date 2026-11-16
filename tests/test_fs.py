@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import _base
 from flnd import _time as clock
 from flnd import _files as fs
+from flnd.errors import DiskError
 
 
 class FsCase(unittest.TestCase):
@@ -72,7 +72,7 @@ class StageTest(FsCase):
             with self.assertRaises(fs.BusyError) as ctx:
                 with fs.stage(self.dest, timeout=0.01):
                     self.fail("block must not run")
-        self.assertIsInstance(ctx.exception, fs.Error)
+        self.assertIsInstance(ctx.exception, DiskError)
 
     def test_a_block_that_moves_the_stage_away_wins(self):
         with fs.stage(self.dest) as temp:
@@ -82,7 +82,7 @@ class StageTest(FsCase):
 
     def test_failed_replace_wraps_os_error_in_fs_error(self):
         with mock.patch("os.replace", side_effect=OSError("disk full")):
-            with self.assertRaises(fs.Error) as ctx:
+            with self.assertRaises(DiskError) as ctx:
                 with fs.stage(self.dest, keep=False) as temp:
                     temp.write_text("new")
         self.assertIsInstance(ctx.exception.__cause__, OSError)
@@ -102,8 +102,7 @@ class WriteTest(FsCase):
         self.dest.write_text("old")
         with self.assertRaises(fs.ExistsError) as ctx:
             fs.write(self.dest, b"new", replace=False)
-        self.assertIsInstance(ctx.exception, FileExistsError)
-        self.assertIsInstance(ctx.exception, _base.Error)
+        self.assertIsInstance(ctx.exception, DiskError)
         self.assertEqual(self.dest.read_text(), "old")
         self.assertEqual(self.names(), ["a.txt"])
 
@@ -142,7 +141,7 @@ class TouchTest(FsCase):
         fs.touch(self.dest, mtime=1_000_000.0)
         stat = self.dest.stat()
         self.assertEqual((stat.st_atime, stat.st_mtime), (1_000_000.0, 1_000_000.0))
-        with self.assertRaises(fs.Error):
+        with self.assertRaises(DiskError):
             fs.touch(self.folder / "missing", mtime=0)
 
 
@@ -184,7 +183,7 @@ class WindowsReplaceTest(FsCase):
         self.dest.write_bytes(b"old")
         patch, calls = self.held(100)
         with patch, mock.patch.object(fs, "WINDOWS", True), clock.use(clock.Fake()):
-            with self.assertRaises(fs.Error) as ctx:
+            with self.assertRaises(DiskError) as ctx:
                 fs.write(self.dest, b"new")
         self.assertIsInstance(ctx.exception.__cause__, PermissionError)
         self.assertEqual(self.dest.read_bytes(), b"old")
@@ -206,7 +205,7 @@ class LockTest(FsCase):
         with fs.lock(lock_file):
             timeout_err = fs.filelock.Timeout(str(lock_file))
             with mock.patch("filelock.FileLock.acquire", side_effect=timeout_err):
-                with self.assertRaises(fs.Error):
+                with self.assertRaises(DiskError):
                     with fs.lock(lock_file, timeout=0.01):
                         pass
 
@@ -216,7 +215,7 @@ class LockErrorTest(FsCase):
         with self.assertRaises(FileNotFoundError) as ctx:
             with fs.lock(self.folder / "a.lock"):
                 open(self.folder / "missing")
-        self.assertNotIsInstance(ctx.exception, fs.Error)
+        self.assertNotIsInstance(ctx.exception, DiskError)
 
     def test_timeout_raises_busy_error(self):
         path = self.folder / "a.lock"

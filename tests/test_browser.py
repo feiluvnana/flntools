@@ -29,6 +29,7 @@ from unittest import mock
 from flnd import _time as clock, _cookies as cookies, _http as http
 from flnd import _browser as browser
 from flnd._ui import ui
+from flnd.errors import Blocked, Error, SiteError, ToolError
 
 # The real lookup, before BrowserCase patches it out.
 CHROME_INSTALLED = browser._chrome_installed
@@ -354,15 +355,16 @@ class ChromeOnlyTest(BrowserCase):
     def test_no_raises_naming_chrome_and_is_asked_once(self):
         self.terminal("n")
         for _ in range(2):
-            with self.assertRaises(RuntimeError) as caught:
+            with self.assertRaises(ToolError) as caught:
                 browser.open()
             self.assertEqual(str(caught.exception), "flnd needs Google Chrome: install it from https://www.google.com/chrome/")
+            self.assertEqual(caught.exception.hint, browser.INSTALL_CHROME)
         self.assertEqual((self.launched, self.installs), ([], []))
         self.assertEqual(self.playwright.stop.call_count, 2)
 
     def test_without_a_terminal_it_raises_naming_chrome(self):
         with mock.patch.object(sys.stdin, "isatty", return_value=False), \
-                self.assertRaisesRegex(browser.MissingError, "^flnd needs Google Chrome: install it"):
+                self.assertRaisesRegex(ToolError, "^flnd needs Google Chrome: install it"):
             browser.open()
         self.assertEqual((self.launched, self.installs), ([], []))
         self.assertNotIn(browser.CHROMIUM_QUESTION, self.dest.getvalue())
@@ -370,19 +372,19 @@ class ChromeOnlyTest(BrowserCase):
     def test_a_failed_download(self):
         self.terminal("y")
         with mock.patch.object(browser.subprocess, "Popen", return_value=FakeInstaller("Error: ENOSPC\n", 1)), \
-                self.assertRaisesRegex(browser.MissingError, "exited with 1: Error: ENOSPC"):
+                self.assertRaisesRegex(ToolError, "exited with 1: Error: ENOSPC"):
             browser.open()
         self.assertEqual(self.launched, [])
         self.assertIn("Downloading Chromium", self.dest.getvalue())
 
     def test_a_failed_download_is_raised_again_without_asking(self):
         asked = []
-        failure = browser.MissingError("Chromium was not downloaded: Playwright's installer exited "
+        failure = ToolError("Chromium was not downloaded: Playwright's installer exited "
                                        "with 1: Error: ENOSPC")
         with mock.patch.object(browser.prompt, "confirm", lambda *args, **options: asked.append(args) or True), \
                 mock.patch.object(browser, "_install_chromium", side_effect=failure) as install:
             for _ in range(2):
-                with self.assertRaises(browser.MissingError) as caught:
+                with self.assertRaises(ToolError) as caught:
                     browser.open()
                 self.assertIs(caught.exception, failure)
         self.assertEqual((len(asked), install.call_count, self.launched), (1, 1, []))
@@ -696,7 +698,7 @@ class PageTest(PageCase):
                 with self.assertRaises(browser.WaitError) as caught:
                     self.page.wait(**cast(dict[str, Any], options), timeout=0.2)
                 self.assertEqual(str(caught.exception), f"waited 0.2 s for {what}")
-                self.assertIsInstance(caught.exception, browser.Error)
+                self.assertIsInstance(caught.exception, Error)
                 self.assertNotIsInstance(caught.exception, browser._raw_error())
                 self.assertLess(time.monotonic() - started, 3)
 
@@ -716,7 +718,7 @@ class PageTest(PageCase):
         self.assertTrue(self.page.raw.is_closed())
 
     def test_handoff_headless_raises(self):
-        with self.assertRaises(browser.Error):
+        with self.assertRaises(Error):
             self.page.handoff(until=lambda: False, message="Solve the captcha")
         self.assertTrue(self.page.handoff(until=lambda: True, message="Solve the captcha"))
 
@@ -781,7 +783,7 @@ class ScrollTest(PageCase):
 
     def test_within_nothing_visible_raises(self):
         self.load()
-        with self.assertRaisesRegex(browser.Error, "no visible element"):
+        with self.assertRaisesRegex(Error, "no visible element"):
             self.page.scroll(within="#missing")
 
     def test_uses_the_wheel_in_uneven_steps(self):
@@ -1223,27 +1225,27 @@ class FetchTest(PageCase):
         self.assertEqual(self.page.fetch("/echo").json["headers"]["cookie"], "sid=example-session")
 
     def test_a_404_is_refused_and_unchecked_fetch_returns_it(self):
-        with self.assertRaises(http.RefusedError) as caught:
+        with self.assertRaises(SiteError) as caught:
             self.page.fetch("/status/404?token=abc", headers={"Authorization": SECRET})
         self.assertEqual(caught.exception.status, 404)
         self.assertEqual(str(caught.exception), f"GET {self.server.url}/status/404: HTTP 404")
         self.assertEqual(self.page.fetch("/status/404", check=False).status, 404)
 
     def test_a_429_is_rate_limited_with_retry_after(self):
-        with self.assertRaises(http.RateLimitedError) as caught:
+        with self.assertRaises(Blocked) as caught:
             self.page.fetch("/status/429")
-        self.assertEqual(caught.exception.retry_after, 7.0)
-        self.assertNotIsInstance(caught.exception, http.RefusedError)
+        self.assertEqual(caught.exception.wait, 7.0)
+        self.assertEqual(caught.exception.status, 429)
         self.assertEqual(self.page.fetch("/status/429", check=False).status, 429)
 
-    def test_a_500_is_an_incomplete_error(self):
-        with self.assertRaises(http.IncompleteError) as caught:
+    def test_a_500_is_a_retryable_site_error(self):
+        with self.assertRaises(SiteError) as caught:
             self.page.fetch("/status/500")
         self.assertIn("500", str(caught.exception))
 
     def test_the_timeout_aborts_the_request_in_the_page(self):
         started = time.monotonic()
-        with self.assertRaises(http.Error) as caught, mock.patch.object(browser, "FETCH_TIMEOUT", 0.5):
+        with self.assertRaises(Error) as caught, mock.patch.object(browser, "FETCH_TIMEOUT", 0.5):
             self.page.fetch("/slow?token=abc", headers={"Authorization": SECRET})
         self.assertLess(time.monotonic() - started, 5)
         self.assertEqual(str(caught.exception), f"GET {self.server.url}/slow: no answer within 0.5 s")
@@ -1251,7 +1253,7 @@ class FetchTest(PageCase):
         self.assertEqual(self.page.fetch("/json").status, 200)
 
     def test_a_request_the_browser_refuses_names_no_header_value(self):
-        with self.assertRaises(http.Error) as caught:
+        with self.assertRaises(Error) as caught:
             # A NUL byte makes the value invalid: the browser's TypeError must not show it, whatever its wording.
             self.page.fetch("/json", headers={"X-Token": SECRET + "\x00"})
         self.assertNotIn("s3cr3t", str(caught.exception))

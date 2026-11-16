@@ -4,7 +4,7 @@ import unittest
 
 from flnd import targets
 from flnd.engine import resolve
-from flnd.source import Target, TargetError
+from flnd.source import Target, UsageError
 from flnd.sources import SOURCES
 
 
@@ -111,7 +111,7 @@ class ShortLinkTest(unittest.TestCase):
         self.assertEqual(read("https://www.tiktok.com/@someone", follow), Target("tik", "user", "someone"))
 
     def test_fb_watch_belongs_to_facebook(self):
-        with self.assertRaisesRegex(TargetError, "^fbk: single posts and videos aren't supported yet"):
+        with self.assertRaisesRegex(UsageError, "^fbk: single posts and videos aren't supported yet"):
             read("https://fb.watch/abc/", lambda url: "https://www.facebook.com/watch/?v=123")
 
     def test_share_links_are_followed(self):
@@ -127,24 +127,24 @@ class ShortLinkTest(unittest.TestCase):
                  lambda url: "https://www.instagram.com/p/C1abcDEFghi/"),
             Target("ins", "post", "C1abcDEFghi"),
         )
-        with self.assertRaisesRegex(TargetError, "can't read"):
+        with self.assertRaisesRegex(UsageError, "can't read"):
             read("https://vm.tiktok.com/ZMabc123/", lambda url: url)
 
 
 class RefusedTest(unittest.TestCase):
     def test_bare_value_lists_every_source(self):
-        with self.assertRaises(TargetError) as caught:
+        with self.assertRaises(UsageError) as caught:
             read("example_user")
         self.assertEqual(str(caught.exception), 'which source is "example_user"? Write it as tik:example_user, '
                                                 "fbk:example_user, ins:example_user, twt:example_user, loi:example_user, "
                                                 "tlg:example_user, mht:example_user")
 
     def test_unknown_source(self):
-        with self.assertRaisesRegex(TargetError, "^unknown source 'ytb'. Sources: tik, fbk, ins, twt, loi, tlg, mht$"):
+        with self.assertRaisesRegex(UsageError, "^unknown source 'ytb'. Sources: tik, fbk, ins, twt, loi, tlg, mht$"):
             read("ytb:nasa")
 
     def test_url_of_no_source(self):
-        with self.assertRaisesRegex(TargetError, "^which source is"):
+        with self.assertRaisesRegex(UsageError, "^which source is"):
             read("https://example.com/someone")
 
     def test_refused_forms_have_a_hint(self):
@@ -158,11 +158,11 @@ class RefusedTest(unittest.TestCase):
             ("https://x.com/intent/tweet", "twt: that's not a profile"),
         ]
         for text, message in rows:
-            with self.subTest(text=text), self.assertRaisesRegex(TargetError, "^" + message):
+            with self.subTest(text=text), self.assertRaisesRegex(UsageError, "^" + message):
                 read(text)
 
     def test_unreadable_forms_list_the_forms(self):
-        with self.assertRaises(TargetError) as caught:
+        with self.assertRaises(UsageError) as caught:
             read("ins:not a name")
         self.assertEqual(str(caught.exception), "ins: can't read 'not a name'; write it like ins:me, ins:<user>, "
                                                 "https://www.instagram.com/p/<code>/, https://www.instagram.com/reel/<code>/, "
@@ -171,14 +171,14 @@ class RefusedTest(unittest.TestCase):
                                                 "https://www.instagram.com/…/reel/<code>/, https://www.instagram.com/…/reels/<code>/, "
                                                 "https://www.instagram.com/…/tv/<code>/, https://www.instagram.com/<user>/")
         # twt's forms are generated from its routes, so its first form is twt:<user>.
-        with self.assertRaisesRegex(TargetError, "^twt: can't read 'not a name'; write it like twt:<user>, "):
+        with self.assertRaisesRegex(UsageError, "^twt: can't read 'not a name'; write it like twt:<user>, "):
             read("twt:not a name")
         for text in ("ins:", "tik:https://www.tiktok.com/"):
-            with self.subTest(text=text), self.assertRaisesRegex(TargetError, "can't read"):
+            with self.subTest(text=text), self.assertRaisesRegex(UsageError, "can't read"):
                 read(text)
 
     def test_empty(self):
-        with self.assertRaises(TargetError):
+        with self.assertRaises(UsageError):
             read("  ")
 
 

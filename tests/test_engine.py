@@ -24,12 +24,13 @@ import httpx
 
 from flnd import job
 from flnd.common import auth, net, paths
-from flnd import Engine, LoginError, Range, Report, Target, TargetReport
+from flnd import Blocked, Engine, LoginError, Range, Report, Target, TargetReport, UsageError
 from flnd.options import Options
 from flnd.site import LoginSite
-from flnd.source import FetchError, File, Post, Source, target
-from flnd import _cli as cli, _time as clock, _cookies as cookies, _http as http, _db as store
+from flnd.source import SiteError, File, Post, Source, target
+from flnd import _cli as cli, _time as clock, _cookies as cookies, _db as store
 from flnd._ui import ui
+from flnd.errors import Error
 
 CDN = "https://cdn.example"
 
@@ -177,7 +178,7 @@ class GroupsTest(EngineCase):
     def test_rows_end_at_ok_or_error_and_the_run_goes_on(self):
         def run(site):
             if site.target.value == "bad":
-                raise RuntimeError("blocked")
+                raise Blocked("blocked")
 
         def files(site, context):
             return [File(f"{CDN}/{site.target.value}.jpg", name="a.jpg")]
@@ -192,7 +193,7 @@ class GroupsTest(EngineCase):
     def test_a_group_whose_connect_fails_ends_its_rows_failed(self):
         # Fix 5: before it, only the error line was written and log.group ended the rows at ok.
         def connect(self, site):
-            raise RuntimeError("tlg: the saved login no longer works")
+            raise LoginError("tlg: the saved login no longer works")
 
         report = self.report(make_source("aaa", connect=connect), make_source("bbb"), targets=["aaa:a", "aaa:b", "bbb:c"])
         lines = self.lines()
@@ -200,7 +201,7 @@ class GroupsTest(EngineCase):
         self.assertFalse(any("aaa:" in line and "posts " in line for line in lines), lines)
         self.assertTrue(any("bbb:c posts " in line for line in lines), lines)
         self.assertEqual([str(target) for target in report.failed], ["aaa:a", "aaa:b"])
-        self.assertEqual(report.targets[0].error, "tlg: the saved login no longer works")
+        self.assertEqual(str(report.targets[0].error), "tlg: the saved login no longer works")
 
     def test_a_group_whose_logged_in_raises_ends_its_rows_failed(self):
         def logged_in(self, site):
@@ -213,14 +214,14 @@ class GroupsTest(EngineCase):
     def test_failed_lists_only_the_targets_that_failed(self):
         def run(site):
             if site.target.value == "bad":
-                raise RuntimeError("blocked")
+                raise Blocked("blocked")
 
         source = make_source("aaa", run)
         self.assertEqual(self.report(source, targets=["aaa:good"]).failed, ())
         report = self.report(source, targets=["aaa:bad", "aaa:good"])
         # Each report is its own run's: nothing piles up across runs, as `Engine.failed` once did.
         self.assertEqual([str(target) for target in report.failed], ["aaa:bad"])
-        self.assertEqual(report.targets[0].error, "blocked")
+        self.assertEqual(str(report.targets[0].error), "blocked")
         self.assertFalse(report.ok)
 
 
@@ -259,7 +260,7 @@ class LoginStateTest(EngineCase):
 
         def route(site):
             site.fetch("https://api.aaa.example/me")
-            raise RuntimeError("blocked")
+            raise Blocked("blocked")
 
         self.routes["https://api.aaa.example/me"] = httpx.Response(
             200, json={}, headers=[("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/")])
@@ -270,10 +271,10 @@ class LoginStateTest(EngineCase):
         ran = []
         self.run_engine(make_source("aaa", ran.append, needs=("sid",), requires_login=True), targets=["aaa:a", "aaa:b"])
         self.assertEqual(ran, [])
-        self.assertTrue(any(line.endswith("aaa:a: not logged in; run flnd auth login") for line in self.lines()),
-                        self.lines())
-        self.assertTrue(any(line.endswith("aaa:b: not logged in; run flnd auth login") for line in self.lines()),
-                        self.lines())
+        for name in ("aaa:a", "aaa:b"):
+            # The message, then the hint on its own line: what to do, never a traceback.
+            self.assertIn(f"x {name}: not logged in", self.lines())
+            self.assertIn(f"* {name}: run flnd auth login", self.lines())
 
     def test_download_never_asks(self):
         # The `Site` a download gives has no `ask`, so a source can't stop to ask a question.
@@ -308,9 +309,9 @@ class HttpTest(EngineCase):
             for url in ("https://api.aaa.example/gone", "https://api.aaa.example/html"):
                 try:
                     site.fetch(url).json
-                except FetchError as error:
+                except SiteError as error:
                     results.append((error.status, str(error)[:40]))
-                except http.Error as error:
+                except Error as error:
                     results.append((None, str(error)[:40]))
             results.append(site.fetch("https://api.aaa.example/html").html.css("h1").text)
 
@@ -318,7 +319,7 @@ class HttpTest(EngineCase):
         self.routes["https://api.aaa.example/html"] = httpx.Response(200, html="<h1>Hi</h1>")
         self.run_engine(make_source("aaa", run), targets=["aaa:a"])
         self.assertEqual(results, [404, (404, "GET https://api.aaa.example/gone: HTTP 4"),
-                                   (None, "expected JSON from https://api.aaa.examp"), "Hi"])
+                                   (200, "expected JSON from https://api.aaa.examp"), "Hi"])
 
     def test_a_rate_limit_never_stops_the_source(self):
         ran = []
@@ -503,9 +504,10 @@ class ApiTest(EngineCase):
         import flnd
 
         self.assertEqual(sorted(flnd.__all__), [
-            "AuthInfo", "Engine", "Error", "LoginError", "Range",
-            "Report", "SOURCES", "Source", "Target", "TargetError", "TargetInfo", "TargetReport",
-            "__version__", "download", "open", "resolve", "source",
+            "AuthInfo", "Blocked", "Changed", "DiskError", "Engine", "Error", "LoginError",
+            "NetworkError", "NotFound", "Range", "Report", "SOURCES", "SiteError", "Source",
+            "SourceError", "Stopped", "Target", "TargetInfo", "TargetReport", "ToolError",
+            "UsageError", "__version__", "download", "open", "resolve", "source",
         ])
         self.assertFalse(hasattr(Engine, "LoginError"))
         self.assertFalse(hasattr(Engine, "run"))
@@ -524,7 +526,7 @@ class ApiTest(EngineCase):
     def test_download_reports_each_target_in_order(self):
         def files(site, context):
             if site.target.value == "bad":
-                raise RuntimeError("blocked")
+                raise Blocked("blocked")
             return [File(f"{CDN}/{site.target.value}/a.jpg", name="a.jpg"), File(f"{CDN}/{site.target.value}/b.jpg",
                                                                                   name="b.jpg")]
 
@@ -534,7 +536,7 @@ class ApiTest(EngineCase):
         self.assertEqual((one.target, bad.target), (Target("aaa", "user", "one"), Target("aaa", "user", "bad")))
         self.assertEqual(sorted(path.name for path in one.written), ["a.jpg", "b.jpg"])
         self.assertTrue(all(path.is_file() for path in one.written))
-        self.assertEqual((one.skipped, one.error, bad.error), (0, None, "blocked"))
+        self.assertEqual((one.skipped, one.error, str(bad.error)), (0, None, "blocked"))
         self.assertEqual((report.files, report.failed, report.ok), (2, (Target("aaa", "user", "bad"),), False))
         again = engine.download([Target("aaa", "user", "one")], categories="all")
         self.assertEqual((again.files, again.targets[0].skipped, again.ok), (0, 2, True))
@@ -573,7 +575,7 @@ class ApiTest(EngineCase):
         from flnd.source import TIME_USAGE
 
         for text in ("2026-01-01", "2026-13-01,", "2026-06-30,2026-01-01", "yesterday,", "2026-01-01,2026-02-01,"):
-            with self.subTest(time=text), self.assertRaisesRegex(ValueError, "^--time takes <since>,<until>"):
+            with self.subTest(time=text), self.assertRaisesRegex(UsageError, "^--time takes <since>,<until>"):
                 Range.parse(text)
         self.assertEqual(Range.parse("*,2026-06-30"), Range(None, datetime.date(2026, 6, 30)))
         self.assertEqual(Range.parse("2026-01-01,"), Range(datetime.date(2026, 1, 1), None))
@@ -583,10 +585,10 @@ class ApiTest(EngineCase):
             ({"categories": "reels"}, "no source here has 'reels'"),
         )
         for options, message in cases:
-            with self.subTest(options=options), self.assertRaises(ValueError) as caught:
+            with self.subTest(options=options), self.assertRaises(UsageError) as caught:
                 engine.download(["aaa:a"], **options)
             self.assertTrue(str(caught.exception).startswith(message), caught.exception)
-        with self.assertRaisesRegex(ValueError, "unknown source 'zzz'"):
+        with self.assertRaisesRegex(UsageError, "unknown source 'zzz'"):
             engine.download(["zzz:a"])
         self.assertFalse((self.home / paths.MEDIA).exists())
         self.assertFalse((self.home / paths.METADATA).exists())
@@ -600,7 +602,7 @@ class ApiTest(EngineCase):
         for targets in (["https://www.instagram.com/p/C1abcDEFghi/"],
                         ["ins:example_user", "https://www.instagram.com/p/C1abcDEFghi/"],
                         ["tik:example_creator", "https://www.instagram.com/p/C1abcDEFghi/"]):
-            with self.subTest(targets=targets), self.assertRaisesRegex(ValueError, f"^{message}$"):
+            with self.subTest(targets=targets), self.assertRaisesRegex(UsageError, f"^{message}$"):
                 engine.download(targets, categories="all")
         self.assertEqual(self.requests, [])
         self.assertFalse((self.home / paths.MEDIA).exists())
@@ -666,7 +668,7 @@ class ApiLoginTest(EngineCase):
                 self.engine.login("aaa", "browser", browser="chrome")
         for args, options in ((("aaa", "qr"), {}), (("zzz", "browser"), {}), (("aaa", "browser"), {}),
                               (("aaa", "file"), {})):
-            with self.subTest(args=args), self.assertRaises(ValueError):
+            with self.subTest(args=args), self.assertRaises(UsageError):
                 self.engine.login(*args, **options)
         self.assertEqual(self.engine.logins, {})
 
@@ -678,7 +680,7 @@ class ApiLoginTest(EngineCase):
         self.engine.login("aaa", "browser", browser="chrome")
         self.assertEqual(self.engine.logout(["all"]), ["aaa"])
         self.assertEqual(self.engine.logout(["all"]), [])
-        with self.assertRaisesRegex(ValueError, "unknown source 'zzz'"):
+        with self.assertRaisesRegex(UsageError, "unknown source 'zzz'"):
             self.engine.logout(["zzz"])
 
     def test_a_download_uses_the_vaulted_login(self):

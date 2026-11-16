@@ -23,6 +23,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from flnd import _text as text
 from flnd._ui import ui
+from flnd.errors import (
+    Blocked, Changed, Error, LoginError, NetworkError, NotFound, SiteError, SourceError, UsageError,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,9 +34,9 @@ if TYPE_CHECKING:
 
     from flnd import _browser as browser, _http as http
 
-__all__ = ["Category", "DateLike", "Error", "Fetch", "FetchError", "File", "Login", "LoginError",
-           "Post", "Range", "Route", "Site", "Source", "Target", "TargetError", "day", "fill",
-           "pages", "target"]
+__all__ = ["Blocked", "Category", "Changed", "DateLike", "Error", "Fetch", "File", "Login",
+           "LoginError", "NetworkError", "NotFound", "Post", "Range", "Route", "Site", "SiteError",
+           "Source", "SourceError", "Target", "UsageError", "day", "fill", "pages", "target"]
 
 # Hosts that are the same site as their bare domain: desktop, mobile and web variants.
 SITE_PREFIXES = ("www.", "m.", "mobile.", "web.", "mbasic.", "touch.")
@@ -71,47 +74,15 @@ Fetch = Callable[["Path", Callable[..., None]], Any]
 DateLike = Union[datetime.date, int, float, str, None]
 
 
-class Error(Exception):
-    """The base of the errors a source raises: `except flnd.source.Error` catches all three."""
+class _Unmatched(UsageError):
+    """A target no route reads; `url` is set when it is a link on the source's domains.
 
-
-class FetchError(Error):
-    """A request that failed: `status` is the refusing HTTP status, or None (no response or JSON).
-
-        try:
-            data = site.fetch(url).json
-        except FetchError as error:
-            if error.status == 403: ...
+    Private: the engine catches it to follow a short link once with a HEAD request and read
+    where it leads. Everyone else sees the `UsageError` it is.
 
     Args:
-        message: what failed, shown to the person.
-        status: the HTTP status that refused the request; None when there was no response.
-        response: the refusing response, body and all, so a source can read the site's reason
-            from it (Instagram's "please wait a few minutes" comes as a 400 or 401 with JSON);
-            None when there was none.
-    """
-
-    def __init__(
-        self, message: str, *, status: int | None = None, response: http.Response | None = None
-    ):
-        super().__init__(message)
-        self.status = status
-        self.response = response
-
-
-class LoginError(Error):
-    """A login failure with next steps: `LoginError("tlg: run flnd login tlg")`."""
-
-
-class TargetError(Error, ValueError):
-    """A target that can't be read, with what to write instead.
-
-        raise TargetError("ins: story links aren't supported; give the profile")
-
-    Args:
-        message: the whole message, starting with the source's code when one is known.
-        url: a link on the source's site that no route matched. The engine follows it once with a
-            HEAD request and reads where it leads; None (the default) means the refusal is final.
+        message: the whole message, starting with the source's code.
+        url: the link to follow; None when the refusal is final.
     """
 
     def __init__(self, message: str, *, url: str | None = None):
@@ -170,7 +141,7 @@ class _Pattern:
         )
         self.is_query = self.host is None and not segments and mark == "?"
         if self.host is None and mark and not self.is_query:
-            raise TypeError(f"pattern {text!r}: only a URL pattern can name a query")
+            raise SourceError(f"pattern {text!r}: only a URL pattern can name a query")
         self.names: list[str] = []
         if self.is_query:
             self.segments = []
@@ -182,7 +153,7 @@ class _Pattern:
         self.segments = segments[1:] if self.host is not None else ["/".join(segments)]
         self.keys = [_split(pair, "=", once=True) for pair in _split(query, "&")] if mark else []
         if any(not key or not value for key, _, value in self.keys):
-            raise TypeError(f"pattern {text!r}: write a query as ?key={{name}}")
+            raise SourceError(f"pattern {text!r}: write a query as ?key={{name}}")
         # Placeholder names in order: route pattern has one, unsupported pattern none.
         self.regexes = [_compile(segment, text, self.names) for segment in self.segments]
         self.query = [(key, _compile(value, text, self.names)) for key, _, value in self.keys]
@@ -242,7 +213,7 @@ class Category:
         self.folder, self.key = folder, key
         parameters = list(inspect.signature(function).parameters)
         if len(parameters) != 3:
-            raise TypeError(
+            raise SourceError(
                 f"category {self.name}: take (self, site, context), not ({', '.join(parameters)})"
             )
 
@@ -266,7 +237,7 @@ class Route:
         discovers: bool = False,
         from_: Iterable[str] | None = None, folder: str | None = None,
     ):
-        """Compile `patterns` for `function`, raising `TypeError` for a mistake in them."""
+        """Compile `patterns` for `function`, raising `SourceError` for a mistake in them."""
         self.function = function
         self.kind = function.__name__
         self.patterns = patterns
@@ -283,18 +254,18 @@ class Route:
             parameter.name for parameter in inspect.signature(function).parameters.values()
         ]
         if len(parameters) != 3:
-            raise TypeError(
+            raise SourceError(
                 f"route {self.kind}: take (self, site, value), not ({', '.join(parameters)})"
             )
         for pattern in self._patterns:
             if len(pattern.names) != 1:
                 # One value is the target's identity: its folder and its history keys.
-                raise TypeError(
+                raise SourceError(
                     f"route {self.kind}: pattern {pattern.text!r} needs exactly one placeholder, "
                     f"not {len(pattern.names)}"
                 )
             if pattern.names[0] != parameters[2]:
-                raise TypeError(
+                raise SourceError(
                     f"route {self.kind}: pattern {pattern.text!r} captures {pattern.names[0]!r}, "
                     f"but the method's value parameter is {parameters[2]!r}"
                 )
@@ -324,7 +295,7 @@ class Route:
         def register(method: Callable[..., Any]) -> Callable[..., Any]:
             made = Category(method, newest_first=newest_first, folder=folder, key=key)
             if any(known.name == made.name for known in self._categories):
-                raise TypeError(f"route {self.kind}: category {made.name!r} is declared twice")
+                raise SourceError(f"route {self.kind}: category {made.name!r} is declared twice")
             self._categories.append(made)
             return method
 
@@ -382,7 +353,7 @@ class File:
         size: its size in bytes, when the site says it; None when unknown.
 
     Raises:
-        TypeError: `url` is none of those.
+        SourceError: `url` is none of those.
     """
 
     # A URL, mirrors tried in order, or a `Fetch` function; None for a text file.
@@ -403,7 +374,7 @@ class File:
         elif isinstance(url, Sequence) and url and all(isinstance(mirror, str) for mirror in url):
             sources = tuple(url)
         else:
-            raise TypeError(f"File takes a URL, mirror URLs or a fetch function, not {url!r}")
+            raise SourceError(f"File takes a URL, mirror URLs or a fetch function, not {url!r}")
         _assign(self, url=sources, audio=audio, name=name, size=size, content=None)
 
     @classmethod
@@ -442,7 +413,7 @@ class Post:
         **fields: the site's own fields for the formats, such as `album`, `title` or `author`.
 
     Raises:
-        TypeError: a field is one the engine sets (`category`, `num`, `count`, `index`,
+        SourceError: a field is one the engine sets (`category`, `num`, `count`, `index`,
             `extension`, `path`), so a source can never overwrite one by accident.
     """
 
@@ -464,7 +435,7 @@ class Post:
         reserved = sorted(ENGINE_FIELDS & fields.keys())
         if reserved:
             msg = "is a field" if len(reserved) == 1 else "are fields"
-            raise TypeError(
+            raise SourceError(
                 f"Post: {', '.join(reserved)} {msg} the engine sets; name the site field otherwise"
             )
         _assign(self, id=str(id), files=files if callable(files) else tuple(files), date=date,
@@ -577,18 +548,18 @@ class Range:
             text: the value as given on the command line.
 
         Raises:
-            ValueError: there is no comma, a side isn't a day, or since is after until;
+            UsageError: there is no comma, a side isn't a day, or since is after until;
                 the message is `TIME_USAGE`.
         """
         since, comma, until = text.partition(",")
         if not comma or "," in until:
-            raise ValueError(TIME_USAGE)
+            raise UsageError(TIME_USAGE)
         try:
             days = [_side(side) for side in (since, until)]
         except ValueError:
-            raise ValueError(TIME_USAGE) from None
+            raise UsageError(TIME_USAGE) from None
         if days[0] and days[1] and days[0] > days[1]:
-            raise ValueError(TIME_USAGE)
+            raise UsageError(TIME_USAGE)
         return cls(days[0], days[1])
 
     def __contains__(self, value: object) -> bool:
@@ -645,8 +616,10 @@ class Site(Protocol):
             items = site.fetch(API, params={"cursor": cursor}).json
             profile = site.fetch(f"{API}/users/{user}", check=False)   # read profile.ok
 
-        `request` takes `params` (the query) and `body` (as `http.fetch`'s). A refusal or error
-        raises `FetchError`, unless `check` is False, which returns a refusal's response.
+        `request` takes `params` (the query) and `body` (as `http.fetch`'s). A refusal raises a
+        `SiteError` with its `status` and `response` (`NotFound` for a 404 or 410, `Blocked` for
+        a 429 still refused after its waits), unless `check` is False, which returns the
+        refusal's response; a request that got no answer raises `NetworkError`.
         """
         ...
 
@@ -857,7 +830,7 @@ def _first_page(fetch: Callable[[str | None], Any], start: str | None,
         return fetch(None)
     try:
         return fetch(start)
-    except FetchError as error:
+    except SiteError as error:
         # A cursor gone stale (a 4xx) is the site's answer for good; anything else is a failure.
         if error.status is None or not 400 <= error.status < 500:
             raise
@@ -889,7 +862,7 @@ class Source:
 
     Every subclass is listed in `flnd.sources.SOURCES`. When the class is created, its routes
     are collected in declaration order and checked: each pattern's host must be one of
-    `domains`, and no pattern may appear twice. A mistake raises `TypeError` at import. Its
+    `domains`, and no pattern may appear twice. A mistake raises `SourceError` at import. Its
     `categories` are then its routes' categories, in declaration order, and its `single_kinds`
     the kinds of its routes without any.
     """
@@ -942,7 +915,7 @@ class Source:
         """Collect and check routes and unsupported patterns, and derive forms and categories.
 
         Raises:
-            TypeError: a pattern outside `domains`, a pattern given twice, a placeholder in
+            SourceError: a pattern outside `domains`, a pattern given twice, a placeholder in
                 `unsupported`, or categories declared as both field and methods.
         """
         super().__init_subclass__(**kwargs)
@@ -956,7 +929,7 @@ class Source:
             (_Pattern(pattern), message) for pattern, message in cls.unsupported.items()
         )
         if any(pattern.names for pattern, _ in cls._refusals):
-            raise TypeError(
+            raise SourceError(
                 f"{cls.__name__}.unsupported: pattern captures nothing; use * for any segment"
             )
         domains = getattr(cls, "domains", ())
@@ -966,7 +939,7 @@ class Source:
             if pattern.host is not None and not any(
                 pattern.host == _bare_host(domain) for domain in domains
             ):
-                raise TypeError(
+                raise SourceError(
                     f"{cls.__name__}: pattern {pattern.text!r} isn't on its domains {domains}"
                 )
             # Compared without www. and m., which matching drops anyway.
@@ -977,10 +950,10 @@ class Source:
                 host_part, slash, rest = (tail if sep else head).partition("/")
                 key = f"{_bare_host(host_part.lower())}{slash}{rest}"
             if key in seen:
-                raise TypeError(f"{cls.__name__}: pattern {pattern.text!r} is given twice")
+                raise SourceError(f"{cls.__name__}: pattern {pattern.text!r} is given twice")
             seen.add(key)
         if "categories" in vars(cls) or "single_kinds" in vars(cls):
-            raise TypeError(
+            raise SourceError(
                 f"{cls.__name__}: its categories are its @<route>.category methods; "
                 "declare no categories or single_kinds field"
             )
@@ -1013,7 +986,7 @@ class Source:
             The target the first matching route reads.
 
         Raises:
-            TargetError: an `unsupported` pattern matched, with its message, and no route pattern
+            UsageError: an `unsupported` pattern matched, with its message, and no route pattern
                 that matches too has more literal segments than it; or nothing matched, listing
                 `forms`, with `url` set when the text is a link on the source's domains.
         """
@@ -1032,13 +1005,13 @@ class Source:
                     if route.is_query:
                         stripped = value.strip()
                         if not stripped:
-                            raise TargetError(f"{self.code}: the query is empty")
+                            raise UsageError(f"{self.code}: the query is empty")
                         return Target(self.code, route.kind, stripped, query=True)
                     return Target(self.code, route.kind, value)
         if refused is not None:
-            raise TargetError(f"{self.code}: {refused[1]}")
+            raise UsageError(f"{self.code}: {refused[1]}")
         link = None if url is None else text if _is_url(text) else f"https://{text}"
-        raise TargetError(
+        raise _Unmatched(
             f"{self.code}: can't read {text!r}; write it like {', '.join(self.forms)}", url=link
         )
 
@@ -1077,7 +1050,8 @@ class Source:
         files saved undated or with an estimated day. A source overrides it with one paced request.
 
         Raises:
-            FetchError: the item can't be read; a 401, 403 or 429 stops asking for the run.
+            SiteError: the item can't be read; a 401, 403 or 429 (`Blocked`) stops asking for
+                the run. A `NetworkError` or `LoginError` is taken the same way.
         """
         return None
 
@@ -1149,7 +1123,7 @@ def _tokens(segment: str, pattern: str) -> list[tuple[str, str, str]]:
         pattern: the whole pattern, for the error message.
 
     Raises:
-        TypeError: an unclosed `{`, a stray `}`, or a placeholder whose name isn't an identifier.
+        SourceError: an unclosed `{`, a stray `}`, or a placeholder whose name isn't an identifier.
     """
     tokens, index = [], 0
     while index < len(segment):
@@ -1159,7 +1133,7 @@ def _tokens(segment: str, pattern: str) -> list[tuple[str, str, str]]:
             index += 2
             continue
         if character == "}":
-            raise TypeError(f"pattern {pattern!r}: a '}}' with no '{{'")
+            raise SourceError(f"pattern {pattern!r}: a '}}' with no '{{'")
         if character == "*":
             tokens.append(("any", "*", ""))
             index += 1
@@ -1180,10 +1154,10 @@ def _tokens(segment: str, pattern: str) -> list[tuple[str, str, str]]:
             if depth == 0:
                 break
         if depth:
-            raise TypeError(f"pattern {pattern!r}: a '{{' with no '}}'")
+            raise SourceError(f"pattern {pattern!r}: a '{{' with no '}}'")
         name, _, regex = segment[index + 1:end].partition(":")
         if not name.isidentifier():
-            raise TypeError(f"pattern {pattern!r}: {{{name}}} isn't a placeholder name")
+            raise SourceError(f"pattern {pattern!r}: {{{name}}} isn't a placeholder name")
         tokens.append(("hole", name, regex))
         index = end + 1
     return tokens
@@ -1198,7 +1172,7 @@ def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
         names: the names of the pattern's placeholders so far; the first one is captured as `value`.
 
     Raises:
-        TypeError: the segment, or a placeholder's regex, is malformed.
+        SourceError: the segment, or a placeholder's regex, is malformed.
     """
     regex = ""
     for kind, token, custom in _tokens(segment, pattern):
@@ -1214,7 +1188,7 @@ def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
     try:
         return re.compile(regex)
     except re.error as error:
-        raise TypeError(f"pattern {pattern!r}: {error}") from None
+        raise SourceError(f"pattern {pattern!r}: {error}") from None
 
 
 def _shown(segment: str) -> str:

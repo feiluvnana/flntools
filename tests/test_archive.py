@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 
 from flnd import _unpack as archive, _tools as sh
+from flnd.errors import DiskError, SiteError
 
 HAS_7Z = bool(shutil.which("7zz") or shutil.which("7z"))
 HAS_UNRAR = bool(shutil.which("unrar"))
@@ -136,7 +137,7 @@ class RoundTripTest(ArchiveCase):
     @unittest.skipUnless(HAS_7Z, "needs 7zz or 7z")
     def test_password(self) -> None:
         packed = archive.pack(self.root / "album", self.root / "secret.7z", password="pw")
-        with self.assertRaises(archive.PasswordError):
+        with self.assertRaises(SiteError):
             archive.unpack(packed, self.out)
         self.assertEqual(len(archive.ls(packed, password="pw")), 4)
         archive.unpack(packed, self.out, password="pw")
@@ -146,7 +147,7 @@ class RoundTripTest(ArchiveCase):
     def test_rar_needs_the_tool(self) -> None:
         path = self.root / "made.rar"
         path.write_bytes(b"Rar!\x1a\x07\x00")
-        with self.assertRaises((archive.MissingError, archive.BrokenError)):
+        with self.assertRaises((sh.MissingError, SiteError)):
             archive.ls(path)
 
 
@@ -159,18 +160,18 @@ class SafetyTest(ArchiveCase):
     def test_traversal_names(self) -> None:
         for name in ("../evil", "a/../../evil", "/abs/evil", "C:/evil", "..\\evil"):
             with self.subTest(name=name):
-                self.assert_refused(archive.UnsafeError, self.zip_with({name: b"x"}))
+                self.assert_refused(SiteError, self.zip_with({name: b"x"}))
 
     def test_symlink_in_a_tar_is_refused(self) -> None:
-        self.assert_refused(archive.UnsafeError, self.tar_with({"a.txt": b"a"}, symlink=True))
+        self.assert_refused(SiteError, self.tar_with({"a.txt": b"a"}, symlink=True))
 
     def test_limits(self) -> None:
         zipped = self.zip_with({"a.txt": b"aaaa", "b.txt": b"bbbb"})
-        with self.assertRaises(archive.UnsafeError):
+        with self.assertRaises(SiteError):
             archive.ls(zipped, limits=archive.Limits(files=1))
-        with self.assertRaises(archive.UnsafeError):
+        with self.assertRaises(SiteError):
             archive.ls(zipped, limits=archive.Limits(size=3))
-        with self.assertRaises(archive.UnsafeError):
+        with self.assertRaises(SiteError):
             archive.ls(zipped, limits=archive.Limits(ratio=0.01))
 
     def test_links_listed_by_7z_are_refused(self) -> None:
@@ -183,7 +184,7 @@ class SafetyTest(ArchiveCase):
                     if attributes.startswith("A_ -"):
                         self.assertEqual(archive.ls(listed)[0].name, "link")
                     else:
-                        self.assert_refused(archive.UnsafeError, listed)
+                        self.assert_refused(SiteError, listed)
 
     def test_links_listed_by_unrar_are_refused(self) -> None:
         listed = self.root / "links.rar"
@@ -192,7 +193,7 @@ class SafetyTest(ArchiveCase):
             with self.subTest(kind=kind):
                 tool = FakeTool(f"Name: link\nType: {kind}\nSize: 4\n")
                 with sh.fake({"unrar": tool}):
-                    self.assert_refused(archive.UnsafeError, listed)
+                    self.assert_refused(SiteError, listed)
 
     def test_a_path_like_a_switch_reaches_the_tools_as_a_path(self) -> None:
         sources = self.root / "-sdel"
@@ -255,7 +256,7 @@ class ConflictTest(ArchiveCase):
         (self.out / "a.txt").write_bytes(b"old")
 
     def test_error_is_the_default(self) -> None:
-        with self.assertRaises(archive.UnsafeError):
+        with self.assertRaises(DiskError):
             archive.unpack(self.zipped, self.out)
         self.assertEqual((self.out / "a.txt").read_bytes(), b"old")
 
@@ -274,13 +275,13 @@ class ConflictTest(ArchiveCase):
 
 class ErrorTest(ArchiveCase):
     def test_missing_file(self) -> None:
-        with self.assertRaises(archive.BrokenError):
+        with self.assertRaises(SiteError):
             archive.ls(self.root / "nope.zip")
 
     def test_corrupt_file(self) -> None:
         bad = self.root / "bad.zip"
         bad.write_bytes(b"not an archive")
-        with self.assertRaises(archive.BrokenError):
+        with self.assertRaises(SiteError):
             archive.ls(bad)
 
     def test_unsupported_pack_extension(self) -> None:
@@ -288,14 +289,17 @@ class ErrorTest(ArchiveCase):
             archive.pack(self.album, self.root / "album.rar")
 
     def test_missing_source_leaves_no_file(self) -> None:
-        with self.assertRaises(archive.Error):
+        with self.assertRaises(DiskError):
             archive.pack(self.root / "missing", self.root / "none.zip")
         self.assertFalse((self.root / "none.zip").exists())
 
-    def test_error_hierarchy(self) -> None:
-        self.assertTrue(issubclass(archive.UnsafeError, ValueError))
-        self.assertTrue(issubclass(archive.BrokenError, ValueError))
-        self.assertTrue(issubclass(archive.PasswordError, ValueError))
+    def test_an_archive_that_cant_be_extracted_is_the_sites_file(self) -> None:
+        # Broken, unsafe or locked: the file the site served is at fault, so it isn't retried.
+        bad = self.root / "bad.zip"
+        bad.write_bytes(b"PK\x03\x04 not really a zip")
+        with self.assertRaises(SiteError) as caught:
+            archive.unpack(bad, self.root / "out")
+        self.assertFalse(caught.exception.retryable)
 
 
 if __name__ == "__main__":

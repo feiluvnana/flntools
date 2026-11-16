@@ -11,7 +11,7 @@
     page.script(id="__NEXT_DATA__").jmespath("props.user").first
     selector.parse({"data": {"id": "9"}}).jmespath("data.id").first
 
-Text over 64 MB or invalid JSON raises `BrokenError`.
+Text over 64 MB or invalid JSON raises `flnd.errors.Changed`; a bad query, `SourceError`.
 """
 
 from __future__ import annotations
@@ -21,16 +21,14 @@ import re
 from pathlib import Path
 from typing import Any, Iterator, Union
 
-from flnd import _base
+from flnd.errors import Changed, SourceError, disk
 
 try:
     import parsel
 except ImportError:
     raise ImportError("flnd._html needs parsel: pip install parsel") from None
 
-__all__ = [
-    "BrokenError", "Error", "MissingError", "QueryError", "Selection", "parse",
-]
+__all__ = ["Selection", "parse"]
 
 WHITESPACE = re.compile(r"\s+")
 # The largest text `parse` reads: 64 MiB. The biggest page flnd reads (a TikTok or Facebook page
@@ -40,21 +38,10 @@ MAX_SIZE = 64 * 1024 * 1024
 Raw = Union[parsel.Selector, parsel.SelectorList[parsel.Selector]]
 
 
-class Error(_base.Error):
-    """The base of every error `flnd._html` raises."""
-
-
-# A ValueError through _base.BrokenError so callers catching ValueError still handle it.
-class BrokenError(Error, _base.BrokenError):
-    """Text that should be JSON but doesn't parse: the site changed what it sends."""
-
-
-class QueryError(Error, ValueError):
-    """A CSS, XPath, JMESPath, JSONPath or regex query is invalid or used on the wrong kind."""
-
-
-class MissingError(Error, _base.MissingError):
-    """An optional parser dependency (`jsonpath`, `jmespath`, `msgspec`) is not installed."""
+# Errors: text that should be JSON but doesn't parse, or is too big, is `Changed` (the site
+# changed what it sends); a query that is malformed, or used on the wrong kind of document, is a
+# `SourceError` (the source's mistake); a file that can't be read is a `DiskError`. A parser
+# package that isn't installed is an `ImportError`, as parsel's own is above.
 
 
 def parse(source: Any) -> Selection:
@@ -99,14 +86,14 @@ class Selection:
         try:
             return Selection(self._matches.css(query))
         except Exception as error:
-            raise QueryError(f"invalid CSS selector {query!r}: {error}") from None
+            raise SourceError(f"invalid CSS selector {query!r}: {error}") from None
 
     def xpath(self, query: str) -> Selection:
         """The HTML matches of an XPath expression."""
         try:
             return Selection(self._matches.xpath(query))
         except Exception as error:
-            raise QueryError(f"invalid XPath {query!r}: {error}") from None
+            raise SourceError(f"invalid XPath {query!r}: {error}") from None
 
     def jmespath(self, query: str) -> Selection:
         """The JSON result of a JMESPath expression: one match per element when it is a list."""
@@ -114,7 +101,7 @@ class Selection:
         found: list[Any] = []
         for match in self._matches:
             if match.type not in ("json", "text"):
-                raise QueryError(f"cannot use jmespath on {match.type!r}")
+                raise SourceError(f"cannot use jmespath on {match.type!r}")
             value = compiled.search(match.root)
             if isinstance(value, list):
                 found.extend(item for item in value if item is not None)
@@ -129,7 +116,7 @@ class Selection:
         found: list[Any] = []
         for match in self._matches:
             if match.type not in ("json", "text"):
-                raise QueryError(f"cannot use jsonpath on {match.type!r}")
+                raise SourceError(f"cannot use jsonpath on {match.type!r}")
             for value in compiled.findall(match.root):
                 if isinstance(value, list):
                     found.extend(item for item in value if item is not None)
@@ -151,13 +138,13 @@ class Selection:
         try:
             found = re.search(pattern, haystack, re.DOTALL)
         except re.error as error:
-            raise QueryError(f"invalid regex {pattern!r}: {error}") from None
+            raise SourceError(f"invalid regex {pattern!r}: {error}") from None
         if found is None:
             return Selection(parsel.SelectorList())
         try:
             group = found.group(1)
         except IndexError:
-            raise QueryError(f"pattern {pattern!r} needs a capturing group for JSON") from None
+            raise SourceError(f"pattern {pattern!r} needs a capturing group for JSON") from None
         return Selection(parsel.Selector(root=_loads(group), type="json"))
 
     @property
@@ -170,7 +157,7 @@ class Selection:
         The text of an HTML element is all its text nodes, joined as they are; a text or attribute
         match is its own text; a JSON string is parsed. JSON that is already parsed (a number, a
         list, an object) is kept as it is, so `script(...).json` is the same as `script(...)`.
-        It raises `BrokenError` when a text isn't JSON or is over 64 MB.
+        It raises `Changed` when a text isn't JSON or is over 64 MB.
         """
         values = []
         for match in self._matches:
@@ -226,7 +213,7 @@ def _selector(source: Any) -> tuple[parsel.Selector, str | None]:
             _check_size(source.stat().st_size, "bytes")
             raw_bytes = source.read_bytes()
         except OSError as error:
-            raise Error(f"{source}: {error}") from error
+            raise disk(error, source) from error
         source = raw_bytes.decode("utf-8-sig", "replace")
     elif isinstance(source, (bytes, bytearray)):
         _check_size(len(source), "bytes")
@@ -260,19 +247,19 @@ def _text_selector(text: str) -> tuple[parsel.Selector, str | None]:
 
 
 def _loads(text: str) -> Any:
-    """Parse JSON text, raising `BrokenError` if too large or invalid."""
+    """Parse JSON text, raising `Changed` if too large or invalid."""
     _check_size(len(text), "characters")
     clean = text.removeprefix("\ufeff")
     try:
         return _msgspec_json().decode(clean)
     except Exception as error:
-        raise BrokenError(f"expected JSON, got {text[:80]!r}: {error}") from None
+        raise Changed(f"expected JSON, got {text[:80]!r}: {error}") from None
 
 
 def _check_size(size: int, unit: str) -> None:
-    """Raise `BrokenError` when `size` is over `MAX_SIZE`."""
+    """Raise `Changed` when `size` is over `MAX_SIZE`."""
     if size > MAX_SIZE:
-        raise BrokenError(f"refusing {size:,} {unit} of text: the limit is {MAX_SIZE:,}")
+        raise Changed(f"refusing {size:,} {unit} of text: the limit is {MAX_SIZE:,}")
 
 
 @functools.cache
@@ -281,7 +268,7 @@ def _msgspec_json() -> Any:
     try:
         import msgspec.json
     except ImportError:
-        raise MissingError("flnd._html needs msgspec: pip install msgspec") from None
+        raise ImportError("flnd._html needs msgspec: pip install msgspec") from None
     return msgspec.json
 
 
@@ -291,13 +278,13 @@ def _compile_jmespath(query: str) -> Any:
     try:
         import jmespath
     except ImportError:
-        raise MissingError(
+        raise ImportError(
             "flnd._html needs jmespath: pip install jmespath"
         ) from None
     try:
         return jmespath.compile(query)
     except Exception as error:
-        raise QueryError(f"invalid JMESPath {query!r}: {error}") from None
+        raise SourceError(f"invalid JMESPath {query!r}: {error}") from None
 
 
 @functools.lru_cache(maxsize=256)
@@ -307,7 +294,7 @@ def _compile_jsonpath(query: str) -> Any:
     try:
         return env.compile(query)
     except Exception as error:
-        raise QueryError(f"invalid JSONPath {query!r}: {error}") from None
+        raise SourceError(f"invalid JSONPath {query!r}: {error}") from None
 
 
 @functools.lru_cache(maxsize=None)
@@ -316,7 +303,7 @@ def _jsonpath() -> Any:
     try:
         import jsonpath
     except ImportError:
-        raise MissingError(
+        raise ImportError(
             "flnd._html needs python-jsonpath: pip install python-jsonpath"
         ) from None
     # The default environment adds keywords such as `missing`, which can't be keys.

@@ -25,15 +25,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Union
 
-from flnd import _base
 from flnd import _vault as crypto
 from flnd import _files as fs
 from flnd import _http as http
+from flnd.errors import DiskError, ToolError
 
-__all__ = [
-    "Error", "MissingError", "Result", "RunError", "Spec", "Tool", "UnsafeError", "fake",
-    "find", "run",
-]
+__all__ = ["MissingError", "Result", "RunError", "Spec", "Tool", "fake", "find", "run"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -44,22 +41,24 @@ VERSION = re.compile(r"\d+(?:\.\d+)+")
 VERSIONS_FILE = "versions.json"
 # How much of a streamed tool's stderr a `RunError` keeps.
 TAIL_LINES = 20
+# How many of a failed tool's last output lines its message quotes, on one line.
+QUOTED_LINES = 3
 
 
-class Error(_base.Error):
-    """The base of every error `flnd._tools` raises."""
+# The two `ToolError`s callers act on get their own class: a missing tool may have another to
+# fall back on (7zz, then 7z), and a failed run's output may say why (a wrong password).
+class MissingError(ToolError):
+    """The requested tool is not on PATH and has no download for this platform."""
 
 
-class MissingError(Error, _base.MissingError):
-    """The requested tool is not on PATH and has no spec for this platform."""
+class RunError(ToolError):
+    """A subprocess exited non-zero when `check=True`, or timed out.
 
-
-class UnsafeError(Error, _base.UnsafeError):
-    """Downloaded tool failed its checksum check or contained an unsafe archive path."""
-
-
-class RunError(Error):
-    """A subprocess exited non-zero when `check=True` or timed out."""
+    Args:
+        message: the tool, its exit status and its last lines of output, on one line.
+        code: the exit status; -1 for a timeout.
+        out, err: everything it wrote to stdout and stderr (stderr's tail, when streamed).
+    """
 
     def __init__(self, message: str, *, code: int = 1, out: str = "", err: str = ""):
         super().__init__(message)
@@ -146,7 +145,7 @@ class Tool:
             version = _parse_version(self)
             known[key] = {"mtime": mtime, "version": version}
             # A read-only cache costs a spawn next time, not the answer.
-            with suppress(fs.Error):
+            with suppress(DiskError):
                 fs.write(cache, json.dumps(known, indent=1, sort_keys=True))
         return version
 
@@ -169,11 +168,12 @@ def run(
             encoding="utf-8", errors="replace", timeout=timeout, check=False,
         )
     except FileNotFoundError as error:
-        raise MissingError(f"{argv[0]}: executable not found") from error
+        raise MissingError(f"{argv[0]}: executable not found",
+                           hint=f"install {argv[0]}, or put it on PATH") from error
     except subprocess.TimeoutExpired as error:
         raise RunError(f"{argv[0]} timed out after {timeout}s", code=-1) from error
     except OSError as error:
-        raise Error(f"{argv[0]}: {error}") from error
+        raise ToolError(f"{argv[0]}: {error}") from error
     result = Result(done.returncode, done.stdout or "", done.stderr or "", argv)
     return _checked(result, check=check)
 
@@ -227,12 +227,18 @@ def _faked(argv: tuple[str, ...]) -> Result | None:
 def _checked(result: Result, *, check: bool) -> Result:
     """`result`, or a `RunError` when `check` and it exited non-zero."""
     if check and result.code != 0:
-        detail = (result.err or result.out).strip() or f"exit status {result.code}"
+        detail = _last_lines(result.err or result.out) or f"exit status {result.code}"
         raise RunError(
             f"{result.args[0]} failed ({result.code}): {detail}",
             code=result.code, out=result.out, err=result.err,
         )
     return result
+
+
+def _last_lines(output: str) -> str:
+    """The last `QUOTED_LINES` non-empty lines of a tool's output, joined into one line."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return " / ".join(lines[-QUOTED_LINES:])
 
 
 def _cwd(cwd: PathLike | None) -> str | None:
@@ -255,9 +261,10 @@ def _stream(
             text=True, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError as error:
-        raise MissingError(f"{argv[0]}: executable not found") from error
+        raise MissingError(f"{argv[0]}: executable not found",
+                           hint=f"install {argv[0]}, or put it on PATH") from error
     except OSError as error:
-        raise Error(f"{argv[0]}: {error}") from error
+        raise ToolError(f"{argv[0]}: {error}") from error
     tail: deque[str] = deque(maxlen=TAIL_LINES)
     # A full stderr pipe would block the tool, so a thread drains it while stdout is read.
     drain = threading.Thread(target=tail.extend, args=(process.stderr,), daemon=True)
@@ -313,7 +320,8 @@ def _download(name: str, specs: Mapping[tuple[str, str], Spec] | None) -> Tool:
     key = _platform_key()
     spec = specs.get(key) if specs else None
     if spec is None:
-        raise MissingError(f"{name}: not on PATH and no download for {key[0]}/{key[1]}")
+        raise MissingError(f"{name}: not on PATH and no download for {key[0]}/{key[1]}",
+                           hint=f"install {name}, or put it on PATH")
     bin_name = spec.bin or (f"{name}.exe" if key[0] == "windows" else name)
     target = _cache_root() / name / spec.sha256[:12] / Path(bin_name).name
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -343,7 +351,7 @@ def _provision(spec: Spec, bin_name: str, target: Path) -> None:
         http.download(spec.url, stage)
         actual = crypto.digest(stage, algorithm="sha256")
         if actual.lower() != spec.sha256.lower():
-            raise UnsafeError(
+            raise ToolError(
                 f"{archive_name}: sha256 mismatch (expected {spec.sha256}, got {actual})"
             )
         _install_artifact(stage, archive_name, bin_name, target)
@@ -371,7 +379,7 @@ def _extract_zip(archive_path: Path, bin_name: str, target: Path) -> None:
                 continue
             member = info.filename.replace("\\", "/").lstrip("./")
             if ".." in PurePosixPath(member).parts:
-                raise UnsafeError(f"unsafe zip member {info.filename!r}")
+                raise ToolError(f"unsafe zip member {info.filename!r}")
             if member == wanted or member.endswith(f"/{wanted}"):
                 fs.write(target, zf.read(info))
                 return
@@ -386,7 +394,7 @@ def _extract_tar(archive_path: Path, bin_name: str, target: Path) -> None:
                 continue
             clean = member.name.replace("\\", "/").lstrip("./")
             if ".." in PurePosixPath(clean).parts:
-                raise UnsafeError(f"unsafe tar member {member.name!r}")
+                raise ToolError(f"unsafe tar member {member.name!r}")
             if clean == wanted or clean.endswith(f"/{wanted}"):
                 stream = tf.extractfile(member)
                 if stream is None:

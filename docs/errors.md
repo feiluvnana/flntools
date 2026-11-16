@@ -1,84 +1,135 @@
 # Errors
 
-What can go wrong in a run today, which error class says so, and what to do about it.
-
-The rebuild replaces the classes below with one hierarchy under `flnd.Error`, each error with a
-`hint` that says what to do, and an exit code per class. That isn't built yet; the commit that
-builds it rewrites this page.
-
-## How a failure travels
-
-flnd keeps a failure as small as it can:
-
-- **One file** that fails (after its tries) is counted as failed, saved in `targets.db` with its
-  request, and tried again first on the target's next run. The rest of the target goes on.
-- **One target** whose listing fails ends with its error printed in red, and its
-  `TargetReport.error` set. The other targets still run, and the exit code is 1.
-- **One source** that can't start (its `connect` fails, or it requires a login it doesn't have)
-  fails each of its targets; other sources still run.
-- **A usage mistake** stops the command before anything is fetched, with exit code 2.
-- **Ctrl-C** ends the run with exit code 130; see [cli.md](cli.md#ctrl-c).
-
-Anything else (a full disk, a bug) ends the run with a Python traceback.
-
-## What is retried
-
-| what | where | tries |
-| --- | --- | --- |
-| a request to the site that couldn't be sent, or got a 5xx | `Site.fetch` | 4 in all, after about 1, 2 and 4 s |
-| a 429 (rate limited) | `Site.fetch`, `Site.goto` | waited out, for the time the site asks (`Retry-After`), then tried again |
-| a file download | `common/net.download` | 3 tries, each trying every mirror in order |
-| a DASH video whose streams came short, or whose ffmpeg merge failed | `common/net.download` | 3 tries |
-
-A web page or JSON where a photo or video was expected (a login wall, an error page) is never
-retried: it is a failed file, named as such.
+What can go wrong in a run, which error class says so, what flnd does about it, and what you
+can do.
 
 ## The classes
 
-### Raised by sources (`flnd.source`)
+Every error flnd raises is a `flnd.Error`, from one hierarchy in `flnd/errors.py`:
 
-| class | cause | what to do |
-| --- | --- | --- |
-| `FetchError` | a request was refused or failed; `status` holds the HTTP status, or `None` when there was no response | read the message; a 401 or 403 usually means the login expired (`flnd auth login`) |
-| `LoginError` | a login is missing, expired, or failed during `flnd auth login` | log in again with `flnd auth login` |
-| `TargetError` | a target can't be read: an unknown source, a form no route accepts, or a link the source refuses on purpose | write the target in one of the forms `flnd --help` lists |
-| `Error` | the base of the three above | |
+```
+flnd.Error                 str(e) says what went wrong; e.hint what to do
+├── UsageError             a bad target, flag or config value
+├── LoginError             not logged in, expired, or refused
+├── SiteError              the site answered, but not usefully (e.status, e.response)
+│   ├── Blocked            rate limited or blocked for a while (e.wait)
+│   ├── NotFound           deleted, private, or never there
+│   └── Changed            the answer no longer has the shape the source expects
+├── NetworkError           DNS, TLS, a timeout, a reset, a transfer cut short
+├── DiskError              no space, no permission, a name too long, a damaged store
+├── ToolError              ffmpeg, 7zz or a browser: missing, or failed
+└── SourceError            a source is broken: its declaration, or a bug in its listing
 
-`flnd` re-exports `LoginError` and `TargetError`. `flnd.Error` is the engine's own base class
-today (`flnd.engine.Error`); nothing raises it yet.
+flnd.Stopped               Ctrl-C: a KeyboardInterrupt, never an Error
+```
 
-### Raised by the CLI and the engine
+Each error has:
 
-| class | cause | exit code |
-| --- | --- | --- |
-| `flnd._cli.UsageError` | a bad flag value, a `--from` the target doesn't have, a target not known to `flnd target`, `flnd auth login` outside a terminal | 2 |
-| cyclopts' errors | an unknown command or flag, a missing argument | 2 |
-| `KeyboardInterrupt` | Ctrl-C | 130 |
+- **its message**, `str(error)`: one line, with no secret in it;
+- **`hint`**: what to do, as a command when there is one (`run flnd auth login`); `""` when
+  there is nothing to suggest;
+- **`target`**: the target it is about, as written (`ins:example_user`), or `None`;
+- **`retryable`**: whether trying again later may work. Whoever raises the error sets it, from
+  the policy below; the class alone doesn't decide it. A `NetworkError` for a host that doesn't
+  exist won't heal, while one for a timeout may.
 
-### Raised by the toolkit (`flnd._*`)
+A `SiteError` also has `status`, the HTTP status (`None` when there was no HTTP answer), and
+`response`, the answer itself, so a source can read the site's reason from its body.
+`Blocked` has `wait`, the seconds the site asked to wait, or `None`.
 
-Every error of the toolkit is a `flnd._base.Error`. Each module has its own `Error` under it, and an
-error about bad input is also one of four kinds, so a caller can catch by kind:
+`flnd.Stopped` derives from `KeyboardInterrupt`, so `except flnd.Error` (or `except Exception`)
+never swallows a Ctrl-C.
 
-| kind | meaning | examples |
-| --- | --- | --- |
-| `flnd._base.UnsafeError` | input refused because trusting it could do harm | an archive entry that escapes its folder, a shell argument that could inject |
-| `flnd._base.BrokenError` | input that is damaged or isn't what it claims | a download cut short (`http.IncompleteError`), a broken archive, unreadable HTML |
-| `flnd._base.RefusedError` | a remote end or a person said no | an HTTP 4xx (`http.RefusedError`), a wrong archive password |
-| `flnd._base.MissingError` | something this machine lacks | ffmpeg, a browser, Chrome's cookie key |
+```python
+import flnd
 
-Other toolkit errors a run may show: `http.RateLimitedError` (a 429, waited out),
-`http.StoppedError` (Ctrl-C during a request), `fs.BusyError` (another run holds a lock: wait,
-or stop the other run), `store.Error` (a store that can't be opened) and
-`common.paths.NotMediaError` (a web page instead of media).
+try:
+    flnd.resolve("zzz:example_user")
+except flnd.Error as error:
+    assert isinstance(error, flnd.UsageError)
+    print(error)        # unknown source 'zzz'. Sources: tik, fbk, ins, twt, loi, tlg, mht
+
+assert not issubclass(flnd.Stopped, flnd.Error)
+assert issubclass(flnd.Blocked, flnd.SiteError)
+```
+
+A source imports the classes it raises from `flnd.source`: `UsageError`, `LoginError`,
+`SiteError`, `Blocked`, `NotFound`, `Changed`, `NetworkError`, `SourceError`, and `Error` to
+catch them all. A mistake in a source's declaration (a pattern outside its domains, a category
+declared twice) raises `SourceError` when its class is made.
+
+## The policy
+
+| failure | class | retried | then |
+| --- | --- | --- | --- |
+| a timeout, a reset, a 5xx | `NetworkError`, or `SiteError` with the status | 4 tries in all, waiting about 1, 2 and 4 s (jittered) | the file fails alone; the run goes on |
+| a 429 or a block page | `Blocked` | waits what the site asks (`Retry-After`, or its rate-limit reset, up to 1 h), within the same 4 tries | the file or target fails |
+| a 404 or 410, a private item | `NotFound` | never | the file or target fails |
+| a 401 or 403 from the source's own domains, a login wall | `LoginError` | never | the source stops: its other targets fail with the same error, and the other sources go on |
+| a 401 or 403 from another host (a CDN's expired link) | `SiteError` | a 403 or 410 on a post whose files the source lists lazily lists them again once, for a fresh link | the file fails alone |
+| a truncated transfer | `NetworkError` | yes, resuming from the stage file | the stage is kept for the next run |
+| an answer that doesn't parse, a web page where media was expected | `Changed`, `SiteError` | never | the file or target fails |
+| no space, no permission, a name too long | `DiskError` | never | the run stops |
+| a missing or failing ffmpeg, 7zz or browser | `ToolError` | a DASH merge that ffmpeg failed is tried 3 times in all; a missing tool never | the file or target fails |
+| an unexpected exception in a listing | `SourceError` | never | the target fails, and its message says it is a bug |
+
+What "fails" means at each level:
+
+- **A file** that fails (after its tries) is counted as failed, saved in `targets.db` with its
+  request, and tried again first on the target's next run. The rest of the target goes on.
+- **A target** whose listing fails ends with its error printed, then its hint on the next line,
+  and `TargetReport.error` holds the error. The other targets still run.
+- **A source** whose login fails, or that can't start (its `connect` fails), fails each of its
+  targets; the other sources still run.
+- **A usage mistake** stops the command before anything is fetched.
+- **A full or refused disk** stops the run; the files already saved keep their rows.
+
+The run's exit code says which happened; [cli.md](cli.md#exit-codes) lists the codes: 1 for
+failed files or targets, 2 for usage, 3 for a login, 4 when flnd itself stopped, 130 for Ctrl-C.
+
+## No tracebacks for a person's mistake
+
+A `UsageError`, `LoginError`, `DiskError` or `ToolError` prints one line saying what went wrong
+and one line saying what to do:
+
+```
+x ins:example_user: not logged in
+• ins:example_user: run flnd auth login
+```
+
+An unexpected exception is a bug. The CLI prints one line naming a crash file,
+`.flnd/logs/crash-<time>.txt`, which holds the traceback, and exits 4; with `-v` the traceback
+prints instead. A bug inside one target's listing doesn't stop the run: it becomes that target's
+`SourceError`, and its cause is printed with `-v`.
+
+## Secrets never reach a message
+
+- A URL in a message is redacted: its user info, query and fragment are dropped.
+- The secret headers a request carried (`Authorization`, `Cookie`, `Proxy-Authorization`), their
+  parts (a cookie's value, a bearer token) and the URL's query values are replaced by `***`
+  wherever a library's error text quotes them.
+- A cookie's value is never printed, logged or put in an error, even when a cookie file is
+  broken: the message names the file and the line.
+
+## Not built yet
+
+- The `failures` table in `flnd.db`, `flnd status` and `flnd retry`, and the short failure
+  summary at the end of a run.
+- A sample of a response that didn't parse, saved scrubbed to `logs/<run>/samples/`.
+- One cookie refresh from the browser before a 401 or 403 becomes a `LoginError`.
+- Recording a `NotFound` item as gone, so a later run doesn't ask again unless `--again`.
+- The third stage of Ctrl-C; today the first stops listing and finishes the files in progress,
+  and the second stops at once ([cli.md](cli.md#ctrl-c)).
 
 ## Common messages
 
 | message | meaning | fix |
 | --- | --- | --- |
 | `--from is required (use all, or …)` | a profile, chat or search needs its categories | add `--from all`, or name the categories |
-| `<target>: not logged in; run flnd auth login` | the source requires a login | `flnd auth login` |
+| `<target>: not logged in` | the source requires a login | `flnd auth login` |
 | `<code>: not logged in, using public access` | a warning: only public posts are listed | log in to get more |
+| `<code>: the site refused the login (HTTP 403)` | the saved login expired or was revoked | `flnd auth login` |
 | `which source is "<text>"?` | a bare name, not a link, without a source | write it as `<code>:<text>` |
 | `got a web page instead of a photo` | the site answered a file request with a page | usually a login wall: log in again |
-| `held by another writer; try again later` | another flnd run is using the same home | wait for it to end |
+| `held by another writer` | another flnd run is using the same home | wait for it to end |
+| `unexpected <Type>: …` | a bug in a source or in flnd | run with `-v` and report it |

@@ -14,8 +14,8 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, T
 import httpx
 
 from flnd.common import paths
-from flnd.common.paths import NotMediaError
-from flnd.source import Fetch, FetchError, File
+from flnd.errors import Error, SiteError
+from flnd.source import Fetch, File
 from flnd import _time as clock, _files as fs, _http as http, _tools as sh, _text as text
 from flnd._ui import ui
 
@@ -66,14 +66,8 @@ def download(client: http.Client, file: File, dest: Path, *, label: str,
             return _try_mirror(
                 client, mirror, file, dest, label, headers, kind, received, halt,
             )
-        except http.StoppedError:
-            raise KeyboardInterrupt from None
-        except http.RefusedError as error:
-            reason: BaseException = FetchError(
-                f"HTTP {error.status} for {text.redact(str(mirror))}", status=error.status
-            )
-            if number == len(mirrors):
-                raise reason from None
+        # The last mirror's failure is the file's; an earlier one's is a warning, and the next
+        # mirror is tried. A `Stopped` is a KeyboardInterrupt, so it is never caught here.
         except Exception as error:
             if number == len(mirrors):
                 raise
@@ -90,7 +84,7 @@ def _try_mirror(
     """Download one mirror (fetch callback, DASH pair, or URL) into `dest`."""
     if callable(mirror):
         save = partial(_save_fetch, mirror, dest, label, file.size, kind, stop)
-        return _again(save, retryable=(Exception,), final=(NotMediaError,))
+        return _again(save, worth=_fetch_again)
     if file.audio is not None:
         return _save_dash(client, mirror, file.audio, dest, label, headers, stop)
     return _save_url(client, mirror, dest, label, headers, file.size, kind, received, stop)
@@ -147,7 +141,7 @@ def _save_dash(client: http.Client, video: str, audio: str, dest: Path, label: s
     with _Row(label) as row:
         return _again(
             partial(_dash_merge, client, video, audio, dest, headers, stop, row),
-            retryable=(http.IncompleteError, sh.RunError),
+            worth=_merge_again,
         )
 
 
@@ -185,15 +179,52 @@ def _dash_merge(client: http.Client, video: str, audio: str, dest: Path,
             stream.unlink(missing_ok=True)
 
 
-def _again(attempt: Callable[[], T], *, retryable: tuple[type[BaseException], ...],
-           final: tuple[type[BaseException], ...] = ()) -> T:
-    """Call `attempt` up to `ATTEMPTS` times while it raises `retryable` but not `final`."""
+def _fetch_again(error: Exception) -> bool:
+    """Whether a source's `fetch` function is worth another try after `error`.
+
+    Its errors are the source's own (an SDK's), so any is tried again, except the site's
+    answer (a `SiteError`: a web page for a photo, a refusal), which the next try would get too.
+
+    Args:
+        error: what the try raised.
+
+    Returns:
+        True to try again.
+    """
+    return not isinstance(error, SiteError)
+
+
+def _merge_again(error: Exception) -> bool:
+    """Whether a DASH download and merge is worth another try after `error`.
+
+    A stream that came short, or a merge ffmpeg failed (it may have read a short stream), is;
+    a refusal or a missing ffmpeg isn't.
+
+    Args:
+        error: what the try raised.
+
+    Returns:
+        True to try again.
+    """
+    return isinstance(error, sh.RunError) or (isinstance(error, Error) and error.retryable)
+
+
+def _again(attempt: Callable[[], T], *, worth: Callable[[Exception], bool]) -> T:
+    """Call `attempt` up to `ATTEMPTS` times while what it raises is `worth` another try.
+
+    The tries wait 1, then 2 s between them. A `KeyboardInterrupt` (`Stopped`) is never caught.
+
+    Args:
+        attempt: one try; what it returns is returned.
+        worth: whether an exception the try raised is worth another; when it isn't, or the
+            tries are used up, the exception is raised.
+    """
     number = 1
     while True:
         try:
             return attempt()
-        except retryable as error:
-            if number >= ATTEMPTS or isinstance(error, final):
+        except Exception as error:
+            if number >= ATTEMPTS or not worth(error):
                 raise
             seconds = 2.0 ** (number - 1)
             ui.debug("retry {n} in {time}: {error}", n=number,
@@ -258,7 +289,7 @@ def _sniffed(part: Path, dest: Path, known: bool) -> Path:
     """Where a file whose content decides its kind goes: media by content, else as `dest`."""
     extension = paths.sniff(part)
     if extension in paths.PAGES:
-        raise NotMediaError("got a web page instead of a file")
+        raise paths.not_media("a file")
     # `kind_of` reads a name's extension, and ".mp4" alone is a name without one.
     kind = paths.kind_of(f"file{extension}") if extension else None
     if extension is None or kind is None:

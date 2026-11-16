@@ -23,12 +23,12 @@ assert str(target) == "ins:example_user"
 assert flnd.resolve("https://www.instagram.com/example_user/") == target
 ```
 
-A text no source reads raises `flnd.TargetError`, whose message lists the forms that work:
+A text no source reads raises `flnd.UsageError`, whose message lists the forms that work:
 
 ```python
 try:
     flnd.resolve("zzz:example_user")
-except flnd.TargetError as error:
+except flnd.UsageError as error:
     print(error)        # unknown source 'zzz'. Sources: tik, fbk, ins, twt, loi, tlg, mht
 ```
 
@@ -140,6 +140,17 @@ with flnd.open("ins") as site:
 
 ## Errors
 
-The library raises `flnd.TargetError` for a target no source reads, `flnd.LoginError` for a
-missing login, and a usage error (`flnd._cli.UsageError`, a `ValueError`) for a bad option.
-[errors.md](errors.md) has the rest.
+Everything the library raises is a `flnd.Error`: `str(error)` says what went wrong, and
+`error.hint` what to do. `flnd.UsageError` is a bad target or option, raised before anything
+is fetched; `flnd.LoginError` a missing or refused login. A Ctrl-C is `flnd.Stopped`, a
+`KeyboardInterrupt`, so `except flnd.Error` never swallows it.
+
+```python
+try:
+    flnd.download("ins:example_user", time="yesterday")
+except flnd.Error as error:
+    print(type(error).__name__, error.hint == "")    # UsageError True
+```
+
+A target that fails during a run doesn't raise: its `TargetReport.error` holds the error, and
+the other targets go on. [errors.md](errors.md) lists every class and the policy behind it.

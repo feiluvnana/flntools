@@ -20,12 +20,12 @@ import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Union, cast
 
-from flnd import _base
+from flnd.errors import LoginError, ToolError
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-__all__ = ["Error", "MissingError", "decrypt", "digest", "encrypt"]
+__all__ = ["decrypt", "digest", "encrypt"]
 
 Data = Union[str, bytes, bytearray, memoryview]
 HashInput = Union[str, bytes, bytearray, memoryview, Path, BinaryIO]
@@ -39,16 +39,13 @@ GCM_TAG_SIZE = 16
 KEY_SIZE = 32
 # One message for every way decryption fails, so it says nothing about the key or the data.
 DECRYPT_FAILED = "cannot decrypt: wrong key or damaged data"
-MISSING_CRYPTOGRAPHY = "flnd._vault needs cryptography: pip install cryptography"
+# What a blob that doesn't open says to do: the vault holds logins only, so log in again.
+LOG_IN_AGAIN = "log in again: flnd auth login"
+MISSING_CRYPTOGRAPHY = "flnd._vault needs cryptography"
 
-
-# Subclasses ValueError so callers expecting bad input exceptions catch it.
-class Error(_base.Error, ValueError):
-    """Data could not be decrypted, key length is wrong, or the hash algorithm is unknown."""
-
-
-class MissingError(Error, _base.MissingError):
-    """`cryptography` isn't installed (`pip install cryptography`)."""
+# Errors: a blob that doesn't open is a `LoginError`, since what it held was a login; a missing
+# `cryptography` is a `ToolError`. A wrong key length or an unknown hash is a bug in the caller,
+# and stays the builtin `ValueError`.
 
 
 def digest(data: HashInput, *, algorithm: str = "sha256") -> str:
@@ -60,19 +57,16 @@ def digest(data: HashInput, *, algorithm: str = "sha256") -> str:
     if isinstance(data, Path):
         with data.open("rb") as handle:
             return digest(handle, algorithm=algorithm)
-    try:
-        if isinstance(data, str):
-            return hashlib.new(algorithm, data.encode("utf-8")).hexdigest()
-        if isinstance(data, (bytes, bytearray, memoryview)):
-            return hashlib.new(algorithm, data).hexdigest()
-        if isinstance(data, io.BytesIO):
-            view = data.getbuffer()[data.tell():]
-            data.seek(0, io.SEEK_END)
-            return hashlib.new(algorithm, view).hexdigest()
-        if hasattr(data, "read"):
-            return hashlib.file_digest(cast(Any, data), algorithm).hexdigest()
-    except ValueError as error:
-        raise Error(str(error)) from None
+    if isinstance(data, str):
+        return hashlib.new(algorithm, data.encode("utf-8")).hexdigest()
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        return hashlib.new(algorithm, data).hexdigest()
+    if isinstance(data, io.BytesIO):
+        view = data.getbuffer()[data.tell():]
+        data.seek(0, io.SEEK_END)
+        return hashlib.new(algorithm, view).hexdigest()
+    if hasattr(data, "read"):
+        return hashlib.file_digest(cast(Any, data), algorithm).hexdigest()
     raise TypeError(
         f"cannot hash {type(data).__name__}: pass str, bytes, a Path, or a binary file"
     )
@@ -97,13 +91,13 @@ def decrypt(blob: bytes, key: bytes, *, context: bytes = b"") -> bytes:
     from cryptography.exceptions import InvalidTag
 
     if len(blob) < 1 + GCM_NONCE_SIZE + GCM_TAG_SIZE or blob[0] != GCM_VERSION:
-        raise Error(DECRYPT_FAILED)
+        raise LoginError(DECRYPT_FAILED, hint=LOG_IN_AGAIN)
     nonce, ciphertext = blob[1:1 + GCM_NONCE_SIZE], blob[1 + GCM_NONCE_SIZE:]
     try:
         return cipher.decrypt(nonce, ciphertext, context)
     # InvalidTag is the only way GCM rejects; drop its traceback which says nothing more.
     except InvalidTag:
-        raise Error(DECRYPT_FAILED) from None
+        raise LoginError(DECRYPT_FAILED, hint=LOG_IN_AGAIN) from None
 
 
 def _as_bytes(data: Data) -> bytes:
@@ -118,11 +112,11 @@ def _aes_gcm(key: bytes) -> AESGCM:
     """`cryptography`'s AESGCM for a 32-byte key, imported here so `digest` never needs it."""
     # The message gives the key's length only, never its bytes.
     if len(key) != KEY_SIZE:
-        raise Error(
+        raise ValueError(
             f"an AES-256 key must be {KEY_SIZE} bytes, not {len(key)}: use secrets.token_bytes(32)"
         )
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError:
-        raise MissingError(MISSING_CRYPTOGRAPHY) from None
+        raise ToolError(MISSING_CRYPTOGRAPHY, hint="pip install cryptography") from None
     return AESGCM(key)

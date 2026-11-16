@@ -16,7 +16,7 @@ from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
 from flnd.options import Options
-from flnd.source import FetchError, LoginError, Post, Target, TargetError
+from flnd.source import SiteError, LoginError, Post, Target, UsageError
 from flnd.sources.fbk import Facebook, image_extension, media_items
 
 SITE = "https://www.facebook.com"
@@ -334,7 +334,7 @@ class RoutesTest(unittest.TestCase):
                 if isinstance(expected, tuple):
                     self.assertEqual(Facebook().resolve(value), Target("fbk", *expected))
                 else:
-                    with self.assertRaisesRegex(TargetError, f"^fbk: {expected}"):
+                    with self.assertRaisesRegex(UsageError, f"^fbk: {expected}"):
                         Facebook().resolve(value)
 
 
@@ -516,7 +516,7 @@ class ReadPageTest(unittest.TestCase):
 
         site = AlternatingSite((f"{SITE}/login/", ""), (f"{SITE}/a", "temporarily blocked"))
         with mock.patch.object(fbk, "meta_results", return_value=[]):
-            with self.assertRaises((LoginError, FetchError)):
+            with self.assertRaises((LoginError, SiteError)):
                 fbk.read_page(cast(Any, site), f"{SITE}/a")
         self.assertLessEqual(len(site.back_offs), fbk.WALL_ATTEMPTS + fbk.BLOCK_ATTEMPTS)
 
@@ -564,7 +564,7 @@ class ScrollTest(unittest.TestCase):
         seen = Seen()
         pages = {f"{SITE}/a": embedded(header(user_id="42"), photo("1", owner="42"))}
         scrolls = {f"{SITE}/a": [[{"__dr": "CometErrorRoot.react"}]] * 4}
-        with self.assertRaisesRegex(FetchError, "temporarily blocked"):
+        with self.assertRaisesRegex(SiteError, "temporarily blocked"):
             read("fbk:a", pages=pages, scrolls=scrolls, seen=seen, categories=("posts",))
         self.assertEqual(len(seen.back_offs), 3)
 
@@ -579,9 +579,10 @@ class ScrollTest(unittest.TestCase):
 
     def test_persistent_login_page_raises_login_error(self):
         seen = Seen()
-        with self.assertRaisesRegex(LoginError, "flnd auth login fbk"):
+        with self.assertRaisesRegex(LoginError, "fbk: Facebook kept asking for a login") as caught:
             read("fbk:a", pages={}, seen=seen, categories=("posts",),
                  redirects={f"{SITE}/a": f"{SITE}/login/?next=%2Fa"})
+        self.assertIn("flnd auth login", caught.exception.hint)
         self.assertEqual(len(seen.back_offs), 2)
 
 

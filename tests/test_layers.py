@@ -36,8 +36,10 @@ def toolkit(name: str) -> bool:
     The toolkit was the `shared` package before the fold. Until the source API of the rebuild
     replaces it, sources and the CLI import these private modules directly; the rule is only that
     they stay private, so the engine (`flnd.job`, `flnd.site`, ...) is still off limits.
+    `flnd.errors`, the error hierarchy, counts too: it imports nothing of flnd, and every layer
+    raises its classes.
     """
-    return name.startswith("flnd._")
+    return name.startswith("flnd._") or name == "flnd.errors"
 
 
 def flnd_imports(path: Path) -> set[str]:

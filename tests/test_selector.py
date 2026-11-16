@@ -9,7 +9,7 @@ from unittest import mock
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from flnd import _base
+from flnd.errors import Changed, DiskError, SiteError, SourceError
 
 if TYPE_CHECKING:
     import parsel
@@ -83,7 +83,8 @@ class ParseTest(unittest.TestCase):
                     self.assertEqual(selector.parse(source).jmespath("a.b[1]").first, 2)
 
     def test_json_content_type_with_broken_json_raises(self):
-        for error in (selector.BrokenError, selector.Error, _base.BrokenError, ValueError):
+        # The site changed what it sends: a SiteError, and never a ValueError a caller might eat.
+        for error in (Changed, SiteError):
             with self.subTest(error.__qualname__), self.assertRaises(error):
                 selector.parse(FakePlaywrightResponse("<html>", "application/json"))
 
@@ -103,8 +104,8 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(selector.parse(bom_text).jmespath("a.b[1]").first, 2)
         self.assertEqual(selector.parse(bom_text.encode("utf-8")).jmespath("a.b[1]").first, 2)
 
-    def test_missing_file_raises_selector_error(self):
-        with self.assertRaises(selector.Error):
+    def test_missing_file_raises_a_disk_error(self):
+        with self.assertRaises(DiskError):
             selector.parse(Path("nonexistent_selector_file.json"))
 
 
@@ -142,13 +143,13 @@ class HtmlTest(unittest.TestCase):
         self.assertIsInstance(links.raw, parsel.SelectorList)
 
     def test_jsonpath_on_html_raises(self):
-        with self.assertRaises(selector.QueryError):
+        with self.assertRaises(SourceError):
             self.page.jsonpath("$..a")
 
     def test_invalid_css_and_xpath_raise_query_error(self):
-        with self.assertRaises(selector.QueryError):
+        with self.assertRaises(SourceError):
             self.page.css("div[")
-        with self.assertRaises(selector.QueryError):
+        with self.assertRaises(SourceError):
             self.page.xpath("//div[")
 
 
@@ -185,7 +186,7 @@ class JmespathTest(unittest.TestCase):
         self.assertEqual(self.data.jmespath("data.other.id || data.user.id").first, "9")
 
     def test_invalid_expression_raises(self):
-        with self.assertRaises(selector.QueryError):
+        with self.assertRaises(SourceError):
             self.data.jmespath("data.[")
 
 
@@ -208,7 +209,7 @@ class JsonpathTest(unittest.TestCase):
         self.assertIsNone(selector.parse(DATA).jsonpath("$..absent").first)
 
     def test_invalid_expression_raises(self):
-        with self.assertRaises(selector.QueryError):
+        with self.assertRaises(SourceError):
             selector.parse(DATA).jsonpath("$..[")
 
     def test_list_result_is_split_into_matches(self):
@@ -236,15 +237,15 @@ class ScriptTest(unittest.TestCase):
         self.assertIsNone(self.page.match(r"nothing = (\{\})").first)
 
     def test_broken_json_raises(self):
-        with self.assertRaises(selector.BrokenError):
+        with self.assertRaises(Changed):
             self.page.script("broken")
 
     def test_script_requires_id_and_match_validates_pattern(self):
         with self.assertRaises(TypeError):
             self.page.script()  # type: ignore[call-arg]
-        with self.assertRaises(selector.QueryError):
+        with self.assertRaises(SourceError):
             self.page.match(r"[unclosed")
-        with self.assertRaises(selector.QueryError):
+        with self.assertRaises(SourceError):
             self.page.match(r"window\._sharedData")
 
 
@@ -280,7 +281,7 @@ class JsonTest(unittest.TestCase):
 
     def test_broken_json_raises(self):
         for source in (self.page.css("h1"), self.page.css("script#broken::text"), selector.parse({"a": "{x"}).jmespath("a")):
-            with self.subTest(repr(source)), self.assertRaises(selector.BrokenError):
+            with self.subTest(repr(source)), self.assertRaises(Changed):
                 source.json
 
 
@@ -301,7 +302,7 @@ class SizeTest(unittest.TestCase):
                        FakePlaywrightResponse(text, "application/json")]
             for source in sources:
                 with self.subTest(type(source).__name__):
-                    for error in (selector.BrokenError, selector.Error, _base.BrokenError, ValueError):
+                    for error in (Changed, SiteError):
                         with self.assertRaises(error):
                             selector.parse(source)
 
@@ -309,9 +310,9 @@ class SizeTest(unittest.TestCase):
         with mock.patch.object(selector, "MAX_SIZE", 8):
             self.assertEqual(selector.parse("<p>a</p>").css("p::text").first, "a")
             self.assertEqual(selector.parse(b'"abcdef"').first, "abcdef")
-            with self.assertRaises(selector.BrokenError):
+            with self.assertRaises(Changed):
                 selector.parse("<p>ab</p>")
-            with self.assertRaises(selector.BrokenError):
+            with self.assertRaises(Changed):
                 selector.parse({"a": "[1, 2, 3]"}).jmespath("a").json
 
     def test_parsed_data_has_no_limit(self):

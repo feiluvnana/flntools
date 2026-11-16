@@ -20,6 +20,7 @@ from flnd.options import Options, RunShared
 from flnd.source import File, Post, Range, Source, Target, target
 from flnd import _cli as cli
 from flnd._ui import ui
+from flnd.errors import LoginError, UsageError
 
 
 class PlanTest(JobCase):
@@ -91,9 +92,9 @@ class TreeTest(JobCase):
         # Only undated posts survive a range in the future.
         self.assertEqual([line for line in self.lines(time="2099-01-01,") if line.endswith("undated")],
                          ["    A1  undated", "    42  undated"])
-        with self.assertRaises(ValueError):
+        with self.assertRaises(UsageError):
             self.lines(categories="nothing")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(UsageError):
             self.lines(time="yesterday")
 
     def test_other_kinds_of_file_are_named(self):
@@ -133,7 +134,7 @@ class MainTest(unittest.TestCase):
 
     def test_a_failure_is_one_line_and_exit_1(self):
         def plan(home, text, **options):
-            raise ValueError("ins: not logged in; run flnd login")
+            raise LoginError("ins: not logged in; run flnd login")
 
         code, _, err = self.run_main(plan, "ins:example_user")
         self.assertEqual((code, err), (1, "x ins: not logged in; run flnd login\n"))

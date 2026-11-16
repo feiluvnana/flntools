@@ -17,7 +17,7 @@ from test_engine import EngineCase
 
 from flnd.common import auth
 from flnd.options import Options
-from flnd.source import FetchError, LoginError, Target, TargetError
+from flnd.source import SiteError, LoginError, Target, UsageError
 from flnd.sources.twt import QUERIES, TWITTER_BEARER, Twitter, read_timeline_page, tweet_posts
 from flnd import _cookies as cookies
 
@@ -158,7 +158,7 @@ class RoutesTest(unittest.TestCase):
                 if isinstance(expected, tuple):
                     self.assertEqual(Twitter().resolve(value), Target("twt", *expected))
                 else:
-                    with self.assertRaisesRegex(TargetError, f"^twt: {expected}"):
+                    with self.assertRaisesRegex(UsageError, f"^twt: {expected}"):
                         Twitter().resolve(value)
 
 
@@ -468,7 +468,7 @@ class RefreshTest(unittest.TestCase):
     def run_user(self, refreshed_user, *, home=HOME_PAGE, script=MAIN_JS, seen=None):
         with browser({}):
             return collect(Twitter, "twt:someone", options=Options(categories=("profile",)), seen=seen,
-                           json={url("UserByScreenName"): FetchError("HTTP 400", status=400),
+                           json={url("UserByScreenName"): SiteError("HTTP 400", status=400),
                                  f"{API}NEWuser42/UserByScreenName": refreshed_user},
                            html={HOME: home, SCRIPT: script})
 
@@ -497,7 +497,7 @@ class RefreshTest(unittest.TestCase):
 
     def test_a_refresh_that_doesnt_help_falls_back_to_browser_for_user(self):
         seen = Seen()
-        saved = self.run_user(FetchError("HTTP 400", status=400), seen=seen)
+        saved = self.run_user(SiteError("HTTP 400", status=400), seen=seen)
         self.assertEqual(saved, [])
         self.assertIn("! the API can't find @someone; reading the profile in the browser", seen.messages)
 
@@ -509,16 +509,16 @@ class RefreshTest(unittest.TestCase):
     def test_a_refresh_is_tried_once_a_run(self):
         seen = Seen()
         collect(Twitter, "twt:https://x.com/someone/status/1", seen=seen,
-                json={url("TweetResultByRestId"): FetchError("HTTP 404", status=404)})
+                json={url("TweetResultByRestId"): SiteError("HTTP 404", status=404)})
         collect(Twitter, "twt:someone", options=Options(categories=("profile",)), seen=seen,
-                json={url("UserByScreenName"): FetchError("HTTP 404", status=404)})
+                json={url("UserByScreenName"): SiteError("HTTP 404", status=404)})
         self.assertEqual([u for _, u, _ in seen.requests].count(HOME), 2)
 
     def test_a_refusal_that_isnt_stale_is_not_refreshed(self):
         seen = Seen()
         with browser({}):
             collect(Twitter, "twt:someone", options=Options(categories=("posts",)), seen=seen,
-                    json={url("UserByScreenName"): FetchError("HTTP 403", status=403)})
+                    json={url("UserByScreenName"): SiteError("HTTP 403", status=403)})
         self.assertNotIn(HOME, [u for _, u, _ in seen.requests])
 
 

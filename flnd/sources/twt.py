@@ -25,10 +25,11 @@ from urllib.parse import urlsplit
 import msgspec
 
 from flnd.source import (
-    FetchError, File, LoginError, Post, Site, Source, caught_up, day, target,
+    Changed, File, LoginError, NetworkError, Post, Site, SiteError, Source, caught_up, day,
+    target,
 )
 from flnd.sources.common.feed import warm_tabs, watch_responses
-from flnd import _http as http, _html as selector, _text as text
+from flnd import _html as selector, _text as text
 
 if TYPE_CHECKING:
     import httpx
@@ -190,7 +191,7 @@ class Twitter(Source):
         }
         try:
             data = self.graph.get(site, "TweetResultByRestId", variables)
-        except (FetchError, http.Error) as error:
+        except (SiteError, NetworkError) as error:
             site.warn("tweet {id}: {error}", id=tweet_id, error=error)
             return
         tweet = selector.parse(data).jmespath("data.tweetResult.result").first
@@ -213,7 +214,7 @@ class Twitter(Source):
             found = selector.parse(
                 self.graph.get(site, query, variables)
             ).jmespath("data.user.result").first
-        except (FetchError, http.Error) as error:
+        except (SiteError, NetworkError) as error:
             site.warn("{query}: {error}", query=query, error=error)
         if isinstance(found, dict) and found.get("rest_id"):
             return Account(user, found)
@@ -331,7 +332,7 @@ class Graph:
         try:
             return self._get(site, query, variables)
         # Only a stale id (400 or 404) is worth a refresh; any other refusal is raised as it is.
-        except FetchError as error:
+        except SiteError as error:
             if error.status not in STALE or self.refreshed or not self.refresh(site):
                 raise
         return self._get(site, query, variables)
@@ -345,9 +346,9 @@ class Graph:
             home = site.fetch(HOME).text
             found = MAIN_SCRIPT.search(home)
             if found is None:
-                raise FetchError("x.com's page names no main script")
+                raise Changed("x.com's page names no main script")
             script = site.fetch(found[0]).text
-        except (FetchError, http.Error) as error:
+        except (SiteError, NetworkError) as error:
             site.warn(
                 "the API's query ids look stale, and x.com's script couldn't be read: {error}",
                 error=error,

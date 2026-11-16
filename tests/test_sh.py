@@ -12,6 +12,7 @@ from unittest import mock
 
 
 from flnd import _tools as sh
+from flnd.errors import ToolError
 
 
 class ShCase(unittest.TestCase):
@@ -103,7 +104,7 @@ class FindTest(ShCase):
         with (
             mock.patch("flnd._tools.shutil.which", return_value=None),
             mock.patch("flnd._tools.http.download", side_effect=fake_download),
-            self.assertRaises(sh.UnsafeError),
+            self.assertRaises(ToolError),
         ):
             sh.find("badtool", specs={plat: spec})
 

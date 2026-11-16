@@ -15,6 +15,7 @@ from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import File, Range, Source, Target
 from flnd.sources import SOURCES
 from flnd import _cli as cli, _text as text
+from flnd.errors import Error, LoginError, UsageError
 from flnd._ui import ui
 
 __all__ = ["main", "plan", "tree"]
@@ -41,7 +42,7 @@ def plan(
         with shared_browser(settings), source_run(settings, source()) as run:
             account = TargetSite(run, Target(source.code, ACCOUNT, ""))
             if not run.source.logged_in(account) and run.source.requires_login:
-                raise cli.UsageError(f"{source.code}: not logged in; run flnd auth login")
+                raise LoginError(f"{source.code}: not logged in", hint="run flnd auth login")
             with _connected(run, account):
                 yield from job.plan(run, target, options)
 
@@ -93,7 +94,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         span = Range.parse(args.time) if args.time else Range()
         placed = plan(Path(".flnd"), args.target, categories=args.categories, time=span)
         ui.raw.print(render_tree(args.target, placed))
-    except ValueError as error:
+    except Error as error:
         ui.error("{error}", error=error)
         return 1
     except Exception as error:
@@ -114,11 +115,11 @@ def _validate_dry(
     if not names:
         return
     if target.kind in source.single_kinds:
-        raise cli.UsageError(
+        raise UsageError(
             f"--from applies to profiles and chats; {target} is one post, downloaded whole"
         )
     if problem := unknown(names, [source]):
-        raise cli.UsageError(problem)
+        raise UsageError(problem)
 
 
 def _where(file: File) -> str:

@@ -122,10 +122,6 @@ flnd/_cli.py:App.group: Args: no default
 flnd/_cli.py:App.group: Args: no help
 flnd/_cli.py:App.group: Args: no name
 flnd/_cli.py:App.group: no Returns:
-flnd/_cli.py:App.run: Args: no argv
-flnd/_cli.py:App.run: no Returns:
-flnd/_cli.py:App: Args: no help
-flnd/_cli.py:App: Args: no name
 flnd/_cli.py:_cyclopts_app: Args: no default
 flnd/_cli.py:_cyclopts_app: Args: no help
 flnd/_cli.py:_cyclopts_app: Args: no name
@@ -336,15 +332,6 @@ flnd/_http.py:Client: Args: no rate
 flnd/_http.py:Client: Args: no retry
 flnd/_http.py:Client: Args: no stop
 flnd/_http.py:Client: Args: no timeout
-flnd/_http.py:IncompleteError: Args: no message
-flnd/_http.py:IncompleteError: Args: no response
-flnd/_http.py:IncompleteError: Args: no status
-flnd/_http.py:RateLimitedError: Args: no message
-flnd/_http.py:RateLimitedError: Args: no response
-flnd/_http.py:RateLimitedError: Args: no retry_after
-flnd/_http.py:RefusedError: Args: no message
-flnd/_http.py:RefusedError: Args: no response
-flnd/_http.py:RefusedError: Args: no status
 flnd/_http.py:_Headers: no docstring
 flnd/_http.py:_Meter.start: no docstring
 flnd/_http.py:_Meter: Args: no sink
@@ -369,9 +356,7 @@ flnd/_http.py:_client: no docstring
 flnd/_http.py:_cookie_dict: no docstring
 flnd/_http.py:_cookie_from_dict: no docstring
 flnd/_http.py:_reset: no docstring
-flnd/_http.py:_retries: no docstring
 flnd/_http.py:_retry_after: no docstring
-flnd/_http.py:_scrub: no docstring
 flnd/_http.py:_total_bytes: no docstring
 flnd/_http.py:fake: Args: no routes
 flnd/_http.py:fake: no Yields:
@@ -451,10 +436,6 @@ flnd/_time.py:Fake.sleep: no Returns:
 flnd/_time.py:Fake: Args: no start
 flnd/_time.py:use: Args: no replacement
 flnd/_time.py:use: no Yields:
-flnd/_tools.py:RunError: Args: no code
-flnd/_tools.py:RunError: Args: no err
-flnd/_tools.py:RunError: Args: no message
-flnd/_tools.py:RunError: Args: no out
 flnd/_tools.py:Tool.stream: Args: no args
 flnd/_tools.py:Tool.stream: Args: no cwd
 flnd/_tools.py:Tool.stream: Args: no env
@@ -588,7 +569,6 @@ flnd/_vault.py:encrypt: no Returns:
 flnd/cli.py:_ask_source: no docstring
 flnd/cli.py:_read_targets: no docstring
 flnd/cli.py:auth_ls: no Returns:
-flnd/cli.py:download: no Raises:
 flnd/cli.py:download: no Returns:
 flnd/cli.py:epilog: no Returns:
 flnd/cli.py:login_command: no Raises:
@@ -648,9 +628,6 @@ flnd/common/net.py:_Row.update: no docstring
 flnd/common/net.py:_Row: Args: no label
 flnd/common/net.py:_Stream: Args: no row
 flnd/common/net.py:_Stream: Args: no stop
-flnd/common/net.py:_again: Args: no attempt
-flnd/common/net.py:_again: Args: no final
-flnd/common/net.py:_again: Args: no retryable
 flnd/common/net.py:_again: no Returns:
 flnd/common/net.py:_dash_merge: Args: no audio
 flnd/common/net.py:_dash_merge: Args: no client
@@ -886,10 +863,6 @@ flnd/engine.py:_folder_stats: no docstring
 flnd/engine.py:_log_dry: no docstring
 flnd/engine.py:_log_totals: no docstring
 flnd/engine.py:_require_auth: no docstring
-flnd/engine.py:_run_site: Args: no board
-flnd/engine.py:_run_site: Args: no reports
-flnd/engine.py:_run_site: Args: no run_settings
-flnd/engine.py:_run_site: Args: no work
 flnd/engine.py:_split_target: Args: no cleaned
 flnd/engine.py:_split_target: Args: no sources
 flnd/engine.py:_split_target: no Raises:
@@ -1265,8 +1238,6 @@ flnd/site.py:_SharedBrowser: Args: no jar
 flnd/site.py:_SharedBrowser: Args: no pool
 flnd/site.py:_SharedCookies: Args: no jar
 flnd/site.py:_SharedCookies: Args: no pool
-flnd/site.py:_fetch_errors: no Raises:
-flnd/site.py:_fetch_errors: no Yields:
 flnd/site.py:_warn_expiring: Args: no jar
 flnd/site.py:_warn_expiring: Args: no source
 flnd/site.py:shared_browser: Args: no settings

@@ -17,7 +17,8 @@ from typing import (
 import httpx
 
 from flnd.common import auth, net, paths
-from flnd.source import FetchError, Range, Source, Target
+from flnd.errors import Blocked, SourceError, Stopped, UsageError
+from flnd.source import Range, Source, Target
 from flnd import (
     _browser as browser, _time as clock, _http as http, _prompt as prompt,
     _db as store, _text as text, _loop as worker,
@@ -202,7 +203,7 @@ class TargetSite:
         url = _with_query(url, options.pop("params", None))
         body = options.pop("body", None)
         if options:
-            raise TypeError(f"fetch takes params and body, not {', '.join(sorted(options))}")
+            raise SourceError(f"fetch takes params and body, not {', '.join(sorted(options))}")
         if in_page:
             page = self.page
             send = functools.partial(page.fetch, url, method=method, headers=headers, body=body)
@@ -211,8 +212,9 @@ class TargetSite:
                 # Cookies set in the browser reach the client too, as a logged-in page sends them.
                 self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies.get()))
             send = functools.partial(self._run.web._send, method.upper(), url, headers, body)
-        with _fetch_errors():
-            return self._run.web._call(url, send, method=method.upper(), check=check)
+        # The client raises flnd's errors as they are (`flnd._http`): a refusal is a `SiteError`
+        # with its status and response, no answer a `NetworkError`, and a stop `Stopped`.
+        return self._run.web._call(url, send, method=method.upper(), check=check)
 
     def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
         """Load `url` in the target's tab, paced."""
@@ -225,17 +227,16 @@ class TargetSite:
             self._fill_warm_tabs()
         else:
             page, pre_visit = self.page, None
-        with _stoppable():
-            if pre_visit is not None:
-                visit = self._visit_tab(
-                    page, url=url, pre_visit=pre_visit, idle=idle, timeout=timeout,
-                )
-            else:
-                visit = self._run.web._call(
-                    url,
-                    lambda: self._visit_tab(page, url=url, pre_visit=None,
-                                            idle=idle, timeout=timeout),
-                )
+        if pre_visit is not None:
+            visit = self._visit_tab(
+                page, url=url, pre_visit=pre_visit, idle=idle, timeout=timeout,
+            )
+        else:
+            visit = self._run.web._call(
+                url,
+                lambda: self._visit_tab(page, url=url, pre_visit=None,
+                                        idle=idle, timeout=timeout),
+            )
         if visit is None:
             return False
         if visit.status >= 400:
@@ -410,7 +411,7 @@ class TargetSite:
             if visit is not None and visit.status == 429:
                 raw_wait = visit.headers.get("retry-after") if visit.headers else None
                 wait = float(raw_wait) if raw_wait and raw_wait.isdigit() else None
-                raise http.RateLimitedError(wait, f"GET {url}: HTTP 429")
+                raise Blocked(f"GET {text.redact(url)}: HTTP 429", wait=wait, status=429)
             return visit
         try:
             page.wait(idle=idle, timeout=timeout)
@@ -445,12 +446,11 @@ class TargetSite:
 
     def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
         """Count one rate limit and wait it out."""
-        with _stoppable():
-            seconds = retry_after if retry_after is not None else 5.0
-            ui.warn("{target}: {reason}; waiting {time}", target=str(self.target),
-                    reason=reason, time=text.duration(round(seconds)))
-            if seconds > 0 and not clock.sleep(seconds, stop=self._run.web._stop):
-                raise http.StoppedError(f"{self.target}: stopped")
+        seconds = retry_after if retry_after is not None else 5.0
+        ui.warn("{target}: {reason}; waiting {time}", target=str(self.target),
+                reason=reason, time=text.duration(round(seconds)))
+        if seconds > 0 and not clock.sleep(seconds, stop=self._run.web._stop):
+            raise Stopped(f"{self.target}: stopped")
 
     def _held_pages(self) -> list[_PacedPage]:
         pages = [*self._stack, *self._idle_tabs, *(tab for tab, _ in self._warmed.values())]
@@ -506,7 +506,8 @@ class LoginSite:
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
         """Ask a question with `prompt.ask`, and return what was typed."""
         if not self.interactive:
-            raise RuntimeError(f"{self._run.source.code}: logging in needs a terminal to ask in")
+            raise UsageError(f"{self._run.source.code}: logging in needs a terminal to ask in",
+                             hint="run flnd auth login in a terminal")
         if description:
             ui.info(description)
         return prompt.ask(message, secret=secret)
@@ -740,27 +741,6 @@ class _BrowserPool:
                 self._executor.shutdown(wait=True)
                 self._executor = None
                 self._thread_id = None
-
-
-@contextmanager
-def _stoppable() -> Iterator[None]:
-    """Turn a wait the first Ctrl-C ended into `KeyboardInterrupt`, as the job expects."""
-    try:
-        yield
-    except http.StoppedError:
-        raise KeyboardInterrupt from None
-
-
-@contextmanager
-def _fetch_errors() -> Iterator[None]:
-    """Turn a request's errors into `FetchError`, keeping a refusal's status and response."""
-    try:
-        with _stoppable():
-            yield
-    except http.RefusedError as error:
-        raise FetchError(str(error), status=error.status, response=error.response) from None
-    except (http.Error, browser.Error) as error:
-        raise FetchError(str(error), status=getattr(error, "status", None)) from None
 
 
 def _with_query(url: str, params: Mapping[str, Any] | None) -> str:

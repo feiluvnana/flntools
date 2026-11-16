@@ -13,8 +13,8 @@ from unittest import mock
 
 import questionary
 
-from flnd import _base
 from flnd import _prompt as prompt
+from flnd.errors import UsageError
 
 
 class _FakeStream(io.StringIO):
@@ -39,7 +39,6 @@ class _FakeQuestion:
 
 class AutofillAndFallbackTest(unittest.TestCase):
     def test_error_hierarchy_and_raw(self) -> None:
-        self.assertTrue(issubclass(prompt.Error, _base.Error))
         self.assertIs(prompt.raw, questionary)
 
     def test_non_tty_returns_defaults_or_raises(self) -> None:
@@ -54,9 +53,9 @@ class AutofillAndFallbackTest(unittest.TestCase):
             self.assertEqual(
                 prompt.choose("Tags", ["a", "b"], many=True, default=("b",)), ["b"]
             )
-            with self.assertRaises(prompt.Error):
+            with self.assertRaises(UsageError):
                 prompt.ask("Token")
-            with self.assertRaises(prompt.Error):
+            with self.assertRaises(UsageError):
                 prompt.choose("Color", ["red", "blue"])
 
     def test_autofill_context_overrides_tty(self) -> None:
@@ -71,7 +70,7 @@ class AutofillAndFallbackTest(unittest.TestCase):
             self.assertEqual(
                 prompt.choose("Ops", {"A": 1, "B": 2}, many=True, default=[1]), [1]
             )
-            with self.assertRaises(prompt.Error):
+            with self.assertRaises(UsageError):
                 prompt.ask("Secret", secret=True)
 
     def test_autofill_isolated_across_threads(self) -> None:
@@ -112,15 +111,15 @@ class AutofillAndFallbackTest(unittest.TestCase):
 
 class ChoiceValidationTest(unittest.TestCase):
     def test_empty_choices_raise(self) -> None:
-        with self.assertRaises(prompt.Error):
+        with self.assertRaises(UsageError):
             prompt.choose("Pick", [])
-        with self.assertRaises(prompt.Error):
+        with self.assertRaises(UsageError):
             prompt.choose("Pick", {}, many=True)
 
     def test_invalid_defaults_raise(self) -> None:
-        with self.assertRaises(prompt.Error):
+        with self.assertRaises(UsageError):
             prompt.choose("Pick", ["a", "b"], default="c")
-        with self.assertRaises(prompt.Error):
+        with self.assertRaises(UsageError):
             prompt.choose("Pick", ["a", "b"], many=True, default=("c",))
 
 
@@ -187,7 +186,7 @@ class InteractiveQuestionaryTest(unittest.TestCase):
 
     def test_eof_raises_prompt_error_and_interrupt_propagates(self) -> None:
         with mock.patch("questionary.text", return_value=_FakeQuestion(error=EOFError())):
-            with self.assertRaises(prompt.Error):
+            with self.assertRaises(UsageError):
                 prompt.ask("Name")
         with mock.patch("questionary.text", return_value=_FakeQuestion(error=KeyboardInterrupt())):
             with self.assertRaises(KeyboardInterrupt):

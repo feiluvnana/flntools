@@ -16,12 +16,10 @@ from typing import Union
 
 import filelock
 
-from flnd import _base
 from flnd import _time as clock
+from flnd.errors import DiskError, disk
 
-__all__ = [
-    "BusyError", "Error", "ExistsError", "lock", "stage", "sweep", "touch", "walk", "write",
-]
+__all__ = ["BusyError", "ExistsError", "lock", "stage", "sweep", "touch", "walk", "write"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -42,15 +40,13 @@ KEEP_AGE = 7 * 86_400
 SETTLE_AGE = 3_600
 
 
-class Error(_base.Error):
-    """The base of every error `flnd._files` raises."""
-
-
-class ExistsError(Error, FileExistsError):
+# Every failure here is a `DiskError`: an OSError becomes one through `flnd.errors.disk`, which
+# names the path and says what to do. Two conditions a caller acts on get their own class.
+class ExistsError(DiskError):
     """Raised when `dest` already exists and `replace` is False."""
 
 
-class BusyError(Error):
+class BusyError(DiskError):
     """Raised when another writer holds a lock past `timeout`."""
 
 
@@ -99,9 +95,10 @@ def lock(path: PathLike, *, timeout: float | None = None) -> Iterator[filelock.F
         flock = filelock.FileLock(target, timeout=-1.0 if timeout is None else timeout)
         flock.acquire()
     except filelock.Timeout as error:
-        raise BusyError(f"{target}: held by another writer; try again later") from error
+        raise BusyError(f"{target}: held by another writer",
+                        hint="wait for the other flnd run to end, then try again") from error
     except OSError as error:
-        raise Error(str(error)) from error
+        raise disk(error) from error
     try:
         yield flock
     finally:
@@ -113,7 +110,7 @@ def touch(path: PathLike, *, mtime: float) -> None:
     try:
         os.utime(path, (mtime, mtime))
     except OSError as error:
-        raise Error(str(error)) from error
+        raise disk(error) from error
 
 
 def walk(folder: PathLike, *, suffix: tuple[str, ...] = ()) -> Iterator[os.DirEntry[str]]:
@@ -164,11 +161,11 @@ def _stage_path(target: Path) -> Path:
 
 
 def _exists(path: Path) -> bool:
-    """Whether `path` exists, as an `fs.Error` when the check itself fails."""
+    """Whether `path` exists, as a `DiskError` when the check itself fails."""
     try:
         return path.exists()
     except OSError as error:
-        raise Error(str(error)) from error
+        raise disk(error) from error
 
 
 def _write_bytes(temp: Path, data: bytes) -> None:
@@ -178,7 +175,7 @@ def _write_bytes(temp: Path, data: bytes) -> None:
         with os.fdopen(handle, "wb") as file:
             file.write(data)
     except OSError as error:
-        raise Error(str(error)) from error
+        raise disk(error, temp) from error
 
 
 def _link(temp: Path, dest: Path, *, sync: bool) -> None:
@@ -210,7 +207,7 @@ def _commit(temp: Path, dest: Path, *, sync: bool) -> None:
         if sync and not WINDOWS:
             _fsync_dir(dest.parent)
     except OSError as error:
-        raise Error(str(error)) from error
+        raise disk(error) from error
 
 
 def _replace(temp: Path, dest: Path) -> None:
@@ -236,7 +233,7 @@ def _fsync_file(path: Path) -> None:
         finally:
             os.close(fd)
     except OSError as error:
-        raise Error(str(error)) from error
+        raise disk(error) from error
 
 
 def _fsync_dir(folder: Path) -> None:
@@ -256,7 +253,7 @@ def _unlink(path: str) -> int:
     except FileNotFoundError:
         return 0
     except OSError as error:
-        raise Error(str(error)) from error
+        raise disk(error) from error
 
 
 def _scan(folder: PathLike) -> Iterator[os.DirEntry[str]]:
@@ -271,7 +268,7 @@ def _scan(folder: PathLike) -> Iterator[os.DirEntry[str]]:
                     elif entry.is_file(follow_symlinks=False):
                         yield entry
         except OSError as error:
-            raise Error(str(error)) from error
+            raise disk(error) from error
 
 
 def _temporary(name: str) -> bool:
@@ -294,7 +291,7 @@ def _older_than(entry: os.DirEntry[str], now: float, age: float) -> bool:
     except FileNotFoundError:
         return False
     except OSError as error:
-        raise Error(str(error)) from error
+        raise disk(error) from error
     return now - mtime >= age
 
 

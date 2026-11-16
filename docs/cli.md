@@ -139,12 +139,19 @@ flnd auth ls
 | code | meaning |
 | --- | --- |
 | 0 | everything worked |
-| 1 | at least one target failed (it is named above the exit), or a login failed |
+| 1 | some files or targets failed (each is named above the exit); flnd went on with the rest |
 | 2 | a usage error: an unknown flag, a target no source reads, a bad `--from`, `--time` or `--limit` |
+| 3 | a login is needed: a source isn't logged in, its login was refused, or `flnd auth login` failed |
+| 4 | flnd itself stopped: a full or refused disk, a missing tool, a broken source, or a bug |
 | 130 | stopped with Ctrl-C |
 
-Any other error is a bug or an unexpected failure, and Python prints its traceback. The rebuild
-gives every failure its own class and code ([errors.md](errors.md)).
+A cron job can tell "some files failed" (1) from "flnd broke" (4). Each error class has its
+code; [errors.md](errors.md) lists them.
+
+A mistake you can fix (usage, login, disk, a tool) prints one line saying what went wrong, then
+one line saying what to do, and never a traceback. A bug prints one line naming a crash file,
+`.flnd/logs/crash-<time>.txt`, which holds the traceback; with `-v` the traceback prints
+instead.
 
 ## Ctrl-C
 

@@ -6,9 +6,8 @@ import re
 import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
-from flnd import _base
 
-__all__ = ["Error", "count", "duration", "filename", "fold", "redact", "size"]
+__all__ = ["count", "duration", "filename", "fold", "redact", "size"]
 
 BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
 UNSAFE_CHARACTERS = re.compile(r'[\\/*?:"<>|\x00-\x1f\x7f-\x9f]')
@@ -19,10 +18,6 @@ RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
     for kind in ("COM", "LPT")
     for suffix in (*range(1, 10), "\u00b9", "\u00b2", "\u00b3")
 }
-
-
-class Error(_base.Error):
-    """The base of every error `flnd._text` raises."""
 
 
 def filename(name: str, *, fallback: str = "untitled", max_bytes: int = 200) -> str:

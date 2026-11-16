@@ -127,9 +127,12 @@ what its rows hold.
 
 ## Errors
 
-A source raises `FetchError` (a request failed), `LoginError` (a login is missing or expired) or
-`TargetError` (a target can't be read). The job turns a failure of one file into a failed file,
-and a failure of a listing into a failed target, so one bad target never stops the others.
+Every error is a `flnd.Error` from one hierarchy (`flnd/errors.py`): `UsageError`,
+`LoginError`, `SiteError` (with `Blocked`, `NotFound` and `Changed`), `NetworkError`,
+`DiskError`, `ToolError` and `SourceError`. The HTTP client classifies what it meets, and a
+source raises the same classes from `flnd.source`. The job turns a failure of one file into a
+failed file, and a failure of a listing into a failed target, so one bad target never stops the
+others; a refused login stops its source, and a full disk stops the run.
 [errors.md](errors.md) lists every error class and what to do about it.
 
 ## Where to go next

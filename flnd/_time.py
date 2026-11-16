@@ -9,18 +9,13 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Protocol, TypeVar
 
-from flnd import _base
 
-__all__ = ["Clock", "Error", "Fake", "now", "sleep", "use", "wall"]
+__all__ = ["Clock", "Fake", "now", "sleep", "use", "wall"]
 
 # 2026-01-01 UTC, so a test's formatted dates are repeatable.
 FAKE_WALL = 1767225600.0
 
 C = TypeVar("C", bound="Clock")
-
-
-class Error(_base.Error):
-    """The base of every error `flnd._time` raises."""
 
 
 class Clock(Protocol):

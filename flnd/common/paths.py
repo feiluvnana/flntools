@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from flnd import _db as store, _text as text
+from flnd.errors import SiteError
 
 if TYPE_CHECKING:
     from flnd.source import Target
@@ -66,8 +67,22 @@ def stamp(path: Path) -> dict[str, int]:
     return {SIZE: found.st_size, MTIME: found.st_mtime_ns}
 
 
-class NotMediaError(ValueError):
-    """A web page or JSON where media was expected (e.g. login wall or error page)."""
+# What a web page where media was expected says to do: such a page is most often a login wall.
+NOT_MEDIA_HINT = "it is usually a login wall: run flnd auth login, then try again"
+
+
+def not_media(noun: str) -> SiteError:
+    """The error for a web page or JSON where media was expected: a login wall or error page.
+
+    It isn't retried: the same request gets the same page until something changes.
+
+    Args:
+        noun: what was expected, as the message says it ("a photo", "a file").
+
+    Returns:
+        A `SiteError` saying so, with a hint to log in again.
+    """
+    return SiteError(f"got a web page instead of {noun}", hint=NOT_MEDIA_HINT)
 
 
 # Common media extensions mapped to `IMAGE`, `VIDEO`, or `AUDIO` without probing disk.
@@ -149,5 +164,5 @@ def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
     del decode
     extension = sniff(path)
     if extension in PAGES:
-        raise NotMediaError(f"got a web page instead of {NOUNS.get(kind, kind)}")
+        raise not_media(NOUNS.get(kind, kind))
     return extension

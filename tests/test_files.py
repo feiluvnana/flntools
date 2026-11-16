@@ -9,6 +9,7 @@ from pathlib import Path
 from flnd.common import paths
 from flnd import _files as fs
 from flnd._ui import ui
+from flnd.errors import SiteError
 
 
 def jpeg(size=(64, 48)):
@@ -43,7 +44,7 @@ class CheckedTest(FilesCase):
     def test_a_web_page_raises_not_media(self):
         path = self.tmp / "a.jpg"
         path.write_bytes(b"<!doctype html><title>Log in</title>")
-        with self.assertRaises(paths.NotMediaError) as caught:
+        with self.assertRaises(SiteError) as caught:
             paths.checked(path, "image")
         self.assertEqual(str(caught.exception), "got a web page instead of a photo")
 

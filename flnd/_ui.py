@@ -23,11 +23,10 @@ from rich.progress import (
 from rich.theme import Theme
 from rich.text import Text
 
-from flnd import _base
 from flnd import _time as clock
 from flnd._text import size
 
-__all__ = ["Error", "Group", "Row", "UI", "ui"]
+__all__ = ["Group", "Row", "UI", "ui"]
 
 Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
@@ -66,10 +65,6 @@ _ESCAPE = re.compile(
     r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]"
 )
 _URL = re.compile(r"https?://[^\s:]+(?::\d+)?[^\s]*")
-
-
-class Error(_base.Error):
-    """Base error raised by `flnd._ui`."""
 
 
 class _SafeFormatter(string.Formatter):
@@ -347,7 +342,6 @@ class Group:
 class UI:
     """Terminal logging and progress helper."""
 
-    Error = Error
     Group = Group
     Row = Row
 

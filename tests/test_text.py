@@ -1,12 +1,6 @@
 import unittest
 
-from flnd import _base
 from flnd import _text as text
-
-
-class ErrorTest(unittest.TestCase):
-    def test_error_inherits_the_base_error(self):
-        self.assertTrue(issubclass(text.Error, _base.Error))
 
 
 class ScrubUrlTest(unittest.TestCase):

@@ -16,21 +16,18 @@ from flnd.common import auth, net, paths
 from flnd.job import TargetReport
 from flnd.options import Options, RunShared, categories_by_source
 from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
-from flnd.source import Range, Source, Target, TargetError
+from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
+from flnd.source import Range, Source, Target, _Unmatched
 from flnd.sources import SOURCES
-from flnd import _cli as cli, _files as fs, _db as store
+from flnd import _cli as cli, _files as fs, _db as store, _text as text
 from flnd._ui import ui
 
-__all__ = ["AuthInfo", "Engine", "Error", "Report", "TargetInfo", "TargetReport"]
+__all__ = ["AuthInfo", "Engine", "Report", "TargetInfo", "TargetReport"]
 
 HISTORY_TABLE = "downloads"
 ACCOUNT = "account"
 ALL = "all"
 MAX_SYNC_NEW = 25
-
-
-class Error(Exception):
-    """Base error for engine operations."""
 
 
 @dataclass(frozen=True)
@@ -117,7 +114,7 @@ class Engine:
     ) -> Report:
         """Download each target with its saved or given options and return a `Report`."""
         if limit is not None and limit < 1:
-            raise cli.UsageError("--limit must be at least 1")
+            raise UsageError("--limit must be at least 1")
         span = Range.parse(time) if isinstance(time, str) else time
         resolved = self._resolved(targets)
         cats_map = categories_by_source(categories, resolved, self.sources)
@@ -175,7 +172,7 @@ class Engine:
         unrecorded = set(self._unrecorded(recorded, rows))
         for target in resolved:
             if flnd.targets.key(target) not in rows and target not in unrecorded:
-                raise cli.UsageError(f"{target}: not a known target; download it first")
+                raise UsageError(f"{target}: not a known target; download it first")
         for target in resolved:
             flnd.targets.set_sync(self.home, target, enabled=enabled)
         return resolved
@@ -186,7 +183,7 @@ class Engine:
         rows = flnd.targets.rows(self.home)
         for target in resolved:
             if flnd.targets.key(target) not in rows:
-                raise cli.UsageError(f"{target}: not a saved target")
+                raise UsageError(f"{target}: not a saved target")
         for target in resolved:
             flnd.targets.delete(self.home, target)
         return resolved
@@ -218,23 +215,23 @@ class Engine:
     ) -> str:
         """Log in to a source by one of its `login_methods` and return a status message."""
         if code not in self.sources:
-            raise cli.UsageError(f"unknown source '{code}'. Sources: {', '.join(self.sources)}")
+            raise UsageError(f"unknown source '{code}'. Sources: {', '.join(self.sources)}")
         source = self.sources[code]()
         if method not in source.login_methods:
-            raise cli.UsageError(
+            raise UsageError(
                 f"{code} logs in by {', '.join(source.login_methods)}, not {method!r}"
             )
         if code not in self.cookie_logins:
             return self._interactive_login(code, source, method)
         if method == "file":
             if path is None:
-                raise cli.UsageError("a file login needs the cookie file's path")
+                raise UsageError("a file login needs the cookie file's path")
             file = Path(path).expanduser()
             return auth.store(
                 source, auth.from_file(source, file), home=self.home, origin=file.name
             )
         if browser is None:
-            raise cli.UsageError("a browser login needs the browser to read cookies from")
+            raise UsageError("a browser login needs the browser to read cookies from")
         jar = auth.from_browser(source, browser=browser, profile=profile)
         return auth.store(source, jar, home=self.home, origin=auth.BROWSERS.get(browser, browser))
 
@@ -243,7 +240,7 @@ class Engine:
         asked = list(dict.fromkeys(codes))
         unknown = [code for code in asked if code != ALL and code not in self.sources]
         if unknown:
-            raise cli.UsageError(
+            raise UsageError(
                 f"unknown source '{unknown[0]}'. Sources: {', '.join(self.sources)}"
             )
         chosen = list(self.sources) if ALL in asked else asked
@@ -436,18 +433,20 @@ class Engine:
         with source_run(settings, source) as run:
             account = TargetSite(run, Target(source.code, ACCOUNT, ""))
             if not source.logged_in(account) and source.requires_login:
-                ui.error("{target}: not logged in; run flnd auth login", target=str(target))
-                return TargetReport(target, (), 0, error="not logged in; run flnd auth login")
+                failed = job.logged_out(target)
+                job.tell(target, failed)
+                return TargetReport(target, (), 0, error=failed)
             try:
                 with _connected(run, account):
                     _log_dry(run, target, options, span, is_query=self._is_query(target))
             except KeyboardInterrupt:
                 if not stop.soon.is_set() or stop.now.is_set():
                     raise
-                return TargetReport(target, (), 0, error=job.STOPPED)
+                return TargetReport(target, (), 0, error=Stopped(job.STOPPED))
             except Exception as error:
-                ui.error("{target}: {error}", target=str(target), error=error)
-                return TargetReport(target, (), 0, error=str(error))
+                failed = job.failure(error, target, source)
+                job.tell(target, failed)
+                return TargetReport(target, (), 0, error=failed)
             return TargetReport(target, (), 0)
 
     def _download_mixed(
@@ -539,11 +538,11 @@ class Engine:
         except KeyboardInterrupt:
             if not stop.soon.is_set() or stop.now.is_set():
                 raise
-            reports.append(TargetReport(target, (), 0, error=job.STOPPED))
+            reports.append(TargetReport(target, (), 0, error=Stopped(job.STOPPED)))
         except Exception as error:
-            ui.error("{target}: {error}", target=str(target), error=error)
-            ui.debug("{target}: {chain}", target=str(target), chain=job.causes(error))
-            reports.append(TargetReport(target, (), 0, error=str(error)))
+            failed = job.failure(error, target, run.source)
+            job.tell(target, failed)
+            reports.append(TargetReport(target, (), 0, error=failed))
         finally:
             board.end(target, failed=any(r.error is not None for r in reports))
             if seen_keys:
@@ -615,12 +614,12 @@ class Engine:
             if not stop.soon.is_set() or stop.now.is_set():
                 raise
             failed = True
-            return TargetReport(target, tuple(written), skipped, error=job.STOPPED)
+            return TargetReport(target, tuple(written), skipped, error=Stopped(job.STOPPED))
         except Exception as error:
             failed = True
-            ui.error("{target}: {error}", target=str(target), error=error)
-            ui.debug("{target}: {chain}", target=str(target), chain=job.causes(error))
-            return TargetReport(target, tuple(written), skipped, error=str(error))
+            ended = job.failure(error, target, run.source)
+            job.tell(target, ended)
+            return TargetReport(target, tuple(written), skipped, error=ended)
         finally:
             board.end(target, failed=failed or child_failed is not None)
             if seen_to_mark:
@@ -638,7 +637,7 @@ class Engine:
         stop: cli.Stopping,
         written: list[Path],
         seen_to_mark: list[str],
-    ) -> tuple[int, str | None]:
+    ) -> tuple[int, Error | Stopped | None]:
         """Download newly discovered query children and return `(new_count, first_error)`."""
         skipped, new_count, child_failed = 0, 0, None
         account = TargetSite(run, Target(run.source.code, ACCOUNT, ""))
@@ -733,7 +732,7 @@ class Engine:
                 if folder.is_dir() and folder not in seen:
                     try:
                         yield self.resolve([f"{code}:{folder.name}"])[0]
-                    except TargetError as error:
+                    except UsageError as error:
                         ui.debug(
                             "{folder}: not synced: {error}",
                             folder=f"{code}/{folder.name}",
@@ -774,7 +773,7 @@ class Engine:
                 for item in work:
                     try:
                         _run_site(run_settings, board, reports, item)
-                    except KeyboardInterrupt:
+                    except (KeyboardInterrupt, DiskError):
                         raise
                     except BaseException as error:
                         _fail_unreached(item, error, reports, board)
@@ -811,8 +810,9 @@ def _validate_targets(
 def _require_auth(source: Source, run: SourceRun, target: Target) -> TargetReport | None:
     account = TargetSite(run, Target(source.code, ACCOUNT, ""))
     if not source.logged_in(account) and source.requires_login:
-        ui.error("{target}: not logged in; run flnd auth login", target=str(target))
-        return TargetReport(target, (), 0, error="not logged in; run flnd auth login")
+        failed = job.logged_out(target)
+        job.tell(target, failed)
+        return TargetReport(target, (), 0, error=failed)
     if not source.logged_in(account):
         ui.warn("{code}: not logged in, using public access; run flnd auth login", code=source.code)
     return None
@@ -861,11 +861,11 @@ def resolve(
     """Read one target string and return it resolved by its source."""
     cleaned = target_text.strip()
     if not cleaned:
-        raise TargetError("a target can't be empty")
+        raise UsageError("a target can't be empty")
     source, body = _split_target(cleaned, sources)
     try:
         return source.resolve(body)
-    except TargetError as miss:
+    except _Unmatched as miss:
         if follow is None or miss.url is None:
             raise
         followed = follow(miss.url)
@@ -883,16 +883,16 @@ def _split_target(cleaned: str, sources: Mapping[str, type[Source]]) -> tuple[So
     if qmark != -1 and (colon == -1 or qmark < colon) and "/" not in cleaned[:qmark]:
         code = cleaned[:qmark].strip().lower()
         if code not in sources:
-            raise TargetError(f"unknown source '{code}'. Sources: {', '.join(sources)}")
+            raise UsageError(f"unknown source '{code}'. Sources: {', '.join(sources)}")
         return sources[code](), f"?{cleaned[qmark + 1:].strip()}"
     if colon != -1:
         code, value = cleaned[:colon].strip().lower(), cleaned[colon + 1:]
         if code not in sources:
-            raise TargetError(f"unknown source '{code}'. Sources: {', '.join(sources)}")
+            raise UsageError(f"unknown source '{code}'. Sources: {', '.join(sources)}")
         src, body = sources[code](), value.strip()
         if not body:
             forms = ", ".join(src.forms)
-            raise TargetError(f"{src.code}: can't read {value!r}; write it like {forms}")
+            raise UsageError(f"{src.code}: can't read {value!r}; write it like {forms}")
         return src, body
     return _owner_source(cleaned, sources), cleaned
 
@@ -901,7 +901,7 @@ def _owner_source(cleaned: str, sources: Mapping[str, type[Source]]) -> Source:
     found = owner(cleaned, sources)
     if found is None:
         choices = ", ".join(f"{code}:{cleaned}" for code in sources)
-        raise TargetError(f'which source is "{cleaned}"? Write it as {choices}')
+        raise UsageError(f'which source is "{cleaned}"? Write it as {choices}')
     return found()
 
 
@@ -926,7 +926,7 @@ def _follow(url: str) -> str:
     try:
         return net.follow(url)
     except httpx.HTTPError as error:
-        raise TargetError(f"can't follow {url}: {error}") from None
+        raise NetworkError(f"can't follow {text.redact(url)}: {error}", retryable=True) from None
 
 
 def _run_site(
@@ -935,31 +935,54 @@ def _run_site(
     reports: dict[int, TargetReport],
     work: tuple[Source, list[_Planned]],
 ) -> None:
-    """Execute all planned targets for one source site and record their reports."""
+    """Execute all planned targets for one source site and record their reports.
+
+    A target that ends in a `LoginError` stops the source: the targets after it get the same
+    error without being asked. The other sources still run.
+
+    Args:
+        run_settings: what every source of the run shares.
+        board: the run's progress rows.
+        reports: filled with each target's report, by its number in the run.
+        work: the source, and its targets in order.
+
+    Raises:
+        DiskError: a target's files can't be written; the whole run stops.
+    """
     source, group = work
     with source_run(run_settings, source) as run:
         account = TargetSite(run, Target(source.code, ACCOUNT, ""))
         if not source.logged_in(account) and source.requires_login:
             for planned in group:
-                ui.error(
-                    "{target}: not logged in; run flnd auth login", target=str(planned.target)
-                )
-                reports[planned.number] = TargetReport(
-                    planned.target, (), 0, error="not logged in; run flnd auth login"
-                )
+                failed = job.logged_out(planned.target)
+                job.tell(planned.target, failed)
+                reports[planned.number] = TargetReport(planned.target, (), 0, error=failed)
             return
         if not source.logged_in(account):
             ui.warn(
                 "{code}: not logged in, using public access; run flnd auth login", code=source.code
             )
         with _written_back(run), _connected(run, account):
+            login: LoginError | None = None
             for planned in group:
-                reports[planned.number] = job.download(run, planned.target, board, planned.options)
+                # A login the site refused stops this source: its other targets would hit the
+                # same wall. The other sources go on, and the run exits 3 at the end.
+                if login is not None:
+                    board.end(planned.target, failed=True)
+                    reports[planned.number] = TargetReport(planned.target, (), 0, error=login)
+                    continue
+                report = job.download(run, planned.target, board, planned.options)
+                reports[planned.number] = report
+                if isinstance(report.error, LoginError):
+                    login = report.error
+                # A full or refused disk stops the whole run: every later file would fail too.
+                elif isinstance(report.error, DiskError):
+                    raise report.error
 
 
 def _fail_unreached(
     work: tuple[Source, list[_Planned]],
-    error: BaseException | None,
+    error: BaseException,
     reports: dict[int, TargetReport],
     board: job.Board,
 ) -> None:
@@ -969,7 +992,8 @@ def _fail_unreached(
     for planned in group:
         board.end(planned.target, failed=True)
         if planned.number not in reports:
-            reports[planned.number] = TargetReport(planned.target, (), 0, error=str(error))
+            failed = job.failure(error, planned.target, source)
+            reports[planned.number] = TargetReport(planned.target, (), 0, error=failed)
 
 
 @contextmanager

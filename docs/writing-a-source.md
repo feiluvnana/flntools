@@ -107,7 +107,7 @@ assert [file.path for file in saved] == ["posts/2026-01-02_p1_0.jpg", "posts/202
 assert [file.key for file in saved] == ["p1_0", "p1_1"]
 ```
 
-A request no fixture answers raises a 404 `FetchError`, as a missing page would. Each built-in
+A request no fixture answers raises a 404 `NotFound`, as a missing page would. Each built-in
 source has a test like this in `tests/test_<code>.py`. Live runs against the real site are done
 by hand, on test accounts, never in a unit test.
 
@@ -153,7 +153,7 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 
 | member | what it does |
 | --- | --- |
-| `site.fetch(url, params=…, method=…, headers=…, check=…)` | one request, paced and retried; `.json`, `.text`, `.html` on the answer; a refusal raises `FetchError` unless `check=False` |
+| `site.fetch(url, params=…, method=…, headers=…, check=…)` | one request, paced and retried; `.json`, `.text`, `.html` on the answer; a refusal raises a `SiteError` with its `status` (`NotFound` for a 404 or 410, `Blocked` for a 429) unless `check=False`; no answer raises `NetworkError` |
 | `site.goto(url)`, `site.page` | load a page in the target's browser tab, and use the tab |
 | `site.handoff(until=…, message=…)` | ask a person to do a step in the browser window, such as a captcha |
 | `site.cookies`, `site.secrets` | the login's cookies, and the source's encrypted secrets |

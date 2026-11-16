@@ -16,9 +16,10 @@ from unittest import mock
 import httpx
 
 from flnd.common import net, paths
-from flnd.source import FetchError, File
+from flnd.source import SiteError, File
 from flnd import _time as clock, _http as http, _tools as sh
 from flnd._ui import ui
+from flnd.errors import Error, NetworkError
 
 
 class Broken(httpx.SyncByteStream):
@@ -164,7 +165,7 @@ class DownloadTest(NetCase):
         self.assertEqual([path.name for path in (self.tmp / "posts").iterdir()], ["a.jpg"])
 
     def test_a_dead_connection_costs_three_attempts_and_is_raised(self):
-        with self.client(httpx.ConnectError("refused")) as client, self.assertRaises(http.Error) as caught:
+        with self.client(httpx.ConnectError("refused")) as client, self.assertRaises(Error) as caught:
             self.download(client, "https://cdn.example/a.jpg")
         self.assertIsInstance(caught.exception.__cause__, httpx.ConnectError)
         self.assertEqual(len(self.requests), 3)
@@ -178,11 +179,11 @@ class DownloadTest(NetCase):
 
     def test_a_refusal_raises_with_its_status_and_is_not_retried(self):
         """The job reads the status: a 403 or 410 may be an expired link it can refresh (B6)."""
-        with self.client(httpx.Response(403)) as client, self.assertRaises(FetchError) as caught:
+        with self.client(httpx.Response(403)) as client, self.assertRaises(SiteError) as caught:
             self.download(client, "https://cdn.example/a.jpg?oe=signed")
         self.assertEqual(caught.exception.status, 403)
         # The signed query stays out of the message.
-        self.assertEqual(str(caught.exception), "HTTP 403 for https://cdn.example/a.jpg")
+        self.assertEqual(str(caught.exception), "GET https://cdn.example/a.jpg: HTTP 403")
         self.assertEqual(len(self.requests), 1)
         self.assertFalse((self.tmp / "posts" / "a.jpg").exists())
 
@@ -190,7 +191,7 @@ class DownloadTest(NetCase):
         with self.client(httpx.Response(404), httpx.Response(200, content=b"7z")) as client:
             self.assertTrue(self.download(client, ["https://a.example/f.7z", "https://b.example/f.7z"], "f.7z"))
         self.assertEqual([request.url.host for request in self.requests], ["a.example", "b.example"])
-        self.assertIn("! mirror 1 failed: HTTP 404 for https://a.example/f.7z; trying next", self.lines())
+        self.assertIn("! mirror 1 failed: GET https://a.example/f.7z: HTTP 404; trying next", self.lines())
 
     def test_a_failed_mirror_logs_why(self):
         """Fix 9: the warning names the reason, not only the mirror's number."""
@@ -202,7 +203,7 @@ class DownloadTest(NetCase):
     def test_an_incomplete_body_is_still_retried(self):
         """Fix 9: only a page that isn't media fails at once; a cut-off body costs three attempts as before."""
         short = httpx.Response(200, headers={"content-length": "10"}, content=b"12345")
-        with self.client(short) as client, self.assertRaises(http.IncompleteError):
+        with self.client(short) as client, self.assertRaises(NetworkError):
             self.download(client, "https://cdn.example/a.jpg")
         self.assertEqual(len(self.requests), 3)
 
@@ -254,9 +255,9 @@ class DownloadTest(NetCase):
 
     def test_a_fetch_function_that_gets_a_web_page_is_called_once(self):
         """Fix 9: a fetch function retries every Exception, so `final` is what stops a login wall costing three tries."""
-        error = paths.NotMediaError("got a web page instead of a photo")
+        error = SiteError("got a web page instead of a photo")
         fetch = mock.Mock(side_effect=error)
-        with self.client(httpx.Response(200)) as client, self.assertRaises(paths.NotMediaError):
+        with self.client(httpx.Response(200)) as client, self.assertRaises(SiteError):
             self.download(client, fetch, "m.mp4")
         fetch.assert_called_once()
         self.assertEqual(self.sleeps, [])
@@ -314,7 +315,7 @@ class MediaDownloadTest(NetCase):
     def test_a_web_page_is_requested_once(self):
         """Fix 9: a login wall is the same page on every attempt, so it fails at once instead of three times."""
         page = httpx.Response(200, content=b"<!doctype html><title>Log in</title>")
-        with self.client(page) as client, self.assertRaises(net.NotMediaError) as caught:
+        with self.client(page) as client, self.assertRaises(net.SiteError) as caught:
             self.download(client, "https://cdn.example/a.jpg", kind="image")
         self.assertEqual(str(caught.exception), "got a web page instead of a photo")
         self.assertEqual(len(self.requests), 1)
@@ -421,7 +422,7 @@ class FollowTest(NetCase):
         self.assertEqual({request.method for request in self.requests}, {"HEAD"})
 
     def test_fetch_error_keeps_the_status(self):
-        self.assertEqual(FetchError("x", status=403).status, 403)
+        self.assertEqual(SiteError("x", status=403).status, 403)
 
 
 if __name__ == "__main__":

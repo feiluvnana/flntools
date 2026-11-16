@@ -23,7 +23,7 @@ from pathlib import PurePosixPath
 from typing import Any, Iterator, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
-from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, target
+from flnd.source import Blocked, File, LoginError, Post, Site, Source, day, target
 from flnd.sources.common import dash
 from flnd.sources.common.relay import meta_results
 from flnd.sources.common.feed import warm_tabs, watch_responses
@@ -302,15 +302,14 @@ def read_page(site: Site, url: str) -> list[Any] | None:
         # each other, so a wall and a block in turn still give up.
         if urlsplit(page.url).path.split("/")[1:2] in (["login"], ["login.php"]):
             if walls >= WALL_ATTEMPTS:
-                raise LoginError(
-                    "fbk: Facebook kept asking for a login; run flnd auth login fbk"
-                )
+                raise LoginError("fbk: Facebook kept asking for a login",
+                                 hint="run flnd auth login, then try again")
             walls += 1
             site.back_off(LOGIN_WALL)
             continue
         if BLOCKED in page.document.text.lower():
             if blocks >= BLOCK_ATTEMPTS:
-                raise FetchError(TEMPORARILY_BLOCKED)
+                raise Blocked(TEMPORARILY_BLOCKED)
             blocks += 1
             site.back_off(TEMPORARILY_BLOCKED)
             continue
@@ -368,7 +367,7 @@ def _collect_tab(site: Site, profile: Profile, path: str) -> Iterator[tuple[Any,
                 yield result, profile.owner
                 continue
             if blocks >= BLOCK_ATTEMPTS:
-                raise FetchError(TEMPORARILY_BLOCKED)
+                raise Blocked(TEMPORARILY_BLOCKED)
             blocks += 1
             site.back_off(TEMPORARILY_BLOCKED)
 

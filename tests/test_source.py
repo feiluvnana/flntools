@@ -18,7 +18,9 @@ from example_source import FIXTURES, Example as RoutedExample
 from fakes import collect
 
 from flnd.engine import resolve
-from flnd.source import File, Post, Range, Source, Target, TargetError, _parse, day, fill, pages, target
+from flnd.source import (
+    File, Post, Range, Source, SourceError, Target, UsageError, _parse, day, fill, pages, target,
+)
 from flnd.sources import SOURCES
 
 
@@ -78,7 +80,7 @@ class PatternTest(unittest.TestCase):
         self.check([("@example_user", ("user", "example_user")),
                     ("https://example.com/@example_user", ("user", "example_user"))])
         for text in ("@@example_user", "example-user", "not a name", ""):
-            with self.subTest(text=text), self.assertRaisesRegex(TargetError, "^exm: can't read"):
+            with self.subTest(text=text), self.assertRaisesRegex(UsageError, "^exm: can't read"):
                 read(text)
 
     def test_a_regex_placeholder_and_a_star(self):
@@ -88,7 +90,7 @@ class PatternTest(unittest.TestCase):
         self.check([("730123456789012", ("user", "730123456789012"))])
         # A star inside a segment is any text there: /watch, /watchlist, /watch/?v=1.
         for text in ("https://example.com/watch", "https://example.com/watchlist", "https://example.com/watch/?v=1"):
-            with self.subTest(text=text), self.assertRaisesRegex(TargetError, "^exm: videos aren't supported$"):
+            with self.subTest(text=text), self.assertRaisesRegex(UsageError, "^exm: videos aren't supported$"):
                 read(text)
 
     def test_a_query_placeholder(self):
@@ -106,10 +108,10 @@ class OrderTest(unittest.TestCase):
         self.assertEqual([route.kind for route in Example.routes], ["post", "video", "user"])
 
     def test_unsupported_beats_a_route(self):
-        with self.assertRaises(TargetError) as caught:
+        with self.assertRaises(UsageError) as caught:
             read("https://www.example.com/stories/example_user/1/")
         self.assertEqual(str(caught.exception), "exm: story links aren't supported; give the profile")
-        self.assertIsNone(caught.exception.url)
+        self.assertIsNone(getattr(caught.exception, "url", None))
 
     def test_a_more_specific_route_beats_a_refusal(self):
         class Narrow(Source):
@@ -130,7 +132,7 @@ class OrderTest(unittest.TestCase):
         # Four literal segments (host, i, web, status) beat the refusal's two (host, i).
         self.assertEqual(Narrow().resolve("https://example.com/i/web/status/123"), Target("nrw", "post", "123"))
         for text in ("https://example.com/i", "https://example.com/i/flow/login"):
-            with self.assertRaises(TargetError) as caught:
+            with self.assertRaises(UsageError) as caught:
                 Narrow().resolve(text)
             self.assertEqual(str(caught.exception), "nrw: that's not a profile")
 
@@ -145,7 +147,7 @@ class OrderTest(unittest.TestCase):
 
             def run(self, session): ...
 
-        with self.assertRaises(TargetError) as caught:
+        with self.assertRaises(UsageError) as caught:
             Equal().resolve("https://example.com/status/123")
         self.assertEqual(str(caught.exception), "eql: no")
 
@@ -156,7 +158,7 @@ class OrderTest(unittest.TestCase):
 
         self.assertEqual([route.kind for route in Child.routes], ["post", "video", "user"])
         self.assertEqual(Child().resolve("https://example.com/u/example_user"), Target("exm", "user", "example_user"))
-        with self.assertRaises(TargetError):
+        with self.assertRaises(UsageError):
             Child().resolve("example_user")
 
     def test_a_route_is_still_a_method_on_an_instance(self):
@@ -171,21 +173,21 @@ class OrderTest(unittest.TestCase):
 
 class MissTest(unittest.TestCase):
     def test_a_link_nothing_matches_carries_its_url(self):
-        with self.assertRaises(TargetError) as caught:
+        with self.assertRaises(UsageError) as caught:
             read("example.com/")
         self.assertEqual(caught.exception.url, "https://example.com/")
-        with self.assertRaises(TargetError) as caught:
+        with self.assertRaises(UsageError) as caught:
             read("https://short.example.com/AbC")
         self.assertEqual(caught.exception.url, "https://short.example.com/AbC")
 
     def test_text_that_is_no_link_carries_none(self):
         for text in ("not a name", "https://elsewhere.example/example_user", "elsewhere.example/example_user"):
-            with self.subTest(text=text), self.assertRaises(TargetError) as caught:
+            with self.subTest(text=text), self.assertRaises(UsageError) as caught:
                 read(text)
-            self.assertIsNone(caught.exception.url)
+            self.assertIsNone(getattr(caught.exception, "url", None))
 
     def test_the_refusal_lists_the_generated_forms(self):
-        with self.assertRaises(TargetError) as caught:
+        with self.assertRaises(UsageError) as caught:
             read("not a name")
         self.assertEqual(str(caught.exception),
                          "exm: can't read 'not a name'; write it like exm:<video id>, exm:<user>, "
@@ -216,13 +218,13 @@ class ShortLinkTest(unittest.TestCase):
 
     def test_a_second_miss_lists_the_forms(self):
         follow, followed = self.follow_to("https://www.example.com/", "never asked")
-        with self.assertRaisesRegex(TargetError, r"^exm: can't read 'https://www.example.com/'; write it like exm:"):
+        with self.assertRaisesRegex(UsageError, r"^exm: can't read 'https://www.example.com/'; write it like exm:"):
             resolve("https://short.example.com/AbC", {"exm": Example}, follow=follow)
         self.assertEqual(followed, ["https://short.example.com/AbC"])
 
     def test_a_short_link_can_lead_to_an_unsupported_one(self):
         follow, _ = self.follow_to("https://www.example.com/watch/?v=1")
-        with self.assertRaisesRegex(TargetError, "^exm: videos aren't supported$"):
+        with self.assertRaisesRegex(UsageError, "^exm: videos aren't supported$"):
             resolve("https://short.example.com/AbC", {"exm": Example}, follow=follow)
 
     def test_refusals_and_matches_are_never_followed(self):
@@ -232,11 +234,11 @@ class ShortLinkTest(unittest.TestCase):
         self.assertEqual(resolve("https://example.com/example_user", {"exm": Example}, follow=follow),
                          Target("exm", "user", "example_user"))
         for text in ("https://example.com/stories/example_user", "exm:not a name"):
-            with self.subTest(text=text), self.assertRaises(TargetError):
+            with self.subTest(text=text), self.assertRaises(UsageError):
                 resolve(text, {"exm": Example}, follow=follow)
 
     def test_without_follow_the_miss_is_the_refusal(self):
-        with self.assertRaisesRegex(TargetError, "^exm: can't read"):
+        with self.assertRaisesRegex(UsageError, "^exm: can't read"):
             resolve("https://short.example.com/AbC", {"exm": Example})
 
 
@@ -262,7 +264,7 @@ class FormsTest(unittest.TestCase):
 
 
 class ClassCreationTest(unittest.TestCase):
-    """Each mistake in a source's routes raises `TypeError` when its class is created, so at import."""
+    """Each mistake in a source's routes raises `SourceError` when its class is created, so at import."""
 
     def declare(self, **attributes):
         body = {"code": "bad", "name": "Bad", "domains": ("example.com",), "run": lambda self, session: None,
@@ -270,7 +272,7 @@ class ClassCreationTest(unittest.TestCase):
         return type("Bad", (Source,), body)
 
     def assertRefused(self, message, make):
-        with self.assertRaisesRegex(TypeError, message):
+        with self.assertRaisesRegex(SourceError, message):
             make()
 
     def test_a_placeholder_must_name_the_value_parameter(self):
@@ -372,7 +374,7 @@ class CategoriesTest(unittest.TestCase):
         self.assertEqual(list(dict.fromkeys(item.post.category for item in saved)), ["posts", "albums", "profile"])
 
     def test_a_field_and_methods_together_are_refused(self):
-        with self.assertRaisesRegex(TypeError, "declare no categories"):
+        with self.assertRaisesRegex(SourceError, "declare no categories"):
             class Both(Source):
                 code, name, domains = "bth", "Both", ("example.com",)
                 categories = ("posts",)
@@ -386,9 +388,9 @@ class CategoriesTest(unittest.TestCase):
     def test_a_category_declared_twice_or_with_the_wrong_parameters(self):
         route = target("{user}")(lambda self, site, user: None)
         route.category(lambda self, site, profile: None)
-        with self.assertRaisesRegex(TypeError, "declared twice"):
+        with self.assertRaisesRegex(SourceError, "declared twice"):
             route.category(lambda self, site, profile: None)
-        with self.assertRaisesRegex(TypeError, r"take \(self, site, context\)"):
+        with self.assertRaisesRegex(SourceError, r"take \(self, site, context\)"):
             route.category(key="")(lambda self, profile: None)
 
 
@@ -402,9 +404,9 @@ class PostTest(unittest.TestCase):
     def test_an_engine_field_is_a_type_error(self):
         for name in ("category", "num", "count", "index", "extension", "path"):
             kwargs: dict[str, object] = {name: "x"}
-            with self.subTest(field=name), self.assertRaisesRegex(TypeError, f"{name} is a field the engine sets"):
+            with self.subTest(field=name), self.assertRaisesRegex(SourceError, f"{name} is a field the engine sets"):
                 Post("7", **kwargs)  # type: ignore[arg-type]
-        with self.assertRaisesRegex(TypeError, "the engine sets"):
+        with self.assertRaisesRegex(SourceError, "the engine sets"):
             Post("7").replace(category="posts")
 
     def test_frozen_and_replace(self):
@@ -421,7 +423,7 @@ class PostTest(unittest.TestCase):
                          ("https://a.example/f.7z", "https://b.example/f.7z"))
         text = File.text("info.md", "# Title\n")
         self.assertEqual((text.url, text.name, text.content), (None, "info.md", "# Title\n"))
-        with self.assertRaises(TypeError):
+        with self.assertRaises(SourceError):
             File([])
         with self.assertRaises(dataclasses.FrozenInstanceError):
             text.name = "other.md"  # type: ignore[misc]

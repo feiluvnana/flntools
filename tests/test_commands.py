@@ -15,7 +15,7 @@ from unittest import mock
 
 from test_engine import make_source
 
-from flnd import Engine, Target, TargetReport
+from flnd import Blocked, Engine, Target, TargetReport
 from flnd import cli as flnd_cli
 from flnd import sources
 from flnd.common import auth, paths
@@ -355,7 +355,7 @@ class ExitStatusTest(FlndCase):
 
         def run(site):
             if site.target.value == "bad":
-                raise RuntimeError("blocked")
+                raise Blocked("blocked")
 
         patcher = mock.patch.dict(sources.SOURCES, {"aaa": make_source("aaa", run),
                                                     "bbb": make_source("bbb", run, connect=connect)})
@@ -442,13 +442,15 @@ class LoginFileTest(LoginCase):
 
     def test_a_missing_needs_cookie(self):
         code, out = self.from_file("fbk", self.cookie_file(NETSCAPE))
-        self.assertEqual(code, 1)
+        # A login that fails exits 3, "login needed", with its message and no traceback.
+        self.assertEqual(code, 3)
+        self.assertNotIn("Traceback", out)
         self.assertTrue(out.splitlines()[-1].endswith("fbk: no c_user or xs for facebook.com in cookies.txt; log in there first"), out)
         self.assertNotIn("fbk", Engine(home=Path(".flnd")).logins)
 
     def test_a_broken_file(self):
         code, out = self.from_file("ins", self.cookie_file("not\ta cookie\n"))
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 3)
         self.assertIn("ins: can't read", out)
 
     def test_a_missing_path_is_asked_again(self):
@@ -531,10 +533,10 @@ class LoginBrowserTest(LoginCase):
     def test_a_missing_needs_cookie_and_an_unreadable_browser(self):
         self.store = {}
         code, out = self.login("twt", "browser", browser="chrome")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 3)
         self.assertTrue(out.splitlines()[-1].endswith("twt: no auth_token for x.com in Chrome; log in there first"), out)
         code, out = self.login("twt", "browser", browser="edge")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 3)
         self.assertIn("twt: can't read Edge's cookies: can't read edge cookies on Windows; try a cookie file instead",
                       out)
 

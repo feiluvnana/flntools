@@ -7,15 +7,14 @@ without `cryptography`; `digest` needs only the stdlib.
 import builtins
 import hashlib
 import io
-import re
 import secrets
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import _base
 from flnd import _vault as crypto
+from flnd.errors import LoginError, ToolError
 
 try:
     import cryptography  # noqa: F401
@@ -72,8 +71,8 @@ class HashTest(unittest.TestCase):
     def test_str_is_text_not_a_file_name(self):
         self.assertEqual(crypto.digest("photo.jpg"), hashlib.sha256(b"photo.jpg").hexdigest())
 
-    def test_unknown_algorithm_raises_crypto_error(self):
-        with self.assertRaises(crypto.Error):
+    def test_unknown_algorithm_is_a_value_error(self):
+        with self.assertRaises(ValueError):
             crypto.digest(b"abc", algorithm="no-such-hash")
 
     def test_other_types_refused(self):
@@ -112,16 +111,16 @@ class CipherTest(unittest.TestCase):
             "unknown version": (b"\x02" + blob[1:], self.key, b"slot"),
         }
         for name, (damaged_blob, key, context) in damaged.items():
-            with self.subTest(name), self.assertRaises(crypto.Error):
+            with self.subTest(name), self.assertRaises(LoginError) as caught:
                 crypto.decrypt(damaged_blob, key, context=context)
-        # flnd's vault and older code catch a wrong key or damaged data as a ValueError.
-        self.assertTrue(issubclass(crypto.Error, ValueError))
+            # What the vault held was a login, so the hint is to log in again.
+            self.assertIn("flnd auth login", caught.exception.hint)
 
     def test_only_a_32_byte_key(self):
         for size in (16, 20, 24, 33):
             for call in (lambda size=size: crypto.encrypt("x", b"k" * size),
                          lambda size=size: crypto.decrypt(b"x" * 40, b"k" * size)):
-                with self.subTest(size=size), self.assertRaises(crypto.Error):
+                with self.subTest(size=size), self.assertRaises(ValueError):
                     call()
 
     def test_no_secret_reaches_a_message(self):
@@ -143,7 +142,7 @@ class CipherTest(unittest.TestCase):
         for key_bytes in (key, wrong_key, key[:20], wrong_key[:20]):
             secret_texts += [key_bytes.hex(), repr(key_bytes), key_bytes.decode("latin-1")]
         for number, call in enumerate(failures):
-            with self.subTest(number), self.assertRaises((ValueError, TypeError)) as caught:
+            with self.subTest(number), self.assertRaises((LoginError, ValueError, TypeError)) as caught:
                 call()
             error = caught.exception
             texts = [str(error), repr(error), *map(str, error.args)]
@@ -163,13 +162,12 @@ class MissingExtraTest(unittest.TestCase):
                 raise ImportError("No module named 'cryptography'")
             return real_import(name, *args, **kwargs)
 
-        self.assertTrue(issubclass(crypto.MissingError, crypto.Error))
-        self.assertTrue(issubclass(crypto.MissingError, _base.MissingError))
         with mock.patch("builtins.__import__", import_without_cryptography):
             for cipher_call in (lambda: crypto.decrypt(b"x" * 40, secrets.token_bytes(32)),
                                 lambda: crypto.encrypt("x", secrets.token_bytes(32))):
-                with self.assertRaisesRegex(crypto.MissingError, re.escape("pip install cryptography")):
+                with self.assertRaises(ToolError) as caught:
                     cipher_call()
+                self.assertEqual(caught.exception.hint, "pip install cryptography")
             self.assertEqual(crypto.digest("a"), hashlib.sha256(b"a").hexdigest())
 
 

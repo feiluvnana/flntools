@@ -8,7 +8,7 @@ from test_engine import EngineCase
 
 from flnd import Engine
 from flnd.options import Options
-from flnd.source import FetchError, Target, TargetError
+from flnd.source import SiteError, Target, UsageError
 from flnd.sources.mht import API, Mimi, cover_name, format_order, page_name
 
 CDN = "https://moe-cdn.example"
@@ -77,7 +77,7 @@ class RoutesTest(unittest.TestCase):
                 if isinstance(expected, tuple):
                     self.assertEqual(Mimi().resolve(value), Target("mht", *expected))
                 else:
-                    with self.assertRaisesRegex(TargetError, f"^mht: {expected}"):
+                    with self.assertRaisesRegex(UsageError, f"^mht: {expected}"):
                         Mimi().resolve(value)
 
 
@@ -130,10 +130,10 @@ class MangaAndChapterTest(unittest.TestCase):
 
     def test_missing_manga_or_chapter_raises_fetch_error(self):
         site = FakeSite(Target("mht", "manga", "999"), json={f"{API}manga/999": {}})
-        with self.assertRaisesRegex(FetchError, "manga 999"):
+        with self.assertRaisesRegex(SiteError, "manga 999"):
             Mimi().manga(site, "999")
         site_ch = FakeSite(Target("mht", "chapter", "999"), json={f"{API}chapters/999": {}})
-        with self.assertRaisesRegex(FetchError, "chapter 999"):
+        with self.assertRaisesRegex(SiteError, "chapter 999"):
             list(Mimi().chapter(site_ch, "999"))
 
 
@@ -203,7 +203,7 @@ class AuthorGenreAndQueryTest(unittest.TestCase):
         self.assertEqual(list(Mimi().author(site, "7")), [Target("mht", "manga", "70982")])
         self.assertEqual(list(Mimi().author(site, "example-creator")), [Target("mht", "manga", "70982")])
         self.assertEqual(list(Mimi().genre(site, "romance")), [Target("mht", "manga", "70983")])
-        with self.assertRaisesRegex(TargetError, "no genre named missing"):
+        with self.assertRaisesRegex(UsageError, "no genre named missing"):
             list(Mimi().genre(site, "missing"))
 
 

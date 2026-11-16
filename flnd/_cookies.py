@@ -21,11 +21,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Union
 
-from flnd import _base
 from flnd import _files as fs
 from flnd._ui import ui
+from flnd.errors import LoginError, UsageError
 
-__all__ = ["Error", "Jar", "MissingError", "UnsafeError", "load"]
+__all__ = ["Jar", "load"]
 
 Cookie = dict[str, Any]
 PathLike = Union[str, Path]
@@ -58,16 +58,9 @@ _HOST_HASH_VERSION = 24
 _HOST_HASH_SIZE = 32
 
 
-class Error(_base.Error):
-    """A cookie file is broken, unreadable, or cannot be decrypted."""
-
-
-class MissingError(Error, _base.MissingError):
-    """Reading these cookies needs what only the browser has: Chromium's keys on Windows."""
-
-
-class UnsafeError(Error, _base.UnsafeError):
-    """A cookie file over 16 MB, refused before it is read."""
+# Errors: cookies are read to log in, so a cookie file that is broken, too big or unreadable, and
+# a browser whose cookies can't be decrypted, all raise `LoginError`; its message names the file
+# or the browser, never a cookie's value. An unknown browser name is a `UsageError`.
 
 
 class Jar:
@@ -83,7 +76,7 @@ class Jar:
             and is copied, so changing the dict afterwards doesn't change the jar. Empty by default.
 
     Raises:
-        Error: a cookie isn't a dict, or has no `name` or `value`.
+        LoginError: a cookie isn't a dict, or has no `name` or `value`.
 
     Iterating gives a copy of each cookie, in the jar's order. A jar may hold two cookies of the
     same name for different domains or paths; `[name]` and `header` follow the jar's order then.
@@ -95,7 +88,7 @@ class Jar:
         kept = []
         for index, cookie in enumerate(cookies):
             if not isinstance(cookie, dict) or "name" not in cookie or "value" not in cookie:
-                raise Error(f"cookie {index} needs a name and a value")
+                raise LoginError(f"cookie {index} needs a name and a value")
             kept.append(dict(cookie))
         self._cookies: tuple[Cookie, ...] = tuple(kept)
 
@@ -149,8 +142,8 @@ class Jar:
                 is replaced.
 
         Raises:
-            Error: a cookie holds a tab (outside its value) or a line break, which a Netscape file
-                can't hold; nothing is written then.
+            LoginError: a cookie holds a tab (outside its value) or a line break, which a
+                Netscape file can't hold; nothing is written then.
             OSError: the file can't be written.
 
         The file is replaced in one step with mode 0600, so a crash never leaves half a file.
@@ -202,21 +195,21 @@ def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
                 return Jar(_load_firefox(profile))
             return Jar(_load_chromium(lower, profile or "Default"))
         if profile is not None:
-            raise Error(f"unknown browser {source!r}: use one of {', '.join(_BROWSERS)}")
+            raise UsageError(f"unknown browser {source!r}: use one of {', '.join(_BROWSERS)}")
         if "\n" in source or "\r" in source or "\t" in source or source.lstrip()[:1] in ("[", "{"):
             return _load_text(source, "<text>")
     path = Path(source)
     if path.stat().st_size > MAX_SIZE:
-        raise UnsafeError(f"{path}: a cookie file over {MAX_SIZE // (1024 * 1024)} MB is refused")
+        raise LoginError(f"{path}: a cookie file over {MAX_SIZE // (1024 * 1024)} MB is refused")
     with open(path, "rb") as file:
         data = file.read(MAX_SIZE + 1)
     if len(data) > MAX_SIZE:
-        raise UnsafeError(f"{path}: a cookie file over {MAX_SIZE // (1024 * 1024)} MB is refused")
+        raise LoginError(f"{path}: a cookie file over {MAX_SIZE // (1024 * 1024)} MB is refused")
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as err:
         # Not str(err): it quotes the undecodable byte, which may be part of a value.
-        raise Error(f"{path}: not UTF-8 text (at byte {err.start})") from None
+        raise LoginError(f"{path}: not UTF-8 text (at byte {err.start})") from None
     return _load_text(text, str(path))
 
 
@@ -225,7 +218,7 @@ def _load_text(text: str, label: str) -> Jar:
     try:
         parsed = _parse_json(text) if text.lstrip()[:1] in ("[", "{") else _parse_netscape(text)
     except ValueError as err:
-        raise Error(f"{label}: {err}") from None
+        raise LoginError(f"{label}: {err}") from None
     return Jar(parsed)
 
 
@@ -244,7 +237,7 @@ def _load_firefox(profile: str | None) -> list[Cookie]:
                 "FROM moz_cookies"
             ).fetchall()
         except sqlite3.Error as error:
-            raise Error(f"cannot read Firefox cookies: {error}") from error
+            raise LoginError(f"cannot read Firefox cookies: {error}") from error
     jar = []
     for host, name, value, path, expiry, secure, http_only, same_site in rows:
         # Firefox stores expiry in ms in newer versions; seconds stay below 10**11 until 5138.
@@ -306,13 +299,13 @@ def _open_copy(database: Path) -> Iterator[sqlite3.Connection]:
     try:
         source = sqlite3.connect(uri, uri=True)
     except sqlite3.Error as error:
-        raise Error(f"cannot open cookie database {database}: {error}") from error
+        raise LoginError(f"cannot open cookie database {database}: {error}") from error
     dest = sqlite3.connect(":memory:")
     try:
         try:
             source.backup(dest)
         except sqlite3.Error as error:
-            raise Error(f"cannot read cookie database {database}: {error}") from error
+            raise LoginError(f"cannot read cookie database {database}: {error}") from error
         finally:
             source.close()
         yield dest
@@ -351,13 +344,13 @@ def _load_chromium(browser: str, profile: str) -> list[Cookie]:
                 "is_httponly, samesite FROM cookies"
             ).fetchall()
         except sqlite3.Error as error:
-            raise Error(f"cannot read {browser} cookies: {error}") from error
+            raise LoginError(f"cannot read {browser} cookies: {error}") from error
     has_host_hash = int(version_row[0]) >= _HOST_HASH_VERSION if version_row else False
     # The key is read only when a value needs it, so a profile of plain values shows no prompt.
     keys = _chromium_keys(browser) if any(row[3] for row in rows) else {}
     jar = []
     encrypted_count = 0
-    failures: list[Error] = []
+    failures: list[LoginError] = []
     for host, name, value, encrypted, path, expires_utc, secure, http_only, same_site in rows:
         if encrypted:
             encrypted_count += 1
@@ -367,7 +360,7 @@ def _load_chromium(browser: str, profile: str) -> list[Cookie]:
             try:
                 what = f"{browser} cookie {name} for {host}"
                 value = _decrypt_chromium(bytes(encrypted), keys, host, has_host_hash, what)
-            except Error as error:
+            except LoginError as error:
                 failures.append(error)
                 continue
         # Chromium counts microseconds from 1601; 0 marks a session cookie.
@@ -375,7 +368,7 @@ def _load_chromium(browser: str, profile: str) -> list[Cookie]:
         same = _SAME_SITE.get(same_site, "Lax")
         jar.append(_cookie(name, value, host, path, expires, secure, http_only, same))
     if failures and len(failures) == encrypted_count:
-        raise Error(
+        raise LoginError(
             f"can't decrypt any of {encrypted_count} {browser} cookies: wrong key or unknown "
             f"format; first: {failures[0]}"
         )
@@ -422,14 +415,14 @@ def _read_windows_key(browser: str) -> bytes:
     """Read and DPAPI-decrypt Chromium's AES-256-GCM master key from `Local State`."""
     state_path = _chromium_root(browser) / "Local State"
     if not state_path.is_file():
-        raise MissingError(f"no Local State file for {browser} at {state_path}")
+        raise LoginError(f"no Local State file for {browser} at {state_path}")
     try:
         state = json.loads(state_path.read_text(encoding="utf-8-sig"))
         raw = base64.b64decode(state["os_crypt"]["encrypted_key"])
     except (OSError, ValueError, KeyError, TypeError) as error:
-        raise Error(f"cannot read {browser} Local State key: {error}") from error
+        raise LoginError(f"cannot read {browser} Local State key: {error}") from error
     if not raw.startswith(b"DPAPI"):
-        raise Error(f"unexpected {browser} Local State key format")
+        raise LoginError(f"unexpected {browser} Local State key format")
     return _dpapi_unprotect(raw[5:])
 
 
@@ -437,7 +430,7 @@ def _dpapi_unprotect(data: bytes) -> bytes:
     """Decrypt `data` using Windows DPAPI (`CryptUnprotectData`)."""
     windll = getattr(ctypes, "windll", None)
     if windll is None:
-        raise MissingError("Windows DPAPI is only available on Windows")
+        raise LoginError("Windows DPAPI is only available on Windows")
     buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
     blob_in = _DataBlob(len(data), buf)
     blob_out = _DataBlob()
@@ -445,7 +438,7 @@ def _dpapi_unprotect(data: bytes) -> bytes:
         ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
     )
     if not ok:
-        raise Error("Windows DPAPI CryptUnprotectData failed")
+        raise LoginError("Windows DPAPI CryptUnprotectData failed")
     try:
         return ctypes.string_at(blob_out.pbData, blob_out.cbData)
     finally:
@@ -461,7 +454,7 @@ def _read_keychain_password(service: str) -> str:
     )
     if result.returncode != 0:
         err = result.stderr.strip() or "denied"
-        raise Error(f"can't read the Keychain item {service!r}: {err}")
+        raise LoginError(f"can't read the Keychain item {service!r}: {err}")
     return result.stdout.strip()
 
 
@@ -492,7 +485,7 @@ def _decrypt_chromium(
     """One Chromium value, decrypted; errors name `what`, never the value."""
     key = keys.get(encrypted[:3])
     if key is None:
-        raise Error(f"can't decrypt {what}: unknown format {encrypted[:3]!r}")
+        raise LoginError(f"can't decrypt {what}: unknown format {encrypted[:3]!r}")
     # ValueError: bad padding, bad host hash, or bad UTF-8 (wrong key or damaged value).
     try:
         plain = (
@@ -506,7 +499,7 @@ def _decrypt_chromium(
             plain = plain[_HOST_HASH_SIZE:]
         return plain.decode("utf-8")
     except ValueError:
-        raise Error(f"can't decrypt {what}: wrong key or damaged value") from None
+        raise LoginError(f"can't decrypt {what}: wrong key or damaged value") from None
 
 
 def _decrypt_aes_gcm(key: bytes, ciphertext: bytes) -> bytes:
@@ -591,7 +584,7 @@ def _json_cookie(entry: Any, index: int) -> Cookie:
 
 
 def _netscape_text(jar: Iterable[Cookie]) -> str:
-    """The jar as a Netscape file; an Error names the cookie if one cannot be written."""
+    """The jar as a Netscape file; a LoginError names the cookie if one cannot be written."""
     lines = ["# Netscape HTTP Cookie File"]
     for cookie in jar:
         domain = str(cookie.get("domain", ""))
@@ -609,7 +602,7 @@ def _netscape_text(jar: Iterable[Cookie]) -> str:
         # A tab before the value or any line break would make the file read back differently.
         if any("\t" in field for field in fields[:-1]) or any(m in "".join(fields) for m in "\r\n"):
             name = cookie["name"]
-            raise Error(
+            raise LoginError(
                 f"cookie {name!r} for {domain} has a tab or newline Netscape cannot hold"
             )
         lines.append("\t".join(fields))

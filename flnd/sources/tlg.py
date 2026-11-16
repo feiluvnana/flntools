@@ -13,8 +13,8 @@ from urllib.parse import urlsplit
 
 from flnd import __version__
 from flnd.source import (
-    Fetch, FetchError, File, Login, LoginError, Post, Site, Source, Target, TargetError,
-    target,
+    Error, Fetch, File, Login, LoginError, NetworkError, NotFound, Post, Site, Source, Target,
+    UsageError, target,
 )
 from flnd import _browser as browser, _files as fs
 
@@ -109,7 +109,7 @@ class Telegram(Source):
             value = text.strip()
         if value is None:
             forms_str = ", ".join(self.forms)
-            raise TargetError(f"{self.code}: can't read {text!r}; write it like {forms_str}")
+            raise UsageError(f"{self.code}: can't read {text!r}; write it like {forms_str}")
         return Target(self.code, "chat", value)
 
     def login(self, login: Login, method: str) -> None:
@@ -195,8 +195,8 @@ async def find_chat(client: Any, value: str) -> Any:
         # Unresolved username falls through to dialogs; an invite can only be one of them.
         except (ValueError, RPCError):
             if value.startswith("+"):
-                raise FetchError(
-                    f"the invite {value!r} isn't one of your chats; join it first"
+                raise NotFound(
+                    f"the invite {value!r} isn't one of your chats", hint="join it first"
                 ) from None
     if value.lstrip("-").isdigit():
         try:
@@ -209,10 +209,11 @@ async def find_chat(client: Any, value: str) -> Any:
     else:
         found = [dialog for dialog in dialogs if dialog.name.casefold() == value.casefold()]
     if not found:
-        raise FetchError(f"no chat {value!r} among your chats")
+        raise NotFound(f"no chat {value!r} among your chats")
     if len(found) > 1:
         ids = ", ".join(str(dialog.id) for dialog in found)
-        raise FetchError(f"{len(found)} chats are titled {value!r}: {ids}; pass one as tlg:<id>")
+        raise UsageError(f"{len(found)} chats are titled {value!r}: {ids}",
+                         hint="pass one as tlg:<id>")
     return found[0].entity
 
 
@@ -375,7 +376,8 @@ class _Download:
                 fs.write(self.sidecar, payload)
             self.progress(sum(self.done), self.size)
         if self.done[number] == before:
-            raise FetchError(f"Telegram sent nothing from byte {position} of {self.size}")
+            raise NetworkError(f"Telegram sent nothing from byte {position} of {self.size}",
+                               retryable=True)
 
 
 def parts(size: int) -> list[tuple[int, int]]:
@@ -484,9 +486,9 @@ def read_telegram_web() -> dict[str, str]:
             try:
                 return page.raw.evaluate("Object.assign({}, localStorage)")
             # What evaluate raises when the tab navigated away or closed meanwhile.
-            except (browser.Error, Exception) as error:
+            except Exception as error:
                 raise LoginError(err_msg.format(error=error)) from None
-    except (browser.Error, OSError, RuntimeError, ValueError) as error:
+    except (Error, OSError, RuntimeError, ValueError) as error:
         raise LoginError(err_msg.format(error=error)) from None
 
 

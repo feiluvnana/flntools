@@ -5,9 +5,8 @@ import unittest
 
 from rich.console import Console as RichConsole
 
-from flnd import _base
 from flnd import _time as clock
-from flnd._ui import Error, Group, Row, ui
+from flnd._ui import Group, Row, ui
 
 
 class UICase(unittest.TestCase):
@@ -26,10 +25,6 @@ class UICase(unittest.TestCase):
 
 class LoggingTest(UICase):
     """Tests for log levels, formatting, nested specs, and escape sanitization."""
-
-    def test_error_hierarchy(self) -> None:
-        self.assertIs(ui.Error, Error)
-        self.assertTrue(issubclass(Error, _base.Error))
 
     def test_raw_console(self) -> None:
         self.assertIsInstance(ui.raw, RichConsole)

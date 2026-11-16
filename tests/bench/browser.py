@@ -62,7 +62,7 @@ def main() -> None:
         with kit.serve(folder) as base:
             try:
                 chrome, took = timed(lambda: browser.open(headless=True))
-            except Exception as error:  # Playwright's own errors, or flnd._base.MissingError
+            except Exception as error:  # Playwright's own errors, or flnd.ToolError (no browser)
                 report.skip(f"Chromium did not launch ({type(error).__name__}); "
                             "run `playwright install chromium`")
                 report.emit()

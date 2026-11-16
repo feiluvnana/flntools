@@ -21,6 +21,7 @@ from flnd.common import auth, paths
 from flnd.sources.ins import Instagram
 from flnd import _cookies as cookies, _vault as crypto
 from flnd._ui import ui
+from flnd.errors import DiskError, LoginError
 
 NETSCAPE = ("# Netscape HTTP Cookie File\n"
             ".instagram.com\tTRUE\t/\tTRUE\t1825861327\tsessionid\tins-session\n")
@@ -165,7 +166,7 @@ class VaultedCookiesTest(AuthCase):
         auth.save(self.home, "ins", cookies.Jar([{"name": "sessionid", "value": "s", "domain": ".instagram.com"}]))
         with paths.table(self.home / paths.SECRETS, "secrets") as db:
             db["twt:cookies"] = db.get("ins:cookies")
-        with self.assertRaises(crypto.Error):
+        with self.assertRaises(LoginError):
             auth.load(self.home, "twt")
 
     def test_crypto_keeps_no_key_or_derive(self):
@@ -286,7 +287,7 @@ class VaultTest(AuthCase):
             db["loi:session"] = db.get("tlg:session")
             db["tlg:other"] = db.get("tlg:session")
         for code, name in (("loi", "session"), ("tlg", "other")):
-            with auth.secrets(self.home, code) as secrets, self.assertRaises(crypto.Error):
+            with auth.secrets(self.home, code) as secrets, self.assertRaises(LoginError):
                 secrets[name]
 
     def test_no_key_file_until_a_secret_is_used(self):
@@ -360,8 +361,9 @@ class KeyTest(AuthCase):
             with self.subTest(size=len(content)):
                 (self.home / paths.KEY).write_bytes(content)
                 with mock.patch.object(auth, "KEY_WAIT", 0.05), \
-                        self.assertRaisesRegex(ValueError, f"damaged: it should hold 32 bytes, not {len(content)}"):
+                        self.assertRaisesRegex(DiskError, f"damaged: it should hold 32 bytes, not {len(content)}") as caught:
                     auth.key(self.home)
+                self.assertIn("delete it", caught.exception.hint)
 
     def test_a_dangling_symlink_key_is_refused_in_time(self):
         """A dangling link at secret.key can be neither read nor created, so it once spun forever at 100% CPU."""
@@ -371,7 +373,7 @@ class KeyTest(AuthCase):
         except (OSError, NotImplementedError):
             self.skipTest("symlinks aren't supported here")
         with mock.patch.object(auth, "KEY_WAIT", 0.05), \
-                self.assertRaisesRegex(ValueError, "damaged: it exists but can't be read.*delete it"):
+                self.assertRaisesRegex(DiskError, "damaged: exists but cannot be read"):
             auth.key(self.home)
 
 

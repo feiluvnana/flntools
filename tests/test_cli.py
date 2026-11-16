@@ -10,8 +10,8 @@ from contextlib import redirect_stderr, redirect_stdout
 
 import cyclopts
 
-from flnd import _base
 from flnd import _cli as cli
+from flnd.errors import UsageError
 
 
 def _run_captured(app: cli.App, *argv: str) -> tuple[int, str, str]:
@@ -22,10 +22,7 @@ def _run_captured(app: cli.App, *argv: str) -> tuple[int, str, str]:
 
 
 class ErrorAndExitCodeTest(unittest.TestCase):
-    def test_error_hierarchy(self) -> None:
-        self.assertTrue(issubclass(cli.Error, _base.Error))
-        self.assertTrue(issubclass(cli.UsageError, cli.Error))
-        self.assertTrue(issubclass(cli.UsageError, ValueError))
+    def test_no_main_of_its_own(self) -> None:
         self.assertFalse(hasattr(cli, "main"))
 
     def test_bool_int_and_none_exit_codes(self) -> None:
@@ -58,7 +55,7 @@ class ErrorAndExitCodeTest(unittest.TestCase):
         @app.command
         def check(value: str) -> int:
             if value == "bad":
-                raise cli.UsageError("bad value")
+                raise UsageError("bad value")
             if value == "ctrlc":
                 raise KeyboardInterrupt
             return 0

@@ -24,7 +24,7 @@ from flnd import targets as db_targets
 from flnd.common import net
 from flnd.engine import Engine
 from flnd.options import Options
-from flnd.source import FetchError, LoginError, Target, TargetError, day
+from flnd.source import SiteError, LoginError, Target, UsageError, day
 from flnd.sources.common.relay import embedded_results
 from flnd.sources.ins import (APP_ID, Instagram, best_file, files_of, full_size, is_complete, pk_of_code, pk_stamp,
                               post_files, reel_posts, tab_media)
@@ -140,7 +140,7 @@ class RoutesTest(unittest.TestCase):
                 if isinstance(expected, tuple):
                     self.assertEqual(Instagram().resolve(value), Target("ins", *expected))
                 else:
-                    with self.assertRaisesRegex(TargetError, f"^ins: {expected}"):
+                    with self.assertRaisesRegex(UsageError, f"^ins: {expected}"):
                         Instagram().resolve(value)
 
 
@@ -392,7 +392,7 @@ class NamesAndKeysTest(unittest.TestCase):
 
     def test_the_story_pages_name_and_key_them_the_same(self):
         """The fallback: with the reels API refused, the story pages give the same paths and keys."""
-        refused = {**JSON, f"{API}/feed/reels_media/": FetchError("HTTP 500", status=None)}
+        refused = {**JSON, f"{API}/feed/reels_media/": SiteError("HTTP 500", status=None)}
         saved = read(options=Options(categories=("stories", "highlights")), json=refused)
         self.assertEqual(sorted((item.path, item.key) for item in saved),
                          [pair for pair in OLD_PROFILE if pair[0].startswith(("stories/", "highlights/"))])
@@ -504,7 +504,7 @@ class ProfileTest(unittest.TestCase):
 
     def test_a_refused_story_api_falls_back_to_the_story_page(self):
         seen = Seen()
-        refused = {**JSON, f"{API}/feed/user/42/story/": FetchError("HTTP 400", status=400)}
+        refused = {**JSON, f"{API}/feed/user/42/story/": SiteError("HTTP 400", status=400)}
         saved = read(options=Options(categories=("stories",)), json=refused, seen=seen)
         self.assertEqual([item.path for item in saved], [f"stories/{DAY}_5001.jpg", "stories/5003.mp4"])
         self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/stories/someone/"])
@@ -533,7 +533,7 @@ class ProfileTest(unittest.TestCase):
         pages = {**PAGES, f"{SITE}/someone/": embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}}),
                  **{f"{SITE}/stories/highlights/{n}/": "<html></html>" for n in range(7)}}
         seen = Seen()
-        refused = {**JSON, f"{API}/feed/reels_media/": FetchError("HTTP 500", status=500)}
+        refused = {**JSON, f"{API}/feed/reels_media/": SiteError("HTTP 500", status=500)}
         read(options=Options(categories=("highlights",)), pages=pages, json=refused, seen=seen)
         # 7 highlights are two calls of 5 and 2; the second is never made.
         self.assertEqual(len([url for _, url, _ in seen.requests if url.endswith("/reels_media/")]), 1)
@@ -541,7 +541,7 @@ class ProfileTest(unittest.TestCase):
         self.assertFalse([m for m in seen.messages if m.startswith("! highlights")])
 
     def test_a_refused_api_is_left_alone_for_a_day_then_asked_again(self):
-        refused = {**JSON, f"{API}/feed/user/42/story/": FetchError("HTTP 500", status=500)}
+        refused = {**JSON, f"{API}/feed/user/42/story/": SiteError("HTTP 500", status=500)}
         state: dict = {}
         stories = Options(categories=("stories",))
 
@@ -652,7 +652,7 @@ class Landing(FakeSite):
 
 class ThrottleTest(unittest.TestCase):
     def test_a_please_wait_answer_is_waited_out_and_the_same_post_saved(self):
-        answers = [FetchError("HTTP 400", status=400, response=http.Response(
+        answers = [SiteError("HTTP 400", status=400, response=http.Response(
             400, f"{API}/media/{PK['T1']}/info/", {"content-type": "application/json"},
             json.dumps({**THROTTLE, "require_login": True}).encode())), THROTTLE]
         calls = []
@@ -677,7 +677,7 @@ class ThrottleTest(unittest.TestCase):
         def media(url, request):
             # flnd's own client is refused; the tab's fetch is answered.
             if not seen.requests[-1][2]["in_page"]:
-                return FetchError("HTTP 403", status=403)
+                return SiteError("HTTP 403", status=403)
             return JSON[f"{API}/media/{PK['T1']}/info/"]
 
         saved = read(options=Options(categories=("tagged",)), json={**JSON, f"{API}/media/{PK['T1']}/info/": media},
@@ -692,7 +692,7 @@ class ThrottleTest(unittest.TestCase):
         seen = Seen()
         pages = {**PAGES, f"{SITE}/p/T1/": shortcode_page({"code": "T1", "taken_at": STAMP,
                                                            **image("https://cdn.example/t.jpg")})}
-        refused = {**JSON, f"{API}/media/{PK['T1']}/info/": FetchError("HTTP 500", status=None)}
+        refused = {**JSON, f"{API}/media/{PK['T1']}/info/": SiteError("HTTP 500", status=None)}
         saved = read(options=Options(categories=("tagged",)), json=refused, pages=pages, seen=seen)
         self.assertIn(f"tagged/{DAY}_T1.jpg", [item.path for item in saved])
         self.assertIn(f"{SITE}/p/T1/", seen.visited)
@@ -710,7 +710,7 @@ class ThrottleTest(unittest.TestCase):
                        lands={f"{SITE}/p/SINGLE/": [f"{SITE}/accounts/suspended/?next=/p/SINGLE/"]})
         with self.assertRaisesRegex(LoginError, "suspended or locked"):
             list(Instagram().post(site, "SINGLE"))
-        suspended = FetchError("HTTP 403", status=403, response=http.Response(
+        suspended = SiteError("HTTP 403", status=403, response=http.Response(
             403, f"{SITE}/accounts/suspended/", {"content-type": "text/html"}, b"<html></html>"))
         with self.assertRaisesRegex(LoginError, "suspended or locked"):
             read(options=Options(categories=("tagged",)), json={**JSON, f"{API}/media/{PK['T1']}/info/": suspended})
@@ -843,7 +843,7 @@ class MeTest(unittest.TestCase):
 
     def test_me_rejects_unexpected_response(self):
         site = FakeSite(Target("ins", "me", "me"), cookies={"sessionid": "s", "ds_user_id": "99"}, json={f"{API}/friendships/99/following/": {}})
-        with self.assertRaises(FetchError):
+        with self.assertRaises(SiteError):
             list(Instagram().me(site, "me"))
 
     def test_engine_treats_ins_me_as_query_target(self):

@@ -14,11 +14,11 @@ from unittest import mock
 
 import httpx
 
-from flnd import _base
 from flnd import _http as http
 from flnd import _html as selector
 from flnd import _time as clock
 from flnd._ui import _brief, ui
+from flnd.errors import Blocked, Error, NetworkError, NotFound, SiteError
 
 SITE = "https://example.com"
 
@@ -75,31 +75,33 @@ class FetchTest(HttpTestCase):
 
     def test_a_refusal_raises_with_its_response(self):
         with http.fake({f"{SITE}/gone": http.Response(410, f"{SITE}/gone", {}, b'{"reason": "gone"}')}):
-            with self.assertRaises(http.RefusedError) as raised:
+            with self.assertRaises(SiteError) as raised:
                 http.fetch(f"{SITE}/gone")
         self.assertEqual(raised.exception.status, 410)
         assert raised.exception.response is not None
         self.assertEqual(raised.exception.response.json, {"reason": "gone"})
-        self.assertIsInstance(raised.exception, _base.RefusedError)
+        # A 410 is gone for good: never retried, and recorded as gone.
+        self.assertIsInstance(raised.exception, NotFound)
+        self.assertFalse(raised.exception.retryable)
         self.assertIn(f"GET {SITE}/gone: HTTP 410", str(raised.exception))
 
     def test_a_429_on_every_try_raises_rate_limited(self):
         with http.fake({SITE + "/": httpx.Response(429, headers={"Retry-After": "12"})}):
-            with self.assertRaises(http.RateLimitedError) as raised:
+            with self.assertRaises(Blocked) as raised:
                 http.fetch(f"{SITE}/")
-        self.assertEqual(raised.exception.retry_after, 12.0)
+        self.assertEqual(raised.exception.wait, 12.0)
         self.assertEqual(self.clock.slept, [12.0, 12.0])
-        # Kept apart from refusals, so a caller catching those doesn't swallow a rate limit.
-        self.assertNotIsInstance(raised.exception, _base.RefusedError)
+        self.assertEqual(raised.exception.status, 429)
+        self.assertTrue(raised.exception.retryable)
 
     def test_a_429s_retry_after_as_a_date_or_missing(self):
         later = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(clock.wall() + 60))
         for header, low, high in (({"Retry-After": later}, 55.0, 61.0), ({}, None, None)):
             with self.subTest(header=header), http.Client(retry=http.Retry(1)) as client, \
                     http.fake({SITE + "/": httpx.Response(429, headers=header)}):
-                with self.assertRaises(http.RateLimitedError) as raised:
+                with self.assertRaises(Blocked) as raised:
                     client.fetch(f"{SITE}/")
-                retry_after = raised.exception.retry_after
+                retry_after = raised.exception.wait
                 if low is None or high is None:
                     self.assertIsNone(retry_after)
                 else:
@@ -116,9 +118,11 @@ class RetryTest(HttpTestCase):
 
     def test_a_5xx_on_every_try_raises_incomplete_and_waits_stop_growing_at_the_cap(self):
         with http.Client(retry=http.Retry(7)) as client, http.fake({SITE + "/": self.serve(httpx.Response(502))}):
-            with self.assertRaises(http.IncompleteError) as raised:
+            with self.assertRaises(SiteError) as raised:
                 client.fetch(f"{SITE}/")
         self.assertIn("502", str(raised.exception))
+        self.assertEqual(raised.exception.status, 502)
+        self.assertTrue(raised.exception.retryable)
         self.assertEqual(len(self.seen), 7)
         self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0, 8.0, 8.0, 8.0])
 
@@ -133,7 +137,7 @@ class RetryTest(HttpTestCase):
             self.seen.append(request)
             raise httpx.ConnectError("connection refused", request=request)
 
-        with http.fake({SITE + "/": refused}), self.assertRaises(http.Error) as raised:
+        with http.fake({SITE + "/": refused}), self.assertRaises(Error) as raised:
             http.fetch(f"{SITE}/")
         self.assertEqual((len(self.seen), len(self.clock.slept)), (3, 2))
         self.assertIn("ConnectError", str(raised.exception))
@@ -141,21 +145,21 @@ class RetryTest(HttpTestCase):
 
     def test_one_try_never_waits_and_a_4xx_is_never_tried_again(self):
         with http.Client(retry=http.Retry(1)) as client, http.fake({SITE + "/": 500}):
-            with self.assertRaises(http.IncompleteError):
+            with self.assertRaises(SiteError):
                 client.fetch(f"{SITE}/")
-        with http.fake({SITE + "/": self.serve(httpx.Response(403))}), self.assertRaises(http.RefusedError):
+        with http.fake({SITE + "/": self.serve(httpx.Response(403))}), self.assertRaises(SiteError):
             http.fetch(f"{SITE}/")
         self.assertEqual((len(self.seen), self.clock.slept), (1, []))
 
     def test_errors_another_try_would_repeat_are_raised_at_once(self):
         route = self.serve(httpx.UnsupportedProtocol("no", request=httpx.Request("GET", SITE)))
-        with http.fake({SITE + "/": route}), self.assertRaises(http.Error):
+        with http.fake({SITE + "/": route}), self.assertRaises(Error):
             http.fetch(f"{SITE}/")
         self.assertEqual(len(self.seen), 1)
 
     def test_a_post_is_never_tried_again_after_a_5xx_or_a_timeout(self):
         timeout = httpx.ReadTimeout("slow", request=httpx.Request("POST", SITE))
-        for answer, error in ((httpx.Response(503), http.IncompleteError), (timeout, http.Error)):
+        for answer, error in ((httpx.Response(503), SiteError), (timeout, NetworkError)):
             self.seen.clear()
             with self.subTest(answer=answer), http.fake({SITE + "/": self.serve(answer)}):
                 with self.assertRaises(error):
@@ -172,7 +176,7 @@ class RetryTest(HttpTestCase):
     def test_a_429s_retry_after_counts_toward_times_even_at_zero(self):
         route = self.serve(httpx.Response(429, headers={"Retry-After": "0"}))
         with http.Client(retry=http.Retry(3)) as client, http.fake({SITE + "/": route}):
-            with self.assertRaises(http.RateLimitedError):
+            with self.assertRaises(Blocked):
                 client.fetch(f"{SITE}/")
         self.assertEqual(len(self.seen), 3)
         self.assertEqual(self.clock.slept, [0.0, 0.0])
@@ -193,7 +197,7 @@ class RetryTest(HttpTestCase):
 class ResponseTest(unittest.TestCase):
     def test_json_on_a_non_json_body_raises_http_error(self):
         page = http.Response(200, f"{SITE}/?token=abc", {}, b"<html>nope</html>")
-        with self.assertRaises(http.Error) as raised:
+        with self.assertRaises(Error) as raised:
             page.json  # noqa: B018
         self.assertIn("<html>nope", str(raised.exception))
         self.assertNotIn("token=abc", str(raised.exception))
@@ -264,7 +268,7 @@ class SecretsTest(HttpTestCase):
         with mock.patch.object(http.ui, "debug") as debug:
             for route in (403, 429, 500, connection_lost):
                 with http.Client(headers={"Authorization": self.TOKEN}, retry=http.Retry(2)) as client, \
-                        http.fake({SITE + "/*": route}), self.assertRaises(http.Error) as raised:
+                        http.fake({SITE + "/*": route}), self.assertRaises(Error) as raised:
                     client.raw.cookies.set("sessionid", self.COOKIE)
                     client.fetch(url)
                 self.assert_no_secret(str(raised.exception))
@@ -276,7 +280,7 @@ class SecretsTest(HttpTestCase):
         url = f"https://example_user:{self.PASSWORD}@example.com/a"
         for route in (404, 500, httpx.ConnectError("refused")):
             with self.subTest(route=route), http.fake({SITE + "/*": self.serve(route)}):
-                with self.assertRaises(http.Error) as raised:
+                with self.assertRaises(Error) as raised:
                     http.fetch(url)
                 self.assert_no_secret(str(raised.exception))
                 self.assertNotIn("example_user:", str(raised.exception))
@@ -320,7 +324,7 @@ class FakeTest(HttpTestCase):
         self.assertEqual(texts, ["site", "api", "me", "me"])
 
     def test_an_unmatched_url_raises_and_is_never_sent(self):
-        with http.fake({f"{SITE}/a": "a"}), self.assertRaises(http.Error) as raised:
+        with http.fake({f"{SITE}/a": "a"}), self.assertRaises(Error) as raised:
             http.fetch("https://other.example.com/b?token=abc")
         self.assertIn("GET https://other.example.com/b: no route in http.fake", str(raised.exception))
         self.assertEqual(self.clock.slept, [])
@@ -364,9 +368,9 @@ class ModuleClientTest(HttpTestCase):
 
 class BugFixTest(HttpTestCase):
     def test_invalid_url_raises_http_error(self):
-        with self.assertRaises(http.Error):
+        with self.assertRaises(Error):
             http.fetch(f"{SITE}/bad\n")
-        with http.Client() as client, self.assertRaises(http.Error):
+        with http.Client() as client, self.assertRaises(Error):
             client.fetch(f"{SITE}/bad\n")
 
     def test_a_raw_body_raises_no_deprecation(self):

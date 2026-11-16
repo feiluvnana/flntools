@@ -15,7 +15,7 @@ from test_engine import EngineCase
 
 from flnd.common import auth
 from flnd.options import Options
-from flnd.source import FetchError, Target, TargetError
+from flnd.source import SiteError, Target, UsageError
 from flnd.sources.loi import API, SITE_IV, SITE_KEY, Loibus, decode_token, decrypt_field, sign_request
 from flnd import _cookies as cookies, _vault as crypto
 
@@ -66,7 +66,7 @@ class FieldsTest(unittest.TestCase):
         self.assertEqual(decrypt_field(None), "")
 
     def test_a_field_that_doesnt_decrypt_raises(self):
-        with self.assertRaisesRegex(FetchError, "changed its key"):
+        with self.assertRaisesRegex(SiteError, "changed its key"):
             decrypt_field("bm90IGJsb2Nrcw==")
 
     def test_decode_token(self):
@@ -110,7 +110,7 @@ class RoutesTest(unittest.TestCase):
                 if isinstance(expected, tuple):
                     self.assertEqual(Loibus().resolve(value), Target("loi", *expected))
                 else:
-                    with self.assertRaisesRegex(TargetError, f"^loi: {expected}"):
+                    with self.assertRaisesRegex(UsageError, f"^loi: {expected}"):
                         Loibus().resolve(value)
 
 
@@ -288,12 +288,12 @@ class RunTest(unittest.TestCase):
 
     def test_refused_links_are_a_warning(self):
         seen = Seen()
-        files = saved(("archive",), seen=seen, **{"user/loi/download_v6/5930": FetchError("HTTP 403", status=403)})
+        files = saved(("archive",), seen=seen, **{"user/loi/download_v6/5930": SiteError("HTTP 403", status=403)})
         self.assertEqual(pairs(files), [])
         self.assertIn("! the site gives no download links for this post (VIP1 needed)", seen.messages)
 
     def test_a_refused_post_is_not_counted(self):
-        site, _ = archive_site(**{"user/loi/download_v6/5930": FetchError("HTTP 403", status=403)})
+        site, _ = archive_site(**{"user/loi/download_v6/5930": SiteError("HTTP 403", status=403)})
         list(Loibus().archive(site, POST))
         self.assertNotIn("quota", site.state)
 
@@ -304,7 +304,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests], ["lois/5930"])
 
     def test_a_missing_post_is_an_error(self):
-        with self.assertRaisesRegex(FetchError, "post 5930 isn't there"):
+        with self.assertRaisesRegex(SiteError, "post 5930 isn't there"):
             saved(**{"lois/5930": {"status": "error", "data": None}})
 
 

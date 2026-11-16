@@ -82,7 +82,7 @@ def api_text() -> str:
     """The API snapshot: one line per public name, sorted, as `tests/data/api.txt` holds it.
 
         flnd.db.Store.keys(prefix: str = '') -> KeysView[str]
-        flnd._unpack.BombError(flnd._unpack.Error, flnd._base.UnsafeError)
+        flnd.Blocked(flnd.SiteError)
         flnd.ui.level: property, settable -> Level
 
     Functions and methods show their signature without `self`, classes their constructor's, errors

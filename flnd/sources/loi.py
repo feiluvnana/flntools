@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
 from urllib.parse import unquote, urlsplit
 
-from flnd.source import FetchError, File, Post, Site, Source, day, target
+from flnd.source import Changed, File, NotFound, Post, Site, Source, day, target
 from flnd import _time as clock, _vault as crypto
 
 if TYPE_CHECKING:
@@ -64,7 +64,7 @@ class Loibus(Source):
         body = site.fetch(f"{API}lois/{id}").json
         post = body.get("data") if isinstance(body, dict) else None
         if not isinstance(post, dict) or not post.get("loi_title"):
-            raise FetchError(f"post {id} isn't there")
+            raise NotFound(f"post {id} isn't there")
         return post
 
     @post.category
@@ -370,7 +370,7 @@ def decrypt_field(text: str | None) -> str:
         return _decrypt_aes_cbc(base64.b64decode(text)).decode("utf-8", "replace")
     # Bad base64 or invalid padding; site key change is the likely cause.
     except (binascii.Error, ValueError):
-        raise FetchError(
+        raise Changed(
             f"loi: can't decrypt {text[:16]!r}…; the site changed its key"
         ) from None
 

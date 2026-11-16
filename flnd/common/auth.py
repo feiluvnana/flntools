@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 
 # A source's own login (tlg) raises it too; `auth.LoginError` is the same class.
 from flnd.common import paths
-from flnd.source import LoginError
+from flnd.errors import DiskError, Error, LoginError
 from flnd import _cookies as cookies, _db, _vault as crypto, _text as text
 from flnd._ui import ui
 
@@ -60,6 +60,8 @@ KEY_SIZE = 32
 KEY_WAIT = 2.0
 # How often a short key file is read again while waiting, in seconds.
 KEY_POLL = 0.01
+# What a damaged key file says to do. Every login sealed with it is lost with it.
+DAMAGED_KEY = "delete it, then log in again: flnd auth login"
 
 
 def from_browser(source: Source, *, browser: str, profile: str | None = None) -> cookies.Jar:
@@ -67,7 +69,7 @@ def from_browser(source: Source, *, browser: str, profile: str | None = None) ->
     try:
         return _own(source, cookies.load(browser, profile=profile))
     # Every way reading a browser fails: missing file, platform refusal, bad decrypt, or no crypto.
-    except (OSError, RuntimeError, ValueError, ImportError, cookies.Error) as error:
+    except (OSError, RuntimeError, ValueError, ImportError, Error) as error:
         raise LoginError(
             f"{source.code}: can't read {BROWSERS.get(browser, browser)}'s cookies: {error}; "
             "try a cookie file instead"
@@ -78,7 +80,7 @@ def from_file(source: Source, path: Path) -> cookies.Jar:
     """The source's cookies from a Netscape or JSON cookie file; a whole browser export works."""
     try:
         return _own(source, cookies.load(path))
-    except (OSError, ValueError, cookies.Error) as error:
+    except (OSError, ValueError, Error) as error:
         raise LoginError(f"{source.code}: can't read {path}: {error}") from None
 
 
@@ -95,7 +97,7 @@ def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
 
     Raises:
         LoginError: none of the source's `needs` cookies is in the jar.
-        ValueError: the key file is damaged (`key`).
+        DiskError: the key file is damaged (`key`).
         OSError: the vault can't be written.
 
     Nothing is written under `.flnd/` but the vault. A plain cookie file an earlier version left
@@ -125,7 +127,7 @@ def save(home: Path, code: str, jar: cookies.Jar, *, origin: str | None = None) 
         origin: optional login origin label to record alongside the cookies.
 
     Raises:
-        ValueError: the key file is damaged (`key`).
+        DiskError: the key file is damaged (`key`).
         OSError: the vault can't be written.
     """
     with secrets(home, code) as vault:
@@ -188,7 +190,7 @@ def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
             save(home, code, cookies.Jar(saved))
             ui.debug("{code}: refreshed {names}", code=code, names=", ".join(changed))
         return changed
-    except (OSError, ValueError, _db.Error) as error:
+    except (OSError, ValueError, Error) as error:
         ui.warn(
             "{code}: could not save refreshed cookies ({kind})",
             code=code, kind=type(error).__name__,
@@ -231,8 +233,9 @@ def load(home: Path, code: str) -> cookies.Jar:
         version is moved into the vault first.
 
     Raises:
-        ValueError: the key file is damaged, or the sealed jar doesn't decrypt (`crypto.Error`):
-            it was copied from another slot, or sealed with another key.
+        DiskError: the key file is damaged.
+        LoginError: the sealed jar doesn't decrypt: it was copied from another slot, or sealed
+            with another key.
     """
     _move(home, code)
     if not (home / paths.SECRETS).is_file():
@@ -307,11 +310,11 @@ def _move(home: Path, code: str) -> None:
             with secrets(home, code) as vault:
                 if COOKIES not in vault:
                     vault[COOKIES] = json.dumps(fix_domains(jar).list)
-        # A file that can't be read or isn't a cookie file (cookies.Error is a ValueError), a
-        # damaged key (ValueError), or a vault that can't be opened or written (OSError, kv.Error,
-        # sqlite3.Error): the plain file is the only copy of the login, so it stays. Each of these
-        # names the file or the key, never a cookie's value.
-        except (OSError, ValueError, cookies.Error, _db.Error) as error:
+        # A file that can't be read or isn't a cookie file (a LoginError), a damaged key (a
+        # DiskError), or a vault that can't be opened or written (OSError, DiskError): the plain
+        # file is the only copy of the login, so it stays. Each of these names the file or the
+        # key, never a cookie's value.
+        except (OSError, ValueError, Error) as error:
             ui.warn(
                 "{code}: can't move {name} into the vault: {error}; kept it",
                 code=code, name=path.name, error=error,
@@ -431,9 +434,9 @@ def key(home: Path) -> bytes:
                 return created
             # Lost the race: winner's file exists now, maybe still short, so read it again.
             if time.monotonic() >= deadline:
-                raise ValueError(
-                    f"{path} is damaged: exists but cannot be read (e.g. broken link); "
-                    "delete it, then log in again"
+                raise DiskError(
+                    f"{path} is damaged: exists but cannot be read (e.g. broken link)",
+                    hint=DAMAGED_KEY,
                 ) from None
             time.sleep(KEY_POLL)
             continue
@@ -441,9 +444,9 @@ def key(home: Path) -> bytes:
             return secret
         # A run killed between creating the file and writing it leaves it empty for good.
         if len(secret) > KEY_SIZE or time.monotonic() >= deadline:
-            raise ValueError(
-                f"{path} is damaged: it should hold {KEY_SIZE} bytes, not {len(secret)}; "
-                "delete it, then log in again"
+            raise DiskError(
+                f"{path} is damaged: it should hold {KEY_SIZE} bytes, not {len(secret)}",
+                hint=DAMAGED_KEY,
             )
         time.sleep(KEY_POLL)
 

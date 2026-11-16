@@ -28,9 +28,12 @@ from flnd import engine as engine_module
 from flnd import Engine, job
 from flnd.common import paths
 from flnd.options import Options
-from flnd.source import FetchError, File, LoginError, Post, Source, Target, pages, target
+from flnd.source import (
+    File, LoginError, NotFound, Post, SiteError, Source, SourceError, Target, pages, target,
+)
 from flnd import _cli as cli, _time as clock
 from flnd._ui import ui
+from flnd.errors import UsageError
 
 
 class JobCase(EngineCase):
@@ -122,7 +125,7 @@ class CategoriesTest(JobCase):
 
     def test_from_with_a_single_post_is_still_the_usage_error(self):
         self.assertEqual(Example.single_kinds, ("post",))
-        with self.assertRaises(cli.UsageError) as ctx:
+        with self.assertRaises(UsageError) as ctx:
             Engine(home=self.home, sources={"exm": Example}).download(
                 ["https://www.example.com/p/C1abc/"], categories="posts"
             )
@@ -440,7 +443,7 @@ class SyncStopTest(JobCase):
                 try:
                     for post_id in list(test.ids):
                         if post_id in test.fail_at:
-                            raise FetchError("cut")
+                            raise SiteError("cut")
                         test.listed.append(post_id)
                         files = test.post_files.get(post_id, [File(f"{CDN}/{post_id}.jpg")])
                         yield Post(post_id, files, date=datetime.date(2026, 1, 1))
@@ -644,13 +647,16 @@ class FailureTest(JobCase):
                 raise RuntimeError("the feed broke")
 
         self.run_engine(Broken, targets=["brk:example_user"])
-        self.assertIn("x brk:example_user: the feed broke", self.lines())
+        # A bug in a listing is a SourceError: one line naming it and what to do, no traceback.
+        self.assertIn("x brk:example_user: unexpected RuntimeError: the feed broke", self.lines())
+        self.assertIn("* brk:example_user: this is a bug; run with -v and report it", self.lines())
         report = self.report(Broken, targets=["brk:example_user"])
         self.assertEqual(report.failed, (Target("brk", "user", "example_user"),))
-        self.assertEqual(report.targets[0].error, "the feed broke")
+        self.assertIsInstance(report.targets[0].error, SourceError)
+        self.assertIsInstance(report.targets[0].error.__cause__, RuntimeError)
 
 
-    def test_a_route_or_category_that_raises_a_source_error_fails_only_its_target(self):
+    def test_a_site_error_fails_only_its_target_and_a_login_error_stops_the_source(self):
         class Errors(Source):
             code, name, domains = "err", "Errors", ("example.com",)
             folder = ""
@@ -658,35 +664,36 @@ class FailureTest(JobCase):
             @target("{user}")
             def user(self, site, user):
                 if user == "gone":
-                    raise FetchError("HTTP 404 for https://example.com/gone", status=404)
+                    raise NotFound("HTTP 404 for https://example.com/gone", status=404)
                 if user == "locked":
-                    raise LoginError("err: run flnd login err")
+                    raise LoginError("err: the saved login expired", hint="run flnd auth login")
                 return user
 
             @user.category
             def posts(self, site, user):
                 if user == "cut":
-                    raise FetchError("HTTP 500 for https://example.com/cut", status=500)
-                if user == "expired":
-                    raise LoginError("err: the saved login expired")
+                    raise SiteError("HTTP 500 for https://example.com/cut", status=500)
                 yield Post(user, [File(f"{CDN}/{user}.jpg")])
 
-        names = ["gone", "locked", "cut", "expired", "good", "last"]
+        names = ["gone", "cut", "good", "locked", "last"]
         report = self.report(Errors, targets=[f"err:{name}" for name in names])
-        self.assertEqual(report.files, 2)
-        self.assertEqual([target.value for target in report.failed], ["gone", "locked", "cut", "expired"])
+        self.assertEqual(report.files, 1)
+        self.assertEqual([target.value for target in report.failed], ["gone", "cut", "locked", "last"])
         lines = self.lines()
-        for line in ("x err:gone: HTTP 404 for https://example.com/gone", "x err:locked: err: run flnd login err",
+        for line in ("x err:gone: HTTP 404 for https://example.com/gone",
                      "x err:cut: HTTP 500 for https://example.com/cut",
-                     "x err:expired: err: the saved login expired"):
+                     "x err:locked: err: the saved login expired", "* err:locked: run flnd auth login"):
             self.assertIn(line, lines)
-        # Each target that listed has its status line, and the good ones saved their file.
+        # A site's refusal fails its own target; the targets after it still run.
         self.assertTrue(any(line.startswith("x err:cut ") for line in lines), lines)
         self.assertTrue(any(line.startswith("+ ") and "err:good " in line and "1 saved" in line
                             for line in lines))
-        self.assertTrue(any(line.startswith("+ ") and "err:last " in line
-                            for line in lines))
         self.assertEqual(self.files("err", "good"), ["good.jpg"])
+        # A refused login stops the source: the target after it fails with the same error, unasked.
+        last = report.targets[-1]
+        self.assertIs(last.error, report.targets[-2].error)
+        self.assertIsInstance(last.error, LoginError)
+        self.assertEqual(self.files("err", "last"), [])
 
 
 class Cut(httpx.SyncByteStream):
@@ -760,7 +767,7 @@ class RefreshTest(JobCase):
         self.cdn(lambda request, headers: httpx.Response(410))
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("albums",)))
         self.assertEqual(self.listings, 2)
-        self.assertIn("x albums/Summer_2026/A1.jpg: HTTP 410 for https://cdn.example/A1/1.jpg", self.lines())
+        self.assertIn("x albums/Summer_2026/A1.jpg: GET https://cdn.example/A1/1.jpg: HTTP 410", self.lines())
         self.assertNotIn("exm:A1_0", self.history())
 
     def test_a_first_ctrl_c_during_a_refresh_is_no_fresh_link_and_the_target_stops(self):
@@ -777,7 +784,7 @@ class RefreshTest(JobCase):
 
         self.routes[f"{API}/albums/A1"] = album
         report = self.report(Example, targets=["exm:example_user"], options=Options(categories=("albums",)), stop=stop)
-        self.assertEqual(report.targets[0].error, job.STOPPED)
+        self.assertEqual(str(report.targets[0].error), job.STOPPED)
         self.assertEqual(self.listings, 2)
 
     def test_a_refresh_cut_by_the_first_ctrl_c_answers_no_link_and_one_by_the_second_raises(self):
@@ -802,7 +809,7 @@ class RefreshTest(JobCase):
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
         self.assertEqual(len(self.fetched(f"{CDN}/C1abc_0.jpg")), 1)
         self.assertEqual(len(self.fetched(f"{API}/users/42/posts")), 2)
-        self.assertIn("x posts/2026-01-02_C1abc_0.jpg: HTTP 403 for https://cdn.example/C1abc_0.jpg", self.lines())
+        self.assertIn("x posts/2026-01-02_C1abc_0.jpg: GET https://cdn.example/C1abc_0.jpg: HTTP 403", self.lines())
 
 
 class CtrlCTest(JobCase):
@@ -889,7 +896,7 @@ class CtrlCTest(JobCase):
         release.set()
         thread.join(10)
         report = outcome["report"]
-        self.assertEqual(report.targets[0].error, job.STOPPED)
+        self.assertEqual(str(report.targets[0].error), job.STOPPED)
         self.assertEqual(self.files("slw"), ["2026-01-01_1.7z"])
         self.assertIn("slw:1_0", self.history())
         # Post 2 was queued but not started, so it was dropped; nothing past post 3 was listed.
@@ -990,9 +997,9 @@ class ResumeTest(JobCase):
                 def fetch(cursor):
                     test.cursors_fetched.append(cursor)
                     if cursor is not None and test.refuse:
-                        raise FetchError("stale cursor", status=400)
+                        raise SiteError("stale cursor", status=400)
                     if test.fail_on is not None and cursor == test.fail_on:
-                        raise FetchError("connection reset")
+                        raise SiteError("connection reset")
                     return test.feed[cursor]
 
                 for ids, _ in pages(fetch, lambda page: page[1]):
@@ -1142,7 +1149,7 @@ class MemoryTest(JobCase):
 
     def test_a_block_while_dating_estimates_the_rest_without_failing(self):
         def blocked(post):
-            raise FetchError("HTTP 429", status=429)
+            raise SiteError("HTTP 429", status=429)
 
         posts = [Post("N1", [File(f"{CDN}/n1.jpg")], date=datetime.date(2026, 1, 5)),
                  Post("U1", [File(f"{CDN}/u1.jpg")]), Post("U2", [File(f"{CDN}/u2.jpg")])]

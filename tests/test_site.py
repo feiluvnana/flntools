@@ -24,12 +24,13 @@ from flnd import site as site_module
 from flnd.common import auth, net, paths
 from flnd.options import RunShared
 from flnd.site import TargetSite, shared_browser, source_run
-from flnd.source import FetchError, File, Site, Target
+from flnd.source import SiteError, File, Site, Target
 from flnd.sources.common.feed import warm_tabs, watch_responses
 from flnd.sources.common.relay import meta_results
 from flnd import _cli as cli, _time as clock, _cookies as cookies, _http as http
 from flnd._ui import ui
 from flnd._browser import Page
+from flnd.errors import Blocked, SourceError
 
 PAGE = "https://www.example.com/example_user/"
 
@@ -226,7 +227,7 @@ class FetchTest(SiteCase):
         self.assertIsInstance(response, http.Response)
         self.assertEqual(response.json, {"path": "/users/example_user"})
         self.assertEqual(site.fetch(f"{API}/missing", check=False).status, 404)
-        with self.assertRaises(FetchError) as caught:
+        with self.assertRaises(SiteError) as caught:
             site.fetch(f"{API}/private")
         self.assertEqual(caught.exception.status, 403)
         # The refusal keeps its response, so a source can read the site's reason from its body.
@@ -246,7 +247,8 @@ class FetchTest(SiteCase):
     def test_in_page_waits_out_a_429_and_tries_a_5xx_again(self):
         run, site = self.open()
         answer = http.Response(200, f"{API}/feed", {"content-type": "application/json"}, b'{"items": []}')
-        errors = [http.RateLimitedError(5.0), http.Error("HTTP 503")]
+        errors = [Blocked("HTTP 429", wait=5.0, status=429),
+                  SiteError("HTTP 503", status=503, retryable=True)]
         with mock.patch.object(Page, "fetch", side_effect=[*errors, answer]) as fetch:
             self.assertEqual(site.fetch(f"{API}/feed", in_page=True, params={"a": 1}).json, {"items": []})
         self.assertEqual(fetch.call_args.args[0], f"{API}/feed?a=1")
@@ -254,14 +256,14 @@ class FetchTest(SiteCase):
     def test_in_page_refusals_are_fetch_errors(self):
         _, site = self.open()
         refusal = http.Response(400, f"{API}/feed", {"content-type": "application/json"}, b'{"status": "fail"}')
-        with mock.patch.object(Page, "fetch", side_effect=http.RefusedError(400, response=refusal)), \
-                self.assertRaises(FetchError) as caught:
+        with mock.patch.object(Page, "fetch", side_effect=SiteError("HTTP 400", status=400, response=refusal)), \
+                self.assertRaises(SiteError) as caught:
             site.fetch(f"{API}/feed", in_page=True)
         self.assertEqual(caught.exception.status, 400)
         response = caught.exception.response
         assert response is not None
         self.assertEqual(response.json, {"status": "fail"})
-        with self.assertRaisesRegex(TypeError, "takes params and body"):
+        with self.assertRaisesRegex(SourceError, "takes params and body"):
             site.fetch(f"{API}/feed", in_page=True, follow_redirects=False)
 
     def test_the_browser_opens_with_the_engines_settings_and_cookies_and_closes_with_the_target(self):

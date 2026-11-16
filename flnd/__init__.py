@@ -8,26 +8,39 @@ from pathlib import Path
 
 __version__ = "0.1.0"
 
-from flnd.engine import AuthInfo, Engine, Error, Report, TargetInfo, TargetReport
+from flnd.engine import AuthInfo, Engine, Report, TargetInfo, TargetReport
+from flnd.errors import (
+    Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError, SourceError,
+    Stopped, ToolError, UsageError,
+)
 from flnd.options import RunShared
 from flnd.site import TargetSite, source_run
-from flnd.source import LoginError, Range, Source, Target, TargetError
+from flnd.source import Range, Source, Target
 from flnd.sources import SOURCES
 from flnd import _cli
 
 __all__ = [
     "AuthInfo",
+    "Blocked",
+    "Changed",
+    "DiskError",
     "Engine",
     "Error",
     "LoginError",
+    "NetworkError",
+    "NotFound",
     "Range",
     "Report",
     "SOURCES",
+    "SiteError",
     "Source",
+    "SourceError",
+    "Stopped",
     "Target",
-    "TargetError",
     "TargetInfo",
     "TargetReport",
+    "ToolError",
+    "UsageError",
     "__version__",
     "download",
     "open",
@@ -40,7 +53,7 @@ def source(code: str) -> Source:
     """Instantiate a registered source by its short code (e.g. `'twt'`, `'ins'`)."""
     cls = SOURCES.get(code)
     if cls is None:
-        raise TargetError(f"unknown source {code!r}; known: {', '.join(SOURCES)}")
+        raise UsageError(f"unknown source {code!r}; known: {', '.join(SOURCES)}")
     return cls()
 
 

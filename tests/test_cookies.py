@@ -17,8 +17,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import _base
 from flnd import _cookies as cookies
+from flnd.errors import DiskError, LoginError, UsageError
 
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -144,10 +144,9 @@ class ChromiumMacTest(BrowserTestCase):
         for version in (23, 24):
             with self.subTest(version=version):
                 self.chrome_db(version, password="another")
-                with self.assertRaises(cookies.Error) as caught:
+                with self.assertRaises(LoginError) as caught:
                     cookies.load("chrome")
                 self.assertIn("chrome", str(caught.exception))
-                self.assertIsInstance(caught.exception, _base.Error)
                 self.assertNotIsInstance(caught.exception, ValueError)
                 self.assertNotIn("value0", str(caught.exception))
                 (self.home / "Library/Application Support/Google/Chrome/Default/Network/Cookies").unlink()
@@ -217,7 +216,7 @@ class ChromiumLinuxTest(BrowserTestCase):
             ("a.example", "two", "", b"v20" + b"\0" * 16, "/", 0, 0, 0, 0),
             ("a.example", "plain", "visible", b"", "/", 0, 0, 0, 0),
         ])
-        with self.assertRaises(cookies.Error) as caught:
+        with self.assertRaises(LoginError) as caught:
             cookies.load("chrome")
         self.assertIn("can't decrypt any of 2 chrome cookies", str(caught.exception))
         self.assertNotIn("s3cr3t-value", str(caught.exception))
@@ -226,13 +225,13 @@ class ChromiumLinuxTest(BrowserTestCase):
         make_chromium_db(self.home / ".config/google-chrome/Default/Cookies", 23, [
             ("a.example", "odd", "", b"v99" + b"\0" * 16, "/", 0, 0, 0, 0),
         ])
-        with self.assertRaises(cookies.Error):
+        with self.assertRaises(LoginError):
             cookies.load("chrome")
 
 
 class BrowserChoiceTest(BrowserTestCase):
     def test_unknown_browser(self):
-        with self.assertRaises(cookies.Error):
+        with self.assertRaises(UsageError):
             cookies.load("safari", profile="Default")
 
     @unittest.skipUnless(HAS_CRYPTOGRAPHY, "needs cryptography")
@@ -268,7 +267,7 @@ class BrowserChoiceTest(BrowserTestCase):
         ])
         with mock.patch.object(cookies, "_PLATFORM", "win32"), \
                 mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app)}):
-            with self.assertRaises(cookies.MissingError):
+            with self.assertRaises(LoginError):
                 cookies.load("chrome")
 
     def test_missing_cryptography(self):
@@ -329,7 +328,7 @@ class ProgramsTest(unittest.TestCase):
     def test_keychain_failure_raises_cookies_error(self):
         failed = subprocess.CompletedProcess([], 44, stdout="", stderr="not found")
         with mock.patch.object(cookies.subprocess, "run", return_value=failed) as run:
-            with self.assertRaises(cookies.Error):
+            with self.assertRaises(LoginError):
                 cookies._read_keychain_password("Chrome Safe Storage")
         self.assertEqual(run.call_args.args[0][:2], ["security", "find-generic-password"])
 
@@ -387,16 +386,15 @@ class LoadTest(FileTestCase):
                      "x.com\tTRUE\t/\tTRUE\tsoon\ta\tb\n", "[{\"name\": \"a\", \"value\": 1, \"domain\": \"x\", \"expires\": \"?\"}]"):
             with self.subTest(text=text):
                 path = self.write("broken.json", text)
-                with self.assertRaises(cookies.Error) as caught:
+                with self.assertRaises(LoginError) as caught:
                     cookies.load(path)
                 self.assertIn("broken.json", str(caught.exception))
-                self.assertIsInstance(caught.exception, _base.Error)
                 self.assertNotIsInstance(caught.exception, ValueError)
 
     def test_not_utf8_names_itself(self):
         path = self.folder / "binary.txt"
         path.write_bytes(b"\xff\xfe\x00")
-        with self.assertRaises(cookies.Error) as caught:
+        with self.assertRaises(LoginError) as caught:
             cookies.load(path)
         self.assertIn("binary.txt", str(caught.exception))
 
@@ -406,11 +404,10 @@ class LoadTest(FileTestCase):
         with open(path, "wb") as file:
             file.truncate(16 * 1024 * 1024 + 1)
         with mock.patch.object(cookies, "_parse_netscape", side_effect=AssertionError("parsed")):
-            with self.assertRaises(cookies.UnsafeError) as caught:
+            with self.assertRaises(LoginError) as caught:
                 cookies.load(path)
         self.assertIn("huge.txt", str(caught.exception))
-        self.assertIsInstance(caught.exception, _base.UnsafeError)
-        self.assertIsInstance(caught.exception, cookies.Error)
+        self.assertIsInstance(caught.exception, LoginError)
 
     def test_exactly_16_mb_is_read(self):
         path = self.folder / "big.txt"
@@ -493,7 +490,7 @@ class JarTest(unittest.TestCase):
     def test_needs_a_name_and_a_value(self):
         for entry in ({"name": "a"}, {"value": "secret-1"}, "a=1"):
             with self.subTest(entry=entry):
-                with self.assertRaises(cookies.Error) as caught:
+                with self.assertRaises(LoginError) as caught:
                     cookies.Jar([entry])  # type: ignore[list-item]
                 self.assertNotIn("secret-1", str(caught.exception))
 
@@ -570,12 +567,12 @@ class SaveTest(FileTestCase):
     def test_no_temp_file_after_failure(self):
         path = self.folder / "ins.txt"
         with mock.patch.object(cookies.os, "replace", side_effect=OSError("disk full")):
-            with self.assertRaises(_base.Error):
+            with self.assertRaises(DiskError):
                 self.jar.save(path)
         self.assertEqual(list(self.folder.iterdir()), [])
 
     def test_line_break_refused(self):
-        with self.assertRaises(cookies.Error):
+        with self.assertRaises(LoginError):
             cookies.Jar([{**self.jar.list[0], "value": "a\nb"}]).save(self.folder / "ins.txt")
         self.assertEqual(list(self.folder.iterdir()), [])
 
@@ -600,16 +597,16 @@ class SecretsTest(FileTestCase):
         ]
         messages = []
         for index, text in enumerate(broken):
-            with self.assertRaises(cookies.Error) as caught:
+            with self.assertRaises(LoginError) as caught:
                 cookies.load(self.write(f"broken{index}.txt", text))
             messages.append(str(caught.exception))
         path = self.folder / "binary.txt"
         path.write_bytes(self.SECRET.encode() + b"\xff")
-        with self.assertRaises(cookies.Error) as caught:
+        with self.assertRaises(LoginError) as caught:
             cookies.load(path)
         messages.append(str(caught.exception))
         for value in (f"{self.SECRET}\n", f"{self.SECRET}\r"):
-            with self.assertRaises(cookies.Error) as caught:
+            with self.assertRaises(LoginError) as caught:
                 cookies.Jar([cookie("sid", value)]).save(self.folder / "out.txt")
             messages.append(str(caught.exception))
         with self.assertRaises(KeyError) as caught:

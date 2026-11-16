@@ -27,12 +27,12 @@ from typing import (
 )
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from flnd import _base
 from flnd import _time as clock
 from flnd import _prompt as prompt
 from flnd import _text as text
 from flnd._cookies import Jar
 from flnd._ui import ui
+from flnd.errors import Changed, NetworkError, ToolError, UsageError
 
 if TYPE_CHECKING:
     from flnd import _http as http
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from playwright.sync_api import Page as RawPage
 
 __all__ = [
-    "Browser", "BrowserCookies", "Error", "Match", "MissingError", "Page",
+    "Browser", "BrowserCookies", "Match", "Page",
     "Visit", "WaitError", "Watch", "attach", "open",
 ]
 
@@ -124,6 +124,8 @@ CHROME_PATHS = {
 WINDOWS_ROOTS = ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)")
 CHROMIUM_QUESTION = "Google Chrome isn't installed. Download Chromium for flnd (about 200 MB)?"
 NEEDS_CHROME = "flnd needs Google Chrome: install it from https://www.google.com/chrome/"
+# What a missing browser's `ToolError` says to do.
+INSTALL_CHROME = "install Google Chrome, or run flnd in a terminal and accept Chromium's download"
 # Playwright's installer prints a line such as "|■■■■      |  20% of 167.3 MiB" every few
 # percent when its output isn't a terminal; the number is the progress row's.
 INSTALL_PERCENT = re.compile(r"(\d+)% of")
@@ -147,16 +149,12 @@ HANDOFF_POLL = 1.0
 # Set when the Chromium download was declined (or couldn't be asked), so it isn't asked again.
 _chromium_declined = False
 # The error the Chromium download failed with, re-raised without asking for the rest of the process.
-_chromium_failed: MissingError | None = None
+_chromium_failed: ToolError | None = None
 # Each source's session opens its browser on its own thread, so two can find Chromium missing at
 # once: the check, the question and the download are one step, or both would ask and both download.
 _chromium_offer = threading.Lock()
 # Cached headful user-agent string keyed by browser executable path.
 _HEADFUL_UA: dict[str, str] = {}
-
-
-class Error(_base.Error):
-    """The base of every error `flnd._browser` raises."""
 
 
 class _NeverRaised(Exception):
@@ -188,12 +186,11 @@ def _gone(error: BaseException) -> bool:
     return any(text in str(error) for text in GONE)
 
 
-class MissingError(Error, _base.MissingError):
-    """Neither Google Chrome nor a downloaded Chromium, and the download was declined or failed."""
-
-
-class WaitError(Error):
+class WaitError(NetworkError):
     """`Page.wait`'s condition didn't come true within its `timeout`.
+
+    Its own class because callers act on it (a feed that stopped growing, a page to skip); it is
+    a retryable `NetworkError` to everyone else, since a slow page may load on the next try.
 
     Not a subclass of the builtin `TimeoutError`, which is an `OSError`: a page that is slow to
     show an element isn't a failure of the operating system, and `except OSError` mustn't catch it.
@@ -617,13 +614,14 @@ class Page:
             result = self.raw.evaluate(IN_PAGE_FETCH, request)
         # A tab that navigated, closed or crashed meanwhile: the page is gone, not refused.
         except _raw_error() as error:
-            raise Error(_without_values(f"{where}: the page couldn't send it: "
-                                        f"{_first_line(error)}", request["headers"])) from None
+            raise NetworkError(_without_values(f"{where}: the page couldn't send it: "
+                                               f"{_first_line(error)}", request["headers"]),
+                               retryable=True) from None
         where = f"{request['method']} {text.redact(result['resolved'])}"
         if "error" in result:
             if result["error"] == "timeout":
-                raise _http.Error(f"{where}: no answer within {FETCH_TIMEOUT:g} s")
-            raise _http.Error(_without_values(f"{where}: {result['error']}", request["headers"]))
+                raise NetworkError(f"{where}: no answer within {FETCH_TIMEOUT:g} s", retryable=True)
+            raise NetworkError(_without_values(f"{where}: {result['error']}", request["headers"]))
         return _http.Response(
             status=result["status"], url=result["url"], headers=dict(result["headers"]),
             content=base64.b64decode(result["body"]),
@@ -643,7 +641,8 @@ class Page:
         if until():
             return True
         if self.browser._headless:
-            raise Error(f"cannot hand off to a person in a headless browser: {message}")
+            raise UsageError(f"cannot hand off to a person in a headless browser: {message}",
+                             hint="run it again with a visible browser")
         ui.warn(message)
         deadline = None if timeout is None else clock.now() + timeout
         with ui.progress(message) as bar:
@@ -737,12 +736,12 @@ class Page:
         except _raw_timeout():
             box = None
         if box is None:
-            raise Error("scroll(within=…) found no visible element to scroll")
+            raise Changed("scroll(within=…) found no visible element to scroll")
         # Only the part inside the viewport can be under the mouse.
         top, bottom = max(box["y"], 0.0), min(box["y"] + box["height"], height)
         left, right = max(box["x"], 0.0), min(box["x"] + box["width"], width)
         if bottom <= top or right <= left:
-            raise Error("scroll(within=…) found its element outside the viewport")
+            raise Changed("scroll(within=…) found its element outside the viewport")
         return left, top, right - left, bottom - top
 
     def _move(self, target: Locator | None) -> None:
@@ -796,7 +795,7 @@ class _Scroller:
         self._idle = idle
         target = page.raw.locator(within).first if isinstance(within, str) else within
         if target is not None and not target.is_visible():
-            raise Error("scroll(within=…) found no visible element to scroll")
+            raise Changed("scroll(within=…) found no visible element to scroll")
         self._target = target
         self._marker = page._progress_marker(target, None)
         self._quiet_since: float | None = None
@@ -867,8 +866,8 @@ def _channel(playwright: Playwright) -> str:
     """The channel `open` launches: `chrome` when Google Chrome is installed, `chromium` otherwise.
 
     Without Chrome or a downloaded Chromium, it asks to download Chromium, and raises
-    `MissingError(NEEDS_CHROME)` on no or without a terminal. A failed download raises its
-    `MissingError`, and the same one again, without asking, for the rest of the process.
+    `ToolError(NEEDS_CHROME)` on no or without a terminal. A failed download raises its
+    `ToolError`, and the same one again, without asking, for the rest of the process.
     """
     global _chromium_declined, _chromium_failed
     if _chrome_installed():
@@ -889,10 +888,10 @@ def _channel(playwright: Playwright) -> str:
         # a run that opens a browser once per source asks only once.
         if _chromium_declined or not prompt.confirm(CHROMIUM_QUESTION, default=False):
             _chromium_declined = True
-            raise MissingError(NEEDS_CHROME)
+            raise ToolError(NEEDS_CHROME, hint=INSTALL_CHROME)
         try:
             _install_chromium()
-        except MissingError as error:
+        except ToolError as error:
             # A failed download (no space, no network) would likely fail again after asking again.
             _chromium_failed = error
             raise
@@ -925,7 +924,7 @@ def _install_chromium() -> None:
     new headless mode (the `chromium` channel), so the shell would never be used.
 
     Raises:
-        MissingError: the installer failed, with its last line of output.
+        ToolError: the installer failed, with its last line of output.
     """
     # A bundled flnd has no `python -m playwright`, so this runs the driver Playwright ships.
     from playwright._impl._driver import compute_driver_executable, get_driver_env
@@ -944,8 +943,8 @@ def _install_chromium() -> None:
                     bar.count = int(found[1])
         if installer.returncode:
             last = next((line for line in reversed(lines) if line), "no output")
-            raise MissingError(f"Chromium was not downloaded: Playwright's installer exited with "
-                               f"{installer.returncode}: {last}")
+            raise ToolError(f"Chromium was not downloaded: Playwright's installer exited with "
+                            f"{installer.returncode}: {last}", hint=INSTALL_CHROME)
 
 
 def _open_context(playwright: Playwright, profile: str | Path | None, channel: str | None,

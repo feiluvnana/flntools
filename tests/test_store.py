@@ -13,8 +13,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
-from flnd import _base
 from flnd import _db as store
+from flnd.errors import DiskError
 
 
 class File(store.Row):
@@ -75,18 +75,18 @@ class MappingTest(StoreCase):
         with store.open(self.file) as again:
             self.assertEqual(again["kv"]["a"], [1, "two", None, True])
 
-    def test_bad_keys_values_and_names_raise_store_errors(self):
-        with self.assertRaises(store.Error):
+    def test_bad_keys_values_and_names_are_the_callers_bugs(self):
+        # A wrong key, value or name is a bug in the caller, not a damaged store.
+        with self.assertRaises(TypeError):
             self.kv[1] = "x"  # type: ignore[index]
-        with self.assertRaises(store.Error):
+        with self.assertRaises(TypeError):
             self.kv["x"] = object()
-        with self.assertRaises(store.Error):
+        with self.assertRaises(ValueError):
             self.db['bad"name']
-        self.assertTrue(issubclass(store.Error, _base.Error))
 
     def test_a_closed_db_refuses_calls(self):
         self.db.close()
-        with self.assertRaises(store.ClosedError):
+        with self.assertRaises(RuntimeError):
             self.kv["a"] = 1
 
 
@@ -101,9 +101,9 @@ class RowTest(StoreCase):
 
     def test_a_row_that_no_longer_fits_its_type_is_a_store_error(self):
         self.db["files"]["a.jpg"] = {"state": "kept"}
-        with self.assertRaises(store.Error):
+        with self.assertRaises(DiskError):
             self.db[File]["a.jpg"]
-        with self.assertRaises(store.Error):
+        with self.assertRaises(DiskError):
             self.db[File].rows.get()
 
 
@@ -161,7 +161,7 @@ class BatchTest(StoreCase):
             with closing(sqlite3.connect(db.path, isolation_level=None)) as other:
                 # Another writer holds the file past the busy timeout, so BEGIN fails.
                 other.execute("BEGIN IMMEDIATE")
-                with self.assertRaises(store.Error):
+                with self.assertRaises(DiskError):
                     with db.batch():
                         pass
                 other.execute("ROLLBACK")
@@ -220,7 +220,7 @@ class ConvertTest(unittest.TestCase):
             path.write_bytes(b"SQLite format 3\x00" + b"\xff" * 200)
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always", ResourceWarning)
-                with store.open(path) as db, self.assertRaises(store.Error):
+                with store.open(path) as db, self.assertRaises(DiskError):
                     db["kv"]["a"] = 1
                 gc.collect()
             self.assertEqual([w for w in caught if w.category is ResourceWarning], [])
@@ -245,7 +245,7 @@ class ConvertTest(unittest.TestCase):
                 def open_it():
                     try:
                         opened.append(store.open(path))
-                    except store.Error as error:
+                    except DiskError as error:
                         errors.append(error)
 
                 threads = [threading.Thread(target=open_it) for _ in range(2)]
@@ -265,7 +265,7 @@ class ConvertTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "bad.db"
             path.write_text("{nope")
-            with self.assertRaises(store.Error):
+            with self.assertRaises(DiskError):
                 store.open(path)
 
 

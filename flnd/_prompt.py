@@ -15,9 +15,9 @@ from typing import Any, Callable, TypeVar, cast
 
 import questionary
 
-from flnd import _base
+from flnd.errors import UsageError
 
-__all__ = ["Error", "ask", "autofill", "choose", "confirm", "interactive", "raw"]
+__all__ = ["ask", "autofill", "choose", "confirm", "interactive", "raw"]
 
 T = TypeVar("T")
 Validate = Callable[[str], bool | str]
@@ -39,8 +39,8 @@ QMARK = "•"
 POINTER = "❯"
 
 
-class Error(_base.Error):
-    """A prompt that cannot be asked, such as missing choices or no default off-TTY."""
+# A prompt that can't be asked (no choices, no default off a terminal, input that ended) raises
+# `UsageError`: the person ran something that needs a question where none can be asked.
 
 
 def ask(
@@ -81,7 +81,7 @@ def choose(
     if many:
         return _choose_many(message, pairs, () if default is None else default)
     if default is not None and not any(value == default for _, value in pairs):
-        raise Error(f"{default!r} is not a choice for {message!r}")
+        raise UsageError(f"{default!r} is not a choice for {message!r}")
     if _use_autofill():
         return _require_default(message, default)
     items = [questionary.Choice(title=str(label), value=value) for label, value in pairs]
@@ -100,7 +100,7 @@ def _choose_many(
     values = [value for _, value in pairs]
     for item in selected:
         if item not in values:
-            raise Error(f"{item!r} is not a choice for {message!r}")
+            raise UsageError(f"{item!r} is not a choice for {message!r}")
     if _use_autofill():
         return selected
     items = [
@@ -134,9 +134,9 @@ def interactive() -> bool:
 
 
 def _require_default(message: str, default: T | None) -> T:
-    """Return `default` or raise `Error` when a non-interactive prompt has none."""
+    """Return `default` or raise `UsageError` when a non-interactive prompt has none."""
     if default is None:
-        raise Error(f"{message!r} has no default and cannot be asked here")
+        raise UsageError(f"{message!r} has no default and cannot be asked here")
     return default
 
 
@@ -146,7 +146,7 @@ def _choice_pairs(
     """Normalize a sequence or mapping of choices into `(label, value)` pairs."""
     pairs = list(choices.items()) if isinstance(choices, Mapping) else [(c, c) for c in choices]
     if not pairs:
-        raise Error(f"{message!r} has no choices")
+        raise UsageError(f"{message!r} has no choices")
     return pairs
 
 
@@ -202,4 +202,4 @@ def _run(question: questionary.Question) -> Any:
         try:
             return question.unsafe_ask()
         except EOFError as error:
-            raise Error("unexpected end of input") from error
+            raise UsageError("unexpected end of input") from error

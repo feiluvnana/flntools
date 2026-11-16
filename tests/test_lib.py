@@ -15,7 +15,7 @@ class LibraryApiTest(unittest.TestCase):
     def test_source_and_resolve(self):
         src = flnd.source("ins")
         self.assertEqual(src.code, "ins")
-        with self.assertRaises(flnd.TargetError):
+        with self.assertRaises(flnd.UsageError):
             flnd.source("unknown_code_xyz")
         target = flnd.resolve("ins:example_user")
         self.assertEqual(target, flnd.Target("ins", "user", "example_user"))

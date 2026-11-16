@@ -9,7 +9,7 @@ from typing import Annotated, Optional, Sequence
 import cyclopts
 from rich.table import Table
 
-from flnd import Engine, LoginError, Range, TargetError, __version__
+from flnd import Engine, LoginError, Range, Report, UsageError, __version__
 from flnd.sources import SOURCES
 from flnd import _cli as cli, _prompt as prompt, _text as text
 from flnd._ui import ui
@@ -46,7 +46,7 @@ def epilog() -> str:
     )
 
 
-app = cli.App(name="flnd", help=f"{describe()}\n\n{epilog()}")
+app = cli.App(name="flnd", help=f"{describe()}\n\n{epilog()}", logs=HOME / "logs")
 app.raw.version = __version__
 
 
@@ -89,21 +89,18 @@ def download(
     """
     resolved_targets = _read_targets(targets)
     with ui.scope(level="debug" if verbose else None):
-        try:
-            report = Engine(home=HOME).download(
-                resolved_targets,
-                categories=categories,
-                time=Range() if time is None else time,
-                limit=limit,
-                dry=dry,
-                sync=sync,
-                again=again,
-            )
-        except (TargetError, ValueError) as error:
-            raise cli.UsageError(str(error)) from error
+        report = Engine(home=HOME).download(
+            resolved_targets,
+            categories=categories,
+            time=Range() if time is None else time,
+            limit=limit,
+            dry=dry,
+            sync=sync,
+            again=again,
+        )
     if not dry:
         ui.ok("Complete. {files}", files=text.count(report.files, "file"))
-    return 0 if report.ok else 1
+    return _ended(report)
 
 
 @app.command("sync")
@@ -122,7 +119,7 @@ def sync(
     """
     with ui.scope(level="debug" if verbose else None):
         report = Engine(home=HOME).sync(targets)
-    return 0 if report.ok else 1
+    return _ended(report)
 
 
 target_group = app.group("target", help="Saved targets and their sync state.")
@@ -160,7 +157,7 @@ def target_ls() -> int:
 def target_sync_on(targets: list[str]) -> int:
     """Enable syncing for each known target."""
     if not targets:
-        raise cli.UsageError("give at least one target")
+        raise UsageError("give at least one target")
     for target in Engine(home=HOME).target_sync(targets, enabled=True):
         ui.ok("{target}: sync on", target=str(target))
     return 0
@@ -170,7 +167,7 @@ def target_sync_on(targets: list[str]) -> int:
 def target_sync_off(targets: list[str]) -> int:
     """Disable syncing for each known target."""
     if not targets:
-        raise cli.UsageError("give at least one target")
+        raise UsageError("give at least one target")
     for target in Engine(home=HOME).target_sync(targets, enabled=False):
         ui.ok("{target}: sync off", target=str(target))
     return 0
@@ -180,7 +177,7 @@ def target_sync_off(targets: list[str]) -> int:
 def target_del(targets: list[str]) -> int:
     """Remove saved targets from `targets.db` (downloaded files are kept)."""
     if not targets:
-        raise cli.UsageError("give at least one target")
+        raise UsageError("give at least one target")
     for target in Engine(home=HOME).target_del(targets):
         ui.ok("{target}: removed", target=str(target))
     return 0
@@ -193,7 +190,7 @@ auth_group = app.group("auth", help="Logins and saved credentials.")
 def login_command() -> int:
     """Log in to a source interactively."""
     if not (sys.stdin.isatty() and ui.raw.is_terminal):
-        raise cli.UsageError("flnd auth login asks its questions in a terminal")
+        raise UsageError("flnd auth login asks its questions in a terminal")
     engine = Engine(home=HOME)
     code = _ask_source(engine)
     source = SOURCES[code]
@@ -209,11 +206,8 @@ def login_command() -> int:
     answers: dict[str, Optional[str]] = {}
     if code in engine.cookie_logins:
         answers = _ask_cookie_login(engine, method)
-    try:
-        message = engine.login(code, method, **answers)
-    except LoginError as error:
-        ui.error("{error}", error=error)
-        return 1
+    # A LoginError ends the command with its message and hint, and exit 3 (`cli.App.run`).
+    message = engine.login(code, method, **answers)
     if message:
         ui.ok(message)
     return 0
@@ -226,10 +220,10 @@ def logout(sources: list[str] = []) -> int:  # noqa: B006 - never mutated
     if not sources:
         logged_in = [code for code, state in engine.logins.items() if state == "logged in"]
         msg = f"logged in: {', '.join(logged_in)}" if logged_in else "no source is logged in"
-        raise cli.UsageError(f"give the sources to log out of, or all; {msg}")
+        raise UsageError(f"give the sources to log out of, or all; {msg}")
     bad = [code for code in sources if code != "all" and code not in SOURCES]
     if bad:
-        raise cli.UsageError(f"unknown source {bad[0]!r}; use all or {', '.join(SOURCES)}")
+        raise UsageError(f"unknown source {bad[0]!r}; use all or {', '.join(SOURCES)}")
     everything = "all" in sources
     removed = engine.logout(sources)
     for code in SOURCES if everything else dict.fromkeys(sources):
@@ -256,6 +250,30 @@ def auth_ls() -> int:
     return 0
 
 
+def _ended(report: Report) -> int:
+    """The exit code of a `download` or `sync` that ran to its end (docs/cli).
+
+    1. 130 when Ctrl-C ended a target: nothing after it ran.
+    2. 3 when a source needs a login: logging in is the one thing to do.
+    3. 1 when any other target failed (a site's refusal, a bug in one listing): flnd went on,
+       so it is "some failed", never 4. An error that stops the whole run (a full disk) is
+       raised instead, and `cli.App.run` gives it its own code.
+    4. 0 when every target finished.
+
+    Args:
+        report: the run's report, one `TargetReport` per target.
+
+    Returns:
+        The exit code.
+    """
+    errors = [target.error for target in report.targets if target.error is not None]
+    if any(isinstance(error, KeyboardInterrupt) for error in errors):
+        return cli.STOPPED
+    if any(isinstance(error, LoginError) for error in errors):
+        return cli.exit_code(LoginError(""))
+    return 1 if errors else 0
+
+
 def _read_targets(targets: Sequence[str]) -> list[str]:
     if targets:
         return list(targets)
@@ -267,7 +285,7 @@ def _read_targets(targets: Sequence[str]) -> list[str]:
         ]
         if lines:
             return lines
-    raise cli.UsageError("give at least one target, or pipe targets on stdin")
+    raise UsageError("give at least one target, or pipe targets on stdin")
 
 
 def _ask_cookie_login(engine: Engine, method: str) -> dict[str, Optional[str]]:

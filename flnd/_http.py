@@ -11,6 +11,16 @@
 `body` is the one way to send data: on a GET or HEAD a dict becomes the query string; on any
 other method a dict or list is JSON; bytes or str go as they are. A Client's `retry`, `timeout`
 and `stop` cover every call it makes, and the module's `fetch` and `download` use a default one.
+
+Failures are `flnd.errors` classes, classified here by the policy of `docs/errors`:
+- a 404 or 410 is `NotFound`, never retried;
+- a 429 is `Blocked`, with the site's wait (`Retry-After` or its reset), waited out and retried;
+- a 5xx is a retryable `SiteError`, and any other 4xx a `SiteError` that isn't retried; each
+  keeps its `status` and `response`;
+- a timeout, a reset or a cut-off transfer is a retryable `NetworkError`, and a malformed
+  request one that isn't;
+- a write the disk refuses is a `DiskError`, and a set `stop` raises `Stopped`.
+Every message names the URL redacted (`flnd._text.redact`), never its query or user info.
 """
 
 from __future__ import annotations
@@ -35,12 +45,12 @@ from typing import (
 
 import msgspec
 
-from flnd import _base
 from flnd import _time as clock
 from flnd import _cookies as cookies
 from flnd import _files as fs
 from flnd import _text as text
 from flnd._sink import Sink
+from flnd.errors import Blocked, Changed, Error, NetworkError, NotFound, SiteError, Stopped, disk
 from flnd._ui import ui
 
 try:
@@ -51,16 +61,15 @@ except ImportError:
 if TYPE_CHECKING:
     from flnd._html import Selection
 
-__all__ = [
-    "Client", "Error", "IncompleteError", "RateLimitedError", "RefusedError", "Response", "Retry",
-    "StoppedError", "download", "fake", "fetch",
-]
+__all__ = ["Client", "Response", "Retry", "download", "fake", "fetch"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 A = TypeVar("A")
 
 CONNECTION_ERRORS = (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)
 SECRET_HEADERS = ("authorization", "cookie", "proxy-authorization")
+# The shortest secret `_scrub` replaces in a message; anything shorter is no secret.
+SHORT_SECRET = 4
 QUERY_METHODS = ("GET", "HEAD")
 FIRST_WAIT = 1.0
 MAX_WAIT = 8.0
@@ -76,48 +85,8 @@ SEGMENTED = 64 << 20
 SEGMENTS = 4
 # One token at most: a rate is a floor between two requests to a host, never a burst after a lull.
 BURST = 1.0
-
-
-class Error(_base.Error):
-    """The base of every error `flnd._http` raises; also what a failed connection raises."""
-
-
-class _RequestError(Error):
-    """A malformed request or protocol error that retrying cannot fix."""
-
-
-class RefusedError(Error, _base.RefusedError):
-    """A 4xx other than 429: the site said no."""
-
-    def __init__(self, status: int, message: str = "", *, response: Response | None = None):
-        super().__init__(message or f"HTTP {status}")
-        self.status = status
-        self.response = response
-
-
-class RateLimitedError(Error):
-    """A 429: the site asks to slow down."""
-
-    def __init__(self, retry_after: float | None, message: str = "", *,
-                 response: Response | None = None):
-        super().__init__(message or "HTTP 429")
-        self.status = 429
-        self.retry_after = retry_after
-        self.response = response
-
-
-class StoppedError(Error):
-    """A request or download ended because its client's `stop` was set."""
-
-
-class IncompleteError(Error, _base.BrokenError):
-    """A truncated response, 5xx error, or broken transfer."""
-
-    def __init__(self, message: str, *, status: int | None = None,
-                 response: Response | None = None):
-        super().__init__(message)
-        self.status = status
-        self.response = response
+# The statuses that mean the item is gone for good: never retried, recorded as gone.
+GONE = (404, 410)
 
 
 @dataclass(frozen=True)
@@ -170,7 +139,7 @@ class Response:
 
     @property
     def json(self) -> Any:
-        """The body parsed as JSON. Raises `http.Error` when not JSON."""
+        """The body parsed as JSON. Raises `flnd.errors.Changed` when it isn't JSON."""
         return self._cached("json", self._json)
 
     @property
@@ -191,7 +160,7 @@ class Response:
             return msgspec.json.decode(self.content)
         except msgspec.DecodeError as error:
             msg = f"expected JSON from {text.redact(self.url)}, got {self.text[:80]!r}: {error}"
-            raise Error(msg) from None
+            raise Changed(msg, status=self.status, response=self) from None
 
 
 def fetch(url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
@@ -271,8 +240,6 @@ class Client:
                     attempt = functools.partial(self._file, mirror, part, headers, resume, meter)
                     self._call(mirror, attempt)
                     return target
-                except StoppedError:
-                    raise
                 except Error as error:
                     ui.debug("{url} failed: {reason}; trying the next mirror",
                              url=text.redact(mirror), reason=error)
@@ -297,17 +264,17 @@ class Client:
             attempt += 1
 
     def _back_off(self, host: str, attempt: int, error: Error) -> None:
-        hinted = getattr(error, "retry_after", None)
+        hinted = error.wait if isinstance(error, Blocked) else None
         jittered = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT) * random.uniform(0.5, 1.0)
         wait = jittered if hinted is None else hinted
-        if isinstance(error, RateLimitedError):
+        if isinstance(error, Blocked):
             ui.warn("{host}: rate limited; waiting {time}",
                     host=host, time=text.duration(round(wait)))
         else:
             ui.debug("retry {n}/{total} in {seconds:.1f}s: {reason}",
                      n=attempt, total=self._retry.times, seconds=wait, reason=error)
         if not clock.sleep(wait, stop=self._stop):
-            raise StoppedError(f"{host}: stopped")
+            raise Stopped(f"{host}: stopped")
 
     def _send(self, method: str, url: str, headers: Mapping[str, str] | None,
               body: Any) -> Response:
@@ -319,9 +286,9 @@ class Client:
             finally:
                 raw.close()
         except CONNECTION_ERRORS as error:
-            raise Error(_failed(request, error)) from error
+            raise NetworkError(_failed(request, error), retryable=True) from error
         except (httpx.HTTPError, httpx.InvalidURL) as error:
-            raise _RequestError(_failed(request, error)) from error
+            raise NetworkError(_failed(request, error)) from error
         return _checked(_response(raw), method)
 
     def _request(self, method: str, url: str, headers: Mapping[str, str] | None,
@@ -337,7 +304,7 @@ class Client:
             return self._raw.build_request(method, url, headers=headers, **options)
         except (httpx.HTTPError, httpx.InvalidURL) as error:
             msg = f"{method} {text.redact(url)}: {type(error).__name__}: {error}"
-            raise _RequestError(_without_userinfo(msg, url)) from error
+            raise NetworkError(_without_userinfo(msg, url)) from error
 
     def _file(self, url: str, part: Path, headers: Mapping[str, str] | None, resume: bool,
               meter: _Meter) -> None:
@@ -363,7 +330,7 @@ class Client:
             meter.start(offset, offset)
             return
         if not offset:
-            raise RefusedError(416, f"GET {text.redact(url)}: HTTP 416")
+            raise SiteError(f"GET {text.redact(url)}: HTTP 416", status=416)
         part.unlink()
         self._file(url, part, headers, False, meter)
 
@@ -382,26 +349,31 @@ class Client:
             finally:
                 response.close()
         except CONNECTION_ERRORS as error:
-            raise IncompleteError(_failed(request, error)) from error
+            raise NetworkError(_failed(request, error), retryable=True) from error
         except (httpx.HTTPError, httpx.InvalidURL) as error:
-            raise _RequestError(_failed(request, error)) from error
+            raise NetworkError(_failed(request, error)) from error
 
     def _write(self, url: str, response: httpx.Response, part: Path, start: int,
                total: int | None, meter: _Meter) -> None:
         meter.start(total, start)
         done = start
-        with part.open("ab" if start else "wb", buffering=CHUNK) as handle:
-            for chunk in response.iter_bytes():
-                self._check(url)
-                handle.write(chunk)
-                done += len(chunk)
-                meter.add(len(chunk))
+        try:
+            with part.open("ab" if start else "wb", buffering=CHUNK) as handle:
+                for chunk in response.iter_bytes():
+                    self._check(url)
+                    handle.write(chunk)
+                    done += len(chunk)
+                    meter.add(len(chunk))
+        # A full disk or a refused folder is the disk's failure, not the site's: the run stops.
+        except OSError as error:
+            raise disk(error, part) from error
         if total is not None and done < total:
-            raise IncompleteError(f"GET {text.redact(url)}: truncated at {done} of {total} bytes")
+            raise NetworkError(f"GET {text.redact(url)}: truncated at {done} of {total} bytes",
+                               retryable=True)
 
     def _check(self, url: str) -> None:
         if self._stop is not None and self._stop.is_set():
-            raise StoppedError(f"{text.redact(url)}: stopped")
+            raise Stopped(f"{text.redact(url)}: stopped")
 
 
 @contextmanager
@@ -410,7 +382,7 @@ def fake(routes: Mapping[str, Any]) -> Iterator[None]:
 
     A route maps a URL, or a prefix ending in `*`, to a dict or list (JSON), bytes or str (a body
     that serves ranges), an int (that status), a `Response`, or a callable taking the
-    `httpx.Request`. A URL no route matches raises `http.Error`.
+    `httpx.Request`. A URL no route matches raises `NetworkError`, as an unknown host would.
     """
     transport = httpx.MockTransport(_Router(routes))
     original = httpx.Client._transport_for_url
@@ -441,7 +413,7 @@ class _Pace:
             tokens = min(BURST, tokens + (now - at) * self._rate) - 1.0
             self._hosts[host] = (tokens, now)
         if tokens < 0 and not clock.sleep(-tokens / self._rate, stop=stop):
-            raise StoppedError(f"{host}: stopped")
+            raise Stopped(f"{host}: stopped")
 
 
 class _Meter:
@@ -504,13 +476,14 @@ class _Segments:
             with self.client._open(self.url, self.headers, f"bytes={start}-{end}") as response, \
                     self.pieces.open("r+b", buffering=CHUNK) as handle:
                 if response.status_code != 206:
-                    raise IncompleteError(f"GET {text.redact(self.url)}: no range {start}-{end}")
+                    raise NetworkError(f"GET {text.redact(self.url)}: no range {start}-{end}",
+                                       retryable=True)
                 handle.seek(start)
                 if not self.copy(index, response, handle):
                     return
             if self.written[index] != end - start + 1:
-                raise IncompleteError(f"GET {text.redact(self.url)}: range {start}-{end} "
-                                      f"ended at {self.written[index]} bytes")
+                raise NetworkError(f"GET {text.redact(self.url)}: range {start}-{end} "
+                                   f"ended at {self.written[index]} bytes", retryable=True)
         except BaseException:
             self.failed.set()
             raise
@@ -543,7 +516,7 @@ class _Router:
             route = next((answer for prefix, answer in self.prefixes if url.startswith(prefix)),
                          None)
         if route is None:
-            raise _RequestError(f"{request.method} {text.redact(url)}: no route in http.fake")
+            raise NetworkError(f"{request.method} {text.redact(url)}: no route in http.fake")
         if callable(route):
             route = route(request)
         return _answer(route, request)
@@ -575,17 +548,32 @@ def _with_query(url: str, params: Mapping[str, Any]) -> str:
     try:
         return str(httpx.URL(url).copy_merge_params(params))
     except httpx.InvalidURL as error:
-        raise _RequestError(f"{text.redact(url)}: InvalidURL: {error}") from error
+        raise NetworkError(f"{text.redact(url)}: InvalidURL: {error}") from error
 
 
 def _retries(retry: Retry, method: str, error: Error) -> bool:
-    if isinstance(error, (StoppedError, _RequestError)):
-        return False
+    """Whether `error` is worth another try under `retry`.
+
+    A refusal is retried by its status, as `retry.statuses` lists them. An error without one
+    (a timeout, a reset, a cut-off transfer) is retried when its raiser marked it `retryable`;
+    a malformed request or an unknown route never is.
+
+    Args:
+        retry: the client's policy: which statuses and methods it tries again.
+        method: the request's method, upper case; only `retry.methods` are sent twice, but any
+            method after a 429, which the server didn't act on.
+        error: what the last try raised.
+
+    Returns:
+        True to wait and try again.
+    """
     status = getattr(error, "status", None)
     # The server acted on nothing it answered with 429, so any method may be sent again.
     if status == 429:
         return 429 in retry.statuses
-    return method in retry.methods and (status is None or status in retry.statuses)
+    if status is None:
+        return error.retryable and method in retry.methods
+    return method in retry.methods and status in retry.statuses
 
 
 def _given_up(error: Error, check: bool) -> Response:
@@ -599,7 +587,7 @@ def _host(url: str) -> str:
     try:
         return (httpx.URL(url).host or "").lower()
     except httpx.InvalidURL as error:
-        raise _RequestError(f"{text.redact(url)}: InvalidURL: {error}") from error
+        raise NetworkError(f"{text.redact(url)}: InvalidURL: {error}") from error
 
 
 def _total_bytes(headers: Mapping[str, str], offset: int) -> int | None:
@@ -670,11 +658,13 @@ def _checked(response: Response, method: str) -> Response:
         if retry_after is None:
             retry_after = _reset(response.headers)
         wait = "" if retry_after is None else f", retry after {retry_after:g} s"
-        raise RateLimitedError(retry_after, f"{where}: HTTP 429, rate limited{wait}",
-                               response=response)
-    if status < 500:
-        raise RefusedError(status, f"{where}: HTTP {status}", response=response)
-    raise IncompleteError(f"{where}: HTTP {status}", status=status, response=response)
+        raise Blocked(f"{where}: HTTP 429, rate limited{wait}", wait=retry_after, status=429,
+                      response=response)
+    if status in GONE:
+        raise NotFound(f"{where}: HTTP {status}", status=status, response=response)
+    # A 5xx is the server's trouble, which may pass; any other 4xx is its answer.
+    raise SiteError(f"{where}: HTTP {status}", status=status, response=response,
+                    retryable=status >= 500)
 
 
 def _retry_after(value: str | None) -> float | None:
@@ -748,14 +738,37 @@ def _without_userinfo(message: str, url: str) -> str:
 
 
 def _scrub(text: str, request: httpx.Request) -> str:
+    """`text` without any secret `request` carries, each replaced by `***`.
+
+    A library's error text may quote what it sent, so every secret is looked for in it:
+    1. each secret header's whole value (`SECRET_HEADERS`);
+    2. its parts: a cookie's values, and the credentials after an `Authorization` scheme
+       (`Bearer <token>`);
+    3. the values of the URL's query, and the password in its user info.
+    A part shorter than `SHORT_SECRET` isn't replaced: "1" or "en" would garble the message,
+    and is no secret.
+
+    Args:
+        text: an error message about `request`.
+        request: the request, with the headers and URL it was sent with.
+
+    Returns:
+        The message with each secret replaced.
+    """
+    secrets: list[str] = []
     for name in SECRET_HEADERS:
         for value in request.headers.get_list(name):
-            if value:
-                text = text.replace(value, "***")
-                for part in value.split(";") if name == "cookie" else ():
-                    secret = part.partition("=")[2].strip()
-                    if len(secret) >= 4:
-                        text = text.replace(secret, "***")
+            secrets.append(value)
+            if name == "cookie":
+                secrets += [part.partition("=")[2].strip() for part in value.split(";")]
+            else:
+                secrets += value.split()[1:]
+    secrets += [value for _, value in request.url.params.multi_items()]
+    secrets.append(request.url.password or "")
+    # Longest first, so a value that holds a shorter one is replaced whole.
+    for secret in sorted(secrets, key=len, reverse=True):
+        if len(secret) >= SHORT_SECRET:
+            text = text.replace(secret, "***")
     return text
 
 

@@ -163,17 +163,20 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
     Args:
         names: the snapshot's names; a test passes made-up ones.
 
-    An error re-exported under another module's name (`flnd.TargetError` is `flnd.source.TargetError`,
-    which `flnd`'s API lists) belongs to the module that defines it: it is a breach only when no
+    An error re-exported under another module's name (`flnd.source.LoginError` is
+    `flnd.LoginError`) belongs to the module that defines it: it is a breach only when no
     module listing it has an `Error` it is under. A library's own error passed through by name
-    (`browser.RawError` is Playwright's) is the library's, not the module's.
+    (`browser.RawError` is Playwright's) is the library's, not the module's. `flnd.Stopped` is
+    a `KeyboardInterrupt` on purpose (AGENTS.md: a Ctrl-C is never an `Error`), so a
+    `KeyboardInterrupt` is no breach.
     """
     found: set[str] = set()
     by_name = {entry.name: entry for entry in names}
     errors: dict[str, list[Any]] = {}
     homes: dict[int, set[str]] = {}
     for entry in names:
-        if entry.kind == "error" and not from_a_library(entry.obj):
+        if (entry.kind == "error" and not from_a_library(entry.obj)
+                and not issubclass(entry.obj, KeyboardInterrupt)):
             errors.setdefault(module_of(entry.name, names), []).append(entry)
             homes.setdefault(id(entry.obj), set()).add(module_of(entry.name, names))
 
@@ -439,8 +442,18 @@ class ChecksTest(unittest.TestCase):
                  self.name("error", Stray, name="flnd.x.Inner.StrayError")]
         self.assertEqual(error_breaches(names), {"flnd.x: errors outside flnd.x.Error: flnd.x.Inner.StrayError"})
 
+    def test_a_keyboard_interrupt_is_no_stray_error(self):
+        # `flnd.Stopped` derives from KeyboardInterrupt so `except flnd.Error` never eats a Ctrl-C.
+        class Error(Exception): ...
+
+        class Stopped(KeyboardInterrupt): ...
+
+        names = [self.name("module", None, name="flnd"), self.name("error", Error, name="flnd.Error"),
+                 self.name("error", Stopped, name="flnd.Stopped")]
+        self.assertEqual(error_breaches(names), set())
+
     def test_a_reexported_error_belongs_to_the_module_that_defines_it(self):
-        # `flnd.TargetError` is `flnd.source.TargetError`: `flnd` has no Error of its own, and needs none.
+        # `flnd.source.LoginError` is `flnd.LoginError`: it belongs to the module defining it.
         class SourceError(Exception): ...
 
         class Kept(SourceError): ...

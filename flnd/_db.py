@@ -28,11 +28,11 @@ from typing import Any, ClassVar, Generic, TypeVar, Union
 
 import msgspec
 
-from flnd import _base
 from flnd import _files as fs
 from flnd._query import Plan, Query, run as run_plan
+from flnd.errors import DiskError
 
-__all__ = ["ClosedError", "Db", "Error", "Row", "Rows", "Table", "open"]
+__all__ = ["Db", "Row", "Rows", "Table", "open"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 V = TypeVar("V")
@@ -45,12 +45,9 @@ BUSY_MS = 30_000
 SQLITE_MAGIC = b"SQLite format 3\x00"
 
 
-class Error(_base.Error):
-    """The base of every error `flnd._db` raises."""
-
-
-class ClosedError(Error, RuntimeError):
-    """The `Db` was closed before this call."""
+# Errors: a file SQLite can't open, read or write, and a row that no longer decodes, are a
+# `DiskError` naming the file. Using a closed `Db`, a bad table name, a key that isn't a string
+# or a value JSON can't hold are bugs in the caller, so they raise the builtin errors.
 
 
 class Row(msgspec.Struct):
@@ -119,7 +116,7 @@ class Db:
             table._made = False
 
     def close(self) -> None:
-        """Close the file; later calls raise `ClosedError`."""
+        """Close the file; later calls raise `RuntimeError`."""
         with self._lock:
             self._closed = True
             if self._sql is not None:
@@ -129,7 +126,7 @@ class Db:
     def _run(self, sql: str, args: tuple[Any, ...] = (), *, read: bool = False) -> list[Any]:
         with self._lock:
             if self._closed:
-                raise ClosedError(f"{self.path}: store is closed")
+                raise RuntimeError(f"{self.path}: store is closed")
             if self._sql is None:
                 if read and not self.path.exists():
                     return []
@@ -137,7 +134,7 @@ class Db:
             try:
                 return self._sql.execute(sql, args).fetchall()
             except sqlite3.Error as error:
-                raise Error(f"{self.path}: {error}") from error
+                raise DiskError(f"{self.path}: {error}") from error
 
 
 class Table(MutableMapping[str, V], Generic[V]):
@@ -145,7 +142,7 @@ class Table(MutableMapping[str, V], Generic[V]):
 
     def __init__(self, db: Db, name: str, kind: type[V] | None) -> None:
         if not name or '"' in name:
-            raise Error(f"{db.path}: bad table name {name!r}")
+            raise ValueError(f"{db.path}: bad table name {name!r}")
         self.db, self.name = db, name
         self._sql_name = f'"{PREFIX}{name}"'
         self._decode = msgspec.json.Decoder(kind) if kind is not None else msgspec.json.Decoder()
@@ -159,7 +156,7 @@ class Table(MutableMapping[str, V], Generic[V]):
 
     def __setitem__(self, key: str, value: V) -> None:
         if not isinstance(key, str):
-            raise Error(f"{self.db.path}: keys must be strings, not {type(key).__name__}")
+            raise TypeError(f"{self.db.path}: keys must be strings, not {type(key).__name__}")
         self._write("INSERT OR REPLACE INTO {} (key, value) VALUES (?, ?)", (key, _encode(value)))
 
     def __delitem__(self, key: str) -> None:
@@ -202,12 +199,12 @@ class Table(MutableMapping[str, V], Generic[V]):
             return self._decode.decode(raw)
         # A row written before its type gained a required field no longer fits it.
         except msgspec.DecodeError as error:
-            raise Error(f"{self.db.path}: {self.name}: {error}") from error
+            raise DiskError(f"{self.db.path}: {self.name}: {error}") from error
 
     def _select(self, sql: str, args: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
         try:
             return self.db._run(sql.format(self._sql_name), args, read=True)
-        except Error as error:
+        except DiskError as error:
             # A table nothing was written to yet reads as empty.
             if not self._made and "no such table" in str(error):
                 return []
@@ -325,7 +322,7 @@ def _connect(path: Path) -> sqlite3.Connection:
     try:
         sql = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
     except sqlite3.Error as error:
-        raise Error(f"{path}: cannot open store: {error}") from error
+        raise DiskError(f"{path}: cannot open store: {error}") from error
     try:
         sql.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
         sql.execute("PRAGMA journal_mode = WAL")
@@ -334,14 +331,14 @@ def _connect(path: Path) -> sqlite3.Connection:
         return sql
     except sqlite3.Error as error:
         sql.close()
-        raise Error(f"{path}: cannot open store: {error}") from error
+        raise DiskError(f"{path}: cannot open store: {error}") from error
 
 
 def _encode(value: Any) -> str:
     try:
         return msgspec.json.encode(value).decode()
     except (TypeError, msgspec.EncodeError) as error:
-        raise Error(f"cannot store a {type(value).__name__}: {error}") from error
+        raise TypeError(f"cannot store a {type(value).__name__}: {error}") from error
 
 
 def _is_sqlite(path: Path) -> bool:
@@ -366,9 +363,9 @@ def _rewrite(path: Path) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        raise Error(f"{path}: cannot read store: {error}") from error
+        raise DiskError(f"{path}: cannot read store: {error}") from error
     if not isinstance(data, dict):
-        raise Error(f"{path}: expected a JSON object")
+        raise DiskError(f"{path}: expected a JSON object")
     staged = path.with_name(f".{path.name}.convert")
     staged.unlink(missing_ok=True)
     db = Db(staged)

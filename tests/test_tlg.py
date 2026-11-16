@@ -31,7 +31,7 @@ from test_engine import EngineCase, make_source
 from flnd.common import auth, net
 from flnd.engine import Engine
 from flnd.options import Options
-from flnd.source import LoginError, Target, TargetError
+from flnd.source import LoginError, Target, UsageError
 from flnd.sources import tlg
 from flnd.sources.tlg import QR_CODES, Telegram, fetcher, from_web_storage, half_blocks, read_telegram_web
 from flnd import _text as text
@@ -252,11 +252,11 @@ class RoutesTest(unittest.TestCase):
                 if isinstance(expected, tuple):
                     self.assertEqual(Telegram().resolve(value), Target("tlg", *expected))
                 else:
-                    with self.assertRaisesRegex(TargetError, f"^tlg: {expected}"):
+                    with self.assertRaisesRegex(UsageError, f"^tlg: {expected}"):
                         Telegram().resolve(value)
 
     def test_a_refusal_lists_the_shown_form(self):
-        with self.assertRaises(TargetError) as caught:
+        with self.assertRaises(UsageError) as caught:
             Telegram().resolve("@bad name")
         self.assertEqual(str(caught.exception), "tlg: can't read '@bad name'; write it like tlg:<@username, chat title or id>")
 
@@ -532,7 +532,7 @@ class LoginCommandTest(FlndCase):
         self.choose_telegram("qr")
         with mock.patch.object(Telegram, "login", refuse):
             code, _, out = self.run_app("auth", "login")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 3)
         self.assertIn("tlg: no QR code was scanned; run flnd login again", out)
 
     def test_a_stored_session_is_marked_logged_in(self):
@@ -682,7 +682,7 @@ class DownloadTest(DownloadCase):
         with auth.secrets(self.home, "tlg") as secrets:
             secrets.clear()
         self.assertEqual(self.download(), 0)
-        self.assertIn("x tlg:examplechannel: not logged in; run flnd auth login", self.lines())
+        self.assertIn("x tlg:examplechannel: not logged in", self.lines())
         self.assertEqual(self.telegram.clients, [])
 
     def test_many_files_on_the_async_loop(self):
@@ -767,8 +767,9 @@ class ChatTest(DownloadCase):
         other = chat(1002, "Example Channel")
         self.telegram.dialogs.append(SimpleNamespace(id=-1001002, name="Example Channel", entity=other))
         self.assertEqual(self.download("tlg:Example Channel"), 0)
-        self.assertIn("x tlg:Example Channel: 2 chats are titled 'Example Channel': -1001001, -1001002; "
-                      "pass one as tlg:<id>", self.lines())
+        self.assertIn("x tlg:Example Channel: 2 chats are titled 'Example Channel': -1001001, -1001002",
+                      self.lines())
+        self.assertIn("* tlg:Example Channel: pass one as tlg:<id>", self.lines())
 
     def test_a_chat_that_isnt_there(self):
         self.assertEqual(self.download("tlg:nochat"), 0)

@@ -15,6 +15,7 @@ import httpx
 
 from flnd import _time as clock, _http as http
 from flnd._ui import ui
+from flnd.errors import SiteError, Stopped
 
 SITE = "https://www.example.com"
 FILE = f"{SITE}/file.bin"
@@ -107,7 +108,7 @@ class PaceTest(ClientCase):
     def test_stop_ends_a_wait(self):
         stop = threading.Event()
         stop.set()
-        with http.fake({SITE + "/*": 429}), self.assertRaises(http.StoppedError):
+        with http.fake({SITE + "/*": 429}), self.assertRaises(Stopped):
             self.client(stop=stop).fetch(f"{SITE}/a")
 
 
@@ -175,7 +176,7 @@ class DownloadTest(ClientCase):
         self.assertEqual(self.ranges(), ["bytes=0-", "bytes=0-"])
 
     def test_a_refusal_from_every_mirror_raises_and_keeps_nothing_in_place(self):
-        with http.fake({SITE + "/*": 404}), self.assertRaises(http.RefusedError):
+        with http.fake({SITE + "/*": 404}), self.assertRaises(SiteError):
             self.client().download([f"{SITE}/a", f"{SITE}/b"], self.dest)
         self.assertFalse(self.dest.exists())
 
@@ -188,7 +189,7 @@ class DownloadTest(ClientCase):
             yield BODY[10:]
 
         route = lambda request: httpx.Response(200, headers={"content-length": str(len(BODY))}, content=pieces())
-        with http.fake({FILE: route}), self.assertRaises(http.StoppedError):
+        with http.fake({FILE: route}), self.assertRaises(Stopped):
             self.client(stop=stop).download(FILE, self.dest)
         self.assertEqual(self.stage.read_bytes(), BODY[:10])
         self.assertFalse(self.dest.exists())

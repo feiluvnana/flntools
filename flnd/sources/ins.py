@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING, Any, Iterator, Mapping
 from urllib.parse import unquote, urlsplit
 
 from flnd.source import (
-    FetchError, File, LoginError, Post, Site, Source, Target, caught_up, day, target,
+    Changed, File, LoginError, NetworkError, Post, Site, SiteError, Source, Target, caught_up, day,
+    target,
 )
 from flnd.sources.common import dash
 from flnd.sources.common.feed import warm_tabs, watch_responses
@@ -265,8 +266,9 @@ class Api:
             params: query params as dict or pairs.
 
         Raises:
-            FetchError: refusal from tab call or unparseable answer.
-                answer that isn't JSON. The caller falls back to the page.
+            SiteError: a refusal, from the client or the tab; `Changed` for an answer that
+                isn't JSON. The caller falls back to the page.
+            NetworkError: no answer, after the client's tries.
             LoginError: Instagram sent the call to `/accounts/suspended/`.
         """
         # Each pass makes one call; throttles and login walls are waited out.
@@ -277,7 +279,7 @@ class Api:
                                       headers=self.headers(site.cookies) if self.in_page else None)
             # A 404 is a post or user that isn't there, which is an answer, not an error. Any other
             # refusal goes to `_waited`, which may move the calls into the tab.
-            except FetchError as error:
+            except SiteError as error:
                 if error.status == 404:
                     return None
                 next_walls = self._waited(
@@ -296,8 +298,8 @@ class Api:
             try:
                 return response.json
             # Non-JSON answers are HTML error or login pages; caller reads page.
-            except http.Error:
-                raise FetchError(f"{url}: Instagram's answer isn't JSON") from None
+            except Changed:
+                raise Changed(f"{url}: Instagram's answer isn't JSON") from None
 
     def media(self, site: Site, pk: str) -> dict | None:
         """One post by `pk` from `/api/v1/media/<pk>/info/`, or None.
@@ -309,13 +311,13 @@ class Api:
             pk: the post's id, as digits.
 
         Raises:
-            FetchError, LoginError: as `get`.
+            SiteError, NetworkError, LoginError: as `get`.
         """
         if "media" in self.refused:
             return None
         try:
             data = self.get(site, f"{API}/media/{pk}/info/")
-        except FetchError:
+        except (SiteError, NetworkError):
             if self.in_page:
                 self.refused.add("media")
             raise
@@ -342,7 +344,7 @@ class Api:
             # A refused media API isn't fatal: the post's page, read below, still holds the post.
             try:
                 media = self.media(site, pk)
-            except FetchError as error:
+            except (SiteError, NetworkError) as error:
                 site.warn(
                     "post {code}: media API refused ({error}); reading page",
                     code=code, error=error,
@@ -359,7 +361,7 @@ class Api:
         try:
             params = [("reel_ids", str(reel)) for reel in reel_ids]
             data = self.get(site, f"{API}/feed/reels_media/", params=params)
-        except FetchError:
+        except (SiteError, NetworkError):
             self._refuse(site, "reels", what)
             return None
         # An answer without the reels' JSON is a refusal too, so the same fallback applies.
@@ -379,7 +381,7 @@ class Api:
             return None
         try:
             data = self.get(site, f"{API}/feed/user/{user_id}/story/")
-        except FetchError:
+        except (SiteError, NetworkError):
             self._refuse(site, "story", "stories")
             return None
         # `reel` is null while user has no story; an answer without `reel` isn't this API's.
@@ -401,7 +403,7 @@ class Api:
                 params["max_id"] = max_id
             data = self.get(site, f"{API}/friendships/{user_id}/following/", params=params)
             if not isinstance(data, dict) or not isinstance(data.get("users"), list):
-                raise FetchError("ins:me: unexpected following response")
+                raise Changed("ins:me: unexpected following response")
             for user in data["users"]:
                 username = user.get("username") if isinstance(user, dict) else None
                 if isinstance(username, str) and username:
@@ -471,7 +473,10 @@ class Api:
         if walled:
             if walls >= WALL_ATTEMPTS:
                 who = response.url if response is not None else SITE
-                raise FetchError(f"{who}: Instagram showed a login wall")
+                # A SiteError, not a LoginError: the caller falls back to the post's page, which
+                # a wall on the API alone doesn't stop. A listing it ends is a login problem.
+                raise SiteError(f"{who}: Instagram showed a login wall",
+                                hint="run flnd auth login, then try again")
             site.back_off("Instagram showed a login wall")
             return walls + 1
         return None
@@ -514,7 +519,7 @@ class Profile:
         with watch_responses(site, GRAPHQL, scroll=True) as responses:
             if not load(site, f"{SITE}/{self.user}/{TABS[tab]}"):
                 # Raised, not returned: a tab that ended here would be recorded complete.
-                raise FetchError(f"{tab}: the page didn't load")
+                raise SiteError(f"{tab}: the page didn't load")
             keys = list(TABS)
             warm_tabs(
                 site,
@@ -651,7 +656,7 @@ def lazy_files(site: Site, api: Api, code: str, pk: str | None) -> list[File]:
         try:
             media = api.media(site, pk)
         # A refused media API falls back to the post's page, as `Api.post` does.
-        except FetchError as error:
+        except (SiteError, NetworkError) as error:
             site.warn(
                     "post {code}: media API refused ({error}); reading page",
                     code=code, error=error,
@@ -676,7 +681,7 @@ def _json(response: http.Response | None) -> Any:
     try:
         return response.json
     # A refusal's body is often HTML (a login page): it says nothing a source reads.
-    except http.Error:
+    except Changed:
         return None
 
 

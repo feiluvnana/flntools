@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 from flnd.common import paths
 from flnd.options import Options
 from flnd.source import Source, Target
-from flnd import _cli as cli
+from flnd.errors import UsageError
 
 TARGETS_TABLE = "targets"
 SYNC = "sync"
@@ -284,26 +284,26 @@ def _route_fields(route: Any) -> frozenset[str]:
 
 
 def _check_template(template: str, allowed: frozenset[str], source: type[Source]) -> None:
-    """Raise `cli.UsageError` if `template` escapes paths or uses invalid placeholders."""
+    """Raise `UsageError` if `template` escapes paths or uses invalid placeholders."""
     if not template:
         return
     if "\\" in template or template.startswith("/") or _DRIVE_RE.match(template):
-        raise cli.UsageError(f"folder template {template!r} must be relative using '/' separators")
+        raise UsageError(f"folder template {template!r} must be relative using '/' separators")
     if any(seg in ("", ".", "..") for seg in template.split("/")):
-        raise cli.UsageError(f"folder template {template!r} cannot contain empty, '.', or '..'")
+        raise UsageError(f"folder template {template!r} cannot contain empty, '.', or '..'")
     try:
         parsed = list(_FORMATTER.parse(template))
     except ValueError as error:
-        raise cli.UsageError(f"folder template {template!r} is invalid: {error}") from None
+        raise UsageError(f"folder template {template!r} is invalid: {error}") from None
     for _, field_name, format_spec, conversion in parsed:
         if field_name is None:
             continue
         if not field_name or conversion is not None or format_spec:
-            raise cli.UsageError(
+            raise UsageError(
                 f"folder template {template!r} has invalid placeholder {{{field_name}}}"
             )
         if field_name not in allowed:
-            raise cli.UsageError(
+            raise UsageError(
                 f"folder template {template!r} has unknown field {{{field_name}}} for {source.code}"
             )
 
@@ -320,7 +320,7 @@ def _validate_from(
     routes = _target_routes(by_code, targets)
     for target, route in routes:
         if not _route_from(route) and not route.discovers:
-            raise cli.UsageError(
+            raise UsageError(
                 f"--from applies to profiles and chats; {target} is one post, downloaded whole"
             )
     if routes:
@@ -348,9 +348,9 @@ def _check_from_entry(
         names = [part.strip() for part in entry.split(",") if part.strip()]
         bad = [name for name in names if name != ALL and name not in known]
     if not names:
-        raise cli.UsageError(f"--from {entry!r} has no category name")
+        raise UsageError(f"--from {entry!r} has no category name")
     if bad:
-        raise cli.UsageError(f"unknown --from category {', '.join(map(repr, bad))}")
+        raise UsageError(f"unknown --from category {', '.join(map(repr, bad))}")
 
 
 def _target_routes(

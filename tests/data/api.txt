@@ -5,6 +5,23 @@ flnd.AuthInfo.expiring: field -> list[tuple[str, float]]
 flnd.AuthInfo.name: field -> str
 flnd.AuthInfo.origin: field -> str
 flnd.AuthInfo.state: field -> str
+flnd.Blocked(flnd.SiteError)
+flnd.Blocked.hint: attribute
+flnd.Blocked.response: attribute
+flnd.Blocked.retryable: attribute
+flnd.Blocked.status: attribute
+flnd.Blocked.target: attribute
+flnd.Blocked.wait: attribute
+flnd.Changed(flnd.SiteError)
+flnd.Changed.hint: attribute
+flnd.Changed.response: attribute
+flnd.Changed.retryable: attribute
+flnd.Changed.status: attribute
+flnd.Changed.target: attribute
+flnd.DiskError(flnd.Error)
+flnd.DiskError.hint: attribute
+flnd.DiskError.retryable: attribute
+flnd.DiskError.target: attribute
 flnd.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] = SOURCES)
 flnd.Engine.auth_ls() -> list[AuthInfo]
 flnd.Engine.browsers: property -> dict[str, str]
@@ -21,7 +38,23 @@ flnd.Engine.target_del(targets: Sequence[Target | str]) -> list[Target]
 flnd.Engine.target_ls() -> list[TargetInfo]
 flnd.Engine.target_sync(targets: Sequence[Target | str], *, enabled: bool) -> list[Target]
 flnd.Error(Exception)
-flnd.LoginError(flnd.source.Error)
+flnd.Error.hint: attribute
+flnd.Error.retryable: attribute
+flnd.Error.target: attribute
+flnd.LoginError(flnd.Error)
+flnd.LoginError.hint: attribute
+flnd.LoginError.retryable: attribute
+flnd.LoginError.target: attribute
+flnd.NetworkError(flnd.Error)
+flnd.NetworkError.hint: attribute
+flnd.NetworkError.retryable: attribute
+flnd.NetworkError.target: attribute
+flnd.NotFound(flnd.SiteError)
+flnd.NotFound.hint: attribute
+flnd.NotFound.response: attribute
+flnd.NotFound.retryable: attribute
+flnd.NotFound.status: attribute
+flnd.NotFound.target: attribute
 flnd.Range(since: datetime.date | None = None, until: datetime.date | None = None)
 flnd.Range.parse(text: str) -> Range
 flnd.Range.since: field -> datetime.date | None
@@ -32,6 +65,12 @@ flnd.Report.files: property -> int
 flnd.Report.ok: property -> bool
 flnd.Report.targets: field -> tuple[TargetReport, ...]
 flnd.SOURCES: dict
+flnd.SiteError(flnd.Error)
+flnd.SiteError.hint: attribute
+flnd.SiteError.response: attribute
+flnd.SiteError.retryable: attribute
+flnd.SiteError.status: attribute
+flnd.SiteError.target: attribute
 flnd.Source()
 flnd.Source.browser: attribute -> ClassVar[bool]
 flnd.Source.categories: attribute -> ClassVar[tuple[str, ...]]
@@ -56,13 +95,16 @@ flnd.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
 flnd.Source.stealth: attribute -> ClassVar[bool]
 flnd.Source.unsupported: attribute -> ClassVar[Mapping[str, str]]
 flnd.Source.user_agent: attribute -> ClassVar[str | None]
+flnd.SourceError(flnd.Error)
+flnd.SourceError.hint: attribute
+flnd.SourceError.retryable: attribute
+flnd.SourceError.target: attribute
+flnd.Stopped(KeyboardInterrupt)
 flnd.Target(source: str, kind: str, value: str, query: bool = False)
 flnd.Target.kind: field -> str
 flnd.Target.query: field -> bool
 flnd.Target.source: field -> str
 flnd.Target.value: field -> str
-flnd.TargetError(flnd.source.Error, ValueError)
-flnd.TargetError.url: attribute
 flnd.TargetInfo(target: Target, sync: bool, at: str, files: int, size: int, seen: int, categories: dict[str, str], query: bool)
 flnd.TargetInfo.at: field -> str
 flnd.TargetInfo.categories: field -> dict[str, str]
@@ -72,28 +114,49 @@ flnd.TargetInfo.seen: field -> int
 flnd.TargetInfo.size: field -> int
 flnd.TargetInfo.sync: field -> bool
 flnd.TargetInfo.target: field -> Target
-flnd.TargetReport(target: Target, written: tuple[Path, ...], skipped: int, error: str | None = None)
-flnd.TargetReport.error: field -> str | None
+flnd.TargetReport(target: Target, written: tuple[Path, ...], skipped: int, error: Error | Stopped | None = None)
+flnd.TargetReport.error: field -> Error | Stopped | None
 flnd.TargetReport.skipped: field -> int
 flnd.TargetReport.target: field -> Target
 flnd.TargetReport.written: field -> tuple[Path, ...]
+flnd.ToolError(flnd.Error)
+flnd.ToolError.hint: attribute
+flnd.ToolError.retryable: attribute
+flnd.ToolError.target: attribute
+flnd.UsageError(flnd.Error)
+flnd.UsageError.hint: attribute
+flnd.UsageError.retryable: attribute
+flnd.UsageError.target: attribute
 flnd.__version__: str
 flnd.download(targets: Target | str | Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), limit: int | None = None, dry: bool = False, sync: bool = False, again: bool = False, home: Path = Path('.flnd')) -> Report
 flnd.open(code: str, *, home: Path = Path('.flnd'), time: Range | str = Range(since=None, until=None)) -> Iterator[TargetSite]
 flnd.resolve(text: str) -> Target
 flnd.source: module
+flnd.source.Blocked(flnd.SiteError)
+flnd.source.Blocked.hint: attribute
+flnd.source.Blocked.response: attribute
+flnd.source.Blocked.retryable: attribute
+flnd.source.Blocked.status: attribute
+flnd.source.Blocked.target: attribute
+flnd.source.Blocked.wait: attribute
 flnd.source.Category(function: Callable[..., Any], *, newest_first: bool = False, folder: str | None = None, key: str | None = None)
 flnd.source.Category.folder: attribute
 flnd.source.Category.function: attribute
 flnd.source.Category.key: attribute
 flnd.source.Category.name: attribute
 flnd.source.Category.newest_first: attribute
+flnd.source.Changed(flnd.SiteError)
+flnd.source.Changed.hint: attribute
+flnd.source.Changed.response: attribute
+flnd.source.Changed.retryable: attribute
+flnd.source.Changed.status: attribute
+flnd.source.Changed.target: attribute
 flnd.source.DateLike: Union
 flnd.source.Error(Exception)
+flnd.source.Error.hint: attribute
+flnd.source.Error.retryable: attribute
+flnd.source.Error.target: attribute
 flnd.source.Fetch: _CallableGenericAlias
-flnd.source.FetchError(flnd.source.Error)
-flnd.source.FetchError.response: attribute
-flnd.source.FetchError.status: attribute
 flnd.source.File(url: str | Sequence[str] | Fetch, *, audio: str | None = None, name: str | None = None, size: int | None = None)
 flnd.source.File.audio: field -> str | None
 flnd.source.File.content: field -> str | None
@@ -106,7 +169,20 @@ flnd.source.Login.ask(message: str, *, secret: bool = False, description: str = 
 flnd.source.Login.info(message: str, **fields: Any) -> None
 flnd.source.Login.interactive: property -> bool
 flnd.source.Login.secrets: property -> MutableMapping[str, str]
-flnd.source.LoginError(flnd.source.Error)
+flnd.source.LoginError(flnd.Error)
+flnd.source.LoginError.hint: attribute
+flnd.source.LoginError.retryable: attribute
+flnd.source.LoginError.target: attribute
+flnd.source.NetworkError(flnd.Error)
+flnd.source.NetworkError.hint: attribute
+flnd.source.NetworkError.retryable: attribute
+flnd.source.NetworkError.target: attribute
+flnd.source.NotFound(flnd.SiteError)
+flnd.source.NotFound.hint: attribute
+flnd.source.NotFound.response: attribute
+flnd.source.NotFound.retryable: attribute
+flnd.source.NotFound.status: attribute
+flnd.source.NotFound.target: attribute
 flnd.source.Post(id: str | int, files: Sequence[File] | Callable[[], Iterable[File]] = (), *, date: DateLike = None, headers: Mapping[str, str] | None = None, **fields: Any)
 flnd.source.Post.category: field -> str
 flnd.source.Post.date: field -> DateLike
@@ -147,6 +223,12 @@ flnd.source.Site.state: property -> MutableMapping[str, Any]
 flnd.source.Site.target: property -> Target
 flnd.source.Site.time: property -> Range
 flnd.source.Site.warn(message: str, **fields: Any) -> None
+flnd.source.SiteError(flnd.Error)
+flnd.source.SiteError.hint: attribute
+flnd.source.SiteError.response: attribute
+flnd.source.SiteError.retryable: attribute
+flnd.source.SiteError.status: attribute
+flnd.source.SiteError.target: attribute
 flnd.source.Source()
 flnd.source.Source.browser: attribute -> ClassVar[bool]
 flnd.source.Source.categories: attribute -> ClassVar[tuple[str, ...]]
@@ -171,13 +253,19 @@ flnd.source.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.stealth: attribute -> ClassVar[bool]
 flnd.source.Source.unsupported: attribute -> ClassVar[Mapping[str, str]]
 flnd.source.Source.user_agent: attribute -> ClassVar[str | None]
+flnd.source.SourceError(flnd.Error)
+flnd.source.SourceError.hint: attribute
+flnd.source.SourceError.retryable: attribute
+flnd.source.SourceError.target: attribute
 flnd.source.Target(source: str, kind: str, value: str, query: bool = False)
 flnd.source.Target.kind: field -> str
 flnd.source.Target.query: field -> bool
 flnd.source.Target.source: field -> str
 flnd.source.Target.value: field -> str
-flnd.source.TargetError(flnd.source.Error, ValueError)
-flnd.source.TargetError.url: attribute
+flnd.source.UsageError(flnd.Error)
+flnd.source.UsageError.hint: attribute
+flnd.source.UsageError.retryable: attribute
+flnd.source.UsageError.target: attribute
 flnd.source.day(value: Any) -> datetime.date | None
 flnd.source.fill(template: str, fields: Mapping[str, Any], *, safe: bool = True) -> str
 flnd.source.pages(fetch: Callable[[str | None], Any], cursor: Callable[[Any], str | None]) -> Iterator[Any]

@@ -17,7 +17,7 @@ from unittest import mock
 from fakes import FakeSite, Seen, collect
 
 from flnd.options import Options
-from flnd.source import FetchError, Target, TargetError
+from flnd.source import SiteError, Target, UsageError
 from flnd.sources.tik import TIKTOK_UA, TikTok, best_video
 from flnd import _html as selector
 
@@ -84,7 +84,7 @@ class RoutesTest(unittest.TestCase):
                 if isinstance(expected, tuple):
                     self.assertEqual(TikTok().resolve(value), Target("tik", *expected))
                 else:
-                    with self.assertRaisesRegex(TargetError, f"^tik: {expected}"):
+                    with self.assertRaisesRegex(UsageError, f"^tik: {expected}"):
                         TikTok().resolve(value)
 
 
@@ -509,7 +509,7 @@ class ScrollTest(unittest.TestCase):
     def test_unsolved_captcha_after_limit_raises_fetch_error(self):
         captcha = "<body><div id='captcha_container'>Drag the slider</div></body>"
         attempts = []
-        with self.assertRaisesRegex(FetchError, "captcha"):
+        with self.assertRaisesRegex(SiteError, "captcha"):
             run("tik:someone", html=lambda tab: (attempts.append(len(tab.seen.back_offs)), captcha)[1])
         self.assertEqual(attempts[-1], 3)
 

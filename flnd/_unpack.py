@@ -11,14 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import IO, Any, Callable, Literal, Sequence, Union
 
-from flnd import _base
 from flnd import _files as fs
 from flnd import _tools as sh
+from flnd.errors import DiskError, SiteError
 
-__all__ = [
-    "BrokenError", "Entry", "Error", "Limits", "MissingError", "PasswordError",
-    "UnsafeError", "ls", "pack", "unpack",
-]
+__all__ = ["Entry", "Limits", "ls", "pack", "unpack"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 Progress = Callable[[int, int], Any]
@@ -33,24 +30,11 @@ CHUNK = 1024 * 1024
 RAR_LINKS = ("link", "junction", "reference")
 
 
-class Error(_base.Error):
-    """The base of every error `flnd._unpack` raises."""
-
-
-class UnsafeError(Error, _base.UnsafeError):
-    """An entry would land outside `dest`, is a link/special file, or exceeds `Limits`."""
-
-
-class BrokenError(Error, _base.BrokenError):
-    """The archive is truncated, corrupt, or unsupported."""
-
-
-class PasswordError(Error, _base.RefusedError, ValueError):
-    """The archive is encrypted and needs a valid password."""
-
-
-class MissingError(Error, _base.MissingError):
-    """Reading or writing this archive format needs an external tool (`7zz`, `unrar`)."""
+# Errors. An archive is a file a site served, so one that can't be extracted is a `SiteError`
+# (not retried): truncated, corrupt or unsupported; encrypted with a wrong or missing password;
+# or unsafe, with an entry that would land outside `dest`, a link, or one past `Limits`. A
+# destination that exists already, or a source that doesn't, is a `DiskError`. A missing or
+# failing `7zz` or `unrar` is the `ToolError` `flnd._tools` raises.
 
 
 @dataclass(frozen=True)
@@ -145,7 +129,7 @@ def unpack(
     if conflict == "error":
         for e, target in zip(entries, targets):
             if e.kind == "file" and target.exists():
-                raise UnsafeError(f"{target} already exists")
+                raise DiskError(f"{target} already exists")
     out_dir.mkdir(parents=True, exist_ok=True)
     if kind == "zip":
         return _unpack_zip(
@@ -166,7 +150,7 @@ def unpack(
 
 def _detect(path: Path) -> str:
     if not path.is_file():
-        raise BrokenError(f"{path}: archive not found")
+        raise SiteError(f"{path}: archive not found")
     with path.open("rb") as handle:
         head = handle.read(8)
     if head.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
@@ -177,7 +161,7 @@ def _detect(path: Path) -> str:
         return "rar"
     if tarfile.is_tarfile(path):
         return "tar"
-    raise BrokenError(f"{path.name}: unsupported or corrupt archive")
+    raise SiteError(f"{path.name}: unsupported or corrupt archive")
 
 
 def _write_kind(path: Path) -> str:
@@ -209,32 +193,32 @@ def _collect_files(sources: Sequence[Path]) -> list[tuple[Path, str]]:
         elif src.is_file():
             out.append((src, src.name))
         else:
-            raise Error(f"{src}: source does not exist")
+            raise DiskError(f"{src}: source does not exist")
     return out
 
 
 def _safe_dest(dest: Path, member: str) -> Path:
     norm = member.replace("\\", "/")
     if not norm or norm.startswith("/") or DRIVE.match(norm):
-        raise UnsafeError(f"unsafe archive path {member!r}")
+        raise SiteError(f"unsafe archive path {member!r}")
     parts = PurePosixPath(norm).parts
     if any(p in ("..", "") for p in parts):
-        raise UnsafeError(f"unsafe archive path {member!r}")
+        raise SiteError(f"unsafe archive path {member!r}")
     resolved_root = dest.resolve()
     target = (dest / Path(*parts)).resolve()
     if target != resolved_root and resolved_root not in target.parents:
-        raise UnsafeError(f"archive path escapes destination: {member!r}")
+        raise SiteError(f"archive path escapes destination: {member!r}")
     return dest / Path(*parts)
 
 
 def _check_limits(entries: Sequence[Entry], archive_size: int, limits: Limits) -> None:
     if len(entries) > limits.files:
-        raise UnsafeError(f"too many entries ({len(entries)} > {limits.files})")
+        raise SiteError(f"too many entries ({len(entries)} > {limits.files})")
     total = sum(e.size or 0 for e in entries)
     if total > limits.size:
-        raise UnsafeError(f"unpacked size exceeds limit ({total} > {limits.size})")
+        raise SiteError(f"unpacked size exceeds limit ({total} > {limits.size})")
     if archive_size > 0 and total / archive_size > limits.ratio:
-        raise UnsafeError(f"compression ratio exceeds limit ({limits.ratio})")
+        raise SiteError(f"compression ratio exceeds limit ({limits.ratio})")
 
 
 def _read_entries(path: Path, kind: str, *, password: str | None) -> list[Entry]:
@@ -246,18 +230,18 @@ def _read_entries(path: Path, kind: str, *, password: str | None) -> list[Entry]
                     for i in zf.infolist()
                 ]
         except zipfile.BadZipFile as error:
-            raise BrokenError(f"{path.name}: {error}") from error
+            raise SiteError(f"{path.name}: {error}") from error
     if kind == "tar":
         try:
             with tarfile.open(path) as tf:
                 out: list[Entry] = []
                 for m in tf.getmembers():
                     if m.issym() or m.islnk() or not (m.isfile() or m.isdir()):
-                        raise UnsafeError(f"unsafe tar entry {m.name!r}")
+                        raise SiteError(f"unsafe tar entry {m.name!r}")
                     out.append(Entry(m.name, m.size, "dir" if m.isdir() else "file"))
                 return out
         except tarfile.TarError as error:
-            raise BrokenError(f"{path.name}: {error}") from error
+            raise SiteError(f"{path.name}: {error}") from error
     if kind == "7z":
         return _ls_7z(path, password=password)
     return _ls_unrar(path, password=password)
@@ -286,10 +270,10 @@ def _unpack_zip(
                     progress(idx, len(infos))
     except RuntimeError as error:
         if "password" in str(error).lower():
-            raise PasswordError(f"{path.name}: wrong or missing password") from error
-        raise BrokenError(f"{path.name}: {error}") from error
+            raise SiteError(f"{path.name}: wrong or missing password") from error
+        raise SiteError(f"{path.name}: {error}") from error
     except zipfile.BadZipFile as error:
-        raise BrokenError(f"{path.name}: {error}") from error
+        raise SiteError(f"{path.name}: {error}") from error
     return written
 
 
@@ -315,14 +299,14 @@ def _unpack_tar(
                 if progress:
                     progress(idx, len(members))
     except tarfile.TarError as error:
-        raise BrokenError(f"{path.name}: {error}") from error
+        raise SiteError(f"{path.name}: {error}") from error
     return written
 
 
 def _save(stream: IO[bytes], target: Path, *, replace: bool) -> None:
     """Copy `stream` onto `target` atomically, piece by piece."""
     if not replace and target.exists():
-        raise UnsafeError(f"{target} already exists")
+        raise DiskError(f"{target} already exists")
     with fs.stage(target, keep=False) as part, part.open("wb") as out:
         shutil.copyfileobj(stream, out, CHUNK)
 
@@ -333,7 +317,8 @@ def _7z_tool() -> sh.Tool:
             return sh.find(name)
         except sh.MissingError:
             continue
-    raise MissingError("7z archives need `7zz` or `7z` on PATH")
+    raise sh.MissingError("7z archives need `7zz` or `7z` on PATH",
+                          hint="install 7-Zip (7zz), or put it on PATH")
 
 
 def _seven_zip_pack(
@@ -348,10 +333,7 @@ def _seven_zip_pack(
     with fs.stage(out, keep=False) as part:
         # 7zz adds to an archive already there, such as a stage a crash left behind.
         part.unlink(missing_ok=True)
-        try:
-            tool.run(*args, "--", part, *sources)
-        except sh.RunError as error:
-            raise Error(str(error)) from error
+        tool.run(*args, "--", part, *sources)
 
 
 def _ls_7z(path: Path, *, password: str | None) -> list[Entry]:
@@ -361,8 +343,8 @@ def _ls_7z(path: Path, *, password: str | None) -> list[Entry]:
         res = tool.run(*args)
     except sh.RunError as error:
         if "password" in error.err.lower() or "wrong password" in error.out.lower():
-            raise PasswordError(f"{path.name}: wrong or missing password") from error
-        raise BrokenError(str(error)) from error
+            raise SiteError(f"{path.name}: wrong or missing password") from error
+        raise SiteError(str(error)) from error
     entries: list[Entry] = []
     cur: dict[str, str] = {}
     for line in res.out.splitlines():
@@ -383,7 +365,7 @@ def _7z_entry(cur: dict[str, str]) -> Entry:
     flags, _, mode = cur.get("Attributes", "").partition(" ")
     # `L` is a Windows reparse point (a link or junction), `l` a Unix symbolic link.
     if "L" in flags or mode.startswith("l") or cur.get("Symbolic Link") or cur.get("Hard Link"):
-        raise UnsafeError(f"unsafe 7z entry {cur['Path']!r}: a link")
+        raise SiteError(f"unsafe 7z entry {cur['Path']!r}: a link")
     is_dir = cur.get("Folder") == "+" or flags.startswith("D")
     size_raw = cur.get("Size", "")
     size = int(size_raw) if size_raw.isdigit() else None
@@ -401,8 +383,8 @@ def _unpack_7z(
         tool.run(*args)
     except sh.RunError as error:
         if "password" in error.err.lower():
-            raise PasswordError(f"{path.name}: wrong or missing password") from error
-        raise BrokenError(str(error)) from error
+            raise SiteError(f"{path.name}: wrong or missing password") from error
+        raise SiteError(str(error)) from error
     written = [_safe_dest(dest, e.name) for e in entries if e.kind == "file"]
     if progress:
         progress(len(written), len(written))
@@ -413,7 +395,8 @@ def _unrar_tool() -> sh.Tool:
     try:
         return sh.find("unrar")
     except sh.MissingError as error:
-        raise MissingError("RAR archives need `unrar` on PATH") from error
+        raise sh.MissingError("RAR archives need `unrar` on PATH",
+                              hint="install unrar, or put it on PATH") from error
 
 
 def _ls_unrar(path: Path, *, password: str | None) -> list[Entry]:
@@ -423,8 +406,8 @@ def _ls_unrar(path: Path, *, password: str | None) -> list[Entry]:
         res = tool.run("vt", pwd_flag, "--", str(path))
     except sh.RunError as error:
         if error.code == 11 or "password" in error.err.lower():
-            raise PasswordError(f"{path.name}: wrong or missing password") from error
-        raise BrokenError(str(error)) from error
+            raise SiteError(f"{path.name}: wrong or missing password") from error
+        raise SiteError(str(error)) from error
     entries: list[Entry] = []
     name: str | None = None
     size: int | None = None
@@ -439,7 +422,7 @@ def _ls_unrar(path: Path, *, password: str | None) -> list[Entry]:
         elif k == "Size" and v.isdigit():
             size = int(v)
         elif k == "Type" and any(word in v.lower() for word in RAR_LINKS):
-            raise UnsafeError(f"unsafe rar entry {name!r}: {v}")
+            raise SiteError(f"unsafe rar entry {name!r}: {v}")
         elif k == "Type":
             kind = "dir" if "dir" in v.lower() else "file"
     if name is not None:
@@ -458,8 +441,8 @@ def _unpack_unrar(
         tool.run("x", "-y", ov_flag, pwd_flag, "--", str(path), str(dest) + os.sep)
     except sh.RunError as error:
         if error.code == 11 or "password" in error.err.lower():
-            raise PasswordError(f"{path.name}: wrong or missing password") from error
-        raise BrokenError(str(error)) from error
+            raise SiteError(f"{path.name}: wrong or missing password") from error
+        raise SiteError(str(error)) from error
     written = [_safe_dest(dest, e.name) for e in entries if e.kind == "file"]
     if progress:
         progress(len(written), len(written))

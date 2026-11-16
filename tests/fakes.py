@@ -17,11 +17,11 @@ from unittest import mock
 from flnd import job
 from flnd.engine import resolve
 from flnd.options import Options
-from flnd.source import FetchError, File, Post, Range, Source, Target
+from flnd.source import File, NotFound, Post, Range, SiteError, Source, Target
 from flnd import _browser as browser, _http as http
 
 
-# A fixture: data for a URL, a FetchError to raise, or a function of (url, request) giving either.
+# A fixture: data for a URL, a SiteError to raise, or a function of (url, request) giving either.
 Answer = Any
 
 
@@ -48,7 +48,7 @@ class FakeSite:
     Args:
         target: the target it acts for.
         cookies: the login's cookies.
-        json: data for a URL, a `FetchError` to raise, or a function of `(url, request)` giving either.
+        json: data for a URL, a `SiteError` to raise, or a function of `(url, request)` giving either.
         html: page text for a URL, as `json`.
         pages: the HTML `page` shows after `goto` loaded a URL; "" for one not listed.
         options: the run's options; `time` reads `--time` from them.
@@ -84,11 +84,11 @@ class FakeSite:
         base = url.split("?")[0]
         if base in self._json:
             answer = _answer(self._json, url, request)
-            if not isinstance(answer, FetchError):
+            if not isinstance(answer, SiteError):
                 return http.Response(200, url, {"content-type": "application/json"}, jsonlib.dumps(answer).encode())
         else:
             answer = _answer(self._html, url, request)
-            if not isinstance(answer, FetchError):
+            if not isinstance(answer, SiteError):
                 return http.Response(200, url, {"content-type": "text/html"}, str(answer).encode())
         if not check and answer.status is not None:
             return answer.response or http.Response(answer.status, url, {})
@@ -191,6 +191,6 @@ def _first_key(source: Source, post: Post, category: Any) -> str | None:
 
 
 def _answer(answers: Mapping[str, Answer], url: str, request: dict[str, Any]) -> Any:
-    """The fixture for `url` without its query, called when it's a function; a 404 `FetchError` for one not given."""
-    answer = answers.get(url.split("?")[0], FetchError(f"HTTP 404 for {url}", status=404))
+    """The fixture for `url` without its query, called when it's a function; a 404 `NotFound` for one not given."""
+    answer = answers.get(url.split("?")[0], NotFound(f"HTTP 404 for {url}", status=404))
     return answer(url, request) if callable(answer) else answer

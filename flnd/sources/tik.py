@@ -20,7 +20,9 @@ from pathlib import PurePosixPath
 from typing import Any, Callable, Dict, Generator, Iterator, List, Mapping, NamedTuple, Sequence
 from urllib.parse import urlsplit
 
-from flnd.source import FetchError, File, Post, Site, Source, caught_up, day, fill, target
+from flnd.source import (
+    Blocked, File, NetworkError, Post, Site, SiteError, Source, caught_up, day, fill, target,
+)
 from flnd.sources.common.feed import Responses, watch_responses
 from flnd import _html as selector
 
@@ -218,7 +220,8 @@ class Profile:
                                  message="Solve the TikTok captcha in the browser window"):
                 return
             if attempts >= CAPTCHA_ATTEMPTS:
-                raise FetchError("TikTok captcha wasn't solved")
+                raise Blocked("TikTok captcha wasn't solved",
+                              hint="solve it in a browser, then try again")
             attempts += 1
             # Unsolved captcha handled as rate limit: back off, then reload page.
             self.site.back_off("TikTok captcha")
@@ -252,7 +255,7 @@ class Profile:
     def _load(self) -> bool:
         """Load the profile, wait out any captcha, and read its own data."""
         if not self.site.goto(self.url):
-            raise FetchError("the profile didn't load")
+            raise SiteError("the profile didn't load")
         # The captcha shows a few seconds after the load event, over a page that looks ready.
         self.site.page.raw.wait_for_timeout(SETTLE * 1000)
         self.wait_out_captcha()
@@ -451,7 +454,7 @@ def embed_posts(site: Site, video_id: str) -> Iterator[Post]:
         embed_url = f"https://www.tiktok.com/embed/v2/{video_id}"
         page = site.fetch(embed_url).html
     # A failed fetch is a warning for this one post, so the rest of the run goes on.
-    except FetchError as error:
+    except (SiteError, NetworkError) as error:
         site.warn("{err} on embed endpoint for {id}", err=error, id=video_id)
         return
     data = page.script("__NEXT_DATA__").first

@@ -1,90 +1,427 @@
-"""The error tree of AGENTS.md: `_base.Error`, its three kinds, and each module's `Error`.
+"""The one error hierarchy (`flnd.errors`) and its policy (docs/errors.md).
 
-It pins each error's place in the tree, and also the builtin base it had before the tree, such as
-ValueError, so every `except` written before still catches what it caught. Nothing is faked.
+Three groups of tests:
+1. `ClassesTest`: one test per class, raising it where flnd raises it and checking its place in
+   the tree and its `hint`, `target` and `retryable`.
+2. `PolicyTest`: one test per row of the policy table, through the real HTTP client, the job
+   and the engine, on a fake network and a fake clock.
+3. `CliTest`: the exit code of each class, and that a person's mistake (usage, login, disk, a
+   tool) prints one line and a hint, never a traceback, while a bug writes a crash file.
+
+The network, the clock and the browser are faked; nothing here touches a real site.
 """
 
+from __future__ import annotations
+
+import errno
+import io
+import threading
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from flnd import _base
-from flnd import _unpack as archive, _browser as browser, _cli as cli, _time as clock, _cookies as cookies, _vault as crypto, _files as fs, _http as http, _prompt as prompt, _html as selector, _tools as sh, _db as store, _text as text, _loop as worker
+import httpx
+
+import flnd
+from flnd import job, sources
+from flnd import _cli as cli, _files as fs, _http as http, _time as clock, _tools as sh
+from flnd.errors import (
+    Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError, SourceError,
+    Stopped, ToolError, UsageError, classify, disk,
+)
+from flnd.source import File, Range, Source, Target, target
 from flnd._ui import ui
+from test_commands import FlndCase
+from test_engine import EngineCase, make_source
 
-MODULES = {"archive": archive, "browser": browser, "cli": cli, "clock": clock,
-           "cookies": cookies, "crypto": crypto, "fs": fs, "http": http,
-           "prompt": prompt, "selector": selector, "sh": sh, "store": store, "text": text, "ui": ui,
-           "worker": worker}
-
-# Each error that existed before the tree: its module, the builtin base it had then, which it keeps,
-# and the kind of problem it now also is (None for none of the three).
-ERRORS = [
-    (archive.UnsafeError, "archive", ValueError, _base.UnsafeError),
-    (archive.BrokenError, "archive", ValueError, _base.BrokenError),
-    (archive.PasswordError, "archive", ValueError, _base.RefusedError),
-    (sh.UnsafeError, "sh", ValueError, _base.UnsafeError),
-    (cookies.Error, "cookies", Exception, None),
-    (cookies.UnsafeError, "cookies", ValueError, _base.UnsafeError),
-    (crypto.Error, "crypto", ValueError, None),
-    (store.ClosedError, "store", RuntimeError, None),
-    (selector.BrokenError, "selector", ValueError, _base.BrokenError),
-    (cli.UsageError, "cli", ValueError, None),
-    (prompt.Error, "prompt", Exception, None),
-    (worker.ClosedError, "worker", RuntimeError, None),
-]
-KINDS = (_base.UnsafeError, _base.BrokenError, _base.RefusedError)
+SITE = "https://example.com"
+# The secrets the redaction test plants: none may reach a message.
+TOKEN = "s3cr3t-token-value"
+PASSWORD = "hunter2-example"
+ALL = (Error, UsageError, LoginError, SiteError, Blocked, NotFound, Changed, NetworkError,
+       DiskError, ToolError, SourceError)
 
 
-class TreeTest(unittest.TestCase):
-    def test_the_three_kinds(self):
-        # UnsafeError and BrokenError are about bad input, so they are ValueErrors; a refusal isn't.
-        for kind in KINDS:
-            self.assertTrue(issubclass(kind, _base.Error))
-        self.assertTrue(issubclass(_base.UnsafeError, ValueError))
-        self.assertTrue(issubclass(_base.BrokenError, ValueError))
-        self.assertFalse(issubclass(_base.RefusedError, ValueError))
-        self.assertTrue(issubclass(_base.Error, Exception))
+class HttpCase(unittest.TestCase):
+    """The real client on `http.fake`, a fake clock, and jitter pinned to the full step."""
 
-    def test_every_module_has_its_own_error(self):
-        for name, module in MODULES.items():
-            with self.subTest(name):
-                self.assertTrue(issubclass(module.Error, _base.Error))
-                self.assertIsNot(module.Error, _base.Error)
-        self.assertEqual(len({module.Error for module in MODULES.values()}), len(MODULES))
+    def setUp(self) -> None:
+        self.clock = self.enterContext(clock.use(clock.Fake()))
+        self.enterContext(mock.patch.object(http.random, "uniform", lambda low, high: high))
+        self.enterContext(ui.scope(dest=io.StringIO(), color=False, width=80))
+        self.seen: list[httpx.Request] = []
 
-    def test_each_error_keeps_its_old_base_and_joins_the_tree(self):
-        for error, module, old_base, kind in ERRORS:
-            with self.subTest(error.__qualname__, module=module):
-                self.assertTrue(issubclass(error, old_base))
-                self.assertTrue(issubclass(error, MODULES[module].Error))
-                for other in KINDS:
-                    self.assertEqual(issubclass(error, other), other is kind, other.__name__)
+    def serve(self, answer: httpx.Response | Exception):
+        """A route that counts its requests and gives `answer` to each."""
+        def route(request: httpx.Request) -> httpx.Response:
+            self.seen.append(request)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
 
-    def test_no_error_gained_a_builtin_base(self):
-        # A new builtin base would make an old `except ValueError` or `except RuntimeError` catch more.
-        for error, module, old_base, _ in ERRORS:
-            with self.subTest(error.__qualname__, module=module):
-                for builtin in (ValueError, RuntimeError, TypeError):
-                    self.assertEqual(issubclass(error, builtin), old_base is builtin, builtin.__name__)
+        return route
 
-    def test_a_missing_tool_is_caught_by_name_and_by_its_old_builtin(self):
-        for error, module in ((sh.MissingError, sh), (archive.MissingError, archive),
-                              (browser.MissingError, browser), (cookies.MissingError, cookies)):
-            with self.subTest(error.__qualname__):
-                self.assertTrue(issubclass(error, _base.MissingError))
-                self.assertTrue(issubclass(error, module.Error))
-                self.assertTrue(issubclass(error, RuntimeError))
-        self.assertTrue(issubclass(_base.MissingError, _base.Error))
 
-    def test_siblings_stay_apart(self):
-        # The tree adds bases, never links two module errors: a broken archive isn't an archive.UnsafeError.
-        self.assertFalse(issubclass(archive.BrokenError, archive.UnsafeError))
-        self.assertFalse(issubclass(sh.UnsafeError, archive.UnsafeError))
-        self.assertFalse(issubclass(sh.RunError, sh.UnsafeError))
+# ---------------------------------------------------------------------------------------------
+# 1. One test per class
+# ---------------------------------------------------------------------------------------------
 
-    def test_a_module_error_is_caught_at_every_level(self):
-        for level in (archive.UnsafeError, archive.Error, _base.UnsafeError, _base.Error, ValueError):
-            with self.subTest(level.__qualname__), self.assertRaises(level):
-                raise archive.UnsafeError("unsafe path")
+class ClassesTest(HttpCase):
+    def test_the_tree(self):
+        for kind in ALL:
+            with self.subTest(kind.__name__):
+                self.assertTrue(issubclass(kind, Error))
+                self.assertIs(getattr(flnd, kind.__name__), kind)
+                # No builtin base but Exception: `except ValueError` never catches one by accident.
+                for builtin in (ValueError, RuntimeError, OSError, TypeError, KeyError):
+                    self.assertFalse(issubclass(kind, builtin), builtin.__name__)
+        for kind in (Blocked, NotFound, Changed):
+            self.assertTrue(issubclass(kind, SiteError))
+        self.assertFalse(issubclass(Stopped, Error))
+
+    def test_error(self):
+        error = Error("it broke", hint="do this", target="aaa:example_user", retryable=True)
+        self.assertEqual((str(error), error.hint, error.target, error.retryable),
+                         ("it broke", "do this", "aaa:example_user", True))
+        plain = Error("it broke")
+        self.assertEqual((plain.hint, plain.target, plain.retryable), ("", None, False))
+
+    def test_usage_error(self):
+        with self.assertRaises(UsageError):
+            flnd.resolve("nosuchsource:example_user")
+        with self.assertRaises(UsageError):
+            Range.parse("yesterday")
+        with self.assertRaises(UsageError):
+            flnd.source("nosuchsource")
+
+    def test_login_error(self):
+        made = job.failure(self.refusal(403, "https://api.aaa.example/me"),
+                           Target("aaa", "user", "example_user"), make_source("aaa")())
+        self.assertIsInstance(made, LoginError)
+        self.assertIn("flnd auth login", made.hint)
+        self.assertEqual(made.target, "aaa:example_user")
+        self.assertFalse(made.retryable)
+
+    def test_site_error(self):
+        error = self.refusal(400, f"{SITE}/api")
+        self.assertIs(type(error), SiteError)
+        self.assertEqual(error.status, 400)
+        self.assertEqual(error.response.status, 400)
+        self.assertFalse(error.retryable)
+
+    def test_blocked(self):
+        with http.Client(retry=http.Retry(1)) as client, \
+                http.fake({f"{SITE}/": httpx.Response(429, headers={"Retry-After": "9"})}):
+            with self.assertRaises(Blocked) as caught:
+                client.fetch(f"{SITE}/")
+        self.assertEqual((caught.exception.wait, caught.exception.status), (9.0, 429))
+        self.assertTrue(caught.exception.retryable)
+
+    def test_not_found(self):
+        for status in (404, 410):
+            with self.subTest(status=status):
+                error = self.refusal(status, f"{SITE}/gone")
+                self.assertIsInstance(error, NotFound)
+                self.assertFalse(error.retryable)
+
+    def test_changed(self):
+        with http.fake({f"{SITE}/api": httpx.Response(200, html="<h1>Log in</h1>")}):
+            page = http.fetch(f"{SITE}/api")
+        with self.assertRaises(Changed) as caught:
+            page.json
+        self.assertIn(f"expected JSON from {SITE}/api", str(caught.exception))
+        self.assertFalse(caught.exception.retryable)
+
+    def test_network_error(self):
+        reset = httpx.ConnectError("connection reset", request=httpx.Request("GET", SITE))
+        with http.Client(retry=http.Retry(1)) as client, http.fake({f"{SITE}/": self.serve(reset)}):
+            with self.assertRaises(NetworkError) as caught:
+                client.fetch(f"{SITE}/")
+        self.assertTrue(caught.exception.retryable)
+        self.assertIsInstance(caught.exception.__cause__, httpx.ConnectError)
+
+    def test_disk_error(self):
+        made = disk(OSError(errno.ENOSPC, "No space left on device"), "media/a.jpg")
+        self.assertEqual(str(made), "media/a.jpg: No space left on device")
+        self.assertIn("free some space", made.hint)
+        self.assertEqual(disk(OSError(errno.ENAMETOOLONG, "File name too long")).hint,
+                         "use a shorter --home or folder template")
+        refused = OSError(errno.EACCES, "Permission denied")
+        with mock.patch.object(fs.os, "replace", side_effect=refused):
+            with self.assertRaises(DiskError) as caught:
+                fs.write(Path(self.enterContext(_folder())) / "a.txt", "x")
+        self.assertIn("Permission denied", str(caught.exception))
+        self.assertFalse(caught.exception.retryable)
+
+    def test_tool_error(self):
+        with self.assertRaises(ToolError) as caught:
+            sh.run("flnd-no-such-tool-example")
+        self.assertIn("executable not found", str(caught.exception))
+        self.assertEqual(caught.exception.hint,
+                         "install flnd-no-such-tool-example, or put it on PATH")
+
+    def test_source_error(self):
+        with self.assertRaisesRegex(SourceError, "other.example"):
+            class Outside(Source):
+                code, name, domains = "out", "Outside", ("aaa.example",)
+
+                @target("other.example/{user}")
+                def user(self, site, user): ...
+
+        with self.assertRaises(SourceError):
+            File([])
+        # An unexpected error in a listing is a bug in the source: a SourceError naming it.
+        made = classify(KeyError("id"), target="aaa:example_user")
+        self.assertIsInstance(made, SourceError)
+        self.assertEqual((str(made), made.target),
+                         ("unexpected KeyError: 'id'", "aaa:example_user"))
+        self.assertIsInstance(made.__cause__, KeyError)
+
+    def test_stopped(self):
+        self.assertTrue(issubclass(Stopped, KeyboardInterrupt))
+        self.assertFalse(issubclass(Stopped, Error))
+        stop = threading.Event()
+        stop.set()
+        with self.assertRaises(Stopped), http.Client(stop=stop, retry=http.Retry(2)) as client, \
+                http.fake({f"{SITE}/": 503}):
+            try:
+                client.fetch(f"{SITE}/")
+            except Error:  # never catches a stop
+                self.fail("except Error caught a Stopped")
+        self.assertIs(classify(Stopped()).__class__, Stopped)
+
+    def refusal(self, status: int, url: str) -> SiteError:
+        """What the client raises for `status` at `url`, after its tries."""
+        with http.Client(retry=http.Retry(1)) as client, http.fake({url: status}):
+            try:
+                client.fetch(url)
+            except SiteError as error:
+                return error
+        raise AssertionError(f"no error for HTTP {status}")
+
+
+# ---------------------------------------------------------------------------------------------
+# 2. One test per row of the policy
+# ---------------------------------------------------------------------------------------------
+
+class PolicyTest(HttpCase):
+    def test_a_timeout_a_reset_or_a_5xx_is_retried_with_backoff_then_fails(self):
+        timeout = httpx.ReadTimeout("slow", request=httpx.Request("GET", SITE))
+        for answer, kind in ((httpx.Response(503), SiteError), (timeout, NetworkError)):
+            self.seen.clear()
+            self.clock.slept.clear()
+            with self.subTest(kind=kind.__name__), http.Client(retry=http.Retry(4)) as client, \
+                    http.fake({f"{SITE}/": self.serve(answer)}):
+                with self.assertRaises(kind) as caught:
+                    client.fetch(f"{SITE}/")
+                self.assertTrue(caught.exception.retryable)
+                self.assertEqual(len(self.seen), 4)
+                self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0])
+
+    def test_a_429_waits_what_the_site_asks_then_is_blocked(self):
+        route = self.serve(httpx.Response(429, headers={"Retry-After": "30"}))
+        with http.Client(retry=http.Retry(3)) as client, http.fake({f"{SITE}/": route}):
+            with self.assertRaises(Blocked) as caught:
+                client.fetch(f"{SITE}/")
+        self.assertEqual(self.clock.slept, [30.0, 30.0])
+        self.assertEqual(caught.exception.wait, 30.0)
+
+    def test_a_404_or_410_is_gone_and_never_asked_again(self):
+        for status in (404, 410):
+            self.seen.clear()
+            with self.subTest(status=status), http.Client(retry=http.Retry(4)) as client, \
+                    http.fake({f"{SITE}/": self.serve(httpx.Response(status))}):
+                with self.assertRaises(NotFound):
+                    client.fetch(f"{SITE}/")
+                self.assertEqual((len(self.seen), self.clock.slept), (1, []))
+
+    def test_a_401_or_403_on_the_sources_domains_is_a_login_error_for_that_source(self):
+        source = make_source("aaa")()
+        who = Target("aaa", "user", "example_user")
+        for status in (401, 403):
+            with self.subTest(status=status):
+                own = ClassesTest.refusal(self, status, "https://api.aaa.example/me")
+                self.assertIsInstance(job.failure(own, who, source), LoginError)
+                # The same status from a CDN is an expired link, not a login: it stays a refusal.
+                other = ClassesTest.refusal(self, status, "https://cdn.example/a.jpg")
+                self.assertIs(type(job.failure(other, who, source)), SiteError)
+
+    def test_a_truncated_transfer_keeps_its_part_to_resume(self):
+        body = b"0123456789" * 10
+
+        def cut(request: httpx.Request) -> httpx.Response:
+            def pieces():
+                yield body[:30]
+                raise httpx.ReadError("connection reset", request=request)
+
+            return httpx.Response(200, headers={"content-length": str(len(body))}, content=pieces())
+
+        folder = Path(self.enterContext(_folder()))
+        dest = folder / "a.mp4"
+        with http.Client(retry=http.Retry(1)) as client, http.fake({f"{SITE}/a.mp4": cut}):
+            with self.assertRaises(NetworkError) as caught:
+                client.download(f"{SITE}/a.mp4", dest)
+        self.assertTrue(caught.exception.retryable)
+        self.assertFalse(dest.exists())
+        self.assertEqual(fs._stage_path(dest).read_bytes(), body[:30])
+        # The next try resumes from byte 30 with a Range request.
+        with http.fake({f"{SITE}/a.mp4": body}):
+            http.download(f"{SITE}/a.mp4", dest)
+        self.assertEqual(dest.read_bytes(), body)
+
+    def test_a_parse_failure_is_changed_and_not_retried(self):
+        with http.Client(retry=http.Retry(4)) as client, \
+                http.fake({f"{SITE}/api": self.serve(httpx.Response(200, html="<p>moved</p>"))}):
+            with self.assertRaises(Changed) as caught:
+                client.fetch(f"{SITE}/api").json
+        self.assertEqual(len(self.seen), 1)
+        self.assertFalse(caught.exception.retryable)
+
+    def test_secrets_never_reach_a_message(self):
+        url = f"https://user:{PASSWORD}@example.com/a?token={TOKEN}#{TOKEN}"
+        reset = httpx.ConnectError(f"reset while sending {TOKEN}",
+                                   request=httpx.Request("GET", url))
+        for answer in (httpx.Response(403), httpx.Response(429), reset):
+            with self.subTest(answer=type(answer).__name__), \
+                    http.Client(retry=http.Retry(1)) as client, \
+                    http.fake({"https://example.com/a": self.serve(answer)}):
+                with self.assertRaises(Error) as caught:
+                    client.fetch(url, headers={"Authorization": f"Bearer {TOKEN}"})
+                self.assertNotIn(TOKEN, str(caught.exception))
+                self.assertNotIn(PASSWORD, str(caught.exception))
+
+
+class PolicyEngineTest(EngineCase):
+    def test_a_file_that_fails_fails_alone(self):
+        self.routes["https://cdn.example/bad.jpg"] = httpx.Response(503)
+        source = make_source("aaa", files=[File("https://cdn.example/bad.jpg", name="bad.jpg"),
+                                           File("https://cdn.example/good.jpg", name="good.jpg")])
+        report = self.report(source, targets=["aaa:example_user"])
+        self.assertEqual([path.name for path in report.targets[0].written], ["good.jpg"])
+        self.assertIsNone(report.targets[0].error)
+        self.assertIn("x bad.jpg: GET https://cdn.example/bad.jpg: HTTP 503", self.lines())
+
+    def test_a_refused_login_stops_its_source_and_the_others_go_on(self):
+        self.routes["https://api.aaa.example/me"] = httpx.Response(403)
+        refused = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/me"))
+        report = self.report(refused, make_source("bbb"),
+                             targets=["aaa:example_user", "aaa:example_creator",
+                                      "bbb:example_user"])
+        first, second, other = report.targets
+        self.assertIsInstance(first.error, LoginError)
+        self.assertIs(second.error, first.error)
+        self.assertIsNone(other.error)
+        asked = [str(request.url) for request in self.requests if "aaa.example" in str(request.url)]
+        self.assertEqual(asked, ["https://api.aaa.example/me"])
+
+    def test_disk_full_stops_the_run(self):
+        def full(site):
+            raise disk(OSError(errno.ENOSPC, "No space left on device"), "media/aaa")
+
+        ran = []
+        with self.assertRaises(DiskError):
+            self.report(make_source("aaa", full), make_source("bbb", ran.append),
+                        targets=["aaa:example_user", "bbb:example_user"])
+        self.assertEqual(ran, [])
+
+
+# ---------------------------------------------------------------------------------------------
+# 3. Exit codes, and no traceback for a person's mistake
+# ---------------------------------------------------------------------------------------------
+
+class CliTest(FlndCase):
+    def setUp(self):
+        super().setUp()
+        self.enterContext(clock.use(clock.Fake()))
+
+    def app(self, error: BaseException) -> cli.App:
+        """An app whose one command raises `error`, crashing into `.flnd/logs`."""
+        app = cli.App(name="demo", logs=Path(".flnd/logs"))
+
+        @app.command
+        def fail(*, verbose: bool = False) -> int:
+            raise error
+
+        return app
+
+    def run_demo(self, error: BaseException, *argv: str) -> tuple[int, str]:
+        code, _, out = self.run_with(self.app(error), "fail", *argv)
+        return code, out
+
+    def run_with(self, app: cli.App, *argv: str) -> tuple[int, str, str]:
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", self.dest):
+            code = app.run(list(argv))
+        return code, stdout.getvalue(), self.dest.getvalue()
+
+    def test_each_class_has_its_exit_code(self):
+        cases = [(UsageError("bad flag"), 2), (LoginError("not logged in"), 3),
+                 (SiteError("refused"), 1), (NotFound("gone"), 1), (NetworkError("reset"), 1),
+                 (DiskError("full"), 4), (ToolError("no ffmpeg"), 4), (SourceError("bug"), 4),
+                 (Stopped("stopped"), 130), (KeyboardInterrupt(), 130), (RuntimeError("bug"), 4)]
+        for error, code in cases:
+            with self.subTest(type(error).__name__):
+                self.assertEqual(self.run_demo(error)[0], code)
+                self.assertEqual(cli.exit_code(error), code)
+        self.assertEqual(cli.exit_code(None), 0)
+
+    def test_a_persons_mistake_is_one_line_and_a_hint_never_a_traceback(self):
+        for error in (UsageError("give at least one target", hint="flnd download ins:example_user"),
+                      LoginError("ins: not logged in", hint="run flnd auth login"),
+                      DiskError("media: No space left on device", hint="free some space"),
+                      ToolError("ffmpeg: executable not found", hint="install ffmpeg")):
+            self.dest.seek(0)
+            self.dest.truncate()
+            with self.subTest(type(error).__name__):
+                _, out = self.run_demo(error)
+                self.assertEqual(out.splitlines(), [f"x {error}", f"* {error.hint}"])
+                self.assertNotIn("Traceback", out)
+                self.assertFalse(Path(".flnd/logs").exists())
+
+    def test_a_usage_error_from_flnd_itself_has_no_traceback(self):
+        with mock.patch.dict(sources.SOURCES, {"aaa": make_source("aaa")}):
+            for argv in (("download", "aaa:example_user", "--time", "yesterday"),
+                         ("download", "nosuchsource:example_user"), ("download", "--no-such-flag")):
+                self.dest.seek(0)
+                self.dest.truncate()
+                with self.subTest(argv=argv):
+                    code, _, out = self.run_app(*argv)
+                    self.assertEqual(code, 2)
+                    self.assertNotIn("Traceback", out)
+                    errors = [line for line in out.splitlines() if line.startswith("x ")]
+                    self.assertEqual(len(errors), 1)
+
+    def test_a_login_the_source_needs_exits_3(self):
+        source = make_source("aaa", needs=("sid",), requires_login=True)
+        with mock.patch.dict(sources.SOURCES, {"aaa": source}):
+            code, _, out = self.run_app("download", "aaa:example_user", "--from", "all")
+        self.assertEqual(code, 3)
+        self.assertIn("* aaa:example_user: run flnd auth login", out)
+        self.assertNotIn("Traceback", out)
+
+    def test_a_bug_writes_a_crash_file_and_exits_4(self):
+        code, out = self.run_demo(RuntimeError("an example bug"))
+        self.assertEqual(code, 4)
+        crashes = list(Path(".flnd/logs").glob("crash-*.txt"))
+        self.assertEqual(len(crashes), 1)
+        self.assertIn("Traceback", crashes[0].read_text(encoding="utf-8"))
+        self.assertEqual(out.splitlines(),
+                         ["x unexpected RuntimeError: an example bug; "
+                          f"the details are in {crashes[0]}"])
+
+    def test_with_verbose_a_bug_prints_its_traceback_instead(self):
+        code, out = self.run_demo(RuntimeError("an example bug"), "--verbose")
+        self.assertEqual(code, 4)
+        self.assertIn("Traceback", out)
+        self.assertIn("RuntimeError: an example bug", out)
+        self.assertFalse(Path(".flnd/logs").exists())
+
+
+def _folder():
+    """A temporary folder, as a context manager giving its path."""
+    import tempfile
+
+    return tempfile.TemporaryDirectory()
 
 
 if __name__ == "__main__":

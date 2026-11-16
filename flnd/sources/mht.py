@@ -7,7 +7,9 @@ from pathlib import PurePosixPath
 from typing import Any, Iterator, Mapping
 from urllib.parse import unquote, urlsplit
 
-from flnd.source import FetchError, File, Post, Site, Source, Target, TargetError, pages, target
+from flnd.source import (
+    File, NotFound, Post, Site, Source, Target, UsageError, pages, target,
+)
 from flnd import _text as text
 
 API = "https://mimihentai.moe/api/"
@@ -56,7 +58,7 @@ class Mimi(Source):
         body = site.fetch(f"{API}chapters/{id}").json
         info = body.get("info") if isinstance(body, dict) else None
         if not isinstance(info, dict) or "id" not in info:
-            raise FetchError(f"chapter {id} isn't there")
+            raise NotFound(f"chapter {id} isn't there")
         yield Post(info["id"], _chapter_pages(body), date=info.get("created_at"),
                    order=format_order(info.get("order")), title=info.get("title") or "")
 
@@ -72,7 +74,7 @@ class Mimi(Source):
             return {**cached, "id": cached.get("id") or id}
         body = site.fetch(f"{API}manga/{id}").json
         if not isinstance(body, dict) or not body.get("title"):
-            raise FetchError(f"manga {id} isn't there")
+            raise NotFound(f"manga {id} isn't there")
         return {**body, "id": body.get("id") or id}
 
     @manga.category
@@ -243,7 +245,7 @@ def _resolve_id(site: Site, kind: str, raw: str, lookup: Any) -> str:
             matches = [item_id for label, item_id in found if text.fold(label) == folded_raw]
             if matches:
                 return matches[0]
-    raise TargetError(f"mht: no {kind} named {value}")
+    raise UsageError(f"mht: no {kind} named {value}")
 
 
 def _parse_query(
@@ -252,7 +254,7 @@ def _parse_query(
     """Parse `mht` query text into `(simple_q, advanced_params, chapter_filters)`."""
     stripped = raw.strip()
     if not stripped:
-        raise TargetError("mht: the query is empty")
+        raise UsageError("mht: the query is empty")
     try:
         tokens = shlex.split(stripped)
     except ValueError:
@@ -271,7 +273,7 @@ def _parse_query(
         negated = token.startswith("-")
         key, _, val = (token[1:] if negated else token).partition(":")
         if not val:
-            raise TargetError(f"mht: empty value for {key}")
+            raise UsageError(f"mht: empty value for {key}")
         if key == "title" and not negated:
             titles.append(val)
         elif key == "chapters" and not negated and val.isdigit():
@@ -286,7 +288,7 @@ def _parse_query(
         elif key == "character" and not negated:
             buckets["character"].append(val)
         else:
-            raise TargetError(f"mht: unsupported query term {token!r}")
+            raise UsageError(f"mht: unsupported query term {token!r}")
     if not has_terms:
         return " ".join(titles), {}, []
     params = {key: ",".join(vals) for key, vals in buckets.items() if vals}
