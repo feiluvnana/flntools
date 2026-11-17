@@ -89,8 +89,8 @@ NO_LOCKS = {errno.ENOLCK, errno.EOPNOTSUPP, getattr(errno, "ENOTSUP", errno.EOPN
 # sidecar or an old lock file untouched this long.
 KEEP_AGE = 7 * 86_400
 SETTLE_AGE = 3_600
-# What older flnd versions left: hidden `.<name>.stage` (or `.part`) files.
-OLD_PARTS = (".stage", ".part")
+# A hidden stage file an old flnd may still have left beside a download.
+OLD_STAGE = ".stage"
 # What may sit beside a part: its sidecar, a hard link being made (`link`), and an old stage's
 # `.info` sidecar and lock file.
 SIDES = (SIDE, ".link", ".info", ".lock")
@@ -315,7 +315,7 @@ def part(dest: str | os.PathLike[str], *, resume: bool = False,
     target = Path(dest)
     path = _part_path(target)
     try:
-        fd, size = _open(path, wait=not resume)
+        fd, size = _open(path, wait=not resume, resume=resume)
         if size and not resume:
             os.ftruncate(fd, 0)
             size = 0
@@ -506,7 +506,7 @@ def _part_path(dest: Path) -> Path:
     return dest.with_name(f"{head}.{digest}{PART}")
 
 
-def _open(path: Path, *, wait: bool) -> tuple[int, int]:
+def _open(path: Path, *, wait: bool, resume: bool = False) -> tuple[int, int]:
     """Open and lock the part at `path`, returning its descriptor and the bytes it holds.
 
     1. Create it exclusively: a new part needs no check, since no one else had it.
@@ -545,6 +545,12 @@ def _open(path: Path, *, wait: bool) -> tuple[int, int]:
                 return fd, found.st_size
             if not wait:
                 raise BusyError(f"{path.name}: just saved by another run")
+            # A download must not start a fresh part over a file another run just landed.
+            if resume and path.name.endswith(PART):
+                landed = path.with_name(path.name[: -len(PART)])
+                if landed.is_file() and not path.is_file():
+                    raise BusyError(f"{path.name}: just saved by another run",
+                                    hint="let the other flnd run finish; the next run skips it")
         except BaseException:
             os.close(fd)
             raise
@@ -816,7 +822,7 @@ def _scan(folder: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
 
 def _is_part(name: str) -> bool:
     """Whether `name` is a part, or a stage an older flnd left (`.<name>.stage`)."""
-    return name.endswith(PART) or (name.startswith(".") and name.endswith(OLD_PARTS))
+    return name.endswith(PART) or (name.startswith(".") and name.endswith(OLD_STAGE))
 
 
 def _temporary(name: str) -> bool:
