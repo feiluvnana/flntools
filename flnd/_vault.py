@@ -3,14 +3,13 @@
 A library: it knows nothing of flnd's sources or homes. What it offers, for any caller:
 - `encrypt` and `decrypt`: authenticated encryption of a value under a 32-byte key, bound to a
   context (associated data), so a sealed value moved elsewhere doesn't open.
-- `Vault(path, key_path, slot)`: one slot's secrets as a mapping of text to text, each value
-  sealed in its own row of the database at `path`, under the key in `key_path`.
+- `Vault(path, slot)`: one slot's secrets as a mapping of text to text in the database at `path`.
 - `key(path)`: the key in a key file, made with mode 0600 on first use.
 - `Keychain(account)`: the key in the operating system's keychain instead (macOS's
   `security`, Linux's `secret-tool`).
 - `digest`: the hex hash of text, bytes, a file or a stream.
 
-    with Vault(Path("secrets.db"), Path("secret.key"), "tlg") as saved:
+    with Vault(Path("secrets.db"), "tlg") as saved:
         saved["session"] = "1BVts…"
 
 Who calls it: in flnd, `flnd/_home.py` opens one `Vault` per source (`_home.secrets`), with the
@@ -220,7 +219,6 @@ class Vault(MutableMapping[str, str]):
 
     Args:
         path: the database file (`secret.db`).
-        key_path: optional legacy key path (kept for compatibility with callers).
         slot: whose secrets these are (a source's code); another slot's aren't visible.
         hint: what a value that doesn't open says to do.
 
@@ -233,14 +231,9 @@ class Vault(MutableMapping[str, str]):
         {'session': 's'}
     """
 
-    def __init__(self, path: Path, key_path: Any = None, slot: str = "", *,
-                 hint: str = DAMAGED_KEY):
-        if slot == "" and isinstance(key_path, str):
-            slot = key_path
-            key_path = None
-        self._key_path, self._slot, self._hint = key_path, slot, hint
-        self._key: bytes | None = None
-        self._db = _db.Db(path, schema=SCHEMA.format(""))
+    def __init__(self, path: Path, slot: str, *, hint: str = DAMAGED_KEY):
+        self._slot, self._hint = slot, hint
+        self._db = _db.Db(path, schema=SCHEMA.format(""), secure=True)
 
     def __getitem__(self, name: str) -> str:
         found = self._db.one("SELECT value FROM secrets WHERE slot = ? AND name = ?",
@@ -251,11 +244,6 @@ class Vault(MutableMapping[str, str]):
         if isinstance(val, str):
             return val
         if isinstance(val, (bytes, memoryview)):
-            if self._key_path is not None:
-                try:
-                    return decrypt(val, self._secret_key(), context=self._context(name)).decode()
-                except Exception:
-                    pass
             return bytes(val).decode("utf-8", errors="replace")
         return str(val)
 
@@ -294,15 +282,6 @@ class Vault(MutableMapping[str, str]):
     def close(self) -> None:
         """Close the database; the same as leaving `with`."""
         self._db.close()
-
-    def _context(self, name: str) -> bytes:
-        return f"{self._slot}\0{name}".encode()
-
-    def _secret_key(self) -> bytes:
-        if self._key is None:
-            where = self._key_path
-            self._key = where.key() if isinstance(where, Keychain) else key(where, hint=self._hint)
-        return self._key
 
 
 def key(path: Path, *, hint: str = DAMAGED_KEY) -> bytes:
@@ -406,7 +385,7 @@ class Keychain:
 
         chain = Keychain("vault-1f2e", service="example")
         secret = chain.key()          # made and stored on first use
-        Vault(Path("secrets.db"), chain, "tlg")
+        Vault(Path("secrets.db"), "tlg")
 
     On macOS the item is a generic password in the login keychain, through `/usr/bin/security`;
     on Linux an item of the Secret Service (GNOME Keyring, KWallet), through `secret-tool`. The

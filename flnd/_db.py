@@ -35,6 +35,7 @@ Rules a change must keep:
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 import threading
@@ -52,6 +53,26 @@ __all__ = ["Db", "connect"]
 BUSY_MS = 30_000
 # How often `_wal` tries again while another process is making the same database, in seconds.
 WAL_POLL = 0.01
+
+
+def _harden(path: Path) -> None:
+    """Give a private database file mode 0600 and its folder 0700 (Unix only).
+
+    Args:
+        path: the database file; its parent is hardened when present.
+    """
+    if os.name == "nt":
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    if path.exists():
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -123,6 +144,7 @@ class Db:
             EXISTS`); "" for none.
         setup: called with the connection after `schema`, before anything else uses it; a
             failure closes the connection and is raised. None for nothing.
+        secure: when True, chmod the file to 0600 and its folder to 0700 on first open (Unix).
 
     Example:
         >>> import tempfile
@@ -136,9 +158,11 @@ class Db:
     """
 
     def __init__(self, path: Path, *, schema: str = "",
-                 setup: Callable[[sqlite3.Connection], None] | None = None) -> None:
+                 setup: Callable[[sqlite3.Connection], None] | None = None,
+                 secure: bool = False) -> None:
         self.path = path
         self._schema, self._setup = schema, setup
+        self._secure = secure
         # Re-entrant: a `transaction` holds it while the caller's block calls `write` or `one`.
         self._lock = threading.RLock()
         self._sql: sqlite3.Connection | None = None
@@ -184,6 +208,8 @@ class Db:
                 except BaseException:
                     sql.close()
                     raise
+                if self._secure:
+                    _harden(self.path)
                 self._sql = sql
             return self._sql
 
