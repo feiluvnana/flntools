@@ -21,6 +21,7 @@ _HOMES = {
     "Stopped": "flncore.errors",
     "ToolError": "flncore.errors",
     "UsageError": "flncore.errors",
+    "App": "flncore.cli",
     "ask": "flncore.prompt",
     "choose": "flncore.prompt",
     "confirm": "flncore.prompt",

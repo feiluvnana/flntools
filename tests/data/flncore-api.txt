@@ -1,4 +1,14 @@
 flncore: module
+flncore.App(name: str, version: str = '', codes: dict[type[BaseException], int] | None = None, help: str = '')
+flncore.App.codes: field -> dict[type[BaseException], int] | None
+flncore.App.command(function: Callable[..., Any] | None = None, **kwargs: Any) -> Any
+flncore.App.group(name: str, help: str = '') -> App
+flncore.App.help: field -> str
+flncore.App.help_text(*tokens: str, width: int = 120) -> str
+flncore.App.name: field -> str
+flncore.App.run(tokens: Sequence[str] | None = None, *, home: Path | None = None, json_out: bool = False) -> int
+flncore.App.show(rows: Sequence[Sequence[Any]], columns: Sequence[str]) -> None
+flncore.App.version: field -> str
 flncore.Blocked(flncore.SiteError)
 flncore.Blocked.hint: attribute
 flncore.Blocked.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
@@ -141,6 +151,7 @@ flncore.log.UI.debug(message: str = '', /, *args: Any, **fields: Any) -> None
 flncore.log.UI.error(message: str = '', /, *args: Any, **fields: Any) -> None
 flncore.log.UI.file(path: str | os.PathLike[str]) -> Journal
 flncore.log.UI.group(title: str = '', *, drawn: bool = True) -> Iterator[Group]
+flncore.log.UI.hold() -> Iterator[None]
 flncore.log.UI.info(message: str = '', /, *args: Any, **fields: Any) -> None
 flncore.log.UI.item(key: str, label: str = '', *, total: float | None = None, unit: str | None = None, drawn: bool = True) -> Item
 flncore.log.UI.level: property, settable -> Level

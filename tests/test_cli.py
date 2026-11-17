@@ -17,7 +17,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from flnd import _home, _prompt, _run, _ui, cli
+from flnd import _home, _prompt, _run, cli
 from flnd.errors import (
     Blocked,
     Changed,
@@ -141,37 +141,44 @@ class Terminal(io.StringIO):
 
 
 class PromptTest(unittest.TestCase):
-    def answers(self, *lines: str) -> io.StringIO:
-        """Type `lines` into a terminal; returns what the prompts showed."""
-        shown = io.StringIO()
-        self.enterContext(mock.patch("sys.stdin", Terminal("".join(f"{x}\n" for x in lines))))
-        self.enterContext(redirect_stderr(shown))
-        return shown
+    def terminal(self) -> None:
+        self.enterContext(mock.patch("sys.stdin", Terminal("")))
 
-    def test_choose_by_number_or_label_and_ask_again_after_a_wrong_answer(self) -> None:
-        shown = self.answers("0", "x", "2", "b")
-        self.assertEqual(_prompt.choose("Pick", {"a": 1, "b": 2}), 2)
-        self.assertEqual(_prompt.choose("Pick", ["a", "b"]), "b")
-        self.assertIn("  1. a\n  2. b\nPick [1-2]: ", shown.getvalue())
-        self.assertEqual(shown.getvalue().count("pick a number from 1 to 2"), 2)
+    def test_choose_returns_what_questionary_selects(self) -> None:
+        self.terminal()
+        answers = iter([2, "b"])
+        ask = mock.Mock(side_effect=lambda *_, **__: mock.Mock(unsafe_ask=lambda: next(answers)))
+        with mock.patch("flncore.prompt.questionary.select", ask):
+            self.assertEqual(_prompt.choose("Pick", {"a": 1, "b": 2}), 2)
+            self.assertEqual(_prompt.choose("Pick", ["a", "b"]), "b")
 
     def test_an_empty_line_takes_the_default(self) -> None:
-        self.answers("", "", "")
-        self.assertEqual(_prompt.choose("Pick", {"a": 1, "b": 2}, default=2), 2)
-        self.assertEqual(_prompt.ask("Name", default="example_user"), "example_user")
-        self.assertFalse(_prompt.confirm("Go on", default=False))
+        self.terminal()
+        with mock.patch("flncore.prompt.questionary.select", return_value=mock.Mock(unsafe_ask=lambda: 2)), \
+                mock.patch("flncore.prompt.questionary.text", return_value=mock.Mock(unsafe_ask=lambda: "")), \
+                mock.patch("flncore.prompt.questionary.confirm", return_value=mock.Mock(unsafe_ask=lambda: False)):
+            self.assertEqual(_prompt.choose("Pick", {"a": 1, "b": 2}, default=2), 2)
+            self.assertEqual(_prompt.ask("Name", default="example_user"), "example_user")
+            self.assertFalse(_prompt.confirm("Go on", default=False))
 
-    def test_confirm_reads_yes_and_no(self) -> None:
-        shown = self.answers("maybe", "y", "no")
-        self.assertTrue(_prompt.confirm("Go on"))
-        self.assertFalse(_prompt.confirm("Go on"))
-        self.assertIn("Go on? [Y/n] ", shown.getvalue())
+    def test_confirm_uses_questionary(self) -> None:
+        self.terminal()
+        values = iter([True, False])
+        with mock.patch(
+            "flncore.prompt.questionary.confirm",
+            return_value=mock.Mock(unsafe_ask=lambda: next(values)),
+        ):
+            self.assertTrue(_prompt.confirm("Go on"))
+            self.assertFalse(_prompt.confirm("Go on"))
 
-    def test_a_secret_is_read_without_echo(self) -> None:
-        self.answers()
-        with mock.patch("getpass.getpass", return_value="hunter2-example") as read:
+    def test_a_secret_uses_questionary_password(self) -> None:
+        self.terminal()
+        with mock.patch(
+            "flncore.prompt.questionary.password",
+            return_value=mock.Mock(unsafe_ask=lambda: "hunter2-example"),
+        ) as password:
             self.assertEqual(_prompt.ask("Password", secret=True), "hunter2-example")
-        read.assert_called_once_with("Password: ")
+        password.assert_called_once()
 
     def test_without_a_terminal_the_default_or_a_usage_error(self) -> None:
         self.enterContext(mock.patch("sys.stdin", io.StringIO("")))
@@ -184,30 +191,32 @@ class PromptTest(unittest.TestCase):
             _prompt.choose("Pick", ["a", "b"])
 
     def test_ended_input_and_bad_choices_are_usage_errors(self) -> None:
-        self.answers()
-        with self.assertRaises(UsageError):
-            _prompt.ask("Name")
+        self.terminal()
+        with mock.patch("flncore.prompt.questionary.text", return_value=mock.Mock(unsafe_ask=lambda: None)):
+            with self.assertRaises(UsageError):
+                _prompt.ask("Name")
         with self.assertRaises(UsageError):
             _prompt.choose("Pick", [])
         with self.assertRaises(UsageError):
             _prompt.choose("Pick", ["a"], default="z")
 
-    def test_a_live_display_is_paused_while_asking(self) -> None:
-        self.answers("typed")
+    def test_a_live_display_is_held_while_asking(self) -> None:
+        self.terminal()
         events: list[str] = []
+        from contextlib import contextmanager
 
-        class Live:
-            is_started = True
+        from flncore import log
 
-            def stop(self) -> None:
-                events.append("stop")
+        @contextmanager
+        def track():
+            events.append("hold")
+            yield
+            events.append("release")
 
-            def start(self) -> None:
-                events.append("start")
-
-        with mock.patch.object(_ui.ui.raw, "_live_stack", [Live()]):
+        with mock.patch.object(log.log, "hold", track), \
+                mock.patch("flncore.prompt.questionary.text", return_value=mock.Mock(unsafe_ask=lambda: "typed")):
             self.assertEqual(_prompt.ask("Name"), "typed")
-        self.assertEqual(events, ["stop", "start"])
+        self.assertEqual(events, ["hold", "release"])
 
 
 if __name__ == "__main__":

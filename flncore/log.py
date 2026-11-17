@@ -374,6 +374,7 @@ class UI:
         self._journal: Journal | None = None
         self._live_tasks: dict[Any, Item] = {}
         self._live_count = 0
+        self._hold_depth = 0
         self._live = self._compute_live()
 
     def _compute_live(self) -> bool:
@@ -534,7 +535,27 @@ class UI:
         line.truncate(width)
         return line
 
+    @contextmanager
+    def hold(self) -> Iterator[None]:
+        """Pause live redraws while something else uses the terminal."""
+        with self._lock:
+            self._hold_depth += 1
+            if self._live_lines > 0:
+                file = self._console.file
+                if hasattr(file, "write"):
+                    file.write(f"\r\x1b[{self._live_lines}A\x1b[J")
+                self._live_lines = 0
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._hold_depth = max(0, self._hold_depth - 1)
+                if self._hold_depth == 0:
+                    self._redraw(force=True)
+
     def _redraw(self, force: bool = False) -> None:
+        if self._hold_depth > 0:
+            return
         now = _time.now()
         if not force and (now - self._last_draw < 0.1):
             return

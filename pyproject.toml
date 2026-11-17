@@ -21,6 +21,7 @@ dependencies = [
     "rich",
     "msgspec",
     "questionary>=2.1",
+    "cyclopts>=5.5.2",
 ]
 
 [project.scripts]

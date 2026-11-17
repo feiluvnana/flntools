@@ -20,6 +20,7 @@ branch is; a part that isn't built yet is named as such, never described as work
 | [architecture.md](architecture.md) | the parts of flnd, one download traced from the CLI to the disk, and the threads |
 | [cli.md](cli.md) | every command, flag, default and exit code |
 | [library.md](library.md) | the calls a script can make, their options and what they return |
+| [flncore.md](flncore.md) | the shared kit: log, prompts, CLI, HTTP, browser and files |
 | [writing-a-source.md](writing-a-source.md) | a tutorial that builds and tests a small source |
 | [errors.md](errors.md) | each error, what causes it and what to do |
 | [storage.md](storage.md) | the home folder: every file, store, table and field |

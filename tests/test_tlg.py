@@ -605,16 +605,17 @@ class LoginTest(LoginCase):
 
 class LoginCommandTest(FlndCase):
     def test_the_way_is_named_or_asked(self):
+        from prompt_lines import select_from_lines
+
         methods = []
         with mock.patch.object(TelegramLogin, "start", lambda self, site, how: methods.append(how)):
             self.assertEqual(self.run_app("login", "tlg", "qr")[0], 0)
-            # Left out, the way is asked with numbered choices: tlg's own ways.
             self.stdin.stop()
-            self.stdin = mock.patch("sys.stdin", Stdin("3\n", tty=True))
+            self.stdin = mock.patch("sys.stdin", Stdin("", tty=True))
             self.stdin.start()
-            code, _, err = self.run_app("login", "tlg")
-        self.assertEqual(code, 0)
-        self.assertIn("  1. browser\n  2. qr\n  3. phone", err)
+            with select_from_lines("3"):
+                code, _, err = self.run_app("login", "tlg")
+        self.assertEqual(code, 0, err)
         self.assertEqual(methods, ["qr", "phone"])
 
     def test_a_failed_login_is_reported(self):
