@@ -1,7 +1,7 @@
 """The chain's own steps (`flnd._steps`): hashing, dedupe, the sidecar, and `Saved` at the end.
 
 Every run fakes the network (`flnd._net.reply` routes, from `test_engine`) and uses synthetic
-photos. Compress runs for real, through Pillow, on the chain's own threads.
+photos.
 """
 
 from __future__ import annotations
@@ -13,10 +13,11 @@ import os
 from pathlib import Path
 from unittest import mock
 
-from test_engine import CDN, EngineCase, make_source
-from test_steps import jpeg
+from test_engine import CDN, EngineCase, make_source, noise
 
-from flnd import _net, _shrink
+JPEG = noise("JPEG")
+
+from flnd import _net
 from flnd._events import Saved
 from flnd.engine import Engine
 from flnd.source import File, Post, Source, target
@@ -31,7 +32,7 @@ def by_target(site, context):
 class ChainCase(EngineCase):
     def setUp(self):
         super().setUp()
-        self.body = jpeg(3)
+        self.body = JPEG
         # Every target's file has the same bytes.
         for name in ("a", "b", "c"):
             self.routes[f"{CDN}/{name}.jpg"] = _net.reply(200, content=self.body)
@@ -104,32 +105,6 @@ class DedupeTest(ChainCase):
         engine.download(["aaa:b"], categories="all")
         self.assertEqual(self.path("b").read_bytes(), self.body)
 
-    def test_compress_keeps_the_link_and_compresses_once(self):
-        engine = self.engine()
-        engine.download(["aaa:a"], categories="all", sync=True)
-        engine.download(["aaa:b"], categories="all", sync=True)
-        with mock.patch("flnd._shrink.shrink", wraps=_shrink.shrink) as shrink:
-            engine.sync(compress=True)
-        self.assertEqual(shrink.call_count, 1)
-        a, b = self.path("a", ".avif"), self.path("b", ".avif")
-        self.assertTrue(os.path.samestat(a.stat(), b.stat()))
-        self.assertFalse(self.path("a").exists() or self.path("b").exists())
-        rows = self.rows()
-        for name, made in (("a", a), ("b", b)):
-            row = rows[f"aaa:{name}.jpg"]
-            self.assertEqual((row.path, row.shrink, row.size), (str(made), "compressed",
-                                                                 made.stat().st_size))
-            self.assertEqual(row.hash, hashlib.sha256(made.read_bytes()).digest())
-
-    def test_a_new_file_compressed_as_it_lands_keeps_its_link_to_an_old_one(self):
-        engine = self.engine()
-        engine.download(["aaa:a"], categories="all")
-        engine.download(["aaa:b"], categories="all", compress=True)
-        a, b = self.path("a", ".avif"), self.path("b", ".avif")
-        self.assertTrue(os.path.samestat(a.stat(), b.stat()))
-        self.assertEqual([event.path for event in self.saved()], [self.path("a"), b])
-
-
 class LinkRowTest(ChainCase):
     """The ledger's link across category folders: a row of its own, and never left dangling."""
 
@@ -154,21 +129,6 @@ class LinkRowTest(ChainCase):
                 yield clip
 
         return Tabs
-
-    def test_sync_compress_moves_a_category_link_with_its_file(self):
-        engine = self.engine(self.tabs())
-        engine.download(["lnk:example_user"], categories="all", sync=True)
-        folder = self.target_dir("lnk", "example_user")
-        link = folder / "reels" / "V1.jpg"
-        self.assertTrue(link.is_symlink())
-        self.assertEqual(self.rows()["lnk:V1_0@reels"].state, "link")
-        engine.sync(compress=True)
-        moved = folder / "reels" / "V1.avif"
-        self.assertFalse(link.exists() or link.is_symlink())
-        self.assertTrue(moved.is_symlink())
-        self.assertEqual(moved.resolve(), (folder / "videos" / "V1.avif").resolve())
-        self.assertEqual(self.rows()["lnk:V1_0@reels"].path, str(moved))
-
 
 class SidecarTest(ChainCase):
     def source_with_fields(self):
@@ -208,21 +168,6 @@ class SidecarTest(ChainCase):
              "url": "https://example.com/p/P1", "file": f"{CDN}/a.jpg"})
         self.assertEqual(self.rows()["cap:P1_0"].sidecar, str(side))
 
-    def test_a_sidecar_is_named_after_the_compressed_file_and_follows_a_later_compress(self):
-        self.config("[defaults]\nsidecars = true\n")
-        engine = self.engine()
-        engine.download(["aaa:a"], categories="all", compress=True)
-        self.assertTrue((self.path("a", ".avif").with_name("a.avif.json")).is_file())
-        engine.download(["aaa:b"], categories="all", sync=True)
-        self.config('[defaults]\nsidecars = true\ndedupe = "off"\n')
-        engine.download(["aaa:c"], categories="all", sync=True)
-        self.assertTrue(self.path("c").with_name("c.jpg.json").is_file())
-        engine.sync(["aaa:c"], compress=True)
-        side = self.path("c", ".avif").with_name("c.avif.json")
-        self.assertTrue(side.is_file())
-        self.assertFalse(self.path("c").with_name("c.jpg.json").exists())
-        self.assertEqual(self.rows()["aaa:c.jpg"].sidecar, str(side))
-
     def test_a_broken_config_is_a_usage_error(self):
         from flnd.errors import UsageError
 
@@ -234,12 +179,6 @@ class SidecarTest(ChainCase):
 
 
 class SavedTest(ChainCase):
-    def test_saved_comes_after_compress_with_the_final_path_and_size(self):
-        self.engine().download(["aaa:a"], categories="all", compress=True)
-        [event] = self.saved()
-        made = self.path("a", ".avif")
-        self.assertEqual((event.path, event.size), (made, made.stat().st_size))
-
     def test_a_file_with_no_slow_step_is_saved_at_once(self):
         self.engine().download(["aaa:a"], categories="all")
         [event] = self.saved()
@@ -253,7 +192,7 @@ class SavedTest(ChainCase):
         chain = _steps.Chain(None, stop, emit=events.append)
         event = Saved(target=mock.Mock(), category="", post="1", path=Path("a.jpg"), date=None,
                       size=3)
-        chain.landed(_steps.Landed("aaa:a.jpg", Path("a.jpg"), compress=True, event=event))
+        chain.landed(_steps.Landed("aaa:a.jpg", Path("a.jpg"), event=event))
         chain.close()
         self.assertEqual(events, [event])
 

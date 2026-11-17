@@ -181,15 +181,6 @@ class FailuresTest(DbCase):
 
 
 class TargetsTest(DbCase):
-    def test_follow_keeps_compress_for_later_syncs(self):
-        db = self.open()
-        db.record([(USER, Options(compress=True))], follow=True, keep=True)
-        self.assertTrue(db.target(USER).compress)
-        db.record([(USER, Options())])
-        self.assertTrue(db.target(USER).compress)
-        db.record([(USER, Options())], follow=True, keep=True)
-        self.assertFalse(db.target(USER).compress)
-
     def test_a_step_updates_its_columns_only(self):
         db = self.open()
         db.save([row("aaa:1")])

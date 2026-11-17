@@ -281,8 +281,6 @@ class TargetRow(msgspec.Struct):
     # Its saved files and their bytes, as of its last run.
     files: int = 0
     bytes: int = 0
-    # Whether `sync` compresses its new files (`follow(compress=True)`).
-    compress: bool = False
     # Each `newest_first` listing's head: the newest post the last run that read it from the
     # top saw, where a later sync stops (`flnd.job`); "" for a route's own listing.
     heads: dict[str, str] = {}
@@ -589,31 +587,6 @@ class Home:
                                 " ORDER BY at, key", tuple(args))
         return [_file_row(row) for row in found]
 
-    def unfinished(self, targets: Sequence[str]) -> list[FileRow]:
-        """The targets' saved files the steps after landing may still have work on.
-
-        A compressed file is done for good, so it is left out in SQL; whether a kept or failed
-        one is done depends on today's tools, which the steps judge.
-
-        Args:
-            targets: the targets' keys.
-
-        Returns:
-            The rows, with their `shrink`, `tools`, `before` and `unpacked` results.
-        """
-        if not targets:
-            return []
-        marks = ", ".join("?" * len(targets))
-        found = self._store.all(f"SELECT {ROW_SELECT} FROM files WHERE target IN ({marks})"
-                                " AND state = 'saved' AND shrink != 'compressed'", tuple(targets))
-        return [_file_row(row) for row in found]
-
-    def shrunk(self) -> list[FileRow]:
-        """Every file `--compress` compressed or kept, for what compressing has saved so far."""
-        found = self._store.all(f"SELECT {ROW_SELECT} FROM files"
-                                " WHERE shrink IN ('compressed', 'kept')")
-        return [_file_row(row) for row in found]
-
     def row(self, item: str) -> FileRow | None:
         """A file's whole row, by its key; None when the home has none.
 
@@ -866,8 +839,8 @@ class Home:
             chosen: each target with its options.
             follow: True follows the targets; None keeps each one's state (a new one follows);
                 False leaves a new one unfollowed.
-            keep: whether to save each target's categories and `compress` for later syncs
-                (`follow`); otherwise the saved ones stay.
+            keep: whether to save each target's categories for later syncs (`follow`);
+                otherwise the saved ones stay.
         """
         if not chosen:
             return
@@ -881,7 +854,6 @@ class Home:
                 if keep:
                     names = options.categories
                     row.only = tuple(names) if names and "all" not in names else None
-                    row.compress = options.compress
                 if options.query:
                     row.query = options.query
                 row.last_sync = now()
@@ -965,8 +937,6 @@ class Home:
             row: the row, as `target` read it and the caller changed it.
         """
         options: dict[str, Any] = {"only": list(row.only)} if row.only else {}
-        if row.compress:
-            options["compress"] = True
         self._store.write(f"INSERT OR REPLACE INTO targets ({', '.join(TARGET_COLUMNS)})"
                     f" VALUES ({', '.join('?' * len(TARGET_COLUMNS))})",
                     (row.key, row.source, row.value, row.kind, int(row.follow), _json(options),
@@ -1229,8 +1199,7 @@ def _target_row(found: tuple[Any, ...]) -> TargetRow:
     only = settings.get("only")
     return TargetRow(item, source, value, kind, bool(follow), tuple(only) if only else None,
                      query, json.loads(complete), json.loads(cursors), json.loads(seen),
-                     last_sync, files, size, compress=settings.get("compress") is True,
-                     heads=json.loads(heads), gaps=json.loads(gaps))
+                     last_sync, files, size, heads=json.loads(heads), gaps=json.loads(gaps))
 
 
 def _file_row(found: tuple[Any, ...]) -> FileRow:

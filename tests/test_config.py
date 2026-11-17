@@ -7,7 +7,6 @@ pace, limits, proxy and scroll. `PrecedenceTest` checks the order a setting reso
 given for one call wins over the file, and the file over the default. No network, no browser.
 """
 
-import datetime
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,10 +18,10 @@ from test_library import LibraryCase
 from test_site import SiteCase
 
 import flnd
-from flnd import _run, _steps, cli, options
+from flnd import cli, options
 from flnd.engine import Engine
 from flnd.errors import UsageError
-from flnd.options import Config, RunShared, SourceConfig, config
+from flnd.options import Config, SourceConfig, config
 
 
 class Home:
@@ -55,16 +54,14 @@ class ReadTest(unittest.TestCase):
 
     def test_every_key_is_read(self):
         found = self.read(
-            '[defaults]\nagain = true\ndedupe = "off"\nsidecars = true\nui = "inline"\n'
-            'compress = true\nwhen = "1y"\n'
-            '[compress]\nvideo = "hevc"\n'
+            '[defaults]\nagain = true\ndedupe = "off"\nsidecars = true\n'
+            'when = "1y"\n'
             '[sources.ins]\npace = 2\nscroll = "fast"\nlimits = { "cdn.example.com" = 4 }\n'
             'proxy = "socks5://127.0.0.1:1080"\nstop_after = 9\n'
         )
         self.assertEqual(
-            (found.again, found.dedupe, found.sidecars, found.ui, found.compress, found.when,
-             found.video),
-            (True, False, True, "inline", True, "1y", "hevc"),
+            (found.again, found.dedupe, found.sidecars, found.when),
+            (True, False, True, "1y"),
         )
         self.assertEqual(found.source("ins"), SourceConfig(
             pace=2.0, scroll="fast", limits=MappingProxyType({"cdn.example.com": 4}),
@@ -74,14 +71,11 @@ class ReadTest(unittest.TestCase):
 
     def test_a_bad_value_names_the_file_the_key_and_what_it_takes(self):
         cases = {
-            "[defaults]\ncompress = 1\n": "[defaults] compress is true or false, not 1",
             '[defaults]\nagain = "yes"\n': "[defaults] again is true or false",
             "[defaults]\nsidecars = 0\n": "[defaults] sidecars is true or false",
             '[defaults]\ndedupe = "skip"\n': '[defaults] dedupe is "link" or "off"',
-            '[defaults]\nui = "fancy"\n': '[defaults] ui is "full" or "inline" or "plain"',
             '[defaults]\nwhen = "tomorrow"\n': "[defaults] when is text --when takes",
             "[defaults]\nwhen = 2026\n": "[defaults] when is text --when takes",
-            '[compress]\nvideo = "vp9"\n': '[compress] video is "av1" or "hevc", not \'vp9\'',
             "[sources.ins]\npace = -1\n": "[sources.ins] pace is a number of seconds, 0 or more",
             "[sources.ins]\npace = true\n": "[sources.ins] pace is a number of seconds",
             '[sources.ins]\nscroll = "slow"\n': '[sources.ins] scroll is "human" or "fast"',
@@ -93,8 +87,7 @@ class ReadTest(unittest.TestCase):
             '[sources.ins]\nproxy = "socks5://example.com:port"\n': "[sources.ins] proxy is",
             "[sources.ins]\nstop_after = 0\n":
                 "[sources.ins] stop_after is a whole number of at least 1",
-            '[defaults]\ncompress = true\n[sources]\nins = "fast"\n': "sources.ins is a table",
-            '[defaults]\n"ui" = \n': "config.toml",
+            '[defaults]\n"when" = \n': "config.toml",
         }
         for text, message in cases.items():
             with self.subTest(text=text), self.assertRaises(UsageError) as caught:
@@ -117,18 +110,18 @@ class ReadTest(unittest.TestCase):
                                  .source("ins").proxy, proxy)
 
     def test_an_unknown_key_is_warned_about_once_and_never_ignored_silently(self):
-        text = ('[defaults]\ncompres = true\n[compress]\naudio = "opus"\n[sources.ins]\nspeed = 1\n'
+        text = ('[defaults]\ncompres = true\n[old]\naudio = "opus"\n[sources.ins]\nspeed = 1\n'
                 "[extras]\nx = 1\n")
         self.read(text)
         self.read(text)
         warned = [call.kwargs["setting"] for call in self.warn.call_args_list]
-        self.assertEqual(warned, ["[defaults] compres", "[compress] audio",
-                                  "[sources.ins] speed", "[extras]"])
+        self.assertEqual(warned, ["[defaults] compres", "[old]", "[sources.ins] speed",
+                                  "[extras]"])
         self.assertEqual(self.warn.call_args.kwargs["path"], str(self.home.path / "config.toml"))
 
     def test_a_changed_file_is_read_again(self):
-        self.assertEqual(self.read('[defaults]\nui = "full"\n').ui, "full")
-        self.assertEqual(self.read('[defaults]\nui = "plain"\n').ui, "plain")
+        self.assertEqual(self.read('[defaults]\nwhen = "2026"\n').when, "2026")
+        self.assertEqual(self.read('[defaults]\nwhen = "1y"\n').when, "1y")
 
 
 class SourceRunTest(SiteCase):
@@ -204,43 +197,9 @@ class PrecedenceTest(LibraryCase):
         self.configure('[defaults]\nwhen = "2026-04"\n')
         self.assertEqual(self.fl.download("exs:example_user", when="").wait().saved, 3)
 
-    def test_compress_from_the_config_and_a_given_false_wins(self):
-        download = self.calls("download")
-        self.configure("[defaults]\ncompress = true\n")
-        self.fl.download("exs:example_user", dry=True).wait()
-        self.fl.download("exs:example_user", dry=True, compress=False).wait()
-        self.configure("[defaults]\ncompress = false\n")
-        self.fl.download("exs:example_user", dry=True).wait()
-        self.fl.download("exs:example_user", dry=True, compress=True).wait()
-        self.assertEqual([call.kwargs["compress"] for call in download.call_args_list],
-                         [True, False, False, True])
 
-    def test_follow_and_sync_take_compress_and_when_from_the_config(self):
-        download, sync = self.calls("download"), self.calls("sync")
-        self.configure('[defaults]\ncompress = true\nwhen = "2026"\n')
-        self.fl.follow("exs:example_user").wait()
-        self.fl.sync().wait()
-        self.fl.sync(compress=False).wait()
-        self.assertTrue(download.call_args.kwargs["compress"])
-        year = (datetime.date(2026, 1, 1), datetime.date(2026, 12, 31))
-        self.assertEqual((download.call_args.kwargs["time"].since,
-                          download.call_args.kwargs["time"].until), year)
-        self.assertEqual([call.kwargs["compress"] for call in sync.call_args_list], [True, False])
-        self.assertEqual((sync.call_args.kwargs["time"].since,
-                          sync.call_args.kwargs["time"].until), year)
 
-    def test_without_a_config_nothing_is_compressed_or_bounded(self):
-        download = self.calls("download")
-        self.assertEqual(self.fl.download("exs:example_user").wait().saved, 3)
-        self.assertFalse(download.call_args.kwargs["compress"])
 
-    def test_the_chain_takes_the_configs_video_codec(self):
-        for text, video in (("", "av1"), ('[compress]\nvideo = "hevc"\n', "hevc")):
-            with self.subTest(video=video):
-                self.configure(text)
-                settings = RunShared(home=self.home, stop=_run.Stop())
-                with _steps.attached(settings) as chain:
-                    self.assertEqual(chain.video, video)
 
 
 class FlagTest(unittest.TestCase):
@@ -249,16 +208,7 @@ class FlagTest(unittest.TestCase):
     def parse(self, *argv):
         return cli.parser().parse_args(list(argv))
 
-    def test_compress_and_when_are_none_when_left_out(self):
-        for command in ("download", "follow"):
-            with self.subTest(command=command):
-                parsed = self.parse(command, "exs:example_user")
-                self.assertEqual((parsed.compress, parsed.when), (None, None))
-        self.assertIsNone(self.parse("sync").compress)
 
-    def test_no_compress_turns_it_off_for_one_run(self):
-        self.assertFalse(self.parse("download", "exs:example_user", "--no-compress").compress)
-        self.assertTrue(self.parse("sync", "--compress").compress)
 
 
 if __name__ == "__main__":

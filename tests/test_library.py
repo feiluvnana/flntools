@@ -450,34 +450,5 @@ class WhenTest(unittest.TestCase):
                 _when(text)
 
 
-
-class CompressTest(EngineCase):
-    """`compress=True` through the library: the step chain shrinks what a run saves."""
-
-    def setUp(self):
-        super().setUp()
-        import io
-
-        from test_shrink import photo
-
-        body = io.BytesIO()
-        photo(320, 240).save(body, "JPEG", quality=95)
-        self.routes[f"{CDN}/a.jpg"] = _net.reply(200, content=body.getvalue())
-        self.fl = self.enterContext(flnd.open(self.home))
-        self.fl.add(make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")]))
-        self.folder = self.home / "media" / "aaa" / "a"
-
-    def test_download_with_compress_replaces_the_photo_with_a_smaller_one(self):
-        report = self.fl.download("aaa:a", compress=True).wait()
-        self.assertEqual(report.saved, 1)
-        self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ["a.avif"])
-
-    def test_sync_with_compress_takes_the_files_saved_before(self):
-        self.fl.follow("aaa:a").wait()
-        self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ["a.jpg"])
-        self.fl.sync(compress=True).wait()
-        self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ["a.avif"])
-
-
 if __name__ == "__main__":
     unittest.main()

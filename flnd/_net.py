@@ -116,7 +116,7 @@ if TYPE_CHECKING:
     from flnd._html import Document
 
 __all__ = [
-    "Cap", "Client", "Headers", "Limits", "Load", "Pause", "Place", "Reply", "Request",
+    "Cap", "Client", "Headers", "Limits", "Load", "Place", "Reply", "Request",
     "Response", "Session", "URL", "fake", "follow", "reply",
 ]
 
@@ -148,11 +148,10 @@ STEP = 10
 RISE = 0.5
 # After a step that was taken back, clean transfers before the cap probes again.
 HOLD = 100
-# The reasons `Limits.pauses` gives for a wait: the site said when to come back; a refusal
+# The reasons a host wait gives: the site said when to come back; a refusal
 # halved the pace, or a failure is waited out before it is tried again; the host's own pace.
 RETRY_AFTER = "Retry-After"
 BACK_OFF = "back-off"
-PACE = "pace"
 # How often, in seconds, a request held by `Limits.suspended` looks again.
 SUSPENDED_POLL = 0.1
 # Statuses that say a host is overloaded, so its cap halves (with a reset and a timeout).
@@ -414,41 +413,6 @@ class Bucket:
         if self._slow:
             self._slow -= 1
 
-    def ahead(self, now: float) -> tuple[float, str]:
-        """How long a request made at `now` would wait for its token, and why.
-
-        Read only: it computes what `take` would, without taking anything.
-
-        Args:
-            now: the time, on `flnd._time`'s clock.
-
-        Returns:
-            The seconds (0 when a token is there), and `RETRY_AFTER` while a site's hold is the
-            longer wait, `BACK_OFF` while the rate is halved, else `PACE`.
-        """
-        rate = self.rate / 2 if self._slow else self.rate
-        tokens = BURST if self._at is None else min(BURST, self._tokens + (now - self._at) * rate)
-        paced = max(0.0, (1.0 - tokens) / rate)
-        held = self._until - now
-        if held > 0 and held >= paced:
-            return held, RETRY_AFTER
-        return paced, BACK_OFF if self._slow else PACE
-
-
-@dataclass(frozen=True)
-class Pause:
-    """One wait before the next request to a host, as `Limits.pauses` shows it.
-
-    Attributes:
-        host: the host.
-        seconds: how long from now.
-        reason: `RETRY_AFTER`, `BACK_OFF` or `PACE`.
-    """
-
-    host: str
-    seconds: float
-    reason: str
-
 
 @dataclass(frozen=True)
 class Load:
@@ -681,25 +645,9 @@ class Limits:
             for host, cap in self._caps.items()
         })
 
-    @property
-    def pauses(self) -> tuple[Pause, ...]:
-        """A snapshot of each wait before a host's next request, the longest first.
-
-        A paced host's bucket gives the time to its next token and why (a site's hold, a halved
-        rate, the pace); a client waiting out a 429 or a failure gives what is left of it. A
-        host with nothing to wait for isn't listed.
-        """
-        now = _time.now()
-        found = [Pause(host, seconds, reason)
-                 for host, bucket in self._buckets.items()
-                 for seconds, reason in [bucket.ahead(now)] if seconds > 0]
-        found += [Pause(host, until - now, reason)
-                  for host, until, reason in self._held.values() if until > now]
-        return tuple(sorted(found, key=lambda pause: -pause.seconds))
-
     @contextmanager
     def holding(self, host: str, seconds: float, reason: str) -> Iterator[None]:
-        """Show a wait before trying `host` again in `pauses`, for the block.
+        """Record a wait before trying `host` again, for the block.
 
         Args:
             host: the host waited for.

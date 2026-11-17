@@ -4,7 +4,7 @@ Who calls it: a target's downloads (`flnd.job.Downloads`), one coroutine per fil
 loop. What it calls: the source's `flnd._net.Client` for URLs, `flnd._files.part` for the part,
 `flnd._tools` for ffmpeg, and `flnd._files` to tell that a file is the media it should be.
 It is flnd's side, not a library: it knows a source's `File` and `Fetch` (`flnd.source`), and
-reports each transfer to the live stats (`flnd._stats`) and its progress row (`flnd._ui`).
+reports each transfer to its progress row (`flnd._ui`).
 
 The flow of one file (`save`):
 1. open and lock `<dest>.part` once, before any request, so a file another run is saving raises
@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
-from flnd import _files, _net, _stats, _text, _time, _tools
+from flnd import _files, _net, _text, _time, _tools
 from flnd._ui import ui
 from flnd.errors import Error, SiteError
 from flnd.source import Fetch, File
@@ -559,7 +559,6 @@ class _Row:
 
     def __enter__(self) -> _Row:
         # Entered and left on the loop, where the live stats read it.
-        self.stack.enter_context(_stats.tracked(_stats.TRANSFER, self))
         return self
 
     def __exit__(self, *error: Any) -> None:

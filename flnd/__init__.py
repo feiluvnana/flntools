@@ -9,7 +9,7 @@
 
 What it holds: the public names a script uses, and nothing else. `flnd.open(home)` gives a
 `Flnd`, whose methods are the CLI's commands; a download returns a `Run`, whose events
-(`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`, and a `Stats` snapshot once a second) are
+(`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`) are
 the only output; `Report`, `Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked` and
 `Installed` are what the reads return; the errors are the one hierarchy of `flnd.errors`. A
 source is written against `flnd.source` instead (see the docs' guide to writing a source), and
@@ -46,7 +46,6 @@ _HOMES = {
     "Report": "flnd._events",
     "Saved": "flnd._events",
     "Skipped": "flnd._events",
-    "Stats": "flnd._events",
     "Status": "flnd._events",
     "Tracked": "flnd._events",
     "Target": "flnd.source",
@@ -69,7 +68,7 @@ _HOMES = {
 __all__ = [
     "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure", "Flnd",
     "Installed", "Login", "LoginError", "NetworkError", "NotFound", "Planned", "Progress",
-    "Record", "Report", "Run", "Saved", "SiteError", "Skipped", "SourceError", "Stats", "Status",
+    "Record", "Report", "Run", "Saved", "SiteError", "Skipped", "SourceError", "Status",
     "Stopped", "Target", "ToolError", "Tracked", "UsageError", "__version__", "open",
 ]
 
@@ -87,7 +86,6 @@ if TYPE_CHECKING:
         Report,
         Saved,
         Skipped,
-        Stats,
         Status,
         Tracked,
     )

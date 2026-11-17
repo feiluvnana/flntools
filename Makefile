@@ -26,9 +26,6 @@ api:      ; $(RUN) python tests/api_snapshot.py --write
 # after changing a source's domains, routes or categories (tests/test_manifest.py checks it).
 manifest: ; $(RUN) python tests/source_manifest.py --write
 bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
-# A hand check, never part of `bench`: --compress's savings and SSIM on real samples kept
-# outside the repo: `make media-real ARGS="~/flnd-samples"` (flnddocs/performance.md).
-media-real: ; $(RUN) python tests/bench/media_real.py $(ARGS)
 # A hand check: throughput from one real CDN host at caps 8, 16, 24 and 32, from URLs kept
 # outside the repo: `make cdn-real ARGS="--urls ~/flnd-cdn.txt"` (flnddocs/performance.md).
 cdn-real: ; $(RUN) python tests/bench/cdn_real.py $(ARGS)
@@ -41,4 +38,4 @@ type:     ; $(RUN) pyright flnd/__init__.py flnd/source.py flnd/testing.py
 try:      ; $(RUN) flnd --home .try download --dry $(ARGS)
 dist:     ; $(RUN) --group dist pyinstaller --onefile --noconfirm --name flnd --collect-submodules flnd --specpath build --workpath build/pyinstaller flnd/__main__.py
 clean:    ; $(RUN) python -c "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
-.PHONY: setup test lint check api manifest bench media-real cdn-real docs type try dist clean
+.PHONY: setup test lint check api manifest cdn-real docs type try dist clean

@@ -185,15 +185,6 @@ class DownloadTest(RunsCase):
                 self.assertNotIn("Traceback", out)
         self.assertEqual(self.runs, [])
 
-    def test_compress_reaches_the_library(self):
-        with mock.patch("flnd._library.Flnd.download", wraps=None) as download:
-            download.return_value.__iter__.return_value = iter(())
-            self.run_app("download", "ins:a", "--compress")
-        self.assertTrue(download.call_args.kwargs["compress"])
-        with mock.patch("flnd._library.Flnd.sync") as sync:
-            sync.return_value.__iter__.return_value = iter(())
-            self.run_app("sync", "--compress")
-        self.assertTrue(sync.call_args.kwargs["compress"])
 
     def test_global_flags_go_before_or_after_the_command(self):
         self.assertEqual(self.run_app("--home", "one", "download", "ins:a")[0], 0)
@@ -503,7 +494,7 @@ class HelpTest(FlndCase):
         code, out, _ = self.run_app("download", "--help")
         self.assertEqual(code, 0)
         self.assertIn("Download what the targets have now, once.", out)
-        for flag in ("--only", "--when", "--limit", "--compress", "--dry", "--again", "--exec",
+        for flag in ("--only", "--when", "--limit", "--dry", "--again", "--exec",
                      "--home", "--json"):
             self.assertIn(flag, out)
         for gone in ("--from", "--time", "--sync", "Args:"):

@@ -51,7 +51,7 @@ def toolkit(name: str) -> bool:
 # package of its own. A name may be listed before its row creates the file.
 LIBRARIES = {
     "_net", "_browser", "_loop", "_files", "_unpack", "_tools", "_cookies", "_vault",
-    "_db", "_html", "_text", "_time", "_prompt", "_ui", "_media", "_shrink",
+    "_db", "_html", "_text", "_time", "_prompt", "_ui",
 }
 
 

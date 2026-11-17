@@ -86,9 +86,6 @@ class Options:
     again: bool = False
     # The query text when this target was discovered from a `?query` route.
     query: str | None = None
-    # Compress each saved photo and video once it is recorded (`--compress`, flnddocs/media),
-    # and remove an archive once it is extracted.
-    compress: bool = False
     # What to do with the files earlier runs failed on; `again` skips them, since it lists
     # every post anyway.
     retry: Retry = Retry.FIRST
@@ -408,11 +405,6 @@ CONFIG = "config.toml"
 # What `[defaults] dedupe` takes: "link" (the default) hard-links a file whose bytes are already
 # saved; "off" keeps both copies.
 DEDUPE = ("link", "off")
-# What `[defaults] ui` takes: how the CLI shows a run on a terminal (flnddocs/cli, "Views").
-UIS = ("full", "inline", "plain")
-# What `[compress] video` takes: the codec `--compress` turns videos into (flnddocs/media). "hevc"
-# is x265, for devices that can't play AV1.
-VIDEOS = ("av1", "hevc")
 # What `[vault] key` takes: where the vault's key is kept, `secret.key` in the home (the
 # default, which an unattended sync can always open) or the OS keychain (flnddocs/storage).
 FILE, KEYCHAIN = "file", "keychain"
@@ -425,8 +417,7 @@ STOP_AFTER = 5
 # Every key each table takes. A key not listed is warned about, never silently ignored, so a
 # typo (`[defaults] compres = true`) can't pass for a setting that works.
 KEYS = {
-    "defaults": ("again", "dedupe", "sidecars", "ui", "compress", "when"),
-    "compress": ("video",),
+    "defaults": ("again", "dedupe", "sidecars", "when"),
     "vault": ("key",),
 }
 SOURCE_KEYS = ("pace", "scroll", "limits", "proxy", "stop_after")
@@ -467,16 +458,9 @@ class Config:
     dedupe: bool = True
     # Write each saved file's post as `<file>.json` beside it (flnddocs/storage).
     sidecars: bool = False
-    # How the CLI shows a run on a terminal when `--ui` isn't given: "full", "inline" or
-    # "plain"; None leaves it to the CLI (full screen).
-    ui: str | None = None
-    # Compress what a download, follow or sync saves when `--compress` isn't given.
-    compress: bool = False
     # The days a download, follow or sync takes when `--when` isn't given, as `--when` writes
     # them (`"1y"`); "" for every day.
     when: str = ""
-    # The codec `--compress` turns videos into: "av1" or "hevc".
-    video: str = "av1"
     # Where the vault's key is kept: "file" (`secret.key` in the home) or "keychain".
     vault: str = FILE
     # Each source's own settings, by code; a source not named has `SourceConfig()`.
@@ -552,21 +536,14 @@ def _parsed(path: Path, text: str) -> Config:
         raise UsageError(f"{path}: {error}", hint="fix the file, or move it away") from None
     _warn_unknown(path, data)
     defaults = _table(path, data, "defaults")
-    compress = _table(path, data, "compress")
     vault = _table(path, data, "vault")
     sources = _table(path, data, "sources")
     where = "defaults"
-    ui = defaults.get("ui")
-    if ui is not None:
-        _choice(path, where, "ui", ui, UIS)
     return Config(
         again=_flag(path, where, "again", defaults.get("again", False)),
         dedupe=_choice(path, where, "dedupe", defaults.get("dedupe", "link"), DEDUPE) == "link",
         sidecars=_flag(path, where, "sidecars", defaults.get("sidecars", False)),
-        ui=ui,
-        compress=_flag(path, where, "compress", defaults.get("compress", False)),
         when=_when_text(path, defaults.get("when", "")),
-        video=_choice(path, "compress", "video", compress.get("video", "av1"), VIDEOS),
         vault=_choice(path, "vault", "key", vault.get("key", FILE), VAULTS),
         sources=MappingProxyType({
             code: _source(path, code, _table(path, sources, code, within="sources"))

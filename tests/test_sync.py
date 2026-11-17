@@ -98,10 +98,6 @@ class SettingsTest(SyncCase):
         self.sync()
         self.assertEqual(sorted(self.saved()), ["aaa:a", "aaa:older"])
 
-    def test_a_target_followed_with_compress_syncs_with_it(self):
-        self.engine().download(["aaa:a"], sync=True, keep=True, compress=True)
-        self.assertTrue(self.saved()["aaa:a"].compress)
-        self.assertEqual(self.plan()[0][1], Options(compress=True))
 
     def test_planning_creates_no_file(self):
         self.assertEqual(self.plan(), [])

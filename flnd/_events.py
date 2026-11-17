@@ -1,4 +1,4 @@
-"""What a run reports, and the rows the library reads: events, `Stats`, `Report`, `Login`,
+"""What a run reports, and the rows the library reads: events, `Report`, `Login`,
 `Record`, `Tracked`, `Checked`, `Status`, `Failure` and `Installed`.
 
 Every type here is a frozen msgspec struct, so it is cheap to make, safe to share between the
@@ -9,9 +9,7 @@ cheap to reach.
 Who makes them:
 1. the job and the engine make `Saved`, `Skipped`, `Failed`, `Progress` and `Planned` as a run
    goes, and hand them to the run's sink (`flnd._run.Run._emit`);
-2. `Run` counts them into a `Report`, and yields them to whoever iterates the run; between
-   two, it yields a `Stats` its meter sampled (`flnd._stats`), made of `Host`, `Transfer`,
-   `Transfers`, `Listing`, `Pause` and `System` rows, which never pass through the event queue;
+2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
 3. `Flnd` makes `Login`, `Record`, `Tracked`, `Status` and `Failure` from the home's
    `flnd.db`, for its reads, `Checked` from `fl.check()`, and `Installed` from the sources it
    knows (`fl.sources`).
@@ -182,198 +180,9 @@ class Planned(msgspec.Struct, frozen=True, tag=True):
     state: str
 
 
-# ---------------------------------------------------------------------------------------------
-# Live stats: one snapshot a second while a run is read (`flnd._stats` makes them)
-# ---------------------------------------------------------------------------------------------
-
-class Host(msgspec.Struct, frozen=True):
-    """One download host's load now: its adaptive cap, and its transfers in flight and waiting.
-
-    Example:
-        >>> host = Host("cdn.example.com", cap=8, busy=8, waiting=3, most=32)
-        >>> host.busy == host.cap
-        True
-    """
-
-    # The host's name, lower case.
-    host: str
-    # The transfers at once it may have now; it adapts between 1 and `most`.
-    cap: int = 0
-    # The transfers in flight to it.
-    busy: int = 0
-    # The transfers waiting for one of its places.
-    waiting: int = 0
-    # The most its cap may grow to.
-    most: int = 0
-
-
-class Transfer(msgspec.Struct, frozen=True):
-    """One file downloading now: how far it is, from which host, and how fast.
-
-    Example:
-        >>> Transfer("example_user/9001.mp4", "cdn.example.com", done=512, total=2048).total
-        2048
-    """
-
-    # The file's path under its target's folder.
-    name: str
-    # The host it comes from; "" for a file the source fetches itself.
-    host: str = ""
-    # Bytes received so far, counting what an earlier run left in its part.
-    done: int = 0
-    # The file's size; None while the server hasn't said.
-    total: int | None = None
-    # Bytes a second over the last sample.
-    speed: float = 0.0
-    # Whether it went on from a part an earlier run left.
-    resumed: bool = False
-
-
-class Transfers(msgspec.Struct, frozen=True):
-    """The run's downloads now: files in flight and queued, and each host's load.
-
-    Example:
-        >>> Transfers(running=2, queued=5).queued
-        5
-    """
-
-    # Files downloading now.
-    running: int = 0
-    # Files found and queued, not started yet.
-    queued: int = 0
-    # Files in flight that went on from a part an earlier run left.
-    resuming: int = 0
-    # Each host's load, the busiest first.
-    hosts: tuple[Host, ...] = ()
-    # Each file in flight, the oldest first.
-    files: tuple[Transfer, ...] = ()
-
-
-class Listing(msgspec.Struct, frozen=True):
-    """One category of one target as it is listed: how far, and whether it stopped early.
-
-    `state` is one of "listing", "finishing" (listed, downloads still going), "done", or how
-    the listing stopped early: "caught up" (5 saved posts in a row), "cut" (`limit` reached),
-    "stopped" (Ctrl-C or `run.stop()`) or "failed".
-
-    Example:
-        >>> from flnd.source import Target
-        >>> row = Listing(Target("ins:example_user", kind="user"), "posts", posts=40, found=52)
-        >>> row.state, row.found
-        ('listing', 52)
-    """
-
-    target: Target
-    # The category; "" for a target without categories.
-    category: str = ""
-    # The pages its paged listing (`site.pages`) has read; 0 for a listing that isn't paged.
-    pages: int = 0
-    # Posts the listing has yielded so far.
-    posts: int = 0
-    # Files found, saved, skipped and failed so far, as `Progress` counts them.
-    found: int = 0
-    saved: int = 0
-    skipped: int = 0
-    failed: int = 0
-    # Bytes saved so far.
-    bytes: int = 0
-    # Already-saved posts in a row: at 5, a sync stops early ("caught up").
-    streak: int = 0
-    state: str = "listing"
-
-
-class Pause(msgspec.Struct, frozen=True):
-    """A source waiting before its next request to a host, and why.
-
-    `reason` is "Retry-After" (the site said when to come back), "back-off" (a refusal halved
-    the pace, or a failure is being tried again), "pace" (the source's human pace between
-    requests), or the source's own words for a wait it asked for.
-
-    Example:
-        >>> Pause("ins", "www.example.com", 180.0, "Retry-After").seconds
-        180.0
-    """
-
-    # The source's code.
-    source: str
-    # The host it waits for; for a wait the source asked for itself, the target.
-    host: str
-    # Seconds until the next request may go.
-    seconds: float
-    reason: str
-
-
-class System(msgspec.Struct, frozen=True):
-    """The machine's side of a run: the browser, flnd's RAM and CPU, the media jobs, the disk.
-
-    Example:
-        >>> System(tabs=2, cap=6, ram=150_000_000).tabs
-        2
-    """
-
-    # Browser tabs open now, and the most one target may hold.
-    tabs: int = 0
-    cap: int = 0
-    # The resident memory of the browser's process tree (Playwright's driver and Chromium), in
-    # bytes; 0 when no browser runs.
-    browser: int = 0
-    # flnd's own resident memory, in bytes.
-    ram: int = 0
-    # flnd's CPU over the last sample, in percent of one core (above 100 on several cores).
-    cpu: float = 0.0
-    # ffmpeg processes running (joining DASH tracks, compressing video).
-    ffmpeg: int = 0
-    # Photos compressing in flnd's own process (Pillow).
-    pillow: int = 0
-    # Archives being extracted.
-    unpack: int = 0
-    # Files waiting for a compress or unpack step.
-    steps: int = 0
-    # Free bytes on the volume of the home folder.
-    disk: int = 0
-
-
-class Stats(msgspec.Struct, frozen=True, tag=True):
-    """A snapshot of a run, once a second while it is read: totals, downloads, listings, waits,
-    and the machine.
-
-    A run yields one about every second while someone iterates it, and `run.stats` holds the
-    latest (None before the first). `run.wait()` with nobody iterating samples nothing. It is
-    the same snapshot the full-screen view draws, so a script sees what the screen shows.
-
-    Example:
-        >>> stats = Stats(elapsed=12.0, saved=30, bytes=90_000_000, speed=7_500_000.0)
-        >>> stats.saved, stats.eta, stats.system.tabs
-        (30, None, 0)
-    """
-
-    # Seconds since the run started.
-    elapsed: float = 0.0
-    # The run's files so far, as `run.report` counts them.
-    saved: int = 0
-    skipped: int = 0
-    failed: int = 0
-    bytes: int = 0
-    # Bytes a second received over the last sample, every transfer together.
-    speed: float = 0.0
-    # Seconds left, once every listing is done and files are still to come; None before.
-    eta: float | None = None
-    # "" while it runs; "soon" after a first Ctrl-C, `q` or `run.stop()` (listing stopped,
-    # files in flight finishing); "now" after a second Ctrl-C.
-    stopping: str = ""
-    # Whether `run.suspend()` holds it: no new request or file starts until `run.resume()`.
-    suspended: bool = False
-    transfers: Transfers = Transfers()
-    # One row per target and category, in the order they began.
-    listing: tuple[Listing, ...] = ()
-    # Each source waiting before its next request, the longest wait first.
-    pauses: tuple[Pause, ...] = ()
-    system: System = System()
-
 
 # Any event a run yields, for a `match` or an annotation.
-Event = Saved | Skipped | Failed | Progress | Planned | Stats
-
+Event = Saved | Skipped | Failed | Progress | Planned
 
 # ---------------------------------------------------------------------------------------------
 # The report and the reads

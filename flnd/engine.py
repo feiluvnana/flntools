@@ -184,7 +184,6 @@ class Engine:
         sync: bool = False,
         again: bool = False,
         keep: bool = False,
-        compress: bool = False,
     ) -> Report:
         """Download each target with its saved or given options and return a `Report`.
 
@@ -197,8 +196,6 @@ class Engine:
             sync: follow the targets, so `sync` takes them later.
             again: ignore saved cursors and the stop at saved posts.
             keep: whether to save `categories` with each target, for later syncs (`follow`).
-            compress: shrink each saved photo and video once it lands, and remove an archive
-                once it is extracted (flnddocs/media).
 
         Returns:
             One `TargetReport` per target, in order.
@@ -220,7 +217,6 @@ class Engine:
             limit=limit,
             again=again,
             stop_at_saved=sync and not again,
-            compress=compress,
         )
         by_source = {
             code: replace(base, categories=cats_map.get(code))
@@ -242,15 +238,12 @@ class Engine:
                 ended.append(report)
                 return report
 
-    def sync(self, targets: Sequence[Target | str] = (), *, compress: bool = False,
-             time: Range | None = None) -> Report:
+    def sync(self, targets: Sequence[Target | str] = (), *, time: Range | None = None) -> Report:
         """Bring synced targets up to date: fetch new posts and sum up.
 
         Args:
             targets: only these targets; every synced target when empty.
-            compress: shrink the new files as they land, then the files these targets saved
-                before that aren't done yet (flnddocs/media).
-            time: the days every target takes posts from (`[defaults] when` in config.toml);
+            time: the days every target takes posts from (`[defaults] when` in config.toml`);
                 None for every day.
 
         Returns:
@@ -258,9 +251,7 @@ class Engine:
         """
         resolved = self._resolved(targets)
         span = time or Range()
-        # A target followed with `compress` compresses its new files on every sync.
-        chosen = [(target, replace(options, compress=compress or options.compress,
-                                   since=span.since, until=span.until))
+        chosen = [(target, replace(options, since=span.since, until=span.until))
                   for target, options in self._plan(resolved)]
         if not chosen:
             ui.info("nothing to sync")
@@ -273,8 +264,6 @@ class Engine:
             with shared_browser(pool_settings):
                 self._sync_normal(chosen, results, pool_settings, stop)
                 self._sync_queries(chosen, results, pool_settings, stop)
-            if compress:
-                self._compress_saved([target for target, _ in chosen], stop)
             report = Report(tuple(results[i] for i in range(len(chosen))))
             ended.append(report)
             return self._finish_report(report, stop)
@@ -1217,7 +1206,7 @@ class Engine:
             targets: the targets named; empty for every synced target.
 
         Returns:
-            Each target with its saved categories, search text and `compress` choice.
+            Each target with its saved categories and search text.
         """
         rows = self._rows()
         if not targets:
@@ -1228,8 +1217,7 @@ class Engine:
         for target in targets:
             row = rows.get(_home.key(target))
             planned.append((target, Options(categories=row.only if row else None,
-                                            query=row.query if row else None,
-                                            compress=row.compress if row else False)))
+                                            query=row.query if row else None)))
         return planned
 
     def _unrecorded(
@@ -1355,8 +1343,7 @@ class Engine:
                     continue
                 if child in ran or child in found:
                     continue
-                found[child] = Options(since=options.since, until=options.until,
-                                       compress=options.compress)
+                found[child] = Options(since=options.since, until=options.until)
         if not found:
             return []
         ui.info("{targets} linked from the listings", targets=_text.count(len(found), "target"))
@@ -1385,25 +1372,6 @@ class Engine:
                 for category in route.categories
             ]
         return max(map(len, labels), default=0)
-
-    def _compress_saved(self, targets: Sequence[Target], stop: Stop) -> None:
-        """Compress (and extract) what `targets` saved before and isn't done yet.
-
-        One read of `flnd.db` picks the targets' files that aren't done; a done file costs no
-        `stat`. The chain's lanes do the work, and closing it waits for them.
-
-        Args:
-            targets: the synced targets, whose folders bound what is taken.
-            stop: the run's Ctrl-C signal; after it, queued files are left for the next sync.
-        """
-        with _home.open(self.home) as db:
-            settings = RunShared(home=self.home, db=db, stop=stop, emit=self.emit)
-            with _steps.attached(settings) as chain:
-                queued = chain.backlog(db.unfinished([_home.key(target) for target in targets]))
-                if queued:
-                    ui.info("compressing {files} saved before",
-                            files=_text.count(queued, "file"))
-
 
 def _validate_targets(
     sources: Mapping[str, type[Source]],

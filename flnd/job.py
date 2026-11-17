@@ -80,7 +80,7 @@ from typing import (
 )
 from urllib.parse import urlsplit
 
-from flnd import _events, _files, _home, _loop, _stats, _text, _transfer
+from flnd import _files, _home, _loop, _text, _transfer
 from flnd._events import NOTHING_NEW, RESUMING, Failed, Progress, Saved, Skipped
 from flnd._steps import Landed, dedupe, holder, landed, sidecars
 from flnd._text import fill
@@ -345,8 +345,6 @@ class Board:
         self._lock = threading.Lock()
         self._lines: dict[tuple[Target, str], _Line] = {}
         self._child_skipped: dict[Target, int] = {}
-        # The run's live stats read the board's rows (`listing`, `queued`) until the run ends.
-        _stats.track(_stats.BOARD, self)
 
     def start(self, target: Target, category: str, *, listing: Any = None) -> None:
         """Open the category's line as its listing starts, unless already open.
@@ -489,47 +487,6 @@ class Board:
                     for name in vars(total):
                         setattr(total, name, getattr(total, name) + getattr(line.counts, name))
         return total
-
-    def listing(self) -> list[_events.Listing]:
-        """A snapshot of every line, for the live stats: one `Listing` each, in open order.
-
-        Returns:
-            The rows, read under the board's lock; any thread may call it.
-        """
-        with self._lock:
-            return [self._listing(target, category, line)
-                    for (target, category), line in self._lines.items()]
-
-    def queued(self) -> int:
-        """Files found and queued, not started yet, over every line."""
-        with self._lock:
-            return sum(line.counts.queued for line in self._lines.values())
-
-    @staticmethod
-    def _listing(target: Target, category: str, line: _Line) -> _events.Listing:
-        """One line's `Listing`; the caller holds the lock.
-
-        Args:
-            target: the line's target (a search's, for the targets it found).
-            category: the line's category.
-            line: the line.
-
-        Returns:
-            The row, with its state: how it stopped, else listing, finishing or done.
-        """
-        c = line.counts
-        if line.how in ("stopped", "failed"):
-            state = line.how
-        elif not line.listed:
-            state = "listing"
-        elif c.pending:
-            state = "finishing"
-        else:
-            state = line.how or "done"
-        pages = line.listing.read if line.listing is not None else 0
-        return _events.Listing(target, category, pages=pages, posts=line.posts, found=c.found,
-                       saved=c.saved + c.linked, skipped=c.skipped, failed=c.failed,
-                       bytes=c.bytes, streak=line.streak, state=state)
 
     @staticmethod
     def _progress(target: Target, category: str, line: _Line) -> Progress:
@@ -1387,15 +1344,10 @@ class Downloads:
         run: the source's run: its settings, clients and loop.
         target: the target the files belong to.
         board: the status lines counts go to.
-        compress: whether the target's files go through the compress step.
     """
 
-    def __init__(
-        self, run: SourceRun, target: Target, board: Board, *, compress: bool = False,
-    ) -> None:
+    def __init__(self, run: SourceRun, target: Target, board: Board) -> None:
         self.run, self.target, self.board = run, target, board
-        # Whether this target's files go through the compress step once recorded.
-        self.compress = compress
         self.source, self.settings = run.source, run.settings
         # Set once the listing failed, so a file that hasn't started ends at once.
         self._halted = False
@@ -1645,7 +1597,7 @@ class Downloads:
             # the sidecar, then `Saved` with the file's final path (`flnd._steps`).
             landed(self.settings, Landed(
                 item.queued.key, item.path, password=placed.file.password,
-                compress=self.compress, hash=item.row.hash, event=event,
+                hash=item.row.hash, event=event,
                 meta=_metadata(self.source, self.target, placed) if metadata else None))
 
     async def _download(self, queued: _Queued) -> bool:
@@ -1947,7 +1899,7 @@ def _run_download(
     started = time.monotonic()
     site = TargetSite(run, target, time=Range(options.since, options.until))
     ledger = Ledger(run, site, target, board, options=options)
-    downloads = Downloads(run, target, board, compress=options.compress)
+    downloads = Downloads(run, target, board)
     work = _Work(ledger, downloads)
     db = run.settings.db
     row = db.target(target) if db is not None else None

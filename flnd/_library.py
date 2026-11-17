@@ -23,7 +23,7 @@ Rules a change must keep:
   the first call that needs them, so `import flnd` stays fast.
 - Options are keyword-only and at most five per call; a setting past that belongs in the
   config file (`flnd.options.config`). An option left as None takes the file's setting
-  (`[defaults] compress` and `when`), so a value given for one call always wins.
+  (`[defaults] when`), so a value given for one call always wins.
 - No callbacks: a run reports through its events alone.
 """
 
@@ -159,7 +159,7 @@ class Flnd:
     def download(
         self, targets: str | Target | Sequence[str | Target], *,
         only: str | Sequence[str] | None = None, when: str | None = None,
-        limit: int | None = None, compress: bool | None = None, dry: bool = False,
+        limit: int | None = None, dry: bool = False,
     ) -> Run:
         """Download what the targets have now, once: nothing is followed for later syncs.
 
@@ -171,9 +171,6 @@ class Flnd:
                 `"2026-01..2026-03"` or `"30d"`; `""` for every day; None for the home's
                 `[defaults] when` in config.toml, which is every day unless it says otherwise.
             limit: at most this many posts per target, or targets per search; None for all.
-            compress: shrink each photo and video as it lands, when a smaller copy looks the
-                same, and remove each archive once it is extracted (flnddocs/media); None for the
-                home's `[defaults] compress`, which is off unless it says otherwise.
             dry: plan instead: the run yields a `Planned` event per file and writes nothing.
 
         Returns:
@@ -197,15 +194,12 @@ class Flnd:
             raise UsageError("limit must be at least 1")
         resolved = self._checked(targets, only)
         again = found.again if self._again is None else self._again
-        shrink = found.compress if compress is None else compress
         return self._run(f"download {_names(resolved)}", lambda engine: engine.download(
-            resolved, categories=only, time=span, limit=limit, dry=dry,
-            compress=shrink, again=again))
+            resolved, categories=only, time=span, limit=limit, dry=dry, again=again))
 
     def follow(
         self, targets: str | Target | Sequence[str | Target], *,
         only: str | Sequence[str] | None = None, when: str | None = None,
-        compress: bool | None = None,
     ) -> Run:
         """Follow the targets, so `sync` keeps them up to date, then download what they have.
 
@@ -217,10 +211,6 @@ class Flnd:
             only: the categories to follow; None follows every category.
             when: the days this first download takes posts from, as `download` reads it;
                 None for the home's `[defaults] when`.
-            compress: shrink each photo and video of this first download as it lands, and
-                remove each archive once it is extracted (flnddocs/media), and keep that with the
-                targets, so later syncs compress their new files too; None for the home's
-                `[defaults] compress`.
 
         Returns:
             The `Run` of the first download, not started yet.
@@ -240,23 +230,16 @@ class Flnd:
         span = _when(found.when if when is None else when)
         resolved = self._checked(targets, only)
         again = found.again if self._again is None else self._again
-        shrink = found.compress if compress is None else compress
         return self._run(f"follow {_names(resolved)}", lambda engine: engine.download(
-            resolved, categories=only, time=span, sync=True, keep=True,
-            compress=shrink, again=again))
+            resolved, categories=only, time=span, sync=True, keep=True, again=again))
 
-    def sync(self, targets: str | Target | Sequence[str | Target] = (), *,
-             compress: bool | None = None) -> Run:
+    def sync(self, targets: str | Target | Sequence[str | Target] = (),) -> Run:
         """Download what is new for every followed target, or for the ones named.
 
         The home's `[defaults] when` in config.toml, when it names days, bounds every sync too.
 
         Args:
             targets: the followed targets to sync; empty for every one.
-            compress: shrink the new photos and videos as they land, then those the targets
-                saved before that aren't done yet; a done file is skipped unopened (flnddocs/media).
-                None for the home's `[defaults] compress`. A target followed with `compress`
-                compresses its new files either way.
 
         Returns:
             The `Run`, not started yet. With nothing to sync, it ends at once with an empty
@@ -275,8 +258,7 @@ class Flnd:
         span = _when(found.when)
         resolved = self._resolve(targets)
         named = f"sync {_names(resolved)}" if resolved else "sync"
-        shrink = found.compress if compress is None else compress
-        return self._run(named, lambda engine: engine.sync(resolved, compress=shrink, time=span))
+        return self._run(named, lambda engine: engine.sync(resolved, time=span))
 
     def retry(self) -> Run:
         """Download again every file the home's failures name, however many runs failed it.
@@ -556,23 +538,6 @@ class Flnd:
                  for cls in self._added.values()]
         return rows
 
-    @property
-    def ui(self) -> str | None:
-        """How the home's `config.toml` asks the CLI to show a run on a terminal (`[defaults]
-        ui`): "full", "inline" or "plain"; None when it doesn't say.
-
-        Raises:
-            UsageError: the file isn't TOML, or `ui` has a value it doesn't take.
-
-        Example:
-            >>> import flnd
-            >>> flnd.open("example-home").ui is None
-            True
-        """
-        from flnd.options import config
-
-        return config(self.home).ui
-
     def add(self, source: type[Source]) -> None:
         """Add a source for this `Flnd` alone: its targets resolve and download like a built-in's.
 
@@ -793,7 +758,7 @@ def _config(home: Path) -> Config:
     """The home's `config.toml`, read and checked (`flnd.options.config`).
 
     Its `[defaults]` fill what a call leaves as None: `again` (list each post again, and ask
-    again for files recorded gone), `compress` and `when`. The library's calls keep their five
+    again for files recorded gone), and `when`. The library's calls keep their five
     options, so the settings past them live there.
 
     Args:

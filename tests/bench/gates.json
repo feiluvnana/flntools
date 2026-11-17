@@ -11,9 +11,7 @@
     "startup.help": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 23.3718,
-      "target": 40,
-      "gate": "perf:rebuild the cli on argparse over the library, with a source manifest"
+      "baseline": 23.3718
     },
     "startup.python_pass": {
       "unit": "ms",
@@ -259,40 +257,6 @@
       "better": "lower",
       "baseline": 6.6843
     },
-    "ui.frame_1000": {
-      "unit": "ms",
-      "better": "lower",
-      "baseline": 1.6243,
-      "target": 5,
-      "gate": "feat:add live stats and the full-screen ui"
-    },
-    "ui.frame_1000_new": {
-      "unit": "ms",
-      "better": "lower",
-      "baseline": 2.217
-    },
-    "ui.frame_80x24": {
-      "unit": "ms",
-      "better": "lower",
-      "baseline": 0.5606
-    },
-    "ui.sample": {
-      "unit": "ms",
-      "better": "lower",
-      "baseline": 0.209
-    },
-    "ui.sample_listing": {
-      "unit": "ms",
-      "better": "lower",
-      "baseline": 6.5628
-    },
-    "ui.sample_core": {
-      "unit": "%",
-      "better": "lower",
-      "baseline": 0.148,
-      "target": 1,
-      "gate": "feat:add live stats and the full-screen ui"
-    },
     "e2e.sync_nothing_new": {
       "unit": "s",
       "better": "lower",
@@ -368,67 +332,6 @@
       "unit": "ms",
       "better": "lower",
       "baseline": 784.749
-    },
-    "media.jpegs_1000": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 15.8161,
-      "target": 120,
-      "gate": "feat:compress media and extract archives as files land",
-      "note": "compressing 1,000 JPEGs with rows in flnd.db; the group fails unless all are compressed"
-    },
-    "media.sync_compress_100k": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 0.1275,
-      "target": 3,
-      "gate": "feat:compress media and extract archives as files land",
-      "note": "sync --compress over 100k done files in flnd.db; the group fails if one is queued"
-    },
-    "media.image_avif_speed_6": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 0.9035
-    },
-    "media.image_avif_speed_8": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 0.1175
-    },
-    "media.image_webp": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 0.8422
-    },
-    "media.image_jpeg": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 0.0829
-    },
-    "media.video_x264_medium": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 1.3878
-    },
-    "media.video_x264_veryfast": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 0.6889
-    },
-    "media.video_svt_av1": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 1.5161
-    },
-    "media.video_videotoolbox_h264": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 1.1813
-    },
-    "media.ffprobe_start": {
-      "unit": "ms",
-      "better": "lower",
-      "baseline": 19.569
     }
   }
 }

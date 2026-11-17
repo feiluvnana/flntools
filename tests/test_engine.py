@@ -532,7 +532,7 @@ class ApiTest(EngineCase):
             "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure",
             "Flnd", "Installed", "Login", "LoginError", "NetworkError", "NotFound", "Planned",
             "Progress", "Record", "Report", "Run", "Saved", "SiteError", "Skipped", "SourceError",
-            "Stats", "Status", "Stopped", "Target", "ToolError", "Tracked", "UsageError",
+            "Status", "Stopped", "Target", "ToolError", "Tracked", "UsageError",
             "__version__", "open",
         ])
         self.assertFalse(hasattr(Engine, "LoginError"))

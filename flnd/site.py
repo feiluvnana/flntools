@@ -69,7 +69,7 @@ from typing import (
     TypeVar,
 )
 
-from flnd import _browser, _home, _loop, _net, _prompt, _stats, _text, _time, _vault
+from flnd import _browser, _home, _loop, _net, _prompt, _text, _time, _vault
 from flnd._ui import ui
 from flnd.errors import Blocked, LoginError, SiteError, SourceError, Stopped, UsageError
 from flnd.options import SourceConfig, config
@@ -245,8 +245,7 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     )
     try:
         # The run's live stats read the source's hosts and waits (`Limits.load`, `.pauses`).
-        with _stats.tracked(_stats.SOURCE, run):
-            yield run
+        yield run
     finally:
         run.close()
 
@@ -687,11 +686,8 @@ class TargetSite:
         """
         if seconds <= 0:
             return
-        # Shown in the live stats as this source's wait, with the source's own reason.
-        wait = (self._run.source.code, str(self.target), _time.now() + seconds, reason)
-        with _stats.tracked(_stats.WAIT, wait):
-            if not _time.sleep(seconds, stop=self._run.web.stop):
-                raise Stopped(f"{self.target}: stopped while waiting: {reason}")
+        if not _time.sleep(seconds, stop=self._run.web.stop):
+            raise Stopped(f"{self.target}: stopped while waiting: {reason}")
 
     def close(self) -> None:
         """Give back the target's tabs, handing the client the cookies set in them."""
@@ -825,11 +821,7 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
     shared = _browser.RunBrowser(loop)
     settings.browser_pool = shared
     try:
-        # The run's live stats sample on this loop, count the browser's tabs, and the free
-        # disk of the home's volume.
-        with (_stats.tracked(_stats.LOOP, loop), _stats.tracked(_stats.BROWSER, shared),
-              _stats.tracked(_stats.HOME, settings.home)):
-            yield
+        yield
     finally:
         settings.browser_pool = None
         try:

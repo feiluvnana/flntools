@@ -248,7 +248,7 @@ def download(args: argparse.Namespace) -> int:
     With no targets, they are read from standard input, one per line; blank lines and lines
     starting with # are skipped.
 
-    --exec CMD runs CMD once for each saved file, after every step (compress included), with
+    --exec CMD runs CMD once for each saved file, after every post-download step, with
     no shell: {path}, {target} and {post} inside an argument become the file's values, which
     are also in $FLND_PATH, $FLND_TARGET and $FLND_POST.
 
@@ -263,7 +263,7 @@ def download(args: argparse.Namespace) -> int:
     targets = _targets(args.targets)
     with _open(args) as fl:
         run = fl.download(targets, only=args.only, when=args.when, limit=args.limit,
-                          compress=args.compress, dry=args.dry)
+                          dry=args.dry)
         return _watch(fl, run, args, runner=runner)
 
 
@@ -281,7 +281,7 @@ def follow(args: argparse.Namespace) -> int:
     """
     targets = _targets(args.targets)
     with _open(args) as fl:
-        run = fl.follow(targets, only=args.only, when=args.when, compress=args.compress)
+        run = fl.follow(targets, only=args.only, when=args.when)
         return _watch(fl, run, args)
 
 
@@ -299,7 +299,7 @@ def sync(args: argparse.Namespace) -> int:
     """
     runner = _runner(args)
     with _open(args) as fl:
-        return _watch(fl, fl.sync(args.targets, compress=args.compress), args, runner=runner)
+        return _watch(fl, fl.sync(args.targets), args, runner=runner)
 
 
 def unfollow(args: argparse.Namespace) -> int:
@@ -740,7 +740,6 @@ def parser() -> argparse.ArgumentParser:
     _when(sub)
     sub.add_argument("--limit", type=int, metavar="N",
                      help="at most N posts per target, or N targets per search")
-    _compress(sub)
     sub.add_argument("--dry", action="store_true",
                      help="list what would be downloaded, and download and write nothing")
     _again(sub)
@@ -751,13 +750,11 @@ def parser() -> argparse.ArgumentParser:
                      help="the targets to follow; read from stdin when none")
     _only(sub)
     _when(sub)
-    _compress(sub)
     _again(sub)
 
     sub = command(sync)
     sub.add_argument("targets", nargs="*", metavar="target",
                      help="only these followed targets; every one when none")
-    _compress(sub)
     _exec(sub)
 
     sub = command(unfollow)
@@ -828,13 +825,6 @@ def _again(sub: argparse.ArgumentParser) -> None:
                           "gone (404 or 410)")
 
 
-def _compress(sub: argparse.ArgumentParser) -> None:
-    # `--compress` and `--no-compress`; neither leaves it None, and the library reads
-    # `[defaults] compress` from config.toml.
-    sub.add_argument("--compress", action=argparse.BooleanOptionalAction, default=None,
-                     help="shrink photos and videos as they land when a smaller copy looks the "
-                          "same, and remove each archive once it is extracted; --no-compress "
-                          "turns off [defaults] compress for this run")
 
 
 def _exec(sub: argparse.ArgumentParser) -> None:

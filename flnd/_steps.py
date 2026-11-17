@@ -1,8 +1,8 @@
 """The steps after a file lands, in their one fixed order, and the threads that run the slow ones.
 
-Every saved file goes through the same chain (the architecture guide, flnddocs/media):
+Every saved file goes through the same chain (the architecture guide, flnddocs/storage):
 
-    download (hashing) → dedupe → unpack → compress → date → place → record → sidecar → Saved
+    download (hashing) → dedupe → unpack → date → place → record → sidecar → Saved
 
 Each step is on or off by its flag or setting; the order never changes, so no combination can,
 say, compress a file before dedupe has linked it. `--exec` is the CLI's: it runs a command for
@@ -54,11 +54,9 @@ Rules a change must keep:
 
 from __future__ import annotations
 
-import contextlib
-import os
 import queue
 import threading
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,9 +75,9 @@ __all__ = ["Chain", "Landed", "attached", "dedupe", "holder", "landed", "record"
 # How many files a lane holds waiting; a full lane makes `landed` wait (memory stays flat).
 QUEUE = 10_000
 # Threads per lane (see stage 1).
-LANES = {"archive": 1, "photo": 2, "video": 1}
+LANES = {"archive": 1}
 # The `files` columns this module writes.
-SHRINK, TOOLS, BEFORE, UNPACKED, FOLDER = "shrink", "tools", "before", "unpacked", "folder"
+UNPACKED, FOLDER = "unpacked", "folder"
 EXTRACTED, FAILED = "extracted", "failed"
 # A sidecar's name is its file's name with this after it: `9001.jpg.json`.
 SIDECAR = ".json"
@@ -105,7 +103,6 @@ class Landed:
     key: str
     path: Path
     password: str | None = None
-    compress: bool = False
     hash: bytes | None = None
     event: Saved | None = None
     meta: Mapping[str, Any] | None = field(default=None, hash=False)
@@ -115,10 +112,6 @@ class Landed:
 class _Tally:
     """What the chain did this run, for its summary line."""
 
-    compressed: int = 0
-    kept: int = 0
-    failed: int = 0
-    saved: int = 0
     unpacked: int = 0
     unpack_failed: int = 0
     linked: int = 0
@@ -152,20 +145,13 @@ class Chain:
 
     def __init__(self, db: Home | None, stop: Any = None, *,
                  emit: Callable[[Any], None] | None = None, dedupe: bool = True,
-                 sidecars: bool = False, video: str = "av1") -> None:
-        from flnd import _shrink
-
+                 sidecars: bool = False) -> None:
         self.db, self.stop = db, stop
         self.emit = emit or (lambda event: None)
-        self.dedupe, self.sidecars, self.video = dedupe, sidecars, video
-        self.savings = _shrink.Savings()
+        self.dedupe, self.sidecars = dedupe, sidecars
         self.tally = _Tally()
         self._lanes: dict[str, _Lane] = {}
         self._lock = threading.Lock()
-        self._seeded = False
-        # One lock per hash being compressed, so two hard links of one file are never
-        # compressed at once: the second waits, then finds the first moved it.
-        self._twins: dict[bytes, threading.Lock] = {}
         self._no_links = False
 
     def landed(self, item: Landed) -> None:
@@ -174,7 +160,7 @@ class Chain:
         Args:
             item: the file.
         """
-        from flnd import _shrink, _unpack
+        from flnd import _unpack
 
         if self._stopping():
             self._finish(item, moved=False)
@@ -182,42 +168,7 @@ class Chain:
         if item.password is not None or _unpack.is_archive(item.path):
             self._lane("archive").put(item)
             return
-        of = _shrink.kind(item.path)
-        if not item.compress or of is None:
-            self._finish(item, moved=False)
-            return
-        self._lane("photo" if of in _shrink.PHOTOS else "video").put(item)
-
-    def backlog(self, rows: Iterable[FileRow]) -> int:
-        """Queue saved files that still need unpacking or compressing.
-
-        A file is done when it was compressed, or kept or failed with today's tools. Its kind
-        comes from its suffix, so a done file costs no `stat`.
-
-        Args:
-            rows: the targets' file rows (`Home.unfinished`), read once.
-
-        Returns:
-            How many files were queued.
-        """
-        from flnd import _shrink, _unpack
-
-        queued = 0
-        for row in rows:
-            self._seed_one(row)
-            item = Landed(row.key, Path(row.path), compress=True, hash=row.hash)
-            if _unpack.is_archive(item.path):
-                if not row.unpacked:
-                    self.landed(item)
-                    queued += 1
-                continue
-            of = _shrink.kind(item.path)
-            if of is None or _done(row, _shrink.tools(of, video=self.video)):
-                continue
-            self.landed(item)
-            queued += 1
-        self._seeded = True
-        return queued
+        self._finish(item, moved=False)
 
     def close(self) -> None:
         """Wait for every lane, or finish what hasn't started after Ctrl-C, and log a summary."""
@@ -281,8 +232,6 @@ class Chain:
                 ui.debug("{name}: gone before its steps ran", name=item.path.name)
             elif item.password is not None or _unpack.is_archive(item.path):
                 self._unpack(item)
-            else:
-                self._compress(item)
         finally:
             self._finish(item, moved=True)
 
@@ -311,198 +260,6 @@ class Chain:
         self.tally.unpacked += 1
         record(self.db, item.key, **{UNPACKED: EXTRACTED, FOLDER: str(folder)})
         ui.debug("{name}: extracted to {folder}", name=item.path.name, folder=folder.name)
-        # The archive goes only after the extract was verified and recorded.
-        if item.compress:
-            item.path.unlink(missing_ok=True)
-
-    def _compress(self, item: Landed) -> None:
-        """The compress step, for a file whose kind is still worth it.
-
-        How it keeps dedupe's hard links (flnddocs/storage, "Dedupe"):
-        1. It holds the lock of the file's hash, so its links are never compressed at once.
-        2. A file whose row is already compressed was moved by a link's compress: done.
-        3. The rows with the same hash whose file is this very file (same inode) are its links.
-        4. `shrink` encodes once. Its `record` call (`moved`) links the result at each link's
-           path, then moves every row in one transaction, then removes the links' old names;
-           `shrink` removes the file's own old name after.
-        A full disk fails this file only; the next run retries it.
-
-        Args:
-            item: the landed photo, video or song.
-        """
-        from flnd import _shrink
-
-        of = _shrink.kind(item.path)
-        if of is None:
-            return
-        self._seed()
-        if not self.savings.worth(of):
-            ui.debug("{name}: left alone: {kind} files don't shrink", name=item.path.name,
-                     kind=of.value)
-            return
-        with self._twin_lock(item.hash):
-            row = self.db.row(item.key) if self.db is not None else None
-            if row is not None and (row.shrink == "compressed" or row.path != str(item.path)):
-                ui.debug("{name}: compressed with a link of it", name=item.path.name)
-                return
-            try:
-                original = item.path.stat()
-            except OSError:
-                return
-            twins = self._links(item, original)
-
-            def moved(outcome: _shrink.Outcome) -> None:
-                self._moved(item, row, twins, outcome)
-
-            kill = self.stop.now if self.stop is not None else None
-            try:
-                outcome = _shrink.shrink(item.path, record=moved, video=self.video, stop=kill)
-            except DiskError as error:
-                self.tally.failed += 1
-                ui.error("{name}: {error}", name=item.path.name, error=error)
-                return
-        self._count(of, outcome)
-
-    def _count(self, of: Any, outcome: Any) -> None:
-        """Count one compress result into the savings and the tally, and log it.
-
-        Args:
-            of: the file's `_shrink.Kind`.
-            outcome: what `shrink` did.
-        """
-        from flnd import _shrink
-
-        self.savings.add(of, outcome.saving)
-        with self._lock:
-            if outcome.state is _shrink.State.COMPRESSED:
-                self.tally.compressed += 1
-                self.tally.saved += outcome.before - outcome.after
-            elif outcome.state is _shrink.State.KEPT:
-                self.tally.kept += 1
-            else:
-                self.tally.failed += 1
-        if outcome.state is _shrink.State.FAILED:
-            ui.warn("{name}: not compressed: {note}", name=outcome.path.name, note=outcome.note)
-        else:
-            ui.debug("{name}: {state} ({saving:.0%})", name=outcome.path.name,
-                     state=outcome.state.value, saving=outcome.saving)
-
-    def _twin_lock(self, digest: bytes | None) -> Any:
-        """The lock of one hash, made on first use; a file with no hash has nothing to share."""
-        if digest is None:
-            return contextlib.nullcontext()
-        with self._lock:
-            return self._twins.setdefault(digest, threading.Lock())
-
-    def _links(self, item: Landed, original: os.stat_result) -> list[FileRow]:
-        """The rows of the other names of this very file: dedupe's and the ledger's links.
-
-        Args:
-            item: the file about to be compressed.
-            original: its `stat`, before anything changed it.
-
-        Returns:
-            The rows with its hash whose path is the same inode; a copy with the same bytes
-            that isn't linked (dedupe off, or a file system without links) is left alone.
-        """
-        if self.db is None or item.hash is None:
-            return []
-        found = []
-        for twin in self.db.twins(item.hash, besides=item.key):
-            try:
-                if os.path.samestat(os.stat(twin.path), original):
-                    found.append(twin)
-            except OSError:
-                continue
-        return found
-
-    def _moved(self, item: Landed, row: FileRow | None, twins: Sequence[FileRow],
-               outcome: Any) -> None:
-        """`shrink`'s record call: move the file's row, and its links' files and rows with it.
-
-        Runs after the result is in place and before the original's old name is removed.
-
-        Args:
-            item: the file compressed.
-            row: its row before the compress; None in a run without a database.
-            twins: its links' rows (`_links`).
-            outcome: what `shrink` did.
-
-        Raises:
-            DiskError: the rows can't be written; the links made for them are removed again.
-        """
-        from flnd import _shrink
-
-        fields: dict[str, Any] = {SHRINK: outcome.state.value, TOOLS: outcome.tools}
-        if outcome.state is not _shrink.State.COMPRESSED:
-            record(self.db, item.key, **fields)
-            return
-        found = outcome.path.stat()
-        fields.update(path=str(outcome.path), size=found.st_size, mtime=found.st_mtime_ns,
-                      hash=_files.digest(outcome.path), **{BEFORE: outcome.before})
-        changes: list[tuple[str, dict[str, Any]]] = [(item.key, fields)]
-        undo: list[Callable[[], Any]] = []
-        old: list[Path] = []
-        side = _move_sidecar(row, outcome.path, undo)
-        if side is not None:
-            fields["sidecar"] = side
-        for twin in twins:
-            moved = self._relink(twin, outcome.path, undo)
-            if moved is None:
-                continue
-            twin_fields = {**fields, "path": str(moved)}
-            twin_fields.pop("sidecar", None)
-            twin_side = _move_sidecar(twin, moved, undo)
-            if twin_side is not None:
-                twin_fields["sidecar"] = twin_side
-            changes.append((twin.key, twin_fields))
-            if moved != Path(twin.path):
-                old.append(Path(twin.path))
-        try:
-            if self.db is not None:
-                self.db.change(changes)
-        except BaseException:
-            for step in reversed(undo):
-                with contextlib.suppress(OSError):
-                    step()
-            raise
-        for path in old:
-            path.unlink(missing_ok=True)
-        if len(changes) > 1:
-            ui.debug("{name}: {links} kept", name=outcome.path.name,
-                     links=_text.count(len(changes) - 1, "link"))
-
-    def _relink(self, twin: FileRow, result: Path, undo: list[Callable[[], Any]]) -> Path | None:
-        """Link a compress result at one link's path: its own name, with the result's suffix.
-
-        A hard link stays a hard link. A symlink (the ledger's link across category folders)
-        is made again, pointing at the result, so it never dangles once the original's old
-        name is removed.
-
-        Args:
-            twin: the link's row.
-            result: the compressed file.
-            undo: where to add what removes the new link again, should the rows fail.
-
-        Returns:
-            The link's new path; None when it can't be linked (a name taken by another file, a
-            file system without links), and it then keeps the original bytes as its own.
-        """
-        before = Path(twin.path)
-        after = before.with_suffix(result.suffix)
-        if after != before and (after.exists() or after.is_symlink()):
-            return None
-        try:
-            if before.is_symlink():
-                _symlink(result, after)
-            elif not _files.link(result, after):
-                return None
-        except (OSError, DiskError) as error:
-            ui.debug("{name}: not linked: {error}", name=after.name, error=error)
-            return None
-        if after != before:
-            undo.append(lambda: after.unlink(missing_ok=True))
-        return after
 
     # -- dedupe -----------------------------------------------------------------------------
 
@@ -612,44 +369,10 @@ class Chain:
 
     # -- savings and the summary ------------------------------------------------------------
 
-    def _seed(self) -> None:
-        """Fill `savings` from earlier results in `flnd.db`, once, before the first compress."""
-        with self._lock:
-            if self._seeded:
-                return
-            self._seeded = True
-        for row in self.db.shrunk() if self.db is not None else ():
-            self._seed_one(row)
-
-    def _seed_one(self, row: FileRow) -> None:
-        """Count one file's earlier compress result in `savings`.
-
-        Args:
-            row: the file's row; one without a compress result counts for nothing.
-        """
-        from flnd import _shrink
-
-        if row.shrink not in ("compressed", "kept"):
-            return
-        of = _shrink.kind(Path(row.path))
-        if of is None:
-            return
-        if row.shrink == "kept" or row.before is None:
-            self.savings.add(of, 0.0)
-        elif row.before > 0:
-            self.savings.add(of, 1 - row.size / row.before)
-
     def _summary(self) -> None:
         """Log one line for what the chain did, when it did anything."""
         tally = self.tally
         parts = []
-        if tally.compressed:
-            parts.append(f"{_text.count(tally.compressed, 'file')} compressed, "
-                         f"{_text.size(tally.saved)} saved")
-        if tally.kept:
-            parts.append(f"{tally.kept} kept as they were")
-        if tally.failed:
-            parts.append(f"{tally.failed} failed")
         if tally.unpacked:
             parts.append(f"{_text.count(tally.unpacked, 'archive')} extracted")
         if tally.unpack_failed:
@@ -657,58 +380,7 @@ class Chain:
         if tally.linked:
             parts.append(f"{_text.count(tally.linked, 'file')} already saved elsewhere, linked")
         if parts:
-            (ui.warn if tally.failed or tally.unpack_failed else ui.ok)(
-                "Media: {line}", line="; ".join(parts))
-
-
-def _done(row: FileRow, tools: str) -> bool:
-    """Whether a file needs no compress: compressed, or kept or failed by `tools`."""
-    if row.shrink == "compressed":
-        return True
-    return row.shrink in ("kept", "failed") and row.tools == tools
-
-
-def _symlink(target: Path, link: Path) -> None:
-    """Make `link` a relative symlink to `target`, replacing whatever `link` was, atomically.
-
-    Args:
-        target: the file to point at.
-        link: the symlink's path.
-
-    Raises:
-        OSError: the file system refused.
-    """
-    made = link.with_name(link.name + ".part.link")
-    made.unlink(missing_ok=True)
-    made.symlink_to(os.path.relpath(target, link.parent))
-    os.replace(made, link)
-
-
-def _move_sidecar(row: FileRow | None, path: Path,
-                  undo: list[Callable[[], Any]]) -> str | None:
-    """Move a file's sidecar to follow the file's new name, when it has one and the name changed.
-
-    Args:
-        row: the file's row before the move; None or one without a sidecar moves nothing.
-        path: the file's new path.
-        undo: where to add what moves it back, should the rows fail.
-
-    Returns:
-        The sidecar's new path, for its row; None when nothing moved.
-    """
-    if row is None or not row.sidecar:
-        return None
-    before = Path(row.sidecar)
-    after = path.with_name(path.name + SIDECAR)
-    if after == before:
-        return None
-    try:
-        os.replace(before, after)
-    except OSError:
-        # The sidecar keeps its old name; it still says what it said.
-        return None
-    undo.append(lambda: os.replace(after, before))
-    return str(after)
+            (ui.warn if tally.unpack_failed else ui.ok)("Media: {line}", line="; ".join(parts))
 
 
 class _Lane:
@@ -799,17 +471,14 @@ def attached(settings: Any) -> Iterator[Chain]:
     Raises:
         UsageError: the home's `config.toml` is broken.
     """
-    from flnd import _stats
     from flnd.options import config
 
     found = config(settings.home)
     chain = Chain(settings.db, settings.stop, emit=settings.emit, dedupe=found.dedupe,
-                  sidecars=found.sidecars, video=found.video)
+                  sidecars=found.sidecars)
     settings.chain = chain
     try:
-        # The run's live stats read the lanes' jobs (`Chain.jobs`) while the chain is open.
-        with _stats.tracked(_stats.CHAIN, chain):
-            yield chain
+        yield chain
     finally:
         settings.chain = None
         chain.close()
