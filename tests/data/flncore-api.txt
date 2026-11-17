@@ -107,43 +107,54 @@ flncore.dig: module
 flncore.dig.dig(data: Any, path: str) -> Any
 flncore.filename(name: str, *, fallback: str = 'untitled', max_bytes: int = 200) -> str
 flncore.log: module
-flncore.log.Group(owner: UI, title: str, *, drawn: bool = True)
-flncore.log.Group.add(label: str, *, total: float | None = None, unit: str | None = None) -> Row
-flncore.log.Group.drawn: attribute
-flncore.log.Group.title: attribute
-flncore.log.Row(label: str, total: float | None, group: Group, unit: str | None = None)
-flncore.log.Row.advance(n: float = 1) -> None
-flncore.log.Row.count: property, settable -> float
-flncore.log.Row.fail(reason: str | None = None) -> None
-flncore.log.Row.finish() -> None
-flncore.log.Row.label: attribute
-flncore.log.Row.part() -> Callable[[int, int | None], None]
-flncore.log.Row.raw: property -> TaskID
-flncore.log.Row.total: property, settable -> float | None
+flncore.log.Item(key: str, label: str = '', *, total: float | None = None, unit: str | None = None, drawn: bool = True, owner: UI)
+flncore.log.Item.advance(n: float = 1) -> None
+flncore.log.Item.count: attribute
+flncore.log.Item.drawn: attribute
+flncore.log.Item.fail(note: str = '') -> None
+flncore.log.Item.finish() -> None
+flncore.log.Item.key: attribute
+flncore.log.Item.label: attribute
+flncore.log.Item.note(text: str) -> None
+flncore.log.Item.ok(note: str = '') -> None
+flncore.log.Item.owner: attribute
+flncore.log.Item.part() -> Callable[[int, int | None], None]
+flncore.log.Item.raw: property -> Any
+flncore.log.Item.skip(note: str = '') -> None
+flncore.log.Item.state: attribute
+flncore.log.Item.total: attribute
+flncore.log.Item.unit: attribute
+flncore.log.Journal(path: str | os.PathLike[str], owner: UI)
+flncore.log.Journal.owner: attribute
+flncore.log.Journal.path: attribute
+flncore.log.Journal.write(record: Any) -> None
+flncore.log.State(*values)
+flncore.log.State.ACTIVE: attribute -> State
+flncore.log.State.DONE: attribute -> State
+flncore.log.State.FAILED: attribute -> State
+flncore.log.State.MERGING: attribute -> State
+flncore.log.State.QUEUED: attribute -> State
+flncore.log.State.SKIPPED: attribute -> State
+flncore.log.State.UNPACKING: attribute -> State
 flncore.log.UI()
-flncore.log.UI.Group(owner: UI, title: str, *, drawn: bool = True)
-flncore.log.UI.Group.add(label: str, *, total: float | None = None, unit: str | None = None) -> Row
-flncore.log.UI.Group.drawn: attribute
-flncore.log.UI.Group.title: attribute
-flncore.log.UI.Row(label: str, total: float | None, group: Group, unit: str | None = None)
-flncore.log.UI.Row.advance(n: float = 1) -> None
-flncore.log.UI.Row.count: property, settable -> float
-flncore.log.UI.Row.fail(reason: str | None = None) -> None
-flncore.log.UI.Row.finish() -> None
-flncore.log.UI.Row.label: attribute
-flncore.log.UI.Row.part() -> Callable[[int, int | None], None]
-flncore.log.UI.Row.raw: property -> TaskID
-flncore.log.UI.Row.total: property, settable -> float | None
 flncore.log.UI.debug(message: str = '', /, *args: Any, **fields: Any) -> None
 flncore.log.UI.error(message: str = '', /, *args: Any, **fields: Any) -> None
+flncore.log.UI.file(path: str | os.PathLike[str]) -> Journal
 flncore.log.UI.group(title: str = '', *, drawn: bool = True) -> Iterator[Group]
 flncore.log.UI.info(message: str = '', /, *args: Any, **fields: Any) -> None
+flncore.log.UI.item(key: str, label: str = '', *, total: float | None = None, unit: str | None = None, drawn: bool = True) -> Item
 flncore.log.UI.level: property, settable -> Level
+flncore.log.UI.live: property -> bool
 flncore.log.UI.ok(message: str = '', /, *args: Any, **fields: Any) -> None
-flncore.log.UI.progress(label: str, *, total: float | None = None, unit: str | None = None, drawn: bool = True) -> Iterator[Row]
+flncore.log.UI.progress(label: str, *, total: float | None = None, unit: str | None = None, drawn: bool = True) -> Iterator[Item]
 flncore.log.UI.raw: property -> RichConsole
 flncore.log.UI.scope(*, color: str | bool | None = None, dest: IO[str] | None = None, width: int | None = None, level: Level | None = None) -> Iterator[UI]
 flncore.log.UI.warn(message: str = '', /, *args: Any, **fields: Any) -> None
+flncore.log.count(n: float, unit: str, *, plural: str | None = None) -> str
+flncore.log.duration(seconds: float) -> str
+flncore.log.log: UI
+flncore.log.redact(url: str) -> str
+flncore.log.size(n: float) -> str
 flncore.log.ui: UI
 flncore.now() -> float
 flncore.part(dest: str | os.PathLike[str], *, resume: bool = False, digest: bool = False) -> Iterator[Part]

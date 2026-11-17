@@ -25,7 +25,6 @@ class _TTY(io.StringIO):
 
 
 class DriftTest(unittest.TestCase):
-    @unittest.expectedFailure
     def test_finishing_one_live_row_leaves_one_bar_for_the_other(self) -> None:
         """After the first file's bar ends, exactly one live bar should remain for the second."""
         columns, lines = 80, 24

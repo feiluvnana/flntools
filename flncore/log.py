@@ -1,74 +1,37 @@
-"""Terminal output: log lines and progress rows, on a Rich console, safe for site text.
+"""Terminal output: log lines and progress items, safe for site text.
 
-A library module: it imports only the stdlib, Rich and other library modules (`_time`,
-`_text`), so any program can log through it. The questions a program asks are `_prompt`'s.
-
-What it offers, through the one shared `ui` object:
-1. The log: `ui.info("saved {name}", name=…)` and its siblings `debug`, `ok`, `warn` and
-   `error` print one line each, with a mark (`✓`, `!`, …) and the level's color. Each field is
-   formatted by `_SafeFormatter`, which strips escape and control codes, so a file name from a
-   site can't move the cursor or rewrite the screen. A field the message doesn't name is a
-   `TypeError`, so a typo can't silently drop a value.
-2. Progress rows: `ui.group(title)` holds rows made with `Group.add`; `ui.progress(label)` is a
-   group of one row. On a terminal they are live Rich bars that vanish when the group ends and
-   leave one finished line per row; elsewhere each row is logged once at the end. A group made
-   with `drawn=False` only counts and shows nothing, for a caller that draws progress its own
-   way (flnd's CLI draws a run from its events).
-3. `ui.level` (what is shown, `quiet` hides even progress) and `ui.scope(…)`, which swaps the
-   console's destination, color, width or level inside a block, as tests and `--color` do.
-
-Who calls it: every flnd module that tells a person something (the HTTP client's retries, the
-browser, cookies, the home, the downloader), and the CLI, which sets the level.
-
-How a log line is made (`UI._log`):
-1. Check every keyword field is named in the message (`_field_names`, cached per message).
-2. Format the fields safely, or just sanitise a message without fields.
-3. Drop the line if its level is below `ui.level`.
-4. Build the line: the mark, the text up to the first `: ` bright, the detail after it dim.
-5. Print it under the lock.
-
-Rules a change must keep:
-- `_log` holds the lock while it prints, so lines of two threads never interleave; the lock is an
-  `RLock`, so code that logs while it already holds the lock can't deadlock.
-- A `Group`'s own lock guards its Rich task table: download threads update rows at once.
-- Nothing else may print to the console a group draws on while its bars are live except
-  through `ui`, or Rich can't keep the bars below the lines.
+The single renderer, stable keys, and the run journal.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import string
 import threading
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
+from enum import StrEnum
 from functools import lru_cache
+from pathlib import Path
 from typing import IO, Any, Literal
 from urllib.parse import urlsplit
 
 from rich.console import Console as RichConsole
 from rich.control import strip_control_codes
-from rich.progress import (
-    Progress as RichProgress,
-)
-from rich.progress import (
-    ProgressColumn,
-    Task,
-    TaskID,
-)
 from rich.text import Text
 from rich.theme import Theme
 
 from flncore import clock as _time
-
-__all__ = ["Group", "Row", "UI", "ui"]
 
 Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
 LEVEL_RANKS: dict[str, int] = {
     "debug": 0, "info": 1, "ok": 2, "warn": 3, "error": 4, "quiet": 4,
 }
+
 PALETTE: dict[str, str] = {
     "info": "color(243)",
     "ok": "#02BF87",
@@ -80,6 +43,7 @@ PALETTE: dict[str, str] = {
     "accent": "#7D84D6",
     "size": "color(245)",
 }
+
 GLYPHS: dict[str, tuple[str, str]] = {
     "info": ("•", "*"),
     "ok": ("✓", "+"),
@@ -89,26 +53,24 @@ GLYPHS: dict[str, tuple[str, str]] = {
     "bar_full": ("━", "="),
     "bar_empty": ("─", "-"),
 }
+
 LOG_GLYPHS: dict[str, str] = {
     "info": "info", "ok": "ok", "warn": "warn", "error": "error", "debug": "debug",
 }
+
 SPIN_FRAMES: tuple[tuple[str, ...], tuple[str, ...]] = (
     ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
     ("|", "/", "-", "\\"),
 )
 BAR_CELLS = 20
+
 _ESCAPE = re.compile(
     r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]"
 )
-_URL = re.compile(r"https?://[^\s:]+(?::\d+)?[^\s]*")
 
 
 class _SafeFormatter(string.Formatter):
-    """`str.format` that strips terminal escape and control codes from each field it formats.
-
-    Both the value (when it is text) and the formatted field are cleaned, so neither a hostile
-    name nor a format spec that pads it can smuggle a code through.
-    """
+    """`str.format` that strips terminal escape and control codes from each field it formats."""
 
     def format_field(self, value: Any, format_spec: str) -> str:
         if isinstance(value, str):
@@ -125,17 +87,6 @@ def _sanitize(value: str) -> str:
 
 @lru_cache(maxsize=256)
 def _field_names(message: str) -> frozenset[str]:
-    """The top-level field names a log message uses, nested format specs included.
-
-    `{a.b}` and `{a[0]}` count as `a`, and `{n:{width}}` names both `n` and `width`. Cached,
-    since a program logs the same few messages many times.
-
-    Args:
-        message: a `str.format` template.
-
-    Returns:
-        The names.
-    """
     names: set[str] = set()
     for _, field_name, format_spec, _ in string.Formatter().parse(message):
         if field_name:
@@ -148,20 +99,6 @@ def _field_names(message: str) -> frozenset[str]:
 def _color_settings(
     color: str | bool | None, base: RichConsole | None,
 ) -> tuple[Any, bool | None, bool | None]:
-    """What Rich's `Console` needs for one of `ui.scope`'s color settings.
-
-    Args:
-        color: None keeps `base`'s settings (or auto-detects without one); False or "none"
-            turns color off; True, "16m" or "truecolor", "256", and "8" or "standard" force
-            that many colors, even when the output isn't a terminal.
-        base: the console being replaced, whose settings None keeps; None for a fresh one.
-
-    Returns:
-        `(color_system, no_color, force_terminal)`, as `Console` takes them.
-
-    Raises:
-        ValueError: `color` is none of those.
-    """
     if color is None and base is not None:
         return base.color_system, base.no_color, base._force_terminal
     table: dict[Any, tuple[Any, bool | None, bool | None]] = {
@@ -181,20 +118,9 @@ def _color_settings(
 
 
 def _detect_unicode(stream: Any) -> bool:
-    """Whether a stream can show the Unicode marks (`✓`, `━`, the braille spinner).
-
-    Each check rules out a case seen to print boxes or question marks: an encoding that isn't
-    UTF-8; a CJK locale, whose fonts draw the marks double width and break the bars; and an old
-    Windows console (no Windows Terminal, no ConEmu with ANSI on). Otherwise the ASCII
-    fallbacks in `GLYPHS` are used.
-
-    Args:
-        stream: the console's file; one without an `encoding` counts as not UTF-8.
-
-    Returns:
-        True when the Unicode marks are safe to print.
-    """
     encoding = getattr(stream, "encoding", None) or ""
+    if not encoding and getattr(stream, "isatty", lambda: False)():
+        encoding = "utf-8"
     if encoding.lower().replace("-", "").replace("_", "") != "utf8":
         return False
     locale = os.environ.get("LC_ALL") or os.environ.get("LANG") or ""
@@ -206,184 +132,18 @@ def _detect_unicode(stream: Any) -> bool:
     return True
 
 
-class Row:
-    """One progress row of a `Group`: a label, a count, and a total or a spinner.
-
-    A row is made by `Group.add` or `ui.progress`, never directly. Its count may be moved from
-    any thread; it ends as finished (`finish`), failed (`fail`), or with its group's outcome.
-
-    Args:
-        label: what the row is about; a `folder/name` label shows the folders dim.
-        total: the units expected; None shows a spinner instead of a bar.
-        group: the group that draws it.
-        unit: "bytes" to show counts as sizes (`1.5 MB/3.0 MB`); None for plain numbers.
-    """
-
-    def __init__(
-        self, label: str, total: float | None, group: Group, unit: str | None = None,
-    ) -> None:
-        self.label = label
-        self._total = total
-        self._count = 0.0
-        self._group = group
-        self._unit = unit
-        self._reason: str | None = None
-        self._outcome: Level | None = None
-        self._task: TaskID = group._add_task(self, label, total)
-
-    @property
-    def raw(self) -> TaskID:
-        """Underlying Rich `TaskID`."""
-        return self._task
-
-    @property
-    def count(self) -> float:
-        """Current completed units."""
-        return self._count
-
-    @count.setter
-    def count(self, value: float) -> None:
-        self._count = float(value)
-        self._group._update(self._task, completed=self._count)
-
-    @property
-    def total(self) -> float | None:
-        """Expected total units, or `None` if indeterminate."""
-        return self._total
-
-    @total.setter
-    def total(self, value: float | None) -> None:
-        self._total = value
-        self._group._update(self._task, total=value)
-
-    def advance(self, n: float = 1) -> None:
-        """Increment progress by `n`."""
-        self._count += n
-        self._group._update(self._task, advance=n)
-
-    def finish(self) -> None:
-        """Mark this row completed."""
-        self._outcome = "ok"
-        if self._total is not None and self._count < self._total:
-            self._count = self._total
-            self._group._update(self._task, completed=self._total)
-        self._group._stop_task(self._task)
-
-    def fail(self, reason: str | None = None) -> None:
-        """Mark this row failed, showing `reason` after it."""
-        self._outcome = "error"
-        self._reason = reason
-        self._group._stop_task(self._task)
-
-    def part(self) -> Callable[[int, int | None], None]:
-        """A `(done, total)` callback that moves this row, for code that reports progress so.
-
-        A downloader calls it with the bytes so far and the full size; a total that changes
-        (a server that sends its length late) replaces the row's.
-
-        Returns:
-            The callback.
-        """
-        def _callback(done: int, total: int | None) -> None:
-            if total is not None and total != self._total:
-                self.total = total
-            self.count = done
-
-        return _callback
-
-    def _render(self, owner: UI) -> Text:
-        """The row as one line: its mark, its bar or spinner, its label, its count, its reason.
-
-        Called by Rich's refresh thread while the bars are live, and once more at the end.
-
-        Args:
-            owner: the `UI` whose glyphs and spinner it uses.
-
-        Returns:
-            The styled line.
-        """
-        level = "info" if self._outcome is None else self._outcome
-        role = "accent" if level == "info" else level
-        text = Text()
-        if self._total is None:
-            mark = owner._spinner() if self._outcome is None else owner._glyph(LOG_GLYPHS[level])
-            text.append(mark, style=role)
-            text.append(" ")
-            text.append_text(_label_text(self.label))
-        else:
-            text.append(owner._glyph(LOG_GLYPHS[level]), style=role)
-            text.append(" ")
-            text.append_text(_render_bar(owner, self._count, self._total, role))
-            text.append(" ")
-            text.append_text(_label_text(self.label))
-            if count_str := _format_count(self._count, self._total, level, self._unit):
-                text.append(" " + count_str, style="size")
-        if self._reason:
-            text.append(" — " + self._reason, style="dim error")
+def _elide_middle(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
         return text
+    if max_len <= 1:
+        return "…"[:max_len]
+    keep = max_len - 1
+    left = keep // 2
+    right = keep - left
+    return f"{text[:left]}…{text[-right:]}"
 
 
-class _RowColumn(ProgressColumn):
-    """The one Rich progress column: it draws each task as its `Row`, in the Charm Huh look.
-
-    Args:
-        owner: the `UI` whose glyphs the rows use.
-        lookup: the row of a Rich task id, or None for a task that has no row.
-    """
-
-    def __init__(self, owner: UI, lookup: Callable[[TaskID], Row | None]) -> None:
-        super().__init__()
-        self._owner = owner
-        self._lookup = lookup
-
-    def render(self, task: Task) -> Text:
-        row = self._lookup(task.id)
-        if row is None:
-            return Text("")
-        return row._render(self._owner)
-
-
-def _render_bar(owner: UI, count: float, total: float, role: str) -> Text:
-    ratio = 1.0 if total <= 0 else min(max(count, 0.0), total) / total
-    filled = round(BAR_CELLS * ratio)
-    full = owner._glyph("bar_full") * filled
-    empty = owner._glyph("bar_empty") * (BAR_CELLS - filled)
-    return Text.assemble((full, role), (empty, "faint"))
-
-
-def _label_text(label: str) -> Text:
-    """A path label with its folders dim and its file name in the normal color."""
-    folder, slash, name = label.rpartition("/")
-    if not slash or " | " in label:
-        return Text(label, style="text")
-    return Text.assemble((folder + slash, "info"), (name, "text"))
-
-
-def _format_count(
-    count: float, total: float | None, level: str, unit: str | None = None,
-) -> str:
-    """A row's count as text: `3/10`, just the total once finished, or the count alone.
-
-    Args:
-        count: the units done.
-        total: the units expected; None for a spinner row, which shows the count once above 0.
-        level: the row's outcome; "ok" shows only the total.
-        unit: "bytes" to show sizes; None for numbers.
-
-    Returns:
-        The text; "" for a spinner row at 0.
-    """
-
-    def one(value: float) -> str:
-        if unit == "bytes":
-            return size(value)
-        return str(int(value) if float(value).is_integer() else value)
-
-    if level == "ok" and total is not None:
-        return one(total)
-    if total is not None:
-        return f"{one(count)}/{one(total)}"
-    return one(count) if count > 0 else ""
+_URL = re.compile(r"https?://[^\s:]+(?::\d+)?[^\s]*")
 
 
 def _brief(error: BaseException, *, limit: int = 100) -> str:
@@ -394,240 +154,292 @@ def _brief(error: BaseException, *, limit: int = 100) -> str:
     return message if len(message) <= limit else message[: limit - 1] + "…"
 
 
-class Group:
-    """A Rich progress group holding one or more `Row` bars.
+class State(StrEnum):
+    """The lifecycle state of a progress item."""
 
-    Args:
-        owner: the `UI` it draws on.
-        title: a line logged above the rows; "" for none.
-        drawn: whether the rows show; False keeps their counts and shows nothing.
-    """
+    QUEUED = "queued"
+    ACTIVE = "active"
+    MERGING = "merging"
+    UNPACKING = "unpacking"
+    DONE = "done"
+    SKIPPED = "skipped"
+    FAILED = "failed"
 
-    def __init__(self, owner: UI, title: str, *, drawn: bool = True) -> None:
-        self._ui = owner
-        self.title = title
-        # Whether the rows show at all: an undrawn group only counts (the engine's rows, which
-        # the CLI draws from events instead).
+
+class Item:
+    """One progress item: a stable key, a label, count/total, state, and an optional note."""
+
+    def __init__(
+        self,
+        key: str,
+        label: str = "",
+        *,
+        total: float | None = None,
+        unit: str | None = None,
+        drawn: bool = True,
+        owner: UI,
+    ) -> None:
+        self.key = key
+        self.label = label or key
+        self.total = total
+        self.count = 0.0
+        self.unit = unit
         self.drawn = drawn
-        self._lock = threading.Lock()
-        self._rows: list[Row] = []
-        self._tasks: dict[TaskID, Row] = {}
-        self._live = False
+        self.owner = owner
+        self.state = State.ACTIVE
+        self._note = ""
+        self._started = _time.now()
+        self._ended: float | None = None
+        self._outcome: Level | None = None
 
     @property
-    def _progress(self) -> RichProgress | None:
-        return self._ui._live_progress if self._live else None
+    def raw(self) -> Any:
+        """Raw item identifier for compatibility."""
+        return self.key
 
-    def _start(self) -> None:
-        """Start the group: log title if any, and register with UI for live rendering."""
-        if self.title and self.drawn and self._ui._allows("info"):
-            self._ui.info(self.title)
-        self._live = self._ui._register_group(self.drawn)
-        if self._live:
-            for row in self._rows:
-                if row._task == TaskID(0):
-                    row._task = self._ui._add_task(row, row.label, row._total)
-                    self._tasks[row._task] = row
+    def advance(self, n: float = 1) -> None:
+        """Increment progress by `n`."""
+        self.count += n
+        self.owner._item_updated(self)
 
-    def _stop(self, outcome: Level = "ok") -> None:
-        """End the group: give each open row `outcome`, and leave one line per row.
+    def note(self, text: str) -> None:
+        """Set the text after the bar."""
+        self._note = text
+        self.owner._item_updated(self)
 
-        Live bars are stopped (Rich removes them) and each row is printed once, finished or
-        failed. Without live bars, a drawn group logs a line per row instead; an undrawn one
-        prints nothing.
-
-        Args:
-            outcome: "ok" for a block that ended cleanly, "error" for one that raised.
-        """
-        for row in self._rows:
-            if row._outcome is None:
-                row._outcome = outcome
-        if self._live:
-            self._ui._unregister_group(self._rows, outcome)
+    def ok(self, note: str = "") -> None:
+        """Mark the item as successfully finished."""
+        if self._ended is not None:
             return
-        if not self.drawn:
+        self.state = State.DONE
+        if note:
+            self._note = note
+        self._ended = _time.now()
+        self._outcome = "ok"
+        self.owner._item_finished(self)
+
+    def skip(self, note: str = "") -> None:
+        """Mark the item as skipped."""
+        if self._ended is not None:
             return
-        for row in self._rows:
-            self._ui._log(row._outcome or outcome, row.label)
+        self.state = State.SKIPPED
+        if note:
+            self._note = note
+        self._ended = _time.now()
+        self._outcome = "warn"
+        self.owner._item_finished(self)
 
-    def _add_task(self, row: Row, label: str, total: float | None) -> TaskID:
-        """Add a row task to the UI live progress display.
-
-        Args:
-            row: the row owning the task.
-            label: what the row is about.
-            total: expected total units or None.
-
-        Returns:
-            The allocated TaskID, or TaskID(0) if not running live.
-        """
-        if not self._live:
-            return TaskID(0)
-        return self._ui._add_task(row, label, total)
-
-    def _update(self, task_id: TaskID, **kwargs: Any) -> None:
-        """Update a live task's progress units.
-
-        Args:
-            task_id: task to update.
-            **kwargs: arguments passed to Rich `Progress.update`.
-        """
-        if not self._live:
+    def fail(self, note: str = "") -> None:
+        """Mark the item as failed."""
+        if self._ended is not None:
             return
-        self._ui._update_task(task_id, **kwargs)
+        self.state = State.FAILED
+        if note:
+            self._note = note
+        self._ended = _time.now()
+        self._outcome = "error"
+        self.owner._item_finished(self)
 
-    def _stop_task(self, task_id: TaskID) -> None:
-        """Stop tracking a live task.
+    def finish(self) -> None:
+        """Alias for `ok()`."""
+        self.ok()
 
-        Args:
-            task_id: task to stop.
-        """
-        if not self._live:
+    def part(self) -> Callable[[int, int | None], None]:
+        """A callback feeding `(fed, total)` chunks from a stream."""
+        def callback(fed: int, total: int | None = None) -> None:
+            self.count = float(fed)
+            if total is not None:
+                self.total = float(total)
+            self.owner._item_updated(self)
+        return callback
+
+    def __enter__(self) -> Item:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if exc_type is None:
+            if self.state in (State.ACTIVE, State.QUEUED, State.MERGING, State.UNPACKING):
+                self.ok()
+        else:
+            if isinstance(exc_val, KeyboardInterrupt):
+                self.fail("stopped")
+            else:
+                self.fail(_brief(exc_val) if exc_val else "failed")
+
+
+# Backwards compatibility alias for flnd
+Row = Item
+
+
+class Journal:
+    """A JSON Lines run journal file recording outcome records and log lines."""
+
+    def __init__(self, path: str | os.PathLike[str], owner: UI) -> None:
+        self.path = Path(path)
+        self.owner = owner
+        self._file: IO[str] | None = None
+
+    def __enter__(self) -> Journal:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(self.path, "a", encoding="utf-8")
+        self.owner._journal = self
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.owner._journal = None
+        if self._file is not None:
+            try:
+                self._file.flush()
+                self._file.close()
+            finally:
+                self._file = None
+
+    def write(self, record: Any) -> None:
+        """Write one JSON record object, adding `at` and `type` if omitted."""
+        if self._file is None:
             return
-        self._ui._stop_task(task_id)
+        if isinstance(record, dict):
+            data = dict(record)
+            event_type = str(data.get("type", "Event"))
+        elif hasattr(record, "__dict__"):
+            data = dict(record.__dict__)
+            event_type = type(record).__name__
+        else:
+            try:
+                import msgspec
+                data = msgspec.to_builtins(record)
+            except Exception:
+                data = {"value": str(record)}
+            event_type = type(record).__name__
+
+        if event_type == "Progress" or data.get("type") == "Progress":
+            return
+
+        if "type" not in data:
+            data["type"] = event_type
+        if "at" not in data:
+            now = _time.now()
+            data["at"] = datetime.fromtimestamp(now, tz=UTC).isoformat()
+
+        line = json.dumps(data, ensure_ascii=False, default=str)
+        self._file.write(line + "\n")
+        self._file.flush()
+
+
+class Group:
+    """A collection of progress items belonging to one logical task."""
+
+    def __init__(self, owner: UI, title: str = "", *, drawn: bool = True) -> None:
+        self.owner = owner
+        self.title = title
+        self.drawn = drawn
+        self._items: list[Item] = []
 
     def add(
         self, label: str, *, total: float | None = None, unit: str | None = None,
-    ) -> Row:
-        """Add a row to this group; any thread may call it.
+    ) -> Item:
+        item = self.owner.item(label, label, total=total, unit=unit, drawn=self.drawn)
+        self._items.append(item)
+        return item
 
-        Args:
-            label: what the row is about, such as a file's name.
-            total: the units expected; None shows a spinner.
-            unit: "bytes" to show its counts as sizes; None for plain numbers.
+    def __enter__(self) -> Group:
+        if self.title:
+            self.owner.info(self.title)
+        return self
 
-        Returns:
-            The new row.
-        """
-        row = Row(label, total, self, unit)
-        with self._lock:
-            self._rows.append(row)
-            self._tasks[row._task] = row
-        return row
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        for item in self._items:
+            if item.state in (State.ACTIVE, State.QUEUED, State.MERGING, State.UNPACKING):
+                if exc_type is not None:
+                    item.fail(_brief(exc_val) if exc_val else "failed")
+                else:
+                    item.ok()
 
 
 class UI:
-    """The log and the progress rows of one console; the module's `ui` is the shared one.
-
-    It writes to stderr by default, so a program's stdout stays free for its real output.
-    Tests and the CLI swap its console inside `scope`.
-    """
-
-    Group = Group
-    Row = Row
+    """The terminal output renderer, log dispatcher, and progress tracker."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._level: Level = "info"
         self._console = self._make_console()
-        self._live_tasks: dict[TaskID, Row] = {}
-        self._live_progress: RichProgress | None = None
+        self._items: dict[str, Item] = {}
+        self._active_keys: list[str] = []
+        self._live_lines = 0
+        self._pending_lines: list[Text | str] = []
+        self._last_draw = 0.0
+        self._journal: Journal | None = None
+        self._live_tasks: dict[Any, Item] = {}
         self._live_count = 0
 
-    def _register_group(self, drawn: bool) -> bool:
-        """Register a group for live progress display.
-
-        Starts the shared `RichProgress` instance if drawn and progress is enabled.
-
-        Args:
-            drawn: whether the group draws its progress rows.
-
-        Returns:
-            True if the group is participating in live progress display.
-        """
-        if not drawn or not self._progress_enabled():
+    @property
+    def live(self) -> bool:
+        """Whether the screen is interactive and live bars should be drawn."""
+        if self._level == "quiet":
             return False
-        with self._lock:
-            if self._live_progress is None:
-                self._live_progress = RichProgress(
-                    _RowColumn(self, self._live_tasks.get),
-                    console=self.raw,
-                    transient=True,
-                )
-                self._live_progress.start()
-            self._live_count += 1
-            return True
+        file = self._console.file
+        is_tty = getattr(file, "isatty", lambda: False)()
+        return is_tty or bool(getattr(self._console, "_force_terminal", False))
 
-    def _unregister_group(self, rows: Sequence[Row], outcome: Level) -> None:
-        """Unregister a group, removing its live tasks and printing completed lines.
+    def _progress_enabled(self) -> bool:
+        return self.live
 
-        Args:
-            rows: rows belonging to the finished group.
-            outcome: fallback outcome for rows without one.
-        """
-        with self._lock:
-            for row in rows:
-                if row._outcome is None:
-                    row._outcome = outcome
+    @property
+    def _live_progress(self) -> Any:
+        return self if self.live and self._live_count > 0 else None
+
+    @property
+    def level(self) -> Level:
+        """Current minimum log level."""
+        return self._level
+
+    @level.setter
+    def level(self, value: Level) -> None:
+        if value not in LEVELS:
+            raise ValueError(f"unknown ui level {value!r}; choose from {', '.join(LEVELS)}")
+        self._level = value
+
+    @property
+    def raw(self) -> RichConsole:
+        """Underlying Rich Console."""
+        return self._console
+
+    def _allows(self, kind: Level) -> bool:
+        return LEVEL_RANKS[kind] >= LEVEL_RANKS[self._level]
+
+    def _use_unicode(self) -> bool:
+        return _detect_unicode(self._console.file)
+
+    def _glyph(self, name: str) -> str:
+        unicode, ascii_ = GLYPHS[name]
+        return unicode if self._use_unicode() else ascii_
+
+    def _spinner(self) -> str:
+        frames = SPIN_FRAMES[0] if self._use_unicode() else SPIN_FRAMES[1]
+        return frames[int(_time.now() * 10) % len(frames)]
+
+    def _get_width(self) -> int:
+        if self._console.width is not None:
+            return self._console.width
+        try:
+            return os.get_terminal_size().columns
+        except (OSError, ValueError):
+            return 80
+
+    def _get_height(self) -> int:
+        if self._console.height is not None:
+            return self._console.height
+        try:
+            return os.get_terminal_size().lines
+        except (OSError, ValueError):
+            return 24
+
+    def _flush(self) -> None:
+        if hasattr(self._console.file, "flush"):
             try:
-                if self._live_progress is not None:
-                    for row in rows:
-                        if row._task in self._live_tasks:
-                            try:
-                                self._live_progress.remove_task(row._task)
-                            except KeyError:
-                                pass
-                            del self._live_tasks[row._task]
-            finally:
-                self._live_count -= 1
-                if self._live_count <= 0:
-                    self._live_count = 0
-                    if self._live_progress is not None:
-                        try:
-                            self._live_progress.stop()
-                        finally:
-                            self._live_progress = None
-                elif self._live_progress is not None:
-                    self._live_progress.refresh()
-
-            if self._allows("ok"):
-                for row in rows:
-                    if row._outcome is not None and self._allows(row._outcome):
-                        self._console.print(row._render(self))
-            if hasattr(self._console.file, "flush"):
-                try:
-                    self._console.file.flush()
-                except (OSError, ValueError):
-                    pass
-
-    def _add_task(self, row: Row, label: str, total: float | None) -> TaskID:
-        """Add a task row to the live progress display if active.
-
-        Args:
-            row: the Row instance owning the task.
-            label: what the row is about.
-            total: expected total units or None.
-
-        Returns:
-            The allocated TaskID, or TaskID(0) if not running live.
-        """
-        with self._lock:
-            if self._live_progress is None:
-                return TaskID(0)
-            task_id = self._live_progress.add_task(_sanitize(label), total=total)
-            self._live_tasks[task_id] = row
-            return task_id
-
-    def _update_task(self, task_id: TaskID, **kwargs: Any) -> None:
-        """Update progress for a live task.
-
-        Args:
-            task_id: the task to update.
-            **kwargs: arguments passed to Rich `Progress.update`.
-        """
-        with self._lock:
-            if self._live_progress is not None:
-                self._live_progress.update(task_id, **kwargs)
-
-    def _stop_task(self, task_id: TaskID) -> None:
-        """Stop tracking progress for a live task.
-
-        Args:
-            task_id: the task to stop.
-        """
-        with self._lock:
-            if self._live_progress is not None:
-                self._live_progress.stop_task(task_id)
+                self._console.file.flush()
+            except (OSError, ValueError):
+                pass
 
     @staticmethod
     def _make_console(
@@ -637,21 +449,6 @@ class UI:
         width: int | None = None,
         base: RichConsole | None = None,
     ) -> RichConsole:
-        """A Rich console with flnd's theme, built from `scope`'s settings.
-
-        Each setting left as None is taken from `base`; with no base either, Rich detects it.
-        Soft wrap is on, so a long line is never cut, and highlighting off, so Rich doesn't
-        color numbers and paths in a site's text.
-
-        Args:
-            color: the color setting, as `_color_settings` reads it.
-            dest: where to write; None keeps `base`'s file, or stderr without one.
-            width: the width in columns; None keeps `base`'s, or detects it.
-            base: the console being replaced.
-
-        Returns:
-            The console.
-        """
         color_system, no_color, force_terminal = _color_settings(color, base)
         file = dest if dest is not None else (base.file if base is not None else None)
         return RichConsole(
@@ -666,62 +463,184 @@ class UI:
             soft_wrap=True,
         )
 
-    def _use_unicode(self) -> bool:
-        return _detect_unicode(self._console.file)
+    def _render_item(self, it: Item, width: int, unicode: bool) -> Text:
+        if it.state == State.ACTIVE:
+            spinner = self._spinner()
+            glyph_style = "accent"
+        elif it.state in (State.MERGING, State.UNPACKING):
+            spinner = self._spinner()
+            glyph_style = "warn"
+        elif it.state == State.DONE:
+            spinner = self._glyph("ok")
+            glyph_style = "ok"
+        elif it.state == State.SKIPPED:
+            spinner = self._glyph("warn")
+            glyph_style = "warn"
+        else:
+            spinner = self._glyph("error")
+            glyph_style = "error"
 
-    def _glyph(self, name: str) -> str:
-        unicode, ascii_ = GLYPHS[name]
-        return unicode if self._use_unicode() else ascii_
+        if it.unit == "bytes":
+            if it.total is not None and it.total > 0:
+                stats = f"{size(it.count)}/{size(it.total)}"
+            else:
+                stats = size(it.count)
+        else:
+            if it.total is not None and it.total > 0:
+                stats = f"{it.count:g}/{it.total:g}"
+            else:
+                stats = f"{it.count:g}"
 
-    def _spinner(self) -> str:
-        frames = SPIN_FRAMES[0] if self._use_unicode() else SPIN_FRAMES[1]
-        return frames[int(_time.now() * 10) % len(frames)]
+        note_str = f"  ({it._note})" if it._note else ""
+        bar_len = 16
+        full_c = GLYPHS["bar_full"][0 if unicode else 1]
+        empty_c = GLYPHS["bar_empty"][0 if unicode else 1]
 
-    @property
-    def raw(self) -> RichConsole:
-        """Underlying Rich `Console`."""
-        return self._console
+        if it.total is not None and it.total > 0:
+            pct = max(0.0, min(1.0, it.count / it.total))
+            filled = int(round(pct * bar_len))
+            bar_full = full_c * filled
+            bar_empty = empty_c * (bar_len - filled)
+        else:
+            bar_full = ""
+            bar_empty = empty_c * bar_len
 
-    @property
-    def level(self) -> Level:
-        """Current minimum log level."""
-        return self._level
+        fixed_len = len(spinner) + 3 + bar_len + 2 + len(stats) + len(note_str)
+        avail_for_label = max(8, width - fixed_len)
+        label = _elide_middle(it.label, avail_for_label)
 
-    @level.setter
-    def level(self, value: Level) -> None:
-        if value not in LEVELS:
-            raise ValueError(f"unknown ui level {value!r}; choose from {', '.join(LEVELS)}")
-        self._level = value
+        line = Text()
+        line.append(spinner, style=glyph_style)
+        line.append(" ")
+        line.append(label, style="text")
+        line.append("  ")
+        if bar_full:
+            line.append(bar_full, style="accent")
+        if bar_empty:
+            line.append(bar_empty, style="faint")
+        line.append("  ")
+        line.append(stats, style="size")
+        if note_str:
+            line.append(note_str, style="faint")
 
-    def _allows(self, kind: Level) -> bool:
-        return LEVEL_RANKS[kind] >= LEVEL_RANKS[self._level]
+        line.truncate(width)
+        return line
 
-    def _progress_enabled(self) -> bool:
-        return self._level != "quiet" and self._console.is_terminal
+    def _redraw(self, force: bool = False) -> None:
+        now = _time.now()
+        if not force and (now - self._last_draw < 0.1):
+            return
+        self._last_draw = now
+        file = self._console.file
+
+        if self._live_lines > 0:
+            if hasattr(file, "write"):
+                file.write(f"\r\x1b[{self._live_lines}A\x1b[J")
+            self._live_lines = 0
+
+        while self._pending_lines:
+            pending = self._pending_lines.pop(0)
+            self._console.print(pending)
+
+        if not self._active_keys:
+            self._flush()
+            return
+
+        w = self._get_width()
+        h = self._get_height()
+        unicode = self._use_unicode()
+        cap = max(1, h - 2)
+
+        active = [self._items[k] for k in self._active_keys if k in self._items]
+        if len(active) <= cap:
+            visible = active
+            folded = 0
+        else:
+            visible = active[:cap - 1]
+            folded = len(active) - (cap - 1)
+
+        drawn_count = 0
+        for it in visible:
+            rendered = self._render_item(it, width=w, unicode=unicode)
+            self._console.print(rendered)
+            drawn_count += 1
+
+        if folded > 0:
+            fold_glyph = "…" if unicode else "..."
+            fold_line = f"  {fold_glyph} and {folded} more"
+            self._console.print(Text(fold_line[:w], style="faint"))
+            drawn_count += 1
+
+        self._live_lines = drawn_count
+        self._flush()
+
+    def item(
+        self,
+        key: str,
+        label: str = "",
+        *,
+        total: float | None = None,
+        unit: str | None = None,
+        drawn: bool = True,
+    ) -> Item:
+        """Create and register a progress item under a stable key."""
+        with self._lock:
+            it = Item(key, label or key, total=total, unit=unit, drawn=drawn, owner=self)
+            self._items[key] = it
+            self._live_count += 1
+            self._live_tasks[it.raw] = it
+            if drawn and self.live:
+                if key not in self._active_keys:
+                    self._active_keys.append(key)
+                self._redraw(force=True)
+            return it
+
+    def _item_updated(self, item: Item) -> None:
+        if not item.drawn or not self.live:
+            return
+        now = _time.now()
+        if now - self._last_draw >= 0.1:
+            with self._lock:
+                self._redraw()
+
+    def _item_finished(self, item: Item) -> None:
+        with self._lock:
+            if item.key in self._active_keys:
+                self._active_keys.remove(item.key)
+            if item.raw in self._live_tasks:
+                del self._live_tasks[item.raw]
+            self._live_count = max(0, self._live_count - 1)
+
+            if item.drawn:
+                rendered = self._render_item(item, self._get_width(), self._use_unicode())
+                if not self.live:
+                    self._console.print(rendered)
+                    self._flush()
+                else:
+                    self._pending_lines.append(rendered)
+                    self._redraw(force=True)
 
     def _log(self, _kind: Level, message: str, *args: Any, **fields: Any) -> None:
-        """Format and print one log line (the module docstring gives its steps).
-
-        Args:
-            _kind: the level; named with an underscore so a field called `kind` stays free.
-            message: the text, a `str.format` template when fields are given.
-            *args: positional fields for the template.
-            **fields: named fields; each must appear in `message`.
-
-        Raises:
-            TypeError: a named field doesn't appear in `message`.
-        """
         unused = set(fields) - _field_names(message) if fields else set()
         if unused:
             raise TypeError(
                 f"ui message {message!r} has no field {', '.join(sorted(unused))}"
             )
+        if not self._allows(_kind):
+            return
         text = (
             _FORMATTER.format(message, *args, **fields)
             if (args or fields) else _sanitize(message)
         )
-        if not self._allows(_kind):
-            return
+        if self._journal is not None:
+            if _kind != "debug" or self._allows("debug"):
+                self._journal.write({
+                    "type": "Log",
+                    "level": _kind,
+                    "message": text,
+                    "fields": fields,
+                })
+
         mark = self._glyph(LOG_GLYPHS.get(_kind, "info"))
         with self._lock:
             if not text or _kind == "debug":
@@ -737,9 +656,13 @@ class UI:
                     (f"{mark} {head}", _kind),
                     (colon + detail, f"dim {_kind}") if colon else ("", ""),
                 )
-            self._console.print(line)
-            if hasattr(self._console.file, "flush"):
-                self._console.file.flush()
+
+            if self.live and self._active_keys:
+                self._pending_lines.append(line)
+                self._redraw(force=True)
+            else:
+                self._console.print(line)
+                self._flush()
 
     def debug(self, message: str = "", /, *args: Any, **fields: Any) -> None:
         """Log a debug message."""
@@ -761,6 +684,10 @@ class UI:
         """Log an error message."""
         self._log("error", message, *args, **fields)
 
+    def file(self, path: str | os.PathLike[str]) -> Journal:
+        """Context manager opening a JSON Lines journal file."""
+        return Journal(path, self)
+
     @contextmanager
     def scope(
         self,
@@ -770,21 +697,7 @@ class UI:
         width: int | None = None,
         level: Level | None = None,
     ) -> Iterator[UI]:
-        """Inside the block, write to another destination, or with other colors, width or level.
-
-        The console and level before it come back when the block ends, even on an error. Scopes
-        nest.
-
-        Args:
-            color: the color setting (see `_color_settings`); None keeps the current one.
-            dest: a text stream to write to, such as `io.StringIO()` in a test; None keeps the
-                current one.
-            width: the width in columns; None keeps the current one.
-            level: the least level shown; None keeps the current one.
-
-        Yields:
-            This `UI`.
-        """
+        """Inside the block, write to another destination, or with other colors, width or level."""
         old_console, old_level = self._console, self._level
         try:
             self._console = self._make_console(
@@ -798,70 +711,40 @@ class UI:
 
     @contextmanager
     def group(self, title: str = "", *, drawn: bool = True) -> Iterator[Group]:
-        """Context manager yielding a `Group` of progress rows.
-
-        Args:
-            title: a line logged above the rows; "" for none.
-            drawn: whether the rows show: as live bars on a terminal, else as a line each when
-                the group ends. False keeps the counts and shows nothing.
-
-        Yields:
-            The group, whose `add` makes a row.
-        """
+        """Context manager yielding a `Group` of progress items."""
         grp = Group(self, title, drawn=drawn)
-        grp._start()
-        try:
+        with grp:
             yield grp
-        except BaseException:
-            grp._stop("error")
-            raise
-        grp._stop("ok")
 
     @contextmanager
     def progress(
-        self, label: str, *, total: float | None = None, unit: str | None = None,
+        self,
+        label: str,
+        *,
+        total: float | None = None,
+        unit: str | None = None,
         drawn: bool = True,
-    ) -> Iterator[Row]:
-        """Context manager yielding a single `Row` progress bar.
-
-        `drawn=False` makes a row that only counts, as `group` does: a file a run downloads,
-        whose progress the CLI shows from the run's events.
-
-        Args:
-            label: what the row is about, such as a file's name.
-            total: the units expected; None when unknown (a spinner).
-            unit: "bytes" to show the counts as sizes; None for plain numbers.
-            drawn: whether the row shows.
-
-        Yields:
-            The row; it ends failed when the block raises, else finished.
-        """
-        with self.group(drawn=drawn) as grp:
-            row = grp.add(label, total=total, unit=unit)
-            try:
-                yield row
-                if row._outcome is None:
-                    row.finish()
-            except BaseException as error:
-                if isinstance(error, KeyboardInterrupt):
-                    row.fail("stopped")
-                else:
-                    row.fail(_brief(error))
-                raise
+    ) -> Iterator[Item]:
+        """Context manager yielding a single `Item` progress bar."""
+        it = self.item(label, label, total=total, unit=unit, drawn=drawn)
+        with it:
+            yield it
 
 
 ui = UI()
-
+log = ui
 
 BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
 
+
 def size(n: float) -> str:
     amount = float(n)
-    for unit in BYTE_UNITS[:-1]:
+    for u in BYTE_UNITS[:-1]:
         if abs(round(amount, 1)) < 1024:
-            return f"{amount:.1f} {unit}"
+            return f"{amount:.1f} {u}"
         amount /= 1024
     return f"{amount:.1f} {BYTE_UNITS[-1]}"
+
 
 def duration(seconds: float) -> str:
     if round(seconds * 1000) < 1000:
@@ -870,13 +753,15 @@ def duration(seconds: float) -> str:
         return f"{seconds:.1f}s"
     whole = round(seconds)
     units = ((whole // 3600, "h"), (whole % 3600 // 60, "m"), (whole % 60, "s"))
-    nonzero = [f"{amount}{unit}" for amount, unit in units if amount]
+    nonzero = [f"{amount}{u}" for amount, u in units if amount]
     return " ".join(nonzero[:2])
+
 
 def count(n: float, unit: str, *, plural: str | None = None) -> str:
     if n == 1:
         return f"{n:,} {unit}"
     return f"{n:,} {plural if plural is not None else unit + 's'}"
+
 
 def redact(url: str) -> str:
     from urllib.parse import urlsplit, urlunsplit
@@ -898,4 +783,15 @@ def redact(url: str) -> str:
         return f"{scheme}{sep}{authority.rpartition('@')[2]}{slash}{path}"
 
 
-log = ui
+__all__ = [
+    "Item",
+    "Journal",
+    "State",
+    "UI",
+    "count",
+    "duration",
+    "log",
+    "redact",
+    "size",
+    "ui",
+]
