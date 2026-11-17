@@ -301,6 +301,40 @@ flnd config remove <key>             back to the default
 flags: -v (debug lines, and a bug's traceback) · --all (get only) · -h (help, with the version)
 ```
 
+**`flnd -h` fits on one screen** (user, 2026-11-17: "flnd -h is also verbose"). Today it is
+126 lines: 11 commands in boxes, then every target form of every site (13 for Facebook
+alone). It becomes:
+
+```
+flnd 0.2.0 · download what you follow, and keep it up to date
+
+  get <targets…> [--all]                   download what the targets have now
+  sync [targets…]                          download what is new for the followed targets
+  target     list · follow · unfollow · remove
+  auth       list · login · logout
+  plugin     list · install · remove
+  extension  install · remove
+  config     init · set · remove
+  status                                   the last run, its failures, the logins, the disk
+
+targets  ins:example_user · ins:example_user/reels · a link · mht?words
+sites    ins tik twt fbk tlg loi mht   (flnd get -h: each site's categories)
+flags    -v debug lines and tracebacks · -h help
+docs     flnddocs/start.md
+```
+
+- **The rules for help text:** one line per command, taken from its docstring's summary
+  line, with no boxes and no wrapped descriptions.
+- **`flnd <group> -h`** shows that group's commands, one line each.
+- **`flnd get -h`** adds one line per site: its code, name and categories, with its own
+  categories marked. That's 7 lines, not 90.
+- **Each site's target forms and link shapes** live in `flnddocs/sources/<code>.md`. A
+  target that no site reads is a `UsageError` whose hint names the site that owns the
+  domain and its page.
+- **The Charm Huh look stays:** the palette, bold commands and dim descriptions, drawn by
+  `flncore.cli`'s help formatter. A test pins the output and its length, at no more than 24
+  lines.
+
 **Three flags, and nothing else.** Each old option goes to the place it belongs:
 
 | old option | where it goes | why |
