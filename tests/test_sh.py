@@ -1,6 +1,5 @@
-"""Tests for `flnd._tools`: running ffmpeg and 7zz, streaming their output, and faking them."""
+"""Tests for `flnd._tools`: running ffmpeg and 7zz and faking them."""
 
-import os
 import sys
 import tempfile
 import unittest
@@ -15,10 +14,6 @@ class ShCase(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.folder = Path(folder.name)
-        self.cache = self.folder / "cache" / "flnd" / "tools"
-        env = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.folder / "cache")})
-        env.start()
-        self.addCleanup(env.stop)
         found = mock.patch.dict(_tools._found, clear=True)
         found.start()
         self.addCleanup(found.stop)
@@ -71,39 +66,8 @@ class FindTest(ShCase):
             _tools.sevenzip()
 
 
-class StreamTest(ShCase):
-    def setUp(self):
-        super().setUp()
-        self.python = _tools.Tool(Path(sys.executable), "python")
-
-    def test_stream_yields_lines_as_they_come(self):
-        code = "import sys\nfor n in range(3): print(n, flush=True)\nsys.stderr.write('done')"
-        self.assertEqual(list(self.python.stream("-c", code)), ["0", "1", "2"])
-
-    def test_a_nonzero_exit_raises_with_the_stderr_tail_after_the_lines(self):
-        code = "import sys\nprint('out')\nsys.stderr.write('bad input\\n')\nsys.exit(4)"
-        lines = []
-        with self.assertRaises(_tools.RunError) as caught:
-            for line in self.python.stream("-c", code):
-                lines.append(line)
-        self.assertEqual(lines, ["out"])
-        self.assertEqual(caught.exception.code, 4)
-        self.assertIn("bad input", caught.exception.err)
-
-    def test_timeout_kills_the_tool(self):
-        with self.assertRaises(_tools.RunError) as caught:
-            list(self.python.stream("-c", "import time; time.sleep(30)", timeout=0.2))
-        self.assertEqual(caught.exception.code, -1)
-
-    def test_leaving_early_stops_the_tool(self):
-        code = "import itertools\nfor n in itertools.count(): print(n, flush=True)"
-        lines = self.python.stream("-c", code)
-        self.assertEqual(next(lines), "0")
-        lines.close()
-
-
 class FakeTest(ShCase):
-    def test_fake_answers_run_find_and_stream_without_a_subprocess(self):
+    def test_fake_answers_run_and_find_without_a_subprocess(self):
         seen = []
 
         def ffmpeg(args):
@@ -113,7 +77,7 @@ class FakeTest(ShCase):
         with _tools.fake({"ffmpeg": ffmpeg, "7zz": _tools.Result(2, "", "wrong password")}):
             tool = _tools.find("ffmpeg")
             self.assertEqual(tool.path, Path("ffmpeg"))
-            self.assertEqual(list(tool.stream("-i", "a.mp4")), ["frame=1", "frame=2"])
+            self.assertEqual(tool.run("-i", "a.mp4").out, "frame=1\nframe=2\n")
             self.assertEqual(_tools.Tool(Path("/usr/bin/ffmpeg"), "ffmpeg").run("-y").out,
                              "frame=1\nframe=2\n")
             with self.assertRaises(_tools.RunError) as caught:
@@ -123,39 +87,6 @@ class FakeTest(ShCase):
             with self.assertRaises(_tools.MissingError):
                 _tools.find("unrar")
         self.assertEqual(seen, [("ffmpeg", "-i", "a.mp4"), (str(Path("/usr/bin/ffmpeg")), "-y")])
-
-    def test_a_failing_fake_stream_raises_after_its_lines(self):
-        with _tools.fake({"ffmpeg": lambda args: (1, "a\n", "broken")}):
-            lines = []
-            with self.assertRaises(_tools.RunError):
-                for line in _tools.find("ffmpeg").stream():
-                    lines.append(line)
-        self.assertEqual(lines, ["a"])
-
-
-class VersionTest(ShCase):
-    def test_version_is_parsed_once_and_cached_by_path_and_mtime(self):
-        binary = self.folder / "mytool"
-        binary.write_text("x")
-        calls = []
-
-        def mytool(args):
-            calls.append(args)
-            return 0, f"mytool version 1.{len(calls)}.0 (example.com build)", ""
-
-        tool = _tools.Tool(binary, "mytool")
-        with _tools.fake({"mytool": mytool}):
-            self.assertEqual(tool.version, "1.1.0")
-            self.assertEqual(tool.version, "1.1.0")
-            self.assertEqual(calls, [(str(binary), "--version")])
-            self.assertTrue((self.cache / "versions.json").is_file())
-            os.utime(binary, (1_000, 1_000))
-            self.assertEqual(tool.version, "1.2.0")
-
-    def test_ffmpeg_style_tools_get_one_dash(self):
-        with _tools.fake({"ffmpeg": lambda args: (0, f"{args[1]} 6.1.1", "")}):
-            self.assertEqual(_tools.find("ffmpeg").version, "6.1.1")
-            self.assertEqual(_tools.find("ffmpeg").run("-version").out, "-version 6.1.1")
 
 
 if __name__ == "__main__":
