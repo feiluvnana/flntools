@@ -17,8 +17,10 @@ How a command runs (`main`):
    rendered with Charm Huh / Cyclopts panels.
 2. The command function opens the home (`--home`, else `$FLND_HOME`, else `./.flnd`) and makes
    one library call with the flags.
-3. A run's downloads show progress bars, and events go to the journal and the terminal:
-   a line per saved or failed file, or one JSON object per line. With `--exec CMD`, each `Saved`
+3. A run's own display is the summary table the library draws on a terminal: one row per
+   target and category, with the counts of its files (queued, downloading, saved, failed) and
+   the spinner on the rows still going. Events go to the journal and the view: a dry run prints
+   its listing, `--json` prints one JSON object per line. With `--exec CMD`, each `Saved`
    event also runs CMD, without a shell (`_Exec`). The end of a run prints a short summary, and
    its failures decide the exit code.
 4. Whatever ends the command becomes an exit code (`exit_code`): 0 ok, 1 some files or targets
@@ -1085,7 +1087,8 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
     """Read a run's events into the chosen view, print its end, and return its exit code.
 
     flnd's own log lines are held to warnings for the run, or opened to debug lines with `-v`.
-    The run's events go to `<home>/log/<stamp>_<command>.jsonl` (see flnd/docs/storage).
+    The run's events go to `<home>/log/<stamp>_<command>.jsonl` (see flnd/docs/storage), and
+    the library draws the run's summary table from the rows it keeps (`ui.group(drawn=…)`).
 
     Args:
         fl: the open home.
@@ -1123,7 +1126,7 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
     view: _View = (
         _Json()
         if args.json
-        else _JournalView(verbose=args.verbose, journal_path=journal_path)
+        else _JournalView(journal_path=journal_path)
     )
     with ExitStack() as stack:
         journal = (
@@ -1279,7 +1282,6 @@ class _View:
     A view is a context manager, so a live display stops even when the run raises.
 
     Args:
-        verbose: also show what a person rarely needs (each skipped file).
         log_stream: stream where flnd's own log lines go; None leaves them on standard error.
         out_stream: stream where terminal output goes; None leaves it on standard output.
     """
@@ -1290,11 +1292,9 @@ class _View:
     def __init__(
         self,
         *,
-        verbose: bool = False,
         log_stream: Any = None,
         out_stream: Any = None,
     ) -> None:
-        self.verbose = verbose
         self.log = log_stream
         self.out = out_stream
         self._con = _console(out_stream) if out_stream is not None else _console()
@@ -1347,23 +1347,29 @@ class _View:
         if report.failed:
             failed = [(event.error, bool(event.post)) for event in report.failed]
             self._err_con.print(_summary(failed, details=True))
+            for hint in _hints(failed):
+                self._err_con.print(Text.assemble(("  ", ""), (hint, "color(243)")))
 
 
 class _JournalView(_View):
-    """Terminal output from run events; the machine record goes to the `.jsonl` journal."""
+    """Terminal output from run events; the machine record goes to the `.jsonl` journal.
+
+    The run's own display is the summary table the library draws (one row per target and
+    category, `flnd.job.Board`), so a view prints no line per file or failure: the table
+    counts them, and `end` sums them up.
+    """
 
     journal: Any = None
 
-    def __init__(self, *, verbose: bool = False, journal_path: Any = None) -> None:
+    def __init__(self, *, journal_path: Any = None) -> None:
         """Args:
-            verbose: also print each saved or skipped file.
             journal_path: where the JSON Lines run log is written; None skips the file.
         """
-        super().__init__(verbose=verbose)
+        super().__init__()
         self.journal_path = journal_path
 
     def show(self, event: Any) -> None:
-        """Record one event and print failures (and saved files with `-v`).
+        """Record one event, and print a dry run's planned files.
 
         Args:
             event: the event to record and potentially display.
@@ -1373,20 +1379,7 @@ class _JournalView(_View):
             return
         if self.journal is not None:
             self.journal.write(event)
-        if name == "Failed":
-            _failed(event, self._con.print)
-        elif name == "Saved" and self.verbose:
-            from rich.text import Text
-
-            path_str = _shown(event.path)
-            folder, filename = os.path.split(path_str)
-            folder_part = (folder + os.sep) if folder else ""
-            self._con.print(Text.assemble(
-                ("saved ", "bold #02BF87"),
-                (folder_part, "color(243)"),
-                (filename, "bold #02BF87"),
-            ))
-        elif name == "Planned":
+        if name == "Planned":
             from rich.text import Text
 
             if event.path is None:
@@ -1404,14 +1397,6 @@ class _JournalView(_View):
                     (folder_part, "color(243)"),
                     (filename, "color(252)"),
                 ))
-        elif name == "Skipped" and self.verbose:
-            from rich.text import Text
-
-            path_str = _shown(event.path) if event.path else str(event.target)
-            self._con.print(Text.assemble(
-                ("skipped ", "yellow"),
-                (path_str, "color(243)"),
-            ))
 
 
 class _Json(_View):
@@ -1435,27 +1420,6 @@ class _Json(_View):
             stream.flush()
 
 
-def _failed(event: Any, write: Callable[..., None]) -> None:
-    """Print a failed file or target: its message, then its hint.
-
-    Args:
-        event: the `flnd.Failed` event.
-        write: what prints one line (`print`, or a console's print).
-    """
-    from rich.text import Text
-
-    where = f"{event.target} {event.post}" if event.post else str(event.target)
-    write(Text.assemble(
-        ("failed ", "bold #ED567A"),
-        (where, "bold #7D84D6"),
-        (": ", "color(243)"),
-        (str(event.error), "#ED567A"),
-    ))
-    hint = getattr(event.error, "hint", "")
-    if hint:
-        write(Text.assemble(("  ", ""), (str(hint), "color(243)")))
-
-
 # Each error class's word in a failure summary, by class name; the first class in an error's MRO
 # that is listed wins.
 WORDS = {
@@ -1471,6 +1435,29 @@ def _word(error: BaseException) -> str:
     """The word a failure summary counts an error under: "network", "gone", …; else "error"."""
     return next((WORDS[kind.__name__] for kind in type(error).__mro__ if kind.__name__ in WORDS),
                 "error")
+
+
+def _hints(failed: Sequence[tuple[BaseException, bool]]) -> list[str]:
+    """The hints of a run's failures a person must act on now, each once, in order.
+
+    A login a target needs is one: `flnd retry` can't fetch it, so the hint's command is the
+    way on, and the run ends with exit code 3. The rest wait in `flnd status`, which shows
+    every failure with its hint.
+
+    Args:
+        failed: each failure's error, with whether it was a file's (else a whole target's).
+
+    Returns:
+        The hint texts, deduplicated.
+    """
+    seen: list[str] = []
+    for error, _ in failed:
+        if _kind(error) != "LoginError":
+            continue
+        hint = str(getattr(error, "hint", "") or "")
+        if hint and hint not in seen:
+            seen.append(hint)
+    return seen
 
 
 def _summary(failed: Sequence[tuple[BaseException, bool]], *, details: bool = False) -> Any:

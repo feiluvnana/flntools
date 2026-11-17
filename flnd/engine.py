@@ -846,7 +846,7 @@ class Engine:
         source = self.sources[target.source]()
         self._record([(target, options)], follow=sync)
         reports: list[TargetReport] = []
-        with _home.open(self.home) as db, ui.group(drawn=False) as group:
+        with _home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as group:
             settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
@@ -983,7 +983,7 @@ class Engine:
         row = rows.get(_home.key(target))
         seen_keys = set(row.seen if row is not None else ())
         known_keys = set(rows)
-        with _home.open(self.home) as db, ui.group(drawn=False) as group:
+        with _home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as group:
             settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
@@ -1280,7 +1280,7 @@ class Engine:
         for number, (target, _) in enumerate(chosen):
             groups.setdefault(target.source, []).append(number)
         reports: dict[int, TargetReport] = {}
-        with _home.open(self.home) as db, ui.group(drawn=False) as rows:
+        with _home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as rows:
             run_settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,

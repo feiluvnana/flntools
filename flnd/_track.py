@@ -1,6 +1,7 @@
-"""One file's download lifecycle: the only place its events and log item come from.
+"""One file's download lifecycle: the only place its events come from.
 
-Architecture guide: flnd/docs/architecture.
+The run's display is the board's summary rows (`flnd.job.Board`), so a file tracks its phase
+and its events here, and draws nothing of its own. Architecture guide: flnd/docs/architecture.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from flnd._events import Failed, Saved, Skipped
-from flnd._ui import ui
 
 __all__ = ["Phase", "FileTrack", "Tracks", "_Bar"]
 
@@ -84,15 +84,10 @@ class FileTrack:
     emit: Callable[[Any], None]
     retried: bool = False
     phase: Phase = Phase.QUEUED
-    _item: Any = None
     _lock: threading.Lock = threading.Lock()
-    _base: float = 0.0
 
-    def active(self, *, total: float | None = None) -> None:
-        """Open a live item for the download.
-
-        Args:
-            total: the total size of the file, or None if unknown.
+    def active(self) -> None:
+        """Mark the download as started.
 
         Raises:
             ValueError: the file already ended or can't start.
@@ -100,11 +95,8 @@ class FileTrack:
         with self._lock:
             if self.phase not in (Phase.QUEUED, Phase.HELD, Phase.ACTIVE):
                 raise ValueError(f"file in {self.phase!s} can't start")
-            if self.phase != Phase.ACTIVE:
-                _forward(self.phase, Phase.ACTIVE)
-                self.phase = Phase.ACTIVE
-            if self._item is None and ui._progress_enabled():
-                self._item = ui.item(self.key, self.label, total=total)
+            _forward(self.phase, Phase.ACTIVE)
+            self.phase = Phase.ACTIVE
 
     def merging(self) -> None:
         """The DASH video and audio streams are being joined."""
@@ -112,11 +104,6 @@ class FileTrack:
             if self.phase in (Phase.QUEUED, Phase.ACTIVE):
                 _forward(self.phase, Phase.MERGING)
                 self.phase = Phase.MERGING
-            if self._item is not None:
-                from flncore.log import State
-
-                self._item._state = State.MERGING
-                self._item.note("merging")
 
     def unpacking(self) -> None:
         """The post-download steps (unpack, sidecar) are running."""
@@ -124,11 +111,6 @@ class FileTrack:
             if self.phase in (Phase.QUEUED, Phase.ACTIVE, Phase.MERGING):
                 _forward(self.phase, Phase.UNPACKING)
                 self.phase = Phase.UNPACKING
-            if self._item is not None:
-                from flncore.log import State
-
-                self._item._state = State.UNPACKING
-                self._item.note("unpacking")
 
     def skip(self, reason: str | None = None) -> None:
         """End skipped and emit a `Skipped` event.
@@ -139,9 +121,6 @@ class FileTrack:
         with self._lock:
             _forward(self.phase, Phase.SKIPPED)
             self.phase = Phase.SKIPPED
-            if self._item is not None:
-                self._item.skip(reason or "already saved")
-                self._item = None
             self.emit(Skipped(self.target, self.category, self.post_id, self.dest,
                               reason=reason))
 
@@ -154,9 +133,6 @@ class FileTrack:
         with self._lock:
             _forward(self.phase, Phase.FAILED)
             self.phase = Phase.FAILED
-            if self._item is not None:
-                self._item.fail(str(error))
-                self._item = None
             self.emit(Failed(self.target, error, post=self.post_id, path=self.dest))
 
     def dropped(self) -> None:
@@ -165,9 +141,6 @@ class FileTrack:
             if self.phase in TERMINAL:
                 return
             self.phase = Phase.DROPPED
-            if self._item is not None:
-                self._item.skip("stopped")
-                self._item = None
 
     def saved(self, event: Saved) -> None:
         """End saved and emit the final `Saved` event.
@@ -178,9 +151,6 @@ class FileTrack:
         with self._lock:
             _forward(self.phase, Phase.SAVED)
             self.phase = Phase.SAVED
-            if self._item is not None:
-                self._item.ok()
-                self._item = None
             self.emit(event)
 
     def bar(self) -> _Bar:
@@ -190,8 +160,12 @@ class FileTrack:
 class _Bar(AbstractContextManager["_Bar"]):
     """Progress sink for `flnd._transfer`, backed by the file track.
 
+    The run's display is the board's summary rows, so the bar carries only what a download
+    needs to answer for: the stop checks (a second Ctrl-C) and the phase captions. It keeps
+    the same surface as `flnd._transfer._Row`, which `_transfer` uses when there is no track.
+
     Args:
-        track: the file whose bar to update.
+        track: the file whose lifecycle the sink moves.
     """
 
     def __init__(self, track: FileTrack) -> None:
@@ -206,29 +180,15 @@ class _Bar(AbstractContextManager["_Bar"]):
         return None
 
     def start(self, total: float | None) -> None:
-        self._track.active(total=total)
-        self._track._base = self._track._item.count if self._track._item else 0.0
+        self._track.active()
 
     def update(self, done: float, total: float | None = None) -> None:
-        """Set how much of this try is done.
-
-        Args:
-            done: the amount done in this try.
-            total: the total size of the file, or None if unknown.
-        """
-        if self._track._item is None:
-            self._track.active(total=total)
-        if total is not None and self._track._item is not None:
-            self._track._item.total = self._track._base + total
-        if self._track._item is not None:
-            self._track._item.count = self._track._base + done
-            self._track._item.advance(0)
+        """Set how much of this try is done; nothing draws, so this counts for nothing."""
 
     def stoppable(self, done: float, total: float | None = None, *,
                   stop: threading.Event | None = None) -> None:
         if stop is not None and stop.is_set():
             raise KeyboardInterrupt
-        self.update(done, total)
 
     def follow(self, stop: threading.Event | None = None) -> _TrackStream:
         return _TrackStream(self, stop)
@@ -237,8 +197,7 @@ class _Bar(AbstractContextManager["_Bar"]):
         self.start(new)
 
     def advance(self, n: float) -> None:
-        if self._track._item is not None:
-            self._track._item.advance(n)
+        """Count `n` more bytes; nothing draws, so this counts for nothing."""
 
     def caption(self, text: str) -> None:
         if "merg" in text.lower():

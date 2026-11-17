@@ -324,6 +324,11 @@ def _ignore(event: Any) -> None:
 class Board:
     """Status board drawing per-target, per-category progress in a `ui.Group`.
 
+    One row per target and category is the run's summary table: the counts of its files
+    (queued, downloading, saved, failed) in the label, the spinner on the rows still going.
+    Whether the rows draw is the caller's (`ui.group(drawn=…)`); a script that only reads
+    events draws nothing.
+
     It is also where `Progress` events come from: each count that a script cares about
     (`PROGRESS_STEPS`), and each listing that ends, sends the category's counts to `emit`. The
     event is made under the board's lock, so its counts agree, and sent after it is released,
@@ -497,9 +502,17 @@ class Board:
                         skipped=c.skipped, failed=c.failed, bytes=c.bytes, listed=line.listed)
 
     def _open(self, target: Target, category: str) -> _Line:
-        """Open a new `ui.Row` for `(target, category)` under the lock."""
+        """Open a new `ui.Row` for `(target, category)` under the lock.
+
+        Args:
+            target: the target the line counts for.
+            category: its category; "" for a target without categories.
+
+        Returns:
+            The new line, whose row is a text row (`unit="none"`), not a quantity.
+        """
         line = _Line(target, category or target.kind, Counts())
-        line.row = self.rows.add(self._label(line))
+        line.row = self.rows.add(self._label(line), unit="none")
         self._lines[(target, category)] = line
         return line
 
@@ -533,20 +546,31 @@ class Board:
                     line.row.fail()
                 else:
                     line.row.finish()
+            else:
+                # The counts moved: redraw the row (throttled by the renderer).
+                line.row.advance(0)
 
     def _label(self, line: _Line) -> str:
         """One line's label: target, category, then the counts that aren't zero, and its note.
+
+        A file moves from queued to downloading, then to saved, skipped or failed, so the
+        label reads the table in that order.
 
         Args:
             line: the line.
 
         Returns:
-            Such as `ins:example_user posts | 12 saved | 3 skipped | 4.1 MB`.
+            Such as `ins:example_user posts | 3 queued | 2 downloading | 12 saved | 4.1 MB`.
         """
         c = line.counts
         subj = str(line.target).ljust(self.widths[0]) if self.widths[0] else str(line.target)
         cat = line.label.ljust(self.widths[1]) if self.widths[1] else line.label
-        parts = [f"{subj} {cat}", f"{c.saved} saved"]
+        parts = [f"{subj} {cat}"]
+        if c.queued:
+            parts.append(f"{c.queued} queued")
+        if c.downloading:
+            parts.append(f"{c.downloading} downloading")
+        parts.append(f"{c.saved} saved")
         if c.linked:
             parts.append(f"{c.linked} linked")
         if c.skipped:

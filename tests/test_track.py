@@ -6,7 +6,6 @@ import io
 import unittest
 from pathlib import Path
 
-from flnd import _time
 from flnd._events import Saved
 from flnd._track import TERMINAL, FileTrack, Phase, Tracks
 from flnd._ui import ui
@@ -83,19 +82,19 @@ class TrackTransitionTest(unittest.TestCase):
         self.assertIs(tracks.get("aaa:1_0"), t)
 
 
-class TrackWithItemTest(unittest.TestCase):
-    def test_active_item_advances_under_live_ui(self) -> None:
+class TrackQuietTest(unittest.TestCase):
+    def test_a_file_draws_nothing_under_a_live_ui(self) -> None:
+        """A file's lifecycle is events only: the run's summary rows are the board's."""
         buf = _TTY()
-        with _time.use(_time.Fake(start=1.0)):
-            with ui.scope(dest=buf, color=False, level="info"):
-                track = FileTrack(
-                    "aaa:f", "posts/f.mp4", Target("aaa:a"), "1", "posts", Path("f.mp4"),
-                    lambda e: None,
-                )
-                track.active(total=100)
-                track.bar().advance(10)
-                track.saved(Saved(Target("aaa:a"), "posts", "1", Path("f.mp4"), None, 10))
-        self.assertIn("f.mp4", buf.getvalue())
+        with ui.scope(dest=buf, color=False, level="info"):
+            track = FileTrack(
+                "aaa:f", "posts/f.mp4", Target("aaa:a"), "1", "posts", Path("f.mp4"),
+                lambda e: None,
+            )
+            track.active()
+            track.merging()
+            track.saved(Saved(Target("aaa:a"), "posts", "1", Path("f.mp4"), None, 10))
+        self.assertEqual(buf.getvalue(), "")
 
 
 if __name__ == "__main__":

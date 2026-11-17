@@ -6,10 +6,11 @@ import io
 import json
 import re
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from flncore.log import UI, Journal, State
+from flncore.log import REDRAW, UI, Journal, State
 
 
 class _TTY(io.StringIO):
@@ -164,6 +165,17 @@ class RendererTest(unittest.TestCase):
             self.assertIn("more", out)
             for it in items:
                 it.ok()
+
+    def test_the_ticker_redraws_active_rows_without_events(self) -> None:
+        ui = UI()
+        buf = _TTY()
+        with ui.scope(dest=buf, color=False, width=80, level="info"):
+            it = ui.item("tick", "tick-row", unit="none")
+            time.sleep(REDRAW * 4)
+            # No advance and no note since the item opened: the ticker's redraws are the
+            # only updates since the first.
+            self.assertGreaterEqual(buf.getvalue().count("tick-row"), 2)
+            it.ok()
 
 
 if __name__ == "__main__":

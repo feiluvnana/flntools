@@ -52,6 +52,13 @@ class Stdin(io.StringIO):
         return self.tty
 
 
+class _TTY(io.StringIO):
+    """A stream that is a terminal, so a run draws its summary rows on it."""
+
+    def isatty(self) -> bool:
+        return True
+
+
 class FlndCase(unittest.TestCase):
     """Runs in a temporary working directory, so the home is `./.flnd`, with stdin a terminal."""
 
@@ -415,11 +422,11 @@ class OutputTest(FlndCase):
         self.assertEqual(out.splitlines()[-1], "planned 3 files; nothing was downloaded")
         self.assertFalse((Path(".flnd") / _home.MEDIA).exists())
 
-    def test_a_failed_file_prints_its_line_and_exits_1(self):
+    def test_a_failed_file_exits_1_without_its_line(self):
         self.listing[("example_user", "posts")] = ["p1", "bad"]
         code, out, err = self.run_app("download", "exs:example_user")
         self.assertEqual(code, 1, err)
-        self.assertIn("failed exs:example_user bad: ", out)
+        self.assertNotIn("failed", out)
         self.assertIn("✗ 1 file failed: 1 site (retry: flnd retry). Details: flnd status", err)
 
     def test_status_shows_the_failure_and_retry_brings_it_back(self):
@@ -451,6 +458,20 @@ class OutputTest(FlndCase):
         self.assertEqual(code, 0, err)
         self.assertRegex(out.splitlines()[-1], r"^done: 3 files saved")
 
+    def test_the_run_draws_summary_rows_on_a_terminal(self):
+        tty = _TTY()
+        with ui.scope(dest=tty, color=False, width=400):
+            code, _, _ = self.run_app("download", "exs:example_user")
+        self.assertEqual(code, 0)
+        rows = tty.getvalue()
+        self.assertIn("exs:example_user posts", rows)
+        self.assertIn("exs:example_user reels", rows)
+        self.assertIn("2 saved", rows)
+        self.assertIn("1 saved", rows)
+        self.assertIn("queued", rows)
+        self.assertIn("downloading", rows)
+        self.assertNotIn("media/", rows)
+
 
 class ExitStatusTest(FlndCase):
     """A target that fails exits 1, so a script or cron job can tell; a login needed exits 3."""
@@ -472,7 +493,8 @@ class ExitStatusTest(FlndCase):
     def test_download_exits_1_when_a_target_failed(self):
         code, out, err = self.run_app("download", "aaa:bad", "aaa:good")
         self.assertEqual(code, 1, err)
-        self.assertIn("failed aaa:bad: blocked", out)
+        self.assertNotIn("failed", out)
+        self.assertIn("✗ 1 target failed: 1 blocked (retry: flnd retry)", err)
         self.assertEqual(self.run_app("download", "aaa:good")[0], 0)
 
     def test_download_exits_1_when_a_source_cant_start(self):
@@ -484,10 +506,11 @@ class ExitStatusTest(FlndCase):
         self.assertEqual(self.run_app("sync", "aaa:good")[0], 0)
 
     def test_a_login_the_source_needs_exits_3_with_the_command_to_run(self):
-        code, out, _ = self.run_app("download", "ccc:example_user")
+        code, out, err = self.run_app("download", "ccc:example_user")
         self.assertEqual(code, 3)
-        self.assertIn("failed ccc:example_user: not logged in", out)
-        self.assertIn("  run flnd login ccc", out)
+        self.assertNotIn("failed", out)
+        self.assertIn("✗ 1 target failed: 1 login (retry: flnd retry)", err)
+        self.assertIn("run flnd login ccc", err)
 
 
 # ---------------------------------------------------------------------------------------------

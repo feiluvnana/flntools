@@ -63,6 +63,10 @@ SPIN_FRAMES: tuple[tuple[str, ...], tuple[str, ...]] = (
     ("|", "/", "-", "\\"),
 )
 BAR_CELLS = 20
+# Seconds between redraws of the live block: the pace of the update throttle, and of the
+# ticker thread that redraws rows which only move with the clock (the spinner, and counts
+# that wait on events). 60 a second is the most a terminal shows.
+REDRAW = 1 / 60
 
 _ESCAPE = re.compile(
     r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]"
@@ -167,7 +171,11 @@ class State(StrEnum):
 
 
 class Item:
-    """One progress item: a stable key, a label, count/total, state, and an optional note."""
+    """One progress item: a stable key, a label, count/total, state, and an optional note.
+
+    `unit` picks the stats segment: None counts (`3`), `"bytes"` sizes (`1.2 MB`), and
+    `"none"` renders no bar and no stats, for a row whose label says it all.
+    """
 
     def __init__(
         self,
@@ -375,6 +383,8 @@ class UI:
         self._live_tasks: dict[Any, Item] = {}
         self._live_count = 0
         self._hold_depth = 0
+        self._wake = threading.Event()
+        self._ticker: threading.Thread | None = None
         self._live = self._compute_live()
 
     def _compute_live(self) -> bool:
@@ -489,6 +499,19 @@ class UI:
             spinner = self._glyph("error")
             glyph_style = "error"
 
+        note_str = f"  ({it._note})" if it._note else ""
+
+        # A text row (`unit="none"`) is a status line, not a quantity: label and note only.
+        if it.unit == "none":
+            line = Text()
+            line.append(spinner, style=glyph_style)
+            line.append(" ")
+            line.append(_elide_middle(it.label, max(8, width - len(spinner) - 1)), style="text")
+            if note_str:
+                line.append(note_str, style="faint")
+            line.truncate(width)
+            return line
+
         if it.unit == "bytes":
             if it.total is not None and it.total > 0:
                 stats = f"{size(it.count)}/{size(it.total)}"
@@ -500,7 +523,6 @@ class UI:
             else:
                 stats = f"{it.count:g}"
 
-        note_str = f"  ({it._note})" if it._note else ""
         bar_len = 16
         full_c = GLYPHS["bar_full"][0 if unicode else 1]
         empty_c = GLYPHS["bar_empty"][0 if unicode else 1]
@@ -535,6 +557,23 @@ class UI:
         line.truncate(width)
         return line
 
+    def _ensure_ticker(self) -> None:
+        """Start the thread that redraws the live block while its rows move only with time.
+
+        A run's summary rows have no per-file item feeding them, so between count changes
+        nothing redraws them; the ticker keeps the spinner turning and the table current.
+        """
+        if self._ticker is None:
+            self._ticker = threading.Thread(target=self._tick, name="ui-tick", daemon=True)
+            self._ticker.start()
+
+    def _tick(self) -> None:
+        """Redraw every `REDRAW` seconds while rows are active on a live terminal."""
+        while not self._wake.wait(REDRAW):
+            with self._lock:
+                if self._active_keys and self._live:
+                    self._redraw(force=True)
+
     @contextmanager
     def hold(self) -> Iterator[None]:
         """Pause live redraws while something else uses the terminal."""
@@ -557,7 +596,7 @@ class UI:
         if self._hold_depth > 0:
             return
         now = _time.now()
-        if not force and (now - self._last_draw < 0.1):
+        if not force and (now - self._last_draw < REDRAW):
             return
         self._last_draw = now
         file = self._console.file
@@ -621,6 +660,7 @@ class UI:
             if drawn and self.live:
                 if key not in self._active_keys:
                     self._active_keys.append(key)
+                self._ensure_ticker()
                 self._redraw(force=True)
             return it
 
@@ -628,7 +668,7 @@ class UI:
         if not item.drawn or not self.live:
             return
         now = _time.now()
-        if now - self._last_draw >= 0.1:
+        if now - self._last_draw >= REDRAW:
             with self._lock:
                 self._redraw()
 

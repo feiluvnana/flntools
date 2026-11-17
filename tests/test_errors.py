@@ -364,7 +364,7 @@ class CliTest(FlndCase):
         with mock.patch.dict(sources.SOURCES, {"aaa": source}):
             code, out, err = self.run_app("download", "aaa:example_user")
         self.assertEqual(code, 3)
-        self.assertIn("  run flnd login aaa", out)
+        self.assertIn("  run flnd login aaa", err)
         self.assertNotIn("Traceback", out + err)
 
 
