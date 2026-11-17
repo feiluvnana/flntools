@@ -316,7 +316,7 @@ To make flnd know it, either:
 `flnd sources` then lists it. A plugin runs with your logins, so install only code you trust;
 flnd never loads one from a home folder. A broken plugin disables itself alone, with a warning
 naming its file and line. [docs/writing-a-source.md](docs/writing-a-source.md) walks through it
-all, and `examples/plugin/` is a working plugin with its test.
+all.
 
 ## Documentation
 [docs/](docs/README.md) is the guide: the CLI, the library, writing a source, errors, storage,

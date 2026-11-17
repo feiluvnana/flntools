@@ -1,4 +1,4 @@
-"""Plugins (`flnd._plugins`, `flnd.sources.Registry`) and the example in `examples/`.
+"""Plugins (`flnd._plugins`, `flnd.sources.Registry`).
 
 Every test gets a registry that hasn't looked for plugins yet (`PluginCase`), a plugin folder
 of its own (`$FLND_SOURCES`), a temporary home, the fake network and the fake clock. A plugin
@@ -35,7 +35,6 @@ from flnd import cli as flnd_cli
 from flnd.sources import SOURCES, _find
 
 ROOT = Path(__file__).resolve().parent.parent
-EXAMPLES = ROOT / "examples"
 JPEG = noise("JPEG")
 
 # A working plugin: `exm:<user>` lists one post with one photo, which `serve` answers.
@@ -335,42 +334,6 @@ class HelpTest(unittest.TestCase):
             subprocess.run([sys.executable, "-m", "flnd", "--help"], cwd=ROOT, env=env,
                            capture_output=True, check=True)
             self.assertFalse(marker.exists())
-
-
-class ExamplesTest(EngineCase):
-    """`examples/`: the plugin's own tests, and the script, downloading through the plugin."""
-
-    def test_the_example_plugins_tests_pass(self):
-        with mock.patch.object(sys, "path", [str(EXAMPLES / "plugin"), *sys.path]), \
-                mock.patch.dict(sys.modules):
-            suite = unittest.defaultTestLoader.discover(str(EXAMPLES / "plugin"),
-                                                        top_level_dir=str(EXAMPLES / "plugin"))
-            result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
-        self.assertEqual(result.testsRun, 3)
-        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
-
-    def test_the_example_script_downloads_through_the_plugin(self):
-        api = "https://api.example.com"
-        self.routes.update({
-            f"{api}/users/example_user": _net.reply(200, json={"id": "42"}),
-            f"{api}/users/42/posts": _net.reply(200, json={"items": [
-                {"id": "p1", "time": "2026-01-02", "urls": ["https://cdn.example.com/p1.jpg"]},
-            ], "next": None}),
-            "https://cdn.example.com/p1.jpg": _net.reply(200, content=JPEG),
-        })
-        sys.path.insert(0, str(EXAMPLES))
-        self.addCleanup(sys.path.remove, str(EXAMPLES))
-        import download
-
-        out = io.StringIO()
-        with mock.patch.dict(os.environ, {_plugins.VARIABLE: str(EXAMPLES / "plugin")}), \
-                mock.patch.multiple(SOURCES, _find=_find, _found=[], _plugins={},
-                                    _codes=list(SOURCES._codes), _loaded=dict(SOURCES._loaded)), \
-                contextlib.redirect_stdout(out):
-            code = download.main(["exm:example_user", "--home", str(self.home)])
-        self.assertEqual(code, 0, out.getvalue() + self.dest.getvalue())
-        self.assertIn("saved   exm:example_user  2026-01-02_p1.jpg", out.getvalue())
-        self.assertIn("1 saved, 0 skipped, 0 failed", out.getvalue())
 
 
 if __name__ == "__main__":

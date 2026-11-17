@@ -19,7 +19,7 @@ setup:    ; $(UV) sync --python $(PY) --all-extras
 # While set, flnd refuses to read or copy a real browser profile (tests/no_profiles.py).
 test: export FLND_TEST_NO_PROFILES = 1
 test:     ; $(RUN) python -m unittest discover -s tests $(ARGS)
-lint:     ; $(RUN) ruff check flnd tests examples
+lint:     ; $(RUN) ruff check flnd tests
 check: lint test
 api:      ; $(RUN) python tests/api_snapshot.py --write
 # The data `flnd --help` and target resolution read instead of importing every source; run it

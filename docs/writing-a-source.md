@@ -7,9 +7,9 @@ logins.
 
 This page builds a small source step by step against **source API 1**, `flnd.source`, tests it
 with `flnd.testing`, and ships it as a plugin. Every `python` block on it runs in the docs test,
-so it stays true. `examples/plugin/` is a whole plugin with its test, `tests/example_source.py`
-is a bigger example with the same shape, and the seven built-in sources in `flnd/sources/` are
-real ones. `flnd/source.py`'s and `flnd/testing.py`'s docstrings are the reference.
+so it stays true. `tests/example_source.py` is a bigger example with the same shape, and the
+seven built-in sources in `flnd/sources/` are real ones. `flnd/source.py`'s and
+`flnd/testing.py`'s docstrings are the reference.
 
 ## 1. The class
 
@@ -221,8 +221,8 @@ class Photos(Source):
 assert [str(found) for found in check(Photos)] == ["pho:example_user", "pho:example_user"]
 ```
 
-Each built-in source has a test like this in `tests/test_<code>.py`, and `examples/plugin/`
-has one for a plugin. Live runs against the real site are done by hand, on test accounts, never
+Each built-in source has a test like this in `tests/test_<code>.py`, and a plugin's own test
+looks the same. Live runs against the real site are done by hand, on test accounts, never
 in a unit test.
 
 ## 5. Where files go

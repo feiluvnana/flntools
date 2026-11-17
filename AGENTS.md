@@ -51,7 +51,7 @@ Examples:
 - **Library modules stay separate** (user, 2026-11-16). A private module that does a general job (HTTP, the browser, files, archives, outside tools, cookies, the vault, the SQLite store, HTML, text, time, prompts, progress, media) is a standalone library: it imports from flnd only other library modules and `flnd.errors`, never the engine, job, site, sources or the public API. flnd-specific code (a source's pace, flnd.db's schema, error advice) lives in flnd's modules and is passed in. So each library reads on its own and could leave flnd as a package later. `tests/test_layers.py` lists them and checks it.
 - **`flnd/cli.py`** is the thin CLI (argparse). It imports only `flnd`, so a script can do anything the CLI can.
 - **`flnd/sources/`** has one module per built-in site (`fbk`, `ins`, `loi`, `mht`, `tik`, `tlg`, `twt`) and `_manifest.py`, the list `flnd --help` and target resolution read without importing a source. A source imports only `flnd.source` and the stdlib.
-- **`docs/architecture.md`** is the map of the design; keep it true when a change moves a part. **`docs/`** holds the guides for people (see Writing). `examples/` holds a runnable script and an example plugin with its test.
+- **`docs/architecture.md`** is the map of the design; keep it true when a change moves a part. **`docs/`** holds the guides for people (see Writing).
 - **Plugins** live outside the repo: in the user's plugin folder (`$FLND_SOURCES`, else `~/.config/flnd/sources/`), or as installed packages with a `flnd.sources` entry point. flnd never loads code from a home folder, since a home may be a folder someone else made.
 
 ## API and naming

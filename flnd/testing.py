@@ -7,7 +7,7 @@
     assert saved[0].path == "posts/2026-01-02_p1_0.jpg"
 
 It is one of flnd's three public modules, next to `flnd` (the library) and `flnd.source` (the
-source API), and it is how a plugin's own tests are written (`examples/plugin/` has one).
+source API), and it is how a plugin's own tests are written.
 
 What it holds:
 - `FakeSite`, a `flnd.source.Site` that answers `fetch` and `pages` from fixtures keyed by URL
