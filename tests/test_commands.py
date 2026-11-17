@@ -210,13 +210,11 @@ class DownloadTest(RunsCase):
         self.assertEqual(code, 0)
         log_dir = Path(".flnd") / _home.LOGS
         self.assertTrue(log_dir.is_dir())
-        run_log = log_dir / "run.log"
-        self.assertTrue(run_log.is_file())
         timestamped = list(log_dir.glob("*_download.log"))
         self.assertEqual(len(timestamped), 1)
-        content = run_log.read_text(encoding="utf-8")
+        content = timestamped[0].read_text(encoding="utf-8")
         self.assertIn("done:", content)
-        self.assertEqual(content, timestamped[0].read_text(encoding="utf-8"))
+        self.assertFalse((log_dir / "run.log").exists())
 
     def test_download_v_logs_events_and_debug_in_realtime(self):
         def run_with_events(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
@@ -228,7 +226,7 @@ class DownloadTest(RunsCase):
             code, out, err = self.run_app("download", "ins:a", "-v")
             self.assertEqual(code, 0)
             log_dir = Path(".flnd") / _home.LOGS
-            run_log = log_dir / "run.log"
+            [run_log] = list(log_dir.glob("*_download.log"))
             content = run_log.read_text(encoding="utf-8")
             self.assertIn("fetching post list for ins:a", content)
             self.assertIn("saved media", content)
@@ -245,7 +243,7 @@ class DownloadTest(RunsCase):
                 self.assertEqual(code, 0)
                 self.assertNotIn("saved media", out)
                 log_dir = Path(".flnd") / _home.LOGS
-                run_log = log_dir / "run.log"
+                [run_log] = list(log_dir.glob("*_download.log"))
                 content = run_log.read_text(encoding="utf-8")
                 self.assertIn("saved media", content)
 

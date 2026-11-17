@@ -150,10 +150,10 @@ class MacTest(KeychainCase):
             self.chain.read()
 
     def test_the_vault_seals_under_the_keychains_key(self):
-        with _vault.Vault(self.home / "secrets.db", self.chain, "tlg") as saved:
+        with _vault.Vault(self.home / "secrets.db", "tlg") as saved:
             saved["session"] = "example-session"
         self.assertFalse((self.home / "secret.key").exists())
-        with _vault.Vault(self.home / "secrets.db", self.chain, "tlg") as saved:
+        with _vault.Vault(self.home / "secrets.db", "tlg") as saved:
             self.assertEqual(saved["session"], "example-session")
 
 

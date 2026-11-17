@@ -303,6 +303,7 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
                            "in a block, through state `run` reads; flnd's own tests use it",
     "flnd/_run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
+    "flnd/_vault.py:Keychain": "tests/test_keychain.py exercises the OS keychain path",
 }
 
 

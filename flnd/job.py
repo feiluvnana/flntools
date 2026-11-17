@@ -348,14 +348,12 @@ class Board:
         # The run's live stats read the board's rows (`listing`, `queued`) until the run ends.
         _stats.track(_stats.BOARD, self)
 
-    def start(self, target: Target, category: str, *, slots: int = 0,
-              listing: Any = None) -> None:
+    def start(self, target: Target, category: str, *, listing: Any = None) -> None:
         """Open the category's line as its listing starts, unless already open.
 
         Args:
             target: the target listed.
             category: its category; "" for a target without categories.
-            slots: unused; kept for the callers.
             listing: the category's `flnd.site.Listing`, whose pages the live stats show.
         """
         owner = self.parent or target
@@ -604,11 +602,10 @@ class Board:
         return " | ".join(parts)
 
 
-def wanted(source: type[Source], route: Route, options: Options) -> tuple[Category, ...]:
+def wanted(route: Route, options: Options) -> tuple[Category, ...]:
     """The categories of `route` that `--only` selects, in the order the source declares them.
 
     Args:
-        source: the source's class (unused; kept for the callers).
         route: the target's route.
         options: the target's options; `categories` None or naming `all` takes every one.
 
@@ -643,7 +640,7 @@ def posts(
     """
     span = Range(options.since, options.until)
     route = next(r for r in source.routes if r.kind == target.kind)
-    categories = wanted(type(source), route, options)
+    categories = wanted(route, options)
     if route.categories and not categories:
         return
     context = _context(source, route, site, target, run_async)
@@ -685,7 +682,7 @@ def _context(
 
 
 def plan(
-    run: SourceRun, target: Target, options: Options, *, row: Any = None
+    run: SourceRun, target: Target, options: Options,
 ) -> Generator[Placed, None, None]:
     """Every file a download of `target` would save, placed, with nothing written (`--dry`).
 
@@ -695,7 +692,6 @@ def plan(
         run: the source's run.
         target: the target.
         options: its options: `--when`, `--only`, `--limit`.
-        row: unused; kept for the callers.
 
     Yields:
         Each file's `Placed`: its path under the target's folder and its history key.
@@ -751,7 +747,7 @@ def place(
     for num, file in enumerate(files):
         extension, kind = _extension(file)
         values = _file_values(
-            source, post, file, num, len(files), posted, extension, target, options,
+            source, post, num, len(files), posted, extension, target, options,
         )
         name = _resolve_name(post, file, filename, values, extension)
         where = fill(folder, values)
@@ -768,7 +764,7 @@ def place(
 
 
 def _file_values(
-    source: Source, post: Post, file: File, num: int, count: int, posted: datetime.date | None,
+    source: Source, post: Post, num: int, count: int, posted: datetime.date | None,
     extension: str, target: Target | None, options: Options | None,
 ) -> dict[str, Any]:
     """The fields a folder, filename or key template of one file may name.
@@ -778,7 +774,6 @@ def _file_values(
     Args:
         source: the post's source; its code is `{source}` when no target is given.
         post: the post.
-        file: the file (unused; kept for the callers).
         num: the file's number in the post, from 0.
         count: how many files the post has; `{index}` is "" for a post of one file.
         posted: the post's day; None when the site gave none.
@@ -1681,14 +1676,14 @@ class Downloads:
                 saved = (await self._fetch(queued, refreshed, received)
                          if refreshed is not None else None)
         # Another run holds this file's part: it saves the file and writes its row, so this run
-        # skips it (docs/storage, "Sharing a home").
+        # skips it (flnddocs/storage, "Sharing a home").
         except _files.BusyError:
             self._count(queued, downloading=-1, skipped=1)
             self.settings.emit(Skipped(self.target, placed.post.category, placed.post.id,
                                        queued.dest))
             ui.info("{name}: being saved by another run", name=placed.path)
             return False
-        # A file the site or the network failed fails alone; the run goes on (docs/errors).
+        # A file the site or the network failed fails alone; the run goes on (flnddocs/errors).
         except (SiteError, NetworkError) as error:
             self._record_failed(queued, error)
             self._count(queued, downloading=-1, failed=1)
@@ -2647,7 +2642,7 @@ def _read(
         listings = [_Listed("", route.newest_first,
                             lambda: getattr(run.source, route.kind)(site, target.value))]
     else:
-        categories = wanted(type(run.source), route, options)
+        categories = wanted(route, options)
         if not categories:
             return
         context = _context(run.source, route, site, target, run.run_async)
@@ -2729,7 +2724,7 @@ def _list_one(
     start = progress.started.get(name) if newest_first else None
     listing = progress.listings[name] = Listing(start, label=f"{target}: {name or target.kind}")
     # The board's line shows the pages this listing reads, in the live stats.
-    work.ledger.board.start(target, name, slots=run.jobs, listing=listing)
+    work.ledger.board.start(target, name, listing=listing)
     if start:
         ui.info("{target}: {name}: going on where an interrupted run stopped",
                 target=str(target), name=name or target.kind)
@@ -2809,7 +2804,7 @@ def _sync_one(
                                                                                     sync=False)
     listing = progress.listings[name] = Listing(None, label=label)
     # The board's line shows the pages this listing reads, in the live stats.
-    work.ledger.board.start(target, name, slots=run.jobs, listing=listing)
+    work.ledger.board.start(target, name, listing=listing)
     # 1. The newest posts. A listing that raises (the site failed it) is cut short like any:
     # where it was is kept as a gap before the error goes on to fail the target.
     try:
@@ -2833,7 +2828,7 @@ def _sync_one(
             ui.info("{target}: resuming from the last run", target=label)
             work.ledger.board.say(target, name, RESUMING)
             jump = progress.listings[name] = Listing(left[0], label=label)
-            work.ledger.board.start(target, name, slots=run.jobs, listing=jump)
+            work.ledger.board.start(target, name, listing=jump)
             try:
                 ended, extra, filled = _listed(work, run, site, name, True, items, jump, stops,
                                                options, rest)

@@ -39,7 +39,7 @@ packages = ["flnd"]
 [dependency-groups]
 # The tools `make` runs: ruff for `make lint`, pdoc for `make docs`, and pyright for `make type`.
 # pyright[nodejs] brings its own Node.js wheel, so `make type` downloads nothing and works on Windows.
-dev = ["ruff>=0.14", "pdoc>=15", "pyright[nodejs]==1.1.414"]
+dev = ["ruff>=0.14", "pdoc>=15", "pyright[nodejs]==1.1.414", "pyte>=0.8"]
 # Only `make dist` needs PyInstaller; its recipe adds this group with `uv run --group dist`.
 dist = ["pyinstaller>=6"]
 

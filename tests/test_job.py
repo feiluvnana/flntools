@@ -1472,7 +1472,7 @@ class BoardTest(unittest.TestCase):
     def test_a_line_ends_once_listed_and_nothing_is_pending(self):
         with ui.group() as rows:
             board = job.Board(rows, subject_width=18, label_width=6)
-            board.start(self.target, "posts", slots=4)
+            board.start(self.target, "posts")
             board.count(self.target, "posts", found=2, queued=2)
             board.count(self.target, "posts", queued=-2, downloading=2)
             board.listed(self.target, "posts")

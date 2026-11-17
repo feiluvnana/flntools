@@ -504,7 +504,7 @@ def _place(held: _files.Part, kind: str, known: bool) -> None:
 
 def _as_media(head: bytes, dest: Path, kind: str, known: bool) -> Path:
     """Where a photo or video starting with `head` goes; raises on a web page."""
-    extension = checked(head, kind, decode=not known)
+    extension = checked(head, kind)
     if extension is None or same_extension(extension, dest.suffix):
         return dest
     return dest.with_suffix(extension)
@@ -532,7 +532,7 @@ def _sniffed(head: bytes, dest: Path, known: bool) -> Path:
     if extension is None or kind is None:
         # An archive, a document, or nothing `sniff` knows: kept as it came.
         return dest
-    checked(head, kind, decode=not known)
+    checked(head, kind)
     return dest.with_name(dest.name + extension)
 
 
@@ -682,13 +682,12 @@ def not_media(noun: str) -> SiteError:
     return SiteError(f"got a web page instead of {noun}", hint=NOT_MEDIA_HINT)
 
 
-def checked(path: Path | bytes, kind: str, *, decode: bool = True) -> str | None:
+def checked(path: Path | bytes, kind: str) -> str | None:
     """The extension a media file calls for, once validated not a web page.
 
     Args:
         path: the file, or its first 64 bytes.
         kind: what it must be (`IMAGE`, `VIDEO`, `AUDIO`), named in the error.
-        decode: unused, kept for the callers' signature.
 
     Returns:
         The extension its content calls for, or None when unknown.
@@ -696,7 +695,6 @@ def checked(path: Path | bytes, kind: str, *, decode: bool = True) -> str | None
     Raises:
         SiteError: the content is a web page or JSON.
     """
-    del decode
     extension = _files.sniff(path)
     if extension in _files.PAGES:
         raise not_media(_files.NOUNS.get(kind, kind))
