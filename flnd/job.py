@@ -85,6 +85,7 @@ from flnd._events import NOTHING_NEW, RESUMING, Failed, Progress, Saved, Skipped
 from flnd._steps import Landed, dedupe, holder, landed, sidecars
 from flnd._text import fill
 from flnd._time import day
+from flnd._track import Tracks
 from flnd._ui import ui
 from flnd.errors import (
     Blocked,
@@ -1349,6 +1350,8 @@ class Downloads:
     def __init__(self, run: SourceRun, target: Target, board: Board) -> None:
         self.run, self.target, self.board = run, target, board
         self.source, self.settings = run.source, run.settings
+        self.tracks = Tracks(target, run.settings.emit)
+        run.settings.tracks = self.tracks
         # Set once the listing failed, so a file that hasn't started ends at once.
         self._halted = False
         # The target's `jobs` places, made on the loop on first use.
@@ -1371,6 +1374,13 @@ class Downloads:
         with self._writing:
             return dict(self._written)
 
+    def expect(self, post: str, count: int) -> None:
+        """Hold a post's commit until every file of it has been submitted."""
+        if count <= 0:
+            return
+        with self._writing:
+            self._open[post] = self._open.get(post, 0) + count
+
     def submit(self, queued: _Queued) -> bool:
         """Start one file's download on the loop once the queue has room.
 
@@ -1387,9 +1397,11 @@ class Downloads:
         if not self._room():
             return False
         self._count(queued, queued=1)
-        with self._writing:
-            post = queued.placed.post.id
-            self._open[post] = self._open.get(post, 0) + 1
+        placed = queued.placed
+        self.tracks.add(
+            queued.key, placed.path, placed.post.id, placed.post.category, queued.dest,
+            retried=queued.retried,
+        )
         try:
             # The task never raises (see `_task`), so its future isn't kept.
             self.run.loop.submit(self._task(queued))
@@ -1510,6 +1522,7 @@ class Downloads:
             Whether the file landed.
         """
         started = False
+        track = self.tracks.get(queued.key)
         try:
             if self._slots is None:
                 self._slots = asyncio.Semaphore(max(self.run.jobs, 1))
@@ -1521,6 +1534,8 @@ class Downloads:
                     self._running += started
                 if not started:
                     return False
+                if track is not None:
+                    track.active()
                 self._count(queued, queued=-1, downloading=1)
                 try:
                     return await self._download(queued)
@@ -1535,6 +1550,8 @@ class Downloads:
             ui.debug("{file}: {chain}", file=queued.placed.path, chain=causes(error))
             return False
         finally:
+            if not started and track is not None:
+                track.dropped()
             if not started:
                 self._count(queued, queued=-1)
             try:
@@ -1580,12 +1597,21 @@ class Downloads:
         try:
             if self.settings.db is not None:
                 self.settings.db.save(rows)
-        except BaseException:
+        except BaseException as error:
+            wrapped = classify(error)
             with self._writing:
                 for item in items:
                     self._written.pop(item.queued.key, None)
             for item in items:
+                self._record_failed(item.queued, wrapped)
                 self._count(item.queued, downloading=-1, failed=1)
+                track = self.tracks.get(item.queued.key)
+                if track is not None:
+                    track.fail(wrapped)
+                else:
+                    placed = item.queued.placed
+                    self.settings.emit(Failed(
+                        self.target, wrapped, post=placed.post.id, path=item.queued.dest))
             raise
         metadata = sidecars(self.settings)
         for item in items:
@@ -1593,6 +1619,9 @@ class Downloads:
             placed = item.queued.placed
             event = Saved(self.target, placed.post.category, placed.post.id, item.path,
                           item.day, item.row.size, retried=item.queued.retried)
+            track = self.tracks.get(item.queued.key)
+            if track is not None:
+                track.unpacking()
             # The steps after the row: unpack and compress on the chain's own threads, then
             # the sidecar, then `Saved` with the file's final path (`flnd._steps`).
             landed(self.settings, Landed(
@@ -1631,15 +1660,24 @@ class Downloads:
         # skips it (flnd/docs/storage, "Sharing a home").
         except _files.BusyError:
             self._count(queued, downloading=-1, skipped=1)
-            self.settings.emit(Skipped(self.target, placed.post.category, placed.post.id,
-                                       queued.dest))
+            track = self.tracks.get(queued.key)
+            if track is not None:
+                track.skip(reason="another run")
+            else:
+                self.settings.emit(Skipped(self.target, placed.post.category, placed.post.id,
+                                           queued.dest))
             ui.info("{name}: being saved by another run", name=placed.path)
             return False
         # A file the site or the network failed fails alone; the run goes on (flnd/docs/errors).
         except (SiteError, NetworkError) as error:
             self._record_failed(queued, error)
             self._count(queued, downloading=-1, failed=1)
-            self.settings.emit(Failed(self.target, error, post=placed.post.id, path=queued.dest))
+            track = self.tracks.get(queued.key)
+            if track is not None:
+                track.fail(error)
+            else:
+                self.settings.emit(Failed(self.target, error, post=placed.post.id,
+                                          path=queued.dest))
             ui.debug("{name}: {error}", name=placed.path, error=error)
             ui.debug("{name}: {chain}", name=placed.path, chain=causes(error))
             return False
@@ -1651,6 +1689,9 @@ class Downloads:
         except BaseException as error:
             self._record_failed(queued, error)
             self._count(queued, downloading=-1, failed=1)
+            track = self.tracks.get(queued.key)
+            if track is not None:
+                track.fail(classify(error))
             raise
         if saved is None:
             self._count(queued, downloading=-1)
@@ -1732,10 +1773,11 @@ class Downloads:
         placed = queued.placed
         if file.url is None:
             return None
+        track = self.tracks.get(queued.key)
         saving = _transfer.save(
             self.run.files, file, queued.dest, label=placed.path,
             headers=placed.post.headers, kind=placed.kind, received=received,
-            day=day(placed.post.date),
+            day=day(placed.post.date), track=track,
         )
         try:
             if callable(file.url):
@@ -2374,6 +2416,8 @@ class _Work:
             What became of the post; `STOPPED` when the run stopped while its files queued.
         """
         outcome, todo = self.ledger.take(post, hold=hold)
+        if todo:
+            self.downloads.expect(post.id, len(todo))
         for queued in todo:
             if not self.downloads.submit(queued):
                 return Outcome.STOPPED

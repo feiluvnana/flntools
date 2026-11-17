@@ -197,16 +197,22 @@ class DownloadTest(RunsCase):
         self.assertEqual(self.run_app("download", "ins:a")[0], 0)
         self.assertEqual(self.runs[0][0].home, Path("from-env"))
 
-    def test_download_writes_terminal_log_to_log_folder_in_realtime(self):
+    def test_download_writes_run_journal_to_log_folder(self):
+        import json
+
         code, out, _ = self.run_app("download", "ins:a")
         self.assertEqual(code, 0)
         log_dir = Path(".flnd") / _home.LOGS
         self.assertTrue(log_dir.is_dir())
-        timestamped = list(log_dir.glob("*_download.log"))
+        timestamped = list(log_dir.glob("*_download.jsonl"))
         self.assertEqual(len(timestamped), 1)
-        content = timestamped[0].read_text(encoding="utf-8")
-        self.assertIn("done:", content)
+        lines = [json.loads(line) for line in timestamped[0].read_text(encoding="utf-8").splitlines()
+                 if line.strip()]
+        types = {line["type"] for line in lines}
+        self.assertIn("Start", types)
+        self.assertIn("Report", types)
         self.assertFalse((log_dir / "run.log").exists())
+        self.assertIn("done:", out)
 
     def test_download_v_logs_events_and_debug_in_realtime(self):
         def run_with_events(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
@@ -218,13 +224,15 @@ class DownloadTest(RunsCase):
             code, out, err = self.run_app("download", "ins:a", "-v")
             self.assertEqual(code, 0)
             log_dir = Path(".flnd") / _home.LOGS
-            [run_log] = list(log_dir.glob("*_download.log"))
-            content = run_log.read_text(encoding="utf-8")
-            self.assertIn("fetching post list for ins:a", content)
-            self.assertIn("saved media", content)
-            self.assertIn("1 file saved", content)
+            [run_log] = list(log_dir.glob("*_download.jsonl"))
+            import json
 
-    def test_download_progress_enabled_logs_saved_to_file_without_stdout_duplicate(self):
+            lines = [json.loads(line) for line in run_log.read_text(encoding="utf-8").splitlines()]
+            texts = json.dumps(lines)
+            self.assertIn("Saved", texts)
+            self.assertIn("1 file saved", out)
+
+    def test_download_progress_enabled_keeps_saved_off_stdout(self):
         def run_with_events(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
             engine.emit(Saved(Target("ins:a"), "posts", "1", Path("media/ins/a/posts/1.jpg"), None, 100))
             return [TargetReport(Target("ins:a"), (), 1)]
@@ -235,9 +243,11 @@ class DownloadTest(RunsCase):
                 self.assertEqual(code, 0)
                 self.assertNotIn("saved media", out)
                 log_dir = Path(".flnd") / _home.LOGS
-                [run_log] = list(log_dir.glob("*_download.log"))
-                content = run_log.read_text(encoding="utf-8")
-                self.assertIn("saved media", content)
+                [run_log] = list(log_dir.glob("*_download.jsonl"))
+                import json
+
+                lines = [json.loads(line) for line in run_log.read_text(encoding="utf-8").splitlines()]
+                self.assertTrue(any(line.get("type") == "Saved" for line in lines))
 
 
 class WhenTest(RunsCase):
@@ -371,11 +381,18 @@ class OutputTest(FlndCase):
         code, out, err = self.run_app("download", "exs:example_user")
         self.assertEqual(code, 0, err)
         lines = out.splitlines()
-        saved = sorted(line for line in lines if line.startswith("saved "))
-        self.assertEqual(len(saved), 3)
-        self.assertEqual(saved[0], "saved " + os.path.join(".flnd", "media", "exs", "example_user", "posts", "2026-03-01_p1.jpg"))
+        saved = [line for line in lines if line.startswith("saved ")]
+        self.assertEqual(saved, [])
         self.assertRegex(lines[-1], r"^done: 3 files saved \(.+\)$")
-        # The engine's own progress lines are gone: the events say what each file did.
+        log_dir = Path(".flnd") / _home.LOGS
+        import json
+
+        saved_rows = [
+            line for path in log_dir.glob("*_download.jsonl")
+            for line in (json.loads(raw) for raw in path.read_text(encoding="utf-8").splitlines())
+            if line.get("type") == "Saved"
+        ]
+        self.assertEqual(len(saved_rows), 3)
         self.assertNotIn("Storage:", err)
         code, out, _ = self.run_app("download", "exs:example_user")
         self.assertEqual(out.splitlines()[-1], "done: 0 files saved, 3 already saved")

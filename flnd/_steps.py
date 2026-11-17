@@ -1,56 +1,5 @@
-"""The steps after a file lands, in their one fixed order, and the threads that run the slow ones.
-
-Every saved file goes through the same chain (the architecture guide, flnd/docs/storage):
-
-    download (hashing) → dedupe → unpack → date → place → record → sidecar → Saved
-
-Each step is on or off by its flag or setting; the order never changes, so no combination can,
-say, compress a file before dedupe has linked it. `--exec` is the CLI's: it runs a command for
-each `Saved` event it reads, so it always comes after the whole chain. Where each step runs:
-- download, date, place and record run in the file's download task on the run's loop, in
-  `flnd.job`: the part is hashed as it is written (`flnd._files`), renamed into place and
-  dated, and its row written to `flnd.db` with the post's other files;
-- dedupe runs there too, as each file lands and before its row is written: the lookup on the
-  loop (`holder`), the link on a worker thread (`dedupe`). A file whose bytes a saved file
-  already has becomes a hard link to it (`[defaults] dedupe = "link"`, the default);
-- unpack and compress are slow (seconds for a video, minutes for a big archive), so the job
-  hands the recorded file to this module's `Chain`, which runs them on lanes of their own
-  threads, and they re-run place and record for the file they change. A slow encode never
-  holds up a download;
-- the sidecar (`[defaults] sidecars = true`) and the `Saved` event come last, wherever the file
-  ended: on the lane that ran its slow steps, or at once in the download's task for a file
-  that needs none (`_finish`). So `Saved.path` is always the file's final name.
-
-How a landed file goes through the chain:
-1. `landed` puts it on a lane: an archive on the `archive` lane; a photo on the `photo` lane
-   (2 threads: libavif already spreads one encode over every core); a video or song on the
-   `video` lane (1 thread: ffmpeg uses every core). A file with no slow step is finished at
-   once. A lane's queue is bounded, but at `QUEUE` items, far more than downloads produce
-   while one encode runs.
-2. A lane thread runs `_run`: unpack an archive (`flnd._unpack.extract`), or compress a media
-   file (`flnd._shrink.shrink`) when its target asked for `--compress`. Compress keeps dedupe's
-   links: the result is linked at every path that shared the original's bytes (`_relink`), and
-   every row moves in one transaction.
-3. Each result is written to the file's row of `flnd.db` by `record` (`Home.update`), or by
-   `Home.change` for a file and its links.
-4. `_finish` writes the sidecar and sends `Saved`, with the path and size the row now holds.
-5. `close` waits for the lanes, or, after Ctrl-C, finishes what hasn't started without its slow
-   steps and lets running steps end (a second Ctrl-C kills a running ffmpeg). It logs one
-   summary line.
-
-`backlog` feeds the same lanes from `flnd.db`: `flnd sync --compress` uses it to compress files
-saved before, skipping each file already done (one query, no `stat` per done file). Those files
-were saved by an earlier run, so they send no `Saved`.
-
-Rules a change must keep:
-- every write to `flnd.db` goes through `record` or `Home.change`, a file before its row;
-- a step's failure is the file's, never the run's: it is logged and recorded as `failed`, and
-  the file is still finished (its `Saved` is sent);
-- every file handed to `landed` is finished exactly once, whatever happens to its slow steps;
-- `Chain` is closed before the database it writes to (`attached` does both in order);
-- `flnd._unpack`, `flnd._shrink` and what they import (zipfile, tarfile, Pillow) are imported
-  inside the functions that use them, so `flnd --help` never loads them.
-"""
+"""The steps after a file lands, in their one fixed order,
+and the threads that run the slow ones."""
 
 from __future__ import annotations
 
@@ -139,15 +88,15 @@ class Chain:
         emit: where `Saved` events go (the run's sink); None drops them.
         dedupe: whether a file whose bytes are already saved becomes a hard link to them.
         sidecars: whether each saved file gets `<file>.json` with its post's metadata.
-        video: the codec `--compress` turns videos into: "av1" (the default) or "hevc", which
-            is x265, for devices that can't play AV1 (`[compress] video` in config.toml).
+        tracks: the file tracks for the download run; None if not tracked.
     """
 
     def __init__(self, db: Home | None, stop: Any = None, *,
                  emit: Callable[[Any], None] | None = None, dedupe: bool = True,
-                 sidecars: bool = False) -> None:
+                 sidecars: bool = False, tracks: Any = None) -> None:
         self.db, self.stop = db, stop
         self.emit = emit or (lambda event: None)
+        self.tracks = tracks
         self.dedupe, self.sidecars = dedupe, sidecars
         self.tally = _Tally()
         self._lanes: dict[str, _Lane] = {}
@@ -158,7 +107,7 @@ class Chain:
         """Queue a recorded file for the steps it needs (stage 1), or finish it at once.
 
         Args:
-            item: the file.
+            item: the landed file to process.
         """
         from flnd import _unpack
 
@@ -346,7 +295,13 @@ class Chain:
             self._sidecar(item, path)
         from msgspec.structs import replace
 
-        self.emit(replace(item.event, path=path, size=size))
+        event = replace(item.event, path=path, size=size)
+        if self.tracks is not None:
+            track = self.tracks.get(item.key)
+            if track is not None:
+                track.saved(event)
+                return
+        self.emit(event)
 
     def _sidecar(self, item: Landed, path: Path) -> None:
         """The sidecar step: the post's metadata as `<file>.json`, beside the file.
@@ -354,7 +309,7 @@ class Chain:
         A disk that refuses it fails the sidecar alone: the file stays saved.
 
         Args:
-            item: the file, with its `meta`.
+            item: the file, with its metadata (`meta`).
             path: where the file is now.
         """
         import msgspec
@@ -413,7 +368,11 @@ class _Lane:
         return self._items.qsize()
 
     def put(self, item: Landed) -> None:
-        """Queue `item`, waiting while the lane is full."""
+        """Queue `item`, waiting while the lane is full.
+
+        Args:
+            item: the landed file to queue.
+        """
         self._items.put(item)
 
     def close(self) -> None:
@@ -475,7 +434,7 @@ def attached(settings: Any) -> Iterator[Chain]:
 
     found = config(settings.home)
     chain = Chain(settings.db, settings.stop, emit=settings.emit, dedupe=found.dedupe,
-                  sidecars=found.sidecars)
+                  sidecars=found.sidecars, tracks=settings.tracks)
     settings.chain = chain
     try:
         yield chain
@@ -489,12 +448,18 @@ def landed(settings: Any, item: Landed) -> None:
 
     Args:
         settings: the run's `RunShared`.
-        item: the file.
+        item: the file to hand over.
     """
     chain = getattr(settings, "chain", None)
     if chain is not None:
         chain.landed(item)
     elif item.event is not None:
+        tracks = getattr(settings, "tracks", None)
+        if tracks is not None:
+            track = tracks.get(item.key)
+            if track is not None:
+                track.saved(item.event)
+                return
         settings.emit(item.event)
 
 
@@ -525,7 +490,7 @@ def dedupe(settings: Any, row: FileRow, found: tuple[Path, int]) -> None:
     Args:
         settings: the run's `RunShared`, with its chain.
         row: the file's row; its `mtime` changes to the shared file's once linked.
-        found: what `holder` found.
+        found: what `holder` found (path and modified time).
     """
     chain = getattr(settings, "chain", None)
     if chain is not None:
@@ -539,7 +504,7 @@ def sidecars(settings: Any) -> bool:
         settings: the run's `RunShared`.
 
     Returns:
-        True when the home's config turned sidecars on.
+        True when the home's config turned sidecars on, False otherwise.
     """
     chain = getattr(settings, "chain", None)
     return chain is not None and chain.sidecars

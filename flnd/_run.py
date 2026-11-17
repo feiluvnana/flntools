@@ -36,6 +36,7 @@ Rules a change must keep:
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import contextvars
 import os
@@ -141,6 +142,9 @@ class Run:
         self._context = contextvars.copy_context()
         self._stop = Stop()
         self._events: queue.Queue[Any] = queue.Queue(maxsize=QUEUE)
+        # Events from the loop when the queue is full; the listing thread may still wait.
+        self._overflow: collections.deque[Any] = collections.deque()
+        self._overflow_lock = threading.Lock()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         # Whether events go on the queue; `wait()` turns it off, since nobody will read them.
@@ -364,12 +368,38 @@ class Run:
         Args:
             item: an event, or the end marker.
         """
+        worker = self._thread
         while self._listening:
             try:
-                self._events.put(item, timeout=WAKE)
+                self._events.put_nowait(item)
+                self._drain_overflow()
                 return
             except queue.Full:
-                continue
+                if worker is not None and threading.current_thread() is worker:
+                    try:
+                        self._events.put(item, timeout=WAKE)
+                        self._drain_overflow()
+                        return
+                    except queue.Full:
+                        continue
+                with self._overflow_lock:
+                    self._overflow.append(item)
+                return
+
+    def _drain_overflow(self) -> None:
+        """Move buffered events onto the queue while there is room."""
+        while self._listening:
+            with self._overflow_lock:
+                if not self._overflow:
+                    return
+                item = self._overflow[0]
+            try:
+                self._events.put_nowait(item)
+            except queue.Full:
+                return
+            with self._overflow_lock:
+                if self._overflow and self._overflow[0] is item:
+                    self._overflow.popleft()
 
     def _start(self) -> None:
         """Start the worker thread, once.
@@ -409,7 +439,9 @@ class Run:
             is gone and the queue is empty); or `_IDLE` when nothing came in time.
         """
         try:
-            return self._events.get(timeout=WAKE)
+            item = self._events.get(timeout=WAKE)
+            self._drain_overflow()
+            return item
         except queue.Empty:
             thread = self._thread
             if thread is not None and not thread.is_alive() and self._events.empty():

@@ -117,6 +117,8 @@ class RunShared:
     # Resolves the text of a target a listing yielded, on any source (the engine's `resolve`);
     # None outside the engine, where a source reads only its own.
     resolve: Callable[[str], Target] | None = field(default=None, repr=False)
+    # Each file's lifecycle for this target (`flnd._track.Tracks`); None outside a download.
+    tracks: Any = field(default=None, repr=False)
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:

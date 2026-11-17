@@ -59,23 +59,25 @@ async def save(client: _net.Client, file: File, dest: Path, *, label: str,
                headers: Mapping[str, str] | None = None, kind: str | None = None,
                received: MutableMapping[str, str] | None = None,
                stop: threading.Event | None = None,
-               day: datetime.date | None = None) -> _files.Saved:
+               day: datetime.date | None = None,
+               track: Any | None = None) -> _files.Saved:
     """Save one `File` under a progress bar, trying mirrors in order.
 
     Args:
         client: the source's downloading client.
         file: what to fetch: a URL, mirrors, a `fetch` function, or a DASH pair.
-        dest: where it lands; the extension may change to what its content calls for.
+        dest: where the file is saved; the extension may change to what its content calls for.
         label: the progress bar's label.
         headers: extra request headers.
-        kind: what the file must be (`_files.IMAGE`, …, `_files.SNIFF`); None checks nothing.
+        kind: what the file must be; None checks nothing.
         received: filled with the file response's headers.
-        stop: set to stop the transfer; None uses the client's.
-        day: the post's day, which becomes the file's modified time (noon UTC); None uses the
-            server's `Last-Modified`, else leaves the time of the write.
+        stop: an event to stop the transfer; None uses the client's.
+        day: the post's day, which becomes the file's modified time; None uses the server's 
+            last-modified header, or the time of the write.
+        track: the file's lifecycle row; None uses a transient bar.
 
     Returns:
-        Where the file landed, with its size and modified time.
+        The location of the saved file, with its size and modified time.
 
     Raises:
         BusyError: another run is saving this file; nothing was sent.
@@ -93,7 +95,7 @@ async def save(client: _net.Client, file: File, dest: Path, *, label: str,
             try:
                 audio = file.audio if number == 1 else None
                 await _mirror(client, mirror, file, held, label, headers, kind, received, halt,
-                              audio=audio)
+                              audio=audio, track=track)
                 break
             # The last mirror's failure is the file's; an earlier one's is a warning, and the
             # next mirror is tried. A `Stopped` is a KeyboardInterrupt, so it is never caught.
@@ -204,7 +206,7 @@ async def _mirror(
     client: _net.Client, mirror: str | Fetch, file: File, held: _files.Part, label: str,
     headers: Mapping[str, str] | None, kind: str | None,
     received: MutableMapping[str, str] | None, stop: threading.Event | None,
-    *, audio: str | None = None,
+    *, audio: str | None = None, track: Any | None = None,
 ) -> None:
     """Download one mirror (fetch function, DASH pair, or URL) into the part `held`.
 
@@ -219,6 +221,7 @@ async def _mirror(
         received: filled with the response's headers.
         stop: set to stop the transfer.
         audio: separate audio track URL for DASH merge, or None for progressive download.
+        track: the file's lifecycle bar; None uses a transient bar.
 
     Returns:
         None, once the part holds the file.
@@ -232,15 +235,16 @@ async def _mirror(
         else (file.audio if not isinstance(file.url, tuple) or mirror == file.url[0] else None)
     )
     if dash_audio is not None:
-        return await _save_dash(client, mirror, dash_audio, held, label, headers, stop)
+        return await _save_dash(client, mirror, dash_audio, held, label, headers, stop,
+                                track=track)
     return await _save_url(client, mirror, held, label, headers, file.size, kind, received,
-                           stop)
+                           stop, track=track)
 
 
 async def _save_url(client: _net.Client, url: str, held: _files.Part, label: str,
                     headers: Mapping[str, str] | None, size: int | None, kind: str | None,
                     received: MutableMapping[str, str] | None,
-                    stop: threading.Event | None) -> None:
+                    stop: threading.Event | None, *, track: Any | None = None) -> None:
     """Download one URL into `held`, date it, and check it as `kind`.
 
     Args:
@@ -253,8 +257,11 @@ async def _save_url(client: _net.Client, url: str, held: _files.Part, label: str
         kind: what the file must be, or None to check nothing.
         received: filled with the response's headers.
         stop: set to stop the transfer.
+        track: the file's lifecycle bar; None uses a transient bar.
     """
-    with _Row(label, host=urlsplit(url).hostname or "", resumed=held.size) as row:
+    row: _Row | Any = track.bar() if track is not None else _Row(
+        label, host=urlsplit(url).hostname or "", resumed=held.size)
+    with row:
         seen = await client.fill(url, held, headers=headers, progress=row.follow(stop))
     if received is not None:
         received.update(seen)
@@ -269,7 +276,7 @@ async def _save_url(client: _net.Client, url: str, held: _files.Part, label: str
 
 async def _save_dash(client: _net.Client, video: str, audio: str, held: _files.Part,
                      label: str, headers: Mapping[str, str] | None,
-                     stop: threading.Event | None) -> None:
+                     stop: threading.Event | None, *, track: Any | None = None) -> None:
     """Download a DASH video and its audio stream, merged into `held`.
 
     Args:
@@ -280,8 +287,12 @@ async def _save_dash(client: _net.Client, video: str, audio: str, held: _files.P
         label: the progress bar's label.
         headers: extra request headers.
         stop: set to stop the transfers.
+        track: the file's lifecycle row; None uses a transient bar.
     """
-    with _Row(label, host=urlsplit(video).hostname or "") as row:
+    row: _Row | Any = (
+        track.bar() if track is not None else _Row(label, host=urlsplit(video).hostname or "")
+    )
+    with row:
         await _again(
             partial(_dash_merge, client, video, audio, held, headers, stop, row),
             worth=_merge_again,

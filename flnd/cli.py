@@ -17,7 +17,7 @@ How a command runs (`main`):
    rendered with Charm Huh / Cyclopts panels.
 2. The command function opens the home (`--home`, else `$FLND_HOME`, else `./.flnd`) and makes
    one library call with the flags.
-3. A run's downloads show progress bars, and events become output (`_Plain` or `_Json`):
+3. A run's downloads show progress bars, and events go to the journal and the terminal:
    a line per saved or failed file, or one JSON object per line. With `--exec CMD`, each `Saved`
    event also runs CMD, without a shell (`_Exec`). The end of a run prints a short summary, and
    its failures decide the exit code.
@@ -73,10 +73,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run one flnd command and return its exit code; nothing escapes but the code.
 
     Args:
-        argv: the arguments after the program's name; None reads `sys.argv`.
+        argv: the arguments after the program's name; None reads the arguments from sys.argv.
 
     Returns:
-        The exit code: the command's own, or the one what ended it maps to (`exit_code`).
+        The exit code: the command's own exit code, or the exit code mapped from an error.
     """
     try:
         args = parser().parse_args(argv)
@@ -108,11 +108,11 @@ def exit_code(error: BaseException | None) -> int:
     """The exit code an error ends a command with, by its class; 0 for None.
 
     Args:
-        error: what ended the command; None when nothing did.
+        error: the exception that ended the command; None if the command finished successfully.
 
     Returns:
-        0 for None, 130 for Ctrl-C (`flnd.Stopped`), the code `CODES` gives a `flnd.Error`'s
-        class or its nearest listed base, and 4 for anything else (a bug).
+        0 if the command succeeded, 130 for Ctrl-C, the exit code from `CODES` for `flnd.Error` 
+        or its base classes, and 4 for other exceptions.
 
     Example:
         >>> import flnd
@@ -1080,86 +1080,12 @@ def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
 # Watching a run
 # ---------------------------------------------------------------------------------------------
 
-class _RunLogStream:
-    """A stream that writes to a target stream and run log files in realtime.
-
-    Args:
-        target: the primary stream (e.g. sys.stdout or sys.stderr); None to write only to log files.
-        files: open text files in the log directory to tee output to.
-    """
-
-    def __init__(self, target: Any, files: Sequence[Any]) -> None:
-        import re
-
-        self._target = target
-        self._files = list(files)
-        self._ansi = re.compile(
-            r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]"
-        )
-
-    def write(self, s: str) -> int:
-        """Write string to target stream and all active run log files.
-
-        Args:
-            s: text string to write.
-
-        Returns:
-            Number of characters written.
-        """
-        if self._target is not None and hasattr(self._target, "write"):
-            self._target.write(s)
-            if hasattr(self._target, "flush"):
-                self._target.flush()
-        if self._files and s:
-            plain = self._ansi.sub("", s)
-            for f in self._files:
-                try:
-                    f.write(plain)
-                    f.flush()
-                except (OSError, ValueError):
-                    pass
-        return len(s)
-
-    def log_only(self, s: str) -> None:
-        """Write string only to active run log files, not the target stream.
-
-        Args:
-            s: text string to log.
-        """
-        if self._files and s:
-            plain = self._ansi.sub("", s)
-            for f in self._files:
-                try:
-                    f.write(plain)
-                    f.flush()
-                except (OSError, ValueError):
-                    pass
-
-    def flush(self) -> None:
-        """Flush target stream and all active run log files immediately to disk."""
-        if self._target is not None and hasattr(self._target, "flush"):
-            self._target.flush()
-        for f in self._files:
-            try:
-                f.flush()
-            except (OSError, ValueError):
-                pass
-
-    def isatty(self) -> bool:
-        return bool(getattr(self._target, "isatty", lambda: False)())
-
-    @property
-    def encoding(self) -> str:
-        return str(getattr(self._target, "encoding", "utf-8") or "utf-8")
-
-
 def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
            runner: _Exec | None = None) -> int:
     """Read a run's events into the chosen view, print its end, and return its exit code.
 
-    flnd's own log lines are held to warnings for the run, or opened to debug lines with `-v`:
-    the events and progress bars already say what each file did. Terminal log output is written
-    in realtime to the log directory (<home>/log/).
+    flnd's own log lines are held to warnings for the run, or opened to debug lines with `-v`.
+    The run's events go to `<home>/log/<stamp>_<command>.jsonl` (see flnd/docs/storage).
 
     Args:
         fl: the open home.
@@ -1181,7 +1107,7 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
     from flnd import _home
     from flnd._ui import ui
 
-    log_files: list[Any] = []
+    journal_path: Path | None = None
     try:
         home = getattr(fl, "home", None)
         if isinstance(home, (str, os.PathLike, Path)):
@@ -1190,30 +1116,36 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
             cmd = getattr(args, "command", None)
             name = cmd.__name__ if cmd and hasattr(cmd, "__name__") else "run"
             stamp = f"{datetime.datetime.now():%Y%m%d-%H%M%S}"
-            log_files.append(open(log_dir / f"{stamp}_{name}.log", "w", encoding="utf-8"))
+            journal_path = log_dir / f"{stamp}_{name}.jsonl"
     except (OSError, TypeError):
         pass
 
-    out_stream = _RunLogStream(sys.stdout, log_files) if log_files else None
-    err_stream = _RunLogStream(sys.stderr, log_files) if log_files else None
     view: _View = (
-        _Json(out_stream=out_stream, log_stream=err_stream)
+        _Json()
         if args.json
-        else _Plain(verbose=args.verbose, out_stream=out_stream, log_stream=err_stream)
+        else _JournalView(verbose=args.verbose, journal_path=journal_path)
     )
     with ExitStack() as stack:
-        for f in log_files:
-            stack.callback(f.close)
-        # The view first, so the log's scope (which may write into it) ends before it does.
+        journal = (
+            stack.enter_context(ui.file(journal_path)) if journal_path is not None else None
+        )
+        view.journal = journal
         stack.enter_context(view)
-        stack.enter_context(ui.scope(level="debug" if args.verbose else "warn", dest=view.log))
+        stack.enter_context(ui.scope(level="debug" if args.verbose else "warn"))
+        cmd = getattr(args, "command", None)
+        name = cmd.__name__ if cmd and hasattr(cmd, "__name__") else "run"
+        if journal is not None:
+            import flnd
+
+            journal.write({"type": "Start", "command": name, "version": flnd.__version__})
         for event in run:
             view.show(event)
-            # The run waits while this runs, so one command at a time, in the order files end.
             if runner is not None and type(event).__name__ == "Saved":
                 runner.run(event)
         report = run.report
         view.end(report)
+        if journal is not None:
+            journal.write(report)
     if any(_kind(failed.error) == "LoginError" for failed in report.failed):
         return LOGIN
     return FAILED if report.failed else OK
@@ -1417,28 +1349,35 @@ class _View:
             self._err_con.print(_summary(failed, details=True))
 
 
-class _Plain(_View):
-    """One line per saved, failed or planned file on standard output."""
+class _JournalView(_View):
+    """Terminal output from run events; the machine record goes to the `.jsonl` journal."""
+
+    journal: Any = None
+
+    def __init__(self, *, verbose: bool = False, journal_path: Any = None) -> None:
+        """Args:
+            verbose: also print each saved or skipped file.
+            journal_path: where the JSON Lines run log is written; None skips the file.
+        """
+        super().__init__(verbose=verbose)
+        self.journal_path = journal_path
 
     def show(self, event: Any) -> None:
-        """Print the event's line, if it has one: a `Progress` has none.
+        """Record one event and print failures (and saved files with `-v`).
 
         Args:
-            event: one event of the run.
+            event: the event to record and potentially display.
         """
-        from rich.text import Text
-
         name = type(event).__name__
-        if name == "Saved":
-            from flnd._ui import ui
+        if name == "Progress":
+            return
+        if self.journal is not None:
+            self.journal.write(event)
+        if name == "Failed":
+            _failed(event, self._con.print)
+        elif name == "Saved" and self.verbose:
+            from rich.text import Text
 
-            if ui._progress_enabled():
-                if self.out is not None and hasattr(self.out, "log_only"):
-                    path_str = _shown(event.path)
-                    folder, filename = os.path.split(path_str)
-                    folder_part = (folder + os.sep) if folder else ""
-                    self.out.log_only(f"saved {folder_part}{filename}\n")
-                return
             path_str = _shown(event.path)
             folder, filename = os.path.split(path_str)
             folder_part = (folder + os.sep) if folder else ""
@@ -1447,9 +1386,9 @@ class _Plain(_View):
                 (folder_part, "color(243)"),
                 (filename, "bold #02BF87"),
             ))
-        elif name == "Failed":
-            _failed(event, self._con.print)
         elif name == "Planned":
+            from rich.text import Text
+
             if event.path is None:
                 self._con.print(Text.assemble(
                     ("found ", "color(243)"),
@@ -1466,6 +1405,8 @@ class _Plain(_View):
                     (filename, "color(252)"),
                 ))
         elif name == "Skipped" and self.verbose:
+            from rich.text import Text
+
             path_str = _shown(event.path) if event.path else str(event.target)
             self._con.print(Text.assemble(
                 ("skipped ", "yellow"),
