@@ -1,4 +1,4 @@
-"""Each target's options, the settings every source of a run shares, and their checks.
+"""Target options, run-wide settings, and config.toml structs.
 
 This is flnd's own module (not a library): it knows sources, targets and the home. It holds:
 - `Options`, what one target's run downloads and how, and `Retry`, what it does with the
