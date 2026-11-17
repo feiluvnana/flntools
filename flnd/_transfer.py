@@ -346,11 +346,7 @@ async def _dash_merge(client: _net.Client, video: str, audio: str, held: _files.
             audio_path = streams[1].path
             audio_size = streams[1].size
             if audio_size == 0:
-                await asyncio.to_thread(
-                    ffmpeg.run,
-                    "-y", "-i", str(streams[0].path),
-                    "-c", "copy", *flags, "-f", fmt, str(held.path),
-                )
+                raise _tools.RunError(f"audio stream is empty (0 bytes): {audio_path}")
             else:
                 try:
                     await asyncio.to_thread(
@@ -392,8 +388,8 @@ async def _dash_merge(client: _net.Client, video: str, audio: str, held: _files.
 def _fetch_again(error: Exception) -> bool:
     """Whether a source's `fetch` function is worth another try after `error`.
 
-    Its errors are the source's own (an SDK's), so any is tried again, except the site's
-    answer (a `SiteError`: a web page for a photo, a refusal), which the next try would get too.
+    Disk errors and site answers are not retried here; the client's own policy covers network
+    failures.
 
     Args:
         error: what the try raised.
@@ -401,7 +397,11 @@ def _fetch_again(error: Exception) -> bool:
     Returns:
         True to try again.
     """
-    return not isinstance(error, SiteError)
+    from flnd.errors import DiskError
+
+    if isinstance(error, (SiteError, DiskError)):
+        return False
+    return True
 
 
 def _merge_again(error: Exception) -> bool:
