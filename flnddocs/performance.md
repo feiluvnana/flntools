@@ -39,10 +39,8 @@ Each group is one script in `tests/bench/`, run in a fresh interpreter.
 | `db` | the history store over 100k rows; SQLite commits per file, per post and per 500 rows |
 | `walk` | listing 100,000 files, and `stat` on known paths |
 | `cpu` | JSON, a JSON path, HTML parsing, hashing, the loop bridge, path planning, a task handed to the loop |
-| `ui` | a full-screen frame with 1,000 targets and 1,000 files in flight (200 × 60 and 80 × 24), and one live-stats sample of a busy run, as a share of one core |
 | `e2e` | a whole run of the real engine on a faked site, with and without latency |
 | `browser` | headless Chromium on a synthetic infinite-scroll feed; skipped without Chromium |
-| `media` | Pillow's AVIF, WebP and JPEG encoders; the compress step over 1,000 JPEGs; `sync --compress` over 100k done files; ffmpeg's video encoders, skipped without ffmpeg |
 
 Each script's docstring says exactly what it builds and times.
 
@@ -91,8 +89,6 @@ baseline recorded at `9d1cf13`, before the rebuild. The numbers a target is set 
 | `cpu.html_meta` (a 2 MiB Meta-style page) | 18.0 ms | 6.7 ms | ≤ 8 ms, met |
 | `ui.frame_1000` (a frame with 1,000 targets and files) | 1.56 ms | 1.62 ms | ≤ 5 ms, met |
 | `ui.sample_core` (live stats of a busy run, share of a core) | 0.155% | 0.148% | ≤ 1%, met |
-| `media.jpegs_1000` (compressing 1,000 JPEGs) | — | 15.8 s | ≤ 2 min, met |
-| `media.sync_compress_100k` (`sync --compress` over 100k done files) | — | 0.13 s | ≤ 3 s, met |
 
 The two missed targets, and where their time goes, are under "Targets not met". Three numbers
 with no target are slower than before the rebuild, the price of `flnd.db`'s real columns and
@@ -287,13 +283,11 @@ about 5), the median of 9 alternating rounds, each the best of 3:
 
 ## Compression
 
-What `--compress` costs and saves ([media.md](media.md)). Measured on 2026-11-16 on the
+What `--compress` costs and saves ([storage.md](storage.md)). Measured on 2026-11-16 on the
 Apple M5 above, with other work running, so read the times as upper bounds:
 
 | number | what | result |
 | --- | --- | ---: |
-| `media.jpegs_1000` | the whole compress step (plan, encode, SSIM check, place, record) over 1,000 synthetic 1080×1350 JPEGs at quality 90 with rows in a home's `flnd.db`, on the photo lane's 2 threads | 15.7 s, every file compressed to AVIF, 76% smaller |
-| `media.sync_compress_100k` | open the home, read the unfinished rows of 100,000 done files in `flnd.db` once (`Home.unfinished`), and queue none | 0.13 s |
 
 The group fails, rather than report a number, when a JPEG wasn't compressed or a done file was
 queued: so the numbers always time the work they name.
@@ -307,22 +301,6 @@ times do. One AVIF encode takes about 0.02 s for a 1080×1350 photo and 0.11 s f
 
 The defaults (the candidates, AVIF quality 60, SVT-AV1 CRF 35 preset 8, and which kinds are left
 alone) are confirmed on real downloads: about 100 photos and 20 videos from the authorized test
-accounts, kept in a folder outside the repo. The script copies each sample, compresses the copy
-exactly as `--compress` would, and prints one row per kind: files, compressed / kept / failed,
-median and total saving, the lowest and median SSIM, and the time per file. It prints no file
-names.
-
-```sh
-make media-real ARGS="~/flnd-samples"                # videos to AV1, the default
-make media-real ARGS="~/flnd-samples --video hevc"   # videos to HEVC
-```
-
-Results: not measured yet. A kind whose median saving comes out under 15% is left alone by
-default; the table marks it.
-
-Whether AV1 plays on the user's own devices (Photos and QuickTime on the iPhone and Mac) is
-checked by hand, with a file `--compress` made, before AV1 stays the default.
-
 ## The full screen and live stats
 
 Measured on the machine of the baseline (Apple M5, Python 3.14.6), `make bench ARGS=ui`:
@@ -330,15 +308,6 @@ Measured on the machine of the baseline (Apple M5, Python 3.14.6), `make bench A
 | what | time | gate |
 | --- | ---: | ---: |
 | one frame, 1,000 targets and 1,000 files, 200 × 60, true colour (`frame_1000`) | 1.6 ms | ≤ 5 ms |
-| the same frame just after a new `Stats` (rows picked and sorted again) | 2.2 ms | |
-| the 1,000-row frame on 80 × 24 | 0.55 ms | |
-| one sample of a busy run (1,000 listing rows, 200 files, 16 hosts, 12 child processes) | 0.21 ms | |
-| a sample that also lists flnd's child processes, every 5 s | 6.9 ms | |
-| sampling at one a second, as a share of one core (`sample_core`) | 0.16 % | < 1 % |
-| `flnd --help`, before and after (A/B, median of 15 alternating starts) | 24.3 / 24.0 ms | no slower |
-
-- A frame renders only the rows that fit, so its cost doesn't grow with the run; the rows are
-  picked and sorted once per `Stats`, not per frame.
 - Listing a process's children with psutil walks every process of the machine (7 ms on macOS),
   so the meter lists them every 5 seconds and reads the ones it found in between: 0.2 ms.
 - **Rich, not Textual.** Textual 8.2 would bring scrolling and widgets, but `import textual.app`

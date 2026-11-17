@@ -97,7 +97,7 @@ A behaviour change updates its `flnddocs` page in the same commit. `tests/test_d
   - one asyncio loop for network and browser;
   - no extra `stat` calls or lock files per file (a `.part` is its own lock);
   - one database transaction per post, not per file and not on a writer thread;
-  - lazy imports, so `flnd --help` stays under 40 ms.
+  - lazy imports, so `flnd --help` stays fast.
 - A regression guard in `make check` counts things (requests, `stat` calls, statements, imported modules) instead of timing them.
 
 ## Models

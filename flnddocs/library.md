@@ -85,12 +85,11 @@ with flnd.open(home) as fl:
 
 | event | when | fields |
 | --- | --- | --- |
-| `flnd.Saved` | a file is downloaded, and every step after it is done (dedupe, unpack, compress, the sidecar) | `target`, `category`, `post`, `path` (its final path: after `compress`, the compressed file's), `date`, `size` (as it is now) |
+| `flnd.Saved` | a file is downloaded, and every step after it is done (dedupe, unpack, the sidecar) | `target`, `category`, `post`, `path` (its final path: on disk), `date`, `size` (as it is now) |
 | `flnd.Skipped` | a file (or a whole post) is already saved | `target`, `category`, `post`, `path` (None for a post) |
 | `flnd.Failed` | a file failed, or a whole target did | `target`, `error`, and for a file `post` and `path` |
 | `flnd.Progress` | a category's counts changed, or its listing ended | `target`, `category`, `found`, `saved`, `skipped`, `failed`, `bytes`, `listed` |
 | `flnd.Planned` | a dry run planned a file | `target`, `post`, `path`, `state` (`"new"` or `"saved"`) |
-| `flnd.Stats` | about once a second, while the run is iterated | a snapshot of the whole run ([Live stats](#live-stats)) |
 
 Events are frozen msgspec structs. A failed file is an event, never an exception: the run goes
 on with the rest. `flnd.Failed.error` is a `flnd.Error`, whose `str()` is the message and `hint`
@@ -115,7 +114,7 @@ with flnd.open(home) as fl:
 | `Report` field | what it is |
 | --- | --- |
 | `saved`, `skipped` | files downloaded, and files (or posts) already saved |
-| `bytes` | the saved files' bytes, as they are on disk (after `compress`, compressed) |
+| `bytes` | the saved files' bytes, as they are on disk |
 | `planned` | files a dry run planned |
 | `failed` | each `Failed` event, in order: a strict script checks it, or `report.ok` |
 | `stopped` | whether `run.stop()` ended the run early |
@@ -129,7 +128,6 @@ Every option is keyword-only:
 | `only` | the categories to take: `["reels"]`, or `"reels,posts"`. None (the default) takes every category. A single post has none, so `only` with one is a usage error |
 | `when` | the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"` (either end may be left out), or a span back from today: `"30d"`, `"8w"`, `"1y"`; `""` for every day. None (the default) takes `when` under `[defaults]` in the home's `config.toml`, which bounds `sync` too |
 | `limit` | at most this many posts per target, or targets per search |
-| `compress` | shrink each photo and video as it lands, when a smaller copy looks the same, and remove each archive once it is extracted ([media.md](media.md)); `sync(compress=True)` also takes files saved before. None (the default) takes `compress` under `[defaults]` in `config.toml`, so `False` turns it off for one call |
 | `dry` | plan instead: `Planned` events, and nothing is written |
 
 ```python
@@ -179,58 +177,6 @@ async def main():
 assert asyncio.run(main()).skipped == 3
 ```
 
-### Live stats
-
-While a script iterates a run, it yields a `flnd.Stats` snapshot about once a second, and
-`run.stats` holds the latest (None before the first). It is what the CLI's full screen draws,
-and `--json` prints it, so a script sees all the screen shows. Nothing is sampled while nobody
-iterates: a `wait()` takes no sample, and psutil (for RAM and CPU) is imported only by the
-first.
-
-```python
-class Slow(Source):
-    code, name, domains, api = "slo", "Slow", ("slow.example.com",), 1
-    folder, key = "{category}", "{post}"
-
-    @target("slo:{user}")
-    def user(self, site, user):
-        return user
-
-    @user.category
-    def posts(self, site, user):
-        site.pause(2.0, "the site's quiet hours")       # shows in the stats as a wait
-        yield Post("s1", [File(write("slow"), name="s1.txt")], date=datetime.date(2026, 5, 1))
-
-
-with flnd.open(home) as fl:
-    fl.add(Slow)
-    run = fl.download("slo:example_user")
-    for event in run:
-        if isinstance(event, flnd.Stats):
-            row = event.listing[0]
-            print(f"{event.elapsed:.0f}s: {row.target} {row.category} {row.state}, "
-                  f"flnd uses {event.system.ram >> 20} MiB")
-            for pause in event.pauses:
-                print(f"  {pause.source} waits {pause.seconds:.1f}s: {pause.reason}")
-    assert run.stats is not None and run.stats.listing[0].category == "posts"
-```
-
-| `Stats` field | what it is |
-| --- | --- |
-| `elapsed`, `saved`, `skipped`, `failed`, `bytes` | seconds since the start, and the report's counts so far |
-| `speed` | bytes a second received over the last sample, every transfer together |
-| `eta` | seconds left, once every listing is done and files are still to come; None before |
-| `stopping` | `""`, `"soon"` after a first Ctrl-C or `run.stop()`, `"now"` after a second |
-| `suspended` | whether `run.suspend()` holds the run |
-| `transfers` | `running`, `queued` and `resuming` files; `hosts`, each with its `cap` (adaptive), `busy`, `waiting` and `most`; `files`, each in flight with `name`, `host`, `done`, `total`, `speed`, `resumed` |
-| `listing` | per target and category: `pages` read by `site.pages`, `posts` seen, `found`, `saved`, `skipped`, `failed`, `bytes`, `streak` (saved posts in a row; 5 stops a sync early) and `state`: `listing`, `finishing`, `done`, `caught up`, `cut`, `stopped` or `failed` |
-| `pauses` | each wait before a source's next request: `source`, `host`, `seconds` and `reason` (`Retry-After`, `back-off`, `pace`, or the source's own words) |
-| `system` | `tabs` open and the `cap` one target holds; `browser`, the RAM of the browser's process tree; flnd's own `ram` and `cpu` (percent of one core); `ffmpeg`, `pillow` and `unpack` jobs running; `steps` waiting; free `disk` on the home's volume |
-
-`run.suspend()` holds a run: no new request or file starts until `run.resume()`, and the files
-in flight finish. A stop (Ctrl-C, `run.stop()`) ends a suspension, so a suspended run still
-stops. The full screen's `p` key does this.
-
 ## Following and syncing
 
 `download` takes what is there once. `follow` records the targets, then downloads them like
@@ -247,8 +193,8 @@ with flnd.open(home) as fl:
 
 | method | returns | what it does |
 | --- | --- | --- |
-| `follow(targets, only=, when=, compress=)` | `Run` | follow, then download; `only` is kept for later syncs, `when` bounds this download alone |
-| `sync(targets=(), compress=)` | `Run` | download what is new for followed targets |
+| `follow(targets, only=, when=)` | `Run` | follow, then download; `only` is kept for later syncs, `when` bounds this download alone |
+| `sync(targets=())` | `Run` | download what is new for followed targets |
 | `unfollow(targets)` | `list[Target]` | stop following; files and history stay |
 | `retry()` | `Run` | download again every file that failed, however many runs failed it ([errors.md](errors.md#retrying)) |
 
@@ -338,7 +284,7 @@ no site. `fl.login("ins", "chrome")` reads a browser's cookies the same way.
 `download` and `follow` then lists each post again and asks again for files the site answered
 404 or 410 for (recorded as gone, [storage.md](storage.md)). Without it, `again = true` under
 `[defaults]` in the home's `config.toml` does the same. The same table turns off dedupe
-(`dedupe = "off"`), turns on sidecars (`sidecars = true`), and gives `compress` and `when` their
+(`dedupe = "off"`), turns on sidecars (`sidecars = true`), and gives `when` its
 defaults; `[sources.<code>]` sets a source's pace, scroll, limits and proxy
 ([storage.md](storage.md#settings-configtoml)). An argument given to a call always wins over
 the file.

@@ -19,7 +19,7 @@ holds your logins and cookies.
   log/
     crash-<time>.txt     the traceback of a crash, for a bug report
     <run>/samples/<n>.txt  the answer a site change was found in, scrubbed (see below)
-  config.toml      settings (optional): `[defaults]`, `[compress]`, `[sources.<code>]`
+  config.toml      settings (optional): `[defaults]`, `[sources.<code>]`
                    (see Settings, below)
   cache/           reserved for things safe to delete; nothing writes there yet
 ```
@@ -114,7 +114,7 @@ How it is written:
   committed together, in one statement, once the post's last file is in place. A row is never
   written before its file, so a crash leaves at worst a whole file without a row, which the
   next run finds on disk and skips. The `flnd.Saved` events of a post follow its commit, each
-  once the steps after its file (compress, the sidecar) are done.
+  once the steps after its file (unpack, the sidecar) are done.
 - **WAL with `synchronous = NORMAL`.** A power cut can lose the last commits, never corrupt the
   file. On macOS, `fullfsync` makes SQLite's own syncs reach the disk. Those syncs happen at
   checkpoints, when the log (`flnd.db-wal`) is copied into the database: every 10,000 pages
@@ -144,12 +144,9 @@ while the file at its `path` is there, and also a file already on disk at its pl
 | `files` | on the first file of a post of several, how many files the post has: it tells a run whether a post listed again is whole |
 | `state` | where it stands with the site: `saved`, or `gone` when the site answered 404 or 410; `link` for a second name of a saved file in another category's folder (see [Links](#links)) |
 | `at` | when it was saved, in UTC, ISO 8601 |
-| `shrink` | what `--compress` did: `compressed`, `kept` (nothing smaller passed) or `failed`; empty when it never ran ([media.md](media.md)) |
 | `tools` | with `shrink`: the encoders and versions it ran with, such as `pillow 13.0.0 libavif 1.4.2`; a `kept` or `failed` file is tried again when these change |
-| `before` | on a compressed file: the original's size in bytes (`size` is the new one, and `path` the new path when the suffix changed) |
 | `unpacked` | on an archive: `extracted`, or `failed` (a wrong password, a damaged or unsafe archive, no 7-Zip) |
-| `folder` | on an extracted archive: the folder it was extracted into. With `--compress` the archive itself is removed, and this folder counts as the saved file |
-| `hash` | the SHA-256 of its bytes (32 bytes); after `--compress`, of the compressed file. Empty on a row from before hashes |
+| `folder` | on an extracted archive: the folder it was extracted into. | `hash` | the SHA-256 of its bytes (32 bytes); after `--compress`, of the compressed file. Empty on a row from before hashes |
 | `sidecar` | where its sidecar is, `<path>.json`, when sidecars are on (see [Sidecars](#sidecars)) |
 | `format` | for a step that doesn't exist yet; empty |
 
@@ -233,7 +230,7 @@ One row per target the home knows, keyed `<code>:<value>` (`ins:example_user`).
 | --- | --- |
 | `source`, `value`, `kind` | the target: its source, its value, and the route that reads it (`user`, `post`, `query`, …) |
 | `follow` | 1 when `sync` takes it |
-| `options` | JSON: `only`, the categories a followed target syncs, and `compress`, whether `sync` compresses its new files (`flnd follow --compress`) |
+| `options` | JSON: `only`, the categories a followed target syncs its new files (`flnd follow --compress`) |
 | `query` | for a target a search found: the search's words |
 | `complete` | JSON: each category listed to its end, with the day it was |
 | `cursors` | JSON: each category's cursor, saved when a full download of it was cut short, so the next run resumes |
@@ -282,15 +279,9 @@ environment only says where things are (`FLND_HOME`, `FLND_SOURCES`), so it neve
 again = false        # list every post again, and ask again for files recorded gone (--again)
 dedupe = "link"      # "link" a file whose bytes are saved already, or "off" to keep both
 sidecars = false     # write <file>.json beside each saved file
-compress = false     # compress what download, follow and sync save (--compress, --no-compress)
 when = ""            # the days every download, follow and sync takes, as --when writes them
                      # ("1y", "2026", "2026-01.."); "" for every day
 
-[compress]
-video = "av1"        # "av1", or "hevc" (x265) for devices that can't play AV1
-
-[vault]
-key = "file"         # "file" (secret.key), or "keychain" (the OS keychain), below
 
 [sources.ins]        # one table per source, by its code
 pace = 1.0           # seconds between its page requests (over the source's own pace)

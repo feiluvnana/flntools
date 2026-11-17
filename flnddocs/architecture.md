@@ -58,7 +58,7 @@ The rules between them:
   its classes and there is one hierarchy.
 - **Nothing heavy loads at import.** `import flnd` imports only `flnd/__init__.py`; each public
   name loads its own module on first use, and curl_cffi, Playwright and Rich load only when a
-  command needs them, so `flnd --help` stays under 40 ms (`tests/test_packaging.py`).
+  command needs them, so `flnd --help` stays fast (`tests/test_packaging.py`).
 
 ## The parts
 
@@ -75,7 +75,7 @@ The rules between them:
         ├── flnd/_home.py       the home: flnd.db (files, targets, runs, failures), the logins
         ├── flnd/site.py        SourceRun and TargetSite: what a source acts through
         │       └── flnd/_transfer.py   one file into its part, checked by its content
-        ├── flnd/_steps.py      the step chain after each file: dedupe, unpack, compress, sidecar
+        ├── flnd/_steps.py      the step chain after each file: dedupe, unpack, sidecar
         └── flnd/job.py         one target: list its posts, plan its files, download, record
                 │
                 └── flnd/sources/<code>.py   one class per site (flnd/source.py is their API),
@@ -88,7 +88,7 @@ The rules between them:
 | `flnd/__init__.py` | the public names, each imported from its module on first use | scripts |
 | `flnd/_library.py` | `open` and `Flnd`: each command as a method, over the engine; the reads (`targets`, `files`, `logins`, `status`), as rows | scripts and the CLI |
 | `flnd/_run.py` | `Run`: a command on its own worker thread, read as a stream of events; `Stop` and `stopping`, the Ctrl-C state | `Flnd`, the engine |
-| `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`, `Stats`), the public `Report`, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the job, `Run`, `Flnd` |
+| `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), the public `Report`, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the job, `Run`, `Flnd` |
 | `flnd/engine.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
 | `flnd/job.py` | one target's run: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads on the loop (`Downloads`), the progress rows (`Board`), history rows | the engine |
 | `flnd/site.py` | `SourceRun` (a source's cookies, HTTP session, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`), `LoginSite`, and `shared_browser`, the run's loop and browser | the engine, the job |
@@ -100,8 +100,7 @@ The rules between them:
 | `flnd/testing.py` | the public test kit: `FakeSite`, `collect`, `check`, `fake_clock` | a source's tests, flnd's own (`tests/fakes.py`) |
 | `flnd/_home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the job, the site, `Flnd` |
 | `flnd/_transfer.py` | one post's file into its part: mirrors, DASH merges, a source's `fetch` function, the content check | the job |
-| `flnd/_steps.py` | the step chain and its lanes: dedupe, unpack, compress, the sidecar, `Saved` ([media.md](media.md)) | the job and the engine |
-| `flnd/_stats.py` | live stats: what a run's parts track (limits, browser, boards, the chain, transfers, the home), sampled into a `flnd.Stats` once a second while the run is read, with psutil for RAM and CPU | `Run` |
+| `flnd/_steps.py` | the step chain and its lanes: dedupe, unpack, the sidecar, `Saved` ([storage.md](storage.md)) | the job and the engine |
 | `flnd/_check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
 | `flnd/errors.py` | the one error hierarchy, `Stopped`, and `classify` and `disk`, which turn any exception into one of them | every module |
 
@@ -113,7 +112,7 @@ The library modules, each a toolkit of its own:
 | `_browser` | the run's one browser on async Playwright: tabs, warm tabs, response feeds, human-like scrolling |
 | `_loop` | one asyncio loop on a thread of its own, which other threads hand work to (`run`, `submit`) |
 | `_files` | atomic files: parts that lock themselves, hashing as bytes are written, renames, sweeps, kinds by name and by content |
-| `_unpack`, `_shrink`, `_media`, `_tools` | archive extraction, compression of photos and videos, probes and ffmpeg runs, and finding ffmpeg and 7zz |
+| `_unpack`, `_tools` | archive extraction and finding ffmpeg and 7zz |
 | `_cookies`, `_vault` | reading browsers' cookie stores and cookie files; sealed secrets on disk |
 | `_db` | a SQLite store: one connection behind a lock, transactions, waiting for another process's writer |
 | `_html`, `_text`, `_time` | HTML parsing, names and sizes and redaction, a clock tests can fake |
@@ -311,14 +310,13 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
   reader never deadlocks it; the boards, the chain's lanes and psutil's process numbers are
   read on the reader's thread, so the system calls never hold up a transfer. The parts of a
   run show themselves to the meter (`_stats.tracked`) through the run's context, as the clock
-  reaches them. A `Stats` never goes through the event queue.
 
 ## The step chain
 
 Every saved file goes through the same steps, in one fixed order:
 
 ```
-download (hashing) → dedupe → unpack → compress → date → place → record → sidecar → Saved → --exec
+download (hashing) → dedupe → unpack → date → place → record → sidecar → Saved → --exec
 ```
 
 - **download, date, place, record** run in the file's download task (`flnd.job`): the bytes are
@@ -328,8 +326,7 @@ download (hashing) → dedupe → unpack → compress → date → place → rec
   whose bytes are already saved becomes a hard link to them (`[defaults] dedupe = "link"`).
 - **unpack** and **compress** (`--compress`) are slow, so the job hands the recorded file to
   the run's `Chain`, whose lanes run them on threads of their own; they re-run date, place and
-  record for a file they change, and compress keeps dedupe's links ([media.md](media.md)).
-- **sidecar** (`[defaults] sidecars = true`) writes the post's caption, author, tags and link
+  record for a file they change, and - **sidecar** (`[defaults] sidecars = true`) writes the post's caption, author, tags and link
   beside the file, and **Saved** is sent last, with the file's final path and size.
 - **`--exec`** is the CLI's: it runs a command for each `Saved` event it reads, never through a
   shell ([cli.md](cli.md#running-a-command-per-file)).
@@ -351,7 +348,6 @@ may keep after the run and `encode` to JSON:
 | `Failed` | a file failed (with its post and path), or a whole target did; `error` is the `flnd.Error`, with its `hint` | the job and the engine |
 | `Progress` | a category's counts changed (found, saved, skipped, failed, bytes), its listing ended, or a note ("resuming from the last run") | the job's `Board` |
 | `Planned` | a dry run planned a file: `"new"` or `"saved"` | the engine's dry run |
-| `Stats` | about once a second while the run is read: hosts, transfers, listings, waits, the machine | the run's meter, on the reader's thread |
 
 `Run` counts the events into a public `flnd.Report` (saved, skipped, bytes, failed, retried,
 resumed, unchanged), which `run.report` shows so far and `run.wait()` returns. The engine keeps
@@ -500,7 +496,7 @@ in November 2026: gallery-dl and yt-dlp (many sites each), instaloader (Instagra
 | The parts of a profile | a "user" extractor dispatching to sub-extractors, picked with `include` | — | — | **categories** under a route, picked with `--only` |
 | Stopping at old posts | `skip = "abort:N"` | `--break-on-existing` | `--fast-update` | **the engine** stops a sync after 5 saved posts in a row (`stop_after` per source), and after the newest post it had |
 | What was downloaded | a SQLite archive of keys | a text file of ids | a timestamps file | **`flnd.db`**: files, targets, runs and failures, with real columns |
-| After a file lands | post-processor modules on events | a post-processor chain (ffmpeg merge, metadata, exec) | — | **a fixed step chain**: dedupe, unpack, compress, date, place, record, sidecar, then `--exec` |
+| After a file lands | post-processor modules on events | a post-processor chain (ffmpeg merge, metadata, exec) | — | **a fixed step chain**: dedupe, unpack, date, place, record, sidecar, then `--exec` |
 | Loading only what is used | imports extractor modules until a pattern matches | a generated `lazy_extractors.py` | — | **a generated manifest** (`flnd/sources/_manifest.py`), like yt-dlp's |
 | Plugins | extra module folders in the config | a `yt_dlp_plugins` package in the user's folder, or from pip | — | **the user's plugin folder, or a `flnd.sources` entry point**, never the current folder |
 | HTTP | `requests`, with browser-like headers | pluggable handlers; curl_cffi for `--impersonate` | httpx; twscrape async with a pool of accounts | **curl_cffi on one asyncio loop**, with Chrome's TLS and HTTP/2 fingerprint |
@@ -577,7 +573,6 @@ The choices that explain how flnd behaves, made with its user in November 2026:
     without passwords or key files.
 12. **`--compress` encodes videos to AV1**, with `[compress] video = "hevc"` in config.toml
     for devices that can't play it, and photos in-process with Pillow and pyoxipng, which are
-    part of the core install ([media.md](media.md)).
 13. **One `Source` class per site**, with routes and categories (above).
 14. **A fixed chain of steps** after each file (above).
 15. **Ruff is the only lint, and pyright is informational** (`make type`), never a gate.
@@ -592,6 +587,6 @@ The choices that explain how flnd behaves, made with its user in November 2026:
 - [writing-a-source.md](writing-a-source.md): adding a site, testing it, and shipping it as a
   plugin.
 - [storage.md](storage.md): every file of a home, and the rows of `flnd.db`.
-- [media.md](media.md): the steps after a file lands, and `--compress`.
+- [storage.md](storage.md): the home, the history and config.toml.
 - [performance.md](performance.md): what is fast, what isn't, and how it is measured.
 - [sources/](README.md#sites): what each site's source does.

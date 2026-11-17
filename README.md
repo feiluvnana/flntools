@@ -138,21 +138,13 @@ A sync is smart about what it has:
   A file is written under its real name only once it is whole, so nothing is ever left
   half-written.
 
-### Compressing and unpacking
-- **`--compress`** replaces each photo and video, as it lands, with a smaller copy that looks the
-  same: photos go to AVIF, an optimized JPEG or WebP (PNGs through oxipng first), videos to AV1
-  with Opus sound. A copy replaces the original only when it decodes, matches its size and
-  length, keeps an SSIM of 0.98 or more (photos), and saves at least 5%; otherwise the original
-  stays. `flnd sync --compress` also shrinks files saved earlier, and a target followed with
-  `--compress` has its new files compressed on every sync. AV1 doesn't play on older Apple
-  devices: for files meant for them, set `video = "hevc"` under `[compress]` in `config.toml`,
-  and videos go to HEVC (x265) instead.
+### Unpacking archives
 - **Archives unpack by themselves** (`.zip`, `.7z`, `.rar`, `.tar*`) into a folder of their name
   beside them. A site that knows the password (LOIBUS) passes it on. Unpacking refuses archive
-  tricks: paths that escape the folder, links of any kind, and zip bombs. The archive is kept,
-  unless `--compress` is on: then it is removed once its extract is verified.
+  tricks: paths that escape the folder, links of any kind, and zip bombs. The archive file stays
+  on disk after extraction.
 
-[flnddocs/media.md](flnddocs/media.md) has the details and the checks.
+See [flnddocs/storage.md](flnddocs/storage.md) for the history fields and [flnddocs/architecture.md](flnddocs/architecture.md) for where unpack runs.
 
 ### Dedupe and sidecars
 - **Dedupe:** a file whose bytes are already saved (a repost, a photo in two albums) becomes a
@@ -239,7 +231,7 @@ file, the key and what it takes; an unknown key is a warning.
 
 ## Use it from Python
 `flnd.open(home)` gives a `Flnd`, whose methods are the commands. A download returns a run that
-yields events as it goes: `Saved`, `Skipped`, `Failed`, `Progress`, and a `Stats` snapshot
+yields events as it goes: `Saved`, `Skipped`, `Failed`, `Progress`, and `Planned`
 about once a second.
 
 <!-- docs-test: skip: it downloads from Instagram, which needs the network and a login -->
