@@ -191,7 +191,7 @@ TARGET_COLUMNS = ("key", "source", "value", "kind", "follow", "options", "query"
                   "cursors", "seen", "last_sync", "files", "bytes", "heads", "gaps")
 # The columns `FailureRow` reads, in its order.
 FAILURE_SELECT = ("key, target, post_id, category, file, cursor, attempts, class, message, hint,"
-                  " url, run, at")
+                  " retryable, url, run, at")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -317,6 +317,7 @@ class FailureRow(msgspec.Struct):
     error: str = "Error"
     message: str = ""
     hint: str = ""
+    retryable: bool = False
     # The file's URL, redacted (no query, no user info); "" for none.
     url: str = ""
     # The run it last failed in; None outside a recorded run.
@@ -412,7 +413,8 @@ def open(home: Path) -> Home:
     db = Home(home)
     try:
         if (home / DB).is_file():
-            db._store.connection()
+            sql = db._store.connection()
+            _require_version(sql)
     except BaseException:
         db.close()
         raise
@@ -642,19 +644,6 @@ class Home:
         found = self._store.all(f"SELECT {ROW_SELECT} FROM files WHERE {ON_DISK}")
         return [_file_row(row) for row in found]
 
-    def failed_at(self) -> dict[str, tuple[str, str, str]]:
-        """The key, target and post of each failed file, by the path it was to have.
-
-        `check` adopts a file found on disk with no row through this: a file a run renamed into
-        place and then crashed before its row (its failure, if any, names it).
-
-        Returns:
-            `{path: (key, target, post_id)}`; the latest failure wins.
-        """
-        found = self._store.all("SELECT file, key, target, post_id FROM failures"
-                                " WHERE file != '' ORDER BY at")
-        return {path: (item, target, post) for path, item, target, post in found}
-
     def drop(self, items: Sequence[str]) -> None:
         """Remove files' rows, in one transaction: `check --fix` for files gone from the disk.
 
@@ -747,17 +736,19 @@ class Home:
         with self._store.transaction() as sql:
             sql.execute(
                 "INSERT INTO failures (run, key, target, post_id, category, file, url, class,"
-                " message, hint, attempts, at, cursor)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
+                " message, hint, retryable, attempts, at, cursor)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
                 " ON CONFLICT (key) DO UPDATE SET run = excluded.run, target = excluded.target,"
                 " post_id = excluded.post_id, category = excluded.category,"
                 " file = excluded.file, url = excluded.url, class = excluded.class,"
-                " message = excluded.message, hint = excluded.hint, at = excluded.at,"
+                " message = excluded.message, hint = excluded.hint,"
+                " retryable = excluded.retryable, at = excluded.at,"
                 " cursor = excluded.cursor, attempts = CASE WHEN EXISTS (SELECT 1 FROM files"
                 " WHERE files.key = excluded.key AND files.state = 'saved') THEN 1"
                 " ELSE failures.attempts + 1 END",
                 (run, item, target, post, category, file, _text.redact(url) if url else "",
-                 type(error).__name__, str(error), getattr(error, "hint", "") or "", at, cursor))
+                 type(error).__name__, str(error), getattr(error, "hint", "") or "",
+                 int(getattr(error, "retryable", False)), at, cursor))
             if isinstance(error, NotFound) and file:
                 sql.execute(INSERT_FILE, _file_values(FileRow(
                     item, target, file, post_id=post, category=category, state=GONE, at=at)))
@@ -1024,6 +1015,31 @@ class State(MutableMapping[str, Any]):
         return found[0] if found else 0
 
 
+def _require_version(sql: sqlite3.Connection) -> None:
+    """Refuse a home whose schema version in `meta` is missing or not today's.
+
+    Args:
+        sql: an open `flnd.db`.
+
+    Raises:
+        UsageError: the version is absent on a non-empty home, or not `VERSION`.
+    """
+    from flnd.errors import UsageError
+
+    row = sql.execute("SELECT value FROM meta WHERE key = 'version'").fetchone()
+    if row is not None and row[0] == VERSION:
+        return
+    if row is not None and row[0] != VERSION:
+        raise UsageError(f"home schema {row[0]!r} needs a newer flnd",
+                         hint="upgrade flnd, or open the home with the flnd that wrote it")
+    tables = sql.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    if "files" in {name for (name,) in tables}:
+        count = sql.execute("SELECT count(*) FROM files").fetchone()
+        if count and count[0]:
+            raise UsageError("home has no schema version",
+                             hint="upgrade flnd, or open the home with the flnd that wrote it")
+
+
 def _upgrade(sql: sqlite3.Connection) -> None:
     """Bring the tables of a `flnd.db` an earlier flnd made up to today's columns.
 
@@ -1056,6 +1072,8 @@ def _upgrade(sql: sqlite3.Connection) -> None:
         add("failures", "category", "TEXT NOT NULL DEFAULT ''")
     if "cursor" not in failures:
         add("failures", "cursor", "TEXT")
+    if "retryable" not in failures:
+        add("failures", "retryable", "INTEGER NOT NULL DEFAULT 0")
     if "request" in failures:
         sql.execute("DELETE FROM failures WHERE rowid NOT IN"
                     " (SELECT max(rowid) FROM failures GROUP BY key)")

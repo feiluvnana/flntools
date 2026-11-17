@@ -163,7 +163,8 @@ class FailuresTest(DbCase):
 
     def test_an_old_failures_table_loses_its_request_column(self):
         sql = sqlite3.connect(self.home.parent / "old.db")
-        sql.executescript(_home.SCHEMA.replace("    cursor TEXT\n", "    request TEXT\n")
+        sql.executescript(_home.SCHEMA.replace("    cursor TEXT\n);", "    cursor TEXT,\n"
+                          "    request TEXT\n);")
                           .replace("    category TEXT NOT NULL DEFAULT '', file", "    file"))
         for at in ("1", "2"):
             sql.execute("INSERT INTO failures (key, target, post_id, class, message, at, request)"

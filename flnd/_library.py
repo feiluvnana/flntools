@@ -860,7 +860,8 @@ def _failure(row: FailureRow) -> Failure:
     kind = getattr(errors, row.error, None)
     if not (isinstance(kind, type) and issubclass(kind, errors.Error)):
         kind = errors.Error
-    return Failure(row.target, kind(row.message, hint=row.hint, target=row.target),
+    return Failure(row.target, kind(row.message, hint=row.hint, target=row.target,
+                                   retryable=row.retryable),
                    post=row.post, path=Path(row.file) if row.file else None,
                    attempts=row.attempts, url=row.url, at=row.at)
 
