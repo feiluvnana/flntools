@@ -146,6 +146,11 @@ class ExtractTest(ArchiveCase):
         self.assertEqual(sorted(p.name for p in folder.iterdir()), ["a.txt"])
         self.assertFalse((self.root / ".post.unpack").exists())
 
+    def test_windows_reserved_names_are_refused(self) -> None:
+        archive = self.zip_with({"CON/data.txt": b"x"})
+        with self.assertRaisesRegex(SiteError, "unsafe archive path"):
+            _unpack.extract(archive)
+
     def test_nested_archives_are_not_unpacked(self) -> None:
         inner = self.zip_with({"inner.txt": b"inner"}, name="inner.zip").read_bytes()
         folder = _unpack.extract(self.zip_with({"nested.zip": inner}))
@@ -169,7 +174,8 @@ class ExtractTest(ArchiveCase):
         with _tools.fake({"7zz": tool}):
             folder = _unpack.extract(archive, password="pw")
         self.assertEqual((folder / "a.txt").read_bytes(), b"secret")
-        self.assertEqual(tool.calls[0][:3], ("x", "-y", "-ppw"))
+        self.assertEqual(tool.calls[-1][:3], ("x", "-y", "-p"))
+        self.assertNotIn("pw", tool.calls[-1])
 
     def test_a_7z_goes_to_7zip_and_is_verified(self) -> None:
         archive = self.root / "made.7z"

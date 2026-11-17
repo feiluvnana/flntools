@@ -75,6 +75,7 @@ class Tool:
         *args: str | os.PathLike[str],
         check: bool = True,
         timeout: float | None = DEFAULT_TIMEOUT,
+        input: str | bytes | None = None,
     ) -> Result:
         """Run with `args`; raise `RunError` when `check` and the exit is non-zero.
 
@@ -82,6 +83,7 @@ class Tool:
             *args: argv tail after the program path.
             check: raise on a non-zero exit when True.
             timeout: seconds before kill; None waits forever.
+            input: bytes or text for standard input; None sends none.
 
         Returns:
             Exit status and output.
@@ -97,7 +99,7 @@ class Tool:
         try:
             done = subprocess.run(
                 argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=timeout, check=False,
+                timeout=timeout, check=False, input=input,
             )
         except FileNotFoundError as error:
             raise _missing(argv[0]) from error

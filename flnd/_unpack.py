@@ -1,36 +1,6 @@
-"""Safe archive extraction: an untrusted zip, 7z, RAR or tar unpacked beside itself, or not at all.
+"""Unpack zip, 7z, RAR and tar beside the archive after listing and safety checks.
 
-A library module: it imports only the stdlib, the tool runner (`flnd._tools`, for 7-Zip) and
-flnd's error classes. It offers:
-- `is_archive(path)`: whether a file's name marks it as an archive (`extract` then reads its
-  first bytes, since a name can lie);
-- `folder(path)`: the folder an archive extracts into, its name without the archive suffix;
-- `extract(path, password=…, limits=…)`: unpack it there, refusing any entry that would escape
-  the folder or any archive past `Limits`, and return the folder.
-
-An archive is extracted into a folder of its own name beside it: `loi-5930.7z` fills
-`loi-5930/`. Who calls it in flnd: the unpack step. The step chain (`flnd._steps`) calls
-`extract` on a downloaded `.zip`, `.7z`, `.rar` or `.tar*` (or any file its source gave a
-password) once the archive's history row is written; `--compress` also removes the archive
-after a verified extract (flnddocs/media).
-
-How `extract` goes:
-1. Read the first bytes to tell the format; a name can lie (loi serves 7z under `.zip`).
-2. List every entry without writing anything, and refuse the archive when an entry would land
-   outside the folder (`../`, `/abs`, `C:`), is a link of any kind, or when the entries pass
-   `Limits` (a zip bomb: too big, too many, or too compressed).
-3. Extract into a hidden staging folder beside the archive, `.<name>.unpack`. zip and tar are
-   read in Python, entry by entry in 1 MiB pieces; 7z, RAR and encrypted zips go to 7-Zip.
-4. Verify: every file entry exists in the stage, at the size the listing gave.
-5. Move the stage into place: renamed when the folder is new, else file by file over it.
-
-Any failure removes the stage, so a wrong password or a damaged archive never leaves half a
-folder, and raises: the archive stays where it is and its row records `failed`.
-
-Rules a change must keep:
-- nothing is written before the listing has passed every entry;
-- every 7-Zip call puts `--` before the archive's path and passes the password as one argument,
-  so neither is ever read as a switch.
+7-Zip passwords go on standard input, never on argv. See the unpack step in the job chain.
 """
 
 from __future__ import annotations
@@ -48,7 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import IO, Literal
 
 from flnd import _tools
-from flnd.errors import SiteError
+from flnd.errors import DiskError, SiteError
 
 __all__ = ["Limits", "extract", "folder", "is_archive"]
 
@@ -59,6 +29,11 @@ Kind = Literal["file", "dir"]
 SUFFIXES = (".zip", ".7z", ".rar", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz",
             ".txz")
 DRIVE = re.compile(r"^[A-Za-z]:")
+WIN_RESERVED = frozenset({
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+})
 # Entries are copied in pieces of this size, so a 20 GB member never sits in memory.
 CHUNK = 1024 * 1024
 # The staging folder's suffix: `.<folder>.unpack`, hidden, beside the archive.
@@ -216,10 +191,17 @@ def _entries(path: Path, kind: str, *, password: str | None) -> list[Entry]:
         SiteError: the archive can't be read, has a link, or needs a password it wasn't given.
     """
     if kind == "zip":
+        if _sevenzip_zip(path, password):
+            return _ls_7z(path, password=password)
         try:
             with zipfile.ZipFile(path) as zf:
-                return [Entry(i.filename, i.file_size, "dir" if i.is_dir() else "file")
-                        for i in zf.infolist()]
+                out: list[Entry] = []
+                for info in zf.infolist():
+                    if _zip_link(info):
+                        raise SiteError(f"{path.name}: unsafe zip entry {info.filename!r}")
+                    out.append(Entry(info.filename, info.file_size,
+                                       "dir" if info.is_dir() else "file"))
+                return out
         except zipfile.BadZipFile as error:
             raise SiteError(f"{path.name}: {error}") from error
     if kind == "tar":
@@ -256,6 +238,12 @@ def _safe_dest(dest: Path, member: str) -> Path:
     parts = PurePosixPath(norm).parts
     if any(p in ("..", "") for p in parts):
         raise SiteError(f"unsafe archive path {member!r}")
+    for part in parts:
+        stem = part.split(".", 1)[0].upper()
+        if stem in WIN_RESERVED:
+            raise SiteError(f"unsafe archive path {member!r}")
+        if os.name == "nt" and ":" in part:
+            raise SiteError(f"unsafe archive path {member!r}")
     target = dest / Path(*parts)
     if not os.path.abspath(target).startswith(os.path.abspath(dest) + os.sep):
         raise SiteError(f"archive path escapes its folder: {member!r}")
@@ -345,7 +333,7 @@ def _unpack_zip(path: Path, dest: Path, *, password: str | None) -> None:
 
 
 def _unpack_tar(path: Path, dest: Path) -> None:
-    """Extract a tar (plain or compressed) into `dest`, file by file.
+    """Extract a tar (plain or compressed) into `dest` with the data filter.
 
     Args:
         path: the tar.
@@ -353,20 +341,30 @@ def _unpack_tar(path: Path, dest: Path) -> None:
 
     Raises:
         SiteError: the tar is damaged.
+        DiskError: the disk refused a write.
     """
     try:
-        with tarfile.open(path) as tf:
-            for m in tf:
-                target = _safe_dest(dest, m.name)
-                if m.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                stream = tf.extractfile(m)
-                if stream is not None:
-                    _save(stream, target)
-    except (tarfile.TarError, *DAMAGED) as error:
+        shutil.unpack_archive(path, dest, filter="data")
+    except (tarfile.TarError, *DAMAGED, shutil.ReadError) as error:
         raise SiteError(f"{path.name}: {error}") from error
+    except OSError as error:
+        raise DiskError.of(error, dest) from error
+
+
+def _zip_link(info: zipfile.ZipInfo) -> bool:
+    """True when a zip entry is a symbolic link (Unix mode in external attributes)."""
+    mode = (info.external_attr >> 16) & 0o170000
+    return mode == 0o120000
+
+
+def _7z_password_args(password: str | None) -> tuple[str, ...]:
+    """7-Zip password argv tail: `-p` alone when a password is set, else `-p` with no value."""
+    return ("-p",) if password else (f"-p{''}",)
+
+
+def _7z_password_input(password: str | None) -> str | None:
+    """What goes to 7-Zip's standard input for the password, or None when there is none."""
+    return password if password else None
 
 
 def _save(stream: IO[bytes], target: Path) -> None:
@@ -398,9 +396,9 @@ def _ls_7z(path: Path, *, password: str | None) -> list[Entry]:
         MissingError: 7-Zip is not installed.
     """
     tool = _tools.sevenzip()
-    # `-p` with an empty value means "no password": 7-Zip fails instead of asking for one.
     try:
-        res = tool.run("l", "-slt", f"-p{password or ''}", "--", str(path))
+        res = tool.run("l", "-slt", *_7z_password_args(password), "--", str(path),
+                       input=_7z_password_input(password))
     except _tools.RunError as error:
         raise _failed(path, error) from error
     entries: list[Entry] = []
@@ -455,7 +453,8 @@ def _unpack_7z(path: Path, dest: Path, *, password: str | None) -> None:
     """
     tool = _tools.sevenzip()
     try:
-        tool.run("x", "-y", f"-p{password or ''}", f"-o{dest}", "--", str(path))
+        tool.run("x", "-y", *_7z_password_args(password), f"-o{dest}", "--", str(path),
+                 input=_7z_password_input(password))
     except _tools.RunError as error:
         raise _failed(path, error) from error
 
@@ -490,7 +489,7 @@ def _verify(stage: Path, entries: list[Entry], name: str) -> None:
         try:
             size = written.stat().st_size
         except OSError as error:
-            raise SiteError(f"{name}: {entry.name!r} was not extracted") from error
+            raise DiskError.of(error, written) from error
         if entry.size is not None and size != entry.size:
             raise SiteError(f"{name}: {entry.name!r} came out {size} bytes, not {entry.size}")
 
