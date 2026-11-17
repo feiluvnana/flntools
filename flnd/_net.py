@@ -691,8 +691,8 @@ class Limits:
             bucket = self._bucket(host)
             if bucket is not None:
                 await bucket.take(stop)
-            yield Place(None, 0, 0.0)
-            return
+                yield Place(None, 0, 0.0)
+                return
         cap = self._caps.get(host)
         if cap is None:
             cap = self._caps[host] = Cap(self.cap, most=self._most(host))
@@ -737,12 +737,11 @@ class Limits:
         Returns:
             Its bucket; None for a host that isn't paced, or when nothing is.
         """
-        if not self._paced(host):
+        if not self.rate or not self._paced(host):
             return None
-        rate = self.rate if self.rate is not None else 1.0
         bucket = self._buckets.get(host)
         if bucket is None:
-            bucket = self._buckets[host] = Bucket(rate)
+            bucket = self._buckets[host] = Bucket(self.rate)
         return bucket
 
 
