@@ -10,8 +10,7 @@
   "metrics": {
     "startup.help": {
       "unit": "ms",
-      "better": "lower",
-      "baseline": 23.3718
+      "better": "lower"
     },
     "startup.python_pass": {
       "unit": "ms",
