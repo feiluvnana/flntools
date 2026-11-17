@@ -45,12 +45,12 @@ import sqlite3
 import struct
 import subprocess
 import sys
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from flnd import _files
+import flncore.browser as _browser
 from flnd._ui import ui
 from flnd.errors import LoginError, UsageError
 
@@ -160,136 +160,8 @@ def _real_home() -> Path:
 # or the browser, never a cookie's value. An unknown browser name is a `UsageError`.
 
 
-class Jar:
-    """An immutable collection of cookies: filter it, read it by name, send or save it.
-
-        jar = cookies.load("cookies.txt").filter(domains="example.com")
-        jar["sessionid"], "sessionid" in jar, len(jar)
-        for cookie in jar:
-            print(cookie["name"], cookie["domain"])
-
-    Args:
-        cookies: the cookies, as dicts in Playwright's shape; each needs a `name` and a `value`,
-            and is copied, so changing the dict afterwards doesn't change the jar. Empty by default.
-
-    Raises:
-        LoginError: a cookie isn't a dict, or has no `name` or `value`.
-
-    Iterating gives a copy of each cookie, in the jar's order. A jar may hold two cookies of the
-    same name for different domains or paths; `[name]` and `header` follow the jar's order then.
-    """
-
-    __slots__ = ("_cookies",)
-
-    def __init__(self, cookies: Iterable[Cookie] = ()):
-        kept = []
-        for index, cookie in enumerate(cookies):
-            if not isinstance(cookie, dict) or "name" not in cookie or "value" not in cookie:
-                raise LoginError(f"cookie {index} needs a name and a value")
-            kept.append(dict(cookie))
-        self._cookies: tuple[Cookie, ...] = tuple(kept)
-
-    def filter(
-        self, *, domains: str | Iterable[str] | None = None, names: Iterable[str] | None = None
-    ) -> Jar:
-        """A jar of only the cookies for `domains` and subdomains, and of only those `names`.
-
-        A cookie belongs to a domain when its own domain, without a leading dot and case, is
-        that domain or ends with `.` plus it: `.www.example.com` belongs to `example.com`, but
-        `notexample.com` doesn't. The order of the jar is kept.
-
-        Args:
-            domains: one domain or several; `None` keeps every domain.
-            names: the cookie names to keep (a single string is one name); `None` keeps every
-                name.
-
-        Returns:
-            A new jar; this one is unchanged.
-        """
-        if domains is None:
-            wanted_domains: tuple[str, ...] | None = None
-        elif isinstance(domains, str):
-            wanted_domains = (domains,)
-        else:
-            wanted_domains = tuple(domains)
-        if names is None:
-            wanted: set[str] | None = None
-        elif isinstance(names, str):
-            wanted = {names}
-        else:
-            wanted = set(names)
-        return Jar(
-            cookie for cookie in self._cookies
-            if (wanted_domains is None
-                or any(_belongs(str(cookie.get("domain", "")), dom) for dom in wanted_domains))
-            and (wanted is None or cookie["name"] in wanted)
-        )
-
-    @property
-    def header(self) -> str:
-        """The value of a `Cookie:` request header for the whole jar, in the jar's order."""
-        return "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in self._cookies)
-
-    @property
-    def list(self) -> list[Cookie]:
-        """The cookies as a new list of new dicts, which the caller may change freely."""
-        return [dict(cookie) for cookie in self._cookies]
-
-    def save(self, dest: PathLike) -> Path:
-        """Write the jar as a Netscape `cookies.txt` with owner-only access, returning path.
-
-            jar.save(".cookies/example.txt")
-
-        Args:
-            dest: the file to write; its folders are created when missing, and an existing file
-                is replaced.
-
-        Returns:
-            `dest`, as a `Path`.
-
-        Raises:
-            LoginError: a cookie holds a tab (outside its value) or a line break, which a
-                Netscape file can't hold; nothing is written then.
-            OSError: the file can't be written.
-
-        The file is replaced in one step with mode 0600, so a crash never leaves half a file.
-        Netscape files have no `sameSite`, so `load` reads every cookie back as "Lax".
-        """
-        path = Path(dest)
-        text = _netscape_text(self._cookies)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Mode 0600: the file is a login. The atomic write means a reader never sees half a file.
-        with _files.part(path) as held:
-            if os.name != "nt":
-                os.chmod(held.fd, 0o600)
-            held.write(text.encode("utf-8"))
-        return path
-
-    def __getitem__(self, name: str) -> str:
-        """The value of the first cookie named `name`; KeyError when there is none."""
-        for cookie in self._cookies:
-            if cookie["name"] == name:
-                return str(cookie["value"])
-        raise KeyError(name)
-
-    def __contains__(self, name: object) -> bool:
-        return any(cookie["name"] == name for cookie in self._cookies)
-
-    def __iter__(self) -> Iterator[Cookie]:
-        return iter([dict(cookie) for cookie in self._cookies])
-
-    def __len__(self) -> int:
-        return len(self._cookies)
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Jar):
-            return NotImplemented
-        return self._cookies == other._cookies
-
-    def __repr__(self) -> str:
-        # Names only: a repr ends up in tracebacks and logs, and a value is a login.
-        names = list(dict.fromkeys(str(cookie["name"]) for cookie in self._cookies))
-        return f"Jar({', '.join(names)})"
+Jar = _browser.Jar
+Jar._error_type = LoginError
 
 
 def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
@@ -651,12 +523,6 @@ def _open_copy(database: Path) -> Iterator[sqlite3.Connection]:
         yield dest
     finally:
         dest.close()
-
-
-def _belongs(cookie_domain: str, domain: str) -> bool:
-    host = cookie_domain.lstrip(".").lower()
-    wanted = domain.lstrip(".").lower()
-    return host == wanted or host.endswith("." + wanted)
 
 
 def _cookie(name: str, value: str, domain: str, path: str, expires: int,
@@ -1087,40 +953,3 @@ def _json_cookie(entry: Any, index: int) -> Cookie:
         str(entry["name"]), str(entry["value"]), str(entry["domain"]),
         str(entry.get("path") or "/"), exp, entry.get("secure"), entry.get("httpOnly"), same_site,
     )
-
-
-def _netscape_text(jar: Iterable[Cookie]) -> str:
-    """The jar as a Netscape file; a LoginError names the cookie if one cannot be written.
-
-    Args:
-        jar: the cookies to write, in order.
-
-    Returns:
-        The file's text: a header line, then one line per cookie, ending in a newline.
-
-    Raises:
-        LoginError: a field holds a tab (the value may) or any field a line break, which would
-            make the file read back as different cookies.
-    """
-    lines = ["# Netscape HTTP Cookie File"]
-    for cookie in jar:
-        domain = str(cookie.get("domain", ""))
-        fields = [
-            (_HTTP_ONLY if cookie.get("httpOnly") else "") + domain,
-            # The "include subdomains" flag: a leading dot means the cookie is a domain cookie.
-            "TRUE" if domain.startswith(".") else "FALSE",
-            str(cookie.get("path") or "/"),
-            "TRUE" if cookie.get("secure") else "FALSE",
-            # Netscape files write a session cookie's expiry as 0.
-            str(max(int(-1 if (exp := cookie.get("expires")) is None else exp), 0)),
-            str(cookie["name"]),
-            str(cookie["value"]),
-        ]
-        # A tab before the value or any line break would make the file read back differently.
-        if any("\t" in field for field in fields[:-1]) or any(m in "".join(fields) for m in "\r\n"):
-            name = cookie["name"]
-            raise LoginError(
-                f"cookie {name!r} for {domain} has a tab or newline Netscape cannot hold"
-            )
-        lines.append("\t".join(fields))
-    return "\n".join(lines) + "\n"

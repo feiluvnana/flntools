@@ -296,11 +296,6 @@ WORD = re.compile(r"[A-Za-z_]\w*")
 # when nothing in flnd/ could use it instead. The list may only shrink: a listed name that
 # becomes used, or goes, fails `test_no_stale_allowance`.
 CALLED_FROM_OUTSIDE: dict[str, str] = {
-    "flnd/_ui.py:_RowColumn.render": "Rich calls a progress column's `render` for each task",
-    "flnd/_net.py:fake": "the HTTP library's test seam: a caller's tests answer requests in a "
-                         "block, through state the request path reads; flnd's own tests use it",
-    "flnd/_tools.py:fake": "the tools library's test seam: a caller's tests answer program runs "
-                           "in a block, through state `run` reads; flnd's own tests use it",
     "flnd/_run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
     "flnd/_vault.py:Keychain": "tests/test_keychain.py exercises the OS keychain path",

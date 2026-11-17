@@ -27,7 +27,7 @@ dependencies = [
 flnd = "flnd.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["flnd"]
+packages = ["flncore", "flnd"]
 
 [dependency-groups]
 # The tools `make` runs: ruff for `make lint`, pdoc for `make docs`, and pyright for `make type`.

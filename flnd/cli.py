@@ -124,7 +124,7 @@ def exit_code(error: BaseException | None) -> int:
     if isinstance(error, KeyboardInterrupt):
         return STOPPED
     for kind in type(error).__mro__:
-        if kind.__module__ == "flnd.errors" and kind.__name__ in CODES:
+        if kind.__module__ in ("flnd.errors", "flncore.errors") and kind.__name__ in CODES:
             return CODES[kind.__name__]
     return BROKE
 

@@ -29,6 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FLND = ROOT / "flnd"
+CORE = ROOT / "flncore"
 
 # Rule 3: everything cli.py may import from flnd, besides the toolkit.
 CLI_ALLOWED = {"flnd", "flnd.sources._manifest"}
@@ -95,6 +96,16 @@ def source_allowed(name: str) -> bool:
 
 
 class LayersTest(unittest.TestCase):
+    def test_flncore_imports_nothing_from_flnd(self):
+        # Rule 0: flncore is a standalone package and imports nothing from flnd.
+        if not CORE.exists():
+            return
+        files = sorted(CORE.rglob("*.py"))
+        self.assertTrue(files)
+        for path in files:
+            with self.subTest(file=path.name):
+                self.assertEqual(sorted(flnd_imports(path)), [])
+
     def test_a_source_imports_only_flnd_source(self):
         files = sorted((FLND / "sources").rglob("*.py"))
         self.assertTrue(files)

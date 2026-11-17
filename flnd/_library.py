@@ -186,7 +186,7 @@ class Flnd:
             ...     fl.download("ins:example_user", when="tomorrow")
             Traceback (most recent call last):
             ...
-            flnd.errors.UsageError: when takes a year (2026), a month (2026-06), ...
+            flncore.errors.UsageError: when takes a year (2026), a month (2026-06), ...
         """
         found = _config(self.home)
         span = _when(found.when if when is None else when)
@@ -220,11 +220,11 @@ class Flnd:
 
         Example:
             >>> import flnd
-            >>> with flnd.open("example-home") as fl:
+            >>> with flnd.open("example-home") as fl:  # doctest: +ELLIPSIS
             ...     fl.follow("zzz:example_user")
             Traceback (most recent call last):
             ...
-            flnd.errors.UsageError: unknown source 'zzz'. Sources: tik, fbk, ins, twt, loi, tlg, mht
+            flncore.errors.UsageError: unknown source 'zzz'. Sources: ...
         """
         found = _config(self.home)
         span = _when(found.when if when is None else when)
@@ -329,7 +329,7 @@ class Flnd:
             ...     fl.unfollow("ins:example_user")
             Traceback (most recent call last):
             ...
-            flnd.errors.UsageError: ins:example_user: not a known target; download it first
+            flncore.errors.UsageError: ins:example_user: not a known target; download it first
         """
         return self._engine().target_sync(self._resolve(targets), enabled=False)
 
@@ -463,7 +463,7 @@ class Flnd:
             ...     fl.login("ins", "netscape")
             Traceback (most recent call last):
             ...
-            flnd.errors.UsageError: ins logs in by a browser (chrome, ...) or a cookie file's ...
+            flncore.errors.UsageError: ins logs in by a browser (chrome, ...) or a cookie file's ...
         """
         from flnd._home import BROWSERS
 

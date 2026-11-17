@@ -155,7 +155,7 @@ class DigTest(unittest.TestCase):
 
     def test_a_bad_path_raises_a_source_error(self):
         for path in ("data[x]", "a..b", "a.", "a[1", "..[novalue]"):
-            with self.subTest(path), self.assertRaises(SourceError):
+            with self.subTest(path), self.assertRaises(Changed):
                 _html.dig(self.PAGE, path)
 
     def test_flnd_source_dig_is_this_one(self):

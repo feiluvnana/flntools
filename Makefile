@@ -19,7 +19,7 @@ setup:    ; $(UV) sync --python $(PY) --all-extras
 # While set, flnd refuses to read or copy a real browser profile (tests/no_profiles.py).
 test: export FLND_TEST_NO_PROFILES = 1
 test:     ; $(RUN) python -m unittest discover -s tests $(ARGS)
-lint:     ; $(RUN) ruff check flnd tests
+lint:     ; $(RUN) ruff check flnd flncore tests
 check: lint test
 api:      ; $(RUN) python tests/api_snapshot.py --write
 # The data `flnd --help` and target resolution read instead of importing every source; run it
@@ -36,6 +36,6 @@ type:     ; $(RUN) pyright flnd/__init__.py flnd/source.py flnd/testing.py
 # `make try ARGS="ins:example_user --only reels"`. Log in there first for a site that needs it
 # (`uv run flnd --home .try login ins chrome`); `make clean` removes it.
 try:      ; $(RUN) flnd --home .try download --dry $(ARGS)
-dist:     ; $(RUN) --group dist pyinstaller --onefile --noconfirm --name flnd --collect-submodules flnd --specpath build --workpath build/pyinstaller flnd/__main__.py
+dist:     ; $(RUN) --group dist pyinstaller --onefile --noconfirm --name flnd --collect-submodules flnd --collect-submodules flncore --specpath build --workpath build/pyinstaller flnd/__main__.py
 clean:    ; $(RUN) python -c "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
 .PHONY: setup test lint check api manifest cdn-real docs type try dist clean

@@ -103,6 +103,9 @@ class Stop:
             return "now"
         return "soon" if self.soon.is_set() else ""
 
+    def __repr__(self) -> str:
+        return f"Stop(stage={self.stage!r})"
+
 
 class Run:
     """One download, follow or sync: iterate it for its events, or `wait()` for its `Report`.

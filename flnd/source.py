@@ -963,7 +963,7 @@ class Cookies(Login):
         Example:
             >>> cookies("sid").start(None, "phone")
             Traceback (most recent call last):
-            flnd.errors.UsageError: phone: cookies are read from a browser or a cookies.txt file
+            flncore.errors.UsageError: phone: cookies are read from a browser or a cookies.txt file
         """
         raise UsageError(f"{how}: cookies are read from a browser or a cookies.txt file")
 

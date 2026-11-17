@@ -45,9 +45,11 @@ ROOT = Path(__file__).resolve().parent.parent
 # against, the library a script imports, and the kit a source is tested with.
 API_MODULES = ("flnd.source", "flnd", "flnd.testing")
 API_FILE = ROOT / "tests" / "data" / "api.txt"
+CORE_API_MODULES = ("flncore", "flncore.testing")
+CORE_API_FILE = ROOT / "tests" / "data" / "flncore-api.txt"
 # Classes whose members are listed: the project's own. A base from the stdlib (MutableMapping,
 # NamedTuple, Exception) adds its own methods, which aren't this project's API.
-PROJECT_PACKAGES = ("flnd",)
+PROJECT_PACKAGES = ("flnd", "flncore")
 
 
 class ApiName(NamedTuple):
@@ -76,9 +78,10 @@ class ApiName(NamedTuple):
 def write_api() -> None:
     """Write `api_text()` to `tests/data/api.txt`, with Unix line ends on every OS, so the file never differs by OS."""
     API_FILE.write_text(api_text(), encoding="utf-8", newline="\n")
+    CORE_API_FILE.write_text(api_text(CORE_API_MODULES), encoding="utf-8", newline="\n")
 
 
-def api_text() -> str:
+def api_text(modules: tuple[str, ...] = API_MODULES) -> str:
     """The API snapshot: one line per public name, sorted, as `tests/data/api.txt` holds it.
 
         flnd.db.Store.keys(prefix: str = '') -> KeysView[str]
@@ -88,10 +91,10 @@ def api_text() -> str:
     Functions and methods show their signature without `self`, classes their constructor's, errors
     their bases, and the rest their kind and type. Annotations are shown as written in the source.
     """
-    return "".join(f"{name.line}\n" for name in api_names())
+    return "".join(f"{name.line}\n" for name in api_names(modules))
 
 
-def api_names() -> list[ApiName]:
+def api_names(modules: tuple[str, ...] = API_MODULES) -> list[ApiName]:
     """Every public name of `API_MODULES`, sorted by name.
 
         names = {name.name: name for name in api_names()}
@@ -107,7 +110,7 @@ def api_names() -> list[ApiName]:
         One `ApiName` per name; a name reached twice (a class re-exported) is listed once.
     """
     names: dict[str, ApiName] = {}
-    for module_name in API_MODULES:
+    for module_name in modules:
         _add(module_name, importlib.import_module(module_name), names)
     # Errors show their bases by public name, which is known only once everything is collected.
     public = {}

@@ -1,6 +1,7 @@
 flnd: module
 flnd.Blocked(flnd.SiteError)
 flnd.Blocked.hint: attribute
+flnd.Blocked.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.Blocked.response: attribute
 flnd.Blocked.retryable: attribute
 flnd.Blocked.status: attribute
@@ -8,6 +9,7 @@ flnd.Blocked.target: attribute
 flnd.Blocked.wait: attribute
 flnd.Changed(flnd.SiteError)
 flnd.Changed.hint: attribute
+flnd.Changed.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.Changed.response: attribute
 flnd.Changed.retryable: attribute
 flnd.Changed.status: attribute
@@ -21,19 +23,22 @@ flnd.Checked.resized: attribute -> tuple[Record, ...]
 flnd.Checked.unknown: attribute -> tuple[Path, ...]
 flnd.DiskError(flnd.Error)
 flnd.DiskError.hint: attribute
+flnd.DiskError.of(error: OSError, *, path: object = None) -> DiskError
+flnd.DiskError.path: attribute
 flnd.DiskError.retryable: attribute
 flnd.DiskError.target: attribute
 flnd.Error(Exception)
 flnd.Error.hint: attribute
+flnd.Error.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.Error.retryable: attribute
 flnd.Error.target: attribute
 flnd.Event: Union
-flnd.Failed(target: flnd.source.Target, error: flnd.errors.Error, post: str = '', path: pathlib.Path | None = None)
+flnd.Failed(target: flnd.source.Target, error: flncore.errors.Error, post: str = '', path: pathlib.Path | None = None)
 flnd.Failed.error: attribute -> Error
 flnd.Failed.path: attribute -> Path | None
 flnd.Failed.post: attribute -> str
 flnd.Failed.target: attribute -> Target
-flnd.Failure(target: str, error: flnd.errors.Error, post: str = '', path: pathlib.Path | None = None, attempts: int = 1, url: str = '', at: str = '')
+flnd.Failure(target: str, error: flncore.errors.Error, post: str = '', path: pathlib.Path | None = None, attempts: int = 1, url: str = '', at: str = '')
 flnd.Failure.at: attribute -> str
 flnd.Failure.attempts: attribute -> int
 flnd.Failure.error: attribute -> Error
@@ -80,14 +85,17 @@ flnd.Login.source: attribute -> str
 flnd.Login.state: attribute -> str
 flnd.LoginError(flnd.Error)
 flnd.LoginError.hint: attribute
+flnd.LoginError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.LoginError.retryable: attribute
 flnd.LoginError.target: attribute
 flnd.NetworkError(flnd.Error)
 flnd.NetworkError.hint: attribute
+flnd.NetworkError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.NetworkError.retryable: attribute
 flnd.NetworkError.target: attribute
 flnd.NotFound(flnd.SiteError)
 flnd.NotFound.hint: attribute
+flnd.NotFound.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.NotFound.response: attribute
 flnd.NotFound.retryable: attribute
 flnd.NotFound.status: attribute
@@ -144,6 +152,7 @@ flnd.Saved.size: attribute -> int
 flnd.Saved.target: attribute -> Target
 flnd.SiteError(flnd.Error)
 flnd.SiteError.hint: attribute
+flnd.SiteError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.SiteError.response: attribute
 flnd.SiteError.retryable: attribute
 flnd.SiteError.status: attribute
@@ -156,6 +165,7 @@ flnd.Skipped.reason: attribute -> str
 flnd.Skipped.target: attribute -> Target
 flnd.SourceError(flnd.Error)
 flnd.SourceError.hint: attribute
+flnd.SourceError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.SourceError.retryable: attribute
 flnd.SourceError.target: attribute
 flnd.Status(command: str, started: str, ended: str = '', saved: int = 0, failures: tuple[flnd._events.Failure, ...] = ())
@@ -171,8 +181,11 @@ flnd.Target.query: field -> bool
 flnd.Target.source: field -> str
 flnd.Target.value: field -> str
 flnd.ToolError(flnd.Error)
+flnd.ToolError.command: attribute
 flnd.ToolError.hint: attribute
+flnd.ToolError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.ToolError.retryable: attribute
+flnd.ToolError.tail: attribute
 flnd.ToolError.target: attribute
 flnd.Tracked(target: flnd.source.Target, follow: bool = False, at: str = '', files: int = 0, size: int = 0, seen: int = 0, categories: dict[str, str] = <factory>, query: bool = False)
 flnd.Tracked.at: attribute -> str
@@ -185,6 +198,7 @@ flnd.Tracked.size: attribute -> int
 flnd.Tracked.target: attribute -> Target
 flnd.UsageError(flnd.Error)
 flnd.UsageError.hint: attribute
+flnd.UsageError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.UsageError.retryable: attribute
 flnd.UsageError.target: attribute
 flnd.__version__: str
@@ -193,6 +207,7 @@ flnd.source: module
 flnd.source.API: int
 flnd.source.Blocked(flnd.SiteError)
 flnd.source.Blocked.hint: attribute
+flnd.source.Blocked.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.source.Blocked.response: attribute
 flnd.source.Blocked.retryable: attribute
 flnd.source.Blocked.status: attribute
@@ -206,6 +221,7 @@ flnd.source.Category.name: attribute
 flnd.source.Category.newest_first: attribute
 flnd.source.Changed(flnd.SiteError)
 flnd.source.Changed.hint: attribute
+flnd.source.Changed.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.source.Changed.response: attribute
 flnd.source.Changed.retryable: attribute
 flnd.source.Changed.status: attribute
@@ -219,6 +235,7 @@ flnd.source.Cookies.start(site: Site, how: str, /) -> None
 flnd.source.DateLike: Union
 flnd.source.Error(Exception)
 flnd.source.Error.hint: attribute
+flnd.source.Error.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.source.Error.retryable: attribute
 flnd.source.Error.target: attribute
 flnd.source.Feed(*args, **kwargs)
@@ -241,14 +258,17 @@ flnd.source.Login.required: attribute
 flnd.source.Login.start(site: Site, how: str, /) -> None
 flnd.source.LoginError(flnd.Error)
 flnd.source.LoginError.hint: attribute
+flnd.source.LoginError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.source.LoginError.retryable: attribute
 flnd.source.LoginError.target: attribute
 flnd.source.NetworkError(flnd.Error)
 flnd.source.NetworkError.hint: attribute
+flnd.source.NetworkError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.source.NetworkError.retryable: attribute
 flnd.source.NetworkError.target: attribute
 flnd.source.NotFound(flnd.SiteError)
 flnd.source.NotFound.hint: attribute
+flnd.source.NotFound.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.source.NotFound.response: attribute
 flnd.source.NotFound.retryable: attribute
 flnd.source.NotFound.status: attribute
@@ -313,6 +333,7 @@ flnd.source.Site.warm(urls: Iterable[str]) -> None
 flnd.source.Site.warn(message: str, **fields: Any) -> None
 flnd.source.SiteError(flnd.Error)
 flnd.source.SiteError.hint: attribute
+flnd.source.SiteError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.source.SiteError.response: attribute
 flnd.source.SiteError.retryable: attribute
 flnd.source.SiteError.status: attribute
@@ -340,6 +361,7 @@ flnd.source.Source.unsupported: attribute -> ClassVar[Mapping[str, str]]
 flnd.source.Source.user_agent: attribute -> ClassVar[str | None]
 flnd.source.SourceError(flnd.Error)
 flnd.source.SourceError.hint: attribute
+flnd.source.SourceError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.source.SourceError.retryable: attribute
 flnd.source.SourceError.target: attribute
 flnd.source.Target(text: str, *, kind: str = '')
@@ -349,6 +371,7 @@ flnd.source.Target.source: field -> str
 flnd.source.Target.value: field -> str
 flnd.source.UsageError(flnd.Error)
 flnd.source.UsageError.hint: attribute
+flnd.source.UsageError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.source.UsageError.retryable: attribute
 flnd.source.UsageError.target: attribute
 flnd.source.cookies(*names: str, required: bool = False) -> Cookies

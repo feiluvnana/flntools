@@ -22,6 +22,7 @@ from flnd.engine import resolve
 from flnd.site import Listing
 from flnd.source import (
     API,
+    Changed,
     Cookies,
     File,
     Login,
@@ -578,7 +579,7 @@ class DigTest(unittest.TestCase):
         self.assertEqual(dig(self.PAGE, "data.user.edges[].node.id || alt"), [1, 2])
 
     def test_a_bad_bracket_is_a_source_error(self):
-        with self.assertRaisesRegex(SourceError, r"can't read '\[x\]'"):
+        with self.assertRaisesRegex(Changed, r"can't read '\[x\]'"):
             dig(self.PAGE, "data[x]")
 
 

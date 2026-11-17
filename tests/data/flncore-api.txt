@@ -1,0 +1,187 @@
+flncore: module
+flncore.Blocked(flncore.SiteError)
+flncore.Blocked.hint: attribute
+flncore.Blocked.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
+flncore.Blocked.response: attribute
+flncore.Blocked.retryable: attribute
+flncore.Blocked.status: attribute
+flncore.Blocked.target: attribute
+flncore.Blocked.wait: attribute
+flncore.Changed(flncore.SiteError)
+flncore.Changed.hint: attribute
+flncore.Changed.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
+flncore.Changed.response: attribute
+flncore.Changed.retryable: attribute
+flncore.Changed.status: attribute
+flncore.Changed.target: attribute
+flncore.DiskError(flncore.Error)
+flncore.DiskError.hint: attribute
+flncore.DiskError.of(error: OSError, *, path: object = None) -> DiskError
+flncore.DiskError.path: attribute
+flncore.DiskError.retryable: attribute
+flncore.DiskError.target: attribute
+flncore.Error(Exception)
+flncore.Error.hint: attribute
+flncore.Error.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
+flncore.Error.retryable: attribute
+flncore.Error.target: attribute
+flncore.Fake(start: float = 0.0)
+flncore.Fake.advance(seconds: float) -> None
+flncore.Fake.now: property -> float
+flncore.Fake.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
+flncore.Fake.slept: attribute -> list[float]
+flncore.Fake.wall: property -> float
+flncore.Loop()
+flncore.Loop.close() -> None
+flncore.Loop.here: property -> bool
+flncore.Loop.run(awaitable: Awaitable[R]) -> R
+flncore.Loop.running: property -> bool
+flncore.Loop.submit(awaitable: Awaitable[R]) -> concurrent.futures.Future[R]
+flncore.NetworkError(flncore.Error)
+flncore.NetworkError.hint: attribute
+flncore.NetworkError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
+flncore.NetworkError.retryable: attribute
+flncore.NetworkError.target: attribute
+flncore.NotFound(flncore.SiteError)
+flncore.NotFound.hint: attribute
+flncore.NotFound.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
+flncore.NotFound.response: attribute
+flncore.NotFound.retryable: attribute
+flncore.NotFound.status: attribute
+flncore.NotFound.target: attribute
+flncore.Part(dest: Path, path: Path, fd: int, size: int, *, resume: bool, digest: bool = False)
+flncore.Part.cut(size: int) -> None
+flncore.Part.dest: attribute
+flncore.Part.drop() -> None
+flncore.Part.fd: attribute
+flncore.Part.feed(data: bytes) -> None
+flncore.Part.flush() -> None
+flncore.Part.flush_note() -> None
+flncore.Part.head(count: int = 64) -> bytes
+flncore.Part.meta: property -> dict[str, Any]
+flncore.Part.mtime: attribute -> float | None
+flncore.Part.note(**fields: Any) -> None
+flncore.Part.path: attribute
+flncore.Part.reset() -> None
+flncore.Part.saved: attribute -> Saved | None
+flncore.Part.side: attribute
+flncore.Part.side_path: property -> Path
+flncore.Part.size: attribute
+flncore.Part.write(data: bytes, *, fed: bool = False) -> None
+flncore.Part.write_at(offset: int, data: bytes) -> None
+flncore.Run(work: Callable[[Callable[[Any], None], Stop], Any], *, name: str = 'run')
+flncore.Run.name: attribute
+flncore.Run.stop: attribute
+flncore.Run.wait() -> Any
+flncore.SiteError(flncore.Error)
+flncore.SiteError.hint: attribute
+flncore.SiteError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
+flncore.SiteError.response: attribute
+flncore.SiteError.retryable: attribute
+flncore.SiteError.status: attribute
+flncore.SiteError.target: attribute
+flncore.Stop()
+flncore.Stop.now: attribute
+flncore.Stop.soon: attribute
+flncore.Stop.stage: property -> str
+flncore.Stop.stop(*, now: bool = False) -> None
+flncore.Stop.suspended: attribute
+flncore.Stopped(KeyboardInterrupt)
+flncore.ToolError(flncore.Error)
+flncore.ToolError.command: attribute
+flncore.ToolError.hint: attribute
+flncore.ToolError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
+flncore.ToolError.retryable: attribute
+flncore.ToolError.tail: attribute
+flncore.ToolError.target: attribute
+flncore.UsageError(flncore.Error)
+flncore.UsageError.hint: attribute
+flncore.UsageError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
+flncore.UsageError.retryable: attribute
+flncore.UsageError.target: attribute
+flncore.ask(message: str, *, secret: bool = False, default: str | None = None) -> str
+flncore.choose(message: str, choices: Sequence[Any] | Mapping[str, Any], *, default: Any = None) -> Any
+flncore.confirm(message: str, *, default: bool = True) -> bool
+flncore.day(value: object) -> datetime.date | None
+flncore.dig: module
+flncore.dig.dig(data: Any, path: str) -> Any
+flncore.filename(name: str, *, fallback: str = 'untitled', max_bytes: int = 200) -> str
+flncore.log: module
+flncore.log.Group(owner: UI, title: str, *, drawn: bool = True)
+flncore.log.Group.add(label: str, *, total: float | None = None, unit: str | None = None) -> Row
+flncore.log.Group.drawn: attribute
+flncore.log.Group.title: attribute
+flncore.log.Row(label: str, total: float | None, group: Group, unit: str | None = None)
+flncore.log.Row.advance(n: float = 1) -> None
+flncore.log.Row.count: property, settable -> float
+flncore.log.Row.fail(reason: str | None = None) -> None
+flncore.log.Row.finish() -> None
+flncore.log.Row.label: attribute
+flncore.log.Row.part() -> Callable[[int, int | None], None]
+flncore.log.Row.raw: property -> TaskID
+flncore.log.Row.total: property, settable -> float | None
+flncore.log.UI()
+flncore.log.UI.Group(owner: UI, title: str, *, drawn: bool = True)
+flncore.log.UI.Group.add(label: str, *, total: float | None = None, unit: str | None = None) -> Row
+flncore.log.UI.Group.drawn: attribute
+flncore.log.UI.Group.title: attribute
+flncore.log.UI.Row(label: str, total: float | None, group: Group, unit: str | None = None)
+flncore.log.UI.Row.advance(n: float = 1) -> None
+flncore.log.UI.Row.count: property, settable -> float
+flncore.log.UI.Row.fail(reason: str | None = None) -> None
+flncore.log.UI.Row.finish() -> None
+flncore.log.UI.Row.label: attribute
+flncore.log.UI.Row.part() -> Callable[[int, int | None], None]
+flncore.log.UI.Row.raw: property -> TaskID
+flncore.log.UI.Row.total: property, settable -> float | None
+flncore.log.UI.debug(message: str = '', /, *args: Any, **fields: Any) -> None
+flncore.log.UI.error(message: str = '', /, *args: Any, **fields: Any) -> None
+flncore.log.UI.group(title: str = '', *, drawn: bool = True) -> Iterator[Group]
+flncore.log.UI.info(message: str = '', /, *args: Any, **fields: Any) -> None
+flncore.log.UI.level: property, settable -> Level
+flncore.log.UI.ok(message: str = '', /, *args: Any, **fields: Any) -> None
+flncore.log.UI.progress(label: str, *, total: float | None = None, unit: str | None = None, drawn: bool = True) -> Iterator[Row]
+flncore.log.UI.raw: property -> RichConsole
+flncore.log.UI.scope(*, color: str | bool | None = None, dest: IO[str] | None = None, width: int | None = None, level: Level | None = None) -> Iterator[UI]
+flncore.log.UI.warn(message: str = '', /, *args: Any, **fields: Any) -> None
+flncore.log.ui: UI
+flncore.now() -> float
+flncore.part(dest: str | os.PathLike[str], *, resume: bool = False, digest: bool = False) -> Iterator[Part]
+flncore.pause(seconds: float, *, stop: threading.Event | None = None) -> bool
+flncore.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
+flncore.testing: module
+flncore.testing.FakeClock(start: float = 0.0)
+flncore.testing.FakeClock.advance(seconds: float) -> None
+flncore.testing.FakeClock.now: property -> float
+flncore.testing.FakeClock.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
+flncore.testing.FakeClock.slept: attribute -> list[float]
+flncore.testing.FakeClock.wall: property -> float
+flncore.testing.Reply(status: int = 200, headers: list[tuple[str, str]] = <factory>, body: bytes = b'', chunks: Iterable[bytes] | None = None)
+flncore.testing.Reply.body: field -> bytes
+flncore.testing.Reply.chunks: field -> Iterable[bytes] | None
+flncore.testing.Reply.headers: field -> list[tuple[str, str]]
+flncore.testing.Reply.status: field -> int
+flncore.testing.Response(status: int, url: str, headers: Mapping[str, str], content: bytes = b'')
+flncore.testing.Response.content: field -> bytes
+flncore.testing.Response.headers: field -> Mapping[str, str]
+flncore.testing.Response.html: property -> Any
+flncore.testing.Response.json: property -> Any
+flncore.testing.Response.ok: property -> bool
+flncore.testing.Response.status: field -> int
+flncore.testing.Response.text: property -> str
+flncore.testing.Response.url: field -> str
+flncore.testing.TTY(initial_value='', newline='\n')
+flncore.testing.TTY.isatty() -> bool
+flncore.testing.Tool(path: Path, name: str)
+flncore.testing.Tool.name: field -> str
+flncore.testing.Tool.path: field -> Path
+flncore.testing.Tool.run(*args: str | os.PathLike[str], check: bool = True, timeout: float | None = 21600.0, input: str | bytes | None = None) -> Result
+flncore.testing.ToolResult(code: int, out: str, err: str, args: tuple[str, ...] = ())
+flncore.testing.ToolResult.args: field -> tuple[str, ...]
+flncore.testing.ToolResult.code: field -> int
+flncore.testing.ToolResult.err: field -> str
+flncore.testing.ToolResult.out: field -> str
+flncore.testing.fake_net(routes: Mapping[str, Any] | Callable[[Request], Any]) -> Iterator[None]
+flncore.testing.fake_tools(handlers: Mapping[str, Handler]) -> Iterator[None]
+flncore.use(replacement: C) -> Iterator[C]
+flncore.wall() -> float
