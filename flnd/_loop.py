@@ -1,4 +1,4 @@
-"""An asyncio event loop on a thread of its own, which plain threads hand coroutines to.
+"""One asyncio loop on a daemon thread; sync code uses `run` or `submit`.
 
 A library module: it imports only the stdlib, and any threaded program that needs async code
 (a browser driver, an async HTTP client) can use it. It offers:
