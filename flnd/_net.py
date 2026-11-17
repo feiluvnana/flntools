@@ -737,11 +737,12 @@ class Limits:
         Returns:
             Its bucket; None for a host that isn't paced, or when nothing is.
         """
-        if not self.rate or not self._paced(host):
+        if not self._paced(host):
             return None
+        rate = self.rate if self.rate is not None else 1.0
         bucket = self._buckets.get(host)
         if bucket is None:
-            bucket = self._buckets[host] = Bucket(self.rate)
+            bucket = self._buckets[host] = Bucket(rate)
         return bucket
 
 
@@ -1281,6 +1282,9 @@ class Client:
 
         Returns:
             The answer's headers.
+
+        Raises:
+            NetworkError: a 206's `Content-Range` does not match the part's resume offset.
         """
         if not resume or (held.size and held.meta.get("holes")):
             held.reset()
@@ -1289,7 +1293,12 @@ class Client:
         answer = await self._range(url, headers, f"bytes={offset}-", validator)
         try:
             status = answer.status
-            start = offset if status == 206 else 0
+            start = _range_start(answer.headers) if status == 206 else 0
+            if status == 206 and start != offset:
+                raise NetworkError(
+                    f"GET {_text.redact(url)}: Content-Range starts at {start}, not {offset}",
+                    retryable=True,
+                )
             total = _total_bytes(answer.headers, start)
             if status != 416:
                 if not start and held.size:
@@ -2041,6 +2050,23 @@ def _validator(headers: Mapping[str, str]) -> str | None:
     return headers.get("last-modified")
 
 
+def _range_start(headers: Mapping[str, str]) -> int:
+    """The byte a 206 answer's `Content-Range` says the body starts at, or 0 when missing.
+
+    Args:
+        headers: the answer's headers.
+
+    Returns:
+        The start offset from `Content-Range`, or 0 when the header is absent.
+    """
+    cr = headers.get("content-range", "")
+    if cr.startswith("bytes "):
+        span = cr[6:].split("/", 1)[0]
+        if "-" in span:
+            return int(span.partition("-")[0])
+    return 0
+
+
 def _total_bytes(headers: Mapping[str, str], offset: int) -> int | None:
     """The whole file's size, from `Content-Range`'s total or from where the answer starts plus
     its `Content-Length`.
@@ -2125,7 +2151,10 @@ def _retry_after(value: str | None) -> float | None:
         seconds = when.timestamp() - _time.wall()
     if not math.isfinite(seconds):
         return None
-    return min(max(0.0, seconds), MAX_BACKOFF)
+    # Retry-After: 0 still needs a pause, or the same host is hit in a tight loop.
+    if seconds <= 0:
+        seconds = 1.0
+    return min(seconds, MAX_BACKOFF)
 
 
 def _reset(headers: Mapping[str, str]) -> float | None:
