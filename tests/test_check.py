@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -102,42 +103,17 @@ class FixTest(CheckCase):
         self.assertNotIn("aaa:a.jpg", rows)
         self.assertEqual((rows["aaa:b.jpg"].size, rows["aaa:b.jpg"].hash),
                          (3, hashlib.sha256(b"cut").digest()))
-        adopted = rows["aaa:a/lost.jpg"]
-        self.assertEqual((adopted.target, adopted.path, adopted.kind), ("aaa:a", str(lost), "image"))
+        self.assertNotIn("aaa:a/lost.jpg", rows)
         with self.aged():
             again = self.check()
-        self.assertTrue(again.ok and not again.fixed)
+        self.assertEqual(again.unknown, (lost,))
+        self.assertFalse(again.ok and not again.fixed)
 
-    def test_an_orphan_a_failure_names_is_adopted_by_its_target_post_and_file(self):
+    def test_fix_refuses_when_media_is_missing(self):
         self.saved_two()
-        lost = self.orphan("9001_0.jpg")
-        with _home.open(self.home) as db:
-            db.fail(run=None, item="aaa:9001_0", target="aaa:a", error=flnd.NetworkError("cut"),
-                    post="9001", file=str(lost), url="https://cdn.example/9001.jpg")
-        with self.aged():
+        shutil.rmtree(self.home / _home.MEDIA)
+        with self.aged(), self.assertRaises(flnd.DiskError):
             self.check(fix=True)
-        row = self.rows()["aaa:9001_0"]
-        self.assertEqual((row.target, row.post_id, row.path), ("aaa:a", "9001", str(lost)))
-
-    def test_an_adopted_file_never_takes_another_files_key(self):
-        self.saved_two()
-        # `a/lost.jpg` is the key an orphan at media/aaa/a/lost.jpg would take.
-        with _home.open(self.home) as db:
-            db.save([_home.FileRow("aaa:a/lost.jpg", "aaa:a", str(self.path("b")), 6)])
-        self.orphan()
-        with self.aged():
-            self.check(fix=True)
-        self.assertIn("aaa:a/lost.jpg#2", self.rows())
-
-    def test_a_file_whose_row_was_lost_is_adopted_and_not_fetched_again(self):
-        self.saved_two()
-        with _home.open(self.home) as db:
-            db.drop(["aaa:a.jpg"])
-        with self.aged():
-            self.assertEqual(self.check(fix=True).unknown, (self.path("a"),))
-        self.requests.clear()
-        self.engine().download(["aaa:a"], categories="all")
-        self.assertEqual(self.requests, [])
 
 
 class LibraryAndCliTest(CheckCase):

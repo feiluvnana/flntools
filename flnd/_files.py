@@ -516,6 +516,7 @@ def _open(path: Path, *, wait: bool, resume: bool = False) -> tuple[int, int]:
     Args:
         path: the part.
         wait: wait for another holder (a small write) instead of raising `BusyError`.
+        resume: True for a download; blocks a fresh part when the final file already landed.
 
     Returns:
         The locked descriptor, and the size of what the part already held (0 for a new one).
