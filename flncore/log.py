@@ -200,12 +200,14 @@ class Item:
     def advance(self, n: float = 1) -> None:
         """Increment progress by `n`."""
         self.count += n
-        self.owner._item_updated(self)
+        if self.drawn and self.owner._live:
+            self.owner._item_updated(self)
 
     def note(self, text: str) -> None:
         """Set the text after the bar."""
         self._note = text
-        self.owner._item_updated(self)
+        if self.drawn and self.owner._live:
+            self.owner._item_updated(self)
 
     def ok(self, note: str = "") -> None:
         """Mark the item as successfully finished."""
@@ -250,7 +252,8 @@ class Item:
             self.count = float(fed)
             if total is not None:
                 self.total = float(total)
-            self.owner._item_updated(self)
+            if self.drawn and self.owner._live:
+                self.owner._item_updated(self)
         return callback
 
     def __enter__(self) -> Item:
@@ -371,15 +374,19 @@ class UI:
         self._journal: Journal | None = None
         self._live_tasks: dict[Any, Item] = {}
         self._live_count = 0
+        self._live = self._compute_live()
 
-    @property
-    def live(self) -> bool:
-        """Whether the screen is interactive and live bars should be drawn."""
+    def _compute_live(self) -> bool:
         if self._level == "quiet":
             return False
         file = self._console.file
         is_tty = getattr(file, "isatty", lambda: False)()
         return is_tty or bool(getattr(self._console, "_force_terminal", False))
+
+    @property
+    def live(self) -> bool:
+        """Whether the screen is interactive and live bars should be drawn."""
+        return self._live
 
     def _progress_enabled(self) -> bool:
         return self.live
@@ -398,6 +405,7 @@ class UI:
         if value not in LEVELS:
             raise ValueError(f"unknown ui level {value!r}; choose from {', '.join(LEVELS)}")
         self._level = value
+        self._live = self._compute_live()
 
     @property
     def raw(self) -> RichConsole:
@@ -698,16 +706,17 @@ class UI:
         level: Level | None = None,
     ) -> Iterator[UI]:
         """Inside the block, write to another destination, or with other colors, width or level."""
-        old_console, old_level = self._console, self._level
+        old_console, old_level, old_live = self._console, self._level, self._live
         try:
             self._console = self._make_console(
                 color=color, dest=dest, width=width, base=self._console,
             )
             if level is not None:
-                self.level = level
+                self._level = level
+            self._live = self._compute_live()
             yield self
         finally:
-            self._console, self._level = old_console, old_level
+            self._console, self._level, self._live = old_console, old_level, old_live
 
     @contextmanager
     def group(self, title: str = "", *, drawn: bool = True) -> Iterator[Group]:
