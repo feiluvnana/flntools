@@ -293,7 +293,7 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 | `site.handoff(until=…, message=…)` | ask a person to do a step in the browser window, such as a captcha |
 | `site.pause(seconds, reason)` | wait, as a page that needs time to settle does |
 | `site.back_off(reason, retry_after=…)` | wait out a block the site showed in its content: 30 s, 2 min, 8 min for the rounds in a row, then `Blocked` |
-| `site.cookies`, `site.secrets` | the login's cookies, and the source's encrypted secrets |
+| `site.cookies`, `site.secrets` | the login's cookies, and the source's secrets, kept in the home's vault |
 | `site.state` | a small store of the source's own, kept between runs |
 | `site.client` | what the source's `connect` hook gave, such as Telegram's client |
 | `site.time` | `--when`, for a site that can query a date range itself |

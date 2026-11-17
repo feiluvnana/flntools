@@ -174,11 +174,10 @@ line counts them. It exits 0 when history and disk agree, and 1 when they don't.
 
 - a **missing** file's row is removed, so `flnd download <target> --again` can fetch it again;
 - a file of the **wrong size** gets its row's size and hash from the disk;
-- an **unknown** file under `media/` is adopted into the history, so a later run skips it. A
-  crash between a file's rename and its row leaves such a file: if the run recorded a failure
-  for that path, the file takes that failure's key, target and post.
+- an **unknown** file under `media/` is only reported: it stays out of the history, and a later
+  run skips it because it is on disk.
 
-[storage.md](storage.md#checking-a-home) says what check passes over and how a file is adopted.
+[storage.md](storage.md#checking-a-home) says what check passes over.
 With `--json`, it prints one `{"type": "Checked", ...}` object.
 
 ## `flnd status`, `flnd retry`
@@ -223,7 +222,8 @@ flnd login [source] [how]
 
 Left out in a terminal, `how` is asked with numbered choices. Off a terminal, or with `--json`,
 leaving it out is a usage error. A login is checked before it is saved: the cookies must hold
-one of the source's login cookies. It is stored encrypted in the home.
+one of the source's login cookies. It is stored in the home's vault, `metadata/secret.db`, a
+file only your account can read ([storage.md](storage.md)).
 
 ```sh
 flnd login
@@ -274,11 +274,14 @@ the plugin sources as they know the built-ins. With `--json`, one object per sou
 
 ## What a run prints
 
-- **Standard terminal run** displays live progress bars for active downloads on standard error
-  while the run progresses. On standard output, it prints: `saved <path>` (the file's final
-  path, once every step after it is done), or
-  `failed <target> <post>: <message>` with the hint on the next line; with `--dry`,
-  `new <path>` or `saved <path>`. With `-v`, a skipped file gets a line too.
+- **Standard terminal run** draws a live summary table on standard error while the run goes:
+  one row per target and category, with the counts of its files — `queued`, `downloading`,
+  `saved`, `failed`, plus `linked` (a file linked from another category's folder) and the row's
+  size — where the spinning rows are the target downloading now. No line per file: a finished
+  file only moves its row's counts, and its name is in the home and in `flnd status`. A target
+  that needs a login prints the command to run under the summary.
+- **With `--dry`**, standard output lists what the run would save: `found <target>` per target
+  a search finds, then `new <path>` or `saved <path>` per file, and a last line counts them.
 - **`--json`** writes each event as one JSON object per line, its class in `"type"` (`Saved`,
   `Skipped`, `Failed`, `Progress`, `Planned`, then the run's report as `{"type": "Report", …}`.
   `ls`, `login`, `logout`, `unfollow`, `sources` and `check` write their rows the same way. An
@@ -287,8 +290,13 @@ the plugin sources as they know the built-ins. With `--json`, one object per sou
   object with a `type`.
 
 The end of a run prints a summary: `done: 3 files saved (1.2 MB), 2 already saved`, and on
-standard error how many failed and of which kind. flnd's own warnings (a wait a site asked for, a
-login about to expire) go to standard error too.
+standard error how many failed and of which kind:
+
+```
+✗ 3 files failed: 2 network (retry: flnd retry), 1 gone. Details: flnd status
+```
+
+flnd's own warnings (a wait a site asked for, a login about to expire) go to standard error too.
 
 ## Exit codes
 
@@ -311,15 +319,14 @@ instead.
 
 ## Ctrl-C
 
-- The **first** Ctrl-C (or `q` on the full screen) stops listing and lets the files in
-  progress finish.
+- The **first** Ctrl-C stops listing and lets the files in progress finish.
 - The **second** stops at once. Unfinished files stay as parts (`<name>.part`), which the next
   run resumes, and it resumes each category from its saved cursor; a sync cut short this way is
   finished by the next sync, which jumps to where it stopped
   ([architecture.md](architecture.md#smart-sync)). It says `Ctrl-C again to quit now`, since
   closing the browser and writing the last rows may take a moment.
-- The **third** quits at once, exit code 130: the terminal's mode and the normal screen are put
-  back first, then flnd exits without waiting for anything. The parts on disk stay and resume
+- The **third** quits at once, exit code 130: it first runs the undo steps anything registered
+  for the terminal, then exits without waiting for anything. The parts on disk stay and resume
   as after a second Ctrl-C; the rows of the posts in progress are lost, and the next run finds
   their files on disk and skips them.
 

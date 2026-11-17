@@ -1,8 +1,8 @@
 # flnd
 
-flnd downloads photos, videos and files from the sites you follow, and keeps them up to date. It
-can shrink what it saves without visible loss, and it unpacks the archives it saves. It is a
-Python library with a thin command line on top, and new sites can be added as plugins.
+flnd downloads photos, videos and files from the sites you follow, and keeps them up to date.
+It unpacks the archives it saves, and hard-links what it has saved before. It is a Python
+library with a thin command line on top, and new sites can be added as plugins.
 
 Sites: **Instagram** (`ins`), **TikTok** (`tik`), **Twitter/X** (`twt`), **Facebook** (`fbk`),
 **Telegram** (`tlg`), **LOIBUS** (`loi`) and **mimihentai** (`mht`), plus any site a plugin adds.
@@ -28,15 +28,13 @@ Outside programs, each needed only for some files:
   terminal, it asks once whether to download Chromium for itself (about 200 MB, kept in
   Playwright's cache). Declined, or off a terminal (cron, `--json`), the run stops with
   "flnd needs Google Chrome" and a link to install it.
-- **ffmpeg**, for videos: joining a video with its separate sound track, and `--compress`.
+- **ffmpeg**, for videos: joining a video with its separate sound track.
 - **7-Zip** (`7zz`, or the older `7z`), for 7z, RAR and encrypted zip archives. zip and tar are
   read by Python.
 
 flnd downloads neither of the last two: it looks for each on your PATH. A missing one is a
-`ToolError` whose hint says what to install (`install ffmpeg, or put it on PATH`), and it costs
-only the files that needed it: a video that needs joining fails (and is retried on later runs),
-an archive is kept but not extracted, and a video to compress stays as it is. Photos are
-compressed in-process, with nothing to install.
+`ToolError` whose hint says what to install, and it costs only the files that needed it: a video
+that needs joining fails (and is retried on later runs), an archive is kept but not extracted.
 
 ## Quick start
 ```bash
@@ -50,9 +48,9 @@ flnd ls                                      # what this home knows: files, size
 
 ## Commands
 ```text
-flnd download [targets…] [--only CATS] [--when WHEN] [--limit N] [--compress] [--dry] [--again] [--exec CMD]
-flnd follow [targets…] [--only CATS] [--when WHEN] [--compress] [--again]
-flnd sync [targets…] [--compress] [--exec CMD]
+flnd download [targets…] [--only CATS] [--when WHEN] [--limit N] [--dry] [--again] [--exec CMD]
+flnd follow [targets…] [--only CATS] [--when WHEN] [--again]
+flnd sync [targets…] [--exec CMD]
 flnd unfollow <targets…>      stop following; files and history stay
 flnd ls [targets…]            the targets this home knows: followed or not, files, size, last run
 flnd status                   the last run: what it saved, each failure, why, and what to do
@@ -94,11 +92,10 @@ global flags: --home DIR · -v/--verbose · --json · -V/--version
   130 stopped with Ctrl-C.
 
 ### Following and syncing
-`download` takes what's there, once. `flnd follow` remembers a target, with its `--only` and
-`--compress`, and downloads it. `flnd sync` then fetches what's new for every followed target
-(or just the ones named). `flnd unfollow` stops following a target; its files and history stay.
-A sync asks no questions, and its exit code says how it went, so it suits cron, launchd or Task
-Scheduler:
+`download` takes what's there, once. `flnd follow` remembers a target, with its `--only`, and
+downloads it. `flnd sync` then fetches what's new for every followed target (or just the ones
+named). `flnd unfollow` stops following a target; its files and history stay. A sync asks no
+questions, and its exit code says how it went, so it suits cron, launchd or Task Scheduler:
 
 ```bash
 15 3 * * * /path/to/flnd --home /path/to/media sync
@@ -129,22 +126,20 @@ A sync is smart about what it has:
 - **Mistakes** you can fix (usage, login, disk, a tool) print `error: …` and what to do, never a
   traceback. A bug writes its traceback to `<home>/log/crash-<time>.txt` (`-v` prints it).
 - **Ctrl-C** works in three stages:
-  1. the first (or `q` on the full screen) stops listing and lets the files in progress finish;
+  1. the first stops listing and lets the files in progress finish;
   2. the second stops at once. Unfinished files stay as `<name>.part` and resume on the next
      run;
-  3. the third quits at once, with the terminal put back, without waiting for the browser to
-     close or the last rows to be written.
+  3. the third quits at once, without waiting for the browser to close or the last rows to be
+     written.
 
   A file is written under its real name only once it is whole, so nothing is ever left
   half-written.
 
 ### Unpacking archives
-- **Archives unpack by themselves** (`.zip`, `.7z`, `.rar`, `.tar*`) into a folder of their name
-  beside them. A site that knows the password (LOIBUS) passes it on. Unpacking refuses archive
-  tricks: paths that escape the folder, links of any kind, and zip bombs. The archive file stays
-  on disk after extraction.
-
-See [flnd/docs/storage.md](flnd/docs/storage.md) for the history fields and [flnd/docs/architecture.md](flnd/docs/architecture.md) for where unpack runs.
+Archives unpack by themselves (`.zip`, `.7z`, `.rar`, `.tar*`) into a folder of their name
+beside them. A site that knows the password (LOIBUS) passes it on. Unpacking refuses archive
+tricks: paths that escape the folder, links of any kind, and zip bombs. The archive file stays
+on disk after extraction.
 
 ### Dedupe and sidecars
 - **Dedupe:** a file whose bytes are already saved (a repost, a photo in two albums) becomes a
@@ -163,10 +158,10 @@ downloads a file.
 `flnd login <source> <how>` reads your login for that site from a browser (`chrome`, `firefox`,
 `edge`, `brave`, `chromium`, or `safari` on macOS), or from a `cookies.txt` or JSON cookie file
 you exported. Reading Safari needs Full Disk Access for your terminal (System Settings › Privacy
-& Security › Full Disk Access); without it, flnd says so and how to allow it. It
-keeps only the site's cookies, and refuses a login that lacks the site's login cookie. Telegram
-logs in its own way: `browser` (Telegram Web's session), `qr` or `phone`. Left out in a
-terminal, `how` is asked with numbered choices.
+& Security › Full Disk Access); without it, flnd says so and how to allow it. It keeps only the
+site's cookies, and refuses a login that lacks the site's login cookie. Telegram logs in its own
+way: `browser` (Telegram Web's session), `qr` or `phone`. Left out in a terminal, `how` is asked
+with numbered choices.
 
 ```bash
 flnd login ins chrome
@@ -176,33 +171,20 @@ flnd login                                   # each source's login, and what exp
 flnd logout ins
 ```
 
-Logins are stored encrypted in `<home>/secrets.db`, with the key in `<home>/secret.key` beside
-it, so keep the home as private as the logins in it. To keep the key in the OS keychain instead
-(macOS's Keychain, or the Secret Service on Linux through `secret-tool`), set it in the home's
-`config.toml`:
-
-```toml
-[vault]
-key = "keychain"                # "file", the default, keeps secret.key
-```
-
-The next command moves the key there and deletes `secret.key` once the keychain reads it back;
-setting `"file"` again moves it back. A keychain may be locked when no one is logged in, so a
-cron or launchd `sync` is safest with the file.
+Logins and cookies are stored in `<home>/metadata/secret.db`, a file only your account can
+read — keep the home as private as the logins in it.
 
 ## The home folder
 Everything flnd keeps lives in one folder: `--home`, else `$FLND_HOME`, else `./.flnd`.
 ```text
 <home>/
-  media/<source>/<target>/…   downloaded files, by category (posts/, reels/, stories/, …)
-  flnd.db                     what was saved, the targets, run history and failures (SQLite)
-  secrets.db                  logins, encrypted
-  secret.key                  the key to secrets.db, unless [vault] keeps it in the keychain
+  media/<code>/<target>/…     downloaded files, by category (posts/, reels/, stories/, …)
+  metadata/
+    flnd.db                   what was saved, the targets, run history and failures (SQLite)
+    secret.db                 logins and cookies, readable only by your account
   config.toml                 optional settings (below)
   log/                        crash reports and samples of changed site answers, kept 30 days
 ```
-A home made by an older flnd (with `metadata/`) is migrated on first use, so nothing is
-downloaded again. The old files are only read, so the older flnd still works on it.
 [flnd/docs/storage.md](flnd/docs/storage.md) describes every file and table.
 
 ### Settings
@@ -211,11 +193,7 @@ wins over it, and it wins over flnd's default:
 
 ```toml
 [defaults]
-compress = true                 # as if every download, follow and sync had --compress
-when = "1y"                     # as if they had --when 1y; "" for every day
-
-[compress]
-video = "hevc"                  # x265 instead of AV1, for devices that can't play AV1
+when = "1y"                     # as if every download, follow and sync had --when 1y
 
 [sources.ins]
 pace = 1.0                      # seconds between page requests
@@ -225,8 +203,8 @@ proxy = "socks5://127.0.0.1:1080"     # HTTP requests only: the browser isn't pr
 stop_after = 5                  # saved posts in a row that end a sync
 ```
 
-`--no-compress` and `--when ""` undo the defaults for one run. A wrong value stops flnd with the
-file, the key and what it takes; an unknown key is a warning.
+`--when ""` undoes the default for one run. A wrong value stops flnd with the file, the key and
+what it takes; an unknown key is a warning.
 [flnd/docs/storage.md](flnd/docs/storage.md#settings-configtoml) lists every key.
 
 ## Use it from Python
@@ -239,7 +217,7 @@ about once a second.
 import flnd
 
 with flnd.open("~/Media/flnd") as fl:
-    for event in fl.download("ins:example_user", only=["reels"], when="2026", compress=True):
+    for event in fl.download("ins:example_user", only=["reels"], when="2026"):
         if isinstance(event, flnd.Saved):
             print(event.path, event.date, event.post)     # event.post is the post's id
         elif isinstance(event, flnd.Failed):
@@ -312,10 +290,9 @@ all.
 
 ## Documentation
 [flnd/docs/](flnd/docs/README.md) is the guide: the CLI, the library, writing a source, errors, storage,
-compression, performance, a glossary and a page per site.
+performance, a glossary and a page per site.
 [flnd/docs/architecture.md](flnd/docs/architecture.md) explains how flnd is built, how it compares with
-similar tools, and the decisions behind it. The code is commented for people to read: every
-module starts with what it does and how it fits.
+similar tools, and the decisions behind it.
 
 ## Development
 | make | what it runs |
@@ -327,7 +304,6 @@ module starts with what it does and how it fits.
 | `make api` | regenerates `tests/data/api.txt`, the public API snapshot |
 | `make manifest` | regenerates `flnd/sources/_manifest.py`, what `--help` and target resolution read; run it after changing a source's domains, routes or categories |
 | `make bench` | the offline benchmarks; `ARGS=--gate` compares them with the targets |
-| `make media-real ARGS=…` | a hand check: `--compress` on real samples kept outside the repo |
 | `make cdn-real ARGS=…` | a hand check: throughput from one real CDN host at several caps |
 | `make docs` | builds the API reference into `build/docs/` |
 | `make type` | pyright on the public modules (informational, not part of `check`) |

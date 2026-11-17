@@ -68,7 +68,8 @@ its `start`, and its `check` says a login is kept when a session is stored.
 the account has one. Both ask questions, so they run only in a terminal.
 
 The first login also asks for an `api_id` and `api_hash`, which you create at `my.telegram.org`
-under API development tools. They are kept with the session in flnd's encrypted secrets store.
+under API development tools. They are kept with the session in the home's vault,
+`metadata/secret.db`.
 What proves a login is the stored `session`; the API pair alone does not.
 
 Without a login, a `tlg` target fails with "not logged in; run flnd login tlg". Each run checks

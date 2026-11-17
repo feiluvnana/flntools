@@ -57,8 +57,8 @@ the way is asked with numbered choices:
 - **From a cookie file**: reads a Netscape `cookies.txt` or a JSON export.
 
 The source declares `login = cookies("sessionid")`, not required: the login is accepted only
-when the cookies hold `sessionid`. They are stored encrypted in
-`.flnd/secrets.db`. Each run loads them into its HTTP client and its browser, and at the
+when the cookies hold `sessionid`. They are stored in the home's vault,
+`metadata/secret.db`. Each run loads them into its HTTP client and its browser, and at the
 end writes back any of those cookies the site refreshed.
 
 Without a login, flnd still tries: it opens the same pages, and gets what Instagram shows a

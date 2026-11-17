@@ -104,7 +104,8 @@ which is also the CLI's. Its layout is in [storage.md](storage.md).
 
 ## Login
 A source's saved credentials: browser cookies for most sites, a session for Telegram. Logins are
-encrypted in the home's vault (`secrets.db`, with its key in `secret.key`).
+kept in the home's vault, `metadata/secret.db`, in plaintext
+([storage.md](storage.md#the-vault)).
 
 ## Pace
 The least time between two requests to a source's own domains, in seconds (`Source.pace`, 0.5 by

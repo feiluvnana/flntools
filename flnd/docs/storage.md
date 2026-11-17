@@ -13,7 +13,7 @@ holds your logins and cookies.
 .flnd/
   metadata/
     flnd.db          what the home remembers: files, posts, targets, runs, failures, …
-    secret.db        the vault: logins, cookies and tokens stored unencrypted
+    secret.db        the vault: logins, cookies and tokens, stored in plaintext
   media/
     <code>/<target>/<category>/…   the downloaded files
   log/
@@ -31,8 +31,9 @@ from a login URL or one that sets a cookie is never kept, and the file is named 
 never by anything the site sent.
 
 The code: `flnd/_home.py` is flnd's storage (the layout, `flnd.db`'s tables and queries, the
-logins). It is built on two library modules: `flnd/_db.py`, a SQLite store (WAL, one connection
-shared by threads, transactions), and `flnd/_vault.py`, secrets stored in `secret.db`.
+logins). It is built on three library modules: `flnd/_db.py`, a SQLite store (WAL, one
+connection shared by threads, transactions), `flnd/_vault.py`, secrets stored in `secret.db`,
+and `flnd/_cookies.py`, cookie jars read from files and browsers.
 
 ## `media/`
 
@@ -55,10 +56,10 @@ Every file flnd writes, a download or a small file of its own, is first written 
 `<name>.part` beside it (`posts/2026-01-02_C1abc_0.jpg.part`), renamed onto its real name once
 whole. So a file with its real name is always whole. A name too long for the file system once
 `.part.json` and the `.part` of that small file's own write are added (255 bytes) gets a
-shorter part, its first 180 bytes and an 8-character
-digest: `<head>.<digest>.part`.
+shorter part, its first 180 bytes and an 8-character digest: `<head>.<digest>.part`.
 
 A download's part:
+
 1. is opened and locked before any request is sent (see [Sharing a home](#sharing-a-home));
 2. is written as the bytes arrive, from every mirror and retry of the file, and checked through
    the open file: a web page where a photo was expected is removed, never renamed. Its SHA-256
@@ -83,9 +84,10 @@ A download that fails or is stopped keeps its part, and the next run goes on fro
   `If-Range`. A file that changed on the server comes whole, and the part starts over from 0,
   so old and new bytes are never spliced;
 - a `416` for the part's size means the part is already whole, and any other `416` starts over;
-- a big file fetched in 4 ranges at once writes them into the part at their offsets. Until
-  they all arrive, the part's `.part.json` says it has holes (`"holes": true`), so a part a
-  crash left that way starts over instead of passing for a whole file;
+- a big file fetched in parallel ranges (built, off by default) writes them into the part at
+  their offsets. Until they all arrive, the part's `.part.json` says it has holes
+  (`"holes": true`), so a part a crash left that way starts over instead of passing for a whole
+  file;
 - a Telegram document keeps the offsets of its parts in the same `.part.json`, written only
   after the bytes they count are flushed, so a resume never skips bytes the file doesn't hold.
 
@@ -105,7 +107,7 @@ One SQLite file in WAL mode, with real columns and indexes, so `sync`, `ls` and 
 the library are queries, never walks of `media/`. Read it with any SQLite tool:
 
 ```sh
-sqlite3 .flnd/flnd.db "SELECT key, path, size, date FROM files LIMIT 3"
+sqlite3 .flnd/metadata/flnd.db "SELECT key, path, size, date FROM files LIMIT 3"
 ```
 
 How it is written:
@@ -144,11 +146,11 @@ while the file at its `path` is there, and also a file already on disk at its pl
 | `files` | on the first file of a post of several, how many files the post has: it tells a run whether a post listed again is whole |
 | `state` | where it stands with the site: `saved`, or `gone` when the site answered 404 or 410; `link` for a second name of a saved file in another category's folder (see [Links](#links)) |
 | `at` | when it was saved, in UTC, ISO 8601 |
-| `tools` | with `shrink`: the encoders and versions it ran with, such as `pillow 13.0.0 libavif 1.4.2`; a `kept` or `failed` file is tried again when these change |
+| `hash` | the SHA-256 of its bytes (32 bytes); empty on a row from before hashes |
 | `unpacked` | on an archive: `extracted`, or `failed` (a wrong password, a damaged or unsafe archive, no 7-Zip) |
-| `folder` | on an extracted archive: the folder it was extracted into. | `hash` | the SHA-256 of its bytes (32 bytes); after `--compress`, of the compressed file. Empty on a row from before hashes |
+| `folder` | on an extracted archive: the folder it was extracted into |
 | `sidecar` | where its sidecar is, `<path>.json`, when sidecars are on (see [Sidecars](#sidecars)) |
-| `format` | for a step that doesn't exist yet; empty |
+| `shrink`, `tools`, `before`, `format` | columns an older home may still have; flnd writes nothing to them today |
 
 Indexed on `(target, post_id)`, on `hash` where there is one, and on the undated rows of each
 target, so the source's `date` hook finds them without reading the rest. There is no index on
@@ -171,19 +173,14 @@ one modified time, so the second file shows the first one's day, and its row say
 - A file system that can't hard-link (FAT and exFAT drives, a link across two volumes) keeps both
   copies, with one warning per run.
 - A hard link is one file: editing it in one folder edits it in the other.
-- **Compress keeps the links.** A file and its links are compressed once: the result is linked at
-  every path that shared the original (each with the new suffix: `a.jpg` and `b.jpg` become
-  `a.avif` and `b.avif`, still one file), and every row moves in one transaction, before the old
-  names are removed. A copy with the same bytes that isn't linked to it is left alone.
 
 ### Links
 
 A file listed in two categories of one target (a video that is also a reel) is downloaded once,
 into the first category's folder, and the second gets a relative symlink to it (or a hard link
 where symlinks are refused). The link has a row of its own, keyed `<file's key>@<category>`, in
-state `link`, with the file's hash: so `check` knows it, and when compress gives the file a new
-suffix, the link is made again pointing at the new name, instead of dangling. A `link` row counts
-toward no post and no target's files.
+state `link`, with the file's hash, so `check` knows it. A `link` row counts toward no post and
+no target's files.
 
 ### Sidecars
 
@@ -211,8 +208,7 @@ give them (`url`, `link` or `permalink`; `caption`, `text`, `description` or `ti
 `user`, `username`, `owner` or `channel`; `tags` or `hashtags`), and are `null` when the source
 gives none, as `date` is for a post with no day; `fields` holds every field as the source gave
 it. `file` is the file's own URL without its query and user info, which may carry a signature.
-The sidecar is written after compress, so it is named after the final file, and a later
-`sync --compress` that renames the file renames its sidecar too. Its path is in the row's
+The sidecar is written last, so it is named after the final file. Its path is in the row's
 `sidecar`.
 
 ### `posts`
@@ -230,7 +226,7 @@ One row per target the home knows, keyed `<code>:<value>` (`ins:example_user`).
 | --- | --- |
 | `source`, `value`, `kind` | the target: its source, its value, and the route that reads it (`user`, `post`, `query`, …) |
 | `follow` | 1 when `sync` takes it |
-| `options` | JSON: `only`, the categories a followed target syncs its new files (`flnd follow --compress`) |
+| `options` | JSON: `only`, the categories a followed target syncs |
 | `query` | for a target a search found: the search's words |
 | `complete` | JSON: each category listed to its end, with the day it was |
 | `cursors` | JSON: each category's cursor, saved when a full download of it was cut short, so the next run resumes |
@@ -304,9 +300,9 @@ stop_after = 5       # saved posts in a row that end a sync of a newest-first li
   that opens pages (Instagram, TikTok, Facebook, Twitter/X) loads them directly. A run says so
   once, as a warning, when such a source opens its first tab.
 - **A bad value** stops the command as a usage error that names the file, the key and what it
-  takes: `config.toml: [sources.ins] scroll is "human" or "fast", not 'slow'`. A key flnd doesn't
-  know is a warning (`[defaults] compres is not a setting flnd knows; it is ignored`), so a typo
-  never passes for a setting that works.
+  takes: `config.toml: [sources.ins] scroll is "human" or "fast", not 'slow'`. A key flnd
+  doesn't know is a warning (`[defaults] compres is not a setting flnd knows; it is ignored`),
+  so a typo never passes for a setting that works.
 
 The code: `flnd/options.py` (`config`) reads and checks the whole file, in one place.
 
@@ -334,20 +330,17 @@ them in `secret.db`, and `flnd/_home.py` holds the logins that use both.
 
 `flnd check` (`fl.check()` in a script) compares the history with the disk, and `--fix`
 (`fix=True`) makes the history match the disk. It reads every row once, with one `stat` each, and
-walks `media/` once. It never deletes, moves or downloads a file.
+walks `media/` once. It never deletes, moves or downloads a file, and it never adds a row.
 
 | found | what it means | what `--fix` does |
 | --- | --- | --- |
 | missing | a row's file isn't there (removed by hand, or a disk lost it) | removes the row, so `flnd download <target> --again` can fetch it again |
 | wrong size | a saved file's size isn't its row's (cut short, or changed by another program) | takes the size, time and hash from the disk |
-| unknown | a file under `media/` no row names | adopts it: gives it a row |
+| unknown | a file under `media/` no row names | nothing: it is reported, and stays out of the history |
 
-An unknown file is usually one a run renamed into place and then crashed before writing its
-row. It is adopted by its `(target, post, file)` key: when a run recorded a failure for that
-path, the file takes the failure's key, target and post; else its target is the folder it is in
-(`media/<code>/<target>/…`) and its key is `<code>:<target folder>/<path under it>`, numbered
-(`#2`) if that key is taken. Either way, a later run that lists the file finds it on disk and
-skips it, so nothing is downloaded twice.
+An unknown file stays unknown: a later run that lists it finds it on disk and skips it, so
+nothing is downloaded twice, and `check` reports it each time until you remove it or give it a
+row yourself.
 
 These are never unknown: parts and what sits beside them, hidden files (`.DS_Store`), symlinks,
 a hard link of a known file, a known file's sidecar, anything inside the folder an archive was
@@ -366,9 +359,8 @@ during a manual run. Nothing makes the second run wait for the first.
   descriptor, so a run that crashes frees it at once.
 - A run that opens a part just as another lands it sees that the name now holds another file,
   and skips it too.
-- flnd's own small files (a cache, a sidecar, a cookie file) wait for each other instead of
-  skipping.
-- `flnd.db` and `secrets.db` are SQLite, which serializes writers; a writer waits up to 30 s
+- flnd's own small files (a cache, a sidecar) wait for each other instead of skipping.
+- `flnd.db` and `secret.db` are SQLite, which serializes writers; a writer waits up to 30 s
   for another run's transaction, which lasts microseconds. Each change of a target's row reads
   and writes it in one transaction, so two runs never write over each other's changes.
 - On a file system without locks (some network shares), files are written unlocked.

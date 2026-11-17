@@ -30,8 +30,10 @@ app.run(["hello"])
 ## log
 
 One shared `log` writes to standard error: lines (`log.info`, `log.warn`, …) and live items
-(`with log.item(key, label, total=…) as item:`). See the PLAN step 4 design; behaviour is
-covered by `tests/test_log.py`.
+(`with log.item(key, label, total=…) as item:`). An item's `unit` picks its stats segment:
+counts by default, `"bytes"` for sizes, and `"none"` for a plain text row (spinner, label and
+note only), which is what the run's summary table uses. Behaviour is covered by
+`tests/test_log.py`.
 
 ## prompt
 
