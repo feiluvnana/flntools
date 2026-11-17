@@ -39,7 +39,7 @@ cookie file; the engine loads them into the HTTP client and the browser. API cal
 `WALLS` (the login flow, or the locked-account page) stops the target with a `LoginError`; it
 isn't waited out. A 401 or 403 from the API is a `LoginError` too.
 
-Site quirks, each with the day it was first seen (docs/sources/twt has them for people):
+Site quirks, each with the day it was first seen (flnddocs/sources/twt has them for people):
 - 2026-11-11: a timeline sits under `timeline` in one response shape and `timeline_v2` in the
   other; the Media tab's later pages come as `moduleItems`, not `entries`.
 - 2026-11-11: a tweet with limited visibility comes inside a wrapper (`unwrap`).
@@ -69,7 +69,7 @@ Under .flnd/media/twt/<target>/:
   posts/, highlights/, reposts/, replies/   <date>_<tweet_id>_<n>.<ext>
   images/, videos/                          the Media tab's photos and videos
   profile/                                  avatar_<id>.jpg and banner_<id>.jpg
-A tweet link's files sit in its own target folder, `twt/<tweet id>/`. See docs/sources/twt.
+A tweet link's files sit in its own target folder, `twt/<tweet id>/`. See flnddocs/sources/twt.
 """
 
 from __future__ import annotations
@@ -521,7 +521,10 @@ class Twitter(Source):
             for data in responses:
                 tweets, cursor = read_timeline_page(data)
                 # A tombstone has no id; it is never new, and never stands for a seen tweet.
-                new = [tweet for tweet in tweets if tweet_id_of(tweet) not in seen | {""}]
+                new = [
+                    tweet for tweet in tweets
+                    if (tid := tweet_id_of(tweet)) and tid not in seen
+                ]
                 # Only a timeline page carries a cursor: an error or throttle body is skipped,
                 # and a page of seen tweets is the end.
                 if not new and cursor is None:

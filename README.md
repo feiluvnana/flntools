@@ -66,7 +66,7 @@ global flags: --home DIR · -v/--verbose · --json · -V/--version
 ```
 
 `flnd --help` lists every command and every form of target each site reads, and
-`flnd <command> --help` a command's flags. [docs/cli.md](docs/cli.md) covers each in full.
+`flnd <command> --help` a command's flags. [flnddocs/cli.md](flnddocs/cli.md) covers each in full.
 
 - **A target** is `<source>:<name, id or link>`, `<source>?<words>` for a search, or just the
   link: `ins:example_user` and `https://www.instagram.com/example_user/` are the same target,
@@ -152,7 +152,7 @@ A sync is smart about what it has:
   tricks: paths that escape the folder, links of any kind, and zip bombs. The archive is kept,
   unless `--compress` is on: then it is removed once its extract is verified.
 
-[docs/media.md](docs/media.md) has the details and the checks.
+[flnddocs/media.md](flnddocs/media.md) has the details and the checks.
 
 ### Dedupe and sidecars
 - **Dedupe:** a file whose bytes are already saved (a repost, a photo in two albums) becomes a
@@ -211,7 +211,7 @@ Everything flnd keeps lives in one folder: `--home`, else `$FLND_HOME`, else `./
 ```
 A home made by an older flnd (with `metadata/`) is migrated on first use, so nothing is
 downloaded again. The old files are only read, so the older flnd still works on it.
-[docs/storage.md](docs/storage.md) describes every file and table.
+[flnddocs/storage.md](flnddocs/storage.md) describes every file and table.
 
 ### Settings
 `<home>/config.toml` holds defaults for every run and settings per site. A flag given for one run
@@ -235,7 +235,7 @@ stop_after = 5                  # saved posts in a row that end a sync
 
 `--no-compress` and `--when ""` undo the defaults for one run. A wrong value stops flnd with the
 file, the key and what it takes; an unknown key is a warning.
-[docs/storage.md](docs/storage.md#settings-configtoml) lists every key.
+[flnddocs/storage.md](flnddocs/storage.md#settings-configtoml) lists every key.
 
 ## Use it from Python
 `flnd.open(home)` gives a `Flnd`, whose methods are the commands. A download returns a run that
@@ -257,7 +257,7 @@ with flnd.open("~/Media/flnd") as fl:
     print(report.saved, report.skipped, report.ok)
     photos = fl.files(target="ins:example_user", kind="image")   # what's saved, from flnd.db
 ```
-[docs/library.md](docs/library.md) covers every call, its options and its events, with examples
+[flnddocs/library.md](flnddocs/library.md) covers every call, its options and its events, with examples
 that run offline.
 
 ## Add a site
@@ -315,13 +315,13 @@ To make flnd know it, either:
 
 `flnd sources` then lists it. A plugin runs with your logins, so install only code you trust;
 flnd never loads one from a home folder. A broken plugin disables itself alone, with a warning
-naming its file and line. [docs/writing-a-source.md](docs/writing-a-source.md) walks through it
+naming its file and line. [flnddocs/writing-a-source.md](flnddocs/writing-a-source.md) walks through it
 all.
 
 ## Documentation
-[docs/](docs/README.md) is the guide: the CLI, the library, writing a source, errors, storage,
+[flnddocs/](flnddocs/README.md) is the guide: the CLI, the library, writing a source, errors, storage,
 compression, performance, a glossary and a page per site.
-[docs/architecture.md](docs/architecture.md) explains how flnd is built, how it compares with
+[flnddocs/architecture.md](flnddocs/architecture.md) explains how flnd is built, how it compares with
 similar tools, and the decisions behind it. The code is commented for people to read: every
 module starts with what it does and how it fits.
 

@@ -6,7 +6,7 @@ This is flnd's own module (not a library): it knows sources, targets and the hom
 - `RunShared`, what every source of a run shares: the home, its database, the stop signal, the
   browser, the event sink;
 - `Config`, `SourceConfig` and `config`: every setting of the home's `config.toml`, read and
-  checked in one place (docs/storage, "config.toml");
+  checked in one place (flnddocs/storage, "config.toml");
 - `categories_by_source`, `validate` and `unknown`, which check `--only` against the targets'
   sources before anything is fetched, and `selected`, which applies it to one source.
 
@@ -60,7 +60,7 @@ ALL = "all"
 
 
 class Retry(Enum):
-    """What a target's run does with the files earlier runs failed on (docs/errors)."""
+    """What a target's run does with the files earlier runs failed on (flnddocs/errors)."""
 
     # List each of their posts again first, for those failed on at most `_home.RETRIES` runs;
     # then the target's listings: every download and sync.
@@ -86,7 +86,7 @@ class Options:
     again: bool = False
     # The query text when this target was discovered from a `?query` route.
     query: str | None = None
-    # Compress each saved photo and video once it is recorded (`--compress`, docs/media),
+    # Compress each saved photo and video once it is recorded (`--compress`, flnddocs/media),
     # and remove an archive once it is extracted.
     compress: bool = False
     # What to do with the files earlier runs failed on; `again` skips them, since it lists
@@ -403,18 +403,18 @@ def _names_of(route: Any) -> frozenset[str]:
 # The home's config file
 # ---------------------------------------------------------------------------------------------
 
-# The home's settings file (docs/storage, "config.toml").
+# The home's settings file (flnddocs/storage, "config.toml").
 CONFIG = "config.toml"
 # What `[defaults] dedupe` takes: "link" (the default) hard-links a file whose bytes are already
 # saved; "off" keeps both copies.
 DEDUPE = ("link", "off")
-# What `[defaults] ui` takes: how the CLI shows a run on a terminal (docs/cli, "Views").
+# What `[defaults] ui` takes: how the CLI shows a run on a terminal (flnddocs/cli, "Views").
 UIS = ("full", "inline", "plain")
-# What `[compress] video` takes: the codec `--compress` turns videos into (docs/media). "hevc"
+# What `[compress] video` takes: the codec `--compress` turns videos into (flnddocs/media). "hevc"
 # is x265, for devices that can't play AV1.
 VIDEOS = ("av1", "hevc")
 # What `[vault] key` takes: where the vault's key is kept, `secret.key` in the home (the
-# default, which an unattended sync can always open) or the OS keychain (docs/storage).
+# default, which an unattended sync can always open) or the OS keychain (flnddocs/storage).
 FILE, KEYCHAIN = "file", "keychain"
 VAULTS = (FILE, KEYCHAIN)
 # The proxy schemes `[sources.<code>] proxy` takes: the ones curl speaks. `socks5h` also looks
@@ -455,7 +455,7 @@ class SourceConfig:
 
 @dataclass(frozen=True)
 class Config:
-    """The settings of a home's `config.toml`, with their defaults (docs/storage).
+    """The settings of a home's `config.toml`, with their defaults (flnddocs/storage).
 
     The library's calls keep to five options each, so a setting past those lives here. A flag or
     a library argument given for one run wins over the file; the file wins over the default.
@@ -463,9 +463,9 @@ class Config:
 
     # List every post again and ask again for files recorded gone (the CLI's `--again`).
     again: bool = False
-    # Hard-link a saved file whose bytes another saved file already has (docs/storage).
+    # Hard-link a saved file whose bytes another saved file already has (flnddocs/storage).
     dedupe: bool = True
-    # Write each saved file's post as `<file>.json` beside it (docs/storage).
+    # Write each saved file's post as `<file>.json` beside it (flnddocs/storage).
     sidecars: bool = False
     # How the CLI shows a run on a terminal when `--ui` isn't given: "full", "inline" or
     # "plain"; None leaves it to the CLI (full screen).

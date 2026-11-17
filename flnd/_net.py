@@ -40,7 +40,7 @@ The main flow of one request (`Client.call`):
 3. send it through curl_cffi, or the active `fake`, and stream the answer;
 4. classify a failure by the policy below, wait, and try again, or raise.
 
-The retry policy (docs/errors):
+The retry policy (flnddocs/errors):
 - a timeout, a reset, a cut-off transfer or a 5xx is tried again up to `RETRIES` more times,
   after jittered waits of about 1, 2, 4 and 8 s; only methods that are safe to repeat are;
 - a 429 is `Blocked`: its `Retry-After`, or the site's rate-limit reset, is waited out (up to an
@@ -70,7 +70,7 @@ Rules a change must keep:
 - A session belongs to one asyncio loop: every coroutine here runs on it, and nothing here
   blocks it. File writes go to one writer thread, `BUFFER` bytes at a time, and each piece of an
   appended body is hashed on one hasher thread beside its write, so a slow disk never stalls
-  the loop (and the browser and every other transfer on it); see docs/performance.
+  the loop (and the browser and every other transfer on it); see flnddocs/performance.
 - A write or hash in flight on those threads always finishes before its transfer gives the part
   back, even when the transfer is cancelled: the part's descriptor is closed only after it.
 - `Limits`, its buckets and its caps are used from the loop's thread only, so they need no
@@ -138,7 +138,7 @@ CLEAN = 20
 BURST = 1.0
 # Transfers at once to a host that isn't paced and has no cap of its own: where its `Cap`
 # starts, and the most it grows to. 8 is what one host took at once before caps adapted; 32 is
-# the ceiling the real-CDN check (docs/performance, "Concurrency per host") is to confirm.
+# the ceiling the real-CDN check (flnddocs/performance, "Concurrency per host") is to confirm.
 CAP = 8
 MOST = 32
 # A cap measures its host's throughput, and may grow by one, every STEP clean transfers.
@@ -166,7 +166,7 @@ SPREAD = 8
 TIMEOUT = 30.0
 # The file system's writes go to the writer thread this many bytes at a time. Each hand-off to
 # a thread waits for the GIL when it comes back, which on a busy loop can take milliseconds, so
-# fewer, larger pieces pay: 4 MiB moved 1 GiB 15% faster than 1 MiB (docs/performance).
+# fewer, larger pieces pay: 4 MiB moved 1 GiB 15% faster than 1 MiB (flnddocs/performance).
 BUFFER = 4 << 20
 # The most bytes of one transfer that wait in memory for the disk before curl pauses it.
 HELD = 8 << 20

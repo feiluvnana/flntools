@@ -1,7 +1,7 @@
 """Every error flnd raises: one hierarchy under `flnd.Error`, plus `flnd.Stopped` for Ctrl-C.
 
 Who calls it: every module of flnd raises these, `flnd` and `flnd.source` re-export them, and the
-CLI maps them to exit codes (see `docs/errors`). What it calls: only the stdlib, so importing
+CLI maps them to exit codes (see `flnddocs/errors`). What it calls: only the stdlib, so importing
 it costs nothing and any module may import it.
 
 The hierarchy:
@@ -24,7 +24,7 @@ Rules a change must keep:
    `flnd._text.redact` first, and a cookie or token never appears at all.
 2. `hint` says what to do, as a command when there is one (`flnd login ins`); "" when
    there is nothing to suggest.
-3. `retryable` is set by whoever raises, from the policy in `docs/errors`, and never implied
+3. `retryable` is set by whoever raises, from the policy in `flnddocs/errors`, and never implied
    by the class: a `NetworkError` for a name that doesn't resolve won't heal, and a 403 may be a
    login wall or a block.
 4. `Stopped` derives from `KeyboardInterrupt`, so `except flnd.Error` (or `except Exception`)

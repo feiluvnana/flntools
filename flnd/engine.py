@@ -198,7 +198,7 @@ class Engine:
             again: ignore saved cursors and the stop at saved posts.
             keep: whether to save `categories` with each target, for later syncs (`follow`).
             compress: shrink each saved photo and video once it lands, and remove an archive
-                once it is extracted (docs/media).
+                once it is extracted (flnddocs/media).
 
         Returns:
             One `TargetReport` per target, in order.
@@ -249,7 +249,7 @@ class Engine:
         Args:
             targets: only these targets; every synced target when empty.
             compress: shrink the new files as they land, then the files these targets saved
-                before that aren't done yet (docs/media).
+                before that aren't done yet (flnddocs/media).
             time: the days every target takes posts from (`[defaults] when` in config.toml);
                 None for every day.
 
@@ -284,7 +284,7 @@ class Engine:
 
         Each target with failed files lists each failed post again, from the cursor of the page
         it was on, and downloads the files that failed, from `(target, post, file)`: never a
-        stored URL (docs/errors). A target whose listing failed whole is downloaded again, its
+        stored URL (flnddocs/errors). A target whose listing failed whole is downloaded again, its
         failed files first. A gone file (`NotFound`) isn't retried; `--again` asks for those.
 
         Returns:
@@ -1169,7 +1169,7 @@ class Engine:
             A list the command appends its report to, for the row's count of saved files.
         """
         named = " ".join([command, *map(str, targets[:3])])
-        # Each run's logs and samples are kept for a month (docs/storage).
+        # Each run's logs and samples are kept for a month (flnddocs/storage).
         _home.sweep(self.home)
         with _home.open(self.home) as db:
             self.run = db.start(named if len(targets) <= 3 else f"{named} …")

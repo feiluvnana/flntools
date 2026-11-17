@@ -14,7 +14,7 @@ offers:
 Who calls it in flnd: the compress step (`--compress`). The step chain (`flnd._steps`) calls
 `shrink` on each saved photo, video or song, on its own threads, after the file's history row is
 written. The originals these sites serve are already compressed, so every result is checked
-before it replaces the original (docs/media).
+before it replaces the original (flnddocs/media).
 
 How `shrink` goes:
 1. *Plan* the candidates from the file's kind (by suffix) and its probe (`flnd._media`):

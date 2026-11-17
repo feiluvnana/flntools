@@ -2,7 +2,7 @@
 
 What it holds: the `Telegram` source, its `TelegramLogin` (by Telegram Web's session in Chrome,
 a QR code, or a phone number), and the helpers both use: finding a chat, listing its messages,
-and downloading a document in parts that resume. `docs/sources/tlg` is the guide for people.
+and downloading a document in parts that resume. `flnddocs/sources/tlg` is the guide for people.
 
 Who calls it: the engine, as every source. It talks to Telegram through Telethon (an SDK for
 Telegram's own protocol, MTProto), never over HTTP, so it imports `telethon` and `qrcode` lazily,
@@ -941,7 +941,7 @@ def _version() -> str:
     from importlib import metadata
 
     try:
-        return metadata.version("flnd")
+        return metadata.version("flntools")
     except metadata.PackageNotFoundError:
         return "0"
 

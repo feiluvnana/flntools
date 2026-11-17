@@ -229,7 +229,7 @@ class ContainmentTest(PluginCase):
             self.assertIsNone(_plugins.load(found))
         reason = found.error
         self.assertIn("old was written for source API 1; this flnd has 2; see "
-                      "docs/writing-a-source.md#source-api-versions", reason)
+                      "flnddocs/writing-a-source.md#source-api-versions", reason)
 
     def test_a_class_with_another_code_is_refused(self):
         self.write("exm.py", plugin("exm"))

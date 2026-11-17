@@ -172,7 +172,7 @@ class Flnd:
                 `[defaults] when` in config.toml, which is every day unless it says otherwise.
             limit: at most this many posts per target, or targets per search; None for all.
             compress: shrink each photo and video as it lands, when a smaller copy looks the
-                same, and remove each archive once it is extracted (docs/media); None for the
+                same, and remove each archive once it is extracted (flnddocs/media); None for the
                 home's `[defaults] compress`, which is off unless it says otherwise.
             dry: plan instead: the run yields a `Planned` event per file and writes nothing.
 
@@ -218,7 +218,7 @@ class Flnd:
             when: the days this first download takes posts from, as `download` reads it;
                 None for the home's `[defaults] when`.
             compress: shrink each photo and video of this first download as it lands, and
-                remove each archive once it is extracted (docs/media), and keep that with the
+                remove each archive once it is extracted (flnddocs/media), and keep that with the
                 targets, so later syncs compress their new files too; None for the home's
                 `[defaults] compress`.
 
@@ -254,7 +254,7 @@ class Flnd:
         Args:
             targets: the followed targets to sync; empty for every one.
             compress: shrink the new photos and videos as they land, then those the targets
-                saved before that aren't done yet; a done file is skipped unopened (docs/media).
+                saved before that aren't done yet; a done file is skipped unopened (flnddocs/media).
                 None for the home's `[defaults] compress`. A target followed with `compress`
                 compresses its new files either way.
 
@@ -284,7 +284,7 @@ class Flnd:
         A download or sync already retries a target's failed files first, on at most 3 runs
         each; this takes every one, at once. Each failed post is listed again through its
         source, for fresh URLs, and only its failed files are downloaded: a retry never uses a
-        stored URL, which `flnd.db` keeps redacted (docs/errors). A target whose listing failed
+        stored URL, which `flnd.db` keeps redacted (flnddocs/errors). A target whose listing failed
         whole is downloaded again. A gone file (a 404 or 410) isn't retried; `again=True`
         asks for those.
 
@@ -432,7 +432,7 @@ class Flnd:
         `fix=True` makes the history match the disk, and never deletes, moves or downloads a
         file: a missing file's row goes, a file of the wrong size gets its row's size and hash
         from the disk, and an unknown file is adopted, by its `(target, post, file)` key where
-        a failed run recorded one (docs/storage, "Checking a home").
+        a failed run recorded one (flnddocs/storage, "Checking a home").
 
         Args:
             fix: also repair the history; False only reports.

@@ -4,10 +4,10 @@ The home folder holds `media/` (the downloads), `metadata/` (`flnd.db` and `secr
 `log/` (crash files and each run's samples), and an optional `config.toml`; `cache/` is
 reserved. This module is flnd's own storage, not a library: it knows flnd's tables, targets and
 sources. It is built on three library modules: `flnd._db` (a SQLite store), `flnd._vault`
-(source secrets in `secret.db`) and `flnd._cookies` (cookie jars). `docs/storage` is the guide
+(source secrets in `secret.db`) and `flnd._cookies` (cookie jars). `flnddocs/storage` is the guide
 to it.
 
-What `flnd.db` holds (the storage guide in `docs/` shows every column):
+What `flnd.db` holds (the storage guide in `flnddocs/` shows every column):
 - `files`: one row per saved file, keyed `<code>:<key>` (the source's `key` template), with its
   target, post, path, size, day, its bytes' SHA-256 (`hash`), and `state`: `saved`, `gone` (the
   site answered 404 or 410), or `link` (a second name for a saved file, in another category's
@@ -111,7 +111,7 @@ VERSION = "1"
 # A file that failed has no `files` row at all: its record is in `failures`.
 SAVED, GONE, LINK = "saved", "gone", "link"
 # The runs a failed file is retried on by itself, at the start of its target's next downloads and
-# syncs; past them it waits for `flnd retry`, which always tries (docs/errors).
+# syncs; past them it waits for `flnd retry`, which always tries (flnddocs/errors).
 RETRIES = 3
 # Logs and samples older than this are swept at the start of each run that downloads.
 LOG_DAYS = 30

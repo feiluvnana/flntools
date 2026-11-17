@@ -1,6 +1,6 @@
 """The steps after a file lands, in their one fixed order, and the threads that run the slow ones.
 
-Every saved file goes through the same chain (the architecture guide, docs/media):
+Every saved file goes through the same chain (the architecture guide, flnddocs/media):
 
     download (hashing) → dedupe → unpack → compress → date → place → record → sidecar → Saved
 
@@ -318,7 +318,7 @@ class Chain:
     def _compress(self, item: Landed) -> None:
         """The compress step, for a file whose kind is still worth it.
 
-        How it keeps dedupe's hard links (docs/storage, "Dedupe"):
+        How it keeps dedupe's hard links (flnddocs/storage, "Dedupe"):
         1. It holds the lock of the file's hash, so its links are never compressed at once.
         2. A file whose row is already compressed was moved by a link's compress: done.
         3. The rows with the same hash whose file is this very file (same inode) are its links.

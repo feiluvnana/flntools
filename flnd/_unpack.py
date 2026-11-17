@@ -12,7 +12,7 @@ An archive is extracted into a folder of its own name beside it: `loi-5930.7z` f
 `loi-5930/`. Who calls it in flnd: the unpack step. The step chain (`flnd._steps`) calls
 `extract` on a downloaded `.zip`, `.7z`, `.rar` or `.tar*` (or any file its source gave a
 password) once the archive's history row is written; `--compress` also removes the archive
-after a verified extract (docs/media).
+after a verified extract (flnddocs/media).
 
 How `extract` goes:
 1. Read the first bytes to tell the format; a name can lie (loi serves 7z under `.zip`).

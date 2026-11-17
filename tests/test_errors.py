@@ -1,4 +1,4 @@
-"""The one error hierarchy (`flnd.errors`) and its policy (docs/errors.md).
+"""The one error hierarchy (`flnd.errors`) and its policy (flnddocs/errors.md).
 
 Three groups of tests:
 1. `ClassesTest`: one test per class, raising it where flnd raises it and checking its place in

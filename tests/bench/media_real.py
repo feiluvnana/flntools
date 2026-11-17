@@ -19,7 +19,7 @@ How it goes:
    under 15% is marked: the compress step leaves it alone by default.
 
 It prints no file names, only counts per kind, so its output can be pasted into
-`docs/performance.md` as it is.
+`flnddocs/performance.md` as it is.
 """
 
 from __future__ import annotations
