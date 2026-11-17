@@ -392,8 +392,10 @@ class Api:
 
         The call is made with `check=False`, so a refusal comes back as its response: its body
         says whether it is a throttle, a login wall, or flnd's client being refused, which moves
-        the calls into the tab (`_waited`). `site.fetch` would otherwise raise a 401 or 403 as a
-        `LoginError`, and the tab's fetch would never be tried.
+        the calls into the tab (`_waited`). So does an answer that is a page instead of JSON:
+        Instagram didn't treat the call as an API call, and the tab's own fetch is. `site.fetch`
+        would otherwise raise a 401 or 403 as a `LoginError`, and the tab's fetch would never
+        be tried.
 
         Args:
             site: the target's site.
@@ -429,9 +431,16 @@ class Api:
             self.claim = response.headers.get("x-ig-set-www-claim") or self.claim
             try:
                 return response.json
-            # An answer that isn't JSON is an HTML error or login page: the caller reads the page.
             except Changed:
-                raise Changed(f"{url}: Instagram's answer isn't JSON") from None
+                if self.in_page:
+                    # An answer that isn't JSON from the tab is an HTML error or login page:
+                    # the caller falls back to the post's page.
+                    raise Changed(f"{url}: Instagram's answer isn't JSON") from None
+                # A page instead of an answer is Instagram not treating the call as an API
+                # call; the tab's own fetch is (seen 2026-11-17). Call again from the tab.
+                self.in_page = True
+                site.warn("Instagram answered the API with a page; sending its API calls "
+                          "from the page")
 
     def media(self, site: Site, pk: str) -> dict | None:
         """One post by `pk`, from `/api/v1/media/<pk>/info/`.
@@ -447,8 +456,8 @@ class Api:
             earlier this run.
 
         Raises:
-            SiteError, NetworkError, LoginError: as `get`. A refusal from the tab also marks
-                the API refused for the rest of the run.
+            SiteError, NetworkError, LoginError: as `get`. A refusal, or a page answer, from
+                the tab marks the API refused for the rest of the run.
         """
         if "media" in self.refused:
             return None
@@ -481,6 +490,11 @@ class Api:
             # A refused media API isn't fatal: the post's page, read below, still holds the post.
             try:
                 media = self.media(site, pk)
+            except Changed:
+                # Instagram answers the media endpoint with a page, as it answers the API
+                # (seen 2026-11-17): `get` announced the move into the page once, and the
+                # post's page is the source now. Saying it again per post is noise.
+                pass
             except (SiteError, NetworkError) as error:
                 site.warn("post {code}: media API refused ({error}); reading page",
                           code=code, error=error)
@@ -865,7 +879,10 @@ def lazy_files(site: Site, api: Api, code: str, pk: str | None, *,
     if pk:
         try:
             media = api.media(site, pk)
-        # A refused media API falls back to the post's page, as `Api.post` does.
+        # A page instead of media JSON is the mode `Api.get` announced once: the post's page
+        # below is the source, quietly. A refusal is said, as `Api.post` says it.
+        except Changed:
+            pass
         except (SiteError, NetworkError) as error:
             site.warn("post {code}: media API refused ({error}); reading page",
                       code=code, error=error)

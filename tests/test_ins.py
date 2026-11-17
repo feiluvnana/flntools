@@ -24,7 +24,7 @@ from flnd import _html, _net
 from flnd._time import day
 from flnd.engine import Engine
 from flnd.options import Options
-from flnd.source import LoginError, Request, SiteError, Target, UsageError
+from flnd.source import Changed, LoginError, Request, SiteError, Target, UsageError
 from flnd.sources.ins import (
     APP_ID,
     Instagram,
@@ -731,6 +731,34 @@ class ThrottleTest(unittest.TestCase):
         self.assertEqual([options["in_page"] for _, _, options in seen.requests], [False, True])
         self.assertIn("! Instagram refused flnd's own client; sending its API calls from the page", seen.messages)
 
+    def test_a_page_answered_to_the_api_moves_the_calls_into_the_page(self):
+        """A 200 answer whose body is a page isn't an answer: the tab's own fetch is asked."""
+        seen = Seen()
+
+        def media(url, request):
+            # flnd's own client is answered with a page; the tab's fetch with JSON.
+            if not seen.requests[-1][2]["in_page"]:
+                return SiteError("HTTP 200", status=200, response=_net.Response(
+                    200, url, {"content-type": "text/html"}, b"<html></html>"))
+            return JSON[f"{API}/media/{PK['T1']}/info/"]
+
+        saved = read(options=Options(categories=("tagged",)),
+                     json={**JSON, f"{API}/media/{PK['T1']}/info/": media}, seen=seen)
+        self.assertEqual([options["in_page"] for _, _, options in seen.requests], [False, True])
+        self.assertIn("! Instagram answered the API with a page; sending its API calls from the page",
+                      seen.messages)
+        self.assertIn(f"tagged/{DAY}_T1_0.jpg", [item.path for item in saved])
+
+    def test_a_page_answered_from_the_tab_is_a_refusal(self):
+        """From the tab, a page instead of an answer stays `Changed`: the callers read the page."""
+        seen = Seen()
+        page = SiteError("HTTP 200", status=200, response=_net.Response(
+            200, f"{API}/media/{PK['T1']}/info/", {"content-type": "text/html"}, b"<html></html>"))
+        site = FakeSite(seen=seen, json={f"{API}/media/{PK['T1']}/info/": page})
+        with self.assertRaises(Changed):
+            Instagram().api.media(site, PK["T1"])
+        self.assertEqual([options["in_page"] for _, _, options in seen.requests], [False, True])
+
     def test_a_refused_media_call_reads_the_posts_page(self):
         seen = Seen()
         pages = {**PAGES, f"{SITE}/p/T1/": shortcode_page({"code": "T1", "taken_at": STAMP,
@@ -739,6 +767,20 @@ class ThrottleTest(unittest.TestCase):
         saved = read(options=Options(categories=("tagged",)), json=refused, pages=pages, seen=seen)
         self.assertIn(f"tagged/{DAY}_T1.jpg", [item.path for item in saved])
         self.assertIn(f"{SITE}/p/T1/", seen.visited)
+        self.assertIn("media API refused", "\n".join(seen.messages))
+
+    def test_a_page_answered_to_the_media_call_reads_the_page_quietly(self):
+        """A page instead of media JSON is the mode `get` announced once: no warning per post."""
+        seen = Seen()
+        page = SiteError("HTTP 200", status=200, response=_net.Response(
+            200, f"{API}/media/{PK['T1']}/info/", {"content-type": "text/html"}, b"<html></html>"))
+        pages = {**PAGES, f"{SITE}/p/T1/": shortcode_page({"code": "T1", "taken_at": STAMP,
+                                                           **image("https://cdn.example/t.jpg")})}
+        answered = {**JSON, f"{API}/media/{PK['T1']}/info/": page}
+        saved = read(options=Options(categories=("tagged",)), json=answered, pages=pages, seen=seen)
+        self.assertIn(f"tagged/{DAY}_T1.jpg", [item.path for item in saved])
+        self.assertIn(f"{SITE}/p/T1/", seen.visited)
+        self.assertNotIn("media API refused", "\n".join(seen.messages))
 
     def test_a_login_wall_is_waited_out_and_the_page_loaded_again(self):
         site = Landing(Target("ins:SINGLE", kind="post"), pages=PAGES,
