@@ -1,4 +1,4 @@
-"""A store in one SQLite file: WAL, one connection shared by threads, explicit transactions.
+"""SQLite WAL store: one shared connection, explicit transactions.
 
 What it offers, for any caller:
 - `connect(path)`: a connection in WAL mode with `synchronous = NORMAL` (and `fullfsync` on
