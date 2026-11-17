@@ -2,7 +2,7 @@
 
 It is run, not only read: tests/test_job.py drives it through the engine on `flnd._net.fake`,
 and through `fakes.collect` on `FIXTURES`. Copy it to start a source: keep its shape and replace
-the site's knowledge (its URLs and JSON paths). flnddocs/writing-a-source.md walks through it.
+the site's knowledge (its URLs and JSON paths). flnd/docs/writing-a-source.md walks through it.
 
 What the made-up site gives, and the quirks a real one has that this one copies:
   - a JSON API on api.example.com that wants the login's `token` cookie as a Bearer header, which

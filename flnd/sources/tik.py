@@ -6,7 +6,7 @@ and the readers of TikTok's JSON (`items_of`, `best_video`, `stamp_of`, `page_st
 Who calls it: the engine, through the source API (`flnd.source`): `TikTok.user` and its
 categories for a profile, `TikTok.video` for one post. It calls only `flnd.source` and the stdlib.
 
-How a profile is read (`flnddocs/sources/tik` has the whole story):
+How a profile is read (`flnd/docs/sources/tik` has the whole story):
   1. The `user` route builds a `Profile` and opens nothing yet.
   2. The first category that needs the page opens `https://www.tiktok.com/@<user>` in the
      browser, with response watchers (`site.feed`) set up first so no response is lost, waits for

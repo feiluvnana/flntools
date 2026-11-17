@@ -41,7 +41,7 @@ logged-out browser gets what Facebook shows the public, which is little. A page 
 `/login` or `/login.php` (a login wall) is waited out `WALL_ATTEMPTS` times, then stops the
 target with a `LoginError` that says to log in again.
 
-Site quirks, each with the day it was first seen (flnddocs/sources/fbk has them for people):
+Site quirks, each with the day it was first seen (flnd/docs/sources/fbk has them for people):
 - 2026-11-11: a tab's path differs by profile (`photos_by` or `photos`, `reels_tab` or
   `reels`, `videos_by` or `videos`); the one the header lists is used (`TABS`, `tab_path`).
 - 2026-11-11: a video's progressive files moved under `videoDeliveryResponseFragment`; older

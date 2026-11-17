@@ -32,7 +32,7 @@ Bearer token (`decode_token`). Without it, `photo` works in full and `archive` w
 and the warning names the VIP level the post needs. The account's VIP level, read from
 `user/info`, sets today's limit (`VIP_DAILY_LIMITS`).
 
-Site quirks, each with the day it was first seen (flnddocs/sources/loi has them for people):
+Site quirks, each with the day it was first seen (flnd/docs/sources/loi has them for people):
 - 2026-11-11: every API request must carry the web client's signature headers, built from
   constants in the site's JavaScript (`sign_request`, `request_id`).
 - 2026-11-11: download links, the Baidu link and its password come AES-128-CBC encrypted under

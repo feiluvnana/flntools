@@ -183,7 +183,7 @@ stay as they were; the numbers are from the recorded baseline.
 
 ## Concurrency per host
 
-Each media host's cap adapts (`flnd._net.Cap`, flnddocs/architecture "Network"): it starts at 8
+Each media host's cap adapts (`flnd._net.Cap`, flnd/docs/architecture "Network"): it starts at 8
 transfers at once, halves on a 429, a 503, a reset or a timeout, and grows by one every 10
 clean transfers, up to 32, while the host's throughput still rises. The `net` group holds its
 caps fixed (`Limits(cap=8, most=8)`), so its numbers don't move with the adaptation.

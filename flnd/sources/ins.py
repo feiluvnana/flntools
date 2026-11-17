@@ -54,7 +54,7 @@ cookie file; the run loads them into the HTTP client and the browser. Logged out
 are read and Instagram shows what it shows the public, which is little. `ins:me` needs the
 account's id (`Api._self_id`: the `ds_user_id` cookie, the `sessionid` prefix, or the API).
 
-Site quirks, each with the date it was seen (the ins page in flnddocs/sources/ has them all):
+Site quirks, each with the date it was seen (the ins page in flnd/docs/sources/ has them all):
 - Throttling is a JSON answer, `"Please wait a few minutes..."`, not a status (2026-11).
 - flnd's own client may be refused (by its TLS fingerprint, it seems) while the tab's fetch
   is answered, so calls move into the tab (2026-11-12).
@@ -89,7 +89,7 @@ Folder layout under `.flnd/media/ins/<username>/`:
   stories/, highlights/<title>/       <date>_<id>.jpg (or .mp4), <date>_<id>_music.m4a
   profile/                            the CDN's own file name
 A post link's files sit in its own target folder, `ins/<code>/`. The guide for people is the
-ins page in flnddocs/sources/.
+ins page in flnd/docs/sources/.
 """
 
 from __future__ import annotations

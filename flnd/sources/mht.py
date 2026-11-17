@@ -58,7 +58,7 @@ Rules a change must keep:
 Under .flnd/media/mht/<target>/:
   chapters/<order> <title>/001.webp   a chapter's pages, by their place in the chapter
   cover/cover.webp                    the manga's cover
-See flnddocs/sources/mht.
+See flnd/docs/sources/mht.
 """
 
 from __future__ import annotations

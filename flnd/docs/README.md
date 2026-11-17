@@ -11,7 +11,7 @@ branch is; a part that isn't built yet is named as such, never described as work
 - **Adding a site:** [writing-a-source.md](writing-a-source.md), then the page of a built-in
   site that works like yours.
 - **Changing flnd itself:** [architecture.md](architecture.md), then the module docstrings of the
-  part you change. [AGENTS.md](../AGENTS.md) has the rules every change follows.
+  part you change. [AGENTS.md](../../AGENTS.md) has the rules every change follows.
 
 ## Guides
 

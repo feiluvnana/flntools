@@ -27,7 +27,7 @@ api:      ; $(RUN) python tests/api_snapshot.py --write
 manifest: ; $(RUN) python tests/source_manifest.py --write
 bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
 # A hand check: throughput from one real CDN host at caps 8, 16, 24 and 32, from URLs kept
-# outside the repo: `make cdn-real ARGS="--urls ~/flnd-cdn.txt"` (flnddocs/performance.md).
+# outside the repo: `make cdn-real ARGS="--urls ~/flnd-cdn.txt"` (flnd/docs/performance.md).
 cdn-real: ; $(RUN) python tests/bench/cdn_real.py $(ARGS)
 # The reference of the three public modules: the library, the source API and the test kit.
 docs:     ; $(RUN) pdoc -d google flnd flnd.source flnd.testing -o build/docs

@@ -1,4 +1,4 @@
-"""Keeps the docs in step with the code: docstrings, `flnddocs/` pages, links, CLI flags and sources.
+"""Keeps the docs in step with the code: docstrings, `flnd/docs/` pages, links, CLI flags and sources.
 
 AGENTS.md › Writing sets the rules this file checks. Each check is a test class below:
 
@@ -7,11 +7,11 @@ AGENTS.md › Writing sets the rules this file checks. Each check is a test clas
    section it lacks (`Args:` naming each argument, `Returns:`, `Yields:`, `Raises:`), and a
    public name without a runnable `Example:` (one with `>>>` lines). Every docstring with `>>>`
    lines then runs as a doctest.
-2. `PageTest` runs every `python` block of `flnddocs/**/*.md`, page by page, in a scratch folder.
-3. `LinkTest` checks that every relative link in `flnddocs/` and in the root's markdown resolves:
+2. `PageTest` runs every `python` block of `flnd/docs/**/*.md`, page by page, in a scratch folder.
+3. `LinkTest` checks that every relative link in `flnd/docs/` and in the root's markdown resolves:
    the file exists, and a `#fragment` names one of its headings.
-4. `CliTest` checks that `flnddocs/cli.md` names every command and every option the CLI parses.
-5. `SourcePageTest` checks that each built-in source has `flnddocs/sources/<code>.md`, and that no
+4. `CliTest` checks that `flnd/docs/cli.md` names every command and every option the CLI parses.
+5. `SourcePageTest` checks that each built-in source has `flnd/docs/sources/<code>.md`, and that no
    page is left for a source that is gone.
 6. `ReadmeTest` runs the `python` blocks of `README.md` offline, and parses every `flnd …`
    command line of its `bash` blocks with the CLI's own argparse parser, so a command, a flag or
@@ -50,7 +50,7 @@ from test_packaging import ROOT
 # The packages whose modules must document themselves. `tests/` is for contributors, not the
 # product, so it is left out.
 PACKAGES = ("flnd",)
-DOCS = ROOT / "flnddocs"
+DOCS = ROOT / "flnd" / "docs"
 # A private function this short (body lines, docstring included) needs no docstring: AGENTS.md
 # exempts "a few obvious lines".
 SHORT = 5
@@ -58,7 +58,7 @@ SHORT = 5
 SECTION = re.compile(r"^\s*(Args|Arguments|Returns|Yields|Raises|Examples?):\s*$")
 # The marker that skips the `python` block right after it, with an optional reason:
 # `<!-- docs-test: skip -->` or `<!-- docs-test: skip: it needs a real site -->`. A skipped block
-# in `flnddocs/` is a gap; one in the README must give its reason, and is still compiled.
+# in `flnd/docs/` is a gap; one in the README must give its reason, and is still compiled.
 SKIP = re.compile(r"^<!-- docs-test: skip(?:: (?P<reason>.+?))? -->$")
 README = ROOT / "README.md"
 # The terms the glossary must define: the words every page uses.
@@ -309,7 +309,7 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
 
 
 def page_gaps() -> list[str]:
-    """One gap per `flnddocs/` page with skipped `python` blocks: `<page>: <n> skipped blocks`."""
+    """One gap per `flnd/docs/` page with skipped `python` blocks: `<page>: <n> skipped blocks`."""
     gaps = []
     for page in sorted(DOCS.rglob("*.md")):
         skipped = sum(1 for _, _, skip in python_blocks(page) if skip)
@@ -336,7 +336,7 @@ def rule(gap: str) -> str:
         A short statement of the rule.
     """
     if gap.endswith("skipped python blocks"):
-        return "every python block in flnddocs/ runs; drop its skip marker and make it run"
+        return "every python block in flnd/docs/ runs; drop its skip marker and make it run"
     if gap.endswith("no module docstring"):
         return "a module starts with a docstring"
     if gap.endswith("no docstring"):
@@ -372,7 +372,7 @@ class DocstringTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------------------------
-# 2. Pages: the python blocks of flnddocs/
+# 2. Pages: the python blocks of flnd/docs/
 # ---------------------------------------------------------------------------------------------
 
 def fenced_blocks(page: Path) -> list[tuple[int, str, str, str]]:
@@ -430,7 +430,7 @@ def scratch() -> Iterator[Path]:
 
 
 class PageTest(unittest.TestCase):
-    """Every `python` block in `flnddocs/` runs, so an example can't rot."""
+    """Every `python` block in `flnd/docs/` runs, so an example can't rot."""
 
     def test_python_blocks_run(self) -> None:
         # The blocks of one page share a namespace, like a doctest session: a tutorial builds a
@@ -475,7 +475,7 @@ def anchors(page: Path) -> set[str]:
 
 
 def markdown_files() -> list[Path]:
-    """The pages whose links are checked: `flnddocs/` and the root's markdown files."""
+    """The pages whose links are checked: `flnd/docs/` and the root's markdown files."""
     return sorted([*DOCS.rglob("*.md"), *ROOT.glob("*.md")])
 
 
@@ -502,12 +502,12 @@ class LinkTest(unittest.TestCase):
         linked = {(DOCS / link.partition("#")[0]).resolve() for link in LINK.findall(index)}
         pages = {page.resolve() for page in DOCS.rglob("*.md")} - {(DOCS / "README.md").resolve()}
         missing = sorted(page.relative_to(DOCS).as_posix() for page in pages - linked)
-        self.assertFalse(missing, f"flnddocs/README.md doesn't link: {', '.join(missing)}")
+        self.assertFalse(missing, f"flnd/docs/README.md doesn't link: {', '.join(missing)}")
 
     def test_glossary_defines_the_terms(self) -> None:
         glossary = (DOCS / "glossary.md").read_text(encoding="utf-8").lower()
         missing = [term for term in TERMS if not re.search(rf"^#+\s+{term}\b", glossary, re.M)]
-        self.assertFalse(missing, f"flnddocs/glossary.md has no heading for: {', '.join(missing)}")
+        self.assertFalse(missing, f"flnd/docs/glossary.md has no heading for: {', '.join(missing)}")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -522,7 +522,7 @@ def cli_words() -> list[str]:
     `--help`'s `-h` spelling are left out: the page shows them in each command's usage line.
 
     Returns:
-        The words `flnddocs/cli.md` must contain, in command order.
+        The words `flnd/docs/cli.md` must contain, in command order.
     """
     import argparse
 
@@ -545,13 +545,13 @@ def cli_words() -> list[str]:
 
 
 class CliTest(unittest.TestCase):
-    """`flnddocs/cli.md` names every command and every option, so the page can't fall behind."""
+    """`flnd/docs/cli.md` names every command and every option, so the page can't fall behind."""
 
     def test_every_command_and_option_is_documented(self) -> None:
         page = (DOCS / "cli.md").read_text(encoding="utf-8")
         missing = [word for word in cli_words()
                    if not re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", page)]
-        self.assertFalse(missing, f"flnddocs/cli.md doesn't mention: {', '.join(missing)}")
+        self.assertFalse(missing, f"flnd/docs/cli.md doesn't mention: {', '.join(missing)}")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -559,7 +559,7 @@ class CliTest(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------
 
 class SourcePageTest(unittest.TestCase):
-    """Each built-in source has `flnddocs/sources/<code>.md`, and each page a source."""
+    """Each built-in source has `flnd/docs/sources/<code>.md`, and each page a source."""
 
     def test_one_page_per_source(self) -> None:
         from flnd.sources import SOURCES

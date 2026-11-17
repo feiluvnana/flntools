@@ -41,7 +41,7 @@ on the loop, where only `site.tab` (awaited) reaches the browser. A `Listing` be
 listing thread too: the job sets it before a category is listed and reads it after. A blocking
 call (`fetch`, `open`, …) made from code on the loop is refused, since it would wait for itself.
 
-The network side of a source (flnddocs/architecture, "Network"): one `flnd._net.Session` with the
+The network side of a source (flnd/docs/architecture, "Network"): one `flnd._net.Session` with the
 login's cookies, the source's user agent and its `sign` hook (for requests to its own
 domains), and one `flnd._net.Limits` with two pools:
 - *pages*, the listing's requests to the source's own `domains`: a token bucket at the
@@ -87,7 +87,7 @@ __all__ = ["Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "pa
 T = TypeVar("T")
 # Transfers at once to one media host (a CDN): where its cap starts, and the most it grows to
 # while the host's throughput still rises. A source's `limits` sets the most for its hosts.
-# 32 is the ceiling the real-CDN check in flnddocs/performance ("Concurrency per host") confirms.
+# 32 is the ceiling the real-CDN check in flnd/docs/performance ("Concurrency per host") confirms.
 MEDIA_CAP = 8
 MEDIA_MOST = 32
 # How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
@@ -96,7 +96,7 @@ EXPIRY_WARNING = 24 * 3600
 # What a site's own domains answer for a login wall.
 LOGIN_WALLS = frozenset({401, 403})
 # `back_off`'s waits for a block a page showed, in seconds, for the first, second and third round
-# in a row; a fourth round raises `Blocked` (flnddocs/errors). A site's own wait is capped at an
+# in a row; a fourth round raises `Blocked` (flnd/docs/errors). A site's own wait is capped at an
 # hour, as a 429's `Retry-After` is.
 BACK_OFF = (30.0, 120.0, 480.0)
 LONGEST_WAIT = 3600.0

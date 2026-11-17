@@ -273,7 +273,7 @@ class Engine:
 
         Each target with failed files lists each failed post again, from the cursor of the page
         it was on, and downloads the files that failed, from `(target, post, file)`: never a
-        stored URL (flnddocs/errors). A target whose listing failed whole is downloaded again, its
+        stored URL (flnd/docs/errors). A target whose listing failed whole is downloaded again, its
         failed files first. A gone file (`NotFound`) isn't retried; `--again` asks for those.
 
         Returns:
@@ -1158,7 +1158,7 @@ class Engine:
             A list the command appends its report to, for the row's count of saved files.
         """
         named = " ".join([command, *map(str, targets[:3])])
-        # Each run's logs and samples are kept for a month (flnddocs/storage).
+        # Each run's logs and samples are kept for a month (flnd/docs/storage).
         _home.sweep(self.home)
         with _home.open(self.home) as db:
             self.run = db.start(named if len(targets) <= 3 else f"{named} …")

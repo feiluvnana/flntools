@@ -3,7 +3,7 @@
 Written 2026-11-17, from the state of `main` at 49ff2dd. This plan answers seven hints from the
 user (quoted in each section) and turns them into ordered steps. Each step is one or a few
 commits, keeps `make check` green, and runs `make bench ARGS=--gate` when it touches a hot
-path. When the work is done, this file is deleted and what lasts moves into `flnddocs/`.
+path. When the work is done, this file is deleted and what lasts moves into `flnd/docs/`.
 
 ## Where we start
 
@@ -53,7 +53,7 @@ What is wrong today:
    (`test_plugins.ExamplesTest`). `HEAD` itself is green. **`examples/` goes for good** (user,
    2026-11-17), and step 0 finishes the removal. A runnable example is still kept, where it
    can't go stale:
-   - the `python` blocks of `flnddocs/library.md` and `flnddocs/writing-a-source.md`, which
+   - the `python` blocks of `flnd/docs/library.md` and `flnd/docs/writing-a-source.md`, which
      `test_docs` runs;
    - `tests/example_source.py`, a whole source with its test.
 
@@ -120,10 +120,10 @@ flntools/
 │   ├── _extension.py     the extension's native host and protocol, private
 │   └── sources/
 ├── extension/            the flnd Chrome extension: MV3, plain JS, no build step
-└── tests/  flnddocs/
+└── tests/  flnd/docs/
 ```
 
-Rules that change (AGENTS.md and `flnddocs/architecture.md` are updated in the same steps):
+Rules that change (AGENTS.md and `flnd/docs/architecture.md` are updated in the same steps):
 - **Two packages, one wheel.** `flncore` and `flnd` ship together (`[tool.hatch...] packages =
   ["flncore", "flnd"]`), and PyInstaller collects both. `core` imports nothing from `flnd`
   (`tests/test_layers.py` gets a new rule 0). A source still imports only `flnd.source`.
@@ -170,7 +170,7 @@ the same way. `tests/test_names.py` and `tests/test_docs.py` cover it, and
 - a resource is a context manager;
 - one spelling, with no aliases;
 - every error is a `flncore.Error` with a `hint`;
-- every public name has a signpost docstring and a section in `flnddocs/flncore.md`, whose examples the docs test runs.
+- every public name has a signpost docstring and a section in `flnd/docs/flncore.md`, whose examples the docs test runs.
 
 Everything is imported from the top, each name loaded on first use:
 
@@ -320,7 +320,7 @@ flnd 0.2.0 · download what you follow, and keep it up to date
 targets  ins:example_user · ins:example_user/reels · a link · mht?words
 sites    ins tik twt fbk tlg loi mht   (flnd get -h: each site's categories)
 flags    -v debug lines and tracebacks · -h help
-docs     flnddocs/start.md
+docs     flnd/docs/start.md
 ```
 
 - **The rules for help text:** one line per command, taken from its docstring's summary
@@ -328,7 +328,7 @@ docs     flnddocs/start.md
 - **`flnd <group> -h`** shows that group's commands, one line each.
 - **`flnd get -h`** adds one line per site: its code, name and categories, with its own
   categories marked. That's 7 lines, not 90.
-- **Each site's target forms and link shapes** live in `flnddocs/sources/<code>.md`. A
+- **Each site's target forms and link shapes** live in `flnd/docs/sources/<code>.md`. A
   target that no site reads is a `UsageError` whose hint names the site that owns the
   domain and its page.
 - **The Charm Huh look stays:** the palette, bold commands and dim descriptions, drawn by
@@ -349,7 +349,7 @@ docs     flnddocs/start.md
 
 A bare `flnd` prints the help. `get` and `sync` show a live line per file in flight, and leave
 one line per target and one per failure (see The log). They exit with the codes that
-`flnddocs/cli.md` lists, which are unchanged.
+`flnd/docs/cli.md` lists, which are unchanged.
 
 Where the old commands go:
 
@@ -485,7 +485,7 @@ How it is drawn (`flncore.log`), built so drift can't happen:
    ```
 
    The file opens with a `Start` line (command, version) and ends with the `Report`. The
-   fields shown are a few of each event's; `flnddocs/storage.md` lists them all.
+   fields shown are a few of each event's; `flnd/docs/storage.md` lists them all.
 
    - **One format, not two.** Each event object is exactly what `flnd.encode(event)` gives, from the
      same `msgspec` encoder (`flnd._events.encode`), with `at` added. `Log` lines (`log.warn`
@@ -615,19 +615,19 @@ log items and makes no decisions of its own. A script reading events sees the sa
    with native messaging too. Safari needs an app wrapper and is out. Cookie files cover
    everything else.
 
-## Docs: flnddocs
+## Docs: flnd/docs
 
-> "The docs will reflect every corner and how to use flnd, renamed to flnddocs, while flnd
+> "The docs will reflect every corner and how to use flnd, renamed to flnd/docs, while flnd
 > comments will be kept to a few lines in each spot to guide the reader only." (user,
 > 2026-11-17)
 
 This replaces the rule of 2026-11-16 ("extensive comments and docs"). The explanation moves
 out of the code and into one place, and the code keeps signposts.
 
-**`flnddocs/`** (renamed from `docs/`) is where every question about flnd is answered:
+**`flnd/docs/`** (renamed from `docs/`) is where every question about flnd is answered:
 
 ```
-flnddocs/
+flnd/docs/
 ├── README.md            the map: which page answers what
 ├── start.md             install, the extension, the first get, the first sync, cron
 ├── cli.md               every command and argument, with examples and the exit codes
@@ -664,17 +664,17 @@ It also still runs every `python` block in the pages, and parses every `flnd` co
 in them. So a page that shows something wrong, or misses something new, fails `make check`.
 
 **The code's comments are signposts** (the new "Writing" rules of AGENTS.md):
-- **A module docstring** is 1 to 3 lines: what the module holds, and the `flnddocs` page that
+- **A module docstring** is 1 to 3 lines: what the module holds, and the `flnd/docs` page that
   explains it. There are no numbered flows, and no "who calls it" sections: those are in
   `architecture.md`.
 - **A public class or function** has a summary line, then `Args:`, `Returns:` and `Raises:`,
   one line per item, only when they say more than the name and the type do. There is no
-  `Example:`: examples live in `flnddocs`, where they run.
+  `Example:`: examples live in `flnd/docs`, where they run.
 - **A private function** gets a docstring only when its name doesn't say what it does.
 - **A comment** is for what the code can't say: a site quirk with the date seen, a magic
   number's source, which thread a call runs on or which lock it needs, why a failure is
-  safe to ignore. One or two lines, pointing to `flnddocs` for more.
-- **A change of behaviour** updates its `flnddocs` page in the same commit, as before.
+  safe to ignore. One or two lines, pointing to `flnd/docs` for more.
+- **A change of behaviour** updates its `flnd/docs` page in the same commit, as before.
 
 **What it does to the size:** docstrings and comments are about half of every file today. With
 signposts instead, the estimates fall to about **11,000 lines for `flnd/` and `flncore/`**
@@ -704,7 +704,7 @@ and only one survived (tomlkit was added later, for `flnd config`):
 | tenacity for retries | refused | flnd's policy has two budgets (429 rounds and other failures), a half-jitter wait, `Retry-After` and reset parsing, and hooks. tenacity would supply only the loop, saving about 10 lines for 12 µs more per request |
 | aiolimiter for pacing | refused | Its timing runs on `loop.time()`, so the fake clock can't drive it, and it has no hold, no halve-on-429 and no stop event. The wrapper would be as big as `Bucket` (about 45 lines) |
 | anyio's portal for the loop | refused | `start_task_soon` waits until the loop has scheduled the task, while `Loop.submit` is fire-and-forget. One task per file is submitted from the listing thread, so this risks `cpu.loop_task` (6.7 µs) and `e2e.latency_500_posts`. The 32.8 µs measured earlier was a raw `run_coroutine_threadsafe`, not `Loop` |
-| keyring + Fernet for secrets | refused | A keychain that is locked over ssh or from cron would break unattended syncs. A key stored beside the data protects nothing. The secret store stays plaintext, as `flnddocs/architecture.md` decided, but in a file only its owner can read (0600, in a 0700 folder), which it isn't today |
+| keyring + Fernet for secrets | refused | A keychain that is locked over ssh or from cron would break unattended syncs. A key stored beside the data protects nothing. The secret store stays plaintext, as `flnd/docs/architecture.md` decided, but in a file only its owner can read (0600, in a 0700 folder), which it isn't today |
 | portalocker for part locks | refused | flnd locks one byte far past a part's end, so ffmpeg and a source's `fetch` can still write the file. portalocker on Windows locks from offset 0. The hand-written lock is about 30 lines |
 | puremagic for kinds | refused | `sniff` is 40 lines. puremagic spells and orders extensions differently |
 | pathvalidate for names | refused | `filename`'s output may never change, or saved files download again under new names. pathvalidate deletes characters that `filename` turns into `_`. It is likely slower than the `cpu.filename` gate too |
@@ -862,7 +862,7 @@ Step 0 takes the three one-line fixes (25, 29, 30), so they ship before anything
 
 - `--compress`, `[defaults] compress`, `[compress]`, `_shrink.py`, Pillow, pyoxipng, the
   photo and video compress lanes, `Chain.backlog`, `make media-real`, and the compress half
-  of `flnddocs/media.md`.
+  of `flnd/docs/media.md`.
 - The `ui` setting, the `Flnd.ui` property, and every leftover from the full screen.
 - Live stats: `_stats.py`, psutil, `Run.stats`, `flnd.Stats` and the `Stats` JSON lines. The
   log line shows a file's own speed, so nothing else needs the meter.
@@ -872,7 +872,7 @@ Step 0 takes the three one-line fixes (25, 29, 30), so they ship before anything
 Cut to make it shorter, each because it is a second way to do something, or rarely worth what
 it costs:
 - **`--exec`.** The `.jsonl` run log is already a stream of `Saved` events, and a script, or
-  `jq` over `tail -f`, acts on it. That removes `_Exec`, its quoting rules, a page of `flnddocs/cli.md`, and a
+  `jq` over `tail -f`, acts on it. That removes `_Exec`, its quoting rules, a page of `flnd/docs/cli.md`, and a
   place where text from a site comes near a command line.
 - **Following links to other sites** (`Engine._found`, `FOLLOW_DEPTH`, up to two links deep).
   A listing that yields a `Target` for another site gets a one-line note in the log, which
@@ -902,7 +902,7 @@ it costs:
 
   - `again`, `when`, `ui` and `compress` go with their flags.
   - `[compress]` goes with compression. `[vault] key` already has no reader since 49ff2dd;
-    `flnddocs/storage.md` still documents it.
+    `flnd/docs/storage.md` still documents it.
   - `pace`, `scroll`, `limits` and `stop_after` go: a source declares them, and the AIMD
     cap adapts by itself.
   - A source's own keys are new: each source declares them (see the source API), and
@@ -916,7 +916,7 @@ it costs:
       appends the commented lines of keys the file lacks: new ones from a newer flnd, or
       from a plugin installed since. It never changes a value or a comment of yours, and it
       says what it added. The template is generated from the settings' classes, so the
-      file, `flnddocs/storage.md` and the code can't drift.
+      file, `flnd/docs/storage.md` and the code can't drift.
     - **`set <key> <value>`** runs `init` first when there is no file. It then writes the
       key in place: it replaces the key's commented line in its table, so the comment above
       stays with it. It checks the value with the same msgspec struct that reads the file,
@@ -963,7 +963,7 @@ Kept: dedupe, unpacking archives (the user said on 2026-11-13 not to remove it),
 `when`, `limit` and `dry` (in the library), searches (`mht?words`), smart sync whole (heads,
 cursors, stacked gaps, retrying failures), plugins, and every source.
 
-What flnd is next to gallery-dl and yt-dlp, which `flnddocs/architecture.md#compared-with-similar-tools`
+What flnd is next to gallery-dl and yt-dlp, which `flnd/docs/architecture.md#compared-with-similar-tools`
 says in full: they read sites over HTTP. flnd also drives a real browser when a site needs
 one, takes its login from the browser you already use, and keeps a target in sync cheaply
 (one request when nothing is new, no gaps after a cut-short run, failed files brought back by
@@ -1087,7 +1087,7 @@ Each item has a test that fails before its fix:
 
 ## Steps
 
-Every step trims the docstrings and comments of the code it touches to signposts, and writes what it removed into the right `flnddocs` page, so nothing a reader needs is lost.
+Every step trims the docstrings and comments of the code it touches to signposts, and writes what it removed into the right `flnd/docs` page, so nothing a reader needs is lost.
 
 Mechanical steps (moves, renames, import updates, snapshots) are delegated to a low-cost model
 (AGENTS.md, Models). Design, the log, the state machine and the source API keep the stronger
@@ -1095,20 +1095,20 @@ model. Each step lists what it measures.
 
 | # | step | kind | done when |
 | --- | --- | --- | --- |
-| 0 | **Baseline and cleanup.** Rename `docs/` to `flnddocs/` (links, Makefile, `test_docs`, README) and rewrite AGENTS.md's "Writing" rules to the signpost rules of Docs. Finish removing `examples/`: take `examples` out of the Makefile's `lint`, delete `test_plugins.ExamplesTest` (moving anything it alone covered onto `tests/example_source.py`), and drop the mentions in README, AGENTS.md and `flnddocs/writing-a-source.md`. Record `make bench` and line counts. Remove the dead arguments and the vault's legacy path (problem 8), and drop `run.log` (problem 12). Add a terminal-emulator test (pyte) that reproduces the drift on today's `_ui` | cleanup + design | `make check` green; the drift test fails, marked expected-failure |
+| 0 | **Baseline and cleanup.** Rename `docs/` to `flnd/docs/` (links, Makefile, `test_docs`, README) and rewrite AGENTS.md's "Writing" rules to the signpost rules of Docs. Finish removing `examples/`: take `examples` out of the Makefile's `lint`, delete `test_plugins.ExamplesTest` (moving anything it alone covered onto `tests/example_source.py`), and drop the mentions in README, AGENTS.md and `flnd/docs/writing-a-source.md`. Record `make bench` and line counts. Remove the dead arguments and the vault's legacy path (problem 8), and drop `run.log` (problem 12). Add a terminal-emulator test (pyte) that reproduces the drift on today's `_ui` | cleanup + design | `make check` green; the drift test fails, marked expected-failure |
 | 1 | **Remove** compress, the `ui` setting, live stats, the `--help` timing test, and the cuts under "What is removed", with their config keys, deps, tests and docs | mechanical + docs | api.txt diff reviewed; Pillow, pyoxipng and psutil are gone |
 | 2 | **Simplify in place**, one module per commit, still inside `flnd/`, following Module by module: `_tools` → `run`; `_unpack` on `shutil.unpack_archive` with its safety kept; `_files`, `_vault` (0600, dead crypto out), `_db`, `_home` (version check, `failures_key` in `SCHEMA`), `_check`, `options` on msgspec, `_net` (segments, stats views and the mirror loop out; `Cap` pulled out as it is), `_loop`, `_transfer`. Each commit passes the bench gate and builds `make dist` | design per module | each row of Module by module reaches its estimate, or its commit says why not |
 | 3 | **Create `flncore/`** and move `_ui` → `log`, `_prompt` → `prompt`, `_run` → `run`, the base of `errors`). It then moves the slimmed `loop`, `clock`, `net`, `browser`, `media`, `files`, `dig` and `config` in as well, with their fakes into `flncore/testing.py`. `test_names`, `test_docs` and a `flncore-api.txt` snapshot cover it from this commit on. Update imports, `test_layers` rule 0, packaging, `make dist`, and the API snapshots | mechanical | `make check` and the bench gate pass; no behaviour change |
 | 4 | **`flncore.log`**: items with stable keys, one renderer, no wrapping, capped region, and the `.jsonl` run log. The Charm Huh palette and glyphs move over | design | the drift test from step 0 passes; every line of a run's `.jsonl` decodes, and the file holds no `Progress` events |
 | 5 | **`flncore.cli` and `flncore.prompt`**: cyclopts with a Charm Huh help formatter, error and hint printing, JSON lines and the exit-code table; questionary with the Charm style, and no test sniffing | design | `flncore-api.txt` reviewed; the help output is checked against a stored snapshot |
 | 6 | **The file's state machine** in the job. Events and log items both come from it. `cli._Plain` and `_RunLogStream` go | design | a transition test covers every state and Ctrl-C |
-| 7 | **The new CLI tree** (`get`, `sync`, `target`, `auth`, `status`, `plugin`) as annotated functions on `flncore.cli`, with only `-v`, `--all` and `-h`; categories in the target (`ins:example_user/reels`) and tab links; `own` categories; the library API of The library (`get(all, when, limit, dry)`, the collections `targets`, `auth`, `plugins`, `extension` and `config`, `flnd config init/set/remove` on tomlkit, and source-declared settings, no `again`); `make try` as `tests/try.py` | design + docs | `flnddocs/cli.md` and `flnddocs/library.md` match the code (`test_docs`); the API snapshot diff reviewed |
+| 7 | **The new CLI tree** (`get`, `sync`, `target`, `auth`, `status`, `plugin`) as annotated functions on `flncore.cli`, with only `-v`, `--all` and `-h`; categories in the target (`ins:example_user/reels`) and tab links; `own` categories; the library API of The library (`get(all, when, limit, dry)`, the collections `targets`, `auth`, `plugins`, `extension` and `config`, `flnd config init/set/remove` on tomlkit, and source-declared settings, no `again`); `make try` as `tests/try.py` | design + docs | `flnd/docs/cli.md` and `flnd/docs/library.md` match the code (`test_docs`); the API snapshot diff reviewed |
 | 8 | **Slim the engine:** split `job.py`; the step chain becomes `to_thread`; trim `home.py` (old-home migration goes) | refactor | bench gate passes; line goals reported |
 | 9 | **Source API 2:** engine-side backoff and pre-loading, the smaller `Site`, `Browser(...)`, and the new class checks. Migrate the 7 sources and `tests/example_source.py`. | design | every source test passes; the writing guide is rewritten |
 | 10 | **The extension, part 1: logins.** `extension/` with `cookies` only, `flnd/_extension.py`, `flnd host`, `flnd extension install`/`remove` and `fl.extension` (copy the files, the host manifests for each Chromium browser and OS, the guided step, waiting for the connection), `auth login` through it. Then delete `_cookies.py` and its tests | design | the fake-extension protocol tests pass; `make ext` reads a test cookie from the local site; a live login per cookie source, by hand |
 | 11 | **The extension, part 2: the browser.** The remaining ops, the backend switch in `site.py`, `Browser(real=True)`, and the popup's Get and Follow | design | every source's browser test runs on both backends against the fakes; live checks on fbk and ins, by hand |
 | 12 | **Bullet-proofing** items 2–7 above, plus the audit of broad excepts (problem 13), the CLI's duck typing (11), and a test forbidding private access across modules (9) | design | each item's test is in `make check` |
-| 13 | **Docs and handover:** the coverage test of Docs turned on for every page (each earlier step already keeps its own pages true); README points to `flnddocs/start.md`; a last pass trims any docstring or comment still longer than a signpost; AGENTS.md (the dependency and writing rules). List the live hand checks per source for the user. Delete this file | docs | `make check` passes with the coverage test on; line counts reported against the goals |
+| 13 | **Docs and handover:** the coverage test of Docs turned on for every page (each earlier step already keeps its own pages true); README points to `flnd/docs/start.md`; a last pass trims any docstring or comment still longer than a signpost; AGENTS.md (the dependency and writing rules). List the live hand checks per source for the user. Delete this file | docs | `make check` passes with the coverage test on; line counts reported against the goals |
 
 Order:
 - The removals (1) come first, so that nothing is swapped for a dependency only to be deleted.

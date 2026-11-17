@@ -77,7 +77,7 @@ class Saved(msgspec.Struct, frozen=True, tag=True):
     date: datetime.date | None
     # The file's size in bytes, as it is now (after `--compress`, the compressed size).
     size: int
-    # Whether a retry brought it back: an earlier run failed on it (flnddocs/errors).
+    # Whether a retry brought it back: an earlier run failed on it (flnd/docs/errors).
     retried: bool = False
 
 

@@ -1,6 +1,6 @@
 """The steps after a file lands, in their one fixed order, and the threads that run the slow ones.
 
-Every saved file goes through the same chain (the architecture guide, flnddocs/storage):
+Every saved file goes through the same chain (the architecture guide, flnd/docs/storage):
 
     download (hashing) → dedupe → unpack → date → place → record → sidecar → Saved
 

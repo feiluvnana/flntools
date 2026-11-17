@@ -1628,14 +1628,14 @@ class Downloads:
                 saved = (await self._fetch(queued, refreshed, received)
                          if refreshed is not None else None)
         # Another run holds this file's part: it saves the file and writes its row, so this run
-        # skips it (flnddocs/storage, "Sharing a home").
+        # skips it (flnd/docs/storage, "Sharing a home").
         except _files.BusyError:
             self._count(queued, downloading=-1, skipped=1)
             self.settings.emit(Skipped(self.target, placed.post.category, placed.post.id,
                                        queued.dest))
             ui.info("{name}: being saved by another run", name=placed.path)
             return False
-        # A file the site or the network failed fails alone; the run goes on (flnddocs/errors).
+        # A file the site or the network failed fails alone; the run goes on (flnd/docs/errors).
         except (SiteError, NetworkError) as error:
             self._record_failed(queued, error)
             self._count(queued, downloading=-1, failed=1)

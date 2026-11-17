@@ -39,7 +39,7 @@ cookie file; the engine loads them into the HTTP client and the browser. API cal
 `WALLS` (the login flow, or the locked-account page) stops the target with a `LoginError`; it
 isn't waited out. A 401 or 403 from the API is a `LoginError` too.
 
-Site quirks, each with the day it was first seen (flnddocs/sources/twt has them for people):
+Site quirks, each with the day it was first seen (flnd/docs/sources/twt has them for people):
 - 2026-11-11: a timeline sits under `timeline` in one response shape and `timeline_v2` in the
   other; the Media tab's later pages come as `moduleItems`, not `entries`.
 - 2026-11-11: a tweet with limited visibility comes inside a wrapper (`unwrap`).
@@ -69,7 +69,7 @@ Under .flnd/media/twt/<target>/:
   posts/, highlights/, reposts/, replies/   <date>_<tweet_id>_<n>.<ext>
   images/, videos/                          the Media tab's photos and videos
   profile/                                  avatar_<id>.jpg and banner_<id>.jpg
-A tweet link's files sit in its own target folder, `twt/<tweet id>/`. See flnddocs/sources/twt.
+A tweet link's files sit in its own target folder, `twt/<tweet id>/`. See flnd/docs/sources/twt.
 """
 
 from __future__ import annotations

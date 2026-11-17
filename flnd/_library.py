@@ -266,7 +266,7 @@ class Flnd:
         A download or sync already retries a target's failed files first, on at most 3 runs
         each; this takes every one, at once. Each failed post is listed again through its
         source, for fresh URLs, and only its failed files are downloaded: a retry never uses a
-        stored URL, which `flnd.db` keeps redacted (flnddocs/errors). A target whose listing failed
+        stored URL, which `flnd.db` keeps redacted (flnd/docs/errors). A target whose listing failed
         whole is downloaded again. A gone file (a 404 or 410) isn't retried; `again=True`
         asks for those.
 
@@ -414,7 +414,7 @@ class Flnd:
         `fix=True` makes the history match the disk, and never deletes, moves or downloads a
         file: a missing file's row goes, a file of the wrong size gets its row's size and hash
         from the disk, and an unknown file is adopted, by its `(target, post, file)` key where
-        a failed run recorded one (flnddocs/storage, "Checking a home").
+        a failed run recorded one (flnd/docs/storage, "Checking a home").
 
         Args:
             fix: also repair the history; False only reports.

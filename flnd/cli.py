@@ -29,7 +29,7 @@ How a command runs (`main`):
 Rules a change must keep:
 - Import nothing heavy at the top: argparse, os and sys only. Everything else is imported by
   the command that needs it, so `flnd --help` pays for none of it.
-- One flag, one spelling: no aliases. The docs' CLI page (flnddocs/cli) names every command and
+- One flag, one spelling: no aliases. The docs' CLI page (flnd/docs/cli) names every command and
   flag, and `tests/test_docs.py` checks it against this parser.
 - `--json` never asks a question: a command that would ask is a usage error instead. Every
   line it prints on standard output is one JSON object with a `type`, an error included.
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 __all__ = ["exit_code", "main", "parser"]
 
-# The exit codes (flnddocs/cli). A cron job can tell "some files failed" (1) from "flnd itself
+# The exit codes (flnd/docs/cli). A cron job can tell "some files failed" (1) from "flnd itself
 # stopped" (4).
 OK, FAILED, USAGE, LOGIN, BROKE, STOPPED = 0, 1, 2, 3, 4, 130
 # Each error class's exit code when it ends a command, by class name, so that reading it needs

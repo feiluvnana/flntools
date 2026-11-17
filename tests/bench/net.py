@@ -13,7 +13,7 @@ Steps:
    (the default cap per host);
 4. download the four 16 MiB files at once onto a disk throttled to 20 MB/s (each write sleeps
    for its size at that rate), while a probe on the loop wakes every 5 ms: `stall_20mbs` is the
-   longest the loop was held up, which must stay under 100 ms (flnddocs/performance).
+   longest the loop was held up, which must stay under 100 ms (flnd/docs/performance).
 
 Each run starts with an empty output folder, so every file is written fresh.
 """

@@ -2,7 +2,7 @@
 
 A source answers one question: what posts does this target have? It declares what it is, and
 implements a few well-named hooks; flnd does everything else (the disk, the history, retries,
-pacing, concurrency, the early stops, resuming). `flnddocs/writing-a-source` walks through one.
+pacing, concurrency, the early stops, resuming). `flnd/docs/writing-a-source` walks through one.
 
     from flnd.source import File, Post, Source, target
 
@@ -1904,7 +1904,7 @@ def _check_api(cls: type[Source], label: str) -> None:
                           hint="update flnd")
     if api < API:
         raise SourceError(f"{label} was written for source API {api}; this flnd has {API}",
-                          hint="see flnddocs/writing-a-source.md#source-api-versions")
+                          hint="see flnd/docs/writing-a-source.md#source-api-versions")
 
 
 def _check_templates(cls: type[Source], label: str) -> None:

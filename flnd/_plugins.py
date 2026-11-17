@@ -289,7 +289,7 @@ def _checked(plugin: Plugin, made: Any) -> type[Source]:
                               hint=f"name the file {classes[0].code}.py, or set "
                                    f'code = "{plugin.code}"')
         raise SourceError("it defines no flnd.source.Source subclass",
-                          hint="see flnddocs/writing-a-source")
+                          hint="see flnd/docs/writing-a-source")
     if not (inspect.isclass(made) and issubclass(made, Source)):
         raise SourceError(f"the entry point gives {made!r}, not a flnd.source.Source subclass")
     if made.code != plugin.code:

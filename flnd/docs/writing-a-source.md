@@ -444,7 +444,7 @@ and run `make manifest`. Then:
 
 1. write `tests/test_<code>.py`, with fixtures for each route and category, and a `ROUTES`
    table with a row for each pattern;
-2. write `flnddocs/sources/<code>.md`, in the shape of the other pages there (the docs test fails
+2. write `flnd/docs/sources/<code>.md`, in the shape of the other pages there (the docs test fails
    until it exists);
 3. run `make check`;
 4. try it by hand on a test account: `make try ARGS=exm:example_user`.
