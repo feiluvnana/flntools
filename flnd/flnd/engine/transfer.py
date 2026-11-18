@@ -342,8 +342,10 @@ async def _dash_merge(client: net.Client, video: str, audio: str, held: files.Pa
         if stop is not None and stop.is_set():
             raise KeyboardInterrupt
         row.caption("merging")
+        # Looked up before the try: a missing ffmpeg raises here and keeps the streams.
+        ffmpeg = files.ffmpeg()
         try:
-            await media.join(streams[0], streams[1], held)
+            await media.join(streams[0], streams[1], held, ffmpeg)
         finally:
             # Merged or not, the streams go: a failed merge (a short stream, a container that
             # can't hold them) is tried again from new downloads.

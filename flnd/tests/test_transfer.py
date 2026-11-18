@@ -390,6 +390,17 @@ class DashDownloadTest(NetCase):
             self.merged(client, "r.webm")
         self.assertEqual(list((self.tmp / "reels").iterdir()), [])
 
+    def test_missing_ffmpeg_keeps_the_downloaded_streams(self):
+        """With ffmpeg missing, the streams stay on disk so the next run merges them without downloading again."""
+        def missing():
+            raise _tools.MissingError("ffmpeg: not found on PATH", hint="install ffmpeg")
+
+        with self.client() as client, mock.patch.object(_tools, "ffmpeg", missing), \
+                self.assertRaises(_tools.ToolError):
+            self.merged(client)
+        self.assertEqual(sorted(path.name for path in (self.tmp / "reels").iterdir()),
+                         ["r.mp4.audio.part", "r.mp4.video.part"])
+
     def test_invalid_video_stream_falls_back_to_progressive_mirror(self):
         """When ffmpeg fails opening video.part, falls back to direct progressive video."""
         patcher, _ = self.fake_ffmpeg(fail_video=True)

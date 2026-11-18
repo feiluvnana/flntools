@@ -15,7 +15,8 @@ _log = logging.getLogger(__name__)
 __all__ = ["join"]
 
 
-async def join(video: files.Part, audio: files.Part, out: files.Part) -> None:
+async def join(video: files.Part, audio: files.Part, out: files.Part,
+               ffmpeg: files.Tool) -> None:
     """Join `video` and `audio` into `out`'s part, copying both streams (no re-encode).
 
     The container follows `out.dest`'s suffix: `.webm` is WebM, anything else MP4 with
@@ -25,12 +26,11 @@ async def join(video: files.Part, audio: files.Part, out: files.Part) -> None:
         video: the part holding the video stream, already downloaded.
         audio: the part holding the audio stream, already downloaded.
         out: the part to write the joined file to; its `dest` gives the name and container.
+        ffmpeg: the ffmpeg tool, looked up by the caller before any download is kept or dropped.
 
     Raises:
-        ToolError: ffmpeg is missing.
         RunError: a stream is empty (0 bytes), or ffmpeg failed on the video.
     """
-    ffmpeg = files.ffmpeg()
     fmt = "webm" if out.dest.suffix.lower() == ".webm" else "mp4"
     flags = ["-movflags", "+faststart"] if fmt == "mp4" else []
     if video.size == 0:
