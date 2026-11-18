@@ -38,6 +38,7 @@ branch is; a part that isn't built yet is named as such, never described as work
 | `tik` | TikTok | [sources/tik.md](sources/tik.md) |
 | `tlg` | Telegram | [sources/tlg.md](sources/tlg.md) |
 | `twt` | Twitter/X | [sources/twt.md](sources/twt.md) |
+| `web` | any other link | [sources/web.md](sources/web.md) |
 
 ## Keeping the docs true
 

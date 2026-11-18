@@ -426,7 +426,7 @@ class SourcePageTest(unittest.TestCase):
         from flnd.sources import SOURCES
 
         pages = {page.stem for page in (DOCS / "sources").glob("*.md")}
-        self.assertEqual(sorted(pages), sorted(SOURCES))
+        self.assertEqual(sorted(pages), sorted([*SOURCES, "web"]))
 
 
 # ---------------------------------------------------------------------------------------------
