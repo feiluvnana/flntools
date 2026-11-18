@@ -318,7 +318,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "FAST", "HUMAN", "Browser", "Capture", "Feed", "Jar", "Match", "Page", "Reader",
-    "RunBrowser", "Tabs", "Visit", "WaitError", "launch", "local_storage",
+    "Cursors", "RunBrowser", "Tabs", "Visit", "WaitError", "launch", "local_storage", "matcher",
 ]
 
 # ---------------------------------------------------------------------------------------------
@@ -2092,10 +2092,10 @@ class Feed:
     def __init__(self, tabs: Tabs, match: Match, *, scroll: bool = False, lines: bool = False,
                  cursor: Reader | None = None):
         self._tabs = tabs
-        self._matches = _matcher(match)
+        self._matches = matcher(match)
         self._scroll = scroll
         self._lines = lines
-        self._cursors = _Cursors(cursor)
+        self._cursors = Cursors(cursor)
         self._closed = False
         self._waiting: deque[Any] = deque()
         tabs.push(self, scroll=scroll)
@@ -2230,10 +2230,10 @@ class Feed:
             self._cursors.read(value)
 
 
-class _Cursors:
+class Cursors:
     """What a feed's pages said about the next one, and whether the site said there is none.
 
-        cursors = _Cursors(lambda page: (page["more"], page.get("next")))
+        cursors = Cursors(lambda page: (page["more"], page.get("next")))
         cursors.read({"more": True, "next": "c2"})
         cursors.ended                                # False
         cursors.read({"more": False})
@@ -2343,7 +2343,7 @@ def _first_line(error: BaseException) -> str:
     return (str(error).splitlines() or [""])[0]
 
 
-def _matcher(match: Match) -> Callable[[str], bool]:
+def matcher(match: Match) -> Callable[[str], bool]:
     """`match` as a predicate over a URL.
 
     Args:

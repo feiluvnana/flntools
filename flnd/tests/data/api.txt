@@ -398,6 +398,36 @@ flnd.testing.Collected.key: field -> str
 flnd.testing.Collected.path: field -> str
 flnd.testing.Collected.post: field -> Post
 flnd.testing.Collected.url: field -> Any
+flnd.testing.FakeCtx(plugin: type[Plugin] | Plugin, target: str | flnd.plugin.Target = '', *, routes: Mapping[str, Reply | Callable[[Request], Any]] | None = None, pages: Mapping[str, FakePage | str] | None = None, account: str | None = None, cookies: Mapping[str, str] | None = None, when: flnd.plugin.Range = Range(since=None, until=None), answers: Sequence[str] = (), state: MutableMapping[str, Any] | None = None, storage: Mapping[str, str] | None = None, extension: Mapping[str, Any] | None = None, settings: Mapping[str, Any] | None = None)
+flnd.testing.FakeCtx.account: property -> flnd.plugin.Account | None
+flnd.testing.FakeCtx.ask(message: str, *, secret: bool = False, description: str = '', choices: Sequence[str] = ()) -> str
+flnd.testing.FakeCtx.call(fn: Callable[..., T], *args: Any) -> T
+flnd.testing.FakeCtx.click(css: str, *, timeout: float = 10.0) -> None
+flnd.testing.FakeCtx.cookies: property -> Mapping[str, str]
+flnd.testing.FakeCtx.document() -> Document
+flnd.testing.FakeCtx.extension(op: str, **args: Any) -> Any
+flnd.testing.FakeCtx.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
+flnd.testing.FakeCtx.fetch(request: str | Request, *, bucket: str | None = None, in_page: bool = False) -> Response
+flnd.testing.FakeCtx.handoff(message: str, *, until: Callable[[], Awaitable[bool]], timeout: float | None = None) -> bool
+flnd.testing.FakeCtx.hold(reason: str, *, seconds: float | None = None, bucket: str | None = None) -> None
+flnd.testing.FakeCtx.load(url: str, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
+flnd.testing.FakeCtx.log(level: str, message: str, **fields: Any) -> None
+flnd.testing.FakeCtx.open(url: str) -> Landed
+flnd.testing.FakeCtx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any]] = 'cursor', bucket: str | None = None, in_page: bool = False) -> AsyncIterator[Response]
+flnd.testing.FakeCtx.pause(seconds: float, reason: str) -> None
+flnd.testing.FakeCtx.secrets: property -> MutableMapping[str, str]
+flnd.testing.FakeCtx.seen: attribute -> Seen
+flnd.testing.FakeCtx.settings: property -> flnd.plugin.Settings
+flnd.testing.FakeCtx.state: property -> MutableMapping[str, Any]
+flnd.testing.FakeCtx.storage(origin: str) -> Mapping[str, str]
+flnd.testing.FakeCtx.target: property -> flnd.plugin.Target
+flnd.testing.FakeCtx.time: property -> flnd.plugin.Clock
+flnd.testing.FakeCtx.when: property -> flnd.plugin.Range
+flnd.testing.FakePage(html: str = '', *, status: int = 200, url: str = '', feeds: Sequence[Sent | tuple[str, Any]] = ())
+flnd.testing.FakePage.feeds: field -> Sequence[Sent | tuple[str, Any]]
+flnd.testing.FakePage.html: field -> str
+flnd.testing.FakePage.status: field -> int
+flnd.testing.FakePage.url: field -> str
 flnd.testing.FakeSite(target: Target | None = None, *, json: Mapping[str, Answer] | None = None, html: Mapping[str, Answer] | None = None, pages: Mapping[str, str] | None = None, feeds: Iterable[tuple[str, Any]] = (), cookies: Mapping[str, str] | None = None, time: Range = Range(since=None, until=None), client: Any = None, state: MutableMapping[str, Any] | None = None, seen: Seen | None = None)
 flnd.testing.FakeSite.ask(message: str, *, secret: bool = False, description: str = '') -> str
 flnd.testing.FakeSite.back_off(reason: str, *, retry_after: float | None = None) -> None
@@ -427,13 +457,25 @@ flnd.testing.FakeSite.url: property -> str
 flnd.testing.FakeSite.wait(css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool] | None = None, idle: bool = False, timeout: float = 30.0) -> None
 flnd.testing.FakeSite.warm(urls: Iterable[str]) -> None
 flnd.testing.FakeSite.warn(message: str, **fields: Any) -> None
-flnd.testing.Seen(requests: list[tuple[str, str, dict[str, Any]]] = <factory>, visited: list[str] = <factory>, scrolls: int = 0, messages: list[str] = <factory>, back_offs: list[str] = <factory>, warmed: list[str] = <factory>)
+flnd.testing.Reply(body: Any = None, *, status: int = 200, headers: Mapping[str, str] | None = None, url: str = '')
+flnd.testing.Reply.body: field -> Any
+flnd.testing.Reply.headers: field -> Mapping[str, str] | None
+flnd.testing.Reply.status: field -> int
+flnd.testing.Reply.url: field -> str
+flnd.testing.Seen(requests: list[tuple[str, str, dict[str, Any]]] = <factory>, visited: list[str] = <factory>, scrolls: int = 0, messages: list[str] = <factory>, back_offs: list[str] = <factory>, warmed: list[str] = <factory>, logs: list[tuple[str, str]] = <factory>, holds: list[tuple[str, float, str | None]] = <factory>)
 flnd.testing.Seen.back_offs: field -> list[str]
+flnd.testing.Seen.holds: field -> list[tuple[str, float, str | None]]
+flnd.testing.Seen.logs: field -> list[tuple[str, str]]
 flnd.testing.Seen.messages: field -> list[str]
 flnd.testing.Seen.requests: field -> list[tuple[str, str, dict[str, Any]]]
 flnd.testing.Seen.scrolls: field -> int
 flnd.testing.Seen.visited: field -> list[str]
 flnd.testing.Seen.warmed: field -> list[str]
-flnd.testing.check(source: type[Source]) -> list[Target]
-flnd.testing.collect(source: type[Source], target: str, *, site: FakeSite | None = None, json: Mapping[str, Answer] | None = None, html: Mapping[str, Answer] | None = None, only: Sequence[str] | None = None) -> list[Collected]
+flnd.testing.Sent(url: str, body: Any, *, click: str | None = None, scroll: int | None = None)
+flnd.testing.Sent.body: field -> Any
+flnd.testing.Sent.click: field -> str | None
+flnd.testing.Sent.scroll: field -> int | None
+flnd.testing.Sent.url: field -> str
+flnd.testing.check(plugin: type[Plugin] | type[Source]) -> list[flnd.plugin.Target] | list[Target]
+flnd.testing.collect(plugin: type[Plugin] | type[Source], target: str, *, ctx: FakeCtx | FakeSite | None = None, categories: Sequence[str] | None = None, limit: int | None = None, json: Mapping[str, Answer] | None = None) -> list[Collected]
 flnd.testing.fake_clock(start: float = 0.0) -> Iterator[clock.Fake]

@@ -312,10 +312,9 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     "src/engine/config.py:user_file": "early part; the engine passes it to read and write",
     "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
-    # Plugin API 2 is declared ahead of its wiring: the plugins call `numbered`, and the engine
-    # and the test kit `_wall`, once `flnd.plugin` is public. Until then only its tests do.
+    # Plugin API 2 is declared ahead of its wiring: the plugins call `numbered` once
+    # `flnd.plugin` is public. Until then only its tests do.
     "src/plugin.py:numbered": "tests/test_plugin.py, until the plugins on API 2 use it",
-    "src/plugin.py:_wall": "tests/test_plugin.py, until the engine and FakeCtx match walls",
     # The scheduler is built ahead of the code that calls it: the save (a transfer's backlog,
     # `slowest`, a segment's start) and the screen (the holds) take these when they are wired.
     "src/engine/jobs.py:Backlog": "the save's transfers, once wired; tests/test_jobs.py",

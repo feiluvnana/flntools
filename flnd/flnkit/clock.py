@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Protocol, TypeVar
 
-__all__ = ["Clock", "Fake", "day", "now", "pause", "sleep", "use", "wall"]
+__all__ = ["Clock", "Fake", "current", "day", "now", "pause", "sleep", "use", "wall"]
 
 FAKE_WALL = 1767225600.0
 POLL = 0.1
@@ -106,6 +106,11 @@ class Fake(Clock):
 
 _DEFAULT: Clock = _RealClock()
 _current: ContextVar[Clock] = ContextVar("flnkit.clock", default=_DEFAULT)
+
+
+def current() -> Clock:
+    """The active clock: the one `use` set in this context, else the real one."""
+    return _current.get()
 
 
 def now() -> float:

@@ -187,7 +187,7 @@ FIXTURES = {
     },
 }
 
-saved = collect(Example, "exm:example_user", json=FIXTURES, only=["posts"])
+saved = collect(Example, "exm:example_user", json=FIXTURES, categories=["posts"])
 assert [file.path for file in saved] == ["posts/2026-01-02_p1_0.jpg", "posts/2026-01-02_p1_1.mp4"]
 assert [file.key for file in saved] == ["p1_0", "p1_1"]
 assert str(saved[0].date) == "2026-01-02"
@@ -196,11 +196,11 @@ assert str(saved[0].date) == "2026-01-02"
 A request no fixture answers raises a 404 `NotFound`, as a missing page would. A fixture may also
 be a function of `(url, request)`, to answer each page of a listing by its cursor, or a
 `SiteError` to raise. For pages opened in the browser, feeds, cookies, a client or `--when`,
-make the `FakeSite` yourself and pass it in; it records what the source did in `site.seen`:
+make the `FakeSite` yourself and pass it in as `ctx`; it records what the source did in `site.seen`:
 
 ```python
 site = FakeSite(json=FIXTURES, cookies={"token": "t"})
-collect(Example, "exm:example_user", site=site)
+collect(Example, "exm:example_user", ctx=site)
 assert [url for _, url, _ in site.seen.requests][0] == f"{API}/users/example_user"
 ```
 
@@ -219,6 +219,89 @@ class Photos(Source):
         yield from ()
 
 assert [str(found) for found in check(Photos)] == ["pho:example_user", "pho:example_user"]
+```
+
+### A plugin on API 2: `FakeCtx`
+
+A plugin written against plugin API 2 (`flnd.plugin`) runs on a `FakeCtx`, a fake of its `ctx`.
+Its requests, tabs and calls run as jobs of the engine's own scheduler (`flnd.engine.jobs`), on
+a fake clock, so the pace, holds, block rounds, wall waits and retries are the engine's and
+pass at once. Every hold is recorded in `ctx.seen.holds`.
+
+- `routes` holds the HTTP answers by URL (whole, or without its query), each a `Reply` or a
+  function of the `Request` giving one. `pages` holds what `open` shows, each a `FakePage`
+  with its HTML, status, landing URL and feed responses. A URL in neither fails the test with
+  an `AssertionError`.
+- With the request's `check` on, a 404 or 410 raises `NotFound`, a 401 or 403 from the
+  plugin's domains `LoginError`, and another refusal `SiteError`. With it off, the refusal's
+  answer is returned.
+- Before that, seconds from the plugin's `blocked` hook are a block round, and a 429 holds its
+  bucket for its `Retry-After` or `x-rate-limit-reset`; the third 429 in a row is a block
+  round, and the fourth round raises `Blocked`. `ctx.hold` takes a round the same way.
+- Landing on one of the plugin's `walls`, as `open`'s page or a fetch redirected there, holds
+  30 s, then 120 s, then raises `LoginError`. A request sent to a wall's path (a login form's
+  POST) is no wall.
+- `pages` keeps its cursor through a hold, so a 429 asks for the same page again.
+- `ask` pops `answers`: one of `choices` when it has any, and `UsageError` when they run out.
+  `extension` and `storage` read their own fakes, and `settings` sets the plugin's `Settings`.
+- `state` takes JSON values only, and `secrets` may be written only in `Login.start`.
+
+`collect` runs the target to its end on it, and checks the listing as it goes: a
+`newest_first` listing's dated posts must not get newer, and a post must give every field a
+template names.
+
+```python
+from flnd import plugin    # API 2's names, kept apart from this page's API-1 ones
+from flnd.testing import FakeCtx, Reply, collect
+
+
+class Gallery(plugin.Plugin):
+    code, name, api, domains = "gal", "Gallery", 2, ("example.com",)
+
+    @plugin.route("gal:{user}")
+    async def user(self, ctx, user):
+        """A user's photos: `gal:example_user`."""
+        return (await ctx.fetch(f"{API}/users/{user}")).json
+
+    @user.category
+    async def photos(self, ctx, profile):
+        async for page in ctx.pages(f"{API}/users/{profile['id']}/posts", cursor="next"):
+            for item in page.json["items"]:
+                yield plugin.Post(item["id"], [plugin.File(item["url"])], date=item["time"])
+
+
+ctx = FakeCtx(Gallery, routes={
+    f"{API}/users/example_user": Reply({"id": "42"}),
+    f"{API}/users/42/posts": Reply({"items": [
+        {"id": "p1", "time": "2026-01-02", "url": "https://cdn.example.com/p1.jpg"}]}),
+})
+saved = collect(Gallery, "gal:example_user", ctx=ctx)
+assert [file.path for file in saved] == ["photos/p1_0.jpg"]
+assert [url for _, url, _ in ctx.seen.requests][0] == f"{API}/users/example_user"
+```
+
+A feed hears only what the tab's page sends after `feed()` is called, as a real tab does, so
+it listens before `open` or `click`. What a page sends is its `feeds`: a `(URL, JSON)` pair is
+sent as the page loads, `Sent(url, body, click=css)` when `ctx.click(css)` runs, and
+`Sent(url, body, scroll=n)` on the page's n-th scroll by a scrolling feed. A scroll that brings
+a feed nothing ends it. A lazy post's files and the `date` hook open their pages in a tab of
+their own, so they never replace the listing's page.
+
+```python
+import asyncio
+
+from flnd.testing import FakePage, Sent
+
+feeds = [("https://www.example.com/api/feed?page=1", {"items": [1]}),
+         Sent("https://www.example.com/api/feed?page=2", {"items": [2]}, scroll=1)]
+ctx = FakeCtx(Gallery, pages={"https://www.example.com/feed": FakePage(feeds=feeds)})
+
+async def read():
+    async with ctx.feed("/api/feed") as pages:
+        await ctx.open("https://www.example.com/feed")
+        return [page["items"] async for page in pages]
+
+assert asyncio.run(read()) == [[1], [2]]
 ```
 
 Each built-in source has a test like this in `tests/test_<code>.py`, and a plugin's own test

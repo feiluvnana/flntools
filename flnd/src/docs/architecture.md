@@ -101,7 +101,7 @@ The rules between them:
 | `src/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
 | `src/engine/plugins.py` | finding plugins (installed packages' `flnd.sources` entry points, then the user's plugin folder), importing one when its code is first used, and disabling one that breaks, with its file and line | `SOURCES` |
 | `src/engine/extension.py` | the Chrome extension's native-messaging host (`flnd host`), the relay a run reaches it by, the run's client, and `install` ([extension.md](extension.md)); the extension's own files are in `src/extension/` | Chrome, the CLI's `flnd extension` |
-| `src/testing.py` | the public test kit: `FakeSite`, `collect`, `check`, `fake_clock` | a source's tests, flnd's own (`tests/fakes.py`) |
+| `src/testing.py` | the public test kit: `FakeCtx` (with `Reply`, `FakePage` and `Seen`) for a plugin on API 2, `FakeSite` for an API-1 source, `collect`, `check`, `fake_clock` | a plugin's tests, flnd's own (`tests/fakes.py`) |
 | `src/engine/home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the job, the site, `Flnd` |
 | `src/engine/transfer.py` | one post's file into its part: mirrors, DASH pairs (joined by `flnkit/media.py`), a source's `fetch` function, the content check | the job |
 | `src/engine/steps.py` | the step chain and its archive lane: dedupe, unpack, the sidecar, `Saved` ([storage.md](storage.md)) | the job and the engine |
