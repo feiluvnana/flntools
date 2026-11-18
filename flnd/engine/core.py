@@ -3,18 +3,19 @@
 What it holds: `Engine`, whose methods are the commands (`download`, `sync`, `retry`,
 `target_ls`, `target_sync`, `auth_ls`, `login`, `logout`); `resolve` and `owner`,
 which turn a target's text into a `Target` of the right source; and the reports a command
-returns (`Report`, one `flnd.job.TargetReport` per target), with `TargetInfo` and `AuthInfo` for
-the reads behind `fl.targets()` (`flnd ls`) and `fl.logins`.
+returns (`Report`, one `flnd.engine.job.TargetReport` per target), with `TargetInfo` and
+`AuthInfo` for the reads behind `fl.targets()` (`flnd ls`) and `fl.logins`.
 
 Who calls it: `flnd._library.Flnd` alone (the CLI reaches it through the library). A command
 that downloads makes its `Engine` inside a `flnd.Run`, on the run's worker thread, with the
 run's event sink and stop state; a read or a quick change (`targets`, `logins`, `unfollow`,
 `login`, `logout`) makes one on the caller's thread. Nothing in a source calls it.
 
-What it calls: `flnd.options` to check a command's options before any request, `flnd._home` for
-`flnd.db` and the logins, `flnd.site` for each source's run (`source_run`) and the run's one
-browser and loop (`shared_browser`), `flnd._steps` for the step chain after each file, and
-`flnd.job` for each target.
+What it calls: `flnd.engine.options` to check a command's options before any request,
+`flnd.engine.home` for
+`flnd.db` and the logins, `flnd.engine.site` for each source's run (`source_run`) and the run's one
+browser and loop (`shared_browser`), `flnd.engine.steps` for the step chain after each file, and
+`flnd.engine.job` for each target.
 
 How one command that downloads goes (`download`):
 1. Check the options (`--limit`, `--when`, `--only`) and resolve every target, so a usage
@@ -38,7 +39,7 @@ Rules a change must keep:
   (`_run_site`); a full disk (`DiskError`) ends the whole run; Ctrl-C ends it with
   `KeyboardInterrupt` once the reports are in.
 - The commands run on one thread: the run's worker thread for a library run, or the caller's.
-  Each `flnd.db` access opens the home for that call (`_home.open`), so no connection is shared
+  Each `flnd.db` access opens the home for that call (`home.open`), so no connection is shared
   across threads; the job's download tasks use the run's own connection, held in `RunShared`.
 - A dry run (`dry=True`) reads `flnd.db` and the disk, and writes nothing.
 """
@@ -52,14 +53,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from flnd import _home, _steps, job
-from flnd._events import Failed, Planned
-from flnd._run import Stop, stopping
+from flnd.engine import home, job, steps
+from flnd.engine.events import Failed, Planned
+from flnd.engine.job import TargetReport
+from flnd.engine.options import Options, Retry, RunShared, categories_by_source, validate
+from flnd.engine.run import Stop, stopping
+from flnd.engine.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
-from flnd.job import TargetReport
 from flnd.kit import net, text
-from flnd.options import Options, Retry, RunShared, categories_by_source, validate
-from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.source import Cookies, Range, Source, Target, _Unmatched
 from flnd.sources import SOURCES
 from flnd.ui.log import ui
@@ -149,7 +150,7 @@ class Engine:
         Args:
             home: the home folder.
             sources: the sources it knows, by code.
-            emit: where its runs send their events (`flnd._run.Run._emit`); None drops them.
+            emit: where its runs send their events (`flnd.engine.run.Run._emit`); None drops them.
             stop: the stop state its runs watch, when the caller owns it (a library run, whose
                 `stop()` sets it); None makes one per command, set by Ctrl-C.
         """
@@ -226,7 +227,7 @@ class Engine:
         with stopping(self.stop) as stop:
             if dry:
                 return self._finish_report(self._dry_run(resolved, by_source, span, stop), stop)
-            ui.info("Storage: {path}", path=(self.home / _home.MEDIA).resolve())
+            ui.info("Storage: {path}", path=(self.home / home.MEDIA).resolve())
             with self._recording("download", resolved) as ended:
                 if any(self._is_query(t) for t in resolved):
                     reports = self._download_mixed(
@@ -283,7 +284,7 @@ class Engine:
         Raises:
             KeyboardInterrupt: Ctrl-C (or the run's stop) ended it.
         """
-        with _home.open(self.home) as db:
+        with home.open(self.home) as db:
             failed = db.failed()
             rows = db.targets()
         chosen: list[tuple[Target, Options]] = []
@@ -318,7 +319,7 @@ class Engine:
         Returns:
             The recorded targets, then the folders in `media/` no row names.
         """
-        with _home.open(self.home) as db:
+        with home.open(self.home) as db:
             rows = db.targets()
             recorded = self._recorded(rows)
             all_targets = recorded + list(self._unrecorded(recorded, rows))
@@ -346,9 +347,9 @@ class Engine:
         recorded = self._recorded(rows)
         unrecorded = set(self._unrecorded(recorded, rows))
         for target in resolved:
-            if _home.key(target) not in rows and target not in unrecorded:
+            if home.key(target) not in rows and target not in unrecorded:
                 raise UsageError(f"{target}: not a known target; download it first")
-        with _home.open(self.home) as db:
+        with home.open(self.home) as db:
             for target in resolved:
                 db.follow(target, enabled)
         return resolved
@@ -364,15 +365,15 @@ class Engine:
         """
         items: list[AuthInfo] = []
         for code, source_cls in self.sources.items():
-            logged = _home.logged_in(self.home, code)
-            api_key = not logged and _home.api_key_saved(self.home, code)
+            logged = home.logged_in(self.home, code)
+            api_key = not logged and home.api_key_saved(self.home, code)
             state = "logged in" if logged else ("api key only" if api_key else "not logged in")
             items.append(AuthInfo(
                 code=code,
                 name=source_cls.name,
                 state=state,
-                origin=_home.origin(self.home, code) if logged else "",
-                expiring=_home.expiring(self.home, source_cls()) if logged else [],
+                origin=home.origin(self.home, code) if logged else "",
+                expiring=home.expiring(self.home, source_cls()) if logged else [],
             ))
         return items
 
@@ -422,13 +423,13 @@ class Engine:
             if path is None:
                 raise UsageError("a file login needs the cookie file's path")
             file = Path(path).expanduser()
-            return _home.store(
-                source, _home.from_file(source, file), home=self.home, origin=file.name
+            return home.store(
+                source, home.from_file(source, file), home=self.home, origin=file.name
             )
         if browser is None:
             raise UsageError("a browser login needs the browser to read cookies from")
-        jar = _home.from_browser(source, browser=browser, profile=profile)
-        return _home.store(source, jar, home=self.home, origin=_home.BROWSERS.get(browser, browser))
+        jar = home.from_browser(source, browser=browser, profile=profile)
+        return home.store(source, jar, home=self.home, origin=home.BROWSERS.get(browser, browser))
 
     def logout(self, codes: Iterable[str]) -> list[str]:
         """Remove the saved logins of the given sources (`flnd logout`).
@@ -451,16 +452,16 @@ class Engine:
                 f"unknown source '{unknown[0]}'. Sources: {', '.join(self.sources)}"
             )
         chosen = list(self.sources) if ALL in asked else asked
-        return [code for code in chosen if _home.logout(self.home, code)]
+        return [code for code in chosen if home.logout(self.home, code)]
 
     @property
     def logins(self) -> dict[str, str]:
         """Map each source code with saved credentials to its login state."""
         found: dict[str, str] = {}
         for code in self.sources:
-            if _home.logged_in(self.home, code):
+            if home.logged_in(self.home, code):
                 found[code] = "logged in"
-            elif _home.api_key_saved(self.home, code):
+            elif home.api_key_saved(self.home, code):
                 found[code] = "api key saved"
         return found
 
@@ -490,8 +491,8 @@ class Engine:
             with source_run(settings, source) as run:
                 assert source.login is not None
                 source.login.start(LoginSite(run), method)
-            if _home.logged_in(self.home, code):
-                _home.record_origin(self.home, code, method)
+            if home.logged_in(self.home, code):
+                home.record_origin(self.home, code, method)
         return ""
 
     def _download_normal(
@@ -523,7 +524,7 @@ class Engine:
         for target in resolved:
             options = by_source[target.source]
             # A followed target stops at its saved posts, unless told to list them again.
-            row = rows.get(_home.key(target))
+            row = rows.get(home.key(target))
             followed = row is not None and row.follow and not options.again
             chosen.append((target, replace(
                 options, stop_at_saved=options.stop_at_saved or followed)))
@@ -538,7 +539,7 @@ class Engine:
         *,
         sync: bool,
         stop: Stop,
-        rows: Mapping[str, _home.TargetRow] | None = None,
+        rows: Mapping[str, home.TargetRow] | None = None,
     ) -> Report:
         """End a download: raise for Ctrl-C, log the totals, and say when a target isn't synced.
 
@@ -604,7 +605,7 @@ class Engine:
             return
         normal = [chosen[i] for i in indices]
         self._record(normal)
-        ui.info("Storage: {path}", path=(self.home / _home.MEDIA).resolve())
+        ui.info("Storage: {path}", path=(self.home / home.MEDIA).resolve())
         run_items = [(t, replace(opts, stop_at_saved=True)) for t, opts in normal]
         reports = self._run(
             run_items, stop=stop, browser_pool=pool_settings.browser_pool
@@ -645,7 +646,7 @@ class Engine:
                 raise KeyboardInterrupt
 
     def _target_info(
-        self, target: Target, rows: Mapping[str, _home.TargetRow], db: _home.Home,
+        self, target: Target, rows: Mapping[str, home.TargetRow], db: home.Home,
     ) -> TargetInfo:
         """A target's state and its saved files' count and bytes, from `flnd.db` alone.
 
@@ -661,14 +662,14 @@ class Engine:
         Returns:
             What `flnd ls` shows of it.
         """
-        row = rows.get(_home.key(target))
+        row = rows.get(home.key(target))
         is_query = self._is_query(target)
         if is_query:
             files, size = 0, 0
         elif row is not None:
             files, size = row.files, row.bytes
         else:
-            files, size = db.count(_home.key(target))
+            files, size = db.count(home.key(target))
         complete = row.complete if row is not None else {}
         cursors = row.cursors if row is not None else {}
         categories = (
@@ -721,7 +722,7 @@ class Engine:
         reports: list[TargetReport] = []
         # A dry run reads `flnd.db` to tell "saved" from "new", but never writes it: a home
         # without one stays untouched.
-        with _home.open(self.home) as db:
+        with home.open(self.home) as db:
             settings = RunShared(home=self.home, db=db, stop=stop, dry=True, emit=self.emit,
                                  resolve=self._one)
             with shared_browser(settings):
@@ -847,7 +848,7 @@ class Engine:
         source = self.sources[target.source]()
         self._record([(target, options)], follow=sync)
         reports: list[TargetReport] = []
-        with _home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as group:
+        with home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as group:
             settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
@@ -857,7 +858,7 @@ class Engine:
                 label_width=self._label_width([(target, options)]), parent=target,
                 emit=self.emit,
             )
-            with (_steps.attached(settings), shared_browser(settings),
+            with (steps.attached(settings), shared_browser(settings),
                   source_run(settings, source) as run):
                 if err := _require_auth(source, run, target):
                     return [err]
@@ -909,7 +910,7 @@ class Engine:
                         child_opts = replace(options, limit=None, query=target.value)
                         rep = self._run_child(run, target, child, board, child_opts, stop)
                         if rep.error is None:
-                            seen_keys.append(_home.key(child))
+                            seen_keys.append(home.key(child))
                         reports.append(rep)
         except KeyboardInterrupt:
             if not stop.soon.is_set() or stop.now.is_set():
@@ -981,10 +982,10 @@ class Engine:
         """
         source = self.sources[target.source]()
         rows = self._rows()
-        row = rows.get(_home.key(target))
+        row = rows.get(home.key(target))
         seen_keys = set(row.seen if row is not None else ())
         known_keys = set(rows)
-        with _home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as group:
+        with home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as group:
             settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
@@ -994,7 +995,7 @@ class Engine:
                 label_width=self._label_width([(target, options)]), parent=target,
                 emit=self.emit,
             )
-            with (_steps.attached(settings), shared_browser(settings),
+            with (steps.attached(settings), shared_browser(settings),
                   source_run(settings, source) as run):
                 if err := _require_auth(source, run, target):
                     return err
@@ -1091,7 +1092,7 @@ class Engine:
                 for child in found:
                     if stop.soon.is_set():
                         break
-                    child_key = _home.key(child)
+                    child_key = home.key(child)
                     if child_key in seen_keys or child_key in known_keys:
                         seen_to_mark.append(child_key)
                         skipped += 1
@@ -1110,14 +1111,14 @@ class Engine:
         return skipped, child_failed
 
     def _warn_unsynced(
-        self, resolved: Sequence[Target], *, rows: Mapping[str, _home.TargetRow] | None = None,
+        self, resolved: Sequence[Target], *, rows: Mapping[str, home.TargetRow] | None = None,
     ) -> None:
         """Remind the user how to keep a target up to date, when one of them isn't followed."""
         saved = self._rows() if rows is None else rows
-        if any((row := saved.get(_home.key(t))) is None or not row.follow for t in resolved):
+        if any((row := saved.get(home.key(t))) is None or not row.follow for t in resolved):
             ui.info("not followed; flnd follow keeps it up to date")
 
-    def _recorded(self, rows: Mapping[str, _home.TargetRow]) -> list[Target]:
+    def _recorded(self, rows: Mapping[str, home.TargetRow]) -> list[Target]:
         """The targets of `flnd.db`'s rows, rebuilt from each row's source, kind and value.
 
         A row of a source that is gone (an uninstalled plugin), or with no kind (a row an old
@@ -1137,14 +1138,14 @@ class Engine:
             if row.kind and row.source in self.sources
         ]
 
-    def _rows(self) -> dict[str, _home.TargetRow]:
+    def _rows(self) -> dict[str, home.TargetRow]:
         """Every target `flnd.db` knows, by key; none for a home that has no database yet."""
-        with _home.open(self.home) as db:
+        with home.open(self.home) as db:
             return db.targets()
 
     def _record(self, chosen: Sequence[tuple[Target, Options]], **how: Any) -> None:
         """Remember the targets of a run in `flnd.db`; `how` is `Db.record`'s options."""
-        with _home.open(self.home) as db:
+        with home.open(self.home) as db:
             db.record(chosen, **how)
 
     @contextmanager
@@ -1160,15 +1161,15 @@ class Engine:
         """
         named = " ".join([command, *map(str, targets[:3])])
         # Each run's logs and samples are kept for a month (flnd/docs/storage).
-        _home.sweep(self.home)
-        with _home.open(self.home) as db:
+        home.sweep(self.home)
+        with home.open(self.home) as db:
             self.run = db.start(named if len(targets) <= 3 else f"{named} …")
         ended: list[Report] = []
         try:
             yield ended
         finally:
             run, self.run = self.run, None
-            with _home.open(self.home) as db:
+            with home.open(self.home) as db:
                 db.end(run, saved=sum(report.files for report in ended))
 
     def _is_query_kind(self, code: str, kind: str) -> bool:
@@ -1216,13 +1217,13 @@ class Engine:
             targets = self._recorded(followed) + list(self._unrecorded(recorded, rows))
         planned = []
         for target in targets:
-            row = rows.get(_home.key(target))
+            row = rows.get(home.key(target))
             planned.append((target, Options(categories=row.only if row else None,
                                             query=row.query if row else None)))
         return planned
 
     def _unrecorded(
-        self, known: Sequence[Target], rows: Mapping[str, _home.TargetRow] | None = None,
+        self, known: Sequence[Target], rows: Mapping[str, home.TargetRow] | None = None,
     ) -> Iterator[Target]:
         """The targets whose folders are under `media/` but which no row of `known` names.
 
@@ -1237,15 +1238,15 @@ class Engine:
         Yields:
             Each unrecorded target, resolved by its source, in folder-name order per source.
         """
-        seen = {_home.target_folder(self.home, t) for t in known if not self._is_query(t)}
-        media = self.home / _home.MEDIA
+        seen = {home.target_folder(self.home, t) for t in known if not self._is_query(t)}
+        media = self.home / home.MEDIA
         saved_rows = rows or {}
         for target in known:
-            row = saved_rows.get(_home.key(target))
+            row = saved_rows.get(home.key(target))
             if self._is_query(target) and row is not None:
                 for child_key in row.seen:
                     if ":" in child_key:
-                        seen.add(_home.target_folder(self.home, Target(child_key)))
+                        seen.add(home.target_folder(self.home, Target(child_key)))
         for code in self.sources:
             for folder in sorted((media / code).iterdir()) if (media / code).is_dir() else ():
                 if folder.is_dir() and folder not in seen:
@@ -1281,7 +1282,7 @@ class Engine:
         for number, (target, _) in enumerate(chosen):
             groups.setdefault(target.source, []).append(number)
         reports: dict[int, TargetReport] = {}
-        with _home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as rows:
+        with home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as rows:
             run_settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
@@ -1298,7 +1299,7 @@ class Engine:
                 )
                 for code, numbers in groups.items()
             ]
-            with _steps.attached(run_settings), shared_browser(run_settings):
+            with steps.attached(run_settings), shared_browser(run_settings):
                 overall = rows.add("Targets", total=len(chosen))
                 for item in work:
                     try:
@@ -1443,7 +1444,7 @@ def _log_dry(
                 ui.info("{target}", target=str(item))
                 emit(Planned(item, "", None, "new"))
         return
-    folder = _home.target_folder(run.settings.home, target)
+    folder = home.target_folder(run.settings.home, target)
     db = run.settings.db
     for placed in job.plan(run, target, options):
         ui.info("{target}: {path}", target=str(target), path=placed.path)
@@ -1719,7 +1720,7 @@ def _written_back(run: SourceRun) -> Iterator[None]:
     try:
         yield
     finally:
-        _home.write_back(run.settings.home, run.source.code, run.session.jar)
+        home.write_back(run.settings.home, run.source.code, run.session.jar)
 
 
 @contextmanager

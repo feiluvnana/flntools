@@ -7,10 +7,10 @@ rows; the listing loop (`_read`, `_list_one`, `_sync_one`, `_retry_failed`) with
 stops; and `plan`, `place`, `posts` and `discover`, the pieces a dry run and `flnd.testing`
 reuse.
 
-Who calls it: the engine (`flnd.engine`), once per target, on the target's listing thread.
+Who calls it: the engine (`flnd.engine.core`), once per target, on the target's listing thread.
 What it calls: the source's route and categories through a `TargetSite`, the downloader
-(`flnd._transfer`) on the run's loop, the step chain (`flnd._steps`) once a file's row is
-written, and the home's `flnd.db` (`flnd._home`).
+(`flnd.engine.transfer`) on the run's loop, the step chain (`flnd.engine.steps`) once a file's row
+is written, and the home's `flnd.db` (`flnd.engine.home`).
 
 How one target goes (`download`):
 1. Sweep stale parts from the target's folder, and read the target's row: which categories
@@ -18,7 +18,7 @@ How one target goes (`download`):
    newest post an earlier run saw) and its gaps (where syncs cut short stopped).
 2. Call the route, then retry the files earlier runs failed on (`_retry_failed`): each failed
    post is listed again, from the cursor of the page it was on, for fresh URLs, and its failed
-   files are queued. A file is retried this way on at most `_home.RETRIES` runs; `flnd retry`
+   files are queued. A file is retried this way on at most `home.RETRIES` runs; `flnd retry`
    (`Retry.ONLY`) takes every one and lists nothing else. A gone file (`NotFound`) never is.
 3. List the route, or each wanted category (`_list_one`), queueing each post's files that
    aren't saved. The engine owns the early stops, never the source (`_Stops`):
@@ -80,10 +80,12 @@ from typing import (
 )
 from urllib.parse import urlsplit
 
-from flnd import _home, _transfer
-from flnd._events import NOTHING_NEW, RESUMING, Failed, Progress, Saved, Skipped
-from flnd._steps import Landed, dedupe, holder, landed, sidecars
-from flnd._track import Tracks
+from flnd.engine import home, transfer
+from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Progress, Saved, Skipped
+from flnd.engine.options import Options, Retry
+from flnd.engine.site import Listing, SourceRun, TargetSite
+from flnd.engine.steps import Landed, dedupe, holder, landed, sidecars
+from flnd.engine.track import Tracks
 from flnd.errors import (
     Blocked,
     Error,
@@ -97,14 +99,12 @@ from flnd.errors import (
 from flnd.kit import files, loop, text
 from flnd.kit.clock import day
 from flnd.kit.text import fill
-from flnd.options import Options, Retry
-from flnd.site import Listing, SourceRun, TargetSite
 from flnd.source import Category, File, NotFound, Post, Range, Route, Site, Source, Target
 from flnd.sources import SOURCES
 from flnd.ui.log import ui
 
 if TYPE_CHECKING:
-    from flnd._run import Stop
+    from flnd.engine.run import Stop
 
 __all__ = [
     "STOPPED", "Board", "Counts", "Downloads", "Ledger", "Placed", "TargetReport",
@@ -359,7 +359,7 @@ class Board:
         Args:
             target: the target listed.
             category: its category; "" for a target without categories.
-            listing: the category's `flnd.site.Listing`, whose pages the live stats show.
+            listing: the category's `flnd.engine.site.Listing`, whose pages the live stats show.
         """
         owner = self.parent or target
         with self._lock:
@@ -835,7 +835,7 @@ class Ledger:
         """Initialize a target ledger with its stores, dates, and category state."""
         self.source, self.settings, self.site = run.source, run.settings, site
         self.target, self.board, self._options = target, board, options
-        self.folder = _home.target_folder(self.settings.home, target)
+        self.folder = home.target_folder(self.settings.home, target)
         # The home's database; None for a plan with nothing to read (`flnd.dry`).
         self._db = self.settings.db
         # Told to ask again for everything: files recorded gone are asked for once more.
@@ -879,7 +879,7 @@ class Ledger:
         skipped = self._saved_first(post, category) if post.lazy else None
         if skipped is None and post.lazy and self._unkeyed(category) and self._db is not None \
                 and not self._again \
-                and self._db.post_saved(_home.key(self.target), post.id, post.category):
+                and self._db.post_saved(home.key(self.target), post.id, post.category):
             # Its keys are its files' paths, known only once listed (LOIBUS's archives): the
             # post's own rows say it was saved, so its files function, which may cost the
             # account a download from its quota, isn't called again.
@@ -1051,7 +1051,7 @@ class Ledger:
             return 0
         dated = 0
         # A partial index holds only undated rows, so a target with none costs one lookup.
-        for row in self._db.undated(_home.key(self.target)):
+        for row in self._db.undated(home.key(self.target)):
             if row.post_id in self._asked:
                 continue
             found = self._ask(Post(row.post_id))
@@ -1285,7 +1285,7 @@ class Ledger:
         if found is None:
             return None
         path, state, folder = found
-        if state == _home.GONE:
+        if state == home.GONE:
             return None if self._again else self._name(Path(path))
         if Path(path).is_file():
             return self._name(Path(path))
@@ -1357,11 +1357,11 @@ class Downloads:
     1. The listing thread `submit`s each file. The queue holds `QUEUE` times the source's
        `jobs` files (queued or downloading); past that, `submit` waits, so a listing never runs
        far ahead of its downloads and memory stays flat.
-    2. Each file becomes a task on the run's loop (`flnd._transfer.save`), which waits for one
-       of the target's `jobs` places; the source's per-host caps (`flnd.site`), shared by
+    2. Each file becomes a task on the run's loop (`flnd.engine.transfer.save`), which waits for one
+       of the target's `jobs` places; the source's per-host caps (`flnd.engine.site`), shared by
        every target, bound the transfers to each host on top of that.
     3. A file that lands is recorded in history on the loop, then handed to the run's step
-       chain (`flnd._steps`), which unpacks archives and, under `--compress`, compresses media
+       chain (`flnd.engine.steps`), which unpacks archives and, under `--compress`, compresses media
        on its own threads.
     4. An expired link of a lazy post is asked for again on the listing thread, which answers
        between two files (`_answer`), since a source's listing runs only there.
@@ -1648,7 +1648,7 @@ class Downloads:
             if track is not None:
                 track.unpacking()
             # The steps after the row: unpack and compress on the chain's own threads, then
-            # the sidecar, then `Saved` with the file's final path (`flnd._steps`).
+            # the sidecar, then `Saved` with the file's final path (`flnd.engine.steps`).
             landed(self.settings, Landed(
                 item.queued.key, item.path, password=placed.file.password,
                 hash=item.row.hash, event=event,
@@ -1732,7 +1732,7 @@ class Downloads:
 
     def _downloaded(
         self, queued: _Queued, saved: files.Saved, received: Mapping[str, str],
-        row: _home.FileRow,
+        row: home.FileRow,
     ) -> None:
         """Hold a landed file's row until its post's last file settles, which commits it.
 
@@ -1746,12 +1746,12 @@ class Downloads:
             row: its row, after dedupe.
         """
         post = queued.placed.post
-        dated = day(post.date) or _transfer.served_day(received.get("last-modified"))
+        dated = day(post.date) or transfer.served_day(received.get("last-modified"))
         with self._writing:
             self._written[queued.key] = saved.path
             self._landed.setdefault(post.id, []).append(_Landed(queued, saved.path, dated, row))
 
-    def _row(self, queued: _Queued, saved: files.Saved) -> _home.FileRow:
+    def _row(self, queued: _Queued, saved: files.Saved) -> home.FileRow:
         """The `files` row of a landed file.
 
         Args:
@@ -1764,11 +1764,11 @@ class Downloads:
         placed = queued.placed
         posted = day(placed.post.date)
         count = placed.values.get("count", 1)
-        return _home.FileRow(
-            queued.key, _home.key(self.target), str(saved.path), saved.size, saved.mtime,
+        return home.FileRow(
+            queued.key, home.key(self.target), str(saved.path), saved.size, saved.mtime,
             post_id=placed.post.id, category=placed.post.category,
             date=posted.isoformat() if posted is not None else None,
-            estimated=queued.estimated, kind=files.kind_of(saved.path.name), at=_home.now(),
+            estimated=queued.estimated, kind=files.kind_of(saved.path.name), at=home.now(),
             files=count if placed.num == 0 and isinstance(count, int) and count > 1 else None,
             hash=saved.hash,
         )
@@ -1776,7 +1776,7 @@ class Downloads:
     async def _fetch(
         self, queued: _Queued, file: File, received: dict[str, str]
     ) -> files.Saved | None:
-        """Save `file` into its part and onto its name (`flnd._transfer.save`).
+        """Save `file` into its part and onto its name (`flnd.engine.transfer.save`).
 
         A file the source fetches itself (a callable `url`) takes a place under the source's
         own gate, since the client has no host to cap it by. A 403 or 410 for a lazy post's
@@ -1799,7 +1799,7 @@ class Downloads:
         if file.url is None:
             return None
         track = self.tracks.get(queued.key)
-        saving = _transfer.save(
+        saving = transfer.save(
             self.run.files, file, queued.dest, label=placed.path,
             headers=placed.post.headers, kind=placed.kind, received=received,
             day=day(placed.post.date), track=track,
@@ -1898,7 +1898,7 @@ class Downloads:
         sampled(self.settings, error)
         placed = queued.placed
         url = placed.file.url if isinstance(placed.file.url, str) else ""
-        db.fail(run=self.settings.run, item=queued.key, target=_home.key(self.target),
+        db.fail(run=self.settings.run, item=queued.key, target=home.key(self.target),
                 error=error, post=placed.post.id, category=placed.post.category,
                 file=str(queued.dest), url=url, cursor=queued.cursor)
 
@@ -1912,7 +1912,7 @@ def sampled(settings: Any, error: BaseException) -> None:
         settings: the run's `RunShared`: its home and run id.
         error: what failed; anything but a `Changed` with a response is left as it is.
     """
-    path = _home.sample(settings.home, settings.run, error)
+    path = home.sample(settings.home, settings.run, error)
     if path is not None and isinstance(error, Error):
         saved = f"the answer is saved, scrubbed, in {path}"
         error.hint = f"{error.hint}; {saved}" if error.hint else saved
@@ -1938,7 +1938,7 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
         return TargetReport(target, (), 0, error=Stopped(STOPPED))
     # No lock on the target: each file's part locks itself, so two runs may share a target and
     # the sweep passes over the parts another run holds.
-    files.sweep(_home.target_folder(run.settings.home, target))
+    files.sweep(home.target_folder(run.settings.home, target))
     return _run_download(run, target, board, options)
 
 
@@ -1980,7 +1980,7 @@ def _run_download(
                     heads=progress.heads, gaps=progress.gaps)
     if db is not None and error is None and not run.settings.stop.soon.is_set():
         # A failure of the whole target is over once it ran to its end.
-        db.clear(_home.key(target))
+        db.clear(home.key(target))
         # Counting reads every row of the target (35 ms for 100,000), so a run that saved
         # nothing keeps the count it has, unless it has none yet.
         if written or row is None or not row.files:
@@ -2002,7 +2002,7 @@ class _Progress:
             ignored (they are still updated by this run).
     """
 
-    def __init__(self, row: _home.TargetRow | None, *, again: bool) -> None:
+    def __init__(self, row: home.TargetRow | None, *, again: bool) -> None:
         earlier = row if row is not None and not again else None
         # Each listing an earlier run read to its end, with the day it did.
         self.listed: Mapping[str, str] = earlier.complete if earlier is not None else {}
@@ -2115,8 +2115,8 @@ def _ended(
         failed = failure(error, target, run.source)
         if run.settings.db is not None:
             sampled(run.settings, failed)
-            run.settings.db.fail(run=run.settings.run, item=_home.key(target),
-                                 target=_home.key(target), error=failed)
+            run.settings.db.fail(run=run.settings.run, item=home.key(target),
+                                 target=home.key(target), error=failed)
         tell(target, failed, run.settings.emit)
         board.end(target, failed=True)
         return replace(report, error=failed)
@@ -2277,7 +2277,7 @@ class _Landed:
     path: Path
     # The day its modified time was set to; None when neither the post nor the server had one.
     day: datetime.date | None
-    row: _home.FileRow
+    row: home.FileRow
 
 
 @dataclass
@@ -2509,7 +2509,7 @@ def _yield_arg_targets(
             child = resolved(run, item)
             if child is None:
                 continue
-            if _home.key(child) in seen_keys:
+            if home.key(child) in seen_keys:
                 break
             if child in yielded:
                 continue
@@ -2896,7 +2896,7 @@ def _retry_failed(
     again through its source, for fresh URLs.
 
     How it goes:
-    1. Read the target's failures (`Home.pending`): those failed on at most `_home.RETRIES`
+    1. Read the target's failures (`Home.pending`): those failed on at most `home.RETRIES`
        runs, or every one for `flnd retry`. A gone file (`NotFound`) is never among them.
     2. Group them by listing, and by the cursor of the page their post was on.
     3. For each group, list from that cursor (`_relist`): each failed post met is queued like
@@ -2915,9 +2915,9 @@ def _retry_failed(
     db = run.settings.db
     if run.settings.dry or options.again or db is None:
         return
-    failed = db.pending(_home.key(target), every=options.retry is Retry.ONLY)
+    failed = db.pending(home.key(target), every=options.retry is Retry.ONLY)
     by_name = {listed.name: listed for listed in listings}
-    groups: dict[tuple[str, str | None], dict[str, list[_home.FailureRow]]] = {}
+    groups: dict[tuple[str, str | None], dict[str, list[home.FailureRow]]] = {}
     for row in failed:
         if row.category in by_name:
             groups.setdefault((row.category, row.cursor), {}).setdefault(row.post, []).append(row)
@@ -2989,7 +2989,7 @@ def _relist(
 
 
 def _lost(
-    work: _Work, run: SourceRun, target: Target, rows: Sequence[_home.FailureRow], *,
+    work: _Work, run: SourceRun, target: Target, rows: Sequence[home.FailureRow], *,
     ran_out: bool,
 ) -> None:
     """Record that a retry didn't meet a failed post: a failure of each of its files.

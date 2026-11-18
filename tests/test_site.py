@@ -19,15 +19,17 @@ from unittest import mock
 from example_source import API, CDN, Example
 from fakes import FakeSite
 
-from flnd import _home, _run, _transfer
+from flnd.engine import home as _home
+from flnd.engine import run as _run
+from flnd.engine import transfer as _transfer
+from flnd.engine.options import RunShared
+from flnd.engine.site import TargetSite, shared_browser, source_run
 from flnd.errors import Blocked, SourceError, UsageError
 from flnd.kit import browser as _browser
 from flnd.kit import clock as _time
 from flnd.kit import cookies as _cookies
 from flnd.kit import net as _net
 from flnd.kit.browser import Page
-from flnd.options import RunShared
-from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import File, LoginError, Site, SiteError, Target
 from flnd.ui.log import ui
 

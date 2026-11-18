@@ -15,7 +15,7 @@ from unittest import mock
 
 from fakes import FakeSite, Seen, collect
 
-from flnd.options import Options
+from flnd.engine.options import Options
 from flnd.source import LoginError, NotFound, Post, SiteError, Target, UsageError
 from flnd.sources.fbk import Facebook, image_extension, media_items
 

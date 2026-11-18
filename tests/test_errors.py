@@ -25,7 +25,8 @@ from test_commands import FlndCase
 from test_engine import EngineCase, make_source
 
 import flnd
-from flnd import job, sources
+from flnd import sources
+from flnd.engine import job
 from flnd.errors import (
     Blocked,
     Changed,

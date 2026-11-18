@@ -18,7 +18,9 @@ from unittest import mock
 from test_chain import ChainCase
 
 import flnd
-from flnd import _check, _home, cli
+from flnd import cli
+from flnd.engine import check as _check
+from flnd.engine import home as _home
 
 
 class CheckCase(ChainCase):
@@ -38,7 +40,7 @@ class CheckCase(ChainCase):
 
     def aged(self):
         """`time.time` moved on, so every file renamed into place has settled."""
-        return mock.patch("flnd._check.time.time", return_value=time.time() + 2 * _check.SETTLING)
+        return mock.patch("flnd.engine.check.time.time", return_value=time.time() + 2 * _check.SETTLING)
 
 
 class FindTest(CheckCase):

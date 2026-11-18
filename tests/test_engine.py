@@ -21,15 +21,18 @@ from unittest import mock
 
 import fakes
 
-from flnd import Blocked, LoginError, Target, UsageError, _home, _run, job
-from flnd._events import Failed, Progress
-from flnd.engine import Engine, Report, TargetReport
+from flnd import Blocked, LoginError, Target, UsageError
+from flnd.engine import home as _home
+from flnd.engine import job
+from flnd.engine import run as _run
+from flnd.engine.core import Engine, Report, TargetReport
+from flnd.engine.events import Failed, Progress
+from flnd.engine.options import Options
+from flnd.engine.site import LoginSite
 from flnd.errors import Error
 from flnd.kit import clock as _time
 from flnd.kit import cookies as _cookies
 from flnd.kit import net as _net
-from flnd.options import Options
-from flnd.site import LoginSite
 from flnd.source import File, Login, Post, SiteError, Source, target
 from flnd.source import cookies as login_cookies
 from flnd.ui.log import ui
@@ -387,7 +390,7 @@ class HttpTest(EngineCase):
         self.routes["https://api.aaa.example/feed"] = limited
         source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/feed").json)
         engine = Engine(home=self.home, sources={"aaa": source})
-        with mock.patch("flnd.engine.stopping", capture_stopping), self.assertRaises(KeyboardInterrupt), \
+        with mock.patch("flnd.engine.core.stopping", capture_stopping), self.assertRaises(KeyboardInterrupt), \
                 ui.scope(level="debug"):
             engine.download(["aaa:a"], categories="all")
         self.assertTrue(any(line.endswith("aaa:a: stopped") for line in self.lines()), self.lines())
@@ -483,7 +486,7 @@ class EngineLoginTest(EngineCase):
         source = make_source("aaa", login=own_login(start))
         self.assertEqual(Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr"), "")
         self.assertEqual(seen, [("qr", LoginSite)])
-        from flnd import _home
+        from flnd.engine import home as _home
         with _home.secrets(self.home, "aaa") as secrets:
             self.assertEqual(secrets["session"], "s")
 
@@ -777,7 +780,7 @@ class QueryAndLimitDryTest(EngineCase):
             seen_options.append(options)
             return orig_download(run, target, board, options)
 
-        with mock.patch("flnd.job.download", side_effect=spy):
+        with mock.patch("flnd.engine.job.download", side_effect=spy):
             engine.download(["srch:1", "srch?action"], categories="photo", limit=1, again=True)
         self.assertTrue(seen_options)
         self.assertTrue(all(opt.again for opt in seen_options))
@@ -956,8 +959,8 @@ class SyncedQueryTest(EngineCase):
                 stop_ref[0].soon.set()
             return real_download(run, child, board, opts)
 
-        with mock.patch("flnd.job.download", stop_on_second), \
-                mock.patch("flnd.engine.stopping", capture_stopping), \
+        with mock.patch("flnd.engine.job.download", stop_on_second), \
+                mock.patch("flnd.engine.core.stopping", capture_stopping), \
                 self.assertRaises(KeyboardInterrupt):
             engine.download(["pgd?dogs"], categories="photo", sync=True)
         self.assertEqual(seen_pages, [0, 1])

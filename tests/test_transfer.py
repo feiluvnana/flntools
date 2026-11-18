@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import _transfer
+from flnd.engine import transfer as _transfer
 from flnd.errors import Error, NetworkError
 from flnd.kit import clock as _time
 from flnd.kit import files as _tools

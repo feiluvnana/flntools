@@ -63,7 +63,7 @@ ignore = [
 
 [tool.ruff.lint.flake8-bugbear]
 # Frozen dataclasses: a shared default instance can't be changed, so B008 has nothing to warn of.
-extend-immutable-calls = ["flnd.options.Options", "flnd.source.Range"]
+extend-immutable-calls = ["flnd.engine.options.Options", "flnd.source.Range"]
 
 [tool.pyright]
 # `make type` names the public modules itself; this only says how to read them. Informational:

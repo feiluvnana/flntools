@@ -20,11 +20,11 @@ import fakes
 from fakes import FakeSite, Seen, collect
 from test_source import INSTAGRAM
 
-from flnd.engine import Engine
+from flnd.engine.core import Engine
+from flnd.engine.options import Options
 from flnd.kit import html as _html
 from flnd.kit import net as _net
 from flnd.kit.clock import day
-from flnd.options import Options
 from flnd.source import Changed, LoginError, Request, SiteError, Target, UsageError
 from flnd.sources.ins import (
     APP_ID,
@@ -608,7 +608,7 @@ class ScrollTest(unittest.TestCase):
         self.assertEqual([item.path for item in saved], [f"posts/{DAY}_NEW.jpg"])
         self.assertEqual(watch.batches[f"{SITE}/example_creator/"], [page_3])
 
-    # A sync's stop at saved posts is the engine's (`flnd.job._queue_listed`), tested in
+    # A sync's stop at saved posts is the engine's (`flnd.engine.job._queue_listed`), tested in
     # tests/test_job.py; the source no longer asks whether a post is saved.
     def test_the_tab_alone_has_no_early_stop(self):
         """Without the engine, the tab reads to its end, old posts and all: only the site ends it."""
@@ -936,7 +936,7 @@ class MeTest(unittest.TestCase):
             list(Instagram().me(site, "me"))
 
     def test_engine_treats_ins_me_as_query_target(self):
-        from flnd import _home
+        from flnd.engine import home as _home
         from flnd.kit import cookies as _cookies
         from flnd.source import File, Post
 

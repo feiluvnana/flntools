@@ -5,7 +5,7 @@
     make cdn-real ARGS="--urls ~/flnd-cdn.txt --header 'Referer: https://www.example.com/'"
 
 Loopback can't show where a real CDN stops giving more for more transfers at once, so the
-ceiling a host's adaptive cap grows to (`flnd.site.MEDIA_MOST`) is set by hand: the URLs of
+ceiling a host's adaptive cap grows to (`flnd.engine.site.MEDIA_MOST`) is set by hand: the URLs of
 about 200 files on one CDN host, taken from the authorized test accounts (from the browser's
 network panel, say), one per line in a file kept outside the repo, or given as arguments. This
 script is never part of `make check` or `make bench`. It prints no URL, file name or host, only
@@ -14,7 +14,7 @@ numbers, so its output can be pasted into flnd/docs/performance.md as it is.
 How it goes:
 1. Each round runs every cap in turn (rounds alternate, so a change in the link's load spreads
    over every cap). A cap downloads every URL through flnd's own client (`flnd.kit.net`, curl_cffi
-   on a `flnd.kit.loop.Loop`, the part and rename of `flnd._transfer`) with a fixed cap: `Limits`
+   on a `flnd.kit.loop.Loop`, the part and rename of `flnd.engine.transfer`) with a fixed cap: `Limits`
    with `most` equal to `cap`, so it never grows, though an overload still halves it.
 2. Then, once per round, the default adaptive cap (8, growing to 32) runs the same list.
 3. Every file goes into a scratch folder, removed at the end; each run starts empty.
@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from flnd import _transfer
+from flnd.engine import transfer as _transfer
 from flnd.kit import net as _net
 from flnd.kit.loop import Loop
 from flnd.ui.log import ui

@@ -1,6 +1,7 @@
 """flnd's transfers: one post's `File` into its part, by URL, mirrors, DASH pair or `fetch`.
 
-Who calls it: a target's downloads (`flnd.job.Downloads`), one coroutine per file on the run's
+Who calls it: a target's downloads (`flnd.engine.job.Downloads`), one coroutine per file on the
+run's
 loop. What it calls: the source's `flnd.kit.net.Client` for URLs, `flnd.kit.files.part` for the
 part,
 `flnd.kit.files` for ffmpeg, and `flnd.kit.files` to tell that a file is the media it should be.

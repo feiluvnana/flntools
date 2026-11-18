@@ -22,13 +22,14 @@ from prompt_lines import select_from_lines
 from test_engine import CDN, make_source, noise
 from test_library import example_source
 
-from flnd import Blocked, Target, _home, sources
+from flnd import Blocked, Target, sources
 from flnd import cli as flnd_cli
-from flnd._events import Saved
-from flnd.engine import Engine, TargetReport
+from flnd.engine import home as _home
+from flnd.engine.core import Engine, TargetReport
+from flnd.engine.events import Saved
+from flnd.engine.options import Options
 from flnd.kit import cookies as _cookies
 from flnd.kit import net as _net
-from flnd.options import Options
 from flnd.source import Login, Source
 from flnd.source import cookies as login_cookies
 from flnd.source import target as route
@@ -547,7 +548,7 @@ class HelpTest(FlndCase):
         import subprocess
 
         code = ("import sys\nfrom flnd.cli import main\nmain(['--help'])\n"
-                "print(sorted(m for m in sys.modules if m.startswith(('flnd.engine', 'flnd.sources.ins', 'curl_cffi'))))")
+                "print(sorted(m for m in sys.modules if m.startswith(('flnd.engine.core', 'flnd.sources.ins', 'curl_cffi'))))")
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                              check=True).stdout.splitlines()[-1]
         self.assertEqual(out, "[]")
@@ -640,7 +641,7 @@ class LoginQuestionsTest(FlndCase):
 
     def test_a_wrong_answer_is_asked_again(self):
         self.answer("9", "nope", "2")
-        with mock.patch("flnd.engine._home.from_browser", return_value=_cookies.Jar(
+        with mock.patch("flnd.engine.home.from_browser", return_value=_cookies.Jar(
                 [{"name": "auth_token", "value": "t", "domain": ".x.com", "path": "/"}])) as read:
             code, out, err = self.run_app("login", "twt")
         self.assertEqual(code, 0, err)

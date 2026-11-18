@@ -2,7 +2,7 @@
 
 import unittest
 
-from flnd.engine import resolve
+from flnd.engine.core import resolve
 from flnd.source import Target, UsageError
 from flnd.sources import SOURCES
 

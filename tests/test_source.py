@@ -17,10 +17,10 @@ from example_source import FIXTURES
 from example_source import Example as RoutedExample
 from fakes import FakeSite, collect
 
-from flnd.engine import resolve
+from flnd.engine.core import resolve
+from flnd.engine.site import Listing
 from flnd.kit import clock as _time
 from flnd.kit import text as _text
-from flnd.site import Listing
 from flnd.source import (
     API,
     Cookies,
@@ -683,7 +683,7 @@ class DashTest(unittest.TestCase):
         self.assertEqual(File.dash(text).url, "https://cdn.example/high.mp4")
 
     def test_the_joined_file_is_webm_only_when_both_tracks_are(self):
-        from flnd.job import _extension
+        from flnd.engine.job import _extension
 
         webm = manifest(representation("video/webm", "https://cdn.example/v.webm", height=720),
                         audios=[representation("audio/webm", "https://cdn.example/a.webm")])

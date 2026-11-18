@@ -11,7 +11,7 @@ The rules:
    the SDK a site needs, which tests/test_sources.py guards);
 2. `flnd.source` imports nothing from flnd but the toolkit: it is what sources see, not the engine;
 3. `flnd/cli.py` imports from flnd only `flnd` (the library), `flnd.sources._manifest` (the
-   sources as data, for help) and the toolkit (`flnd.ui.forms`, `flnd.ui.log`, `flnd._events` for
+   sources as data, for help) and the toolkit (`flnd.ui.forms`, `flnd.ui.log`, `flnd.engine.events` for
    JSON): every decision is the library's, so the CLI only parses, asks and prints;
 4. nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it;
 5. a library module (`LIBRARIES` below: HTTP, browser, files, archives, tools, cookies, vault,
@@ -38,11 +38,12 @@ def toolkit(name: str) -> bool:
     """Whether a module is part of the toolkit: a private `flnd._x` module.
 
     The toolkit was once a package of its own, `shared`. `flnd.source` and the CLI may import
-    these private modules (rules 2 and 3), but never the engine (`flnd.job`, `flnd.site`, ...).
+    these private modules (rules 2 and 3), but never the engine (`flnd.engine.job`, `flnd.engine.site`, ...).
     `flnd.errors`, the error hierarchy, counts too: it imports nothing of flnd, and every layer
     raises its classes.
     """
-    return name.startswith("flnd._") or name == "flnd.errors" or name in TOOLKIT_NEW
+    return (name.startswith("flnd._") or name == "flnd.errors" or name in TOOLKIT_NEW
+            or name in ENGINE_PRIVATE)
 
 
 # The toolkit's new homes: the kit (`flnd/kit/`) and the two screen modules that were the private
@@ -51,6 +52,10 @@ TOOLKIT_NEW = {"flnd.ui.log", "flnd.ui.forms"} | {
     f"flnd.kit.{name}" for name in ("net", "browser", "files", "loop", "clock", "dig", "html", "text",
                                      "db", "cookies", "vault")
 }
+# The engine's modules that were private (`flnd._home` and the rest). The CLI still imports some
+# of them, as it did when they were private, until step 13 moves its decisions into the engine.
+ENGINE_PRIVATE = {f"flnd.engine.{name}" for name in (
+    "home", "run", "events", "track", "transfer", "steps", "check", "plugins")}
 
 
 # Rule 5: the library modules. Each does a general job (HTTP, the browser, files, archives, the
@@ -75,7 +80,7 @@ def library(name: str) -> bool:
 
 
 def flnd_imports(path: Path) -> set[str]:
-    """Every flnd module a file imports, anywhere in it: `from flnd import job` counts as `flnd.job`."""
+    """Every flnd module a file imports, anywhere in it: `from flnd import job` counts as `flnd.engine.job`."""
     found: set[str] = set()
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
@@ -141,8 +146,8 @@ class LayersTest(unittest.TestCase):
 
     def test_the_rules_see_imports_of_names_and_of_modules(self):
         # Guards the guard: `from flnd import Engine` is the package, `from flnd import job` a module.
-        found = flnd_imports(FLND / "engine.py")
-        self.assertIn("flnd.job", found)
+        found = flnd_imports(FLND / "engine" / "core.py")
+        self.assertIn("flnd.engine.job", found)
         self.assertIn("flnd", flnd_imports(FLND / "cli.py"))
 
 

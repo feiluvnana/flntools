@@ -16,20 +16,21 @@ holds:
 - `paged` walks a paged JSON listing for `TargetSite.pages`, and `Listing` carries a category's
   saved cursor in and its last cursor out.
 
-Who calls it: the engine (`flnd.engine` opens `shared_browser` and one `source_run` per source,
-and hands `flnd login` a `LoginSite`), the job (`flnd.job` makes a `TargetSite` per target and
-sets its `listing`), the library (`flnd._library` opens a `TargetSite` on a source's account),
-and the test kit (`flnd.testing` reuses `paged`). What it
+Who calls it: the engine (`flnd.engine.core` opens `shared_browser` and one `source_run` per
+source, and hands `flnd login` a `LoginSite`), the job (`flnd.engine.job` makes a
+`TargetSite` per target and sets its `listing`), the library (`flnd._library` opens a
+`TargetSite` on a source's account), and the test kit (`flnd.testing` reuses `paged`).
+What it
 calls: the libraries `flnd.kit.net` (HTTP), `flnd.kit.browser` (tabs), `flnd.kit.loop` (the run's
 event
-loop), `flnd.kit.vault` and `flnd._home` (secrets, state, cookies), `flnd.ui.forms` and
+loop), `flnd.kit.vault` and `flnd.engine.home` (secrets, state, cookies), `flnd.ui.forms` and
 `flnd.ui.log`.
 
 A run, step by step:
 1. `shared_browser` makes the run's one event loop and its `RunBrowser`, which launches nothing
    until a target asks for a tab.
 2. `source_run` reads the source's `[sources.<code>]` settings from the home's config.toml
-   (`flnd.options.config`), loads its login cookies from the home, warns of any about to
+   (`flnd.engine.options.config`), loads its login cookies from the home, warns of any about to
    expire, and builds its `net.Session` and two clients over one `net.Limits` (below).
 3. Each target gets a `TargetSite`. Its `fetch` and browser verbs run on the target's listing
    thread, and each hands one coroutine to the run's loop and waits for it.
@@ -44,8 +45,7 @@ listing thread too: the job sets it before a category is listed and reads it aft
 call (`fetch`, `open`, …) made from code on the loop is refused, since it would wait for itself.
 
 The network side of a source (flnd/docs/architecture, "Network"): one `flnd.kit.net.Session` with
-the
-login's cookies, the source's user agent and its `sign` hook (for requests to its own
+the login's cookies, the source's user agent and its `sign` hook (for requests to its own
 domains), and one `flnd.kit.net.Limits` with two pools:
 - *pages*, the listing's requests to the source's own `domains`: a token bucket at the
   source's `pace` (or the config's `pace` for it), which a 429's wait holds and halves;
@@ -72,19 +72,19 @@ from typing import (
     TypeVar,
 )
 
-from flnd import _home
+from flnd.engine import home
+from flnd.engine.options import SourceConfig, config
 from flnd.errors import Blocked, LoginError, SiteError, SourceError, Stopped, UsageError
 from flnd.kit import browser, clock, loop, net, text, vault
-from flnd.options import SourceConfig, config
 from flnd.source import Range, Request, Source, Target, dig
 from flnd.ui import forms
 from flnd.ui.log import ui
 
 if TYPE_CHECKING:
-    from flnd._run import Stop
+    from flnd.engine.options import RunShared
+    from flnd.engine.run import Stop
     from flnd.kit import cookies
     from flnd.kit.html import Document
-    from flnd.options import RunShared
 
 __all__ = ["Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "paged",
            "shared_browser", "source_run"]
@@ -130,7 +130,7 @@ class SourceRun:
     config: SourceConfig = field(default_factory=SourceConfig)
     # What the source's `connect` gave, entered once for the run.
     client: Any = None
-    _state: _home.Home | None = field(default=None, repr=False)
+    _state: home.Home | None = field(default=None, repr=False)
     _secrets: vault.Vault | None = field(default=None, repr=False)
     # A loop of the source's own, made only outside a run (`shared_browser` gives the run's).
     _own_loop: loop.Loop | None = field(default=None, repr=False)
@@ -167,19 +167,19 @@ class SourceRun:
         return self.files.limits.slot(self.source.domains[0], self.files.stop, pace=False)
 
     @property
-    def state(self) -> _home.State:
+    def state(self) -> home.State:
         """The source's own values in the home's `flnd.db`: the run's, or one opened here."""
         if self.settings.db is not None:
             return self.settings.db.state(self.source.code)
         if self._state is None:
-            self._state = _home.open(self.settings.home)
+            self._state = home.open(self.settings.home)
         return self._state.state(self.source.code)
 
     @property
     def secrets(self) -> vault.Vault:
         """The source's encrypted secrets in the home's `secrets.db`, opened on first use."""
         if self._secrets is None:
-            self._secrets = _home.secrets(self.settings.home, self.source.code)
+            self._secrets = home.secrets(self.settings.home, self.source.code)
         return self._secrets
 
     def run_async(self, coroutine: Coroutine[Any, Any, T]) -> T:
@@ -236,7 +236,7 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
         UsageError: the home's config.toml has a value it doesn't take.
     """
     configured = config(settings.home).source(source.code)
-    jar = _home.load(settings.home, source.code)
+    jar = home.load(settings.home, source.code)
     _warn_expiring(source, jar)
     session, limits = _network(source, jar, configured)
     stop: Stop | None = getattr(settings, "stop", None)

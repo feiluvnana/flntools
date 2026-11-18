@@ -20,7 +20,7 @@ from unittest import mock
 
 import flnd
 from flnd import cli
-from flnd._events import Saved
+from flnd.engine.events import Saved
 from flnd.source import Target
 
 # Writes what it was given to the file named by its first argument.

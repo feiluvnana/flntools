@@ -56,7 +56,7 @@ class SecretModeTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from flnd import _home
+        from flnd.engine import home as _home
 
         home = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(home, ignore_errors=True))

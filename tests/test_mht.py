@@ -5,9 +5,9 @@ import unittest
 from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
-from flnd.engine import Engine, resolve
+from flnd.engine.core import Engine, resolve
+from flnd.engine.options import Options, categories_by_source, validate
 from flnd.kit import net as _net
-from flnd.options import Options, categories_by_source, validate
 from flnd.source import SiteError, Target, UsageError
 from flnd.sources.mht import (
     API,

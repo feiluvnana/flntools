@@ -12,13 +12,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from flnd import _home
-from flnd._events import Checked, Record
+from flnd.engine import home
+from flnd.engine.events import Checked, Record
+from flnd.engine.home import MEDIA
 from flnd.errors import DiskError
 from flnd.kit import files
 
 if TYPE_CHECKING:
-    from flnd._home import FileRow, Home
+    from flnd.engine.home import FileRow, Home
 
 __all__ = ["check"]
 
@@ -54,10 +55,10 @@ def check(home: Path, db: Home, *, fix: bool = False) -> Checked:
     resized: list[tuple[FileRow, os.stat_result]] = []
     for row in rows:
         _look(row, seen, missing, resized)
-    unknown = list(_unknown(home / _home.MEDIA, seen))
+    unknown = list(_unknown(home / MEDIA, seen))
     if fix:
-        if not (home / _home.MEDIA).is_dir():
-            raise DiskError(f"{home / _home.MEDIA}: not found",
+        if not (home / MEDIA).is_dir():
+            raise DiskError(f"{home / MEDIA}: not found",
                             hint="create the media folder or pick another home")
         _fix(db, missing, resized)
     return Checked(
@@ -95,7 +96,7 @@ def _look(row: FileRow, seen: _Seen, missing: list[FileRow],
         return
     seen.paths.add(_norm(path))
     seen.inodes.add((found.st_dev, found.st_ino))
-    if row.state == _home.SAVED and found.st_size != row.size:
+    if row.state == home.SAVED and found.st_size != row.size:
         resized.append((row, found))
 
 
@@ -173,7 +174,7 @@ def _fix(db: Home, missing: list[FileRow],
 def _record(row: FileRow) -> Record:
     """A row as the `Record` a `Checked` lists."""
     return Record(row.key, Path(row.path), row.size, post=row.post_id, category=row.category,
-                  date=_home._date(row.date), at=row.at)
+                  date=home._date(row.date), at=row.at)
 
 
 def _norm(path: str | os.PathLike[str]) -> str:

@@ -1,4 +1,4 @@
-"""The file lifecycle state machine (`flnd._track`): every phase and Ctrl-C stops."""
+"""The file lifecycle state machine (`flnd.engine.track`): every phase and Ctrl-C stops."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import io
 import unittest
 from pathlib import Path
 
-from flnd._events import Saved
-from flnd._track import TERMINAL, FileTrack, Phase, Tracks
+from flnd.engine.events import Saved
+from flnd.engine.track import TERMINAL, FileTrack, Phase, Tracks
 from flnd.source import Target
 from flnd.ui.log import ui
 

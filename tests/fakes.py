@@ -16,8 +16,8 @@ from typing import Any
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
 from flnd import testing
+from flnd.engine.options import Options
 from flnd.kit import net as _net
-from flnd.options import Options
 from flnd.source import Range, Source, Target
 from flnd.testing import Collected, Seen
 
@@ -79,7 +79,7 @@ def history(home) -> dict[str, dict[str, Any]]:
 
     import msgspec
 
-    from flnd import _home
+    from flnd.engine import home as _home
 
     with _home.open(Path(home)) as db:
         rows = {row.key: msgspec.structs.asdict(row) for row in db.records()}
@@ -92,7 +92,7 @@ def targets(home) -> dict[str, Any]:
     """Every target row in a home's `flnd.db`, by key (`flnd.kit.db.TargetRow`)."""
     from pathlib import Path
 
-    from flnd import _home
+    from flnd.engine import home as _home
 
     with _home.open(Path(home)) as db:
         return db.targets()

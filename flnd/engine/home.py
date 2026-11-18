@@ -14,7 +14,7 @@ What `flnd.db` holds (the storage guide in `flnd/docs/` shows every column):
   site answered 404 or 410), or `link` (a second name for a saved file, in another category's
   folder, keyed `<file's key>@<category>`). A file that failed has no row here (its record is
   in `failures`), unless the site said it is gone. The steps after a file lands fill in
-  `shrink`, `tools`, `before`, `unpacked`, `folder` and `sidecar` (`flnd._steps`).
+  `shrink`, `tools`, `before`, `unpacked`, `folder` and `sidecar` (`flnd.engine.steps`).
 - `posts`: a view of `files`, one row per post of a target with its category, day and how
   many files it has. The first file of a post of several holds the count (`files.files`),
   which tells whether a post listed again is whole: a table of its own would cost every commit
@@ -28,7 +28,7 @@ What `flnd.db` holds (the storage guide in `flnd/docs/` shows every column):
   category, the cursor of the page its post was on, the error's class, message and hint, how
   many runs failed it, and its redacted URL. It is the only record of a failure, so the report
   (`flnd status`), the automatic retry and `flnd retry` can't disagree. No row holds a
-  request: a retry lists the post again for fresh URLs (`flnd.job`).
+  request: a retry lists the post again for fresh URLs (`flnd.engine.job`).
 - `state`: each source's own values between runs (`site.state`).
 - `logins`: how each source logged in, and when; never a secret (those are in `secret.db`).
 - `probes`: what ffmpeg found in a file, kept so it isn't asked twice; safe to empty.
@@ -82,7 +82,7 @@ from flnd.kit import clock, cookies, db, text, vault
 from flnd.ui.log import ui
 
 if TYPE_CHECKING:
-    from flnd.options import Options
+    from flnd.engine.options import Options
     from flnd.source import Source, Target
 
 __all__ = ["FailureRow", "FileRow", "Home", "RunRow", "TargetRow", "open", "sample", "secrets",
@@ -283,7 +283,7 @@ class TargetRow(msgspec.Struct):
     files: int = 0
     bytes: int = 0
     # Each `newest_first` listing's head: the newest post the last run that read it from the
-    # top saw, where a later sync stops (`flnd.job`); "" for a route's own listing.
+    # top saw, where a later sync stops (`flnd.engine.job`); "" for a route's own listing.
     heads: dict[str, str] = {}
     # Each listing's gaps: where syncs that were cut short stopped, newest first, for the next
     # sync to jump to once it meets saved posts at the top. "" is a gap with no cursor (a feed
@@ -684,7 +684,7 @@ class Home:
     def update(self, item: str, **fields: Any) -> None:
         """Record what a step after landing did to a saved file, in one statement.
 
-        This is how the steps (`flnd._steps`) write: compress moves a file and sets `shrink`,
+        This is how the steps (`flnd.engine.steps`) write: compress moves a file and sets `shrink`,
         `tools`, `before` and its new `hash`; unpack sets `unpacked` and `folder`; the sidecar
         step sets `sidecar`.
 

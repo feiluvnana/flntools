@@ -287,7 +287,7 @@ def from_a_library(error: type) -> bool:
 FLND = snapshot.ROOT / "flnd"
 # The modules whose names must each be used: the private ones. `flnd`, `flnd.source`,
 # `flnd.testing` and `flnd.errors` are public, and the API snapshot covers them.
-PRIVATE = ("_*.py", "engine.py", "job.py", "site.py", "options.py", "cli.py", "sources/*.py")
+PRIVATE = ("_*.py", "engine/*.py", "cli.py", "sources/*.py")
 # A string constant that reads as a name or a dotted path (`"chapter"`, `"flnd.sources.twt"`)
 # counts as a use of its words: routes, categories and lazy imports name code in strings.
 NAMEISH = re.compile(r"[\w.:]+")
@@ -296,7 +296,7 @@ WORD = re.compile(r"[A-Za-z_]\w*")
 # when nothing in flnd/ could use it instead. The list may only shrink: a listed name that
 # becomes used, or goes, fails `test_no_stale_allowance`.
 CALLED_FROM_OUTSIDE: dict[str, str] = {
-    "flnd/_run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
+    "flnd/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
 }
 
@@ -476,9 +476,9 @@ class PrivateImportTest(unittest.TestCase):
         self.assertEqual(private_imports(path.read_text(encoding="utf-8")), [])
 
     def test_every_spelling_of_a_private_import_is_found(self):
-        source = ("import flnd._home\nfrom flnd._run import Run\n"
-                  "from flnd import _job, ui\n")
-        self.assertEqual(private_imports(source), ["flnd._home", "flnd._run", "flnd._job"])
+        source = ("import flnd._library\nfrom flnd._library import Flnd\n"
+                  "from flnd import _library, ui\n")
+        self.assertEqual(private_imports(source), ["flnd._library", "flnd._library", "flnd._library"])
         self.assertEqual(private_imports("from flnd.kit import net\nimport flnd\n"), [])
 
 

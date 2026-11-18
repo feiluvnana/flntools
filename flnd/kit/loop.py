@@ -10,7 +10,8 @@ A library module: it imports only the stdlib, and any threaded program that need
   awaiting, so a caller can warn about code that holds the loop up (a blocking call in an
   `async def`): every other task on the loop waits while it does.
 
-Inside flnd a run makes one `Loop` (`flnd.site.shared_browser`), and everything async of that run
+Inside flnd a run makes one `Loop` (`flnd.engine.site.shared_browser`), and everything async of that
+run
 happens on it: the browser (`flnd.kit.browser`), every HTTP transfer (`flnd.kit.net`), a target's
 downloads, and an async source's coroutines (Telegram's Telethon).
 

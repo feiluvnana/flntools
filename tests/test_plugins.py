@@ -1,4 +1,4 @@
-"""Plugins (`flnd._plugins`, `flnd.sources.Registry`).
+"""Plugins (`flnd.engine.plugins`, `flnd.sources.Registry`).
 
 Every test gets a registry that hasn't looked for plugins yet (`PluginCase`), a plugin folder
 of its own (`$FLND_SOURCES`), a temporary home, the fake network and the fake clock. A plugin
@@ -30,8 +30,9 @@ import no_profiles  # noqa: F401  (also points $FLND_SOURCES away from the real 
 from test_engine import EngineCase, noise
 
 import flnd
-from flnd import _plugins, job
 from flnd import cli as flnd_cli
+from flnd.engine import job
+from flnd.engine import plugins as _plugins
 from flnd.kit import net as _net
 from flnd.sources import SOURCES, _find
 

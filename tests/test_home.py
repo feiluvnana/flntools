@@ -19,11 +19,11 @@ from unittest import mock
 
 from test_engine import CDN, EngineCase, make_source, noise
 
-from flnd import _home
-from flnd.engine import Engine
+from flnd.engine import home as _home
+from flnd.engine.core import Engine
+from flnd.engine.options import Options
 from flnd.errors import Changed, NetworkError, NotFound
 from flnd.kit import net as _net
-from flnd.options import Options
 from flnd.source import File, Target
 from flnd.testing import fake_clock
 

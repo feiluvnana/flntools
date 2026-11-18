@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fakes import FakeSite
 
-from flnd.options import Options, selected
+from flnd.engine.options import Options, selected
 from flnd.source import Source, Target, target
 from flnd.sources import SOURCES
 from flnd.sources.fbk import Facebook

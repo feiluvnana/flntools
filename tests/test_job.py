@@ -24,14 +24,17 @@ from fakes import FakeSite, collect
 from test_commands import FlndCase
 from test_engine import EngineCase, make_source
 
-from flnd import _home, _run, job, sources
-from flnd import engine as engine_module
-from flnd import site as site_module
-from flnd.engine import Engine
+from flnd import sources
+from flnd.engine import core as engine_module
+from flnd.engine import home as _home
+from flnd.engine import job
+from flnd.engine import run as _run
+from flnd.engine import site as site_module
+from flnd.engine.core import Engine
+from flnd.engine.options import Options
 from flnd.errors import UsageError
 from flnd.kit import clock as _time
 from flnd.kit import net as _net
-from flnd.options import Options
 from flnd.source import (
     File,
     LoginError,

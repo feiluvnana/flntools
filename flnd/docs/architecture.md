@@ -263,7 +263,7 @@ the three is in the events and in the run's report.
 
 A run uses a few threads, joined by bounded queues, and every rule below protects one of them:
 
-- **The run's worker thread** (`flnd._run.Run`) runs the engine and each target's listing: the
+- **The run's worker thread** (`flnd.engine.run.Run`) runs the engine and each target's listing: the
   route, the categories and the planning. Targets run one after another on it, so a source's
   plain `def` routes run top to bottom, without locks. Outside a library run (a test calling
   the engine), the caller's thread plays this part.
@@ -300,16 +300,16 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
 - **A lazy post's expired link.** A source's code runs on the listing thread only, so a
   download task whose link expired queues a refresh for that thread (`job._Refresh`), which
   answers it between two files, and waits for the fresh link.
-- **The step chain's lane** (`flnd._steps`): one thread for archives, fed by a bounded queue
+- **The step chain's lane** (`flnd.engine.steps`): one thread for archives, fed by a bounded queue
   once a file's history row is written. It updates that row when it extracts, and sends the
   file's `Saved` event when it is done with it (a file with no slow step sends it at once, from
   its download task). The engine closes the chain, waiting for the lane, before it closes
   history.
-- **Ctrl-C** is handled by `flnd._run.stopping`, on the reader's thread when it is the main
+- **Ctrl-C** is handled by `flnd.engine.run.stopping`, on the reader's thread when it is the main
   thread: the first one sets `stop.soon` (stop listing, drop queued files, let running files
   finish), the second sets `stop.now` (stop at once, keep the parts) and warns that a third
-  quits, and the third calls `flnd._run.quit_now`: it runs the undo steps registered with
-  `flnd._run.restoring` (whatever changed the terminal registers its undo there), then
+  quits, and the third calls `flnd.engine.run.quit_now`: it runs the undo steps registered with
+  `flnd.engine.run.restoring` (whatever changed the terminal registers its undo there), then
   `os._exit(130)`, which runs no `finally` and joins no thread. `run.suspend()` sets
   `stop.suspended`, which each source's limits wait on before a new request; a stop clears it.
 - **The run's display** is its summary table: one row per target and category, with the counts
@@ -329,7 +329,7 @@ Every saved file goes through the same steps, in one fixed order:
 download (hashing) → dedupe → unpack → sidecar → Saved → --exec
 ```
 
-- **download, dedupe** run in the file's download task (`flnd.job`): the bytes are hashed as
+- **download, dedupe** run in the file's download task (`flnd.engine.job`): the bytes are hashed as
   they are written, and a file whose bytes are already saved becomes a hard link to them before
   its row is written (`[defaults] dedupe = "link"`).
 - **unpack** is slow, so the job hands the recorded archive to the run's `Chain`, whose one

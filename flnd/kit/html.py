@@ -22,7 +22,7 @@ What it offers:
    `visible` is the text a reader sees: the page without its scripts and styles.
 4. `dig(data, path)` walks parsed JSON by a short path; see its docstring for the four forms.
 
-Who calls it: in flnd, `flnd.source` re-exports `dig`; `flnd.site` parses the page a source's
+Who calls it: in flnd, `flnd.source` re-exports `dig`; `flnd.engine.site` parses the page a source's
 browser loads, `flnd.kit.net.Response.html` a response body, and `flnd.testing` the pages of its
 fakes. What it calls: selectolax, msgspec and `flnd.errors`, nothing else.
 

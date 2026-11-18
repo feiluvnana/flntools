@@ -5,8 +5,8 @@
             ...
 
 Who calls it: scripts and the CLI (`flnd/cli.py`), both through `flnd.open`, so the command
-line can do nothing a script can't. What it calls: `flnd.engine.Engine` for every command,
-`flnd._home` (the home's `flnd.db`) for the reads, and the home's `config.toml` for settings
+line can do nothing a script can't. What it calls: `flnd.engine.core.Engine` for every command,
+`flnd.engine.home` (the home's `flnd.db`) for the reads, and the home's `config.toml` for settings
 past the five options a call takes.
 
 How a call flows:
@@ -16,13 +16,13 @@ How a call flows:
    hasn't started. Its work is a closure that makes an `Engine` with the run's event sink and
    stop state, and calls the engine's command; the run starts it on its own thread when read.
 3. A read (`targets`, `files`, `logins`, `status`) or a quick change (`unfollow`, `login`,
-   `logout`) runs on the caller's thread and returns plain rows from `flnd._events`.
+   `logout`) runs on the caller's thread and returns plain rows from `flnd.engine.events`.
 
 Rules a change must keep:
 - Importing this module imports nothing heavy: the engine, curl_cffi, Playwright and Rich load on
   the first call that needs them, so `import flnd` stays fast.
 - Options are keyword-only and at most five per call; a setting past that belongs in the
-  config file (`flnd.options.config`). An option left as None takes the file's setting
+  config file (`flnd.engine.options.config`). An option left as None takes the file's setting
   (`[defaults] when`), so a value given for one call always wins.
 - No callbacks: a run reports through its events alone.
 """
@@ -39,14 +39,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from flnd._events import Checked, Failure, Installed, Login, Record, Status, Tracked
-from flnd._run import Run
+from flnd.engine.events import Checked, Failure, Installed, Login, Record, Status, Tracked
+from flnd.engine.run import Run
 from flnd.errors import UsageError
 
 if TYPE_CHECKING:
-    from flnd._home import FailureRow
-    from flnd.engine import Engine
-    from flnd.options import Config
+    from flnd.engine.core import Engine
+    from flnd.engine.home import FailureRow
+    from flnd.engine.options import Config
     from flnd.source import Range, Site, Source, Target
 
 __all__ = ["Flnd", "open"]
@@ -297,9 +297,9 @@ class Flnd:
             ...     fl.status is None
             True
         """
-        from flnd import _home
+        from flnd.engine import home
 
-        with _home.open(self.home) as db:
+        with home.open(self.home) as db:
             run = db.last_run()
             rows = db.failures(run.id) if run is not None else []
         if run is None:
@@ -389,19 +389,19 @@ class Flnd:
         """
         if kind is not None and kind not in KINDS:
             raise UsageError(f"kind is one of {', '.join(KINDS)}, not {kind!r}")
-        from flnd import _home
+        from flnd.engine import home
 
         first = None if since is None else _period(since)[0]
         owner = None
         if target is not None:
             [resolved] = self._resolve(target)
-            owner = _home.key(resolved)
-        with _home.open(self.home) as db:
+            owner = home.key(resolved)
+        with home.open(self.home) as db:
             rows = db.records(target=owner, kind=kind)
         found = []
         for row in rows:
             record = Record(row.key, Path(row.path), row.size, post=row.post_id,
-                            category=row.category, date=_home._date(row.date), at=row.at)
+                            category=row.category, date=home._date(row.date), at=row.at)
             if first is not None and (_day(record) or first) < first:
                 continue
             found.append(record)
@@ -431,10 +431,10 @@ class Flnd:
             ...     fl.check().ok
             True
         """
-        from flnd import _check, _home
+        from flnd.engine import check, home
 
-        with _home.open(self.home) as db:
-            return _check.check(self.home, db, fix=fix)
+        with home.open(self.home) as db:
+            return check.check(self.home, db, fix=fix)
 
     # -----------------------------------------------------------------------------------------
     # Logins and sources
@@ -465,7 +465,7 @@ class Flnd:
             ...
             flnd.errors.UsageError: ins logs in by a browser (chrome, ...) or a cookie file's ...
         """
-        from flnd._home import BROWSERS
+        from flnd.engine.home import BROWSERS
 
         cls = self._source(source)
         engine = self._engine()
@@ -524,17 +524,17 @@ class Flnd:
             ...     [row.origin for row in fl.sources if row.code == "ins"]
             ['built-in']
         """
-        from flnd import _plugins
+        from flnd.engine import plugins
         from flnd.sources import SOURCES
 
         logins = self._engine().logins
-        plugins = SOURCES.plugins
-        by_code = {plugin.code: plugin for plugin in plugins if not plugin.error}
+        found = SOURCES.plugins
+        by_code = {plugin.code: plugin for plugin in found if not plugin.error}
         rows = [_installed(SOURCES[code], by_code.get(code), logins) for code in SOURCES]
         rows += [Installed(plugin.code, plugin.code, plugin.origin, where=plugin.where,
                            version=plugin.version, disabled=plugin.error)
-                 for plugin in plugins if plugin.error]
-        rows += [_installed(cls, None, logins, origin=_plugins.SCRIPT)
+                 for plugin in found if plugin.error]
+        rows += [_installed(cls, None, logins, origin=plugins.SCRIPT)
                  for cls in self._added.values()]
         return rows
 
@@ -592,9 +592,9 @@ class Flnd:
             ...     str(site.target)
             'ins'
         """
-        from flnd._run import stopping
-        from flnd.options import RunShared
-        from flnd.site import TargetSite, source_run
+        from flnd.engine.options import RunShared
+        from flnd.engine.run import stopping
+        from flnd.engine.site import TargetSite, source_run
         from flnd.source import Target
 
         cls = self._source(source)
@@ -645,7 +645,7 @@ class Flnd:
 
     def _engine(self, emit: Any = None, stop: Any = None) -> Engine:
         """An engine of this home and its sources, sending events to `emit`."""
-        from flnd.engine import Engine
+        from flnd.engine.core import Engine
 
         return Engine(home=self.home, sources=self._sources(), emit=emit, stop=stop)
 
@@ -683,7 +683,7 @@ class Flnd:
         Raises:
             UsageError: no target, a target no source reads, or a category none of them has.
         """
-        from flnd.options import categories_by_source
+        from flnd.engine.options import categories_by_source
 
         resolved = self._resolve(targets)
         if not resolved:
@@ -718,7 +718,7 @@ def _installed(cls: type[Source], plugin: Any, logins: Mapping[str, str], *,
 
     Args:
         cls: the source's class.
-        plugin: its `flnd._plugins.Plugin` when it is one; None for a built-in or `add`'s.
+        plugin: its `flnd.engine.plugins.Plugin` when it is one; None for a built-in or `add`'s.
         logins: the login state of each source with one saved (`Engine.logins`).
         origin: where it came from, when `plugin` doesn't say; None for a built-in.
 
@@ -726,14 +726,14 @@ def _installed(cls: type[Source], plugin: Any, logins: Mapping[str, str], *,
         The row.
     """
     import flnd
-    from flnd import _plugins
+    from flnd.engine import plugins
 
     if plugin is not None:
         origin, where, version = plugin.origin, plugin.where, plugin.version
     else:
         where = f"{cls.__module__}:{cls.__qualname__}"
         version = flnd.__version__ if origin is None else ""
-        origin = origin or _plugins.BUILT_IN
+        origin = origin or plugins.BUILT_IN
     if cls.login is None:
         login = "needs no login"
     else:
@@ -755,7 +755,7 @@ def _names(targets: Sequence[Target]) -> str:
 
 
 def _config(home: Path) -> Config:
-    """The home's `config.toml`, read and checked (`flnd.options.config`).
+    """The home's `config.toml`, read and checked (`flnd.engine.options.config`).
 
     Its `[defaults]` fill what a call leaves as None: `again` (list each post again, and ask
     again for files recorded gone), and `when`. The library's calls keep their five
@@ -770,7 +770,7 @@ def _config(home: Path) -> Config:
     Raises:
         UsageError: the file isn't TOML, or one of its settings has a value it doesn't take.
     """
-    from flnd.options import config
+    from flnd.engine.options import config
 
     return config(home)
 

@@ -246,7 +246,7 @@ ceiling of 32 is confirmed by hand with `tests/bench/cdn_real.py`:
    default, alternating over the rounds, and prints the median seconds and MiB/s per cap, the
    failures, and the cap each run ended at. It prints no URL, name or host.
 4. Pick the smallest cap past which MiB/s stops rising by more than a few per cent. If it is
-   well under 32, lower `flnd.site.MEDIA_MOST`; if a cap ended below the one asked, the host
+   well under 32, lower `flnd.engine.site.MEDIA_MOST`; if a cap ended below the one asked, the host
    overloaded there.
 
 ## Disk

@@ -5,7 +5,8 @@ author, genre or search, all from the site's public JSON API.
     flnd download https://mimihentai.moe/manga/1234567890/chapter/1234567891
     flnd download "mht?genre:example chapters:1" --only cover
 
-Who calls it: the engine (`flnd.job`), through the routes and categories below, on the target's
+Who calls it: the engine (`flnd.engine.job`), through the routes and categories below, on the
+target's
 listing thread. What it calls: only its `Site` (`site.fetch` and `site.pages`, over plain HTTP:
 no browser, no login) and the stdlib.
 

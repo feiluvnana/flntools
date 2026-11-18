@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from example_source import CDN, Example  # noqa: E402
 
-from flnd import job  # noqa: E402
+from flnd.engine.core import job  # noqa: E402
 from flnd.kit import html as _html  # noqa: E402
 from flnd.kit import text as _text  # noqa: E402
 from flnd.kit.clock import day  # noqa: E402

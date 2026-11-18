@@ -8,7 +8,7 @@ cheap to reach.
 
 Who makes them:
 1. the job and the engine make `Saved`, `Skipped`, `Failed`, `Progress` and `Planned` as a run
-   goes, and hand them to the run's sink (`flnd._run.Run._emit`);
+   goes, and hand them to the run's sink (`flnd.engine.run.Run._emit`);
 2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
 3. `Flnd` makes `Login`, `Record`, `Tracked`, `Status` and `Failure` from the home's
    `flnd.db`, for its reads, `Checked` from `fl.check()`, and `Installed` from the sources it

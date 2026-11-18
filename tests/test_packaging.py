@@ -47,7 +47,7 @@ def loaded_after(code: str) -> set[str]:
 
 # What only a command may load: the engine, the network, the browser and the screen. `import
 # flnd` must load none of them, or every script and `flnd --help` pays.
-HEAVY = {"flnd.engine", "flnd.job", "flnd.site", "playwright", "rich", "curl_cffi",
+HEAVY = {"flnd.engine.core", "flnd.engine.job", "flnd.engine.site", "playwright", "rich", "curl_cffi",
          "msgspec"}
 
 

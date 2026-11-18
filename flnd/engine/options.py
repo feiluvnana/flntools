@@ -10,11 +10,11 @@ This is flnd's own module (not a library): it knows sources, targets and the hom
 - `categories_by_source`, `validate` and `unknown`, which check `--only` against the targets'
   sources before anything is fetched, and `selected`, which applies it to one source.
 
-Who calls it: the engine (`flnd.engine`) builds the `Options` and `RunShared` of a run and
+Who calls it: the engine (`flnd.engine.core`) builds the `Options` and `RunShared` of a run and
 checks `--only`; the job reads them; the library (`flnd._library`) and the steps after a download
-(`flnd._steps`), a source's run (`flnd.site`) and the job read `config`. What it calls:
-`flnd._home` (the database type), `flnd.source` (`Source`, `Target`), `flnd.ui.log` (a warning for
-a key the config file has that flnd doesn't take) and `flnd.errors`.
+(`flnd.engine.steps`), a source's run (`flnd.engine.site`) and the job read `config`. What it calls:
+`flnd.engine.home` (the database type), `flnd.source` (`Source`, `Target`), `flnd.ui.log` (a
+warning for a key the config file has that flnd doesn't take) and `flnd.errors`.
 
 How a setting resolves: a flag (or a library argument) given for one run, then the environment
 (`FLND_HOME`, `FLND_SOURCES`, which only say where things are), then `config.toml`, then the
@@ -47,13 +47,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from flnd import _home
+from flnd.engine import home
 from flnd.errors import UsageError
 from flnd.source import SCROLLS, Source, Target
 from flnd.ui.log import ui
 
 if TYPE_CHECKING:
-    from flnd._run import Stop
+    from flnd.engine.run import Stop
 
 # `--only all` takes every category of every source.
 ALL = "all"
@@ -62,7 +62,7 @@ ALL = "all"
 class Retry(Enum):
     """What a target's run does with the files earlier runs failed on (flnd/docs/errors)."""
 
-    # List each of their posts again first, for those failed on at most `_home.RETRIES` runs;
+    # List each of their posts again first, for those failed on at most `home.RETRIES` runs;
     # then the target's listings: every download and sync.
     FIRST = "first"
     # List each of their posts again, every one of them, and nothing else: `flnd retry`.
@@ -98,7 +98,7 @@ class RunShared:
     home: Path
     stop: Stop
     # The home's `flnd.db`, open for the run; None where nothing is read or saved (a login).
-    db: _home.Home | None = None
+    db: home.Home | None = None
     # The `runs` row the run's failures name; None outside a recorded run (a dry run).
     run: int | None = None
     # Whether a person can be asked a question, which a source's own login needs.
@@ -108,16 +108,17 @@ class RunShared:
     # The run's browser and loop (`flnd.kit.browser.RunBrowser`), set by `site.shared_browser`;
     # None outside a run.
     browser_pool: Any = field(default=None, repr=False)
-    # Where the run's events go (`flnd._run.Run._emit`). It may wait while a script handles the
-    # event before, so it is never called with a lock held. By default, events are dropped.
+    # Where the run's events go (`flnd.engine.run.Run._emit`). It may wait while a script
+    # handles the event before, so it is never called with a lock held. By default, events
+    # are dropped.
     emit: Callable[[Any], None] = field(default=lambda event: None, repr=False)
-    # The steps after a file lands (`flnd._steps.Chain`); None outside a run, so nothing is
+    # The steps after a file lands (`flnd.engine.steps.Chain`); None outside a run, so nothing is
     # unpacked or compressed.
     chain: Any = field(default=None, repr=False)
     # Resolves the text of a target a listing yielded, on any source (the engine's `resolve`);
     # None outside the engine, where a source reads only its own.
     resolve: Callable[[str], Target] | None = field(default=None, repr=False)
-    # Each file's lifecycle for this target (`flnd._track.Tracks`); None outside a download.
+    # Each file's lifecycle for this target (`flnd.engine.track.Tracks`); None outside a download.
     tracks: Any = field(default=None, repr=False)
 
 

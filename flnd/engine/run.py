@@ -30,7 +30,8 @@ Rules a change must keep:
   nobody awaited does: it is almost always a missing `.wait()`.
 - `suspend()` holds new requests and files (`Stop.suspended`, which each source's limits
   watch); a stop always wins over it, so a suspended run still stops.
-- The module imports only the stdlib, `flnd._events` and `flnd.ui.log` on a second Ctrl-C, never
+- The module imports only the stdlib, `flnd.engine.events` and `flnd.ui.log` on a second Ctrl-C,
+never
   the engine, so `flnd.Run` is cheap to reach.
 """
 
@@ -48,10 +49,19 @@ import warnings
 from collections.abc import AsyncIterator, Callable, Generator, Iterator
 from typing import TYPE_CHECKING, Any
 
-from flnd._events import NOTHING_NEW, RESUMING, Failed, Planned, Progress, Report, Saved, Skipped
+from flnd.engine.events import (
+    NOTHING_NEW,
+    RESUMING,
+    Failed,
+    Planned,
+    Progress,
+    Report,
+    Saved,
+    Skipped,
+)
 
 if TYPE_CHECKING:
-    from flnd._events import Event
+    from flnd.engine.events import Event
 
 __all__ = ["Run", "Stop", "quit_now", "restoring", "stopping"]
 

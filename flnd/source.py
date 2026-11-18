@@ -29,7 +29,8 @@ What it holds:
 - `Request`, what the `sign` hook may add headers to;
 - `dig`, a JSON path reader; `Range`, `--when`'s days; and the errors a source raises.
 
-Who calls it: the sources, the engine (`flnd.engine`, `flnd.job`, `flnd.site`), the test kit
+Who calls it: the sources, the engine (`flnd.engine.core`, `flnd.engine.job`, `flnd.engine.site`),
+the test kit
 (`flnd.testing`), and the library, which re-exports `Target`. What it calls: the `flnd.kit.html`
 library (the HTML reader and `dig`), `flnd.kit.text` (template fields), `flnd.kit.clock` (reading a
 date) and `flnd.errors`.
@@ -1063,7 +1064,8 @@ class Site(Protocol):
         if site.open(f"https://www.example.com/{user}/"):
             title = site.document().first("h1").text
 
-    The engine's is `flnd.site.TargetSite`; tests use `flnd.testing.FakeSite`. Every request to the
+    The engine's is `flnd.engine.site.TargetSite`; tests use `flnd.testing.FakeSite`. Every request
+    to the
     source's own `domains` waits its turn under the source's `pace`, and a rate limit or a 5xx is
     waited out and tried again here, so a source never sleeps or retries itself. A login wall
     (a 401 or 403 from the source's own domains) raises `LoginError`.

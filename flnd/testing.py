@@ -22,7 +22,8 @@ What it holds:
 
 Who calls it: a source's tests, flnd's own tests (`tests/fakes.py` builds on it), and the
 doctests of `flnd.source`. What it calls: the engine's own naming and listing code
-(`flnd.job.posts` and `flnd.job.place`, `flnd.engine.resolve`, `flnd.site.paged`), imported when
+(`flnd.engine.job.posts` and `flnd.engine.job.place`, `flnd.engine.core.resolve`,
+`flnd.engine.site.paged`), imported when
 a function first needs it, so a source's test runs the same code a download does.
 
 Rules a change must keep:
@@ -59,8 +60,8 @@ from flnd.source import (
 if TYPE_CHECKING:
     import datetime
 
+    from flnd.engine.options import Options
     from flnd.kit import net
-    from flnd.options import Options
 
 __all__ = ["Collected", "FakeSite", "Seen", "check", "collect", "fake_clock"]
 
@@ -241,7 +242,7 @@ class FakeSite:
             ...                                       cursor="next")]
             [[1], [2]]
         """
-        from flnd.site import paged
+        from flnd.engine.site import paged
 
         return paged(self.fetch, url, cursor=cursor, params=params, send=send,
                      listing=self.listing)
@@ -687,7 +688,7 @@ def collect(source: type[Source], target: str, *, site: FakeSite | None = None,
         >>> [(found.path, found.key) for found in saved]
         [('p1_0.jpg', 'p1_0')]
     """
-    from flnd.options import Options
+    from flnd.engine.options import Options
 
     chosen = site if site is not None else FakeSite(json=json, html=html)
     categories = tuple(only) if only is not None else None
@@ -713,8 +714,8 @@ def _collect(source: type[Source], text: str, site: FakeSite,
     Returns:
         What `collect` returns.
     """
-    from flnd import job
-    from flnd.engine import resolve
+    from flnd.engine import job
+    from flnd.engine.core import resolve
 
     target = resolve(text, {source.code: source})
     site.target = target
@@ -753,7 +754,7 @@ def _first_key(source: Source, post: Post, category: Any) -> str | None:
     Returns:
         The key; None when the template needs the files' paths to be filled.
     """
-    from flnd import job
+    from flnd.engine import job
     from flnd.kit import text
 
     template = job._format(source, category, "key")
@@ -796,7 +797,7 @@ def check(source: type[Source]) -> list[Target]:
         >>> [str(found) for found in check(Example)]
         ['exm:example_user', 'exm:example_user']
     """
-    from flnd.engine import resolve
+    from flnd.engine.core import resolve
 
     if not (isinstance(source, type) and issubclass(source, Source)
             and getattr(source, "code", None)):

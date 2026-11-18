@@ -12,10 +12,10 @@ from unittest import mock
 import fakes
 from test_engine import CDN, EngineCase, make_source, noise
 
-from flnd import _home
-from flnd.engine import Engine, TargetReport
+from flnd.engine import home as _home
+from flnd.engine.core import Engine, TargetReport
+from flnd.engine.options import Options
 from flnd.kit import net as _net
-from flnd.options import Options
 from flnd.source import File, Post, Range, Source, Target, target
 
 

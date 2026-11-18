@@ -18,7 +18,7 @@ from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
-from flnd import _home
+from flnd.engine import home as _home
 from flnd.errors import DiskError
 from flnd.kit import cookies as _cookies
 from flnd.kit import net as _net

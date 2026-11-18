@@ -1,6 +1,6 @@
 """One file's download lifecycle: the only place its events come from.
 
-The run's display is the board's summary rows (`flnd.job.Board`), so a file tracks its phase
+The run's display is the board's summary rows (`flnd.engine.job.Board`), so a file tracks its phase
 and its events here, and draws nothing of its own. Architecture guide: flnd/docs/architecture.
 """
 
@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from flnd._events import Failed, Saved, Skipped
+from flnd.engine.events import Failed, Saved, Skipped
 
 __all__ = ["Phase", "FileTrack", "Tracks", "_Bar"]
 
@@ -158,11 +158,11 @@ class FileTrack:
 
 
 class _Bar(AbstractContextManager["_Bar"]):
-    """Progress sink for `flnd._transfer`, backed by the file track.
+    """Progress sink for `flnd.engine.transfer`, backed by the file track.
 
     The run's display is the board's summary rows, so the bar carries only what a download
     needs to answer for: the stop checks (a second Ctrl-C) and the phase captions. It keeps
-    the same surface as `flnd._transfer._Row`, which `_transfer` uses when there is no track.
+    the same surface as `flnd.engine.transfer._Row`, which `_transfer` uses when there is no track.
 
     Args:
         track: the file whose lifecycle the sink moves.
@@ -205,7 +205,7 @@ class _Bar(AbstractContextManager["_Bar"]):
 
 
 class _TrackStream:
-    """One stream's progress on a file track (same surface as `flnd._transfer._Stream`).
+    """One stream's progress on a file track (same surface as `flnd.engine.transfer._Stream`).
 
     Args:
         bar: the file's bar.

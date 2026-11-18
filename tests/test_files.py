@@ -1,4 +1,4 @@
-"""Part names (`flnd.kit.files`) and media validation (`flnd._transfer.checked`), on a temp folder."""
+"""Part names (`flnd.kit.files`) and media validation (`flnd.engine.transfer.checked`), on a temp folder."""
 
 import fnmatch
 import io
@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from flnd import _transfer
+from flnd.engine import transfer as _transfer
 from flnd.errors import SiteError
 from flnd.kit import files as _files
 from flnd.kit import files as core_files

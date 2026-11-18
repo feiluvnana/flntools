@@ -1,6 +1,6 @@
 """Benchmark group `db`: a home's `flnd.db` over 100k files, and what a commit costs per file.
 
-Part one is `flnd._home` over 100,000 file rows of 10 targets: inserting them, the point read
+Part one is `flnd.engine.home` over 100,000 file rows of 10 targets: inserting them, the point read
 every listed file makes (`Home.held`: its path and state by key), one target's 10,000 rows, and
 a filter on a column (`size`), which SQL runs.
 
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import kit
 
-from flnd import _home
+from flnd.engine import home as _home
 
 ROWS = kit.size(100_000, 1000)
 # 10,000 random keys read back, seeded so every run reads the same ones.
@@ -43,7 +43,7 @@ def files(n: int, *, post_files: int = 1) -> _home.FileRow:
 
 
 def history(report: kit.Report, scratch: Path) -> None:
-    """Time `flnd._home` over 100k file rows.
+    """Time `flnd.engine.home` over 100k file rows.
 
     Args:
         report: where the numbers go.

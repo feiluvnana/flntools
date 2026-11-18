@@ -1,7 +1,7 @@
 """Benchmark group `net`: flnd's HTTP client downloading from a loopback server to disk.
 
 The client is the one flnd builds for a source's downloads (`flnd.kit.net.Client` over a
-`Session`, with the per-host cap of `flnd.site`), on a `flnd.kit.loop.Loop` as in a run, so these
+`Session`, with the per-host cap of `flnd.engine.site`), on a `flnd.kit.loop.Loop` as in a run, so these
 numbers are what a real download pays, minus the network. Loopback shows CPU and per-request
 overhead and hides latency and bandwidth; the `e2e` group adds simulated latency.
 
@@ -49,7 +49,7 @@ from unittest import mock
 
 import kit
 
-from flnd import _transfer
+from flnd.engine import transfer as _transfer
 from flnd.kit import files as _files
 from flnd.kit import net as _net
 from flnd.kit.loop import Loop
@@ -59,7 +59,7 @@ BIG = kit.size(1 << 30, 1 << 20)
 # The big file is written in pieces of this size, so making it never holds 1 GiB in memory.
 PIECE = min(64 << 20, BIG)
 SMALL, COUNT = 100 * 1024, kit.size(2000, 20)
-# Transfers at once to one host: where flnd's cap starts (`flnd.site.MEDIA_CAP`), held there.
+# Transfers at once to one host: where flnd's cap starts (`flnd.engine.site.MEDIA_CAP`), held there.
 AT_ONCE = 8
 # The slow disk: four files of 16 MiB written at 20 MB/s.
 MEDIUM, SLOW_FILES, DISK_RATE = kit.size(16 << 20, 1 << 20), 4, 20e6
@@ -101,7 +101,7 @@ def make_data(folder: Path) -> None:
 
 async def fill(client: _net.Client, url: str, dest: Path) -> None:
     """Download `url` into `dest` as a source's file is: its part opened and landed off the loop
-    (`flnd._transfer`), filled by the client. No progress row: that is the UI's cost (`cpu`)."""
+    (`flnd.engine.transfer`), filled by the client. No progress row: that is the UI's cost (`cpu`)."""
     async with _transfer._held(dest) as held:
         await client.fill(url, held)
 

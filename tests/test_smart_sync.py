@@ -19,10 +19,10 @@ import fakes
 from test_engine import CDN, EngineCase
 
 import flnd
-from flnd import _home
 from flnd import cli as flnd_cli
-from flnd._events import NOTHING_NEW, RESUMING, Progress, Saved, Skipped, encode
-from flnd.engine import Engine
+from flnd.engine import home as _home
+from flnd.engine.core import Engine
+from flnd.engine.events import NOTHING_NEW, RESUMING, Progress, Saved, Skipped, encode
 from flnd.errors import Changed
 from flnd.kit import net as _net
 from flnd.source import File, Post, Source, cookies, target

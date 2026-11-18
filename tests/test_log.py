@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import flnd
-from flnd._events import Failed, Saved
+from flnd.engine.events import Failed, Saved
 from flnd.kit import clock as _time
 from flnd.source import Target
 from flnd.testing import fake_clock

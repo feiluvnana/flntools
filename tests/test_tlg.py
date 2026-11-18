@@ -28,12 +28,13 @@ from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswo
 from test_commands import FlndCase, Stdin
 from test_engine import EngineCase, make_source
 
-from flnd import _home, _transfer
-from flnd._events import Progress
-from flnd.engine import Engine
+from flnd.engine import home as _home
+from flnd.engine import transfer as _transfer
+from flnd.engine.core import Engine
+from flnd.engine.events import Progress
+from flnd.engine.options import Options
+from flnd.engine.site import LoginSite
 from flnd.kit import text as _text
-from flnd.options import Options
-from flnd.site import LoginSite
 from flnd.source import LoginError, Target, UsageError
 from flnd.sources import tlg
 from flnd.sources.tlg import (

@@ -19,7 +19,8 @@ How loading stays lazy:
    so nothing is imported to learn which codes exist. It reads the package metadata once
    (a few milliseconds) and lists one folder.
 2. `load` imports one plugin, on the first use of its code: an `exm:…` target imports `exm`
-   alone. A link imports plugins only when no built-in's domains match it (`flnd.engine.owner`),
+   alone. A link imports plugins only when no built-in's domains match it
+   (`flnd.engine.core.owner`),
    and `flnd sources` imports them all. `flnd --help` imports none.
 
 Rules a change must keep:

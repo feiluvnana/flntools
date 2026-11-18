@@ -5,7 +5,7 @@ target and category) and a byte bar per file in flight. Its output goes to a cou
 says it is a UTF-8 terminal, so the live block draws as it would on a real one.
 
 What it times:
-1. `overhead`: 100,000 file events through a `flnd._run.Run`, each a `Board.count` that moves
+1. `overhead`: 100,000 file events through a `flnd.engine.run.Run`, each a `Board.count` that moves
    a row and sends a `Progress` event to the reader, with the screen on versus off, as the
    percentage the screen adds;
 2. `idle_bytes`: the bytes the screen writes in 5 s while nothing changes, with 20 targets and
@@ -24,8 +24,8 @@ from typing import Any
 
 import kit
 
-from flnd import job
-from flnd._run import Run
+from flnd.engine import job
+from flnd.engine.run import Run
 from flnd.source import Target
 from flnd.ui.log import UI, Group, ui
 

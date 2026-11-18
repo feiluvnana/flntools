@@ -183,7 +183,7 @@ def _report(error: Any, *, as_json: bool = False) -> None:
         as_json: also print it on standard output as `{"type": "Error", ...}`, for `--json`.
     """
     if as_json:
-        from flnd._events import encode
+        from flnd.engine.events import encode
 
         sys.stdout.write('{"type":"Error","error":' + encode(error).decode() + "}\n")
         sys.stdout.flush()
@@ -215,12 +215,12 @@ def _crashed(error: Exception, args: argparse.Namespace) -> int:
 
     from rich.text import Text
 
-    from flnd import _home
+    from flnd.engine.home import LOGS
 
     trace = "".join(traceback.format_exception(error))
     line = f"unexpected {type(error).__name__}: {error}"
     home = Path(args.home or os.environ.get("FLND_HOME") or ".flnd").expanduser()
-    path = home / _home.LOGS / f"crash-{datetime.datetime.now():%Y%m%d-%H%M%S}.txt"
+    path = home / LOGS / f"crash-{datetime.datetime.now():%Y%m%d-%H%M%S}.txt"
     c = _console(sys.stderr)
     if not args.verbose:
         try:
@@ -368,7 +368,7 @@ def status(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd._events import encode
+    from flnd.engine.events import encode
 
     with _open(args) as fl:
         found = fl.status
@@ -446,7 +446,7 @@ def check(args: argparse.Namespace) -> int:
     with _open(args) as fl:
         found = fl.check(fix=args.fix)
     if args.json:
-        from flnd._events import encode
+        from flnd.engine.events import encode
 
         sys.stdout.write('{"type":"Checked",' + encode(found).decode()[1:] + "\n")
         sys.stdout.flush()
@@ -550,7 +550,7 @@ def sources(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd._events import encode
+    from flnd.engine.events import encode
 
     with _open(args) as fl:
         found = fl.sources
@@ -1030,7 +1030,7 @@ def _json(value: Any, *, stream: Any = None) -> None:
         value: an event, record, or dict to encode.
         stream: destination stream; defaults to sys.stdout.
     """
-    from flnd._events import encode
+    from flnd.engine.events import encode
 
     out = stream if stream is not None else sys.stdout
     out.write(encode(value).decode() + "\n")
@@ -1107,14 +1107,14 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
     from contextlib import ExitStack
     from pathlib import Path
 
-    from flnd import _home
+    from flnd.engine.home import LOGS
     from flnd.ui.log import ui
 
     journal_path: Path | None = None
     try:
         home = getattr(fl, "home", None)
         if isinstance(home, (str, os.PathLike, Path)):
-            log_dir = Path(home) / _home.LOGS
+            log_dir = Path(home) / LOGS
             log_dir.mkdir(parents=True, exist_ok=True)
             cmd = getattr(args, "command", None)
             name = cmd.__name__ if cmd and hasattr(cmd, "__name__") else "run"
@@ -1355,7 +1355,7 @@ class _JournalView(_View):
     """Terminal output from run events; the machine record goes to the `.jsonl` journal.
 
     The run's own display is the summary table the library draws (one row per target and
-    category, `flnd.job.Board`), so a view prints no line per file or failure: the table
+    category, `flnd.engine.job.Board`), so a view prints no line per file or failure: the table
     counts them, and `end` sums them up.
     """
 
@@ -1411,7 +1411,7 @@ class _Json(_View):
         Args:
             report: the run's report to encode.
         """
-        from flnd._events import encode
+        from flnd.engine.events import encode
 
         body = encode(report).decode()
         stream = self.out or sys.stdout

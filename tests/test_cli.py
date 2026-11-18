@@ -1,5 +1,5 @@
 """The CLI's frame: exit codes per error class, no traceback for a person's mistake, the crash
-file, two-stage Ctrl-C (`flnd._run.stopping`), and the prompts of `flnd.ui.forms`.
+file, two-stage Ctrl-C (`flnd.engine.run.stopping`), and the prompts of `flnd.ui.forms`.
 
 Each error is raised from a library call (`Flnd.check`, which `flnd check` makes), so the test
 goes through the CLI's real path from flags to exit code. Nothing touches a site.
@@ -17,7 +17,9 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from flnd import _home, _run, cli
+from flnd import cli
+from flnd.engine import home as _home
+from flnd.engine import run as _run
 from flnd.errors import (
     Blocked,
     Changed,

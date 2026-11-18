@@ -1,4 +1,4 @@
-"""The chain's own steps (`flnd._steps`): hashing, dedupe, the sidecar, and `Saved` at the end.
+"""The chain's own steps (`flnd.engine.steps`): hashing, dedupe, the sidecar, and `Saved` at the end.
 
 Every run fakes the network (`flnd.kit.net.reply` routes, from `test_engine`) and uses synthetic
 photos.
@@ -17,8 +17,8 @@ from test_engine import CDN, EngineCase, make_source, noise
 
 JPEG = noise("JPEG")
 
-from flnd._events import Saved
-from flnd.engine import Engine
+from flnd.engine.core import Engine
+from flnd.engine.events import Saved
 from flnd.kit import net as _net
 from flnd.source import File, Post, Source, target
 
@@ -50,7 +50,7 @@ class ChainCase(EngineCase):
         return self.target_dir("aaa", name) / f"{name}{suffix}"
 
     def rows(self) -> dict:
-        from flnd import _home
+        from flnd.engine import home as _home
 
         with _home.open(self.home) as db:
             return {row.key: row for row in db.on_disk()}
@@ -185,7 +185,7 @@ class SavedTest(ChainCase):
         self.assertEqual((event.path, event.size), (self.path("a"), len(self.body)))
 
     def test_a_file_dropped_by_ctrl_c_before_its_steps_is_still_saved(self):
-        from flnd import _steps
+        from flnd.engine import steps as _steps
 
         stop = mock.Mock(soon=mock.Mock(is_set=lambda: True), now=mock.Mock())
         events = []

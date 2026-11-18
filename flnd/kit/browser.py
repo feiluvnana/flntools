@@ -2,7 +2,8 @@
 
 A standalone library: it imports the standard library, Playwright and flnd's other library
 modules (`_loop`, `net`, `_cookies`, `forms`, `_ui`, `_text`, `clock`, `errors`), and nothing
-of flnd's engine. In flnd, `flnd.site.TargetSite` builds the `Site` browser verbs a source calls
+of flnd's engine. In flnd, `flnd.engine.site.TargetSite` builds the `Site` browser verbs a source
+calls
 on it, each one call across to the run's loop (`flnd.kit.loop.Loop.run`, about 40 µs).
 
 What it offers, from the bottom up:

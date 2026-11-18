@@ -14,7 +14,7 @@ flnd.Changed.response: attribute
 flnd.Changed.retryable: attribute
 flnd.Changed.status: attribute
 flnd.Changed.target: attribute
-flnd.Checked(files: int = 0, missing: tuple[flnd._events.Record, ...] = (), unknown: tuple[pathlib.Path, ...] = (), resized: tuple[flnd._events.Record, ...] = (), fixed: bool = False)
+flnd.Checked(files: int = 0, missing: tuple[flnd.engine.events.Record, ...] = (), unknown: tuple[pathlib.Path, ...] = (), resized: tuple[flnd.engine.events.Record, ...] = (), fixed: bool = False)
 flnd.Checked.files: attribute -> int
 flnd.Checked.fixed: attribute -> bool
 flnd.Checked.missing: attribute -> tuple[Record, ...]
@@ -124,7 +124,7 @@ flnd.Record.kind: property -> str | None
 flnd.Record.path: attribute -> Path
 flnd.Record.post: attribute -> str
 flnd.Record.size: attribute -> int
-flnd.Report(saved: int = 0, skipped: int = 0, bytes: int = 0, planned: int = 0, failed: tuple[flnd._events.Failed, ...] = (), stopped: bool = False, retried: int = 0, resumed: int = 0, unchanged: int = 0)
+flnd.Report(saved: int = 0, skipped: int = 0, bytes: int = 0, planned: int = 0, failed: tuple[flnd.engine.events.Failed, ...] = (), stopped: bool = False, retried: int = 0, resumed: int = 0, unchanged: int = 0)
 flnd.Report.bytes: attribute -> int
 flnd.Report.failed: attribute -> tuple[Failed, ...]
 flnd.Report.ok: property -> bool
@@ -168,7 +168,7 @@ flnd.SourceError.hint: attribute
 flnd.SourceError.of(error: BaseException, *, target: str | None = None) -> Error | BaseException
 flnd.SourceError.retryable: attribute
 flnd.SourceError.target: attribute
-flnd.Status(command: str, started: str, ended: str = '', saved: int = 0, failures: tuple[flnd._events.Failure, ...] = ())
+flnd.Status(command: str, started: str, ended: str = '', saved: int = 0, failures: tuple[flnd.engine.events.Failure, ...] = ())
 flnd.Status.command: attribute -> str
 flnd.Status.ended: attribute -> str
 flnd.Status.failures: attribute -> tuple[Failure, ...]

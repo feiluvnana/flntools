@@ -1,8 +1,8 @@
-"""The home's config.toml (`flnd.options.config`), and where each of its settings takes effect.
+"""The home's config.toml (`flnd.engine.options.config`), and where each of its settings takes effect.
 
 `ReadTest` reads files written in a temporary home: every key, every bad value (whose message must
 name the file, the key and what it takes), and the warning for a key flnd doesn't know.
-`SourceRunTest` checks that a source's `[sources.<code>]` settings reach its run (`flnd.site`):
+`SourceRunTest` checks that a source's `[sources.<code>]` settings reach its run (`flnd.engine.site`):
 pace, limits, proxy and scroll. `PrecedenceTest` checks the order a setting resolves in: a value
 given for one call wins over the file, and the file over the default. No network, no browser.
 """
@@ -18,10 +18,11 @@ from test_library import LibraryCase
 from test_site import SiteCase
 
 import flnd
-from flnd import cli, options
-from flnd.engine import Engine
+from flnd import cli
+from flnd.engine import options
+from flnd.engine.core import Engine
+from flnd.engine.options import Config, SourceConfig, config
 from flnd.errors import UsageError
-from flnd.options import Config, SourceConfig, config
 
 
 class Home:

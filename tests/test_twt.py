@@ -15,11 +15,11 @@ from unittest import mock
 from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
-from flnd import _home
-from flnd.engine import resolve
+from flnd.engine import home as _home
+from flnd.engine.core import resolve
+from flnd.engine.options import Options
 from flnd.kit import cookies as _cookies
 from flnd.kit import net as _net
-from flnd.options import Options
 from flnd.source import LoginError, Request, SiteError, Target, UsageError
 from flnd.sources.twt import (
     QUERIES,

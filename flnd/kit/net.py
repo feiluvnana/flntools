@@ -28,8 +28,10 @@ What it offers, for any caller:
         headers = await client.fill([mirror1, mirror2], held, progress=row)
     await session.close()
 
-Who calls it: flnd's site (`flnd.site`) builds one session per source and two clients over it,
-and flnd's transfers (`flnd._transfer`) fill a post's files; the browser (`flnd.kit.browser`) shapes
+Who calls it: flnd's site (`flnd.engine.site`) builds one session per source and two clients over
+it,
+and flnd's transfers (`flnd.engine.transfer`) fill a post's files; the browser (`flnd.kit.browser`)
+shapes
 a request its page sent as a `Response`. It calls curl_cffi, `flnd.kit.files` (parts),
 `flnd.kit.clock`
 (the clock, so tests wait on a fake one), `flnd.kit.cookies`, `flnd.kit.text` (redaction) and

@@ -1,6 +1,6 @@
 """The source registry: `SOURCES` maps each source's code to its class, loaded lazily.
 
-It holds the built-in sources and the plugins (`flnd._plugins`): installed packages' and the
+It holds the built-in sources and the plugins (`flnd.engine.plugins`): installed packages' and the
 user's plugin folder's. Who reads it: the engine and the library (to resolve and run targets),
 login and logout. The CLI's help reads `flnd.sources._manifest` instead, which holds the
 built-ins' facts as plain data, so `--help` imports no source and looks for no plugin.
@@ -9,8 +9,8 @@ How it loads:
 1. The built-ins' codes, their order and where each class lives come from `_manifest.SOURCES`,
    so a built-in code (`"ins" in SOURCES`, `SOURCES["ins"]`) imports that source alone and
    never looks for plugins.
-2. A code that isn't built in makes the registry look for plugins once (`_plugins.discover`,
-   which reads names only), then import that one plugin (`_plugins.load`).
+2. A code that isn't built in makes the registry look for plugins once (`plugins.discover`,
+   which reads names only), then import that one plugin (`plugins.load`).
 3. Iterating (`list(SOURCES)`, `.items()`) gives the built-ins first, without importing them,
    then imports every plugin and gives the ones that work. A broken plugin is left out, with a
    warning; `SOURCES.plugins` lists it with its reason.
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from flnd.sources import _manifest
 
 if TYPE_CHECKING:
-    from flnd._plugins import Plugin
+    from flnd.engine.plugins import Plugin
     from flnd.source import Source
 
 __all__ = ["BUILT_IN", "SOURCES", "Registry"]
@@ -55,7 +55,7 @@ class Registry(MutableMapping[str, "type[Source]"]):
 
     Args:
         places: each built-in code's module and class name, in order.
-        find: what finds the plugins, given the codes taken (`flnd._plugins.discover`); called
+        find: what finds the plugins, given the codes taken (`flnd.engine.plugins.discover`); called
             once, the first time a code that isn't built in is needed. None finds none.
 
     Example:
@@ -164,13 +164,13 @@ class Registry(MutableMapping[str, "type[Source]"]):
         Returns:
             The class; None when no plugin has the code, or it is disabled.
         """
-        from flnd import _plugins
+        from flnd.engine import plugins
 
         self._discover()
         plugin = self._plugins.get(code)
         if plugin is None or plugin.error:
             return None
-        cls = _plugins.load(plugin)
+        cls = plugins.load(plugin)
         if cls is not None and code not in self._loaded:
             self._loaded[code] = cls
             self._codes.append(code)
@@ -181,10 +181,11 @@ class Registry(MutableMapping[str, "type[Source]"]):
 
 
 def _find(taken: dict[str, str]) -> list[Plugin]:
-    """The plugins, found by `flnd._plugins` only once a code that isn't built in is needed."""
-    from flnd import _plugins
+    """The plugins, found by `flnd.engine.plugins` only once a code that isn't built in is
+    needed."""
+    from flnd.engine import plugins
 
-    return _plugins.discover(taken)
+    return plugins.discover(taken)
 
 
 SOURCES: Registry = Registry({

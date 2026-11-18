@@ -141,7 +141,8 @@ class TelegramLogin(Login):
         """Log in by `how`, and keep the session, the `api_id` and the `api_hash`.
 
         Args:
-            site: the source's login site (`flnd.site.LoginSite`): `ask`, `secrets`, `storage`.
+            site: the source's login site (`flnd.engine.site.LoginSite`): `ask`, `secrets`,
+            `storage`.
             how: "browser", "qr" or "phone".
 
         Raises:

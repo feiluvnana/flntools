@@ -21,9 +21,9 @@ from unittest import mock
 from test_engine import CDN, EngineCase, make_source, noise
 
 import flnd
-from flnd import site as site_module
-from flnd._events import encode
 from flnd._library import _when
+from flnd.engine import site as site_module
+from flnd.engine.events import encode
 from flnd.kit import net as _net
 from flnd.source import File, Post, Source, target
 from flnd.source import cookies as login_cookies
@@ -233,7 +233,7 @@ class RunTest(LibraryCase):
     def test_a_third_ctrl_c_puts_the_terminal_back_and_exits_at_once(self):
         import signal
 
-        from flnd import _run
+        from flnd.engine import run as _run
         from flnd.ui.log import ui
 
         class Quit(BaseException):
