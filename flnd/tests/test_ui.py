@@ -16,9 +16,9 @@ import flnd
 from flnd import cli
 from flnd.engine import run as _run
 from flnd.errors import UsageError
-from flnd.kit import clock as _time
 from flnd.ui import out, theme
 from flnd.ui.log import Group, Item, ui
+from flnkit import clock as _time
 
 
 class UICase(unittest.TestCase):

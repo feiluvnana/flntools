@@ -1,7 +1,7 @@
 """Importing this keeps every test away from real browser profiles and the real plugin folder.
 
-It sets `FLND_TEST_NO_PROFILES`, which `flnd.kit.cookies.refuse_profile` reads: while it is set,
-`flnd.kit.cookies` (reading a browser's cookies) and `flnd.kit.browser` (copying a Chrome profile, or
+It sets `FLND_TEST_NO_PROFILES`, which `flnkit.cookies.refuse_profile` reads: while it is set,
+`flnkit.cookies` (reading a browser's cookies) and `flnkit.browser` (copying a Chrome profile, or
 launching Chrome on one) refuse any profile inside the real home folder, before anything is read.
 A test that needs a profile fakes the home folder in a temporary folder instead.
 
@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 
 from flnd.engine.plugins import VARIABLE
-from flnd.kit.cookies import NO_PROFILES
+from flnkit.cookies import NO_PROFILES
 
 os.environ[NO_PROFILES] = "1"
 os.environ.setdefault(VARIABLE, str(Path(__file__).resolve().parent / "data" / "no-plugins"))

@@ -1,4 +1,4 @@
-"""`flnd.kit.net`, the HTTP library: requests, the retry policy, secrets, the fake, pace and caps,
+"""`flnkit.net`, the HTTP library: requests, the retry policy, secrets, the fake, pace and caps,
 and downloads into a part (resumed, mirrored, segmented, written off the loop).
 
 The network is `_net.fake`, the waits a fake clock whose jitter is pinned at its top (so a wait
@@ -21,11 +21,11 @@ from unittest import mock
 from fakes import download, fetch
 
 from flnd.errors import Blocked, Error, NetworkError, NotFound, SiteError, Stopped
-from flnd.kit import clock as _time
-from flnd.kit import files as _files
-from flnd.kit import html as _html
-from flnd.kit import net as _net
 from flnd.ui.log import _brief, ui
+from flnkit import clock as _time
+from flnkit import files as _files
+from flnkit import html as _html
+from flnkit import net as _net
 
 SITE = "https://www.example.com"
 FILE = f"{SITE}/file.bin"
@@ -424,7 +424,7 @@ class SessionTest(NetCase):
                                        f"{request.headers['authorization']} {request.url}")
 
         url = f"https://example_user:{self.PASSWORD}@www.example.com/?auth={self.COOKIE}"
-        with self.assertLogs("flnd.kit.net", "DEBUG") as logged:
+        with self.assertLogs("flnkit.net", "DEBUG") as logged:
             for route in (403, 429, 500, connection_lost):
                 session = _net.Session(headers={"Authorization": self.TOKEN}, cookies=[
                     {"name": "sessionid", "value": self.COOKIE, "domain": "www.example.com", "path": "/"}])
@@ -799,7 +799,7 @@ class DownloadTest(NetCase):
                                            chunks=(body[at:at + 65536]
                                                    for at in range(0, len(body), 65536)))
         with _net.fake({FILE: route}), mock.patch.object(_files.Part, "feed", feed), \
-                mock.patch("flnd.kit.files._digest_fd", side_effect=AssertionError("read back")):
+                mock.patch("flnkit.files._digest_fd", side_effect=AssertionError("read back")):
             saved = asyncio.run(fill())
         self.assertEqual(saved.hash, hashlib.sha256(body).digest())
         self.assertIn("flnd-hasher", " ".join(threads))

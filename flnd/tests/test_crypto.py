@@ -1,4 +1,4 @@
-"""flnd.kit.vault: `digest` against hashlib, and AES-256-GCM's `encrypt` and `decrypt`.
+"""flnkit.vault: `digest` against hashlib, and AES-256-GCM's `encrypt` and `decrypt`.
 
 Nothing is faked but a missing `cryptography`, by patching `__import__`. The ciphers' tests skip
 without `cryptography`; `digest` needs only the stdlib.
@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from flnd.errors import LoginError, ToolError
-from flnd.kit import vault as _vault
+from flnkit import vault as _vault
 
 try:
     import cryptography  # noqa: F401

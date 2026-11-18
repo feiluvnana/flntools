@@ -18,8 +18,6 @@ from test_engine import EngineCase
 from flnd.engine import home as _home
 from flnd.engine.core import resolve
 from flnd.engine.options import Options
-from flnd.kit import cookies as _cookies
-from flnd.kit import net as _net
 from flnd.source import LoginError, Request, SiteError, Target, UsageError
 from flnd.sources.twt import (
     QUERIES,
@@ -30,6 +28,8 @@ from flnd.sources.twt import (
     read_timeline_page,
     tweet_posts,
 )
+from flnkit import cookies as _cookies
+from flnkit import net as _net
 
 API = "https://x.com/i/api/graphql/"
 USER_ID = "42"

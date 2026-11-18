@@ -1,10 +1,10 @@
-"""`flnd.kit.html`: `parse`, CSS queries, text and attributes, embedded JSON, the size limit, and `dig`."""
+"""`flnkit.html`: `parse`, CSS queries, text and attributes, embedded JSON, the size limit, and `dig`."""
 
 import unittest
 from unittest import mock
 
 from flnd.errors import Changed, SiteError, SourceError
-from flnd.kit import html as _html
+from flnkit import html as _html
 
 HTML = """<html><head><title>t</title>
 <script id="__NEXT_DATA__" type="application/json">{"props": {"user": "example_user"}}</script>

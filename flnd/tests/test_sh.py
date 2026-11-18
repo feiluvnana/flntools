@@ -1,4 +1,4 @@
-"""Tests for `flnd.kit.files`: running ffmpeg and 7zz and faking them."""
+"""Tests for `flnkit.files`: running ffmpeg and 7zz and faking them."""
 
 import sys
 import tempfile
@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd.kit import files as _tools
+from flnkit import files as _tools
 
 
 class ShCase(unittest.TestCase):
@@ -44,7 +44,7 @@ class RunTest(ShCase):
 
 class FindTest(ShCase):
     def test_find_on_path_is_cached_for_the_process(self):
-        with mock.patch("flnd.kit.files.shutil.which", return_value=sys.executable) as which:
+        with mock.patch("flnkit.files.shutil.which", return_value=sys.executable) as which:
             tool = _tools.find("python")
             self.assertIs(_tools.find("python"), tool)
         self.assertEqual(which.call_count, 1)
@@ -52,7 +52,7 @@ class FindTest(ShCase):
         self.assertEqual(tool.run("-c", "print(42)").out.strip(), "42")
 
     def test_a_tool_not_on_path_is_missing_with_a_hint(self):
-        with mock.patch("flnd.kit.files.shutil.which", return_value=None):
+        with mock.patch("flnkit.files.shutil.which", return_value=None):
             with self.assertRaises(_tools.MissingError) as caught:
                 _tools.ffprobe()
         self.assertEqual(caught.exception.hint, "install ffmpeg, or put it on PATH")

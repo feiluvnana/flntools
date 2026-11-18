@@ -13,8 +13,8 @@ import unittest
 
 import pyte
 
-from flnd.kit import clock as _time
 from flnd.ui.log import ui
+from flnkit import clock as _time
 
 
 class _TTY(io.StringIO):

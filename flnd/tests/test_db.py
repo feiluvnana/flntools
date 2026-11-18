@@ -1,4 +1,4 @@
-"""flnd/_db.py, the SQLite store library: lazy files, transactions, threads, read-only opens."""
+"""src/_db.py, the SQLite store library: lazy files, transactions, threads, read-only opens."""
 
 import tempfile
 import threading
@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from flnd.errors import DiskError
-from flnd.kit import db as _db
+from flnkit import db as _db
 
 SCHEMA = "CREATE TABLE IF NOT EXISTS t (k TEXT PRIMARY KEY, v INTEGER)"
 

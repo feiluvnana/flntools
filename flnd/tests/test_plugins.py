@@ -33,8 +33,8 @@ import flnd
 from flnd import cli as flnd_cli
 from flnd.engine import job
 from flnd.engine import plugins as _plugins
-from flnd.kit import net as _net
 from flnd.sources import SOURCES, _find
+from flnkit import net as _net
 
 ROOT = Path(__file__).resolve().parent.parent
 JPEG = noise("JPEG")
@@ -231,7 +231,7 @@ class ContainmentTest(PluginCase):
             self.assertIsNone(_plugins.load(found))
         reason = found.error
         self.assertIn("old was written for source API 1; this flnd has 2; see "
-                      "flnd/docs/writing-a-source.md#source-api-versions", reason)
+                      "the API versions part of the writing-a-source page", reason)
 
     def test_a_class_with_another_code_is_refused(self):
         self.write("exm.py", plugin("exm"))

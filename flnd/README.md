@@ -15,7 +15,7 @@ flnd needs [uv](https://docs.astral.sh/uv/) and Python 3.11 or newer.
 ```bash
 git clone https://github.com/feiluvnana/flntools
 cd flntools
-uv tool install .                  # puts `flnd` on your PATH, Telegram support included
+uv tool install -e ./flnd           # from the repository root; puts `flnd` on your PATH, Telegram support included
 ```
 
 From a checkout, `make setup` creates `.venv`, and then `uv run flnd …` runs it. On Windows,
@@ -64,7 +64,7 @@ global flags: --home DIR · -v/--verbose · --json · -V/--version
 ```
 
 `flnd --help` lists every command and every form of target each site reads, and
-`flnd <command> --help` a command's flags. [flnd/docs/cli.md](flnd/docs/cli.md) covers each in full.
+`flnd <command> --help` a command's flags. [src/docs/cli.md](src/docs/cli.md) covers each in full.
 
 - **A target** is `<source>:<name, id or link>`, `<source>?<words>` for a search, or just the
   link: `ins:example_user` and `https://www.instagram.com/example_user/` are the same target,
@@ -186,7 +186,7 @@ Everything flnd keeps lives in one folder: `--home`, else `$FLND_HOME`, else `./
   config.toml                 optional settings (below)
   log/                        crash reports and samples of changed site answers, kept 30 days
 ```
-[flnd/docs/storage.md](flnd/docs/storage.md) describes every file and table.
+[src/docs/storage.md](src/docs/storage.md) describes every file and table.
 
 ### Settings
 `<home>/config.toml` holds defaults for every run and settings per site. A flag given for one run
@@ -206,7 +206,7 @@ stop_after = 5                  # saved posts in a row that end a sync
 
 `--when ""` undoes the default for one run. A wrong value stops flnd with the file, the key and
 what it takes; an unknown key is a warning.
-[flnd/docs/storage.md](flnd/docs/storage.md#settings-configtoml) lists every key.
+[src/docs/storage.md](src/docs/storage.md#settings-configtoml) lists every key.
 
 ## Use it from Python
 `flnd.open(home)` gives a `Flnd`, whose methods are the commands. A download returns a run that
@@ -228,7 +228,7 @@ with flnd.open("~/Media/flnd") as fl:
     print(report.saved, report.skipped, report.ok)
     photos = fl.files(target="ins:example_user", kind="image")   # what's saved, from flnd.db
 ```
-[flnd/docs/library.md](flnd/docs/library.md) covers every call, its options and its events, with examples
+[src/docs/library.md](src/docs/library.md) covers every call, its options and its events, with examples
 that run offline.
 
 ## Add a site
@@ -286,13 +286,13 @@ To make flnd know it, either:
 
 `flnd sources` then lists it. A plugin runs with your logins, so install only code you trust;
 flnd never loads one from a home folder. A broken plugin disables itself alone, with a warning
-naming its file and line. [flnd/docs/writing-a-source.md](flnd/docs/writing-a-source.md) walks through it
+naming its file and line. [src/docs/writing-a-source.md](src/docs/writing-a-source.md) walks through it
 all.
 
 ## Documentation
-[flnd/docs/](flnd/docs/README.md) is the guide: the CLI, the library, writing a source, errors, storage,
+[src/docs/](src/docs/README.md) is the guide: the CLI, the library, writing a source, errors, storage,
 performance, a glossary and a page per site.
-[flnd/docs/architecture.md](flnd/docs/architecture.md) explains how flnd is built, how it compares with
+[src/docs/architecture.md](src/docs/architecture.md) explains how flnd is built, how it compares with
 similar tools, and the decisions behind it.
 
 ## Development
@@ -303,7 +303,7 @@ similar tools, and the decisions behind it.
 | `make test ARGS=…` | the tests, or some of them (`ARGS="-k fetch"`) |
 | `make lint` | ruff alone |
 | `make api` | regenerates `tests/data/api.txt`, the public API snapshot |
-| `make manifest` | regenerates `flnd/sources/_manifest.py`, what `--help` and target resolution read; run it after changing a source's domains, routes or categories |
+| `make manifest` | regenerates `src/sources/_manifest.py`, what `--help` and target resolution read; run it after changing a source's domains, routes or categories |
 | `make bench` | the offline benchmarks; `ARGS=--gate` compares them with the targets |
 | `make cdn-real ARGS=…` | a hand check: throughput from one real CDN host at several caps |
 | `make docs` | builds the API reference into `build/docs/` |

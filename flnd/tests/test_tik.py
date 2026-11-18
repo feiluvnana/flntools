@@ -16,9 +16,9 @@ from unittest import mock
 from fakes import FakeSite, Seen, collect
 
 from flnd.engine.options import Options
-from flnd.kit import html as _html
 from flnd.source import SiteError, Target, UsageError
 from flnd.sources.tik import TIKTOK_UA, TikTok, best_video
+from flnkit import html as _html
 
 DAY = datetime.fromtimestamp(1700000000, UTC).strftime("%Y-%m-%d")
 PROFILE = "https://www.tiktok.com/@example_creator"

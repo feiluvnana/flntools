@@ -1,16 +1,16 @@
-"""Keeps the docs in step with the code: docstrings, `flnd/docs/` pages, links, CLI flags and sources.
+"""Keeps the docs in step with the code: docstrings, `src/docs/` pages, links, CLI flags and sources.
 
 PLAN.md section 13 › Writing sets the rules this file checks. Each check is a test class below:
 
 1. `DocstringTest` reads every module of `flnd` with `ast` (nothing is imported) and lists each
    docstring gap: a module without a docstring, one longer than `MODULE_LINES` lines (but the
-   modules of `LONG`), one that names no `flnd/docs` page, and a public name without a summary.
+   modules of `LONG`), one that names no `src/docs` page, and a public name without a summary.
    Every docstring with `>>>` lines then runs as a doctest.
-2. `PageTest` runs every `python` block of `flnd/docs/**/*.md`, page by page, in a scratch folder.
-3. `LinkTest` checks that every relative link in `flnd/docs/` and in the root's markdown resolves:
+2. `PageTest` runs every `python` block of `src/docs/**/*.md`, page by page, in a scratch folder.
+3. `LinkTest` checks that every relative link in `src/docs/` and in the root's markdown resolves:
    the file exists, and a `#fragment` names one of its headings.
-4. `CliTest` checks that `flnd/docs/cli.md` names every command and every option the CLI parses.
-5. `SourcePageTest` checks that each built-in source has `flnd/docs/sources/<code>.md`, and that no
+4. `CliTest` checks that `src/docs/cli.md` names every command and every option the CLI parses.
+5. `SourcePageTest` checks that each built-in source has `src/docs/sources/<code>.md`, and that no
    page is left for a source that is gone.
 6. `ReadmeTest` runs the `python` blocks of `README.md` offline, and parses every `flnd …`
    command line of its `bash` blocks with the CLI's own argparse parser, so a command, a flag or
@@ -48,30 +48,30 @@ from test_packaging import ROOT
 
 # The packages whose modules must document themselves. `tests/` is for contributors, not the
 # product, so it is left out.
-PACKAGES = ("flnd",)
-DOCS = ROOT / "flnd" / "docs"
-# The longest a module docstring may be, in lines: what the module holds, and its flnd/docs page.
+PACKAGES = ("src", "flnkit")
+DOCS = ROOT / "src" / "docs"
+# The longest a module docstring may be, in lines: what the module holds, and its src/docs page.
 MODULE_LINES = 3
 # The modules that keep a longer docstring for now (32 of them): their flows and rules aren't
-# in a flnd/docs page yet. Step 16 (PLAN.md section 14) empties this list by moving each into
+# in a src/docs page yet. Step 16 (PLAN.md section 14) empties this list by moving each into
 # its page, or the module goes when a step replaces it. The list may only shrink:
 # `test_long_docstrings_are_still_long`.
 LONG = frozenset({
-    "flnd/__init__.py", "flnd/_library.py", "flnd/cli.py", "flnd/errors.py", "flnd/source.py",
-    "flnd/testing.py",
-    "flnd/engine/core.py", "flnd/engine/events.py",
-    "flnd/engine/home.py", "flnd/engine/job.py", "flnd/engine/options.py",
-    "flnd/engine/plugins.py", "flnd/engine/run.py", "flnd/engine/site.py",
-    "flnd/engine/transfer.py",
-    "flnd/kit/browser.py", "flnd/kit/cookies.py", "flnd/kit/db.py", "flnd/kit/html.py",
-    "flnd/kit/loop.py", "flnd/kit/net.py", "flnd/kit/text.py", "flnd/kit/vault.py",
-    "flnd/sources/__init__.py", "flnd/sources/_manifest.py", "flnd/sources/fbk.py",
-    "flnd/sources/ins.py", "flnd/sources/loi.py", "flnd/sources/mht.py", "flnd/sources/tik.py",
-    "flnd/sources/tlg.py", "flnd/sources/twt.py",
+    "src/__init__.py", "src/_library.py", "src/cli.py", "src/errors.py", "src/source.py",
+    "src/testing.py",
+    "src/engine/core.py", "src/engine/events.py",
+    "src/engine/home.py", "src/engine/job.py", "src/engine/options.py",
+    "src/engine/plugins.py", "src/engine/run.py", "src/engine/site.py",
+    "src/engine/transfer.py",
+    "flnkit/browser.py", "flnkit/cookies.py", "flnkit/db.py", "flnkit/html.py",
+    "flnkit/loop.py", "flnkit/net.py", "flnkit/text.py", "flnkit/vault.py",
+    "src/sources/__init__.py", "src/sources/_manifest.py", "src/sources/fbk.py",
+    "src/sources/ins.py", "src/sources/loi.py", "src/sources/mht.py", "src/sources/tik.py",
+    "src/sources/tlg.py", "src/sources/twt.py",
 })
 # The marker that skips the `python` block right after it, with an optional reason:
 # `<!-- docs-test: skip -->` or `<!-- docs-test: skip: it needs a real site -->`. A skipped block
-# in `flnd/docs/` is a gap; one in the README must give its reason, and is still compiled.
+# in `src/docs/` is a gap; one in the README must give its reason, and is still compiled.
 SKIP = re.compile(r"^<!-- docs-test: skip(?:: (?P<reason>.+?))? -->$")
 README = ROOT / "README.md"
 # The terms the glossary must define: the words every page uses.
@@ -109,6 +109,14 @@ def public_names() -> dict[tuple[str, str], str]:
     return found
 
 
+def dotted(path: Path) -> str:
+    """`src/engine/run.py` as `flnd.engine.run`; `flnkit/net.py` as `flnkit.net`."""
+    parts = path.relative_to(ROOT).with_suffix("").parts
+    if parts[0] == "src":
+        parts = ("flnd", *parts[1:])
+    return ".".join(parts).removesuffix(".__init__")
+
+
 def modules() -> list[Path]:
     """Every module of `PACKAGES`, sorted, so the gaps are reported in one order on every OS."""
     return sorted(path for package in PACKAGES for path in (ROOT / package).rglob("*.py"))
@@ -118,7 +126,7 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
     """Every docstring gap of one module, one line each.
 
     The rules (PLAN.md section 13): a module starts with a docstring of at most `MODULE_LINES`
-    lines that names its `flnd/docs` page; a public name (in the API snapshot) has a docstring
+    lines that names its `src/docs` page; a public name (in the API snapshot) has a docstring
     whose first line sums it up. `Args:`, `Returns:` and `Raises:` are written only when they
     add something, so nothing asks for them, and an `Example:` is never required.
 
@@ -135,8 +143,8 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
     if not doc:
         return [f"{relative}: no module docstring"]
     gaps = []
-    if "flnd/docs" not in doc:
-        gaps.append(f"{relative}: the module docstring names no flnd/docs page")
+    if "src/docs" not in doc:
+        gaps.append(f"{relative}: the module docstring names no src/docs page")
     if len(doc.splitlines()) > MODULE_LINES and relative not in LONG:
         gaps.append(f"{relative}: the module docstring is over {MODULE_LINES} lines")
 
@@ -156,7 +164,7 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
 
 
 def page_gaps() -> list[str]:
-    """One gap per `flnd/docs/` page with skipped `python` blocks: `<page>: <n> skipped blocks`."""
+    """One gap per `src/docs/` page with skipped `python` blocks: `<page>: <n> skipped blocks`."""
     gaps = []
     for page in sorted(DOCS.rglob("*.md")):
         skipped = sum(1 for _, _, skip in python_blocks(page) if skip)
@@ -183,14 +191,14 @@ def rule(gap: str) -> str:
         A short statement of the rule.
     """
     if gap.endswith("skipped python blocks"):
-        return "every python block in flnd/docs/ runs; drop its skip marker and make it run"
+        return "every python block in src/docs/ runs; drop its skip marker and make it run"
     if gap.endswith("no module docstring"):
         return "a module starts with a docstring"
-    if gap.endswith("names no flnd/docs page"):
-        return "a module docstring names the flnd/docs page that explains it"
+    if gap.endswith("names no src/docs page"):
+        return "a module docstring names the src/docs page that explains it"
     if gap.endswith(f"over {MODULE_LINES} lines"):
         return (f"a module docstring is 1 to {MODULE_LINES} lines; the explanation lives in "
-                "flnd/docs")
+                "src/docs")
     return "a public name has a docstring that sums it up"
 
 
@@ -215,7 +223,7 @@ class DocstringTest(unittest.TestCase):
         for path in modules():
             if ">>>" not in path.read_text(encoding="utf-8"):
                 continue
-            name = ".".join(path.relative_to(ROOT).with_suffix("").parts).removesuffix(".__init__")
+            name = dotted(path)
             module = importlib.import_module(name)
             with scratch():
                 for test in finder.find(module, name):
@@ -225,7 +233,7 @@ class DocstringTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------------------------
-# 2. Pages: the python blocks of flnd/docs/
+# 2. Pages: the python blocks of src/docs/
 # ---------------------------------------------------------------------------------------------
 
 def fenced_blocks(page: Path) -> list[tuple[int, str, str, str]]:
@@ -283,7 +291,7 @@ def scratch() -> Iterator[Path]:
 
 
 class PageTest(unittest.TestCase):
-    """Every `python` block in `flnd/docs/` runs, so an example can't rot."""
+    """Every `python` block in `src/docs/` runs, so an example can't rot."""
 
     def test_python_blocks_run(self) -> None:
         # The blocks of one page share a namespace, like a doctest session: a tutorial builds a
@@ -328,7 +336,7 @@ def anchors(page: Path) -> set[str]:
 
 
 def markdown_files() -> list[Path]:
-    """The pages whose links are checked: `flnd/docs/` and the root's markdown files."""
+    """The pages whose links are checked: `src/docs/` and the root's markdown files."""
     return sorted([*DOCS.rglob("*.md"), *ROOT.glob("*.md")])
 
 
@@ -355,12 +363,12 @@ class LinkTest(unittest.TestCase):
         linked = {(DOCS / link.partition("#")[0]).resolve() for link in LINK.findall(index)}
         pages = {page.resolve() for page in DOCS.rglob("*.md")} - {(DOCS / "README.md").resolve()}
         missing = sorted(page.relative_to(DOCS).as_posix() for page in pages - linked)
-        self.assertFalse(missing, f"flnd/docs/README.md doesn't link: {', '.join(missing)}")
+        self.assertFalse(missing, f"src/docs/README.md doesn't link: {', '.join(missing)}")
 
     def test_glossary_defines_the_terms(self) -> None:
         glossary = (DOCS / "glossary.md").read_text(encoding="utf-8").lower()
         missing = [term for term in TERMS if not re.search(rf"^#+\s+{term}\b", glossary, re.M)]
-        self.assertFalse(missing, f"flnd/docs/glossary.md has no heading for: {', '.join(missing)}")
+        self.assertFalse(missing, f"src/docs/glossary.md has no heading for: {', '.join(missing)}")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -375,7 +383,7 @@ def cli_words() -> list[str]:
     `--help`'s `-h` spelling are left out: the page shows them in each command's usage line.
 
     Returns:
-        The words `flnd/docs/cli.md` must contain, in command order.
+        The words `src/docs/cli.md` must contain, in command order.
     """
     import argparse
 
@@ -398,13 +406,13 @@ def cli_words() -> list[str]:
 
 
 class CliTest(unittest.TestCase):
-    """`flnd/docs/cli.md` names every command and every option, so the page can't fall behind."""
+    """`src/docs/cli.md` names every command and every option, so the page can't fall behind."""
 
     def test_every_command_and_option_is_documented(self) -> None:
         page = (DOCS / "cli.md").read_text(encoding="utf-8")
         missing = [word for word in cli_words()
                    if not re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", page)]
-        self.assertFalse(missing, f"flnd/docs/cli.md doesn't mention: {', '.join(missing)}")
+        self.assertFalse(missing, f"src/docs/cli.md doesn't mention: {', '.join(missing)}")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -412,7 +420,7 @@ class CliTest(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------
 
 class SourcePageTest(unittest.TestCase):
-    """Each built-in source has `flnd/docs/sources/<code>.md`, and each page a source."""
+    """Each built-in source has `src/docs/sources/<code>.md`, and each page a source."""
 
     def test_one_page_per_source(self) -> None:
         from flnd.sources import SOURCES

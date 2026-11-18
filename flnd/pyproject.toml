@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "flntools"
@@ -28,8 +28,19 @@ dependencies = [
 [project.scripts]
 flnd = "flnd.cli:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["flnd"]
+[tool.setuptools]
+# src/ installs as the package flnd; flnkit/ ships beside it (PLAN.md 4.1). Setuptools maps the
+# folder src/ to the name flnd, which hatchling's dev mode cannot do (it rejects such a rewrite).
+packages = ["flnd", "flnd.engine", "flnd.ui", "flnd.sources", "flnd.docs", "flnd.docs.sources",
+            "flnkit"]
+package-dir = {"flnd" = "src", "flnkit" = "flnkit"}
+
+[tool.setuptools.package-data]
+# The docs are data in folders without an __init__.py: listed as packages, so setuptools ships
+# them and does not warn that they are absent.
+flnd = ["py.typed"]
+"flnd.docs" = ["*.md"]
+"flnd.docs.sources" = ["*.md"]
 
 [dependency-groups]
 # The tools `make` runs: ruff for `make lint` and pdoc for `make docs`; pyte draws a terminal in
@@ -57,6 +68,9 @@ ignore = [
     "B905",
 ]
 
+[tool.ruff.lint.isort]
+# The first-party packages, for import order (I): flnd and the standalone flnkit.
+known-first-party = ["flnd", "flnkit"]
 [tool.ruff.lint.per-file-ignores]
 # A test reads an attribute only to see it raise (`with self.assertRaises(...): page.document`).
 "tests/**" = ["B018"]

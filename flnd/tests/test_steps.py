@@ -1,6 +1,6 @@
 """The steps after a file lands (`flnd.engine.steps`): unpack, end to end through the engine.
 
-Every run here fakes the network (`flnd.kit.net.fake`, from `test_engine`) and uses synthetic
+Every run here fakes the network (`flnkit.net.fake`, from `test_engine`) and uses synthetic
 archives. The chain's own threads are real.
 """
 
@@ -17,9 +17,9 @@ from test_engine import CDN, EngineCase, make_source
 
 from flnd.engine import steps as _steps
 from flnd.engine.core import Engine
-from flnd.kit import files as _tools
-from flnd.kit import net as _net
 from flnd.source import File
+from flnkit import files as _tools
+from flnkit import net as _net
 
 
 def zipped(entries: dict[str, bytes]) -> bytes:

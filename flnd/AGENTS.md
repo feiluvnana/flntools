@@ -5,7 +5,7 @@ writing, models) are in `../AGENTS.md`. This file holds flnd's own rules. Run ev
 this folder, `flnd/`.
 
 These rules are for anyone who changes flnd: how to check, lay out, name, write and measure. The
-`flnd/docs/architecture.md` page is the map of the code, and says why it is built the way it is.
+`src/docs/architecture.md` page is the map of the code, and says why it is built the way it is.
 `PLAN.md` is the plan of the rebuild under way. The layout tree below leads the code until the
 plan's steps build it; `PLAN.md` section 14 says when each part lands.
 
@@ -25,7 +25,7 @@ plan's steps build it; `PLAN.md` section 14 says when each part lands.
   a regression over 15% against `tests/bench/gates.json`. Run the benchmarks before a speed
   change, to get the "before" numbers. Run `ARGS=--gate` on any change that touches speed,
   before its commit. `ARGS=--record` stores a run as the new baseline. See
-  `flnd/docs/performance.md`.
+  `src/docs/performance.md`.
 - `make check PY=3.11` runs on the oldest Python that `requires-python` allows. Run it before
   a release.
 - `make docs` builds the API reference into `build/docs/`. `make dist` builds a one-file binary.
@@ -40,10 +40,11 @@ plan's steps build it; `PLAN.md` section 14 says when each part lands.
   the real OS keychain and `~/.config/flnd/`.
 
 ## Layout
-`flnd/` is one package. Its tree:
+Two packages sit side by side in this folder: `src/`, which installs as the package `flnd`,
+and `flnkit/`, a standalone package imported as `flnkit`. Its tree:
 
 ```text
-flnd/
+src/                 the package flnd
   __init__.py      public names, each loaded on first use
   __main__.py      python -m flnd
   _library.py      open, Flnd, and the groups Targets, Auth, Plugins, Extension, Config
@@ -63,32 +64,33 @@ flnd/
     extension.py   the native-messaging host, the protocol, the relay
     store.py       flnd.db: schema, migrations, rows, check and repair
     config.py      config.toml: structs, reading, editing
-  kit/             imports only kit/ and flnd/errors.py
-    net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py media.py
-  ui/              imports only kit/, ui/, engine/events.py and flnd/errors.py
+  ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
     theme.py out.py screen.py lists.py forms.py
   plugins/         built-ins, importing only flnd.plugin and the standard library
     __init__.py _manifest.py fbk.py ins.py loi.py mht.py tik.py tlg.py twt.py web.py
   extension/       manifest.json background.js page.js popup.html popup.js
   docs/
+flnkit/              the standalone package flnkit, imports nothing of flnd
+  net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py media.py
 ```
 
 The import rules, checked by `tests/test_layers.py` by reading every file's imports:
-1. `kit/*` imports only `kit/*`, `flnd/errors.py`, the standard library and third-party
-   packages.
-2. `ui/*` imports only `ui/*`, `kit/*`, `engine/events.py` and `flnd/errors.py`.
-3. `engine/*` imports `engine/*`, `kit/*`, `ui/*`, `flnd/errors.py` and `flnd/plugin.py`.
-   `engine/events.py` imports only `flnd/errors.py`, `flnd/plugin.py`, `kit/*`, `msgspec` and
-   the standard library.
-4. `flnd/plugin.py` imports only `kit/*`, `flnd/errors.py` and the standard library.
-   `flnd/testing.py` imports `flnd`, `flnd/plugin.py`, `engine/*` and `kit/*`.
-   `flnd/_library.py` imports `engine/*`, `kit/*`, `flnd/errors.py` and `flnd/plugin.py`.
-5. `flnd/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
+1. `flnkit/*` imports only `flnkit/*`, `src/errors.py` (until the kit gets its own errors), the
+   standard library and third-party packages.
+2. `src/ui/*` imports only `src/ui/*`, `flnkit`, `src/engine/events.py` and `src/errors.py`.
+3. `src/engine/*` imports `src/engine/*`, `flnkit`, `src/ui/*`, `src/errors.py` and
+   `src/plugin.py`. `src/engine/events.py` imports only `src/errors.py`, `src/plugin.py`,
+   `flnkit`, `msgspec` and the standard library.
+4. `src/plugin.py` imports only `flnkit`, `src/errors.py` and the standard library.
+   `src/testing.py` imports `flnd`, `src/plugin.py`, `src/engine/*` and `flnkit`.
+   `src/_library.py` imports `src/engine/*`, `flnkit`, `src/errors.py` and `src/plugin.py`.
+5. `src/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
    (`telethon`, `qrcode`), imported inside a function.
-6. `flnd/cli.py` imports only `flnd`, `flnd/ui/*` and `flnd/plugins/_manifest.py`.
-7. `flnd/__init__.py` imports nothing at import time beyond the standard library.
+6. `src/cli.py` imports only `flnd`, `src/ui/*` and `src/plugins/_manifest.py`.
+7. `src/__init__.py` imports nothing at import time beyond the standard library.
 
-Also: `kit/` never imports `engine/`, `ui/` or `plugins/`, and `ui/` never imports `plugins/`.
+Also: `flnkit/` never imports `src/engine/`, `src/ui/` or `src/plugins/`, and `src/ui/` never
+imports `src/plugins/`.
 
 ## Concurrency
 - One event loop per run.
@@ -98,7 +100,7 @@ Also: `kit/` never imports `engine/`, `ui/` or `plugins/`, and `ui/` never impor
 - A commit is one per post, and it runs on the loop. It never blocks the loop.
 
 ## Output
-- Everything printed goes through `flnd/ui` and its theme.
+- Everything printed goes through `src/ui` and its theme.
 - No `print`. No colour or glyph outside `theme.py`.
 - Debug output goes to the journal only.
 
@@ -118,7 +120,7 @@ Also: `kit/` never imports `engine/`, `ui/` or `plugins/`, and `ui/` never impor
 - `tests/test_names.py` checks the public surface. Its allowlist may only shrink.
 
 ## Errors
-- Every error is a `flnd.Error` subclass from the one hierarchy in `flnd/errors.py`:
+- Every error is a `flnd.Error` subclass from the one hierarchy in `src/errors.py`:
 
 ```text
 Error(Exception)            .hint: str (what to do; "" when nothing)
@@ -157,7 +159,8 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
   modules) stay.
 
 ## Dead code
-- The dead-name, docstring and API-snapshot checks cover all of `flnd/`. Remove code they flag.
+- The dead-name, docstring and API-snapshot checks cover all of `src/` and `flnkit/`. Remove
+  code they flag.
 
 ## Dependencies
 - Each dependency has a reason beside it in `pyproject.toml`.
@@ -165,8 +168,8 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
   rich, msgspec, tomlkit and textual. Textual stays only if `ui.open` is at most 250 ms.
 
 ## Writing
-- A module docstring is 1 to 3 lines. It names the `flnd/docs` page that explains the module.
+- A module docstring is 1 to 3 lines. It names the `src/docs` page that explains the module.
 - A public name has a summary line. Then `Args:`, `Returns:` and `Raises:`, only when they add
   something to the name and type.
 - Comments cover only what the code cannot say. Keep them short.
-- A behaviour change updates its `flnd/docs` page in the same commit.
+- A behaviour change updates its `src/docs` page in the same commit.

@@ -28,12 +28,12 @@ from flnd.engine import home as _home
 from flnd.engine.core import Engine, TargetReport
 from flnd.engine.events import Saved
 from flnd.engine.options import Options
-from flnd.kit import cookies as _cookies
-from flnd.kit import net as _net
 from flnd.source import Login, Source
 from flnd.source import cookies as login_cookies
 from flnd.source import target as route
 from flnd.ui.log import ui
+from flnkit import cookies as _cookies
+from flnkit import net as _net
 
 NETSCAPE = (
     "# Netscape HTTP Cookie File\n"
@@ -354,7 +354,7 @@ class FollowTest(RunsCase):
             followed.append(url)
             return "https://www.tiktok.com/@example_creator/video/7301234567890123456"
 
-        with mock.patch("flnd.kit.net.follow", follow):
+        with mock.patch("flnkit.net.follow", follow):
             self.assertEqual(self.run_app("sync", "https://vm.tiktok.com/ZMabc123/")[0], 0)
         self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
         self.assertEqual(self.synced[0][0][0], Target("tik:7301234567890123456", kind="video"))
@@ -381,7 +381,7 @@ class OutputTest(FlndCase):
         # A lambda, so a test that replaces `self.serve` is answered by its own.
         self.serve = serve
         self.enterContext(_net.fake(lambda request: self.serve(request)))
-        from flnd.kit import clock as _time
+        from flnkit import clock as _time
 
         self.enterContext(_time.use(_time.Fake()))
         self.listing = {key: list(ids) for key, ids in type(self).listing.items()}

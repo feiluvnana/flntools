@@ -1,4 +1,4 @@
-"""The source manifest (`flnd/sources/_manifest.py`) and the lazy registry built on it.
+"""The source manifest (`src/sources/_manifest.py`) and the lazy registry built on it.
 
 The manifest is generated (`make manifest`, tests/source_manifest.py); these tests fail when it
 no longer matches the sources, and check that `--help` and target resolution import no more
@@ -31,7 +31,7 @@ class ManifestTest(unittest.TestCase):
     def test_the_manifest_matches_the_sources(self):
         text = source_manifest.MANIFEST.read_text(encoding="utf-8")
         self.assertEqual(text, source_manifest.render(),
-                         "flnd/sources/_manifest.py is stale: run make manifest")
+                         "src/sources/_manifest.py is stale: run make manifest")
 
     def test_the_registry_lists_the_built_in_sources_in_order(self):
         codes = [getattr(__import__(module, fromlist=[name]), name).code

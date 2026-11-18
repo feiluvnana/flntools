@@ -1,4 +1,4 @@
-"""Tests for `flnd.kit.files`: parts, their locks, small writes, walks and stale-part sweeps.
+"""Tests for `flnkit.files`: parts, their locks, small writes, walks and stale-part sweeps.
 
 Two processes sharing a home are played by two threads: a POSIX `flock` belongs to an open file
 description, so two opens in one process exclude each other just as two processes do.
@@ -12,8 +12,8 @@ from pathlib import Path
 from unittest import mock
 
 from flnd.errors import DiskError
-from flnd.kit import clock as _time
-from flnd.kit import files as _files
+from flnkit import clock as _time
+from flnkit import files as _files
 
 
 class FsCase(unittest.TestCase):

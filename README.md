@@ -6,3 +6,5 @@ A monorepo of two projects, each in its own folder.
 - `flni/`: an incremental desktop game, in planning. See [flni/PLAN.md](flni/PLAN.md).
 
 Each folder is its own uv project: run `make` inside it.
+
+To run flnd from anywhere: `uv tool install -e ./flnd` (from the repository root).

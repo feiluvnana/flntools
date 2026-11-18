@@ -247,20 +247,21 @@ def history_breaches(source: str) -> list[str]:
 
 
 def flnd_import_aliases(source: str) -> list[str]:
-    """Import aliases (`as`) of `flnd` modules or symbols. Every one is a breach.
+    """Import aliases (`as`) of `flnd` or `flnkit` modules or symbols. Every one is a breach.
 
     AGENTS.md says import a module by its own name. The transitional aliases of an earlier
-    move (`from flnd import _text as text`) are gone, so any `as` on a `flnd` import fails here.
+    move (`from flnd import _text as text`) are gone, so any `as` on a `flnd` or `flnkit`
+    import, or a relative one, fails here.
     """
     found: list[str] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.asname and (alias.name == "flnd" or alias.name.startswith("flnd.")):
+                if alias.asname and alias.name.split(".")[0] in ("flnd", "flnkit"):
                     found.append(f"line {node.lineno}: import {alias.name} as {alias.asname}")
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
-            if node.level > 0 or mod == "flnd" or mod.startswith("flnd."):
+            if node.level > 0 or mod.split(".")[0] in ("flnd", "flnkit"):
                 for alias in node.names:
                     if alias.asname:
                         found.append(f"line {node.lineno}: from {mod} import {alias.name} as {alias.asname}")
@@ -283,7 +284,8 @@ def from_a_library(error: type) -> bool:
 # Dead names: code nothing in flnd calls
 # ---------------------------------------------------------------------------------------------
 
-FLND = snapshot.ROOT / "flnd"
+FLND = snapshot.PACKAGE_DIRS["flnd"]
+FLNKIT = snapshot.PACKAGE_DIRS["flnkit"]
 # The modules whose names must each be used: all of flnd/. A public name (in the API snapshot)
 # is a script's to call, so it never counts as dead.
 PRIVATE = ("**/*.py",)
@@ -295,8 +297,8 @@ WORD = re.compile(r"[A-Za-z_]\w*")
 # when nothing in flnd/ could use it instead. The list may only shrink: a listed name that
 # becomes used, or goes, fails `test_no_stale_allowance`.
 CALLED_FROM_OUTSIDE: dict[str, str] = {
-    "flnd/kit/vault.py:Keychain": "tests/test_keychain.py exercises the OS keychain path",
-    "flnd/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
+    "flnkit/vault.py:Keychain": "tests/test_keychain.py exercises the OS keychain path",
+    "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
 }
 
@@ -394,10 +396,11 @@ def dead_names() -> set[str]:
 
     public = public_names()
     used: set[str] = set()
-    for path in FLND.rglob("*.py"):
+    for path in [*FLND.rglob("*.py"), *FLNKIT.rglob("*.py")]:
         used |= references(path.read_text(encoding="utf-8"))
     found: set[str] = set()
-    for path in sorted({path for pattern in PRIVATE for path in FLND.glob(pattern)}):
+    for path in sorted({path for pattern in PRIVATE for root in (FLND, FLNKIT)
+                        for path in root.glob(pattern)}):
         relative = path.relative_to(snapshot.ROOT).as_posix()
         for name, qual in definitions(path.read_text(encoding="utf-8")):
             if name not in used and (relative, qual) not in public:
@@ -479,14 +482,14 @@ class PrivateImportTest(unittest.TestCase):
         source = ("import flnd._library\nfrom flnd._library import Flnd\n"
                   "from flnd import _library, ui\n")
         self.assertEqual(private_imports(source), ["flnd._library", "flnd._library", "flnd._library"])
-        self.assertEqual(private_imports("from flnd.kit import net\nimport flnd\n"), [])
+        self.assertEqual(private_imports("from flnkit import net\nimport flnd\n"), [])
 
 
 def _source_files() -> list[str]:
     return sorted(
         path.relative_to(snapshot.ROOT).as_posix()
         for pkg in snapshot.PROJECT_PACKAGES
-        for path in (snapshot.ROOT / pkg).rglob("*.py")
+        for path in snapshot.PACKAGE_DIRS[pkg].rglob("*.py")
     )
 
 
@@ -497,7 +500,7 @@ class ReadableTest(unittest.TestCase):
                 self.assertEqual(history_breaches((snapshot.ROOT / path).read_text(encoding="utf-8")), [])
 
     def test_no_flnd_import_aliases(self):
-        for path in sorted((snapshot.ROOT / "flnd").rglob("*.py")):
+        for path in sorted([*FLND.rglob("*.py"), *FLNKIT.rglob("*.py")]):
             rel = path.relative_to(snapshot.ROOT).as_posix()
             with self.subTest(rel):
                 self.assertEqual(flnd_import_aliases(path.read_text(encoding="utf-8")), [])

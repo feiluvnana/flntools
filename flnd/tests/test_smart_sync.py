@@ -24,9 +24,9 @@ from flnd.engine import home as _home
 from flnd.engine.core import Engine
 from flnd.engine.events import NOTHING_NEW, RESUMING, Progress, Saved, Skipped, encode
 from flnd.errors import Changed
-from flnd.kit import net as _net
 from flnd.source import File, Post, Source, cookies, target
 from flnd.ui.log import ui
+from flnkit import net as _net
 
 API = "https://api.example.com"
 # Posts a page of the feed holds.
@@ -408,7 +408,7 @@ class SecretsTest(FeedCase):
 
 
 def _redacted(url):
-    from flnd.kit.text import redact
+    from flnkit.text import redact
 
     return redact(url)
 

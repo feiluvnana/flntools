@@ -16,9 +16,6 @@ from test_engine import EngineCase
 from flnd.engine import home as _home
 from flnd.engine.core import resolve
 from flnd.engine.options import Options
-from flnd.kit import cookies as _cookies
-from flnd.kit import net as _net
-from flnd.kit import vault as _vault
 from flnd.source import Blocked, Request, SiteError, Target, UsageError
 from flnd.sources.loi import (
     API,
@@ -31,6 +28,9 @@ from flnd.sources.loi import (
     refusal,
     sign_request,
 )
+from flnkit import cookies as _cookies
+from flnkit import net as _net
+from flnkit import vault as _vault
 
 # The site's own key and iv, as loix used them: "https://dl.example/a.zip", encrypted.
 ENCRYPTED_URL = "GbQQUMfoM0sFLYH/040yiFqXee34SusjXJybD/DgNfA="
@@ -454,7 +454,7 @@ SEVEN_ZIP = b"7z\xbc\xaf\x27\x1c" + b"\0" * 26
 
 
 class EngineTest(EngineCase):
-    """The source through the real engine, on `flnd.kit.net.fake`."""
+    """The source through the real engine, on `flnkit.net.fake`."""
 
     def setUp(self):
         super().setUp()
@@ -535,7 +535,7 @@ class LoginTest(unittest.TestCase):
         def load(browser="chrome", *, profile=None):
             return _cookies.Jar(cookie for jar in store.values() for cookie in jar)
 
-        with mock.patch("flnd.kit.cookies.load", load):
+        with mock.patch("flnkit.cookies.load", load):
             jar = _home.from_browser(Loibus(), browser="chrome")
             self.assertEqual(_home.store(Loibus(), jar, home=self.home, origin="Chrome"),
                              "loi: logged in from Chrome (1 cookie)")

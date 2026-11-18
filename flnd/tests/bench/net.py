@@ -1,7 +1,7 @@
 """Benchmark group `net`: flnd's HTTP client downloading from a loopback server to disk.
 
-The client is the one flnd builds for a source's downloads (`flnd.kit.net.Client` over a
-`Session`, with the per-host cap of `flnd.engine.site`), on a `flnd.kit.loop.Loop` as in a run, so these
+The client is the one flnd builds for a source's downloads (`flnkit.net.Client` over a
+`Session`, with the per-host cap of `flnd.engine.site`), on a `flnkit.loop.Loop` as in a run, so these
 numbers are what a real download pays, minus the network. Loopback shows CPU and per-request
 overhead and hides latency and bandwidth; the `e2e` group adds simulated latency.
 
@@ -13,7 +13,7 @@ Steps:
    (the default cap per host);
 4. download the four 16 MiB files at once onto a disk throttled to 20 MB/s (each write sleeps
    for its size at that rate), while a probe on the loop wakes every 5 ms: `stall_20mbs` is the
-   longest the loop was held up, which must stay under 100 ms (flnd/docs/performance);
+   longest the loop was held up, which must stay under 100 ms (src/docs/performance);
 5. `two_disks`: sixteen 16 MiB downloads to a fast folder, alone and then while a second
    client (a second target) writes the four 16 MiB files to a folder throttled to 20 MB/s, as
    the percentage the slow disk adds to the fast target's time. Both folders sit in one
@@ -50,10 +50,10 @@ from unittest import mock
 import kit
 
 from flnd.engine import transfer as _transfer
-from flnd.kit import files as _files
-from flnd.kit import net as _net
-from flnd.kit.loop import Loop
 from flnd.ui.log import ui
+from flnkit import files as _files
+from flnkit import net as _net
+from flnkit.loop import Loop
 
 BIG = kit.size(1 << 30, 1 << 20)
 # The big file is written in pieces of this size, so making it never holds 1 GiB in memory.

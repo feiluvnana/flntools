@@ -1,4 +1,4 @@
-"""flnd/_vault.py: cookie jars in the vault, the one-time move of plain cookie files, whether a
+"""src/_vault.py: cookie jars in the vault, the one-time move of plain cookie files, whether a
 source is logged in, logout, secrets sealed per source and name, and the key file.
 
 No browser, no network: cookie files are written by the tests, and the vault's key is a real one
@@ -20,11 +20,11 @@ import no_profiles  # noqa: F401  (refuses real browser profiles)
 
 from flnd.engine import home as _home
 from flnd.errors import DiskError
-from flnd.kit import cookies as _cookies
-from flnd.kit import net as _net
-from flnd.kit import vault as _vault
 from flnd.sources.ins import Instagram
 from flnd.ui.log import ui
+from flnkit import cookies as _cookies
+from flnkit import net as _net
+from flnkit import vault as _vault
 
 NETSCAPE = ("# Netscape HTTP Cookie File\n"
             ".instagram.com\tTRUE\t/\tTRUE\t1825861327\tsessionid\tins-session\n")

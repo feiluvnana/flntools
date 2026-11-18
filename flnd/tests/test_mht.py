@@ -7,7 +7,6 @@ from test_engine import EngineCase
 
 from flnd.engine.core import Engine, resolve
 from flnd.engine.options import Options, categories_by_source, validate
-from flnd.kit import net as _net
 from flnd.source import SiteError, Target, UsageError
 from flnd.sources.mht import (
     API,
@@ -18,6 +17,7 @@ from flnd.sources.mht import (
     lookup_genres,
     page_name,
 )
+from flnkit import net as _net
 
 CDN = "https://moe-cdn.example"
 

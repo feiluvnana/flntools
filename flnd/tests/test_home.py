@@ -1,4 +1,4 @@
-"""flnd/_home.py: the home's `flnd.db`, one transaction per post, gone files, failures, targets, and
+"""src/_home.py: the home's `flnd.db`, one transaction per post, gone files, failures, targets, and
 the migration of an old home, which must never change the old files.
 
 Every test runs on a temporary home. An old home is written here the way flnd wrote it before
@@ -23,9 +23,9 @@ from flnd.engine import home as _home
 from flnd.engine.core import Engine
 from flnd.engine.options import Options
 from flnd.errors import Changed, NetworkError, NotFound
-from flnd.kit import net as _net
 from flnd.source import File, Target
 from flnd.testing import fake_clock
+from flnkit import net as _net
 
 USER = Target("aaa:example_user", kind="user")
 

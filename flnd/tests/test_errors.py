@@ -1,4 +1,4 @@
-"""The one error hierarchy (`flnd.errors`) and its policy (flnd/docs/errors.md).
+"""The one error hierarchy (`flnd.errors`) and its policy (src/docs/errors.md).
 
 Three groups of tests:
 1. `ClassesTest`: one test per class, raising it where flnd raises it and checking its place in
@@ -43,13 +43,13 @@ from flnd.errors import (
     classify,
     disk,
 )
-from flnd.kit import clock as _time
-from flnd.kit import files as _files
-from flnd.kit import files as _tools
-from flnd.kit import net as _net
 from flnd.source import File, Source, Target, target
 from flnd.source import cookies as login_cookies
 from flnd.ui.log import ui
+from flnkit import clock as _time
+from flnkit import files as _files
+from flnkit import files as _tools
+from flnkit import net as _net
 
 SITE = "https://example.com"
 # The secrets the redaction test plants: none may reach a message.

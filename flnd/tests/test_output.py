@@ -1,6 +1,6 @@
-"""No module but `flnd/ui/` writes to standard output or error (PLAN.md section 8.2).
+"""No module but `src/ui/` writes to standard output or error (PLAN.md section 8.2).
 
-Every file under `flnd/` outside `flnd/ui/` is read with `ast`, and nothing is imported or run.
+Every file under `flnd/` outside `src/ui/` is read with `ast`, and nothing is imported or run.
 A write is a call of `print`, a call on `sys.stdout` or `sys.stderr` or their `buffer`
 (`write`, `flush`, `writelines`), `os.write` to descriptor 1 or 2 (or a stream's `fileno()`),
 or a Rich `Console`, which writes to standard output by default. Reading the
@@ -13,8 +13,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FLND = ROOT / "flnd"
-UI = FLND / "ui"
+SRC = ROOT / "src"
+FLNKIT = ROOT / "flnkit"
+UI = SRC / "ui"
 STREAMS = {"stdout", "stderr", "__stdout__", "__stderr__"}
 WRITES = {"write", "flush", "writelines"}
 
@@ -57,7 +58,7 @@ def writes(source: str) -> list[str]:
 
 class OutputTest(unittest.TestCase):
     def test_only_ui_writes_to_the_terminal(self) -> None:
-        for path in sorted(FLND.rglob("*.py")):
+        for path in sorted([*SRC.rglob("*.py"), *FLNKIT.rglob("*.py")]):
             if UI in path.parents:
                 continue
             with self.subTest(str(path.relative_to(ROOT))):

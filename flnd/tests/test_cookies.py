@@ -1,4 +1,4 @@
-"""`flnd.kit.cookies`: `load` and the `Jar`, over fixture files, browsers, and text.
+"""`flnkit.cookies`: `load` and the `Jar`, over fixture files, browsers, and text.
 
 Browser profiles are fixture databases under a temporary home folder (`Path.home` is patched),
 the Keychain and keyring passwords are faked, and any real program `subprocess` would run fails
@@ -20,7 +20,7 @@ from unittest import mock
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
 from flnd.errors import DiskError, LoginError, UsageError
-from flnd.kit import cookies as _cookies
+from flnkit import cookies as _cookies
 
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -44,7 +44,7 @@ class JarErrorTest(unittest.TestCase):
     def test_importing_the_cookies_leaves_the_browser_jar_alone(self):
         # Importing `_cookies` used to make the browser's Jar raise LoginError for the whole
         # process; a Jar made anywhere else must keep raising UsageError.
-        from flnd.kit import browser
+        from flnkit import browser
 
         with self.assertRaises(UsageError):
             browser.Jar([{"name": "a"}])
@@ -214,7 +214,7 @@ class ChromiumLinuxTest(BrowserTestCase):
             ("c.example", "damaged", "", encrypt_chromium("two", "another", 1, "c.example"), "/", 0, 0, 0, 0),
             ("d.example", "plain", "visible", b"", "/", 0, 0, 0, 0),
         ])
-        with self.assertLogs("flnd.kit.cookies", "DEBUG") as said:
+        with self.assertLogs("flnkit.cookies", "DEBUG") as said:
             jar = _cookies.load("chrome")
         self.assertEqual([c["name"] for c in jar.list], ["good", "plain"])
         self.assertEqual((jar["good"], jar["plain"]), ("one", "visible"))
@@ -616,7 +616,7 @@ class SecretsTest(FileTestCase):
 
 class ImportTest(unittest.TestCase):
     def test_import_loads_neither_cryptography_nor_playwright(self):
-        code = ("import sys; from flnd.kit import cookies; "
+        code = ("import sys; from flnkit import cookies; "
                 "print(sorted({n.split('.')[0] for n in sys.modules} & {'cryptography', 'playwright'}))")
         result = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), "[]")

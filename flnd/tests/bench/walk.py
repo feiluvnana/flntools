@@ -14,7 +14,7 @@ from pathlib import Path
 
 import kit
 
-from flnd.kit import files as _files
+from flnkit import files as _files
 
 FOLDERS, PER_FOLDER = kit.size(100, 2), kit.size(1000, 50)
 FILES = FOLDERS * PER_FOLDER

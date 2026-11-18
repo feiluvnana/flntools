@@ -19,8 +19,6 @@ from fakes import FakeSite, collect
 
 from flnd.engine.core import resolve
 from flnd.engine.site import Listing
-from flnd.kit import clock as _time
-from flnd.kit import text as _text
 from flnd.source import (
     API,
     Cookies,
@@ -40,6 +38,8 @@ from flnd.source import (
     target,
 )
 from flnd.sources import SOURCES
+from flnkit import clock as _time
+from flnkit import text as _text
 
 
 class Example(Source):
@@ -483,7 +483,7 @@ class FormatsTest(unittest.TestCase):
 
 
 class DayTest(unittest.TestCase):
-    """The one date rule, the engine's (`flnd.kit.clock.day`): any form a site gives, in UTC, 2004 to next year."""
+    """The one date rule, the engine's (`flnkit.clock.day`): any form a site gives, in UTC, 2004 to next year."""
 
     def test_seconds_milliseconds_and_digit_strings(self):
         for value in (1767312000, 1767312000.5, 1767312000000, "1767312000", "1767312000000", " 1767312000 "):

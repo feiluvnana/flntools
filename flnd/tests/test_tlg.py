@@ -34,7 +34,6 @@ from flnd.engine.core import Engine
 from flnd.engine.events import Progress
 from flnd.engine.options import Options
 from flnd.engine.site import LoginSite
-from flnd.kit import text as _text
 from flnd.source import LoginError, Target, UsageError
 from flnd.sources import tlg
 from flnd.sources.tlg import (
@@ -47,6 +46,7 @@ from flnd.sources.tlg import (
     half_blocks,
     read_telegram_web,
 )
+from flnkit import text as _text
 
 DAY = datetime.date(2026, 1, 5)
 SESSION = "1FAKE-SESSION-aGVsbG8"
@@ -401,7 +401,7 @@ def decode_session(string):
 
 
 class FakeTab:
-    """The tab `flnd.kit.browser.local_storage` opens: it lands on `url`, and `evaluate` answers its script."""
+    """The tab `flnkit.browser.local_storage` opens: it lands on `url`, and `evaluate` answers its script."""
 
     def __init__(self, url, evaluate):
         async def evaluated(script):
@@ -435,7 +435,7 @@ class ReadTelegramWebTest(unittest.TestCase):
         # The login site's own `storage`, which reads nothing of the site it's on.
         site = SimpleNamespace(storage=lambda url: LoginSite.storage(cast(Any, None), url))
         # Never the real browser: a real launch would copy the user's own Chrome profile.
-        with mock.patch("flnd.kit.browser.launch", launch):
+        with mock.patch("flnkit.browser.launch", launch):
             return read_telegram_web(site)
 
     def test_the_storage_of_a_tab_that_reached_telegram_web(self):

@@ -1,26 +1,27 @@
 """The import rules of PLAN.md section 4.1: which of flnd's modules may import which.
 
-Every file under `flnd/` is read with `ast`, and every import counts: at the top, inside a
-function and under `if TYPE_CHECKING:` alike, since each is a dependency. Nothing is imported or
-run. Third-party packages are ruled on only where a rule names them (`engine/events.py`, the
-plugins); which SDK a plugin may use is tests/test_sources.py's guard.
+Every file under `src/` (the package flnd) and `flnkit/` is read with `ast`, and every import
+counts: at the top, inside a function and under `if TYPE_CHECKING:` alike, since each is a
+dependency. Nothing is imported or run. Third-party packages are ruled on only where a rule names
+them (`engine/events.py`, the plugins); which SDK a plugin may use is tests/test_sources.py's guard.
 
 The rules:
-1. `kit/*` imports only `kit/*` and `flnd/errors.py`.
-2. `ui/*` imports only `ui/*`, `kit/*`, `engine/events.py` and `flnd/errors.py`.
-3. `engine/*` imports `engine/*`, `kit/*`, `ui/*`, `flnd/errors.py` and `flnd/plugin.py`;
-   `engine/events.py` only `flnd/errors.py`, `flnd/plugin.py`, `kit/*` and `msgspec`.
-4. `flnd/plugin.py` imports only `kit/*`, `flnd/errors.py` and the standard library;
-   `flnd/testing.py` imports `flnd`, `flnd/plugin.py`, `engine/*` and `kit/*`;
-   `flnd/_library.py` imports `engine/*`, `kit/*`, `flnd/errors.py` and `flnd/plugin.py`.
-5. `flnd/plugins/*` imports from flnd only `flnd.plugin`, and a third-party SDK only inside a
-   function; the registry, `flnd/plugins/__init__.py`, also reads `_manifest.py`.
-6. `flnd/cli.py` imports only `flnd`, `flnd/ui/*` and `flnd/plugins/_manifest.py`.
-7. `flnd/__init__.py` imports nothing at import time beyond the standard library.
-And nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it.
+1. `flnkit/*` imports only `flnkit/*`, `flnd.errors` (until step 3½ part b), the standard
+   library and third-party packages. Nothing under `flnkit/` names `flnd` beyond that.
+2. `src/ui/*` imports only `src/ui/*`, `flnkit`, `src/engine/events.py` and `src/errors.py`.
+3. `src/engine/*` imports `src/engine/*`, `flnkit`, `src/ui/*`, `src/errors.py` and `src/plugin.py`;
+   `src/engine/events.py` only `src/errors.py`, `src/plugin.py`, `flnkit` and `msgspec`.
+4. `src/plugin.py` imports only `flnkit`, `src/errors.py` and the standard library;
+   `src/testing.py` imports `flnd`, `src/plugin.py`, `src/engine/*` and `flnkit`;
+   `src/_library.py` imports `src/engine/*`, `flnkit`, `src/errors.py` and `src/plugin.py`.
+5. `src/plugins/*` imports from flnd only `flnd.plugin`, and a third-party SDK only inside a
+   function; the registry, `src/plugins/__init__.py`, also reads `_manifest.py`.
+6. `src/cli.py` imports only `flnd`, `src/ui/*` and `src/plugins/_manifest.py`.
+7. `src/__init__.py` imports nothing at import time beyond the standard library.
+And nothing imports `flnd.cli` but `src/__main__.py`, which is how `python -m flnd` starts it.
 
-Until step 8, plugin API 1 stands in for API 2: `flnd/source.py` is checked as `flnd/plugin.py`
-and `flnd/sources/*` as `flnd/plugins/*` (`API_1`). What API 1 can't follow is in `EXEMPT`, each
+Until step 8, plugin API 1 stands in for API 2: `src/source.py` is checked as `src/plugin.py`
+and `src/sources/*` as `src/plugins/*` (`API_1`). What API 1 can't follow is in `EXEMPT`, each
 entry with the step that removes it.
 """
 
@@ -30,7 +31,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FLND = ROOT / "flnd"
+# The package flnd lives in src/; the standalone package flnkit beside it (PLAN.md 4.1).
+FLND = ROOT / "src"
+FLNKIT = ROOT / "flnkit"
 
 # Until step 8: the API 1 module that stands for each API 2 one, as a prefix of a dotted name.
 API_1 = {"flnd.source": "flnd.plugin", "flnd.sources": "flnd.plugins"}
@@ -39,7 +42,7 @@ API_1 = {"flnd.source": "flnd.plugin", "flnd.sources": "flnd.plugins"}
 # An importer or an import ending in ".*" covers every module under it.
 EXEMPT = {
     # The registry lists the built-ins through the plugin manager; it moves to
-    # flnd/plugins/__init__.py when API 1 goes.
+    # src/plugins/__init__.py when API 1 goes.
     ("flnd.plugins", "flnd.engine.plugins"): 8,
     # The engine and the library reach the API 1 registry directly; step 8 moves the registry,
     # and the plugin manager (`engine/plugins.py`) owns it from then on.
@@ -49,9 +52,13 @@ EXEMPT = {
     # The CLI still reads the engine's events, the home's paths and the kit's text and cookie
     # names, and the library reads `flnd.__version__`; step 13 rewrites both.
     ("flnd.cli", "flnd.engine.*"): 13,
-    ("flnd.cli", "flnd.kit.*"): 13,
+    ("flnd.cli", "flnkit.*"): 13,
     ("flnd._library", "flnd"): 13,
 }
+
+
+# The two packages this project ships: flnd (the folder src/) and flnkit.
+OWN = ("flnd", "flnkit")
 
 
 def canonical(name: str) -> str:
@@ -63,22 +70,30 @@ def canonical(name: str) -> str:
 
 
 def module_name(path: Path) -> str:
-    """`flnd/sources/ins.py` as `flnd.sources.ins`; a package's `__init__.py` as the package."""
+    """`src/sources/ins.py` as `flnd.sources.ins`; a package's `__init__.py` as the package."""
     parts = path.relative_to(ROOT).with_suffix("").parts
+    if parts[0] == "src":
+        parts = ("flnd", *parts[1:])
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
+def folder(dotted: str) -> Path:
+    """The folder of a dotted module: `flnkit.net` is `flnkit/net`, `flnd.engine` `src/engine`."""
+    head, *rest = dotted.split(".")
+    return (FLND if head == "flnd" else FLNKIT).joinpath(*rest)
+
+
 def _flnd_names(node: ast.AST) -> set[str]:
-    """The flnd modules one import node names: `from flnd.kit import net` is `flnd.kit.net`."""
+    """The flnd or flnkit modules an import node names: `from flnkit import net` is `flnkit.net`."""
     if isinstance(node, ast.Import):
-        return {alias.name for alias in node.names if alias.name.split(".")[0] == "flnd"}
+        return {alias.name for alias in node.names if alias.name.split(".")[0] in OWN}
     if not (isinstance(node, ast.ImportFrom) and node.module and node.level == 0
-            and node.module.split(".")[0] == "flnd"):
+            and node.module.split(".")[0] in OWN):
         return set()
     # `from flnd import errors` imports a module by name. Names are compared to the folder's
     # listing, not looked up as paths: on a case-insensitive disk, `from flnd import Engine`
-    # would find flnd/engine/.
-    package = FLND.parent / node.module.replace(".", "/")
+    # would find src/engine/.
+    package = folder(node.module)
     entries = {entry.name for entry in package.iterdir()} if package.is_dir() else set()
 
     def is_module(name: str) -> bool:
@@ -140,7 +155,7 @@ def all_packages(path: Path) -> set[str]:
 
 
 def third_party(name: str) -> bool:
-    return name.split(".")[0] not in sys.stdlib_module_names and name.split(".")[0] != "flnd"
+    return name.split(".")[0] not in sys.stdlib_module_names and name.split(".")[0] not in OWN
 
 
 def under(name: str, *prefixes: str) -> bool:
@@ -152,20 +167,20 @@ def allowed(importer: str, imported: str) -> bool:
     """Whether rules 1 to 6 let `importer` import `imported` (both read as API 2)."""
     if imported == "flnd.errors" and not under(importer, "flnd.plugins"):
         return importer != "flnd.cli"
-    if under(importer, "flnd.kit"):
-        return under(imported, "flnd.kit")
+    if under(importer, "flnkit"):
+        return under(imported, "flnkit")
     if under(importer, "flnd.ui"):
-        return under(imported, "flnd.ui", "flnd.kit") or imported == "flnd.engine.events"
+        return under(imported, "flnd.ui", "flnkit") or imported == "flnd.engine.events"
     if importer == "flnd.engine.events":
-        return imported == "flnd.plugin" or under(imported, "flnd.kit")
+        return imported == "flnd.plugin" or under(imported, "flnkit")
     if under(importer, "flnd.engine"):
-        return under(imported, "flnd.engine", "flnd.kit", "flnd.ui") or imported == "flnd.plugin"
+        return under(imported, "flnd.engine", "flnkit", "flnd.ui") or imported == "flnd.plugin"
     if importer == "flnd.plugin":
-        return under(imported, "flnd.kit")
+        return under(imported, "flnkit")
     if importer == "flnd.testing":
-        return imported in ("flnd", "flnd.plugin") or under(imported, "flnd.engine", "flnd.kit")
+        return imported in ("flnd", "flnd.plugin") or under(imported, "flnd.engine", "flnkit")
     if importer == "flnd._library":
-        return under(imported, "flnd.engine", "flnd.kit") or imported == "flnd.plugin"
+        return under(imported, "flnd.engine", "flnkit") or imported == "flnd.plugin"
     if importer == "flnd.plugins":
         # The registry lists the built-ins from their manifest, without importing them.
         return imported in ("flnd.plugin", "flnd.plugins._manifest")
@@ -201,8 +216,9 @@ def breaches(path: Path) -> list[str]:
 
 
 def _files() -> list[Path]:
-    """Every module of the package but `flnd/__init__.py`, whose rule is rule 7."""
-    return [path for path in sorted(FLND.rglob("*.py")) if path != FLND / "__init__.py"]
+    """Every module of the package but `src/__init__.py`, whose rule is rule 7."""
+    return [path for path in sorted([*FLND.rglob("*.py"), *FLNKIT.rglob("*.py")])
+            if path != FLND / "__init__.py"]
 
 
 class LayersTest(unittest.TestCase):
@@ -218,7 +234,7 @@ class LayersTest(unittest.TestCase):
         self.assertLessEqual(found, {"msgspec"})
 
     def test_the_source_api_imports_only_the_stdlib_kit_and_errors(self):
-        # Rule 4 in full: `flnd/plugin.py` (today `flnd/source.py`) takes no third-party
+        # Rule 4 in full: `src/plugin.py` (today `src/source.py`) takes no third-party
         # package, at import time or inside a function.
         for path in (FLND / "source.py", FLND / "plugin.py"):
             if not path.exists():
@@ -239,7 +255,7 @@ class LayersTest(unittest.TestCase):
                          [])
 
     def test_nothing_imports_the_cli_but_the_entry_point(self):
-        for path in sorted(FLND.rglob("*.py")):
+        for path in sorted([*FLND.rglob("*.py"), *FLNKIT.rglob("*.py")]):
             if path.name == "__main__.py":
                 continue
             with self.subTest(module=module_name(path)):
@@ -259,13 +275,13 @@ class LayersTest(unittest.TestCase):
 
     def test_the_rules_see_imports_of_names_and_of_modules(self):
         # Guards the guard: `from flnd import Engine` is the package, `from flnd import errors`
-        # a module, and `from flnd.kit import net` the module flnd.kit.net.
+        # a module, and `from flnkit import net` the module flnkit.net.
         self.assertIn("flnd.engine.job", flnd_imports(FLND / "engine" / "core.py"))
-        self.assertIn("flnd.kit.net", flnd_imports(FLND / "engine" / "site.py"))
+        self.assertIn("flnkit.net", flnd_imports(FLND / "engine" / "site.py"))
         self.assertIn("flnd", flnd_imports(FLND / "cli.py"))
-        self.assertFalse(allowed("flnd.kit.net", "flnd.ui.log"))
+        self.assertFalse(allowed("flnkit.net", "flnd.ui.log"))
         self.assertFalse(allowed("flnd.ui.log", "flnd.engine.core"))
-        self.assertFalse(allowed("flnd.plugins.ins", "flnd.kit.net"))
+        self.assertFalse(allowed("flnd.plugins.ins", "flnkit.net"))
 
 
 if __name__ == "__main__":

@@ -17,10 +17,10 @@ from typing import Any
 
 import flnd
 from flnd.engine.events import Failed, Saved
-from flnd.kit import clock as _time
 from flnd.source import Target
 from flnd.testing import fake_clock
 from flnd.ui.log import REDRAW, UI, Journal, State
+from flnkit import clock as _time
 
 
 class _TTY(io.StringIO):

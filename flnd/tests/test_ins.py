@@ -22,9 +22,6 @@ from test_source import INSTAGRAM
 
 from flnd.engine.core import Engine
 from flnd.engine.options import Options
-from flnd.kit import html as _html
-from flnd.kit import net as _net
-from flnd.kit.clock import day
 from flnd.source import Changed, LoginError, Request, SiteError, Target, UsageError
 from flnd.sources.ins import (
     APP_ID,
@@ -40,6 +37,9 @@ from flnd.sources.ins import (
     reel_posts,
     tab_media,
 )
+from flnkit import html as _html
+from flnkit import net as _net
+from flnkit.clock import day
 
 SITE = "https://www.instagram.com"
 API = f"{SITE}/api/v1"
@@ -937,8 +937,8 @@ class MeTest(unittest.TestCase):
 
     def test_engine_treats_ins_me_as_query_target(self):
         from flnd.engine import home as _home
-        from flnd.kit import cookies as _cookies
         from flnd.source import File, Post
+        from flnkit import cookies as _cookies
 
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

@@ -1,6 +1,6 @@
-"""`flnd.kit.browser`: `launch` and its profile copy, the Chromium offer, `Browser`, `Page`, `Capture`, scrolling.
+"""`flnkit.browser`: `launch` and its profile copy, the Chromium offer, `Browser`, `Page`, `Capture`, scrolling.
 
-Every coroutine runs on one `flnd.kit.loop.Loop` for the module (`run`), as the run's loop runs them.
+Every coroutine runs on one `flnkit.loop.Loop` for the module (`run`), as the run's loop runs them.
 The profile and Chromium tests fake Playwright, the home folder and the temp folder, so no real
 profile or browser is touched. The page tests run Playwright's own Chromium, headless, on pages
 served from memory (`fulfill`), and skip without it. `Page.fetch`'s tests serve their page from a
@@ -32,12 +32,12 @@ from unittest import mock
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
 from flnd.errors import Blocked, Changed, Error, NetworkError, SiteError, ToolError
-from flnd.kit import browser as _browser
-from flnd.kit import clock as _time
-from flnd.kit import cookies as _cookies
-from flnd.kit import net as _net
-from flnd.kit.loop import Loop
 from flnd.ui.log import ui
+from flnkit import browser as _browser
+from flnkit import clock as _time
+from flnkit import cookies as _cookies
+from flnkit import net as _net
+from flnkit.loop import Loop
 
 # The real lookup, before BrowserCase patches it out.
 CHROME_INSTALLED = _browser._chrome_installed
@@ -159,13 +159,13 @@ class ImportTest(BrowserCase):
     def test_without_playwright(self):
         blocked = {"playwright": None, "playwright.async_api": None}
         with mock.patch.dict(sys.modules, blocked):
-            sys.modules.pop("flnd.kit.browser", None)
+            sys.modules.pop("flnkit.browser", None)
             try:
-                fresh = importlib.import_module("flnd.kit.browser")
+                fresh = importlib.import_module("flnkit.browser")
                 with self.assertRaisesRegex(ImportError, re.escape("pip install playwright")):
                     run(fresh.launch())
             finally:
-                sys.modules["flnd.kit.browser"] = _browser
+                sys.modules["flnkit.browser"] = _browser
 
 
 class FakePlaywright:

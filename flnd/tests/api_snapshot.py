@@ -47,7 +47,9 @@ API_MODULES = ("flnd.source", "flnd", "flnd.testing")
 API_FILE = ROOT / "tests" / "data" / "api.txt"
 # Classes whose members are listed: the project's own. A base from the stdlib (MutableMapping,
 # NamedTuple, Exception) adds its own methods, which aren't this project's API.
-PROJECT_PACKAGES = ("flnd",)
+PROJECT_PACKAGES = ("flnd", "flnkit")
+# Each package's folder: flnd is the folder src/, flnkit its own (PLAN.md 4.1).
+PACKAGE_DIRS = {"flnd": ROOT / "src", "flnkit": ROOT / "flnkit"}
 
 
 class ApiName(NamedTuple):
@@ -100,7 +102,7 @@ def api_names(modules: tuple[str, ...] = API_MODULES) -> list[ApiName]:
     A module's names are its `__all__`. A class's are its public methods, properties, fields and
     class attributes, its own and its project bases', and the public attributes its `__init__`
     sets on `self`. An object that stands in for a module (`flnd.ui` is the `ui` object of
-    `flnd/_ui.py`) has its class's members, then the rest of its file's `__all__`, under its
+    `src/_ui.py`) has its class's members, then the rest of its file's `__all__`, under its
     name. Imports every module listed, so it runs inside the project environment.
 
     Returns:
@@ -146,7 +148,7 @@ def _add(name: str, value: Any, names: dict[str, ApiName], owner: Any = None) ->
         for member in value.__all__:
             member_value = getattr(value, member)
             # A public name that is an object, not a module, stands for the private file `_<name>`
-            # beside it, the way `flnd.ui` is the `ui` object of `flnd/_ui.py`.
+            # beside it, the way `flnd.ui` is the `ui` object of `src/_ui.py`.
             backing = sys.modules.get(f"{value.__name__}._{member}")
             if backing is not None and not isinstance(member_value, types.ModuleType):
                 _add_stand_in(f"{name}.{member}", member_value, backing, names)

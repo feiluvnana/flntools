@@ -2,6 +2,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 import zipfile
 from pathlib import Path
@@ -19,6 +20,7 @@ class WheelTest(unittest.TestCase):
             wheel = next(Path(out_dir).glob("*.whl"))
             with zipfile.ZipFile(wheel) as archive:
                 self.assertIn("flnd/py.typed", archive.namelist())
+                self.assertTrue(any(name.startswith("flnkit/") for name in archive.namelist()))
 
 
 def run_python(code: str) -> subprocess.CompletedProcess:
@@ -45,6 +47,35 @@ def loaded_after(code: str) -> set[str]:
     return set(result.stdout.split())
 
 
+class ListedPackagesTest(unittest.TestCase):
+    def test_every_package_folder_is_listed_in_pyproject(self):
+        # A new subpackage (a folder with an __init__.py) must be in the wheel: setuptools
+        # ships only the packages it is given, so a missing one is silently left out.
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        listed = set(project["tool"]["setuptools"]["packages"])
+        folders = {"flnd": ROOT / "src", "flnkit": ROOT / "flnkit"}
+        expected = set()
+        for name, folder in folders.items():
+            for init in folder.rglob("__init__.py"):
+                parts = init.parent.relative_to(folder).parts
+                expected.add(".".join((name, *parts)))
+        self.assertEqual(sorted(expected - listed), [],
+                         "add these to [tool.setuptools] packages in pyproject.toml")
+
+
+class EditableTest(unittest.TestCase):
+    def test_both_packages_import_from_outside_the_folder(self):
+        # `make setup` installs the project editable: flnd must come from src/ and flnkit from
+        # flnkit/, whatever the working directory.
+        code = "import flnd, flnkit; print(flnd.__file__); print(flnkit.__file__)"
+        result = subprocess.run([sys.executable, "-c", code], cwd=tempfile.gettempdir(),
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        flnd_file, flnkit_file = (Path(line).resolve() for line in result.stdout.split("\n")[:2])
+        self.assertTrue(flnd_file.is_relative_to(ROOT / "src"), flnd_file)
+        self.assertTrue(flnkit_file.is_relative_to(ROOT / "flnkit"), flnkit_file)
+
+
 # What only a command may load: the engine, the network, the browser and the screen. `import
 # flnd` must load none of them, or every script and `flnd --help` pays.
 HEAVY = {"flnd.engine.core", "flnd.engine.job", "flnd.engine.site", "playwright", "rich", "curl_cffi",
@@ -56,9 +87,9 @@ class BundleTest(unittest.TestCase):
         # Sources, plugins and libraries load lazily by name (`importlib.import_module`), which
         # PyInstaller's import scan can't follow: without this flag, `flnd sources` in the
         # bundle fails with "No module named 'flnd.sources.tik'".
-        recipe = next(line for line in (ROOT / "Makefile").read_text().splitlines()
-                      if line.startswith("dist:"))
-        self.assertIn("--collect-submodules flnd", recipe)
+        script = (ROOT / "tests" / "dist.py").read_text(encoding="utf-8")
+        self.assertIn('"--collect-submodules", "flnd"', script)
+        self.assertIn('"--collect-submodules", "flnkit"', script)
 
 
 class LazyImportTest(unittest.TestCase):
@@ -88,12 +119,12 @@ class LazyImportTest(unittest.TestCase):
 class MissingDependencyTest(unittest.TestCase):
 
     def test_missing_curl_cffi_names_the_package_to_install(self):
-        # `flnd.kit.net` imports curl_cffi on its first request, so that is where it is missed.
+        # `flnkit.net` imports curl_cffi on its first request, so that is where it is missed.
         code = ("import sys, asyncio; sys.modules['curl_cffi'] = None\n"
-                "from flnd.kit import net\n"
+                "from flnkit import net\n"
                 "try:\n    net.Session()._session()\nexcept ImportError as error:\n    print(error)")
         self.assertEqual(run_python(code).stdout.strip(),
-                         "flnd.kit.net needs curl_cffi: pip install curl_cffi")
+                         "flnkit.net needs curl_cffi: pip install curl_cffi")
 
     def test_a_name_loads_its_module_on_first_use(self):
         code = ("import sys, flnd\nbefore = 'flnd._library' in sys.modules\n"
@@ -101,16 +132,16 @@ class MissingDependencyTest(unittest.TestCase):
         self.assertEqual(run_python(code).stdout.strip(), "False flnd._library True")
 
     def test_missing_selectolax_names_the_package_to_install(self):
-        # `flnd.kit.html` imports selectolax on its first parse, so that is where it is missed.
+        # `flnkit.html` imports selectolax on its first parse, so that is where it is missed.
         code = ("import sys; sys.modules['selectolax'] = None\n"
-                "from flnd.kit import html\n"
+                "from flnkit import html\n"
                 "try:\n    html.parse('<p>a</p>')\nexcept ImportError as error:\n    print(error)")
         self.assertEqual(run_python(code).stdout.strip(),
-                         "flnd.kit.html needs selectolax: pip install selectolax")
+                         "flnkit.html needs selectolax: pip install selectolax")
 
     def test_importing_the_html_library_loads_no_parser(self):
-        # `flnd.source` imports `flnd.kit.html` for `dig`, so the import must stay free.
-        self.assertEqual(loaded_after("from flnd.kit import html") & {"selectolax", "msgspec"}, set())
+        # `flnd.source` imports `flnkit.html` for `dig`, so the import must stay free.
+        self.assertEqual(loaded_after("from flnkit import html") & {"selectolax", "msgspec"}, set())
 
 
 

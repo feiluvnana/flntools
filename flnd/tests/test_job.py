@@ -1,7 +1,7 @@
 """The job (flnd/job.py): one target of a ported source, from its route to its history rows.
 
-Run through the engine with tests/example_source.py on `flnd.kit.net.fake`, the clocks of
-`flnd.kit.net` and site.py faked, and through `job.posts` on a `FakeSite` for the listing rules. Also the
+Run through the engine with tests/example_source.py on `flnkit.net.fake`, the clocks of
+`flnkit.net` and site.py faked, and through `job.posts` on a `FakeSite` for the listing rules. Also the
 "download Chromium?" question asked up front, an expired link's refresh, and both Ctrl-Cs (with
 a CDN that blocks on events, and the run on a thread of its own). No network, no browser.
 """
@@ -33,8 +33,6 @@ from flnd.engine import site as site_module
 from flnd.engine.core import Engine
 from flnd.engine.options import Options
 from flnd.errors import UsageError
-from flnd.kit import clock as _time
-from flnd.kit import net as _net
 from flnd.source import (
     File,
     LoginError,
@@ -47,6 +45,8 @@ from flnd.source import (
     target,
 )
 from flnd.ui.log import ui
+from flnkit import clock as _time
+from flnkit import net as _net
 
 
 class JobCase(EngineCase):
