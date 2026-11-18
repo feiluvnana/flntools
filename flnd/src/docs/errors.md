@@ -14,12 +14,13 @@ flnd.Error                 str(e) says what went wrong; e.hint what to do
 ├── LoginError             not logged in, expired, or refused
 ├── SiteError              the site answered, but not usefully (e.status, e.response)
 │   ├── Blocked            rate limited or blocked for a while (e.wait)
-│   ├── NotFound           deleted, private, or never there
+│   ├── NotFound           deleted, or never there
+│   ├── Hidden             it exists, but this account can't see it (a private profile)
 │   └── Changed            the answer no longer has the shape the source expects
 ├── NetworkError           DNS, TLS, a timeout, a reset, a transfer cut short
 ├── DiskError              no space, no permission, a name too long, a damaged store
 ├── ToolError              ffmpeg, 7zz or a browser: missing, or failed
-└── SourceError            a source is broken: its declaration, or a bug in its listing
+└── PluginError            a plugin is broken: its declaration, or a bug in its listing
 
 flnd.Stopped               Ctrl-C: a KeyboardInterrupt, never an Error
 ```
@@ -65,10 +66,11 @@ The hierarchy is defined in two modules, because the kit, `flnkit`, imports noth
   cause. Their hints are generic: none names a flnd command or flag.
 - **`src/errors.py`** (`flnd.errors`) re-exports those same objects, so
   `flnd.LoginError is flnkit.errors.LoginError` and `except flnd.Error` catches what the kit
-  raises. It adds what only flnd knows: `SourceError`, and `classify`.
+  raises. It adds what only flnd knows: `Hidden`, `PluginError` (API 1 named it
+  `SourceError`), and `classify`.
 
 Each class's `__module__` is where it is defined: `flnkit.errors.LoginError`, but
-`flnd.errors.SourceError`. The exit code goes by class (`isinstance`), never by that name, so a
+`flnd.errors.PluginError`. The exit code goes by class (`isinstance`), never by that name, so a
 plugin's own class that is merely named `LoginError` exits 4, not 3.
 
 `classify` gives an error that has no hint flnd's own, before it is printed or kept in
@@ -80,16 +82,16 @@ plugin's own class that is merely named `LoginError` exits 4, not 3.
 | a `DiskError` for a full disk or quota | `free some space on that disk, or use another --home` |
 | a `DiskError` for a read-only disk | `that disk is read-only; use another --home` |
 | a `DiskError` for a name too long | `use a shorter --home or folder template` |
-| any other exception a source lets escape (a `SourceError`) | `this is a bug; run with -v and report it` |
+| any other exception a source lets escape (a `PluginError`) | `this is a bug; run with -v and report it` |
 
 A `ValueError` from the kit is its caller's mistake: `dig` raises one for a malformed path, and
 a page's `css` for a selector that isn't CSS. Escaping a source, it becomes that source's
-`SourceError`, never `Changed`.
+`PluginError`, never `Changed`.
 
 A source imports the classes it raises from `flnd.source`: `UsageError`, `LoginError`,
-`SiteError`, `Blocked`, `NotFound`, `Changed`, `NetworkError`, `SourceError`, and `Error` to
+`SiteError`, `Blocked`, `NotFound`, `Changed`, `NetworkError`, `PluginError`, and `Error` to
 catch them all. A mistake in a source's declaration (a pattern outside its domains, a category
-declared twice) raises `SourceError` when its class is made.
+declared twice) raises `PluginError` when its class is made.
 
 ## The policy
 
@@ -98,14 +100,15 @@ declared twice) raises `SourceError` when its class is made.
 | a timeout, a reset, a 5xx | `NetworkError`, or `SiteError` with the status | 4 more tries by the run's scheduler, waiting about 1, 2, 4 and 8 s (each times 0.5 to 1.5); a POST never, since the server may have acted | the file fails alone; the run goes on |
 | a 429 | `Blocked` | its bucket (the host's, for the plugin) is held for what the site asks (`Retry-After`, or its rate-limit reset, up to 1 h), or 30 s when it doesn't say, and its pace halved for 20 requests; the third 429 in a row is a block round (below) | the file or target fails |
 | a block a source reads from a page's content (`site.back_off`) | `Blocked` | a block round of the run's scheduler: the source's account (every target of it) is held for the larger of what the site asks (up to 1 h) and the round's wait, 30 s, then 2 min, then 8 min for the rounds in a row; 10 minutes without a block start the rounds again; the fourth round in a row raises | the target fails |
-| a 404 or 410, a private item | `NotFound` | never | the file or target fails |
+| a 404 or 410 | `NotFound` | never | the file or target fails |
+| an item this account can't see (a plugin on API 2 says so) | `Hidden` | with switching on, on another account | the file or target fails; from a lazy post's files, that post alone |
 | a 401 or 403 from the source's own domains, a login wall | `LoginError`, raised by `site.fetch` itself (the refusal is its cause) unless the source asked `check=False` | never | the source stops: its other targets fail with the same error, and the other sources go on |
 | a 401 or 403 from another host (a CDN's expired link) | `SiteError` | a 403 or 410 on a post whose files the source lists lazily lists them again once, for a fresh link | the file fails alone |
 | a truncated transfer | `NetworkError` | yes, resuming from the part | the part is kept for the next run |
 | an answer that doesn't parse, a web page where media was expected | `Changed`, `SiteError` | never | the file or target fails |
 | no space, no permission, a name too long | `DiskError` | never | the run stops |
 | a missing or failing ffmpeg, 7zz or browser | `ToolError` | a DASH merge that ffmpeg failed is tried 3 times in all; a missing tool never | the file or target fails |
-| an unexpected exception in a listing | `SourceError` | never | the target fails, and its message says it is a bug |
+| an unexpected exception in a listing | `PluginError` | never | the target fails, and its message says it is a bug |
 
 What "fails" means at each level:
 
@@ -128,7 +131,7 @@ failed files or targets, 2 for usage, 3 for a login, 4 when flnd itself stopped,
 A `flnd.Error` that ends a command, most often a `UsageError`, `LoginError`, `DiskError` or
 `ToolError`, prints one line saying what went wrong and one line saying what to do, and never a
 traceback. Its class gives the exit code: 2 for a `UsageError`, 3 for a `LoginError`, 4 for a
-`DiskError`, `ToolError` or `SourceError`, and 1 for any other `flnd.Error`:
+`DiskError`, `ToolError` or `PluginError`, and 1 for any other `flnd.Error`:
 
 ```
 ✗ ins:example_user needs a login
@@ -138,7 +141,7 @@ traceback. Its class gives the exit code: 2 for a `UsageError`, 3 for a `LoginEr
 An unexpected exception is a bug. The CLI prints `✗ flnd hit a bug: <the error>`, then
 `hint  details in .flnd/log/crash-<time>.txt`, the crash file that holds the traceback, and
 exits 4; with `-v` the traceback prints instead. A bug inside one target's listing doesn't
-stop the run: it becomes that target's `SourceError`, and its cause is printed with `-v`.
+stop the run: it becomes that target's `PluginError`, and its cause is printed with `-v`.
 
 ## Secrets never reach a message
 
@@ -165,7 +168,7 @@ retry may bring back:
 ```
 
 The kinds are `network`, `blocked`, `site`, `changed`, `login`, `disk`, `tool`, `bug` (a
-`SourceError`), `usage` and `gone` (a `NotFound`, which no retry asks for again).
+`PluginError`), `usage` and `gone` (a `NotFound`, which no retry asks for again).
 
 `flnd status` shows the last run that downloaded: what it saved, and each failure it left,
 with its message and hint. `flnd status --json` prints the same as one JSON object for other

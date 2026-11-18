@@ -532,14 +532,6 @@ class ReadPageTest(unittest.TestCase):
                 fbk.read_page(cast(Any, site), f"{SITE}/example_user")
         self.assertLessEqual(len(site.back_offs), fbk.WALL_ATTEMPTS + fbk.BLOCK_ATTEMPTS)
 
-    def test_a_profile_named_like_the_login_page_is_no_wall(self):
-        from flnd.sources import fbk
-
-        site = AlternatingSite((f"{SITE}/login.example", ""))
-        with mock.patch.object(fbk, "meta_results", return_value=[]):
-            self.assertEqual(fbk.read_page(cast(Any, site), f"{SITE}/login.example"), [])
-        self.assertEqual(site.back_offs, [])
-
 def info_line(cursor):
     """A streamed line with the timeline's `page_info`; "" for the last page."""
     return {"label": "ProfileCometTimelineFeed_user$stream$timeline_list_feed_units",

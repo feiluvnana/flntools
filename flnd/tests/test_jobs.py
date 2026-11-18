@@ -70,10 +70,6 @@ def job(kind: Kind = Kind.PAGE, **fields) -> Job:
     return Job(kind=kind, work=fields.pop("work", None), **fields)
 
 
-class Hidden(errors.SiteError):
-    """`flnd.errors.Hidden`, which plugin API 2 adds."""
-
-
 class PoolTest(unittest.TestCase):
     def test_each_pools_numbers(self):
         rows = [  # (cores, kind, places)
@@ -338,7 +334,7 @@ def retryable(error):
 
 def broken():
     """What the loader raises for a plugin class that is broken."""
-    error = errors.SourceError("the class declares no domains")
+    error = errors.PluginError("the class declares no domains")
     error.broken = True
     return error
 
@@ -388,8 +384,8 @@ class RetryTest(unittest.TestCase):
             "a 401 fails at once": ((errors.LoginError("401"),), {}, errors.LoginError, []),
             "a 401 moves with switching": (
                 (errors.LoginError("401"),), {"switch": moved}, "on b", []),
-            "hidden fails": ((Hidden("hidden"),), {}, Hidden, []),
-            "hidden moves with switching": ((Hidden("hidden"),), {"switch": moved}, "on b", []),
+            "hidden fails": ((errors.Hidden("hidden"),), {}, errors.Hidden, []),
+            "hidden moves with switching": ((errors.Hidden("hidden"),), {"switch": moved}, "on b", []),
             "not found fails": ((errors.NotFound("gone"),), {}, errors.NotFound, []),
             "not found past the first page fails with switching": (
                 (errors.NotFound("gone"),), {"switch": moved}, errors.NotFound, []),
@@ -410,11 +406,10 @@ class RetryTest(unittest.TestCase):
                 (retryable(files.MissingError("ffmpeg isn't installed")), "ok"), {},
                 files.MissingError, []),
             "a plugin's bug fails its job": (
-                (errors.SourceError("bug"), "ok"), {}, errors.SourceError, []),
-            "a broken plugin class fails": ((broken(),), {}, errors.SourceError, []),
+                (errors.PluginError("bug"), "ok"), {}, errors.PluginError, []),
+            "a broken plugin class fails": ((broken(),), {}, errors.PluginError, []),
         }
-        with mock.patch.object(jobs, "_HIDDEN", (Hidden,)), \
-                mock.patch.object(jobs.random, "uniform", return_value=1.0):
+        with mock.patch.object(jobs.random, "uniform", return_value=1.0):
             for name, (outcomes, options, result, waits) in rows.items():
                 with self.subTest(name):
                     got, slept, _ = self.outcome(*outcomes, **options)
@@ -489,7 +484,7 @@ class RetryTest(unittest.TestCase):
         self.assertEqual((got, slept), (errors.LoginError, [30, 120, 30, 120]))
 
     def test_a_plugins_bug_or_a_failing_tool_leaves_the_run_going(self):
-        for error in (errors.SourceError("bug"), files.RunError("ffmpeg failed")):
+        for error in (errors.PluginError("bug"), files.RunError("ffmpeg failed")):
             with self.subTest(type(error).__name__):
                 async def main(scheduler, fake, error=error):
                     with self.assertRaises(type(error)):

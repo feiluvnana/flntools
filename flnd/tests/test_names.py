@@ -660,15 +660,15 @@ class ChecksTest(unittest.TestCase):
 
     def test_a_reexported_error_belongs_to_the_module_that_defines_it(self):
         # `flnd.source.LoginError` is `flnd.LoginError`: it belongs to the module defining it.
-        class SourceError(Exception): ...
+        class PluginError(Exception): ...
 
-        class Kept(SourceError): ...
+        class Kept(PluginError): ...
 
         class Stray(ValueError): ...
 
         names = [self.name("module", None, name="flnd"),
                  self.name("module", None, name="flnd.source"),
-                 self.name("error", SourceError, name="flnd.source.Error"),
+                 self.name("error", PluginError, name="flnd.source.Error"),
                  self.name("error", Kept, name="flnd.source.TargetError"),
                  self.name("error", Kept, name="flnd.TargetError"), self.name("error", Stray, name="flnd.StrayError")]
         self.assertEqual(error_breaches(names), {"flnd: errors outside flnd.Error: flnd.StrayError"})

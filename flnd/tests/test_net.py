@@ -751,6 +751,82 @@ class FollowTest(NetCase):
         self.assertEqual({request.method for request in self.seen}, {"HEAD"})
 
 
+class HopTest(NetCase):
+    """A session with a `prepare` hook follows redirects itself, one hop at a time."""
+
+    def hopped(self, routes, method="GET", headers=None, body=None, *, file=False):
+        def prepare(request):
+            if request.url.host.endswith("example.com"):
+                request.headers["x-signed"] = request.url.host
+
+        session = _net.Session(prepare=prepare)
+        client = _net.Client(session)
+
+        def serve(request):
+            self.seen.append(request)
+            return routes[request.url.host + request.url.path]
+
+        async def sent():
+            try:
+                if file:
+                    with _files.part(self.dest, resume=True) as held:
+                        return await client.fill("https://api.example.com/a", held,
+                                                 headers=headers)
+                return await client.fetch("https://api.example.com/a", method=method,
+                                          headers=headers, body=body)
+            finally:
+                await session.close()
+
+        with _net.fake(serve):
+            return asyncio.run(sent())
+
+    def test_a_hop_to_another_host_carries_no_header_of_the_callers_but_the_safe_ones(self):
+        routes = {"api.example.com/a": _net.reply(302, headers={"Location": "https://cdn.example/v"}),
+                  "cdn.example/v": _net.reply(200, content=b"abcd")}
+        headers = {"Cookie": "sessionid=SESSION-SECRET", "Authorization": "Bearer FILE-SECRET",
+                   "X-Token": "TOKEN-SECRET", "Referer": "https://www.example.com/",
+                   "Accept-Language": "en"}
+        for file in (False, True):
+            with self.subTest(file=file):
+                self.seen.clear()
+                self.hopped(routes, headers=headers, file=file)
+                first, second = self.seen
+                self.assertEqual(first.headers["authorization"], "Bearer FILE-SECRET")
+                self.assertNotIn("SECRET", str(dict(second.headers)))
+                self.assertEqual((second.headers.get("referer"),
+                                  second.headers.get("accept-language")),
+                                 ("https://www.example.com/", "en"))
+                self.assertNotIn("x-signed", second.headers)
+
+    def test_a_hop_between_its_own_hosts_is_signed_again(self):
+        routes = {"api.example.com/a": _net.reply(302, headers={"Location": "https://www.example.com/b"}),
+                  "www.example.com/b": _net.reply(200, json={})}
+        self.hopped(routes)
+        self.assertEqual([request.headers["x-signed"] for request in self.seen],
+                         ["api.example.com", "www.example.com"])
+
+    def test_a_post_turns_into_a_get_on_a_301_302_or_303_and_stays_on_a_307_or_308(self):
+        for status, method, body in ((301, "GET", None), (302, "GET", None),
+                                     (303, "GET", None), (307, "POST", b'{"a":1}'),
+                                     (308, "POST", b'{"a":1}')):
+            with self.subTest(status=status):
+                self.seen.clear()
+                routes = {"api.example.com/a": _net.reply(status, headers={"Location": "/b"}),
+                          "api.example.com/b": _net.reply(200, json={})}
+                self.hopped(routes, method="POST", body={"a": 1})
+                second = self.seen[1]
+                self.assertEqual((second.method, second.content), (method, body))
+                if method == "GET":
+                    self.assertNotIn("content-type", second.headers)
+                    self.assertNotIn("content-length", second.headers)
+
+    def test_a_redirect_off_the_web_is_refused(self):
+        routes = {"api.example.com/a": _net.reply(302, headers={"Location": "file:///etc/hosts"})}
+        with self.assertRaisesRegex(NetworkError, "redirected off the web"):
+            self.hopped(routes)
+        self.assertEqual(len(self.seen), 1)
+
+
 class _Loopback(http.server.BaseHTTPRequestHandler):
     """A server on 127.0.0.1 that keeps each request it got, as it came over the socket."""
 

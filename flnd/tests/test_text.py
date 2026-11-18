@@ -1,5 +1,6 @@
-"""`flnkit.text`: `redact`, `size`, `duration`, `count` and `filename`."""
+"""`flnkit.text`: `redact`, `size`, `duration`, `count`, `filename` and `fill`."""
 
+import datetime
 import unittest
 
 from flnkit import text as _text
@@ -68,6 +69,36 @@ class TextTest(unittest.TestCase):
         self.assertEqual(_text.filename("é" * 10, max_bytes=5), "éé")
         with self.assertRaises(TypeError):
             _text.filename("a", "b")
+
+
+class FormatsTest(unittest.TestCase):
+    """The templates rule: a missing or empty field is "", and the separator it leaves is dropped."""
+
+    def test_an_empty_field_and_its_separator_are_dropped(self):
+        rows = [
+            ("{category}/{album}", {"category": "posts"}, "posts"),
+            ("{category}/{album}", {"category": "highlights", "album": "Trip"}, "highlights/Trip"),
+            ("{category}/{album}", {}, ""),
+            ("{date}_{post}{index}", {"post": "C1abc", "date": None, "index": ""}, "C1abc"),
+            ("{date}_{post}{index}", {"post": "C1abc", "date": datetime.date(2026, 1, 2), "index": "_1"},
+             "2026-01-02_C1abc_1"),
+            ("{post}_{idx}", {"post": "71"}, "71"),
+            ("{a} - {b}", {"a": "x"}, "x"),
+            ("{num:02d}", {"num": 0}, "00"),
+            ("{date:%Y}/{post}", {"post": "9", "date": datetime.date(2026, 1, 2)}, "2026/9"),
+        ]
+        for template, fields, expected in rows:
+            with self.subTest(template=template, fields=fields):
+                self.assertEqual(_text.fill(template, fields), expected)
+
+    def test_a_values_own_separators_are_kept(self):
+        self.assertEqual(_text.fill("{title}{index}", {"title": "a_", "index": ""}, safe=False), "a_")
+
+    def test_every_part_goes_through_a_file_name(self):
+        self.assertEqual(_text.fill("{author}/{post} {title}", {"author": "../a/b", "post": 7, "title": "x:y"}),
+                         "a_b/7_x_y")
+        self.assertEqual(_text.fill("{chat}:{post}", {"chat": "-100", "post": "5"}, safe=False), "-100:5")
+        self.assertEqual(_text.fill("{chat}:{post}", {"post": "5"}, safe=False), "5")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from flnd.plugin import (
     Ctx,
     Error,
     File,
+    Hidden,
     Login,
     LoginError,
     NetworkError,
@@ -26,15 +27,10 @@ from flnd.plugin import (
     Part,
     Plugin,
     Post,
-    SourceError,
     Target,
     UsageError,
     route,
 )
-
-# flnd.plugin has no `Hidden` yet ("it exists, but this account can't see it"); SourceError
-# stands in for it.
-Hidden = SourceError
 
 TELEGRAM_WEB = "https://web.telegram.org/"
 # Telegram's production data centers, as every client ships them, and the port Telethon uses.

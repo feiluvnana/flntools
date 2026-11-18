@@ -364,7 +364,8 @@ Windows, `--parent-window`), and it refuses any other origin.
   `ls`, `login`, `logout`, `unfollow`, `sources` and `check` write their rows the same way. An
   error that ends a command is a line too, `{"type": "Error", "error": {"class", "message",
   "hint"}}`, besides its text on standard error. So every line on standard output is one JSON
-  object with a `type`.
+  object with a `type`. A target in an event or a row is `{"text": "ins:example_user",
+  "kind": "user"}`: its text as written, and the route that reads it.
 
 The end of a run prints a summary on standard output, then each failure on standard error,
 at most 10, with its message and its hint:

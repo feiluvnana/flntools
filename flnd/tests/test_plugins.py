@@ -41,7 +41,7 @@ from flnd.engine import crawl as job
 from flnd.engine import manager as _manager
 from flnd.engine import plugins as _plugins
 from flnd.engine.resolve import Manifest, resolve
-from flnd.errors import SourceError, UsageError
+from flnd.errors import PluginError, UsageError
 from flnd.sources import SOURCES, _find
 from flnkit import clock
 from flnkit import net as _net
@@ -138,7 +138,7 @@ class DiscoveryTest(PluginCase):
     def test_a_link_no_built_in_reads_imports_the_plugins(self):
         self.write("exm.py", plugin("exm"))
         [found] = self.fl._resolve(["https://exm.example/example_user"])
-        self.assertEqual((found.source, found.kind, found.value), ("exm", "user", "example_user"))
+        self.assertEqual((found.plugin, found.kind, found.value), ("exm", "user", "example_user"))
 
     def test_a_package_plugin_imports_its_own_modules(self):
         self.write("exp/__init__.py", "from .site import Example\n")
@@ -152,7 +152,7 @@ class DiscoveryTest(PluginCase):
         sys.modules["flnd_example"] = module
         point = metadata.EntryPoint("exe", "flnd_example:Example", _plugins.GROUP)
         with mock.patch.object(metadata, "entry_points", return_value=[point]):
-            self.assertEqual(self.fl._resolve(["exe:example_user"])[0].source, "exe")
+            self.assertEqual(self.fl._resolve(["exe:example_user"])[0].plugin, "exe")
             row = self.rows()["exe"]
         self.assertEqual((row.origin, row.where, row.api), ("package", "flnd_example:Example", 1))
 
@@ -211,7 +211,7 @@ class ContainmentTest(PluginCase):
         """Why a plugin is disabled, after checking the others still work."""
         rows = self.rows()
         self.assertFalse(rows["exm"].disabled)
-        self.assertEqual(self.fl._resolve(["exm:example_user"])[0].source, "exm")
+        self.assertEqual(self.fl._resolve(["exm:example_user"])[0].plugin, "exm")
         return rows[code].disabled
 
     def test_a_syntax_error_disables_that_plugin_alone(self):
@@ -267,7 +267,7 @@ class ContainmentTest(PluginCase):
         self.assertEqual(run.report.saved, 1)
         [event] = failed
         self.assertEqual(str(event.target), "exm:broken")
-        self.assertIsInstance(event.error, flnd.SourceError)
+        self.assertIsInstance(event.error, flnd.PluginError)
         self.assertEqual(str(event.error), "unexpected KeyError: 'id'")
         self.assertIn(f"a bug in the plugin exm ({self.folder / 'exm.py'})", event.error.hint)
 
@@ -481,15 +481,15 @@ class InstallTest(ManagerCase):
         changed = "its code is .* once it has run"
         cases = {
             "a code that climbs, after the class": (lambda: recoded("src/c1.py", "../../evil"),
-                                                    SourceError, changed),
+                                                    PluginError, changed),
             "a code in capitals, after the class": (lambda: recoded("src/c2.py", "EXM"),
-                                                    SourceError, changed),
+                                                    PluginError, changed),
             "an absolute code, after the class": (
-                lambda: recoded("src/pv/__init__.py", str(victim.parent)).parent, SourceError,
+                lambda: recoded("src/pv/__init__.py", str(victim.parent)).parent, PluginError,
                 changed),
-            "a lying code": (lambda: lying("src/c3.py", "../../evil"), SourceError, changed),
+            "a lying code": (lambda: lying("src/c3.py", "../../evil"), PluginError, changed),
             "a lying code, in a package": (
-                lambda: lying("src/pz/__init__.py", "/../../src/victim").parent, SourceError,
+                lambda: lying("src/pz/__init__.py", "/../../src/victim").parent, PluginError,
                 changed),
             "a package holding a pipe": (lambda: fifo("src/ps/pipe"), UsageError,
                                          "holds .*ps/pipe, a special file"),
@@ -514,8 +514,8 @@ class InstallTest(ManagerCase):
             "neither a file nor a package": (lambda: self.write("src/notes.txt", "x"),
                                              UsageError, "neither"),
             "a code that climbs": (lambda: self.write("src/up.py", code="../../up"),
-                                   SourceError, r"src/up\.py, line 7: Example\.code"),
-            "two plugins": (lambda: self.write("src/two.py", two), SourceError,
+                                   PluginError, r"src/up\.py, line 7: Example\.code"),
+            "two plugins": (lambda: self.write("src/two.py", two), PluginError,
                             "defines Example, Other"),
         }
         for path in ("src/pc", "src/ph", "src/pl", "src/pu", "src/ps"):
@@ -543,11 +543,11 @@ class InstallTest(ManagerCase):
         }
         for label, text in cases.items():
             with self.subTest(label):
-                with self.assertRaisesRegex(SourceError, "(?i)api"):
+                with self.assertRaisesRegex(PluginError, "(?i)api"):
                     self.manager.install(self.write("src/exm.py", text))
                 self.assertFalse(self.imported())
         # Set after the class is made: it runs, but its entry never says api 3.
-        with self.assertRaisesRegex(SourceError, "(?i)api"):
+        with self.assertRaisesRegex(PluginError, "(?i)api"):
             self.manager.install(self.write("src/exm.py", self.plugin() + "\nExample.api = 3\n"))
         self.assertFalse(self.folder.exists())
 
@@ -684,12 +684,12 @@ class LoadTest(ManagerCase):
                 self.write("plugins/exm.py", text)
                 self.imported()
                 manager = self.fresh()
-                with self.assertRaises(SourceError) as caught:
+                with self.assertRaises(PluginError) as caught:
                     manager.load("exm")
                 self.assertIn(f"written for plugin API {api}", str(caught.exception))
                 self.assertEqual(caught.exception.hint, hint)
                 self.assertEqual(manager.disabled["exm"], f"{caught.exception.__cause__}; {hint}")
-                with self.assertRaises(SourceError):
+                with self.assertRaises(PluginError):
                     self.manager.install(self.write("src/exm.py", text))
                 self.assertFalse(self.imported())
 
@@ -710,7 +710,7 @@ class LoadTest(ManagerCase):
                 self.write("plugins/plugins.json", json.dumps(
                     {"version": 1, "plugins": {code: {"file": name, "api": 2}}}))
                 manager = self.fresh()
-                with self.assertRaises(SourceError):
+                with self.assertRaises(PluginError):
                     manager.load(code)
                 self.assertEqual(manager.disabled[code], said)
 
@@ -733,7 +733,7 @@ class LoadTest(ManagerCase):
         self.manager.install(self.write("src/exm.py"))
         before = self.fresh().manifest["plugins"]["exm"]
         self.write("plugins/exm.py", code="zzz")
-        with self.assertRaisesRegex(SourceError, "'zzz'"):
+        with self.assertRaisesRegex(PluginError, "'zzz'"):
             self.fresh().load("exm")
         self.assertEqual(self.fresh().manifest["plugins"]["exm"], before)
 
@@ -751,7 +751,7 @@ class LoadTest(ManagerCase):
             self.write("plugins/plugins.json", json.dumps(
                 {"version": 1, "plugins": {code: entry}}))
             self.imported()
-            with self.subTest(label), self.assertRaisesRegex(SourceError, "link|not exm"):
+            with self.subTest(label), self.assertRaisesRegex(PluginError, "link|not exm"):
                 self.fresh().load(code)
             self.assertFalse(self.imported(), label)
 

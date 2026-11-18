@@ -150,11 +150,11 @@ def categories_by_source(
         UsageError: `--only` names a category no source here has, or is given for a single
             post.
     """
-    used = list(dict.fromkeys(sources[target.source] for target in targets))
+    used = list(dict.fromkeys(sources[target.plugin] for target in targets))
     used = used or list(sources.values())
     if categories is None:
         return {source.code: None for source in used}
-    singles = [t for t in targets if t.kind in sources[t.source].single_kinds]
+    singles = [t for t in targets if _single(sources[t.plugin], t.kind)]
     if singles:
         raise UsageError(
             f"--only applies to profiles and chats; {singles[0]} is one post, downloaded whole: "
@@ -167,6 +167,12 @@ def categories_by_source(
     if problem := unknown(plain, used):
         raise UsageError(problem)
     return {source.code: _names(source, plain, scoped) for source in used}
+
+
+def _single(source: Any, kind: str) -> bool:
+    """Whether `kind` reads posts itself, with no categories for `--only` to choose from."""
+    route = next((known for known in source.routes if known.kind == kind), None)
+    return route is not None and not route.categories and not route.discovers
 
 
 def unknown(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None:
@@ -334,7 +340,7 @@ def _validate_from(
     if routes:
         # A search's targets are its source's other routes', so it takes their categories.
         known = {cat for target, route in routes for cat in (
-            by_code[target.source].categories if route.discovers else _names_of(route)
+            by_code[target.plugin].categories if route.discovers else _names_of(route)
         )}
     else:
         known = {cat for src in by_code.values() for cat in src.categories}
@@ -383,7 +389,7 @@ def _target_routes(
     """
     pairs: list[tuple[Target, Any]] = []
     for target in targets:
-        source = by_code.get(target.source)
+        source = by_code.get(target.plugin)
         if source is None:
             continue
         route = next((r for r in source.routes if r.kind == target.kind), None)

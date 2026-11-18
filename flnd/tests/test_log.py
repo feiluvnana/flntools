@@ -131,7 +131,7 @@ class JournalTest(unittest.TestCase):
         saved, failed = map(json.loads, self.journal_path.read_text("utf-8").splitlines())
         self.assertEqual(saved["type"], "Saved")
         self.assertEqual(saved["path"], "media/9001.jpg")
-        self.assertEqual(saved["target"]["value"], "example_user")
+        self.assertEqual(saved["target"], {"text": "ins:example_user", "kind": "user"})
         self.assertEqual(failed["error"], {
             "class": "LoginError", "message": "not logged in",
             "hint": "run flnd login ins chrome",

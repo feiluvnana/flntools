@@ -36,8 +36,8 @@ from flnd.errors import (
     LoginError,
     NetworkError,
     NotFound,
+    PluginError,
     SiteError,
-    SourceError,
     Stopped,
     ToolError,
     UsageError,
@@ -58,7 +58,7 @@ SITE = "https://example.com"
 TOKEN = "s3cr3t-token-value"
 PASSWORD = "hunter2-example"
 ALL = (Error, UsageError, LoginError, SiteError, Blocked, NotFound, Changed, NetworkError,
-       DiskError, ToolError, SourceError)
+       DiskError, ToolError, PluginError)
 
 
 class HttpCase(unittest.TestCase):
@@ -179,7 +179,7 @@ class ClassesTest(HttpCase):
                          "install flnd-no-such-tool-example, or put it on PATH")
 
     def test_source_error(self):
-        with self.assertRaisesRegex(SourceError, "other.example"):
+        with self.assertRaisesRegex(PluginError, "other.example"):
             class Outside(Source):
                 code, name, domains = "out", "Outside", ("aaa.example",)
                 api = 1
@@ -188,11 +188,11 @@ class ClassesTest(HttpCase):
                 @target("other.example/{user}")
                 def user(self, site, user): ...
 
-        with self.assertRaises(SourceError):
+        with self.assertRaises(PluginError):
             File([])
-        # An unexpected error in a listing is a bug in the source: a SourceError naming it.
+        # An unexpected error in a listing is a bug in the source: a PluginError naming it.
         made = classify(KeyError("id"), target="aaa:example_user")
-        self.assertIsInstance(made, SourceError)
+        self.assertIsInstance(made, PluginError)
         self.assertEqual((str(made), made.target),
                          ("unexpected KeyError: 'id'", "aaa:example_user"))
         self.assertIsInstance(made.__cause__, KeyError)
@@ -293,7 +293,7 @@ class PolicyEngineTest(EngineCase):
         report = self.report(make_source("aaa", lambda site: dig({"a": 1}, "a[")),
                              targets=["aaa:example_user"])
         error = report.targets[0].error
-        self.assertIsInstance(error, SourceError)
+        self.assertIsInstance(error, PluginError)
         self.assertIn("dig: can't read", str(error))
 
     def test_a_file_that_fails_fails_alone(self):
@@ -419,8 +419,8 @@ class SplitTest(unittest.TestCase):
         for name in KIT:
             with self.subTest(name):
                 self.assertEqual(getattr(kit, name).__module__, "flnkit.errors")
-        self.assertEqual(SourceError.__module__, "flnd.errors")
-        self.assertTrue(issubclass(SourceError, kit.Error))
+        self.assertEqual(PluginError.__module__, "flnd.errors")
+        self.assertTrue(issubclass(PluginError, kit.Error))
 
     def test_except_flnd_error_catches_what_flnkit_raises(self):
         with self.assertRaises(flnd.Error):
@@ -440,7 +440,7 @@ class SplitTest(unittest.TestCase):
 
         cases = [(kit.Stopped(), 130), (kit.UsageError("x"), 2), (kit.LoginError("x"), 3),
                  (Refused("x"), 3), (kit.DiskError("x"), 4), (kit.ToolError("x"), 4),
-                 (SourceError("x"), 4), (kit.Blocked("x"), 1), (Own("x"), 1),
+                 (PluginError("x"), 4), (kit.Blocked("x"), 1), (Own("x"), 1),
                  (LoginError("x"), 4), (ValueError("x"), 4)]
         for error, code in cases:
             with self.subTest(type(error).__name__):
@@ -464,7 +464,7 @@ class SplitTest(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             dig({"a": 1}, "a[")
         made = classify(caught.exception, target="aaa:example_user")
-        self.assertIsInstance(made, SourceError)
+        self.assertIsInstance(made, PluginError)
         self.assertNotIsInstance(made, Changed)
         self.assertIn("dig: can't read", str(made))
 

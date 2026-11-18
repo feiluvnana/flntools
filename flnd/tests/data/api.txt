@@ -29,7 +29,7 @@ flnd.Error.hint: attribute
 flnd.Error.retryable: attribute
 flnd.Error.target: attribute
 flnd.Event: Union
-flnd.Failed(target: flnd.source.Target, error: flnkit.errors.Error, post: str = '', path: pathlib.Path | None = None)
+flnd.Failed(target: flnd.plugin.Target, error: flnkit.errors.Error, post: str = '', path: pathlib.Path | None = None)
 flnd.Failed.error: attribute -> Error
 flnd.Failed.path: attribute -> Path | None
 flnd.Failed.post: attribute -> str
@@ -66,6 +66,12 @@ flnd.Flnd.status: property -> Status | None
 flnd.Flnd.sync(targets: str | Target | Sequence[str | Target] = ()) -> Run
 flnd.Flnd.targets(*, source: str | None = None) -> list[Tracked]
 flnd.Flnd.unfollow(targets: str | Target | Sequence[str | Target]) -> list[Target]
+flnd.Hidden(flnd.SiteError)
+flnd.Hidden.hint: attribute
+flnd.Hidden.response: attribute
+flnd.Hidden.retryable: attribute
+flnd.Hidden.status: attribute
+flnd.Hidden.target: attribute
 flnd.HoldState(plugin: str, account: str | None, bucket: str, until: float, reason: str, count: int = 1)
 flnd.HoldState.account: attribute -> str | None
 flnd.HoldState.bucket: attribute -> str
@@ -112,11 +118,15 @@ flnd.Phase.DOWNLOADING: attribute -> Phase
 flnd.Phase.FAILED: attribute -> Phase
 flnd.Phase.LISTING: attribute -> Phase
 flnd.Phase.WAITING: attribute -> Phase
-flnd.Planned(target: flnd.source.Target, post: str, path: pathlib.Path | None, state: str)
+flnd.Planned(target: flnd.plugin.Target, post: str, path: pathlib.Path | None, state: str)
 flnd.Planned.path: attribute -> Path | None
 flnd.Planned.post: attribute -> str
 flnd.Planned.state: attribute -> str
 flnd.Planned.target: attribute -> Target
+flnd.PluginError(flnd.Error)
+flnd.PluginError.hint: attribute
+flnd.PluginError.retryable: attribute
+flnd.PluginError.target: attribute
 flnd.Record(key: str, path: pathlib.Path, size: int, post: str = '', category: str = '', date: datetime.date | None = None, at: str = '')
 flnd.Record.at: attribute -> str
 flnd.Record.category: attribute -> str
@@ -145,7 +155,7 @@ flnd.Run.state: property -> State
 flnd.Run.stop() -> None
 flnd.Run.suspend() -> None
 flnd.Run.wait() -> Report
-flnd.Saved(target: flnd.source.Target, category: str, post: str, path: pathlib.Path, date: datetime.date | None, size: int, retried: bool = False)
+flnd.Saved(target: flnd.plugin.Target, category: str, post: str, path: pathlib.Path, date: datetime.date | None, size: int, retried: bool = False)
 flnd.Saved.category: attribute -> str
 flnd.Saved.date: attribute -> datetime.date | None
 flnd.Saved.path: attribute -> Path
@@ -159,16 +169,12 @@ flnd.SiteError.response: attribute
 flnd.SiteError.retryable: attribute
 flnd.SiteError.status: attribute
 flnd.SiteError.target: attribute
-flnd.Skipped(target: flnd.source.Target, category: str, post: str, path: pathlib.Path | None = None, reason: str = 'saved')
+flnd.Skipped(target: flnd.plugin.Target, category: str, post: str, path: pathlib.Path | None = None, reason: str = 'saved')
 flnd.Skipped.category: attribute -> str
 flnd.Skipped.path: attribute -> Path | None
 flnd.Skipped.post: attribute -> str
 flnd.Skipped.reason: attribute -> str
 flnd.Skipped.target: attribute -> Target
-flnd.SourceError(flnd.Error)
-flnd.SourceError.hint: attribute
-flnd.SourceError.retryable: attribute
-flnd.SourceError.target: attribute
 flnd.State(version: int = 0, elapsed: float = 0.0, targets: tuple[flnd.engine.events.TargetState, ...] = (), files: tuple[flnd.engine.events.FileState, ...] = (), more: int = 0, holds: tuple[flnd.engine.events.HoldState, ...] = (), now: str = '', saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, speed: float = 0.0)
 flnd.State.bytes: attribute -> int
 flnd.State.elapsed: attribute -> float
@@ -191,9 +197,10 @@ flnd.Status.started: attribute -> str
 flnd.Stopped(KeyboardInterrupt)
 flnd.Target(text: str, *, kind: str = '')
 flnd.Target.kind: field -> str
-flnd.Target.query: field -> bool
-flnd.Target.source: field -> str
-flnd.Target.value: field -> str
+flnd.Target.plugin: property -> str
+flnd.Target.query: property -> bool
+flnd.Target.text: field -> str
+flnd.Target.value: property -> str
 flnd.TargetState(text: str, categories: tuple[str, ...], phase: flnd.engine.events.Phase, found: int = 0, saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, speed: float = 0.0)
 flnd.TargetState.bytes: attribute -> int
 flnd.TargetState.categories: attribute -> tuple[str, ...]
@@ -210,7 +217,7 @@ flnd.ToolError.hint: attribute
 flnd.ToolError.retryable: attribute
 flnd.ToolError.tail: attribute
 flnd.ToolError.target: attribute
-flnd.Tracked(target: flnd.source.Target, follow: bool = False, at: str = '', files: int = 0, size: int = 0, seen: int = 0, categories: dict[str, str] = <factory>, query: bool = False)
+flnd.Tracked(target: flnd.plugin.Target, follow: bool = False, at: str = '', files: int = 0, size: int = 0, seen: int = 0, categories: dict[str, str] = <factory>, query: bool = False)
 flnd.Tracked.at: attribute -> str
 flnd.Tracked.categories: attribute -> dict[str, str]
 flnd.Tracked.files: attribute -> int
@@ -225,6 +232,254 @@ flnd.UsageError.retryable: attribute
 flnd.UsageError.target: attribute
 flnd.__version__: str
 flnd.open(home: str | os.PathLike[str] | None = None, *, again: bool | None = None) -> Flnd
+flnd.plugin: module
+flnd.plugin.API: int
+flnd.plugin.Account(id: int, plugin: str, name: str, origin: str, at: str, is_default: bool = False, status: Literal['ok', 'held', 'expired'] = 'ok', held_until: str | None = None, expires: str | None = None)
+flnd.plugin.Account.at: field -> str
+flnd.plugin.Account.expires: field -> str | None
+flnd.plugin.Account.held_until: field -> str | None
+flnd.plugin.Account.id: field -> int
+flnd.plugin.Account.is_default: field -> bool
+flnd.plugin.Account.name: field -> str
+flnd.plugin.Account.origin: field -> str
+flnd.plugin.Account.plugin: field -> str
+flnd.plugin.Account.status: field -> Literal['ok', 'held', 'expired']
+flnd.plugin.Blocked(flnd.SiteError)
+flnd.plugin.Blocked.hint: attribute
+flnd.plugin.Blocked.response: attribute
+flnd.plugin.Blocked.retryable: attribute
+flnd.plugin.Blocked.status: attribute
+flnd.plugin.Blocked.target: attribute
+flnd.plugin.Blocked.wait: attribute
+flnd.plugin.Browser(*values)
+flnd.plugin.Browser.ANY: attribute -> Browser
+flnd.plugin.Browser.CHROME: attribute -> Browser
+flnd.plugin.Browser.NONE: attribute -> Browser
+flnd.plugin.Category(function: Callable[..., Any], *, own: bool = True, url: str | None = None, newest_first: bool = True, folder: str | None = None, key: str | None = None)
+flnd.plugin.Category.folder: attribute
+flnd.plugin.Category.function: attribute
+flnd.plugin.Category.key: attribute
+flnd.plugin.Category.link(profile: Mapping[str, Any]) -> str
+flnd.plugin.Category.name: attribute
+flnd.plugin.Category.newest_first: attribute
+flnd.plugin.Category.own: attribute
+flnd.plugin.Category.url: attribute
+flnd.plugin.Changed(flnd.SiteError)
+flnd.plugin.Changed.hint: attribute
+flnd.plugin.Changed.response: attribute
+flnd.plugin.Changed.retryable: attribute
+flnd.plugin.Changed.status: attribute
+flnd.plugin.Changed.target: attribute
+flnd.plugin.Clock(*args, **kwargs)
+flnd.plugin.Clock.day() -> datetime.date
+flnd.plugin.Clock.now() -> float
+flnd.plugin.Clock.wall() -> float
+flnd.plugin.Cookies(*names: str, url: str, required: bool = False)
+flnd.plugin.Cookies.check(ctx: Ctx) -> bool
+flnd.plugin.Cookies.methods: attribute -> ClassVar[tuple[str, ...]]
+flnd.plugin.Cookies.names: attribute
+flnd.plugin.Cookies.required: attribute
+flnd.plugin.Cookies.start(ctx: Ctx, method: str) -> None
+flnd.plugin.Cookies.url: attribute
+flnd.plugin.Cookies.whoami(ctx: Ctx) -> str | None
+flnd.plugin.Ctx(*args, **kwargs)
+flnd.plugin.Ctx.account: property -> Account | None
+flnd.plugin.Ctx.ask(message: str, *, secret: bool = False, description: str = '', choices: Sequence[str] = ()) -> str
+flnd.plugin.Ctx.call(fn: Callable[..., T], *args: Any) -> T
+flnd.plugin.Ctx.click(css: str, *, timeout: float = 10.0) -> None
+flnd.plugin.Ctx.cookies: property -> Mapping[str, str]
+flnd.plugin.Ctx.document() -> Document
+flnd.plugin.Ctx.extension(op: str, **args: Any) -> Any
+flnd.plugin.Ctx.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
+flnd.plugin.Ctx.fetch(request: str | Request, *, bucket: str | None = None, in_page: bool = False) -> Response
+flnd.plugin.Ctx.handoff(message: str, *, until: Callable[[], Awaitable[bool]], timeout: float | None = None) -> bool
+flnd.plugin.Ctx.hold(reason: str, *, seconds: float | None = None, bucket: str | None = None) -> None
+flnd.plugin.Ctx.load(url: str, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
+flnd.plugin.Ctx.log(level: str, message: str, **fields: Any) -> None
+flnd.plugin.Ctx.open(url: str) -> Landed
+flnd.plugin.Ctx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any]] = 'cursor', bucket: str | None = None, in_page: bool = False) -> AsyncIterator[Response]
+flnd.plugin.Ctx.pause(seconds: float, reason: str) -> None
+flnd.plugin.Ctx.secrets: property -> MutableMapping[str, str]
+flnd.plugin.Ctx.settings: property -> Settings
+flnd.plugin.Ctx.state: property -> MutableMapping[str, Any]
+flnd.plugin.Ctx.storage(origin: str) -> Mapping[str, str]
+flnd.plugin.Ctx.target: property -> Target
+flnd.plugin.Ctx.time: property -> Clock
+flnd.plugin.Ctx.warm(urls: Sequence[str]) -> None
+flnd.plugin.Ctx.when: property -> Range
+flnd.plugin.DateLike: Union
+flnd.plugin.Document(tree: LexborHTMLParser)
+flnd.plugin.Document.attr(name: str) -> str | None
+flnd.plugin.Document.blocks(contains: str = '') -> list[Any]
+flnd.plugin.Document.css(query: str) -> list[Element]
+flnd.plugin.Document.first(query: str) -> Element | None
+flnd.plugin.Document.script(id: str) -> Any
+flnd.plugin.Document.tag: property -> str
+flnd.plugin.Document.text: property -> str
+flnd.plugin.Document.visible: property -> str
+flnd.plugin.Element(node: LexborNode)
+flnd.plugin.Element.attr(name: str) -> str | None
+flnd.plugin.Element.css(query: str) -> list[Element]
+flnd.plugin.Element.first(query: str) -> Element | None
+flnd.plugin.Element.tag: property -> str
+flnd.plugin.Element.text: property -> str
+flnd.plugin.Error(Exception)
+flnd.plugin.Error.hint: attribute
+flnd.plugin.Error.retryable: attribute
+flnd.plugin.Error.target: attribute
+flnd.plugin.Fetch: _CallableGenericAlias
+flnd.plugin.File(url: str | None = None, *, mirrors: Sequence[str] = (), fetch: Fetch | None = None, audio: str | None = None, name: str | None = None, size: int | None = None, password: str | None = None, ranged: bool = False)
+flnd.plugin.File.audio: field -> str | None
+flnd.plugin.File.content: field -> str | None
+flnd.plugin.File.dash(manifest: str | None, *, height: int | None = None) -> File | None
+flnd.plugin.File.fetch: field -> Fetch | None
+flnd.plugin.File.headers: field -> Mapping[str, str] | None
+flnd.plugin.File.mirrors: field -> tuple[str, ...]
+flnd.plugin.File.name: field -> str | None
+flnd.plugin.File.password: field -> str | None
+flnd.plugin.File.playlist: field -> str | None
+flnd.plugin.File.ranged: field -> bool
+flnd.plugin.File.size: field -> int | None
+flnd.plugin.File.stream(playlist: str, *, headers: Mapping[str, str] | None = None) -> File
+flnd.plugin.File.text(name: str, text: str) -> File
+flnd.plugin.File.url: field -> str | None
+flnd.plugin.Hidden(flnd.SiteError)
+flnd.plugin.Hidden.hint: attribute
+flnd.plugin.Hidden.response: attribute
+flnd.plugin.Hidden.retryable: attribute
+flnd.plugin.Hidden.status: attribute
+flnd.plugin.Hidden.target: attribute
+flnd.plugin.Landed(url: str, status: int)
+flnd.plugin.Landed.status: field -> int
+flnd.plugin.Landed.url: field -> str
+flnd.plugin.Login(*, required: bool = True)
+flnd.plugin.Login.check(ctx: Ctx) -> bool
+flnd.plugin.Login.methods: attribute -> ClassVar[tuple[str, ...]]
+flnd.plugin.Login.names: attribute -> tuple[str, ...]
+flnd.plugin.Login.required: attribute
+flnd.plugin.Login.start(ctx: Ctx, method: str) -> None
+flnd.plugin.Login.url: attribute -> str
+flnd.plugin.Login.whoami(ctx: Ctx) -> str | None
+flnd.plugin.LoginError(flnd.Error)
+flnd.plugin.LoginError.hint: attribute
+flnd.plugin.LoginError.retryable: attribute
+flnd.plugin.LoginError.target: attribute
+flnd.plugin.NetworkError(flnd.Error)
+flnd.plugin.NetworkError.hint: attribute
+flnd.plugin.NetworkError.retryable: attribute
+flnd.plugin.NetworkError.target: attribute
+flnd.plugin.NotFound(flnd.SiteError)
+flnd.plugin.NotFound.hint: attribute
+flnd.plugin.NotFound.response: attribute
+flnd.plugin.NotFound.retryable: attribute
+flnd.plugin.NotFound.status: attribute
+flnd.plugin.NotFound.target: attribute
+flnd.plugin.Part(sink: Callable[[bytes], Awaitable[None]], *, offset: int = 0, end: int | None = None, sized: Callable[[int], None] | None = None)
+flnd.plugin.Part.end: attribute
+flnd.plugin.Part.offset: attribute
+flnd.plugin.Part.total(size: int) -> None
+flnd.plugin.Part.write(data: bytes) -> None
+flnd.plugin.Plugin()
+flnd.plugin.Plugin.Settings()
+flnd.plugin.Plugin.blocked(response: Response) -> float | None
+flnd.plugin.Plugin.browser: attribute -> ClassVar[Browser]
+flnd.plugin.Plugin.categories: attribute -> ClassVar[tuple[str, ...]]
+flnd.plugin.Plugin.connect(ctx: Ctx) -> AbstractAsyncContextManager[None]
+flnd.plugin.Plugin.date(ctx: Ctx, post: Post) -> datetime.date | None
+flnd.plugin.Plugin.domains: attribute -> ClassVar[tuple[str, ...]]
+flnd.plugin.Plugin.fields: attribute -> ClassVar[tuple[str, ...]]
+flnd.plugin.Plugin.filename: attribute -> ClassVar[str]
+flnd.plugin.Plugin.folder: attribute -> ClassVar[str]
+flnd.plugin.Plugin.forms: attribute -> ClassVar[tuple[str, ...]]
+flnd.plugin.Plugin.key: attribute -> ClassVar[str]
+flnd.plugin.Plugin.limits: attribute -> ClassVar[Mapping[str, int]]
+flnd.plugin.Plugin.login: attribute -> ClassVar[Login | None]
+flnd.plugin.Plugin.pace: attribute -> ClassVar[float]
+flnd.plugin.Plugin.refresh(ctx: Ctx, post: Post) -> Post
+flnd.plugin.Plugin.resolve(text: str) -> Target | None
+flnd.plugin.Plugin.routes: attribute -> ClassVar[tuple[Route, ...]]
+flnd.plugin.Plugin.sign(request: Request, cookies: Mapping[str, str]) -> Request
+flnd.plugin.Plugin.stealth: attribute -> ClassVar[bool]
+flnd.plugin.Plugin.unsupported: attribute -> ClassVar[Mapping[str, str]]
+flnd.plugin.Plugin.user_agent: attribute -> ClassVar[str | None]
+flnd.plugin.Plugin.walls: attribute -> ClassVar[tuple[str, ...]]
+flnd.plugin.PluginError(flnd.Error)
+flnd.plugin.PluginError.hint: attribute
+flnd.plugin.PluginError.retryable: attribute
+flnd.plugin.PluginError.target: attribute
+flnd.plugin.Post(id: str | int, files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]] = (), *, date: DateLike = None, listed: DateLike = None, headers: Mapping[str, str] | None = None, pinned: bool = False, **fields: Any)
+flnd.plugin.Post.date: field -> DateLike
+flnd.plugin.Post.fields: field -> Mapping[str, Any]
+flnd.plugin.Post.files: field -> tuple[File, ...] | Callable[[], Awaitable[Sequence[File]]]
+flnd.plugin.Post.headers: field -> Mapping[str, str] | None
+flnd.plugin.Post.id: field -> str
+flnd.plugin.Post.lazy: property -> bool
+flnd.plugin.Post.listed: property -> DateLike
+flnd.plugin.Post.pinned: field -> bool
+flnd.plugin.Post.replace(**changes: Any) -> Post
+flnd.plugin.Range(since: datetime.date | None = None, until: datetime.date | None = None)
+flnd.plugin.Range.since: field -> datetime.date | None
+flnd.plugin.Range.until: field -> datetime.date | None
+flnd.plugin.Request(url: str, *, method: str = 'GET', params: Mapping[str, Any] | None = None, body: Any = None, headers: Mapping[str, str] | None = None, check: bool = True)
+flnd.plugin.Request.body: field -> Any
+flnd.plugin.Request.check: field -> bool
+flnd.plugin.Request.headers: field -> Mapping[str, str] | None
+flnd.plugin.Request.method: field -> str
+flnd.plugin.Request.params: field -> Mapping[str, Any] | None
+flnd.plugin.Request.replace(**changes: Any) -> Request
+flnd.plugin.Request.url: field -> str
+flnd.plugin.Response(*args, **kwargs)
+flnd.plugin.Response.content: property -> bytes
+flnd.plugin.Response.headers: property -> Mapping[str, str]
+flnd.plugin.Response.html: property -> Document
+flnd.plugin.Response.json: property -> Any
+flnd.plugin.Response.ok: property -> bool
+flnd.plugin.Response.status: property -> int
+flnd.plugin.Response.text: property -> str
+flnd.plugin.Response.url: property -> str
+flnd.plugin.Route(function: Callable[..., Any], patterns: tuple[str | tuple[str, str], ...], *, newest_first: bool = True, single: bool = False, discovers: bool = False, folder: str | None = None, shown: str | None = None)
+flnd.plugin.Route.categories: property -> tuple[Category, ...]
+flnd.plugin.Route.category(function: Callable[..., Any] | None = None, /, *, own: bool = True, url: str | None = None, newest_first: bool | None = None, folder: str | None = None, key: str | None = None) -> Any
+flnd.plugin.Route.discovers: attribute
+flnd.plugin.Route.folder: attribute
+flnd.plugin.Route.forms(code: str) -> list[str]
+flnd.plugin.Route.function: attribute
+flnd.plugin.Route.is_query: attribute
+flnd.plugin.Route.kind: attribute
+flnd.plugin.Route.newest_first: attribute
+flnd.plugin.Route.patterns: attribute
+flnd.plugin.Route.shown: attribute
+flnd.plugin.Route.single: attribute
+flnd.plugin.Settings()
+flnd.plugin.SiteError(flnd.Error)
+flnd.plugin.SiteError.hint: attribute
+flnd.plugin.SiteError.response: attribute
+flnd.plugin.SiteError.retryable: attribute
+flnd.plugin.SiteError.status: attribute
+flnd.plugin.SiteError.target: attribute
+flnd.plugin.Stream(url: str, height: int = 0, width: int = 0, bitrate: int = 0, audio: str | None = None)
+flnd.plugin.Stream.audio: field -> str | None
+flnd.plugin.Stream.bitrate: field -> int
+flnd.plugin.Stream.height: field -> int
+flnd.plugin.Stream.url: field -> str
+flnd.plugin.Stream.width: field -> int
+flnd.plugin.Target(text: str, *, kind: str = '')
+flnd.plugin.Target.kind: field -> str
+flnd.plugin.Target.plugin: property -> str
+flnd.plugin.Target.query: property -> bool
+flnd.plugin.Target.text: field -> str
+flnd.plugin.Target.value: property -> str
+flnd.plugin.UsageError(flnd.Error)
+flnd.plugin.UsageError.hint: attribute
+flnd.plugin.UsageError.retryable: attribute
+flnd.plugin.UsageError.target: attribute
+flnd.plugin.best(streams: Sequence[Stream], *, height: int | None = None) -> Stream | None
+flnd.plugin.cookies(*names: str, url: str, required: bool = False) -> Cookies
+flnd.plugin.dig(data: Any, path: str) -> Any
+flnd.plugin.meta(document: Document) -> list[Any]
+flnd.plugin.numbered(n: int, *, suffix: str = '', width: int = 2) -> str
+flnd.plugin.page_info(path: str) -> Callable[[Any], tuple[bool, str | None] | None]
+flnd.plugin.route(*patterns: str | tuple[str, str], newest_first: bool = True, single: bool = False, discovers: bool = False, folder: str | None = None, shown: str | None = None) -> Callable[[Callable[..., Any]], Route]
 flnd.source: module
 flnd.source.API: int
 flnd.source.Blocked(flnd.SiteError)
@@ -289,6 +544,10 @@ flnd.source.NotFound.response: attribute
 flnd.source.NotFound.retryable: attribute
 flnd.source.NotFound.status: attribute
 flnd.source.NotFound.target: attribute
+flnd.source.PluginError(flnd.Error)
+flnd.source.PluginError.hint: attribute
+flnd.source.PluginError.retryable: attribute
+flnd.source.PluginError.target: attribute
 flnd.source.Post(id: str | int, files: Sequence[File] | Callable[[], Iterable[File]] = (), *, date: DateLike = None, headers: Mapping[str, str] | None = None, **fields: Any)
 flnd.source.Post.category: field -> str
 flnd.source.Post.date: field -> DateLike
@@ -374,15 +633,12 @@ flnd.source.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.stealth: attribute -> ClassVar[bool]
 flnd.source.Source.unsupported: attribute -> ClassVar[Mapping[str, str]]
 flnd.source.Source.user_agent: attribute -> ClassVar[str | None]
-flnd.source.SourceError(flnd.Error)
-flnd.source.SourceError.hint: attribute
-flnd.source.SourceError.retryable: attribute
-flnd.source.SourceError.target: attribute
 flnd.source.Target(text: str, *, kind: str = '')
 flnd.source.Target.kind: field -> str
-flnd.source.Target.query: field -> bool
-flnd.source.Target.source: field -> str
-flnd.source.Target.value: field -> str
+flnd.source.Target.plugin: property -> str
+flnd.source.Target.query: property -> bool
+flnd.source.Target.text: field -> str
+flnd.source.Target.value: property -> str
 flnd.source.UsageError(flnd.Error)
 flnd.source.UsageError.hint: attribute
 flnd.source.UsageError.retryable: attribute
@@ -422,6 +678,7 @@ flnd.testing.FakeCtx.state: property -> MutableMapping[str, Any]
 flnd.testing.FakeCtx.storage(origin: str) -> Mapping[str, str]
 flnd.testing.FakeCtx.target: property -> flnd.plugin.Target
 flnd.testing.FakeCtx.time: property -> flnd.plugin.Clock
+flnd.testing.FakeCtx.warm(urls: Sequence[str]) -> None
 flnd.testing.FakeCtx.when: property -> flnd.plugin.Range
 flnd.testing.FakePage(html: str = '', *, status: int = 200, url: str = '', feeds: Sequence[Sent | tuple[str, Any]] = ())
 flnd.testing.FakePage.feeds: field -> Sequence[Sent | tuple[str, Any]]

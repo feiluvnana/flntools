@@ -15,8 +15,8 @@ What it holds: the public names a script uses, and nothing else. `flnd.open(home
 (a `State`) says what it is doing now; `Report`, `Login`, `Record`, `Tracked`, `Status`,
 `Failure`, `Checked` and `Installed` are what the reads return; the errors are the one
 hierarchy of `flnd.errors`. A
-source is written against `flnd.source` instead (see the docs' guide to writing a source), and
-tested with `flnd.testing`.
+plugin is written against `flnd.plugin` instead (src/docs/writing-a-source explains
+it), and tested with `flnd.testing`.
 
 How it loads: every name is lazy. `import flnd` imports nothing but this file, and the first
 use of a name (`flnd.open`, `flnd.Saved`) imports the one module that defines it. The engine,
@@ -55,16 +55,17 @@ _HOMES = {
     "Status": "flnd.engine.events",
     "TargetState": "flnd.engine.events",
     "Tracked": "flnd.engine.events",
-    "Target": "flnd.source",
+    "Target": "flnd.plugin",
     "Blocked": "flnd.errors",
     "Changed": "flnd.errors",
     "DiskError": "flnd.errors",
     "Error": "flnd.errors",
+    "Hidden": "flnd.errors",
     "LoginError": "flnd.errors",
     "NetworkError": "flnd.errors",
     "NotFound": "flnd.errors",
+    "PluginError": "flnd.errors",
     "SiteError": "flnd.errors",
-    "SourceError": "flnd.errors",
     "Stopped": "flnd.errors",
     "ToolError": "flnd.errors",
     "UsageError": "flnd.errors",
@@ -74,9 +75,9 @@ _HOMES = {
 # the two agree.
 __all__ = [
     "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure",
-    "FileState", "Flnd", "HoldState", "Installed", "Login", "LoginError", "NetworkError",
-    "NotFound", "Phase", "Planned", "Record", "Report", "Run", "Saved", "SiteError",
-    "Skipped", "SourceError", "State", "Status", "Stopped", "Target", "TargetState",
+    "FileState", "Flnd", "Hidden", "HoldState", "Installed", "Login", "LoginError",
+    "NetworkError", "NotFound", "Phase", "Planned", "PluginError", "Record", "Report", "Run",
+    "Saved", "SiteError", "Skipped", "State", "Status", "Stopped", "Target", "TargetState",
     "ToolError", "Tracked", "UsageError", "__version__", "open",
 ]
 
@@ -108,16 +109,17 @@ if TYPE_CHECKING:
         Changed,
         DiskError,
         Error,
+        Hidden,
         LoginError,
         NetworkError,
         NotFound,
+        PluginError,
         SiteError,
-        SourceError,
         Stopped,
         ToolError,
         UsageError,
     )
-    from flnd.source import Target
+    from flnd.plugin import Target
 
 
 def __getattr__(name: str) -> Any:

@@ -18,15 +18,17 @@ import stat
 import subprocess
 import sys
 import threading
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
 import msgspec
 
+import flnd.plugin
 from flnd.engine import home, jobs
 from flnd.engine.events import BUSY, Failed, Saved, Skipped
 from flnd.engine.home import FILE_COLUMNS, FileRow, _file_values, now
@@ -42,11 +44,12 @@ from flnd.errors import (
     UsageError,
     classify,
 )
-from flnd.source import Fetch, File, Target
+from flnd.plugin import Target
+from flnd.source import Fetch, File
 from flnd.ui.log import ui
 from flnkit import clock, files, media, net, text
 
-__all__ = ["Item", "Saver", "Store"]
+__all__ = ["STEM", "Item", "Saver", "Store", "stem_extension", "typed"]
 
 T = TypeVar("T")
 
@@ -68,6 +71,9 @@ INSERT = (f"INSERT OR REPLACE INTO files ({', '.join(FILE_COLUMNS)}, sidecar)"
           f" VALUES ({', '.join('?' * (len(FILE_COLUMNS) + 1))})")
 # `exec`'s placeholders, filled in one pass, so a value holding `{post}` stays literal.
 PLACEHOLDER = re.compile(r"\{(path|target|post)\}")
+# The kind of an API 2 file named by a stem (5.3): its extension is what its bytes are, else
+# what its `Content-Type` names, else its URL's, else none; the planned name may hold the URL's.
+STEM = "stem"
 
 
 @dataclass(frozen=True)
@@ -282,6 +288,132 @@ class _Split:
         await saver.scheduler.run(job)
 
 
+class _Fetching:
+    """A `ranged` fetch file's segments while it transfers (`Saver._fetched`).
+
+    The file's own `FILE` job takes the segments one at a time (`take`); before each, while
+    the host's cap has a free place and nobody waits for it (`Scheduler.room`), one more `FILE`
+    job starts and takes segments too. A segment is taken when its transfer starts, so a job
+    still waiting for a place holds none, and the file's job waits for no other: the others
+    are waited for past it (`finish`). The part's sidecar keeps each segment, written by one
+    task after each `net.BUFFER` bytes and as a segment ends, so a later run resumes each.
+
+    Args:
+        saver: the run's save.
+        item: the file.
+        fetch: the plugin's `fetch`.
+        held: its part.
+        job: the file's own `FILE` job, whose host and target the others take.
+        plan: its segments.
+    """
+
+    def __init__(self, saver: Saver, item: Item, fetch: flnd.plugin.Fetch, held: files.Part,
+                 job: Job[Any], plan: jobs.Segments) -> None:
+        self.saver, self.item, self.fetch, self.held, self.job = saver, item, fetch, held, job
+        self.plan = plan
+        self.todo: deque[jobs.Segment] = deque(part for part in plan.parts if part.left)
+        self._helpers: list[asyncio.Task[Any]] = []
+        self._keeper: asyncio.Task[None] | None = None
+        self._dirty = False
+
+    async def take(self) -> None:
+        """Take segments in this transfer until none is left; one more job starts before each
+        while the host has room."""
+        moved = _Bytes(self.job, self.saver.scheduler.slowest)
+        moved.flight = self.saver._fly(self.item)
+        while self.todo:
+            if (len(self.todo) > 1 and len(self._helpers) + 1 < len(self.plan.parts)
+                    and self.saver.scheduler.room(self.job.host)):
+                self._helpers.append(asyncio.ensure_future(_kept(self._helper())))
+            await self._next(moved)
+
+    async def _helper(self) -> None:
+        """One more `FILE` job of the file's host, taking segments while any is left."""
+        saver = self.saver
+
+        async def work() -> None:
+            moved = _Bytes(own, saver.scheduler.slowest)
+            moved.flight = saver._fly(self.item)
+            while self.todo:
+                await self._next(moved)
+
+        own = saver._file_job(self.item, self.job.plugin, self.fetch, work)
+        own.host, own.bucket, own.size = self.job.host, self.job.host, None
+        await saver.scheduler.run(own)
+
+    async def _next(self, moved: _Bytes) -> None:
+        """Fetch the next segment left; one that fails goes back for another try."""
+        part = self.todo.popleft()
+        try:
+            await self._segment(part, moved)
+        except BaseException:
+            self.todo.appendleft(part)
+            raise
+
+    async def _segment(self, part: jobs.Segment, moved: _Bytes) -> None:
+        stop, write = self.saver.stop, self.saver._writer(self.item.dest)
+        unkept = 0
+
+        async def sink(data: bytes) -> None:
+            nonlocal unkept
+            if stop is not None and stop.is_set():
+                raise KeyboardInterrupt
+            if not data:
+                return
+            await write(self.held.write_at, part.at, data)
+            part.written += len(data)
+            moved.advance(len(data))
+            unkept += len(data)
+            if unkept >= net.BUFFER:
+                unkept = 0
+                await self.keep()
+
+        await self.fetch(flnd.plugin.Part(sink, offset=part.at, end=part.end))
+        await self.keep()
+        if part.left:
+            raise NetworkError(f"{self.item.dest.name}: a part stopped {part.left} bytes short",
+                               retryable=True)
+
+    async def keep(self) -> None:
+        """Wait until the sidecar holds the segments as they are now. One task writes it, a
+        snapshot at a time, as `_Split._keep` does."""
+        self.held.note(**self.plan.meta)
+        self._dirty = True
+        if self._keeper is None or self._keeper.done():
+            self._keeper = asyncio.ensure_future(self._keeping())
+        await asyncio.shield(self._keeper)
+
+    async def _keeping(self) -> None:
+        while self._dirty:
+            self._dirty = False
+            await self.saver._call(self.held.keep, dict(self.held.meta))
+
+    async def finish(self) -> None:
+        """Wait for the other jobs; the first failure is raised. Once every segment is in, the
+        sidecar is dropped as the part lands.
+
+        Raises:
+            Error: a segment failed after its job's tries.
+            NetworkError: a segment was left, its job given up.
+        """
+        for task in self._helpers:
+            result = await task
+            if isinstance(result, BaseException):
+                raise result
+        if self.todo:
+            raise NetworkError(f"{self.item.dest.name}: {len(self.todo)} parts left",
+                               retryable=True)
+        self.held.note(segments=None, size=None, last_modified=None, etag=None)
+
+    async def cancel(self) -> None:
+        """Stop the other jobs still going; their bytes stay, as the sidecar says."""
+        for task in self._helpers:
+            task.cancel()
+        await asyncio.gather(*self._helpers, return_exceptions=True)
+        if self._keeper is not None:
+            await asyncio.gather(self._keeper, return_exceptions=True)
+
+
 class _Dropped(Stopped):
     """A file whose transfer never started: the run, or its target, stopped first."""
 
@@ -454,7 +586,7 @@ def _fail(sql: sqlite3.Connection, failure: _Failure, run: int | None) -> None:
 
 
 def _target_key(target: Target) -> str:
-    return f"{target.source}:{target.value}"
+    return f"{target.plugin}:{target.value}"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -513,6 +645,8 @@ class Saver:
         self._checkpoints: set[asyncio.Task[Any]] = set()
         # Each target's last file to join the scheduler's queue (`_turn`).
         self._turns: dict[Target, asyncio.Event] = {}
+        # Each ranged fetch file's segments, by its first transfer's job (`_ranged`).
+        self._fetching: dict[Job[Any], _Fetching] = {}
 
     async def post(self, items: Sequence[Item], *, client: net.Client,
                    plugin: str) -> dict[str, Path]:
@@ -619,7 +753,10 @@ class Saver:
     async def _land(self, item: Item, client: net.Client, plugin: str,
                     flow: _Flow) -> _Landed | None:
         file = item.file
-        if file.url is None:
+        if not _sources(file):
+            if getattr(file, "playlist", None) is not None:
+                raise UsageError(f"{item.dest.name}: a segmented stream (an HLS or DASH "
+                                 "playlist) isn't saved yet")
             return None
         received: dict[str, str] = {}
         try:
@@ -630,7 +767,7 @@ class Saver:
             ui.info("{name}: HTTP {status}, asking for a fresh link",
                     name=item.label or item.dest.name, status=error.status)
             fresh = await item.refresh()
-            if fresh is None or fresh.url is None or fresh.content is not None:
+            if fresh is None or not _sources(fresh) or fresh.content is not None:
                 raise
             saved = await self._transfer(item, fresh, client, plugin, received, flow)
         dated = item.day or served_day(received.get("last-modified"))
@@ -661,8 +798,7 @@ class Saver:
         tried as plain files. Everything else opens its part on a thread, then fills it from its
         mirrors as one `FILE` job (`_mirrors`), then is checked and lands on a thread.
         """
-        mirrors: list[str | Fetch] = (
-            [file.url] if isinstance(file.url, str) or callable(file.url) else list(file.url))
+        mirrors = _sources(file)
         if file.audio is not None and isinstance(mirrors[0], str):
             try:
                 return await self._dash(item, mirrors[0], file.audio, client, plugin, flow)
@@ -687,7 +823,7 @@ class Saver:
                 # The last mirror's content check, and the landing, come after the job gave
                 # back its places: a small file holds its host's cap for its transfer alone.
                 if item.kind is not None:
-                    await self._call(_place, held, item.kind)
+                    await self._call(_place, held, item, received)
                 if held.mtime is None:
                     served = served_day(received.get("last-modified"))
                     held.mtime = noon(served) if served is not None else None
@@ -729,10 +865,11 @@ class Saver:
                             answered = await self._segmented(item, urls, held, client, meter,
                                                              job)
                         else:
-                            answered = await self._mirror(item, mirror, held, client, meter)
+                            answered = await self._mirror(item, mirror, held, client, meter,
+                                                          job)
                         received.update(answered)
                         if item.kind is not None and number < len(mirrors):
-                            await self._call(_place, held, item.kind)
+                            await self._call(_place, held, item, received)
                         return
                     except Exception as error:
                         if number == len(mirrors) or _final(error):
@@ -760,8 +897,16 @@ class Saver:
             # Set before the job queues, which it does at once, ahead of the next file's.
             mine.set()
             await running
+            fetching = self._fetching.get(job)
+            if fetching is not None:
+                # The other segments' jobs, waited for here, past this file's own job, which
+                # holds no place of its host meanwhile.
+                await fetching.finish()
         finally:
             mine.set()
+            fetching = self._fetching.pop(job, None)
+            if fetching is not None:
+                await fetching.cancel()
 
     async def _segmented(self, item: Item, urls: Sequence[str], held: files.Part,
                          client: net.Client, meter: net.Meter,
@@ -837,10 +982,13 @@ class Saver:
             else {"etag": plan.etag}
 
     async def _mirror(self, item: Item, mirror: str | Fetch, held: files.Part,
-                      client: net.Client, meter: net.Meter) -> Mapping[str, str]:
+                      client: net.Client, meter: net.Meter, job: Job[Any]) -> Mapping[str, str]:
         """One mirror into the part: a URL by the client, or a plugin's `fetch` function."""
         if isinstance(mirror, str):
             return await client.fill(mirror, held, headers=item.headers, progress=meter)
+        if isinstance(item.file, flnd.plugin.File):
+            await self._fetched(item, mirror, held, meter, job)
+            return {}
         # A fetch that resumes keeps its offsets in `<part>.json`, which goes when it lands.
         held.side = True
 
@@ -855,6 +1003,68 @@ class Saver:
         if inspect.isawaitable(outcome):
             await outcome
         return {}
+
+    async def _fetched(self, item: Item, fetch: flnd.plugin.Fetch, held: files.Part,
+                       meter: net.Meter, job: Job[Any]) -> None:
+        """A plugin's `fetch` (API 2) into the part, as `flnd.plugin.Part`s.
+
+        A file that isn't `ranged`, or whose size is unknown or under `jobs.SPLIT_FILE`, is one
+        part, from what the part holds already (a resumed try or run). So is a `ranged` one
+        when its host has no free place as it starts. Otherwise it is cut into up to
+        `jobs.FETCH_SEGMENTS` even segments (`_Fetching`): this transfer takes them one by one,
+        and more `FILE` jobs take the others while the host has room. A running `Part`'s end
+        can't move, so a segment is never split once it began.
+
+        Raises:
+            NetworkError: the fetch stopped short of the size it said.
+        """
+        size = item.file.size
+        if item.file.ranged and size is not None and size >= jobs.SPLIT_FILE:
+            fetching = self._fetching.get(job) or await self._ranged(item, fetch, held, job, size)
+            if fetching is not None:
+                await fetching.take()
+                return
+        write, stop = self._writer(item.dest), self.stop
+        state = {"at": held.size, "total": size}
+        meter.start(size, held.size)
+
+        async def sink(data: bytes) -> None:
+            if stop is not None and stop.is_set():
+                raise KeyboardInterrupt
+            if data:
+                await write(_append, held, data)
+                state["at"] += len(data)
+                meter.add(len(data))
+
+        def sized(total: int) -> None:
+            state["total"] = total
+            meter.start(total, state["at"])
+
+        await fetch(flnd.plugin.Part(sink, offset=held.size, sized=sized))
+        total = state["total"]
+        if total is not None and state["at"] < total:
+            raise NetworkError(f"{item.dest.name}: {state['at']} of {total} bytes",
+                               retryable=True)
+
+    async def _ranged(self, item: Item, fetch: flnd.plugin.Fetch, held: files.Part, job: Job[Any],
+                      size: int) -> _Fetching | None:
+        """A `ranged` fetch file's segments: those its sidecar kept, else even ones when the
+        host has a free place; None to fetch it as one part (a part begun whole, no room)."""
+        plan = jobs.Segments.of(held.meta, fetch=True) if held.size else None
+        if plan is not None and plan.size != size:
+            await self._call(held.reset)
+            plan = None
+        if plan is None:
+            if held.size or not self.scheduler.room(job.host):
+                return None
+            count = max(1, min(jobs.FETCH_SEGMENTS, size // jobs.SPLIT_RANGE))
+            step = -(-size // count)
+            plan = jobs.Segments(size, fetch=True, parts=[
+                jobs.Segment(start, min(start + step, size))
+                for start in range(0, size, step)])
+        fetching = self._fetching[job] = _Fetching(self, item, fetch, held, job, plan)
+        await fetching.keep()
+        return fetching
 
     async def _dash(self, item: Item, video: str, audio: str, client: net.Client, plugin: str,
                     flow: _Flow) -> files.Saved:
@@ -1239,15 +1449,31 @@ def _exec(argv: Sequence[str], path: Path, target: Target, post: str) -> None:
                 code=done.returncode, name=path.name, said=f": {said[-1]}" if said else "")
 
 
-def _place(held: files.Part, kind: str) -> None:
-    """Point `held` at the name its content calls for; drop it when it is a web page."""
+def _place(held: files.Part, item: Item, received: Mapping[str, str]) -> None:
+    """Point `held` at the name its content calls for; drop it when it is a web page.
+
+    An API 2 stem (`STEM`) takes what its bytes are, else what its `Content-Type` names, else
+    its URL's extension, else none (5.3).
+    """
+    kind = item.kind
+    assert kind is not None
     try:
         head = held.head()
         extension = files.sniff(head)
         if extension in files.PAGES:
             raise SiteError(f"got a web page instead of {files.NOUNS.get(kind, 'a file')}",
                             hint=NOT_MEDIA_HINT)
-        if kind == files.SNIFF:
+        if kind == STEM:
+            url = _url(item.file)
+            planned = stem_extension("", url)
+            base = held.dest.name
+            if planned and base.lower().endswith(planned):
+                base = base[:-len(planned)]
+            # The rule (`stem_extension`), then the bytes when they are another known kind.
+            found = extension if extension and files.kind_of(f"file{extension}") else None
+            held.dest = held.dest.with_name(
+                base + (found or stem_extension(received.get("content-type", ""), url)))
+        elif kind == files.SNIFF:
             found = files.kind_of(f"file{extension}") if extension else None
             if found is not None:
                 held.dest = held.dest.with_name(held.dest.name + extension)
@@ -1298,6 +1524,50 @@ def _raised(results: list[T | BaseException]) -> list[T]:
         if isinstance(result, BaseException):
             raise result
     return results  # type: ignore[return-value]
+
+
+def _append(held: files.Part, data: bytes) -> None:
+    held.write(data)
+    held.flush()
+
+
+def _sources(file: Any) -> list[Any]:
+    """A file's mirrors in order: its URLs, or its fetch function; empty for none."""
+    if isinstance(file, flnd.plugin.File):
+        if file.url:
+            return [file.url]
+        return list(file.mirrors) if file.mirrors else [file.fetch] if file.fetch else []
+    if file.url is None:
+        return []
+    return [file.url] if isinstance(file.url, str) or callable(file.url) else list(file.url)
+
+
+def _url(file: Any) -> str:
+    """An API 2 file's first URL; "" for a file with no URL."""
+    return file.url or (file.mirrors[0] if file.mirrors else "")
+
+
+def stem_extension(content_type: str, url: str) -> str:
+    """The extension an API 2 stem takes (5.3), the engine's and the kit's one rule: what its
+    `Content-Type` names when `files.kind_of` knows it, else its URL's when that is a known
+    media kind, else none. The bytes then rename a file of another known format as it lands.
+
+    Args:
+        content_type: the answer's `Content-Type`; "" when it isn't known yet (a plan).
+        url: the file's URL; "" for none.
+    """
+    found = typed(content_type)
+    if found:
+        return found
+    suffix = PurePosixPath(urlsplit(url).path).suffix.lower() if url else ""
+    return suffix if suffix and files.kind_of(f"file{suffix}") else ""
+
+
+def typed(content_type: str) -> str:
+    """The extension of an image, a video or an audio a `Content-Type` names; "" for none."""
+    kind = content_type.split(";", 1)[0].strip().lower()
+    found = mimetypes.guess_extension(kind) if kind else None
+    return found if found and files.kind_of(f"file{found}") else ""
 
 
 def noon(day: datetime.date) -> float:

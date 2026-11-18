@@ -121,11 +121,6 @@ TICK = 1.0
 # The window over which `slowest` averages a transfer, in seconds.
 SLOW_WINDOW = 30.0
 
-# `flnd.errors` gains `Hidden` and `PluginError` with plugin API 2; until then `SourceError` is
-# the plugin's error and nothing raises `Hidden`.
-_HIDDEN: tuple[type[BaseException], ...] = tuple(
-    filter(None, [getattr(errors, "Hidden", None)]))
-_BROKEN: type[BaseException] = getattr(errors, "PluginError", errors.SourceError)
 
 
 class Kind(Enum):
@@ -999,7 +994,7 @@ class Scheduler:
             if error.status == 429:
                 return await self._refused(job, error)
             return await self._round(job, error, error.wait or 0.0)
-        if isinstance(error, _HIDDEN):
+        if isinstance(error, errors.Hidden):
             return self._move(job, error)
         if isinstance(error, errors.NotFound) and job.first and job.kind in (Kind.PAGE, Kind.TAB):
             return self._move(job, error)
@@ -1183,7 +1178,7 @@ def _again_later(error: Exception) -> bool:
 def _broken(error: Exception) -> bool:
     """A plugin's class that is broken (the loader sets `broken` on the error), which stops the
     run; anything a plugin raises while it runs fails only its own job."""
-    return isinstance(error, _BROKEN) and getattr(error, "broken", False)
+    return isinstance(error, errors.PluginError) and getattr(error, "broken", False)
 
 
 def _overloaded(error: Exception) -> bool:

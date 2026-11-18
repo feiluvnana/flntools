@@ -45,7 +45,7 @@ class GroupsTest(EngineCase):
 
         def files(site, context):
             # The listing's first step, after its route: a target lists from its route on.
-            code = site.target.source
+            code = site.target.plugin
             with lock:
                 running[code] += 1
                 peaks[code] = max(peaks[code], running[code])

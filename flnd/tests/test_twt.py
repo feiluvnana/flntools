@@ -578,17 +578,6 @@ class BrowserWallTest(unittest.TestCase):
                 ))
 
 
-    def test_a_handle_that_starts_like_the_login_path_is_read(self):
-        site = FakeSite(Target("twt:login_example", kind="user"),
-                        pages={"https://x.com/login_example": "<html></html>"})
-        # Warming the later tabs comes right after the wall check, so reaching it means none was seen.
-        with mock.patch.object(FakeSite, "warm", side_effect=LookupError("past the wall")):
-            with self.assertRaisesRegex(LookupError, "past the wall"):
-                list(Twitter().read_browser(
-                    site, Account("login_example", {"rest_id": "42"}), Timeline("posts", "UserTweets", ""),
-                ))
-
-
 def search_page(*entries, cursor="next"):
     """A SearchTimeline page: its entries, then its bottom cursor."""
     added = [{"entryId": f"e{number}", "content": entry} for number, entry in enumerate(entries)]

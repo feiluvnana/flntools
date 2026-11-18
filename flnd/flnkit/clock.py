@@ -40,6 +40,10 @@ class Clock(Protocol):
         """Sleep for `seconds` or until `stop` is set; return True if completed."""
         ...
 
+    def day(self) -> datetime.date:
+        """Return the UTC day of `wall`."""
+        ...
+
 
 class _RealClock:
     """The real system clock."""
@@ -57,6 +61,9 @@ class _RealClock:
             time.sleep(max(0.0, seconds))
             return True
         return not stop.wait(max(0.0, seconds))
+
+    def day(self) -> datetime.date:
+        return _utc_day(self.wall)
 
 
 class Fake(Clock):
@@ -102,6 +109,15 @@ class Fake(Clock):
     def advance(self, seconds: float) -> None:
         with self._lock:
             self._time += seconds
+
+    def day(self) -> datetime.date:
+        """The UTC day of the fake wall time."""
+        return _utc_day(self.wall)
+
+
+def _utc_day(stamp: float) -> datetime.date:
+    """The UTC day of Unix seconds `stamp`."""
+    return datetime.datetime.fromtimestamp(stamp, datetime.UTC).date()
 
 
 _DEFAULT: Clock = _RealClock()
@@ -202,7 +218,7 @@ def day(value: object) -> datetime.date | None:
             found = datetime.datetime.fromtimestamp(seconds, datetime.UTC).date()
         except (OverflowError, OSError, ValueError):
             return None
-    today = datetime.datetime.fromtimestamp(wall(), datetime.UTC).date()
+    today = _utc_day(wall())
     if found is None or not FIRST_YEAR <= found.year <= today.year + 1:
         return None
     return found

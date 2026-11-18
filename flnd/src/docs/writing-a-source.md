@@ -7,7 +7,7 @@ logins.
 
 This page builds a small source step by step against **source API 1**, `flnd.source`, tests it
 with `flnd.testing`, and ships it as a plugin. Every `python` block on it runs in the docs test,
-so it stays true. `tests/example_source.py` is a bigger example with the same shape, and the
+so it stays true. `tests/example_plugin.py` is a bigger example on plugin API 2, and the
 seven built-in sources in `src/sources/` are real ones. `src/source.py`'s and
 `src/testing.py`'s docstrings are the reference.
 
@@ -101,10 +101,10 @@ flnd closes its generator, which ends the page reads or the scrolling.
 ## 2. Mistakes fail when the class is made
 
 flnd checks the class when it is made, so a broken source never starts a run. Each mistake is a
-`SourceError` naming the source, the attribute and the fix:
+`PluginError` naming the source, the attribute and the fix:
 
 ```python
-from flnd.source import SourceError
+from flnd.source import PluginError
 
 try:
     class Broken(Source):
@@ -113,7 +113,7 @@ try:
 
         @target("brk:{user}")
         def user(self, site, user): ...
-except SourceError as error:
+except PluginError as error:
     message = str(error)
 
 assert message.startswith("brk.folder: unknown field {usr}; fields are source, target, category")
@@ -136,7 +136,7 @@ assert Example.forms == ("exm:<user>", "https://www.example.com/<user>/")
 assert Example.categories == ("posts",)
 
 found = Example().resolve("https://www.example.com/example_user/")
-assert (found.source, found.kind, found.value) == ("exm", "user", "example_user")
+assert (found.plugin, found.kind, found.value) == ("exm", "user", "example_user")
 ```
 
 A link pattern matches a link's first path parts, and later parts are allowed, so
@@ -372,7 +372,7 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 
 | member | what it does |
 | --- | --- |
-| `site.target` | the target being downloaded: `.source`, `.kind`, `.value` |
+| `site.target` | the target being downloaded: `.plugin`, `.kind`, `.value` |
 | `site.fetch(url, params=…, method=…, headers=…, check=…)` | one request, paced and retried, with Chrome's fingerprint; `.json`, `.text` on the answer; a refusal raises a `SiteError` with its `status` (`NotFound` for a 404 or 410, `Blocked` for a 429), a 401 or 403 from the source's own domains a `LoginError`, unless `check=False`; no answer raises `NetworkError` |
 | `site.pages(url, cursor=…, params=…, send=…)` | a paged JSON listing, resumed by flnd (section 1) |
 | `site.open(url)`, `site.url` | load a page in the target's browser tab (False when it didn't load), and where the tab is now |
@@ -420,7 +420,7 @@ page with CSS queries and the JSON it embeds. There is no XPath, and no `::text`
 - `a || b` gives the first alternative that finds something (not None, "", [] or {}).
 
 A missing key gives None, and a path with `[]` or `..[]` gives a list, empty when nothing
-matched. A malformed path raises `SourceError`.
+matched. A malformed path raises `PluginError`.
 
 ```python
 from flnkit import html
@@ -575,7 +575,7 @@ code, into your own plugin folder or with pip.
 **A broken plugin disables only itself.** An import error, or a class that fails its checks (a
 bad pattern, a newer source API), disables that plugin alone, with a warning naming its file
 and line, which `flnd sources` repeats. An exception inside its listing fails that target alone,
-as a `SourceError` whose hint names the plugin. An `async def` route that runs 10 s without
+as a `PluginError` whose hint names the plugin. An `async def` route that runs 10 s without
 awaiting (a blocking call) holds up the whole run, and is warned about.
 
 This is containment, not a security boundary: a plugin runs in flnd's process, with your

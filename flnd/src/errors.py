@@ -1,8 +1,8 @@
-"""flnd's face of the one error hierarchy: flnkit's classes, `SourceError`, and `classify`.
+"""flnd's face of the one error hierarchy: flnkit's classes, `Hidden`, `PluginError`, `classify`.
 
 src/docs/errors explains it. The classes flnkit raises are defined in `flnkit.errors` and are
-the same objects here (`flnd.LoginError is flnkit.errors.LoginError`); `SourceError` and the
-hints that name flnd's commands and flags are flnd's own.
+the same objects here (`flnd.LoginError is flnkit.errors.LoginError`); `Hidden`, `PluginError`
+and the hints that name flnd's commands and flags are flnd's own.
 """
 
 from __future__ import annotations
@@ -29,11 +29,12 @@ __all__ = [
     "Changed",
     "DiskError",
     "Error",
+    "Hidden",
     "LoginError",
     "NetworkError",
     "NotFound",
     "SiteError",
-    "SourceError",
+    "PluginError",
     "Stopped",
     "ToolError",
     "UsageError",
@@ -42,8 +43,12 @@ __all__ = [
 ]
 
 
-class SourceError(Error):
-    """A source is broken: a mistake in its declaration, or an unexpected error in a listing."""
+class Hidden(SiteError):
+    """It exists, but this account can't see it: a private profile, a chat the account left."""
+
+
+class PluginError(Error):
+    """A plugin is broken: a mistake in its declaration, or an unexpected error in a listing."""
 
 
 # flnd's hints, which `classify` gives an error that has none. A disk error's depends on its
@@ -63,7 +68,7 @@ def classify(error: BaseException, *, target: str | None = None) -> Error | Base
 
     An `Error` comes back as it is, with `target` set when it had none and flnd's hint when it
     had none. Any other exception becomes a `NetworkError`, a `DiskError` or, as a bug, a
-    `SourceError`, with the original as its `__cause__`.
+    `PluginError`, with the original as its `__cause__`.
 
     Args:
         error: what was raised.
@@ -88,7 +93,7 @@ def classify(error: BaseException, *, target: str | None = None) -> Error | Base
         made.hint = made.hint or _hint(made)
     else:
         # A ValueError too: `flnkit.dig` raises one for a malformed path, the plugin's mistake.
-        made = SourceError(f"unexpected {type(error).__name__}: {error}", hint=BUG_HINT)
+        made = PluginError(f"unexpected {type(error).__name__}: {error}", hint=BUG_HINT)
     made.target = target
     made.__cause__ = error
     return made

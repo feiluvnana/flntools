@@ -91,7 +91,7 @@ class RoutesTest(unittest.TestCase):
                 if isinstance(expected, tuple):
                     found = resolve(text, {"mht": Mimi})
                     self.assertEqual((found.kind, found.value), expected)
-                    self.assertEqual(found.source, "mht")
+                    self.assertEqual(found.plugin, "mht")
                 else:
                     with self.assertRaisesRegex(UsageError, f"^mht: {expected}"):
                         resolve(text, {"mht": Mimi})

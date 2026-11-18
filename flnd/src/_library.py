@@ -352,7 +352,7 @@ class Flnd:
             self._source(source)
         found: list[Tracked] = []
         for info in self._engine().target_ls():
-            if source is not None and info.target.source != source:
+            if source is not None and info.target.plugin != source:
                 continue
             found.append(Tracked(info.target, follow=info.sync, at=info.at, files=info.files,
                                  size=info.size, seen=info.seen,
@@ -543,10 +543,10 @@ class Flnd:
         never replaced.
 
         Args:
-            source: the `flnd.source.Source` subclass.
+            source: the `flnd.plugin.Plugin` subclass, or an API 1 `flnd.source.Source` one.
 
         Raises:
-            UsageError: it isn't a `Source` subclass, or its code is taken.
+            UsageError: it isn't either, or its code is taken.
 
         Example:
             >>> import flnd
@@ -561,10 +561,11 @@ class Flnd:
             ...     fl.targets(source="exa")
             []
         """
+        from flnd.plugin import Plugin
         from flnd.source import Source
 
-        if not (isinstance(source, type) and issubclass(source, Source)):
-            raise UsageError(f"add takes a flnd.source.Source subclass, not {source!r}")
+        if not (isinstance(source, type) and issubclass(source, (Source, Plugin))):
+            raise UsageError("add takes a flnd.plugin.Plugin subclass (or an API 1 source)")
         if source.code in self._sources():
             taken = self._sources()[source.code]
             raise UsageError(f"{source.code}: the code is taken by {taken.__module__}."
@@ -593,7 +594,7 @@ class Flnd:
         from flnd.engine.options import RunShared
         from flnd.engine.run import stopping
         from flnd.engine.site import TargetSite, source_run
-        from flnd.source import Target
+        from flnd.plugin import Target
 
         cls = self._source(source)
         with stopping() as stop:
@@ -661,7 +662,7 @@ class Flnd:
         Raises:
             UsageError: a text no source reads.
         """
-        from flnd.source import Target
+        from flnd.plugin import Target
 
         given = [targets] if isinstance(targets, (str, Target)) else list(targets)
         engine = self._engine()

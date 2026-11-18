@@ -8,7 +8,7 @@ from test_library import LibraryCase, example_source
 
 from flnd.engine import home
 from flnd.engine.resolve import Manifest, Resolved, resolve
-from flnd.errors import SourceError, UsageError
+from flnd.errors import PluginError, UsageError
 from flnd.source import Target, target
 from flnd.sources import _manifest
 
@@ -202,7 +202,7 @@ class ResolveTest(unittest.TestCase):
                                                                          "patterns": patterns}
             entry = {"bad": {"routes": [route]}}
             with self.subTest(patterns=patterns):
-                with self.assertRaises(SourceError) as caught:
+                with self.assertRaises(PluginError) as caught:
                     Manifest(entry)
                 self.assertEqual(str(caught.exception), message)
                 # Installed, it is disabled alone and the rest still loads.

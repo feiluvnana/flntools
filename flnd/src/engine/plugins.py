@@ -273,9 +273,9 @@ def _checked(plugin: Plugin, made: Any) -> type[Source]:
         The class.
 
     Raises:
-        SourceError: it gives no source class, or one with another code.
+        PluginError: it gives no source class, or one with another code.
     """
-    from flnd.errors import SourceError
+    from flnd.errors import PluginError
     from flnd.source import Source
 
     if plugin.origin == FILE:
@@ -288,15 +288,15 @@ def _checked(plugin: Plugin, made: Any) -> type[Source]:
         if mine:
             return mine[0]
         if classes:
-            raise SourceError(f"its source's code is {classes[0].code!r}, not its file's name",
+            raise PluginError(f"its source's code is {classes[0].code!r}, not its file's name",
                               hint=f"name the file {classes[0].code}.py, or set "
                                    f'code = "{plugin.code}"')
-        raise SourceError("it defines no flnd.source.Source subclass",
+        raise PluginError("it defines no flnd.source.Source subclass",
                           hint="see the writing-a-source page of flnd's docs")
     if not (inspect.isclass(made) and issubclass(made, Source)):
-        raise SourceError(f"the entry point gives {made!r}, not a flnd.source.Source subclass")
+        raise PluginError(f"the entry point gives {made!r}, not a flnd.source.Source subclass")
     if made.code != plugin.code:
-        raise SourceError(f"its source's code is {made.code!r}, not the entry point's name",
+        raise PluginError(f"its source's code is {made.code!r}, not the entry point's name",
                           hint=f"name the entry point {made.code}, or set "
                                f'code = "{plugin.code}"')
     return made
@@ -331,7 +331,7 @@ def _place(plugin: Plugin, error: BaseException) -> str:
 
     A syntax error names its own place. Otherwise the traceback is read from the deepest
     frame up: the first frame in the plugin's file or package wins; for an installed package,
-    the first frame that isn't importlib's or flnd's own (flnd raises a class's `SourceError`
+    the first frame that isn't importlib's or flnd's own (flnd raises a class's `PluginError`
     from `src/source.py`, but the mistake is where the class is).
 
     Args:

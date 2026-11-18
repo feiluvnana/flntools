@@ -16,6 +16,7 @@ COMMANDS = (
     ("python_pass", ["-c", "pass"]),
     ("import_flnd", ["-c", "import flnd"]),
     ("import_flnd_source", ["-c", "import flnd.source"]),
+    ("import_flnd_plugin", ["-c", "import flnd.plugin"]),
     ("import_flnd_cli", ["-c", "import flnd.cli"]),
     ("help", ["-m", "flnd", "--help"]),
 )

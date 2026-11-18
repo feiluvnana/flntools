@@ -30,6 +30,11 @@
       "better": "lower",
       "baseline": 33.8465
     },
+    "startup.import_flnd_plugin": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 33.8465
+    },
     "startup.import_flnd_cli": {
       "unit": "ms",
       "better": "lower",

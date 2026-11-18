@@ -38,7 +38,7 @@ date) and `flnd.errors`.
 How a source is used, from its class to its files:
 1. Python makes the class. `Source.__init_subclass__` checks every declaration and derives
    `routes`, `forms`, `categories` and `single_kinds` from the `@target` methods, so a mistake
-   raises `SourceError` at import, naming the attribute and the fix.
+   raises `PluginError` at import, naming the attribute and the fix.
 2. A person types a target. The engine finds the source by its code or by a link's domain, and
    `Source.resolve` matches the text against the routes' patterns: the result is a `Target`
    whose `kind` names the route that reads it.
@@ -56,7 +56,7 @@ The rules a change must keep:
 - This module imports nothing of flnd but the library modules and `flnd.errors`: it is what a
   source sees, never the engine (tests/test_layers.py, rule 2).
 - A mistake in a source fails when its class is made (`Source.__init_subclass__`), with a
-  `SourceError` naming the source, the attribute and the fix. Never halfway through a run.
+  `PluginError` naming the source, the attribute and the fix. Never halfway through a run.
 - One spelling: the source API has no aliases. A name of the old API (`needs`, `prepare`,
   `concurrency`, …) is refused with the new spelling in its message.
 - `API` is the major version. A change that breaks a written source raises it.
@@ -77,7 +77,7 @@ from collections.abc import (
     Sequence,
 )
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import MappingProxyType, MethodType
 from typing import (
     TYPE_CHECKING,
@@ -94,10 +94,11 @@ from flnd.errors import (
     LoginError,
     NetworkError,
     NotFound,
+    PluginError,
     SiteError,
-    SourceError,
     UsageError,
 )
+from flnd.plugin import Target
 from flnkit import clock, html, text
 
 if TYPE_CHECKING:
@@ -109,7 +110,7 @@ __all__ = [
     "API", "Blocked", "Category", "Changed", "Cookies", "DateLike", "Error", "Feed", "Fetch",
     "File",
     "Login", "LoginError", "NetworkError", "NotFound", "Post", "Range", "Request", "Route", "Site",
-    "SiteError", "Source", "SourceError", "Target", "UsageError", "cookies", "dig", "target",
+    "SiteError", "Source", "PluginError", "Target", "UsageError", "cookies", "dig", "target",
 ]
 
 # The source API's major version: a source declares the one it was written for (`api = 1`).
@@ -154,82 +155,6 @@ DateLike = datetime.date | int | float | str | None
 
 
 # ---------------------------------------------------------------------------------------------
-# Targets
-# ---------------------------------------------------------------------------------------------
-
-@dataclass(frozen=True, init=False)
-class Target:
-    """One thing to download, as people write it: `Target("ins:example_user")`.
-
-    A source yields `Target(text)` from a search or a post that links elsewhere, and the engine
-    downloads it as if it had been typed. The text may be `code:value`, `code?query` or a link,
-    on any source's site: a link to another site is handed to that site's source.
-
-    Resolving it (`Source.resolve`) gives the same target with its `kind` set: the name of the
-    route that reads it. The engine compares and stores resolved targets; two resolved targets are
-    equal when their source, kind and value are.
-
-    Args:
-        text: the target, as typed: `ins:example_user`, `mht?romance` or a link.
-        kind: the route that reads it, set by resolution; "" for a target not resolved yet.
-
-    Example:
-        >>> found = Target("ins:example_user", kind="user")
-        >>> found.source, found.value, str(found)
-        ('ins', 'example_user', 'ins:example_user')
-        >>> Target("https://www.tiktok.com/@example_user").source
-        ''
-    """
-
-    # The source's code, such as "ins"; "" for a link no source has read yet.
-    source: str
-    # The route that reads it (`user`, `post`, `video`, `chat`); "" until it is resolved.
-    kind: str
-    # What it points to: the captured value, which names the target's folder and starts its keys;
-    # for a link not resolved yet, the whole link.
-    value: str
-    # Whether it is a query (`code?query`) rather than `code:value`.
-    query: bool = field(default=False, compare=False, repr=False)
-
-    def __init__(self, text: str, *, kind: str = "") -> None:
-        source, query, value = _split_target(text)
-        object.__setattr__(self, "source", source)
-        object.__setattr__(self, "kind", kind)
-        object.__setattr__(self, "value", value)
-        object.__setattr__(self, "query", query)
-
-    def __str__(self) -> str:
-        if not self.source:
-            return self.value
-        # The account a login and `connect` see has no value, and reads as its source's code.
-        if not self.value:
-            return self.source
-        return f"{self.source}{'?' if self.query else ':'}{self.value}"
-
-
-def _split_target(text: str) -> tuple[str, bool, str]:
-    """`text` as (code, whether a query, value); a link or bare text has no code.
-
-    `ins:example_user` is ("ins", False, "example_user"), `mht?romance` is ("mht", True,
-    "romance"), and `https://x.com/example_user` is ("", False, the link): `https:` is a scheme,
-    not a code, and a link's source is found by resolving it.
-
-    Args:
-        text: the target as typed.
-
-    Returns:
-        The source's code ("" when there is none), whether it is a query, and the value.
-    """
-    text = text.strip()
-    if "://" in text.split("?", 1)[0].split("/", 1)[0] or text.lower().startswith("http"):
-        return "", False, text
-    found = re.match(r"([a-z][a-z0-9]*)([:?])", text)
-    if found is None:
-        return "", False, text
-    return found[1], found[2] == "?", text[found.end():]
-
-
-# ---------------------------------------------------------------------------------------------
 # Routes and categories
 # ---------------------------------------------------------------------------------------------
 
@@ -249,7 +174,7 @@ class _Pattern:
         text: the pattern as the route gives it, such as `example.com/{user}` or `exm:{user}`.
 
     Raises:
-        SourceError: the pattern is malformed (see `_tokens` and `_compile`).
+        PluginError: the pattern is malformed (see `_tokens` and `_compile`).
     """
 
     def __init__(self, text: str):
@@ -274,7 +199,7 @@ class _Pattern:
         )
         self.is_query = self.host is None and not segments and mark == "?"
         if self.host is None and mark and not self.is_query:
-            raise SourceError(f"pattern {text!r}: only a link pattern can name a query")
+            raise PluginError(f"pattern {text!r}: only a link pattern can name a query")
         self.names: list[str] = []
         if self.is_query:
             self.segments: list[str] = []
@@ -286,7 +211,7 @@ class _Pattern:
         self.segments = segments[1:] if self.host is not None else ["/".join(segments)]
         self.keys = [_split(pair, "=", once=True) for pair in _split(query, "&")] if mark else []
         if any(not key or not value for key, _, value in self.keys):
-            raise SourceError(f"pattern {text!r}: write a query as ?key={{name}}")
+            raise PluginError(f"pattern {text!r}: write a query as ?key={{name}}")
         # Placeholder names in order: a route's pattern has one, an `unsupported` pattern none.
         self.regexes = [_compile(segment, text, self.names) for segment in self.segments]
         self.query = [(key, _compile(value, text, self.names)) for key, _, value in self.keys]
@@ -368,7 +293,7 @@ class Category:
         key: the history key template of its files, instead of the source's `key`.
 
     Raises:
-        SourceError: the method doesn't take `(self, site, context)`.
+        PluginError: the method doesn't take `(self, site, context)`.
 
     Example:
         >>> Category(lambda self, site, profile: [], newest_first=True).newest_first
@@ -384,7 +309,7 @@ class Category:
         self.folder, self.key = folder, key
         parameters = list(inspect.signature(function).parameters)
         if len(parameters) != 3:
-            raise SourceError(
+            raise PluginError(
                 f"category {self.name}: take (self, site, context), not ({', '.join(parameters)})"
             )
 
@@ -412,7 +337,7 @@ class Route:
         folder: the folder template of its files, instead of the source's `folder`.
 
     Raises:
-        SourceError: a pattern is malformed, has other than one placeholder, or names it
+        PluginError: a pattern is malformed, has other than one placeholder, or names it
             differently from the method's value parameter; or the method takes other parameters.
 
     Example:
@@ -438,18 +363,18 @@ class Route:
         self._categories: list[Category] = []
         parameters = list(inspect.signature(function).parameters)
         if len(parameters) != 3:
-            raise SourceError(
+            raise PluginError(
                 f"route {self.kind}: take (self, site, value), not ({', '.join(parameters)})"
             )
         for pattern in self._patterns:
             if len(pattern.names) != 1:
                 # One value is the target's identity: its folder and its history keys.
-                raise SourceError(
+                raise PluginError(
                     f"route {self.kind}: pattern {pattern.text!r} needs exactly one placeholder, "
                     f"not {len(pattern.names)}"
                 )
             if pattern.names[0] != parameters[2]:
-                raise SourceError(
+                raise PluginError(
                     f"route {self.kind}: pattern {pattern.text!r} captures {pattern.names[0]!r}, "
                     f"but the method's value parameter is {parameters[2]!r}"
                 )
@@ -479,7 +404,7 @@ class Route:
             The method itself, so the class keeps it as a plain method.
 
         Raises:
-            SourceError: a category of the same name is declared twice.
+            PluginError: a category of the same name is declared twice.
 
         Example:
             >>> class Example(Source):
@@ -498,7 +423,7 @@ class Route:
         def register(method: Callable[..., Any]) -> Callable[..., Any]:
             made = Category(method, newest_first=newest_first, folder=folder, key=key)
             if any(known.name == made.name for known in self._categories):
-                raise SourceError(f"route {self.kind}: category {made.name!r} is declared twice")
+                raise PluginError(f"route {self.kind}: category {made.name!r} is declared twice")
             self._categories.append(made)
             return method
 
@@ -600,7 +525,7 @@ class File:
             it once downloaded. None for none.
 
     Raises:
-        SourceError: `url` is none of those.
+        PluginError: `url` is none of those.
 
     Example:
         >>> File("https://cdn.example.com/a.jpg", size=2048).size
@@ -630,7 +555,7 @@ class File:
         elif isinstance(url, Sequence) and url and all(isinstance(mirror, str) for mirror in url):
             sources = tuple(url)
         else:
-            raise SourceError(f"File takes a URL, mirror URLs or a fetch function, not {url!r}")
+            raise PluginError(f"File takes a URL, mirror URLs or a fetch function, not {url!r}")
         _assign(self, url=sources, audio=audio, name=name, size=size, content=None,
                 password=password)
 
@@ -705,7 +630,7 @@ class Post:
             search.
 
     Raises:
-        SourceError: a field is one the engine sets (`post`, `category`, `num`, …).
+        PluginError: a field is one the engine sets (`post`, `category`, `num`, …).
 
     Example:
         >>> post = Post(9001, [File("https://cdn.example.com/a.jpg")], album="Trip")
@@ -731,7 +656,7 @@ class Post:
         reserved = sorted(RESERVED & fields.keys())
         if reserved:
             are = "is a field" if len(reserved) == 1 else "are fields"
-            raise SourceError(
+            raise PluginError(
                 f"Post: {', '.join(reserved)} {are} the engine sets; "
                 "name the site's field otherwise"
             )
@@ -947,7 +872,7 @@ class Cookies(Login):
     def __init__(self, *names: str, required: bool = False) -> None:
         super().__init__(required=required)
         if not names or not all(isinstance(name, str) and name for name in names):
-            raise SourceError('cookies() takes the cookie names that prove a login: '
+            raise PluginError('cookies() takes the cookie names that prove a login: '
                               'cookies("sessionid")')
         self.names = tuple(names)
 
@@ -1535,7 +1460,7 @@ class Source:
             def posts(self, site, profile): ...
 
     Only `code`, `domains`, `api` and one route are required. The class is checked when it is
-    made: a mistake raises `SourceError` naming the attribute and the fix, so a broken source
+    made: a mistake raises `PluginError` naming the attribute and the fix, so a broken source
     never starts a run. Its `routes`, `forms`, `categories` and `single_kinds` are then
     derived from its `@target` methods.
 
@@ -1623,7 +1548,7 @@ class Source:
         alone until a subclass is made.
 
         Raises:
-            SourceError: a missing or malformed `code`, `domains` or `api`; no route; a pattern
+            PluginError: a missing or malformed `code`, `domains` or `api`; no route; a pattern
                 outside `domains` or given twice; a template naming an unknown field; a route
                 with categories that yields; a wrong `login`, `pace`, `limits` or `scroll`; or a
                 name of the old source API. The message names the source and the attribute.
@@ -1631,7 +1556,7 @@ class Source:
         super().__init_subclass__(**kwargs)
         for derived in ("routes", "forms", "categories", "single_kinds"):
             if derived in vars(cls):
-                raise SourceError(f"{cls.__name__}.{derived}: made from the @target methods and "
+                raise PluginError(f"{cls.__name__}.{derived}: made from the @target methods and "
                                   "their @<route>.category methods; declare no such field")
         # A subclass keeps its base's routes; one of the same name replaces it in place.
         routes = {route.kind: route for route in cls.routes}
@@ -1692,9 +1617,9 @@ class Source:
             ...     def photos(self, site, user):
             ...         yield Post("p1")
             >>> Example().resolve("https://www.example.com/p/Abc123")
-            Target(source='exm', kind='post', value='Abc123')
+            Target(text='exm:Abc123', kind='post')
             >>> Example().resolve("@example_user")
-            Target(source='exm', kind='photos', value='example_user')
+            Target(text='exm:example_user', kind='photos')
         """
         url = _parse(text, self.domains)
         # The most specific pattern wins (user, 2026-11-12): a refusal for a whole path (`x.com/i`)
@@ -1836,48 +1761,48 @@ def _check(cls: type[Source]) -> None:
         cls: the source class being made.
 
     Raises:
-        SourceError: the first mistake, worded `<code>.<attribute>: <what>; <the fix>`.
+        PluginError: the first mistake, worded `<code>.<attribute>: <what>; <the fix>`.
     """
     label = cls.__name__
     code = vars(cls).get("code", getattr(cls, "code", None))
     if not isinstance(code, str) or not CODE.fullmatch(code):
-        raise SourceError(f"{label}.code: {'missing' if code is None else repr(code)}; set code"
+        raise PluginError(f"{label}.code: {'missing' if code is None else repr(code)}; set code"
                           ' = "exm": 2 to 16 lowercase letters and digits, what targets start with')
     label = code
     for name, spelled in OLD_NAMES.items():
         if hasattr(cls, name):
-            raise SourceError(f"{label}.{name}: source API {API} spells it {spelled}")
+            raise PluginError(f"{label}.{name}: source API {API} spells it {spelled}")
     domains = getattr(cls, "domains", None)
     if (not isinstance(domains, tuple) or not domains
             or not all(isinstance(d, str) and d and "/" not in d for d in domains)):
-        raise SourceError(f'{label}.domains: set domains = ("example.com",), the hosts of its '
+        raise PluginError(f'{label}.domains: set domains = ("example.com",), the hosts of its '
                           "links, without a scheme or a path")
     _check_api(cls, label)
     if not cls.routes:
-        raise SourceError(f'{label}: no route; mark a method with @target("{code}:{{user}}")')
+        raise PluginError(f'{label}: no route; mark a method with @target("{code}:{{user}}")')
     login = cls.login
     if login is not None and not isinstance(login, Login):
-        raise SourceError(f'{label}.login: set login = cookies("<name>"), an instance of a '
+        raise PluginError(f'{label}.login: set login = cookies("<name>"), an instance of a '
                           "Login subclass, or None")
     if not isinstance(cls.pace, (int, float)) or isinstance(cls.pace, bool) or cls.pace < 0:
-        raise SourceError(f"{label}.pace: {cls.pace!r}; set the seconds between requests, "
+        raise PluginError(f"{label}.pace: {cls.pace!r}; set the seconds between requests, "
                           "such as 0.5")
     if not isinstance(cls.limits, Mapping) or not all(
             isinstance(host, str) and isinstance(n, int) and not isinstance(n, bool) and n > 0
             for host, n in cls.limits.items()):
-        raise SourceError(f'{label}.limits: {cls.limits!r}; set {{"<host>": <files at once>}}, '
+        raise PluginError(f'{label}.limits: {cls.limits!r}; set {{"<host>": <files at once>}}, '
                           "each a whole number above 0")
     if cls.scroll not in SCROLLS:
-        raise SourceError(f"{label}.scroll: {cls.scroll!r}; set 'human' or 'fast'")
+        raise PluginError(f"{label}.scroll: {cls.scroll!r}; set 'human' or 'fast'")
     clash = sorted(set(cls.fields) & RESERVED)
     if clash:
-        raise SourceError(f"{label}.fields: {', '.join(clash)} is the engine's; name the "
+        raise PluginError(f"{label}.fields: {', '.join(clash)} is the engine's; name the "
                           "site's field otherwise")
     for route in cls.routes:
         function = route.function
         if route.categories and (inspect.isgeneratorfunction(function)
                                  or inspect.isasyncgenfunction(function)):
-            raise SourceError(
+            raise PluginError(
                 f"{label}.{route.kind}: a route with categories returns what they receive, but "
                 "it yields; return a value, or drop its categories"
             )
@@ -1892,20 +1817,20 @@ def _check_api(cls: type[Source], label: str) -> None:
         label: how messages name it: its code.
 
     Raises:
-        SourceError: `api` is missing, not a whole number from 1, or another major version;
+        PluginError: `api` is missing, not a whole number from 1, or another major version;
             a newer one's hint is to update flnd.
     """
     api = getattr(cls, "api", None)
     if api is None:
-        raise SourceError(f"{label}.api: missing; set api = {API}, the source API it is "
+        raise PluginError(f"{label}.api: missing; set api = {API}, the source API it is "
                           "written for")
     if not isinstance(api, int) or isinstance(api, bool) or api < 1:
-        raise SourceError(f"{label}.api: {api!r}; set api = {API}")
+        raise PluginError(f"{label}.api: {api!r}; set api = {API}")
     if api > API:
-        raise SourceError(f"{label} needs source API {api}; this flnd has {API}",
+        raise PluginError(f"{label} needs source API {api}; this flnd has {API}",
                           hint="update flnd")
     if api < API:
-        raise SourceError(f"{label} was written for source API {api}; this flnd has {API}",
+        raise PluginError(f"{label} was written for source API {api}; this flnd has {API}",
                           hint="see the API versions part of the writing-a-source page of "
                                "flnd's docs")
 
@@ -1918,7 +1843,7 @@ def _check_templates(cls: type[Source], label: str) -> None:
         label: how messages name it: its code.
 
     Raises:
-        SourceError: a template leaves the target's folder, can't be parsed, or names a field
+        PluginError: a template leaves the target's folder, can't be parsed, or names a field
             that is neither the engine's nor in `fields`.
     """
     known = (*TEMPLATE_FIELDS, *cls.fields)
@@ -1934,14 +1859,14 @@ def _check_templates(cls: type[Source], label: str) -> None:
         # A folder stays under the target's: no absolute path, drive, backslash or `..`.
         if ("\\" in template or template.startswith("/") or re.match(r"[A-Za-z]:", template)
                 or any(part in (".", "..") for part in template.split("/"))):
-            raise SourceError(f"{label}.{attribute}: {template!r} leaves the target's folder; "
+            raise PluginError(f"{label}.{attribute}: {template!r} leaves the target's folder; "
                               "write a relative path with '/' and no '..'")
         try:
             used = text.fields(template)
         except ValueError as error:
-            raise SourceError(f"{label}.{attribute}: {template!r}: {error}") from None
+            raise PluginError(f"{label}.{attribute}: {template!r}: {error}") from None
         for name in sorted(used - set(known)):
-            raise SourceError(f"{label}.{attribute}: unknown field {{{name}}}; fields are "
+            raise PluginError(f"{label}.{attribute}: unknown field {{{name}}}; fields are "
                               f"{', '.join(known)}",
                               hint=f"list a post field in {label}.fields to use it")
 
@@ -1953,12 +1878,12 @@ def _check_patterns(cls: type[Source]) -> None:
         cls: the source class being made, its routes and refusals compiled.
 
     Raises:
-        SourceError: an `unsupported` pattern captures a value, a link pattern is on another
+        PluginError: an `unsupported` pattern captures a value, a link pattern is on another
             site, a code pattern doesn't start with the source's code, or a pattern is given
             twice.
     """
     if any(pattern.names for pattern, _ in cls._refusals):
-        raise SourceError(f"{cls.code}.unsupported: a pattern captures nothing; use * for any "
+        raise PluginError(f"{cls.code}.unsupported: a pattern captures nothing; use * for any "
                           "segment")
     seen: set[str] = set()
     route_patterns = [pattern for route in cls.routes for pattern in route._patterns]
@@ -1968,7 +1893,7 @@ def _check_patterns(cls: type[Source]) -> None:
         if pattern.host is not None and not any(
             pattern.host == _bare_host(domain) for domain in cls.domains
         ):
-            raise SourceError(
+            raise PluginError(
                 f"{cls.code}: pattern {pattern.text!r} isn't on its domains {cls.domains}"
             )
         # Only the class's own routes: a subclass with another code reads its base's patterns
@@ -1976,7 +1901,7 @@ def _check_patterns(cls: type[Source]) -> None:
         if pattern.host is None and pattern in own and pattern.code != cls.code:
             written = pattern.text[len(pattern.code or ""):]
             written = written if written.startswith(("?", ":")) else f":{written}"
-            raise SourceError(f"{cls.code}: pattern {pattern.text!r} must start with the "
+            raise PluginError(f"{cls.code}: pattern {pattern.text!r} must start with the "
                               f"source's code; write it {cls.code}{written}")
         # Compared without the code, www. and m., which matching drops anyway.
         if pattern.host is None:
@@ -1986,7 +1911,7 @@ def _check_patterns(cls: type[Source]) -> None:
             host_part, slash, rest = (tail if sep else head).partition("/")
             key = f"{_bare_host(host_part.lower())}{slash}{rest}"
         if key in seen:
-            raise SourceError(f"{cls.code}: pattern {pattern.text!r} is given twice")
+            raise PluginError(f"{cls.code}: pattern {pattern.text!r} is given twice")
         seen.add(key)
 
 
@@ -2151,7 +2076,7 @@ def _tokens(segment: str, pattern: str) -> list[tuple[str, str, str]]:
         is "" when it has none (`{user}`), else what follows its `:` (`{id:\\w+}`).
 
     Raises:
-        SourceError: an unclosed `{`, a stray `}`, or a placeholder whose name isn't an identifier.
+        PluginError: an unclosed `{`, a stray `}`, or a placeholder whose name isn't an identifier.
     """
     tokens, index = [], 0
     while index < len(segment):
@@ -2161,7 +2086,7 @@ def _tokens(segment: str, pattern: str) -> list[tuple[str, str, str]]:
             index += 2
             continue
         if character == "}":
-            raise SourceError(f"pattern {pattern!r}: a '}}' with no '{{'")
+            raise PluginError(f"pattern {pattern!r}: a '}}' with no '{{'")
         if character == "*":
             tokens.append(("any", "*", ""))
             index += 1
@@ -2182,10 +2107,10 @@ def _tokens(segment: str, pattern: str) -> list[tuple[str, str, str]]:
             if depth == 0:
                 break
         if depth:
-            raise SourceError(f"pattern {pattern!r}: a '{{' with no '}}'")
+            raise PluginError(f"pattern {pattern!r}: a '{{' with no '}}'")
         name, _, regex = segment[index + 1:end].partition(":")
         if not name.isidentifier():
-            raise SourceError(f"pattern {pattern!r}: {{{name}}} isn't a placeholder name")
+            raise PluginError(f"pattern {pattern!r}: {{{name}}} isn't a placeholder name")
         tokens.append(("hole", name, regex))
         index = end + 1
     return tokens
@@ -2204,7 +2129,7 @@ def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
         placeholder without its own regex matches `NAME`, with one optional leading `@`.
 
     Raises:
-        SourceError: the segment, or a placeholder's regex, is malformed.
+        PluginError: the segment, or a placeholder's regex, is malformed.
     """
     regex = ""
     for kind, token, custom in _tokens(segment, pattern):
@@ -2220,7 +2145,7 @@ def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
     try:
         return re.compile(regex)
     except re.error as error:
-        raise SourceError(f"pattern {pattern!r}: {error}") from None
+        raise PluginError(f"pattern {pattern!r}: {error}") from None
 
 
 def _shown(segment: str) -> str:

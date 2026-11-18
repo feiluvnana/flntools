@@ -156,7 +156,7 @@ class RoutesTest(unittest.TestCase):
             with self.subTest(text=text):
                 if isinstance(expected, tuple):
                     found = resolve(text, {"loi": Loibus})
-                    self.assertEqual((found.source, found.kind, found.value), ("loi", *expected))
+                    self.assertEqual((found.plugin, found.kind, found.value), ("loi", *expected))
                 else:
                     with self.assertRaisesRegex(UsageError, f"^loi: {expected}"):
                         resolve(text, {"loi": Loibus})

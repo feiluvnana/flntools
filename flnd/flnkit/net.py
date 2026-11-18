@@ -71,10 +71,11 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import msgspec
 
-from flnkit import clock, files, html
+from flnkit import clock, files, html, text
 from flnkit.errors import (
     Blocked,
     Changed,
+    Error,
     NetworkError,
     NotFound,
     SiteError,
@@ -85,7 +86,7 @@ from flnkit.text import redact
 
 __all__ = [
     "Client", "Headers", "Meter", "Reply", "Request", "Response", "Session", "URL", "fake",
-    "follow", "reply",
+    "follow", "refusal", "reply",
 ]
 
 
@@ -106,6 +107,13 @@ BUFFER = 4 << 20
 HELD = 8 << 20
 # Redirects followed for one request, as curl_cffi's default allows.
 REDIRECTS = 30
+# The statuses that send a request on to their `Location`.
+REDIRECTING = frozenset({301, 302, 303, 307, 308})
+# The caller's headers a redirect to another host carries, as a browser's would: none that
+# names who is asking (a cookie, credentials, a token of the site's).
+CARRIED = frozenset({"accept", "accept-language", "range", "if-range", "referer"})
+# What describes a body, dropped with it when a redirect turns a request into a GET.
+BODY_HEADERS = ("content-type", "content-length", "content-encoding")
 # The statuses that mean the item is gone for good: never retried, recorded as gone.
 GONE = (404, 410)
 QUERY_METHODS = ("GET", "HEAD")
@@ -197,12 +205,15 @@ class Request:
         url: the whole URL, with its query.
         headers: the headers to send, beyond the session's defaults.
         content: the body; None for none.
+        follow: whether the session follows its redirects; False gives back a redirect as it
+            came, for the client to follow hop by hop (`Client._open`).
     """
 
     method: str
     url: URL
     headers: Headers = field(default_factory=Headers)
     content: bytes | None = None
+    follow: bool = True
 
     def __post_init__(self) -> None:
         # A str and a dict are taken too, as a test or a script writes them.
@@ -310,17 +321,31 @@ class _Answer:
     close: Callable[[], Awaitable[None]]
     set_cookies: list[str] = field(default_factory=list)
 
-    async def read(self) -> Response:
+    async def read(self, *, limit: int | None = None) -> Response:
         """Read the rest of the body and close the answer.
+
+        Args:
+            limit: the most bytes the body may have; None reads any.
 
         Returns:
             The whole answer, as a `Response`.
+
+        Raises:
+            SiteError: the body is over `limit`; reading stops there.
         """
+        chunks: list[bytes] = []
+        size = 0
         try:
-            body = b"".join([chunk async for chunk in self.chunks])
+            async for chunk in self.chunks:
+                size += len(chunk)
+                if limit is not None and size > limit:
+                    raise SiteError(f"{redact(self.url)}: the answer is over "
+                                    f"{text.size(limit)}, too big to read as a page",
+                                    status=self.status)
+                chunks.append(chunk)
         finally:
             await self.close()
-        return Response(self.status, self.url, self.headers, body)
+        return Response(self.status, self.url, self.headers, b"".join(chunks))
 
 
 class Session:
@@ -415,7 +440,7 @@ class Session:
         headers.update(request.headers)
         if "cookie" not in headers and (cookie := self._cookie_header(request.url)):
             headers["cookie"] = cookie
-        sent = Request(request.method, request.url, headers, request.content)
+        sent = Request(request.method, request.url, headers, request.content, request.follow)
         router = _FAKES[-1] if _FAKES else None
         if router is not None:
             answer = await router.answer(sent)
@@ -625,6 +650,7 @@ class _Curls:
         update_header_line(lines, "Expect", "", replace=True)
         curl.setopt(CurlOpt.HTTPHEADER, [line.encode() for line in lines])
         curl.setopt(CurlOpt.COOKIELIST, "ALL")
+        curl.setopt(CurlOpt.FOLLOWLOCATION, int(request.follow))
         if self._proxy:
             # A scheme is case-insensitive, as curl_cffi's `urlparse` treats it.
             tunnel = url[:6].lower() == "https:" and not self._proxy.startswith("socks")
@@ -937,7 +963,8 @@ class Client:
         self.stop = stop
 
     async def fetch(self, url: str, *, method: str = "GET",
-                    headers: Mapping[str, str] | None = None, body: Any = None) -> Response:
+                    headers: Mapping[str, str] | None = None, body: Any = None,
+                    check: bool = True, limit: int | None = None) -> Response:
         """Send one request and return its `Response`.
 
         Args:
@@ -946,16 +973,20 @@ class Client:
             headers: headers for this request, over the session's.
             body: on a GET or HEAD a dict is the query; on any other method a dict or list is
                 JSON; bytes or str go as they are.
+            check: raise for a refusal (`refusal`); False returns any answer.
+            limit: the most bytes the body may have; None reads any.
 
         Returns:
-            The response, when its status is under 400.
+            The response: when `check`, one whose status is under 400.
 
         Raises:
             Error: as the module's policy says; a refusal carries its `response`.
+            SiteError: the body is over `limit`.
         """
         method = method.upper()
         answer = await self._open(_request(method, url, headers, body))
-        return _checked(await answer.read(), method)
+        response = await answer.read(limit=limit)
+        return _checked(response, method) if check else response
 
     async def fill(self, url: str, held: files.Part, *,
                    headers: Mapping[str, str] | None = None, resume: bool = True,
@@ -1039,9 +1070,28 @@ class Client:
         """
         self._check(request.url)
         prepare = self.session.prepare
-        if prepare is not None:
-            request = prepare(request) or request
-        return await self.session.send(request)
+        if prepare is None:
+            return await self.session.send(request)
+        # A session with a hook follows redirects here, hop by hop, each hop prepared afresh
+        # from the caller's headers: what the hook adds for one host (a signature, a token)
+        # never follows a redirect to another, and a hop to another host carries only the
+        # caller's `CARRIED` headers, never its cookie or credentials.
+        host = request.url.host
+        for _ in range(REDIRECTS + 1):
+            hop = Request(request.method, request.url, Headers(request.headers),
+                          request.content, follow=False)
+            answer = await self.session.send(prepare(hop) or hop)
+            location = answer.headers.get("location")
+            if answer.status not in REDIRECTING or not location:
+                return answer
+            await answer.close()
+            target = urljoin(str(request.url), location)
+            if not target.lower().startswith(("http://", "https://")):
+                raise NetworkError(f"{request.method} {redact(str(request.url))}: redirected "
+                                   "off the web")
+            request = _redirected(request, answer.status, URL(target), host)
+            self._check(request.url)
+        raise NetworkError(f"{request.method} {redact(str(request.url))}: too many redirects")
 
     async def _file(self, url: str, held: files.Part, headers: Mapping[str, str] | None,
                     resume: bool, meter: Meter) -> Mapping[str, str]:
@@ -1522,7 +1572,7 @@ class _Router:
             answer = await self._one(request, url)
             location = dict((name.lower(), value) for name, value in answer.headers).get(
                 "location")
-            if answer.status not in (301, 302, 303, 307, 308) or not location:
+            if answer.status not in REDIRECTING or not location or not request.follow:
                 return _streamed(answer, url, request)
             # A 303 turns any method but HEAD into a GET without a body, as curl does.
             method = "GET" if answer.status == 303 and request.method != "HEAD" else request.method
@@ -1707,6 +1757,24 @@ def _request(method: str, url: str, headers: Mapping[str, str] | None, body: Any
     return Request(method, URL(url), extra, content)
 
 
+def _redirected(request: Request, status: int, url: URL, host: str) -> Request:
+    """The next hop of `request` after a redirect of `status` to `url`, as a browser makes it.
+
+    A 303, and a 301 or 302 of a POST, turn it into a GET without its body or the headers
+    that described the body; a 307 or 308 keeps it whole. A hop to a host other than `host`
+    (the first one's) keeps only the caller's `CARRIED` headers.
+    """
+    method, content, headers = request.method, request.content, Headers(request.headers)
+    if (status == 303 and method != "HEAD") or (status in (301, 302) and method == "POST"):
+        method, content = "GET", None
+        for name in BODY_HEADERS:
+            headers.pop(name, None)
+    if url.host != host:
+        headers = Headers({name: value for name, value in headers.items()
+                           if name.lower() in CARRIED})
+    return Request(method, url, headers, content)
+
+
 def _host(url: str) -> str:
     """The URL's host, lower case.
 
@@ -1794,36 +1862,45 @@ def _joined(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
 
 
 def _checked(response: Response, method: str) -> Response:
-    """`response`, or the error its status means under the module's policy.
+    """`response`, or the error its status means under the module's policy (`refusal`).
+
+    Raises:
+        Error: the `refusal` of a status of 400 or more.
+    """
+    error = refusal(response, method=method)
+    if error is not None:
+        raise error
+    return response
+
+
+def refusal(response: Any, *, method: str = "GET") -> Error | None:
+    """The error a response's status means, or None for a status under 400.
 
     Args:
-        response: the answer.
+        response: the answer: anything with `status`, `url` and `headers`.
         method: the request's method, named in the message.
 
     Returns:
-        `response`, when its status is under 400.
-
-    Raises:
-        Blocked: a 429, with the site's wait.
-        NotFound: a 404 or 410.
-        SiteError: any other 4xx, or a 5xx (retryable).
+        `Blocked` for a 429, with the site's wait from `Retry-After` or a rate-limit reset
+        header; `NotFound` for a 404 or 410; `SiteError` for any other 4xx, and a retryable one
+        for a 5xx. Each carries the response. None when the status is under 400.
     """
     status = response.status
-    where = f"{method} {redact(response.url)}"
     if status < 400:
-        return response
+        return None
+    where = f"{method} {redact(response.url)}"
     if status == 429:
         retry_after = _retry_after(response.headers.get("retry-after"))
         if retry_after is None:
             retry_after = _reset(response.headers)
         wait = "" if retry_after is None else f", retry after {retry_after:g} s"
-        raise Blocked(f"{where}: HTTP 429, rate limited{wait}", wait=retry_after, status=429,
-                      response=response)
+        return Blocked(f"{where}: HTTP 429, rate limited{wait}", wait=retry_after, status=429,
+                       response=response)
     if status in GONE:
-        raise NotFound(f"{where}: HTTP {status}", status=status, response=response)
+        return NotFound(f"{where}: HTTP {status}", status=status, response=response)
     # A 5xx is the server's trouble, which may pass; any other 4xx is its answer.
-    raise SiteError(f"{where}: HTTP {status}", status=status, response=response,
-                    retryable=status >= 500)
+    return SiteError(f"{where}: HTTP {status}", status=status, response=response,
+                     retryable=status >= 500)
 
 
 def _retry_after(value: str | None) -> float | None:

@@ -369,7 +369,7 @@ class EventsTest(LibraryCase):
         report = self.fl.download("exl:example_user").wait()
         [failed] = report.failed
         self.assertIsInstance(failed.error, flnd.LoginError)
-        self.assertEqual((failed.target.source, failed.post, failed.path),
+        self.assertEqual((failed.target.plugin, failed.post, failed.path),
                          ("exl", "", None))
         self.assertFalse(report.ok)
 

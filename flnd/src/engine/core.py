@@ -22,8 +22,10 @@ from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
+import flnd.plugin
 from flnd.engine import crawl, home, jobs, save, site
 from flnd.engine.crawl import TargetReport
+from flnd.engine.ctx import Ctx, native, start
 from flnd.engine.events import Failed, Planned
 from flnd.engine.options import Options, Retry, RunShared, categories_by_source, validate
 from flnd.engine.run import Stop, Tally, _shut_down, sink, stopping
@@ -206,7 +208,7 @@ class Engine:
         )
         by_source = {
             code: replace(base, categories=cats_map.get(code))
-            for code in {t.source for t in resolved}
+            for code in {t.plugin for t in resolved}
         }
         with stopping(self.stop) as stop:
             async with self._live():
@@ -283,7 +285,7 @@ class Engine:
             except Error as error:
                 ui.warn("{target}: can't retry: {error}", target=item, error=error)
                 continue
-            if target.source not in self.sources or self._is_query(target):
+            if target.plugin not in self.sources or self._is_query(target):
                 continue
             # A failed file may be in any category, so a retry lists the ones it failed in; a
             # target that failed whole is downloaded as its last run would have been.
@@ -461,7 +463,7 @@ class Engine:
     def cookie_logins(self) -> tuple[str, ...]:
         """Source codes that authenticate with browser or file cookies."""
         return tuple(code for code, source in self.sources.items()
-                     if isinstance(source.login, Cookies))
+                     if isinstance(source.login, (Cookies, flnd.plugin.Cookies)))
 
     def _interactive_login(self, code: str, source: Source, method: str) -> str:
         """Run a source's own login hook (`Login.start`), with a terminal it may prompt on.
@@ -482,7 +484,11 @@ class Engine:
             settings = RunShared(home=self.home, stop=stop, interactive=True)
             with source_run(settings, source) as run:
                 assert source.login is not None
-                source.login.start(LoginSite(run), method)
+                if native(source):
+                    ctx = Ctx(run, Target(f"{code}:", kind=ACCOUNT), login=True)
+                    run.loop.run(start(source.login, ctx, method))
+                else:
+                    source.login.start(LoginSite(run), method)
             if home.logged_in(self.home, code):
                 home.record_origin(self.home, code, method)
         return ""
@@ -516,7 +522,7 @@ class Engine:
         rows = await _off(self._rows)
         chosen = []
         for target in resolved:
-            options = by_source[target.source]
+            options = by_source[target.plugin]
             # A followed target stops at its saved posts, unless told to list them again.
             row = rows.get(home.key(target))
             followed = row is not None and row.follow and not options.again
@@ -669,7 +675,7 @@ class Engine:
                     "complete" if cat in complete
                     else ("interrupted" if cat in cursors else "incomplete")
                 )
-                for cat in self.sources[target.source].categories
+                for cat in self.sources[target.plugin].categories
             }
         )
         return TargetInfo(
@@ -686,7 +692,7 @@ class Engine:
 
     def _is_query(self, target: Target) -> bool:
         """Whether `target`'s route discovers other targets (a search) rather than posts."""
-        source = self.sources[target.source]
+        source = self.sources[target.plugin]
         route = next((r for r in source.routes if r.kind == target.kind), None)
         return route is not None and route.discovers
 
@@ -711,7 +717,7 @@ class Engine:
         # A dry run reads `flnd.db` to tell "saved" from "new", but never writes it: a home
         # without one stays untouched.
         async with self._running(stop, dry=True) as runner:
-            return Report(tuple([await self._dry_one(runner, target, by_source[target.source],
+            return Report(tuple([await self._dry_one(runner, target, by_source[target.plugin],
                                                      span, stop)
                                  for target in resolved]))
 
@@ -786,7 +792,7 @@ class Engine:
         """
         reports: list[TargetReport] = []
         for target in resolved:
-            options = by_source[target.source]
+            options = by_source[target.plugin]
             if self._is_query(target):
                 reports.extend(await self._run_query(runner, target, options, span=span,
                                                      sync=sync, stop=stop))
@@ -1320,7 +1326,7 @@ class _Runner:
         """
         settings, tally = self.settings, self.settings.tally
         try:
-            entry = await self.entry(target.source)
+            entry = await self.entry(target.plugin)
         except Exception as error:
             failed = crawl.failure(error, target)
             tally.end(target, failed=True)
@@ -1355,7 +1361,7 @@ class _Runner:
         wait for: waiting for that plugin's listing place while holding its own could wait
         forever, for a listing of that plugin waiting the other way.
         """
-        if inside == target.source:
+        if inside == target.plugin:
             await self.target(target, options, inside=inside)
             return
         self.settings.tally.add(target, _planned(options))
@@ -1410,14 +1416,14 @@ class _Runner:
 
     async def _run(self, target: Target, options: Options, parent: Target | None,
                    inside: str | None, began: crawl.Turn) -> TargetReport:
-        if parent is not None and parent.source == target.source:
+        if parent is not None and parent.plugin == target.plugin:
             self.settings.tally.adopt(target, parent)
         entry, failed = await self.ready(target)
         if entry is None or failed is not None:
             assert failed is not None
             return failed
         refused = None
-        if inside == target.source:
+        if inside == target.plugin:
             report = await crawl.download(entry.run, target, self.settings.tally, options,
                                           turn=began)
         else:
@@ -1659,15 +1665,21 @@ def _validate_targets(
     validate(sources, categories, resolved)
 
 
-def _account(run: SourceRun) -> TargetSite:
-    """The `Site` of a source's account, not of a target: what `connect` and `check` see."""
-    return TargetSite(run, Target(f"{run.source.code}:", kind=ACCOUNT))
+def _account(run: SourceRun) -> TargetSite | Ctx:
+    """The `Site` (API 2's `Ctx`) of a source's account, not of a target: what `connect` and
+    `check` see."""
+    account = Target(f"{run.source.code}:", kind=ACCOUNT)
+    return Ctx(run, account) if native(run.source) else TargetSite(run, account)
 
 
 async def _logged_in(run: SourceRun) -> bool:
     """Whether the source's login is kept; a source without a login always is."""
     login = run.source.login
-    return login is None or await run.call(login.check, _account(run))
+    if login is None:
+        return True
+    if native(run.source):
+        return bool(await login.check(_account(run)))
+    return await run.call(login.check, _account(run))
 
 
 def _required(source: Source) -> bool:
@@ -1759,7 +1771,7 @@ def resolve(
         raise UsageError("a target can't be empty")
     source, body = _split_target(cleaned, sources)
     try:
-        return source.resolve(body)
+        return _read(source, body)
     except _Unmatched as miss:
         if follow is None or miss.url is None:
             raise
@@ -1767,7 +1779,23 @@ def resolve(
         if not followed or followed == miss.url:
             raise
         redirected = owner(followed, sources)
-        return (redirected() if redirected is not None else source).resolve(followed)
+        return _read(redirected() if redirected is not None else source, followed)
+
+
+def _read(source: Source | flnd.plugin.Plugin, text: str) -> Target:
+    """`source.resolve(text)`, a miss of either API as `_Unmatched`.
+
+    API 1's `resolve` raises it; API 2's gives None, read here as the same miss, with the link
+    to follow when `text` is one on the plugin's domains.
+    """
+    if not native(source):
+        return source.resolve(text)
+    found = type(source).resolve(text)
+    if found is not None:
+        return found
+    link = None if not _on(text, source.domains) else text if _is_url(text) else f"https://{text}"
+    raise _Unmatched(f"{source.code}: can't read {text!r}; write it like "
+                     f"{', '.join(source.forms)}", url=link)
 
 
 def _split_target(cleaned: str, sources: Mapping[str, type[Source]]) -> tuple[Source, str]:
@@ -1909,6 +1937,10 @@ async def _connected(run: SourceRun, account: Any) -> AsyncIterator[None]:
         run: the source's run.
         account: the account `Site` the hook gets (`_account`).
     """
+    if native(run.source):
+        async with run.source.connect(account):
+            yield
+        return
     manager = await run.call(run.source.connect, account)
     if not hasattr(manager, "__aenter__"):
         run.client = await run.call(manager.__enter__)

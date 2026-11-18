@@ -1,6 +1,6 @@
 """The crawl (src/engine/crawl.py): one target, from its route to its history rows; searches.
 
-Run through the engine with tests/example_source.py on `flnkit.net.fake` and a fake clock, and
+Run through the engine with tests/example_plugin.py (plugin API 2) on `flnkit.net.fake` and a fake clock, and
 through `crawl.posts` on a `FakeSite` for the listing rules: smart sync, early stops, gaps,
 lazy posts, an expired link's refresh, both Ctrl-Cs, and searches. No network, no browser.
 """
@@ -21,8 +21,8 @@ from pathlib import Path
 from unittest import mock
 
 import fakes
-from example_source import API, CDN, FIXTURES, Example
-from fakes import EngineCase, FakeSite, collect, make_source
+from example_plugin import API, CDN, FIXTURES, Example
+from fakes import EngineCase, FakeSite, make_source
 from test_commands import FlndCase
 
 from flnd import sources
@@ -39,10 +39,10 @@ from flnd.source import (
     File,
     LoginError,
     NotFound,
+    PluginError,
     Post,
     SiteError,
     Source,
-    SourceError,
     Target,
     target,
 )
@@ -61,7 +61,7 @@ class JobCase(EngineCase):
 
     def json_answer(self, url, answer):
         def respond(request):
-            data = answer(str(request.url), {"params": dict(request.url.params)}) if callable(answer) else answer
+            data = answer(dict(request.url.params)) if callable(answer) else answer
             return _net.reply(200, json=data)
 
         return respond
@@ -141,16 +141,11 @@ class CategoriesTest(JobCase):
         self.run_engine(Tagged, targets=["https://example.com/tags/example_tag"])
         self.assertEqual(called, ["example_tag"])
 
-    def test_the_engine_sets_category(self):
-        saved = collect(Example, "exm:example_user", json=FIXTURES)
-        self.assertEqual([item.post.category for item in saved], ["posts", "posts", "posts", "albums", "profile"])
-
     def test_a_route_without_categories_files_its_posts_in_the_targets_folder(self):
         self.assertEqual(self.run_engine(Example, targets=["https://www.example.com/p/C1abc/"]), 1)
         self.assertEqual(self.files(name="C1abc"), ["2026-01-02_C1abc.jpg"])
 
     def test_from_with_a_single_post_is_still_the_usage_error(self):
-        self.assertEqual(Example.single_kinds, ("post",))
         with self.assertRaises(UsageError) as ctx:
             Engine(home=self.home, sources={"exm": Example}).download(
                 ["https://www.example.com/p/C1abc/"], categories="posts"
@@ -736,12 +731,12 @@ class FailureTest(JobCase):
                 raise RuntimeError("the feed broke")
 
         self.run_engine(Broken, targets=["brk:example_user"])
-        # A bug in a listing is a SourceError: its message names it, its hint says what to do.
+        # A bug in a listing is a PluginError: its message names it, its hint says what to do.
         self.assertEqual(self.failures(), ["brk:example_user: unexpected RuntimeError: the feed broke"])
         self.assertEqual(self.events[-1].error.hint, "this is a bug; run with -v and report it")
         report = self.report(Broken, targets=["brk:example_user"])
         self.assertEqual(report.failed, (Target("brk:example_user", kind="user"),))
-        self.assertIsInstance(report.targets[0].error, SourceError)
+        self.assertIsInstance(report.targets[0].error, PluginError)
         self.assertIsInstance(report.targets[0].error.__cause__, RuntimeError)
 
 

@@ -11,12 +11,13 @@ import asyncio
 import datetime
 import inspect
 import unittest
+from unittest import mock
 
 import no_profiles  # noqa: F401
 
 from flnd import plugin as v2
 from flnd.errors import Blocked, LoginError, NotFound, SiteError
-from flnd.source import File, Post, Source, SourceError, UsageError, target
+from flnd.source import File, PluginError, Post, Source, UsageError, target
 from flnd.sources import SOURCES
 from flnd.testing import FakeCtx, FakePage, FakeSite, Reply, Sent, check, collect, fake_clock
 from flnkit import clock as _time
@@ -59,13 +60,13 @@ class CheckTest(unittest.TestCase):
                 """One post: `https://www.example.com/p/p1`."""
                 return []
 
-        with self.assertRaises(SourceError) as caught:
+        with self.assertRaises(PluginError) as caught:
             check(Wrong)
         self.assertEqual(str(caught.exception), "wrg.post: the example "
                          "'https://www.example.com/p/p1' is read by the route user")
 
     def test_check_takes_a_source_class(self):
-        with self.assertRaises(SourceError):
+        with self.assertRaises(PluginError):
             check(object)  # type: ignore[arg-type]
 
 
@@ -190,8 +191,6 @@ def bodies(ctx, items):
         return [item async for item in items]
     return run(taken())
 
-
-HELD = "HTTP 429 for https://api.example.com/a"
 ITEMS = [{"id": "p2", "time": "2026-01-03", "album": "trip"},
          {"id": "p1", "time": "2026-01-02", "album": None}]
 PROFILE = {f"{BASE}/users/example_user": Reply({"id": "42"})}
@@ -211,6 +210,41 @@ class FakeCtxTest(unittest.TestCase):
                                       inspect.isasyncgenfunction(found)),
                                      (inspect.iscoroutinefunction(wanted),
                                       inspect.isasyncgenfunction(wanted)))
+
+    def test_a_post_is_never_tried_again_and_a_page_is_capped(self):
+        from flnd.engine import ctx as engine_ctx
+
+        tries = []
+
+        def busy(request):
+            tries.append(request)
+            return Reply(status=503)
+
+        fake = FakeCtx(Gallery, routes={f"{BASE}/login": busy, f"{BASE}/big": Reply(b"x" * 11)})
+        response = run(fake.fetch(v2.Request(f"{BASE}/login", method="POST", check=False)))
+        self.assertEqual((response.status, len(tries)), (503, 1))
+        with self.assertRaises(v2.SiteError):
+            run(fake.fetch(v2.Request(f"{BASE}/login", method="POST")))
+        self.assertEqual(len(tries), 2)
+        with mock.patch.object(engine_ctx, "PAGE_LIMIT", 10), \
+                self.assertRaisesRegex(v2.SiteError, "too big to read as a page"):
+            run(fake.fetch(f"{BASE}/big"))
+
+    def test_the_user_agent_is_set_before_sign_sees_the_request(self):
+        seen = {}
+
+        class Agent(Gallery):
+            code = "gag"
+            user_agent = "example-agent/1"
+
+            def sign(self, request, cookies):
+                seen.update(request.headers or {})
+                return request
+
+        fake = FakeCtx(Agent, routes={f"{BASE}/me": Reply({"ok": 1})})
+        run(fake.fetch(v2.Request(f"{BASE}/me", headers={"User-Agent": "mine"})))
+        self.assertEqual(seen.get("User-Agent"), "example-agent/1")
+        self.assertEqual(fake.seen.requests[0][2]["headers"]["User-Agent"], "example-agent/1")
 
     def test_a_checked_answer_becomes_the_engines_error(self):
         cdn = "https://cdn.example.com/a.jpg"
@@ -376,11 +410,11 @@ class FakeCtxTest(unittest.TestCase):
         self.assertEqual((state, ctx.settings.height), ({"seen": {"ids": [1, 2], "at": None}},
                                                         1080))
         for value in [{1, 2}, (1, 2), {1: "a"}, b"x"]:
-            with self.subTest(value=value), self.assertRaises(SourceError):
+            with self.subTest(value=value), self.assertRaises(PluginError):
                 ctx.state["bad"] = value
         with self.assertRaises(UsageError):
             FakeCtx(Gallery, settings={"width": 1})
-        with self.assertRaises(SourceError):
+        with self.assertRaises(PluginError):
             ctx.secrets["code"] = "1"
         signed = type("Signed", (Gallery,), {"code": "sgn", "login": Signing()})
         ctx = FakeCtx(signed, answers=["123456"])
@@ -417,7 +451,7 @@ class FakeCtxTest(unittest.TestCase):
         run(ctx.open(PAGE))
         self.assertEqual(bodies(ctx, ctx.feed("/api/liked", scroll=False)), [])
         for wrong in [{"click": ".more", "scroll": 1}, {"scroll": 0}]:
-            with self.subTest(wrong), self.assertRaises(SourceError):
+            with self.subTest(wrong), self.assertRaises(PluginError):
                 Sent("https://www.example.com/api/liked", 0, **wrong)
 
     def test_it_runs_on_the_active_fake_clock_and_logs(self):
@@ -428,7 +462,7 @@ class FakeCtxTest(unittest.TestCase):
         self.assertEqual(ctx.time.now(), 0.0)
         ctx.log("info", "{n} posts", n=2)
         self.assertEqual(ctx.seen.logs, [("info", "2 posts")])
-        with self.assertRaises(SourceError):
+        with self.assertRaises(PluginError):
             ctx.log("error", "no such level")
 
 
@@ -604,7 +638,7 @@ class PluginCollectTest(unittest.TestCase):
             ([{"id": "p1", "time": "2026-01-02"}], "gives no album"),
         ]
         for items, message in rows:
-            with self.subTest(message), self.assertRaises(SourceError) as caught:
+            with self.subTest(message), self.assertRaises(PluginError) as caught:
                 collect(Gallery, "gal:example_user", ctx=self.ctx(items))
             self.assertIn(message, str(caught.exception))
 
@@ -619,7 +653,7 @@ class PluginCollectTest(unittest.TestCase):
                 """One post: `https://www.example.com/p/p1`."""
                 yield v2.Post(post)
 
-        with self.assertRaises(SourceError) as caught:
+        with self.assertRaises(PluginError) as caught:
             check(Wrong)
         self.assertIn("is read by the route user", str(caught.exception))
 

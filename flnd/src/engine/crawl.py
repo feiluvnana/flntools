@@ -31,7 +31,9 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
+import flnd.plugin
 from flnd.engine import home, jobs, save
+from flnd.engine.ctx import Ctx, native
 from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped
 from flnd.engine.options import Options, Retry
 from flnd.engine.run import Counts, Tally
@@ -40,11 +42,13 @@ from flnd.errors import (
     Blocked,
     Changed,
     Error,
+    Hidden,
     LoginError,
     NetworkError,
+    PluginError,
     SiteError,
-    SourceError,
     Stopped,
+    UsageError,
     classify,
 )
 from flnd.source import Category, File, NotFound, Post, Range, Route, Site, Source, Target
@@ -83,6 +87,9 @@ HEAD_IN_A_ROW = 2
 LISTED_FIELDS = frozenset({"count", "index", "extension", "path"})
 # The extension a video joined with its audio track gets, unless both are WebM.
 DASH_EXTENSION = ".mp4"
+# An API 2 `File.name`'s own extension, which it keeps, of up to 7 characters: `.png` in
+# `cover_12.png` and `.torrent` in `file.torrent`, not `.2` in `v1.2` (5.3).
+EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,6}")
 STOPPED = "stopped by Ctrl-C"
 FINISHING = "stopping: {files} finishing (Ctrl-C again to stop now)"
 # Seconds a wait on the loop looks again at the stop state: short enough that Ctrl-C feels at
@@ -112,7 +119,7 @@ T = TypeVar("T")
 # What `_steps` gives once a plain iterator is done.
 _DONE = object()
 # What a lazy post's files may raise that fails the post alone, never its target (PLAN 6.2).
-_POST_ERRORS: tuple[type[BaseException], ...] = (NotFound, Changed, *jobs._HIDDEN)
+_POST_ERRORS: tuple[type[BaseException], ...] = (NotFound, Changed, Hidden)
 
 
 @dataclass(frozen=True)
@@ -164,7 +171,7 @@ def failure(error: BaseException, target: Target, source: Source | None = None) 
     assert isinstance(made, Error), made
     # A bug in a plugin is its author's to fix, not flnd's: the hint says whose code it is.
     plugin = SOURCES.plugin(type(source)) if source is not None else None
-    if plugin is not None and isinstance(made, SourceError) and made.__cause__ is error:
+    if plugin is not None and isinstance(made, PluginError) and made.__cause__ is error:
         made.hint = (f"a bug in the plugin {plugin.code} ({plugin.where}), not in flnd; "
                      "report it to its author")
     if (source is not None and type(made) is SiteError and made.status in LOGIN_WALLS
@@ -203,7 +210,7 @@ def logged_out(target: Target, message: str | None = None) -> LoginError:
     Returns:
         A `LoginError` whose hint is the command that logs in again.
     """
-    return LoginError(message or "not logged in", hint=f"run flnd login {target.source}",
+    return LoginError(message or "not logged in", hint=f"run flnd login {target.plugin}",
                       target=str(target))
 
 
@@ -237,8 +244,12 @@ def wanted(route: Route, options: Options) -> tuple[Category, ...]:
         refused it before the run).
     """
     names = options.categories
-    if names is None or ALL in names:
+    if names is not None and ALL in names:
         return route.categories
+    if names is None:
+        # API 2's default is the account's own content (`own`); API 1 has every category.
+        return tuple(category for category in route.categories
+                     if getattr(category, "own", True))
     selected = set(names)
     return tuple(category for category in route.categories if category.name in selected)
 
@@ -306,10 +317,26 @@ async def _context(source: Source, route: Route, site: Site, target: Target, cal
 
 async def _called(call: Call, method: Callable[..., Any], *args: Any) -> Any:
     """`method(*args)`: through `call`, unless it is a generator function, whose call only
-    makes the generator, so nothing of the source runs until it is stepped."""
+    makes the generator, so nothing of the source runs until it is stepped, or an `async def`
+    (API 2's routes), which runs on the loop."""
     if inspect.isgeneratorfunction(method) or inspect.isasyncgenfunction(method):
         return method(*args)
+    if inspect.iscoroutinefunction(method):
+        return await method(*args)
     return await call(method, *args)
+
+
+def _site(run: SourceRun, target: Target, since: datetime.date | None = None,
+          until: datetime.date | None = None) -> TargetSite | Ctx:
+    """What a target's route and categories act through: API 2's `Ctx`, API 1's `Site`."""
+    if native(run.source):
+        return Ctx(run, target, when=flnd.plugin.Range(since, until))
+    return TargetSite(run, target, time=Range(since, until))
+
+
+def _say(target: Target, level: str, message: str, **fields: Any) -> None:
+    """A line about a target, its text in front as a field so a value can't break the format."""
+    getattr(ui, level)("{target}: " + message, target=str(target), **fields)
 
 
 async def plan(run: SourceRun, target: Target, options: Options) -> AsyncIterator[Placed]:
@@ -325,7 +352,7 @@ async def plan(run: SourceRun, target: Target, options: Options) -> AsyncIterato
     Yields:
         Each file's `Placed`: its path under the target's folder and its history key.
     """
-    site = TargetSite(run, target, time=Range(options.since, options.until))
+    site = _site(run, target, options.since, options.until)
     route = next(r for r in run.source.routes if r.kind == target.kind)
     categories = {c.name: c for c in route.categories}
     taken = 0
@@ -336,7 +363,7 @@ async def plan(run: SourceRun, target: Target, options: Options) -> AsyncIterato
                 if options.limit is not None and taken >= options.limit:
                     break
                 taken += 1
-                for placed in place(run.source, post, await _files(run, post),
+                for placed in place(run.source, post, await _files(run, site, post),
                                     category=categories.get(post.category), route=route,
                                     target=target, options=options):
                     yield placed
@@ -345,11 +372,25 @@ async def plan(run: SourceRun, target: Target, options: Options) -> AsyncIterato
             await run.off(site.close)
 
 
-async def _files(run: SourceRun, post: Post) -> list[File]:
-    """A post's files: a lazy post's listed with tabs of their own (`SourceRun.aside`)."""
-    if callable(post.files):
+async def _files(run: SourceRun, site: TargetSite | Ctx, post: Post) -> list[File]:
+    """A post's files: a lazy post's listed with tabs of their own (`SourceRun.aside`, or
+    API 2's `Ctx.aside`).
+
+    Raises:
+        PluginError: an API 2 post's files hold something that isn't a `File`.
+    """
+    if not callable(post.files):
+        return list(post.files)
+    if not isinstance(site, Ctx):
         return await run.aside(_listed_files, post)
-    return list(post.files)
+    async with site.aside():
+        found = list(await post.files())
+    stray = next((file for file in found if not isinstance(file, flnd.plugin.File)), None)
+    if stray is not None:
+        raise PluginError(f"{run.source.code}: post {post.id}'s files hold a "
+                          f"{type(stray).__name__}; wrap "
+                          "each in File(...)")
+    return found
 
 
 def _listed_files(post: Post) -> list[File]:
@@ -390,7 +431,8 @@ def place(
         values = _file_values(
             source, post, num, len(files), posted, extension, target, options,
         )
-        name = _resolve_name(post, file, filename, values, extension)
+        named = _named if isinstance(file, flnd.plugin.File) else _resolve_name
+        name = named(post, file, filename, values, extension)
         where = fill(folder, values)
         path = "/".join(part for part in (where, name) if part)
         # Files of one post may share a name (`cover.jpg`): a later one takes its number, or it
@@ -425,13 +467,15 @@ def _file_values(
     Returns:
         The fields, by name.
     """
-    code = target.source if target is not None else source.code
+    code = target.plugin if target is not None else source.code
     target_val = target.value if target is not None else ""
     query_val = (options.query or "") if options is not None else ""
+    # `{plugin}` is API 2's name of API 1's `{source}`.
     return {
         **post.fields, "post": post.id, "date": posted, "category": post.category,
         "num": num, "count": count, "index": "" if count == 1 else f"_{num}",
-        "extension": extension, "source": code, "target": target_val, "query": query_val,
+        "extension": extension, "source": code, "plugin": code, "target": target_val,
+        "query": query_val,
     }
 
 
@@ -460,6 +504,25 @@ def _resolve_name(
     if file.content is None and PurePosixPath(file.name).stem in _stems(filename, values):
         return formatted + PurePosixPath(file.name).suffix
     return text.filename(file.name)
+
+
+def _named(
+    post: Post, file: flnd.plugin.File, filename: str, values: Mapping[str, Any], extension: str
+) -> str:
+    """An API 2 file's name (5.3): its `name` when it has its own extension (or holds text),
+    else its `name` or the filename template as a stem, with `extension` after it."""
+    if file.content is not None or own_extension(file.name):
+        return text.filename(file.name or post.id)
+    stem = file.name if file.name is not None else fill(filename, values)
+    return text.filename(stem or post.id) + extension
+
+
+def own_extension(name: str | None) -> str:
+    """The extension an API 2 `File.name` keeps (`EXTENSION`); "" for a stem or no name."""
+    if name is None:
+        return ""
+    suffix = PurePosixPath(name).suffix
+    return suffix if EXTENSION.fullmatch(suffix) else ""
 
 
 def _stems(filename: str, values: Mapping[str, Any]) -> set[str]:
@@ -509,7 +572,7 @@ class Ledger:
         self._waiting: dict[str, Post] = {}
         self._order: list[tuple[str, datetime.date | None]] = []
         self._estimated: set[str] = set()
-        self._asking = type(self.source).date is not Source.date
+        self._asking = type(self.source).date not in (Source.date, flnd.plugin.Plugin.date)
         self._link_warned = False
         self._later: list[tuple[Path, str, str]] = []
         # The posts the `date` hook had no day for, read off the loop by `load`.
@@ -555,7 +618,7 @@ class Ledger:
             return Outcome.EMPTY, []
         if skipped is not None:
             return skipped, []
-        listed = await _files(self.run, post)
+        listed = await _files(self.run, self.site, post)
         planned = await self.run.off(self._queue_post_files, dated, listed, category, first)
         await self._tell()
         return planned
@@ -732,7 +795,7 @@ class Ledger:
         if not _try_link(dest, holder):
             if not self._link_warned:
                 self._link_warned = True
-                self.site.warn("can't link files found in two folders here")
+                _say(self.target, "warn", "can't link files found in two folders here")
             return
         if self._db is not None:
             self._db.link(item_key, dest, category)
@@ -779,12 +842,13 @@ class Ledger:
         for row in await self.run.off(self._db.undated, home.key(self.target)):
             if row.post_id in self._asked:
                 continue
-            found = await self._ask(Post(row.post_id))
+            found = await self._ask(flnd.plugin.Post(row.post_id) if native(self.source)
+                                    else Post(row.post_id))
             if found is not None and await self.run.off(self._redate, row, found):
                 dated += 1
         await self.run.off(self._save_asked)
         if dated:
-            self.site.info("{files} dated", files=text.count(dated, "saved file"))
+            _say(self.target, "info", "{files} dated", files=text.count(dated, "saved file"))
         return dated
 
     def _redate(self, row: home.FileRow, found: datetime.date) -> bool:
@@ -823,12 +887,17 @@ class Ledger:
         if not self._asking:
             return None
         try:
-            found = day(await self.run.aside(self.source.date, self.site, post))
+            if isinstance(self.site, Ctx):
+                async with self.site.aside():
+                    found = day(await self.source.date(self.site, getattr(post, "post", post)))
+            else:
+                found = day(await self.run.aside(self.source.date, self.site, post))
         except (SiteError, NetworkError, LoginError) as error:
             blocked = isinstance(error, (LoginError, Blocked))
             if blocked or getattr(error, "status", None) in BLOCKS:
                 self._asking = False
-                self.site.warn("dating stopped: {error}; the rest are estimated", error=error)
+                _say(self.target, "warn", "dating stopped: {error}; the rest are estimated",
+                     error=error)
             else:
                 ui.debug("{post}: not dated: {error}", post=post.id, error=error)
             return None
@@ -1167,8 +1236,11 @@ class Downloads:
     """
 
     def __init__(self, run: SourceRun, target: Target, tally: Tally, *,
-                 swept: Awaitable[None] | None = None) -> None:
+                 swept: Awaitable[None] | None = None,
+                 site: TargetSite | Ctx | None = None) -> None:
         self.run, self.target, self.tally = run, target, tally
+        # The target's site, whose `aside` tabs a refresh lists on; None for API 1's.
+        self._site = site
         # The sweep of the target's folder, which the first file waits for.
         self._swept = swept
         self.source, self.settings = run.source, run.settings
@@ -1288,7 +1360,7 @@ class Downloads:
             meta=(_metadata(self.source, self.target, placed)
                   if saver is not None and saver.sidecars else None),
             cursor=queued.cursor, retried=queued.retried,
-            refresh=(lambda: self._fresh(queued)) if callable(post.files) else None,
+            refresh=(lambda: self._fresh(queued)) if self._refreshes(post) else None,
             label=placed.path, dropped=lambda: self._dropped(queued),
             domain=self.source.domains[0] if self.source.domains else "")
 
@@ -1345,15 +1417,30 @@ class Downloads:
                 return True
             await self._settled()
 
+    def _refreshes(self, post: Post) -> bool:
+        """Whether a file of `post` can get a fresh link: a lazy post's, or any post's of an
+        API 2 plugin with a `refresh` hook of its own."""
+        return callable(post.files) or (
+            isinstance(self._site, Ctx)
+            and type(self.source).refresh is not flnd.plugin.Plugin.refresh)
+
     async def _fresh(self, queued: _Queued) -> File | None:
-        """A lazy post's files listed again, for a fresh copy of one link.
+        """A post's files listed again, for a fresh copy of one link: API 1 lists a lazy post's
+        files again, API 2 asks the plugin's `refresh` hook.
 
         Returns:
             The fresh file, at the same number in the post; None when no fresh link came (the
             listing failed, or the post has fewer files now).
         """
         try:
-            found = await self.run.aside(_listed_files, queued.placed.post)
+            site = self._site
+            if isinstance(site, Ctx):
+                post = queued.placed.post
+                async with site.aside():
+                    fresh = await self.source.refresh(site, getattr(post, "post", post))
+                    found = list(await fresh.files() if fresh.lazy else fresh.files)
+            else:
+                found = await self.run.aside(_listed_files, queued.placed.post)
         except Exception as error:
             ui.warn("{name}: no fresh link: {error}", name=queued.placed.path, error=error)
             return None
@@ -1396,9 +1483,9 @@ async def download(run: SourceRun, target: Target, tally: Tally, options: Option
     # ends before the first file is handed over.
     sweeping = asyncio.ensure_future(
         run.off(files.sweep, home.target_folder(run.settings.home, target)))
-    site = TargetSite(run, target, time=Range(options.since, options.until))
+    site = _site(run, target, options.since, options.until)
     ledger = Ledger(run, site, target, tally, options=options)
-    downloads = Downloads(run, target, tally, swept=sweeping)
+    downloads = Downloads(run, target, tally, swept=sweeping, site=site)
     work = _Work(ledger, downloads)
     db = run.settings.db
     row = await run.off(_opened, ledger, db, target)
@@ -1805,26 +1892,32 @@ class _Kept:
             if isinstance(post, Target):
                 self.linked.append(post)
                 continue
-            if not isinstance(post, Post):
+            if not isinstance(post, (Post, flnd.plugin.Post)):
                 raise TypeError(
                     f"{self.category or 'a route'} yielded {type(post).__name__}, "
                     "not a Post or a Target"
                 )
             pinned = _pinned(post)
-            if self.category:
-                post = post.filed(self.category)
+            if isinstance(post, flnd.plugin.Post):
+                # API 2's posts are ordered by `listed`, which is `date` unless given.
+                listed = day(post.listed)
+                post = _Filed(post, self.category)
+            else:
+                listed = day(post.date)
+                if self.category:
+                    post = post.filed(self.category)
             posted = day(post.date)
             if pinned:
                 self.pinned.add(post.id)
             else:
-                self._note(post.id, posted)
+                self._note(post.id, listed)
             if posted in self.time:
                 older = older if pinned else 0
                 last = post.id
                 yield post
                 continue
             since = self.time.since
-            if self.newest_first and since and posted and posted < since and not pinned:
+            if self.newest_first and since and listed and listed < since and not pinned:
                 older += post.id != last
                 last = post.id
                 if older >= OLDER_IN_A_ROW:
@@ -1847,6 +1940,30 @@ class _Kept:
 def _pinned(post: Post) -> bool:
     """Whether the site shows `post` above its date order (API 2's `Post.pinned`)."""
     return getattr(post, "pinned", False) is True
+
+
+class _Filed:
+    """A post on API 2 as the crawl files it: the post its plugin yielded, and its category.
+
+    API 1's `Post` carries its category (`Post.filed`); API 2's has no room for one, so the
+    crawl reads `category` here, and everything else from the post.
+
+    Args:
+        post: the post.
+        category: the category that listed it; "" for a route's own posts.
+    """
+
+    __slots__ = ("category", "post")
+
+    def __init__(self, post: flnd.plugin.Post, category: str) -> None:
+        self.post, self.category = post, category
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.post, name)
+
+    def replace(self, **changes: Any) -> _Filed:
+        """The post with `changes`, in the same category."""
+        return _Filed(self.post.replace(**changes), self.category)
 
 
 class Outcome(Enum):
@@ -1922,13 +2039,14 @@ async def discover(
         Each new target, resolved by the source that owns it.
     """
     route = next(r for r in run.source.routes if r.kind == target.kind)
-    site = TargetSite(run, target, time=time_range)
+    site = _site(run, target, time_range.since, time_range.until)
     yielded: set[Target] = set()
     try:
         if _at_limit(run, yielded, limit):
             return
         context = await _context(run.source, route, site, target, run.call)
-        async with contextlib.aclosing(_steps(context, run.call, run.off)) as steps:
+        async with contextlib.aclosing(_discovered(run, route, site, context,
+                                                   Options())) as steps:
             async for item in steps:
                 if run.settings.stop.soon.is_set():
                     return
@@ -1942,6 +2060,22 @@ async def discover(
     finally:
         if not site._idle:
             await run.off(site.close)
+
+
+async def _discovered(run: SourceRun, route: Route, site: TargetSite | Ctx, context: Any,
+                      options: Options) -> AsyncIterator[Any]:
+    """What a discovering route yields: its own listing, or each wanted category's in turn
+    (`wanted`), given what the route returned."""
+    if not route.categories:
+        async with contextlib.aclosing(_steps(context, run.call, run.off)) as items:
+            async for item in items:
+                yield item
+        return
+    for category in wanted(route, options):
+        listed = await _called(run.call, getattr(run.source, category.name), site, context)
+        async with contextlib.aclosing(_steps(listed, run.call, run.off)) as items:
+            async for item in items:
+                yield item
 
 
 def _at_limit(run: SourceRun, yielded: set[Target], limit: int | None) -> bool:
@@ -2086,8 +2220,8 @@ async def _read(
     if route.discovers:
         if turn is not None:
             turn.release()
-        await _run_discovered(run, options,
-                              await _context(run.source, route, site, target, run.call))
+        context = await _context(run.source, route, site, target, run.call)
+        await _run_discovered(run, options, _discovered(run, route, site, context, options))
         return
     listings: list[_Listed]
     if not route.categories:
@@ -2558,7 +2692,7 @@ async def _run_discovered(run: SourceRun, options: Options, yielded: Any) -> Non
             seen.add(child)
             if follow is not None:
                 await follow(child, child_options, inside=run.source.code)
-            elif child.source == run.source.code:
+            elif child.plugin == run.source.code:
                 await download(run, child, run.settings.tally or Tally(), child_options)
             if options.limit is not None and len(seen) >= options.limit:
                 return
@@ -2667,6 +2801,8 @@ def _extension(file: File) -> tuple[str, str | None]:
     Returns:
         The extension with its dot ("" when unknown), and the kind (None for inline content).
     """
+    if isinstance(file, flnd.plugin.File):
+        return planned(file)
     if file.content is not None:
         return PurePosixPath(file.name or "").suffix, None
     if file.name is not None:
@@ -2687,6 +2823,38 @@ def _extension(file: File) -> tuple[str, str | None]:
     if kind is None:
         return "", files.SNIFF
     return extension, kind
+
+
+def planned(file: flnd.plugin.File, content_type: str = "") -> tuple[str, str | None]:
+    """An API 2 file's extension and kind before its bytes are seen (5.3); the kit names by it.
+
+    A name with its own extension keeps it, its content checked as it lands (`_extension`'s
+    kinds). A stem takes `save.stem_extension`'s: `content_type`'s, else its URL's media
+    extension, else none; it is named again as it lands (`save.STEM`), by the answer's
+    `Content-Type`, then by its bytes. A DASH pair and a stream are videos.
+
+    Args:
+        file: the file.
+        content_type: its answer's `Content-Type`, when known; "" for a plan.
+    """
+    if file.content is not None:
+        return PurePosixPath(file.name or "").suffix, None
+    own = own_extension(file.name)
+    if own:
+        return own, files.kind_of(file.name or "")
+    if file.audio is not None:
+        url = file.url or (file.mirrors[0] if file.mirrors else "")
+        both = {_url_suffix(url), _url_suffix(file.audio)} == {".webm"}
+        return (".webm" if both else DASH_EXTENSION), files.VIDEO
+    if file.playlist is not None:
+        return DASH_EXTENSION, files.VIDEO
+    url = file.url or (file.mirrors[0] if file.mirrors else "")
+    return save.stem_extension(content_type, url), save.STEM
+
+
+def _url_suffix(url: str) -> str:
+    """A URL's extension, lowercase; "" for none."""
+    return PurePosixPath(urlsplit(url).path).suffix.lower()
 
 
 def _fields(template: str) -> set[str]:
@@ -2745,9 +2913,12 @@ async def resolved(run: SourceRun, item: Target | str) -> Target | None:
         if run.settings.resolve is not None:
             return await run.off(run.settings.resolve, text)
         own = Target(text)
-        if own.source == run.source.code:
+        if own.plugin == run.source.code:
             text = f"?{own.value}" if own.query else own.value
-        return await run.off(run.source.resolve, text)
+        found = await run.off(run.source.resolve, text)
+        if found is None:
+            raise UsageError(f"{run.source.code}: no route reads it")
+        return found
     except Error as error:
         ui.warn("{source}: can't follow {text}: {error}", source=run.source.code, text=text,
                 error=error)

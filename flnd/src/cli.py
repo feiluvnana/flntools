@@ -64,7 +64,7 @@ CODES = (
     ("LoginError", LOGIN),
     ("DiskError", BROKE),
     ("ToolError", BROKE),
-    ("SourceError", BROKE),
+    ("PluginError", BROKE),
     ("Error", FAILED),
 )
 # ---------------------------------------------------------------------------------------------
@@ -1252,7 +1252,7 @@ class _Json(_View):
 WORDS = {
     "NotFound": "gone", "Blocked": "blocked", "Changed": "changed", "LoginError": "login",
     "SiteError": "site", "NetworkError": "network", "DiskError": "disk", "ToolError": "tool",
-    "SourceError": "bug", "UsageError": "usage",
+    "PluginError": "bug", "UsageError": "usage",
 }
 # The words of failures a retry won't bring back: a gone file is never asked for again.
 FINAL = frozenset({"gone"})

@@ -76,7 +76,8 @@ The rules between them:
         │
         ├── src/engine/options.py   Options (what one target downloads), RunShared (a run's)
         ├── src/engine/home.py      the home: flnd.db (files, targets, runs, failures), logins
-        ├── src/engine/site.py      SourceRun and TargetSite: what a source acts through
+        ├── src/engine/ctx.py       Ctx: what a plugin on API 2 acts through
+        ├── src/engine/site.py      SourceRun and TargetSite: API 1's bridge
         ├── src/engine/jobs.py      the scheduler: every request and step as a job
         ├── src/engine/save.py      a post's files: transfer, dedupe, commit, unpack, sidecar
         └── src/engine/crawl.py     one target: list its posts, plan its files, download
@@ -94,6 +95,7 @@ The rules between them:
 | `src/engine/core.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
 | `src/engine/crawl.py` | one target, as a coroutine on the run's loop: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads (`Downloads`), history rows | the engine |
 | `src/engine/site.py` | plugin API 1's bridge: `SourceRun` (a source's cookies, HTTP session, clients and browser for a run, and `call`, which runs its plain code on a `CALL` thread), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`), `LoginSite`, and `shared_browser`, the run's browser and scheduler | the engine, the crawl |
+| `src/engine/ctx.py` | plugin API 2's `Ctx` for one target of a run: `fetch` and `pages` as page jobs (signed, `blocked` read, a 429 or a wall held, a refusal raised or, with `check=False`, read; a page body capped at 32 MiB), the browser verbs through the target's `TargetSite` on a thread (`open` gives `Landed`, a 404 is `NotFound`), `warm`, `hold`, `pause`, `call`, `ask` and `log`; the account's `state` (JSON values) and `secrets` (written only while `Login.start` runs, `LOGGING_IN`); the answer rules `refused`, `walled` and `checked`, which `flnd.testing.FakeCtx` shares | the crawl, the engine's login and `connect` |
 | `src/engine/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, `when`'s reading, and `config`: every setting of config.toml, read and checked in one place | the engine, the crawl, the library, `site` |
 | `src/source.py` | source API 1: `Source` and its checks, `@target`, `Post`, `File`, `Target`, `Site`, `Login` and `cookies`, `Request`, `dig`, errors | every source |
 | `src/sources/` | the seven built-in sources, one module each, and `SOURCES`, the registry of every source, plugins included, each imported on first use | the engine and the library |
@@ -110,7 +112,7 @@ The rules between them:
 | `src/ui/screen.py` | the run's screen, drawn from `run.state` on its `flnd-screen` thread, and the end summary | the CLI |
 | `src/ui/forms.py` | questions on the terminal in Huh's look (Textual, inline): `select`, `text`, `confirm`; without a terminal, `select` and `text` raise `UsageError` and `confirm` gives its default | the CLI, the site, the engine's browser screen, `src/ui/lists.py` |
 | `src/ui/lists.py` | the interactive lists (Textual, inline) of targets, accounts and plugins: ↑↓, `/` filter, enter details, `d` delete after a confirmation, `q` quit, each list's own keys; a plain table on a pipe | step 13's `target list`, `auth list` and `plugin list` |
-| `src/errors.py` | flnd's face of the one error hierarchy: the kit's classes re-exported, `SourceError`, and `classify`, which turns any exception into one of them and gives flnd's hint to an error that has none | every module |
+| `src/errors.py` | flnd's face of the one error hierarchy: the kit's classes re-exported, `PluginError`, and `classify`, which turns any exception into one of them and gives flnd's hint to an error that has none | every module |
 
 The kit, `flnkit/` — each module a toolkit of its own:
 
@@ -482,12 +484,19 @@ loop:
   `Accept-Ranges: bytes` or a 206 may take more places. From 2 s into its transfer, at each
   piece written (at most once a second) and at once when a segment ends, while its host's cap
   has a free place and no other file waits for it, the largest range left of 8 MiB or more is
-  halved, up to 8 segments (4 for a ranged `fetch`, once plugin API 2 brings those). The first
+  halved, up to 8 segments. The first
   transfer stops where its range now ends (`Client.fill`'s `until`); each new segment is a
   `FILE` job of its own (`Client.span`), written at its offset into the one part, from a
   mirror whose length and
   `ETag` match the first URL's, else from the first URL. The part's sidecar keeps each
-  segment after every piece ([storage.md](storage.md)).
+  segment after every piece ([storage.md](storage.md)). A plugin's `ranged` `fetch` file of
+  16 MiB or more is cut into up to 4 even segments as it starts, each a `flnd.plugin.Part`
+  that stops at its `end`, since a running fetch's end can't move; any other `fetch` file is
+  one part, resumed from what the part holds.
+- **Names** (plugin API 2): a `File.name` with its own extension keeps it; a stem (or the
+  `filename` template's name) is planned with its URL's extension when that names a known
+  kind, and lands with what its bytes are, else what its `Content-Type` names, else its URL's
+  extension, else none (`save.STEM`).
 - **The fake** (`flnkit.net.fake`) answers every request from routes or a handler in tests and
   benchmarks; nothing in `make check` reaches the network.
 
@@ -517,7 +526,7 @@ its rows hold.
 Every error is a `flnd.Error` from one hierarchy, defined in `flnkit/errors.py` and
 `src/errors.py` ([errors.md](errors.md#where-the-classes-live)):
 `UsageError`, `LoginError`, `SiteError` (with `Blocked`, `NotFound` and `Changed`),
-`NetworkError`, `DiskError`, `ToolError` and `SourceError`. `str(e)` is the one-line message
+`NetworkError`, `DiskError`, `ToolError` and `PluginError`. `str(e)` is the one-line message
 and `e.hint` says what to do. Ctrl-C is `flnd.Stopped`, a `KeyboardInterrupt`, so
 `except flnd.Error` never swallows it.
 
@@ -525,7 +534,7 @@ How a failure travels:
 
 1. **Where it starts.** The HTTP client classifies what it meets (a status, a timeout); a
    source raises the same classes from `flnd.source`; anything else a listing lets escape is
-   turned into one by `errors.classify` (a bug in a source is a `SourceError`, and its hint
+   turned into one by `errors.classify` (a bug in a source is a `PluginError`, and its hint
    names a plugin's author).
 2. **A file's failure** stays the file's: a `Failed` event with its post and path, a row in
    `failures`, and a retry on the next runs. A 404 or 410 records it gone, never asked again.

@@ -355,11 +355,11 @@ def key(target: Target) -> str:
         Its key; a search's is its words (`ins:cats`), as the old `targets.db` keyed it.
 
     Example:
-        >>> from flnd.source import Target
+        >>> from flnd.plugin import Target
         >>> key(Target("ins:example_user", kind="user"))
         'ins:example_user'
     """
-    return f"{target.source}:{target.value}"
+    return f"{target.plugin}:{target.value}"
 
 
 def target_folder(home: Path, target: Target) -> Path:
@@ -373,11 +373,11 @@ def target_folder(home: Path, target: Target) -> Path:
         The folder; nothing is made on disk.
 
     Example:
-        >>> from flnd.source import Target
+        >>> from flnd.plugin import Target
         >>> target_folder(Path("home"), Target("ins:example_user", kind="user")).as_posix()
         'home/media/ins/example_user'
     """
-    return home / MEDIA / target.source / text.filename(target.value)
+    return home / MEDIA / target.plugin / text.filename(target.value)
 
 
 def now() -> str:
@@ -843,7 +843,7 @@ class Home:
         with self._store.transaction():
             for target, options in chosen:
                 old = self.target(target)
-                row = old or TargetRow(key(target), target.source, target.value, target.kind)
+                row = old or TargetRow(key(target), target.plugin, target.value, target.kind)
                 row.kind = target.kind
                 if follow is True or old is None:
                     row.follow = follow is not False
@@ -863,7 +863,7 @@ class Home:
             on: True follows it, so `sync` takes it; False stops following it.
         """
         with self._store.transaction():
-            row = self.target(target) or TargetRow(key(target), target.source, target.value,
+            row = self.target(target) or TargetRow(key(target), target.plugin, target.value,
                                                    target.kind, last_sync=now())
             row.follow = on
             self._put(row)
@@ -878,7 +878,7 @@ class Home:
         if not found:
             return
         with self._store.transaction():
-            row = self.target(target) or TargetRow(key(target), target.source, target.value,
+            row = self.target(target) or TargetRow(key(target), target.plugin, target.value,
                                                    target.kind, follow=True, last_sync=now())
             row.seen = list(dict.fromkeys([*row.seen, *found]))
             self._put(row)
@@ -903,7 +903,7 @@ class Home:
         with self._store.transaction():
             # A target nothing recorded (a run of the engine's own, a test) follows, as a row of
             # an old home without a `sync` field did.
-            row = self.target(target) or TargetRow(key(target), target.source, target.value,
+            row = self.target(target) or TargetRow(key(target), target.plugin, target.value,
                                                    target.kind, follow=True)
             merged = {**row.cursors, **cursors}
             row.cursors = {name: value for name, value in merged.items() if value}

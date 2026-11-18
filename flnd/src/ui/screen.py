@@ -413,13 +413,13 @@ def under(path: Path | str, target: Any) -> str:
     """A file's path under its target's folder (`<home>/media/<code>/<value>/`), else its name.
 
     Example:
-        >>> from flnd.source import Target
+        >>> from flnd.plugin import Target
         >>> user = Target("ins:example_user", kind="user")
         >>> under("home/media/ins/example_user/posts/1.jpg", user)
         'posts/1.jpg'
     """
     parts = Path(path).parts
     for at in range(len(parts) - 3):
-        if parts[at] == "media" and parts[at + 1] == target.source:
+        if parts[at] == "media" and parts[at + 1] == target.plugin:
             return "/".join(parts[at + 3:])
     return Path(path).name

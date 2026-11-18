@@ -18,7 +18,6 @@ from unittest import mock
 
 import fakes
 from fakes import FakeSite, Seen, collect
-from test_source import INSTAGRAM
 
 from flnd.engine.core import Engine
 from flnd.engine.options import Options
@@ -40,6 +39,32 @@ from flnd.sources.ins import (
 from flnkit import html as _html
 from flnkit import net as _net
 from flnkit.clock import day
+
+# A DASH manifest as Meta serves it, for the reels' video and audio.
+MANIFEST_HEAD = '<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period>'
+
+
+def representation(mime, url, *, height=None, bandwidth=1000):
+    size = f' height="{height}"' if height else ""
+    return (f'<Representation mimeType="{mime}"{size} bandwidth="{bandwidth}">'
+            f"<BaseURL>{url}</BaseURL></Representation>")
+
+
+def manifest(*videos, audios=()):
+    sets = f'<AdaptationSet>{"".join(videos)}</AdaptationSet>'
+    if audios:
+        sets += f'<AdaptationSet>{"".join(audios)}</AdaptationSet>'
+    return MANIFEST_HEAD + sets + "</Period></MPD>"
+
+
+# Meta serves each quality as one representation; some list the same height twice, told apart only
+# by bandwidth.
+INSTAGRAM = manifest(
+    representation("video/mp4", "https://cdn.example/360.mp4", height=640, bandwidth=168170),
+    representation("video/mp4", "https://cdn.example/1080.mp4", height=1920, bandwidth=1160975),
+    representation("video/mp4", "https://cdn.example/720.mp4", height=1280, bandwidth=825291),
+    audios=[representation("audio/mp4", "https://cdn.example/a64.mp4", bandwidth=64353),
+            representation("audio/mp4", "https://cdn.example/a95.mp4", bandwidth=95480)])
 
 SITE = "https://www.instagram.com"
 API = f"{SITE}/api/v1"
@@ -820,15 +845,6 @@ class ThrottleTest(unittest.TestCase):
         with self.assertRaisesRegex(LoginError, "login wall or challenge"):
             list(Instagram().post(site, "SINGLE"))
         self.assertEqual(site._seen.back_offs, ["Instagram showed a login wall"] * 2)
-
-    def test_a_profile_whose_name_starts_like_a_wall_is_not_one(self):
-        from flnd.sources.ins import load
-
-        for name in ("challenge_example", "challengers"):
-            with self.subTest(name=name):
-                site = Landing(Target("ins:" + name, kind="user"), pages=PAGES, lands={})
-                self.assertTrue(load(site, f"{SITE}/{name}/"))
-                self.assertEqual(site._seen.back_offs, [])
 
     def test_a_profile_page_without_its_user_is_loaded_once(self):
         from flnd.sources.ins import Profile

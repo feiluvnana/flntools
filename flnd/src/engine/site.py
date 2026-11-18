@@ -27,9 +27,11 @@ from typing import (
     TypeVar,
 )
 
+from flnd import plugin
 from flnd.engine import home, jobs
 from flnd.engine.options import SourceConfig, config
-from flnd.errors import Blocked, Error, LoginError, SiteError, SourceError, Stopped, UsageError
+from flnd.errors import Blocked, Error, LoginError, PluginError, SiteError, Stopped, UsageError
+from flnd.plugin import Plugin
 from flnd.source import Range, Request, Source, Target, dig
 from flnd.ui import forms
 from flnd.ui.log import ui
@@ -41,8 +43,9 @@ if TYPE_CHECKING:
     from flnkit import cookies
     from flnkit.html import Document
 
-__all__ = ["Bridge", "Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "met_turn",
-           "opened", "paged", "scheduler", "shared_browser", "source_run"]
+__all__ = ["Bridge", "Listing", "LoginSite", "SourceRun", "TargetSite", "first_page",
+           "login_names", "met_turn", "opened", "paged", "scheduler", "shared_browser",
+           "source_run"]
 
 T = TypeVar("T")
 # How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
@@ -318,6 +321,11 @@ class SourceRun:
                 self._own_loop.close()
 
 
+def _on_domains(source: Source | Plugin, domain: str) -> bool:
+    """Whether a cookie's `domain` is one of the source's domains, or under one."""
+    return _matches_domain(source, domain)
+
+
 def _matches_domain(source: Source, host: str | None) -> bool:
     """Whether `host` belongs to one of `source.domains`."""
     if not host:
@@ -411,9 +419,24 @@ def _network(source: Source, jar: Iterable[Mapping[str, Any]],
 
     def prepare(request: net.Request) -> net.Request | None:
         # Runs on the loop before each try; the hook only adds headers, so it costs little. The
-        # source sees a `flnd.source.Request`, never the HTTP client's own type, so the client
-        # may change without breaking a source; what it sets in `headers` is copied back.
+        # source sees its API's own request, never the HTTP client's type, so the client may
+        # change without breaking a source; what it sets in `headers` is copied back.
         if not _matches_domain(source, request.url.host):
+            return None
+        if isinstance(source, Plugin):
+            if source.user_agent:
+                request.headers["User-Agent"] = source.user_agent
+            asked = plugin.Request(str(request.url), method=request.method,
+                                   headers=dict(request.headers), body=request.content)
+            given = source.sign(asked, MappingProxyType(
+                {cookie["name"]: cookie["value"] for cookie in session.cookies
+                 if _on_domains(source, str(cookie.get("domain", "")).lstrip("."))}))
+            if not isinstance(given, plugin.Request):
+                # The type alone: what `sign` gave may hold a token.
+                raise PluginError(f"{source.code}.sign: return the request, not a "
+                                  f"{type(given).__name__}")
+            for name, value in (given.headers or {}).items():
+                request.headers[name] = value
             return None
         seen = Request(request.method, str(request.url), dict(request.headers),
                        request.content, session.names)
@@ -422,7 +445,9 @@ def _network(source: Source, jar: Iterable[Mapping[str, Any]],
             request.headers[name] = value
         return None
 
-    headers = {"User-Agent": source.user_agent} if source.user_agent else None
+    # A plugin on API 2 sends its `user_agent` to its own domains only (`prepare`).
+    headers = ({"User-Agent": source.user_agent}
+               if source.user_agent and not isinstance(source, Plugin) else None)
     session = net.Session(headers=headers, cookies=jar, prepare=prepare, handles=handles,
                            proxy=settings.proxy)
     return session
@@ -494,7 +519,7 @@ class TargetSite:
             The response.
 
         Raises:
-            SourceError: an option other than `params` and `body`, or a call from code on the
+            PluginError: an option other than `params` and `body`, or a call from code on the
                 loop, which would wait for the loop it runs on.
             LoginError: a 401 or 403 from the source's own domains.
             SiteError: another refusal (`NotFound`, `Blocked` and the rest), when `check`.
@@ -505,9 +530,9 @@ class TargetSite:
         url = net.with_query(url, options.pop("params", None))
         body = options.pop("body", None)
         if options:
-            raise SourceError(f"fetch takes params and body, not {', '.join(sorted(options))}")
+            raise PluginError(f"fetch takes params and body, not {', '.join(sorted(options))}")
         if self._run.loop.here:
-            raise SourceError("site.fetch is for a plain `def` route or category, not for code "
+            raise PluginError("site.fetch is for a plain `def` route or category, not for code "
                               "on the run's loop")
         web = self._run.web
         if in_page:
@@ -734,11 +759,11 @@ class TargetSite:
             The target's tabs.
 
         Raises:
-            SourceError: called from async code on the run's loop, where the verb would wait for
+            PluginError: called from async code on the run's loop, where the verb would wait for
                 the loop it runs on; that code awaits `site.tab` instead.
         """
         if self._run.loop.here:
-            raise SourceError("the browser verbs of `site` are for a plain `def` route or "
+            raise PluginError("the browser verbs of `site` are for a plain `def` route or "
                               "category; an `async def` one awaits `site.tab` instead")
         _met()
         aside = _ASIDE.get()
@@ -781,7 +806,7 @@ class TargetSite:
             # without a word.
             ui.warn("{code}: the browser doesn't use the proxy in config.toml; only the "
                     "source's HTTP requests do", code=self._source.code)
-        style = settings.scroll or self._source.scroll
+        style = settings.scroll or getattr(self._source, "scroll", browser.HUMAN)
         budget = jobs.Budget(self._run.scheduler, self._source.code, None)
         return browser.Tabs(self._shared, self._run.jar, scroll=style, budget=budget)
 
@@ -1175,6 +1200,35 @@ def paged(fetch: Callable[..., Any], url: str, *, cursor: str | Callable[[Any], 
         page = ask(following)
 
 
+async def first_page(ask: Callable[[Any], Awaitable[Any]], listing: Listing | None) -> Any:
+    """`_first_page` for API 2's `ctx.pages`: `ask` is awaited."""
+    start = listing.start if listing is not None else None
+    if not start:
+        return await ask(None)
+    try:
+        return await ask(start)
+    except SiteError as error:
+        if not _stale(error):
+            raise
+    assert listing is not None
+    _refused(listing)
+    return await ask(None)
+
+
+def _stale(error: SiteError) -> bool:
+    """Whether a refusal of a saved cursor says it went stale: a 4xx, but never a block or a
+    429, which says nothing of the cursor (S6)."""
+    return (not isinstance(error, Blocked) and error.status is not None
+            and 400 <= error.status < 500 and error.status != 429)
+
+
+def _refused(listing: Listing) -> None:
+    """Drop a listing's saved cursor the site refused, and say so once."""
+    ui.info("{label}: the cursor an interrupted run saved was refused; listing from the newest",
+            label=listing.label)
+    listing.refused, listing.cursor = True, None
+
+
 def _first_page(ask: Callable[[Any], Any], listing: Listing | None) -> Any:
     """The first page: from the saved cursor if any, else from the newest.
 
@@ -1195,10 +1249,8 @@ def _first_page(ask: Callable[[Any], Any], listing: Listing | None) -> Any:
     try:
         return ask(start)
     except SiteError as error:
-        if error.status is None or not 400 <= error.status < 500:
+        if not _stale(error):
             raise
     assert listing is not None
-    ui.info("{label}: the cursor an interrupted run saved was refused; listing from the newest",
-            label=listing.label)
-    listing.refused, listing.cursor = True, None
+    _refused(listing)
     return ask(None)

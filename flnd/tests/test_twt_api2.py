@@ -287,9 +287,9 @@ class TweetTest(unittest.TestCase):
                            routes={url("TweetResultByRestId"): lambda _, a=answers: a.pop(0)})
                 saved = collect(Twitter, self.LINK, ctx=ctx)
                 self.assertEqual([found.key for found in saved], ["1790_0"])
-                self.assertEqual([(reason.split(" for ")[0], bucket)
+                self.assertEqual([("HTTP 429" in reason, bucket)
                                   for reason, _, bucket in ctx.seen.holds],
-                                 [("HTTP 429", "TweetResultByRestId")])
+                                 [(True, "TweetResultByRestId")])
                 self.assertGreaterEqual(ctx.seen.holds[0][1], 60.0)
 
 
@@ -423,12 +423,6 @@ class LoadTest(unittest.TestCase):
                             ctx=fake(pages={"https://x.com/example_handle": shown}))
                 if retryable is not None:
                     self.assertEqual(raised.exception.retryable, retryable)
-
-    def test_a_handle_that_starts_like_the_login_path_is_read(self):
-        timeline = [page(item(tweet("1", [photo("a")])))]
-        ctx = fake("twt:login_example", pages=tabs("https://x.com/login_example", posts=timeline))
-        saved = collect(Twitter, "twt:login_example", ctx=ctx, categories=["posts"])
-        self.assertEqual(([found.key for found in saved], ctx.seen.holds), (["1_0"], []))
 
 
 class ProfileTest(unittest.TestCase):

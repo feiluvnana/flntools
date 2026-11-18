@@ -22,7 +22,7 @@ from collections.abc import Collection, Iterator
 from pathlib import Path
 from typing import Any
 
-from flnd.errors import SourceError, UsageError
+from flnd.errors import PluginError, UsageError
 from flnd.plugin import API, CODE, OLD_NAMES, Plugin
 from flnkit import clock, files
 
@@ -118,7 +118,7 @@ class Manager:
         Raises:
             UsageError: not a `.py` file or a package; a link, a hard link, a special file, a
                 home or a cookie file, or a package holding one; a built-in's code.
-            SourceError: its API can't be read without running it, or isn't this flnd's; it
+            PluginError: its API can't be read without running it, or isn't this flnd's; it
                 fails to import, has no or several plugin classes, or fails their checks.
         """
         source = Path(path).expanduser()
@@ -177,14 +177,14 @@ class Manager:
 
         Raises:
             UsageError: a built-in's code, or no plugin installed with that code.
-            SourceError: it is disabled; the error says why.
+            PluginError: it is disabled; the error says why.
         """
         if code in self._classes:
             return self._classes[code]
         if code in self.built_in:
             raise UsageError(f"{code} is built in; plugins.json's entry for it is ignored")
         if code in self.disabled:
-            raise SourceError(f"{code} is disabled: {self.disabled[code]}")
+            raise PluginError(f"{code} is disabled: {self.disabled[code]}")
         index = self.manifest["plugins"]
         entry = index.get(code) if _is_code(code) else None
         if entry is None:
@@ -192,14 +192,14 @@ class Manager:
         try:
             file = entry.get("file")
             if file not in (code, f"{code}.py"):
-                raise SourceError(f"its entry names {file!r}, not {code}.py",
+                raise PluginError(f"its entry names {file!r}, not {code}.py",
                                   hint=f"flnd plugin install {self.folder / code}.py")
             path = self.folder / file
             # Walks it without following links, so an edit that adds one disables it.
             digest = _digest(path, path)
             cls = _checked(path, code, shown=path, keep=True)
             if cls.code != code:
-                raise SourceError(f"its plugin's code is {cls.code!r}, not {code!r}",
+                raise PluginError(f"its plugin's code is {cls.code!r}, not {code!r}",
                                   hint=f"flnd plugin install {path}")
             if digest != entry.get("sha256"):
                 index[code] = _entry(cls, file, digest,
@@ -210,7 +210,7 @@ class Manager:
             hint = getattr(error, "hint", "")
             self.disabled[code] = f"{error}; {hint}" if hint else str(error)
             self.warnings.append(f"{code}: disabled: {self.disabled[code]}")
-            raise SourceError(f"{code} is disabled: {error}", hint=hint) from error
+            raise PluginError(f"{code} is disabled: {error}", hint=hint) from error
         self._classes[code] = cls
         return cls
 
@@ -250,7 +250,7 @@ class Manager:
     def _place(self, copy: Path, name: str) -> None:
         """Put the checked copy in the folder as `name`, in place of either form of its code."""
         if not _is_code(name.removesuffix(".py")):
-            raise SourceError(f"{name!r} isn't named by a plugin's code")
+            raise PluginError(f"{name!r} isn't named by a plugin's code")
         self.folder.mkdir(parents=True, exist_ok=True)
         dest = self.folder / name
         if copy.is_dir():
@@ -419,14 +419,14 @@ def _trees(paths: list[Path], shown: Path, root: Path) -> list[ast.Module]:
     """Each file parsed; a syntax error is refused here, so nothing of the plugin runs.
 
     Raises:
-        SourceError: a file doesn't parse, named under `shown`.
+        PluginError: a file doesn't parse, named under `shown`.
     """
     parsed = []
     for path in paths:
         try:
             parsed.append(ast.parse(path.read_bytes(), str(path)))
         except (SyntaxError, ValueError) as error:
-            raise SourceError(_described(error, root, shown)) from None
+            raise PluginError(_described(error, root, shown)) from None
     return parsed
 
 
@@ -525,7 +525,7 @@ def _api(paths: list[Path], code: str, shown: Path, root: Path) -> None:
     """Refuse a plugin unless every `api` its plugin classes set is the literal `API`.
 
     Raises:
-        SourceError: an `api` set otherwise, or none; another API, naming what an older
+        PluginError: an `api` set otherwise, or none; another API, naming what an older
             plugin must change.
     """
     classes = _plugin_classes(_trees(paths, shown, root))
@@ -533,18 +533,18 @@ def _api(paths: list[Path], code: str, shown: Path, root: Path) -> None:
     values = {value for found, _ in read for value in found}
     if not classes or not values or not all(plain for _, plain in read) or not all(
             type(value) is int for value in values):
-        raise SourceError(f"{shown}: its plugin API can't be read without running it",
+        raise PluginError(f"{shown}: its plugin API can't be read without running it",
                           hint=f"set api = {API} in the body of a class that subclasses "
                                "flnd.plugin.Plugin, as a plain number")
     if max(values) > API:
-        raise SourceError(f"{code} is written for plugin API {max(values)}; this flnd has {API}",
+        raise PluginError(f"{code} is written for plugin API {max(values)}; this flnd has {API}",
                           hint="it needs a newer flnd")
     if min(values) < API:
         used = sorted({old for cls in classes for node in _scope(cls) for old in OLD_NAMES
                        if _sets(node, old)})
         hint = "; ".join(f"{old} becomes {OLD_NAMES[old]}" for old in used) or (
             "see the writing-a-source page of flnd's docs")
-        raise SourceError(f"{code} is written for plugin API {min(values)}; this flnd has "
+        raise PluginError(f"{code} is written for plugin API {min(values)}; this flnd has "
                           f"{API}", hint=hint)
 
 
@@ -567,7 +567,7 @@ def _checked(path: Path, code: str, *, shown: Path, keep: bool) -> type[Plugin]:
     left as it was.
 
     Raises:
-        SourceError: another API, an import error or a failed check, naming the file and line
+        PluginError: another API, an import error or a failed check, naming the file and line
             as `shown`; no plugin class, or several; an `api` changed once its class was made.
     """
     _api(_sources(path), code, shown, path)
@@ -576,7 +576,7 @@ def _checked(path: Path, code: str, *, shown: Path, keep: bool) -> type[Plugin]:
         try:
             module = _import(name, path)
         except Exception as error:
-            raise SourceError(_described(error, path, shown),
+            raise PluginError(_described(error, path, shown),
                               hint=getattr(error, "hint", "")) from error
         found = [value for value in vars(module).values()
                  if inspect.isclass(value) and issubclass(value, Plugin) and value is not Plugin
@@ -584,16 +584,16 @@ def _checked(path: Path, code: str, *, shown: Path, keep: bool) -> type[Plugin]:
                  and isinstance(getattr(value, "code", None), str)]
     if len(found) != 1:
         what = ", ".join(cls.__name__ for cls in found) or "no flnd.plugin.Plugin subclass"
-        raise SourceError(f"{shown} defines {what}; a plugin defines exactly one",
+        raise PluginError(f"{shown} defines {what}; a plugin defines exactly one",
                           hint="see the writing-a-source page of flnd's docs")
     if found[0].api != API:
-        raise SourceError(f"{shown}: its api is {found[0].api!r} once it has run, not {API}",
+        raise PluginError(f"{shown}: its api is {found[0].api!r} once it has run, not {API}",
                           hint=f"set api = {API} in the class, and never change it after")
     # The code names its file in the folder, so it is checked as it is once the module ran.
     if not _is_code(found[0].code):
         code = found[0].code
         what = repr(code) if type(code) is str else f"a {type(code).__name__}, not a plain str"
-        raise SourceError(f"{shown}: its code is {what} once it has run",
+        raise PluginError(f"{shown}: its code is {what} once it has run",
                           hint='set code = "exm": 2 to 16 lowercase letters and digits, and '
                                "never change it after")
     return found[0]
@@ -652,7 +652,7 @@ def _described(error: BaseException, path: Path, shown: Path) -> str:
     A frame is the plugin's when its file is `path` or inside it, compared by whole path
     parts, so `exm2.py` is never `exm`'s. It is named as `shown`, the file people know.
     """
-    what = f"{type(error).__name__}: {error}" if not isinstance(error, SourceError) else (
+    what = f"{type(error).__name__}: {error}" if not isinstance(error, PluginError) else (
         str(error))
     places = [(error.filename, error.lineno)] if isinstance(error, SyntaxError) else []
     places += [(frame.filename, frame.lineno)

@@ -31,15 +31,15 @@ from pathlib import Path
 import kit
 import msgspec
 
-# `example_source.py`, the test source, lives in tests/, one folder up.
+# `example_plugin.py`, the test plugin, lives in tests/, one folder up.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from example_source import CDN, Example  # noqa: E402
+from example_plugin import CDN, Example  # noqa: E402
 from kit import Loop  # noqa: E402
 
 from flnd.engine import crawl, run  # noqa: E402
 from flnd.engine.events import State  # noqa: E402
-from flnd.source import File, Post, Target  # noqa: E402
+from flnd.plugin import File, Post, Target  # noqa: E402
 from flnd.ui.screen import Screen  # noqa: E402
 from flnkit import html as _html  # noqa: E402
 from flnkit import text as _text  # noqa: E402
@@ -139,8 +139,9 @@ def hashes(report: kit.Report) -> None:
 def per_file(report: kit.Report) -> None:
     """Time step 5: `crawl.place`, `text.filename` and `day()`, per call."""
     files = [File(f"{CDN}/a/{n}.jpg") for n in range(2)]
-    posts = [Post(f"C{n:08d}", files, date=1767312000 + n,
-                  title=f"a title number {n} with é and / slash").filed("posts")
+    # Filed under their category, as the crawl files a plugin's posts as it lists them.
+    posts = [crawl._Filed(Post(f"C{n:08d}", files, date=1767312000 + n, album=None,
+                               title=f"a title number {n} with é and / slash"), "posts")
              for n in range(5000)]
     source = Example()
 

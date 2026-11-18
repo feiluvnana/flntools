@@ -23,7 +23,7 @@ from telethon.errors import (
 )
 from telethon.tl import types
 
-from flnd.plugin import LoginError, NetworkError, NotFound, Part, Range, SourceError, UsageError
+from flnd.plugin import Hidden, LoginError, NetworkError, NotFound, Part, Range, UsageError
 from flnd.plugins import tlg
 from flnd.plugins.tlg import Telegram, from_web_storage, half_blocks
 from flnd.testing import FakeCtx, check, collect
@@ -33,8 +33,6 @@ SESSION = "1FAKE-SESSION-aGVsbG8"
 CREDENTIALS = {"api_id": "12345", "api_hash": "0123456789abcdef0123456789abcdef"}
 KIND_OF_FILTER = {"InputMessagesFilterPhotos": "photo", "InputMessagesFilterVideo": "video",
                   "InputMessagesFilterDocument": "file"}
-# Hidden stands in as SourceError until flnd.plugin has it.
-Hidden = SourceError
 
 
 def channel(number, title, username=None, access_hash=77):

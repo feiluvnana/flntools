@@ -11,12 +11,12 @@ import io
 import json
 import threading
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import mock
 
-from example_source import API, CDN, Example
 from fakes import FakeSite
 
 from flnd.engine import home as _home
@@ -24,8 +24,19 @@ from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine.options import RunShared
 from flnd.engine.site import TargetSite, shared_browser, source_run
-from flnd.errors import Blocked, SourceError, UsageError
-from flnd.source import LoginError, Site, SiteError, Target
+from flnd.errors import Blocked, PluginError, UsageError
+from flnd.source import (
+    File,
+    LoginError,
+    Post,
+    Request,
+    Site,
+    SiteError,
+    Source,
+    Target,
+    cookies,
+    target,
+)
 from flnd.ui.log import ui
 from flnkit import browser as _browser
 from flnkit import clock as _time
@@ -35,6 +46,75 @@ from flnkit import net as _net
 from flnkit.browser import Page, run_on
 
 PAGE = "https://www.example.com/example_user/"
+
+# The API 1 source the bridge runs here: Example's site (tests/example_plugin.py is the same
+# site on plugin API 2). It goes with API 1.
+API = "https://api.example.com"
+CDN = "https://cdn.example"
+# The CDN refuses a request without the site's Referer, as Instagram's and TikTok's do.
+CDN_HEADERS = {"Referer": "https://www.example.com/"}
+
+
+class Example(Source):
+    """Example's profiles and single posts, from its JSON API."""
+
+    code = "exm"
+    name = "Example"
+    domains = ("example.com",)
+    api = 1
+    # Logged in when this cookie is there.
+    login = cookies("token")
+    # A post's category, and an album's title when it has one: "posts", "albums/<title>".
+    folder = "{category}/{album}"
+    fields = ("album",)
+    # The day, the post, and the file's number when the post has more than one.
+    filename = "{date}_{post}{index}"
+
+    @target(r"example.com/p/{code:[\w-]+}")
+    def post(self, site: Site, code: str) -> Iterator[Post]:
+        """One post, by its link: a route without categories yields its posts itself."""
+        yield post_of(site.fetch(f"{API}/posts/{code}").json)
+
+    @target("exm:{user}", "example.com/{user}")
+    def user(self, site: Site, user: str) -> dict:
+        """A profile: its JSON, which every category below receives, fetched once per target."""
+        return site.fetch(f"{API}/users/{user}").json
+
+    @user.category(newest_first=True)
+    def posts(self, site: Site, profile: dict) -> Iterator[Post]:
+        """The profile's posts, newest first, page by page."""
+        for page in site.pages(f"{API}/users/{profile['id']}/posts", cursor="next"):
+            for item in page["items"]:
+                yield post_of(item)
+
+    @user.category
+    def albums(self, site: Site, profile: dict) -> Iterator[Post]:
+        """Each album, its photos listed (one request) only when the album isn't saved yet."""
+        for album in profile.get("albums", []):
+            yield Post(album["id"], lambda album=album: album_files(site, album["id"]), album=album["title"],
+                       headers=CDN_HEADERS)
+
+    @user.category(folder="profile", key="")
+    def profile(self, site: Site, profile: dict) -> Iterator[Post]:
+        """The profile picture, named and keyed as before step 6: `profile/avatar_<id>.jpg`."""
+        if profile.get("picture"):
+            picture = File(profile["picture"], name=f"avatar_{profile['id']}.jpg")
+            yield Post(profile["id"], [picture], headers=CDN_HEADERS)
+
+    def sign(self, request: Request) -> None:
+        """The login's token as a Bearer header, on the source's own domains only."""
+        if request.cookies.get("token"):
+            request.headers["Authorization"] = f"Bearer {request.cookies['token']}"
+
+
+def post_of(item: dict) -> Post:
+    """One post of the API, with its files in order; the engine reads `taken_at` as a date."""
+    return Post(item["id"], [File(url) for url in item["urls"]], date=item.get("taken_at"), headers=CDN_HEADERS)
+
+
+def album_files(site: Site, album_id: str) -> list[File]:
+    """An album's photos, from its own request."""
+    return [File(url) for url in site.fetch(f"{API}/albums/{album_id}").json["urls"]]
 
 
 class FakeRaw:
@@ -360,7 +440,7 @@ class FetchTest(SiteCase):
         response = caught.exception.response
         assert response is not None
         self.assertEqual(response.json, {"status": "fail"})
-        with self.assertRaisesRegex(SourceError, "takes params and body"):
+        with self.assertRaisesRegex(PluginError, "takes params and body"):
             site.fetch(f"{API}/feed", in_page=True, follow_redirects=False)
 
     def test_the_browser_opens_with_the_engines_settings_and_cookies_and_closes_with_the_target(self):
@@ -404,7 +484,7 @@ class FetchTest(SiteCase):
         async def category():
             site.open(PAGE)
 
-        with self.assertRaisesRegex(SourceError, "await"):
+        with self.assertRaisesRegex(PluginError, "await"):
             run.loop.run(category())
 
     def test_async_code_gets_the_raw_tab(self):

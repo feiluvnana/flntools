@@ -58,25 +58,25 @@ from collections.abc import (
     Sequence,
 )
 from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
+import flnd.engine.ctx
 import flnd.plugin
 from flnd.engine import jobs
-from flnd.errors import Blocked, Changed, LoginError, NetworkError
+from flnd.errors import Changed, NetworkError
 from flnd.plugin import Document, Landed, Plugin, Request, Response
 from flnd.source import (
     File,
     NotFound,
+    PluginError,
     Post,
     Range,
     SiteError,
     Source,
-    SourceError,
     Target,
     UsageError,
 )
@@ -106,8 +106,8 @@ EXAMPLE = re.compile(r"`([^`\s]+)`")
 class Seen:
     """What a plugin did through a `FakeCtx` (or a source through a `FakeSite`).
 
-    A `FakeCtx` fills `requests`, `visited`, `scrolls`, `logs` and `holds`, and `collect` its
-    `failed`; a `FakeSite` fills `messages`, `back_offs` and `warmed` instead.
+    A `FakeCtx` fills `requests`, `visited`, `scrolls`, `logs`, `holds` and `warmed`, and
+    `collect` its `failed`; a `FakeSite` fills `messages`, `back_offs` and `warmed` instead.
 
     Example:
         >>> site = FakeSite(json={"https://api.example.com/me": {"id": 1}})
@@ -502,7 +502,7 @@ class FakeSite:
             Traceback (most recent call last):
             flnkit.errors.UsageError: exm: a run can't ask 'Code'
         """
-        raise UsageError(f"{self.target.source}: a run can't ask {message!r}")
+        raise UsageError(f"{self.target.plugin}: a run can't ask {message!r}")
 
     def info(self, message: str, **fields: Any) -> None:
         """Record a line in `seen.messages`.
@@ -654,14 +654,8 @@ def _answer(answers: Mapping[str, Answer], url: str, request: dict[str, Any]) ->
 
 # What `ctx.log` takes as its level.
 LEVELS = ("debug", "info", "warn")
-# Set while a plugin's `Login.start` runs, the one time `ctx.secrets` may be written.
-LOGGING_IN: ContextVar[bool] = ContextVar("flnd.testing.logging_in", default=False)
 # What a lazy post's files may raise that fails only that post, never its listing.
-LAZY_FAILURES: tuple[type[Exception], ...] = (
-    NotFound, Changed, *filter(None, [getattr(flnd.errors, "Hidden", None)]))
-# A `File.name`'s own extension, which it keeps, of up to 7 characters: `.png` in
-# `cover_12.png` and `.torrent` in `file.torrent`, not `.2` in `v1.2`.
-EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,6}")
+LAZY_FAILURES: tuple[type[Exception], ...] = (NotFound, Changed, flnd.errors.Hidden)
 T = TypeVar("T")
 
 
@@ -713,7 +707,7 @@ class Sent:
             With neither, it is sent as the page loads.
 
     Raises:
-        SourceError: both `click` and `scroll`, or a `scroll` under 1.
+        PluginError: both `click` and `scroll`, or a `scroll` under 1.
     """
 
     url: str
@@ -723,9 +717,9 @@ class Sent:
 
     def __post_init__(self) -> None:
         if self.click is not None and self.scroll is not None:
-            raise SourceError(f"Sent({self.url!r}): give click or scroll, not both")
+            raise PluginError(f"Sent({self.url!r}): give click or scroll, not both")
         if self.scroll is not None and (isinstance(self.scroll, bool) or self.scroll < 1):
-            raise SourceError(f"Sent({self.url!r}): scroll counts from 1, not {self.scroll!r}")
+            raise PluginError(f"Sent({self.url!r}): scroll counts from 1, not {self.scroll!r}")
 
 
 class FakeCtx:
@@ -785,7 +779,7 @@ class FakeCtx:
         if isinstance(plugin, type) and issubclass(plugin, Plugin):
             plugin = plugin()
         if not isinstance(plugin, Plugin) or not getattr(plugin, "code", None):
-            raise SourceError(f"FakeCtx takes a flnd.plugin.Plugin class with a code, not "
+            raise PluginError(f"FakeCtx takes a flnd.plugin.Plugin class with a code, not "
                               f"{plugin!r}")
         # What the plugin did: its requests, pages, scrolls, log lines and holds.
         self.seen: Seen = Seen()
@@ -796,8 +790,8 @@ class FakeCtx:
         self._cookies = MappingProxyType(dict(cookies or {}))
         self._when = when
         self._answers = deque(answers)
-        self._state = _JsonState(state if state is not None else {})
-        self._secrets = _Secrets(plugin)
+        self._state = flnd.engine.ctx.JsonState(state if state is not None else {})
+        self._secrets = _secrets(plugin)
         self._storage = MappingProxyType(dict(storage or {}))
         self._extension = extension
         try:
@@ -829,28 +823,41 @@ class FakeCtx:
         own = self._own(asked.url)
 
         async def attempt() -> Any:
-            sent = self._plugin.sign(asked, self._cookies) if own else asked
+            sent = asked
+            if own and self._plugin.user_agent:
+                # The engine sets the plugin's User-Agent on its own domains, before `sign`.
+                sent = sent.replace(headers={**(sent.headers or {}),
+                                             "User-Agent": self._plugin.user_agent})
+            sent = self._plugin.sign(sent, self._cookies) if own else sent
             self.seen.requests.append((sent.method, sent.url, {
                 "params": sent.params, "body": sent.body, "headers": dict(sent.headers or {}),
                 "bucket": bucket, "in_page": in_page}))
-            response = self._answer(sent)
-            self._refused(response, own)
-            if response.url != sent.url:
-                self._walled(response.url)
-            # A 5xx is the server's trouble, retried even when the plugin reads refusals.
-            if sent.check or response.status >= 500:
-                return self._checked(response)
-            return response
+            try:
+                response = flnd.engine.ctx.capped(self._answer(sent))
+                landed = self._own(response.url)
+                flnd.engine.ctx.refused(self._plugin, response, own=landed)
+                if response.url != sent.url:
+                    flnd.engine.ctx.walled(self._plugin, response.url, own=landed)
+                # A 5xx is the server's trouble, retried even when the plugin reads refusals;
+                # a POST's never is, as in the engine.
+                if sent.check or response.status >= 500:
+                    return flnd.engine.ctx.checked(self._plugin, response, own=landed)
+                return response
+            except flnd.errors.Error as error:
+                return flnd.engine.ctx.once(sent, error)
 
         kind = jobs.Kind.PAGE if own else jobs.Kind.FILE
         try:
-            return await self._run(kind, attempt, bucket=bucket or "",
-                                   host=urlsplit(asked.url).hostname or "")
+            got = await self._run(kind, attempt, bucket=bucket or "",
+                                  host=urlsplit(asked.url).hostname or "")
         except SiteError as error:
             # With `check` off, the last 5xx is handed back once the scheduler's tries ran out.
             if asked.check or (error.status or 0) < 500 or error.response is None:
                 raise
             return error.response
+        if isinstance(got, flnd.engine.ctx.Once):
+            raise got.error
+        return got
 
     def pages(self, request: str | Request, *,
               cursor: str | Callable[[Response], str | None],
@@ -871,7 +878,7 @@ class FakeCtx:
                 more = send(at) if callable(send) else {send: at}
                 asked = first.replace(params={**(first.params or {}), **more})
             response = await self.fetch(asked, bucket=bucket, in_page=in_page)
-            if _empty(response):
+            if flnd.engine.ctx.empty(response):
                 return
             yield response
             following = (cursor(response) if callable(cursor)
@@ -904,9 +911,10 @@ class FakeCtx:
             landed = page.url or url
             response = net.Response(page.status, landed, {"content-type": "text/html"},
                                     page.html.encode())
-            self._refused(response, self._own(landed))
-            self._walled(landed)
-            self._checked(response, refused=False)
+            own = self._own(landed)
+            flnd.engine.ctx.refused(self._plugin, response, own=own)
+            flnd.engine.ctx.walled(self._plugin, landed, own=own)
+            flnd.engine.ctx.checked(self._plugin, response, own=own, every=False)
             tab.load(page)
             return Landed(landed, page.status)
 
@@ -945,6 +953,10 @@ class FakeCtx:
             yield flnd.plugin.meta(await self.document())
             async for item in feed:
                 yield item
+
+    async def warm(self, urls: Sequence[str]) -> None:
+        """Record each URL that isn't empty in `seen.warmed`; a fake tab loads nothing ahead."""
+        self.seen.warmed.extend(url for url in urls if url)
 
     async def document(self) -> Document:
         """The page the tab shows, parsed; an empty one before any."""
@@ -1015,9 +1027,10 @@ class FakeCtx:
                             reason=reason, bucket=bucket)
 
     async def call(self, fn: Callable[..., T], *args: Any) -> T:
-        """Run `fn` as a call job, once the account's holds end; on the loop's own thread."""
+        """Run `fn` as a call job, once the account's holds end, on a thread as the engine's
+        thread pool runs it."""
         async def work() -> Any:
-            return fn(*args)
+            return await asyncio.to_thread(fn, *args)
 
         return await self._run(jobs.Kind.CALL, work)
 
@@ -1041,10 +1054,10 @@ class FakeCtx:
         """Record a line in `seen.logs`, its `{name}` fields filled.
 
         Raises:
-            SourceError: `level` isn't "debug", "info" or "warn".
+            PluginError: `level` isn't "debug", "info" or "warn".
         """
         if level not in LEVELS:
-            raise SourceError(f"{self._plugin.code}: log level {level!r}; use one of "
+            raise PluginError(f"{self._plugin.code}: log level {level!r}; use one of "
                               f"{', '.join(LEVELS)}")
         self.seen.logs.append((level, message.format(**fields) if fields else message))
 
@@ -1063,7 +1076,7 @@ class FakeCtx:
     @property
     def time(self) -> flnd.plugin.Clock:
         """The fake clock, as `now()`, `wall()` and `day()`."""
-        return _Time(self)
+        return flnd.engine.ctx.Time(self._clock)
 
     @property
     def settings(self) -> flnd.plugin.Settings:
@@ -1141,53 +1154,6 @@ class FakeCtx:
         self._answered[_bare(request.url)] = response
         return response
 
-    def _refused(self, response: Any, own: bool) -> None:
-        """Raise the `Blocked` the scheduler holds for: a block `blocked` reads, or a 429.
-
-        Raises:
-            Blocked: with the plugin's seconds (a block round), or a 429's wait.
-        """
-        from flnkit import net
-
-        where = _bare(response.url)
-        seconds = self._plugin.blocked(response) if own else None
-        if seconds is not None:
-            raise Blocked(f"{self._plugin.code}: blocked, HTTP {response.status} for {where}",
-                          wait=seconds)
-        if response.status == 429:
-            wait = net._retry_after(response.headers.get("retry-after"))
-            raise Blocked(f"HTTP 429 for {where}",
-                          wait=wait if wait is not None else net._reset(response.headers),
-                          status=429, response=response)
-
-    def _walled(self, url: str) -> None:
-        """Raise the scheduler's wall when `url`, where a page or a redirect landed, is one.
-
-        Raises:
-            LoginError: a retryable one, which the scheduler waits out twice.
-        """
-        wall = flnd.plugin._wall(url, self._plugin.walls) if self._own(url) else None
-        if wall is not None:
-            raise LoginError(f"{self._plugin.code}: landed on the wall {wall}, at {_bare(url)}",
-                             retryable=True)
-
-    def _checked(self, response: Any, *, refused: bool = True) -> Any:
-        """`response`, or the error the engine raises for its status.
-
-        Args:
-            response: the answer.
-            refused: raise for any other 4xx or 5xx too; False returns it (an `open`).
-        """
-        from flnkit import net
-
-        status = response.status
-        if status in (401, 403) and self._own(response.url):
-            raise LoginError(f"{self._plugin.code}: HTTP {status} for {_bare(response.url)}")
-        if status in (404, 410) or (refused and status >= 400):
-            return net._checked(response, "GET")
-        return response
-
-
 class _Scheduler(jobs.Scheduler):
     """The engine's scheduler, its every hold recorded in a `Seen`."""
 
@@ -1230,22 +1196,6 @@ class _Tab:
         for entry in sent:
             for listening in list(self.feeds):
                 listening._push(entry.url, entry.body)
-
-
-class _Time:
-    """A context's clock as `flnd.plugin.Clock` reads it: `now()`, `wall()` and `day()`."""
-
-    def __init__(self, ctx: FakeCtx) -> None:
-        self._ctx = ctx
-
-    def now(self) -> float:
-        return self._ctx._clock().now
-
-    def wall(self) -> float:
-        return self._ctx._clock().wall
-
-    def day(self) -> datetime.date:
-        return datetime.datetime.fromtimestamp(self.wall(), datetime.UTC).date()
 
 
 class _CtxFeed:
@@ -1295,98 +1245,26 @@ class _CtxFeed:
             self._tab.feeds.remove(self)
 
 
-class _JsonState(MutableMapping[str, Any]):
-    """A plugin's state over a dict: each value must come back from JSON as it went in.
+def _secrets(plugin: Plugin) -> flnd.engine.ctx.Secrets:
+    """The account's secrets: written only while the plugin's `Login.start` runs.
 
-    Raises:
-        SourceError: a value that JSON can't hold as it is (a set, a tuple, a non-text key).
+    The plugin's login object gets a `start` that runs it as the engine does
+    (`flnd.engine.ctx.start`), with the engine's own flag set. What `start` begins inherits it:
+    an `asyncio` task, a `ctx.call`, an `asyncio.to_thread`; a plain thread doesn't.
     """
-
-    def __init__(self, data: MutableMapping[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        try:
-            same = jsonlib.loads(jsonlib.dumps(value)) == value and _plain(value)
-        except (TypeError, ValueError):
-            same = False
-        if not isinstance(key, str) or not same:
-            raise SourceError(f"state[{key!r}]: {value!r} isn't a JSON value; store lists, "
-                              "dicts with text keys, text, numbers, booleans or None")
-        self._data[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        del self._data[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-
-def _plain(value: Any) -> bool:
-    """Whether `value` is made of JSON's own types only (a tuple compares equal to no list)."""
-    if isinstance(value, dict):
-        return all(isinstance(key, str) and _plain(item) for key, item in value.items())
-    if isinstance(value, list):
-        return all(_plain(item) for item in value)
-    return value is None or isinstance(value, (str, int, float, bool))
-
-
-class _Secrets(MutableMapping[str, str]):
-    """An account's secrets: written only while the plugin's `Login.start` runs.
-
-    The plugin's login object gets a `start` that marks its run in `LOGGING_IN`, a context
-    variable. What `start` begins inherits it, as in the engine: an `asyncio` task, a
-    `ctx.call`, an `asyncio.to_thread`. A plain `threading.Thread` doesn't, since by default
-    it starts with an empty context.
-
-    Raises:
-        SourceError: a write or a delete outside `Login.start`.
-    """
-
-    def __init__(self, plugin: Plugin) -> None:
-        login = type(plugin).login
-        if login is not None and not getattr(login.start, "marked", False):
-            login.start = _marked(login.start)
-        self._data: dict[str, str] = {}
-
-    @staticmethod
-    def _writable() -> None:
-        if not LOGGING_IN.get():
-            raise SourceError("ctx.secrets is written only during Login.start")
-
-    def __getitem__(self, key: str) -> str:
-        return self._data[key]
-
-    def __setitem__(self, key: str, value: str) -> None:
-        self._writable()
-        self._data[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        self._writable()
-        del self._data[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
+    login = type(plugin).login
+    if login is not None and not getattr(login.start, "marked", False):
+        login.start = _marked(login.start)
+    data: dict[str, str] = {}
+    return flnd.engine.ctx.Secrets(lambda: data)
 
 
 def _marked(start: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
-    """`start`, with `LOGGING_IN` set while it runs."""
+    """`start`, with the engine's login flag set while it runs."""
     @functools.wraps(start)
-    async def marked(ctx: Any, method: str) -> None:
-        token = LOGGING_IN.set(True)
-        try:
-            await start(ctx, method)
-        finally:
-            LOGGING_IN.reset(token)
+    async def marked(context: Any, method: str) -> None:
+        with flnd.engine.ctx.granted():
+            await start(context, method)
 
     marked.marked = True  # type: ignore[attr-defined]
     return marked
@@ -1421,16 +1299,6 @@ def _response(reply: Reply, url: str) -> Any:
         content = jsonlib.dumps(body).encode()
         headers.setdefault("content-type", "application/json")
     return net.Response(reply.status, reply.url or url, headers, content)
-
-
-def _empty(response: Any) -> bool:
-    """Whether a page holds nothing: no body, or JSON that is null, {} or []."""
-    if not response.content:
-        return True
-    try:
-        return response.json in (None, {}, [])
-    except SiteError:
-        return False
 
 
 def _bare(url: str) -> str:
@@ -1503,7 +1371,7 @@ def collect(plugin: type[Plugin] | type[Source], target: str, *,
     Raises:
         UsageError: the routes don't read `target`, `categories` names one the route doesn't
             have, or an option doesn't fit the kind of class.
-        SourceError: a listing broke one of the checks above, or yielded something else.
+        PluginError: a listing broke one of the checks above, or yielded something else.
         Error: whatever the plugin raised.
 
     Example:
@@ -1617,7 +1485,7 @@ class _Listing:
         """Take a listing's posts as the crawl does, checking their order as they come.
 
         Raises:
-            SourceError: a `newest_first` listing's post is newer than one before it, or the
+            PluginError: a `newest_first` listing's post is newer than one before it, or the
                 listing yielded something not a `Post` or a `Target`.
         """
         from flnd.engine import crawl
@@ -1632,12 +1500,13 @@ class _Listing:
                 self._taken += self.route.discovers
                 continue
             if not isinstance(item, flnd.plugin.Post):
-                raise SourceError(f"{label}: it yielded {item!r}; yield a Post or a Target")
+                raise PluginError(f"{label}: it yielded a {type(item).__name__}; yield a Post or "
+                                  "a Target")
             listed = clock.day(item.listed)
             # A pinned post sits outside the date order: neither checked nor counted.
             if newest_first and listed is not None and not item.pinned:
                 if last is not None and listed > last:
-                    raise SourceError(f"{label}: post {item.id} ({listed}) is newer than one "
+                    raise PluginError(f"{label}: post {item.id} ({listed}) is newer than one "
                                       f"before it ({last}), in a newest_first listing",
                                       hint="list newest first, or set newest_first=False")
                 last = listed
@@ -1669,7 +1538,8 @@ class _Listing:
                 return
         stray = next((file for file in files if not isinstance(file, flnd.plugin.File)), None)
         if stray is not None:
-            raise SourceError(f"{self.plugin.code}: post {post.id}'s files hold {stray!r}; "
+            raise PluginError(f"{self.plugin.code}: post {post.id}'s files hold a "
+                              f"{type(stray).__name__}; "
                               "wrap each in File(...)")
         for path, key, file in _placed(self.ctx, self.route, category, post, files):
             if path in self._known or key in self._known:
@@ -1684,13 +1554,14 @@ def _placed(ctx: FakeCtx, route: flnd.plugin.Route, category: flnd.plugin.Catego
             files: Sequence[flnd.plugin.File]) -> list[tuple[str, str, flnd.plugin.File]]:
     """Each file's path under the target's folder and its history key, by the templates.
 
-    A `File.name` with an extension keeps it. A stem (or no name) takes its extension from
-    the content type, when its URL is routed and its `Content-Type` names a file, then from
-    the URL, then none. The kit doesn't sniff the bytes, which a save does as well.
+    A `File.name` with an extension keeps it. A stem (or no name) takes the engine's rule
+    (`flnd.engine.crawl.planned`): its routed answer's `Content-Type`, then its URL's media
+    extension, then none. The kit has no bytes, which a save checks too.
 
     Raises:
-        SourceError: a template names a field of the plugin's that the post doesn't give.
+        PluginError: a template names a field of the plugin's that the post doesn't give.
     """
+    from flnd.engine import crawl
     from flnkit import text
 
     plugin, target = ctx._plugin, ctx.target
@@ -1700,16 +1571,16 @@ def _placed(ctx: FakeCtx, route: flnd.plugin.Route, category: flnd.plugin.Catego
     named = text.fields(folder) | text.fields(plugin.filename) | text.fields(key)
     missing = sorted(named & set(plugin.fields) - set(post.fields))
     if missing:
-        raise SourceError(f"{plugin.code}: post {post.id} gives no {', '.join(missing)}, "
+        raise PluginError(f"{plugin.code}: post {post.id} gives no {', '.join(missing)}, "
                           "which a template names",
                           hint="give the field on every post, None when it has none")
     placed, used = [], set()
     for num, file in enumerate(files):
-        own = file.name is not None and EXTENSION.fullmatch(PurePosixPath(file.name).suffix)
+        own = bool(crawl.own_extension(file.name))
         if own or file.content is not None:
             extension = PurePosixPath(file.name or "").suffix
         else:
-            extension = _typed(ctx, file) or _extension(file)
+            extension = crawl.planned(file, _typed(ctx, file))[0]
         values = {**post.fields, "plugin": plugin.code, "target": target.value,
                   "category": category.name if category else "", "post": post.id,
                   "num": num, "count": len(files), "index": "" if len(files) == 1 else f"_{num}",
@@ -1732,51 +1603,24 @@ def _placed(ctx: FakeCtx, route: flnd.plugin.Route, category: flnd.plugin.Catego
     return placed
 
 
-def _extension(file: flnd.plugin.File) -> str:
-    """The extension a file is named with before its content is seen; "" when that decides."""
-    from flnkit import files
-
-    if file.content is not None:
-        return PurePosixPath(file.name or "").suffix
-    if file.audio is not None:
-        # Joined without re-encoding: a WebM pair into WebM, anything else into MP4.
-        both = {_suffix(file.url or file.mirrors[0]), _suffix(file.audio)} == {".webm"}
-        return ".webm" if both else ".mp4"
-    if file.playlist is not None:
-        return ".mp4"
-    url = file.url or (file.mirrors[0] if file.mirrors else "")
-    suffix = _suffix(url) if url else ""
-    return suffix if suffix and files.kind_of(f"file{suffix}") else ""
-
-
-def _typed(ctx: FakeCtx, file: flnd.plugin.File) -> str | None:
-    """The media extension a routed file's Content-Type names; None when its URL isn't routed,
-    it is joined or streamed, or its type names no image, video or audio.
+def _typed(ctx: FakeCtx, file: flnd.plugin.File) -> str:
+    """The `Content-Type` a routed file's answer gives; "" when its URL isn't routed, or it is
+    joined or streamed.
 
     A `Reply` route is read as it is. A function route isn't called, since it may answer in
     turn: the answer it last gave the plugin for that URL is read, if any.
     """
-    import mimetypes
-
-    from flnkit import files
-
     url = file.url or (file.mirrors[0] if file.mirrors else None)
     given = _lookup(ctx._routes, url) if url and not (file.audio or file.playlist) else None
     if given is None:
-        return None
+        return ""
     if callable(given):
         response = ctx._answered.get(_bare(url))
         if response is None:
-            return None
+            return ""
     else:
         response = _response(given if isinstance(given, Reply) else Reply(given), url)
-    kind = response.headers.get("content-type", "").split(";")[0].strip()
-    found = mimetypes.guess_extension(kind) if kind else None
-    return found if found and files.kind_of(f"file{found}") else None
-
-
-def _suffix(url: str) -> str:
-    return PurePosixPath(urlsplit(url).path).suffix.lower()
+    return response.headers.get("content-type", "")
 
 
 def _collect(source: type[Source], text: str, site: FakeSite,
@@ -1866,7 +1710,7 @@ def check(plugin: type[Plugin] | type[Source]) -> list[flnd.plugin.Target] | lis
         Each example, resolved, in the order the routes give them.
 
     Raises:
-        SourceError: it isn't a `Plugin` (or `Source`) subclass with a code, a declaration is
+        PluginError: it isn't a `Plugin` (or `Source`) subclass with a code, a declaration is
             wrong, or an example doesn't resolve, or resolves to another route.
 
     Example:
@@ -1884,7 +1728,7 @@ def check(plugin: type[Plugin] | type[Source]) -> list[flnd.plugin.Target] | lis
 
     if not (isinstance(plugin, type) and issubclass(plugin, (Plugin, Source))
             and getattr(plugin, "code", None)):
-        raise SourceError(f"check takes a flnd.plugin.Plugin subclass with a code, "
+        raise PluginError(f"check takes a flnd.plugin.Plugin subclass with a code, "
                           f"not {plugin!r}")
     if issubclass(plugin, Plugin):
         flnd.plugin._check(plugin)
@@ -1895,13 +1739,13 @@ def check(plugin: type[Plugin] | type[Source]) -> list[flnd.plugin.Target] | lis
                 resolved = (plugin.resolve(text) if issubclass(plugin, Plugin)
                             else resolve(text, {plugin.code: plugin}))
             except UsageError as error:
-                raise SourceError(f"{plugin.code}.{route.kind}: the example {text!r} doesn't "
+                raise PluginError(f"{plugin.code}.{route.kind}: the example {text!r} doesn't "
                                   f"resolve: {error}") from None
             if resolved is None:
-                raise SourceError(f"{plugin.code}.{route.kind}: the example {text!r} doesn't "
+                raise PluginError(f"{plugin.code}.{route.kind}: the example {text!r} doesn't "
                                   "resolve: no route reads it")
             if resolved.kind != route.kind:
-                raise SourceError(f"{plugin.code}.{route.kind}: the example {text!r} is read "
+                raise PluginError(f"{plugin.code}.{route.kind}: the example {text!r} is read "
                                   f"by the route {resolved.kind}",
                                   hint="move the example to that route's docstring, or "
                                        "change the patterns")

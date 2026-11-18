@@ -15,7 +15,7 @@ from unittest import mock
 
 import no_profiles  # noqa: F401
 
-from flnd.errors import Blocked, Changed, NetworkError, NotFound, SiteError, SourceError
+from flnd.errors import Blocked, Changed, Hidden, NetworkError, NotFound, PluginError, SiteError
 from flnd.plugin import Range
 from flnd.plugins.tik import TIKTOK_UA, Profile, TikTok, best_video
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
@@ -295,7 +295,7 @@ class ProfileTest(unittest.TestCase):
 
     def test_an_older_pinned_post_above_newer_ones(self):
         # Marked pinned, it sits outside the date order; unmarked, the order is broken.
-        for pinned, error in ((True, None), (False, SourceError)):
+        for pinned, error in ((True, None), (False, PluginError)):
             with self.subTest(pinned=pinned):
                 feeds = [(FEEDS[0][0], {"hasMore": False, "itemList": [
                     video("7200000000000000001", f"{CDN}/old", createTime=1690000000,
@@ -306,7 +306,7 @@ class ProfileTest(unittest.TestCase):
                 try:
                     saved, raised = collect(TikTok, "tik:example_creator", ctx=ctx,
                                             categories=["videos"]), None
-                except SourceError as found:
+                except PluginError as found:
                     saved, raised = [], found
                 self.assertIs(type(raised) if raised else None, error)
                 self.assertEqual([found.post.pinned for found in saved],
@@ -338,16 +338,16 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(ctx.seen.scrolls, 1)
 
     def test_a_walled_post_list(self):
-        """S19: the posts the page links to are saved, then the list is `Hidden` (SourceError
-        stands in), in `videos` and in `playlists`, which leaves the links to `videos`. A
-        list answered empty is walled too; a profile listing no videos is just empty."""
+        """S19: the posts the page links to are saved, then the list is `Hidden`, in `videos`
+        and in `playlists`, which leaves the links to `videos`. A list answered empty is walled
+        too; a profile listing no videos is just empty."""
         link = f'<a href="/@example_creator/video/{VIDEO}">clip</a>'
         routes = {f"{API}/embed/v2/{VIDEO}": Reply(embed_page(EMBEDS[VIDEO][0]))}
         empty = [(FEEDS[0][0], {"hasMore": False, "itemList": []})]
         for category, count, feeds, ids, error in (
-                ("videos", 2, (), [VIDEO], SourceError),
-                ("videos", 2, empty, [VIDEO], SourceError),
-                ("playlists", 2, empty, [], SourceError),
+                ("videos", 2, (), [VIDEO], Hidden),
+                ("videos", 2, empty, [VIDEO], Hidden),
+                ("playlists", 2, empty, [], Hidden),
                 ("videos", 0, empty, [], None)):
             with self.subTest(category=category, video_count=count, answered=bool(feeds)):
                 ctx = fake(profile_page(video_count=count, body=link), feeds, routes=routes)

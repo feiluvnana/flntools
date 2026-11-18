@@ -5,29 +5,42 @@ logins, `Ctx`'s members, and the helpers. Made-up plugins on example.com; no net
 """
 
 import asyncio
+import contextvars
 import dataclasses
 import datetime
 import inspect
+import threading
 import unittest
+from unittest import mock
 
+from fakes import EngineCase
+from test_site import FakeRaw, SiteCase
+
+from flnd.engine import jobs
+from flnd.engine.core import Engine
+from flnd.engine.events import Planned
+from flnd.engine.options import Options
+from flnd.errors import Blocked
 from flnd.plugin import (
     API,
     Browser,
     Ctx,
     File,
+    Landed,
     Login,
+    LoginError,
     NotFound,
     Part,
     Plugin,
+    PluginError,
     Post,
     Range,
     Request,
     Settings,
-    SourceError,
+    SiteError,
     Stream,
     Target,
     UsageError,
-    _wall,
     best,
     cookies,
     dig,
@@ -35,9 +48,13 @@ from flnd.plugin import (
     numbered,
     page_info,
     route,
+    wall,
 )
+from flnd.testing import FakeCtx, Reply, collect
 from flnkit import dig as kit_dig
 from flnkit import html
+from flnkit import net as _net
+from flnkit.browser import Page
 
 
 async def listing(self, ctx, user):
@@ -233,7 +250,7 @@ class DeclarationTest(unittest.TestCase):
         ]
         for attribute, make, message in rows:
             with self.subTest(attribute, message=message), self.assertRaisesRegex(
-                    SourceError, message):
+                    PluginError, message):
                 make()
 
     def test_each_pattern_mistake_is_named(self):
@@ -259,19 +276,19 @@ class DeclarationTest(unittest.TestCase):
             ((42,), r"write a pattern, or a \(pattern, value\) pair"),
         ]
         for patterns, message in rows:
-            with self.subTest(patterns), self.assertRaisesRegex(SourceError, message):
+            with self.subTest(patterns), self.assertRaisesRegex(PluginError, message):
                 plugin(user=route(*patterns)(listing))
-        with self.assertRaisesRegex(SourceError, r"route <lambda>: take \(self, ctx, value\)"):
+        with self.assertRaisesRegex(PluginError, r"route <lambda>: take \(self, ctx, value\)"):
             route("exm:{user}")(lambda self, user: None)
-        with self.assertRaisesRegex(SourceError, r"a single route reads one post"):
+        with self.assertRaisesRegex(PluginError, r"a single route reads one post"):
             route("exm:{user}", single=True, discovers=True)(listing)
-        with self.assertRaisesRegex(SourceError, r"category <lambda>: take \(self, ctx, profile\)"):
+        with self.assertRaisesRegex(PluginError, r"category <lambda>: take \(self, ctx, profile\)"):
             route("exm:{user}")(profile).category(lambda self, profile: None)
-        with self.assertRaisesRegex(SourceError, r"category 'posts' is declared twice"):
+        with self.assertRaisesRegex(PluginError, r"category 'posts' is declared twice"):
             made = route("exm:{user}")(profile)
             made.category(posts)
             made.category(posts)
-        with self.assertRaisesRegex(SourceError, r"category posts: url '\{user'"):
+        with self.assertRaisesRegex(PluginError, r"category posts: url '\{user'"):
             route("exm:{user}")(profile).category(url="{user")(posts)
         options = [
             (lambda: route("exm:{user}", single=1)(listing), r"route listing: single is True"),
@@ -284,7 +301,7 @@ class DeclarationTest(unittest.TestCase):
              r"category posts: newest_first is True or False, not 1"),
         ]
         for make, message in options:
-            with self.subTest(message), self.assertRaisesRegex(SourceError, message):
+            with self.subTest(message), self.assertRaisesRegex(PluginError, message):
                 make()
 
     def test_a_valid_plugin_derives_its_routes_forms_and_categories(self):
@@ -415,7 +432,7 @@ class RouteTest(unittest.TestCase):
         ]
         for url, walls, expected in rows:
             with self.subTest(url, walls=walls):
-                self.assertEqual(_wall(url, walls), expected)
+                self.assertEqual(wall(url, walls), expected)
 
 
 class TypesTest(unittest.TestCase):
@@ -455,7 +472,7 @@ class TypesTest(unittest.TestCase):
         self.assertEqual((post.pinned, pinned.replace(date=3).pinned,
                           pinned.replace(pinned=False).pinned, pinned.listed), (False, True, False,
                                                                                 None))
-        with self.assertRaises(SourceError):
+        with self.assertRaises(PluginError):
             Post("1", pinned=1)
         lazy = Post("1", files)
         self.assertTrue(lazy.lazy)
@@ -466,14 +483,14 @@ class TypesTest(unittest.TestCase):
                          (File("https://a.example.com/x"),))
         for files, message in ((["https://a.example.com/x"], r"wrap each in File"),
                                ("https://a.example.com/x", r"files is a list of File")):
-            with self.subTest(files), self.assertRaisesRegex(SourceError, message):
+            with self.subTest(files), self.assertRaisesRegex(PluginError, message):
                 Post("1", files)
         for empty in (None, "", "  "):
-            with self.subTest(id=empty), self.assertRaisesRegex(SourceError, "a post needs an id"):
+            with self.subTest(id=empty), self.assertRaisesRegex(PluginError, "a post needs an id"):
                 Post(empty)
         self.assertEqual(Post(0).id, "0")
         for field in ("post", "category", "num", "plugin"):
-            with self.subTest(field), self.assertRaisesRegex(SourceError, f"{field} is the"):
+            with self.subTest(field), self.assertRaisesRegex(PluginError, f"{field} is the"):
                 Post("1", **{field: "x"})
 
     def test_file_takes_exactly_one_source(self):
@@ -501,7 +518,7 @@ class TypesTest(unittest.TestCase):
             ({"url": "https://a.example.com/x", "size": -1}, r"whole number of bytes"),
         ]
         for options, message in rows:
-            with self.subTest(options), self.assertRaisesRegex(SourceError, message):
+            with self.subTest(options), self.assertRaisesRegex(PluginError, message):
                 File(**options)
 
     def test_text_and_stream_files(self):
@@ -512,7 +529,7 @@ class TypesTest(unittest.TestCase):
         live = File.stream("https://cdn.example.com/v.m3u8", headers={"referer": "x"})
         self.assertEqual((live.playlist, dict(live.headers), live.url),
                          ("https://cdn.example.com/v.m3u8", {"referer": "x"}, None))
-        with self.assertRaisesRegex(SourceError, r"a playlist's URL"):
+        with self.assertRaisesRegex(PluginError, r"a playlist's URL"):
             File.stream("v.m3u8")
         self.assertEqual(note, File.text("info.md", "# Title\n"))
         self.assertIn("info.md", repr(note))
@@ -619,7 +636,7 @@ class HooksTest(unittest.TestCase):
             run(login.start(Jar(), "phone"))
         for names, url, message in (((), "https://x.example.com", r"takes the cookie names"),
                                     (("sid",), "http://x.example.com", r"an https URL")):
-            with self.subTest(message), self.assertRaisesRegex(SourceError, message):
+            with self.subTest(message), self.assertRaisesRegex(PluginError, message):
                 cookies(*names, url=url)
 
     def test_settings_subclasses_are_frozen_keyword_only_dataclasses(self):
@@ -640,13 +657,13 @@ class HooksTest(unittest.TestCase):
             Own().height = 1
         with self.assertRaises(TypeError):
             Own(720)
-        with self.assertRaisesRegex(SourceError, r"Mutable: mutable default"):
+        with self.assertRaisesRegex(PluginError, r"Mutable: mutable default"):
             type("Mutable", (Settings,), {"__annotations__": {"tags": list}, "tags": []})
 
     def test_ctx_has_exactly_the_contracts_members(self):
         members = {name for name in vars(Ctx) if not name.startswith("_")}
         self.assertEqual(members, {
-            "fetch", "pages", "open", "feed", "load", "document", "click", "handoff",
+            "fetch", "pages", "open", "feed", "load", "document", "warm", "click", "handoff",
             "extension", "storage", "pause", "hold", "call", "ask", "log", "target", "when",
             "time", "settings", "account", "cookies", "state", "secrets"})
         self.assertEqual(str(inspect.signature(Ctx.pages)),
@@ -710,6 +727,612 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(dig({"a": [{"b": 1}]}, "a[0].b"), 1)
         with self.assertRaises(ValueError):
             dig({}, "a[")
+
+
+# ---------------------------------------------------------------------------------------------
+# The engine's `Ctx` (src/engine/ctx.py), on a real source run with tests/test_site.py's fake
+# browser and `flnkit.net.fake`
+# ---------------------------------------------------------------------------------------------
+
+API_URL = "https://api.example.com"
+PROFILE = "https://www.example.com/example_user/"
+
+
+class Wired(Example):
+    """`Example` with a token signed onto its own domains and a fixed User-Agent."""
+
+    code = "exw"
+    user_agent = "example-agent/1"
+    walls = ("/accounts/login", "/challenge", "/login", "/login.php")
+
+    def sign(self, request, cookies):
+        return request.replace(headers={**(request.headers or {}), "X-Signed": "1"})
+
+
+class CtxCase(SiteCase):
+    """A `flnd.engine.ctx.Ctx` for `exw:example_user`, on the run of the test's `SiteCase`."""
+
+    def ctx(self, plugin=Wired, **options):
+        from flnd.engine.ctx import Ctx
+
+        run, _ = self.open(source=plugin)
+        made = Ctx(run, Target(f"{plugin.code}:example_user", kind="user"), **options)
+        self.addCleanup(made.close)
+        return run, made
+
+    def call(self, run, coroutine):
+        return run.loop.run(coroutine)
+
+
+class PagesTest(CtxCase):
+    def listing(self, start):
+        from flnd.engine.site import Listing
+
+        return Listing(start, label="exw:example_user: posts")
+
+    def collected(self, run, ctx):
+        async def pages():
+            return [page.json async for page in ctx.pages(f"{API_URL}/posts", cursor="next")]
+
+        return self.call(run, pages())
+
+    def test_a_429_on_a_resumed_page_keeps_its_cursor(self):
+        """S6: the saved cursor outlives a rate limit; the next run resumes from it."""
+        self.serve = lambda request: _net.reply(429, headers={"retry-after": "1"})
+        run, ctx = self.ctx()
+        ctx.listing = listing = self.listing("c42")
+        with self.assertRaises(Blocked):
+            self.collected(run, ctx)
+        self.assertEqual((listing.cursor, listing.refused), ("c42", False))
+
+    def test_a_refused_cursor_lists_from_the_newest_and_a_page_moves_it(self):
+        def serve(request):
+            cursor = request.url.params.get("cursor")
+            if cursor == "stale":
+                return _net.reply(400)
+            return _net.reply(200, json={"items": [cursor], "next": "c2" if cursor is None
+                                         else None})
+
+        self.serve = serve
+        run, ctx = self.ctx()
+        ctx.listing = listing = self.listing("stale")
+        pages = self.collected(run, ctx)
+        self.assertEqual(pages, [{"items": [None], "next": "c2"}, {"items": ["c2"], "next": None}])
+        self.assertEqual((listing.refused, listing.cursor, listing.read), (True, "c2", 2))
+
+
+class OpenTest(CtxCase):
+    def opened(self, statuses, url=PROFILE, **raw):
+        self.raw = FakeRaw(statuses, **raw)
+        run, ctx = self.ctx()
+        return run, ctx, lambda: self.call(run, ctx.open(url))
+
+    def test_a_404_page_is_not_found_and_a_page_says_where_it_landed(self):
+        """S5: `open` keeps the page's status: a 404 raises `NotFound`, never a quiet False."""
+        _, _, opened = self.opened([200, 404])
+        self.assertEqual(opened(), Landed(PROFILE, 200))
+        with self.assertRaises(NotFound):
+            opened()
+
+    def landed(self, lands, name):
+        """`open` of `example.com/<name>/`, its tab landing where `lands` says."""
+        url = f"https://www.example.com/{name}/"
+        _, ctx, opened = self.opened([200] * 4, url)
+        original = self.raw.goto
+
+        async def goto(target, **options):
+            answer = await original(target, **options)
+            self.raw.url = lands.get(target, target)
+            return type(answer)(status=answer.status, url=self.raw.url, headers={})
+
+        self.raw.goto = goto
+        return opened
+
+    def test_landed_keeps_the_pages_own_status(self):
+        _, _, opened = self.opened([203])
+        self.assertEqual(opened(), Landed(PROFILE, 203))
+
+    def test_landing_on_a_wall_is_held_twice_then_a_login_error(self):
+        wall = "https://www.example.com/accounts/login/?next=/example_user/"
+        opened = self.landed({PROFILE: wall}, "example_user")
+        with self.assertRaises(LoginError):
+            opened()
+        self.assertEqual(len(self.raw.loaded), 3)
+        self.assertGreaterEqual(self.now, 150.0)
+
+    # The three wall tests the API-1 plugins had (fbk, ins, twt), on the engine's rule.
+    def test_a_profile_named_like_the_login_page_is_no_wall(self):
+        self.assertEqual(self.landed({}, "login.example")().status, 200)
+
+    def test_a_profile_whose_name_starts_like_a_wall_is_not_one(self):
+        for name in ("challenge_example", "challengers"):
+            with self.subTest(name=name):
+                self.assertEqual(self.landed({}, name)().status, 200)
+                self.assertEqual(self.raw.loaded, [f"https://www.example.com/{name}/"])
+
+    def test_a_handle_that_starts_like_the_login_path_is_read(self):
+        self.assertEqual(self.landed({}, "login_example")().url,
+                         "https://www.example.com/login_example/")
+
+
+class FetchTest(CtxCase):
+    def fetched(self, request, *, serve=None, plugin=Wired, **options):
+        if serve is not None:
+            self.serve = serve
+        run, ctx = self.ctx(plugin)
+        return run, self.call(run, ctx.fetch(request, **options))
+
+    def test_signed_and_its_user_agent_on_its_own_domains_only(self):
+        run, _ = self.fetched(f"{API_URL}/me")
+        self.call(run, self.ctx()[1].fetch("https://cdn.example/a.jpg"))
+        own, other = self.requests
+        self.assertEqual((own.headers["x-signed"], own.headers["user-agent"]),
+                         ("1", "example-agent/1"))
+        self.assertNotIn("x-signed", other.headers)
+        self.assertNotEqual(other.headers.get("user-agent"), "example-agent/1")
+
+    def test_a_refusal_unchecked_is_read_and_never_expires_the_account(self):
+        for status in (401, 403, 404, 410):
+            with self.subTest(status=status):
+                run, response = self.fetched(Request(f"{API_URL}/private", check=False),
+                                             serve=lambda request, status=status:
+                                             _net.reply(status))
+                self.assertEqual(response.status, status)
+                self.assertEqual(run.scheduler.expired, set())
+
+    def test_a_checked_403_is_a_login_error_and_expires_the_account(self):
+        self.serve = lambda request: _net.reply(403)
+        run, ctx = self.ctx()
+        with self.assertRaises(LoginError):
+            self.call(run, ctx.fetch(f"{API_URL}/private"))
+        self.assertEqual(run.scheduler.expired, {("exw", None)})
+
+    def test_a_5xx_is_tried_again_and_the_last_answer_read(self):
+        def serve(request):
+            self.requests.append(request)
+            return _net.reply(503)
+
+        _, response = self.fetched(Request(f"{API_URL}/busy", check=False), serve=serve)
+        self.assertEqual((response.status, len(self.requests)), (503, 5))
+
+    def test_blocked_holds_for_what_it_reads(self):
+        class Strict(Wired):
+            code = "exs"
+
+            def blocked(self, response):
+                return 60.0 if b"slow down" in response.content else None
+
+        answers = iter([_net.reply(200, content=b"slow down"), _net.reply(200, json={"ok": 1})])
+        _, response = self.fetched(f"{API_URL}/me", plugin=Strict,
+                                   serve=lambda request: next(answers))
+        self.assertEqual(response.json, {"ok": 1})
+        self.assertGreaterEqual(self.now, 60.0)
+
+    def test_a_page_body_is_capped(self):
+        from flnd.engine import ctx
+
+        with mock.patch.object(ctx, "PAGE_LIMIT", 10), \
+                self.assertRaisesRegex(SiteError, "too big to read as a page"):
+            self.fetched(f"{API_URL}/big", serve=lambda request: _net.reply(200, content=b"x" * 11))
+
+
+    def test_a_post_is_never_tried_again(self):
+        """A POST's 5xx comes back at once: the server may have acted (a 2FA code sent)."""
+        def serve(request):
+            self.requests.append(request)
+            return _net.reply(503)
+
+        _, response = self.fetched(Request(f"{API_URL}/login", method="POST", check=False),
+                                   serve=serve)
+        self.assertEqual((response.status, len(self.requests)), (503, 1))
+        with self.assertRaises(SiteError):
+            self.fetched(Request(f"{API_URL}/login", method="POST", body={"code": "1"}),
+                         serve=serve)
+        self.assertEqual(len(self.requests), 2)
+
+    def test_a_redirect_to_a_wall_is_one_and_a_direct_request_is_not(self):
+        wall = "https://www.example.com/accounts/login/"
+
+        def serve(request):
+            self.requests.append(request)
+            if request.url.path == "/moved":
+                return _net.reply(302, headers={"Location": wall})
+            return _net.reply(200, json={"path": request.url.path})
+
+        _, response = self.fetched(wall, serve=serve)
+        self.assertEqual(response.json, {"path": "/accounts/login/"})
+        with self.assertRaises(LoginError):
+            self.fetched("https://www.example.com/moved", serve=serve)
+        self.assertGreaterEqual(self.now, 150.0)
+
+    def test_blocked_and_a_login_are_read_on_its_own_domains_only(self):
+        class Strict(Wired):
+            code = "exs"
+
+            def blocked(self, response):
+                return 60.0
+
+        for url in ("https://cdn.example/a.jpg", "https://notexample.com/a",
+                    "https://example.com.evil/a"):
+            with self.subTest(url):
+                self.requests.clear()
+                with self.assertRaises(SiteError) as raised:
+                    self.fetched(url, plugin=Strict, serve=lambda request: (
+                        self.requests.append(request), _net.reply(403))[1])
+                self.assertNotIsInstance(raised.exception, LoginError)
+                self.assertEqual(self.now, 0.0)
+                self.assertNotIn("x-signed", self.requests[0].headers)
+
+    def test_a_post_signing_error_names_no_secret(self):
+        class Leaky(Wired):
+            code = "exl"
+
+            def sign(self, request, cookies):
+                return {"Authorization": "Bearer TOKEN-SECRET"}
+
+        with self.assertRaises(PluginError) as raised:
+            self.fetched(f"{API_URL}/me", plugin=Leaky)
+        self.assertNotIn("TOKEN-SECRET", str(raised.exception))
+        self.assertIn("dict", str(raised.exception))
+
+    def test_an_in_page_answer_is_capped_and_pages_go_in_page(self):
+        from flnd.engine import ctx
+
+        big = _net.Response(200, f"{API_URL}/feed", {}, b"x" * 11)
+        with mock.patch.object(Page, "fetch", new=mock.AsyncMock(return_value=big)), \
+                mock.patch.object(ctx, "PAGE_LIMIT", 10), \
+                self.assertRaisesRegex(SiteError, "too big to read as a page"):
+            self.fetched(f"{API_URL}/feed", in_page=True)
+        pages = [_net.Response(200, f"{API_URL}/feed", {}, b'{"next": "c2"}'),
+                 _net.Response(200, f"{API_URL}/feed", {}, b'{"next": null}')]
+        run, made = self.ctx()
+
+        async def listed():
+            return [page.json async for page in made.pages(f"{API_URL}/feed", cursor="next",
+                                                           in_page=True)]
+
+        with mock.patch.object(Page, "fetch", new=mock.AsyncMock(side_effect=pages)) as sent:
+            self.assertEqual(self.call(run, listed()), [{"next": "c2"}, {"next": None}])
+        self.assertEqual(sent.call_args.args[0], f"{API_URL}/feed?cursor=c2")
+        self.assertEqual(self.requests, [])
+
+    def test_a_redirect_off_its_domains_carries_nothing_sign_added(self):
+        """API 1 and API 2: a signed request followed to another host goes unsigned."""
+        from test_site import Example as Source1
+
+        from flnd.engine import site
+        from flnd.engine.options import SourceConfig
+
+        def serve(request):
+            self.requests.append(request)
+            if request.url.host == "api.example.com":
+                return _net.reply(302, headers={"Location": "https://cdn.example/elsewhere"})
+            return _net.reply(200, content=b"ok")
+
+        self.serve = serve
+        jar = [{"name": "token", "value": "TOKEN-SECRET", "domain": ".example.com", "path": "/"}]
+        for source in (Wired(), Source1()):
+            with self.subTest(source.api):
+                self.requests.clear()
+                session = site._network(source, jar, SourceConfig(), handles=4)
+                client = _net.Client(session)
+
+                async def fetched(client=client, session=session):
+                    try:
+                        return await client.fetch(f"{API_URL}/me")
+                    finally:
+                        await session.close()
+
+                self.assertEqual(asyncio.run(fetched()).url, "https://cdn.example/elsewhere")
+                first, second = self.requests
+                signed = {"x-signed", "authorization"}
+                self.assertTrue(signed & set(first.headers))
+                self.assertFalse(signed & set(second.headers), second.headers)
+                self.assertNotIn("TOKEN-SECRET", str(dict(second.headers)))
+
+
+class ReadsTest(CtxCase):
+    def test_secrets_are_written_only_during_a_login(self):
+        from flnd.engine.ctx import start
+
+        class Phone(Login):
+            methods = ("phone",)
+
+            async def start(self, ctx, method):
+                ctx.secrets["session"] = "s1"
+
+        run, ctx = self.ctx()
+        with self.assertRaisesRegex(PluginError, "only during Login.start"):
+            ctx.secrets["session"] = "s0"
+        self.call(run, start(Phone(), ctx, "phone"))
+        self.assertEqual(dict(ctx.secrets), {"session": "s1"})
+
+    def test_a_task_a_login_started_cant_write_after_it(self):
+        from flnd.engine.ctx import start
+
+        left = {}
+
+        class Phone(Login):
+            methods = ("phone",)
+
+            async def start(self, ctx, method):
+                gate = asyncio.Event()
+
+                async def later():
+                    await gate.wait()
+                    ctx.secrets["late"] = "x"
+
+                left["task"], left["gate"] = asyncio.get_running_loop().create_task(later()), gate
+
+        run, made = self.ctx()
+        self.call(run, start(Phone(), made, "phone"))
+
+        async def release():
+            left["gate"].set()
+            await left["task"]
+
+        with self.assertRaisesRegex(PluginError, "only during Login.start"):
+            self.call(run, release())
+
+    def test_its_cookies_are_its_domains_only(self):
+        run, made = self.ctx()
+        run.session.add([{"name": "sid", "value": "1", "domain": ".example.com", "path": "/"},
+                         {"name": "cdn", "value": "2", "domain": "cdn.example", "path": "/"}])
+        self.assertEqual(dict(made.cookies), {"sid": "1"})
+        seen = {}
+
+        class Seeing(Wired):
+            code = "exc"
+
+            def sign(self, request, cookies):
+                seen.update(cookies)
+                return request
+
+        run, made = self.ctx(Seeing)
+        run.session.add([{"name": "sid", "value": "1", "domain": ".example.com", "path": "/"},
+                         {"name": "cdn", "value": "2", "domain": "cdn.example", "path": "/"}])
+        self.call(run, made.fetch(f"{API_URL}/me"))
+        self.assertEqual(seen, {"sid": "1"})
+
+    def test_a_fetch_takes_only_the_browser_cookies_of_its_host(self):
+        run, made = self.ctx()
+        made._site._tabs = object()
+        browser = [{"name": "sid", "value": "1", "domain": ".example.com", "path": "/"},
+                   {"name": "other", "value": "2", "domain": ".example.org", "path": "/"}]
+        with mock.patch.object(type(made._site), "_browser_cookies", return_value=browser):
+            self.call(run, made.fetch(f"{API_URL}/me"))
+        made._site._tabs = None
+        self.assertEqual(set(run.session.names), {"sid"})
+
+    def test_ask_runs_off_the_loop(self):
+        from flnd.engine.ctx import Ctx
+        from flnd.ui import forms
+
+        run, _ = self.ctx()
+        run.settings.interactive = True
+        made = Ctx(run, Target("exw:", kind="account"), login=True)
+        ticked = threading.Event()
+
+        def typed(message, *, secret=False):
+            return "typed" if ticked.wait(5) else "the loop was blocked"
+
+        async def asked():
+            async def tick():
+                await asyncio.sleep(0)
+                ticked.set()
+
+            ticker = asyncio.ensure_future(tick())
+            answer = await made.ask("Code?")
+            await ticker
+            return answer
+
+        with mock.patch.object(forms, "interactive", return_value=True), \
+                mock.patch.object(forms, "ask", side_effect=typed):
+            self.assertEqual(self.call(run, asked()), "typed")
+
+    def test_state_takes_json_values_and_time_has_a_day(self):
+        _, ctx = self.ctx()
+        ctx.state["seen"] = {"a": [1, None]}
+        self.assertEqual(ctx.state["seen"], {"a": [1, None]})
+        with self.assertRaises(PluginError):
+            ctx.state["bad"] = ("a", "tuple")
+        self.assertEqual(ctx.time.day(), datetime.date(2026, 1, 1))
+
+    def test_warm_loads_the_pages_a_listing_opens_next(self):
+        run, ctx = self.ctx()
+        self.make_raw = lambda: FakeRaw([200])
+        self.call(run, ctx.warm(["https://www.example.com/a/", "", "https://www.example.com/b/"]))
+        self.assertEqual(sorted(ctx._site._tabs._warmed), ["https://www.example.com/a/",
+                                                           "https://www.example.com/b/"])
+
+
+# ---------------------------------------------------------------------------------------------
+# Through the real engine (`fakes.EngineCase`): names, a single route's categories, `ranged`
+# ---------------------------------------------------------------------------------------------
+
+JPEG = b"\xff\xd8\xff\xe0" + b"\0" * 60
+CDN_URL = "https://cdn.example"
+
+
+class Saving(Plugin):
+    """A post of the files `FILES` holds, one route per case of the engine's naming."""
+
+    code = "exn"
+    name = "Saving"
+    api = API
+    domains = ("example.com",)
+    filename = "{post}_{num}"
+    # Set by each test: the files of the one post.
+    files: tuple = ()
+
+    @route("exn:{user}")
+    async def user(self, ctx, user):
+        yield Post("p1", type(self).files, date="2026-01-02")
+
+    @route("example.com/p/{post:\\w+}", single=True)
+    async def post(self, ctx, post):
+        return {"post": post}
+
+    @post.category
+    async def photo(self, ctx, profile):
+        yield Post(profile["post"], [File(f"{CDN_URL}/{profile['post']}.jpg")])
+
+    @post.category(own=False)
+    async def archive(self, ctx, profile):
+        yield Post(profile["post"], [File(f"{CDN_URL}/{profile['post']}.zip", name="a.zip")])
+
+
+class EngineTest(EngineCase):
+    def saved(self, *files, targets=("exn:example_user",), **options):
+        Saving.files = files
+        self.addCleanup(setattr, Saving, "files", ())
+        self.run_engine(Saving, targets=list(targets), **options)
+        folder = self.home / "media" / "exn"
+        return sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*")
+                      if path.is_file() and not path.name.endswith(".json"))
+
+    def test_a_file_is_named_as_the_kit_names_it(self):
+        """5.3: a name with its extension keeps it; a stem takes its content type's, then its
+        URL's media extension, then none; then the bytes rename one of another known format.
+        The kit, which has no bytes, names every other row the same."""
+        rows = [  # (file, answer's Content-Type, bytes, name saved)
+            (File(f"{CDN_URL}/a.png", name="cover_12.gif"), "", b"plain", "cover_12.gif"),
+            (File(f"{CDN_URL}/b", name="avatar_42"), "image/png", b"plain", "avatar_42.png"),
+            (File(f"{CDN_URL}/c.png"), "", JPEG, "p1_2.jpg"),
+            (File(f"{CDN_URL}/d.php", name="01"), "", b"plain", "01"),
+            (File(f"{CDN_URL}/e"), "", b"plain", "p1_4"),
+            (File(f"{CDN_URL}/f.jpg"), "image/png", b"plain", "p1_5.png"),
+            (File(f"{CDN_URL}/g.mp4"), "", b"plain", "p1_6.mp4"),
+        ]
+        routes = {}
+        for file, kind, body, _ in rows:
+            headers = {"Content-Type": kind} if kind else {}
+            self.routes[file.url] = _net.reply(200, content=body, headers=headers)
+            routes[file.url] = Reply(body, headers=headers)
+        found = self.saved(*[file for file, *_ in rows])
+        self.assertEqual(found, sorted(f"example_user/{name}" for *_, name in rows))
+        kit = collect(Saving, "exn:example_user", ctx=FakeCtx(Saving, routes=routes))
+        self.assertEqual([found.path for found, (_, _, body, _) in zip(kit, rows) if body != JPEG],
+                         [name for _, _, body, name in rows if body != JPEG])
+
+    def test_a_dry_run_shows_the_path_that_is_saved(self):
+        self.routes[f"{CDN_URL}/d.php"] = _net.reply(200, content=b"plain")
+        Saving.files = (File(f"{CDN_URL}/d.php", name="01"),)
+        self.addCleanup(setattr, Saving, "files", ())
+        events = []
+        Engine(home=self.home, sources={"exn": Saving}, emit=events.append).download(
+            ["exn:example_user"], dry=True)
+        planned = [event.path.name for event in events if isinstance(event, Planned)]
+        self.assertEqual(planned, ["01"])
+        self.assertEqual(self.saved(*Saving.files), ["example_user/01"])
+
+    def ranged(self, count):
+        """`count` ranged fetch files of 4 small segments each, saved at once on one host."""
+        size = 4 * (64 << 10) + 123
+        blob = bytes(range(256)) * (size // 256 + 1)
+        blob = blob[:size]
+
+        async def fetch(part):
+            end = part.end if part.end is not None else size
+            for at in range(part.offset, end, 10000):
+                await part.write(blob[at:min(at + 10000, end)])
+
+        files = [File(fetch=fetch, size=size, ranged=True, name=f"f{n}.bin") for n in range(count)]
+        with mock.patch.object(jobs, "SPLIT_FILE", 128 << 10), \
+                mock.patch.object(jobs, "SPLIT_RANGE", 64 << 10):
+            outcome = {}
+            context = contextvars.copy_context()
+            worker = threading.Thread(target=context.run, args=(
+                lambda: outcome.setdefault("found", self.saved(*files)),), daemon=True)
+            worker.start()
+            worker.join(60)
+        self.assertNotIn(worker, threading.enumerate(), f"{count} ranged files hung")
+        folder = self.home / "media/exn/example_user"
+        return outcome["found"], [(folder / f"f{n}.bin").read_bytes() == blob
+                                  for n in range(count)]
+
+    def test_many_ranged_fetches_on_one_host_all_finish_whole(self):
+        for count in (8, 16):
+            with self.subTest(count=count):
+                found, whole = self.ranged(count)
+                self.assertEqual(len(found), count)
+                self.assertTrue(all(whole))
+
+    def test_a_ranged_fetch_is_one_transfer_when_its_host_has_no_room(self):
+        size = 3 * jobs.SPLIT_RANGE
+        asked = []
+
+        async def fetch(part):
+            asked.append((part.offset, part.end))
+            await part.write(bytes(size - part.offset))
+
+        with mock.patch.object(jobs.Scheduler, "room", return_value=False):
+            self.saved(File(fetch=fetch, size=size, ranged=True, name="big.bin"))
+        self.assertEqual(asked, [(0, None)])
+
+    def test_a_ranged_fetchs_sidecar_is_written_per_piece_by_one_writer(self):
+        from flnkit import files as _files
+
+        kept = []
+        real = _files.Part.keep
+
+        def keep(part, meta):
+            kept.append(threading.get_ident())
+            return real(part, meta)
+
+        with mock.patch.object(_files.Part, "keep", keep):
+            found, whole = self.ranged(1)
+        self.assertTrue(all(whole))
+        # Four segments under 4 MiB each: the plan once, and each segment's end.
+        self.assertLessEqual(len(kept), 5)
+
+    def test_a_discovering_routes_categories_run_and_their_targets_are_followed(self):
+        class Finder(Plugin):
+            code = "exf"
+            name = "Finder"
+            api = API
+            domains = ("example.net",)
+
+            @route("exf:{user}", discovers=True)
+            async def user(self, ctx, user):
+                return {"user": user}
+
+            @user.category
+            async def following(self, ctx, profile):
+                yield Target("exn:example_user")
+
+        self.routes[f"{CDN_URL}/a.jpg"] = _net.reply(200, content=JPEG)
+        Saving.files = (File(f"{CDN_URL}/a.jpg"),)
+        self.addCleanup(setattr, Saving, "files", ())
+        self.run_engine(Finder, Saving, targets=["exf:example_user"])
+        self.assertTrue((self.home / "media/exn/example_user/p1_0.jpg").is_file(),
+                        self.failures())
+
+    def test_a_single_route_takes_its_own_categories_by_default(self):
+        self.routes[f"{CDN_URL}/P9.jpg"] = _net.reply(200, content=JPEG)
+        found = self.saved(targets=("https://example.com/p/P9",))
+        self.assertEqual(found, ["P9/photo/P9_0.jpg"])
+        self.routes[f"{CDN_URL}/P9.zip"] = _net.reply(200, content=b"PK\x05\x06" + b"\0" * 18)
+        found = self.saved(targets=("https://example.com/p/P9",),
+                           options=Options(categories=("archive",)))
+        self.assertIn("P9/archive/a.zip", found)
+
+    def test_a_ranged_fetch_comes_in_parts_that_each_stop_at_their_end(self):
+        size = 3 * jobs.SPLIT_RANGE
+        blob = bytes(range(256)) * (size // 256)
+        asked = []
+
+        async def fetch(part):
+            asked.append((part.offset, part.end))
+            end = part.end if part.end is not None else size
+            for at in range(part.offset, end, 1 << 20):
+                await part.write(blob[at:min(at + (1 << 20), end)])
+
+        found = self.saved(File(fetch=fetch, size=size, ranged=True, name="big.bin"))
+        self.assertEqual(found, ["example_user/big.bin"])
+        self.assertEqual((self.home / "media/exn/example_user/big.bin").read_bytes(), blob)
+        step = jobs.SPLIT_RANGE
+        self.assertEqual(sorted(asked), [(0, step), (step, 2 * step), (2 * step, size)])
 
 
 if __name__ == "__main__":

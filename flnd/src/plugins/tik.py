@@ -19,13 +19,13 @@ from flnd.plugin import (
     Ctx,
     Document,
     File,
+    Hidden,
     NetworkError,
     NotFound,
     Plugin,
     Post,
     Request,
     SiteError,
-    SourceError,
     Stream,
     best,
     cookies,
@@ -112,11 +112,11 @@ class Profile:
         return self._scrolled and not self.found and dig(self.user, "stats.videoCount") != 0
 
     def wall(self, read: str, *,
-             hint: str = "log in with another account, or try again later") -> SourceError:
-        """The error of a walled post list, `read` saying what was read instead; it stands
-        for `Hidden`, so another account may be tried."""
-        return SourceError(f"tik: {self.name}'s post list is walled for this account; {read}",
-                           hint=hint)
+             hint: str = "log in with another account, or try again later") -> Hidden:
+        """The error of a walled post list, `read` saying what was read instead: `Hidden`, so
+        another account may be tried."""
+        return Hidden(f"tik: {self.name}'s post list is walled for this account; {read}",
+                      hint=hint)
 
     async def page(self, ctx: Ctx) -> None:
         """Open the profile, when no category has yet."""
@@ -297,9 +297,9 @@ class TikTok(Plugin):
         """The videos and photo posts in no playlist.
 
         Raises:
-            SourceError: the post list was walled (it gave no item, 2026-11-11): the posts
+            Hidden: the post list was walled (it gave no item, 2026-11-11): the posts
                 the page links to were read from their embed pages first. It stands for
-                `Hidden`, so another account may be tried.
+                so another account may be tried.
         """
         async for item in profile.posts(ctx, "videos"):
             yield post_of(ctx, item, "videos")
@@ -329,7 +329,7 @@ class TikTok(Plugin):
         """The videos in a playlist, each under `albums/<playlist title>/`.
 
         Raises:
-            SourceError: the post list was walled, as for `videos`, whose fallback reads the
+            Hidden: the post list was walled, as for `videos`, whose fallback reads the
                 posts the page links to, playlists' included.
         """
         async for item in profile.posts(ctx, "playlists"):

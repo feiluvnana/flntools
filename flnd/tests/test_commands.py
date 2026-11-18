@@ -325,7 +325,7 @@ class FollowTest(RunsCase):
         self.assertEqual((code, out), (0, "ins:example_user: unfollowed\n"))
         code, out, _ = self.run_app("ls", "ins:example_user", "--json")
         row = json.loads(out)
-        self.assertEqual((row["target"]["value"], row["follow"]), ("example_user", False))
+        self.assertEqual((row["target"], row["follow"]), ({"text": "ins:example_user", "kind": "user"}, False))
         code, _, out = self.run_app("unfollow", "ins:nobody")
         self.assertEqual(code, 2)
         self.assertIn("not a known target", out)

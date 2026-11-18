@@ -5,7 +5,7 @@ src/docs/library explains it.
 
 Every type here is a frozen msgspec struct, so it is cheap to make, safe to share between the
 run's threads, and encodes to JSON (`encode`) for a script or a cron job. The module imports
-msgspec, the errors and `flnd.source` (for `Target`), never the engine, so `flnd.Saved` is
+msgspec, the errors and `flnd.plugin` (for `Target`), never the engine, so `flnd.Saved` is
 cheap to reach.
 
 Who makes them:
@@ -32,9 +32,9 @@ from typing import Any
 import msgspec
 
 # Both are read at runtime, by `typing.get_type_hints` (the API snapshot, a decoder), so they
-# are real imports. `flnd.errors` is stdlib-only; `flnd.source` is the light half of flnd.
+# are real imports. `flnd.errors` is stdlib-only; `flnd.plugin` is the light half of flnd.
 from flnd.errors import Error
-from flnd.source import Target
+from flnd.plugin import Target
 
 __all__ = [
     "BUSY", "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure", "FileState",
@@ -63,7 +63,7 @@ class Saved(msgspec.Struct, frozen=True, tag=True):
 
     Example:
         >>> import datetime, pathlib
-        >>> from flnd.source import Target
+        >>> from flnd.plugin import Target
         >>> event = Saved(Target("ins:example_user", kind="user"), "posts", "9001",
         ...               pathlib.Path("media/ins/example_user/9001.jpg"),
         ...               datetime.date(2026, 1, 2), 2048)
@@ -96,7 +96,7 @@ class Skipped(msgspec.Struct, frozen=True, tag=True):
     in, which has no post and no path.
 
     Example:
-        >>> from flnd.source import Target
+        >>> from flnd.plugin import Target
         >>> event = Skipped(Target("ins:example_user", kind="user"), "posts", "9001")
         >>> event.path is None, event.reason
         (True, 'saved')
@@ -121,7 +121,7 @@ class Failed(msgspec.Struct, frozen=True, tag=True):
 
     Example:
         >>> import flnd
-        >>> from flnd.source import Target
+        >>> from flnd.plugin import Target
         >>> event = Failed(Target("ins:example_user", kind="user"),
         ...                flnd.LoginError("not logged in", hint="run flnd login ins chrome"))
         >>> event.error.hint
@@ -145,7 +145,7 @@ class Planned(msgspec.Struct, frozen=True, tag=True):
 
     Example:
         >>> import pathlib
-        >>> from flnd.source import Target
+        >>> from flnd.plugin import Target
         >>> Planned(Target("ins:example_user", kind="user"), "9001",
         ...         pathlib.Path("media/ins/example_user/9001.jpg"), "new").state
         'new'
@@ -419,7 +419,7 @@ class Tracked(msgspec.Struct, frozen=True):
     """A target the home knows: downloaded once, or followed, with what is on disk for it.
 
     Example:
-        >>> from flnd.source import Target
+        >>> from flnd.plugin import Target
         >>> row = Tracked(Target("ins:example_user", kind="user"), follow=True, files=3)
         >>> row.follow, row.files
         (True, 3)
@@ -536,7 +536,7 @@ def encode(value: Any) -> bytes:
         The JSON, as UTF-8 bytes. An event carries its class's name in `"type"`.
 
     Example:
-        >>> from flnd.source import Target
+        >>> from flnd.plugin import Target
         >>> encode(Skipped(Target("ins:example_user", kind="user"), "posts", "9001"))[:16]
         b'{"type":"Skipped'
     """

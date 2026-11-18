@@ -13,9 +13,8 @@ from tempfile import TemporaryDirectory
 from types import MappingProxyType
 from unittest import mock
 
-from example_source import Example
 from test_library import LibraryCase
-from test_site import SiteCase
+from test_site import Example, SiteCase
 
 import flnd
 from flnd import cli

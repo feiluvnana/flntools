@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from flnd.errors import SourceError, UsageError
+from flnd.errors import PluginError, UsageError
 
 __all__ = ["Manifest", "Resolved", "resolve"]
 
@@ -66,7 +66,7 @@ class _Pattern:
         template: the value made from the captures (`"{user}_{post}"`); None takes the only one.
 
     Raises:
-        SourceError: the pattern is malformed.
+        PluginError: the pattern is malformed.
     """
 
     def __init__(self, text: str, template: str | None = None):
@@ -85,7 +85,7 @@ class _Pattern:
             self.literals = 0
             return
         if self.host is None and mark:
-            raise SourceError(f"pattern {text!r}: only a link pattern can name a query")
+            raise PluginError(f"pattern {text!r}: only a link pattern can name a query")
         parts = segments[1:] if self.host is not None else ["/".join(segments)]
         self.segments = [_compile(part, text, self.names) for part in parts]
         pairs = [_split(pair, "=", once=True) for pair in _split(query, "&")] if mark else []
@@ -94,9 +94,9 @@ class _Pattern:
         self.literals = 0 if self.host is None else 1 + sum(
             1 for part in parts if not set(part) & set("{}*"))
         if template is None and len(self.names) > 1:
-            raise SourceError(f"pattern {text!r}: two placeholders need a value template")
+            raise PluginError(f"pattern {text!r}: two placeholders need a value template")
         if template is not None and not set(re.findall(r"{(\w+)}", template)) <= set(self.names):
-            raise SourceError(f"pattern {text!r}: {template!r} names a placeholder it lacks")
+            raise PluginError(f"pattern {text!r}: {template!r} names a placeholder it lacks")
 
     def match(self, text: str, url: _Url | None) -> str | None:
         """The value when `text` (after `code:`) or `url` matches; None when it doesn't."""
@@ -154,7 +154,7 @@ def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
             regex, index = regex + re.escape(segment[index + 1]), index + 2
             continue
         if character == "}":
-            raise SourceError(f"pattern {pattern!r}: a '}}' with no '{{'")
+            raise PluginError(f"pattern {pattern!r}: a '}}' with no '{{'")
         if character == "*":
             regex, index = regex + "[^/]*", index + 1
             continue
@@ -171,7 +171,7 @@ def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
                 break
         name, _, custom = segment[index + 1:end].partition(":")
         if depth or not name.isidentifier():
-            raise SourceError(
+            raise PluginError(
                 f"pattern {pattern!r}: {segment[index:end + 1]!r} isn't a placeholder")
         names.append(name)
         regex += f"(?P<{name}>{custom})" if custom else NAME.format(name)
@@ -179,7 +179,7 @@ def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
     try:
         return re.compile(regex)
     except re.error as error:
-        raise SourceError(f"pattern {pattern!r}: {error}") from None
+        raise PluginError(f"pattern {pattern!r}: {error}") from None
 
 
 def _shown(text: str) -> str:
@@ -267,21 +267,21 @@ class Manifest:
             is never replaced, and a malformed entry is left out and kept in `broken`.
 
     Raises:
-        SourceError: a built-in's entry is malformed.
+        PluginError: a built-in's entry is malformed.
     """
 
     def __init__(self, built_in: Mapping[str, Mapping[str, Any]],
                  installed: Mapping[str, Any] | None = None) -> None:
         self.plugins = {code: _entry(code, entry) for code, entry in built_in.items()}
         # An installed plugin with a malformed entry is disabled alone, with its error.
-        self.broken: dict[str, SourceError] = {}
+        self.broken: dict[str, PluginError] = {}
         plugins = dict((installed or {}).get("plugins", {}))
         for code, entry in sorted(plugins.items()):
             if code in built_in:
                 continue
             try:
                 self.plugins[code] = _entry(code, entry)
-            except SourceError as error:
+            except PluginError as error:
                 self.broken[code] = error
 
     @property
@@ -294,12 +294,12 @@ def _entry(code: str, entry: Mapping[str, Any]) -> _Plugin:
     """One plugin's entry, compiled.
 
     Raises:
-        SourceError: a malformed pattern or route, naming the plugin.
+        PluginError: a malformed pattern or route, naming the plugin.
     """
     try:
         return _compiled(code, entry)
-    except SourceError as error:
-        raise SourceError(f"plugin {code}: {error}") from None
+    except PluginError as error:
+        raise PluginError(f"plugin {code}: {error}") from None
 
 
 def _compiled(code: str, entry: Mapping[str, Any]) -> _Plugin:
@@ -320,7 +320,7 @@ def _compiled(code: str, entry: Mapping[str, Any]) -> _Plugin:
 def _route(route: Mapping[str, Any]) -> _Route:
     if not route.get("name"):
         patterns = list(route.get("patterns", ()))
-        raise SourceError(f"a route with the patterns {patterns} has no name")
+        raise PluginError(f"a route with the patterns {patterns} has no name")
     patterns = tuple(_pattern(item) for item in route.get("patterns", ()))
     categories = tuple((item, True) if isinstance(item, str) else
                        (item["name"], bool(item.get("own", True)))
@@ -335,7 +335,7 @@ def _pattern(item: str | Sequence[str]) -> _Pattern:
     if isinstance(item, str):
         return _Pattern(item)
     if len(item) != 2 or not all(isinstance(part, str) for part in item):
-        raise SourceError(f"pattern {list(item)!r}: write a text or a [pattern, template] pair")
+        raise PluginError(f"pattern {list(item)!r}: write a text or a [pattern, template] pair")
     return _Pattern(item[0], item[1])
 
 
