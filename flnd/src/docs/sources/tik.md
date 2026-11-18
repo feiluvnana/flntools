@@ -40,18 +40,20 @@ whole; `--only` with one is a usage error.
 | `favorites` | the Favorites tab, when the account made it public |
 | `profile` | the profile picture |
 
-Without `--only` a profile gets every category, in the order above; `--only` names one or
-more of them.
+Without `--only` a profile gets its own categories, in the order above: every one except
+`reposts`, `liked` and `favorites`. Those three are marked `own=False`, so they are taken only
+when named in `--only`, or with `--only all`.
 
 ## Logging in
 
-The source declares `login = cookies("sessionid", "sid_tt")`: `flnd login tik <how>` takes a
+The plugin declares `login = cookies("sessionid", "sid_tt")`: `flnd login tik <how>` takes a
 browser (read the cookies of an installed browser, such as `chrome`) or a cookie file's path (a
 Netscape `cookies.txt` or JSON cookie file). Either cookie for `tiktok.com` proves a login.
 
-Nothing in the source needs a login. Without one, flnd prints a warning and reads what is public.
-With one, the saved cookies are loaded into the browser, and the CDN is sent the `tt_chain_token`
-and `sessionid` cookies with every file, each only when it has a value. A login with only
+Nothing in the plugin needs a login, and no login wall is known: a logged-out visitor is shown the
+public profile. Without a login, flnd prints a warning and reads what is public. With one, the
+saved cookies are loaded into the browser, and the CDN is sent the `tt_chain_token` and
+`sessionid` cookies with every file, each only when it has a value. A login with only
 `sid_tt` sends no `sessionid` at all; before 2026-11-16 it sent an empty `sessionid=`.
 
 When a run starts, flnd warns if a login cookie has expired or expires within 24 hours. After a
@@ -73,36 +75,44 @@ scrolling the page to its end. Each category listens for its own API paths:
 | `liked` | `/api/favorite/item_list` |
 | `favorites` | `/api/user/collect/item_list` |
 
-1. flnd loads the profile page and waits 5 seconds for it to settle, then checks for a captcha.
+1. flnd loads the profile page, with its feeds already listening so that no answer is lost, and
+   waits 5 seconds for it to settle. Then it checks for a captcha.
 2. It reads the profile's own data (its picture and its video count) from the
    `__UNIVERSAL_DATA_FOR_REHYDRATION__` script in the page.
 3. `videos` and `playlists` share one scroll of the post list. Each item goes to `playlists` if
    it has a playlist name, else to `videos`. The scroll ends when a list response says
    `hasMore: false` (`page_state`, the feed's cursor reader).
-4. `stories` arrive with the page load, without scrolling; flnd waits up to 10 seconds for the
-   network to go quiet.
+4. `stories` has a feed of its own, listening from the page load, and is read with no scroll;
+   flnd waits up to 10 seconds for the network to go quiet.
 5. `reposts`, `liked` and `favorites` each click their tab (`data-e2e="repost-tab"`,
-   `"liked-tab"`, `"favorites-tab"`) and scroll its list to the end.
+   `"liked-tab"`, `"favorites-tab"`) and scroll its list to the end. A tab the account doesn't
+   show is logged as not public, and gives nothing.
 6. `profile` takes the `avatarLarger` picture from the profile's data.
 
 A list ends when a response says `hasMore` is false, or when the page stops loading more.
-Those are the only stops the source makes itself; the engine makes the others (see *Early
+Those are the only stops the plugin makes itself; the engine makes the others (see *Early
 stops* below).
 
 **A single post** is read from `https://www.tiktok.com/embed/v2/<id>` over HTTP: its
-`__NEXT_DATA__` script holds the post's data. A failed fetch is a warning for that post only.
+`__NEXT_DATA__` script holds the post's data. A 404 or 410 from that page means the post is gone,
+and is `NotFound`. Any other refusal, a 401 or 403 included, is a site error, since the embed
+page is public. A page with no post in it is `Changed`.
+
+When a saved file's link has expired (the CDN answers 403 or 410), flnd asks the post's embed
+page once for a fresh link to the same photo or video. A profile picture has no embed page, so
+it is not asked for this way.
 
 **Which video file:** each video lists several encodings (`bitrateInfo`). flnd takes the one with
 the most pixels, bitrate breaking a tie, and skips DASH streams. With no usable entry, it takes
 `playAddr`. Every CDN address a file has is kept and tried in order.
 
-**Pacing:** `pace` is 0.2, so requests to TikTok's own domains are at least 0.2 seconds apart (a
-code comment says no limit is known). It sets no `limits`: each CDN host's files download 8 at once,
-adapting up to 32. Requests are sent with a fixed desktop Chrome user agent.
+**Pacing:** `pace` is 0.2, so requests to TikTok's own domains are at least 0.2 seconds apart; no
+limit is known. The plugin sets no `limits`: each CDN host's files download 8 at once, adapting up
+to 32. Requests are sent with a fixed desktop Chrome user agent.
 
 ## Where files go
 
-The class declares:
+The plugin declares:
 
 - `folder = "{part}/{album}"`: `part` is `videos` or `images` for the `videos` category (by
   whether the post is a video or photos), `albums` for a playlist video, and otherwise the
@@ -114,8 +124,8 @@ The class declares:
 - `key = "{post}_{idx}"`: the history key, stored as `tik:<id>` for a video and `tik:<id>_<n>` for
   the n-th photo. These are the names and keys files have always had: changing either would
   download every saved file again.
-- The `profile` category has its own `folder = "profile"` and an empty key, so its history key is
-  the file's path. The picture is named `avatar_<picture id>.jpg`.
+- The `profile` category has its own `folder = "profile"`, and its key is the file's path,
+  `profile/avatar_<picture id>.jpg`. The picture is named `avatar_<picture id>.jpg`.
 
 Files go under `.flnd/media/tik/<target>/`, where `<target>` is the user name or the post id:
 
@@ -129,22 +139,28 @@ Files go under `.flnd/media/tik/<target>/`, where `<target>` is the user name or
 ## Quirks
 
 - **Captchas.** TikTok shows a slider or puzzle captcha a few seconds after the page looks loaded.
-  flnd finds it by its container or its words, gives you 60 seconds to solve it in the browser
-  window, then treats it as a rate limit: it backs off, reloads and checks again. A fourth
-  unsolved captcha fails the target. Captcha detection handled since 2026-11-11; the back-off
-  and reload since 2026-11-12. A captcha can also come over the grid while it scrolls: when the
-  post list then gave nothing, flnd watches again, waits the captcha out and reads the grid
-  again (handled since 2026-11-11).
+  flnd finds it by its container or its words, and gives you 60 seconds to solve it in the browser
+  window. If it is still there, flnd holds the target as a block (the engine's holds run 30 s,
+  then 120 s, then 480 s), then opens the profile again and waits for the captcha once more. A
+  fourth unsolved captcha fails the target; the count starts again after ten minutes with no
+  block. Captcha detection handled since 2026-11-11. A captcha can also come over the grid while
+  it scrolls: when the post list then gave nothing, flnd watches again, waits the captcha out and
+  reads the grid again (handled since 2026-11-11).
 - **Pinned videos** sit at the top of the post list, out of date order. `videos` and `playlists`
   are `newest_first`, so the engine's early stops apply (below); they wait for 5 posts in a row,
   so a few old pinned posts don't end the list.
-- **Photo posts** come as one item per photo, all with the post's id, and the source yields one
+- **Photo posts** come as one item per photo, all with the post's id, and the plugin yields one
   post per photo: a photo's key counts from 1 even in a one-photo post, which no engine field
   gives. The engine's streaks count posts, so each photo counts once: a pinned carousel of 5 or
   more photos, older than `--when` or already saved, is enough to end the scroll. (Before
   2026-11-16 the source counted a carousel once, with stops of its own.)
-- **Walled post list.** When the profile page loads but its post list gives nothing, `videos`
-  reads every post linked on the page from its embed page instead. Handled since 2026-11-11.
+- **Walled post list.** When the profile page loads but its post list gives nothing, on a profile
+  that lists videos, `videos` reads every post linked on the page from its embed page instead.
+  A post that fails there is logged and skipped. Then the category fails with `Hidden`, with the
+  hint to log in with another account or try again later. Handled since 2026-11-11.
+- **Walled playlists.** `playlists` can't tell the posts apart in that read, so it fails with
+  `Hidden` too. Its hint says to log in with another account, or to download the `videos` category
+  as well, since that reads the linked posts, playlists' included.
 - **Dates.** A post's time is its `createTime`. When that is missing or a placeholder, it is read
   from the id, whose upper bits are the Unix time in seconds. Handled since 2026-11-11.
 - **CDN 403s.** TikTok's CDN refuses a file without a `Referer`, the user agent and the session
@@ -160,7 +176,7 @@ Files go under `.flnd/media/tik/<target>/`, where `<target>` is the user name or
 
 ## Early stops
 
-The engine owns them; the source only yields the posts in the order the list gives them.
+The engine owns them; the plugin only yields the posts in the order the list gives them.
 
 - With `--when`, a `newest_first` listing (`videos`, `playlists`) stops after 5 posts in a row
   older than its start, which closes the scroll.
@@ -171,12 +187,15 @@ The engine owns them; the source only yields the posts in the order the list giv
 
 ## Limits
 
-- The source declares no `unsupported` links; any other TikTok link is refused with the list of
+- The plugin declares no `unsupported` links; any other TikTok link is refused with the list of
   forms above.
 - Liked and Favorites are read only when the account made them public. A tab that is missing is
   reported as "not public on this account", and an empty one as "nothing public".
-- A tab that doesn't open within 10 seconds is skipped with a warning.
+- A tab that is there but doesn't take the click within 10 seconds fails its category with
+  `Changed`.
 - Stories are the ones the page shows on load; older stories are not listed.
-- A profile always needs the browser, and a captcha may need you at the window. A captcha still
-  there after 3 back-offs fails the target.
+- A profile always needs the browser, and a captcha may need you at the window. A fourth unsolved
+  captcha fails the target.
+- A walled post list fails `videos` and `playlists` with `Hidden`, so another account may be
+  tried (see Quirks).
 - No rate limit is known. TikTok's answer to heavy use is the captcha.

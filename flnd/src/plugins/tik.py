@@ -336,8 +336,9 @@ class TikTok(Plugin):
             yield post_of(ctx, item, "videos")
         if profile.walled:
             raise profile.wall("its playlists can't be told from its other posts",
-                               hint="download its videos category too: it reads the posts "
-                                    "the page links to, playlists' included")
+                               hint="log in with another account, or download its videos "
+                                    "category too: it reads the posts the page links to, "
+                                    "playlists' included")
 
     # Ordered by when each was reposted, not posted, so not newest first.
     @user.category(own=False)

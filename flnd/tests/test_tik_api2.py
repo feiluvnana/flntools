@@ -344,16 +344,20 @@ class ProfileTest(unittest.TestCase):
         link = f'<a href="/@example_creator/video/{VIDEO}">clip</a>'
         routes = {f"{API}/embed/v2/{VIDEO}": Reply(embed_page(EMBEDS[VIDEO][0]))}
         empty = [(FEEDS[0][0], {"hasMore": False, "itemList": []})]
-        for category, count, feeds, ids, error in (
-                ("videos", 2, (), [VIDEO], Hidden),
-                ("videos", 2, empty, [VIDEO], Hidden),
-                ("playlists", 2, empty, [], Hidden),
+        other = "log in with another account, or try again later"
+        playlists = ("log in with another account, or download its videos category too: it "
+                     "reads the posts the page links to, playlists' included")
+        for category, count, feeds, ids, hint in (
+                ("videos", 2, (), [VIDEO], other),
+                ("videos", 2, empty, [VIDEO], other),
+                ("playlists", 2, empty, [], playlists),
                 ("videos", 0, empty, [], None)):
             with self.subTest(category=category, video_count=count, answered=bool(feeds)):
                 ctx = fake(profile_page(video_count=count, body=link), feeds, routes=routes)
                 posts, raised = listed(ctx, category)
                 self.assertEqual([post.id for post in posts], ids)
-                self.assertIs(type(raised) if raised else None, error)
+                self.assertIs(type(raised) if raised else None, hint and Hidden)
+                self.assertEqual(getattr(raised, "hint", None), hint)
                 self.assertEqual(len(ctx.seen.requests), len(ids))
 
     def test_a_block_stops_the_walled_fallback(self):
