@@ -4,14 +4,13 @@ flnd downloads the photos and videos of an X (Twitter) user: their own posts, th
 highlights, reposts and replies, and their avatar and banner. It also downloads the media of one
 post (a *tweet*) by its link, and the tweets of a search. Timelines and searches are read in a
 browser by scrolling their tabs; the profile itself and single tweets are read from X's GraphQL
-API. A login is not required by
-the code, but X usually sends a logged-out browser to its login page, which stops the run. The
-source is `src/sources/twt.py`.
+API. A login is not required by the code, but X usually sends a logged-out browser to its login
+page, which stops the run. The plugin is `src/plugins/twt.py`.
 
 ## Targets
 
 A *target* is what you ask flnd to download (see the [glossary](../glossary.md)). Each form below
-is read by one *route*, a method of the source named after the kind of target it reads.
+is read by one *route*, a method of the plugin named after the kind of target it reads.
 
 | You type | Route | What it downloads |
 | --- | --- | --- |
@@ -32,14 +31,16 @@ Latest tab) and scrolls it, reading the `SearchTimeline` responses. X's own oper
 operators (`until:` is the day after `--when`'s last, since X's is exclusive), so a short range
 doesn't scroll through years. A search is a query target: it yields a tweet link
 (`https://x.com/i/web/status/<id>`) for each tweet with a file, and the engine downloads each as a
-`post` target, into its own folder `twt/<tweet id>/`, named and keyed as a tweet link is. A
-search needs a login: X sends a logged-out browser to its login page, which stops the run.
+`post` target, into its own folder `twt/<tweet id>/`, named and keyed as a tweet link is. The
+tweets a search lists are kept for the run, so the `post` target for each one costs no request.
+A search needs a login: X sends a logged-out browser to its login page, which stops the run.
 
 ## Categories
 
 A *category* is one part of a profile that can be downloaded on its own. Without
-[`--only`](../cli.md) a profile gets every category; `--only` names some of them.
-`--only` is refused for a `post` target, which is always downloaded whole.
+[`--only`](../cli.md) a profile gets every category but `reposts`; `--only` names some of them,
+and `--only all` takes `reposts` too. `--only` is refused for a `post` target, which is always
+downloaded whole.
 
 | Category | What it holds |
 | --- | --- |
@@ -52,12 +53,13 @@ A *category* is one part of a profile that can be downloaded on its own. Without
 
 The *newest first* categories stop early after 5 tweets with media in a row that are already
 saved, or 5 tweets in a row older than the start of `--when` (which covers a pinned tweet).
-These early stops are the engine's: the source yields every tweet in listing order, and the
+These early stops are the engine's: the plugin yields every tweet in listing order, and the
 engine closes the scroll. `highlights` and `reposts` come in the order they were added, so they
 are read to the end.
 
 Every category but `reposts` leaves retweets out. A tweet's files include the media of a tweet
-it quotes and its card's image.
+it quotes and its card's image. `reposts` is marked `own=False`, so it is taken only when named
+(see above).
 
 ## Logging in
 
@@ -68,7 +70,7 @@ the way is asked with numbered choices:
   Safari on macOS.
 - **From a cookie file**: reads a Netscape `cookies.txt` or a JSON export.
 
-The source declares `login = cookies("auth_token")`: the login is accepted only when the
+The plugin declares `login = cookies("auth_token")`: the login is accepted only when the
 cookies hold `auth_token`. They are stored in the home's vault,
 `metadata/secret.db`, loaded into the HTTP client and the browser each run, and any the
 site refreshed are written back at the end. API calls also need the `ct0` cookie, which X sets
@@ -89,16 +91,19 @@ the query string. flnd calls three of them over HTTP:
   banner;
 - `TweetResultByRestId` for a `post` target.
 
-The source's `sign` hook adds to every request to `/i/api/`, before each try, the web
-client's public bearer token (the `TWITTER_BEARER`
-constant), `x-csrf-token` copied from the `ct0` cookie, and `x-twitter-auth-type` when logged in.
-The HTTP client sends a desktop Chrome user agent.
+The plugin's `sign` hook adds to every request to `/i/api/`, before each try, the web client's
+public bearer token (the `TWITTER_BEARER` constant), `x-csrf-token` copied from the `ct0` cookie,
+and `x-twitter-auth-type` when logged in. The HTTP client sends a desktop Chrome user agent.
 
 Each operation's *query id* comes from the `QUERIES` table in the code. X changes these ids now
 and then. When a call is refused with a 400 or 404, flnd reads `https://x.com/` and the web
 app's main script on `abs.twimg.com`, takes the current id and feature flags of each operation
-from them, keeps them in the source's saved state for later runs, and asks again. It does this
+from them, keeps them in the plugin's saved state for later runs, and asks again. It does this
 at most once a run.
+
+Each of these operations is a bucket of its own. A 429 holds only that operation: flnd waits for
+the time X's `x-rate-limit-reset` header (or `Retry-After`) gives, or 30 seconds when it gives
+none, then asks again. The other operations are not held.
 
 **The browser.** Each timeline category opens its tab and scrolls it, keeping the JSON of every
 response whose URL names the tab's operation:
@@ -113,23 +118,23 @@ response whose URL names the tab's operation:
 
 A numeric target opens `https://x.com/i/user/<id>` instead of the handle. The scroll ends when a
 page brings no new tweet, or at an early stop. A page of cursors alone, which X sends at a
-timeline's end, stops the scroll at once (`timeline_state`, the feed's cursor reader). The tabs
-not yet read are opened in background tabs meanwhile (`site.warm`). If the API could not find
-the user, the timelines are still read in the browser.
+timeline's end, stops the scroll at once (`timeline_state`, the feed's cursor reader). Each
+timeline's `url=` names its tab, so the engine opens the tabs ahead in background tabs while the
+run's tab budget has room. If the API could not find the user, the timelines are still read in
+the browser.
 
 A photo is asked for at `name=orig`, its uploaded size, with `4096x4096`, `large` and `medium`
 as *mirrors* (addresses tried in turn when one refuses). A video is its highest-bitrate MP4.
 
-**Pace and concurrency.** `pace` is 0.2: at least 0.2 seconds between requests to `x.com` and
-`twitter.com`, page loads included. When an API call is answered with HTTP 429, flnd waits
-until the time X's `x-rate-limit-reset` header (or `Retry-After`) gives. Each media host's files download
-8 at once, adapting up to 32 (no `limits` of its own). The browser runs without flnd's stealth
-settings (`stealth = False`).
+**Pace and concurrency.** `pace` is 0.2: at least 0.2 seconds between two requests of one bucket.
+The browser's page loads share the host's bucket. Each media host's files download 8 at once,
+adapting up to 32 (no `limits` of its own). Stealth is off (`stealth = False`), since this
+browser never hid `navigator.webdriver`.
 
 ## Where files go
 
 A target's files go under `.flnd/media/twt/<target>/`, where `<target>` is the handle or id, or
-the tweet's id for a `post` target. Inside it, the source declares:
+the tweet's id for a `post` target. Inside it, the plugin declares:
 
 - `folder = "{part}"`: the category's name, except that `media` files go in `images/` or
   `videos/`. A `post` target's files sit directly in the target's folder. The `profile` category
@@ -137,8 +142,8 @@ the tweet's id for a `post` target. Inside it, the source declares:
 - `filename = "{date}_{post}_{n}"`: a file is `<date>_<tweet id>_<n>.<ext>`, where `n` is the
   media's place in the tweet (`0`, `1`, …), `q0`, `q1`, … for a quoted tweet's media, or `card`
   for the card's image. Without a date the name drops it.
-- `key = "{post}_{n}"`: the history remembers `twt:<tweet id>_<n>`. The `profile` category sets
-  an empty key, so its history key is the file's path under the target's folder.
+- `key = "{post}_{n}"`: the history remembers `twt:<tweet id>_<n>`. The `profile` category keys
+  by the file's path, so its history key is that path under the target's folder.
 
 The avatar is `avatar_<picture id>.<ext>` and the banner `banner_<banner id>.jpg`.
 
@@ -188,10 +193,17 @@ Example:
 - **Site pages are refused** as "that's not a profile": links under `/home`, `/explore`,
   `/search`, `/settings`, `/notifications`, `/messages`, `/hashtag`, `/i` (except
   `/i/web/status/<id>` and `/i/user/<id>`), `/intent`, `/compose` and `/login`.
-- **A single tweet** is read only from the API. If the API refuses it, or the tweet is gone or
-  not visible to the login, flnd warns and downloads nothing; there is no browser fallback.
-- **If the API cannot find the user**, the `profile` category downloads nothing, since the
-  pictures come from the API's user object. The timelines, `replies` included, are still read.
+- **A single tweet** is read only from the API, or from a search of the same run. A tweet the
+  API doesn't give, because it was deleted or isn't visible to the login, is `NotFound`, and the
+  target fails. A refused call fails with its own error. There is no browser fallback. A
+  protected tweet is `NotFound` too for now: the plugin doesn't yet tell it from a deleted one.
+- **Timelines stop at a cap.** X's timelines stop after a few thousand tweets, so a profile with
+  more lists only the newest. The search that went past the cap went with the old timeline API,
+  and flnd doesn't restore it.
+- **If the API cannot find the user**, the `profile` category fails with `NotFound`, since the
+  pictures come from the API's user object. If the lookup is refused by X (an error other than a
+  login refusal), `profile` fails with that error instead. Either way the timelines, `replies`
+  included, are still read in the browser.
 - **Text-only tweets** have no files, so nothing is saved for them.
 - **Streaming-only videos** (with no MP4 variant) are skipped.
 - **A login wall or locked account** stops the run; it is not waited out.

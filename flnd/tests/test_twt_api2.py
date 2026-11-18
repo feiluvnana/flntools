@@ -7,6 +7,7 @@ import asyncio
 import json
 import unittest
 from datetime import date
+from pathlib import PurePosixPath
 
 import no_profiles  # noqa: F401
 
@@ -260,6 +261,19 @@ class NamesAndKeysTest(unittest.TestCase):
         self.assertEqual([post.files[0].url or post.files[0].mirrors for post in posts[1:]], [
             sizes("https://pbs.example/media/q.jpg"), "https://video.example/clip.mp4",
             "https://pbs.example/card_img/full?name=orig"])
+
+    def test_a_card_image_keeps_its_urls_lowercase_extension(self):
+        cases = [("https://pbs.example/card_img/c.png", ".png"),
+                 ("https://pbs.example/card_img/c.JPG", ".jpg"),
+                 ("https://pbs.example/card_img/c?name=orig", ".jpg")]
+        for image, extension in cases:
+            with self.subTest(image=image):
+                card = tweet("1", [])
+                card["card"] = {"legacy": {"binding_values": [
+                    {"key": "photo_image_full_size_original",
+                     "value": {"image_value": {"url": image}}}]}}
+                [post] = tweet_posts(card, "posts", None)
+                self.assertEqual(PurePosixPath(post.files[0].name).suffix, extension)
 
 
 class TweetTest(unittest.TestCase):
