@@ -484,11 +484,16 @@ class Engine:
             settings = RunShared(home=self.home, stop=stop, interactive=True)
             with source_run(settings, source) as run:
                 assert source.login is not None
-                if native(source):
-                    ctx = Ctx(run, Target(f"{code}:", kind=ACCOUNT), login=True)
-                    run.loop.run(start(source.login, ctx, method))
-                else:
-                    source.login.start(LoginSite(run), method)
+                # Its state, read and written back here, off the loop the login runs on.
+                run.load_state()
+                try:
+                    if native(source):
+                        ctx = Ctx(run, Target(f"{code}:", kind=ACCOUNT), login=True)
+                        run.loop.run(start(source.login, ctx, method))
+                    else:
+                        source.login.start(LoginSite(run), method)
+                finally:
+                    run.save_state()
             if home.logged_in(self.home, code):
                 home.record_origin(self.home, code, method)
         return ""
@@ -1300,6 +1305,9 @@ class _Runner:
             entry.started.set()
             raise
         try:
+            # The plugin's state, read once, off the loop, and written back as the run ends.
+            await run.off(run.load_state)
+            stack.push_async_callback(run.off, run.save_state)
             entry.logged_in = await _logged_in(run)
             if not entry.logged_in and _required(source):
                 return entry

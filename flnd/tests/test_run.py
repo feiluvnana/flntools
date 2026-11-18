@@ -602,9 +602,11 @@ class EngineLoginTest(EngineCase):
 
 
 class OffTheLoopTest(EngineCase):
-    def test_flnd_db_and_the_disk_are_never_read_or_written_on_the_loop(self):
-        # flnd.db's connection waits up to 30 s for another process's lock: on the loop, that
-        # would stall every transfer of the run.
+    """flnd.db's connection waits up to 30 s for another process's lock: on the loop, that
+    would stall every transfer of the run."""
+
+    def spy(self):
+        """Each call of `Home`, of a plugin's `State` and of a file's stat made on the loop."""
         on_loop = []
 
         def spied(name, real):
@@ -617,18 +619,39 @@ class OffTheLoopTest(EngineCase):
                 return real(*args, **kwargs)
             return call
 
-        names = [name for name in vars(_home.Home) if not name.startswith("_")
-                 and callable(getattr(_home.Home, name))]
-        for name in names:
-            self.enterContext(mock.patch.object(_home.Home, name,
-                                                spied(name, getattr(_home.Home, name))))
+        for owner, names in [
+                (_home.Home, [name for name in vars(_home.Home) if not name.startswith("_")
+                              and callable(getattr(_home.Home, name))]),
+                (_home.State, ["__getitem__", "__setitem__", "__delitem__", "__iter__",
+                               "__len__"])]:
+            for name in names:
+                self.enterContext(mock.patch.object(owner, name,
+                                                    spied(name, getattr(owner, name))))
         self.enterContext(mock.patch.object(job, "_on_disk", spied("stat", job._on_disk)))
+        return on_loop
+
+    def test_flnd_db_and_the_disk_are_never_read_or_written_on_the_loop(self):
+        on_loop = self.spy()
         files = [File(f"{CDN}/a.jpg", name="a.jpg"), File(f"{CDN}/b.txt", name="b.txt")]
         engine = Engine(home=self.home, sources={"aaa": make_plugin("aaa", files=files)})
         engine.download(["aaa:example_user"], sync=True)
         engine.sync()
         engine.retry()
         self.assertEqual(on_loop, [])
+
+    def test_a_plugins_state_is_read_once_and_written_back_off_the_loop(self):
+        def route(ctx):
+            ctx.state["seen"] = ctx.state.get("seen", 0) + 1
+            ctx.state.pop("gone", None)
+
+        with _home.open(self.home) as db:
+            db.state("aaa")["seen"], db.state("aaa")["gone"] = 1, True
+        on_loop = self.spy()
+        engine = Engine(home=self.home, sources={"aaa": make_plugin("aaa", route)})
+        engine.download(["aaa:a", "aaa:b"])
+        self.assertEqual(on_loop, [])
+        with _home.open(self.home) as db:
+            self.assertEqual(dict(db.state("aaa")), {"seen": 3})
 
 
 class ApiTest(EngineCase):

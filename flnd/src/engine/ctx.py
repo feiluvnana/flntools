@@ -367,8 +367,7 @@ class Ctx:
         self._login = login
         self._site = site.TargetSite(run, target)
         self._settings = type(self._plugin).Settings()
-        # Made on first use: reading `run.state` reaches the home's database.
-        self._state: JsonState | None = None
+        self._state = JsonState(run.values)
         self._secrets = Secrets(lambda: run.secrets)
         # The category's listing, which `pages` resumes and reports to; the crawl sets it.
         self.listing: site.Listing | None = None
@@ -717,8 +716,7 @@ class Ctx:
 
     @property
     def state(self) -> MutableMapping[str, Any]:
-        if self._state is None:
-            self._state = JsonState(self._run.state)
+        """The plugin's state, in memory: the engine reads and writes flnd.db off the loop."""
         return self._state
 
     @property

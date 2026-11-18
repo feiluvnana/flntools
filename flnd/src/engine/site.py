@@ -203,6 +203,12 @@ class SourceRun:
     _closed: bool = field(default=False, repr=False)
     # Whether a target already said that the browser doesn't use the config's proxy.
     _told_proxy: bool = field(default=False, repr=False)
+    # The plugin's state for the run, read from flnd.db once, off the loop (`load_state`); the
+    # keys changed since the last `save_state`; and a lock, as the loop and the engine's
+    # threads both reach them.
+    _values: dict[str, Any] | None = field(default=None, repr=False)
+    _changed: set[str] = field(default_factory=set, repr=False)
+    _guard: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def loop(self) -> Bridge:
@@ -239,6 +245,32 @@ class SourceRun:
         if self._state is None:
             self._state = home.open(self.settings.home)
         return self._state.state(self.source.code)
+
+    @property
+    def values(self) -> MutableMapping[str, Any]:
+        """The plugin's state as the run reads and writes it: in memory, read from flnd.db
+        once (`load_state`) and written back by `save_state`, both off the loop."""
+        return _Values(self)
+
+    def load_state(self) -> None:
+        """Read the plugin's state from flnd.db, once; off the loop."""
+        with self._guard:
+            if self._values is None:
+                self._values = dict(self.state.items())
+
+    def save_state(self) -> None:
+        """Write the values changed since the last save back to flnd.db; off the loop."""
+        with self._guard:
+            if self._values is None or not self._changed:
+                return
+            changed, self._changed = self._changed, set()
+            kept = {key: self._values[key] for key in changed if key in self._values}
+        stored = self.state
+        for key in sorted(changed):
+            if key in kept:
+                stored[key] = kept[key]
+            else:
+                stored.pop(key, None)
 
     @property
     def secrets(self) -> vault.Vault:
@@ -320,6 +352,46 @@ class SourceRun:
             if self._own_loop is not None:
                 self._own_loop.close()
 
+
+
+class _Values(MutableMapping[str, Any]):
+    """A plugin's state in memory (`PluginRun.values`): each change is noted for
+    `save_state`. Read before `load_state` (outside a run), it loads first."""
+
+    def __init__(self, run: Any) -> None:
+        self._run = run
+
+    def _data(self) -> dict[str, Any]:
+        if self._run._values is None:
+            self._run.load_state()
+        return self._run._values
+
+    def __getitem__(self, key: str) -> Any:
+        data = self._data()
+        with self._run._guard:
+            return data[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        data = self._data()
+        with self._run._guard:
+            data[key] = value
+            self._run._changed.add(key)
+
+    def __delitem__(self, key: str) -> None:
+        data = self._data()
+        with self._run._guard:
+            del data[key]
+            self._run._changed.add(key)
+
+    def __iter__(self) -> Iterator[str]:
+        data = self._data()
+        with self._run._guard:
+            return iter(list(data))
+
+    def __len__(self) -> int:
+        data = self._data()
+        with self._run._guard:
+            return len(data)
 
 def _on_domains(source: Source | Plugin, domain: str) -> bool:
     """Whether a cookie's `domain` is one of the source's domains, or under one."""

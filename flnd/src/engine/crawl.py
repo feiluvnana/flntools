@@ -1155,7 +1155,7 @@ def asked(run: SourceRun) -> None:
     if run.asked is not None or type(run.source).date is Source.date:
         return
     now = time.time()
-    raw = run.state.get(ASKED_KEY)
+    raw = run.values.get(ASKED_KEY)
     run.asked = {} if not isinstance(raw, dict) else {
         str(k): float(v) for k, v in raw.items()
         if isinstance(v, (int, float)) and now - v < ASKED_TTL
@@ -1502,6 +1502,8 @@ async def download(run: SourceRun, target: Target, tally: Tally, options: Option
     if db is not None:
         await run.off(_keep, db, target, options, progress, row,
                       error is None and not run.settings.stop.soon.is_set(), bool(written))
+    # What the plugin changed of its state, written back as each target ends.
+    await run.off(run.save_state)
     report = TargetReport(target, written, tally.totals(target).skipped,
                           found=tuple(dict.fromkeys(work.linked)))
     return await _ended(run, tally, report, error,
