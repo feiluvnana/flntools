@@ -12,7 +12,7 @@ from unittest import mock
 import fakes
 from fakes import CDN, EngineCase, make_plugin, noise
 
-from flnd.engine import home as _home
+from flnd.engine import store as _store
 from flnd.engine.core import Engine, TargetReport, _Runner
 from flnd.engine.events import State
 from flnd.engine.options import Options
@@ -86,19 +86,19 @@ class SettingsTest(SyncCase):
         self.download(Options(categories=("posts",), since=datetime.date(2026, 1, 1), until=datetime.date(2026, 6, 30)))
         row = self.saved()["aaa:a"]
         # `complete` is what was listed to its end, not a setting: here the one category, `posts`.
-        self.assertEqual((row.kind, row.follow, row.only, row.cursors), ("user", True, None, {}))
+        self.assertEqual((row.kind, row.follow, row.categories, row.cursors), ("user", True, (), {}))
         self.assertEqual(sorted(row.complete), ["posts"])
         self.assertEqual(self.plan()[0][1], Options())
 
     def test_every_recorded_target_and_unrecorded_folders(self):
         self.download()
-        (self.home / _home.MEDIA / "aaa" / "older").mkdir(parents=True)
-        (self.home / _home.MEDIA / "aaa" / "older" / "x.jpg").write_bytes(b"x")
+        (self.home / _store.MEDIA / "aaa" / "older").mkdir(parents=True)
+        (self.home / _store.MEDIA / "aaa" / "older" / "x.jpg").write_bytes(b"x")
         chosen = dict(self.plan())
         self.assertEqual(chosen[Target("aaa:older", kind="user")], Options())
         # A folder of a source flnd doesn't have, or a file beside the folders, isn't a target.
-        (self.home / _home.MEDIA / "zzz" / "b").mkdir(parents=True)
-        (self.home / _home.MEDIA / "aaa" / "a.zip").write_bytes(b"")
+        (self.home / _store.MEDIA / "zzz" / "b").mkdir(parents=True)
+        (self.home / _store.MEDIA / "aaa" / "a.zip").write_bytes(b"")
         self.assertEqual(len(self.plan()), 2)
         self.sync()
         self.assertEqual(sorted(self.saved()), ["aaa:a", "aaa:older"])
@@ -106,7 +106,7 @@ class SettingsTest(SyncCase):
 
     def test_planning_creates_no_file(self):
         self.assertEqual(self.plan(), [])
-        self.assertFalse((self.home / _home.DB).exists())
+        self.assertFalse((self.home / _store.DB).exists())
 
 
 class FetchTest(SyncCase):
@@ -123,7 +123,7 @@ class HistoryTest(SyncCase):
     def test_a_sync_never_reads_every_saved_file(self):
         """Fix 12: repair, compress and the tally each scanned the whole history, per target."""
         self.download(texts=("aaa:a", "aaa:b", "aaa:c"))
-        with mock.patch.object(_home.Home, "records", side_effect=AssertionError("a full scan")):
+        with mock.patch.object(_store.Store, "records", side_effect=AssertionError("a full scan")):
             lines = self.sync()
         self.assertEqual(len(lines), 3)
 

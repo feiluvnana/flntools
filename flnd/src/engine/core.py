@@ -25,7 +25,7 @@ from typing import Any, NamedTuple, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.engine.resolve
-from flnd.engine import crawl, ctx, home, jobs, save
+from flnd.engine import crawl, ctx, home, jobs, save, store
 from flnd.engine.crawl import TargetReport
 from flnd.engine.ctx import Ctx, PluginRun, plugin_run, shared_browser, start
 from flnd.engine.events import Failed, Planned
@@ -179,8 +179,9 @@ class Engine:
             NetworkError: a short link couldn't be followed.
         """
         # Only the rows that keep categories: each imports its plugin, to write its key.
-        rows = {item: row for item, row in self._rows().items() if row.only}
-        stored = {str(target): rows[home.key(target)].only for target in self._recorded(rows)}
+        rows = {item: row for item, row in self._rows().items() if row.categories}
+        stored = {str(target): rows[store.key(target)].categories
+                  for target in self._recorded(rows)}
         found: list[Chosen] = []
         for given in targets:
             if isinstance(given, Chosen):
@@ -318,13 +319,11 @@ class Engine:
             async with self._live():
                 if dry:
                     return self._finish_report(await self._dry_run(chosen, span, stop), stop)
-                ui.info("Storage: {path}", path=await _off((self.home / home.MEDIA).resolve))
-                async with self._recording("download", [t for t, _ in chosen]) as ended:
+                ui.info("Storage: {path}", path=await _off((self.home / store.MEDIA).resolve))
+                async with self._recording("download", [t for t, _ in chosen]):
                     async with self._running(stop) as runner:
-                        report = await self._download(runner, chosen, span=span, sync=sync,
-                                                      stop=stop, keep=keep)
-                    ended.append(report)
-                    return report
+                        return await self._download(runner, chosen, span=span, sync=sync,
+                                                    stop=stop, keep=keep)
 
     async def run_sync(self, targets: Sequence[Target | str] = (), *,
                        time: Range | None = None) -> Report:
@@ -347,13 +346,12 @@ class Engine:
             ui.info("nothing to sync")
             return Report(())
         with stopping(self.stop) as stop:
-            async with self._recording("sync", [t for t, _ in chosen]) as ended, \
+            async with self._recording("sync", [t for t, _ in chosen]), \
                     self._live(), self._running(stop) as runner:
                 results: dict[int, TargetReport] = {}
                 await self._sync_normal(runner, chosen, results, stop)
                 await self._sync_queries(runner, chosen, results, stop)
                 report = Report(tuple(results[i] for i in range(len(chosen))))
-                ended.append(report)
             return self._finish_report(report, stop)
 
     async def run_retry(self) -> Report:
@@ -385,22 +383,22 @@ class Engine:
                 continue
             # A failed file may be in any category, so a retry lists the ones it failed in; a
             # target that failed whole is downloaded as its last run would have been.
-            options = (Options(categories=row.only if row else None, stop_at_saved=True)
+            options = (Options(categories=(row.categories or None) if row else None,
+                               stop_at_saved=True)
                        if whole else Options(retry=Retry.ONLY))
             chosen.append((target, options))
         if not chosen:
             ui.info("nothing to retry")
             return Report(())
         with stopping(self.stop) as stop:
-            async with self._recording("retry", [target for target, _ in chosen]) as ended, \
+            async with self._recording("retry", [target for target, _ in chosen]), \
                     self._live(), self._running(stop) as runner:
                 report = Report(tuple(await runner.run(chosen)))
-                ended.append(report)
             return self._finish_report(report, stop)
 
-    def _failures(self) -> tuple[dict[str, bool], dict[str, home.TargetRow]]:
+    def _failures(self) -> tuple[dict[str, bool], dict[str, store.TargetRow]]:
         """The targets with failures `flnd retry` takes, and every target's row."""
-        with home.open(self.home) as db:
+        with store.open(self.home) as db:
             return db.failed(), db.targets()
 
     def target_ls(self) -> list[TargetInfo]:
@@ -409,7 +407,7 @@ class Engine:
         Returns:
             The recorded targets, then the folders in `media/` no row names.
         """
-        with home.open(self.home) as db:
+        with store.open(self.home) as db:
             rows = db.targets()
             recorded = self._recorded(rows)
             all_targets = recorded + list(self._unrecorded(recorded, rows))
@@ -437,9 +435,9 @@ class Engine:
         recorded = self._recorded(rows)
         unrecorded = set(self._unrecorded(recorded, rows))
         for target in resolved:
-            if home.key(target) not in rows and target not in unrecorded:
+            if store.key(target) not in rows and target not in unrecorded:
                 raise UsageError(f"{target}: not a known target; download it first")
-        with home.open(self.home) as db:
+        with store.open(self.home) as db:
             for target in resolved:
                 db.follow(target, enabled)
         return resolved
@@ -625,7 +623,7 @@ class Engine:
         kept = []
         for target, options in chosen:
             # A followed target stops at its saved posts, unless told to list them again.
-            row = rows.get(home.key(target))
+            row = rows.get(store.key(target))
             followed = row is not None and row.follow and not options.again
             kept.append((target, replace(
                 options, stop_at_saved=options.stop_at_saved or followed)))
@@ -650,7 +648,7 @@ class Engine:
         *,
         sync: bool,
         stop: Stop,
-        rows: Mapping[str, home.TargetRow] | None = None,
+        rows: Mapping[str, store.TargetRow] | None = None,
     ) -> Report:
         """End a download: raise for Ctrl-C, log the totals, and say when a target isn't synced.
 
@@ -716,7 +714,7 @@ class Engine:
             return
         normal = [chosen[i] for i in indices]
         await _off(self._record, normal)
-        ui.info("Storage: {path}", path=await _off((self.home / home.MEDIA).resolve))
+        ui.info("Storage: {path}", path=await _off((self.home / store.MEDIA).resolve))
         reports = await runner.run([(t, replace(opts, stop_at_saved=True)) for t, opts in normal])
         if stop.soon.is_set():
             raise KeyboardInterrupt
@@ -752,7 +750,7 @@ class Engine:
                 raise KeyboardInterrupt
 
     def _target_info(
-        self, target: Target, rows: Mapping[str, home.TargetRow], db: home.Home,
+        self, target: Target, rows: Mapping[str, store.TargetRow], db: store.Store,
     ) -> TargetInfo:
         """A target's state and its saved files' count and bytes, from `flnd.db` alone.
 
@@ -768,14 +766,14 @@ class Engine:
         Returns:
             What `flnd ls` shows of it.
         """
-        row = rows.get(home.key(target))
+        row = rows.get(store.key(target))
         is_query = self._is_query(target)
         if is_query:
             files, size = 0, 0
         elif row is not None:
             files, size = row.files, row.bytes
         else:
-            files, size = db.count(home.key(target))
+            files, size = db.count(store.key(target))
         complete = row.complete if row is not None else {}
         cursors = row.cursors if row is not None else {}
         categories = (
@@ -946,7 +944,7 @@ class Engine:
                     child_opts = replace(options, limit=None, query=target.value, link=None)
                     rep = await runner.target(child, child_opts, parent=target)
                     if rep.error is None:
-                        seen_keys.append(home.key(child))
+                        seen_keys.append(store.key(child))
                     reports.append(rep)
         except KeyboardInterrupt:
             if not stop.soon.is_set() or stop.now.is_set():
@@ -985,7 +983,7 @@ class Engine:
             first error, if any.
         """
         rows = await _off(self._rows)
-        row = rows.get(home.key(target))
+        row = rows.get(store.key(target))
         seen_keys = set(row.seen if row is not None else ())
         known_keys = set(rows)
         self.tally.add(target, _planned(options))
@@ -1061,8 +1059,8 @@ class Engine:
         """List a search's targets and download the new ones, at most `MAX_SYNC_NEW` of them.
 
         The listing walks past the targets seen before (or known to the home), which are
-        skipped and marked seen, so a sync that took its slice of new ones leaves the rest for
-        the next. A new one is downloaded, and marked seen only when it downloaded without
+        marked seen, so a sync that took its slice of new ones leaves the rest for the next. A
+        new one is downloaded, and marked seen only when it downloaded without
         error, so a failed one is tried again on the next sync.
 
         Args:
@@ -1077,7 +1075,7 @@ class Engine:
             seen_to_mark: filled with the keys to add to the search's `seen`.
 
         Returns:
-            The targets and files skipped, and the first found target's error (None when
+            The files skipped, and the first found target's error (None when
             none failed).
         """
         skipped, new_count, child_failed = 0, 0, None
@@ -1085,10 +1083,10 @@ class Engine:
             async for child in found:
                 if stop.soon.is_set():
                     break
-                child_key = home.key(child)
+                child_key = store.key(child)
                 if child_key in seen_keys or child_key in known_keys:
+                    # A target seen before is passed over: `skipped` counts files alone.
                     seen_to_mark.append(child_key)
-                    skipped += 1
                     continue
                 if new_count >= MAX_SYNC_NEW:
                     break
@@ -1121,7 +1119,7 @@ class Engine:
         Yields:
             The run, whose plugin instances are closed when the block ends.
         """
-        db = await _off(home.open, self.home)
+        db = await _off(store.open, self.home)
         try:
             settings = RunShared(home=self.home, db=db, run=None if dry else self.run,
                                  stop=stop, dry=dry, emit=self.emit, resolve=self._one,
@@ -1138,14 +1136,14 @@ class Engine:
             await _off(db.close)
 
     def _warn_unsynced(
-        self, resolved: Sequence[Target], *, rows: Mapping[str, home.TargetRow] | None = None,
+        self, resolved: Sequence[Target], *, rows: Mapping[str, store.TargetRow] | None = None,
     ) -> None:
         """Remind the user how to keep a target up to date, when one of them isn't followed."""
         saved = self._rows() if rows is None else rows
-        if any((row := saved.get(home.key(t))) is None or not row.follow for t in resolved):
+        if any((row := saved.get(store.key(t))) is None or not row.follow for t in resolved):
             ui.info("not followed; flnd follow keeps it up to date")
 
-    def _recorded(self, rows: Mapping[str, home.TargetRow]) -> list[Target]:
+    def _recorded(self, rows: Mapping[str, store.TargetRow]) -> list[Target]:
         """The targets of `flnd.db`'s rows, rebuilt from each row's source, kind and value.
 
         A row of a source that is gone (an uninstalled plugin), or with no kind (a row an old
@@ -1159,52 +1157,61 @@ class Engine:
             The targets, in the rows' order; a search is written `<code>?<query>`.
         """
         return [
-            Target(f"{row.source}{'?' if self._is_query_kind(row.source, row.kind) else ':'}"
+            Target(f"{row.plugin}{'?' if self._is_query_kind(row.plugin, row.kind) else ':'}"
                    f"{row.value}", kind=row.kind)
             for row in rows.values()
-            if row.kind and row.source in self.sources
+            if row.kind and row.plugin in self.sources
         ]
 
-    def _rows(self) -> dict[str, home.TargetRow]:
+    def _rows(self) -> dict[str, store.TargetRow]:
         """Every target `flnd.db` knows, by key; none for a home that has no database yet."""
-        with home.open(self.home) as db:
+        with store.open(self.home) as db:
             return db.targets()
 
-    def _record(self, chosen: Sequence[tuple[Target, Options]], **how: Any) -> None:
-        """Remember the targets of a run in `flnd.db`; `how` is `Db.record`'s options."""
-        with home.open(self.home) as db:
-            db.record(chosen, **how)
+    def _record(self, chosen: Sequence[tuple[Target, Options]], *, follow: bool | None = None,
+                keep: bool = False) -> None:
+        """Remember the targets of a run in `flnd.db`, in one transaction.
+
+        Args:
+            chosen: each target, with its options.
+            follow: as `store.Store.record` takes it.
+            keep: whether to keep each target's categories for later syncs; otherwise the
+                stored ones stay.
+        """
+        if not chosen:
+            return
+        with store.open(self.home) as db, db.transaction():
+            for target, options in chosen:
+                db.record(target, follow=follow, query=options.query,
+                          categories=(options.categories or ()) if keep else None)
 
     @contextlib.asynccontextmanager
-    async def _recording(self, command: str,
-                         targets: Sequence[Target]) -> AsyncIterator[list[Report]]:
-        """A `runs` row for a command that downloads, ended with what it saved; its reads and
-        writes are off the loop.
+    async def _recording(self, command: str, targets: Sequence[Target]) -> AsyncIterator[None]:
+        """A `runs` row for a command that downloads, ended with the files it saved, however
+        it ends (a stopped run's row keeps its count too); its reads and writes are off the
+        loop.
 
         Args:
             command: the command's name.
             targets: its targets; the first three are named in the row.
-
-        Yields:
-            A list the command appends its report to, for the row's count of saved files.
         """
         named = " ".join([command, *map(str, targets[:3])])
         self.run = await _off(self._started, named if len(targets) <= 3 else f"{named} …")
-        ended: list[Report] = []
         try:
-            yield ended
+            yield
         finally:
             run, self.run = self.run, None
-            await _off(self._ended, run, sum(report.files for report in ended))
+            # The command's tally: `_live` made it before, or inside, this block.
+            await _off(self._ended, run, self.tally.saved)
 
     def _started(self, named: str) -> int:
         """Open a command's `runs` row, after sweeping the month-old logs (src/docs/storage)."""
         home.sweep(self.home)
-        with home.open(self.home) as db:
+        with store.open(self.home) as db:
             return db.start(named)
 
     def _ended(self, run: int | None, saved: int) -> None:
-        with home.open(self.home) as db:
+        with store.open(self.home) as db:
             db.end(run, saved=saved)
 
     def _is_query_kind(self, code: str, kind: str) -> bool:
@@ -1228,18 +1235,18 @@ class Engine:
         if not targets:
             followed = {item: row for item, row in rows.items() if row.follow}
             recorded = self._recorded(rows)
-            targets = [Chosen(target, rows[home.key(target)].only)
+            targets = [Chosen(target, rows[store.key(target)].categories or None)
                        for target in self._recorded(followed)]
             targets += [Chosen(target) for target in self._unrecorded(recorded, rows)]
         planned = []
         for target, categories, link in targets:
-            row = rows.get(home.key(target))
+            row = rows.get(store.key(target))
             planned.append((target, Options(categories=categories, link=link or None,
                                             query=row.query if row else None)))
         return planned
 
     def _unrecorded(
-        self, known: Sequence[Target], rows: Mapping[str, home.TargetRow] | None = None,
+        self, known: Sequence[Target], rows: Mapping[str, store.TargetRow] | None = None,
     ) -> Iterator[Target]:
         """The targets whose folders are under `media/` but which no row of `known` names.
 
@@ -1255,10 +1262,10 @@ class Engine:
             Each unrecorded target, resolved by its source, in folder-name order per source.
         """
         seen = {home.target_folder(self.home, t) for t in known if not self._is_query(t)}
-        media = self.home / home.MEDIA
+        media = self.home / store.MEDIA
         saved_rows = rows or {}
         for target in known:
-            row = saved_rows.get(home.key(target))
+            row = saved_rows.get(store.key(target))
             if self._is_query(target) and row is not None:
                 for child_key in row.seen:
                     if ":" in child_key:
@@ -1762,9 +1769,10 @@ async def _log_dry(
             saved = await run.off(_planned_saved, db, f"{run.source.code}:{placed.key}", dest)
             await emit(Planned(target, placed.post.id, dest, "saved" if saved else "new"))
 
-def _planned_saved(db: home.Home | None, key: str, dest: Path) -> bool:
+def _planned_saved(db: store.Store | None, key: str, dest: Path) -> bool:
     """Whether a planned file is saved: its row or its file is there (off the loop)."""
-    return (db is not None and db.held(key) is not None) or dest.is_file()
+    return (db is not None and db.known(key) is not None) or dest.is_file()
+
 
 
 def _log_totals(report: Report) -> None:

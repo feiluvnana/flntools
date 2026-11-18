@@ -848,12 +848,12 @@ class Popup:
 
     def resolve(self, url: str) -> dict[str, Any]:
         """The target a link is, and whether this home follows it."""
-        from flnd.engine import home
+        from flnd.engine import store
         from flnd.engine.core import Engine
 
         target = Engine(home=self.home).resolve([url])[0]
-        with home.open(self.home) as db:
-            row = db.target(target)
+        with store.open(self.home) as db:
+            row = db.target(store.key(target))
         return {"target": str(target), "followed": bool(row and row.follow)}
 
     def start(self, op: str, target: str) -> dict[str, Any]:

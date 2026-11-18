@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime
 import functools
+import itertools
 import json
 import os
 import sqlite3
@@ -32,6 +33,8 @@ __all__ = ["AccountRow", "FailureRow", "FileRow", "RunRow", "State", "Store", "T
 MEDIA, METADATA = Path("media"), Path("metadata")
 DB = METADATA / "flnd.db"
 SECRETS = METADATA / "secret.db"
+# Where a version-1 `flnd.db` is copied, whole, before its migration.
+BACKUP = METADATA / "flnd.v1.db"
 VERSION = "2"
 
 SCHEMA = """
@@ -110,11 +113,11 @@ CHECKPOINT_ROWS = 1_000
 SAVED, GONE, LINK = "saved", "gone", "link"
 RETRIES = 3
 ON_DISK = "state IN ('saved', 'link')"
-# SQLite takes up to 32,766 values in one statement; 500 rows of 15 is 7,500.
+# SQLite takes up to 32,766 values in one statement; 500 rows of 16 is 8,000.
 ONE_STATEMENT = 500
 
 FILE_COLUMNS = ("key", "target", "plugin", "post_id", "category", "path", "size", "mtime",
-                "date", "estimated", "kind", "state", "at", "files", "hash")
+                "date", "estimated", "kind", "state", "at", "files", "hash", "sidecar")
 INSERT_FILE = (f"INSERT OR REPLACE INTO files ({', '.join(FILE_COLUMNS)}) "
                f"VALUES ({', '.join('?' * len(FILE_COLUMNS))})")
 # The columns `FileRow` reads, in its order.
@@ -170,6 +173,11 @@ class FileRow(msgspec.Struct):
     def plugin(self) -> str:
         """The plugin's code: the key's part before the first colon."""
         return self.key.partition(":")[0]
+
+    @property
+    def day(self) -> datetime.date | None:
+        """Its post's day; None when the row holds none, or one that isn't a day."""
+        return _date(self.date)
 
 
 class TargetRow(msgspec.Struct):
@@ -315,10 +323,17 @@ def open(home: Path, *, loop: bool = False,
 
 def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool,
            seal: Callable[[sqlite3.Connection, Mapping[str, int]], None] | None) -> None:
-    """Set the pragmas, then make schema 2 or migrate version 1, in one transaction."""
+    """Set the pragmas, then make schema 2 or migrate version 1, in one transaction.
+
+    A version-1 file is copied whole to `BACKUP` first, once: the migration never loses a
+    row, and the copy is there if it ever did. A crash inside the transaction leaves the file
+    at version 1, which the next open migrates.
+    """
     sql.execute(f"PRAGMA busy_timeout = {OTHER_BUSY_MS}")
     sql.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
     sql.execute(f"PRAGMA wal_autocheckpoint = {0 if loop else OTHER_CHECKPOINT_PAGES}")
+    if _version(sql) == "1":
+        _backup(sql, home / BACKUP)
     sql.execute("BEGIN IMMEDIATE")
     try:
         version = _version(sql)
@@ -338,6 +353,31 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool,
         raise
     if loop:
         sql.execute(f"PRAGMA busy_timeout = {LOOP_BUSY_MS}")
+
+
+def _backup(sql: sqlite3.Connection, path: Path) -> None:
+    """Copy a version-1 file to `path` with SQLite's online backup, unless a copy is there.
+
+    The copy is written beside it and renamed into place, so a crash never leaves half of
+    one.
+
+    Raises:
+        DiskError: the copy can't be written; the file is left as it was.
+    """
+    if path.is_file():
+        return
+    part = path.with_name(f"{path.name}.part")
+    try:
+        copy = sqlite3.connect(part)
+        try:
+            sql.backup(copy)
+        finally:
+            copy.close()
+        os.replace(part, path)
+    except (OSError, sqlite3.Error) as error:
+        part.unlink(missing_ok=True)
+        raise DiskError(f"{path}: can't keep a copy of version 1 before migrating: {error}",
+                        hint="free some disk space, then run flnd again") from error
 
 
 def _version(sql: sqlite3.Connection) -> str | None:
@@ -520,6 +560,14 @@ class Store:
         with self._db.transaction() as sql:
             yield sql
 
+    def ready(self) -> None:
+        """Make `flnd.db` (or migrate it) now, off the loop, so no first write on it waits.
+
+        Raises:
+            DiskError: the file can't be made or opened.
+        """
+        self._db.connection()
+
     @property
     def due(self) -> bool:
         """Whether the loop's connection has committed enough rows to checkpoint."""
@@ -580,14 +628,38 @@ class Store:
             return
         if len(rows) <= ONE_STATEMENT:
             # One statement is its own transaction: no BEGIN and COMMIT to send.
-            values = tuple(value for row in rows for value in _file_values(row))
-            self._db.write(_insert_files(len(rows)), values)
+            self._db.write(_insert_files(len(rows)), _values(rows))
         else:
             with self._db.transaction() as sql:
                 for start in range(0, len(rows), ONE_STATEMENT):
                     part = rows[start:start + ONE_STATEMENT]
-                    sql.execute(_insert_files(len(part)),
-                                tuple(value for row in part for value in _file_values(row)))
+                    sql.execute(_insert_files(len(part)), _values(part))
+        self._rows += len(rows)
+
+    def commit(self, rows: Sequence[FileRow], *, hashes: Mapping[str, bytes] | None = None,
+               failures: Sequence[Mapping[str, Any]] = (), run: int | None = None) -> None:
+        """Write a post's rows, the hashes dedupe found and its files' failures, in one
+        transaction: the save's commit, on the loop.
+
+        Args:
+            rows: the post's files that landed.
+            hashes: other saved files' SHA-256, by key, that dedupe read on the way.
+            failures: each failed file's `fail` arguments, without `run`.
+            run: the run's id, for the failures.
+
+        Raises:
+            DiskError: the database can't be written; `busy(error)` when another connection
+                holds the lock, and nothing was written.
+        """
+        at = now()
+        with self._db.transaction() as sql:
+            for start in range(0, len(rows), ONE_STATEMENT):
+                part = rows[start:start + ONE_STATEMENT]
+                sql.execute(_insert_files(len(part)), _values(part))
+            sql.executemany("UPDATE files SET hash = ? WHERE key = ?",
+                            [(digest, item) for item, digest in (hashes or {}).items()])
+            for failure in failures:
+                _fail(sql, run=run, at=at, **failure)
         self._rows += len(rows)
 
     def undated(self, target: str) -> list[FileRow]:
@@ -700,26 +772,9 @@ class Store:
 
         A file saved since its last failure starts again from 1. `url` is kept redacted.
         """
-        at = now()
         with self._db.transaction() as sql:
-            sql.execute(
-                "INSERT INTO failures (run, key, target, post_id, category, file, url, class,"
-                " message, hint, retryable, attempts, at, cursor)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
-                " ON CONFLICT (key) DO UPDATE SET run = excluded.run, target = excluded.target,"
-                " post_id = excluded.post_id, category = excluded.category,"
-                " file = excluded.file, url = excluded.url, class = excluded.class,"
-                " message = excluded.message, hint = excluded.hint,"
-                " retryable = excluded.retryable, at = excluded.at,"
-                " cursor = excluded.cursor, attempts = CASE WHEN EXISTS (SELECT 1 FROM files"
-                " WHERE files.key = excluded.key AND files.state = 'saved') THEN 1"
-                " ELSE failures.attempts + 1 END",
-                (run, item, target, post, category, file, text.redact(url) if url else "",
-                 type(error).__name__, str(error), getattr(error, "hint", "") or "",
-                 int(getattr(error, "retryable", False)), at, cursor))
-            if isinstance(error, NotFound) and file:
-                sql.execute(INSERT_FILE, _file_values(FileRow(
-                    item, target, file, post_id=post, category=category, state=GONE, at=at)))
+            _fail(sql, run=run, item=item, target=target, error=error, post=post,
+                  category=category, file=file, url=url, cursor=cursor, at=now())
 
     def clear(self, item: str) -> None:
         """Drop a failure's row: a target that failed whole has now run to its end."""
@@ -963,6 +1018,30 @@ class State(MutableMapping[str, Any]):
         return found[0] if found else 0
 
 
+def _fail(sql: sqlite3.Connection, *, run: int | None, item: str, target: str,
+          error: BaseException, post: str = "", category: str = "", file: str = "",
+          url: str = "", cursor: str | None = None, at: str) -> None:
+    """One failure's row, in the caller's transaction (`Store.fail`, `Store.commit`)."""
+    sql.execute(
+        "INSERT INTO failures (run, key, target, post_id, category, file, url, class,"
+        " message, hint, retryable, attempts, at, cursor)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
+        " ON CONFLICT (key) DO UPDATE SET run = excluded.run, target = excluded.target,"
+        " post_id = excluded.post_id, category = excluded.category,"
+        " file = excluded.file, url = excluded.url, class = excluded.class,"
+        " message = excluded.message, hint = excluded.hint,"
+        " retryable = excluded.retryable, at = excluded.at,"
+        " cursor = excluded.cursor, attempts = CASE WHEN EXISTS (SELECT 1 FROM files"
+        " WHERE files.key = excluded.key AND files.state = 'saved') THEN 1"
+        " ELSE failures.attempts + 1 END",
+        (run, item, target, post, category, file, text.redact(url) if url else "",
+         type(error).__name__, str(error), getattr(error, "hint", "") or "",
+         int(getattr(error, "retryable", False)), at, cursor))
+    if isinstance(error, NotFound) and file:
+        sql.execute(INSERT_FILE, _file_values(FileRow(
+            item, target, file, post_id=post, category=category, state=GONE, at=at)))
+
+
 def stamp(path: Path) -> tuple[int, int]:
     """A file's `(size, mtime_ns)`, from one `stat`.
 
@@ -983,10 +1062,15 @@ def _insert_files(count: int) -> str:
     return f"{INSERT_FILE.partition(' VALUES ')[0]} VALUES {', '.join([row] * count)}"
 
 
+def _values(rows: Sequence[FileRow]) -> tuple[Any, ...]:
+    """Every row's values, one after another, for one `INSERT` of several rows."""
+    return tuple(itertools.chain.from_iterable(map(_file_values, rows)))
+
+
 def _file_values(row: FileRow) -> tuple[Any, ...]:
     return (row.key, row.target, row.plugin, row.post_id, row.category, row.path, row.size,
             row.mtime, row.date, int(row.estimated), row.kind, row.state, row.at, row.files,
-            row.hash)
+            row.hash, row.sidecar)
 
 
 def _file_row(found: tuple[Any, ...]) -> FileRow:
@@ -1148,7 +1232,8 @@ def _fix(store: Store, missing: list[FileRow],
 
 def _record(row: FileRow) -> Record:
     return Record(row.key, Path(row.path), row.size, post=row.post_id, category=row.category,
-                  date=_date(row.date), at=row.at)
+                  date=row.day, at=row.at)
+
 
 
 def _norm(path: str | os.PathLike[str]) -> str:

@@ -26,6 +26,7 @@ from flnd import cli as flnd_cli
 from flnd.engine import crawl as job
 from flnd.engine import home as _home
 from flnd.engine import save
+from flnd.engine import store as _store
 from flnd.engine.core import Engine
 from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped, encode
 from flnd.errors import Changed
@@ -297,8 +298,8 @@ class RetryTest(FeedCase):
         # From the cursor of its page to the listing's end, without it: it is gone.
         self.assertEqual(self.pages(), ["p6", None])
         self.assertEqual(self.failures_row()["class"], "NotFound")
-        with _home.open(self.home) as db:
-            self.assertEqual(db.held("fed:p8")[1], _home.GONE)
+        with _store.open(self.home) as db:
+            self.assertEqual(db.known("fed:p8")[1], _store.GONE)
         self.sync()
         self.assertEqual(self.pages(), [None])
 
@@ -314,8 +315,8 @@ class RetryTest(FeedCase):
         self.assertTrue(failure.path.name.startswith("p8"))
 
     def failures_row(self):
-        with _home.open(self.home) as db:
-            sql = db._store.connection()
+        with _store.open(self.home) as db:
+            sql = db._db.connection()
             sql.row_factory = lambda cursor, row: {d[0]: v for d, v in zip(cursor.description, row)}
             return sql.execute("SELECT * FROM failures WHERE key = 'fed:p8'").fetchone()
 

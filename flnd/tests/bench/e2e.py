@@ -39,6 +39,7 @@ import kit
 
 from flnd.engine import home as _home
 from flnd.engine import run as _run
+from flnd.engine import store as _store
 from flnd.engine.core import Engine, _drive
 from flnd.engine.options import Options
 from flnd.plugin import Ctx, File, Plugin, Post, Request, Target, route
@@ -168,10 +169,10 @@ def grow(home: Path, files: int) -> None:
         files: how many file rows the home holds after.
     """
     folder = _home.target_folder(home, Target("bnc:example_user", kind="user")) / "posts"
-    with _home.open(home) as db:
+    with _store.open(home) as db:
         held = db.count("bnc:example_user")[0]
         rows = [
-            _home.FileRow(f"bnc:p{n}_{num}", "bnc:example_user",
+            _store.FileRow(f"bnc:p{n}_{num}", "bnc:example_user",
                           str(folder / f"2026-01-01_p{n}_{num}{('.jpg', '.mp4')[num]}"),
                           len(BODY) + 4, post_id=f"p{n}", category="posts", date="2026-01-01",
                           kind=("image", "video")[num], files=2 if num == 0 else None)
@@ -206,7 +207,7 @@ def contended(home: Path) -> float:
     Returns:
         The longest the run's loop was held up, in seconds.
     """
-    holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(home / _home.DB), str(HOLD)],
+    holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(home / _store.DB), str(HOLD)],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     lags: list[float] = []
     # The probe's task, kept so the loop can't drop it half way.

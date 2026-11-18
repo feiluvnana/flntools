@@ -24,6 +24,7 @@ from flnd.engine import crawl as job
 from flnd.engine import home as _home
 from flnd.engine import jobs
 from flnd.engine import run as _run
+from flnd.engine import store as _store
 from flnd.engine.core import Engine, Report, TargetReport, _Runner
 from flnd.engine.events import Failed, Skipped
 from flnd.engine.options import Options
@@ -127,22 +128,24 @@ class GroupsTest(EngineCase):
 
     def test_targets_with_their_own_options_run_sequentially_and_targets_db_opens_once(self):
         seen, opened = [], []
-        real_download, real_open = job.download, _home.open
+        real_download, real_open = job.download, _store.open
 
         async def download(run, target, row, options, **listed):
             seen.append((target.value, options.again))
             return await real_download(run, target, row, options, **listed)
 
-        def opening(home):
-            opened.append(home)
-            return real_open(home)
+        def opening(home, **how):
+            # The save's commit connection (`loop=True`) is its own.
+            if not how.get("loop"):
+                opened.append(home)
+            return real_open(home, **how)
 
         sources = {"aaa": make_plugin("aaa"), "bbb": make_plugin("bbb")}
         engine = Engine(home=self.home, sources=sources)
         chosen = [(Target("aaa:a", kind="user"), Options(again=True)),
                   (Target("aaa:b", kind="user"), Options()), (Target("bbb:c", kind="user"), Options())]
         stop = _run.Stop()
-        with mock.patch.object(job, "download", download), mock.patch.object(_home, "open", opening):
+        with mock.patch.object(job, "download", download), mock.patch.object(_store, "open", opening):
             reports = fakes.run_targets(engine, chosen, stop).targets
         self.assertEqual(sorted(seen), [("a", True), ("b", False), ("c", False)])
         self.assertEqual(opened, [self.home])
@@ -603,27 +606,29 @@ class EngineLoginTest(EngineCase):
 
 class OffTheLoopTest(EngineCase):
     """flnd.db's connection waits up to 30 s for another process's lock: on the loop, that
-    would stall every transfer of the run."""
+    would stall every transfer of the run. Only the save's commit connection, which waits for no
+    lock (`loop=True`), runs there."""
 
     def spy(self):
-        """Each call of `Home`, of a plugin's `State` and of a file's stat made on the loop."""
+        """Each call of `Store`, of a plugin's `State` and of a file's stat made on the loop."""
         on_loop = []
 
         def spied(name, real):
             def call(*args, **kwargs):
                 try:
                     asyncio.get_running_loop()
-                    on_loop.append(name)
+                    if not (isinstance(args[0], _store.Store) and args[0]._loop):
+                        on_loop.append(name)
                 except RuntimeError:
                     pass
                 return real(*args, **kwargs)
             return call
 
         for owner, names in [
-                (_home.Home, [name for name in vars(_home.Home) if not name.startswith("_")
-                              and callable(getattr(_home.Home, name))]),
-                (_home.State, ["__getitem__", "__setitem__", "__delitem__", "__iter__",
-                               "__len__"])]:
+                (_store.Store, [name for name in vars(_store.Store) if not name.startswith("_")
+                                and callable(getattr(_store.Store, name))]),
+                (_store.State, ["__getitem__", "__setitem__", "__delitem__", "__iter__",
+                                "__len__"])]:
             for name in names:
                 self.enterContext(mock.patch.object(owner, name,
                                                     spied(name, getattr(owner, name))))
@@ -644,13 +649,13 @@ class OffTheLoopTest(EngineCase):
             ctx.state["seen"] = ctx.state.get("seen", 0) + 1
             ctx.state.pop("gone", None)
 
-        with _home.open(self.home) as db:
+        with _store.open(self.home) as db:
             db.state("aaa")["seen"], db.state("aaa")["gone"] = 1, True
         on_loop = self.spy()
         engine = Engine(home=self.home, sources={"aaa": make_plugin("aaa", route)})
         engine.download(["aaa:a", "aaa:b"])
         self.assertEqual(on_loop, [])
-        with _home.open(self.home) as db:
+        with _store.open(self.home) as db:
             self.assertEqual(dict(db.state("aaa")), {"seen": 3})
 
 
@@ -718,8 +723,8 @@ class ApiTest(EngineCase):
             self.assertTrue(str(caught.exception).startswith(message), caught.exception)
         with self.assertRaisesRegex(UsageError, "no plugin named zzz"):
             engine.download(["zzz:a"])
-        self.assertFalse((self.home / _home.MEDIA).exists())
-        self.assertFalse((self.home / _home.DB).exists())
+        self.assertFalse((self.home / _store.MEDIA).exists())
+        self.assertFalse((self.home / _store.DB).exists())
 
     def test_categories_on_a_single_post_are_refused_before_any_request(self):
         from flnd.plugins import PLUGINS
@@ -731,8 +736,8 @@ class ApiTest(EngineCase):
             with self.subTest(targets=targets), self.assertRaisesRegex(UsageError, f"^{message}$"):
                 engine.download(targets)
         self.assertEqual(self.requests, [])
-        self.assertFalse((self.home / _home.MEDIA).exists())
-        self.assertFalse((self.home / _home.DB).exists())
+        self.assertFalse((self.home / _store.MEDIA).exists())
+        self.assertFalse((self.home / _store.DB).exists())
         # A link to a post downloads it whole.
         runs = []
         async def run(runner, chosen, *, depth=0):

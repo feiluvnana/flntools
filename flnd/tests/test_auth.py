@@ -18,6 +18,7 @@ from unittest import mock
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
 from flnd.engine import home as _home
+from flnd.engine import store as _store
 from flnd.plugins.ins import Instagram
 from flnd.ui.log import ui
 from flnkit import cookies as _cookies
@@ -31,7 +32,7 @@ NETSCAPE = ("# Netscape HTTP Cookie File\n"
 @contextmanager
 def raw(home):
     """The vault's `secrets.db`, opened as any SQLite tool would, to read or tamper with its rows."""
-    db = sqlite3.connect(home / _home.SECRETS, isolation_level=None)
+    db = sqlite3.connect(home / _store.SECRETS, isolation_level=None)
     try:
         yield db
     finally:
@@ -114,7 +115,7 @@ class VaultedCookiesTest(AuthCase):
             self.assertEqual(db.execute("SELECT slot, name FROM secrets").fetchall(), [("ins", "cookies")])
             [(sealed,)] = db.execute("SELECT value FROM secrets")
             self.assertIn("ins-session", sealed)
-        self.assertEqual(_home.origin(self.home, "ins"), "cookies.txt")
+        self.assertEqual(_home.origin(self.home, "ins"), "file")
 
     def test_a_plain_cookie_file_moves_into_the_vault_on_the_first_run(self):
         self.write("ins.txt")
@@ -280,7 +281,7 @@ class VaultTest(AuthCase):
     def test_the_secret_store_is_the_owners_alone(self):
         with _home.secrets(self.home, "tlg") as vault:
             vault["session"] = "x"
-        db = self.home / _home.SECRETS
+        db = self.home / _store.SECRETS
         self.assertTrue(db.is_file())
         if os.name != "nt":
             self.assertEqual(stat.S_IMODE(db.stat().st_mode), 0o600)
@@ -297,7 +298,8 @@ class OriginAndExpiryTest(AuthCase):
             {"name": "other", "value": "top-secret-2", "domain": ".instagram.com", "expires": now - 10},
         ])
         _home.store(Instagram(), jar, home=self.home, origin="Chrome")
-        self.assertEqual(_home.origin(self.home, "ins"), "Chrome")
+        # Schema 2 names an origin by its browser or method (`accounts.origin`).
+        self.assertEqual(_home.origin(self.home, "ins"), "chrome")
         expiring = _home.expiring(self.home, Instagram())
         self.assertEqual(len(expiring), 1)
         self.assertEqual(expiring[0][0], "sessionid")

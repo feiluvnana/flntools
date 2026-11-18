@@ -13,6 +13,7 @@ holds your logins and cookies.
 .flnd/
   metadata/
     flnd.db          what the home remembers: files, posts, targets, runs, failures, …
+    flnd.v1.db       a home of version 1, copied whole before its migration (see below)
     secret.db        the vault: logins, cookies and tokens, stored in plaintext
   media/
     <code>/<target>/<category>/…   the downloaded files
@@ -30,10 +31,11 @@ keys that look like secrets (`token`, `session`, `cookie`, …) are replaced by 
 from a login URL or one that sets a cookie is never kept, and the file is named by a count,
 never by anything the site sent.
 
-The code: `src/engine/home.py` is flnd's storage (the layout, `flnd.db`'s tables and queries,
-the logins). It is built on three kit modules: `flnkit/db.py`, a SQLite store (WAL, one
-connection shared by threads, transactions), `flnkit/vault.py`, secrets stored in `secret.db`,
-and `flnkit/cookies.py`, cookie jars read from files and browsers.
+The code: `src/engine/store.py` is `flnd.db` (its schema, the migration of a version-1 home,
+its rows and queries, and `check`), and `src/engine/home.py` the rest of the home (a target's
+folder, the logs, the logins). They are built on three kit modules: `flnkit/db.py`, a SQLite
+store (WAL, one connection shared by threads, transactions), `flnkit/vault.py`, secrets stored
+in `secret.db`, and `flnkit/cookies.py`, cookie jars read from files and browsers.
 
 ## `media/`
 
@@ -141,7 +143,7 @@ while the file at its `path` is there, and also a file already on disk at its pl
 | --- | --- |
 | `key` | `<code>:<key>` |
 | `target` | the target it was saved for, `<code>:<value>` |
-| `source` | the plugin's code |
+| `plugin` | the plugin's code |
 | `post_id`, `category` | its post, and the category it was listed in ("" for a single post) |
 | `path` | where the file is, as flnd saved it |
 | `size`, `mtime` | its size in bytes, and its modified time in nanoseconds, when saved |
@@ -155,10 +157,10 @@ while the file at its `path` is there, and also a file already on disk at its pl
 | `unpacked` | on an archive: `extracted`, or `failed` (a wrong password, a damaged or unsafe archive, no 7-Zip) |
 | `folder` | on an extracted archive: the folder it was extracted into |
 | `sidecar` | where its sidecar is, `<path>.json`, when sidecars are on (see [Sidecars](#sidecars)) |
-| `shrink`, `tools`, `before`, `format` | columns an older home may still have; flnd writes nothing to them today |
 
-Indexed on `(target, post_id)`, on `hash` where there is one, and on the undated rows of each
-target, so the plugin's `date` hook finds them without reading the rest. There is no index on
+Indexed on `(target, post_id)`, on `size` among the saved files (what dedupe looks up), on
+`hash` where there is one, and on the undated rows of each target, so the plugin's `date` hook
+finds them without reading the rest. There is no index on
 `path` yet: `check` reads every row once instead of looking files up by path, and each index
 costs every commit a page.
 
@@ -230,9 +232,9 @@ One row per target the home knows, keyed `<code>:<value>` (`ins:example_user`).
 
 | column | what it holds |
 | --- | --- |
-| `source`, `value`, `kind` | the target: its plugin's code (the column is `source`), its value, and the route that reads it (`user`, `post`, `query`, …) |
+| `plugin`, `value`, `kind` | the target: its plugin, its value, and the route that reads it (`user`, `post`, `query`, …) |
 | `follow` | 1 when `sync` takes it |
-| `options` | JSON: `only`, the categories a followed target syncs |
+| `categories` | JSON: the categories a followed target syncs, as its text named them (`ins:example_user/reels`); `[]` takes the route's own |
 | `query` | for a target a search found: the search's words |
 | `complete` | JSON: each category listed to its end, with the UTC day it was |
 | `cursors` | JSON: each category's cursor, saved when a full download of it was cut short, so the next run resumes |
@@ -241,11 +243,13 @@ One row per target the home knows, keyed `<code>:<value>` (`ins:example_user`).
 | `seen` | JSON: for a search, the targets it found, so a sync downloads only new ones |
 | `last_sync` | when it was last downloaded or synced, in UTC |
 | `files`, `bytes` | its saved files and their bytes, counted at the end of each of its runs; `flnd ls` shows them |
+| `account` | the account that last worked for it |
 
 ### `runs` and `failures`
 
 `runs` has one row per command that downloads: `id`, `command`, `started`, `ended`, the files
-it `saved`, and how many `failed`.
+it `saved`, and how many `failed`. A run stopped by Ctrl-C keeps the files it saved before the
+stop.
 
 `failures` has one row per failed file, keyed by its `key` however often it fails: the `run`
 it last failed in, its `target`, `post_id`, `category` and `file` (where it would have gone),
@@ -255,23 +259,33 @@ the first, and back to 1 for a file saved since that fails again), and `at`. A f
 whole target has the target's key and no post; the target's next run to its end drops it.
 
 No row holds a request to send again, nor a URL with its query: a retry lists the post again
-through its source, from `cursor`, for fresh links ([errors.md](errors.md#retrying)). A home an
-earlier flnd made had a `request` column; opening it keeps each key's latest row and drops the
-column. The next download or sync of the target retries every failed file that has no row in
-`files` since and `attempts` of at most 3; `flnd retry` takes every one.
+through its source, from `cursor`, for fresh links ([errors.md](errors.md#retrying)). The next
+download or sync of the target retries every failed file that has no row in `files` since and
+`attempts` of at most 3; `flnd retry` takes every one.
 
-### `state`, `logins`, `probes`, `meta`
+### `state`, `accounts`, `meta`
 
-- `state`: each plugin's own values between runs (`ctx.state`), as JSON, keyed `(source,
-  key)`, where `source` is the plugin's code. A run reads a plugin's values once, before its
-  first route, keeps the plugin's changes in memory, and writes them back as each target ends
-  and as the run ends, always off the loop. flnd keeps one entry of its own there too
-  (`src/engine/crawl.py`): `redate.asked`, the posts whose date a plugin's `date` hook couldn't
-  find, so they aren't asked again for 30 days.
-- `logins`: how each plugin logged in (`origin`: "Chrome", "cookies.txt", "qr") and `at`. No
-  secret is ever here. `flnd logout` removes the plugin's row.
-- `probes`: what ffmpeg found in a file; safe to empty.
-- `meta`: the schema's `version`, and `migrated`, when an old home was migrated.
+- `state`: each plugin's own values between runs (`ctx.state`), as JSON, keyed `(plugin, key)`.
+  A run reads a plugin's values once, before its first route, keeps the plugin's changes in
+  memory, and writes them back as each target ends and as the run ends, always off the loop.
+  flnd keeps one entry of its own there too (`src/engine/crawl.py`): `redate.asked`, the posts
+  whose date a plugin's `date` hook couldn't find, so they aren't asked again for 30 days.
+- `accounts`: each plugin's logged-in account (`name` `default`, `is_default` 1), with how it
+  logged in (`origin`: a browser such as `chrome`, `file` for a cookie file, or the plugin's
+  own way, `qr`, `phone`), `at`, and its `status`. No secret is ever here. `flnd logout`
+  removes the plugin's rows.
+- `meta`: the schema's `version`, `2`.
+
+### A home of version 1
+
+A home an earlier flnd made (version 1) moves to version 2 the first time it is opened, in one
+transaction: `source` becomes `plugin`; a target's `options` (`only`) become its `categories`;
+the `shrink`, `before`, `format` and `tools` columns, and the `probes` table, go; each `logins`
+row (and each plugin with a `secret.db` slot but no row) becomes the plugin's default account;
+a key that failed more than once keeps its latest failure; and `version` becomes `2`. Before
+it starts, the whole file is copied to `metadata/flnd.v1.db`, once, so no row is ever lost: a
+crash inside the migration leaves the home at version 1, and the next open migrates it again.
+A home of a later version, or one with files and no version, is refused.
 
 ## Settings: config.toml
 
@@ -356,7 +370,9 @@ walks `media/` once. It never deletes, moves or downloads a file, and it never a
 
 An unknown file stays unknown: a later run that lists it finds it on disk and skips it, so
 nothing is downloaded twice, and `check` reports it each time until you remove it or give it a
-row yourself.
+row yourself. A home with one isn't all right, fixed or not: `flnd check --fix` repairs the
+rows and still exits 1, saying the unknown files stay.
+
 
 These are never unknown: parts and what sits beside them, hidden files (`.DS_Store`), symlinks,
 a hard link of a known file, a known file's sidecar, anything inside the folder an archive was

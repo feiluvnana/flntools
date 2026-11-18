@@ -27,10 +27,10 @@ from unittest import mock
 
 from fakes import EngineCase, make_plugin
 
-from flnd.engine import home, jobs, save
+from flnd.engine import jobs, store
 from flnd.engine.events import Failed, Saved, Skipped
 from flnd.engine.jobs import Kind
-from flnd.engine.save import Item, Saver, Store
+from flnd.engine.save import Item, Saver
 from flnd.errors import DiskError, NotFound, UsageError
 from flnd.plugin import File, Target
 from flnd.ui.log import ui
@@ -64,10 +64,11 @@ class SaveCase(unittest.TestCase):
         self.clock = self.enterContext(clock.use(clock.Fake()))
         self.routes: dict = {}
         self.enterContext(net.fake(lambda request: self.serve(request)))
-        with home.Home(self.tmp) as made:
-            made.clear("")  # a first write makes flnd.db with today's schema
-        self.store = Store(self.tmp / home.DB)
+        # The run's commit connection, its flnd.db made now.
+        self.store = store.open(self.tmp, loop=True)
         self.addCleanup(self.store.close)
+        self.store.ready()
+        self.sql = self.store._db.connection()
         self.jobs = Jobs()
         self.addCleanup(lambda: self.jobs.__exit__())
         self.events: list = []
@@ -93,7 +94,7 @@ class SaveCase(unittest.TestCase):
         return saver
 
     def rows(self, columns="key, path, size, date, hash") -> list[tuple]:
-        return self.store._sql.execute(f"SELECT {columns} FROM files ORDER BY key").fetchall()
+        return self.sql.execute(f"SELECT {columns} FROM files ORDER BY key").fetchall()
 
     def saved(self) -> list[Path]:
         return [event.path for event in self.events if isinstance(event, Saved)]
@@ -123,7 +124,7 @@ class StagesTest(SaveCase):
         self.assertIsInstance(failed, Failed)
         self.assertIn("got a web page instead of a photo", str(failed.error))
         self.assertEqual(os.listdir(self.tmp / "media"), [])
-        self.assertEqual(self.store._sql.execute("SELECT key, class FROM failures").fetchall(),
+        self.assertEqual(self.sql.execute("SELECT key, class FROM failures").fetchall(),
                          [("ins:a.jpg", "SiteError")])
 
     def test_the_mirrors_are_tried_in_order(self) -> None:
@@ -354,11 +355,11 @@ class DedupeTest(SaveCase):
                  ("same bytes, no hard links", JPEG, JPEG, False, False)]
         for number, (label, old, new, links, linked) in enumerate(cases):
             with self.subTest(label):
-                self.store._sql.execute("DELETE FROM files")
+                self.sql.execute("DELETE FROM files")
                 held = self.tmp / f"held{number}.jpg"
                 held.write_bytes(old)
-                self.store.commit([home.FileRow(f"ins:held{number}", "ins:example_user",
-                                                str(held), len(old))], [], {}, None)
+                self.store.commit([store.FileRow(f"ins:held{number}", "ins:example_user",
+                                                str(held), len(old))])
                 self.routes[f"{CDN}/{number}.jpg"] = new
                 self.jobs.kinds.clear()
                 link = files.link if links else (lambda *paths: False)
@@ -379,24 +380,24 @@ class DedupeTest(SaveCase):
 class CommitTest(SaveCase):
     def test_a_posts_rows_go_in_one_transaction(self) -> None:
         statements: list[str] = []
-        self.store._sql.set_trace_callback(statements.append)
+        self.sql.set_trace_callback(statements.append)
         for name in ("a.jpg", "b.jpg", "c.jpg"):
             self.routes[f"{CDN}/{name}"] = JPEG
         self.save(self.item("a.jpg", count=3), self.item("b.jpg"), self.item("c.jpg"))
         self.assertEqual(statements.count("BEGIN IMMEDIATE"), 1)
         self.assertEqual(len(self.rows()), 3)
-        self.assertEqual(self.store._sql.execute("PRAGMA busy_timeout").fetchone(), (0,))
+        self.assertEqual(self.sql.execute("PRAGMA busy_timeout").fetchone(), (0,))
 
     def test_a_commit_that_meets_a_lock_is_queued_again(self) -> None:
         other = sqlite3.connect(self.store.path, isolation_level=None)
         other.execute("BEGIN IMMEDIATE")
         tries, commit = [], self.store.commit
 
-        def counted(*args):
+        def counted(*args, **options):
             tries.append(self.jobs.kinds[-1])
             if len(tries) == 3:
                 other.execute("COMMIT")
-            return commit(*args)
+            return commit(*args, **options)
 
         self.routes[f"{CDN}/a.jpg"] = JPEG
         with mock.patch.object(self.store, "commit", counted):
@@ -408,8 +409,8 @@ class CommitTest(SaveCase):
 
     def test_the_log_is_checkpointed_every_so_many_rows_and_at_close(self) -> None:
         self.routes.update({f"{CDN}/a.jpg": JPEG, f"{CDN}/b.jpg": PNG})
-        with mock.patch.object(save, "CHECKPOINT_ROWS", 2), \
-                mock.patch.object(Store, "checkpoint", autospec=True) as checkpoint:
+        with mock.patch.object(store, "CHECKPOINT_ROWS", 2), \
+                mock.patch.object(store.Store, "checkpoint", autospec=True) as checkpoint:
             self.save(self.item("a.jpg"), self.item("b.jpg"))
         self.assertEqual(checkpoint.call_count, 2)
 
@@ -419,7 +420,7 @@ class StopTest(SaveCase):
         def full(self, *data, **options):
             raise OSError(errno.ENOSPC, "No space left on device")
 
-        def refused(*args):
+        def refused(*args, **options):
             raise DiskError("flnd.db: database or disk is full")
 
         def dropped(request):
@@ -448,7 +449,7 @@ class StopTest(SaveCase):
                         with files.fake({}), self.assertRaises(raised):
                             self.save(self.item(name, file=file, kind=None))
                 self.assertEqual([type(one) for one in self.events], [event] if event else [])
-        gone = self.store._sql.execute("SELECT state FROM files WHERE key = ?",
+        gone = self.sql.execute("SELECT state FROM files WHERE key = ?",
                                        ("ins:a missing file.jpg",)).fetchone()
         self.assertEqual(gone, ("gone",))
         self.assertIsInstance(self.events[0].error, NotFound)
@@ -471,7 +472,7 @@ class FinishTest(SaveCase):
 
     def test_a_sidecar_holds_the_posts_fields_and_its_row_the_posts_commit(self) -> None:
         statements: list[str] = []
-        self.store._sql.set_trace_callback(statements.append)
+        self.sql.set_trace_callback(statements.append)
         self.routes.update({f"{CDN}/a.jpg": JPEG, f"{CDN}/b.jpg": PNG})
         meta = {"post": "1", "caption": "hello", "day": DAY}
         self.save(self.item("a.jpg", meta=meta), self.item("b.jpg", meta=meta))
@@ -697,7 +698,7 @@ class EngineTest(EngineCase):
         locked, release = threading.Event(), threading.Event()
 
         def hold() -> None:
-            other = sqlite3.connect(self.home / home.DB, isolation_level=None)
+            other = sqlite3.connect(self.home / store.DB, isolation_level=None)
             other.execute("BEGIN IMMEDIATE")
             locked.set()
             release.wait(5)
@@ -725,7 +726,7 @@ class EngineTest(EngineCase):
 
 
 # Where a post's rows are written.
-COMMIT = (Store, "commit")
+COMMIT = (store.Store, "commit")
 
 
 def probe(case) -> list[float]:

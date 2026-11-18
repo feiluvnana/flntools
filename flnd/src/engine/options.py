@@ -38,7 +38,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from flnd.engine import home
+from flnd.engine import store
 from flnd.engine.run import sink
 from flnd.errors import UsageError
 from flnd.plugin import Range, Target
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 class Retry(Enum):
     """What a target's run does with the files earlier runs failed on (src/docs/errors)."""
 
-    # List each of their posts again first, for those failed on at most `home.RETRIES` runs;
+    # List each of their posts again first, for those failed on at most `store.RETRIES` runs;
     # then the target's listings: every download and sync.
     FIRST = "first"
     # List each of their posts again, every one of them, and nothing else: `flnd retry`.
@@ -90,7 +90,7 @@ class RunShared:
     home: Path
     stop: Stop
     # The home's `flnd.db`, open for the run; None where nothing is read or saved (a login).
-    db: home.Home | None = None
+    db: store.Store | None = None
     # The `runs` row the run's failures name; None outside a recorded run (a dry run).
     run: int | None = None
     # Whether a person can be asked a question, which a source's own login needs.

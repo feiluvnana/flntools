@@ -857,6 +857,12 @@ class Tally:
                 setattr(line, name, getattr(line, name) + step)
                 setattr(row.counts, name, getattr(row.counts, name) + step)
 
+    @property
+    def saved(self) -> int:
+        """The files every target has saved so far."""
+        with self._lock:
+            return sum(line.saved for line in self._lines.values())
+
     def totals(self, target: Target) -> Counts:
         """The counts of every category of `target` itself, summed, as a new `Counts`."""
         total = Counts()

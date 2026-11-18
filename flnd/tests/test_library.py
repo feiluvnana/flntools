@@ -22,9 +22,10 @@ from fakes import CDN, EngineCase, login_cookies, make_plugin, noise
 
 import flnd
 from flnd.engine import jobs as jobs_module
+from flnd.engine.core import Engine
 from flnd.engine.events import encode
 from flnd.engine.options import _when
-from flnd.plugin import File, Plugin, Post, route
+from flnd.plugin import File, Plugin, Post, Target, route
 from flnkit import net as _net
 
 JPEG = noise("JPEG")
@@ -159,7 +160,7 @@ class CliCommandsTest(LibraryCase):
                            encoding="utf-8")
         login = self.fl.login("exc", str(cookies))
         self.assertEqual((login.source, login.state, login.origin),
-                         ("exc", "logged in", "cookies.txt"))
+                         ("exc", "logged in", "file"))
         self.assertIn(login, self.fl.logins)
         self.assertTrue(self.fl.logout("exc"))
         self.assertFalse(self.fl.logout("exc"))
@@ -388,6 +389,45 @@ class EventsTest(LibraryCase):
                        if isinstance(event, flnd.Saved)]
         with self.assertRaises(AttributeError):
             event.size = 0
+
+
+class StoppedRunTest(LibraryCase):
+    """E2: a run stopped after 3 saved files keeps what it saved in its `runs` row."""
+
+    listing = {("example_user", "posts"): ["p1", "p2", "p3", "p4", "p5", "p6"]}
+
+    def test_a_stopped_runs_row_counts_what_it_saved(self):
+        run = self.fl.download("exs:example_user")
+        saved = 0
+        for event in run:
+            if isinstance(event, flnd.Saved):
+                saved += 1
+                if saved == 3:
+                    run.stop()
+        self.assertGreaterEqual(saved, 3)
+        self.assertEqual(self.fl.status.saved, saved)
+
+
+class SearchSkipTest(LibraryCase):
+    """E19: a search's sync counts skipped files, never the targets it had seen."""
+
+    def test_skipped_counts_files_only(self):
+        found = ["exq:example_user", "exq:example_creator"]
+        listing = {("example_handle", "posts"): ["p1", "p2", "p3"]}
+
+        async def search(self, ctx, words):
+            for text in found:
+                yield Target(text)
+
+        source = example_source(listing, code="exq", search=route("exq?{words}")(search))
+        engine = Engine(home=self.home, sources={"exq": source})
+        engine.download(["exq:example_handle/all"])
+        engine.download(["exq?words/all"], sync=True)
+        # Two targets seen before, and a new one whose 3 files are saved already.
+        found.append("exq:example_handle2")
+        listing["example_handle2", "posts"] = ["p1", "p2", "p3"]
+        [report] = engine.sync(["exq?words"]).targets
+        self.assertEqual(report.skipped, 3)
 
 
 class FollowTest(LibraryCase):

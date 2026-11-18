@@ -19,14 +19,13 @@ from test_chain import ChainCase
 
 import flnd
 from flnd import cli
-from flnd.engine import check as _check
-from flnd.engine import home as _home
+from flnd.engine import store as _store
 
 
 class CheckCase(ChainCase):
     def check(self, *, fix=False):
-        with _home.open(self.home) as db:
-            return _check.check(self.home, db, fix=fix)
+        with _store.open(self.home) as db:
+            return _store.check(self.home, db, fix=fix)
 
     def saved_two(self):
         self.config('[defaults]\ndedupe = "off"\n')
@@ -40,7 +39,8 @@ class CheckCase(ChainCase):
 
     def aged(self):
         """`time.time` moved on, so every file renamed into place has settled."""
-        return mock.patch("flnd.engine.check.time.time", return_value=time.time() + 2 * _check.SETTLING)
+        return mock.patch("flnd.engine.store.time.time",
+                          return_value=time.time() + 2 * _store.SETTLING)
 
 
 class FindTest(CheckCase):
@@ -83,7 +83,7 @@ class FindTest(CheckCase):
         folder = self.target_dir("aaa", "a")
         (folder / "set").mkdir()
         (folder / "set" / "in.txt").write_text("alpha")
-        with _home.open(self.home) as db:
+        with _store.open(self.home) as db:
             db.update("aaa:a.jpg", unpacked="extracted", folder=str(folder / "set"))
         self.path("a").unlink()
         with self.aged():
@@ -95,7 +95,6 @@ class FixTest(CheckCase):
         self.saved_two()
         self.path("a").unlink()
         self.path("b").write_bytes(b"cut")
-        lost = self.orphan()
         before = sorted(path.name for path in self.home.rglob("*.jpg"))
         with self.aged():
             found = self.check(fix=True)
@@ -105,15 +104,12 @@ class FixTest(CheckCase):
         self.assertNotIn("aaa:a.jpg", rows)
         self.assertEqual((rows["aaa:b.jpg"].size, rows["aaa:b.jpg"].hash),
                          (3, hashlib.sha256(b"cut").digest()))
-        self.assertNotIn("aaa:a/lost.jpg", rows)
         with self.aged():
-            again = self.check()
-        self.assertEqual(again.unknown, (lost,))
-        self.assertFalse(again.ok and not again.fixed)
+            self.assertTrue(self.check().ok)
 
     def test_fix_refuses_when_media_is_missing(self):
         self.saved_two()
-        shutil.rmtree(self.home / _home.MEDIA)
+        shutil.rmtree(self.home / _store.MEDIA)
         with self.aged(), self.assertRaises(flnd.DiskError):
             self.check(fix=True)
 
@@ -140,6 +136,21 @@ class LibraryAndCliTest(CheckCase):
         self.assertIn("missing", out)
         self.assertEqual(self.run_cli("--fix")[0], 0)
         self.assertEqual(self.run_cli(), (0, "checked 1 file: history and disk agree\n"))
+
+    def test_an_unknown_file_after_fix_is_not_ok_and_exits_1(self):
+        """E14: a repair never adopts an unknown file, so the home isn't ok until it goes."""
+        self.saved_two()
+        self.path("a").unlink()
+        lost = self.orphan()
+        with self.aged():
+            found = self.check(fix=True)
+        self.assertEqual((found.fixed, found.ok, found.unknown), (False, False, (lost,)))
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err), self.aged():
+            self.assertEqual(cli.main(["--home", str(self.home), "check", "--fix"]), 1)
+        self.assertIn("never adopts an unknown file", err.getvalue())
+        lost.unlink()
+        self.assertEqual(self.run_cli("--fix")[0], 0)
 
     def test_json_prints_one_checked_object(self):
         self.saved_two()

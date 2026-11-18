@@ -393,8 +393,9 @@ def check(args: argparse.Namespace) -> int:
     """Compare the history with the disk: files missing, unknown, or of the wrong size.
 
     --fix makes the history match the disk, and never deletes, moves or downloads a file: a
-    missing file's row goes, a file of the wrong size gets its size from the disk, and an
-    unknown file under media/ is adopted into the history.
+    missing file's row goes, and a file of the wrong size gets its size from the disk. An
+    unknown file under media/ is never adopted, so the check fails until it is moved or
+    deleted.
 
     Args:
         args: the parsed flags.
@@ -429,6 +430,10 @@ def check(args: argparse.Namespace) -> int:
     elif found.fixed:
         out.line((line, "dim"), (", ".join(problems), "bold bad"),
                  ("; the history now matches the disk", "dim"))
+    elif args.fix:
+        out.line((line, "dim"), (", ".join(problems), "bold bad"),
+                 ("; --fix repaired the rows, and never adopts an unknown file: move or delete "
+                  "it", "dim"), err=True)
     else:
         out.line((line, "dim"), (", ".join(problems), "bold bad"),
                  ("; flnd check --fix makes the history match", "dim"), err=True)

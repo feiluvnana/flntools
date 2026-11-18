@@ -108,17 +108,18 @@ class _Kept:
     """A store that keeps nothing: the save's rows are `e2e`'s to time, not this group's."""
 
     path = Path("flnd.db")
+    due = False
 
-    def sized(self, size: int, *, besides: str) -> list[Any]:
+    def twins(self, **asked: Any) -> list[Any]:
         return []
 
-    def commit(self, *args: Any) -> None:
+    def commit(self, *args: Any, **options: Any) -> None:
         pass
 
-    def update(self, *args: Any) -> None:
+    def update(self, *args: Any, **fields: Any) -> None:
         pass
 
-    def checkpoint(self) -> None:
+    def checkpoint(self, *, force: bool = False) -> None:
         pass
 
 

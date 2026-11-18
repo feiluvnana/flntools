@@ -16,6 +16,7 @@ from fakes import CDN, EngineCase, make_plugin, noise
 
 JPEG = noise("JPEG")
 
+from flnd.engine import store as _store
 from flnd.engine.core import Engine
 from flnd.engine.events import Saved
 from flnd.plugin import File, Plugin, Post, route
@@ -49,9 +50,8 @@ class ChainCase(EngineCase):
         return self.target_dir("aaa", name) / f"{name}{suffix}"
 
     def rows(self) -> dict:
-        from flnd.engine import home as _home
 
-        with _home.open(self.home) as db:
+        with _store.open(self.home) as db:
             return {row.key: row for row in db.on_disk()}
 
     def saved(self) -> list[Saved]:

@@ -76,7 +76,8 @@ The rules between them:
    src/engine/core.py       Engine: resolves targets, checks options, runs each plugin's targets
         │
         ├── src/engine/options.py   Options (what one target downloads), RunShared (a run's)
-        ├── src/engine/home.py      the home: flnd.db (files, targets, runs, failures), logins
+        ├── src/engine/store.py     flnd.db: files, targets, runs, failures, accounts; check
+        ├── src/engine/home.py      the home's layout, logs and the logins in the vault
         ├── src/engine/ctx.py       PluginRun (a plugin's resources for a run) and Ctx (what
         │                           a plugin acts through, for one target)
         ├── src/engine/jobs.py      the scheduler: every request and step as a job
@@ -104,9 +105,9 @@ The rules between them:
 | `src/engine/plugins.py` | finding installed plugins (installed packages' `flnd.sources` entry points, then the user's plugin folder), importing one when its code is first used, and disabling one that breaks, with its file and line | `PLUGINS` |
 | `src/engine/extension.py` | the Chrome extension's native-messaging host (`flnd host`), the relay a run reaches it by, the run's client, and `install` ([extension.md](extension.md)); the extension's own files are in `src/extension/` | Chrome, the CLI's `flnd extension` |
 | `src/testing.py` | the public test kit: `FakeCtx` (with `Reply`, `FakePage` and `Seen`) for a plugin, `collect`, `check`, `fake_clock` | a plugin's tests, flnd's own (`tests/fakes.py`) |
-| `src/engine/home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, the plugins' state), the migration of an old home, and the logins in the vault | the engine, the crawl, `ctx`, `Flnd` |
+| `src/engine/store.py` | `flnd.db`, schema 2: its tables, the migration of a version-1 home (copied to `flnd.v1.db` first), the rows and queries (files, posts, targets, runs, failures, plugins' state, accounts), the save's commit, and `check`, the history against the disk and its repair ([storage.md](storage.md#checking-a-home)) | the engine, the crawl, the save, `ctx`, `Flnd` |
+| `src/engine/home.py` | the rest of the home: a target's folder, the samples and their sweep, and the logins in the vault | the engine, the crawl, `ctx`, `Flnd` |
 | `src/engine/save.py` | a post's files as jobs (`Saver`): part, transfer by mirrors or a DASH pair (joined by `flnkit/media.py`) or a plugin's `fetch` function, the content check, dedupe, the post's commit, unpack, the sidecar, `Saved`, exec ([storage.md](storage.md)) | the crawl and the engine |
-| `src/engine/check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
 | `src/ui/theme.py` | every colour and glyph flnd draws with, and when to drop colour or Unicode | `src/ui/*` |
 | `src/ui/out.py` | every line flnd prints: lines, folded warnings, errors and their hints, tables, the help; text from a site cleaned of escape codes | the CLI, `src/ui/log.py`, the run's hard exit |
 | `src/ui/log.py` | the levels of log lines and their scope; the journal; the route of the kit's `logging` records | every layer above the kit |
@@ -169,7 +170,8 @@ yours.
    that loop, except a plugin's own blocking code, which runs on a thread of the scheduler's
    (see "Threads and queues").
 5. **Recording.** The engine opens the command's row in `runs` (each failure names it), then
-   `Home.record` writes the target's row in `flnd.db`, followed, with `posts` kept for
+   `Store.record` writes the target's row in `flnd.db`, followed, with `posts` kept for
+
    later syncs, keeping its cursors, heads and gaps from earlier runs.
 6. **One `PluginRun` per plugin.** The engine makes one `PluginRun` per plugin per run, the
    first time one of its targets runs, discovered and linked targets included: the plugin's

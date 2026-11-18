@@ -31,7 +31,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
-from flnd.engine import home, jobs, save
+from flnd.engine import home, jobs, save, store
 from flnd.engine.ctx import Ctx, Listing, PluginRun, met_turn
 from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped
 from flnd.engine.options import Options, Retry
@@ -509,7 +509,7 @@ class Ledger:
         # The posts the `date` hook had no day for, read off the loop by `load`.
         self._asked: dict[str, float] = {}
         # The rows of files found on disk with none, written with their post's (`_held`).
-        self._unrecorded: list[home.FileRow] = []
+        self._unrecorded: list[store.FileRow] = []
         # The `Skipped` events made off the loop, sent by `_tell`.
         self._told: list[Skipped] = []
         # Whether the files queued now are a retry's (`_retry_failed`), which their `Saved`
@@ -564,7 +564,7 @@ class Ledger:
         skipped = self._saved_first(dated, category)
         if skipped is None and self._unkeyed(category) and self._db is not None \
                 and not self._again \
-                and self._db.post_saved(home.key(self.target), dated.id, dated.category):
+                and self._db.post_saved(store.key(self.target), dated.id, dated.category):
             # Its keys are its files' paths, known only once listed (LOIBUS's archives): the
             # post's own rows say it was saved, so its files function, which may cost the
             # account a download from its quota, isn't called again.
@@ -676,7 +676,7 @@ class Ledger:
         listing = self.site.listing
         if self._db is not None:
             await self.run.off(functools.partial(
-                self._db.fail, run=self.settings.run, item=key, target=home.key(self.target),
+                self._db.fail, run=self.settings.run, item=key, target=store.key(self.target),
                 error=failed, post=post.id, category=post.category, file=str(dest),
                 cursor=listing.cursor if listing is not None else None))
         self.tally.count(self.target, post.category, found=1, failed=1)
@@ -696,7 +696,7 @@ class Ledger:
         for dest, item_key, category in self._later:
             holder = written.get(item_key)
             # The compress step may have moved the file to a new suffix; its row says where.
-            found = self._db.held(item_key) if holder is not None and self._db else None
+            found = self._db.known(item_key) if holder is not None and self._db else None
             if found is not None and found[0]:
                 holder = Path(found[0])
             if holder is not None:
@@ -770,7 +770,7 @@ class Ledger:
             return 0
         dated = 0
         # A partial index holds only undated rows, so a target with none costs one lookup.
-        for row in await self.run.off(self._db.undated, home.key(self.target)):
+        for row in await self.run.off(self._db.undated, store.key(self.target)):
             if row.post_id in self._asked:
                 continue
             found = await self._ask(Post(row.post_id))
@@ -781,7 +781,7 @@ class Ledger:
             _say(self.target, "info", "{files} dated", files=text.count(dated, "saved file"))
         return dated
 
-    def _redate(self, row: home.FileRow, found: datetime.date) -> bool:
+    def _redate(self, row: store.FileRow, found: datetime.date) -> bool:
         """Rename one saved file for its day, set its time and update its row; off the loop.
 
         Returns:
@@ -998,29 +998,29 @@ class Ledger:
                 return holder
         on_disk = _on_disk(dest) if dest is not None else None
         if dest is not None and on_disk is not None:
-            if placed is not None and self._db is not None and self._db.held(item_key) is None:
+            if placed is not None and self._db is not None and self._db.known(item_key) is None:
                 self._unrecorded.append(self._row(dest, item_key, placed, on_disk))
             return self._name(dest)
-        found = self._db.held(item_key) if self._db is not None else None
+        found = self._db.known(item_key) if self._db is not None else None
         if found is None:
             return None
         path, state, folder = found
-        if state == home.GONE:
+        if state == store.GONE:
             return None if self._again else self._name(Path(path))
         if Path(path).is_file():
             return self._name(Path(path))
         return self._name(Path(folder)) if folder and Path(folder).is_dir() else None
 
     def _row(self, dest: Path, item_key: str, placed: Placed,
-             found: os.stat_result) -> home.FileRow:
+             found: os.stat_result) -> store.FileRow:
         """The row of a file found on disk with none: its size and time from its `stat`."""
         posted = day(placed.post.date)
         count = placed.values.get("count", 1)
-        return home.FileRow(
-            item_key, home.key(self.target), str(dest), found.st_size, found.st_mtime_ns,
+        return store.FileRow(
+            item_key, store.key(self.target), str(dest), found.st_size, found.st_mtime_ns,
             post_id=placed.post.id, category=placed.post.category,
             date=posted.isoformat() if posted else None, kind=files.kind_of(dest.name),
-            at=home.now(),
+            at=store.now(),
             files=count if placed.num == 0 and isinstance(count, int) and count > 1 else None)
 
     def _name(self, path: Path) -> str:
@@ -1434,14 +1434,14 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
                         complete=", ".join(progress.complete) or "none", started=started)
 
 
-def _opened(ledger: Ledger, db: home.Home | None, target: Target) -> home.TargetRow | None:
+def _opened(ledger: Ledger, db: store.Store | None, target: Target) -> store.TargetRow | None:
     """What a target starts from, off the loop: its row, and what its ledger keeps."""
     ledger.load()
-    return db.target(target) if db is not None else None
+    return db.target(store.key(target)) if db is not None else None
 
 
-def _keep(db: home.Home, target: Target, options: Options, progress: _Progress,
-          row: home.TargetRow | None, finished: bool, written: bool) -> None:
+def _keep(db: store.Store, target: Target, options: Options, progress: _Progress,
+          row: store.TargetRow | None, finished: bool, written: bool) -> None:
     """Write where a target's listings stand, off the loop: a write may wait for the lock."""
     # A target a search found has no row of its own: the search's row keeps what it found.
     if not options.query:
@@ -1449,7 +1449,7 @@ def _keep(db: home.Home, target: Target, options: Options, progress: _Progress,
                     heads=progress.heads, gaps=progress.gaps)
     if finished:
         # A failure of the whole target is over once it ran to its end.
-        db.clear(home.key(target))
+        db.clear(store.key(target))
         # Counting reads every row of the target (35 ms for 100,000), so a run that saved
         # nothing keeps the count it has, unless it has none yet.
         if written or row is None or not row.files:
@@ -1465,7 +1465,7 @@ class _Progress:
             ignored (they are still updated by this run).
     """
 
-    def __init__(self, row: home.TargetRow | None, *, again: bool) -> None:
+    def __init__(self, row: store.TargetRow | None, *, again: bool) -> None:
         earlier = row if row is not None and not again else None
         # Each listing an earlier run read to its end, with the day it did.
         self.listed: Mapping[str, str] = earlier.complete if earlier is not None else {}
@@ -1608,7 +1608,7 @@ def _failed(run: PluginRun, target: Target, failed: Error) -> None:
     """Record a target's failure, with a scrubbed sample of a `Changed` answer, off the loop."""
     assert run.settings.db is not None
     save.sampled(run.settings, failed)
-    run.settings.db.fail(run=run.settings.run, item=home.key(target), target=home.key(target),
+    run.settings.db.fail(run=run.settings.run, item=store.key(target), target=store.key(target),
                          error=failed)
 
 
@@ -2431,7 +2431,7 @@ async def _retry_failed(
     again through its source, for fresh URLs.
 
     How it goes:
-    1. Read the target's failures (`Home.pending`): those failed on at most `home.RETRIES`
+    1. Read the target's failures (`Home.pending`): those failed on at most `store.RETRIES`
        runs, or every one for `flnd retry`. A gone file (`NotFound`) is never among them.
     2. Group them by listing, and by the cursor of the page their post was on.
     3. For each group, list from that cursor (`_relist`): each failed post met is queued like
@@ -2450,10 +2450,10 @@ async def _retry_failed(
     db = run.settings.db
     if run.settings.dry or options.again or db is None:
         return
-    failed = await run.off(functools.partial(db.pending, home.key(target),
+    failed = await run.off(functools.partial(db.pending, store.key(target),
                                              every=options.retry is Retry.ONLY))
     by_name = {listed.name: listed for listed in listings}
-    groups: dict[tuple[str, str | None], dict[str, list[home.FailureRow]]] = {}
+    groups: dict[tuple[str, str | None], dict[str, list[store.FailureRow]]] = {}
     for row in failed:
         if row.category in by_name:
             groups.setdefault((row.category, row.cursor), {}).setdefault(row.post, []).append(row)
@@ -2525,7 +2525,7 @@ async def _relist(
 
 
 async def _lost(
-    work: _Work, run: PluginRun, target: Target, rows: Sequence[home.FailureRow], *,
+    work: _Work, run: PluginRun, target: Target, rows: Sequence[store.FailureRow], *,
     ran_out: bool,
 ) -> None:
     """Record that a retry didn't meet a failed post: a failure of each of its files.

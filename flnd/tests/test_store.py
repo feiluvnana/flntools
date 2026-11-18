@@ -2,7 +2,10 @@
 accounts, the busy signal, and `check`.
 """
 
+import datetime
+import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -12,7 +15,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from flnd.engine import store
-from flnd.errors import DiskError, NotFound, UsageError
+from flnd.errors import DiskError, NetworkError, NotFound, UsageError
+from flnd.testing import fake_clock
 from flnkit import vault
 
 # Version 1 as a home made it: its schema text, then what its `_upgrade` added.
@@ -191,13 +195,33 @@ class MigrationTest(StoreCase):
             fresh.state("x")["y"] = 1
         self.assertEqual(schema(self.path), schema(fresh.path))
 
-    def test_the_version_1_text_is_what_a_version_1_home_holds(self):
-        from flnd.engine import home
-
+    def test_a_version_1_home_is_kept_whole_beside_it_once(self):
         self.v1(slots=())
-        with home.open(self.home / "made") as made:
-            made.state("x")["y"] = 1
-        self.assertEqual(schema(self.path), schema(made.path))
+        before = rows(self.path, "SELECT * FROM files ORDER BY key")
+        self.open().close()
+        backup = self.home / store.BACKUP
+        self.assertEqual((rows(backup, "SELECT * FROM meta"),
+                          rows(backup, "SELECT * FROM files ORDER BY key")),
+                         ([("version", "1")], before))
+        made = backup.stat().st_mtime_ns
+        self.open().close()
+        self.assertEqual(backup.stat().st_mtime_ns, made)
+
+    def test_a_crash_in_the_migration_leaves_a_home_that_opens_and_migrates(self):
+        self.v1()
+        code = ("import os, sys\n"
+                "from pathlib import Path\n"
+                "from unittest import mock\n"
+                "from flnd.engine import store\n"
+                "with mock.patch.object(store, '_copy_targets', lambda sql: os._exit(9)):\n"
+                "    store.open(Path(sys.argv[1]))\n")
+        done = subprocess.run([sys.executable, "-c", code, str(self.home)], check=False)
+        self.assertEqual(done.returncode, 9)
+        self.assertEqual(rows(self.path, "SELECT * FROM meta"), [("version", "1")])
+        with self.open() as opened:
+            self.assertEqual((rows(self.path, "SELECT * FROM meta"), len(opened.on_disk()),
+                              len(opened.targets()), len(opened.accounts())),
+                             ([("version", "2")], 3, 4, 4))
 
     def test_a_failure_from_before_retryable_was_recorded_is_not_retryable(self):
         self.v1(slots=())
@@ -361,6 +385,190 @@ class RowsTest(StoreCase):
         opened.logout(first.id)
         self.assertEqual([(row.id, row.default) for row in opened.accounts("ins")],
                          [(second.id, True)])
+
+
+USER = SimpleNamespace(plugin="aaa", value="example_user", kind="user")
+
+
+def row(item, post="p1", **fields):
+    """A saved file's row of `aaa:example_user`."""
+    return store.FileRow(item, "aaa:example_user", f"/m/{item}.jpg", 10, post_id=post,
+                         category="posts", at="2026-01-02T00:00:00+00:00", **fields)
+
+
+class FilesTest(StoreCase):
+    def test_reading_a_new_home_creates_nothing(self):
+        with store.open(self.home / "new") as opened:
+            self.assertIsNone(opened.known("aaa:x"))
+            self.assertEqual((opened.targets(), opened.records(),
+                              opened.pending("aaa:example_user"), dict(opened.state("aaa"))),
+                             ({}, [], [], {}))
+        self.assertFalse((self.home / "new").exists())
+
+    def test_wal_with_normal_sync_and_full_syncs_on_macos(self):
+        opened = self.open()
+        opened.save([row("aaa:1")])
+        sql = opened._db.connection()
+        self.assertEqual([sql.execute(f"PRAGMA {name}").fetchone()[0]
+                          for name in ("journal_mode", "synchronous", "fullfsync")],
+                         ["wal", 1, int(sys.platform == "darwin")])
+
+    def test_a_posts_files_commit_once(self):
+        opened = self.open()
+        opened.save([row("aaa:0")])
+        statements = []
+        opened._db.connection().set_trace_callback(statements.append)
+        opened.save([row("aaa:1", files=3), row("aaa:2"), row("aaa:3")])
+        # One statement for the post: SQLite makes it one transaction, so one commit.
+        self.assertEqual(len(statements), 1)
+        self.assertTrue(statements[0].startswith("INSERT OR REPLACE INTO files"))
+        self.assertEqual(opened.known("aaa:2"), ("/m/aaa:2.jpg", "saved", None))
+        self.assertEqual([opened.files_of_post(item) for item in ("aaa:1", "aaa:2", "aaa:9")],
+                         [3, None, None])
+
+    def test_the_day_a_row_holds_and_redating_it(self):
+        opened = self.open()
+        opened.save([row("aaa:1", estimated=True)])
+        self.assertIsNone(opened.day("aaa:1"))
+        self.assertEqual([found.key for found in opened.undated("aaa:example_user")], ["aaa:1"])
+        path = self.home / "a.jpg"
+        path.write_bytes(b"12345")
+        opened.redate("aaa:1", path, datetime.date(2026, 1, 4))
+        self.assertEqual(opened.day("aaa:1"), datetime.date(2026, 1, 4))
+        self.assertEqual(opened.undated("aaa:example_user"), [])
+        [saved] = opened.records()
+        self.assertEqual((saved.path, saved.size, saved.estimated, saved.day),
+                         (str(path), 5, False, datetime.date(2026, 1, 4)))
+
+    def test_records_filter_by_target_and_kind_and_100k_rows_read_fast(self):
+        opened = self.open()
+        opened.save([row("aaa:1", kind="image"), row("aaa:2", post="p2", kind="video")])
+        opened.save([store.FileRow("bbb:1", "bbb:other", "/m/b.jpg", kind="image")])
+        self.assertEqual([found.key for found in opened.records(target="aaa:example_user")],
+                         ["aaa:1", "aaa:2"])
+        self.assertEqual(sorted(found.key for found in opened.records(kind="image")),
+                         ["aaa:1", "bbb:1"])
+        rows = [store.FileRow(f"ccc:{n:06d}", "ccc:example_user", f"/m/{n}.jpg", n,
+                              post_id=str(n)) for n in range(100_000)]
+        for start in range(0, len(rows), 500):
+            opened.save(rows[start:start + 500])
+        self.assertEqual(opened.known("ccc:099999"), ("/m/99999.jpg", "saved", None))
+        self.assertEqual(opened.count("ccc:example_user"), (100_000, sum(range(100_000))))
+
+    def test_a_step_updates_its_columns_only(self):
+        opened = self.open()
+        opened.save([row("aaa:1")])
+        opened.update("aaa:1", unpacked="extracted", folder="/m/set")
+        [saved] = opened.records()
+        self.assertEqual((saved.unpacked, saved.folder), ("extracted", "/m/set"))
+        with self.assertRaises(ValueError):
+            opened.update("aaa:1", target="aaa:other")
+
+
+class FailuresTest(StoreCase):
+    def failure(self, opened, item="aaa:1", error=None, run=None, **fields):
+        fields = {"post": "p1", "category": "posts", "file": f"/m/{item}.jpg", **fields}
+        opened.fail(run=run, item=item, target="aaa:example_user",
+                    error=error or NetworkError("reset"), **fields)
+
+    def test_a_not_found_file_is_gone_and_never_pending(self):
+        opened = self.open()
+        self.failure(opened, error=NotFound("HTTP 404"), file="/m/1.jpg",
+                     url="https://cdn.example/1.jpg?sig=secret")
+        self.assertEqual(opened.known("aaa:1"), ("/m/1.jpg", "gone", None))
+        self.assertEqual((opened.pending("aaa:example_user"),
+                          opened.pending("aaa:example_user", every=True), opened.failed(),
+                          opened.records()), ([], [], {}, []))
+
+    def test_a_failure_keeps_what_a_retry_lists_again_never_a_url_to_reuse(self):
+        opened = self.open()
+        run = opened.start("download aaa:example_user")
+        self.failure(opened, run=run, url="https://user:pw@cdn.example/1.jpg?token=secret",
+                     cursor="c4")
+        opened.end(run, saved=0)
+        [pending] = opened.pending("aaa:example_user")
+        self.assertEqual((pending.key, pending.post, pending.category, pending.cursor,
+                          pending.attempts, pending.error, pending.url),
+                         ("aaa:1", "p1", "posts", "c4", 1, "NetworkError",
+                          "https://cdn.example/1.jpg"))
+        found = opened._db.all("SELECT * FROM failures", ())
+        self.assertNotIn("secret", repr(found))
+        self.assertEqual(opened._db.one("SELECT saved, failed FROM runs", ()), (0, 1))
+        self.assertEqual(([row.key for row in opened.failures(run)], opened.last_run().command),
+                         (["aaa:1"], "download aaa:example_user"))
+        opened.save([row("aaa:1")])
+        self.assertEqual((opened.pending("aaa:example_user"), opened.failures(run),
+                          opened.failed()), ([], [], {}))
+
+    def test_one_row_per_file_counting_the_runs_and_retried_on_three(self):
+        opened = self.open()
+        for attempt in range(1, 6):
+            self.failure(opened, run=opened.start("sync"), error=NetworkError(f"reset {attempt}"))
+            [found] = opened.pending("aaa:example_user", every=True)
+            self.assertEqual((found.attempts, found.message), (attempt, f"reset {attempt}"))
+        # The first failure and three retries: the automatic retry leaves it to a retry asked.
+        self.assertEqual(opened.pending("aaa:example_user"), [])
+        self.assertEqual(opened._db.one("SELECT count(*) FROM failures", ()), (1,))
+        # A file saved since that fails again starts from 1.
+        opened.save([row("aaa:1")])
+        self.failure(opened)
+        self.assertEqual(opened._db.one("SELECT attempts FROM failures", ()), (1,))
+
+    def test_a_whole_target_failure_is_retried_whole_and_cleared(self):
+        opened = self.open()
+        opened.fail(run=None, item="aaa:example_user", target="aaa:example_user",
+                    error=NetworkError("listing reset"))
+        self.assertEqual((opened.pending("aaa:example_user"), opened.failed()),
+                         ([], {"aaa:example_user": True}))
+        opened.clear("aaa:example_user")
+        self.assertEqual(opened.failed(), {})
+
+
+class TargetsTest(StoreCase):
+    def test_record_follow_progress_seen_and_tally(self):
+        opened = self.open()
+        opened.record(USER, follow=False, categories=("posts",))
+        self.assertEqual((opened.target("aaa:example_user").categories,
+                          opened.target("aaa:example_user").follow), (("posts",), False))
+        # Recorded again without `follow`, it keeps its state; `follow` follows it.
+        opened.record(USER)
+        self.assertFalse(opened.target("aaa:example_user").follow)
+        opened.follow(USER, True)
+        opened.progress(USER, cursors={"posts": "c2"}, complete=[])
+        opened.progress(USER, cursors={"posts": None}, complete=["posts"])
+        opened.seen(USER, ["aaa:a", "aaa:b"])
+        opened.seen(USER, ["aaa:b", "aaa:c"])
+        opened.save([row("aaa:1"), row("aaa:2")])
+        opened.tally(USER)
+        saved = opened.targets()["aaa:example_user"]
+        self.assertEqual((saved.follow, saved.categories, saved.cursors, list(saved.complete),
+                          saved.seen, saved.files, saved.bytes),
+                         (True, ("posts",), {}, ["posts"], ["aaa:a", "aaa:b", "aaa:c"], 2, 20))
+
+    @unittest.skipUnless(hasattr(time, "tzset"), "needs time.tzset")
+    def test_a_listing_is_stamped_complete_on_the_utc_day(self):
+        with mock.patch.dict(os.environ, {"TZ": "EST5"}):
+            time.tzset()
+            self.addCleanup(time.tzset)
+            opened = self.open()
+            # 04:30 UTC on 2026-01-01 is 23:30 the day before at UTC-5.
+            with fake_clock() as clock:
+                clock.advance(4.5 * 3600)
+                opened.progress(USER, cursors={}, complete=["posts"])
+        self.assertEqual(opened.target("aaa:example_user").complete, {"posts": "2026-01-01"})
+
+    def test_a_plugins_state_is_a_mapping_of_json_values(self):
+        opened = self.open()
+        state = opened.state("aaa")
+        state["user"] = {"id": 42}
+        state["asked"] = [1, 2]
+        self.assertEqual((state["user"], sorted(state), len(state)),
+                         ({"id": 42}, ["asked", "user"], 2))
+        del state["asked"]
+        self.assertNotIn("asked", state)
+        self.assertEqual(dict(opened.state("bbb")), {})
+        with self.assertRaises(KeyError):
+            del state["asked"]
 
 
 class CheckTest(StoreCase):

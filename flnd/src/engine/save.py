@@ -12,7 +12,6 @@ import mimetypes
 import os
 import re
 import shutil
-import sqlite3
 import stat
 import subprocess
 import sys
@@ -27,16 +26,14 @@ from urllib.parse import urlsplit
 
 import msgspec
 
-from flnd.engine import home, jobs
+from flnd.engine import home, jobs, store
 from flnd.engine.events import BUSY, Failed, Saved, Skipped
-from flnd.engine.home import FILE_COLUMNS, FileRow, _file_values, now
 from flnd.engine.jobs import Job, Kind
 from flnd.engine.run import sink
 from flnd.errors import (
     DiskError,
     Error,
     NetworkError,
-    NotFound,
     SiteError,
     Stopped,
     UsageError,
@@ -46,7 +43,7 @@ from flnd.plugin import Fetch, File, Part, Target
 from flnd.ui.log import ui
 from flnkit import clock, files, media, net, text
 
-__all__ = ["STEM", "Item", "Saver", "Store", "stem_extension", "typed"]
+__all__ = ["STEM", "Item", "Saver", "stem_extension", "typed"]
 
 T = TypeVar("T")
 
@@ -59,13 +56,8 @@ NOT_MEDIA_HINT = "it is usually a login wall: run flnd login <source>, then try 
 EXPIRED = frozenset({403, 410})
 # How many saved files of the same size dedupe hashes at most, to compare with a new one.
 CANDIDATES = 8
-# The log is checkpointed into the database after this many committed rows, and at close.
-CHECKPOINT_ROWS = 1_000
 # A sidecar is its file's name with this after it: `9001.jpg.json`.
 SIDECAR = ".json"
-# A post's rows: today's columns, and the sidecar written before them.
-INSERT = (f"INSERT OR REPLACE INTO files ({', '.join(FILE_COLUMNS)}, sidecar)"
-          f" VALUES ({', '.join('?' * (len(FILE_COLUMNS) + 1))})")
 # `exec`'s placeholders, filled in one pass, so a value holding `{post}` stays literal.
 PLACEHOLDER = re.compile(r"\{(path|target|post)\}")
 # The kind of an API 2 file named by a stem (5.3): its extension is what its bytes are, else
@@ -129,7 +121,7 @@ class _Landed:
     item: Item
     path: Path
     day: datetime.date | None
-    row: FileRow
+    row: store.FileRow
     # Hashes worked out for saved files of the same size, stored with the post's rows.
     hashes: dict[str, bytes] = field(default_factory=dict)
 
@@ -142,7 +134,17 @@ class _Failure:
     error: Error
 
 
+def _failed_row(failure: _Failure) -> dict[str, Any]:
+    """A failed file's `store.Store.fail` arguments, for its post's commit."""
+    item = failure.item
+    url = item.file.url if isinstance(item.file.url, str) else ""
+    return {"item": item.key, "target": store.key(item.target), "error": failure.error,
+            "post": item.post, "category": item.category, "file": str(item.dest), "url": url,
+            "cursor": item.cursor}
+
+
 class _Mismatch(Exception):
+
     """A segment's answer isn't of the file the first URL served: another length or `ETag`."""
 
 
@@ -460,133 +462,6 @@ class _Bytes:
 
 
 # ---------------------------------------------------------------------------------------------
-# The store: the save's reads and writes of flnd.db
-
-
-class Store:
-    """flnd.db as the save uses it: on the loop, and never waiting for another process's lock.
-
-    Its one connection has `busy_timeout = 0` and `wal_autocheckpoint = 0`: a lock held
-    elsewhere is reported at once (`jobs.Busy`), and the log is checkpointed from a thread
-    (`checkpoint`). It writes the `files` and `failures` rows of the home's schema, version 1.
-
-    Args:
-        path: the home's `flnd.db`, its tables made already.
-
-    Raises:
-        DiskError: the file can't be opened.
-    """
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        try:
-            self._sql = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
-            # Setting up waits for a lock like any other connection, once, at the run's start.
-            self._sql.execute("PRAGMA busy_timeout = 30000")
-            self._sql.execute("PRAGMA journal_mode = WAL")
-            self._sql.execute("PRAGMA synchronous = NORMAL")
-            if sys.platform == "darwin":
-                self._sql.execute("PRAGMA fullfsync = ON")
-            self._sql.execute("PRAGMA cache_size = -65536")
-            self._sql.execute("CREATE INDEX IF NOT EXISTS files_size ON files (size)"
-                              " WHERE state = 'saved'")
-            self._sql.execute("PRAGMA wal_autocheckpoint = 0")
-            self._sql.execute("PRAGMA busy_timeout = 0")
-        except sqlite3.Error as error:
-            raise DiskError(f"{path}: cannot open: {error}") from error
-
-    def close(self) -> None:
-        """Close the connection."""
-        self._sql.close()
-
-    def sized(self, size: int, *, besides: str) -> list[tuple[str, str, bytes | None]]:
-        """Saved files of `size` bytes (`files_size`), as (key, path, hash), at most a few."""
-        return self._run(lambda: self._sql.execute(
-            "SELECT key, path, hash FROM files WHERE size = ? AND state = 'saved' AND key != ?"
-            " LIMIT ?", (size, besides, CANDIDATES)).fetchall())
-
-    def commit(self, rows: Sequence[FileRow], failures: Sequence[_Failure],
-               hashes: Mapping[str, bytes], run: int | None) -> None:
-        """Write a post's rows, its files' failures and the hashes found, in one transaction.
-
-        Raises:
-            jobs.Busy: another process holds the write lock; nothing was written.
-            DiskError: flnd.db refused the write.
-        """
-        def write() -> None:
-            sql = self._sql
-            sql.execute("BEGIN IMMEDIATE")
-            try:
-                sql.executemany(INSERT, [(*_file_values(row), row.sidecar) for row in rows])
-                sql.executemany("UPDATE files SET hash = ? WHERE key = ?",
-                                [(digest, key) for key, digest in hashes.items()])
-                for failure in failures:
-                    _fail(sql, failure, run)
-                sql.execute("COMMIT")
-            except BaseException:
-                if sql.in_transaction:
-                    sql.execute("ROLLBACK")
-                raise
-        self._run(write)
-
-    def update(self, key: str, fields: Mapping[str, Any]) -> None:
-        """Set what an unpack did to a saved file (`unpacked`, `folder`), in one statement."""
-        sets = ", ".join(f"{name} = ?" for name in fields)
-        self._run(lambda: self._sql.execute(f"UPDATE files SET {sets} WHERE key = ?",
-                                            (*fields.values(), key)))
-
-    def checkpoint(self) -> None:
-        """Copy the log into the database without waiting for anyone, on a connection of its
-        own: run it on a thread."""
-        try:
-            sql = sqlite3.connect(self.path, isolation_level=None)
-            try:
-                sql.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            finally:
-                sql.close()
-        except sqlite3.Error as error:
-            ui.debug("checkpoint skipped: {error}", error=error)
-
-    def _run(self, call: Callable[[], T]) -> T:
-        """`call()`, its SQLite errors as `jobs.Busy` (the lock is taken) or `DiskError`."""
-        try:
-            return call()
-        except sqlite3.Error as error:
-            code = getattr(error, "sqlite_errorcode", 0) & 0xFF
-            if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
-                raise jobs.Busy(f"{self.path}: locked by another process") from error
-            raise DiskError(f"{self.path}: {error}") from error
-
-
-def _fail(sql: sqlite3.Connection, failure: _Failure, run: int | None) -> None:
-    """One file's `failures` row; a file the site no longer has is also recorded gone."""
-    item, error = failure.item, failure.error
-    at = now()
-    url = item.file.url if isinstance(item.file.url, str) else ""
-    sql.execute(
-        "INSERT INTO failures (run, key, target, post_id, category, file, url, class, message,"
-        " hint, retryable, attempts, at, cursor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
-        " ON CONFLICT (key) DO UPDATE SET run = excluded.run, target = excluded.target,"
-        " post_id = excluded.post_id, category = excluded.category, file = excluded.file,"
-        " url = excluded.url, class = excluded.class, message = excluded.message,"
-        " hint = excluded.hint, retryable = excluded.retryable, at = excluded.at,"
-        " cursor = excluded.cursor, attempts = CASE WHEN EXISTS (SELECT 1 FROM files"
-        " WHERE files.key = excluded.key AND files.state = 'saved') THEN 1"
-        " ELSE failures.attempts + 1 END",
-        (run, item.key, _target_key(item.target), item.post, item.category, str(item.dest),
-         text.redact(url) if url else "", type(error).__name__, str(error), error.hint or "",
-         int(error.retryable), at, item.cursor))
-    if isinstance(error, NotFound):
-        sql.execute(INSERT, (*_file_values(FileRow(
-            item.key, _target_key(item.target), str(item.dest), post_id=item.post,
-            category=item.category, state="gone", at=at)), None))
-
-
-def _target_key(target: Target) -> str:
-    return f"{target.plugin}:{target.value}"
-
-
-# ---------------------------------------------------------------------------------------------
 # The save
 
 
@@ -622,7 +497,7 @@ class Saver:
         sample: keeps a scrubbed sample of a `Changed` answer, and points its hint at it.
     """
 
-    def __init__(self, store: Store, scheduler: jobs.Scheduler,
+    def __init__(self, db: store.Store, scheduler: jobs.Scheduler,
                  emit: Callable[[Any], Awaitable[None]], *,
                  run: int | None = None, dedupe: bool = True, sidecars: bool = True,
                  exec: Sequence[str] | None = None, stop: threading.Event | None = None,
@@ -631,12 +506,11 @@ class Saver:
                                  or not all(isinstance(arg, str) for arg in exec)):
             raise UsageError("exec must be a list: the program, then its arguments",
                              hint='exec = ["echo", "{path}"]')
-        self.store, self.scheduler, self.run = store, scheduler, run
+        self.store, self.scheduler, self.run = db, scheduler, run
         self.emit = sink(emit)
         self.dedupe, self.sidecars, self.exec, self.stop = dedupe, sidecars, exec, stop
         self.tally, self.sample = tally, sample
         self.done = _Done()
-        self._rows = 0
         # The pairs of devices (saved file's, new file's) found unable to hard-link.
         self._unlinkable: set[tuple[int, int]] = set()
         self._checkpoints: set[asyncio.Task[Any]] = set()
@@ -680,7 +554,7 @@ class Saver:
     async def close(self) -> None:
         """Wait for the checkpoints running, checkpoint once more, and say what was done."""
         await asyncio.gather(*self._checkpoints)
-        await self._call(self.store.checkpoint)
+        await self._call(self.store.checkpoint, force=True)
         done, parts = self.done, []
         if done.unpacked:
             parts.append(f"{text.count(done.unpacked, 'archive')} extracted")
@@ -768,11 +642,12 @@ class Saver:
                 raise
             saved = await self._transfer(item, fresh, client, plugin, received, flow)
         dated = item.day or served_day(received.get("last-modified"))
-        row = FileRow(
-            item.key, _target_key(item.target), str(saved.path), saved.size, saved.mtime,
+        row = store.FileRow(
+            item.key, store.key(item.target), str(saved.path), saved.size, saved.mtime,
             post_id=item.post, category=item.category,
             date=item.day.isoformat() if item.day else None, estimated=item.estimated,
-            kind=files.kind_of(saved.path.name), at=now(), files=item.count, hash=saved.hash)
+            kind=files.kind_of(saved.path.name), at=store.now(), files=item.count,
+            hash=saved.hash)
         landed = _Landed(item, saved.path, dated, row)
         if self.dedupe:
             await self._dedupe(landed, plugin)
@@ -1188,7 +1063,8 @@ class Saver:
         """Link the file to a saved one with the same bytes, among those of its size."""
         row = landed.row
         # One indexed read on the loop, on the store's one connection, which no thread shares.
-        found = self.store.sized(row.size, besides=row.key)
+        found = [(twin.key, twin.path, twin.hash) for twin in
+                 self.store.twins(besides=row.key, size=row.size, limit=CANDIDATES)]
         if not found:
             return
         path = Path(row.path)
@@ -1237,18 +1113,23 @@ class Saver:
         stalls."""
         rows = [one.row for one in landed]
         hashes = {key: digest for one in landed for key, digest in one.hashes.items()}
-        await self._write(self.store.commit, rows, failures, hashes, self.run)
-        self._rows += len(rows)
-        if self._rows >= CHECKPOINT_ROWS:
-            self._rows = 0
+        failed = [_failed_row(one) for one in failures]
+        await self._write(self.store.commit, rows, hashes=hashes, failures=failed, run=self.run)
+        if self.store.due:
             task = asyncio.ensure_future(self._call(self.store.checkpoint))
             self._checkpoints.add(task)
             task.add_done_callback(self._checkpoints.discard)
 
-    async def _write(self, call: Callable[..., Any], *args: Any) -> None:
-        """`call(*args)` on the store, on the loop, as a `WRITE` job."""
+    async def _write(self, call: Callable[..., Any], *args: Any, **options: Any) -> None:
+        """`call(*args, **options)` on the store, on the loop, as a `WRITE` job; a lock
+        another connection holds puts it back in the queue (`jobs.Busy`)."""
         async def work() -> None:
-            call(*args)
+            try:
+                call(*args, **options)
+            except DiskError as error:
+                if store.busy(error):
+                    raise jobs.Busy(f"{self.store.path}: locked by another process") from error
+                raise
         await self.scheduler.run(Job(kind=Kind.WRITE, work=work))
 
     # -- stages 6 to 9: unpack, `Saved`, exec; the sidecar went before the commit -----------
@@ -1256,7 +1137,8 @@ class Saver:
     async def _finish(self, landed: _Landed, plugin: str) -> None:
         item, path = landed.item, landed.path
         if item.file.password is not None or files.is_archive(path):
-            await self._write(self.store.update, item.key, await self._unpack(item, path, plugin))
+            await self._write(self.store.update, item.key,
+                              **await self._unpack(item, path, plugin))
         self._count(item, downloading=-1, saved=1, bytes=landed.row.size)
         await self.emit(Saved(item.target, item.category, item.post, path, landed.day,
                               landed.row.size, retried=item.retried))
@@ -1317,8 +1199,8 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
         yield None
         return
     # The configs and the store are read and opened off the loop.
-    found, argv, store = await asyncio.to_thread(_opened, settings)
-    saver = Saver(store, scheduler, settings.emit, run=settings.run, dedupe=found.dedupe,
+    found, argv, db = await asyncio.to_thread(_opened, settings)
+    saver = Saver(db, scheduler, settings.emit, run=settings.run, dedupe=found.dedupe,
                   sidecars=found.sidecars, exec=argv or None, stop=settings.stop.now,
                   tally=settings.tally, sample=lambda error: sampled(settings, error))
     settings.saver = saver
@@ -1329,16 +1211,23 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
         try:
             await saver.close()
         finally:
-            await asyncio.to_thread(store.close)
+            await asyncio.to_thread(db.close)
 
 
-def _opened(settings: Any) -> tuple[Any, Any, Store]:
-    """`attached`'s reads, off the loop: the home's config, the user's `exec`, the store; the
-    config modules are imported here too, since an import reads files."""
+def _opened(settings: Any) -> tuple[Any, Any, store.Store]:
+    """`attached`'s reads, off the loop: the home's config, the user's `exec`, and the run's
+    commit connection (`loop=True`: it waits for no lock), made now; the config modules are
+    imported here too, since an import reads files."""
     from flnd.engine.config import program, user_file
     from flnd.engine.options import config
 
-    return config(settings.home), program(user_file()), Store(settings.db.ready())
+    db = store.open(settings.home, loop=True)
+    try:
+        db.ready()
+    except BaseException:
+        db.close()
+        raise
+    return config(settings.home), program(user_file()), db
 
 
 def sampled(settings: Any, error: BaseException) -> None:

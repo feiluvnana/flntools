@@ -23,6 +23,7 @@ import unawaited  # noqa: F401  (a coroutine never awaited fails its test)
 from flnd import plugin
 from flnd.engine import home as _home
 from flnd.engine import run as _run
+from flnd.engine import store as _store
 from flnd.engine.core import Engine, Report, _drive
 from flnd.engine.events import Failed, Phase, State
 from flnd.engine.options import Options
@@ -45,9 +46,8 @@ def history(home) -> dict[str, dict[str, Any]]:
 
     import msgspec
 
-    from flnd.engine import home as _home
 
-    with _home.open(Path(home)) as db:
+    with _store.open(Path(home)) as db:
         rows = {row.key: msgspec.structs.asdict(row) for row in db.records()}
         for item, row in rows.items():
             row["files"] = db.files_of_post(item)
@@ -58,9 +58,8 @@ def targets(home) -> dict[str, Any]:
     """Every target row in a home's `flnd.db`, by key (`flnkit.db.TargetRow`)."""
     from pathlib import Path
 
-    from flnd.engine import home as _home
 
-    with _home.open(Path(home)) as db:
+    with _store.open(Path(home)) as db:
         return db.targets()
 # ---------------------------------------------------------------------------------------------
 # The HTTP library, driven from a test's own thread
@@ -269,4 +268,4 @@ class EngineCase(unittest.TestCase):
                 for name in row.categories}
 
     def target_dir(self, code, name):
-        return self.home / _home.MEDIA / code / name
+        return self.home / _store.MEDIA / code / name

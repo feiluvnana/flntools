@@ -26,6 +26,7 @@ from test_library import example_source
 from flnd import Blocked, Target
 from flnd import cli as flnd_cli
 from flnd.engine import home as _home
+from flnd.engine import store as _store
 from flnd.engine.core import Engine, TargetReport, _Runner
 from flnd.engine.events import Saved
 from flnd.engine.options import Options
@@ -170,7 +171,7 @@ class DownloadTest(RunsCase):
             self.assertIn(message, out)
             self.assertNotIn("Traceback", out)
         self.assertEqual(self.runs, [])
-        self.assertFalse((Path(".flnd") / _home.MEDIA).exists())
+        self.assertFalse((Path(".flnd") / _store.MEDIA).exists())
 
     def test_bad_flags(self):
         message = "ins has no category videos"
@@ -405,7 +406,7 @@ class OutputTest(FlndCase):
         planned = [line for line in out.splitlines() if line.startswith("new ")]
         self.assertEqual(len(planned), 3)
         self.assertEqual(out.splitlines()[-1], "planned 3 files; nothing was downloaded")
-        self.assertFalse((Path(".flnd") / _home.MEDIA).exists())
+        self.assertFalse((Path(".flnd") / _store.MEDIA).exists())
 
     def test_a_failed_file_exits_1_without_its_line(self):
         self.listing[("example_user", "posts")] = ["p1", "bad"]
@@ -577,7 +578,7 @@ class LoginFileTest(FlndCase):
     def test_a_full_export_keeps_only_the_source(self):
         code, out, err = self.run_app("login", "ins", str(self.cookie_file(NETSCAPE)))
         self.assertEqual(code, 0, err)
-        self.assertEqual(out, "ins: logged in (cookies.txt)\n")
+        self.assertEqual(out, "ins: logged in (file)\n")
         saved = self.saved("ins")
         self.assertEqual({cookie["name"]: cookie["domain"] for cookie in saved},
                          {"sessionid": ".instagram.com", "ds_user_id": ".www.instagram.com"})
@@ -622,7 +623,7 @@ class LoginQuestionsTest(FlndCase):
         self.answer(str(len(choices) + 1), str(path))
         code, out, err = self.run_app("login", "twt")
         self.assertEqual(code, 0, err)
-        self.assertEqual(out, "twt: logged in (cookies.txt)\n")
+        self.assertEqual(out, "twt: logged in (file)\n")
 
     def test_a_wrong_answer_is_asked_again(self):
         self.answer("9", "nope", "2")
@@ -679,7 +680,7 @@ class LoginsTest(FlndCase):
             secrets["api_id"] = "1"
         code, out, _ = self.run_app("login")
         self.assertEqual(code, 0)
-        for token in ("Instagram", "logged in", "cookies.txt", "sessionid expired", "Telegram",
+        for token in ("Instagram", "logged in", "file", "sessionid expired", "Telegram",
                       "api key only", "TikTok", "not logged in"):
             self.assertIn(token, out)
         self.assertNotIn("secret-val", out)

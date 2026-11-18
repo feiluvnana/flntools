@@ -46,8 +46,8 @@ from flnd.errors import UsageError
 
 if TYPE_CHECKING:
     from flnd.engine.core import Chosen, Engine
-    from flnd.engine.home import FailureRow
     from flnd.engine.options import Config
+    from flnd.engine.store import FailureRow
     from flnd.plugin import Plugin, Target
 
 __all__ = ["Flnd", "open"]
@@ -293,9 +293,9 @@ class Flnd:
             ...     fl.status is None
             True
         """
-        from flnd.engine import home
+        from flnd.engine import store
 
-        with home.open(self.home) as db:
+        with store.open(self.home) as db:
             run = db.last_run()
             rows = db.failures(run.id) if run is not None else []
         if run is None:
@@ -385,20 +385,20 @@ class Flnd:
         """
         if kind is not None and kind not in KINDS:
             raise UsageError(f"kind is one of {', '.join(KINDS)}, not {kind!r}")
-        from flnd.engine import home
+        from flnd.engine import store
         from flnd.engine.options import _period
 
         first = None if since is None else _period(since)[0]
         owner = None
         if target is not None:
             [resolved] = self._resolve(target)
-            owner = home.key(resolved)
-        with home.open(self.home) as db:
+            owner = store.key(resolved)
+        with store.open(self.home) as db:
             rows = db.records(target=owner, kind=kind)
         found = []
         for row in rows:
             record = Record(row.key, Path(row.path), row.size, post=row.post_id,
-                            category=row.category, date=home._date(row.date), at=row.at)
+                            category=row.category, date=row.day, at=row.at)
             if first is not None and (_day(record) or first) < first:
                 continue
             found.append(record)
@@ -409,9 +409,9 @@ class Flnd:
 
         It reads every row and walks the home's `media/` folder once; nothing is fetched.
         `fix=True` makes the history match the disk, and never deletes, moves or downloads a
-        file: a missing file's row goes, a file of the wrong size gets its row's size and hash
-        from the disk, and an unknown file is adopted, by its `(target, post, file)` key where
-        a failed run recorded one (src/docs/storage, "Checking a home").
+        file: a missing file's row goes, and a file of the wrong size gets its row's size and
+        hash from the disk. An unknown file is never adopted, so a home with one isn't `ok`,
+        fixed or not (src/docs/storage, "Checking a home").
 
         Args:
             fix: also repair the history; False only reports.
@@ -428,10 +428,11 @@ class Flnd:
             ...     fl.check().ok
             True
         """
-        from flnd.engine import check, home
+        from flnd.engine import store
 
-        with home.open(self.home) as db:
-            return check.check(self.home, db, fix=fix)
+        with store.open(self.home) as db:
+            return store.check(self.home, db, fix=fix)
+
 
     # -----------------------------------------------------------------------------------------
     # Logins and sources

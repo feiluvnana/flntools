@@ -26,9 +26,9 @@ from fakes import EngineCase, make_plugin
 
 from flnd.engine import core as engine_module
 from flnd.engine import crawl as job
-from flnd.engine import home as _home
 from flnd.engine import jobs as jobs_module
 from flnd.engine import run as _run
+from flnd.engine import store as _store
 from flnd.engine.core import Engine
 from flnd.engine.events import Skipped
 from flnd.engine.options import Options
@@ -96,7 +96,7 @@ class JobCase(EngineCase):
 
     def sql(self, statement, *args):
         """Run one statement on the home's `flnd.db`, as another tool might."""
-        db = sqlite3.connect(self.home / _home.DB, isolation_level=None)
+        db = sqlite3.connect(self.home / _store.DB, isolation_level=None)
         try:
             db.execute(statement, args)
         finally:
@@ -122,12 +122,12 @@ class CategoriesTest(JobCase):
         # Today's row format: where it is, its size and modified time, and when.
         # The first file of a post of several holds their count (fixes #2).
         self.assertEqual(sorted(rows["exm:C1abc_0"]),
-                         ["at", "before", "category", "date", "estimated", "files", "folder", "hash", "key", "kind", "mtime", "path",
-                          "post_id", "shrink", "sidecar", "size", "state", "target", "tools", "unpacked"])
+                         ["at", "category", "date", "estimated", "files", "folder", "hash", "key", "kind", "mtime", "path",
+                          "post_id", "sidecar", "size", "state", "target", "unpacked"])
         self.assertEqual(rows["exm:C1abc_0"]["files"], 2)
         self.assertEqual(sorted(rows["exm:C1abc_1"]),
-                         ["at", "before", "category", "date", "estimated", "files", "folder", "hash", "key", "kind", "mtime", "path",
-                          "post_id", "shrink", "sidecar", "size", "state", "target", "tools", "unpacked"])
+                         ["at", "category", "date", "estimated", "files", "folder", "hash", "key", "kind", "mtime", "path",
+                          "post_id", "sidecar", "size", "state", "target", "unpacked"])
         # The route is called once for its three categories.
         self.assertEqual(len(self.fetched(f"{API}/users/example_user")), 1)
 
@@ -338,11 +338,11 @@ class FilesTest(JobCase):
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
         row = self.history()["exm:C1abc_0"]
         saved = self.target_dir("exm", "example_user") / "posts" / "2026-01-02_C1abc_0.jpg"
-        self.assertEqual(sorted(row), ["at", "before", "category", "date", "estimated", "files", "folder", "hash", "key", "kind", "mtime", "path",
-                          "post_id", "shrink", "sidecar", "size", "state", "target", "tools", "unpacked"])
+        self.assertEqual(sorted(row), ["at", "category", "date", "estimated", "files", "folder", "hash", "key", "kind", "mtime", "path",
+                          "post_id", "sidecar", "size", "state", "target", "unpacked"])
         self.assertEqual(sorted(self.history()["exm:B2def_0"]),
-                         ["at", "before", "category", "date", "estimated", "files", "folder", "hash", "key", "kind", "mtime", "path",
-                          "post_id", "shrink", "sidecar", "size", "state", "target", "tools", "unpacked"])
+                         ["at", "category", "date", "estimated", "files", "folder", "hash", "key", "kind", "mtime", "path",
+                          "post_id", "sidecar", "size", "state", "target", "unpacked"])
         self.assertEqual((row["path"], row["size"]), (str(saved), len(b"/C1abc_0.jpg")))
         written = datetime.datetime.fromisoformat(row["at"])
         self.assertEqual(written.utcoffset(), datetime.timedelta(0))
@@ -1049,7 +1049,7 @@ class AskedTest(JobCase):
             "und", posts, newest_first=True, key="{post}", date=undated)})
         engine.download(["und:a", "und:b"], sync=True)
         engine.sync()
-        with _home.open(self.home) as db:
+        with _store.open(self.home) as db:
             self.assertEqual(sorted(db.state("und")[job.ASKED_KEY]), ["a-p", "b-p"])
 
 
@@ -1208,8 +1208,8 @@ class MemoryTest(JobCase):
         undated = Post("B2", [File(f"{CDN}/b.jpg")])
         self.run_feed([dated])
         # B2's day is known from an earlier run's row for its key.
-        with _home.open(self.home) as db:
-            db.save([_home.FileRow("mem:B2_0", "mem:example_user", "/gone.jpg", 1, post_id="B2",
+        with _store.open(self.home) as db:
+            db.save([_store.FileRow("mem:B2_0", "mem:example_user", "/gone.jpg", 1, post_id="B2",
                                  at="2026-01-03T00:00:00+00:00", date="2026-01-03")])
         self.assertIn("2026-01-03_B2.jpg", self.run_feed([undated]))
 
@@ -1560,14 +1560,14 @@ class QueryAndLimitDryTest(EngineCase):
         output = "\n".join(self.lines())
         self.assertIn("srch:1", output)
         self.assertIn("srch:2", output)
-        self.assertFalse((self.home / _home.DB).exists())
-        self.assertFalse((self.home / _home.DB).exists())
-        self.assertFalse((self.home / _home.MEDIA).exists())
+        self.assertFalse((self.home / _store.DB).exists())
+        self.assertFalse((self.home / _store.DB).exists())
+        self.assertFalse((self.home / _store.MEDIA).exists())
 
         report_normal = engine.download(["srch:1/photo"], dry=True)
         self.assertTrue(report_normal.ok)
         self.assertIn("1.jpg", "\n".join(self.lines()))
-        self.assertFalse((self.home / _home.MEDIA).exists())
+        self.assertFalse((self.home / _store.MEDIA).exists())
 
     def test_limit_on_normal_target_and_target_yielding_route(self):
         class Multi(Plugin):
@@ -1669,7 +1669,7 @@ class SyncedQueryTest(EngineCase):
         engine = Engine(home=self.home, sources={"pgd": src})
         report = engine.download(["pgd?cats/photo"], dry=True, sync=True)
         self.assertTrue(report.ok)
-        self.assertFalse((self.home / _home.DB).exists())
+        self.assertFalse((self.home / _store.DB).exists())
 
     def test_ctrl_c_and_limit_close_generator_and_keep_partial_seen(self):
         pages = [[1], [2], [3]]

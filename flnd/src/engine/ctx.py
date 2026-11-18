@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.plugin
-from flnd.engine import home, jobs
+from flnd.engine import home, jobs, store
 from flnd.engine.options import SourceConfig, config
 from flnd.errors import (
     Blocked,
@@ -912,7 +912,7 @@ class PluginRun:
     config: SourceConfig = field(default_factory=SourceConfig)
     # The posts its `date` hook had no day for, read once for the run (`crawl.asked`).
     asked: dict[str, float] | None = None
-    _state: home.Home | None = field(default=None, repr=False)
+    _state: store.Store | None = field(default=None, repr=False)
     _secrets: vault.Vault | None = field(default=None, repr=False)
     # A loop of the plugin's own, made only outside a run (`shared_browser` gives the run's).
     _own_loop: Bridge | None = field(default=None, repr=False)
@@ -957,12 +957,12 @@ class PluginRun:
         return self.scheduler.limits.places
 
     @property
-    def state(self) -> home.State:
+    def state(self) -> store.State:
         """The plugin's own values in the home's `flnd.db`: the run's, or one opened here."""
         if self.settings.db is not None:
             return self.settings.db.state(self.source.code)
         if self._state is None:
-            self._state = home.open(self.settings.home)
+            self._state = store.open(self.settings.home)
         return self._state.state(self.source.code)
 
     @property

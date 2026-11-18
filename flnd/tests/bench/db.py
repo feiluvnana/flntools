@@ -1,10 +1,10 @@
 """Benchmark group `db`: a home's `flnd.db` over 100k files, and what a commit costs per file.
 
-Part one is `flnd.engine.home` over 100,000 file rows of 10 targets: inserting them, the point read
-every listed file makes (`Home.held`: its path and state by key), one target's 10,000 rows, and
+Part one is `flnd.engine.store` over 100,000 file rows of 10 targets: inserting them, the point read
+every listed file makes (`Store.known`: its path and state by key), one target's 10,000 rows, and
 a filter on a column (`size`), which SQL runs.
 
-Part two is what commits cost: 50,000 files saved through `Home.save`, one transaction per post
+Part two is what commits cost: 50,000 files saved through `Store.save`, one transaction per post
 of 2 files (`commit_per_post`, the run's real pattern), and raw SQLite in WAL mode committing
 one per row, one per 500 rows, and one per row with `synchronous=FULL`, for comparison. 50,000
 rows make the WAL pass its automatic checkpoint (1,000 pages) many times, so the cost of
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import kit
 
-from flnd.engine import home as _home
+from flnd.engine import store as _store
 
 ROWS = kit.size(100_000, 1000)
 # 10,000 random keys read back, seeded so every run reads the same ones.
@@ -34,16 +34,16 @@ FILES = ("CREATE TABLE files (key TEXT PRIMARY KEY, target TEXT, post_id TEXT, p
 INSERT = "INSERT INTO files VALUES (?,?,?,?,?,?,?)"
 
 
-def files(n: int, *, post_files: int = 1) -> _home.FileRow:
+def files(n: int, *, post_files: int = 1) -> _store.FileRow:
     """File `n` of the benchmark's homes: target `n % 10`, `post_files` files per post."""
     user = f"ins:example_user{n % 10}"
-    return _home.FileRow(f"ins:{n:08d}", user, f"/m/ins/example_user{n % 10}/{n}.jpg", n,
+    return _store.FileRow(f"ins:{n:08d}", user, f"/m/ins/example_user{n % 10}/{n}.jpg", n,
                          post_id=str(n // post_files), category="posts", date="2026-01-02",
                          kind="image", at="2026-01-02T00:00:00+00:00")
 
 
 def history(report: kit.Report, scratch: Path) -> None:
-    """Time `flnd.engine.home` over 100k file rows.
+    """Time `flnd.engine.store` over 100k file rows.
 
     Args:
         report: where the numbers go.
@@ -56,21 +56,21 @@ def history(report: kit.Report, scratch: Path) -> None:
     def fill() -> None:
         nonlocal made
         made += 1
-        with _home.open(scratch / f"fill{made}") as db:
+        with _store.open(scratch / f"fill{made}") as db:
             db.save(rows)
 
     report.add("insert", kit.best(fill) / ROWS * 1e6, "us")
-    with _home.open(scratch / "home") as db:
+    with _store.open(scratch / "home") as db:
         db.save(rows)
-        report.add("point_read", kit.best(lambda: [db.held(k) for k in probes]) / PROBES * 1e6,
+        report.add("point_read", kit.best(lambda: [db.known(k) for k in probes]) / PROBES * 1e6,
                    "us")
         report.add("contains", kit.best(
-            lambda: [db.held(k) is not None for k in probes]) / PROBES * 1e6, "us")
+            lambda: [db.known(k) is not None for k in probes]) / PROBES * 1e6, "us")
         # One target's rows: every tenth file, 10,000 rows.
         report.add("prefix_scan_10k",
                    kit.best(lambda: db.records(target="ins:example_user0")) * 1e3, "ms")
         # `size` is a column now, so SQL filters it; the name stays for the comparison.
-        report.add("filter_json", kit.best(lambda: db._store.all(
+        report.add("filter_json", kit.best(lambda: db._db.all(
             "SELECT key FROM files WHERE size = ?", (5,))) * 1e3, "ms")
 
 
@@ -111,13 +111,13 @@ def commits(report: kit.Report, scratch: Path) -> None:
         return took / COMMIT_ROWS * 1e6
 
     report.add("commit_per_file", timed("NORMAL", 1), "us")
-    # The run's real pattern: `Home.save` per post of 2 files, through flnd's own code.
+    # The run's real pattern: `Store.save` per post of 2 files, through flnd's own code.
     posts = [[files(n, post_files=2), files(n + 1, post_files=2)]
              for n in range(0, COMMIT_ROWS, 2)]
     homes = iter(range(10))
 
     def saved() -> None:
-        with _home.open(scratch / f"posts{next(homes)}") as db:
+        with _store.open(scratch / f"posts{next(homes)}") as db:
             for post in posts:
                 db.save(post)
 
