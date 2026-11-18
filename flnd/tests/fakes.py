@@ -5,8 +5,8 @@
   `only` and `time`. `Seen` is the kit's own.
 - `history` and `targets` read what a run saved in a home's `flnd.db`.
 - `fetch` and `download` drive the HTTP library (`flnkit.net`) from a test's own thread.
-- `EngineCase`, `make_source` and `run_targets` run the engine on test sources, on
-  `flnkit.net.fake` and a fake clock.
+- `EngineCase`, `make_plugin`, `login_cookies`, `own_login` and `run_targets` run the engine on
+  test plugins (API 2), on `flnkit.net.fake` and a fake clock.
 """
 
 from __future__ import annotations
@@ -23,13 +23,14 @@ from typing import Any
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 import unawaited  # noqa: F401  (a coroutine never awaited fails its test)
 
-from flnd import testing
+from flnd import plugin, testing
 from flnd.engine import home as _home
 from flnd.engine import run as _run
 from flnd.engine.core import Engine, Report, _drive
 from flnd.engine.events import Failed, Phase, State
 from flnd.engine.options import Options
-from flnd.source import Login, Post, Range, Source, Target, target
+from flnd.plugin import Post
+from flnd.source import Range, Source, Target
 from flnd.testing import Collected, Seen
 from flnd.ui.log import ui
 from flnkit import clock as _time
@@ -37,7 +38,8 @@ from flnkit import cookies as _cookies
 from flnkit import net as _net
 
 __all__ = ["CDN", "Collected", "EngineCase", "FakeSite", "Seen", "collect", "download", "fetch",
-           "history", "make_source", "noise", "own_login", "run_targets", "targets"]
+           "history", "login_cookies", "make_plugin", "noise", "own_login", "run_targets",
+           "targets"]
 
 # A fixture: data for a URL, a SiteError to raise, or a function of (url, request) giving either.
 Answer = Any
@@ -188,54 +190,70 @@ def noise(format, size=(64, 48)):
     return b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + bytes(32)
 
 
-def make_source(code, route=None, *, files: Any = (), **declared):
-    """A routed test source: `code:<name>` reads a user, `route(site)` is its route, and `files` are its `posts`.
+def make_plugin(code, route=None, *, files: Any = (), **declared):
+    """A test plugin on API 2: `code:<name>` reads a user, `route(ctx)` is its route, and `files` are its `posts`.
 
-        make_source("aaa", lambda site: seen.append(site.target.value), files=[File(url, name="a.jpg")])
+        make_plugin("aaa", lambda ctx: seen.append(ctx.target.value), files=[File(url, name="a.jpg")])
 
     Args:
-        code: the source's code; its domain is `<code>.example`.
-        route: called with the target's `Site` when the target is read; what it returns is the
-            context of the category. A coroutine function makes the route and the category `async def`.
+        code: the plugin's code; its domain is `<code>.example`.
+        route: called with the target's `Ctx` when the target is read, and awaited when it gives
+            an awaitable; what it returns is the context of the category.
         files: the files `posts` yields, each in a post of its own, kept as the site names them and
             filed in the target's own folder, keyed by their path (`aaa:a.jpg`); or a function of
-            `(site, context)` giving them.
-        **declared: the class's other fields and methods, such as `login`, `connect` or `sign`.
+            `(ctx, context)` giving them (awaited when it gives an awaitable).
+        **declared: the class's other fields and methods, such as `login`, `connect` or `sign`;
+            `browser=True` is `Browser.ANY`.
     """
-    def listed(site, context):
-        found: Any = files(site, context) if callable(files) else files
+    async def listed(ctx, context):
+        found: Any = files(ctx, context) if callable(files) else files
+        if inspect.isawaitable(found):
+            found = await found
         return [Post(file.name or str(number), [file]) for number, file in enumerate(found)]
 
-    if inspect.iscoroutinefunction(route):
-        @target(f"{code}:{{user}}")
-        async def user(self, site, user):
-            return await route(site)
+    @plugin.route(f"{code}:{{user}}", newest_first=False)
+    async def user(self, ctx, user):
+        found = route(ctx) if route is not None else None
+        return await found if inspect.isawaitable(found) else found
 
-        @user.category
-        async def posts(self, site, context):
-            for post in listed(site, context):
-                yield post
-    else:
-        @target(f"{code}:{{user}}")
-        def user(self, site, user):
-            return route(site) if route is not None else None
+    @user.category(newest_first=False)
+    async def posts(self, ctx, context):
+        for post in await listed(ctx, context):
+            yield post
 
-        @user.category
-        def posts(self, site, context):
-            yield from listed(site, context)
+    if declared.get("browser") is True:
+        declared["browser"] = plugin.Browser.ANY
+    attributes = {"code": code, "name": code.upper(), "domains": (f"{code}.example",), "api": 2,
+                  "folder": "", "key": "{path}", "user": user, "posts": posts, **declared}
+    return type(f"Plugin_{code}", (plugin.Plugin,), attributes)
 
-    attributes = {"code": code, "name": code.upper(), "domains": (f"{code}.example",), "api": 1, "folder": "",
-                  "key": "{path}", "user": user, "posts": posts, **declared}
-    return type(f"Source_{code}", (Source,), attributes)
+
+def login_cookies(*names: str, required: bool = False) -> plugin.Cookies:
+    """A cookie login of a test plugin: `flnd.plugin.cookies` with a login page on example.com."""
+    return plugin.cookies(*names, url="https://example.com/login", required=required)
 
 
 def own_login(start=None, *, methods=("qr",), check=None):
-    """A source's own `Login`: `start(self, site, how)` logs in; `check(self, site)` says whether it did."""
-    attributes = {"methods": methods}
-    if start is not None:
-        attributes["start"] = start
-    attributes["check"] = check or (lambda self, site: "session" in site.secrets)
-    return type("OwnLogin", (Login,), attributes)()
+    """A plugin's own `Login`: `start(self, ctx, method)` logs in; `check(self, ctx)` says whether it did.
+
+    Either may be a plain function or an `async def`; what a plain one returns is awaited when it
+    is awaitable. Without `check`, it is logged in when its secrets hold `session`.
+    """
+    async def called(function, *args):
+        found = function(*args)
+        return await found if inspect.isawaitable(found) else found
+
+    async def started(self, ctx, method):
+        if start is not None:
+            await called(start, self, ctx, method)
+
+    async def checked(self, ctx):
+        if check is None:
+            return "session" in ctx.secrets
+        return await called(check, self, ctx)
+
+    return type("OwnLogin", (plugin.Login,), {"methods": methods, "start": started,
+                                              "check": checked})()
 
 
 class EngineCase(unittest.TestCase):

@@ -2,8 +2,8 @@
 
 `ReadTest` reads files written in a temporary home: every key, every bad value (whose message must
 name the file, the key and what it takes), and the warning for a key flnd doesn't know.
-`SourceRunTest` checks that a source's `[sources.<code>]` settings reach its run (`flnd.engine.site`):
-pace, limits, proxy and scroll. `PrecedenceTest` checks the order a setting resolves in: a value
+`PluginRunTest` checks that a plugin's `[sources.<code>]` settings reach its run: pace, limits,
+proxy and scroll. `PrecedenceTest` checks the order a setting resolves in: a value
 given for one call wins over the file, and the file over the default. No network, no browser.
 """
 
@@ -13,15 +13,15 @@ from tempfile import TemporaryDirectory
 from types import MappingProxyType
 from unittest import mock
 
+from fakes import EngineCase, make_plugin
 from test_library import LibraryCase
-from test_site import Example, SiteCase
 
-import flnd
 from flnd import cli
 from flnd.engine import options
 from flnd.engine.core import Engine
 from flnd.engine.options import Config, SourceConfig, config
 from flnd.errors import UsageError
+from flnkit import browser
 
 
 class Home:
@@ -124,39 +124,54 @@ class ReadTest(unittest.TestCase):
         self.assertEqual(self.read('[defaults]\nwhen = "1y"\n').when, "1y")
 
 
-class SourceRunTest(SiteCase):
-    """A source's `[sources.<code>]` settings reach its run, over what its class says."""
+class PluginRunTest(EngineCase):
+    """A plugin's `[sources.<code>]` settings reach its run, over what its class says."""
+
+    LIMITS = {"cdn.example.com": 3}
 
     def configure(self, text):
         self.home.mkdir(parents=True, exist_ok=True)
         (self.home / "config.toml").write_text(text, encoding="utf-8")
 
-    def test_without_settings_the_source_decides(self):
-        run, site = self.open()
-        self.assertEqual(run.scheduler.pace["exm"], Example.pace)
-        self.assertEqual(run.scheduler.limits.limits, dict(Example.limits))
-        self.assertIsNone(run.session.proxy)
-        self.assertEqual(site._browser().scroll, Example.scroll)
+    def open(self, *users, check=None):
+        """Run `exm:<user>` for each user; what its run had, as its route saw it."""
+        seen = {}
+
+        def route(ctx):
+            run = ctx._run
+            tabs = ctx._site._browser()
+            seen.update(pace=run.scheduler.pace["exm"], limits=dict(run.scheduler.limits.limits),
+                        jobs=run.jobs, proxy=run.session.proxy, scroll=tabs.scroll)
+            if check is not None:
+                check(run.session)
+
+        plugin = make_plugin("exm", route, pace=2.0, limits=self.LIMITS)
+        self.report(plugin, targets=[f"exm:{user}" for user in users or ("example_user",)])
+        return seen
+
+    def test_without_settings_the_plugin_decides(self):
+        seen = self.open()
+        self.assertEqual((seen["pace"], seen["limits"]), (2.0, self.LIMITS))
+        self.assertIsNone(seen["proxy"])
+        self.assertEqual(seen["scroll"], browser.HUMAN)
 
     def test_pace_limits_proxy_and_scroll_come_from_the_config(self):
         self.configure('[sources.exm]\npace = 4\nlimits = { "cdn.example.com" = 48 }\n'
                        'proxy = "socks5://127.0.0.1:1080"\nscroll = "fast"\n')
-        run, site = self.open()
-        self.assertEqual(run.scheduler.pace["exm"], 4.0)
-        self.assertEqual(run.scheduler.limits.limits, {**Example.limits, "cdn.example.com": 48})
+        seen = self.open()
+        self.assertEqual(seen["pace"], 4.0)
+        self.assertEqual(seen["limits"], {**self.LIMITS, "cdn.example.com": 48})
         # One host's limit above the usual most lets a target keep that many files going.
-        self.assertEqual(run.jobs, 48)
-        self.assertEqual(run.session.proxy, "socks5://127.0.0.1:1080")
-        self.assertEqual(site._browser().scroll, "fast")
+        self.assertEqual(seen["jobs"], 48)
+        self.assertEqual(seen["proxy"], "socks5://127.0.0.1:1080")
+        self.assertEqual(seen["scroll"], "fast")
 
     def test_a_pace_of_0_is_no_pace(self):
         self.configure("[sources.exm]\npace = 0\n")
-        run, _ = self.open()
-        self.assertEqual(run.scheduler.pace["exm"], 0)
+        self.assertEqual(self.open()["pace"], 0)
 
     def test_the_proxy_reaches_curl(self):
         self.configure('[sources.exm]\nproxy = "http://127.0.0.1:8080"\n')
-        run, _ = self.open()
         from curl_cffi import CurlOpt
 
         class Curl:
@@ -170,18 +185,19 @@ class SourceRunTest(SiteCase):
                 return 0
 
         curl = Curl()
-        run.session._session()._setup(curl)
-        # Nothing was sent, so there is nothing for the run to close.
-        run.session._raw = None
+
+        def check(session):
+            raw = session._raw
+            session._session()._setup(curl)
+            # Nothing was sent through it, so there is nothing for the run to close.
+            session._raw = raw
+
+        self.open(check=check)
         self.assertEqual(curl.options[CurlOpt.PROXY], "http://127.0.0.1:8080")
 
     def test_the_browser_says_once_that_it_isnt_proxied(self):
         self.configure('[sources.exm]\nproxy = "http://127.0.0.1:8080"\n')
-        run, site = self.open()
-        site._browser()
-        other = type(site)(run, flnd.Target("exm:example_creator", kind="user"))
-        self.addCleanup(other.close)
-        other._browser()
+        self.open("example_user", "example_creator")
         told = [line for line in self.lines() if "doesn't use the proxy" in line]
         self.assertEqual(len(told), 1)
 

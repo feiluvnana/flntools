@@ -2,14 +2,20 @@
 
 import asyncio
 import base64
+import contextlib
 import datetime
+import itertools
 import json
 import unittest
 from unittest import mock
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
+from fakes import EngineCase
 
+from flnd.engine import home as _home
+from flnd.engine.core import Engine
+from flnd.engine.options import Options
 from flnd.errors import Blocked, NotFound, SiteError
 from flnd.plugin import Range, Request
 from flnd.plugins.loi import (
@@ -24,6 +30,7 @@ from flnd.plugins.loi import (
     signature,
 )
 from flnd.testing import FakeCtx, Reply, check, collect, fake_clock
+from flnkit import cookies as _cookies
 from flnkit import net as _net
 from flnkit import vault as _vault
 
@@ -422,6 +429,91 @@ class RateTest(unittest.TestCase):
             archive_files(ctx)
         self.assertEqual([seconds for _, seconds, _ in ctx.seen.holds], [30, 120, 480])
         self.assertNotIn("quota", ctx.state)
+
+
+# A 7z archive's first bytes, which the server sends under a .zip name; flnd saves it as it comes.
+SEVEN_ZIP = b"7z\xbc\xaf\x27\x1c" + b"\0" * 26
+
+
+class EngineTest(EngineCase):
+    """The plugin through the real engine, on `flnkit.net.fake`: the login in the home, the
+    engine's retries and its save."""
+
+    def setUp(self):
+        super().setUp()
+        jar = [{"name": "access-token", "value": "Bearer%20tok", "domain": ".loix.cc",
+                "path": "/"}]
+        _home.save(self.home, "loi", _cookies.Jar(jar))
+        self.routes.update({
+            f"{API}lois/5930": _net.reply(200, json={"data": {**POST, "images": []}}),
+            f"{API}user/info": _net.reply(200, json=USER)})
+        self.folder = self.target_dir("loi", "5930") / FOLDER
+
+    def test_a_retried_request_is_signed_again_and_the_archive_is_saved_as_sent(self):
+        attempts = []
+
+        def flaky(request):
+            attempts.append(dict(request.headers))
+            if len(attempts) == 1:
+                return _net.reply(503)
+            return _net.reply(200, json={"data": {"sv_list": [
+                {"sv_name": "A", "sv_url": encrypt("https://one.example/set.zip")}]}})
+
+        self.routes[f"{API}{LINKS_PATH}"] = flaky
+        self.routes["https://one.example/set.zip"] = _net.reply(200, content=SEVEN_ZIP)
+        # Each call a second later, so each try is signed at its own time.
+        clock = itertools.count(1_700_000_000.0, 1.0)
+        with mock.patch("flnd.plugins.loi.time.time", lambda: next(clock)):
+            self.run_engine(Loibus, targets=["loi:5930"],
+                            options=Options(categories=("archive",)))
+        self.assertEqual(len(attempts), 2)
+        for header in ("x-signature-timestamp", "x-request-id"):
+            self.assertNotEqual(attempts[0][header], attempts[1][header])
+        self.assertEqual(attempts[1]["authorization"], "Bearer tok")
+        self.assertEqual((self.folder / "set.zip").read_bytes(), SEVEN_ZIP)
+        self.assertTrue((self.folder / "info.md").is_file())
+        [archive] = [request for request in self.requests if request.url.host == "one.example"]
+        self.assertNotIn("authorization", archive.headers)
+        self.assertNotIn("x-request-id", archive.headers)
+
+    def test_a_403_on_links_is_soft(self):
+        self.routes[f"{API}{LINKS_PATH}"] = _net.reply(403, json={"message": "VIP only"})
+        self.run_engine(Loibus, targets=["loi:5930"], options=Options(categories=("all",)))
+        self.assertTrue((self.folder / "info.md").is_file())
+        self.assertEqual(self.failures(), [])
+
+
+class LoginTest(EngineCase):
+    def test_a_cookie_file_or_the_browser_keeps_loix_cc_and_needs_the_token(self):
+        def jar(*names):
+            own = [{"name": name, "value": "v", "domain": "loix.cc", "path": "/"}
+                   for name in names]
+            other = {"name": "access-token", "value": "other", "domain": "example.com",
+                     "path": "/"}
+            return _cookies.Jar([*own, other])
+
+        path = self.home.parent / "cookies.txt"
+        engine = Engine(home=self.home, sources={"loi": Loibus})
+        for method, names, said in [
+            ("file", ("access-token", "user-level"),
+             "loi: logged in from cookies.txt (2 cookies)"),
+            ("file", ("user-level",), "no access-token for loix.cc in cookies.txt"),
+            ("browser", ("access-token",), "loi: logged in from Chrome (1 cookie)"),
+            ("browser", (), "no access-token for loix.cc in Chrome"),
+        ]:
+            # The browser's store is faked; the file is a real one.
+            browser = mock.patch("flnkit.cookies.load", return_value=jar(*names))
+            with self.subTest(method=method, names=names), \
+                    browser if method == "browser" else contextlib.nullcontext():
+                jar(*names).save(path)
+                if "logged in" not in said:
+                    with self.assertRaisesRegex(_vault.LoginError, said):
+                        engine.login("loi", method, browser="chrome", path=path)
+                    continue
+                self.assertEqual(engine.login("loi", method, browser="chrome", path=path),
+                                 said)
+                self.assertEqual({cookie["domain"] for cookie in _home.load(self.home, "loi")},
+                                 {".loix.cc"})
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 `flnd retry`, `fl.status`, and the samples of changed answers, kept scrubbed.
 
 Every test runs the engine on a temporary home over a fake network and a fake clock
-(`EngineCase`). The `Feed` source pages its posts by cursor, the way the sites' APIs do: each
+(`EngineCase`). The `Feed` plugin pages its posts by cursor, the way the sites' APIs do: each
 page holds `PAGE` posts, newest first, and its cursor is the last post's id, so a cursor still
 works after new posts arrive on top. Each listing signs its file URLs afresh (`sig=s<n>`), as a
 CDN's signed URLs are, so a test can tell a fresh URL from a stored one.
@@ -19,7 +19,7 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 import fakes
-from fakes import CDN, EngineCase
+from fakes import CDN, EngineCase, login_cookies
 
 import flnd
 from flnd import cli as flnd_cli
@@ -29,7 +29,7 @@ from flnd.engine import save
 from flnd.engine.core import Engine
 from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped, encode
 from flnd.errors import Changed
-from flnd.source import File, Post, Source, cookies, target
+from flnd.plugin import File, Plugin, Post, route
 from flnd.ui.log import ui
 from flnkit import net as _net
 
@@ -40,7 +40,7 @@ DAY = datetime.date(2026, 1, 1)
 
 
 class FeedCase(EngineCase):
-    """A home with the `fed` source, whose feed (`self.posts`, newest first) pages by cursor."""
+    """A home with the `fed` plugin, whose feed (`self.posts`, newest first) pages by cursor."""
 
     def setUp(self):
         super().setUp()
@@ -56,28 +56,28 @@ class FeedCase(EngineCase):
         self.engine = Engine(home=self.home, sources={"fed": self.source}, emit=self.events.append)
 
     def feed_source(self, *, info=None, **declared):
-        """The `fed` source; `info`, a second category's method, and `declared` its other fields."""
+        """The `fed` plugin; `info`, a second category's method, and `declared` its other fields."""
         test = self
 
-        def user(self, site, user):
+        async def user(self, ctx, user):
             return user
 
-        def posts(self, site, user):
+        async def posts(self, ctx, user):
             test.listings += 1
             sig = f"s{test.listings}" + (f"&token={test.signed}" if test.signed else "")
-            for page in site.pages(f"{API}/feed", cursor="next", send="after"):
-                for post_id in page["ids"]:
+            async for response in ctx.pages(f"{API}/feed", cursor="next", send="after"):
+                for post_id in response.json["ids"]:
                     yield Post(post_id, [File(f"{CDN}/{post_id}.jpg?sig={sig}")], date=DAY)
 
-        route = target("fed:{user}")(user)
-        route.category(newest_first=True)(posts)
-        attributes = {"code": "fed", "name": "Feed", "domains": ("example.com",), "api": 1,
-                      "key": "{post}", "filename": "{post}", "user": route, "posts": posts,
+        listed = route("fed:{user}", newest_first=False)(user)
+        listed.category(newest_first=True)(posts)
+        attributes = {"code": "fed", "name": "Feed", "domains": ("example.com",), "api": 2,
+                      "key": "{post}", "filename": "{post}", "user": listed, "posts": posts,
                       **declared}
         if info is not None:
-            route.category(info)
+            listed.category(info)
             attributes["info"] = info
-        return type("Feed", (Source,), attributes)
+        return type("Feed", (Plugin,), attributes)
 
     def page(self, request):
         after = dict(request.url.params).get("after")
@@ -205,21 +205,21 @@ class GapTest(FeedCase):
         listed, cut = [], {"at": None}
         test = self
 
-        def user(self, site, user):
+        async def user(self, ctx, user):
             return user
 
-        def posts(self, site, user):
+        async def posts(self, ctx, user):
             for post_id in test.posts:
                 if post_id == cut["at"]:
                     raise flnd.SiteError("the feed stopped answering")
                 listed.append(post_id)
                 yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=DAY)
 
-        route = target("lst:{user}")(user)
-        route.category(newest_first=True)(posts)
-        source = type("List", (Source,), {"code": "lst", "name": "List", "domains": ("example.com",),
-                                          "api": 1, "key": "{post}", "filename": "{post}",
-                                          "user": route, "posts": posts})
+        read = route("lst:{user}", newest_first=False)(user)
+        read.category(newest_first=True)(posts)
+        source = type("List", (Plugin,), {"code": "lst", "name": "List",
+                                          "domains": ("example.com",), "api": 2, "key": "{post}",
+                                          "filename": "{post}", "user": read, "posts": posts})
         engine = Engine(home=self.home, sources={"lst": source})
         engine.download(["lst:example_user"], categories="all", sync=True)
         self.posts = [f"n{number}" for number in range(1, 13)] + self.posts
@@ -333,17 +333,18 @@ class SampleTest(EngineCase):
     """A changed answer is kept, scrubbed, in `logs/<run>/samples/`; a login's never is."""
 
     def changed_source(self, path):
-        def user(self, site, user):
+        async def user(self, ctx, user):
             return user
 
-        def posts(self, site, user):
-            answer = site.fetch(f"{API}{path}")
+        async def posts(self, ctx, user):
+            answer = await ctx.fetch(f"{API}{path}")
             raise Changed("the feed has no items", response=answer)
+            yield  # an async generator
 
-        route = target("chg:{user}")(user)
-        route.category(posts)
-        return type("Chg", (Source,), {"code": "chg", "name": "Chg", "domains": ("example.com",),
-                                       "api": 1, "user": route, "posts": posts})
+        read = route("chg:{user}", newest_first=False)(user)
+        read.category(posts)
+        return type("Chg", (Plugin,), {"code": "chg", "name": "Chg", "domains": ("example.com",),
+                                       "api": 2, "user": read, "posts": posts})
 
     def run_changed(self, path, body):
         self.routes[f"{API}{path}"] = _net.reply(200, json=body)
@@ -388,14 +389,16 @@ class SecretsTest(FeedCase):
         super().setUp()
         self.enterContext(ui.scope(dest=self.dest, level="debug"))
 
-        def sign(self, request):
-            request.headers["Authorization"] = f"Bearer {TOKEN}"
+        def sign(self, request, cookies):
+            return request.replace(headers={**(request.headers or {}),
+                                            "Authorization": f"Bearer {TOKEN}"})
 
-        def info(self, site, user):
-            answer = site.fetch(f"{API}/info")
+        async def info(self, ctx, user):
+            answer = await ctx.fetch(f"{API}/info")
             raise Changed(f"no items in {_redacted(answer.url)}", response=answer)
+            yield  # an async generator
 
-        self.source = self.feed_source(login=cookies("sessionid"), sign=sign, info=info)
+        self.source = self.feed_source(login=login_cookies("sessionid"), sign=sign, info=info)
         self.engine = Engine(home=self.home, sources={"fed": self.source}, emit=self.events.append)
         self.log_in("fed", sessionid=SESSION)
         self.routes[f"{API}/info"] = _net.reply(200, json={"csrf": CSRF, "auth": TOKEN})

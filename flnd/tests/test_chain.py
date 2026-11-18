@@ -12,19 +12,19 @@ import os
 from pathlib import Path
 from unittest import mock
 
-from fakes import CDN, EngineCase, make_source, noise
+from fakes import CDN, EngineCase, make_plugin, noise
 
 JPEG = noise("JPEG")
 
 from flnd.engine.core import Engine
 from flnd.engine.events import Saved
-from flnd.source import File, Post, Source, target
+from flnd.plugin import File, Plugin, Post, route
 from flnkit import net as _net
 
 
-def by_target(site, context):
+def by_target(ctx, context):
     """Each target lists one file named after itself (`a.jpg` for `aaa:a`)."""
-    name = f"{site.target.value}.jpg"
+    name = f"{ctx.target.value}.jpg"
     return [File(f"{CDN}/{name}", name=name)]
 
 
@@ -35,7 +35,7 @@ class ChainCase(EngineCase):
         # Every target's file has the same bytes.
         for name in ("a", "b", "c"):
             self.routes[f"{CDN}/{name}.jpg"] = _net.reply(200, content=self.body)
-        self.source = make_source("aaa", files=by_target)
+        self.source = make_plugin("aaa", files=by_target)
 
     def engine(self, source=None) -> Engine:
         source = source or self.source
@@ -103,39 +103,39 @@ class LinkRowTest(ChainCase):
     def tabs(self):
         clip = Post("V1", [File(f"{CDN}/a.jpg", name="V1.jpg")])
 
-        class Tabs(Source):
+        class Tabs(Plugin):
             code, name, domains, key = "lnk", "Links", ("example.com",), "{post}_{num}"
-            api = 1
+            api = 2
             filename = "{date}_{post}{index}"
 
-            @target("lnk:{user}")
-            def user(self, site, user):
+            @route("lnk:{user}", newest_first=False)
+            async def user(self, ctx, user):
                 return user
 
             @user.category
-            def videos(self, site, user):
+            async def videos(self, ctx, user):
                 yield clip
 
             @user.category
-            def reels(self, site, user):
+            async def reels(self, ctx, user):
                 yield clip
 
         return Tabs
 
 class SidecarTest(ChainCase):
     def source_with_fields(self):
-        class Captioned(Source):
+        class Captioned(Plugin):
             code, name, domains, key = "cap", "Captions", ("example.com",), "{post}_{num}"
-            api = 1
+            api = 2
             filename = "{date}_{post}{index}"
 
-            @target("cap:{user}")
-            def user(self, site, user):
+            @route("cap:{user}", newest_first=False)
+            async def user(self, ctx, user):
                 return user
 
             @user.category
-            def posts(self, site, user):
-                yield Post("P1", [File(f"{CDN}/a.jpg?sig=secret", name="P1.jpg")],
+            async def posts(self, ctx, user):
+                yield Post("P1", [File(f"{CDN}/a.jpg?sig=secret")],
                            date="2026-01-02", caption="a day out", author="example_user",
                            tags=["beach"], url="https://example.com/p/P1")
 

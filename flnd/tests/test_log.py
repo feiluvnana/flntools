@@ -17,7 +17,7 @@ from typing import Any
 
 import flnd
 from flnd.engine.events import Failed, Saved
-from flnd.source import Target
+from flnd.plugin import Target
 from flnd.testing import fake_clock
 from flnd.ui.log import UI, Journal
 from flnkit import clock as _time

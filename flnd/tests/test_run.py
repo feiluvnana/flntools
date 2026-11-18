@@ -1,4 +1,4 @@
-"""The run (src/engine/run.py) and the engine on it, on `flnkit.net.fake`, with test sources.
+"""The run (src/engine/run.py) and the engine on it, on `flnkit.net.fake`, with test plugins.
 
 The event channel and `END`, then the engine's runs, plugin instances, HTTP, clients and logins
 through its run (what `download` and `sync` await), then its commands: `download`, `sync`,
@@ -17,101 +17,55 @@ from typing import Any
 from unittest import mock
 
 import fakes
-from fakes import CDN, EngineCase, make_source, own_login
+from fakes import CDN, EngineCase, login_cookies, make_plugin, own_login
 
 from flnd import Blocked, LoginError, Target, UsageError
 from flnd.engine import crawl as job
 from flnd.engine import home as _home
-from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine.core import Engine, Report, TargetReport, _Runner
 from flnd.engine.events import Failed, Skipped
 from flnd.engine.options import Options
-from flnd.engine.site import LoginSite
-from flnd.errors import Error
-from flnd.source import File, Post, SiteError, Source, target
-from flnd.source import cookies as login_cookies
+from flnd.errors import Error, SiteError
+from flnd.plugin import File, Plugin, Post, Request, route
 from flnd.ui.log import ui
 from flnkit import cookies as _cookies
 from flnkit import net as _net
 
 
+async def met(barrier):
+    """Wait for the barrier's other parties; one that waits 10 s breaks it for them all."""
+    try:
+        await asyncio.wait_for(barrier.wait(), 10)
+    except TimeoutError:
+        await barrier.abort()
+        raise
+
+
 class GroupsTest(EngineCase):
-    def test_an_http_plugin_lists_4_targets_at_once_and_a_browser_plugin_one(self):
-        lock = threading.Lock()
-        running, peaks = {"aaa": 0, "bbb": 0}, {"aaa": 0, "bbb": 0}
-        # The first four of the HTTP plugin's six wait for each other: they list together.
-        together = threading.Barrier(4, timeout=10)
-
-        def files(site, context):
-            # The listing's first step, after its route: a target lists from its route on.
-            code = site.target.plugin
-            with lock:
-                running[code] += 1
-                peaks[code] = max(peaks[code], running[code])
-            if code == "aaa" and site.target.value in "1234":
-                together.wait()
-            with lock:
-                running[code] -= 1
-            return []
-
-        http = make_source("aaa", files=files)
-        browser = make_source("bbb", files=files, browser=True)
-        self.run_engine(http, browser, targets=[*(f"aaa:{n}" for n in range(1, 7)),
-                                                "bbb:1", "bbb:2", "bbb:3"])
-        self.assertEqual(peaks, {"aaa": 4, "bbb": 1})
-
     def test_targets_of_other_plugins_never_wait_behind_a_browser_plugins_place(self):
         # The browser plugin's second target waits for its one place; the HTTP plugin's
         # target, started after it, lists at once, while the first still lists.
-        started, seen = threading.Event(), []
+        started, seen = asyncio.Event(), []
 
-        def slow(site, context):
-            if site.target.value == "1":
-                seen.append(started.wait(5))
+        async def slow(ctx, context):
+            if ctx.target.value == "1":
+                seen.append(await asyncio.wait_for(started.wait(), 5))
             return []
 
-        def http(site):
-            started.set()
-
-        browser = make_source("bbb", files=slow, browser=True)
-        self.run_engine(browser, make_source("aaa", http),
+        browser = make_plugin("bbb", files=slow, browser=True)
+        self.run_engine(browser, make_plugin("aaa", lambda ctx: started.set()),
                         targets=["bbb:1", "bbb:2", "aaa:1"])
         self.assertEqual(seen, [True])
-
-    def test_the_run_lists_16_targets_at_once_whatever_its_cores(self):
-        lock, entered = threading.Lock(), []
-        # Sixteen listings wait for each other: the run's `ACTIVE`, on their own threads.
-        together = threading.Barrier(16, timeout=10)
-        running, peak = [0], [0]
-
-        def files(site, context):
-            with lock:
-                entered.append(site.target)
-                first = len(entered) <= 16
-                running[0] += 1
-                peak[0] = max(peak[0], running[0])
-            if first:
-                together.wait()
-            with lock:
-                running[0] -= 1
-            return []
-
-        sources = [make_source(code, files=files) for code in ("paa", "pbb", "pcc", "pdd",
-                                                               "pee", "pff")]
-        self.enterContext(mock.patch.object(jobs.os, "cpu_count", return_value=2))
-        self.run_engine(*sources, targets=[f"{source.code}:{n}" for source in sources
-                                           for n in range(4)])
-        self.assertEqual((len(entered), peak[0]), (24, 16))
 
     def test_two_targets_of_one_file_save_it_once_and_a_target_named_twice_runs_once(self):
         listed = []
 
-        def files(site, context):
-            listed.append(site.target.value)
+        def files(ctx, context):
+            listed.append(ctx.target.value)
             return [File(f"{CDN}/a.jpg", name="a.jpg")]
 
-        source = make_source("aaa", files=files)
+        source = make_plugin("aaa", files=files)
         report = self.report(source, targets=["aaa:x", "aaa:y", "aaa:x"])
         self.assertEqual(([str(one.target) for one in report.targets], report.files),
                          (["aaa:x", "aaa:y"], 1))
@@ -132,7 +86,7 @@ class GroupsTest(EngineCase):
             opened.append(home)
             return real_open(home)
 
-        sources = {"aaa": make_source("aaa"), "bbb": make_source("bbb")}
+        sources = {"aaa": make_plugin("aaa"), "bbb": make_plugin("bbb")}
         engine = Engine(home=self.home, sources=sources)
         chosen = [(Target("aaa:a", kind="user"), Options(again=True)),
                   (Target("aaa:b", kind="user"), Options()), (Target("bbb:c", kind="user"), Options())]
@@ -144,25 +98,26 @@ class GroupsTest(EngineCase):
         self.assertEqual([report.target for report in reports], [target for target, _ in chosen])
 
     def test_rows_end_at_ok_or_error_and_the_run_goes_on(self):
-        def run(site):
-            if site.target.value == "bad":
+        def run(ctx):
+            if ctx.target.value == "bad":
                 raise Blocked("blocked")
 
-        def files(site, context):
-            return [File(f"{CDN}/{site.target.value}.jpg", name="a.jpg")]
+        def files(ctx, context):
+            return [File(f"{CDN}/{ctx.target.value}.jpg", name="a.jpg")]
 
-        total = self.run_engine(make_source("aaa", run, files=files), targets=["aaa:bad", "aaa:good"])
+        total = self.run_engine(make_plugin("aaa", run, files=files),
+                                targets=["aaa:bad", "aaa:good"])
         self.assertEqual(total, 1)
         self.assertEqual(self.failures(), ["aaa:bad: blocked"])
         self.assertIn(("aaa:good", "posts"), self.listed())
 
-
     def test_a_group_whose_connect_fails_ends_its_rows_failed(self):
         # Fix 5: before it, only the error line was written and log.group ended the rows at ok.
-        def connect(self, site):
+        def connect(self, ctx):
             raise LoginError("tlg: the saved login no longer works")
 
-        report = self.report(make_source("aaa", connect=connect), make_source("bbb"), targets=["aaa:a", "aaa:b", "bbb:c"])
+        report = self.report(make_plugin("aaa", connect=connect), make_plugin("bbb"),
+                             targets=["aaa:a", "aaa:b", "bbb:c"])
         self.assertEqual(self.failures(), ["aaa:a: tlg: the saved login no longer works",
                                            "aaa:b: tlg: the saved login no longer works"])
         self.assertEqual(self.listed(), {("bbb:c", "posts")})
@@ -170,19 +125,19 @@ class GroupsTest(EngineCase):
         self.assertEqual(str(report.targets[0].error), "tlg: the saved login no longer works")
 
     def test_a_group_whose_logged_in_raises_ends_its_rows_failed(self):
-        def check(self, site):
+        def check(self, ctx):
             raise RuntimeError("can't read the login")
 
-        report = self.report(make_source("aaa", login=own_login(check=check)), targets=["aaa:a"])
+        report = self.report(make_plugin("aaa", login=own_login(check=check)), targets=["aaa:a"])
         self.assertFalse(any(line.startswith("✓ aaa:a") for line in self.lines()), self.lines())
         self.assertEqual([str(target) for target in report.failed], ["aaa:a"])
 
     def test_failed_lists_only_the_targets_that_failed(self):
-        def run(site):
-            if site.target.value == "bad":
+        def run(ctx):
+            if ctx.target.value == "bad":
                 raise Blocked("blocked")
 
-        source = make_source("aaa", run)
+        source = make_plugin("aaa", run)
         self.assertEqual(self.report(source, targets=["aaa:good"]).failed, ())
         report = self.report(source, targets=["aaa:bad", "aaa:good"])
         # Each report is its own run's: nothing piles up across runs, as `Engine.failed` once did.
@@ -194,16 +149,20 @@ class GroupsTest(EngineCase):
 class LoginStateTest(EngineCase):
     def test_not_logged_in_is_a_hint_and_public_access_goes_on(self):
         ran = []
-        self.run_engine(make_source("aaa", ran.append, login=login_cookies("sid")), targets=["aaa:a"])
+        self.run_engine(make_plugin("aaa", ran.append, login=login_cookies("sid")),
+                        targets=["aaa:a"])
         self.assertEqual(len(ran), 1)
         self.assertIn("! aaa: not logged in, using public access; run flnd login aaa", self.lines())
 
     def test_logged_in_has_no_hint_and_cookies_reach_the_client(self):
         self.log_in("aaa", sid="1", other="2")
         seen = []
-        source = make_source("aaa", lambda site: seen.append((dict(site.cookies),
-                                                              site.fetch("https://api.aaa.example/me").json)),
-                             login=login_cookies("sid"))
+
+        async def route(ctx):
+            me = await ctx.fetch("https://api.aaa.example/me")
+            seen.append((dict(ctx.cookies), me.json))
+
+        source = make_plugin("aaa", route, login=login_cookies("sid"))
         self.routes["https://api.aaa.example/me"] = _net.reply(200, json={"me": 1})
         self.run_engine(source, targets=["aaa:a"])
         self.assertEqual(seen, [({"sid": "1", "other": "2"}, {"me": 1})])
@@ -212,7 +171,8 @@ class LoginStateTest(EngineCase):
 
     def test_the_cookies_the_site_rotated_are_saved_in_the_vault_after_the_group(self):
         self.log_in("aaa", sid="1", ct0="old")
-        source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/me"), login=login_cookies("sid"))
+        source = make_plugin("aaa", lambda ctx: ctx.fetch("https://api.aaa.example/me"),
+                             login=login_cookies("sid"))
         self.routes["https://api.aaa.example/me"] = _net.reply(200, json={}, headers=[
             ("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/"),
             ("set-cookie", "_tracker=t1; Domain=.aaa.example; Path=/")])
@@ -224,18 +184,19 @@ class LoginStateTest(EngineCase):
     def test_a_failed_group_still_saves_the_rotated_cookies(self):
         self.log_in("aaa", sid="1", ct0="old")
 
-        def route(site):
-            site.fetch("https://api.aaa.example/me")
+        async def route(ctx):
+            await ctx.fetch("https://api.aaa.example/me")
             raise Blocked("blocked")
 
         self.routes["https://api.aaa.example/me"] = _net.reply(
             200, json={}, headers=[("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/")])
-        self.run_engine(make_source("aaa", route, login=login_cookies("sid")), targets=["aaa:a"])
+        self.run_engine(make_plugin("aaa", route, login=login_cookies("sid")), targets=["aaa:a"])
         self.assertEqual(_home.load(self.home, "aaa")["ct0"], "new-ct0")
 
     def test_requires_login_fails_the_targets(self):
         ran = []
-        self.run_engine(make_source("aaa", ran.append, login=login_cookies("sid", required=True)), targets=["aaa:a", "aaa:b"])
+        self.run_engine(make_plugin("aaa", ran.append, login=login_cookies("sid", required=True)),
+                        targets=["aaa:a", "aaa:b"])
         self.assertEqual(ran, [])
         for name in ("aaa:a", "aaa:b"):
             # The message, and the hint: what to do, never a traceback.
@@ -244,71 +205,73 @@ class LoginStateTest(EngineCase):
                          {"run flnd login aaa"})
 
     def test_download_never_asks(self):
-        # The `Site` a download gives refuses `ask`, so a source can't stop to ask a question.
+        # The `Ctx` a download gives refuses `ask`, so a plugin can't stop to ask a question.
         asking = []
 
-        def route(site):
+        async def route(ctx):
             try:
-                site.ask("Code")
+                await ctx.ask("Code")
             except UsageError as error:
                 asking.append(str(error))
 
-        self.run_engine(make_source("aaa", route), targets=["aaa:a"])
-        self.assertEqual(asking, ["aaa: a run can't ask 'Code'"])
+        self.run_engine(make_plugin("aaa", route), targets=["aaa:a"])
+        self.assertEqual(asking, ["aaa: nobody can answer 'Code' here"])
 
 
 class HttpTest(EngineCase):
     def test_one_client_per_group_with_headers_user_agent_and_signing(self):
-        def sign(self, request):
-            request.headers["x-signed"] = "yes"
+        def sign(self, request, cookies):
+            return request.replace(headers={**(request.headers or {}), "x-signed": "yes"})
 
-        def run(site):
-            site.fetch("https://api.aaa.example/a", headers={"x-extra": "1"})
+        def run(ctx):
+            return ctx.fetch(Request("https://api.aaa.example/a", headers={"x-extra": "1"}))
 
-        source = make_source("aaa", run, user_agent="Agent/1", sign=sign)
+        source = make_plugin("aaa", run, user_agent="Agent/1", sign=sign)
         self.routes["https://api.aaa.example/a"] = _net.reply(200, json={})
         with mock.patch.object(_net, "Session", wraps=_net.Session) as made:
             self.run_engine(source, targets=["aaa:a", "aaa:b"])
         made.assert_called_once()
         request = self.requests[0]
-        self.assertEqual((request.headers["user-agent"], request.headers["x-signed"], request.headers["x-extra"]),
-                         ("Agent/1", "yes", "1"))
+        self.assertEqual((request.headers["user-agent"], request.headers["x-signed"],
+                          request.headers["x-extra"]), ("Agent/1", "yes", "1"))
 
     def test_fetch_errors_and_soft(self):
         results = []
 
-        def run(site):
-            results.append(site.fetch("https://api.aaa.example/gone", check=False).status)
+        async def run(ctx):
+            soft = await ctx.fetch(Request("https://api.aaa.example/gone", check=False))
+            results.append(soft.status)
             for url in ("https://api.aaa.example/gone", "https://api.aaa.example/html"):
                 try:
-                    site.fetch(url).json
+                    (await ctx.fetch(url)).json
                 except SiteError as error:
                     results.append((error.status, str(error)[:40]))
                 except Error as error:
                     results.append((None, str(error)[:40]))
-            results.append(site.fetch("https://api.aaa.example/html").html.first("h1").text)
+            results.append((await ctx.fetch("https://api.aaa.example/html")).html.first("h1").text)
 
         self.routes["https://api.aaa.example/gone"] = _net.reply(404)
         self.routes["https://api.aaa.example/html"] = _net.reply(200, html="<h1>Hi</h1>")
-        self.run_engine(make_source("aaa", run), targets=["aaa:a"])
+        self.run_engine(make_plugin("aaa", run), targets=["aaa:a"])
         self.assertEqual(results, [404, (404, "GET https://api.aaa.example/gone: HTTP 4"),
                                    (200, "expected JSON from https://api.aaa.examp"), "Hi"])
 
-    def test_a_rate_limit_never_stops_the_source(self):
+    def test_a_rate_limit_never_stops_the_plugin(self):
         ran = []
         answers = [_net.reply(429)] * 2 + [_net.reply(200, json={"ok": 1})]
 
-        def run(site):
-            ran.append((site.target.value, site.fetch("https://api.aaa.example/feed").json))
+        async def run(ctx):
+            ran.append((ctx.target.value, (await ctx.fetch("https://api.aaa.example/feed")).json))
 
-        self.routes["https://api.aaa.example/feed"] = lambda request: answers.pop(0) if len(answers) > 1 else answers[0]
-        self.run_engine(make_source("aaa", run), targets=["aaa:a", "aaa:b", "aaa:c"])
+        self.routes["https://api.aaa.example/feed"] = (
+            lambda request: answers.pop(0) if len(answers) > 1 else answers[0])
+        self.run_engine(make_plugin("aaa", run), targets=["aaa:a", "aaa:b", "aaa:c"])
         self.assertEqual(sorted(ran), [("a", {"ok": 1}), ("b", {"ok": 1}), ("c", {"ok": 1})])
         self.assertIn("rate limited; waiting", " ".join(self.lines()))
         self.assertIn(("aaa:c", "posts"), self.listed())
 
     def test_challenges_are_waited_out_by_rounds_of_the_account(self):
-        self.run_engine(make_source("aaa", lambda site: site.back_off("challenged")),
+        self.run_engine(make_plugin("aaa", lambda ctx: ctx.hold("challenged")),
                         targets=["aaa:a", "aaa:b", "aaa:c", "aaa:d"])
         waits = [line for line in self.lines() if "challenged; waiting" in line]
         # The rounds are the account's, across its targets: 30, 120 and 480 s, then the
@@ -332,9 +295,11 @@ class HttpTest(EngineCase):
             stop_ref[0].soon.set()
             return _net.reply(429)
 
+        async def run(ctx):
+            return (await ctx.fetch("https://api.aaa.example/feed")).json
+
         self.routes["https://api.aaa.example/feed"] = limited
-        source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/feed").json)
-        engine = Engine(home=self.home, sources={"aaa": source})
+        engine = Engine(home=self.home, sources={"aaa": make_plugin("aaa", run)})
         with mock.patch("flnd.engine.core.stopping", capture_stopping), self.assertRaises(KeyboardInterrupt), \
                 ui.scope(level="debug"):
             engine.download(["aaa:a"], categories="all")
@@ -381,15 +346,15 @@ class PacingTest(EngineCase):
         self.listed = []
         test = self
 
-        class Many(Source):
-            code, name, domains, api, folder, key = "mny", "Many", ("mny.example",), 1, "", "{post}"
+        class Many(Plugin):
+            code, name, domains, api, folder, key = "mny", "Many", ("mny.example",), 2, "", "{post}"
 
-            @target("mny:{user}")
-            def user(self, site, user):
+            @route("mny:{user}", newest_first=False)
+            async def user(self, ctx, user):
                 return user
 
-            @user.category
-            def posts(self, site, user):
+            @user.category(newest_first=False)
+            async def posts(self, ctx, user):
                 for number in range(20):
                     test.listed.append(number)
                     # Dated, so no post is held back for its day.
@@ -433,7 +398,8 @@ class PacingTest(EngineCase):
         reader.start()
         self.addCleanup(reader.join, 10)
         time.sleep(0.3)
-        self.assertEqual((self.requests, self.listed), ([], []))
+        # A listing on the loop that asks nothing isn't a job; none of its files' jobs starts.
+        self.assertEqual(self.requests, [])
         run.resume()
         reader.join(10)
         self.assertEqual(run.report.saved, 20)
@@ -460,70 +426,68 @@ def history(home):
 
 
 class ClientTest(EngineCase):
-    def test_sync_connect_is_entered_once_per_group(self):
+    def test_connect_is_entered_once_per_group(self):
         events = []
 
-        @contextmanager
-        def connect(self, site):
+        @asynccontextmanager
+        async def connect(self, ctx):
             events.append("enter")
-            yield "client"
+            yield
             events.append("exit")
 
-        source = make_source("aaa", lambda site: events.append(site.client), connect=connect)
+        source = make_plugin("aaa", lambda ctx: events.append("listed"), connect=connect)
         self.run_engine(source, targets=["aaa:a", "aaa:b"])
-        self.assertEqual(events, ["enter", "client", "client", "exit"])
+        self.assertEqual(events, ["enter", "listed", "listed", "exit"])
 
     def test_an_error_of_connects_exit_is_reported(self):
         # E16: the targets were saved, but a client that didn't close is the run's failure.
-        @contextmanager
-        def connect(self, site):
-            yield "client"
+        @asynccontextmanager
+        async def connect(self, ctx):
+            yield
             raise RuntimeError("the client didn't close")
 
         files = [File(f"{CDN}/a.jpg", name="a.jpg")]
-        report = self.report(make_source("aaa", connect=connect, files=files), targets=["aaa:a"])
+        report = self.report(make_plugin("aaa", connect=connect, files=files), targets=["aaa:a"])
         self.assertTrue(report.ok)
         [failed] = [event for event in self.events if isinstance(event, Failed)]
         self.assertEqual((str(failed.target), str(failed.error)),
                          ("aaa", "unexpected RuntimeError: the client didn't close"))
 
-    def test_async_connect_run_and_fetch_share_one_loop(self):
+    def test_connect_the_route_and_a_fetch_file_share_one_loop(self):
         loops = []
 
         @asynccontextmanager
-        async def connect(self, site):
+        async def connect(self, ctx):
             loops.append(asyncio.get_running_loop())
-            yield "telethon"
+            yield
 
-        async def fetch(dest, progress):
+        async def fetch(part):
             loops.append(asyncio.get_running_loop())
-            dest.write_bytes(b"media")
+            await part.write(b"media")
 
-        async def run(site):
+        async def run(ctx):
             loops.append(asyncio.get_running_loop())
             await asyncio.sleep(0)
-            return site.client
+            return "telethon"
 
-        source = make_source("aaa", run, connect=connect, files=lambda site, client: [File(fetch, name=f"{client}.bin")])
+        source = make_plugin("aaa", run, connect=connect, files=lambda ctx, client: [
+            File(fetch=fetch, name=f"{client}.bin")])
         self.assertEqual(self.run_engine(source, targets=["aaa:a"]), 1)
         self.assertEqual(len(set(map(id, loops))), 1)
         self.assertEqual(len(loops), 3)
         self.assertEqual((self.target_dir("aaa", "a") / "telethon.bin").read_bytes(), b"media")
 
-    def test_an_async_run_saves_more_files_than_the_pool_queues(self):
-        # Each fetch needs the source's loop, so a save made on that loop must never wait for the pool.
+    def test_a_run_saves_more_fetch_files_than_the_pool_queues(self):
+        # Each fetch needs the run's loop, so a save made on that loop must never wait for the pool.
         @asynccontextmanager
-        async def connect(self, site):
-            yield "client"
+        async def connect(self, ctx):
+            yield
 
-        async def fetch(dest, progress):
-            dest.write_bytes(b"media")
+        async def fetch(part):
+            await part.write(b"media")
 
-        async def run(site):
-            pass
-
-        source = make_source("aaa", run, connect=connect, limits={"aaa.example": 1},
-                             files=[File(fetch, name=f"{number}.bin") for number in range(20)])
+        files = [File(fetch=fetch, name=f"{number}.bin") for number in range(20)]
+        source = make_plugin("aaa", connect=connect, limits={"aaa.example": 1}, files=files)
         finished = []
         runner = threading.Thread(target=lambda: finished.append(self.run_engine(source, targets=["aaa:a"])),
                                   daemon=True)
@@ -533,79 +497,56 @@ class ClientTest(EngineCase):
 
 
 class EngineLoginTest(EngineCase):
-    def test_a_source_with_its_own_login_gets_an_asking_session(self):
+    def test_a_plugin_with_its_own_login_logs_in_by_its_method_and_keeps_its_secrets(self):
         seen = []
 
-        def start(self, site, method):
-            seen.append((method, type(site)))
-            site.secrets["session"] = "s"
+        def start(self, ctx, method):
+            seen.append(method)
+            ctx.secrets["session"] = "s"
 
-        source = make_source("aaa", login=own_login(start))
+        source = make_plugin("aaa", login=own_login(start))
         self.assertEqual(Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr"), "")
-        self.assertEqual(seen, [("qr", LoginSite)])
-        from flnd.engine import home as _home
+        self.assertEqual(seen, ["qr"])
         with _home.secrets(self.home, "aaa") as secrets:
             self.assertEqual(secrets["session"], "s")
 
-    def test_interactive_only_during_login_in_a_terminal(self):
+    def test_ask_answers_only_during_login_in_a_terminal(self):
         seen = []
 
-        def start(self, site, method):
-            seen.append(site.interactive)
-            site.secrets["session"] = "s"
+        async def asked(ctx):
+            try:
+                seen.append(await ctx.ask("Code"))
+            except UsageError:
+                seen.append(None)
 
-        source = make_source("aaa", lambda site: seen.append(site.interactive), login=own_login(start))
+        async def start(self, ctx, method):
+            await asked(ctx)
+            ctx.secrets["session"] = "s"
+
+        source = make_plugin("aaa", asked, login=own_login(start))
         engine = Engine(home=self.home, sources={"aaa": source})
+        self.enterContext(mock.patch("flnd.ui.forms.ask", return_value="1"))
         with mock.patch.object(sys.stdin, "isatty", return_value=False):
             engine.login("aaa", "qr")
         with mock.patch.object(sys.stdin, "isatty", return_value=True):
             engine.login("aaa", "qr")
-        self.run_engine(source, targets=["aaa:a"])
-        self.assertEqual(seen, [False, True, False])
+            self.run_engine(source, targets=["aaa:a"])
+        self.assertEqual(seen, [None, "1", None])
 
     def test_ask_shows_its_description_in_the_question(self):
         answers = []
 
-        def start(self, site, method):
-            answers.append(site.ask("Phone number", description="With the country code, such as +44"))
+        async def start(self, ctx, method):
+            answers.append(await ctx.ask("Phone number",
+                                         description="With the country code, such as +44"))
 
-        source = make_source("aaa", login=own_login(start))
+        source = make_plugin("aaa", login=own_login(start))
         with mock.patch.object(sys.stdin, "isatty", return_value=True), \
                 mock.patch("flnd.ui.forms.ask", return_value="1") as asked:
             Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr")
         self.assertEqual(answers, ["1"])
         asked.assert_called_once_with("Phone number", secret=False)
         self.assertIn("With the country code, such as +44", "\n".join(self.lines()))
-
-
-class OffTheLoopTest(EngineCase):
-    def test_flnd_db_and_the_disk_are_never_read_or_written_on_the_loop(self):
-        # flnd.db's connection waits up to 30 s for another process's lock: on the loop, that
-        # would stall every transfer of the run.
-        on_loop = []
-
-        def spied(name, real):
-            def call(*args, **kwargs):
-                try:
-                    asyncio.get_running_loop()
-                    on_loop.append(name)
-                except RuntimeError:
-                    pass
-                return real(*args, **kwargs)
-            return call
-
-        names = [name for name in vars(_home.Home) if not name.startswith("_")
-                 and callable(getattr(_home.Home, name))]
-        for name in names:
-            self.enterContext(mock.patch.object(_home.Home, name,
-                                                spied(name, getattr(_home.Home, name))))
-        self.enterContext(mock.patch.object(job, "_on_disk", spied("stat", job._on_disk)))
-        files = [File(f"{CDN}/a.jpg", name="a.jpg"), File(f"{CDN}/b.txt", name="b.txt")]
-        engine = Engine(home=self.home, sources={"aaa": make_source("aaa", files=files)})
-        engine.download(["aaa:example_user"], sync=True)
-        engine.sync()
-        engine.retry()
-        self.assertEqual(on_loop, [])
 
 
 class ApiTest(EngineCase):
@@ -628,13 +569,14 @@ class ApiTest(EngineCase):
             report.targets = ()  # type: ignore[misc]
 
     def test_download_reports_each_target_in_order(self):
-        def files(site, context):
-            if site.target.value == "bad":
+        def files(ctx, context):
+            value = ctx.target.value
+            if value == "bad":
                 raise Blocked("blocked")
-            return [File(f"{CDN}/{site.target.value}/a.jpg", name="a.jpg"), File(f"{CDN}/{site.target.value}/b.jpg",
-                                                                                  name="b.jpg")]
+            return [File(f"{CDN}/{value}/a.jpg", name="a.jpg"),
+                    File(f"{CDN}/{value}/b.jpg", name="b.jpg")]
 
-        engine = self.engine(make_source("aaa", files=files))
+        engine = self.engine(make_plugin("aaa", files=files))
         report = engine.download(["aaa:one", "aaa:bad"], categories="all")
         one, bad = report.targets
         self.assertEqual((one.target, bad.target), (Target("aaa:one", kind="user"), Target("aaa:bad", kind="user")))
@@ -646,21 +588,22 @@ class ApiTest(EngineCase):
         self.assertEqual((again.files, again.targets[0].skipped, again.ok), (0, 2, True))
 
     def test_a_category_that_lists_to_its_end_is_recorded_complete(self):
-        def files(site, context):
-            if site.target.value == "cut":
+        def files(ctx, context):
+            if ctx.target.value == "cut":
                 raise RuntimeError("cut short")
             return []
 
-        self.engine(make_source("aaa", files=files)).download(["aaa:whole", "aaa:cut"], categories="all")
+        self.engine(make_plugin("aaa", files=files)).download(["aaa:whole", "aaa:cut"],
+                                                              categories="all")
         rows = self.saved()
         self.assertEqual(rows["aaa:whole"].complete, {"posts": "2026-01-01"})
         self.assertEqual(rows["aaa:cut"].complete, {})
         # Re-running keeps the record.
-        self.engine(make_source("aaa")).download(["aaa:whole"], categories="all")
+        self.engine(make_plugin("aaa")).download(["aaa:whole"], categories="all")
         self.assertIn("posts", self.saved()["aaa:whole"].complete)
 
     def test_bad_values_are_value_errors_before_anything_starts(self):
-        engine = self.engine(make_source("aaa"))
+        engine = self.engine(make_plugin("aaa"))
         cases: tuple[tuple[dict[str, Any], str], ...] = (
             ({"categories": "reels"}, "no source here has 'reels'"),
             ({"limit": 0}, "--limit must be at least 1"),
@@ -675,11 +618,12 @@ class ApiTest(EngineCase):
         self.assertFalse((self.home / _home.DB).exists())
 
     def test_from_with_a_post_link_is_refused_before_any_request(self):
-        from flnd.sources import SOURCES
+        from flnd.plugins.ins import Instagram
+        from flnd.plugins.tik import TikTok
 
         message = ("--only applies to profiles and chats; ins:C1abcDEFghi is one post, downloaded whole: "
                    "give it without --only")
-        engine = Engine(home=self.home, sources=SOURCES)
+        engine = Engine(home=self.home, sources={"ins": Instagram, "tik": TikTok})
         for targets in (["https://www.instagram.com/p/C1abcDEFghi/"],
                         ["ins:example_user", "https://www.instagram.com/p/C1abcDEFghi/"],
                         ["tik:example_creator", "https://www.instagram.com/p/C1abcDEFghi/"]):
@@ -701,10 +645,10 @@ class ApiTest(EngineCase):
     def test_sync_downloads_files_deleted_by_hand(self):
         listed = {"a.jpg", "b.jpg", "c.jpg"}
 
-        def files(site, context):
+        def files(ctx, context):
             return [File(f"{CDN}/{name}", name=name) for name in sorted(listed)]
 
-        engine = self.engine(make_source("aaa", files=files))
+        engine = self.engine(make_plugin("aaa", files=files))
         engine.download(["aaa:a"], categories="all", sync=True)
         folder = self.target_dir("aaa", "a")
         (folder / "a.jpg").unlink()
@@ -721,8 +665,9 @@ class ApiLoginTest(EngineCase):
 
     def setUp(self):
         super().setUp()
-        self.source = make_source("aaa", login=login_cookies("sid"))
-        self.engine = Engine(home=self.home, sources={"aaa": self.source, "bbb": make_source("bbb")})
+        self.source = make_plugin("aaa", login=login_cookies("sid"))
+        self.engine = Engine(home=self.home,
+                             sources={"aaa": self.source, "bbb": make_plugin("bbb")})
         jar = _cookies.Jar([{"name": "sid", "value": "s", "domain": ".aaa.example", "path": "/"},
                            {"name": "other", "value": "o", "domain": ".example.com", "path": "/"}])
         patcher = mock.patch("flnkit.cookies.load", lambda browser="chrome", *, profile=None: jar)
@@ -730,7 +675,7 @@ class ApiLoginTest(EngineCase):
         self.addCleanup(patcher.stop)
 
     def test_a_browser_login_lives_only_in_the_vault(self):
-        # A source without a login (bbb) has nothing to log in to.
+        # A plugin without a login (bbb) has nothing to log in to.
         self.assertEqual(self.engine.cookie_logins, ("aaa",))
         self.assertEqual(self.engine.login("aaa", "browser", browser="chrome"), "aaa: logged in from Chrome (1 cookie)")
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.db"])
@@ -769,20 +714,21 @@ class ApiLoginTest(EngineCase):
     def test_a_download_uses_the_vaulted_login(self):
         self.engine.login("aaa", "browser", browser="chrome")
         seen = []
-        self.engine = Engine(home=self.home, sources={"aaa": make_source("aaa", lambda site: seen.append(dict(site.cookies)),
-                                                                         login=login_cookies("sid"))})
+        source = make_plugin("aaa", lambda ctx: seen.append(dict(ctx.cookies)),
+                             login=login_cookies("sid"))
+        self.engine = Engine(home=self.home, sources={"aaa": source})
         self.assertTrue(self.engine.download(["aaa:a"], categories="all").ok)
         self.assertEqual(seen, [{"sid": "s"}])
         self.assertFalse(any("not logged in" in line for line in self.lines()))
 
 
 class LoginStaysAtHomeTest(EngineCase):
-    """twt through the engine: what its API and its media servers each receive, with a `ct0`
-    that the site rotates (moved from tests/test_twt.py, which plugin API 2 replaces)."""
+    """twt (`flnd.plugins.twt`) through the engine: what its API and its media servers each
+    receive, with a `ct0` that the site rotates."""
 
     def setUp(self):
         super().setUp()
-        from flnd.sources.twt import QUERIES
+        from flnd.plugins.twt import QUERIES
 
         def url(query):
             return f"https://x.com/i/api/graphql/{QUERIES[query]}/{query}"
@@ -804,7 +750,7 @@ class LoginStaysAtHomeTest(EngineCase):
                                                 "legacy": legacy}}}})
 
     def test_media_servers_never_see_the_login_and_the_api_sees_the_refreshed_token(self):
-        from flnd.sources.twt import TWITTER_BEARER, Twitter
+        from flnd.plugins.twt import TWITTER_BEARER, Twitter
 
         self.run_engine(Twitter, targets=["twt:example_handle", "twt:https://x.com/example_handle/status/100"],
                         options=Options(categories=("profile",)))

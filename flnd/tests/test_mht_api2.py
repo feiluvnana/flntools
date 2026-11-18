@@ -5,10 +5,13 @@ import datetime
 import unittest
 
 import no_profiles  # noqa: F401
+from fakes import EngineCase
 
+from flnd.engine.core import Engine
 from flnd.plugin import NotFound, Range, Target, UsageError
 from flnd.plugins.mht import API, Mimi, format_order
 from flnd.testing import FakeCtx, Reply, check, collect
+from flnkit import net as _net
 from flnkit.files import sniff
 
 CDN = "https://moe-cdn.example.com"
@@ -251,6 +254,67 @@ class SearchTest(unittest.TestCase):
                 self.assertEqual(listed(ctx, kind, value), manga(70982))
                 self.assertEqual(ctx.seen.requests[-1][2]["params"],
                                  {**sent, "cursor_res": "true"})
+
+
+class EngineTest(EngineCase):
+    """Searches and author links through the real engine, on `flnkit.net.fake`."""
+
+    def setUp(self):
+        super().setUp()
+        self.genre_calls = 0
+
+        def genres(request):
+            self.genre_calls += 1
+            return _net.reply(200, json=[{"id": 1, "name": "Vanilla"}])
+
+        page = f"{CDN}/1001/1.webp"
+        self.routes.update({
+            f"{API}genres": genres,
+            f"{API}manga/advanced-search": _net.reply(200, json={"items": [{"id": 70982}],
+                                                                 "next_cursor": None}),
+            f"{API}manga/70982": _net.reply(200, json=MANGA),
+            f"{API}manga/70982/chapters": _net.reply(200, json=CHAPTERS[:1]),
+            f"{API}chapters/1001": _net.reply(200, json={"info": CHAPTERS[0],
+                                                         "pages": [{"image_url": page}]}),
+            page: _net.reply(200, content=b"WEBP1"),
+            MANGA["cover_url"]: _net.reply(200, content=b"COVER1")})
+        self.engine = Engine(home=self.home, sources={"mht": Mimi})
+        self.folder = self.target_dir("mht", "70982")
+
+    def asked(self):
+        return [str(request.url).split("?")[0] for request in self.requests]
+
+    def test_a_query_downloads_its_manga_and_a_second_run_skips_a_saved_chapter(self):
+        report = self.engine.download(["mht?genre:vanilla"], categories="all", limit=1)
+        self.assertTrue(report.ok, report)
+        self.assertEqual(self.genre_calls, 1)
+        self.assertTrue((self.folder / "chapters" / "001_First_Chapter" / "001.webp").exists())
+        self.assertTrue((self.folder / "cover" / "cover.webp").exists())
+        # The saved chapter's pages are not asked for again.
+        del self.routes[f"{API}chapters/1001"]
+        self.requests.clear()
+        report = self.engine.download(["mht?genre:vanilla"], categories="all", limit=1)
+        self.assertTrue(report.ok, report)
+        self.assertEqual(self.genre_calls, 2)
+        self.assertNotIn(f"{API}chapters/1001", self.asked())
+
+    def test_a_cover_query_reuses_the_searchs_manga_without_asking_for_it(self):
+        self.routes[f"{API}manga/advanced-search"] = _net.reply(
+            200, json={"items": [MANGA], "next_cursor": None})
+        report = self.engine.download(["mht?genre:vanilla"], categories="cover", limit=1)
+        self.assertTrue(report.ok, report)
+        self.assertTrue((self.folder / "cover" / "cover.webp").exists())
+        self.assertNotIn(f"{API}manga/70982", self.asked())
+
+    def test_an_author_link_downloads_only_the_named_category(self):
+        """`--only chapters` on an author link reaches each manga it finds (a fixed bug)."""
+        self.routes[f"{API}manga/advanced-search"] = _net.reply(
+            200, json={"items": [MANGA], "next_cursor": None})
+        report = self.engine.download(["https://mimihentai.moe/author/7"],
+                                      categories="chapters")
+        self.assertTrue(report.ok, report)
+        self.assertTrue((self.folder / "chapters" / "001_First_Chapter" / "001.webp").exists())
+        self.assertFalse((self.folder / "cover").exists())
 
 
 if __name__ == "__main__":

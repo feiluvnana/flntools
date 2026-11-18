@@ -18,7 +18,7 @@ from unittest import mock
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
 from flnd.engine import home as _home
-from flnd.sources.ins import Instagram
+from flnd.plugins.ins import Instagram
 from flnd.ui.log import ui
 from flnkit import cookies as _cookies
 from flnkit import net as _net

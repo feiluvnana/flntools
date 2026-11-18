@@ -19,7 +19,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from fakes import CDN, make_source, noise
+from fakes import CDN, login_cookies, make_plugin, noise, own_login
 from prompt_lines import select_from_lines
 from test_library import example_source
 
@@ -29,9 +29,7 @@ from flnd.engine import home as _home
 from flnd.engine.core import Engine, TargetReport, _Runner
 from flnd.engine.events import Saved
 from flnd.engine.options import Options
-from flnd.source import Login, Source
-from flnd.source import cookies as login_cookies
-from flnd.source import target as route
+from flnd.plugin import Plugin, Post, route
 from flnd.ui.log import ui
 from flnkit import cookies as _cookies
 from flnkit import net as _net
@@ -464,16 +462,16 @@ class ExitStatusTest(FlndCase):
     def setUp(self):
         super().setUp()
 
-        def connect(self, site):
+        def connect(self, ctx):
             raise RuntimeError("the saved login no longer works")
 
-        def run(site):
-            if site.target.value == "bad":
+        def run(ctx):
+            if ctx.target.value == "bad":
                 raise Blocked("blocked")
 
         self.enterContext(mock.patch.dict(sources.SOURCES, {
-            "aaa": make_source("aaa", run), "bbb": make_source("bbb", run, connect=connect),
-            "ccc": make_source("ccc", login=login_cookies("sid", required=True))}))
+            "aaa": make_plugin("aaa", run), "bbb": make_plugin("bbb", run, connect=connect),
+            "ccc": make_plugin("ccc", login=login_cookies("sid", required=True))}))
 
     def test_download_exits_1_when_a_target_failed(self):
         code, out, err = self.run_app("download", "aaa:bad", "aaa:good")
@@ -647,18 +645,17 @@ class LoginQuestionsTest(FlndCase):
     def test_a_source_with_its_own_login_offers_its_own_ways(self):
         calls = []
 
-        class OwnLogin(Login):
-            methods = ("qr", "phone")
+        def start(self, ctx, method):
+            calls.append(method)
+            ctx.secrets["session"] = "s"
 
-            def start(self, site, method):
-                calls.append((method, type(site).__name__))
+        class Own(Plugin):
+            code, name, domains, api = "own", "Own", ("own.example",), 2
+            login = own_login(start, methods=("qr", "phone"))
 
-        class Own(Source):
-            code, name, domains, api = "own", "Own", ("own.example",), 1
-            login = OwnLogin()
-
-            @route("own:{user}")
-            def user(self, site, user): ...
+            @route("own:{user}", single=True)
+            async def user(self, ctx, user):
+                yield Post(user)
 
         self.answer("2")
         with mock.patch.dict(sources.SOURCES, {"own": Own}), \
@@ -667,7 +664,7 @@ class LoginQuestionsTest(FlndCase):
                     "logins": ("qr", "phone")}}):
             code, _, err = self.run_app("login", "own")
         self.assertEqual(code, 0, err)
-        self.assertEqual(calls, [("phone", "LoginSite")])
+        self.assertEqual(calls, ["phone"])
 
 
 class LoginsTest(FlndCase):
@@ -676,7 +673,9 @@ class LoginsTest(FlndCase):
 
         jar = _cookies.Jar([{"name": "sessionid", "value": "secret-val", "domain": ".instagram.com",
                             "expires": time.time() - 10}])
-        _home.store(sources.SOURCES["ins"](), jar, home=Path(".flnd"), origin="cookies.txt")
+        from flnd.plugins.ins import Instagram
+
+        _home.store(Instagram(), jar, home=Path(".flnd"), origin="cookies.txt")
         with _home.secrets(Path(".flnd"), "tlg") as secrets:
             secrets["api_id"] = "1"
         code, out, _ = self.run_app("login")

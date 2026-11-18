@@ -25,7 +25,7 @@ from rich.console import Console
 import flnd
 from flnd.engine import run as job
 from flnd.engine.events import FileState, HoldState, Phase, State, TargetState
-from flnd.source import Target
+from flnd.plugin import Target
 from flnd.ui import screen
 from flnd.ui.log import ui
 from flnkit import clock

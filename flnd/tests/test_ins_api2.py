@@ -10,11 +10,18 @@ import unittest
 from collections.abc import Sequence
 from datetime import date
 from typing import Any
+from unittest import mock
 
+import fakes
+
+from flnd.engine import home as _home
+from flnd.engine.core import Engine
 from flnd.errors import Blocked, Changed, LoginError, NotFound, SiteError, UsageError
-from flnd.plugin import Range, Request, Target
+from flnd.plugin import File, Post, Range, Request, Target
 from flnd.plugins.ins import APP_ID, Instagram, best_file, pk_stamp
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
+from flnkit import cookies as _cookies
+from flnkit import net as _net
 from flnkit.clock import day
 
 SITE = "https://www.instagram.com"
@@ -531,6 +538,66 @@ class MeTest(unittest.TestCase):
             self.follows({"sessionid": "opaque"})
         with self.assertRaises(Changed):
             self.follows({"ds_user_id": "99"}, {self.URL.format("99"): Reply({"status": "ok"})})
+
+
+class InPage:
+    """The target's tab, as `ins:me`'s in-page calls reach it: answered by the case's `serve`."""
+
+    def __init__(self, case):
+        self.case = case
+
+    async def fetch(self, url, **options):
+        reply = self.case.serve(_net.Request("GET", _net.URL(url), {}, None))
+        return _net.Response(reply.status, url, {}, reply.body)
+
+
+class MeEngineTest(fakes.EngineCase):
+    """`ins:me` through the real engine: a target that finds the follows, recorded once."""
+
+    def setUp(self):
+        super().setUp()
+        self.follows = [{"users": [{"username": "example_user"}]},
+                        {"users": [{"username": "example_creator"},
+                                   {"username": "example_user"}]}]
+        self.routes[f"{SITE}/api/v1/friendships/99/following/"] = (
+            lambda request: _net.reply(200, json=self.follows[0]))
+        _home.save(self.home, "ins", _cookies.Jar([{"name": "sessionid", "value": "99:abc:1",
+                                                    "domain": ".instagram.com", "path": "/"}]))
+
+        async def read_tab(ctx, profile, tab):
+            code = "A1" if profile.user == "example_user" else "B1"
+            yield Post(code, [File(f"https://cdn.example/{code.lower()}.jpg")], date=day(STAMP))
+
+        async def nothing(*args, **options):
+            return []
+
+        # The tabs and the pages a sync's every category reads, so no browser opens.
+        self.enterContext(mock.patch("flnd.plugins.ins.read_tab", read_tab))
+        self.enterContext(mock.patch("flnd.plugins.ins.story_page", nothing))
+        self.enterContext(mock.patch("flnd.plugins.ins.page_results", nothing))
+        self.enterContext(mock.patch("flnd.engine.ctx.Ctx._page", lambda ctx: InPage(self)))
+
+    def saved(self, user, code):
+        return (self.target_dir("ins", user) / "posts" / f"{DAY}_{code}.jpg").exists()
+
+    def test_a_dry_run_keeps_nothing_and_a_sync_finds_new_follows(self):
+        engine = Engine(home=self.home, sources={"ins": Instagram})
+        dry = engine.download(["ins:me"], categories="posts", dry=True)
+        self.assertTrue(dry.ok, (dry, self.lines()))
+        self.assertEqual(fakes.targets(self.home), {})
+        report = engine.download(["ins:me"], categories="posts", sync=True)
+        self.assertTrue(report.ok, report)
+        rows = fakes.targets(self.home)
+        self.assertEqual((list(rows), rows["ins:me"].seen), (["ins:me"], ["ins:example_user"]))
+        [listed] = engine.target_ls()
+        self.assertEqual((str(listed.target), listed.query, listed.seen), ("ins:me", True, 1))
+        self.assertTrue(self.saved("example_user", "A1"))
+        self.follows.pop(0)
+        report = engine.sync()
+        self.assertTrue(report.ok, report)
+        self.assertEqual([str(found.target) for found in report.targets], ["ins:me"])
+        self.assertEqual(list(fakes.targets(self.home)), ["ins:me"])
+        self.assertTrue(self.saved("example_creator", "B1"))
 
 
 if __name__ == "__main__":

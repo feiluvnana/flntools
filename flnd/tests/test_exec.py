@@ -21,7 +21,7 @@ from unittest import mock
 import flnd
 from flnd import cli
 from flnd.engine.events import Saved
-from flnd.source import Target
+from flnd.plugin import Target
 
 # Writes what it was given to the file named by its first argument.
 RECORD = ("import json, os, sys; json.dump({'argv': sys.argv[2:], 'env': {k: v for k, v in "

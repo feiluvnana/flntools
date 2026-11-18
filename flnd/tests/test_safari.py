@@ -15,7 +15,7 @@ import no_profiles  # noqa: F401  (refuses real browser profiles)
 
 from flnd.engine import home as _home
 from flnd.errors import LoginError, UsageError
-from flnd.sources.ins import Instagram
+from flnd.plugins.ins import Instagram
 from flnkit import cookies as _cookies
 
 # 2030-01-01 00:00:00 UTC, in Unix seconds, and in seconds from 2001-01-01 as Safari keeps it.

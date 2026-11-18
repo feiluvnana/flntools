@@ -17,13 +17,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fakes import CDN, EngineCase, make_source, noise
+from fakes import CDN, EngineCase, make_plugin, noise
 
 from flnd.engine import home as _home
 from flnd.engine.core import Engine
 from flnd.engine.options import Options
 from flnd.errors import Changed, NetworkError, NotFound
-from flnd.source import File, Target
+from flnd.plugin import File, Target
 from flnd.testing import fake_clock
 from flnkit import net as _net
 
@@ -272,7 +272,7 @@ class GoneTest(EngineCase):
         super().setUp()
         self.routes[f"{CDN}/a.jpg"] = _net.reply(200, content=noise("JPEG"))
         self.routes[f"{CDN}/b.jpg"] = _net.reply(404)
-        self.source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg"),
+        self.source = make_plugin("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg"),
                                                 File(f"{CDN}/b.jpg", name="b.jpg")])
 
     def asked(self):

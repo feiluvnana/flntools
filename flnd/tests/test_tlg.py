@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
-from fakes import EngineCase, FakeSite, Seen, collect, make_source
+from fakes import EngineCase, FakeSite, Seen, collect, make_plugin
 from playwright.sync_api import Error as PlaywrightError
 from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswordNeededError
 from test_commands import FlndCase, Stdin
@@ -896,7 +896,7 @@ class WithOtherSourcesTest(DownloadCase):
                 order.append("tlg")
             return original(client, entity, **options)
 
-        other = make_source("aaa", lambda site: order.append("aaa"))
+        other = make_plugin("aaa", lambda site: order.append("aaa"))
         with mock.patch.object(FakeClient, "iter_messages", iter_messages):
             total = self.run_engine(Telegram, other, targets=["tlg:@examplechannel", "aaa:a"])
         self.assertEqual(total, 1)

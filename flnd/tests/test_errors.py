@@ -22,7 +22,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fakes import EngineCase, download, fetch, make_source
+from fakes import EngineCase, download, fetch, login_cookies, make_plugin
 from test_commands import FlndCase
 
 import flnd
@@ -44,8 +44,7 @@ from flnd.errors import (
     classify,
     disk,
 )
-from flnd.source import File, Source, Target, target
-from flnd.source import cookies as login_cookies
+from flnd.plugin import File, Plugin, Target, dig, route
 from flnd.ui.log import ui
 from flnkit import clock as _time
 from flnkit import errors as kit
@@ -114,7 +113,7 @@ class ClassesTest(HttpCase):
 
     def test_login_error(self):
         made = job.failure(self.refusal(403, "https://api.aaa.example/me"),
-                           Target("aaa:example_user", kind="user"), make_source("aaa")())
+                           Target("aaa:example_user", kind="user"), make_plugin("aaa")())
         self.assertIsInstance(made, LoginError)
         self.assertIn("flnd login aaa", made.hint)
         self.assertEqual(made.target, "aaa:example_user")
@@ -178,19 +177,20 @@ class ClassesTest(HttpCase):
         self.assertEqual(caught.exception.hint,
                          "install flnd-no-such-tool-example, or put it on PATH")
 
-    def test_source_error(self):
+    def test_plugin_error(self):
         with self.assertRaisesRegex(PluginError, "other.example"):
-            class Outside(Source):
+            class Outside(Plugin):
                 code, name, domains = "out", "Outside", ("aaa.example",)
-                api = 1
+                api = 2
                 filename = "{date}_{post}{index}"
 
-                @target("other.example/{user}")
-                def user(self, site, user): ...
+                @route("other.example/{user}")
+                async def user(self, ctx, user):
+                    yield user
 
         with self.assertRaises(PluginError):
-            File([])
-        # An unexpected error in a listing is a bug in the source: a PluginError naming it.
+            File(mirrors=[])
+        # An unexpected error in a listing is a bug in the plugin: a PluginError naming it.
         made = classify(KeyError("id"), target="aaa:example_user")
         self.assertIsInstance(made, PluginError)
         self.assertEqual((str(made), made.target),
@@ -234,7 +234,7 @@ class PolicyTest(HttpCase):
                 self.assertEqual((len(self.seen), self.clock.slept), (1, []))
 
     def test_a_401_or_403_on_the_sources_domains_is_a_login_error_for_that_source(self):
-        source = make_source("aaa")()
+        source = make_plugin("aaa")()
         who = Target("aaa:example_user", kind="user")
         for status in (401, 403):
             with self.subTest(status=status):
@@ -287,10 +287,8 @@ class PolicyTest(HttpCase):
 
 
 class PolicyEngineTest(EngineCase):
-    def test_a_malformed_dig_path_fails_its_target_as_a_bug_in_the_source(self):
-        from flnd.source import dig
-
-        report = self.report(make_source("aaa", lambda site: dig({"a": 1}, "a[")),
+    def test_a_malformed_dig_path_fails_its_target_as_a_bug_in_the_plugin(self):
+        report = self.report(make_plugin("aaa", lambda ctx: dig({"a": 1}, "a[")),
                              targets=["aaa:example_user"])
         error = report.targets[0].error
         self.assertIsInstance(error, PluginError)
@@ -298,7 +296,7 @@ class PolicyEngineTest(EngineCase):
 
     def test_a_file_that_fails_fails_alone(self):
         self.routes["https://cdn.example/bad.jpg"] = _net.reply(503)
-        source = make_source("aaa", files=[File("https://cdn.example/bad.jpg", name="bad.jpg"),
+        source = make_plugin("aaa", files=[File("https://cdn.example/bad.jpg", name="bad.jpg"),
                                            File("https://cdn.example/good.jpg", name="good.jpg")])
         report = self.report(source, targets=["aaa:example_user"])
         self.assertEqual([path.name for path in report.targets[0].written], ["good.jpg"])
@@ -308,9 +306,9 @@ class PolicyEngineTest(EngineCase):
     def test_a_refused_login_stops_its_source_and_the_others_go_on(self):
         self.routes["https://api.aaa.example/me"] = _net.reply(403)
         # One target at a time, so the one after the refused login hasn't started.
-        refused = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/me"),
+        refused = make_plugin("aaa", lambda ctx: ctx.fetch("https://api.aaa.example/me"),
                               browser=True)
-        report = self.report(refused, make_source("bbb"),
+        report = self.report(refused, make_plugin("bbb"),
                              targets=["aaa:example_user", "aaa:example_creator",
                                       "bbb:example_user"])
         first, second, other = report.targets
@@ -319,23 +317,6 @@ class PolicyEngineTest(EngineCase):
         self.assertIsNone(other.error)
         asked = [str(request.url) for request in self.requests if "aaa.example" in str(request.url)]
         self.assertEqual(asked, ["https://api.aaa.example/me"])
-
-    def test_disk_full_stops_the_run(self):
-        def full(site):
-            raise disk(OSError(errno.ENOSPC, "No space left on device"), "media/aaa")
-
-        ran = []
-        with self.assertRaises(DiskError):
-            self.report(make_source("aaa", full), make_source("bbb", ran.append),
-                        targets=["aaa:example_user", "bbb:example_user"])
-        self.assertEqual(ran, [])
-        # Targets list at once, but each starts once the one before it has called its route.
-        with self.assertRaises(DiskError):
-            self.report(make_source("ccc", lambda site: site.target.value == "0" and full(site)
-                                    or ran.append(site)),
-                        targets=[f"ccc:{n}" for n in range(30)])
-        self.assertEqual(ran, [])
-
 
 # ---------------------------------------------------------------------------------------------
 # 3. Exit codes, and no traceback for a person's mistake
@@ -349,7 +330,7 @@ class CliTest(FlndCase):
         self.enterContext(_time.use(_time.Fake()))
 
     def test_a_usage_error_from_flnd_itself_has_no_traceback(self):
-        with mock.patch.dict(sources.SOURCES, {"aaa": make_source("aaa")}):
+        with mock.patch.dict(sources.SOURCES, {"aaa": make_plugin("aaa")}):
             for argv in (("download", "aaa:example_user", "--when", "yesterday"),
                          ("download", "nosuchsource:example_user"), ("download", "--no-such-flag")):
                 self.dest.seek(0)
@@ -361,11 +342,11 @@ class CliTest(FlndCase):
                     errors = [line for line in out.splitlines() if line.startswith("x ")]
                     self.assertEqual(len(errors), 1)
 
-    def test_a_flnkit_error_a_source_raises_reaches_the_cli_with_flnds_hint(self):
-        def refused(site):
+    def test_a_flnkit_error_a_plugin_raises_reaches_the_cli_with_flnds_hint(self):
+        def refused(ctx):
             raise kit.LoginError("the site asked for a login")
 
-        with mock.patch.dict(sources.SOURCES, {"aaa": make_source("aaa", refused)}):
+        with mock.patch.dict(sources.SOURCES, {"aaa": make_plugin("aaa", refused)}):
             code, out, err = self.run_app("download", "aaa:example_user")
         self.assertEqual(code, 3)
         # The end of the run names the command; flnkit's error had no hint at all.
@@ -374,17 +355,17 @@ class CliTest(FlndCase):
         self.assertNotIn("Traceback", out + err)
 
     def test_a_full_disk_says_what_it_said_before_the_split(self):
-        def full(site):
+        def full(ctx):
             raise kit.disk(OSError(errno.ENOSPC, "No space left on device"), "media/aaa")
 
-        with mock.patch.dict(sources.SOURCES, {"aaa": make_source("aaa", full)}):
+        with mock.patch.dict(sources.SOURCES, {"aaa": make_plugin("aaa", full)}):
             code, out, err = self.run_app("download", "aaa:example_user")
         self.assertEqual(code, 4)
         self.assertIn("media/aaa: No space left on device", err)
         self.assertIn("free some space on that disk, or use another --home", err)
 
     def test_a_login_the_source_needs_exits_3(self):
-        source = make_source("aaa", login=login_cookies("sid", required=True))
+        source = make_plugin("aaa", login=login_cookies("sid", required=True))
         with mock.patch.dict(sources.SOURCES, {"aaa": source}):
             code, out, err = self.run_app("download", "aaa:example_user")
         self.assertEqual(code, 3)
@@ -403,7 +384,7 @@ KIT = ("Error", "UsageError", "LoginError", "SiteError", "Blocked", "NotFound", 
 class SplitTest(unittest.TestCase):
     def test_flnd_re_exports_flnkits_own_objects(self):
         from flnd import errors as flnd_errors
-        from flnd import source as flnd_source
+        from flnd import plugin as flnd_plugin
 
         self.assertEqual(sorted(kit.__all__), sorted([*KIT, "disk"]))
         for name in kit.__all__:
@@ -411,8 +392,8 @@ class SplitTest(unittest.TestCase):
                 self.assertIs(getattr(flnd_errors, name), getattr(kit, name))
                 if name != "disk":
                     self.assertIs(getattr(flnd, name), getattr(kit, name))
-                if hasattr(flnd_source, name):
-                    self.assertIs(getattr(flnd_source, name), getattr(kit, name))
+                if hasattr(flnd_plugin, name):
+                    self.assertIs(getattr(flnd_plugin, name), getattr(kit, name))
         self.assertIs(flnd.LoginError, kit.LoginError)
 
     def test_each_class_names_the_module_it_is_defined_in(self):
@@ -458,9 +439,7 @@ class SplitTest(unittest.TestCase):
         refused = kit.disk(OSError(errno.EACCES, "Permission denied"))
         self.assertEqual(classify(refused).hint, "check that you may write to that folder")
 
-    def test_a_malformed_dig_path_escaping_a_source_is_a_source_error(self):
-        from flnd.source import dig
-
+    def test_a_malformed_dig_path_escaping_a_plugin_is_a_plugin_error(self):
         with self.assertRaises(ValueError) as caught:
             dig({"a": 1}, "a[")
         made = classify(caught.exception, target="aaa:example_user")

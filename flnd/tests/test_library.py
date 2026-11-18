@@ -18,51 +18,51 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
-from fakes import CDN, EngineCase, make_source, noise
+from fakes import CDN, EngineCase, login_cookies, make_plugin, noise
 
 import flnd
 from flnd.engine import jobs as jobs_module
 from flnd.engine.events import encode
 from flnd.engine.options import _when
-from flnd.source import File, Post, Source, target
-from flnd.source import cookies as login_cookies
+from flnd.plugin import File, Plugin, Post, route
 from flnkit import net as _net
 
 JPEG = noise("JPEG")
 
 
 def example_source(listing, *, code="exs", **declared):
-    """A source with two categories and single posts, listing what `listing` holds.
+    """A plugin with two categories and single posts, listing what `listing` holds.
 
     Args:
         listing: `{(user, category): [post ids]}`; each post has one file, `<CDN>/<id>.jpg`.
-        code: the source's code; its domain is `<code>.example`.
+        code: the plugin's code; its domain is `<code>.example`.
         **declared: the class's other fields, such as `login`.
     """
-    def posts_of(user, category):
-        for post_id in listing.get((user, category), []):
-            yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 3, 1))
+    def posted(post_id):
+        return Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 3, 1))
 
-    def post(self, site, id):
-        yield Post(id, [File(f"{CDN}/{id}.jpg")], date=datetime.date(2026, 3, 1))
+    @route(f"{code}:p/{{id}}", newest_first=False, single=True)
+    async def post(self, ctx, id):
+        yield posted(id)
 
-    def user(self, site, user):
+    @route(f"{code}:{{user}}", newest_first=False)
+    async def user(self, ctx, user):
         return user
 
-    def posts(self, site, user):
-        yield from posts_of(user, "posts")
+    @user.category(newest_first=False)
+    async def posts(self, ctx, user):
+        for post_id in listing.get((user, "posts"), []):
+            yield posted(post_id)
 
-    def reels(self, site, user):
-        yield from posts_of(user, "reels")
+    @user.category(newest_first=False)
+    async def reels(self, ctx, user):
+        for post_id in listing.get((user, "reels"), []):
+            yield posted(post_id)
 
-    profile = target(f"{code}:{{user}}")(user)
-    profile.category(posts)
-    profile.category(reels)
-    attributes = {"code": code, "name": "Example", "domains": (f"{code}.example",), "api": 1,
+    attributes = {"code": code, "name": "Example", "domains": (f"{code}.example",), "api": 2,
                   "folder": "{category}", "key": "{post}", "filename": "{date}_{post}{index}",
-                  "post": target(f"{code}:p/{{id}}")(post), "user": profile, "posts": posts,
-                  "reels": reels, **declared}
-    return type("Example", (Source,), attributes)
+                  "post": post, "user": user, "posts": posts, "reels": reels, **declared}
+    return type("Example", (Plugin,), attributes)
 
 
 class LibraryCase(EngineCase):
@@ -325,7 +325,7 @@ class RunTest(LibraryCase):
         from flnkit import clock as _time
 
         seen = []
-        self.fl.add(make_source("ewk", lambda site: seen.append(
+        self.fl.add(make_plugin("ewk", lambda ctx: seen.append(
             (threading.current_thread(), _time.wall()))))
         self.fl.download("ewk:example_user").wait()
         [(thread, wall)] = seen
@@ -432,11 +432,6 @@ class ReadsTest(LibraryCase):
         with self.assertRaises(flnd.UsageError):
             self.fl.add(object)
 
-    def test_site_gives_a_sources_site(self):
-        with self.fl.site("exs") as site:
-            self.assertEqual(str(site.target), "exs")
-            self.assertEqual(site.fetch("https://exs.example/x").text, "/x")
-
     def test_home_defaults_to_flnd_home_then_dot_flnd(self):
         from unittest import mock
 
@@ -449,16 +444,17 @@ class ReadsTest(LibraryCase):
 class WhenTest(unittest.TestCase):
     def test_periods_ranges_and_spans(self):
         day = datetime.date
-        self.assertEqual(_when(None), flnd.source.Range())
-        self.assertEqual(_when("2026"), flnd.source.Range(day(2026, 1, 1), day(2026, 12, 31)))
-        self.assertEqual(_when("2024-02"), flnd.source.Range(day(2024, 2, 1), day(2024, 2, 29)))
-        self.assertEqual(_when("2026-12"), flnd.source.Range(day(2026, 12, 1), day(2026, 12, 31)))
-        self.assertEqual(_when("2026-06-15"),
-                         flnd.source.Range(day(2026, 6, 15), day(2026, 6, 15)))
-        self.assertEqual(_when("2026-01..2026-03"),
-                         flnd.source.Range(day(2026, 1, 1), day(2026, 3, 31)))
-        self.assertEqual(_when("2026-01.."), flnd.source.Range(day(2026, 1, 1), None))
-        self.assertEqual(_when("..2026-03"), flnd.source.Range(None, day(2026, 3, 31)))
+        for text, span in ((None, (None, None)),
+                           ("2026", (day(2026, 1, 1), day(2026, 12, 31))),
+                           ("2024-02", (day(2024, 2, 1), day(2024, 2, 29))),
+                           ("2026-12", (day(2026, 12, 1), day(2026, 12, 31))),
+                           ("2026-06-15", (day(2026, 6, 15), day(2026, 6, 15))),
+                           ("2026-01..2026-03", (day(2026, 1, 1), day(2026, 3, 31))),
+                           ("2026-01..", (day(2026, 1, 1), None)),
+                           ("..2026-03", (None, day(2026, 3, 31)))):
+            with self.subTest(text=text):
+                found = _when(text)
+                self.assertEqual((found.since, found.until), span)
 
     def test_a_span_counts_back_from_today_on_the_clock(self):
         from flnkit import clock as _time

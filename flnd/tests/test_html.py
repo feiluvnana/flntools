@@ -136,8 +136,8 @@ class DigTest(unittest.TestCase):
             with self.subTest(path), self.assertRaises(ValueError):
                 _html.dig(self.PAGE, path)
 
-    def test_flnd_source_dig_is_this_one(self):
-        from flnd.source import dig
+    def test_flnd_plugin_dig_is_this_one(self):
+        from flnd.plugin import dig
 
         self.assertIs(dig, _html.dig)
 

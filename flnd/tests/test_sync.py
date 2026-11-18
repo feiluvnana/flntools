@@ -10,13 +10,13 @@ import unittest
 from unittest import mock
 
 import fakes
-from fakes import CDN, EngineCase, make_source, noise
+from fakes import CDN, EngineCase, make_plugin, noise
 
 from flnd.engine import home as _home
 from flnd.engine.core import Engine, TargetReport, _Runner
 from flnd.engine.events import State
 from flnd.engine.options import Options
-from flnd.source import File, Post, Range, Source, Target, target
+from flnd.plugin import File, Plugin, Post, Range, Target, route
 from flnkit import net as _net
 
 
@@ -27,7 +27,7 @@ class Site:
         self.case, self.files = case, files
 
     def source(self, code="aaa"):
-        return make_source(code, files=[File(f"{CDN}/{name}", name=name) for name in self.files])
+        return make_plugin(code, files=[File(f"{CDN}/{name}", name=name) for name in self.files])
 
     def serve(self):
         for name, body in self.files.items():
@@ -149,17 +149,17 @@ class SavedRunStopTest(SyncCase):
     def feed(self):
         names = self.NAMES
 
-        class Feed(Source):
+        class Feed(Plugin):
             code, name, domains, folder, key = "aaa", "AAA", ("aaa.example",), "", "{path}"
-            api = 1
+            api = 2
             filename = "{date}_{post}{index}"
 
-            @target("aaa:{user}")
-            def user(self, site, user):
+            @route("aaa:{user}", newest_first=False)
+            async def user(self, ctx, user):
                 return None
 
             @user.category(newest_first=True)
-            def posts(self, site, context):
+            async def posts(self, ctx, context):
                 for name in names:
                     yield Post(name, [File(f"{CDN}/{name}", name=name)])
 

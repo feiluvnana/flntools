@@ -25,14 +25,14 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest import mock
 
-from fakes import EngineCase, make_source
+from fakes import EngineCase, make_plugin
 
 from flnd.engine import home, jobs, save
 from flnd.engine.events import Failed, Saved, Skipped
 from flnd.engine.jobs import Kind
 from flnd.engine.save import Item, Saver, Store
 from flnd.errors import DiskError, NotFound, UsageError
-from flnd.source import File, Target
+from flnd.plugin import File, Target
 from flnd.ui.log import ui
 from flnkit import clock, files, net
 
@@ -128,7 +128,7 @@ class StagesTest(SaveCase):
 
     def test_the_mirrors_are_tried_in_order(self) -> None:
         self.routes.update({f"{CDN}/one.jpg": 500, f"{CDN}/two.jpg": JPEG})
-        self.save(self.item("a.jpg", file=File((f"{CDN}/one.jpg", f"{CDN}/two.jpg"))))
+        self.save(self.item("a.jpg", file=File(mirrors=[f"{CDN}/one.jpg", f"{CDN}/two.jpg"])))
         self.assertEqual((self.tmp / "media" / "a.jpg").read_bytes(), JPEG)
         self.assertIn("mirror 1 failed", self.lines.getvalue())
 
@@ -166,16 +166,19 @@ class StagesTest(SaveCase):
             held.drop()
 
     def test_a_plugins_fetch_function_writes_the_part_and_stops_on_ctrl_c(self) -> None:
-        def fetch(path, progress):
-            Path(path).write_bytes(JPEG)
-            progress(len(JPEG))
-
-        self.save(self.item("a.jpg", file=File(fetch)))
-        self.assertEqual((self.tmp / "media" / "a.jpg").read_bytes(), JPEG)
         stop = threading.Event()
-        stop.set()
+
+        async def fetch(part):
+            await part.write(JPEG)
+            # Ctrl-C between two writes: the second stops the run, and the first stays.
+            stop.set()
+            await part.write(b"more")
+
+        self.save(self.item("a.jpg", file=File(fetch=fetch)))
+        self.assertEqual((self.tmp / "media" / "a.jpg").read_bytes(), JPEG + b"more")
+        stop.clear()
         with self.assertRaises(KeyboardInterrupt):
-            self.save(self.item("b.jpg", file=File(fetch)), stop=stop)
+            self.save(self.item("b.jpg", file=File(fetch=fetch)), stop=stop)
         self.assertEqual((self.tmp / "media" / "b.jpg.part").read_bytes(), JPEG)
 
     def test_an_expired_link_is_asked_for_again(self) -> None:
@@ -279,7 +282,7 @@ class SegmentTest(SaveCase):
         body, log, other = os.urandom(24 << 20), [], []
         self.routes[f"{CDN}/one.bin"] = self.serve_ranges(body, log=log)
         self.routes[f"{CDN}/two.bin"] = self.serve_ranges(body, etag='"v2"', log=other)
-        self.save(self.item("m.bin", file=File((f"{CDN}/one.bin", f"{CDN}/two.bin")),
+        self.save(self.item("m.bin", file=File(mirrors=[f"{CDN}/one.bin", f"{CDN}/two.bin"]),
                             kind=None))
         self.assertEqual((self.tmp / "media" / "m.bin").read_bytes(), body)
         self.assertTrue(other, "the second mirror was asked for a segment")
@@ -503,7 +506,7 @@ class EngineTest(EngineCase):
     """The save inside a run of the engine: what stops the run, and what each file ends as."""
 
     def run_files(self, *found: File, targets=("aaa:example_user",)):
-        return self.report(make_source("aaa", files=list(found)), targets=list(targets))
+        return self.report(make_plugin("aaa", files=list(found)), targets=list(targets))
 
     def saved(self) -> list[str]:
         return sorted(event.path.name for event in self.events if isinstance(event, Saved))
@@ -544,9 +547,8 @@ class EngineTest(EngineCase):
                 self.assertEqual((folder / name).read_bytes(), body)
 
     def test_a_fetch_file_takes_its_plugins_first_domain_and_its_limit(self) -> None:
-        def fetch(path, progress):
-            Path(path).write_bytes(JPEG)
-            progress(len(JPEG))
+        async def fetch(part):
+            await part.write(JPEG)
 
         caps: list = []
         real = jobs.Scheduler.run
@@ -556,7 +558,8 @@ class EngineTest(EngineCase):
                 caps.append((job.host, scheduler.limits.cap(job.host).most))
             return await real(scheduler, job)
 
-        source = make_source("aaa", files=[File(fetch, name="a.jpg"), File(fetch, name="b.jpg")],
+        source = make_plugin("aaa", files=[File(fetch=fetch, name="a.jpg"),
+                                                File(fetch=fetch, name="b.jpg")],
                              limits={"aaa.example": 1})
         with mock.patch.object(jobs.Scheduler, "run", run):
             self.report(source, targets=["aaa:example_user"])
@@ -595,8 +598,8 @@ class EngineTest(EngineCase):
             with zipfile.ZipFile(body, "w") as archive:
                 archive.writestr("inside.txt", name)
             self.routes[f"{CDN}/{name}.zip"] = body.getvalue()
-        source = make_source("aaa", files=lambda site, context: [
-            File(f"{CDN}/{site.target.value}.zip", name=f"{site.target.value}.zip")])
+        source = make_plugin("aaa", files=lambda ctx, context: [
+            File(f"{CDN}/{ctx.target.value}.zip", name=f"{ctx.target.value}.zip")])
         self.report(source, targets=["aaa:example_user", "aaa:example_creator"])
         self.assertEqual(self.saved(), ["example_creator.zip", "example_user.zip"])
 
