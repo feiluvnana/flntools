@@ -115,7 +115,7 @@ the reason the decision was taken.
 | D23 | A commit runs on the loop with `busy_timeout = 0`, and `SQLITE_BUSY` re-queues it after 20 ms | the loop never blocks (E18) |
 | D24 | Chromium cookie stores read through the keychain go once the extension lands; Firefox, Safari and cookie files stay | the extension does Chrome's job better; the others have no extension |
 | D25 | Plugin installs copy a `.py` file or a package folder into the plugin folder and record it in `plugins.json` | help and resolution never import a plugin |
-| D26 | Pushing: the orchestrator asks the user once, before the first push, whether to push after each step | outward-facing; AGENTS.md says push only when asked |
+| D26 | Pushing: the orchestrator pushes after each step. Settled by the user on 2026-11-18: "just work to finish and push all" | outward-facing; AGENTS.md says push only when the user says to, and the user said to |
 | D27 | One checker: ruff, with the rules `F E9 B UP I ASYNC RUF006`. pyright, `make type` and `[tool.pyright]` go. The tests turn a never-awaited coroutine into an error | the user: one tool, not a mix; ruff runs in milliseconds and today's code passes it; `ASYNC` catches blocking calls inside coroutines, the one-loop rule's main risk; a missed `await` fails a test instead of being guessed at by types |
 
 ## 3. Words used here
@@ -1445,8 +1445,8 @@ The events and rows are frozen msgspec structs (`Target` and `Account` are defin
 | instaloader, twscrape | limits per endpoint (buckets); a pool of accounts switched on a limit; fast update (the head) | one tool per site |
 | JDownloader | the link grabber (the popup); handing a captcha to a person (`handoff`) | reconnecting the router |
 
-**`make live ARGS=<code>`** comes from yt-dlp's live tests. It is a hand check on the test
-accounts, never run in `make check`:
+**`make live ARGS=<code>`** comes from yt-dlp's live tests. It is a check on the test
+accounts, run by the user or by the orchestrator (15), never in `make check`:
 - it runs each route of the plugin on the target listed in `~/.config/flnd/live.toml`, which
   stays outside the repo;
 - it checks that at least one file was found per category, that every template field was
@@ -1594,7 +1594,8 @@ Step 0 rewrites AGENTS.md to exactly these sections.
   - no secret in a log, an error, a comment, a doc or a test;
   - only example handles (`example_user`, `example_creator`, `example_handle`,
     `example.page`, `examplechannel`, `example.com`);
-  - live checks only by hand, on the test accounts; unit tests fake the network, the
+  - live checks only outside the unit tests: `make live` or a `--dry` run on the test
+    accounts, by the user or the orchestrator (15); unit tests fake the network, the
     browser and the clock, and `FLND_TEST_NO_PROFILES=1` (set by `make test`) refuses real
     browser profiles, the real OS keychain and `~/.config/flnd/`.
 - **Layout:** section 4.1 and its import rules. `src/` is the package `flnd`; `flnkit/` is the
@@ -1896,9 +1897,9 @@ is built on the earlier layout.
 - **What to build.** Each port takes its plugin's safe and fast path from section 16, the
   audit of 2026-11-18: the fewest requests, tabs and scrolls per post, from the way the site
   accepts, and never losing content without saying so. An item marked *live* in 16.3 is
-  built so that today's behaviour stays until the user's `make live` confirms the change; the
-  port's commit says which items wait, and the change lands in its own commit after the
-  check.
+  built so that today's behaviour stays until its live check (16.3) passes; the port's
+  commit says which items wait, and the change lands in its own commit once the check
+  passes, quoting what was checked (never a handle or a cookie).
 - **Order,** one commit each: `mht`, `loi`, `tlg`, `tik`, `twt`, `fbk`, `ins`.
 - **Each port:**
   1. moves `src/sources/<code>.py` to `src/plugins/<code>.py`;
@@ -2131,11 +2132,14 @@ is built on the earlier layout.
   - report the line count against 24,000;
   - a last pass over the tests that remain, under 13's rules, to reach 12,000 lines and
     `make check` in 30 s; report both;
-  - run `make bench ARGS=--record`.
+  - run `make bench ARGS=--record`;
+  - bump `__version__` to `0.2.0` in the last commit, with no tag;
+  - clean up, locally only (nothing here is committed): remove the merged agent worktrees
+    and their local branches, the repository root's stale `.venv`, and its `.ruff_cache`.
 - **Done when:** `tests/test_docs.py` is green on the new pages, `wc -l tests/*.py` is at most
   12,000, and `make check` takes at most 30 s on the M5.
 - **Commits:** `docs:describe flnd as built`, `test:trim the tests to their budget`, then
-  `chore:record the benchmarks`.
+  `chore:record the benchmarks and set version 0.2.0`.
 
 ## 15. How the plan is carried out
 
@@ -2158,6 +2162,13 @@ order:
      without the reason 13 asks for.
 
    A finding goes back to the same builder (`SendMessage`), until the step passes.
+
+   **Live checks.** The orchestrator runs `make live ARGS=<code>` and `--dry` runs itself,
+   on the test accounts whose cookie files the user put in the repository root, as it did in
+   Phase 5. A step-8 item marked *live* (16.3) is built once its check passes. The privacy
+   rules (13) hold throughout: no cookie value is printed or logged, the cookie files are
+   never read into a transcript or committed, and no test handle is written into any file
+   of the repository (targets stay in `~/.config/flnd/live.toml`).
 3. **Commit** the step's commits as section 14 names them, with only that step's paths.
    **Early parts.** A later step's standalone part (a new module that nothing imports yet,
    with its own tests) may be built and committed early, in parallel with the running
@@ -2166,11 +2177,16 @@ order:
    2026-11-18 ("Can you speed it up?", "Now should parallel all things"). An early part
    follows the contracts as written; if its step later changes a contract, the wiring
    commit changes the part too.
-4. **Before the first push,** ask the user whether to push after each step (D26).
+4. **Push** after each step: the user said "you cant ask anything from now, just work to
+   finish and push all" (2026-11-18), which settles D26's question.
 5. **Keep a progress note** in memory: the step number, the last commit, and anything open.
-6. **Stop and ask the user** after step 6 before starting step 7 (plugin API 2), and
-   whenever this plan doesn't answer a question, when a goal in section 12 can't be met
-   without dropping a feature, or when a step would delete user data.
+6. **Decide, don't ask.** From 2026-11-18 the user takes no more questions. When this plan
+   is silent on what to build, when a verifier fails the same point twice, or when a goal in
+   section 12 can't be met without dropping a feature, the orchestrator decides. It writes
+   the decision and its reason in the commit message and in this plan (the section it
+   concerns), and checks it with the plan's author session while that session is running.
+   The rules that protect the user still hold: no step deletes user data, and no privacy
+   rule bends.
 
 ## 16. The plugin audit (2026-11-18)
 
@@ -2210,10 +2226,12 @@ Only `twt` names buckets: one per GraphQL operation, since X limits each endpoin
 (the `x-rate-limit-*` headers the code obeys). Every other plugin uses the one default bucket,
 so a throttle holds all its page requests, and its pace isn't multiplied (5.3).
 
-### 16.3 What waits for the user's live check
+### 16.3 What waits for a live check
 
-Each item is built so that today's behaviour stays until the user runs `make live` on the test
-accounts and confirms it.
+Each item is built so that today's behaviour stays until a live check passes: `make live`, or
+a `--dry` run, on the test accounts. The orchestrator runs these checks itself (15), with the
+cookie files the user put in the repository root for testing ("I add 5 real cookies in the
+repo root for you to testing things out"); the change then lands in its own commit.
 
 | plugin | the check | until then |
 | --- | --- | --- |
