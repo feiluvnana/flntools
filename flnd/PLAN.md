@@ -4,7 +4,8 @@
 `PROMPT.md` wins where the two differ. The user's follow-ups of the same day are folded in,
 and every decision is settled: section 2 lists them.
 
-Paths are relative to the project folder `flnd/`, the repository's subfolder for this project in the monorepo; run every command there.
+Paths are relative to the project folder `flnd/`, the repository's subfolder for this project
+in the monorepo; run every command there.
 
 This page is the specification. A builder makes no design choice that isn't written here.
 
@@ -47,6 +48,7 @@ The numbers today:
 13. Conventions (the new AGENTS.md)
 14. The steps
 15. How the plan is carried out
+16. The plugin audit (2026-11-18)
 
 ## 1. What is wrong today
 
@@ -296,7 +298,7 @@ class is made, naming the attribute and the fix.
 | `browser` | `Browser` | `Browser.NONE` | `NONE` (HTTP only), `ANY` (flnd's Chromium or the user's Chrome; defaults to Chromium), `CHROME` (needs the extension) |
 | `stealth` | `bool` | `True` | hide automation in its tabs, applied per tab by an init script |
 | `user_agent` | `str \| None` | `None` | User-Agent sent to its domains (HTTP only); `None` keeps the client's Chrome UA |
-| `walls` | `tuple[str, ...]` | `()` | URL path prefixes meaning "log in": landing on one raises `LoginError` after retry |
+| `walls` | `tuple[str, ...]` | `()` | URL paths meaning "log in", or an account the site stopped (`/accounts/suspended`). A wall matches whole path segments: a path `p` lands on the wall `w` when `p == w` or `p.startswith(w + "/")`, so `/challengers/` and `/login_example` are no walls. Landing on one is 6.2's wall row |
 | `folder` | `str` | `"{category}"` | a template under `media/<code>/<target>/` |
 | `filename` | `str` | `"{post}_{num}"` | a template; the extension is added from the content |
 | `key` | `str` | `"{post}_{num}"` | the history key under `<code>:` |
@@ -327,9 +329,9 @@ async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Pos
 - **`shown`** replaces the first pattern in help when the route accepts custom text (`tlg`).
 - **What a route returns** is passed to every category as `profile`. A route with no
   categories is an `async def` generator yielding `Post | Target` itself.
-- **`single=True`** marks a one-post route (a post or a video link). It is never followed,
-  and a target of it with `/categories` is a `UsageError`. This replaces today's
-  `single_kinds`.
+- **`single=True`** marks a one-post route (a post or a video link). It is never followed.
+  It may have categories, as `loi:<id>` has `photo` and `archive`; `/categories` on a single
+  route without categories is a `UsageError`. This replaces today's `single_kinds`.
 - **`discovers=True`** marks a route whose categories yield `Target`s, which are run as
   their own targets (searches, a user's list of others).
 - **`own`:**
@@ -337,7 +339,9 @@ async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Pos
   - `False` means other people's (tagged, reposts, liked), taken only with `/all` or when
     named.
 - **`url`** is a template over `profile`. When the next wanted category has one, the
-  scheduler opens it ahead in a warm tab while the current category runs.
+  scheduler opens it ahead in a warm tab while the current category runs. A template that
+  renders `""`, or names a key `profile` lacks, opens no warm tab and raises nothing, so a
+  route returns `""` for a tab its page lacks (fbk's `photos_url`).
 
 **Types.**
 - **`Post(id: str | int, files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]] = (),
@@ -350,12 +354,14 @@ async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Pos
   - `listed` is the date the listing is ordered by (default: `date`).
 - **`File(url: str | None = None, *, mirrors: Sequence[str] = (), fetch: Fetch | None = None,
   audio: str | None = None, name: str | None = None, size: int | None = None,
-  password: str | None = None)`:**
+  password: str | None = None, ranged: bool = False)`:**
   - exactly one of `url`, `mirrors` and `fetch` is given;
   - `audio` is a DASH audio stream to merge with the video (when `mirrors` holds a DASH video
     followed by a progressive fallback, `audio` merges only with `mirrors[0]`, fixing S9);
   - `name` overrides the stem `filename` makes;
-  - `password` is an archive's.
+  - `password` is an archive's;
+  - `ranged=True` says `fetch` can start and stop anywhere, so 6.2's segments may split the
+    file (with `size` known), at most 4 segments for a `Fetch` file.
 
   It also has `File.text(name: str, text: str) -> File`, `File.dash(manifest: str | None, *,
   height: int | None = None) -> File | None` (parses an inline MPD XML manifest, picking the
@@ -363,8 +369,10 @@ async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Pos
   headers: Mapping[str, str] | None = None) -> File` (an HLS `.m3u8` or segmented DASH
   `.mpd` playlist URL fetched as concurrent segment jobs).
 - **`Fetch`:** `Callable[[Part], Awaitable[None]]`. `Part` has `offset: int`,
-  `async write(data: bytes) -> None` and `total(size: int) -> None`, and resumes from
-  `offset`. It replaces tlg's own part code.
+  `end: int | None` (exclusive; `None` means to the file's end), `async write(data: bytes)
+  -> None` and `total(size: int) -> None`. A call fetches from `offset` and stops at `end`;
+  `write` raises `ValueError` past `end`. A file that isn't `ranged` gets one part, with
+  `end = None`, resumed from its `offset`. It replaces tlg's own part code.
 - **`Target(text: str, *, kind: str = "")`:** has `.plugin: str`, `.kind: str`,
   `.value: str`, `.query: bool`; yielded by a route or category to run as its own target.
 - **`Request(url: str, *, method: str = "GET", params: Mapping[str, Any] | None = None,
@@ -383,8 +391,8 @@ on the loop when its job kind is `none`.
 | member | signature | job kind |
 | --- | --- | --- |
 | `fetch` | `async fetch(request: str \| Request, *, bucket: str \| None = None, in_page: bool = False) -> Response` | `page` on the plugin's domains, `file`-pooled elsewhere |
-| `pages` | `pages(request: str \| Request, *, cursor: str \| Callable[[Response], str \| None], send: str \| Callable[[str], Mapping[str, Any]] = "cursor", bucket: str \| None = None) -> AsyncIterator[Response]` | `page`, one per page; the engine keeps and resumes the cursor |
-| `open` | `async open(url: str) -> Landed` | `tab`; a 404 raises `NotFound`; landing on a wall retries once, then raises `LoginError` |
+| `pages` | `pages(request: str \| Request, *, cursor: str \| Callable[[Response], str \| None], send: str \| Callable[[str], Mapping[str, Any]] = "cursor", bucket: str \| None = None, in_page: bool = False) -> AsyncIterator[Response]` | `page`, one per page; the engine keeps and resumes the cursor; with `in_page`, each page is fetched from the account's logged-in tab, as `fetch` does |
+| `open` | `async open(url: str) -> Landed` | `tab`; a 404 raises `NotFound`; landing on a wall is 6.2's wall row; called from a lazy post's files, `refresh` or `date`, it opens its own tab (6.2's `TAB` row), never the listing's |
 | `feed` | `feed(match: str \| Pattern \| Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str \| None] \| None] \| None = None) -> AsyncIterator[Any]` | `tab`; attaches its response listener immediately when called (usable with `async with` before `click`/`open`, or `async for`) |
 | `load` | `load(url: str, match, *, scroll: bool = True, lines: bool = False, cursor=None) -> AsyncIterator[Any]` | `tab`; attaches `feed` before `open(url)`, yields `meta(document)`, then `feed` items |
 | `document` | `async document() -> Document` | `tab` |
@@ -401,6 +409,11 @@ on the loop when its job kind is `none`.
 | `cookies` | `Mapping[str, str]` | the account's cookies on the plugin's domains, read-only |
 | `state` | `MutableMapping[str, Any]` | the plugin's own table in `flnd.db`; JSON values, each set one statement |
 | `secrets` | `MutableMapping[str, str]` | the account's sealed secrets; writable only during a login |
+
+**Buckets add rate.** Each bucket has its own pace, so an account with three buckets may send
+three times the requests. A plugin names a bucket only where its site limits that endpoint on
+its own (twt's GraphQL operations, each with its own `x-rate-limit-*`); every other request
+uses the default bucket, the host.
 
 Removed from today's `Site`:
 - `wait`, `scroll`, `tab` and `html`: unused, or replaced by `document`;
@@ -420,7 +433,7 @@ Removed from today's `Site`:
 | `sign` | `sign(self, request: Request, cookies: Mapping[str, str]) -> Request` | before each try of a request to its domains; returns the request with headers added |
 | `connect` | `connect(self, ctx) -> AbstractAsyncContextManager[None]` | once per run, around the plugin's targets (tlg's client) |
 | `date` | `async date(self, ctx, post: Post) -> date \| None` | a post with no date, before its files are named |
-| `blocked` | `blocked(self, response: Response) -> float \| None` | each answer from its domains; seconds to hold, or `None` when it isn't a block |
+| `blocked` | `blocked(self, response: Response) -> float \| None` | each HTTP answer from its domains: `fetch`, `pages`, and the main document of `open`. Never a `feed` item, which the plugin checks itself and answers with `ctx.hold`. Seconds to hold, or `None` when it isn't a block |
 | `refresh` | `async refresh(self, ctx, post: Post) -> Post` | a file's link expired (403 or 410 after starting) or ran below `slowest`; returns the post with fresh files |
 
 The default `refresh` lists the post's lazy files again, and raises `NotFound` for a post
@@ -474,7 +487,8 @@ that isn't lazy.
   - `blocked` returning seconds or `ctx.hold` records the hold in `ctx.seen.holds` and moves
     on with the fake clock;
   - `open` returns `Landed` with the page's status, raising `NotFound` and `LoginError` as
-    the engine does;
+    the engine does, with walls matched by whole segments and the wall row's two retries on
+    the fake clock;
   - `ask` pops `answers`, and raises `UsageError` when they run out;
   - `extension` and `storage` read the given fakes.
 - `Collected(path: str, url: Any, post: Post, key: str, file: File)` with `.date: date | None`.
@@ -533,7 +547,7 @@ retry policy, and releases the pools.
 | --- | --- | --- |
 | `PAGE` | the hold of (plugin, account, bucket), then its pace token | one-token bucket at `1 / pace`; `pace` from config, else the class (0.5 s) |
 | `FILE` | the target's place, then the host's cap, then the rate limit | places per target `max(32, max(limits.values(), default=0))`; queue per target 4 × places; cap starts at 8, grows to 32 or `limits[host]` |
-| `TAB` | the run's tab budget, and for a scrolling feed the account's scroll gate | 6 tabs; 2 scrolling tabs per account; one target reuses one tab; a warm tab opens only when at least 2 slots are free and never blocks an active target |
+| `TAB` | the run's tab budget, and for a scrolling feed the account's scroll gate | 6 tabs; 2 scrolling tabs per account; one target's listing reuses one tab; an `open` or `load` from a lazy post's files, `refresh` or `date` takes a tab of its own from the budget and closes it when the call ends, and never navigates the listing's tab; a warm tab opens only when at least 2 slots are free and never blocks an active target |
 | `CALL` | the thread pool | `min(32, os.cpu_count() + 4)` threads |
 | `HASH` | the hasher pool | `os.cpu_count()` threads |
 | `UNPACK` | the archive lane | 1 thread |
@@ -561,7 +575,7 @@ first out.
 | `NetworkError`, or a 5xx | try again after 1, 2, 4, 8 s, each × a random 0.5–1.5; then fail the job |
 | 429 | hold the bucket for `Retry-After` or `x-rate-limit-reset` (at most 3600 s; else 30 s), and halve its rate for 20 clean requests; a third 429 in a row on a bucket counts as a block round |
 | `blocked()` returned seconds, `ctx.hold(...)`, or a block round | with switching on and another account free: move the job to it. Else hold (plugin, account, bucket) for the larger of the seconds and the round's wait (30, 120, 480 s); a fourth round fails the job with `Blocked`. Rounds reset after 600 s with no block |
-| `LoginError` | landing on `plugin.walls` in `open()` retries once after a 30 s hold first. With switching on and another account: move the job. Else fail it, and mark the account `expired` |
+| `LoginError` | landing on a wall (5.3's `walls`: in `open`, or a `fetch` redirected to one) holds (plugin, account) and tries again, twice: after 30 s, then after 120 s, since a throttled session's wall lifts after a wait. These waits are not block rounds. A third landing, or a 401 or 403 from the plugin's domains: with switching on and another account, move the job; else fail it, and mark the account `expired` |
 | `Hidden` | with switching on: move the job. Else fail it: a file is recorded failed, a target fails |
 | `NotFound` | on a target's first page with switching on: move the job. Else a file is recorded gone, and a target fails |
 | `Changed` | fail the job, save a scrubbed sample, never retry |
@@ -668,6 +682,10 @@ What it does:
      `ctx.state["redate.asked"]` and stopping on `Blocked` or `LoginError`.
 4. **Searches and discovered targets** run as their own targets, each with its own plugin and
    account (fixes E12), up to `FOLLOW_DEPTH`.
+   - **One plugin instance per (plugin, account) per run.** Every target of that pair,
+     discovered ones included, runs on the same instance, so an in-run cache (mht's
+     `_cached`, twt's search tweets) serves them all. A job moved to another account runs on
+     that account's instance.
    - A search sync takes at most `MAX_SYNC_NEW` new targets.
    - It walks past seen ones, and doesn't stop at the first, so a later sync reaches the
      rest (fixes E3).
@@ -736,7 +754,7 @@ link        := "http://" … | "https://" …
   - `/all` is every category;
   - no slash means the stored categories of a known target, else the route's `own=True`
     ones;
-  - categories on a `single` route are a `UsageError`;
+  - categories on a `single` route that has none are a `UsageError`;
   - for `plugin-form`, `/categories` splits at the last `/` only when the route has categories
     or `discovers=True` (and for catch-all patterns like `tlg:{chat:.+}`, only when every
     comma-separated token after `/` is `"all"` or one of the route's categories, keeping
@@ -1417,6 +1435,12 @@ test passes on today's code.
 | S14 | _home.py:1632-1639 | a dot is added to host-only `__Host-` cookies | a `__Host-` cookie keeps a domain with no dot | 11 |
 | S15 | flncore/dig.py:51-54 | a malformed path raises `Changed` | `dig(x, "a[")` raises `SourceError` (renamed `PluginError` in step 7) | 2 |
 | S16 | _vault.py:19 and others | the docs say "encrypted"; the vault is plaintext | `secret.db` holds no plaintext value after a login | 11 |
+| S17 | ins.py:848-857, job.py:2582-2629 | on a sync, lazy posts the media API couldn't give are put aside until the scroll ends, and the sync's stop drops them | a sync with every lazy post's page faked: each new post's files are saved, none put aside | 8 |
+| S18 | ins.py:1017-1018, fbk.py:517-519 | a story or highlight page (ins), or a story bucket (fbk), that doesn't load is skipped, and the category is recorded complete | the page fails to load: the category fails, nothing recorded complete | 8 |
+| S19 | tik.py:540-545 | a walled post list reads only the first screen's links, then is recorded complete | walled list: the linked posts are saved, then the target raises `Hidden` | 8 |
+| S20 | tik.py:352-355 | a reposts, liked or favorites tab that won't click is a warning, recorded complete | the click times out: `Changed`, the category fails | 8 |
+| S21 | twt.py:371-376, :436-437 | a refused user lookup leaves `profile` empty, recorded complete | the lookup refused: `profile` raises, the timelines still run | 8 |
+| S22 | ins.py:388-613 | each run's first media-API refusal costs 2–4 requests and up to 150 s of waits, spending 2 block rounds | gone with the media API: a run of an `ins:` target makes no `/api/v1/media/` request (a request-count guard) | 8 |
 | K1 | flncore/files.py:985 | `filename` keeps `\` | `filename("a\\b") == "a_b"` | 1 |
 | K2 | flncore/__init__.py:47 | `flncore.dig` and `.log` give back modules | gone with the package; `kit/dig.dig` is a function | 2 |
 | K3 | _db.py:282, :304 | reads after `close()` return no row | a read after `close()` raises | 1 |
@@ -1674,16 +1698,18 @@ its commits.
   - `engine/jobs.py` holds `Job`, `Kind` and the pools of 6.2: `Cap`, `Limits` and `Bucket`
     moved from `kit/net.py`, the tab budget and the scroll gate from `kit/browser.py`, and
     the lanes and writers;
-  - the retry table, the holds with buckets, the segments, `rate`, `slowest`, the free-space
-    check, and the hasher pool;
+  - the retry table (with the wall row's two retries, 30 s then 120 s), the holds with
+    buckets, the segments (with `ranged` `Fetch` files, at most 4 segments), `rate`,
+    `slowest`, the free-space check, and the hasher pool;
   - `engine/save.py` (6.4) replaces `Downloads` and the downloading half of `job.py`, and
     `track.py`, `transfer.py` and `steps.py`, which are deleted;
   - dedupe by size;
   - `exec`.
 - **Tests:**
   - `tests/test_jobs.py`: each pool's numbers, priorities, every row of the retry table,
-    holds per bucket, segments splitting and resuming from the sidecar, `rate`, `slowest`,
-    the free-space stop;
+    holds per bucket, segments splitting and resuming from the sidecar, a `ranged` `Fetch`
+    split into parts that each stop at `end`, `rate`, `slowest`, the free-space stop, a wall
+    held 30 s then 120 s before `LoginError`;
   - `tests/test_save.py`: the save's 9 stages, dedupe by size, the commit on `SQLITE_BUSY`;
   - E1, E5, E6, E7, E13, E15, E18, K7, K9.
 - **Bench:** `net.*` (P2, P6, P13, P14), `e2e.*` (P9).
@@ -1707,11 +1733,16 @@ its commits.
   - the worker thread, `kit/loop.py`, the loop bridge and `_Refresh` are deleted;
   - API-1 sources run through `engine/site.py`'s temporary bridge, which runs a sync source's
     route on a `CALL` thread and turns each `site.<verb>` into a scheduler job;
-  - active targets are bounded and run at once (6.2);
+  - active targets are bounded and run at once (6.2), with one plugin instance per (plugin,
+    account) per run (6.3);
+  - an `open` or `load` from a lazy post's files, `refresh` or `date` takes its own tab, and
+    a `url=` that renders empty opens no warm tab (6.2, 5.3);
   - the browser's warm tabs open together, cookies are added in one call, and bodies are
     read only for an open feed (P5).
 - **Tests:** `tests/test_crawl.py` (smart sync, early stops, gaps, searches),
-  `tests/test_run.py` (the channel, `END` last, Ctrl-C stages, suspend) and a `stat`-count
+  `tests/test_run.py` (the channel, `END` last, Ctrl-C stages, suspend), tests that a lazy
+  post's `open` leaves the listing tab's URL unchanged, that an empty `url=` opens nothing,
+  and that a discovered target sees its parent's instance, and a `stat`-count
   guard for `Ledger` in `tests/test_fs.py` (P8). E3, E10, E11, E12, E16.
 - **Bench:** `cpu.loop_bridge` (gone), `e2e.latency_500_posts` (P3), `e2e.sync_100_targets`
   (P4), `browser.*` (P5), `test_fs` counts (P8).
@@ -1729,7 +1760,14 @@ its commits.
   - `engine/` runs `api = 2` plugins natively;
   - `flnd/testing.py` gets `FakeCtx` (5.4);
   - `open` returns `Landed` and raises `NotFound` and `LoginError` (S5);
-  - `pages` keeps the cursor on a 429 (S6);
+  - `pages` keeps the cursor on a 429 (S6), and takes `in_page`;
+  - `walls` match whole path segments; today's three tests
+    (`test_a_profile_whose_name_starts_like_a_wall_is_not_one`,
+    `test_a_profile_named_like_the_login_page_is_no_wall`,
+    `test_a_handle_that_starts_like_the_login_path_is_read`) move to `tests/test_plugin.py`
+    and run against the engine's rule;
+  - `blocked()` sees only HTTP answers, never `feed` items (5.3);
+  - a `single` route may have categories (5.3); `Part.end` and `File(ranged=)`;
   - update `pyproject.toml` (`extend-immutable-calls` adds `flnd.plugin.Range`),
     `tests/test_names.py` (`registered` recognizes `@route`), `tests/api_snapshot.py`
     (`API_MODULES` includes `flnd.plugin`), and `tests/bench/startup.py`
@@ -1742,22 +1780,95 @@ its commits.
 - **Commits:** `feat:add plugin api 2`, then `feat:make the test kit behave like the engine`.
 
 ### Step 8. The plugins on API 2
-- **Order,** one commit each: `mht` (adds `mht:author/{author}` and `mht:genre/{genre}`),
-  `loi` (S8), `tlg` (its part code goes to `Fetch`), `tik` (S1, S10), `twt` (S2, S4),
-  `fbk` (S4), `ins` (S3, S9, S13).
+- **What to build.** Each port takes its plugin's safe and fast path from section 16, the
+  audit of 2026-11-18: the fewest requests, tabs and scrolls per post, from the way the site
+  accepts, and never losing content without saying so. An item marked *live* in 16.3 is
+  built so that today's behaviour stays until the user's `make live` confirms the change; the
+  port's commit says which items wait, and the change lands in its own commit after the
+  check.
+- **Order,** one commit each: `mht`, `loi`, `tlg`, `tik`, `twt`, `fbk`, `ins`.
 - **Each port:**
   1. moves `flnd/sources/<code>.py` to `flnd/plugins/<code>.py`;
   2. becomes async;
   3. replaces its copied helpers with 5.3's (`meta`, `page_info`, `numbered`, `best`,
      `load`);
   4. deletes its back-off loops for `blocked` and `ctx.hold`;
-  5. declares `walls`, `browser`, `own` and `url`;
+  5. declares `walls` (whole segments), `browser`, `own`, `url` and its buckets (one, the
+     host, unless 16.2 names more);
   6. raises `Hidden` where its site hides content from an account;
-  7. moves its tests to `tests/test_<code>.py` on `FakeCtx`;
+  7. moves its tests to `tests/test_<code>.py` on `FakeCtx`, with a failing-first test for
+     each of its rows in section 11;
   8. quotes its lines before and after.
 
   While porting one plugin per commit, the registry and `tests/source_manifest.py` read from
   both `flnd/sources/` and `flnd/plugins/`.
+- **Per port,** beyond the common items:
+  1. **`mht`:** `browser = NONE`; searches by `ctx.pages(…, cursor="next_cursor")` with
+     `cursor_res=true`; `numbered(n, width=3)`; adds `mht:author/{author}` and
+     `mht:genre/{genre}` as `discovers=True` routes; `own=True` on both categories; keeps the
+     in-run `_cached` (one instance, 6.3).
+  2. **`loi`:** `browser = NONE`; `blocked()` returns `0.0` on the site's rate answers,
+     replacing `_fetch_links`' loop (the quota answer stays the plugin's decision, never a
+     hold); S8, with `info.md` written by `archive`, and by `photo` only when `archive` isn't
+     wanted; `user/info` read once per run; the quota day from `ctx.time.day()` (UTC);
+     `loi:<id>` is `single=True` with its two categories.
+  3. **`tlg`:** Telethon async on the run's loop, no `ctx.call`; `FloodWaitError` becomes
+     `ctx.hold("Telegram flood wait", seconds=error.seconds)` and the listing resumes from the
+     last id, replacing `_flood_wait`, `_WAITS` and `back_off`; documents as
+     `File(fetch=…, size=…, ranged=True)`, each part's offset aligned down to 512 KiB;
+     `limits = {"t.me": 3}` kept; a chat title's id cached in `ctx.state["chats.<title>"]`,
+     with `get_dialogs` on a miss; `Hidden` for a private chat or one the account left, and
+     `NotFound` ("join it first") for an invite not joined. *Live:* a big document's speed in
+     `ranged` parts against today's 4 parts.
+  4. **`tik`:** S1 (an embed 404 is `NotFound`; a 401 or 403 on the public embed page stays a
+     `SiteError`); S10 (`stories` loads its own feed; `videos` and `playlists` share one
+     scrolling load); the captcha by `ctx.handoff(…, timeout=60)`, else `ctx.hold("TikTok
+     captcha")` and open again, replacing `wait_out_captcha`; S19; S20; `refresh` is one
+     embed fetch for `post.id`; `own=False` on `reposts`, `liked` and `favorites`. *Live:* the
+     settle ends at the first `item_list` answer or the captcha, at most 5 s (today: a fixed
+     5 s), still watching for the captcha through the scroll; whether a walled list is a
+     block or an account limit.
+  5. **`twt`:** S2, S4 and S21; a bucket per GraphQL operation (`UserByScreenName`,
+     `TweetResultByRestId`, …); a search keeps its tweets on the instance, and the `post`
+     route reads them before calling `TweetResultByRestId`, so a discovered tweet costs no
+     request; `url=` per timeline tab, replacing `warm=later`; `walls = ("/i/flow/login",
+     "/login", "/account/access")`; `stealth = False` kept; `own=False` on `reposts`; the
+     timeline cap written in `docs/plugins/twt.md` as a known limit (16.4). *Live:* the
+     reason that marks a protected tweet (`Hidden`); reading the avatar from the page's own
+     `UserByScreenName` answer.
+  6. **`fbk`:** S4 and S18; `ctx.hold("Facebook says you've been temporarily blocked")` on the
+     block text and on a `CometErrorRoot.react` feed line, replacing both loops; `blocked()`
+     for the `date` hook's fetches; `walls = ("/login", "/login.php")`; the `user` route
+     returns flat tab URLs (`photos_url`, `reels_url`, `videos_url`, `albums_url`,
+     `tagged_url`, each `""` when the header lacks the tab) for the categories' `url=`;
+     `own=False` on `tagged`. *Live:* `newest_first` on `posts`, `photos`, `reels` and
+     `videos` (until confirmed, every sync scrolls those tabs to their end, as today); story
+     buckets by `fetch(in_page=True)` and `meta`.
+  7. **`ins`:** page first, with no media-API call.
+     - A lazy post's files: `ctx.fetch(f"{SITE}/p/{code}/", in_page=True)`, then the first
+       post `meta(r.html)` holds. It never navigates the scrolling tab, so there is no aside
+       list (S17, S22). When the page lacks the post: `open` of the post page with a
+       non-scrolling `feed("graphql")`, in its own tab (6.2); never put aside.
+     - The `post` route: `load` of `/p/<code>/` with no scroll, 0 API calls, keeping the check
+       that the post's code equals the link's; no post is `NotFound` (S3), or `Hidden`.
+     - `stories` and `highlights` keep `open` + `document`, and a page that fails raises
+       (S18). `profile` reads the profile page's own GraphQL.
+     - `me`: `friendships/<id>/following/` by `ctx.pages(…, in_page=True)` on `next_max_id`;
+       the id from `ds_user_id`, then the `sessionid` prefix (`whoami`), with no
+       `current_user` call.
+     - `walls = ("/accounts/login", "/challenge", "/accounts/suspended")`; `blocked()`
+       returns `0.0` on the "wait a few minutes" JSON, and the feed loop answers the same
+       JSON with `ctx.hold`; `sign` adds the API headers only under `/api/` and `/graphql`;
+       one bucket; the class `pace` stays 0.5.
+     - `own=False` on `tagged` and `reposts` (the commit says that a followed `ins:` target
+       keeps them only if its stored categories name them); `url=` for `reels`, `tagged`,
+       `reposts` and `stories`; S9; S13.
+     - Deleted: the `Api` ladder (`REFUSED_DIRECT`, `CHECKPOINTS`, `WALL_ATTEMPTS`, `_waited`,
+       `refusal`, `media`, `post`, `self.refused`), `Profile.scrolling`, the aside list,
+       `lazy_files(page=…)` and `load`'s back-off loop.
+     - *Live:* that the HTML of `/p/<code>/` embeds the post (until confirmed, the fallback
+       tab above is the measured path); story pages by `fetch(in_page=True)`; the pace;
+       the private-account marker for `Hidden` (until found, no post is `NotFound`).
 - **Then:** delete `flnd/source.py`, `engine/site.py`, the bridge, `flnd/sources/` and
   `test_layers.py`'s temporary API-1 exemptions; update imports in `engine/*`,
   `flnd/_library.py`, `flnd/cli.py`, `Makefile` (`docs`), `pyproject.toml` (drop
@@ -1886,6 +1997,9 @@ its commits.
     polish `cli.md`, `library.md`, `writing-a-plugin.md` and `plugins/<code>.md`;
   - polish the README;
   - check that no temporary module is left;
+  - empty `tests/test_docs.py`'s `LONG`: the 32 modules allowed a long docstring until
+    their flows move into `flnd/docs` get section 13's docstring of 1–3 lines, which step 2
+    deferred for them, and their flows go to the `flnd/docs` page they name;
   - report the line count against 24,000;
   - run `make bench ARGS=--record`.
 - **Done when:** `tests/test_docs.py` is green on the new pages.
@@ -1916,3 +2030,85 @@ order:
 6. **Stop and ask the user** after step 6 before starting step 7 (plugin API 2), and
    whenever this plan doesn't answer a question, when a goal in section 12 can't be met
    without dropping a feature, or when a step would delete user data.
+
+## 16. The plugin audit (2026-11-18)
+
+A read-only audit of every built-in source at `a6c19ec` (their code, pages, tests and git
+history; no site was contacted) gave step 8 its "what to build". The user asked for it:
+"api usage in instagram plugin is reject and usually fallback to page, so maybe just use page
+from start. Check every build in plugin, and make sure they use the safe and fast way to do
+things." **Safe** means least likely to get an account blocked, rate-limited or logged out,
+and never losing content without saying so. **Fast** means the fewest requests, tabs and
+scrolls per post, with work run at once where the site allows it.
+
+### 16.1 Each plugin's path
+
+| plugin | today's first path | its path in API 2 | what goes |
+| --- | --- | --- | --- |
+| `ins` | a scrolled tab; lazy posts through the media REST API, then the post's page | the scrolled tab; a lazy post's page by `fetch(in_page=True)` and `meta`; no media-API call | the media API and its refusal ladder, the aside list |
+| `fbk` | the page: embedded `__bbox` and its GraphQL feed | the same, by `load`, `meta` and `feed(lines=True)` | the back-off loops of `read_page` |
+| `tik` | the page's own `item_list` answers; one post by its HTTP embed page | the same | the fixed 5 s settle (after the live check); the silent walled fallback |
+| `twt` | the GraphQL API for a user and one tweet; the browser for timelines and search | the same, with a bucket per operation; a search's tweets reused | the `TweetResultByRestId` call per searched tweet |
+| `tlg` | Telethon | the same, async on the loop, documents as `ranged` `Fetch` files | its own part code, `_flood_wait` |
+| `loi` | the signed HTTP API, never a browser | the same | the back-off loop of `_fetch_links` |
+| `mht` | the public HTTP API | the same, plus the author and genre routes | nothing |
+
+**Why `ins` goes page first.** The media API is the last REST call on its listing path.
+`flnd`'s own client was refused (by its TLS fingerprint, it seems) from 2026-11-12, and the
+tab's fetch was answered with a page instead of JSON from 2026-11-17 (`866fec3`). Its story and
+reels APIs were already dropped for their pages (`49ff2dd`), as were twt's timeline API
+(`a2c749c`) and fbk's replayed GraphQL. Every run paid the first refusal again: 2 to 4
+wasted requests and up to 150 s of waits, spending 2 block rounds (S22). Then each lazy post
+waited for the scroll to end, and on a sync was lost (S17). A request from the logged-in tab
+carries the browser's own fingerprint and cookies, so that refusal can't happen; the CDN's
+files stay plain `FILE` jobs with their `Referer`.
+
+### 16.2 Buckets
+
+Only `twt` names buckets: one per GraphQL operation, since X limits each endpoint on its own
+(the `x-rate-limit-*` headers the code obeys). Every other plugin uses the one default bucket,
+so a throttle holds all its page requests, and its pace isn't multiplied (5.3).
+
+### 16.3 What waits for the user's live check
+
+Each item is built so that today's behaviour stays until the user runs `make live` on the test
+accounts and confirms it.
+
+| plugin | the check | until then |
+| --- | --- | --- |
+| `ins` | the HTML of `/p/<code>/` embeds the post | the post page's own tab, with a non-scrolling feed |
+| `ins` | story and highlight pages embed their items when fetched in-page | `open` and `document`, as today |
+| `ins` | the pace for page fetches | the class default, 0.5 s |
+| `ins` | the marker of a private account the login doesn't follow | a post page with no post is `NotFound` |
+| `fbk` | `posts`, `photos`, `reels` and `videos` list newest first | every sync scrolls those tabs to their end |
+| `fbk` | story buckets by `fetch(in_page=True)` | one navigation per bucket |
+| `tik` | the settle ends at the first `item_list` answer or the captcha | a fixed 5 s |
+| `tik` | whether a walled list is a block or an account limit | `Hidden`, so switching may move the target |
+| `twt` | the reason a protected tweet gives | `NotFound` |
+| `twt` | the page's own `UserByScreenName` answer for the avatar | the API lookup; `profile` raises when it is refused (S21) |
+| `tlg` | `ranged` parts are as fast as today's 4 parts on one big document | measured; a slower result is reported, not shipped |
+
+### 16.4 Known limits, kept
+
+- **`twt`'s timeline cap.** X's timelines stop after a few thousand tweets, so a profile with
+  more lists only the newest. The search past the cap went with the timeline API (`a2c749c`).
+  This plan writes the limit in `docs/plugins/twt.md` and doesn't restore the search; that
+  needs a live check of the cap, and a decision on a category yielding `Target`s.
+- **`ins`'s `tagged` and `reposts` become `own=False`** (D6): a bare `ins:example_user` no
+  longer takes them, and a followed target keeps them only if its stored categories name them.
+
+### 16.5 The gaps it found in this plan, and where each is settled
+
+| gap | settled in |
+| --- | --- |
+| walls matched as prefixes would take `/challengers/` or `login_example` for a wall | 5.3 `walls` (whole segments); step 7 |
+| `ctx.pages` had no `in_page` | 5.3 `pages`; step 7 |
+| an `open` from a lazy post would navigate the scrolling tab | 5.3 `open`, 6.2 `TAB`; step 6 |
+| a suspended account had no hard stop | 5.3 `walls` lists it, and the wall row marks the account `expired` |
+| walls got one 30 s retry where today waits 30 s, then 120 s | 6.2's wall row; step 5 |
+| `Fetch` had no segments | 5.3 `File(ranged=)` and `Part.end`; steps 5 and 7 |
+| a `url=` could render empty | 5.3 `url`; step 6 |
+| `loi:<id>` has categories but is one post | 5.3 `single`, 6.5; step 7 |
+| whether `feed` items pass through `blocked()` | 5.3 `blocked` (they don't); step 7 |
+| discovered targets on the same plugin instance | 6.3, item 4; step 6 |
+| each named bucket adds rate | 5.3 "Buckets add rate", 16.2 |
