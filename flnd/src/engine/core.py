@@ -1457,8 +1457,10 @@ class _Runner:
         source = entry.run.source
         listing = self._listing.get(source.code)
         if listing is None:
-            # API 1 says so with a `browser` class attribute; API 2 with its `browser`.
-            browser = bool(getattr(type(source), "browser", False))
+            # API 1 says so with a `browser` class attribute; API 2 with its `browser`, whose
+            # `Browser.NONE` is a member, so true too.
+            declared = getattr(type(source), "browser", False)
+            browser = declared is not flnd.plugin.Browser.NONE and bool(declared)
             listing = self._listing[source.code] = asyncio.Semaphore(
                 1 if browser else HTTP_AT_ONCE)
         held = {"listing": False, "active": False}

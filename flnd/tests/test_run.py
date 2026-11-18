@@ -22,6 +22,7 @@ from fakes import CDN, EngineCase, login_cookies, make_plugin, own_login
 from flnd import Blocked, LoginError, Target, UsageError
 from flnd.engine import crawl as job
 from flnd.engine import home as _home
+from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine.core import Engine, Report, TargetReport, _Runner
 from flnd.engine.events import Failed, Skipped
@@ -43,6 +44,31 @@ async def met(barrier):
 
 
 class GroupsTest(EngineCase):
+    def test_an_http_plugin_lists_4_targets_at_once_and_a_browser_plugin_one(self):
+        running, peaks = {"aaa": 0, "bbb": 0}, {"aaa": 0, "bbb": 0}
+        # The first four of the HTTP plugin's six wait for each other: they list together.
+        together = asyncio.Barrier(4)
+
+        async def files(ctx, context):
+            # The listing's first step, after its route: a target lists from its route on.
+            code = ctx.target.plugin
+            running[code] += 1
+            peaks[code] = max(peaks[code], running[code])
+            try:
+                if code == "aaa" and ctx.target.value in "1234":
+                    await met(together)
+                for _ in range(20):
+                    await asyncio.sleep(0)
+            finally:
+                running[code] -= 1
+            return []
+
+        http = make_plugin("aaa", files=files)
+        browser = make_plugin("bbb", files=files, browser=True)
+        self.run_engine(http, browser, targets=[*(f"aaa:{n}" for n in range(1, 7)),
+                                                "bbb:1", "bbb:2", "bbb:3"])
+        self.assertEqual(peaks, {"aaa": 4, "bbb": 1})
+
     def test_targets_of_other_plugins_never_wait_behind_a_browser_plugins_place(self):
         # The browser plugin's second target waits for its one place; the HTTP plugin's
         # target, started after it, lists at once, while the first still lists.
@@ -57,6 +83,31 @@ class GroupsTest(EngineCase):
         self.run_engine(browser, make_plugin("aaa", lambda ctx: started.set()),
                         targets=["bbb:1", "bbb:2", "aaa:1"])
         self.assertEqual(seen, [True])
+
+    def test_the_run_lists_16_targets_at_once_whatever_its_cores(self):
+        entered, running, peak = [], [0], [0]
+        # Sixteen listings wait for each other: the run's `ACTIVE`.
+        together = asyncio.Barrier(16)
+
+        async def files(ctx, context):
+            entered.append(ctx.target)
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+            try:
+                if len(entered) <= 16:
+                    await met(together)
+                for _ in range(20):
+                    await asyncio.sleep(0)
+            finally:
+                running[0] -= 1
+            return []
+
+        sources = [make_plugin(code, files=files) for code in ("paa", "pbb", "pcc", "pdd",
+                                                               "pee", "pff")]
+        self.enterContext(mock.patch.object(jobs.os, "cpu_count", return_value=2))
+        self.run_engine(*sources, targets=[f"{source.code}:{n}" for source in sources
+                                           for n in range(4)])
+        self.assertEqual((len(entered), peak[0]), (24, 16))
 
     def test_two_targets_of_one_file_save_it_once_and_a_target_named_twice_runs_once(self):
         listed = []
