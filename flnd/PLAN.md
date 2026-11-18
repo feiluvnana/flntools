@@ -168,6 +168,7 @@ flnd/                the project folder
     engine/
       run.py         Run, the loop's thread, the event channel, Ctrl-C, the journal
       events.py      the events, Report, State, and the rows the reads return
+      ctx.py         the engine's Ctx: requests as jobs, signing, walls, check=False, pages, open
       jobs.py        the scheduler: Job, pools, priorities, retry policy, holds, segments, lanes
       crawl.py       one target: listing, smart sync, early stops, the Ledger
       save.py        a file job: transfer, dedupe, unpack, sidecar, exec, the commit
@@ -491,7 +492,8 @@ on the loop when its job kind is `none`.
 | --- | --- | --- |
 | `fetch` | `async fetch(request: str \| Request, *, bucket: str \| None = None, in_page: bool = False) -> Response` | `page` on the plugin's domains, `file`-pooled elsewhere |
 | `pages` | `pages(request: str \| Request, *, cursor: str \| Callable[[Response], str \| None], send: str \| Callable[[str], Mapping[str, Any]] = "cursor", bucket: str \| None = None, in_page: bool = False) -> AsyncIterator[Response]` | `page`, one per page; the engine keeps and resumes the cursor; with `in_page`, each page is fetched from the account's logged-in tab, as `fetch` does |
-| `open` | `async open(url: str) -> Landed` | `tab`; a 404 raises `NotFound`; landing on a wall is 6.2's wall row; called from a lazy post's files, `refresh` or `date`, it opens its own tab (6.2's `TAB` row), never the listing's |
+| `open` | `async open(url: str) -> Landed` | `page`, paced and held by the account, with its tab taken from the tab budget (6.2's `TAB` row); a 404 raises `NotFound`; landing on a wall is 6.2's wall row; called from a lazy post's files, `refresh` or `date`, it opens its own tab (6.2's `TAB` row), never the listing's |
+| `warm` | `async warm(urls: Sequence[str]) -> None` | as `open`; opens warm tabs for pages that no category's `url=` names (fbk's album pages and story buckets, which API-1 fbk warmed with `site.warm`); an empty URL opens nothing |
 | `feed` | `feed(match: str \| Pattern \| Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str \| None] \| None] \| None = None) -> AsyncIterator[Any]` | `tab`; attaches its response listener immediately when called, and responses before that call are dropped (usable with `async with` before `click`/`open`, or `async for`) |
 | `load` | `load(url: str, match, *, scroll: bool = True, lines: bool = False, cursor=None) -> AsyncIterator[Any]` | `tab`; attaches `feed` before `open(url)`, yields `meta(document)`, then `feed` items |
 | `document` | `async document() -> Document` | `tab` |
@@ -517,7 +519,8 @@ uses the default bucket, the host.
 Removed from today's `Site`:
 - `wait`, `scroll`, `tab` and `html`: unused, or replaced by `document`;
 - `evaluate`: now the extension op `evaluate`;
-- `warm`: replaced by `url=` on a category;
+- `warm`: replaced by `url=` on a category, and by `ctx.warm(urls)` for pages no category
+  names;
 - `back_off`: replaced by `blocked()` and `ctx.hold()`;
 - `url`: replaced by `Landed.url`;
 - `interactive`, `info` and `warn`: replaced by `ask`, which raises with nobody to answer,
@@ -585,7 +588,8 @@ that isn't lazy.
     feed answer. It is delivered when `open` loads the page, on a `ctx.click(css)` whose
     `css` is `click`, or on the `scroll`-th scroll. A scroll that brings nothing ends the
     feed. A click that matches nothing raises `NetworkError` after 10 s on the fake clock;
-  - `Seen` (`ctx.seen`) records `requests`, `visited`, `scrolls`, `logs` and `holds`.
+  - `Seen` (`ctx.seen`) records `requests`, `visited`, `warmed` (`ctx.warm`'s URLs), `scrolls`,
+    `logs` and `holds`.
 
   `FakeCtx` behaves like the engine:
   - it runs the real `jobs.Scheduler` on the fake clock for holds, block rounds, 429s and
@@ -672,7 +676,7 @@ blocks and every kind goes through the same retry policy. Decided by the orchest
 | --- | --- | --- |
 | `PAGE` | the hold of (plugin, account, bucket), then its pace token | one-token bucket at `1 / pace`; `pace` from config, else the class (0.5 s) |
 | `FILE` | the target's place, then the host's cap, then the rate limit | places per target `max(32, max(limits.values(), default=0))`; queue per target 4 × places; cap starts at 8, grows to 32 or `limits[host]` |
-| `TAB` | for a scrolling feed, the account's scroll gate, then the tab budget; otherwise the tab budget. A tab waiting to scroll holds no tab, so it never blocks an active target, and nothing holds a tab while it waits for a gate (the gate is per account), so the two can't deadlock | 6 tabs; 2 scrolling tabs per account; one target's listing reuses one tab; an `open` or `load` from a lazy post's files, `refresh` or `date` takes a tab of its own from the budget and closes it when the call ends, and never navigates the listing's tab; a warm tab opens only when at least 2 slots are free and never blocks an active target |
+| `TAB` | `open` is no `TAB` job: it is a `PAGE` job, paced and held by the account, and takes its tab from the tab budget (`browser.Tabs`), since a `TAB` job's place on top of the budget's place could deadlock with 6 tabs held (decided by the orchestrator on 2026-11-19). For a scrolling feed, the account's scroll gate, then the tab budget; otherwise the tab budget. A tab waiting to scroll holds no tab, so it never blocks an active target, and nothing holds a tab while it waits for a gate (the gate is per account), so the two can't deadlock | 6 tabs; 2 scrolling tabs per account; one target's listing reuses one tab; an `open` or `load` from a lazy post's files, `refresh` or `date` takes a tab of its own from the budget and closes it when the call ends, and never navigates the listing's tab; a warm tab opens only when at least 2 slots are free and never blocks an active target |
 | `CALL` | the thread pool | `min(32, os.cpu_count() + 4)` threads |
 | `HASH` | the hasher pool | `os.cpu_count()` threads |
 | `UNPACK` | the archive lane | 1 thread |
@@ -718,10 +722,14 @@ first out.
 **Segments**, for a `FILE` job:
 - A file whose size is at least 16 MiB, from a host that answered `Accept-Ranges: bytes` or a
   206, may take more places.
-- **When to split.** Every 1 s, from 2 s after the transfer started, if the host's cap has a
-  free place, no other `FILE` job waits for that host, and the file has fewer than 8
-  segments, then the largest remaining range of at least 8 MiB is split in half. The new
-  half becomes a segment job.
+- **A `Fetch` file.** A `File(ranged=True)` fetch of 16 MiB or more is cut into up to 4 even
+  segments when it starts, each one stopping at `Part.end`. A running `Part`'s end can't
+  move, so a fetch file is never split during the transfer. Decided by the orchestrator on
+  2026-11-19.
+- **When to split** a URL file during its transfer. Every 1 s, from 2 s after the transfer
+  started, if the host's cap has a free place, no other `FILE` job waits for that host, and
+  the file has fewer than 8 segments, then the largest remaining range of at least 8 MiB is
+  split in half. The new half becomes a segment job.
 - **When a segment ends,** the same rule runs at once.
 - **Mirrors.** Segments are taken from the URL that answered first. Another mirror is used
   for a segment only when its `Content-Length` and `ETag` match the first URL's; a segment
@@ -972,7 +980,8 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
   `ctx.secrets` be written. Tasks inherit the flag, so a Telethon task started inside `start`
   can write. `FakeCtx` checks the same flag, in place of its stack-frame check.
 - **Refusals.** `flnkit.net` makes its status-to-error mapping (today's private
-  `_retry_after`, `_reset` and `_checked`) one public function. The engine's `Ctx` and
+  `_retry_after`, `_reset` and `_checked`) one public function,
+  `refusal(response, *, method="GET") -> Error | None`. The engine's `Ctx` and
   `FakeCtx` both call it, so a status means the same error in both.
 - **The engine stores every account,** warns at a run's start about cookies that expire
   within 3 days, writes the cookies a site refreshed back to the vault at the run's end, and
@@ -1492,6 +1501,9 @@ and `flnd`:
 - **What goes in it:** every event, every log line at every level (debug included), every
   hold and every switch. The first record is `{"type": "run", "command", "version",
   "targets"}`, and the last is `{"type": "run", "report": {…}}`.
+- **A target** in a record, and in `--json` lines while `--json` lasts (D19), is
+  `{"text", "kind"}`, no longer `{source, kind, value, query}`. It is a 0.2.0 change, and
+  `src/docs/cli.md` documents it.
 - **Secrets never go in:** `flnkit/text.redact` strips userinfo, queries and fragments from URLs
   (including URLs inside messages), and `flnkit/text.scrub` scrubs secret-looking keys and
   header values in dicts and text before writing.
@@ -2093,7 +2105,8 @@ is built on the earlier layout.
      - *Live:* that the HTML of `/p/<code>/` embeds the post (until confirmed, the fallback
        tab above is the measured path); story pages by `fetch(in_page=True)`; the pace;
        the private-account marker for `Hidden` (until found, no post is `NotFound`).
-- **Then:** delete `src/source.py`, `engine/site.py`, the bridge, `src/sources/` and
+- **Then:** move `SourceRun`, the browser part of `TargetSite` and `Listing` out of
+  `engine/site.py`, then delete `src/source.py`, `engine/site.py`, the bridge, `src/sources/` and
   `test_layers.py`'s temporary API-1 exemptions; update imports in `engine/*`,
   `src/_library.py`, `src/cli.py`, `Makefile` (`docs`), `pyproject.toml` (drop
   `flnd.source.Range`), `tests/api_snapshot.py`, `tests/source_manifest.py` and
@@ -2145,7 +2158,8 @@ is built on the earlier layout.
   - the sealed vault with `~/.config/flnd/key` (deleting the OS keychain code from
     `flnkit/vault.py`), and the migration of `secret.db`;
   - the `ContextVar` flag that lets `Login.start` write `secrets`, which `FakeCtx` checks too,
-    and `flnkit.net`'s one public status-to-error function, used by `Ctx` and `FakeCtx` (6.7);
+    and `flnkit.net.refusal(response, *, method="GET") -> Error | None`, the one public
+    status-to-error function, used by `Ctx` and `FakeCtx` (6.7);
   - delete `engine/home.py` and `engine/core.py`.
 - **Tests:** `tests/test_auth.py`:
   - each method;
