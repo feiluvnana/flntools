@@ -11,7 +11,7 @@ src/docs/library explains it.
 
 What it holds: the public names a script uses, and nothing else. `flnd.open(home)` gives a
 `Flnd`, whose methods are the CLI's commands; a download returns a `Run`, whose events
-(`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`) are the only output, and whose `state`
+(`Saved`, `Skipped`, `Failed`, `Planned`) are the only output, and whose `state`
 (a `State`) says what it is doing now; `Report`, `Login`, `Record`, `Tracked`, `Status`,
 `Failure`, `Checked` and `Installed` are what the reads return; the errors are the one
 hierarchy of `flnd.errors`. A
@@ -47,7 +47,6 @@ _HOMES = {
     "Login": "flnd.engine.events",
     "Phase": "flnd.engine.events",
     "Planned": "flnd.engine.events",
-    "Progress": "flnd.engine.events",
     "Record": "flnd.engine.events",
     "Report": "flnd.engine.events",
     "Saved": "flnd.engine.events",
@@ -76,7 +75,7 @@ _HOMES = {
 __all__ = [
     "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure",
     "FileState", "Flnd", "HoldState", "Installed", "Login", "LoginError", "NetworkError",
-    "NotFound", "Phase", "Planned", "Progress", "Record", "Report", "Run", "Saved", "SiteError",
+    "NotFound", "Phase", "Planned", "Record", "Report", "Run", "Saved", "SiteError",
     "Skipped", "SourceError", "State", "Status", "Stopped", "Target", "TargetState",
     "ToolError", "Tracked", "UsageError", "__version__", "open",
 ]
@@ -94,7 +93,6 @@ if TYPE_CHECKING:
         Login,
         Phase,
         Planned,
-        Progress,
         Record,
         Report,
         Saved,

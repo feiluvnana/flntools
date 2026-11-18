@@ -22,7 +22,7 @@ import flnd
 from flnd import cli as flnd_cli
 from flnd.engine import home as _home
 from flnd.engine.core import Engine
-from flnd.engine.events import NOTHING_NEW, RESUMING, Progress, Saved, Skipped, encode
+from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped, encode
 from flnd.errors import Changed
 from flnd.source import File, Post, Source, cookies, target
 from flnd.ui.log import ui
@@ -158,8 +158,7 @@ class GapTest(FeedCase):
         self.assertEqual(self.pages(), [None, "n1", "n4", "n6", "n9", "n12"])
         self.assertEqual(self.saved(), sorted([*self.posts]))
         self.assertEqual((self.row().gaps, self.row().heads), ({}, {"posts": "x1"}))
-        self.assertTrue(any(isinstance(event, Progress) and event.note == RESUMING
-                            for event in self.events))
+        self.assertIn(RESUMING, self.events)
         self.assertIn("* fed:example_user: posts: resuming from the last run", self.lines())
         # Nothing is left behind: the next sync has nothing new.
         self.sync()

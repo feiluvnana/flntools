@@ -17,7 +17,7 @@ from flnd import cli
 from flnd.engine import run as _run
 from flnd.errors import UsageError
 from flnd.ui import out, theme
-from flnd.ui.log import Group, Item, ui
+from flnd.ui.log import ui
 from flnkit import clock as _time
 
 
@@ -89,51 +89,6 @@ class LoggingTest(UICase):
     def test_markup_in_fields_is_literal(self) -> None:
         ui.info("msg {x}", x="[bold red]literal[/]")
         self.assertIn("[bold red]literal[/]", self.output())
-
-
-class ProgressTest(UICase):
-    """Tests for `progress`, `group`, and `Item`."""
-
-    def test_progress_ok_and_error(self) -> None:
-        with ui.progress("photos/a.jpg", total=10) as row:
-            self.assertIsInstance(row, Item)
-            row.advance(4)
-            self.assertEqual(row.count, 4)
-            row.finish()
-        self.assertIn("photos/a.jpg", self.output())
-
-        bad: Item | None = None
-        with self.assertRaises(RuntimeError):
-            with ui.progress("photos/b.jpg", total=10) as bad:
-                bad.fail()
-                raise RuntimeError("boom")
-        assert bad is not None
-        self.assertIn("photos/b.jpg", self.output())
-
-    def test_group_rows(self) -> None:
-        with ui.group("batch") as grp:
-            self.assertIsInstance(grp, Group)
-            r1 = grp.add("Metadata", total=3)
-            r2 = grp.add("Media", total=10)
-            r1.advance(3)
-            r1.finish()
-            r2.advance(5)
-        out = self.output()
-        self.assertIn("batch", out)
-        self.assertIn("Metadata", out)
-        self.assertIn("Media", out)
-
-    def test_concurrent_progress_rows_both_draw(self) -> None:
-        buf = io.StringIO()
-        with ui.scope(color=True, dest=buf, width=80, level="info"):
-            self.assertTrue(ui.live)
-            with ui.progress("item1.jpg", total=10) as row1:
-                with ui.progress("item2.jpg", total=20) as row2:
-                    row1.advance(5)
-                    row2.advance(10)
-        out = buf.getvalue()
-        self.assertIn("item1.jpg", out)
-        self.assertIn("item2.jpg", out)
 
 
 class ScopeTest(UICase):

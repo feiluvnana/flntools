@@ -14,6 +14,7 @@ from test_engine import CDN, EngineCase, make_source, noise
 
 from flnd.engine import home as _home
 from flnd.engine.core import Engine, TargetReport
+from flnd.engine.events import State
 from flnd.engine.options import Options
 from flnd.source import File, Post, Range, Source, Target, target
 from flnkit import net as _net
@@ -50,7 +51,8 @@ class SyncCase(EngineCase):
 
     def engine(self, source=None):
         source = source or self.site.source()
-        return Engine(home=self.home, sources={source.code: source}, emit=self.events.append)
+        return Engine(home=self.home, sources={source.code: source}, emit=lambda event: (
+            self.states if isinstance(event, State) else self.events).append(event))
 
     def download(self, options=Options(), source=None, texts=("aaa:a",), sync=True):
         """`Engine.download` with `options`' --from and --time."""

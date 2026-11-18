@@ -283,6 +283,12 @@ class FakeInstaller:
         return None
 
 
+def drawn(screen, label, *, total=None):
+    """A `Screen.progress` as flnd's (`flnd.engine.site`): a line with the label, and no bar."""
+    ui.info("{label}", label=label)
+    return contextlib.nullcontext(_browser._Bar())
+
+
 class ChromeOnlyTest(BrowserCase):
     """Which browser launch starts, and the Chromium download offered without Chrome."""
 
@@ -300,10 +306,8 @@ class ChromeOnlyTest(BrowserCase):
 
         self.patch_launch(starts(self.playwright), open_context)
         self.enterContext(mock.patch.object(_browser.subprocess, "Popen", self.popen))
-        # The rows draw as flnd's screen draws them.
-        self.enterContext(mock.patch.object(
-            _browser.Screen, "progress",
-            lambda screen, label, *, total=None: ui.progress(label, total=total)))
+        # The rows show as flnd's screen shows them (`flnd.engine.site`).
+        self.enterContext(mock.patch.object(_browser.Screen, "progress", drawn))
         self.enterContext(mock.patch("playwright._impl._driver.compute_driver_executable",
                                      return_value=("/driver/node", "/driver/cli.js")))
 

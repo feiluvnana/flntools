@@ -107,13 +107,19 @@ QUIET = 600.0
 
 
 class _Screen(browser.Screen):
-    """The browser's questions and rows, drawn as the rest of flnd's screen is."""
+    """The browser's questions, asked as flnd's others are; its rows are a line each.
+
+    A run's screen shows only what the run's snapshot holds, so a browser step that would draw
+    a bar (Chromium's download, a wait for a person) warns its label instead: a run shows
+    warnings, and the download takes minutes.
+    """
 
     def confirm(self, question: str) -> bool:
         return forms.confirm(question, default=False)
 
     def progress(self, label: str, *, total: float | None = None) -> Any:
-        return ui.progress(label, total=total)
+        ui.warn("{label}", label=label)
+        return super().progress(label, total=total)
 
 
 @dataclass

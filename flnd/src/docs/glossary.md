@@ -85,9 +85,9 @@ A file or target that failed and isn't saved since: one row of `flnd.db`'s `fail
 
 ## Event
 A report of something a run did: a file saved (`flnd.Saved`), skipped (`flnd.Skipped`) or
-failed (`flnd.Failed`), the counts so far (`flnd.Progress`), or, for a dry run, a file planned
-(`flnd.Planned`). A script reads a run's events by iterating it ([library.md](library.md)),
-and the CLI draws its progress from the same events.
+failed (`flnd.Failed`), or, for a dry run, a file planned (`flnd.Planned`). A script reads a
+run's events by iterating it ([library.md](library.md)); what the run is doing now is its
+snapshot, `run.state`, which the CLI's screen is drawn from.
 
 ## Run
 One `download`, `follow` or `sync` of the library (`flnd.Run`). It starts when it is first

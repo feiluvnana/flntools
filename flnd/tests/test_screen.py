@@ -17,6 +17,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import msgspec
 import pyte
 from rich.cells import cell_len
 from rich.console import Console
@@ -221,6 +222,33 @@ class ScreenTest(unittest.TestCase):
             "    the site answered 404: the file is gone",
             "    hint  nothing to do; flnd won't ask for it again", "",
             "  details  flnd status"])
+
+    def test_a_question_asked_during_a_run_stays_on_the_screen(self) -> None:
+        from types import SimpleNamespace
+
+        from flnd.ui import forms
+
+        tty, version = _TTY(), [1]
+        shown = self.shown(lambda: msgspec.structs.replace(MOCKUP, version=version[0]), tty)
+        shown.tick()
+        with redirect_stdout(tty), redirect_stderr(tty), \
+                mock.patch.object(forms, "interactive", return_value=True), \
+                mock.patch.object(forms, "_app", lambda owner: SimpleNamespace(
+                    return_value=owner.finish(True))), \
+                mock.patch.object(forms, "_show", lambda app: None):
+            self.assertTrue(forms.confirm("Download Chromium?"))
+        for _ in range(3):
+            version[0] += 1
+            shown.tick()
+        term = pyte.Screen(100, 40)
+        pyte.Stream(term).feed(tty.getvalue().replace("\n", "\r\n"))
+        rows = [row.rstrip() for row in term.display]
+        self.assertTrue(any("Download Chromium?" in row for row in rows), rows)
+        # One block, drawn below the answer: no stale copy is left above it.
+        heads = [n for n, row in enumerate(rows) if "flnd download" in row]
+        question = next(n for n, row in enumerate(rows) if "Download Chromium?" in row)
+        self.assertEqual(len(heads), 1, rows)
+        self.assertGreater(heads[0], question)
 
     def test_the_screen_reads_nothing_but_the_snapshot(self) -> None:
         tree = ast.parse(Path(screen.__file__).read_text(encoding="utf-8"))

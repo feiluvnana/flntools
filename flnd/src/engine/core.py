@@ -836,7 +836,7 @@ class Engine:
         """Download a search: list the targets it finds, then download each one.
 
         The search's row is recorded first (followed when `sync`), so a later sync finds it.
-        Its found targets share the search's board rows (`Board.parent`).
+        Its found targets count on the search's row of the run's snapshot (`Tally.adopt`).
 
         Args:
             target: the search.
@@ -853,24 +853,17 @@ class Engine:
         self._record([(target, options)], follow=sync)
         self.tally.add(target, _planned(options))
         reports: list[TargetReport] = []
-        with home.open(self.home) as db, ui.group(drawn=False) as group:
+        with home.open(self.home) as db:
             settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
                 tally=self.tally,
             )
-            board = job.Board(
-                group, subject_width=len(str(target)),
-                label_width=self._label_width([(target, options)]), parent=target,
-                emit=self.emit, tally=self.tally,
-            )
             with (steps.attached(settings), shared_browser(settings),
                   source_run(settings, source) as run):
                 if err := _require_auth(source, run, target):
                     return [err]
-                self._discover_and_run(
-                    run, target, options, board, reports, span=span, stop=stop,
-                )
+                self._discover_and_run(run, target, options, reports, span=span, stop=stop)
         return reports
 
     def _discover_and_run(
@@ -878,7 +871,6 @@ class Engine:
         run: SourceRun,
         target: Target,
         options: Options,
-        board: job.Board,
         reports: list[TargetReport],
         *,
         span: Range,
@@ -896,7 +888,6 @@ class Engine:
             target: the search.
             options: its options; the found targets get them with no limit, and the search's
                 text as their `query` (for the `{query}` folder field).
-            board: the progress rows the found targets share.
             reports: filled with a report per target downloaded, and one for a failure.
             span: `--when`, which the search filters what it finds by.
             stop: the run's stop state.
@@ -914,7 +905,7 @@ class Engine:
                         if stop.soon.is_set():
                             break
                         child_opts = replace(options, limit=None, query=target.value)
-                        rep = self._run_child(run, target, child, board, child_opts, stop)
+                        rep = self._run_child(run, target, child, child_opts, stop)
                         if rep.error is None:
                             seen_keys.append(home.key(child))
                         reports.append(rep)
@@ -927,7 +918,7 @@ class Engine:
             job.tell(target, failed, self.emit)
             reports.append(TargetReport(target, (), 0, error=failed))
         finally:
-            board.end(target, failed=any(r.error is not None for r in reports))
+            self.tally.end(target, failed=any(r.error is not None for r in reports))
             if seen_keys and run.settings.db is not None:
                 run.settings.db.seen(target, seen_keys)
 
@@ -936,7 +927,6 @@ class Engine:
         run: SourceRun,
         parent: Target,
         child: Target,
-        board: job.Board,
         child_opts: Options,
         stop: Stop,
     ) -> TargetReport:
@@ -949,7 +939,6 @@ class Engine:
             run: the search's source run.
             parent: the search.
             child: the target it found.
-            board: the search's progress rows.
             child_opts: the found target's options.
             stop: the run's stop state.
 
@@ -957,7 +946,8 @@ class Engine:
             The found target's report.
         """
         if child.source == parent.source:
-            return job.download(run, child, board, child_opts)
+            self.tally.adopt(child, parent)
+            return job.download(run, child, self.tally, child_opts)
         [rep] = self._run(
             [(child, child_opts)], stop=stop, browser_pool=run.settings.browser_pool
         )
@@ -992,31 +982,23 @@ class Engine:
         seen_keys = set(row.seen if row is not None else ())
         known_keys = set(rows)
         self.tally.add(target, _planned(options))
-        with home.open(self.home) as db, ui.group(drawn=False) as group:
+        with home.open(self.home) as db:
             settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
                 tally=self.tally,
             )
-            board = job.Board(
-                group, subject_width=len(str(target)),
-                label_width=self._label_width([(target, options)]), parent=target,
-                emit=self.emit, tally=self.tally,
-            )
             with (steps.attached(settings), shared_browser(settings),
                   source_run(settings, source) as run):
                 if err := _require_auth(source, run, target):
                     return err
-                return self._sync_query_run(
-                    run, target, options, board, seen_keys, known_keys, stop
-                )
+                return self._sync_query_run(run, target, options, seen_keys, known_keys, stop)
 
     def _sync_query_run(
         self,
         run: SourceRun,
         target: Target,
         options: Options,
-        board: job.Board,
         seen_keys: set[str],
         known_keys: set[str],
         stop: Stop,
@@ -1027,7 +1009,6 @@ class Engine:
             run: the search's source run.
             target: the search.
             options: its saved options.
-            board: the progress rows its found targets share.
             seen_keys: the keys of the targets earlier syncs saw.
             known_keys: the keys of every target the home has a row for.
             stop: the run's stop state.
@@ -1043,7 +1024,7 @@ class Engine:
         skipped, child_failed, seen_to_mark, failed = 0, None, [], False
         try:
             skipped, child_failed = self._sync_query_items(
-                run, target, options, board, seen_keys, known_keys, stop, written, seen_to_mark
+                run, target, options, seen_keys, known_keys, stop, written, seen_to_mark
             )
         except KeyboardInterrupt:
             if not stop.soon.is_set() or stop.now.is_set():
@@ -1056,7 +1037,7 @@ class Engine:
             job.tell(target, ended, self.emit)
             return TargetReport(target, tuple(written), skipped, error=ended)
         finally:
-            board.end(target, failed=failed or child_failed is not None)
+            self.tally.end(target, failed=failed or child_failed is not None)
             if seen_to_mark and run.settings.db is not None:
                 run.settings.db.seen(target, seen_to_mark)
         return TargetReport(target, tuple(written), skipped, error=child_failed)
@@ -1066,7 +1047,6 @@ class Engine:
         run: SourceRun,
         target: Target,
         options: Options,
-        board: job.Board,
         seen_keys: set[str],
         known_keys: set[str],
         stop: Stop,
@@ -1083,7 +1063,6 @@ class Engine:
             run: the search's source run.
             target: the search.
             options: its saved options.
-            board: the progress rows its found targets share.
             seen_keys: the keys of the targets earlier syncs saw; the listing stops at them.
             known_keys: the keys of every target the home has a row for.
             stop: the run's stop state.
@@ -1109,7 +1088,7 @@ class Engine:
                         break
                     new_count += 1
                     child_opts = replace(options, limit=None, query=target.value)
-                    rep = self._run_child(run, target, child, board, child_opts, stop)
+                    rep = self._run_child(run, target, child, child_opts, stop)
                     written.extend(rep.written)
                     skipped += rep.skipped
                     if rep.error is None:
@@ -1298,16 +1277,11 @@ class Engine:
             groups.setdefault(target.source, []).append(number)
             self.tally.add(target, _planned(options))
         reports: dict[int, TargetReport] = {}
-        with home.open(self.home) as db, ui.group(drawn=False) as rows:
+        with home.open(self.home) as db:
             run_settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
                 tally=self.tally,
-            )
-            board = job.Board(
-                rows,
-                subject_width=max((len(str(target)) for target, _ in chosen), default=0),
-                label_width=self._label_width(chosen), emit=self.emit, tally=self.tally,
             )
             work = [
                 (
@@ -1317,15 +1291,13 @@ class Engine:
                 for code, numbers in groups.items()
             ]
             with steps.attached(run_settings), shared_browser(run_settings):
-                overall = rows.add("Targets", total=len(chosen))
                 for item in work:
                     try:
-                        _run_site(run_settings, board, reports, item)
+                        _run_site(run_settings, reports, item)
                     except (KeyboardInterrupt, DiskError):
                         raise
                     except BaseException as error:
-                        _fail_unreached(item, error, reports, board)
-                    overall.advance(len(item[1]))
+                        _fail_unreached(run_settings, item, error, reports)
         done = [reports[number] for number in range(len(chosen))]
         return done + self._found(chosen, done, stop=stop, browser_pool=browser_pool, depth=depth)
 
@@ -1374,23 +1346,6 @@ class Engine:
         """Resolve one target's text on any source, following a short link once."""
         return resolve(text, self.sources, follow=_follow)
 
-    def _label_width(self, chosen: Sequence[tuple[Target, Options]]) -> int:
-        """The width the board pads category labels to, so its rows line up.
-
-        Args:
-            chosen: the run's targets; their kinds and every category of their sources count.
-
-        Returns:
-            The longest label's length; 0 for no targets.
-        """
-        labels = [target.kind for target, _ in chosen]
-        for code in {target.source for target, _ in chosen}:
-            labels += [
-                category.name
-                for route in self.sources[code].routes
-                for category in route.categories
-            ]
-        return max(map(len, labels), default=0)
 
 def _planned(options: Options) -> tuple[str, ...]:
     """The categories a target's row shows before its listings start: those `--only` names."""
@@ -1663,7 +1618,6 @@ def _follow(url: str) -> str:
 
 def _run_site(
     run_settings: RunShared,
-    board: job.Board,
     reports: dict[int, TargetReport],
     work: tuple[Source, list[_Planned]],
 ) -> None:
@@ -1673,8 +1627,7 @@ def _run_site(
     error without being asked. The other sources still run.
 
     Args:
-        run_settings: what every source of the run shares.
-        board: the run's progress rows.
+        run_settings: what every source of the run shares, its tally too.
         reports: filled with each target's report, by its number in the run.
         work: the source, and its targets in order.
 
@@ -1700,11 +1653,11 @@ def _run_site(
                 # A login the site refused stops this source: its other targets would hit the
                 # same wall. The other sources go on, and the run exits 3 at the end.
                 if login is not None:
-                    board.end(planned.target, failed=True)
+                    run_settings.tally.end(planned.target, failed=True)
                     reports[planned.number] = TargetReport(planned.target, (), 0, error=login)
                     run_settings.emit(Failed(planned.target, login))
                     continue
-                report = job.download(run, planned.target, board, planned.options)
+                report = job.download(run, planned.target, run_settings.tally, planned.options)
                 reports[planned.number] = report
                 if isinstance(report.error, LoginError):
                     login = report.error
@@ -1714,27 +1667,28 @@ def _run_site(
 
 
 def _fail_unreached(
+    run_settings: RunShared,
     work: tuple[Source, list[_Planned]],
     error: BaseException,
     reports: dict[int, TargetReport],
-    board: job.Board,
 ) -> None:
     """Fail every target of a source that broke before it could run them, one event each.
 
     Args:
+        run_settings: the run's: its tally ends each target failed, and its sink gets one
+            `Failed` per target.
         work: the source, and its targets in order.
         error: what broke it (a source that can't start, a bug in its `connect`).
         reports: filled with a failed report for each target not reported yet.
-        board: the run's progress rows, which end failed; its sink gets one `Failed` per target.
     """
     source, group = work
     ui.debug("{source}: {error}", source=source.code, error=error)
     for planned in group:
-        board.end(planned.target, failed=True)
+        run_settings.tally.end(planned.target, failed=True)
         if planned.number not in reports:
             failed = job.failure(error, planned.target, source)
             reports[planned.number] = TargetReport(planned.target, (), 0, error=failed)
-            board.emit(Failed(planned.target, failed))
+            run_settings.emit(Failed(planned.target, failed))
 
 
 @contextmanager

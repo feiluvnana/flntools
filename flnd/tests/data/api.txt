@@ -117,16 +117,6 @@ flnd.Planned.path: attribute -> Path | None
 flnd.Planned.post: attribute -> str
 flnd.Planned.state: attribute -> str
 flnd.Planned.target: attribute -> Target
-flnd.Progress(target: flnd.source.Target, category: str, found: int = 0, saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, listed: bool = False, note: str = '')
-flnd.Progress.bytes: attribute -> int
-flnd.Progress.category: attribute -> str
-flnd.Progress.failed: attribute -> int
-flnd.Progress.found: attribute -> int
-flnd.Progress.listed: attribute -> bool
-flnd.Progress.note: attribute -> str
-flnd.Progress.saved: attribute -> int
-flnd.Progress.skipped: attribute -> int
-flnd.Progress.target: attribute -> Target
 flnd.Record(key: str, path: pathlib.Path, size: int, post: str = '', category: str = '', date: datetime.date | None = None, at: str = '')
 flnd.Record.at: attribute -> str
 flnd.Record.category: attribute -> str

@@ -1,4 +1,4 @@
-"""The live block of progress items, the log lines' levels, and the run journal.
+"""The log lines' levels and scope, the folding of repeated warnings, and the run journal.
 
 src/docs/cli explains it.
 """
@@ -9,16 +9,13 @@ import atexit
 import json
 import logging
 import os
-import re
 import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
 from typing import IO, Any, Literal
-from urllib.parse import urlsplit
 
 import msgspec
 from rich.console import Console as RichConsole
@@ -26,18 +23,12 @@ from rich.text import Text
 
 from flnd.ui import out, theme
 from flnkit import clock
-from flnkit.text import size
 
 Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
 LEVEL_RANKS: dict[str, int] = {
     "debug": 0, "info": 1, "ok": 2, "warn": 3, "error": 4, "quiet": 4,
 }
-
-# Seconds between redraws of the live block: the pace of the update throttle, and of the
-# ticker thread that redraws rows which only move with the clock (the spinner, and counts
-# that wait on events). 60 a second is the most a terminal shows.
-REDRAW = 1 / 60
 
 def _color_settings(
     color: str | bool | None, base: RichConsole | None,
@@ -72,164 +63,6 @@ def _color_settings(
     if color not in table:
         raise ValueError(f"unknown color setting {color!r}")
     return table[color]
-
-
-def _elide_middle(text: str, max_len: int) -> str:
-    """Shorten `text` to `max_len` characters by cutting its middle, with a `…` in the gap.
-
-    Args:
-        text: the text to shorten.
-        max_len: the most characters to return, the `…` included.
-
-    Returns:
-        `text` itself when it fits, otherwise the shortened text.
-    """
-    if len(text) <= max_len:
-        return text
-    cut = theme.glyph("more", True)
-    if max_len <= 1:
-        return cut[:max_len]
-    keep = max_len - 1
-    left = keep // 2
-    right = keep - left
-    return f"{text[:left]}{cut}{text[-right:]}"
-
-
-_URL = re.compile(r"https?://[^\s:]+(?::\d+)?[^\s]*")
-
-
-def _brief(error: BaseException, *, limit: int = 100) -> str:
-    """One line naming `error`, with each URL cut to its host."""
-    first = (str(error).strip().splitlines() or [""])[0]
-    first = _URL.sub(lambda match: urlsplit(match.group()).hostname or match.group(), first)
-    message = f"{type(error).__name__}: {first}" if first else type(error).__name__
-    return message if len(message) <= limit else message[: limit - 1] + theme.glyph("more", True)
-
-
-class State(StrEnum):
-    """The lifecycle state of a progress item."""
-
-    QUEUED = "queued"
-    ACTIVE = "active"
-    MERGING = "merging"
-    UNPACKING = "unpacking"
-    DONE = "done"
-    SKIPPED = "skipped"
-    FAILED = "failed"
-
-
-class Item:
-    """One progress item: a stable key, a label, count/total, state, and an optional note.
-
-    `unit` picks the stats segment: None counts (`3`), `"bytes"` sizes (`1.2 MB`), and
-    `"none"` renders no bar and no stats, for a row whose label says it all.
-
-    Args:
-        key: the stable key the item is kept under.
-        label: the text shown; `key` when empty.
-        total: the count that is 100%; None when it is not known.
-        unit: None for a count, "bytes" for sizes, or "none" for a text row with no bar.
-        drawn: False to keep the item off the screen; it is still counted.
-        owner: the `UI` that draws it.
-    """
-
-    def __init__(
-        self,
-        key: str,
-        label: str = "",
-        *,
-        total: float | None = None,
-        unit: str | None = None,
-        drawn: bool = True,
-        owner: UI,
-    ) -> None:
-        self.key = key
-        self.label = label or key
-        self.total = total
-        self.count = 0.0
-        self.unit = unit
-        self.drawn = drawn
-        self.owner = owner
-        self.state = State.ACTIVE
-        self._note = ""
-        self._started = clock.now()
-        self._ended: float | None = None
-        self._outcome: Level | None = None
-
-    def advance(self, n: float = 1) -> None:
-        """Increment progress by `n`."""
-        self.count += n
-        if self.drawn and self.owner._live:
-            self.owner._item_updated(self)
-
-    def note(self, text: str) -> None:
-        """Set the text after the bar."""
-        self._note = text
-        if self.drawn and self.owner._live:
-            self.owner._item_updated(self)
-
-    def ok(self, note: str = "") -> None:
-        """Mark the item as successfully finished.
-
-        Args:
-            note: the text to show after the bar; empty keeps the current note.
-        """
-        if self._ended is not None:
-            return
-        self.state = State.DONE
-        if note:
-            self._note = note
-        self._ended = clock.now()
-        self._outcome = "ok"
-        self.owner._item_finished(self)
-
-    def skip(self, note: str = "") -> None:
-        """Mark the item as skipped.
-
-        Args:
-            note: the text to show after the bar; empty keeps the current note.
-        """
-        if self._ended is not None:
-            return
-        self.state = State.SKIPPED
-        if note:
-            self._note = note
-        self._ended = clock.now()
-        self._outcome = "warn"
-        self.owner._item_finished(self)
-
-    def fail(self, note: str = "") -> None:
-        """Mark the item as failed.
-
-        Args:
-            note: the text to show after the bar; empty keeps the current note.
-        """
-        if self._ended is not None:
-            return
-        self.state = State.FAILED
-        if note:
-            self._note = note
-        self._ended = clock.now()
-        self._outcome = "error"
-        self.owner._item_finished(self)
-
-    def finish(self) -> None:
-        """Alias for `ok()`."""
-        self.ok()
-
-    def __enter__(self) -> Item:
-        return self
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        if exc_type is None:
-            if self.state in (State.ACTIVE, State.QUEUED, State.MERGING, State.UNPACKING):
-                self.ok()
-        else:
-            if isinstance(exc_val, KeyboardInterrupt):
-                self.fail("stopped")
-            else:
-                self.fail(_brief(exc_val) if exc_val else "failed")
-
 
 
 class Journal:
@@ -267,7 +100,7 @@ class Journal:
     def write(self, record: Any) -> None:
         """Write one JSON record object, adding `at` and `type` if omitted.
 
-        Does nothing when the journal is not open. A `Progress` record is never written.
+        Does nothing when the journal is not open.
 
         Args:
             record: a dict, an object with attributes, or a value msgspec can encode.
@@ -283,9 +116,6 @@ class Journal:
         data = msgspec.to_builtins(record, enc_hook=_encode)
         if not isinstance(data, dict):
             data = {"value": data}
-
-        if event_type == "Progress" or data.get("type") == "Progress":
-            return
 
         if "type" not in data:
             data["type"] = event_type
@@ -316,72 +146,15 @@ def _encode(value: Any) -> Any:
     return str(value)
 
 
-class Group:
-    """A collection of progress items belonging to one logical task.
-
-    Args:
-        owner: the `UI` that draws the items.
-        title: a line logged when the group opens; empty for none.
-        drawn: False to keep the group's items off the screen.
-    """
-
-    def __init__(self, owner: UI, title: str = "", *, drawn: bool = True) -> None:
-        self.owner = owner
-        self.title = title
-        self.drawn = drawn
-        self._items: list[Item] = []
-
-    def add(
-        self, label: str, *, total: float | None = None, unit: str | None = None,
-    ) -> Item:
-        item = self.owner.item(label, label, total=total, unit=unit, drawn=self.drawn)
-        self._items.append(item)
-        return item
-
-    def __enter__(self) -> Group:
-        if self.title:
-            self.owner.info(self.title)
-        return self
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        for item in self._items:
-            if item.state in (State.ACTIVE, State.QUEUED, State.MERGING, State.UNPACKING):
-                if exc_type is not None:
-                    item.fail(_brief(exc_val) if exc_val else "failed")
-                else:
-                    item.ok()
-
-
 class UI:
-    """The terminal output renderer, log dispatcher, and progress tracker."""
+    """flnd's log lines: their level, where they go, and the journal they are written to."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._level: Level = "info"
         self._console = self._make_console()
-        self._items: dict[str, Item] = {}
-        self._active_keys: list[str] = []
-        self._live_lines = 0
-        self._pending_lines: list[Text | str] = []
-        self._last_draw = 0.0
         self._journal: Journal | None = None
-        self._hold_depth = 0
-        self._wake = threading.Event()
-        self._ticker: threading.Thread | None = None
         self._folds = out.Folds()
-        self._live = self._compute_live()
-
-    def _compute_live(self) -> bool:
-        if self._level == "quiet":
-            return False
-        file = self._console.file
-        is_tty = getattr(file, "isatty", lambda: False)()
-        return is_tty or bool(getattr(self._console, "_force_terminal", False))
-
-    @property
-    def live(self) -> bool:
-        """Whether the screen is interactive and live bars should be drawn."""
-        return self._live
 
     @property
     def level(self) -> Level:
@@ -393,7 +166,6 @@ class UI:
         if value not in LEVELS:
             raise ValueError(f"unknown ui level {value!r}; choose from {', '.join(LEVELS)}")
         self._level = value
-        self._live = self._compute_live()
 
     @property
     def raw(self) -> RichConsole:
@@ -405,38 +177,6 @@ class UI:
 
     def _use_unicode(self) -> bool:
         return theme.unicode(self._console.file)
-
-    def _glyph(self, name: str) -> str:
-        return theme.glyph(name, self._use_unicode())
-
-    def _spinner(self) -> str:
-        return theme.spinner(clock.now(), self._use_unicode())
-
-    def _get_width(self) -> int:
-        """The width in columns: the console's, else the terminal's, else 80.
-
-        Returns:
-            The number of columns to lay a line out in.
-        """
-        if self._console.width is not None:
-            return self._console.width
-        try:
-            return os.get_terminal_size().columns
-        except (OSError, ValueError):
-            return 80
-
-    def _get_height(self) -> int:
-        """The height in lines: the console's, else the terminal's, else 24.
-
-        Returns:
-            The number of lines the terminal shows.
-        """
-        if self._console.height is not None:
-            return self._console.height
-        try:
-            return os.get_terminal_size().lines
-        except (OSError, ValueError):
-            return 24
 
     def _flush(self) -> None:
         if hasattr(self._console.file, "flush"):
@@ -476,255 +216,6 @@ class UI:
             highlight=False,
             soft_wrap=True,
         )
-
-    def _render_item(self, it: Item, width: int, unicode: bool) -> Text:
-        """The one-line row for `it`: a glyph, its label, a bar and its stats, cut to `width`.
-
-        Args:
-            it: the item to draw.
-            width: the most columns the row may take.
-            unicode: True to use the Unicode glyphs and bar characters.
-
-        Returns:
-            The row as styled text.
-        """
-        if it.state == State.ACTIVE:
-            spinner = self._spinner()
-            glyph_style = "focus"
-        elif it.state in (State.MERGING, State.UNPACKING):
-            spinner = self._spinner()
-            glyph_style = "warn"
-        elif it.state == State.DONE:
-            spinner = self._glyph("done")
-            glyph_style = "good"
-        elif it.state == State.SKIPPED:
-            spinner = self._glyph("warn")
-            glyph_style = "warn"
-        else:
-            spinner = self._glyph("failed")
-            glyph_style = "bad"
-        glyph_style = theme.style(glyph_style)
-        body, dim = theme.style("text"), theme.style("dim")
-
-        note_str = f"  ({it._note})" if it._note else ""
-
-        # A text row (`unit="none"`) is a status line, not a quantity: label and note only.
-        if it.unit == "none":
-            line = Text()
-            line.append(spinner, style=glyph_style)
-            line.append(" ")
-            line.append(_elide_middle(it.label, max(8, width - len(spinner) - 1)), style=body)
-            if note_str:
-                line.append(note_str, style=dim)
-            line.truncate(width)
-            return line
-
-        if it.unit == "bytes":
-            if it.total is not None and it.total > 0:
-                stats = f"{size(it.count)}/{size(it.total)}"
-            else:
-                stats = size(it.count)
-        else:
-            if it.total is not None and it.total > 0:
-                stats = f"{it.count:g}/{it.total:g}"
-            else:
-                stats = f"{it.count:g}"
-
-        bar_len = 16
-        full_c = theme.glyph("full", unicode)
-        empty_c = theme.glyph("empty", unicode)
-
-        if it.total is not None and it.total > 0:
-            pct = max(0.0, min(1.0, it.count / it.total))
-            filled = int(round(pct * bar_len))
-            bar_full = full_c * filled
-            bar_empty = empty_c * (bar_len - filled)
-        else:
-            bar_full = ""
-            bar_empty = empty_c * bar_len
-
-        fixed_len = len(spinner) + 3 + bar_len + 2 + len(stats) + len(note_str)
-        avail_for_label = max(8, width - fixed_len)
-        label = _elide_middle(it.label, avail_for_label)
-
-        line = Text()
-        line.append(spinner, style=glyph_style)
-        line.append(" ")
-        line.append(label, style=body)
-        line.append("  ")
-        if bar_full:
-            line.append(bar_full, style=theme.style("focus"))
-        if bar_empty:
-            line.append(bar_empty, style=dim)
-        line.append("  ")
-        line.append(stats, style=dim)
-        if note_str:
-            line.append(note_str, style=dim)
-
-        line.truncate(width)
-        return line
-
-    def _ensure_ticker(self) -> None:
-        """Start the thread that redraws the live block while its rows move only with time.
-
-        A run's summary rows have no per-file item feeding them, so between count changes
-        nothing redraws them; the ticker keeps the spinner turning and the table current.
-        """
-        if self._ticker is None:
-            self._ticker = threading.Thread(target=self._tick, name="ui-tick", daemon=True)
-            self._ticker.start()
-
-    def _tick(self) -> None:
-        """Redraw every `REDRAW` seconds while rows are active on a live terminal."""
-        while not self._wake.wait(REDRAW):
-            with self._lock:
-                if self._active_keys and self._live:
-                    self._redraw(force=True)
-
-    @contextmanager
-    def hold(self) -> Iterator[None]:
-        """Pause live redraws while something else uses the terminal.
-
-        The live rows are cleared while the block runs, and drawn again after it.
-
-        Yields:
-            Nothing; the block only needs the terminal to itself.
-        """
-        with self._lock:
-            self._hold_depth += 1
-            if self._live_lines > 0:
-                file = self._console.file
-                if hasattr(file, "write"):
-                    file.write(f"\r\x1b[{self._live_lines}A\x1b[J")
-                self._live_lines = 0
-        try:
-            yield
-        finally:
-            with self._lock:
-                self._hold_depth = max(0, self._hold_depth - 1)
-                if self._hold_depth == 0:
-                    self._redraw(force=True)
-
-    def _redraw(self, force: bool = False) -> None:
-        """Redraw the live block: the pending lines first, then the active rows.
-
-        Nothing is drawn while a `hold` is open. Rows beyond the screen are folded into one
-        "and N more" line.
-
-        Args:
-            force: True to draw now, even when the last draw was less than `REDRAW` ago.
-        """
-        if self._hold_depth > 0:
-            return
-        now = clock.now()
-        if not force and (now - self._last_draw < REDRAW):
-            return
-        self._last_draw = now
-        file = self._console.file
-
-        if self._live_lines > 0:
-            if hasattr(file, "write"):
-                file.write(f"\r\x1b[{self._live_lines}A\x1b[J")
-            self._live_lines = 0
-
-        while self._pending_lines:
-            pending = self._pending_lines.pop(0)
-            self._console.print(pending)
-
-        if not self._active_keys:
-            self._flush()
-            return
-
-        w = self._get_width()
-        h = self._get_height()
-        unicode = self._use_unicode()
-        cap = max(1, h - 2)
-
-        active = [self._items[k] for k in self._active_keys if k in self._items]
-        if len(active) <= cap:
-            visible = active
-            folded = 0
-        else:
-            visible = active[:cap - 1]
-            folded = len(active) - (cap - 1)
-
-        drawn_count = 0
-        for it in visible:
-            rendered = self._render_item(it, width=w, unicode=unicode)
-            self._console.print(rendered)
-            drawn_count += 1
-
-        if folded > 0:
-            fold_line = f"  {theme.glyph('more', unicode)} and {folded} more"
-            self._console.print(Text(fold_line[:w], style=theme.style("dim")))
-            drawn_count += 1
-
-        self._live_lines = drawn_count
-        self._flush()
-
-    def item(
-        self,
-        key: str,
-        label: str = "",
-        *,
-        total: float | None = None,
-        unit: str | None = None,
-        drawn: bool = True,
-    ) -> Item:
-        """Create and register a progress item under a stable key.
-
-        Args:
-            key: the stable name the item is kept under. A new item with the same key replaces
-                the one before it.
-            label: the text shown; `key` when empty.
-            total: the count that is 100%; None when it is not known.
-            unit: None for a count, "bytes" for sizes, or "none" for a text row with no bar.
-            drawn: False to keep the item off the screen; it is still counted.
-
-        Returns:
-            The new `Item`.
-        """
-        with self._lock:
-            it = Item(key, label or key, total=total, unit=unit, drawn=drawn, owner=self)
-            self._items[key] = it
-            if drawn and self.live:
-                if key not in self._active_keys:
-                    self._active_keys.append(key)
-                self._ensure_ticker()
-                self._redraw(force=True)
-            return it
-
-    def _item_updated(self, item: Item) -> None:
-        """Redraw the live block for `item`, at most once per `REDRAW` interval.
-
-        Args:
-            item: the item whose count or note changed.
-        """
-        if not item.drawn or not self.live:
-            return
-        now = clock.now()
-        if now - self._last_draw >= REDRAW:
-            with self._lock:
-                self._redraw()
-
-    def _item_finished(self, item: Item) -> None:
-        """Take `item` off the live rows, and print its final line.
-
-        Args:
-            item: the item that ended: done, skipped or failed.
-        """
-        with self._lock:
-            if item.key in self._active_keys:
-                self._active_keys.remove(item.key)
-
-            if item.drawn:
-                rendered = self._render_item(item, self._get_width(), self._use_unicode())
-                if not self.live:
-                    self._console.print(rendered)
-                    self._flush()
-                else:
-                    self._pending_lines.append(rendered)
-                    self._redraw(force=True)
 
     def _log(self, _kind: Level, message: str, *args: Any, **fields: Any) -> None:
         """Write one log line of `_kind` if its level is on, and journal it when a journal is open.
@@ -778,18 +269,13 @@ class UI:
                 self._show(out.styled("warn", text, fancy=self._use_unicode(), times=times))
 
     def _show(self, line: Text) -> None:
-        """Print a line above the live block, or at once when no row is live."""
+        """Print a line: above the run's screen while one is drawn there (`out.above`)."""
         sink = out._above
         if sink is not None and self._console.file is sys.stderr:
-            # The run's screen prints it above its block (`out.above`).
             sink(line)
             return
-        if self.live and self._active_keys:
-            self._pending_lines.append(line)
-            self._redraw(force=True)
-        else:
-            self._console.print(line)
-            self._flush()
+        self._console.print(line)
+        self._flush()
 
     def debug(self, message: str = "", /, *args: Any, **fields: Any) -> None:
         """Log a debug message."""
@@ -835,7 +321,7 @@ class UI:
         Yields:
             This `UI`, with the new settings in place.
         """
-        old_console, old_level, old_live = self._console, self._level, self._live
+        old_console, old_level = self._console, self._level
         old_folds = self._folds
         try:
             self._console = self._make_console(
@@ -843,36 +329,13 @@ class UI:
             )
             if level is not None:
                 self._level = level
-            self._live = self._compute_live()
             self._folds = out.Folds()
             yield self
         finally:
             # The warnings still folded are printed where the block printed them.
             self.drain()
-            self._console, self._level, self._live = old_console, old_level, old_live
+            self._console, self._level = old_console, old_level
             self._folds = old_folds
-
-    @contextmanager
-    def group(self, title: str = "", *, drawn: bool = True) -> Iterator[Group]:
-        """Context manager yielding a `Group` of progress items."""
-        grp = Group(self, title, drawn=drawn)
-        with grp:
-            yield grp
-
-    @contextmanager
-    def progress(
-        self,
-        label: str,
-        *,
-        total: float | None = None,
-        unit: str | None = None,
-        drawn: bool = True,
-    ) -> Iterator[Item]:
-        """Context manager yielding a single `Item` progress bar."""
-        it = self.item(label, label, total=total, unit=unit, drawn=drawn)
-        with it:
-            yield it
-
 
 ui = UI()
 log = ui
@@ -915,11 +378,4 @@ _kit.addHandler(_KitLines())
 _kit.propagate = False
 
 
-__all__ = [
-    "Item",
-    "Journal",
-    "State",
-    "UI",
-    "log",
-    "ui",
-]
+__all__ = ["Journal", "UI", "log", "ui"]

@@ -9,7 +9,6 @@ a CDN that blocks on events, and the run on a thread of its own). No network, no
 
 import asyncio
 import datetime
-import io
 import os
 import sqlite3
 import threading
@@ -46,7 +45,6 @@ from flnd.source import (
     target,
 )
 from flnd.ui.log import ui
-from flnkit import clock as _time
 from flnkit import net as _net
 
 
@@ -906,16 +904,6 @@ class CtrlCTest(JobCase):
     def setUp(self):
         super().setUp()
         self.stop = _run.Stop()
-        self.boards = []
-        real = job.download
-
-        def spy(run, target, board, options):
-            self.boards.append((board, target))
-            return real(run, target, board, options)
-
-        patcher = mock.patch.object(job, "download", spy)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def start(self, source, text):
         """Run `text` on a thread; returns the thread and a dict that gets its result or error."""
@@ -980,7 +968,8 @@ class CtrlCTest(JobCase):
         self.stop.soon.set()
         self.until(closed.is_set)
         finishing = "stopping: 1 file finishing (Ctrl-C again to stop now)"
-        self.until(lambda: self.boards and self.note(*self.boards[0]) == finishing)
+        # Said once, above the run's screen.
+        self.until(lambda: f"slw:example_user: {finishing}" in self.dest.getvalue())
         release.set()
         thread.join(10)
         report = outcome["report"]
@@ -991,11 +980,6 @@ class CtrlCTest(JobCase):
         # listed.
         self.assertEqual(self.fetched(f"{CDN}/2.7z"), [])
         self.assertEqual(listed, [1, 2, 3, 4, 5])
-
-    def note(self, board, target):
-        """The note under the target's posts line, or None before it opens."""
-        line = board._lines.get((target, "posts"))
-        return None if line is None else line.note
 
     def test_the_second_ctrl_c_stops_now_and_keeps_the_part(self):
         sent, gate = threading.Event(), threading.Event()
@@ -1462,49 +1446,6 @@ class LinkTest(JobCase):
         Engine(home=self.home, sources={"lnk": feed}).sync()
         link = folder / "reels" / "2026-01-02_V1.mp4"
         self.assertTrue(link.is_symlink() and link.exists())
-
-class BoardTest(unittest.TestCase):
-    """The run's status lines: one per target and category, ended once listed and done."""
-
-    def setUp(self):
-        self.dest = io.StringIO()
-        self.enterContext(ui.scope(dest=self.dest, width=200, color=False))
-        self.enterContext(_time.use(_time.Fake()))
-        self.target = Target("aaa:example_user", kind="user")
-
-    def lines(self):
-        return self.dest.getvalue().splitlines()
-
-    def test_a_line_ends_once_listed_and_nothing_is_pending(self):
-        with ui.group() as rows:
-            board = job.Board(rows, subject_width=18, label_width=6)
-            board.start(self.target, "posts")
-            board.count(self.target, "posts", found=2, queued=2)
-            board.count(self.target, "posts", queued=-2, downloading=2)
-            board.listed(self.target, "posts")
-            board.count(self.target, "posts", downloading=-1, saved=1, bytes=2048)
-            board.count(self.target, "posts", downloading=-1, failed=1)
-        self.assertEqual((board.totals(self.target).saved, board.totals(self.target).failed), (1, 1))
-
-    def test_totals_and_ending_a_target(self):
-        other = Target("aaa:example_creator", kind="user")
-        with ui.group() as rows:
-            board = job.Board(rows)
-            board.count(self.target, "posts", found=1, skipped=1)
-            board.count(self.target, "reels", found=3, skipped=2, linked=1)
-            board.count(other, "posts", found=5, skipped=5)
-            self.assertEqual((board.totals(self.target).found, board.totals(self.target).skipped),
-                             (4, 3))
-            board.end(self.target, failed=True)
-
-    def test_a_link_waiting_for_its_file_keeps_the_line_open(self):
-        with ui.group() as rows:
-            board = job.Board(rows)
-            board.count(self.target, "reels", found=1, skipped=1, later=1)
-            board.listed(self.target, "reels")
-            board.count(self.target, "reels", later=-1, linked=1)
-        self.assertEqual(board.totals(self.target).linked, 1)
-
 
 class VerboseTest(EngineCase):
     """The engine logs no rows (the CLI draws a run from its events); -v adds its debug lines."""

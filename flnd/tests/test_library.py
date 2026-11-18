@@ -255,7 +255,8 @@ class RunTest(LibraryCase):
                         self.assertEqual(run._stop.stage, "soon")
                         signal.raise_signal(signal.SIGINT)
                         self.assertEqual(run._stop.stage, "now")
-                        warn.assert_called_once_with(_run.AGAIN)
+                        # Beside it, the target may say which files are finishing.
+                        self.assertEqual(warn.call_args_list.count(mock.call(_run.AGAIN)), 1)
                         signal.raise_signal(signal.SIGINT)
         exit_now.assert_called_once_with(130)
         # Newest first, the way the `with` blocks would have unwound.
@@ -311,16 +312,17 @@ class RunTest(LibraryCase):
 
 
 class EventsTest(LibraryCase):
-    def test_saved_skipped_and_progress(self):
-        first = list(self.fl.download("exs:example_user"))
+    def test_saved_skipped_and_the_snapshot(self):
+        run = self.fl.download("exs:example_user")
+        first = list(run)
         saved = [event for event in first if isinstance(event, flnd.Saved)]
         self.assertEqual(sorted(event.path.name for event in saved),
                          ["2026-03-01_p1.jpg", "2026-03-01_p2.jpg", "2026-03-01_r1.jpg"])
         self.assertTrue(all(event.path.is_file() and event.size == len(JPEG) for event in saved))
         self.assertEqual({event.date for event in saved}, {datetime.date(2026, 3, 1)})
-        progress = [event for event in first if isinstance(event, flnd.Progress)]
-        self.assertEqual({event.category for event in progress}, {"posts", "reels"})
-        self.assertTrue(any(event.listed for event in progress))
+        [row] = run.state.targets
+        self.assertEqual((row.categories, row.phase, row.saved), (("posts", "reels"),
+                                                                  flnd.Phase.DONE, 3))
         second = list(self.fl.download("exs:example_user"))
         self.assertEqual(sum(isinstance(event, flnd.Skipped) for event in second), 3)
         self.assertFalse(any(isinstance(event, flnd.Saved) for event in second))

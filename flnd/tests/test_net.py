@@ -21,7 +21,7 @@ from unittest import mock
 from fakes import download, fetch
 
 from flnd.errors import Blocked, Error, NetworkError, NotFound, SiteError, Stopped
-from flnd.ui.log import _brief, ui
+from flnd.ui.log import ui
 from flnkit import clock as _time
 from flnkit import files as _files
 from flnkit import html as _html
@@ -444,7 +444,6 @@ class SessionTest(NetCase):
                     fetch(url, retries=0)
                 self.assert_no_secret(str(raised.exception))
                 self.assertNotIn("example_user:", str(raised.exception))
-        self.assertNotIn(self.PASSWORD, _brief(ValueError(f"GET {url}: refused")))
 
     def test_the_secrets_were_sent_and_a_responses_repr_names_no_value(self):
         session = _net.Session(headers={"Authorization": self.TOKEN}, cookies=[

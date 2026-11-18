@@ -360,7 +360,7 @@ Windows, `--parent-window`), and it refuses any other origin.
 - **With `--dry`**, standard output lists what the run would save: `found <target>` per target
   a search finds, then `new <path>` or `saved <path>` per file, and a last line counts them.
 - **`--json`** writes each event as one JSON object per line, its class in `"type"` (`Saved`,
-  `Skipped`, `Failed`, `Progress`, `Planned`, then the run's report as `{"type": "Report", …}`.
+  `Skipped`, `Failed`, `Planned`, then the run's report as `{"type": "Report", …}`.
   `ls`, `login`, `logout`, `unfollow`, `sources` and `check` write their rows the same way. An
   error that ends a command is a line too, `{"type": "Error", "error": {"class", "message",
   "hint"}}`, besides its text on standard error. So every line on standard output is one JSON

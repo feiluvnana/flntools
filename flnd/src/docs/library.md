@@ -88,7 +88,6 @@ with flnd.open(home) as fl:
 | `flnd.Saved` | a file is downloaded, and every step after it is done (dedupe, unpack, the sidecar) | `target`, `category`, `post`, `path` (its final path: on disk), `date`, `size` (as it is now) |
 | `flnd.Skipped` | a file (or a whole post) is already saved | `target`, `category`, `post`, `path` (None for a post) |
 | `flnd.Failed` | a file failed, or a whole target did | `target`, `error`, and for a file `post` and `path` |
-| `flnd.Progress` | a category's counts changed, or its listing ended | `target`, `category`, `found`, `saved`, `skipped`, `failed`, `bytes`, `listed` |
 | `flnd.Planned` | a dry run planned a file | `target`, `post`, `path`, `state` (`"new"` or `"saved"`) |
 
 Events are frozen msgspec structs. A failed file is an event, never an exception: the run goes
@@ -232,8 +231,8 @@ A download or sync is smart about what it already has ([architecture.md](archite
 - a sync with nothing new reads one page and stops: a `Skipped` event with
   `reason="nothing new"`, counted in `report.unchanged` (not in `report.skipped`, which counts
   files);
-- a sync that was cut short is finished by the next one, which jumps to where it stopped: a
-  `Progress` event with `note="resuming from the last run"`, counted in `report.resumed`.
+- a sync that was cut short is finished by the next one, which jumps to where it stopped,
+  counted in `report.resumed`.
 
 ```python
 with flnd.open(home) as fl:

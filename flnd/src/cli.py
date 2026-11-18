@@ -1216,8 +1216,6 @@ class _JournalView(_View):
         from flnd.ui import out
 
         name = type(event).__name__
-        if name == "Progress":
-            return
         if self.journal is not None:
             self.journal.write(event)
         if name != "Planned":

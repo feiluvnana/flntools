@@ -54,7 +54,6 @@ from flnd.engine.events import (
     RESUMING,
     Failed,
     Planned,
-    Progress,
     Report,
     Saved,
     Skipped,
@@ -123,7 +122,8 @@ class Run:
     """One download, follow or sync: iterate it for its events, or `wait()` for its `Report`.
 
     A run starts when it is first iterated or waited on. Iterating yields `Saved`, `Skipped`,
-    `Failed`, `Progress` and (for `dry=True`) `Planned` events as they happen. Breaking out of the
+    `Failed` and (for `dry=True`) `Planned` events as they happen; `state` says what it is doing
+    now. Breaking out of the
     loop holds the run back: iterating again goes on where it was, `wait()` finishes it, and
     leaving the `Flnd`'s `with` stops it.
 
@@ -361,13 +361,19 @@ class Run:
         Called by the engine on its listing thread and from download tasks on the run's loop.
         It returns at once when nobody will read the event (`wait()` is draining the run).
 
-        A `State` isn't an event: it replaces `run.state` at once, and is never queued.
+        Two things that aren't events come here too, and are never queued: a `State`, which
+        replaces `run.state` at once, and `RESUMING`, a listing that went on from an earlier
+        run's cursor, which `report.resumed` counts.
 
         Args:
-            event: a `Saved`, `Skipped`, `Failed`, `Progress` or `Planned` event, or a `State`.
+            event: a `Saved`, `Skipped`, `Failed` or `Planned` event, a `State`, or `RESUMING`.
         """
         if isinstance(event, State):
             self._state = event
+            return
+        if event is RESUMING:
+            with self._lock:
+                self._resumed += 1
             return
         with self._lock:
             if isinstance(event, Saved):
@@ -380,8 +386,6 @@ class Run:
                     self._unchanged += 1
                 else:
                     self._skipped += 1
-            elif isinstance(event, Progress):
-                self._resumed += event.note == RESUMING
             elif isinstance(event, Failed):
                 self._failed.append(event)
             elif isinstance(event, Planned):

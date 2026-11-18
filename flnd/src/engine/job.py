@@ -2,12 +2,12 @@
 
 src/docs/architecture explains it.
 
-What it holds: `download`, the one entry for a target; `Board`, the progress rows and the source
-of `Progress` events; `Ledger`, which plans each post's files (skip, link, hold for a day,
-queue); `Downloads`, which runs the queued files on the run's loop and commits each post's
-rows; the listing loop (`_read`, `_list_one`, `_sync_one`, `_retry_failed`) with its early
-stops; and `plan`, `place`, `posts` and `discover`, the pieces a dry run and `flnd.testing`
-reuse.
+What it holds: `download`, the one entry for a target; `Tally`, the run's live counts and
+the `State` snapshots made from them; `Ledger`, which plans each post's files (skip, link,
+hold for a day, queue); `Downloads`, which runs the queued files on the run's loop and
+commits each post's rows; the listing loop (`_read`, `_list_one`, `_sync_one`,
+`_retry_failed`) with its early stops; and `plan`, `place`, `posts` and `discover`, the
+pieces a dry run and `flnd.testing` reuse.
 
 Who calls it: the engine (`flnd.engine.core`), once per target, on the target's listing thread.
 What it calls: the source's route and categories through a `TargetSite`, the downloader
@@ -50,7 +50,7 @@ Rules a change must keep:
   file)` and the cursor of the post's page.
 - Two threads touch a target. The listing thread runs the source, the `Ledger` and
   `Downloads.submit`; each file's task runs on the run's loop. They share only what a lock
-  guards: the board's counts (`Board._lock`), the downloads' lists of written and landed files
+  guards: the tally's counts (`Tally._lock`), the downloads' lists of written and landed files
   (`Downloads._writing`) and its queue count (`Downloads._changed`). A source's code runs on
   the listing thread only, so a task that needs a lazy post's files again asks that thread
   (`_Refresh`), which answers between two files.
@@ -94,7 +94,6 @@ from flnd.engine.events import (
     FileState,
     HoldState,
     Phase,
-    Progress,
     Saved,
     Skipped,
     State,
@@ -125,7 +124,7 @@ if TYPE_CHECKING:
     from flnd.engine.run import Stop
 
 __all__ = [
-    "STOPPED", "Board", "Counts", "Downloads", "Flight", "Ledger", "Placed", "Tally",
+    "STOPPED", "Counts", "Downloads", "Flight", "Ledger", "Placed", "Tally",
     "TargetReport", "causes", "discover", "download", "failure", "logged_out", "place", "plan",
     "posts", "tell", "wanted",
 ]
@@ -288,7 +287,7 @@ def _on_domains(error: SiteError, domains: Sequence[str]) -> bool:
 
 @dataclass
 class Counts:
-    """One category's counts of files, as its board line and its `Progress` events show them.
+    """One category's counts of files, as the run's tally keeps them.
 
     A file moves from `queued` to `downloading`, then to `saved`, `skipped` or `failed`.
     `linked` counts files linked from another category's folder, `later` the links held back
@@ -311,277 +310,8 @@ class Counts:
         return self.queued + self.downloading + self.later
 
 
-@dataclass
-class _Line:
-    """One category status line tracked by `Board`."""
-
-    target: Target
-    label: str
-    counts: Counts
-    row: Any = None
-    listed: bool = False
-    ended: bool = False
-    note: str = ""
-
-
-# The counts whose change is worth a `Progress` event. A file moving from queued to downloading
-# isn't: a script sees it when the file is saved, skipped or fails.
-PROGRESS_STEPS = frozenset({"found", "saved", "skipped", "failed", "linked"})
-
-
 def _ignore(event: Any) -> None:
     """The sink of a run nobody listens to: the event is dropped."""
-
-
-class Board:
-    """Status board drawing per-target, per-category progress in a `ui.Group`.
-
-    One row per target and category is the run's summary table: the counts of its files
-    (queued, downloading, saved, failed) in the label, the spinner on the rows still going.
-    Whether the rows draw is the caller's (`ui.group(drawn=…)`); a script that only reads
-    events draws nothing.
-
-    It is also where `Progress` events come from: each count that a script cares about
-    (`PROGRESS_STEPS`), and each listing that ends, sends the category's counts to `emit`. The
-    event is made under the board's lock, so its counts agree, and sent after it is released,
-    since a sink may wait for the script to take the event.
-
-    Args:
-        rows: the `ui.Group` the rows are drawn in.
-        subject_width: the width the targets are padded to; 0 to leave them as they are.
-        label_width: the width the categories are padded to; 0 to leave them as they are.
-        parent: the search whose found targets share this board's rows; None for a plain run.
-        emit: the run's event sink; None drops the events.
-    """
-
-    def __init__(
-        self, rows: Any, *, subject_width: int = 0, label_width: int = 0,
-        parent: Target | None = None, emit: Callable[[Any], None] | None = None,
-        tally: Tally | None = None,
-    ) -> None:
-        self.rows, self.widths, self.parent = rows, (subject_width, label_width), parent
-        self.emit = emit or _ignore
-        self.tally = tally or Tally()
-        self._lock = threading.Lock()
-        self._lines: dict[tuple[Target, str], _Line] = {}
-        self._child_skipped: dict[Target, int] = {}
-
-    def start(self, target: Target, category: str, listing: Listing | None = None) -> None:
-        """Open the category's line as its listing starts, unless already open.
-
-        Args:
-            target: the target listed.
-            category: its category; "" for a target without categories.
-            listing: the category's `Listing`, for the pages the snapshot shows.
-        """
-        self._adopt(target)
-        self.tally.start(target, category, listing)
-        owner = self.parent or target
-        with self._lock:
-            line = self._lines.get((owner, category))
-            if line is None or line.ended:
-                self._open(owner, category)
-
-    def count(self, target: Target, category: str, **steps: int) -> None:
-        """Add `steps` to the category's counts, refresh its row, and maybe send `Progress`.
-
-        Called from the listing thread (found, skipped) and from download tasks on the loop
-        (downloading, saved, failed), so the counts change under the board's lock. A found
-        target of a search counts on the search's line, and its skips are also kept per found
-        target, for its own report.
-
-        Args:
-            target: the target the files belong to.
-            category: its category; "" for a target without categories.
-            steps: how much each count of `Counts` moves, such as `saved=1, downloading=-1`.
-        """
-        self._adopt(target)
-        self.tally.count(target, category, **steps)
-        owner = self.parent or target
-        with self._lock:
-            line = self._lines.get((owner, category)) or self._open(owner, category)
-            for name, step in steps.items():
-                setattr(line.counts, name, getattr(line.counts, name) + step)
-            if self.parent is not None and target != self.parent and "skipped" in steps:
-                self._child_skipped[target] = self._child_skipped.get(target, 0) + steps["skipped"]
-            event = self._progress(owner, category, line) if PROGRESS_STEPS & steps.keys() else None
-        self._show(line)
-        if event is not None:
-            self.emit(event)
-
-    def listed(self, target: Target, category: str) -> None:
-        """Mark the category's listing complete so its row finishes once nothing is pending.
-
-        Args:
-            target: the target listed.
-            category: its category.
-        """
-        if self.parent is not None and target != self.parent:
-            return
-        with self._lock:
-            line = self._lines.get((target, category)) or self._open(target, category)
-            line.listed = True
-            event = self._progress(target, category, line)
-        self._show(line)
-        self.emit(event)
-
-    def say(self, target: Target, category: str, note: str) -> None:
-        """Send a `Progress` event with a note about how a listing goes ("resuming …").
-
-        Args:
-            target: the target.
-            category: the listing's category; "" for a route's own posts.
-            note: what the event's `note` says.
-        """
-        owner = self.parent or target
-        with self._lock:
-            line = self._lines.get((owner, category)) or self._open(owner, category)
-            c = line.counts
-            event = Progress(owner, category, found=c.found, saved=c.saved + c.linked,
-                             skipped=c.skipped, failed=c.failed, bytes=c.bytes,
-                             listed=line.listed, note=note)
-        self.emit(event)
-
-    def note(self, target: Target, note_text: str) -> None:
-        """Attach a status note to each open line for `target`."""
-        for line in self._of(target):
-            if not line.ended:
-                line.note = note_text
-                self._show(line)
-
-    def end(self, target: Target, *, failed: bool) -> None:
-        """Finalize every open line for `target` as ok or failed.
-
-        Args:
-            target: the target.
-            failed: whether its open lines end failed.
-        """
-        if self.parent is not None and target != self.parent:
-            return
-        self.tally.end(target, failed=failed)
-        for line in self._of(target):
-            if line.ended or line.row is None:
-                continue
-            line.ended = True
-            line.row.fail() if failed else line.row.finish()
-
-    def totals(self, target: Target) -> Counts:
-        """The counts of every category of `target`, summed.
-
-        Args:
-            target: the target; for a search's found target, only its skips are kept apart.
-
-        Returns:
-            A new `Counts`; changing it changes nothing on the board.
-        """
-        total = Counts()
-        with self._lock:
-            if self.parent is not None and target != self.parent:
-                total.skipped = self._child_skipped.get(target, 0)
-                return total
-            for line in self._lines.values():
-                if line.target == target:
-                    for name in vars(total):
-                        setattr(total, name, getattr(total, name) + getattr(line.counts, name))
-        return total
-
-    def downloading(self, target: Target) -> None:
-        """`target`'s listings ended; its files in flight finish."""
-        self.tally.downloading(target)
-
-    def _adopt(self, target: Target) -> None:
-        """Count a search's found target on the search's row of the snapshot."""
-        if self.parent is not None and target != self.parent:
-            self.tally.adopt(target, self.parent)
-
-    @staticmethod
-    def _progress(target: Target, category: str, line: _Line) -> Progress:
-        """The `Progress` event of one line's counts; the caller holds the lock."""
-        c = line.counts
-        return Progress(target, category, found=c.found, saved=c.saved + c.linked,
-                        skipped=c.skipped, failed=c.failed, bytes=c.bytes, listed=line.listed)
-
-    def _open(self, target: Target, category: str) -> _Line:
-        """Open a new `ui.Item` for `(target, category)` under the lock.
-
-        Args:
-            target: the target the line counts for.
-            category: its category; "" for a target without categories.
-
-        Returns:
-            The new line, whose row is a text row (`unit="none"`), not a quantity.
-        """
-        line = _Line(target, category or target.kind, Counts())
-        line.row = self.rows.add(self._label(line), unit="none")
-        self._lines[(target, category)] = line
-        return line
-
-    def _of(self, target: Target) -> list[_Line]:
-        """Return lines belonging to `target` in open order."""
-        with self._lock:
-            return [line for line in self._lines.values() if line.target == target]
-
-    def _show(self, line: _Line) -> None:
-        """Redraw a line's row, and finish it once its listing ended and no file is pending.
-
-        The label and the state are read under the lock; the row is drawn outside it, since a
-        row may take the UI's own lock.
-
-        Args:
-            line: the line to redraw.
-        """
-        with self._lock:
-            label = self._label(line)
-            done = line.listed and not line.counts.pending
-            completed = (
-                line.counts.saved + line.counts.skipped + line.counts.linked + line.counts.failed
-            )
-            if done:
-                line.ended = True
-        if line.row is not None:
-            line.row.label = label
-            line.row.count = completed
-            if done:
-                if line.counts.failed:
-                    line.row.fail()
-                else:
-                    line.row.finish()
-            else:
-                # The counts moved: redraw the row (throttled by the renderer).
-                line.row.advance(0)
-
-    def _label(self, line: _Line) -> str:
-        """One line's label: target, category, then the counts that aren't zero, and its note.
-
-        A file moves from queued to downloading, then to saved, skipped or failed, so the
-        label reads the table in that order.
-
-        Args:
-            line: the line.
-
-        Returns:
-            Such as `ins:example_user posts | 3 queued | 2 downloading | 12 saved | 4.1 MB`.
-        """
-        c = line.counts
-        subj = str(line.target).ljust(self.widths[0]) if self.widths[0] else str(line.target)
-        cat = line.label.ljust(self.widths[1]) if self.widths[1] else line.label
-        parts = [f"{subj} {cat}"]
-        if c.queued:
-            parts.append(f"{c.queued} queued")
-        if c.downloading:
-            parts.append(f"{c.downloading} downloading")
-        parts.append(f"{c.saved} saved")
-        if c.linked:
-            parts.append(f"{c.linked} linked")
-        if c.skipped:
-            parts.append(f"{c.skipped} skipped")
-        if c.failed:
-            parts.append(f"{c.failed} failed")
-        if c.bytes:
-            parts.append(text.size(c.bytes))
-        if line.note:
-            parts.append(line.note)
-        return " | ".join(parts)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1158,17 +888,17 @@ class Ledger:
         run: the source's run: its source and settings (the home, the database, the sink).
         site: the target's site, for warnings and the source's saved state.
         target: the target.
-        board: the progress rows its counts go to.
+        tally: the run's live counts, which its counts go to.
         options: the target's options, for `--again` and the templates' fields; None for none.
     """
 
     def __init__(
-        self, run: SourceRun, site: TargetSite, target: Target, board: Board, *,
+        self, run: SourceRun, site: TargetSite, target: Target, tally: Tally, *,
         options: Options | None = None,
     ) -> None:
         """Initialize a target ledger with its stores, dates, and category state."""
         self.source, self.settings, self.site = run.source, run.settings, site
-        self.target, self.board, self._options = target, board, options
+        self.target, self.tally, self._options = target, tally, options
         self.folder = home.target_folder(self.settings.home, target)
         # The home's database; None for a plan with nothing to read (`flnd.dry`).
         self._db = self.settings.db
@@ -1262,7 +992,7 @@ class Ledger:
                     found += 1
                 self._skip_held(post, placed.path, dest, item_key, held)
                 continue
-            self.board.count(self.target, post.category, found=1)
+            self.tally.count(self.target, post.category, found=1)
             self._queued.update(dict.fromkeys((dest, item_key), placed.path))
             # The cursor of the page the post is on, which a failure keeps for its retry.
             listing = self.site.listing
@@ -1292,7 +1022,7 @@ class Ledger:
         ui.debug("skip {name} -> {held}", name=name, held=held)
         if item_key in self._queued:
             self._later.append((dest, item_key, category))
-            self.board.count(self.target, category, later=1)
+            self.tally.count(self.target, category, later=1)
         else:
             candidate = self.folder.joinpath(*held.split("/"))
             self._link(dest, candidate if candidate.is_file() else Path(held), category, item_key)
@@ -1314,7 +1044,7 @@ class Ledger:
                 holder = Path(found[0])
             if holder is not None:
                 self._link(dest.with_suffix(holder.suffix), holder, category, item_key)
-            self.board.count(self.target, category, later=-1)
+            self.tally.count(self.target, category, later=-1)
         self._later = []
 
     def _link(self, dest: Path, holder: Path, category: str, item_key: str) -> None:
@@ -1343,7 +1073,7 @@ class Ledger:
             return
         if self._db is not None:
             self._db.link(item_key, dest, category)
-        self.board.count(self.target, category, linked=1)
+        self.tally.count(self.target, category, linked=1)
         ui.debug("link {name} -> {held}", name=self._name(dest), held=self._name(holder))
 
     def release(self) -> list[Post]:
@@ -1591,7 +1321,7 @@ class Ledger:
             post: the post's id.
             path: the file skipped; None when the whole post was.
         """
-        self.board.count(self.target, category, found=1, skipped=1)
+        self.tally.count(self.target, category, found=1, skipped=1)
         self.settings.emit(Skipped(self.target, category, post, path))
 
     def _held(self, dest: Path | None, item_key: str) -> str | None:
@@ -1703,13 +1433,13 @@ class Downloads:
     Args:
         run: the source's run: its settings, clients and loop.
         target: the target the files belong to.
-        board: the status lines counts go to.
+        tally: the run's live counts, which its counts go to.
     """
 
-    def __init__(self, run: SourceRun, target: Target, board: Board) -> None:
-        self.run, self.target, self.board = run, target, board
+    def __init__(self, run: SourceRun, target: Target, tally: Tally) -> None:
+        self.run, self.target, self.tally = run, target, tally
         self.source, self.settings = run.source, run.settings
-        self.tracks = Tracks(target, run.settings.emit, board.tally)
+        self.tracks = Tracks(target, run.settings.emit, tally)
         run.settings.tracks = self.tracks
         # Set once the listing failed, so a file that hasn't started ends at once.
         self._halted = False
@@ -1774,7 +1504,7 @@ class Downloads:
     def wait(self) -> None:
         """Wait on the listing thread until every submitted download ends, answering refreshes.
 
-        After the first Ctrl-C, the target's rows say how many files are finishing.
+        After the first Ctrl-C, a warning says how many of the target's files are finishing.
 
         Raises:
             KeyboardInterrupt: the second Ctrl-C (`stop.now`); the running files stop through
@@ -1796,8 +1526,8 @@ class Downloads:
                 if note_text == shown:
                     self._changed.wait(WAKE)
                     continue
-            if note_text is not None:
-                self.board.note(self.target, note_text)
+            if note_text is not None and shown is None:
+                ui.warn("{target}: {note}", target=str(self.target), note=note_text)
             shown = note_text
 
     def finish(self, error: BaseException | None = None) -> tuple[Path, ...]:
@@ -1864,7 +1594,7 @@ class Downloads:
 
     def _count(self, file: _Queued, /, **steps: int) -> None:
         """Update counts on the category's status line."""
-        self.board.count(self.target, file.placed.post.category, **steps)
+        self.tally.count(self.target, file.placed.post.category, **steps)
 
     async def _task(self, queued: _Queued) -> bool:
         """One file's task on the loop: its download, counted, and never an exception out.
@@ -2070,7 +1800,7 @@ class Downloads:
     ) -> None:
         """Hold a landed file's row until its post's last file settles, which commits it.
 
-        It stays "downloading" on the board until then, which is one board update less.
+        It stays "downloading" in the tally until then, which is one count less.
 
         Args:
             queued: the file's queue entry.
@@ -2254,8 +1984,8 @@ def sampled(settings: Any, error: BaseException) -> None:
         error.hint = f"{error.hint}; {saved}" if error.hint else saved
 
 
-def download(run: SourceRun, target: Target, board: Board, options: Options) -> TargetReport:
-    """Download one target of a source, counting progress on `board` (see the module's steps).
+def download(run: SourceRun, target: Target, tally: Tally, options: Options) -> TargetReport:
+    """Download one target of a source, counting on `tally` (see the module's steps).
 
     Called by the engine on the listing thread, inside the source's run. A failure of the
     listing fails the target alone: it is in the report, never raised.
@@ -2263,7 +1993,7 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
     Args:
         run: the source's run: its session, clients, loop and settings.
         target: the target, resolved.
-        board: the progress rows its counts go to.
+        tally: the run's live counts, which its counts go to.
         options: its options: `--when`, `--only`, `--limit`, `--again`, sync and retry.
 
     Returns:
@@ -2275,11 +2005,11 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
     # No lock on the target: each file's part locks itself, so two runs may share a target and
     # the sweep passes over the parts another run holds.
     files.sweep(home.target_folder(run.settings.home, target))
-    return _run_download(run, target, board, options)
+    return _run_download(run, target, tally, options)
 
 
 def _run_download(
-    run: SourceRun, target: Target, board: Board, options: Options
+    run: SourceRun, target: Target, tally: Tally, options: Options
 ) -> TargetReport:
     """Run one target from its listing to its rows: the steps of the module docstring.
 
@@ -2293,7 +2023,7 @@ def _run_download(
     Args:
         run: the source's run.
         target: the target.
-        board: the progress rows.
+        tally: the run's live counts.
         options: its options.
 
     Returns:
@@ -2301,8 +2031,8 @@ def _run_download(
     """
     started = time.monotonic()
     site = TargetSite(run, target, time=Range(options.since, options.until))
-    ledger = Ledger(run, site, target, board, options=options)
-    downloads = Downloads(run, target, board)
+    ledger = Ledger(run, site, target, tally, options=options)
+    downloads = Downloads(run, target, tally)
     work = _Work(ledger, downloads)
     db = run.settings.db
     row = db.target(target) if db is not None else None
@@ -2321,10 +2051,10 @@ def _run_download(
         # nothing keeps the count it has, unless it has none yet.
         if written or row is None or not row.files:
             db.tally(target)
-    report = TargetReport(target, written, board.totals(target).skipped,
+    report = TargetReport(target, written, tally.totals(target).skipped,
                           found=tuple(dict.fromkeys(work.linked)))
     return _ended(
-        run, board, report, error, complete=", ".join(progress.complete) or "none",
+        run, tally, report, error, complete=", ".join(progress.complete) or "none",
         started=started,
     )
 
@@ -2410,7 +2140,7 @@ def _execute_listing(
             if options.stop_at_saved:
                 work.ledger.redate()
             _read(work, run, site, target, options, progress)
-            work.ledger.board.downloading(target)
+            work.ledger.tally.downloading(target)
         except KeyboardInterrupt:
             if not run.settings.stop.soon.is_set() or run.settings.stop.now.is_set():
                 raise
@@ -2423,7 +2153,7 @@ def _execute_listing(
 
 
 def _ended(
-    run: SourceRun, board: Board, report: TargetReport, error: BaseException | None, *,
+    run: SourceRun, tally: Tally, report: TargetReport, error: BaseException | None, *,
     complete: str, started: float,
 ) -> TargetReport:
     """End a target's rows and report it: failed, stopped, or done.
@@ -2433,7 +2163,7 @@ def _ended(
 
     Args:
         run: the source's run.
-        board: the progress rows.
+        tally: the run's live counts.
         report: the target's report so far.
         error: what ended the listing; None when it finished.
         complete: the listings it read to their end, for the debug line.
@@ -2455,14 +2185,14 @@ def _ended(
             run.settings.db.fail(run=run.settings.run, item=home.key(target),
                                  target=home.key(target), error=failed)
         tell(target, failed, run.settings.emit)
-        board.end(target, failed=True)
+        tally.end(target, failed=True)
         return replace(report, error=failed)
     if run.settings.stop.soon.is_set():
         ui.debug("{target}: stopped", target=str(target))
-        board.end(target, failed=True)
+        tally.end(target, failed=True)
         return replace(report, error=Stopped(STOPPED))
-    board.end(target, failed=False)
-    _summary(board.totals(target), target, time.monotonic() - started)
+    tally.end(target, failed=False)
+    _summary(tally.totals(target), target, time.monotonic() - started)
     ui.debug(
         "{target}: {written} written, {skipped} skipped; complete: {complete}",
         target=str(report.target), written=len(report.written),
@@ -2474,7 +2204,7 @@ def _ended(
 def _summary(totals: Counts, target: Target, seconds: float) -> None:
     """A debug line for a finished target: files saved, size, skips, failures and time.
 
-    The CLI prints its own line from the target's `Progress` events; this one adds the time.
+    The CLI's summary counts the whole run; this line adds each target's own time.
 
     Args:
         totals: the target's counts.
@@ -2989,7 +2719,7 @@ def _read(
     """
     route = next(r for r in run.source.routes if r.kind == target.kind)
     if route.discovers:
-        _run_discovered(run, work.ledger.board, options,
+        _run_discovered(run, work.ledger.tally, options,
                         _steps(_context(run.source, route, site, target, run.run_async),
                                run.run_async))
         return
@@ -3074,16 +2804,14 @@ def _list_one(
     if stops.sync:
         ended, taken = _sync_one(work, run, site, target, options, progress, name=name,
                                  items=items, stops=stops, remaining=remaining)
-        if ended is not Ended.STOPPED:
-            work.ledger.board.listed(target, name)
         return ended, taken
     start = progress.started.get(name) if newest_first else None
     listing = progress.listings[name] = Listing(start, label=f"{target}: {name or target.kind}")
-    work.ledger.board.start(target, name, listing)
+    work.ledger.tally.start(target, name, listing)
     if start:
         ui.info("{target}: {name}: going on where an interrupted run stopped",
                 target=str(target), name=name or target.kind)
-        work.ledger.board.say(target, name, RESUMING)
+        run.settings.emit(RESUMING)
     ended, taken, kept = _listed(work, run, site, name, newest_first, items, listing, stops,
                                  options, remaining)
     if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP):
@@ -3102,8 +2830,6 @@ def _list_one(
             taken += extra
             if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and newest.newest is not None:
                 progress.heads[name] = newest.newest
-    if ended is not Ended.STOPPED:
-        work.ledger.board.listed(target, name)
     return ended, taken
 
 
@@ -3153,7 +2879,7 @@ def _sync_one(
         stops = replace(stops, streak=None) if stops.head is not None else replace(stops,
                                                                                     sync=False)
     listing = progress.listings[name] = Listing(None, label=label)
-    work.ledger.board.start(target, name, listing)
+    work.ledger.tally.start(target, name, listing)
     # 1. The newest posts. A listing that raises (the site failed it) is cut short like any:
     # where it was is kept as a gap before the error goes on to fail the target.
     try:
@@ -3175,9 +2901,9 @@ def _sync_one(
                 ended = Ended.CUT
                 break
             ui.info("{target}: resuming from the last run", target=label)
-            work.ledger.board.say(target, name, RESUMING)
+            run.settings.emit(RESUMING)
             jump = progress.listings[name] = Listing(left[0], label=label)
-            work.ledger.board.start(target, name, jump)
+            work.ledger.tally.start(target, name, jump)
             try:
                 ended, extra, filled = _listed(work, run, site, name, True, items, jump, stops,
                                                options, rest)
@@ -3323,7 +3049,7 @@ def _lost(
     """Record that a retry didn't meet a failed post: a failure of each of its files.
 
     Args:
-        work: the target's ledger and downloads, whose board counts each file failed.
+        work: the target's ledger and downloads, whose tally counts each file failed.
         run: the source's resources for the run, with its database and event sink.
         target: the target.
         rows: the post's failures, one per file.
@@ -3341,7 +3067,7 @@ def _lost(
         if db is not None:
             db.fail(run=run.settings.run, item=row.key, target=row.target, error=error,
                     post=row.post, category=row.category, file=row.file, cursor=row.cursor)
-        work.ledger.board.count(target, row.category, found=1, failed=1)
+        work.ledger.tally.count(target, row.category, found=1, failed=1)
         run.settings.emit(Failed(target, error, post=row.post, path=Path(row.file)))
 
 
@@ -3381,18 +3107,18 @@ def _listed(
 
 
 def _run_discovered(
-    run: SourceRun, board: Board, options: Options, items: Generator[Any, None, None]
+    run: SourceRun, tally: Tally, options: Options, items: Generator[Any, None, None]
 ) -> None:
     """Download each target a discovering route yields, in turn, within its parent's run.
 
     Such a route (an author's page listing their works) has no posts of its own; each target
-    it yields is downloaded at once with the parent's options, sharing its board. `--limit`
+    it yields is downloaded at once with the parent's options, on the same tally. `--limit`
     counts targets. The engine runs most of these as searches (`Engine._run_query`); this is
     the path for one reached by `download` directly, as a found target can be.
 
     Args:
         run: the source's run.
-        board: the parent's progress rows.
+        tally: the run's live counts.
         options: the parent's options.
         items: what the route yields; closed when done.
     """
@@ -3406,7 +3132,7 @@ def _run_discovered(
             if child is None or child in seen:
                 continue
             seen.add(child)
-            download(run, child, board, child_options)
+            download(run, child, tally, child_options)
             if options.limit is not None and len(seen) >= options.limit:
                 return
     finally:

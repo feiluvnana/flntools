@@ -26,7 +26,7 @@ from flnd.engine import home as _home
 from flnd.engine import job
 from flnd.engine import run as _run
 from flnd.engine.core import Engine, Report, TargetReport
-from flnd.engine.events import Failed, Progress
+from flnd.engine.events import Failed, Phase, State
 from flnd.engine.options import Options
 from flnd.engine.site import LoginSite
 from flnd.errors import Error
@@ -113,6 +113,8 @@ class EngineCase(unittest.TestCase):
         self.fake = self.enterContext(_time.use(_time.Fake()))
         # The events of the runs `report` makes: what the CLI shows, now that the engine logs no rows.
         self.events = []
+        # The run's snapshots, kept apart from its events.
+        self.states = []
 
     @property
     def now(self):
@@ -133,10 +135,13 @@ class EngineCase(unittest.TestCase):
 
     def report(self, *sources, targets, options=Options(), stop=None, **settings):
         """Run the targets, each with `options`, and return the `Report`; its events go in `events`."""
-        settings.setdefault("emit", self.events.append)
+        settings.setdefault("emit", lambda event: (
+            self.states if isinstance(event, State) else self.events).append(event))
         engine = Engine(home=self.home, sources={source.code: source for source in sources}, **settings)
         stop = stop or _run.Stop()
-        return Report(tuple(engine._run([(target, options) for target in engine.resolve(targets)], stop=stop)))
+        with engine._live():
+            return Report(tuple(engine._run([(target, options) for target in engine.resolve(targets)],
+                                            stop=stop)))
 
     def log_in(self, code, **values):
         jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
@@ -151,9 +156,10 @@ class EngineCase(unittest.TestCase):
                 for event in self.events if isinstance(event, Failed)]
 
     def listed(self):
-        """Each `(target, category)` whose listing ended, from the `Progress` events."""
-        return {(str(event.target), event.category) for event in self.events
-                if isinstance(event, Progress) and event.listed}
+        """Each `(target, category)` of a target that ended done, from the run's last snapshot."""
+        state = self.states[-1]
+        return {(row.text, name) for row in state.targets if row.phase is Phase.DONE
+                for name in row.categories}
 
     def target_dir(self, code, name):
         return self.home / _home.MEDIA / code / name
@@ -536,7 +542,7 @@ class ApiTest(EngineCase):
         self.assertEqual(sorted(flnd.__all__), [
             "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure",
             "FileState", "Flnd", "HoldState", "Installed", "Login", "LoginError", "NetworkError",
-            "NotFound", "Phase", "Planned", "Progress", "Record", "Report", "Run", "Saved",
+            "NotFound", "Phase", "Planned", "Record", "Report", "Run", "Saved",
             "SiteError", "Skipped", "SourceError", "State", "Status", "Stopped", "Target",
             "TargetState", "ToolError", "Tracked", "UsageError", "__version__", "open",
         ])

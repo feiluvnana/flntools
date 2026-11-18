@@ -8,6 +8,7 @@ in a temporary `.flnd`.
 import io
 import os
 import sqlite3
+import stat
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -275,6 +276,15 @@ class VaultTest(AuthCase):
         with _home.secrets(self.home, "tlg") as secrets:
             self.assertEqual(len(secrets), 0)
         self.assertFalse((self.home / "secret.key").exists())
+
+    def test_the_secret_store_is_the_owners_alone(self):
+        with _home.secrets(self.home, "tlg") as vault:
+            vault["session"] = "x"
+        db = self.home / _home.SECRETS
+        self.assertTrue(db.is_file())
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(db.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(db.parent.stat().st_mode), 0o700)
 
 
 class OriginAndExpiryTest(AuthCase):

@@ -407,14 +407,15 @@ def run(owner: Any, *, keep: bool) -> Any:
             result = app.return_value
         else:
             result = _plain(owner)
+        # Printed while a run's screen is still off the terminal, so it draws again below.
+        if result is not _STOP and keep and owner.answered:
+            from rich.console import Console
+
+            console = Console(file=sys.stdout, highlight=False,
+                              color_system="auto" if theme.color(sys.stdout) else None)
+            console.print(owner.view(theme.unicode(sys.stdout)))
     if result is _STOP:
         raise Stopped("stopped by Ctrl-C")
-    if keep and owner.answered:
-        from rich.console import Console
-
-        console = Console(file=sys.stdout, highlight=False,
-                          color_system="auto" if theme.color(sys.stdout) else None)
-        console.print(owner.view(theme.unicode(sys.stdout)))
     return result
 
 
@@ -542,7 +543,10 @@ def _keys(fd: int) -> list[tuple[str, str | None]]:
 
 @contextmanager
 def _paused() -> Iterator[None]:
-    from flnd.ui.log import log
-
-    with log.hold():
+    """Hold the run's screen while a question uses the terminal; nothing when none is drawn."""
+    screen = sys.modules.get("flnd.ui.screen")
+    if screen is None:
+        yield
+        return
+    with screen.paused():
         yield

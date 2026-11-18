@@ -90,9 +90,9 @@ The rules between them:
 | `src/cli.py` | the commands: `download`, `follow`, `sync`, `retry`, `ls`, `status`, `check`, `login`, `logout` and the rest; a run's screen and summary, or `--json` lines; `--exec`; the exit codes | the `flnd` script, `python -m flnd` |
 | `src/_library.py` | `open` and `Flnd`: each command as a method, over the engine; the reads (`targets`, `files`, `logins`, `status`), as rows | scripts and the CLI |
 | `src/engine/run.py` | `Run`: a command on its own worker thread, read as a stream of events; `Stop` (the Ctrl-C stages) and `suspend` | `Flnd`, the engine |
-| `src/engine/events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), the public `Report`, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the job, `Run`, `Flnd` |
+| `src/engine/events.py` | the events (`Saved`, `Skipped`, `Failed`, `Planned`), the public `Report`, the `State` snapshot, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the job, `Run`, `Flnd` |
 | `src/engine/core.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
-| `src/engine/job.py` | one target's run: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads on the loop (`Downloads`), the progress rows (`Board`), the run's live counts and its snapshots (`Tally`), history rows | the engine |
+| `src/engine/job.py` | one target's run: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads on the loop (`Downloads`), the run's live counts and its snapshots (`Tally`), history rows | the engine |
 | `src/engine/track.py` | each file's lifecycle (`FileTrack`): phases, and the only path that emits `Saved` / `Skipped` / `Failed` for a file | the job, `transfer`, `steps` |
 | `src/engine/site.py` | `SourceRun` (a source's cookies, HTTP session, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`), `LoginSite`, and `shared_browser`, the run's loop and browser | the engine, the job |
 | `src/engine/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, `when`'s reading, and `config`: every setting of config.toml, read and checked in one place | the engine, the job, the library, `site`, `steps` |
@@ -108,7 +108,7 @@ The rules between them:
 | `src/engine/check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
 | `src/ui/theme.py` | every colour and glyph flnd draws with, and when to drop colour or Unicode | `src/ui/*` |
 | `src/ui/out.py` | every line flnd prints: lines, folded warnings, errors and their hints, tables, the help; text from a site cleaned of escape codes | the CLI, `src/ui/log.py`, the run's hard exit |
-| `src/ui/log.py` | the levels of log lines, the progress rows and the run's summary table; the journal; the route of the kit's `logging` records | every layer above the kit |
+| `src/ui/log.py` | the levels of log lines and their scope; the journal; the route of the kit's `logging` records | every layer above the kit |
 | `src/ui/screen.py` | the run's screen, drawn from `run.state` on its `flnd-screen` thread, and the end summary | the CLI |
 | `src/ui/forms.py` | questions on the terminal in Huh's look (Textual, inline): `select`, `text`, `confirm`; without a terminal, `select` and `text` raise `UsageError` and `confirm` gives its default | the CLI, the site, the engine's browser screen, `src/ui/lists.py` |
 | `src/ui/lists.py` | the interactive lists (Textual, inline) of targets, accounts and plugins: ↑↓, `/` filter, enter details, `d` delete after a confirmation, `q` quit, each list's own keys; a plain table on a pipe | step 13's `target list`, `auth list` and `plugin list` |
@@ -253,7 +253,7 @@ the three is in the events and in the run's report.
    short (Ctrl-C, an error, `--limit`) keeps a gap instead (`job._sync_one`): the next sync
    starts from the newest page, since that is where new posts are, and once it meets saved
    posts on top, jumps to the gap's cursor and goes on from there until it meets saved posts
-   again: a `Progress` event with the note `"resuming from the last run"` (`report.resumed`).
+   again; the run counts it in `report.resumed`.
    Gaps stack, newest first, when syncs are cut short twice. A feed that isn't paged by cursor
    leaves a gap without one, and the next sync reads down past saved posts to the head instead.
    The head moves only when a sync leaves no gap, so every gap lies above it.
@@ -278,7 +278,7 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
     Each target's queue holds 4 times its places; `Downloads.submit` waits on the listing
     thread while it is full. A task streams its file into its part, dates it and renames it;
     its post's rows commit when the post's last file settles. The job's `_writing` lock guards
-    the target's lists of written and landed files, the board's lock its counts, and `Home`'s
+    the target's lists of written and landed files, the tally's lock its counts, and `Home`'s
     one connection is shared behind a lock of its own;
   - **async Playwright**: one browser per run (`flnkit.browser.RunBrowser`), launched the
     first time a target needs a tab and shared by every source, so one Chrome window serves
@@ -353,13 +353,14 @@ may keep after the run and `encode` to JSON:
 | `Saved` | a file went through every step: its target, category, post, final path, day, size, and `retried` | the step chain's last step |
 | `Skipped` | a file or post was already saved, another run is saving it, or (with `reason="nothing new"`) a sync found nothing new | the job's `Ledger` and `Downloads` |
 | `Failed` | a file failed (with its post and path), or a whole target did; `error` is the `flnd.Error`, with its `hint` | the job and the engine |
-| `Progress` | a category's counts changed (found, saved, skipped, failed, bytes), its listing ended, or a note ("resuming from the last run") | the job's `Board` |
 | `Planned` | a dry run planned a file: `"new"` or `"saved"` | the engine's dry run |
 
 `Run` counts the events into a public `flnd.Report` (saved, skipped, bytes, failed, retried,
 resumed, unchanged), which `run.report` shows so far and `run.wait()` returns. The engine keeps
 its own `engine.Report` of one `TargetReport` per target, for the `runs` row and the totals; a
-script never sees it. There are no callbacks and no hooks: a script iterates the run.
+script never sees it. What the run is doing now isn't an event: it is `run.state`, the
+snapshot ([Threads and queues](#threads-and-queues)). There are no callbacks and no hooks: a
+script iterates the run.
 
 ## The browser
 
@@ -520,7 +521,7 @@ What flnd took from them:
   locations**: the user's own folder and installed packages.
 - gallery-dl's **`Queue`**, as `Target`: a search, or a post that links to another site, hands
   the target on, and the source that reads it downloads it.
-- gallery-dl's **job types**, as readers of one event stream: the summary table, `--json`,
+- gallery-dl's **job types**, as readers of one event stream: the screen, `--json`,
   `--dry` and a script's loop all read the same events.
 - gallery-dl's **skip-and-abort**, owned by the engine, so no source repeats it.
 - yt-dlp's **expected errors**: an error the user can fix prints one line and a hint.

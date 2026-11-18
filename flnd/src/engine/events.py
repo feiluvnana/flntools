@@ -9,8 +9,8 @@ msgspec, the errors and `flnd.source` (for `Target`), never the engine, so `flnd
 cheap to reach.
 
 Who makes them:
-1. the job and the engine make `Saved`, `Skipped`, `Failed`, `Progress` and `Planned` as a run
-   goes, and hand them to the run's sink (`flnd.engine.run.Run._emit`);
+1. the job and the engine make `Saved`, `Skipped`, `Failed` and `Planned` as a run goes,
+   and hand them to the run's sink (`flnd.engine.run.Run._emit`);
 2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
 3. `Flnd` makes `Login`, `Record`, `Tracked`, `Status` and `Failure` from the home's
    `flnd.db`, for its reads, `Checked` from `fl.check()`, and `Installed` from the sources it
@@ -38,7 +38,7 @@ from flnd.source import Target
 
 __all__ = [
     "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure", "FileState", "HoldState",
-    "Installed", "Login", "Phase", "Planned", "Progress", "Record", "Report", "Saved",
+    "Installed", "Login", "Phase", "Planned", "Record", "Report", "Saved",
     "Skipped", "State", "Status", "TargetState", "Tracked", "encode",
 ]
 
@@ -46,7 +46,8 @@ __all__ = [
 NOTHING_NEW = "nothing new"
 # `Skipped.reason` for a file or post already saved, or being saved by another run.
 SAVED = "saved"
-# `Progress.note` for a listing that goes on from where an earlier run was cut short.
+# What the job sends the run's sink, beside the events, for a listing that goes on from where
+# an earlier run was cut short: the run counts it in `Report.resumed`, and never queues it.
 RESUMING = "resuming from the last run"
 
 
@@ -134,33 +135,6 @@ class Failed(msgspec.Struct, frozen=True, tag=True):
     path: Path | None = None
 
 
-class Progress(msgspec.Struct, frozen=True, tag=True):
-    """The counts of one category of one target so far, sent as they change.
-
-    Example:
-        >>> from flnd.source import Target
-        >>> step = Progress(Target("ins:example_user", kind="user"), "posts", found=3, saved=1)
-        >>> step.found - step.saved - step.skipped - step.failed
-        2
-    """
-
-    target: Target
-    # The category being listed; "" for a target without categories.
-    category: str
-    # Files found so far: queued, saved, skipped or failed.
-    found: int = 0
-    saved: int = 0
-    skipped: int = 0
-    failed: int = 0
-    # Bytes saved so far.
-    bytes: int = 0
-    # Whether the listing is done: what is still found is only finishing downloads.
-    listed: bool = False
-    # How the listing goes, when it is worth saying: "resuming from the last run" when it goes
-    # on where an earlier run was cut short; "" otherwise.
-    note: str = ""
-
-
 class Planned(msgspec.Struct, frozen=True, tag=True):
     """What a dry run (`dry=True`) would do with one file: nothing is downloaded or written.
 
@@ -186,7 +160,7 @@ class Planned(msgspec.Struct, frozen=True, tag=True):
 
 
 # Any event a run yields, for a `match` or an annotation.
-Event = Saved | Skipped | Failed | Progress | Planned
+Event = Saved | Skipped | Failed | Planned
 
 
 # ---------------------------------------------------------------------------------------------

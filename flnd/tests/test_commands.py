@@ -396,7 +396,7 @@ class OutputTest(FlndCase):
         code, out, _ = self.run_app("--json", "download", "exs:example_user", "--only", "reels")
         self.assertEqual(code, 0)
         rows = [json.loads(line) for line in out.splitlines()]
-        self.assertEqual({row["type"] for row in rows[:-1]}, {"Saved", "Progress"})
+        self.assertEqual({row["type"] for row in rows[:-1]}, {"Saved"})
         saved = [row for row in rows if row["type"] == "Saved"]
         self.assertEqual([row["post"] for row in saved], ["r1"])
         self.assertEqual(rows[-1]["type"], "Report")

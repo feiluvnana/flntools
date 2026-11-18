@@ -31,7 +31,6 @@ from test_engine import EngineCase, make_source
 from flnd.engine import home as _home
 from flnd.engine import transfer as _transfer
 from flnd.engine.core import Engine
-from flnd.engine.events import Progress
 from flnd.engine.options import Options
 from flnd.engine.site import LoginSite
 from flnd.source import LoginError, Target, UsageError
@@ -849,9 +848,9 @@ class ChatTest(DownloadCase):
         self.assertTrue((by_title / "Example_Channel" / "photo" / "2026-01-05_11.jpg").is_file())
         self.assertEqual(self.download("tlg:-1001001"), 0)
         # The file is already saved under the title, so the id run's photo counts it skipped.
-        steps = [event for event in self.events if isinstance(event, Progress)
-                 and str(event.target) == "tlg:-1001001" and event.category == "photo"]
-        self.assertEqual((steps[-1].skipped, steps[-1].saved), (1, 0))
+        state = self.states[-1]
+        [row] = [row for row in state.targets if row.text == "tlg:-1001001"]
+        self.assertEqual((row.skipped, row.saved), (1, 0))
 
     def test_an_ambiguous_title_fails_listing_ids(self):
         other = chat(1002, "Example Channel")

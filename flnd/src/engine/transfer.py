@@ -6,7 +6,7 @@ Who calls it: a target's downloads (`flnd.engine.job.Downloads`), one coroutine 
 run's loop. What it calls: the source's `flnkit.net.Client` for URLs, `flnkit.files.part` for
 the part, `flnkit.files` for ffmpeg, and `flnkit.files` to tell that a file is the media it
 should be. It is flnd's side, not a library: it knows a source's `File` and `Fetch` (`flnd.source`),
-and reports each transfer to its progress row (`flnd.ui.log`).
+and counts each transfer's bytes on its file's track (`flnd.engine.track`).
 
 The flow of one file (`save`):
 1. open and lock `<dest>.part` once, before any request, so a file another run is saving raises
@@ -509,125 +509,55 @@ def _sniffed(head: bytes, dest: Path, known: bool) -> Path:
 
 
 class _Row:
-    """One file's progress (or DASH video and audio's), opened on its first response.
+    """The progress sink of a file with no track (outside a target's run): it counts nothing,
+    and stops the transfer at its next chunk after a second Ctrl-C.
 
-    The row only counts (`drawn=False`): a run's progress is shown from its events.
-
-    Its streams report from the loop, and a blocking `fetch` function from its worker thread,
-    so a lock guards the bar.
+    It has the surface of `flnd.engine.track._Bar`, which a tracked file's transfer counts on.
 
     Args:
-        label: the bar's label, the file's path under its target.
+        label: the file's path under its target.
     """
 
     def __init__(self, label: str):
-        self.label, self.stack, self.base = label, ExitStack(), 0.0
-        self.bar: Any = None
-        self._lock = threading.Lock()
+        self.label = label
 
     def __enter__(self) -> _Row:
         return self
 
     def __exit__(self, *error: Any) -> None:
-        self.stack.__exit__(*error)
+        return None
 
     def start(self, total: float | None) -> None:
-        """Open the bar for a `fetch` function, or count a new try on from where it is.
-
-        Args:
-            total: the file's size, or None when unknown.
-        """
-        with self._lock:
-            if self.bar is None:
-                drawn = False
-                self.bar = self.stack.enter_context(
-                    ui.progress(self.label, total=total, unit="bytes", drawn=drawn),
-                )
-                return
-            self.base = self.bar.count
-            self.bar.total = (
-                self.base + total if total is not None and self.bar.total is not None else None
-            )
-
-    def update(self, done: float, total: float | None = None) -> None:
-        """Set where a `fetch` function stands.
-
-        Args:
-            done: bytes written by this try.
-            total: the file's size, when the function learned it.
-        """
-        with self._lock:
-            if self.bar is None:
-                return
-            if total:
-                self.bar.total = self.base + total
-            self.bar.count = self.base + done
+        """A try starts; there is nothing to show."""
 
     def stoppable(self, done: float, total: float | None = None, *,
                   stop: threading.Event | None = None) -> None:
-        """Update progress for a source's `fetch` function, stopping on second Ctrl-C."""
+        """A source's `fetch` function reports; stop on a second Ctrl-C."""
         if stop is not None and stop.is_set():
             raise KeyboardInterrupt
-        self.update(done, total)
 
     def follow(self, stop: threading.Event | None = None) -> _Stream:
-        """A sink for one more stream on this bar, stoppable on Ctrl-C."""
-        return _Stream(self, stop)
-
-    def grow(self, old: float | None, new: float | None) -> None:
-        """Open the bar on a stream's first total, or swap the stream's `old` total for `new`.
-
-        Args:
-            old: the stream's total before, or None.
-            new: its total now, or None when unknown (the bar's total is then unknown too).
-        """
-        with self._lock:
-            if self.bar is None:
-                drawn = False
-                self.bar = self.stack.enter_context(
-                    ui.progress(self.label, total=new, unit="bytes", drawn=drawn),
-                )
-            elif new is None or self.bar.total is None:
-                self.bar.total = None
-            else:
-                self.bar.total = self.bar.total - (old or 0) + new
-
-    def advance(self, n: float) -> None:
-        with self._lock:
-            if self.bar is not None:
-                self.bar.advance(n)
+        """A sink for one more stream, stoppable on Ctrl-C."""
+        return _Stream(stop)
 
     def caption(self, text: str) -> None:
-        with self._lock:
-            if self.bar is not None:
-                self.bar.label = f"{self.label} ({text})"
+        """A step of the file (merging) starts; there is nothing to show."""
 
 
 class _Stream:
-    """One stream's progress sink on a shared `_Row`.
+    """One stream's progress sink with no track: `total` is kept, and `advance` only stops.
 
     Args:
-        row: the file's bar.
         stop: an event that stops the stream at its next chunk (a second Ctrl-C).
     """
 
-    def __init__(self, row: _Row, stop: threading.Event | None):
-        self._row, self._stop = row, stop
-        self._total: float | None = None
-
-    @property
-    def total(self) -> float | None:
-        return self._total
-
-    @total.setter
-    def total(self, value: float | None) -> None:
-        self._row.grow(self._total, value)
-        self._total = value
+    def __init__(self, stop: threading.Event | None):
+        self._stop = stop
+        self.total: float | None = None
 
     def advance(self, n: float) -> None:
         if self._stop is not None and self._stop.is_set():
             raise KeyboardInterrupt
-        self._row.advance(n)
 
 
 # What a web page where media was expected says to do: such a page is most often a login wall.

@@ -8,7 +8,8 @@ from __future__ import annotations
 import queue
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, Any
 
@@ -20,7 +21,7 @@ from flnd.ui import out, theme
 from flnkit import clock
 from flnkit.text import count, duration, size
 
-__all__ = ["Screen", "frame", "summary"]
+__all__ = ["Screen", "frame", "paused", "summary"]
 
 # Seconds between two looks at the snapshot.
 TICK = 0.1
@@ -256,21 +257,24 @@ class Screen:
         self._done = threading.Event()
         self._thread: threading.Thread | None = None
         self._block: Any = None
+        self._console: Any = None
         self._drawn = -1
+        # Held while a draw goes on, and while a question has the terminal (`paused`).
+        self._turn = threading.Lock()
 
     def __enter__(self) -> Screen:
         if not self.live:
             return self
         from rich.console import Console
-        from rich.live import Live
 
         width, height = self._size
-        console = Console(file=self._stream, force_terminal=True, width=width, height=height,
-                          color_system="truecolor" if theme.color(self._stream) else None,
-                          highlight=False, markup=False, emoji=False)
-        self._block = Live(console=console, auto_refresh=False, transient=False,
-                           redirect_stdout=False, redirect_stderr=False)
-        self._block.start()
+        self._console = Console(file=self._stream, force_terminal=True, width=width,
+                                height=height,
+                                color_system="truecolor" if theme.color(self._stream) else None,
+                                highlight=False, markup=False, emoji=False)
+        self._block = self._fresh()
+        global _drawing
+        _drawing = self
         out.above(self._lines.put)
         self._thread = threading.Thread(target=self._run, name="flnd-screen", daemon=True)
         self._thread.start()
@@ -285,9 +289,20 @@ class Screen:
         try:
             self.tick()
         finally:
+            global _drawing
+            _drawing = None
             out.above(None)
             self._block.stop()
             self._block = None
+
+    def _fresh(self) -> Any:
+        """A new live block, started: it knows no earlier block's height, so it erases nothing."""
+        from rich.live import Live
+
+        block = Live(console=self._console, auto_refresh=False, transient=False,
+                     redirect_stdout=False, redirect_stderr=False)
+        block.start()
+        return block
 
     def _run(self) -> None:
         while not self._done.wait(TICK):
@@ -295,8 +310,12 @@ class Screen:
 
     def tick(self) -> None:
         """Print the lines waiting above the block, and redraw it if the snapshot moved."""
+        with self._turn:
+            self._tick()
+
+    def _tick(self) -> None:
         block = self._block
-        if block is None:
+        if block is None or not block.is_started:
             return
         while True:
             try:
@@ -317,6 +336,32 @@ class Screen:
             ui.record("error", f"the screen could not draw: {type(error).__name__}: {error}")
             return
         block.update(drawn, refresh=True)
+
+
+# The screen being drawn, for `paused`; None when there is none.
+_drawing: Screen | None = None
+
+
+@contextmanager
+def paused() -> Iterator[None]:
+    """Take the run's screen off the terminal for the block (a question), then draw it again."""
+    shown = _drawing
+    if shown is None:
+        yield
+        return
+    with shown._turn:
+        block = shown._block
+        if block is None:
+            yield
+            return
+        # Cleared, not left drawn: the question prints where the block was, and stays.
+        block.transient = True
+        block.stop()
+        try:
+            yield
+        finally:
+            shown._block = shown._fresh()
+            shown._drawn = -1
 
 
 # ---------------------------------------------------------------------------------------------

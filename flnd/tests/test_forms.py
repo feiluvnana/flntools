@@ -149,7 +149,7 @@ class AskTest(unittest.TestCase):
                 call()
 
     def test_a_live_display_is_held_while_asking(self) -> None:
-        from flnd.ui import log
+        from flnd.ui import screen
 
         events: list[str] = []
 
@@ -159,7 +159,7 @@ class AskTest(unittest.TestCase):
             yield
             events.append("release")
 
-        with mock.patch.object(log.log, "hold", hold), \
+        with mock.patch.object(screen, "paused", hold), \
                 mock.patch.object(forms, "_show", lambda app: events.append("asked")):
             forms.confirm("Go on?")
         self.assertEqual(events, ["hold", "asked", "release"])
