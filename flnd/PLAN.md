@@ -608,7 +608,8 @@ that isn't lazy.
   categories: Sequence[str] | None = None, limit: int | None = None) -> list[Collected]` runs
   a target to its end, checks that a `newest_first` category's dated posts are non-increasing
   (skipping `pinned` posts) and that every template field is filled, and returns the
-  `Collected` files.
+  `Collected` files. As the crawl does, an error from a lazy post's `files()` (`NotFound`,
+  `Hidden`, `Changed`) is recorded as that post's, and `collect` skips the post and goes on.
 - `check(plugin)` runs the class checks and verifies that every backticked example target in
   each route's docstring resolves to that route.
 - `fake_clock()` is today's, and also fakes `clock.day()` (K6).
@@ -708,6 +709,7 @@ first out.
 | `Changed` | fail the job, save a scrubbed sample, never retry |
 | `DiskError`, a missing tool, or `PluginError` from a broken class | stop the run (exit 4) |
 | a file failed for any reason above | a `failures` row; the next runs retry it, up to 3 runs (`RETRIES = 3`) |
+| `NotFound`, `Hidden` or `Changed` from a lazy post's `files()` | that post's failure, never the target's: a `failures` row under the post's id, and the listing goes on to the next post; a `NotFound` marks the post gone, never asked again. `Blocked` and `LoginError` there act as on any request (a hold, a switch or a stop). Decided by the orchestrator on 2026-11-19 (15, item 6): ins and tik list most posts lazily, so one gone post would otherwise fail a whole profile; API 1 warned and skipped |
 
 **Segments**, for a `FILE` job:
 - A file whose size is at least 16 MiB, from a host that answered `Accept-Ranges: bytes` or a
@@ -800,7 +802,10 @@ What it does:
      is never the head a sync saves, and is skipped by the newest-first order check. A site
      that pins 2 or more posts (ins, tik) would otherwise end every sync at the pinned head
      and the pinned post after it, before any new post. Decided by the orchestrator on
-     2026-11-19 (15, item 6).
+     2026-11-19 (15, item 6);
+   - an error from a lazy post's `files()` fails that post alone (6.2's lazy-post row): its
+     `failures` row is under the post's id, a `NotFound` marks it gone, and the listing goes
+     on to the next post.
 3. **The Ledger** gives each file its path and key:
    - a file whose key is in `files` is `Skipped(reason="saved")`;
    - check on disk with a single `stat()` (`try: st = dest.stat()` instead of `is_file()` +
