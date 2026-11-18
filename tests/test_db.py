@@ -58,6 +58,15 @@ class DbTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             db.write("INSERT INTO t VALUES ('b', 2)")
 
+    def test_a_read_after_close_raises(self):
+        db = _db.Db(self.path, schema=SCHEMA)
+        db.write("INSERT INTO t VALUES ('a', 1)")
+        db.close()
+        with self.assertRaises(RuntimeError):
+            db.one("SELECT v FROM t", ())
+        with self.assertRaises(RuntimeError):
+            db.all("SELECT v FROM t")
+
 
 if __name__ == "__main__":
     unittest.main()

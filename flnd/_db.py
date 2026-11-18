@@ -272,6 +272,7 @@ class Db:
             The row's columns, in the statement's order.
 
         Raises:
+            RuntimeError: the `Db` is closed: a bug in the caller.
             DiskError: SQLite failed.
         """
         # The hot path: an open `Db` is already connected, so this is one prepared statement
@@ -279,7 +280,7 @@ class Db:
         with self._lock:
             sql = self._sql
             if sql is None:
-                if self._closed or not self.path.is_file():
+                if not self._closed and not self.path.is_file():
                     return None
                 sql = self.connection()
             try:
@@ -298,10 +299,11 @@ class Db:
             The rows, each its columns in the statement's order.
 
         Raises:
+            RuntimeError: the `Db` is closed: a bug in the caller.
             DiskError: SQLite failed.
         """
         with self._lock:
-            if self._sql is None and (self._closed or not self.path.is_file()):
+            if self._sql is None and not self._closed and not self.path.is_file():
                 return []
             try:
                 return self.connection().execute(query, args).fetchall()
