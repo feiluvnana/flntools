@@ -91,14 +91,14 @@ the reason the decision was taken.
 | D10 | Several accounts per plugin, one of them the default | the brief: "holds every plugin's accounts" |
 | D11 | Switching accounts is opt-in per plugin (`switch = true`), off by default | results differ between accounts |
 | D12 | The extension is built, and every plugin can use it through `Ctx` | the user's request; it also reads Chrome's cookies under app-bound encryption |
-| D13 | Secrets are sealed with AES-256-GCM; the key lives in the OS keychain, else in `~/.config/flnd/key`, never in the home | a copied or committed home leaks nothing, and an unattended sync still needs no password |
+| D13 | Secrets are sealed with AES-256-GCM; the key lives in `~/.config/flnd/key` (mode 0600), never in the home | a copied or committed home leaks nothing, and cron and SSH always work |
 | D14 | `flnd.sources` entry points are dropped; `plugin install` is the one way in | one way, and a manifest for every plugin |
 | D15 | A built-in `web` plugin takes links no other plugin claims | "any kind of content from any site" |
 | D16 | "source" becomes "plugin" everywhere: `flnd.plugin`, `Plugin`, `[plugins.<code>]`, `$FLND_PLUGINS`, `PluginError` | one word for one meaning, matching the brief |
 | D17 | The context a plugin acts through is `Ctx`; the route decorator is `route` | `Site` and `@target` collide with `Target` and `ctx.target` |
 | D18 | Progress is a snapshot (`run.state`); outcomes are events (`Saved`, `Skipped`, `Failed`, `Planned`); `Progress` goes | an event per count was the flood |
 | D19 | `--json`, `--home`, `--again` and the `retry` and `check` commands go (section 9 says where each feature goes) | the journal, `$FLND_HOME`, `target clean`, automatic retries, `status` |
-| D20 | `[defaults] exec` replaces `--exec`; it runs as a job and never through a shell | gallery-dl's exec, without bug E10 |
+| D20 | `[defaults] exec` replaces `--exec`; it is read only from `~/.config/flnd/config.toml` and runs as a job, never through a shell | gallery-dl's exec, scheduled as a job without a shell or home-folder code |
 | D21 | Segments are taken dynamically, only when the host has a free place and no other file waits for it | IDM and aria2; uses capacity that would sit idle |
 | D22 | Dedupe hashes only files whose size matches a saved file's | most files are never hashed (P2) |
 | D23 | A commit runs on the loop with `busy_timeout = 0`, and `SQLITE_BUSY` re-queues it after 20 ms | the loop never blocks (E18) |
@@ -157,7 +157,7 @@ flnd/
     config.py      config.toml: structs, reading, editing
   kit/             imports only kit/ and flnd/errors.py
     net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py media.py
-  ui/              imports only kit/, ui/ and flnd/errors.py
+  ui/              imports only kit/, ui/, engine/events.py and flnd/errors.py
     theme.py out.py screen.py lists.py forms.py
   plugins/         built-ins, importing only flnd.plugin and the standard library
     __init__.py _manifest.py fbk.py ins.py loi.py mht.py tik.py tlg.py twt.py web.py
@@ -168,13 +168,17 @@ flnd/
 **The import rules,** checked by `tests/test_layers.py` reading every file's imports:
 1. `kit/*` imports only `kit/*`, `flnd/errors.py`, the standard library and third-party
    packages.
-2. `ui/*` imports only `ui/*`, `kit/*` and `flnd/errors.py`.
-3. `engine/*` imports `engine/*`, `kit/*`, `ui/*` (only `ui/screen.py`, for the drawing
-   thread), `flnd/errors.py` and `flnd/plugin.py`.
-4. `flnd/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
+2. `ui/*` imports only `ui/*`, `kit/*`, `engine/events.py` and `flnd/errors.py`.
+3. `engine/*` imports `engine/*`, `kit/*`, `ui/*`, `flnd/errors.py` and `flnd/plugin.py`
+   (`engine/events.py` imports only `flnd/errors.py`, `flnd/plugin.py`, `kit/*`, `msgspec` and the
+   standard library).
+4. `flnd/plugin.py` imports only `kit/*`, `flnd/errors.py` and the standard library.
+   `flnd/testing.py` imports `flnd`, `flnd/plugin.py`, `engine/*` and `kit/*`. `flnd/_library.py`
+   imports `engine/*`, `kit/*`, `flnd/errors.py` and `flnd/plugin.py`.
+5. `flnd/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
    (`telethon`, `qrcode`), imported inside a function.
-5. `flnd/cli.py` imports only `flnd`, `flnd/ui/*` and `flnd/plugins/_manifest.py`.
-6. `flnd/__init__.py` imports nothing at import time beyond the standard library.
+6. `flnd/cli.py` imports only `flnd`, `flnd/ui/*` and `flnd/plugins/_manifest.py`.
+7. `flnd/__init__.py` imports nothing at import time beyond the standard library.
 
 ### 4.2 Where every module of today goes
 
@@ -201,7 +205,9 @@ flnd/
 | `flnd/_run.py`, `_events.py` | `engine/run.py`, `engine/events.py` | 2 |
 | `flnd/_track.py`, `_transfer.py`, `_steps.py` | `engine/track.py`, `transfer.py`, `steps.py` (temporary), then `save.py` | 2, 5 |
 | `flnd/_check.py` | `engine/check.py` (temporary), then `store.py` | 2, 10 |
-| `flnd/_plugins.py`, `flnd/sources/__init__.py` | `engine/plugins.py` | 2, 9 |
+| `flnd/_plugins.py` | `engine/plugins.py` | 2, 9 |
+| `flnd/sources/__init__.py` | `flnd/plugins/__init__.py` (registry stays lazy over manifest) | 8 |
+| `flnd/__init__.py`, `flnd/__main__.py` | kept in place, updated for public names | 4, 7, 13 |
 | `flnd/_library.py` | kept at `flnd/_library.py`, rewritten | 13 |
 | `flnd/source.py` | kept for API 1 until step 8; `flnd/plugin.py` is new in step 7 | 7, 8 |
 | `flnd/sources/<code>.py` | `flnd/plugins/<code>.py`, one per commit as it is ported | 8 |
@@ -240,7 +246,8 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 ### 5.2 Public names
 
 `flnd`:
-- library: `open`, `Flnd`, `Run`, `State`, `Report`;
+- library: `open`, `Flnd`, `Targets`, `Auth`, `Plugins`, `Extension`, `Config`, `Run`, `State`,
+  `TargetState`, `FileState`, `HoldState`, `Phase`, `Report`;
 - events: `Event`, `Saved`, `Skipped`, `Failed`, `Planned`;
 - rows: `Record` (a saved file), `Tracked` (a target), `Account`, `Status`, `Failure`,
   `Checked`, `Installed` (a plugin);
@@ -252,15 +259,19 @@ Removed from `flnd`: `Progress`, `Login` (the row is now `Account`), `SourceErro
 
 `flnd.plugin`:
 - the API: `API = 2`, `Plugin`, `Settings`, `Browser`, `route`, `Route`, `Category`;
-- what a plugin yields and reads: `Post`, `File`, `Target`, `Request`, `Response`, `Landed`,
-  `Range`, `Fetch`;
-- logging in: `Login`, `Cookies`, `cookies`;
+- what a plugin yields and reads: `Post`, `File`, `Part`, `Stream`, `Target`, `Request`,
+  `Response`, `Landed`, `Range`, `Fetch`, `DateLike`, `Clock`, `Document`, `Element`;
+- logging in: `Account`, `Login`, `Cookies`, `cookies`;
 - the context: `Ctx`;
 - helpers: `dig`, `meta`, `page_info`, `best`, `numbered`;
 - the errors `Blocked`, `NotFound`, `Hidden`, `Changed`, `LoginError`, `NetworkError`,
-  `UsageError`, `PluginError`, `Error`.
+  `SiteError`, `UsageError`, `PluginError`, `Error`.
 
-`flnd.testing`: `FakeCtx`, `collect`, `check`, `fake_clock`, `Reply`.
+`Target` and `Account` are defined in `flnd/plugin.py` and re-exported by `engine/events.py`
+and `flnd`.
+
+`flnd.testing`: `FakeCtx`, `FakePage`, `Reply`, `Collected`, `Seen`, `collect`, `check`,
+`fake_clock`.
 
 `tests/data/api.txt` (`make api`) pins all three. Its diff is reviewed in every step that
 changes a public name.
@@ -279,14 +290,15 @@ class is made, naming the attribute and the fix.
 | `login` | `Login \| None` | `None` | how it logs in; `None` means no login |
 | `pace` | `float` | `0.5` | seconds between two page requests of one bucket of one account |
 | `limits` | `Mapping[str, int]` | `{}` | host → the most files at once to it (raises its cap's ceiling) |
-| `browser` | `Browser` | `Browser.NONE` | `NONE` (HTTP only), `ANY` (flnd's Chromium or the user's Chrome), `CHROME` (needs the extension) |
+| `browser` | `Browser` | `Browser.NONE` | `NONE` (HTTP only), `ANY` (flnd's Chromium or the user's Chrome; defaults to Chromium), `CHROME` (needs the extension) |
 | `stealth` | `bool` | `True` | hide automation in its tabs, applied per tab by an init script |
-| `walls` | `tuple[str, ...]` | `()` | URL path prefixes meaning "log in": landing on one raises `LoginError` |
+| `user_agent` | `str \| None` | `None` | User-Agent sent to its domains (HTTP only); `None` keeps the client's Chrome UA |
+| `walls` | `tuple[str, ...]` | `()` | URL path prefixes meaning "log in": landing on one raises `LoginError` after retry |
 | `folder` | `str` | `"{category}"` | a template under `media/<code>/<target>/` |
 | `filename` | `str` | `"{post}_{num}"` | a template; the extension is added from the content |
 | `key` | `str` | `"{post}_{num}"` | the history key under `<code>:` |
 | `fields` | `tuple[str, ...]` | `()` | the post fields templates may use, besides the engine's |
-| `unsupported` | `tuple[str, ...]` | `()` | link paths it refuses, each with a reason in `resolve`'s error |
+| `unsupported` | `Mapping[str, str]` | `{}` | link or code patterns it refuses, mapped to the reason in `resolve`'s `UsageError` |
 | `Settings` | a `Settings` subclass | `Settings` | its own config keys: a frozen msgspec struct; each field has a default and an `Attributes:` line in the docstring |
 
 The engine's template fields stay as today: `plugin` (renamed from `source`), `target`,
@@ -295,8 +307,8 @@ The engine's template fields stay as today: `plugin` (renamed from `source`), `t
 **Routes and categories.**
 
 ```python
-@route(*patterns: str, newest_first: bool = True, single: bool = False,
-       discovers: bool = False, folder: str | None = None)
+@route(*patterns: str | tuple[str, str], newest_first: bool = True, single: bool = False,
+       discovers: bool = False, folder: str | None = None, shown: str | None = None)
 async def user(self, ctx: Ctx, user: str) -> Mapping[str, Any]: ...
 
 @user.category(own: bool = True, url: str | None = None, newest_first: bool | None = None,
@@ -304,10 +316,14 @@ async def user(self, ctx: Ctx, user: str) -> Mapping[str, Any]: ...
 async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Post | Target]: ...
 ```
 
-- **Patterns** keep today's syntax (`ins:{user}`, `instagram.com/{user}`): exactly one
-  placeholder, named like the method's third parameter.
+- **Patterns** keep today's syntax (`ins:{user}`, `instagram.com/{user}`): a plain string has
+  one placeholder named like the method's third parameter. An item may also be a
+  `(pattern, value_template)` pair (`tuple[str, str]`) when a route combines multiple
+  placeholders (`("facebook.com/permalink.php?story_fbid={post:\\w+}&id={user:\\d+}",
+  "{user}_{post}")`) or adds a prefix (`("t.me/c/{chat:\\d+}", "-100{chat}")`).
+- **`shown`** replaces the first pattern in help when the route accepts custom text (`tlg`).
 - **What a route returns** is passed to every category as `profile`. A route with no
-  categories yields `Post`s itself.
+  categories is an `async def` generator yielding `Post | Target` itself.
 - **`single=True`** marks a one-post route (a post or a video link). It is never followed,
   and a target of it with `/categories` is a `UsageError`. This replaces today's
   `single_kinds`.
@@ -321,9 +337,10 @@ async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Pos
   scheduler opens it ahead in a warm tab while the current category runs.
 
 **Types.**
-- **`Post(id: str, files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]],
-  date: DateLike = None, listed: DateLike = None, headers: Mapping[str, str] = {},
-  **fields)`:**
+- **`Post(id: str | int, files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]] = (),
+  *, date: DateLike = None, listed: DateLike = None,
+  headers: Mapping[str, str] | None = None, **fields)`:**
+  - converts `id` to `str`; has `.replace(**changes) -> Post` and `.lazy: bool`;
   - `files` as a coroutine function is a *lazy* post, whose files are listed only once the
     post is known to be new;
   - `date` names the files;
@@ -332,49 +349,61 @@ async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Pos
   audio: str | None = None, name: str | None = None, size: int | None = None,
   password: str | None = None)`:**
   - exactly one of `url`, `mirrors` and `fetch` is given;
-  - `audio` is a DASH audio stream to merge with the video;
+  - `audio` is a DASH audio stream to merge with the video (when `mirrors` holds a DASH video
+    followed by a progressive fallback, `audio` merges only with `mirrors[0]`, fixing S9);
   - `name` overrides the stem `filename` makes;
   - `password` is an archive's.
 
-  It also has `File.text(name, text)`, a file written from text, and `File.stream(playlist)`,
-  an HLS or DASH playlist fetched as segment jobs (5.3, helpers).
-- **`Fetch`:** `Callable[[Part], Awaitable[None]]`. `Part` has `offset`, `write(bytes)` and
-  `total(int)`, and resumes from `offset`. It replaces tlg's own part code.
-- **`Target(text: str)`:** a target a category hands on.
-- **`Request(url, method="GET", params=None, body=None, headers=None, check=True)`:** a
-  frozen struct.
+  It also has `File.text(name: str, text: str) -> File`, `File.dash(manifest: str | None, *,
+  height: int | None = None) -> File | None` (parses an inline MPD XML manifest, picking the
+  best video at or under `height` and best audio), and `File.stream(playlist: str, *,
+  headers: Mapping[str, str] | None = None) -> File` (an HLS `.m3u8` or segmented DASH
+  `.mpd` playlist URL fetched as concurrent segment jobs).
+- **`Fetch`:** `Callable[[Part], Awaitable[None]]`. `Part` has `offset: int`,
+  `async write(data: bytes) -> None` and `total(size: int) -> None`, and resumes from
+  `offset`. It replaces tlg's own part code.
+- **`Target(text: str, *, kind: str = "")`:** has `.plugin: str`, `.kind: str`,
+  `.value: str`, `.query: bool`; yielded by a route or category to run as its own target.
+- **`Request(url: str, *, method: str = "GET", params: Mapping[str, Any] | None = None,
+  body: bytes | str | Any = None, headers: Mapping[str, str] | None = None,
+  check: bool = True)`:** a frozen struct with `.replace(**changes) -> Request`.
 - **`Response`:** `status`, `url`, `headers`, `text`, `json`, `content`, `ok`, `html` (a
   `kit/html.py` document).
 - **`Landed(url: str, status: int)`:** where `open` ended up.
+- **`Stream`:** `url: str`, `height: int = 0`, `width: int = 0`, `bitrate: int = 0`,
+  `audio: str | None = None`.
 - **`Range`:** the run's `when`, as a date range; a category may read `ctx.when`.
 
-**`Ctx`, the only way a plugin acts.** Every coroutine below is one job, or several, of the
-scheduler.
+**`Ctx`, the only way a plugin acts.** Each method below runs as the listed scheduler job, or
+on the loop when its job kind is `none`.
 
 | member | signature | job kind |
 | --- | --- | --- |
 | `fetch` | `async fetch(request: str \| Request, *, bucket: str \| None = None, in_page: bool = False) -> Response` | `page` on the plugin's domains, `file`-pooled elsewhere |
-| `pages` | `pages(request, *, cursor: Callable[[Response], str \| None], send: str = "cursor", bucket=None) -> AsyncIterator[Response]` | `page`, one per page; the engine keeps and resumes the cursor |
-| `open` | `async open(url: str) -> Landed` | `tab`; a 404 raises `NotFound`; landing on a wall raises `LoginError` |
-| `feed` | `feed(match: str \| Pattern \| Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str \| None] \| None] \| None = None) -> AsyncIterator[Any]` | `tab`; the JSON of each matching response, in order |
-| `load` | `load(url: str, match, *, scroll: bool = True, cursor=None) -> AsyncIterator[Any]` | `open`, then `meta()` of the page, then `feed`, as one iterator |
+| `pages` | `pages(request: str \| Request, *, cursor: str \| Callable[[Response], str \| None], send: str \| Callable[[str], Mapping[str, Any]] = "cursor", bucket: str \| None = None) -> AsyncIterator[Response]` | `page`, one per page; the engine keeps and resumes the cursor |
+| `open` | `async open(url: str) -> Landed` | `tab`; a 404 raises `NotFound`; landing on a wall retries once, then raises `LoginError` |
+| `feed` | `feed(match: str \| Pattern \| Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str \| None] \| None] \| None = None) -> AsyncIterator[Any]` | `tab`; attaches its response listener immediately when called (usable with `async with` before `click`/`open`, or `async for`) |
+| `load` | `load(url: str, match, *, scroll: bool = True, lines: bool = False, cursor=None) -> AsyncIterator[Any]` | `tab`; attaches `feed` before `open(url)`, yields `meta(document)`, then `feed` items |
 | `document` | `async document() -> Document` | `tab` |
 | `click` | `async click(css: str, *, timeout: float = 10.0) -> None` | `tab` |
 | `handoff` | `async handoff(message: str, *, until: Callable[[], Awaitable[bool]], timeout: float \| None = None) -> bool` | `tab`; a person does a step (a captcha) in a visible window |
 | `extension` | `async extension(op: str, **args) -> Any` | `tab`; an op of 6.8; `UsageError` with the hint `flnd extension install` when it isn't connected |
+| `storage` | `async storage(origin: str) -> Mapping[str, str]` | `tab`; reads `origin`'s `localStorage` via extension `storage`, or Chrome profile before step 12 |
+| `pause` | `async pause(seconds: float, reason: str) -> None` | none; sleeps on the run's clock so a page settles and `fake_clock` advances |
+| `hold` | `async hold(reason: str, *, seconds: float \| None = None, bucket: str \| None = None) -> None` | none; sets a block hold or switches accounts under 6.2 for feed, DOM or SDK blocks (`FloodWaitError`) |
 | `call` | `async call(fn: Callable[..., T], *args) -> T` | `call`, in the thread pool |
-| `ask` | `async ask(message: str, *, secret: bool = False, choices: Sequence[str] = ()) -> str` | `UsageError` when nobody can answer (no terminal) |
+| `ask` | `async ask(message: str, *, secret: bool = False, description: str = "", choices: Sequence[str] = ()) -> str` | `UsageError` when nobody can answer (no terminal) |
 | `log` | `log(level: str, message: str, **fields) -> None` | none; `level` is `"debug"`, `"info"` or `"warn"` |
-| `target`, `when`, `time`, `settings`, `account` | properties | the Target; the `Range`; the clock; the `Settings` instance; the `Account` or `None` |
+| `target`, `when`, `time`, `settings`, `account` | properties | `Target`; `Range`; `Clock` (`.now()`, `.wall()`, `.day()`); `Settings`; `Account` or `None` |
 | `cookies` | `Mapping[str, str]` | the account's cookies on the plugin's domains, read-only |
-| `state` | `MutableMapping[str, str]` | the plugin's own table in `flnd.db`; each set is one statement |
+| `state` | `MutableMapping[str, Any]` | the plugin's own table in `flnd.db`; JSON values, each set one statement |
 | `secrets` | `MutableMapping[str, str]` | the account's sealed secrets; writable only during a login |
 
 Removed from today's `Site`:
 - `wait`, `scroll`, `tab` and `html`: unused, or replaced by `document`;
 - `evaluate`: now the extension op `evaluate`;
 - `warm`: replaced by `url=` on a category;
-- `back_off` and `pause`: replaced by `blocked` and the scheduler;
+- `back_off`: replaced by `blocked()` and `ctx.hold()`;
 - `url`: replaced by `Landed.url`;
 - `interactive`, `info` and `warn`: replaced by `ask`, which raises with nobody to answer,
   and by `log`;
@@ -384,7 +413,7 @@ Removed from today's `Site`:
 
 | hook | signature | when |
 | --- | --- | --- |
-| `resolve` | `@classmethod resolve(cls, text: str) -> Target \| None` | a link or `code:` text; the default matches the routes' patterns |
+| `resolve` | `@classmethod resolve(cls, text: str) -> Target \| None` | matches `text` against the class's compiled patterns and `unsupported` rules when called on `cls` |
 | `sign` | `sign(self, request: Request, cookies: Mapping[str, str]) -> Request` | before each try of a request to its domains; returns the request with headers added |
 | `connect` | `connect(self, ctx) -> AbstractAsyncContextManager[None]` | once per run, around the plugin's targets (tlg's client) |
 | `date` | `async date(self, ctx, post: Post) -> date \| None` | a post with no date, before its files are named |
@@ -397,14 +426,14 @@ that isn't lazy.
 **`Login`:**
 - **`class Login`** has:
   - `methods: tuple[str, ...]`;
-  - `names: tuple[str, ...]`, the cookies a login must have;
+  - `names: tuple[str, ...]`, the cookies, any one of which proves a login;
   - `url: str`, the login page for the `browser` method;
   - `required: bool = True`.
 - **Its hooks:**
   - `async start(self, ctx, method: str) -> None`: fills `ctx.secrets`, or raises
     `LoginError`;
-  - `async check(self, ctx) -> bool`: may `fetch`; the default is "all `names` cookies
-    present";
+  - `async check(self, ctx) -> bool`: may `fetch`; the default is "any of `names` cookies
+    present in `ctx.cookies`";
   - `async whoami(self, ctx) -> str | None`: the account's name on the site.
 - **`cookies(*names, url, required=False) -> Cookies`** is the login of a cookie site. Its
   methods are `("browser", "chrome", "file", "firefox", "safari")`, and before step 12 also
@@ -413,31 +442,45 @@ that isn't lazy.
 **Helpers:**
 - `meta(document) -> list[Any]`: the JSON in a page's `<script type="application/json">`
   blocks, with Meta's `__bbox` unwrapped. It replaces fbk's and ins's copies.
-- `page_info(path: str) -> Callable[[Any], tuple[bool, str | None]]`: a cursor reader for
-  `{has_next_page, end_cursor}` at a `dig` path.
-- `best(streams, *, height: int | None) -> Stream`: the stream with the most pixels, then the
-  most bits, at or under `height`; `None` means no cap.
-- `numbered(n: int, suffix: str = "", width: int = 2) -> str`: `"07"` or `"07_cover"`. It
+- `page_info(path: str) -> Callable[[Any], tuple[bool, str | None] | None]`: a cursor reader
+  for `{has_next_page, end_cursor}` at a `dig` path (`None` if missing).
+- `best(streams: Sequence[Stream], *, height: int | None = None) -> Stream | None`: the
+  stream with the most pixels, then the most bits, at or under `height`; `None` means no cap.
+- `numbered(n: int, *, suffix: str = "", width: int = 2) -> str`: `"07"` or `"07_cover"`. It
   replaces loi's and mht's copies.
 - `dig(data, path)`: today's. A malformed path raises `PluginError`.
 
 ### 5.4 The test kit (`flnd/testing.py`)
 
-- **`FakeCtx(plugin, *, routes: Mapping[str, Reply | Callable] = {}, pages: Mapping[str,
-  FakePage] = {}, account: str | None = None, answers: Sequence[str] = (), storage:
-  Mapping[str, str] = {}, extension: Mapping[str, Callable] = {})`.** It behaves like the
-  engine:
+- **`FakeCtx(plugin: type[Plugin] | Plugin, target: str | Target = "", *,
+  routes: Mapping[str, Reply | Callable] | None = None,
+  pages: Mapping[str, FakePage | str] | None = None,
+  account: str | None = None, cookies: Mapping[str, str] | None = None,
+  when: Range = Range(), answers: Sequence[str] = (),
+  state: MutableMapping[str, Any] | None = None,
+  storage: Mapping[str, str] | None = None,
+  extension: Mapping[str, Any] | None = None)`.**
+  - `Reply(body: Any = None, *, status: int = 200,
+    headers: Mapping[str, str] | None = None, url: str = "")` answers `fetch` and `pages`;
+  - `FakePage(html: str = "", *, status: int = 200, url: str = "",
+    feeds: Sequence[tuple[str, Any]] = ())` answers `open`, `document` and `feed`;
+  - `Seen` (`ctx.seen`) records `requests`, `visited`, `scrolls`, `logs` and `holds`.
+
+  `FakeCtx` behaves like the engine:
   - a 401 or 403 from the plugin's domains raises `LoginError`;
-  - `blocked` returning seconds records the hold in `ctx.holds` and moves on with the fake
-    clock;
+  - `blocked` returning seconds or `ctx.hold` records the hold in `ctx.seen.holds` and moves
+    on with the fake clock;
   - `open` returns `Landed` with the page's status, raising `NotFound` and `LoginError` as
     the engine does;
   - `ask` pops `answers`, and raises `UsageError` when they run out;
-  - `extension` calls the given fakes.
-- `collect(plugin, target: str, *, categories=None, limit=None) -> Collected` runs a target
-  to its end and returns the posts, files, targets and holds.
-- `check(plugin)` runs the class checks, plus the ones that need posts: a category that
-  isn't ordered newest first but sets `newest_first`, or a template field no post fills.
+  - `extension` and `storage` read the given fakes.
+- `Collected(path: str, url: Any, post: Post, key: str, file: File)` with `.date: date | None`.
+- `collect(plugin, target: str, *, ctx: FakeCtx | None = None,
+  categories: Sequence[str] | None = None, limit: int | None = None) -> list[Collected]` runs
+  a target to its end, checks that a `newest_first` category's dated posts are non-increasing
+  and that every template field is filled, and returns the `Collected` files.
+- `check(plugin)` runs the class checks and verifies that every backticked example target in
+  each route's docstring resolves to that route.
 - `fake_clock()` is today's, and also fakes `clock.day()` (K6).
 
 ## 6. Contracts: the engine
@@ -462,6 +505,8 @@ that isn't lazy.
   3. the third runs the registered terminal restorers, then `os._exit(130)`.
 - **`run.suspend()`** stops new jobs from starting; running ones go on. **`resume()`** undoes
   it.
+- **Unstarted runs.** Dropping a `Run` that was never iterated, awaited or stopped emits a
+  `ResourceWarning`.
 - **The journal** belongs to the run: one file handle, and `write(record)` takes a lock and
   writes one whole line (fixes E9). Records are encoded with an `enc_hook` that writes a
   `Path` as a string and an `Error` as `{"class", "message", "hint"}` (fixes E8).
@@ -485,7 +530,7 @@ retry policy, and releases the pools.
 | --- | --- | --- |
 | `PAGE` | the hold of (plugin, account, bucket), then its pace token | one-token bucket at `1 / pace`; `pace` from config, else the class (0.5 s) |
 | `FILE` | the target's place, then the host's cap, then the rate limit | places per target `max(32, max(limits.values(), default=0))`; queue per target 4 × places; cap starts at 8, grows to 32 or `limits[host]` |
-| `TAB` | the run's tab budget, and for a scrolling feed the account's scroll gate | 6 tabs; 2 scrolling tabs per account |
+| `TAB` | the run's tab budget, and for a scrolling feed the account's scroll gate | 6 tabs; 2 scrolling tabs per account; one target reuses one tab; a warm tab opens only when at least 2 slots are free and never blocks an active target |
 | `CALL` | the thread pool | `min(32, os.cpu_count() + 4)` threads |
 | `HASH` | the hasher pool | `os.cpu_count()` threads |
 | `UNPACK` | the archive lane | 1 thread |
@@ -512,8 +557,8 @@ first out.
 | --- | --- |
 | `NetworkError`, or a 5xx | try again after 1, 2, 4, 8 s, each × a random 0.5–1.5; then fail the job |
 | 429 | hold the bucket for `Retry-After` or `x-rate-limit-reset` (at most 3600 s; else 30 s), and halve its rate for 20 clean requests; a third 429 in a row on a bucket counts as a block round |
-| `blocked()` returned seconds, or a block round | with switching on and another account free: move the job to it. Else hold (plugin, account, bucket) for the larger of the seconds and the round's wait (30, 120, 480 s); a fourth round fails the job with `Blocked`. Rounds reset after 600 s with no block |
-| `LoginError` | with switching on and another account: move the job. Else fail it, and mark the account `expired` |
+| `blocked()` returned seconds, `ctx.hold(...)`, or a block round | with switching on and another account free: move the job to it. Else hold (plugin, account, bucket) for the larger of the seconds and the round's wait (30, 120, 480 s); a fourth round fails the job with `Blocked`. Rounds reset after 600 s with no block |
+| `LoginError` | landing on `plugin.walls` in `open()` retries once after a 30 s hold first. With switching on and another account: move the job. Else fail it, and mark the account `expired` |
 | `Hidden` | with switching on: move the job. Else fail it: a file is recorded failed, a target fails |
 | `NotFound` | on a target's first page with switching on: move the job. Else a file is recorded gone, and a target fails |
 | `Changed` | fail the job, save a scrubbed sample, never retry |
@@ -528,8 +573,9 @@ first out.
   segments, then the largest remaining range of at least 8 MiB is split in half. The new
   half becomes a segment job.
 - **When a segment ends,** the same rule runs at once.
-- **Mirrors.** Segment `n` uses `mirrors[n % len(mirrors)]`. A segment that fails on a mirror
-  falls back to `mirrors[0]`.
+- **Mirrors.** Segments are taken from the URL that answered first. Another mirror is used
+  for a segment only when its `Content-Length` and `ETag` match the first URL's; a segment
+  that fails on another mirror falls back to the first URL.
 - **Writing.** Each segment writes at its offset into the one part. The part's sidecar,
   `<name>.part.json`, holds `{"etag", "last_modified", "size", "segments": [[start, end,
   written], …]}`, written after each 4 MiB piece is on disk, so a later run resumes each
@@ -553,9 +599,11 @@ and it goes on from where it was. This counts as one of its 4 network tries.
 **Targets at once:**
 - a plugin whose `browser` isn't `NONE` lists one target per account at a time;
 - an HTTP-only plugin lists 4 at a time;
-- the run lists at most 16 at once in all.
+- the run runs at most 16 active targets at once: a target holds its slot while `LISTING` or
+  while it has more than `places` `FILE` jobs queued.
 
-A target's files keep downloading while the next target lists.
+A target's files keep downloading while the next target lists once the queue falls below
+`places`.
 
 **`State`**, the snapshot, made of frozen msgspec structs:
 
@@ -592,27 +640,39 @@ Today's listing policy, kept whole, with today's constants:
   `stop_after = 5`, `FOLLOW_DEPTH = 2`, `MAX_SYNC_NEW = 25`.
 
 What it does:
-1. **Failures first.** The files earlier runs failed on are listed again from their page's
+1. **Failures first.** Failed rows in `failures` with `retryable = 1` and `attempts < RETRIES`
+   (`3`), plus whole-target failures (`post_id = ''`), are listed again from their page's
    cursor and queued at priority 0.
 2. **Each wanted category, in declaration order:**
    - resume a saved cursor, then catch up from the newest;
+   - consecutive `Post`s with the same `post.id` count once toward `HEAD_IN_A_ROW`,
+     `stop_after` and `OLDER_IN_A_ROW`;
    - a sync stops after the head and the post after it (`HEAD_IN_A_ROW`), or after
      `stop_after` saved posts in a row;
    - with `when`, a `newest_first` category stops after `OLDER_IN_A_ROW` older posts in a
      row;
    - a sync cut short keeps a gap, which the next sync fills.
 3. **The Ledger** gives each file its path and key:
-   - a file whose key is in `files`, or which is on disk, is `Skipped`;
+   - a file whose key is in `files` is `Skipped(reason="saved")`;
+   - check on disk with a single `stat()` (`try: st = dest.stat()` instead of `is_file()` +
+     `stat()`, fixing P8): when `st.st_size > 0` and the key isn't in `files` (such as after
+     `target clean` without `--media`), record the row in `files` (`hash = None`) and emit
+     `Skipped(reason="saved")`;
    - a file saved under another category is linked;
-   - an undated post takes its nearest dated neighbour's day, marked estimated.
+   - undated posts are held until the category ends (`release`), taking their nearest dated
+     neighbour's day (`estimated = 1`); `Plugin.date(ctx, post)` then fills posts still
+     undated and saved rows in `files_undated` (`redate`), caching misses for 30 days in
+     `ctx.state["redate.asked"]` and stopping on `Blocked` or `LoginError`.
 4. **Searches and discovered targets** run as their own targets, each with its own plugin and
    account (fixes E12), up to `FOLLOW_DEPTH`.
    - A search sync takes at most `MAX_SYNC_NEW` new targets.
    - It walks past seen ones, and doesn't stop at the first, so a later sync reaches the
      rest (fixes E3).
-5. **`limit=N`** stops the target after N new files are queued.
-6. **`dry=True`** lists and plans as usual, sends `Planned(state="new" | "saved")` for each
-   file, and writes nothing to disk or to `flnd.db`.
+5. **`limit=N`** stops a normal target after `N` new posts are queued, and a `discovers=True`
+   route after `N` targets are discovered.
+6. **`dry=True`** lists and plans as usual, sends `Planned(target, post, path, state="new" |
+   "saved", category=category)` for each file (with `post=""` and `path=None` for a
+   discovered target), and writes nothing to disk or to `flnd.db`.
 
 ### 6.4 The save (`engine/save.py`)
 
@@ -634,24 +694,27 @@ One `FILE` job (with its segments) does the following, in order:
      store the hashes;
    - an equal hash replaces this file with a hard link to the saved one; where hard links
      fail, both copies stay.
-5. **The commit.** When the post's last file settles, all its rows go in one transaction, on
-   the loop, with `busy_timeout = 0`. On `SQLITE_BUSY` the commit is queued again after
-   20 ms, and the loop never waits (fixes E18).
+5. **The commit.** All writes go through the one `store.py` connection on the loop with
+   `busy_timeout = 0` and `wal_autocheckpoint = 0`. When the post's last file settles, all its
+   rows go in one transaction on the loop; after every 1,000 committed rows and on run close,
+   a `CALL` job runs `PRAGMA wal_checkpoint(PASSIVE)`. On `SQLITE_BUSY` from another process,
+   the commit is queued again after 20 ms, and the loop never waits (fixes E18).
 6. **Unpack.** An archive (zip, 7z, rar, tar) is extracted beside itself by the `UNPACK` lane,
    and its row is updated.
 7. **Sidecar** (`[defaults] sidecars = true`): `<name>.json` with the post's fields.
 8. **`Saved`** is sent.
-9. **`exec`.** When `[defaults] exec` is set, an `EXEC` job runs it, with `{path}`, `{target}`
-   and `{post}` filled in, and `$FLND_PATH`, `$FLND_TARGET` and `$FLND_POST` set. It runs
-   with `subprocess.run(list)`, never through a shell. A failure is a warning in the journal;
-   the file stays saved.
+9. **`exec`.** `[defaults] exec` is read only from `~/.config/flnd/config.toml` (if set in a
+   home's `config.toml`, it is ignored with a warning). When set, an `EXEC` job runs it with
+   `{path}`, `{target}` and `{post}` filled in and `$FLND_PATH`, `$FLND_TARGET` and
+   `$FLND_POST` set, via `subprocess.run(list)` and never through a shell. A failure is a
+   warning in the journal; the file stays saved.
 
 ### 6.5 The resolver (`engine/resolve.py`)
 
 ```text
 target      := plugin-form | search | link
 plugin-form := code ":" value [ "/" categories ]
-search      := code "?" query
+search      := code "?" query [ "/" categories ]
 categories  := "all" | name ( "," name )*
 link        := "http://" … | "https://" …
 ```
@@ -670,11 +733,21 @@ link        := "http://" … | "https://" …
   - `/all` is every category;
   - no slash means the stored categories of a known target, else the route's `own=True`
     ones;
-  - categories on a `single` route are a `UsageError`.
+  - categories on a `single` route are a `UsageError`;
+  - for `plugin-form`, `/categories` splits at the last `/` only when the route has categories
+    or `discovers=True` (and for catch-all patterns like `tlg:{chat:.+}`, only when every
+    comma-separated token after `/` is `"all"` or one of the route's categories, keeping
+    `tlg:News / Updates` whole);
+  - for `search` and `discovers=True` routes (`ins:me/reels`, `mht?words/cover`), the names
+    must belong to the plugin's categories and are passed to every discovered target.
 - **The key** of a target is `code:value`, with the code lowercased and the value as the
-  route normalises it. Categories are not part of the key.
+  route's pattern (or `(pattern, value_template)` pair) formats it. Categories are not part
+  of the key.
 - **Resolving reads only the manifest** (`plugins/_manifest.py` and `plugins.json`), never a
-  plugin module, until the target runs.
+  plugin module, until the target runs. `unsupported` accepts link and code patterns (checked
+  by specificity before catch-all routes), and multi-placeholder or prefixed targets (`fbk`
+  `permalink.php`, `tlg` `t.me/c/`) use `(pattern, value_template)` pairs stored in the
+  manifest. `Plugin.resolve(cls, text)` runs those same compiled rules when called directly.
 
 ### 6.6 The plugin manager (`engine/plugins.py`)
 
@@ -693,7 +766,8 @@ link        := "http://" … | "https://" …
   `plugins/_manifest.py` holds the built-ins in the same shape, generated by `make manifest`,
   and `tests/test_manifest.py` checks it.
 - **`install(path)`:**
-  1. `path` must be a `.py` file or a folder holding `__init__.py`, else `UsageError`.
+  1. `path` must be a `.py` file or a folder holding `__init__.py`, and neither inside a
+     `.flnd` home folder nor matching `*_cookies.txt`, else `UsageError`.
   2. Import it from a temporary copy, under the module name `_flnd_plugin_<code>`.
   3. It must hold exactly one `Plugin` subclass that passes its checks.
   4. A built-in's code is refused. An installed code is replaced.
@@ -720,12 +794,12 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
 
 | method | what it does |
 | --- | --- |
-| `browser` | opens a visible flnd Chromium window at `login.url`; polls the cookies every 1 s until all of `login.names` exist on the plugin's domains (at most 10 min); saves them; closes the window |
+| `browser` | opens a visible flnd Chromium window at `login.url`; polls the cookies every 1 s until any of `login.names` exists on the plugin's domains (at most 10 min); saves them; closes the window |
 | `chrome` | the extension's `cookies` op for the plugin's domains; `UsageError` with the hint `flnd extension install` when it isn't connected |
 | `file <path>` | a Netscape `cookies.txt` or a JSON export, at most 16 MiB; only the plugin's domains are kept |
 | `firefox`, `safari` | today's store readers (Safari needs Full Disk Access; the hint says so) |
 | `edge`, `brave`, `chromium` | today's keychain readers; removed in step 12 |
-| a plugin's own | `Login.start(ctx, method)`: tlg's `qr` and `phone` |
+| a plugin's own | `Login.start(ctx, method)`: tlg's `browser`, `qr` and `phone` |
 
 - **No method given:** a terminal shows the login form, and no terminal is a `UsageError`
   listing the methods.
@@ -736,7 +810,10 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
 
 **Switching** (`switch = true` for the plugin) follows 6.2's table.
 - A job moves to the next account of the plugin, in `auth list` order, that is `ok` and not
-  held. A page job is retried as it is.
+  held. Any open tab for that target is closed and reopened under the new account's cookies;
+  a plugin with `connect` (`tlg`) enters `connect` for the new account; a resumed `pages`
+  cursor refused with 4xx restarts that category from the newest page (`cursor = None`), while
+  `Ledger` skips posts already saved.
 - A post whose files were `Hidden` is listed again under the new account, since media links
   are signed per session.
 - With every account held, the job waits for the earliest hold to end.
@@ -747,20 +824,21 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
 **The sealed vault** (`kit/vault.py`, using its existing `encrypt` and `decrypt`):
 - **A value** is `bytes([1]) + nonce(12) + AES-256-GCM(ciphertext + tag)`, with associated
   data `f"{account_id}\0{name}".encode()`. A value moved to another slot doesn't decrypt.
-- **The key** is 32 random bytes, one per user, shared by every home.
-- **Where the key is read:**
-  1. the OS keychain:
-     - macOS: `security find-generic-password -s flnd -a vault -w`;
-     - Linux: `secret-tool lookup service flnd key vault`;
-     - Windows: the DPAPI-protected file `%APPDATA%\flnd\key.dpapi`;
-  2. otherwise the file `~/.config/flnd/key`, mode 0600, written atomically.
-- **When there is no key,** it is made in the keychain if that works, else in the file.
+- **The key** is 32 random bytes, one per user, shared by every home, stored in
+  `~/.config/flnd/key` (or `%APPDATA%\flnd\key` on Windows), mode 0600, written atomically.
+  The OS keychain in `kit/vault.py` is deleted in step 11.
+- **When there is no key file** and a login (or the schema-2 migration) writes a secret, the
+  key file is created. Rows sealed under an earlier key stay, and raise the `LoginError`
+  below until their account logs in again.
 - **The key is never inside a home.**
-- **A sealed value whose key is missing** raises `LoginError("the vault's key is gone")` with
-  the hint `flnd auth login <plugin>`, and that account's secrets are dropped.
+- **A sealed value whose key is missing or wrong** (`~/.config/flnd/key` is missing or
+  `decrypt` raises `InvalidTag`) raises `LoginError("the vault's key is gone")` with the
+  hint `flnd auth login <plugin>`. The sealed rows are kept, never deleted: they decrypt
+  again once the key file is restored, and a new login of that account overwrites them.
 - **Migration:** `secrets(slot, name, value TEXT)` becomes `secrets(account INTEGER, name
-  TEXT, sealed BLOB)`. Every plaintext value is sealed in one transaction the first time
-  schema 2 opens it.
+  TEXT, sealed BLOB)`. Every plugin code in `flnd.db`'s `logins` or `secret.db`'s `slot`
+  gets a default `accounts` row (`name = 'default'`, `is_default = 1`), and every plaintext
+  value is sealed under its `account.id` in one transaction when schema 2 first opens it.
 
 ### 6.8 The extension (`flnd/extension/`, `engine/extension.py`)
 
@@ -782,8 +860,10 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
     BraveSoftware/Brave-Browser>/NativeMessagingHosts/`;
   - on Windows, as the key `HKCU\Software\<vendor path>\NativeMessagingHosts\com.flnd.host`.
 - **The relay.** The host listens on `$XDG_RUNTIME_DIR/flnd/host.sock`, else
-  `~/.config/flnd/run/host.sock` (folder mode 0700). On Windows it is the named pipe
-  `\\.\pipe\flnd-host-<user>`. A run connects there.
+  `~/.config/flnd/run/host.sock` (folder mode 0700, socket mode 0600). On Windows it is the
+  named pipe `\\.\pipe\flnd-host-<user>` with a DACL allowing only the current user SID. A run
+  connects there and sends the shared secret from `~/.config/flnd/extension/token.json`
+  (mode 0600) in `hello` before any other op runs.
 - **Messages** are `{"id": int, "op": str, "args": {…}}`, answered by `{"id", "ok": true,
   "value"}` or `{"id", "ok": false, "error": {"class", "message"}}`. An answer over 768 KiB
   is sent in parts `{"id", "part": i, "of": n, "chunk": "<base64>"}`, since Chrome caps a
@@ -792,7 +872,7 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
 
   | op | args | value |
   | --- | --- | --- |
-  | `hello` | `{}` | `{"version"}` |
+  | `hello` | `{"token"}` | `{"version"}` |
   | `cookies` | `{"domains": [str]}` | `[{name, value, domain, path, expires, secure, httpOnly, sameSite}]` |
   | `tabs.open` | `{"url", "active": false}` | `{"tab", "url", "status"}` |
   | `tabs.list` | `{}` | `[{"tab", "url", "title"}]` |
@@ -809,13 +889,18 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
   | `media` | `{"tab"}` | `[{"url", "kind": "video"\|"hls"\|"dash"\|"image", "size"}]` |
 - **The browser backend.** With `browser = "chrome"` (the plugin's `Browser.CHROME`, or the
   config over `ANY`), `open`, `feed`, `document` and `click` run as these ops, and `feed` is
-  `capture.start` plus `capture.read`.
-- **The popup** asks flnd through the host:
+  `capture.start` plus `capture.read`. `document`, `click` and `scroll` use
+  `chrome.scripting`; `chrome.debugger` is attached only for `capture.start`..`capture.stop`
+  and `evaluate`, and detached right after.
+- **The popup** asks flnd through the host, using the default home recorded at install
+  (`~/.config/flnd/extension/host.json`):
   - `resolve {url}` returns the target and whether it is followed; the buttons are **Get**
     (runs `flnd get <target>`) and **Follow**;
   - `media {tab}`, whose items each have **Get**, which sends the URL to the `web` plugin.
 - **Install.** `flnd extension install`:
-  1. copies the files to `~/.config/flnd/extension/`;
+  1. copies the files to `~/.config/flnd/extension/`, generates a 32-byte shared secret in
+     `~/.config/flnd/extension/token.json` (mode 0600), and records the default home
+     (`$FLND_HOME`, else `Path.cwd() / ".flnd"`) in `host.json`;
   2. writes the host manifest for every Chromium browser found;
   3. prints three numbered steps (open `chrome://extensions`, turn on Developer mode, Load
      unpacked with that path);
@@ -847,7 +932,10 @@ CREATE INDEX files_post ON files (target, post_id);
 CREATE INDEX files_size ON files (size) WHERE state = 'saved';
 CREATE INDEX files_hash ON files (hash) WHERE hash IS NOT NULL;
 CREATE INDEX files_undated ON files (target) WHERE state = 'saved' AND (date IS NULL OR estimated);
-CREATE VIEW posts AS …                              -- unchanged
+CREATE VIEW posts AS
+    SELECT target, post_id, min(category) AS category, max(date) AS date,
+           max(count(*), coalesce(max(files), 1)) AS files, max(at) AS at
+    FROM files WHERE state = 'saved' GROUP BY target, post_id;
 CREATE TABLE targets (
     key TEXT PRIMARY KEY, plugin TEXT NOT NULL, value TEXT NOT NULL, kind TEXT NOT NULL,
     follow INTEGER NOT NULL DEFAULT 0, categories TEXT NOT NULL DEFAULT '[]', query TEXT,
@@ -856,8 +944,20 @@ CREATE TABLE targets (
     files INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
     heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}', account TEXT
 ) WITHOUT ROWID;
-CREATE TABLE runs (…);                              -- unchanged
-CREATE TABLE failures (…);                          -- unchanged, `retryable` included
+CREATE TABLE runs (
+    id INTEGER PRIMARY KEY, command TEXT NOT NULL, started TEXT NOT NULL, ended TEXT,
+    saved INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE failures (
+    run INTEGER, key TEXT NOT NULL, target TEXT NOT NULL, post_id TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '', class TEXT NOT NULL, message TEXT NOT NULL,
+    hint TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 1, at TEXT NOT NULL,
+    cursor TEXT, retryable INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX failures_target ON failures (target, key);
+CREATE INDEX failures_run ON failures (run);
+CREATE UNIQUE INDEX failures_key ON failures (key);
 CREATE TABLE state (plugin TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
                     PRIMARY KEY (plugin, key)) WITHOUT ROWID;
 CREATE TABLE accounts (
@@ -871,12 +971,14 @@ CREATE TABLE accounts (
 
 **The migration from version 1 to 2** runs in one transaction, when a home of version 1 is
 first opened:
-1. rename `source` to `plugin` in `files`, `targets` and `state`;
-2. rename `targets.options` to `categories`, keeping only its `categories` list;
+1. rename `source` to `plugin` in `files`, `targets` and `state`, and recreate the `posts`
+   view;
+2. rename `targets.options` to `categories`, keeping its JSON `"only"` list (or `"categories"`
+   if already present, else `[]`) as the JSON list `targets.categories`;
 3. drop the `shrink`, `before`, `format` and `tools` columns, and the `probes` table;
 4. add `files_size`, `targets.account` and `accounts`;
-5. turn each `logins` row into an `accounts` row (`name = 'default'`, `is_default = 1`), then
-   drop `logins`;
+5. turn each `logins` row (and any `secret.db` `slot` not in `logins`) into an `accounts` row
+   (`name = 'default'`, `is_default = 1`), then drop `logins`;
 6. set `meta.version = '2'`.
 
 `secret.db` is migrated as 6.7 says.
@@ -885,8 +987,10 @@ first opened:
 it, and checks every row.
 
 Pragmas are kept: WAL, `synchronous = NORMAL`, `fullfsync` on macOS,
-`wal_autocheckpoint = 10000`, `cache_size = 64 MiB`. `busy_timeout` becomes 0 for commits on
-the loop, and 30000 for every other connection.
+`cache_size = 64 MiB`. One shared store connection per `Home` uses `wal_autocheckpoint = 0`
+(checkpointed passively on a `CALL` thread every 1,000 committed rows and on close) and
+`busy_timeout = 0` for loop commits, with `busy_timeout = 30000` for connections opened by
+other processes or by read-only commands.
 
 **The home's layout** is kept:
 - `media/<code>/<target>/…`;
@@ -899,24 +1003,25 @@ the loop, and 30000 for every other connection.
 ### 7.2 `config.toml`
 
 Every key is below. A wrong value is a `UsageError` naming the key, and an unknown key is a
-warning. A setting resolves in this order: a library argument, then config.toml, then the
-default.
+warning. A setting resolves in this order: a library argument, then `<home>/config.toml`,
+then `~/.config/flnd/config.toml`, then the default (except `[defaults] exec`, which is read
+only from `~/.config/flnd/config.toml`).
 
 | key | type | default | meaning |
 | --- | --- | --- | --- |
-| `[defaults] dedupe` | bool | `true` | hard-link a file whose bytes are already saved |
+| `[defaults] dedupe` | bool | `true` | hard-link a file whose bytes are already saved (`"link"`/`"off"` warned and mapped) |
 | `[defaults] sidecars` | bool | `false` | write `<name>.json` beside each file |
 | `[defaults] when` | str | `""` | a year, month or day, `a..b` with either end open, or `Nd`/`Nw`/`Ny`; `""` means every day |
-| `[defaults] exec` | list[str] | `[]` | a program and its arguments, run after each saved file |
+| `[defaults] exec` | list[str] | `[]` | a program and its arguments, run after each saved file (read only from `~/.config/flnd/config.toml`; ignored with a warning in a home's `config.toml`) |
 | `[defaults] rate` | str | `"0"` | the run's speed limit: `"20 MB/s"`, `"500 KB/s"`; `"0"` means off |
 | `[defaults] slowest` | str | `"0"` | restart a transfer below this speed for 30 s; `"0"` means off |
 | `[defaults] height` | int | `0` | the tallest video stream to pick; `0` means the best |
 | `[defaults] switch` | bool | `false` | switch accounts, for every plugin that doesn't set its own |
 | `[plugins.<code>] pace` | float | the class's | seconds between page requests of one bucket |
 | `[plugins.<code>] limits` | table | `{}` | `{host = n}`, merged over the class's |
-| `[plugins.<code>] proxy` | str | none | `http`, `https`, `socks5` or `socks5h` URL, for every transfer of the plugin |
+| `[plugins.<code>] proxy` | str | none | `http`, `https`, `socks5` or `socks5h` URL, for HTTP (`PAGE` and `FILE`) requests; warns once when opening an unproxied browser |
 | `[plugins.<code>] stop_after` | int | `5` | a sync stops after this many saved posts in a row |
-| `[plugins.<code>] browser` | str | the class's | `"chromium"` or `"chrome"`, only when the class is `ANY` |
+| `[plugins.<code>] browser` | str | `"chromium"` for `ANY`, else the class's | `"chromium"` or `"chrome"`, only when the class is `ANY` |
 | `[plugins.<code>] switch` | bool | `[defaults] switch` | as above, for this plugin |
 | `[plugins.<code>] folder`, `filename` | str | the class's | templates, checked against the fields before any request |
 | `[plugins.<code>] <field>` | per `Settings` | per `Settings` | the plugin's own settings |
@@ -926,8 +1031,14 @@ default.
   - `[vault] key`;
   - `[sources.<code>]`, which is read once as `[plugins.<code>]` with a warning to rename it;
   - `scroll`.
-- **`flnd config`** edits the file with tomlkit (a new dependency), keeping its comments. Each
-  write is atomic and checked by the same structs.
+- **The two files.** `<home>/config.toml` holds the home's settings. The user file,
+  `~/.config/flnd/config.toml` (`%APPDATA%\flnd\config.toml` on Windows), holds settings
+  shared by every home, and is the only place `exec` is read from.
+- **`flnd config`** writes every key to `<home>/config.toml`, except `exec`, which it writes
+  to the user file. Its "where it comes from" column names the file a value was read from
+  (`home`, `user` or `default`). It edits with tomlkit (a new dependency), keeping comments.
+  Each write is atomic and checked by the same structs. `Flnd.config` keys use dotted names
+  (`"defaults.when"`, `"plugins.ins.pace"`, with bare `"when"` accepted for `[defaults]`).
 - **Names** are cut to 255 bytes, never in the middle of a UTF-8 character, keeping the
   extension.
 
@@ -937,20 +1048,20 @@ default.
 
 | command | does | exit |
 | --- | --- | --- |
-| `flnd get [targets…]` | runs the targets; adds a target that isn't single to the followed ones; no target from the arguments or stdin syncs every followed target | 0, or 1 when a file or target failed, 2, 3, 4, 130 |
+| `flnd get [targets…]` | runs the targets; adds a target that isn't single to the followed ones; no target from the arguments or stdin syncs every followed target (or prints `"nothing to sync"` and exits `0` when none are followed) | 0, or 1 when a file or target failed, 2, 3, 4, 130 |
 | `flnd target list` | the list of 8.3; on a pipe, a plain table | 0 |
-| `flnd target clean <targets…> [--media]` | forgets the targets: their rows, files rows, failures, cursors, heads and gaps. `--media` also deletes the files flnd recorded for them and the folders left empty. A terminal asks first ("Forget 2 targets and delete 1.2 GB?"); a pipe doesn't | 0, 2 |
+| `flnd target clean <targets…> [--media]` | forgets the targets: their rows, files rows, failures, cursors, heads and gaps. `--media` also deletes their recorded files, sidecars, links (`state = 'link'`), extracted archive `folder`s and folders left empty. Unrecorded folders under `media/` are never auto-followed (`_unrecorded` goes). A terminal asks first ("Forget 2 targets and delete 1.2 GB?"); a pipe doesn't | 0, 2 |
 | `flnd auth list` | the list of 8.3 | 0 |
 | `flnd auth login <plugin> [method] [path]` | logs an account in (6.7); `path` is only for `file` | 0, 2, 3 |
-| `flnd auth logout <plugin> [account]` | logs one account out, or the default when none is named; a terminal asks first | 0, 2 |
+| `flnd auth logout <plugin> [account]` | logs one account out, or the default when none is named; a terminal asks first; a pipe doesn't | 0, 2 |
 | `flnd plugin list` | the list of 8.3 | 0 |
 | `flnd plugin install <file\|folder>` | 6.6 | 0, 2, 4 |
-| `flnd plugin uninstall <code>` | 6.6; a terminal asks first | 0, 2 |
+| `flnd plugin uninstall <code>` | 6.6; a terminal asks first; a pipe doesn't | 0, 2 |
 | `flnd extension install` / `uninstall` | 6.8 | 0, 2 |
 | `flnd status` | the last run (command, start, length, saved, failed); failures grouped by target (10 shown, then "and N more"); accounts that are held, expired or expiring; the disk against the history. On a terminal with something to repair: "Repair N rows? (y/N)" runs `check(fix=True)` | 0 when all is well, else 1 |
 | `flnd config` | the table of every key, its value, its default and where it comes from; `enter` edits a value in a form. On a pipe, the table | 0, 2 |
 | `flnd host` | hidden: the extension's host | — |
-| `flnd -h`, `flnd <command> -h`, `flnd -V` | help; the version | 0 |
+| `flnd -h`/`--help`, `flnd <command> -h`/`--help`, `flnd -V`/`--version` | help; the version | 0 |
 
 - **Targets on stdin.** When stdin isn't a terminal, its lines are added to the arguments.
   Blank lines and lines starting with `#` are skipped. With no arguments and an empty stdin
@@ -1039,7 +1150,9 @@ Lines from other threads (warnings) go through its queue and print above the liv
 - `select(title, options)`, `text(title, secret=False)` and `confirm(title)`, inside a bar
   `┃` with a title.
 - **Keys:** `↑↓` choose, `enter` confirm, `esc` back. Ctrl-C raises `Stopped`.
-- **Without a terminal,** a form raises `UsageError` naming what was needed.
+- **Without a terminal,** `select` and `text` raise `UsageError` naming what was needed;
+  `confirm` runs only on a terminal (`target clean`, `auth logout` and `plugin uninstall`
+  proceed on a pipe without prompting).
 - **Speed:** each list and form must open in 250 ms or less (`ui.open` benchmark). If Textual
   misses that, step 13 replaces it with a small list on Rich with raw key input, keeping the
   same keys and looks.
@@ -1129,38 +1242,60 @@ Lines from other threads (warnings) go through its queue and print above the liv
 ### 8.3 The library (`flnd/_library.py`)
 
 ```python
-flnd.open(home: str | Path | None = None) -> Flnd   # a context manager; None: $FLND_HOME or ./.flnd
-Flnd.get(*targets: str, limit: int | None = None, when: str | None = None, dry: bool = False) -> Run
-Flnd.targets -> Targets          # iterate: Tracked rows
-    .follow(*targets) -> list[Tracked];  .unfollow(*targets) -> list[Tracked]
-    .clean(*targets, media: bool = False) -> list[Tracked]
-Flnd.auth -> Auth                # iterate: Account rows
-    .login(plugin, method: str | None = None, *, path: str | None = None,
+flnd.open(home: str | Path | None = None) -> Flnd   # None: $FLND_HOME or ./.flnd
+Flnd.home: Path
+Flnd.close() -> None
+Flnd.get(*targets: str | Target, limit: int | None = None, when: str | None = None,
+         dry: bool = False) -> Run
+Flnd.targets -> Targets     # iterate: Tracked rows; .list(*, plugin: str | None = None)
+    .follow(*targets: str | Target) -> list[Tracked]
+    .unfollow(*targets: str | Target) -> list[Tracked]
+    .retry(*targets: str | Target) -> list[Tracked]
+    .clean(*targets: str | Target, media: bool = False) -> list[Tracked]
+Flnd.auth -> Auth           # iterate: Account rows
+    .login(plugin: str, *, method: str | None = None, path: str | None = None,
            name: str | None = None) -> Account
-    .logout(plugin, name: str | None = None) -> Account
-    .default(plugin, name) -> Account
-Flnd.plugins -> Plugins          # iterate: Installed rows
-    .install(path) -> Installed;  .uninstall(code) -> Installed
-Flnd.extension -> Extension      # .install(), .uninstall(), .connected: bool, .version: str | None
-Flnd.config -> Config            # a read-only mapping key -> value; .set(key, value), .unset(key)
-Flnd.status -> Status
+    .logout(plugin: str, *, name: str | None = None) -> Account
+    .default(plugin: str, name: str) -> Account
+Flnd.plugins -> Plugins     # iterate: Installed rows
+    .install(path: str | Path) -> Installed;  .uninstall(code: str) -> Installed
+Flnd.extension -> Extension # .install(), .uninstall(), .connected: bool, .version: str | None
+Flnd.config -> Config       # mapping "defaults.when" / "plugins.ins.pace" -> value;
+                            # .set(key, value), .unset(key)
+Flnd.status -> Status | None
 Flnd.check(*, fix: bool = False) -> Checked
-Flnd.files(*, target: str | None = None, kind: str | None = None,
-           since: date | None = None) -> Iterator[Record]
+Flnd.files(*, target: str | Target | None = None, kind: str | None = None,
+           since: date | str | None = None) -> list[Record]
 Flnd.add(plugin: type[Plugin]) -> None                   # for this process only
 Flnd.plugin(code: str) -> AbstractContextManager[Ctx]    # a Ctx for a script
 Run: iterate (events) · async for · await · .state · .report · .wait() -> Report
      .stop() · .suspend() · .resume()
 ```
 
-The events are frozen msgspec structs:
-- `Saved(target, category, post, path: Path, size: int, date: date | None, retried: bool)`;
-- `Skipped(target, category, post, path: Path | None, reason: Literal["saved", "busy",
-  "nothing new"])`;
-- `Failed(target, category | None, post | None, path: Path | None, error: Error)`;
-- `Planned(target, category, post, path: Path, state: Literal["new", "saved"])`.
-
-`Report` has `saved`, `skipped`, `bytes`, `failed`, `retried`, `resumed` and `unchanged`.
+The events and rows are frozen msgspec structs (`Target` and `Account` are defined in
+`flnd/plugin.py` and re-exported by `engine/events.py` and `flnd`):
+- `Saved(target: Target, category: str, post: str, path: Path, date: date | None, size: int,
+  retried: bool = False)`;
+- `Skipped(target: Target, category: str, post: str, path: Path | None = None,
+  reason: Literal["saved", "busy", "nothing new"] = "saved")`;
+- `Failed(target: Target, error: Error, post: str = "", path: Path | None = None,
+  category: str = "")`;
+- `Planned(target: Target, post: str, path: Path | None, state: Literal["new", "saved"],
+  category: str = "")`.
+- `Report(saved: int = 0, skipped: int = 0, bytes: int = 0, planned: int = 0,
+  failed: tuple[Failed, ...] = (), stopped: bool = False, retried: int = 0, resumed: int = 0,
+  unchanged: int = 0)` with `@property def ok(self) -> bool`.
+- `Account(id: int, plugin: str, name: str, origin: str, at: str, is_default: bool = False,
+  status: Literal["ok", "held", "expired"] = "ok", held_until: str | None = None,
+  expires: str | None = None)`.
+- `Tracked(target: Target, follow: bool = False, at: str = "", files: int = 0, size: int = 0,
+  seen: int = 0, categories: tuple[str, ...] = (), complete: dict[str, str] = …,
+  query: bool = False, account: str | None = None)`.
+- `Installed(code: str, name: str, origin: str, where: str = "", version: str = "",
+  api: int = 2, domains: tuple[str, ...] = (), forms: tuple[str, ...] = (),
+  categories: tuple[str, ...] = (), logins: tuple[str, ...] = (), disabled: str = "")`.
+- `Record`, `Failure`, `Status` (with `Flnd.status` returning `None` when the home has never
+  run) and `Checked` keep today's fields.
 
 ### 8.4 The journal
 
@@ -1171,8 +1306,9 @@ The events are frozen msgspec structs:
 - **What goes in it:** every event, every log line at every level (debug included), every
   hold and every switch. The first record is `{"type": "run", "command", "version",
   "targets"}`, and the last is `{"type": "run", "report": {…}}`.
-- **Secrets never go in:** `kit/text.redact` scrubs URLs' query values and header values
-  before writing.
+- **Secrets never go in:** `kit/text.redact` strips userinfo, queries and fragments from URLs
+  (including URLs inside messages), and `kit/text.scrub` scrubs secret-looking keys and
+  header values in dicts and text before writing.
 
 ## 9. Every feature, and where it goes
 
@@ -1180,20 +1316,22 @@ The events are frozen msgspec structs:
 | --- | --- |
 | `download`, `follow`, `sync` | `get` (D4) |
 | `unfollow`, `ls` | `target list` (`f`); `fl.targets.unfollow` |
-| `retry` | every `get` retries failures first (up to 3 runs), then `r` in `target list` |
+| `retry` | every `get` retries failures first (up to 3 runs); `r` in `target list` and `fl.targets.retry(*targets)` reset `attempts` to `0` |
 | `check [--fix]`, `status` | `status`, which offers the repair; `fl.check(fix=True)` |
 | `login`, `logout`, `sources` | `auth login`, `auth logout`, `plugin list` |
-| `--only`; other people's content | in the target: `/reels,posts`, `/all`; default: the plugin's own |
+| `--only`; other people's content | in the target: `code:value/reels,posts`, `code?query/all`, or on a discovering route (`ins:me/reels`); default: the plugin's own (`own=True`) |
 | `--when` | `[defaults] when`; `when=` |
-| `--limit`, `--dry` | `limit=`, `dry=`; `make try` |
+| `--limit`, `--dry` | `limit=` (posts per target, or targets per search), `dry=`; `make try` runs `fl.get(..., dry=True)` |
 | `--exec` | `[defaults] exec` (D20) |
-| `--again` | `target clean`, then `get` (files on disk are recorded, not downloaded) |
+| `--again` | `target clean`, then `get` (on-disk files are recorded in `flnd.db` with 1 `stat` and skipped, not re-downloaded); `Engine._unrecorded` (auto-following orphan `media/` folders) is dropped so cleaned targets stay forgotten |
 | `--json`, `--home`, `-v` | the journal, `$FLND_HOME`, the journal and crash files |
 | stdin targets, exit codes, Ctrl-C in three stages | kept (8.1, 6.1) |
 | smart sync, early stops, searches, discovered links | kept (6.3; E3 and E12 fixed) |
 | lazy posts, refreshing an expired link | kept; `refresh` is a hook |
 | dedupe, links across categories, unpack, sidecars, redating | kept, as jobs; hashing only on a size match |
 | parts that lock themselves, mirrors, DASH, the content check | kept |
+| `Source.user_agent`, `Route(shown=)`, `Post.replace`, `File.dash`, `Site.ask(description=)` | kept on `Plugin`, `@route`, `Post`, `File` and `Ctx.ask` |
+| `Site.pause`, `Site.back_off`, `Site.storage` | `Ctx.pause(seconds, reason)`, `Ctx.hold(reason, seconds=)` alongside `Plugin.blocked(response)`, and `Ctx.storage(origin)` |
 | segmented downloads (never on) | dynamic segments (6.2, P13) |
 | AIMD caps, pace, 429 holds | the scheduler's pools; holds per bucket |
 | per-site `proxy`, `pace`, `limits`, `stop_after` | `[plugins.<code>]`; `scroll` goes |
@@ -1202,12 +1340,13 @@ The events are frozen msgspec structs:
 | scrolling like a person, the scroll gate, warm tabs | kept; warm tabs come from `url=` |
 | ins's `in_page` fetch | kept (`fetch(in_page=True)`) |
 | expiry warnings, refreshed cookies written back | kept (6.7) |
-| cookie files, Firefox, Safari, tlg's qr and phone | kept |
+| cookie files, Firefox, Safari, tlg's `browser`, `qr` and `phone` | kept |
 | Chromium stores read with the keychain | `chrome`, through the extension (D24) |
 | one login per source, in plaintext | several accounts, opt-in switching, a sealed vault |
 | plugin folder, entry points, manifest | `plugin install` and `plugins.json`; entry points go |
 | samples of unreadable answers, crash files | kept |
-| the library, `Flnd.site(code)`, `flnd.testing` | kept (8.3); `fl.plugin(code)`; `FakeCtx` |
+| the library, `Flnd.site(code)`, `flnd.testing` | kept (8.3: `Flnd.home`, `Flnd.close()`, `Flnd.targets.list(plugin=)`, `Run` `ResourceWarning`); `fl.plugin(code)`; `FakeCtx` |
+| `FLND_TEST_NO_PROFILES` | kept in `Makefile` and `kit/cookies.py`, `kit/vault.py`, `kit/browser.py`, `engine/plugins.py`, `engine/extension.py`; isolates browser profiles, keychain and `~/.config/flnd/` in tests |
 | `make try`, `dist`, `cdn-real` | kept; new `make live`, `make ext` |
 | the Chrome extension (planned, never built) | built (6.8) |
 | unknown links (refused) | the `web` plugin |
@@ -1241,16 +1380,16 @@ test passes on today's code.
 | --- | --- | --- | --- | --- |
 | E1 | job.py:1713, :1571 | a full disk is swallowed; exit 1, not 4 | a fake `ENOSPC` on a part's write: the run raises `DiskError`, exit 4 | 5 |
 | E2 | engine.py:229, :557, :611 | Ctrl-C leaves the `runs` row at 0 saved | stop after 3 saved: the row says 3 | 10 |
-| E3 | engine.py:1098 + job.py:2511 | a search sync never gets past its first 25 | a search of 60: three syncs reach all 60 | 10 |
+| E3 | engine.py:1098 + job.py:2511 | a search sync never gets past its first 25 | a search of 60: three syncs reach all 60 | 6 |
 | E4 | engine.py:813, :847 | a mixed run loses the categories and the stop for followed targets | a search and a user with categories: both stored | 10 |
 | E5 | _track.py:87 | one `Lock` shared by every track, which emits while holding it | two tracks have different locks; a full channel doesn't block another file | 5 |
 | E6 | _track.py:96 + _transfer.py:344 | retrying a merge raises `ValueError` | ffmpeg fails once, retryably: the file saves | 5 |
 | E7 | _transfer.py:359 | empty audio fails 3 times | empty audio: the video is saved alone | 5 |
-| E8 | flncore/log.py:315 | the journal writes `Path` and errors as their repr | a journaled `Saved` decodes with a string `path` | 1 |
+| E8 | flncore/log.py:315-324, :335 | the journal writes `Path` and errors as their repr | a journaled `Saved` decodes with a string `path` | 1 |
 | E9 | flncore/log.py:704 | journal lines from four threads interleave | 4 threads × 1,000 writes: 4,000 whole lines | 1 |
 | E10 | _run.py:365, :433 | the last `Saved` events are lost behind END | 100 events from the loop at the end: the reader gets all 100 | 6 |
 | E11 | _run.py:385 | the overflow queue has no bound | a reader that doesn't read: at most 256 events queued | 6 |
-| E12 | job.py:3080 | a link to another source runs on the parent's `SourceRun` | an ins post yielding a twt target: twt runs it | 10 |
+| E12 | job.py:3080 | a link to another source runs on the parent's `SourceRun` | an ins post yielding a twt target: twt runs it | 6 |
 | E13 | _steps.py:436 + job.py:1378 | tracks stay UNPACKING; each target overwrites `tracks` | two targets with an archive each: both `Saved` | 5 |
 | E14 | _events.py:427 + _check.py:67 | `check --fix` is ok while unknown files remain | an unknown file after `fix`: not ok, exit 1 | 10 |
 | E15 | job.py:1582, :1639 | a `DiskError` in `_commit` is lost | a commit raising `DiskError`: the run stops, exit 4 | 5 |
@@ -1262,28 +1401,28 @@ test passes on today's code.
 | S1 | tik.py:664 | a 404 on `tik:<id>` counts as done | a fake 404: `Failed` with `NotFound`, recorded gone | 8 |
 | S2 | twt.py:305, :369 | a deleted tweet or a 429 counts as done | 404: gone; 429: a hold, then retried | 8 |
 | S3 | ins.py:245, :886 | a post with no media isn't `NotFound`; a page per post while rate-limited | no media: `NotFound`; while `Blocked`: no page opens | 8 |
-| S4 | twt.py:509, fbk.py:474, :728, :790 | a tab that fails to load records the listing complete | `open` raises: the target fails, nothing is recorded complete | 7 |
+| S4 | twt.py:509, fbk.py:474, :728, :790 | a tab that fails to load records the listing complete | `open` raises: the target fails, nothing is recorded complete | 8 |
 | S5 | site.py:448 | `open` drops the status | a 404 page: `NotFound` | 7 |
 | S6 | site.py:979 | a 429 while resuming throws away the saved cursor | 429 on a resumed page: the cursor is kept | 7 |
 | S7 | _plugins.py:343, :356 | a prefix test without a separator | a plugin `flnd_example` that fails: the error names its own file and line | 9 |
 | S8 | loi.py:167, :243 | a re-run rewrites `info.md` without links | two runs: the links stay | 8 |
-| S9 | ins.py:1351 | the progressive MP4 is joined with the DASH audio | the DASH video fails: the MP4 saves alone | 8 |
+| S9 | ins.py:1351-1352 | the progressive MP4 is joined with the DASH audio | the DASH video fails: the MP4 saves alone (audio on `mirrors[0]` only) | 8 |
 | S10 | tik.py:245, :280 | `stories` alone opens a feed nobody reads | `/stories`: no post-list feed opens | 8 |
 | S11 | _cookies.py:163, _net.py:10 | an import patches kit classes for the whole process | importing `kit/cookies` leaves `kit/browser`'s class unchanged | 2 |
 | S12 | testing.py:178, :249, :438, :453 | the fake never blocks, always opens, has no 401 or storage | 5.4's behaviours, one test each | 7 |
 | S13 | ins.py:215 | `self.api` shadows the API version | gone: the client is `self.client` | 8 |
-| S14 | _home.py:1632 | *suspected*: a dot is added to host-only `__Host-` cookies | a `__Host-` cookie keeps a domain with no dot | 11 |
-| S15 | flncore/dig.py:56 | a malformed path raises `Changed` | `dig(x, "a[")` raises `PluginError` | 1 |
+| S14 | _home.py:1632-1639 | a dot is added to host-only `__Host-` cookies | a `__Host-` cookie keeps a domain with no dot | 11 |
+| S15 | flncore/dig.py:51-54 | a malformed path raises `Changed` | `dig(x, "a[")` raises `SourceError` (renamed `PluginError` in step 7) | 2 |
 | S16 | _vault.py:19 and others | the docs say "encrypted"; the vault is plaintext | `secret.db` holds no plaintext value after a login | 11 |
 | K1 | flncore/files.py:985 | `filename` keeps `\` | `filename("a\\b") == "a_b"` | 1 |
-| K2 | flncore/__init__.py:47 | `flncore.dig` and `.log` give back modules | gone with the package; `kit/dig.dig` is a function | 1 |
+| K2 | flncore/__init__.py:47 | `flncore.dig` and `.log` give back modules | gone with the package; `kit/dig.dig` is a function | 2 |
 | K3 | _db.py:282, :304 | reads after `close()` return no row | a read after `close()` raises | 1 |
 | K4 | _home.py:1127 | two samples saved at once get the same name | 2 threads × 50 samples: 100 files | 1 |
 | K5 | _home.py:897 | `date.today()` is local time | under a fake clock at 23:30 UTC−5, the stamp is the UTC day | 1 |
 | K6 | flncore/clock.py:159 | `day()` ignores the fake clock | `day()` under `fake_clock` gives the fake day | 1 |
 | K7 | _transfer.py:324 | DASH parts are opened on the loop | a loop stall check: no `open` on the loop thread | 5 |
 | K8 | flncore/media.py, run.py, cli.py | broken dead modules | deleted | 2 |
-| K9 | flncore/net.py:1486 | one hasher thread for the whole process | 4 files hashed at once use 4 threads | 5 |
+| K9 | flncore/net.py:1484-1491 | one hasher thread for the whole process | 4 files hashed at once use 4 threads | 5 |
 
 ## 12. Speed-ups and benchmarks
 
@@ -1300,38 +1439,43 @@ today's code.
 | P5 | warm tabs opened together, cookies in one call, no unread bodies | `browser.open_tab`, `browser.warm_5` | 73.7 ms, step 0 | warm_5 ≤ 1/3 | 6 |
 | P6 | one writer per device | `net.two_disks` | step 0 | the fast disk within 10 % of alone | 5 |
 | P7 | the screen from a snapshot | `ui.overhead`, `ui.frame`, `ui.idle_bytes` | step 0 | ≤ 3 %, ≤ 1 ms, 0 | 4 |
-| P8 | one `stat` per check that a file is on disk | `test_fs` counts | 2–3 | 1 | 5 |
+| P8 | one `stat` per check that a file is on disk | `test_fs` counts | 2–3 | 1 | 6 |
 | P9 | a commit never blocks the loop | `e2e.db_contended` | step 0 | stall ≤ 100 ms | 5 |
-| P10 | progress as a snapshot | `cpu.advance_*`, `e2e.files_2000` | today | lower | 4 |
-| P11 | styled help stays fast | `startup.help`, `startup.import_flnd_plugin` | 23.4, 33.9 ms | ≤ 60, ≤ 34 ms | 3, 7 |
+| P10 | progress as a snapshot | `cpu.advance_*`, `e2e.per_file` | `cpu.advance_live` 0.50 µs, `cpu.advance_plain` 0.07 µs, `e2e.per_file` 0.50 ms | lower | 4 |
+| P11 | styled help stays fast | `startup.help`, `startup.import_flnd_plugin` | 23.4, 33.9 ms | ≤ 60, ≤ 34 ms | 7 |
 | P12 | slower since the last rebuild | `db.insert`, `db.prefix_scan_10k` | 2.3 µs, 15.6 ms | ≤ 2.0 µs, ≤ 12 ms | 10 |
 | P13 | dynamic segments | `net.per_conn_limit` | step 0 | ≥ 4× | 5 |
 | P14 | a hasher pool | `net.big_4_at_once` | step 0 | ≥ 2.5× | 5 |
 | P15 | transfer lanes, only if P1 leaves the loop CPU-bound | `net.small_8_at_once` with 1, 2 and 4 lanes | after P1 | ≤ 1/2 at 4 lanes, or the step is dropped | 15 |
 | P16 | HLS segments at once | `net.hls_200` | step 0 | ≥ 6× serial | 14 |
-| P17 | lists and forms open fast | `ui.open` | step 13 | ≤ 250 ms | 13 |
+| P17 | lists and forms open fast | `ui.open` | step 0 | ≤ 250 ms | 13 |
 
 **The new benchmarks** (added in step 0, each in its group's script, each with a `--smoke`
-size):
-- `ui.overhead`: 100,000 fake file events through a `Run`, screen on versus off, as the
-  percentage added.
-- `ui.frame`: one draw of a 20-target, 6-file screen, in ms.
-- `ui.idle_bytes`: bytes written in 5 s while nothing changes.
-- `ui.open`: from process start to a list's first frame, in ms. It starts as `n/a` until
-  step 13.
-- `e2e.sync_100_targets`: 100 followed targets with nothing new, 150 ms a page, through the
-  real engine on the network fake, in seconds.
-- `e2e.db_contended`: a run of 500 files while another process holds `flnd.db`'s write lock
-  for 2 s; the loop's longest stall, in ms.
-- `net.two_disks`: one target writing to the page cache and one to a disk throttled to
-  20 MB/s; the fast target's time compared with running it alone.
-- `net.per_conn_limit`: 1 GiB from a loopback server that caps each connection at 20 MB/s;
-  the time compared with one connection.
-- `net.big_4_at_once`: four 256 MiB files with dedupe hashing forced; the time compared with
-  one.
-- `net.hls_200`: an HLS playlist of 200 segments at 40 ms latency each; the time compared
-  with fetching them one at a time.
-- `browser.warm_5`: opening 5 warm tabs; the time compared with today's one after another.
+size). Step 0 adds `"ui"` to `GROUPS` in `tests/bench/run.py` and makes `--gate` treat
+`baseline == 0` as failing when `value > 0` without dividing by zero:
+- `ui.overhead` (`%`, lower): 100,000 fake file events through a `Run`, screen on versus off,
+  as percentage added.
+- `ui.frame` (`ms`, lower): one draw of a 20-target, 6-file screen (times `flncore/log.py` at
+  step 0; `ui/screen.py` in step 4).
+- `ui.idle_bytes` (`B`, lower): bytes written in 5 s while nothing changes (times
+  `flncore/log.py` at step 0; `0 B` in step 4).
+- `ui.open` (`ms`, lower): subprocess start plus `import textual` at step 0; from process
+  start to a list's first frame in step 13 (goal ≤ 250 ms).
+- `e2e.sync_100_targets` (`s`, lower): 100 followed targets of an HTTP-only plugin with
+  nothing new, 150 ms a page, through the real engine on the network fake (goal ≤ 1/4 of
+  step 0's time).
+- `e2e.db_contended` (`ms`, lower): a run of 500 files while another process holds `flnd.db`'s
+  write lock for 2 s; the loop's longest stall (goal ≤ 100 ms).
+- `net.two_disks` (`%`, lower): overhead on the fast target's time when a second target writes
+  to a disk throttled to 20 MB/s vs alone (goal ≤ 10 %).
+- `net.per_conn_limit` (`x`, higher): throughput ratio for 1 GiB from a loopback server capping
+  each connection at 20 MB/s vs one connection (`1.0x` at step 0; goal ≥ `4.0x` in step 5).
+- `net.big_4_at_once` (`x`, higher): throughput ratio for four 256 MiB files with dedupe
+  hashing forced vs one (`1.0x` at step 0; goal ≥ `2.5x` in step 5).
+- `net.hls_200` (`x`, higher): speed-up ratio for a 200-segment playlist at 40 ms latency
+  each vs fetching serially (`1.0x` at step 0; goal ≥ `6.0x` in step 14).
+- `browser.warm_5` (`s`, lower): opening 5 warm tabs (serial at step 0; goal ≤ 1/3 of step 0
+  in step 6).
 
 ## 13. Conventions (the new AGENTS.md)
 
@@ -1358,13 +1502,15 @@ Step 0 rewrites AGENTS.md to exactly these sections.
   - only example handles (`example_user`, `example_creator`, `example_handle`,
     `example.page`, `examplechannel`, `example.com`);
   - live checks only by hand, on the test accounts; unit tests fake the network, the
-    browser and the clock.
-- **Layout:** section 4.1 and its import rules. `kit/` and `ui/` never import `engine/` or
-  `plugins/`.
+    browser and the clock, and `FLND_TEST_NO_PROFILES=1` (set by `make test`) refuses real
+    browser profiles, the real OS keychain and `~/.config/flnd/`.
+- **Layout:** section 4.1 and its import rules. `kit/` never imports `engine/`, `ui/` or
+  `plugins/`, and `ui/` never imports `plugins/`.
 - **Concurrency:**
   - one loop per run;
   - plugin code is async;
-  - only `engine/jobs.py` retries, sleeps, limits, or picks threads or processes;
+  - only `engine/jobs.py` (and `ctx.pause` on the run's clock) retries, sleeps, limits, or
+    picks threads or processes;
   - a commit is one per post and on the loop, and never blocks it.
 - **Output:**
   - everything printed goes through `flnd/ui` and its theme;
@@ -1396,7 +1542,7 @@ Step 0 rewrites AGENTS.md to exactly these sections.
 - **Dead code:** the dead-name, docstring and API-snapshot checks cover all of `flnd/`.
 - **Dependencies:** each one has a reason beside it in `pyproject.toml`. After this plan
   they are curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode, rich,
-  msgspec, textual and tomlkit.
+  msgspec, tomlkit and textual (kept only if `ui.open ≤ 250 ms` in step 13).
 - **Writing:**
   - a module docstring of 1–3 lines naming its `flnd/docs` page;
   - a public name gets a summary, then `Args`, `Returns` and `Raises` only when they add
@@ -1423,26 +1569,31 @@ its commits.
 
 ### Step 0. Baseline and rules
 - **Changes:**
-  - run `make bench ARGS=--record` at HEAD;
-  - add the new benchmarks of section 12 and record them;
+  - add `textual` to `pyproject.toml`, and `"ui"` in `GROUPS` plus `baseline == 0` handling
+    to `tests/bench/run.py`;
+  - add the new benchmarks of section 12 (keeping `startup.import_flnd_source` until step 7
+    renames it to `startup.import_flnd_plugin`), and run `make bench ARGS=--record` at HEAD;
   - rewrite AGENTS.md to section 13.
-- **Done when:** `tests/bench/gates.json` holds every metric of section 12, and AGENTS.md
-  matches section 13.
+- **Done when:** `tests/bench/gates.json` holds every existing metric and every new
+  benchmark of section 12, and AGENTS.md matches section 13.
 - **Commits:** `test:benchmark the screen, many targets, a held database, disks and segments`,
   then `docs:rewrite the agent guidelines for the engine and its plugins`.
 
 ### Step 1. Kit fixes
-- **Changes:** E8, E9, S15 and K1–K6, each in the module where it lives today.
+- **Changes:** E8, E9, K1 and K3–K6, each in the module where it lives today.
 - **Tests:** each bug's test from section 11, in that module's test file.
 - **Commits:** one `fix:` per bug, for example `fix:write paths and errors to the journal as
   data`.
 
 ### Step 2. One package (haiku for the moves)
 - **Changes:**
-  - move the modules as 4.2 says for step 2, with `git mv`;
+  - move the modules as 4.2 says for step 2, with `git mv` (keeping `flnd/sources/__init__.py`
+    in `flnd/sources/` until step 8);
   - fix the imports, and delete the nine shims (S11: the parser and the jar's error type
     become arguments);
-  - delete `flncore/config.py`, `run.py`, `cli.py`, `testing.py` and `__init__.py`;
+  - delete `flncore/config.py`, `run.py`, `cli.py`, `testing.py` and `__init__.py` (K2, K8);
+  - fix `kit/dig.py` to raise `SourceError` on a malformed path (S15, renamed `PluginError`
+    in step 7);
   - rewrite `kit/media.py` from `_transfer._dash_merge`;
   - delete:
     - `_Segments` and `Client(segments=)`;
@@ -1451,12 +1602,22 @@ its commits.
       `Chain.jobs`, `_Lane.running`, `SourceRun.load`, `_Row.host/resumed`, `UI._live_*`,
       `Item.raw/part`);
     - `options.selected`, `Phase.HELD` and `LINKED`;
-    - `Limits.pauses` and `_held`;
-  - merge the duplicates: `redact`, `size`, `duration` and `count` go to `kit/text.py`;
-    `filename` stays one copy; `disk()` stays one copy; `with_query` stays one copy;
+    - `Limits.holding` and `_held` (removing the `with self.limits.holding(...)` block at
+      `net.py:1238` and the stale `.pauses` mentions at `net.py:12` and `site.py:247`);
+  - merge the duplicates: `redact`, `scrub`, `size`, `duration` and `count` go to
+    `kit/text.py`; `filename` stays one copy; `disk()` stays one copy; `with_query` stays
+    one copy;
   - remove cyclopts from `pyproject.toml`;
-  - widen `test_layers` to 4.1's rules, and `test_names`' dead-name check, `test_docs`'
-    docstring check and `api_snapshot` to all of `flnd/`;
+  - update `Makefile` (`lint`, `dist`), `pyproject.toml` (`packages = ["flnd"]`),
+    `tests/api_snapshot.py` and `tests/test_api.py` (drop `CORE_API_MODULES` and
+    `tests/data/flncore-api.txt`); delete `tests/test_core_cli.py`,
+    `tests/data/flncore-help.txt` and `flnd/docs/flncore.md` (and its link in
+    `flnd/docs/README.md`); update `flnd/docs/writing-a-source.md` (`from flnd.kit import
+    html`);
+  - widen `test_layers` to 4.1's rules (keeping temporary API-1 exemptions for
+    `flnd/source.py` and `flnd/sources/*` until step 8), `test_names`' dead-name check to
+    all of `flnd/`, `api_snapshot` (`PROJECT_PACKAGES = ("flnd",)`), and `test_docs`'
+    docstring check to match section 13;
   - the vault's sealing code stays, for step 11.
 - **Bench:** `startup.*`.
 - **Done when:** `flncore/` is gone, `flnd/kit/` and `flnd/engine/` exist with 4.2's
@@ -1477,7 +1638,7 @@ its commits.
     handles if the goal isn't met.
 - **Tests:** `tests/test_ui.py` (the theme's tokens, folded warnings, plain output on a pipe,
   ASCII output), and the help's length.
-- **Bench:** `startup.help` (P11), and `net.small_*` (P1).
+- **Bench:** `startup.help` (gate for P11), and `net.small_*` (P1).
 - **Commits:**
   - `feat:draw every line flnd prints from one theme`;
   - `perf:build the cookie header once per domain` (with its numbers);
@@ -1493,7 +1654,7 @@ its commits.
   - the CLI draws the screen and prints the end summary.
 - **Tests:** `tests/test_screen.py`, using pyte for rows, elision by cell width, the file rows
   capped at 6, an idle screen writing 0 bytes, and the summary on a pipe. E17 and E20.
-- **Bench:** `ui.*` (P7), `cpu.advance_*`, `e2e.files_2000` (P10).
+- **Bench:** `ui.*` (P7), `cpu.advance_*`, `e2e.per_file` (P10).
 - **Commits:** `feat:show the run as a summary drawn from a snapshot`, then `refactor:remove
   progress events and the board`.
 
@@ -1514,7 +1675,7 @@ its commits.
     the free-space stop;
   - `tests/test_save.py`: the save's 9 stages, dedupe by size, the commit on `SQLITE_BUSY`;
   - E1, E5, E6, E7, E13, E15, E18, K7, K9.
-- **Bench:** `net.*` (P2, P6, P13, P14), `e2e.*` (P9), the `test_fs` counts (P8).
+- **Bench:** `net.*` (P2, P6, P13, P14), `e2e.*` (P9).
 - **Commits:**
   - `feat:schedule every request as a job`;
   - `refactor:retry in one policy`;
@@ -1528,52 +1689,70 @@ its commits.
 
 ### Step 6. The async engine
 - **Changes:**
-  - `engine/crawl.py` (6.3) runs listings as coroutines on the loop;
-  - `engine/run.py` (6.1) owns the loop and the event channel;
+  - `engine/crawl.py` (6.3) runs listings as coroutines on the loop (fixing E3 and E12), and
+    checks on-disk files in `Ledger` with one `dest.stat()` (P8);
+  - `engine/run.py` (6.1) owns the loop, the event channel and `Run`'s unstarted
+    `ResourceWarning`;
   - the worker thread, `kit/loop.py`, the loop bridge and `_Refresh` are deleted;
   - API-1 sources run through `engine/site.py`'s temporary bridge, which runs a sync source's
     route on a `CALL` thread and turns each `site.<verb>` into a scheduler job;
-  - targets run at once (6.2);
+  - active targets are bounded and run at once (6.2);
   - the browser's warm tabs open together, cookies are added in one call, and bodies are
     read only for an open feed (P5).
-- **Tests:** `tests/test_crawl.py` (smart sync, early stops, gaps, searches) and
-  `tests/test_run.py` (the channel, `END` last, Ctrl-C stages, suspend). E10, E11, E16.
+- **Tests:** `tests/test_crawl.py` (smart sync, early stops, gaps, searches),
+  `tests/test_run.py` (the channel, `END` last, Ctrl-C stages, suspend) and a `stat`-count
+  guard for `Ledger` in `tests/test_fs.py` (P8). E3, E10, E11, E12, E16.
 - **Bench:** `cpu.loop_bridge` (gone), `e2e.latency_500_posts` (P3), `e2e.sync_100_targets`
-  (P4), `browser.*` (P5).
+  (P4), `browser.*` (P5), `test_fs` counts (P8).
 - **Commits:**
   - `feat:list targets on the run's loop`;
   - `perf:list targets at once`;
   - `perf:open warm tabs together and skip unread bodies`.
+- **Checkpoint:** the orchestrator stops after step 6 and reports to the user before starting
+  step 7 (plugin API 2).
 
 ### Step 7. Plugin API 2
 - **Changes:**
   - `flnd/plugin.py` (5.3), with `Hidden` and `PluginError` added to `flnd/errors.py`
-    (`SourceError` renamed);
+    (`SourceError` renamed); `Target` and `Account` live in `flnd/plugin.py`;
   - `engine/` runs `api = 2` plugins natively;
   - `flnd/testing.py` gets `FakeCtx` (5.4);
-  - `open` returns `Landed` and raises `NotFound` and `LoginError` (S4, S5);
-  - `pages` keeps the cursor on a 429 (S6).
+  - `open` returns `Landed` and raises `NotFound` and `LoginError` (S5);
+  - `pages` keeps the cursor on a 429 (S6);
+  - update `pyproject.toml` (`extend-immutable-calls` adds `flnd.plugin.Range`),
+    `tests/test_names.py` (`registered` recognizes `@route`), `tests/api_snapshot.py`
+    (`API_MODULES` includes `flnd.plugin`), and `tests/bench/startup.py`
+    (`startup.import_flnd_plugin`, P11).
 - **Tests:** `tests/test_plugin.py` (every declaration check, routes, categories, hooks,
-  helpers) and `tests/test_testing.py`. S4, S5, S6, S12.
+  helpers) and `tests/test_testing.py`. S5, S6, S12.
 - **Bench:** `startup.import_flnd_plugin` (P11).
 - **Done when:** `tests/example_source.py` is rewritten as `tests/example_plugin.py` on API 2
   and passes through the real engine.
 - **Commits:** `feat:add plugin api 2`, then `feat:make the test kit behave like the engine`.
 
 ### Step 8. The plugins on API 2
-- **Order,** one commit each: `mht`, `loi` (S8), `tlg` (its part code goes to `Fetch`),
-  `tik` (S1, S10), `twt` (S2), `fbk`, `ins` (S3, S9, S13).
+- **Order,** one commit each: `mht` (adds `mht:author/{author}` and `mht:genre/{genre}`),
+  `loi` (S8), `tlg` (its part code goes to `Fetch`), `tik` (S1, S10), `twt` (S2, S4),
+  `fbk` (S4), `ins` (S3, S9, S13).
 - **Each port:**
   1. moves `flnd/sources/<code>.py` to `flnd/plugins/<code>.py`;
   2. becomes async;
   3. replaces its copied helpers with 5.3's (`meta`, `page_info`, `numbered`, `best`,
      `load`);
-  4. deletes its back-off loops for `blocked`;
+  4. deletes its back-off loops for `blocked` and `ctx.hold`;
   5. declares `walls`, `browser`, `own` and `url`;
   6. raises `Hidden` where its site hides content from an account;
   7. moves its tests to `tests/test_<code>.py` on `FakeCtx`;
   8. quotes its lines before and after.
-- **Then:** delete `flnd/source.py`, `engine/site.py`, the bridge and `flnd/sources/`, and
+
+  While porting one plugin per commit, the registry and `tests/source_manifest.py` read from
+  both `flnd/sources/` and `flnd/plugins/`.
+- **Then:** delete `flnd/source.py`, `engine/site.py`, the bridge, `flnd/sources/` and
+  `test_layers.py`'s temporary API-1 exemptions; update imports in `engine/*`,
+  `flnd/_library.py`, `flnd/cli.py`, `Makefile` (`docs`, `type`), `pyproject.toml` (drop
+  `flnd.source.Range`), `tests/api_snapshot.py`, `tests/source_manifest.py` and
+  `tests/test_docs.py` (`SourcePageTest`, `TERMS`); rename `flnd/docs/sources/` to `plugins/`
+  and `writing-a-source.md` to `writing-a-plugin.md` (with `flnd.plugin` blocks), and
   regenerate the manifest.
 - **Commits:** `refactor:port <name> to plugin api 2`, then `refactor:remove source api 1`.
 
@@ -1582,7 +1761,7 @@ its commits.
   `uninstall`, loading, the API range, disabling, S7. Entry points go.
 - **Tests:** `tests/test_plugins.py`:
   - install a file and a package;
-  - replace one; refuse a built-in;
+  - replace one; refuse a built-in; refuse `.flnd` and `*_cookies.txt`;
   - an edited file is checked again;
   - a file without an entry is ignored;
   - API 1 and API 3 are disabled with their hints;
@@ -1595,10 +1774,11 @@ its commits.
   - `engine/store.py` holds schema 2 and its migration (7.1), and `check` and repair from
     `engine/check.py`;
   - `engine/config.py` (7.2), with the templates;
-  - `engine/home.py`, `options.py` and `check.py` are deleted, as is the rest of
-    `engine/core.py`.
+  - `engine/options.py` and `engine/check.py` are deleted, and `flnd.options.Options` is
+    dropped from `pyproject.toml` (auth and vault code in `engine/home.py` and
+    `engine/core.py` stays until step 11).
 - **Tests:** `tests/test_resolve.py`, `tests/test_store.py` (the migration from a version-1
-  home) and `tests/test_config.py`. E2, E3, E4, E12, E14, E19.
+  home) and `tests/test_config.py`. E2, E4, E14, E19.
 - **Bench:** `db.*` (P12).
 - **Commits:**
   - `feat:read categories from the target`;
@@ -1609,13 +1789,15 @@ its commits.
 - **Changes:**
   - `engine/auth.py` (6.7): accounts, the default, the methods (`browser` is new), expiry,
     write-back, logout, switching;
-  - the sealed vault with the keychain or key file, and the migration of `secret.db`.
+  - the sealed vault with `~/.config/flnd/key` (deleting the OS keychain code from
+    `kit/vault.py`), and the migration of `secret.db`;
+  - delete `engine/home.py` and `engine/core.py`.
 - **Tests:** `tests/test_auth.py`:
   - each method;
   - for each trigger of switching, two faked accounts;
   - every account held;
   - the account that worked is kept;
-  - the key in the keychain, the file and missing;
+  - the key in `~/.config/flnd/key`, wrong and missing;
   - plaintext is sealed on first open;
   - no plaintext in `secret.db`.
 
@@ -1644,17 +1826,21 @@ its commits.
 - **Changes:**
   - `flnd/cli.py` on 8.1's tree;
   - `flnd/_library.py` on 8.3;
-  - `ui/lists.py` and `ui/forms.py` on Textual inline (8.2);
+  - choose Textual inline (8.2) or Rich with raw key input from step 0's `ui.open` benchmark
+    (≤ 250 ms, P17) before writing `ui/lists.py` and `ui/forms.py`;
   - `status` with its repair;
   - `config` with tomlkit;
   - stdin;
   - the exit codes;
-  - remove questionary, add textual and tomlkit;
-  - delete `engine/core.py` if anything is left.
+  - remove questionary (and textual if Rich was chosen), add tomlkit;
+  - update `Makefile`'s `try` recipe (`python -c` calling `fl.get(..., dry=True)` in `.try`),
+    `flnd/docs/cli.md`, `flnd/docs/library.md` and `README.md` so `tests/test_docs.py` stays
+    green.
 - **Tests:**
   - `tests/test_cli.py`: every command, on a pipe and on a pyte terminal; the exit codes;
     stdin; the help's length;
-  - `tests/test_lists.py` and `tests/test_forms.py`, with Textual's `run_test` pilot.
+  - `tests/test_lists.py` and `tests/test_forms.py`, with Textual's `run_test` pilot (or raw
+    terminal input if Rich fallback was chosen).
 - **Bench:** `startup.help`, `ui.open` (P17).
 - **Commits:**
   - `feat:group the commands into get, target, auth, plugin, extension, status and config`;
@@ -1665,6 +1851,7 @@ its commits.
 - **Changes:**
   - `flnd/plugins/web.py`: direct file links; HLS (`.m3u8`) and DASH (`.mpd`) through
     `File.stream`; a page's `og:video`, `og:image` and `<video src>`; the popup's media;
+  - add `flnd/docs/plugins/web.md` and link it in `flnd/docs/README.md`;
   - `make live` (section 10).
 - **Tests:** `tests/test_web.py`.
 - **Bench:** `net.hls_200` (P16).
@@ -1684,11 +1871,9 @@ its commits.
 ### Step 16. Docs and size
 - **Changes:**
   - rewrite `flnd/docs/`: `architecture.md` (sections 3–7 of this plan, as built),
-    `library.md`, `cli.md`, `writing-a-plugin.md` (renamed from `writing-a-source.md`),
-    `extension.md`, `errors.md`, `storage.md`, `performance.md`, `glossary.md`, and
-    `plugins/<code>.md` (renamed from `sources/`);
-  - delete `flncore.md`;
-  - rewrite the README;
+    `extension.md`, `errors.md`, `storage.md`, `performance.md` and `glossary.md`, and
+    polish `cli.md`, `library.md`, `writing-a-plugin.md` and `plugins/<code>.md`;
+  - polish the README;
   - check that no temporary module is left;
   - report the line count against 24,000;
   - run `make bench ARGS=--record`.
@@ -1717,6 +1902,6 @@ order:
 3. **Commit** the step's commits as section 14 names them, with only that step's paths.
 4. **Before the first push,** ask the user whether to push after each step (D26).
 5. **Keep a progress note** in memory: the step number, the last commit, and anything open.
-6. **Stop and ask the user** when this plan doesn't answer a question, when a goal in
-   section 12 can't be met without dropping a feature, or when a step would delete user
-   data.
+6. **Stop and ask the user** after step 6 before starting step 7 (plugin API 2), and
+   whenever this plan doesn't answer a question, when a goal in section 12 can't be met
+   without dropping a feature, or when a step would delete user data.
