@@ -1,9 +1,10 @@
 """Benchmark group `net`: flnd's HTTP client downloading from a loopback server to disk.
 
-The client is the one flnd builds for a source's downloads (`flnkit.net.Client` over a
-`Session`), each transfer a `FILE` job of the run's scheduler (`flnd.engine.jobs`) under a
-fixed cap per host, on a `flnkit.loop.Loop` as in a run, so these numbers are what a real
-download pays, minus the network. Loopback shows CPU and per-request
+Each file goes through the run's save (`flnd.engine.save.Saver`): its transfer a `FILE` job
+of the run's scheduler (`flnd.engine.jobs`) under a fixed cap per host, by the client flnd
+builds for a source's downloads (`flnkit.net.Client` over a `Session`), on a
+`flnkit.loop.Loop` as in a run, so these numbers are what a real download pays, minus the
+network and flnd.db (the save's rows go to a store that keeps nothing; `e2e` counts them). Loopback shows CPU and per-request
 overhead and hides latency and bandwidth; the `e2e` group adds simulated latency.
 
 Steps:
@@ -50,8 +51,8 @@ from unittest import mock
 
 import kit
 
-from flnd.engine import jobs
-from flnd.engine import transfer as _transfer
+from flnd.engine import jobs, save
+from flnd.source import File, Target
 from flnd.ui.log import ui
 from flnkit import files as _files
 from flnkit import net as _net
@@ -102,24 +103,41 @@ def make_data(folder: Path) -> None:
     (folder / "hls.m3u8").write_text("\n".join([*lines, "#EXT-X-ENDLIST", ""]))
 
 
-class Capped:
-    """A downloading client whose transfers are `FILE` jobs of a scheduler of its own, held to
-    `at_once` transfers per host (a limit at or under the cap's start fixes it there)."""
+class _Kept:
+    """A store that keeps nothing: the save's rows are `e2e`'s to time, not this group's."""
 
-    def __init__(self, session: _net.Session, at_once: int) -> None:
+    path = Path("flnd.db")
+
+    def sized(self, size: int, *, besides: str) -> list[Any]:
+        return []
+
+    def commit(self, *args: Any) -> None:
+        pass
+
+    def update(self, *args: Any) -> None:
+        pass
+
+    def checkpoint(self) -> None:
+        pass
+
+
+class Capped:
+    """A target's saves on a scheduler of its own, held to `at_once` transfers per host (a
+    limit at or under the cap's start fixes it there)."""
+
+    def __init__(self, session: _net.Session, at_once: int, *, name: str = "example_user") -> None:
         self.client = _net.Client(session)
         self.scheduler = jobs.Scheduler(limits={"127.0.0.1": at_once, "localhost": at_once})
-
-    async def run(self, url: str, work: Any) -> Any:
-        return await self.scheduler.run(jobs.Job(
-            kind=jobs.Kind.FILE, work=work, host=_net.URL(url).host, target="bench"))
+        self.saver = save.Saver(_Kept(), self.scheduler, lambda event: None,  # type: ignore[arg-type]
+                                dedupe=False, sidecars=False)
+        self.target = Target(f"bnc:{name}", kind="user")
 
 
 async def fill(client: Capped, url: str, dest: Path) -> None:
-    """Download `url` into `dest` as a source's file is: its part opened and landed off the loop
-    (`flnd.engine.transfer`), filled by the client. No progress row: that is the UI's cost (`cpu`)."""
-    async with _transfer._held(dest) as held:
-        await client.run(url, lambda: client.client.fill(url, held))
+    """Download `url` into `dest` as a source's file is, through the save: its part opened and
+    landed off the loop, filled by the client. No progress row: that is the UI's cost (`cpu`)."""
+    item = save.Item(f"bnc:{dest.name}", client.target, dest.name, "", File(url), dest)
+    await client.saver.post([item], client=client.client, plugin="bnc")
 
 
 async def many(client: Capped, urls: list[str], out: Path) -> None:
@@ -181,7 +199,7 @@ async def hls_at_once(client: Capped, url: str, dest: Path) -> None:
         headers = {"Range": f"bytes={span[0]}-{span[1] - 1}"} if span else None
         return (await client.client.fetch(segment, headers=headers)).content
 
-    async with _transfer._held(dest) as held:
+    with _files.part(dest, resume=True) as held:
         async def write(data: bytes) -> None:
             held.write(data)
 
@@ -277,7 +295,7 @@ def segments_and_disks(report: kit.Report, loop: Loop, base: str, scratch: Path,
     out, slow_out = scratch / "out", scratch / "slow"
     session = _net.Session(handles=jobs.PAGES + AT_ONCE)
     second = _net.Session(handles=jobs.PAGES + AT_ONCE)
-    capped, other = Capped(session, AT_ONCE), Capped(second, AT_ONCE)
+    capped, other = Capped(session, AT_ONCE), Capped(second, AT_ONCE, name="example_creator")
 
     slow_out.mkdir()
     with own_device(slow_out):

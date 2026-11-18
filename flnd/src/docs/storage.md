@@ -354,14 +354,17 @@ during a manual run. Nothing makes the second run wait for the first.
 
 - **A part is its own lock.** The run writing it holds an exclusive lock on the open file
   (`flock` on macOS and Linux, `msvcrt.locking` on Windows), taken when the part is opened. A
-  second run that finds a part locked skips that file as "being saved by another run", without
-  sending a request, and the first run writes the file's row. The lock goes with the file
+  second run that finds a part locked skips that file as "being saved by another run"
+  (`Skipped` with `reason="busy"`), without sending a request, and the first run writes the
+  file's row. The lock goes with the file
   descriptor, so a run that crashes frees it at once.
 - A run that opens a part just as another lands it sees that the name now holds another file,
   and skips it too.
 - flnd's own small files (a cache, a sidecar) wait for each other instead of skipping.
 - `flnd.db` and `secret.db` are SQLite, which serializes writers; a writer waits up to 30 s
-  for another run's transaction, which lasts microseconds. Each change of a target's row reads
+  for another run's transaction, which lasts microseconds. A post's commit never waits on the
+  run's loop: it is queued again every 20 ms while another process holds the lock, for up to
+  30 s, and then the run stops (`DiskError`). Each change of a target's row reads
   and writes it in one transaction, so two runs never write over each other's changes.
 - On a file system without locks (some network shares), files are written unlocked.
 

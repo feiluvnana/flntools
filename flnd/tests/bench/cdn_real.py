@@ -14,7 +14,7 @@ numbers, so its output can be pasted into src/docs/performance.md as it is.
 How it goes:
 1. Each round runs every cap in turn (rounds alternate, so a change in the link's load spreads
    over every cap). A cap downloads every URL through flnd's own client (`flnkit.net`, curl_cffi
-   on a `flnkit.loop.Loop`, the part and rename of `flnd.engine.transfer`), each file a `FILE`
+   on a `flnkit.loop.Loop`, the part and rename of `flnkit.files`), each file a `FILE`
    job of a scheduler whose cap for the host is fixed: `jobs.Cap` with `most` equal to its
    start, so it never grows, though an overload still halves it.
 2. Then, once per round, the default adaptive cap (8, growing to 32) runs the same list.
@@ -38,8 +38,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from flnd.engine import jobs
-from flnd.engine import transfer as _transfer
 from flnd.ui.log import ui
+from flnkit import files as _files
 from flnkit import net as _net
 from flnkit.loop import Loop
 
@@ -82,7 +82,7 @@ async def fetch_all(cap: jobs.Cap, urls: list[str], headers: dict[str, str],
     failed = 0
 
     async def fill(n: int, url: str) -> int:
-        async with _transfer._held(out / str(n)) as held:
+        with _files.part(out / str(n), resume=True) as held:
             await client.fill(url, held, headers=headers, resume=False)
             return held.size
 

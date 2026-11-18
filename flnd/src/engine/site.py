@@ -93,7 +93,7 @@ if TYPE_CHECKING:
     from flnkit.html import Document
 
 __all__ = ["Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "paged",
-           "shared_browser", "source_run"]
+           "scheduler", "shared_browser", "source_run"]
 
 T = TypeVar("T")
 # How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
@@ -168,7 +168,7 @@ class SourceRun:
     def scheduler(self) -> jobs.Scheduler:
         """The run's scheduler, which every request and file waits for; the source's own
         outside a run."""
-        shared = _shared_jobs(self.settings)
+        shared = scheduler(self.settings)
         if shared is not None:
             return shared
         if self._own_jobs is None:
@@ -257,11 +257,11 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     _warn_expiring(source, jar)
     stop: Stop | None = getattr(settings, "stop", None)
     # Outside a run, the source has a scheduler of its own.
-    own = jobs.Scheduler(stop=stop) if _shared_jobs(settings) is None else None
-    scheduler = _shared_jobs(settings) or own
-    scheduler.pace[source.code] = source.pace if configured.pace is None else configured.pace
-    scheduler.limits.limits.update(_limits(source, configured))
-    session = _network(source, jar, configured, handles=scheduler.limits.handles)
+    own = jobs.Scheduler(stop=stop) if scheduler(settings) is None else None
+    used = scheduler(settings) or own
+    used.pace[source.code] = source.pace if configured.pace is None else configured.pace
+    used.limits.limits.update(_limits(source, configured))
+    session = _network(source, jar, configured, handles=used.limits.handles)
     run = SourceRun(source, settings, jar, session,
                     net.Client(session, stop=stop.soon if stop else None),
                     net.Client(session, stop=stop.now if stop else None), configured,
@@ -896,7 +896,7 @@ _SCHEDULERS: weakref.WeakKeyDictionary[browser.RunBrowser, jobs.Scheduler] = \
     weakref.WeakKeyDictionary()
 
 
-def _shared_jobs(settings: RunShared) -> jobs.Scheduler | None:
+def scheduler(settings: RunShared) -> jobs.Scheduler | None:
     """The scheduler of the run `settings` belong to; None outside a run."""
     pool = settings.browser_pool
     return _SCHEDULERS.get(pool) if pool is not None else None

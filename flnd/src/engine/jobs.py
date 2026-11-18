@@ -14,6 +14,7 @@ import os
 import random
 import shutil
 import threading
+import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -28,8 +29,8 @@ from flnd import errors
 from flnd.ui.log import ui
 from flnkit import clock, files, text
 
-__all__ = ["Backlog", "Bucket", "Budget", "Cap", "Hold", "Job", "Kind", "Limits", "Pool", "Rate",
-           "Scheduler", "Segment", "Segments", "Speed"]
+__all__ = ["Backlog", "Bucket", "Budget", "Busy", "Cap", "Hold", "Job", "Kind", "Limits", "Pool",
+           "Rate", "Scheduler", "Segment", "Segments", "Speed"]
 
 T = TypeVar("T")
 
@@ -76,6 +77,9 @@ RESET = 600.0
 # A wall (a login page where a page was asked for) lifts after these waits, since a throttled
 # session is walled for a while; one more landing is a login error.
 WALL_WAITS = (30.0, 120.0)
+# A write that finds flnd.db locked by another process goes back in the queue after BUSY_PAUSE
+# seconds, for up to BUSY_FOR: the loop never waits, and a lock held that long is stuck.
+BUSY_PAUSE, BUSY_FOR = 0.02, 30.0
 # Statuses that say a host is overloaded, so its cap halves (with a reset and a timeout).
 OVERLOADED = (429, 503)
 
@@ -142,7 +146,7 @@ class Kind(Enum):
 
 
 # Kinds with threads of their own, which their work reaches through `Scheduler.on`.
-THREADED = frozenset({Kind.CALL, Kind.HASH, Kind.UNPACK, Kind.WRITE})
+THREADED = frozenset({Kind.CALL, Kind.HASH, Kind.UNPACK, Kind.EXEC, Kind.WRITE})
 # The kinds an account's hold (a wall, a block of the account) keeps waiting; a bucket's hold
 # keeps only that bucket's pages waiting.
 ACCOUNT_HELD = frozenset({Kind.PAGE, Kind.TAB, Kind.CALL})
@@ -565,6 +569,11 @@ class Speed:
         return moved / SLOW_WINDOW < slowest
 
 
+class Busy(Exception):
+    """Another process holds flnd.db's write lock (`SQLITE_BUSY`): the write goes back in the
+    queue (`BUSY_PAUSE`)."""
+
+
 class Budget:
     """One target's share of the run's tabs, as `flnkit.browser.Tabs` takes it.
 
@@ -630,6 +639,8 @@ class _Tries:
 
     network: int = 0
     walls: int = 0
+    # When the first try met another process's lock on flnd.db; None while none did.
+    busy: float | None = None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -986,6 +997,8 @@ class Scheduler:
 
     async def _again(self, job: Job[T], error: Exception, tries: _Tries) -> Job[T]:
         """The job to run next after `error`, once its wait is over; raises when there is none."""
+        if isinstance(error, Busy):
+            return await self._busy(job, error, tries)
         if stops(error):
             self._stop = error
             raise error
@@ -1009,6 +1022,30 @@ class Scheduler:
             await self._pause(job, wait)
             return _retried(job)
         raise error
+
+    async def _busy(self, job: Job[T], error: Busy, tries: _Tries) -> Job[T]:
+        """Another process holds flnd.db's write lock: queue the job again, at its priority,
+        after `BUSY_PAUSE` s, until `BUSY_FOR` s have gone by; then the run stops.
+
+        The other process lets go in real time, so these waits are real ones even under a
+        test's fake clock, as a suspension's are.
+
+        Raises:
+            DiskError: the lock was held `BUSY_FOR` s.
+            Stopped: the second Ctrl-C came meanwhile.
+        """
+        if tries.busy is None:
+            tries.busy = time.monotonic()
+        if time.monotonic() - tries.busy >= BUSY_FOR:
+            stop = errors.DiskError(f"{error}, for {BUSY_FOR:.0f}s",
+                                    hint="let the other run finish")
+            self._stop = stop
+            raise stop from error
+        halt = self._halt(job)
+        if halt is not None and halt.is_set():
+            raise errors.Stopped("stopped while flnd.db was locked") from error
+        await asyncio.sleep(BUSY_PAUSE)
+        return job
 
     async def _login(self, job: Job[T], error: errors.LoginError, tries: _Tries) -> Job[T]:
         """A wall (a retryable `LoginError`) holds the account 30 s, then 120 s; after that, or

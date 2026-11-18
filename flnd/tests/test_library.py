@@ -201,6 +201,27 @@ class RunTest(LibraryCase):
         self.assertEqual(run.wait().saved, 3)
         self.assertEqual(list(run), [])
 
+    def test_a_reader_that_stops_reading_never_holds_up_another_files_transfer(self):
+        # E5: the files' events come from the run's loop; with the queue full they wait aside,
+        # so the other files go on while the reader holds the first event.
+        from flnd.engine import run as _run
+
+        self.enterContext(mock.patch.object(_run, "QUEUE", 1))
+        self.listing["example_user", "posts"] = [f"p{n}" for n in range(6)]
+        run = self.fl.download("exs:example_user", only="posts")
+        landed, real = threading.Event(), run._emit
+
+        def emit(event):
+            real(event)
+            if run.report.saved == 6:
+                landed.set()
+
+        run._emit = emit
+        events = iter(run)
+        first = next(event for event in events if isinstance(event, flnd.Saved))
+        self.assertTrue(landed.wait(30), "the other files waited for the reader")
+        self.assertEqual(len([first, *(e for e in events if isinstance(e, flnd.Saved))]), 6)
+
     def test_stop_ends_the_run_without_an_error(self):
         # One place, so most files are still queued when the first lands: a stop drops those and
         # finishes only what is downloading. At the default of 32 places all 30 would be in flight.

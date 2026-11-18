@@ -167,6 +167,10 @@ How a file is written, and why:
   s (see "Targets not met" below).
 - `net.stall_20mbs` charges every write of a part as a disk write at 20 MB/s, the last piece's
   copy into memory included, so it overstates a real slow disk.
+- Since the save runs as jobs (step 5), `net.stall_20mbs` reads 4 to 25 ms, where it read
+  under 2. It is not blocking I/O: measured, no write, open or flush of a part runs on the
+  loop. It is the garbage collector's pauses (6.7 to 17.7 ms) and the scheduling of the save's
+  extra threads, so it varies from run to run, and stays far under the 100 ms target.
 
 ## Targets not met
 

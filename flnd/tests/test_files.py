@@ -1,4 +1,4 @@
-"""Part names, digests and links (`flnkit.files`), and media checks (`flnd.engine.transfer`)."""
+"""Part names, digests and links (`flnkit.files`)."""
 
 import errno
 import fnmatch
@@ -9,12 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd.engine import transfer as _transfer
-from flnd.errors import SiteError
 from flnd.ui.log import ui
 from flnkit import files as _files
-
-JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 
 
 def sha(data):
@@ -35,14 +31,6 @@ class FilesTest(FilesCase):
         with _files.part(self.tmp / "a.jpg") as held:
             self.assertEqual(held.path, self.tmp / "a.jpg.part")
             self.assertTrue(fnmatch.fnmatch(held.path.name, "*.part"))
-
-    def test_checked_names_the_real_type_and_refuses_a_web_page(self):
-        path = self.tmp / "a.webp"
-        path.write_bytes(JPEG)
-        self.assertEqual(_transfer.checked(path, "image"), ".jpg")
-        path.write_bytes(b"<!doctype html><title>Log in</title>")
-        with self.assertRaisesRegex(SiteError, "^got a web page instead of a photo$"):
-            _transfer.checked(path, "image")
 
     def test_a_straight_write_is_hashed_as_it_goes_without_reading_back(self):
         with mock.patch("flnkit.files._digest_fd", side_effect=AssertionError("read back")), \

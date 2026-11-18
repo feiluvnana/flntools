@@ -77,8 +77,8 @@ The rules between them:
         ├── src/engine/options.py   Options (what one target downloads), RunShared (a run's)
         ├── src/engine/home.py      the home: flnd.db (files, targets, runs, failures), logins
         ├── src/engine/site.py      SourceRun and TargetSite: what a source acts through
-        │       └── src/engine/transfer.py   one file into its part, checked by its content
-        ├── src/engine/steps.py     the step chain after each file: dedupe, unpack, sidecar
+        ├── src/engine/jobs.py      the scheduler: every request and step as a job
+        ├── src/engine/save.py      a post's files: transfer, dedupe, commit, unpack, sidecar
         └── src/engine/job.py       one target: list its posts, plan its files, download
                 │
                 └── src/sources/<code>.py   one class per site (src/source.py is their API),
@@ -93,7 +93,6 @@ The rules between them:
 | `src/engine/events.py` | the events (`Saved`, `Skipped`, `Failed`, `Planned`), the public `Report`, the `State` snapshot, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the job, `Run`, `Flnd` |
 | `src/engine/core.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
 | `src/engine/job.py` | one target's run: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads on the loop (`Downloads`), the run's live counts and its snapshots (`Tally`), history rows | the engine |
-| `src/engine/track.py` | each file's lifecycle (`FileTrack`): phases, and the only path that emits `Saved` / `Skipped` / `Failed` for a file | the job, `transfer`, `steps` |
 | `src/engine/site.py` | `SourceRun` (a source's cookies, HTTP session, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`), `LoginSite`, and `shared_browser`, the run's loop and browser | the engine, the job |
 | `src/engine/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, `when`'s reading, and `config`: every setting of config.toml, read and checked in one place | the engine, the job, the library, `site`, `steps` |
 | `src/source.py` | source API 1: `Source` and its checks, `@target`, `Post`, `File`, `Target`, `Site`, `Login` and `cookies`, `Request`, `dig`, errors | every source |
@@ -103,8 +102,7 @@ The rules between them:
 | `src/engine/extension.py` | the Chrome extension's native-messaging host (`flnd host`), the relay a run reaches it by, the run's client, and `install` ([extension.md](extension.md)); the extension's own files are in `src/extension/` | Chrome, the CLI's `flnd extension` |
 | `src/testing.py` | the public test kit: `FakeCtx` (with `Reply`, `FakePage` and `Seen`) for a plugin on API 2, `FakeSite` for an API-1 source, `collect`, `check`, `fake_clock` | a plugin's tests, flnd's own (`tests/fakes.py`) |
 | `src/engine/home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the job, the site, `Flnd` |
-| `src/engine/transfer.py` | one post's file into its part: mirrors, DASH pairs (joined by `flnkit/media.py`), a source's `fetch` function, the content check | the job |
-| `src/engine/steps.py` | the step chain and its archive lane: dedupe, unpack, the sidecar, `Saved` ([storage.md](storage.md)) | the job and the engine |
+| `src/engine/save.py` | a post's files as jobs (`Saver`): part, transfer by mirrors or a DASH pair (joined by `flnkit/media.py`) or a source's `fetch` function, the content check, dedupe, the post's commit, unpack, the sidecar, `Saved`, exec ([storage.md](storage.md)) | the job and the engine |
 | `src/engine/check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
 | `src/ui/theme.py` | every colour and glyph flnd draws with, and when to drop colour or Unicode | `src/ui/*` |
 | `src/ui/out.py` | every line flnd prints: lines, folded warnings, errors and their hints, tables, the help; text from a site cleaned of escape codes | the CLI, `src/ui/log.py`, the run's hard exit |
@@ -194,11 +192,12 @@ yours.
    listing saw, kept in `flnd.db`) and the post after it. The source never stops a listing
    itself: the job closes its generator. A lazy post's files are listed only once the post is
    known to be new.
-10. **Downloading** (`Downloads`). Each new file is submitted to the run's loop as a task. The
-    target's queue holds 4 times its places, so the listing waits when downloads fall behind
-    and memory stays flat; a task waits for one of the target's places (32, as many as one
-    host's cap grows to, or the source's largest `limits` above that), then for a place under
-    its host's cap. `transfer.save` opens and locks the file's part (`<name>.part`, see
+10. **Downloading** (`Downloads`). Each post's new files go to the run's save
+    (`save.Saver.post`) as one task on the run's loop. The target's queue holds 4 times its
+    places, so the listing waits when downloads fall behind and memory stays flat; each file is
+    a `FILE` job of the run's scheduler, which waits for one of the target's places (32, as
+    many as one host's cap grows to, or the source's largest `limits` above that), then for a
+    place under its host's cap. The job opens and locks the file's part (`<name>.part`, see
     [storage.md](storage.md)), skipping a file another run is saving, then streams the file
     into it, resuming what a failed run kept. It tries mirrors in order, merges a DASH video
     with its audio through ffmpeg, checks the content (a web page instead of a photo is a
@@ -297,12 +296,13 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
   dedupe's hard link to worker threads, a source's blocking `fetch` function and ffmpeg's DASH
   merge to worker threads too.
 - **A lazy post's expired link.** A source's code runs on the listing thread only, so a
-  download task whose link expired queues a refresh for that thread (`job._Refresh`), which
-  answers it between two files, and waits for the fresh link.
-- **The step chain's lane** (`flnd.engine.steps`): one thread for archives, fed by a bounded queue
-  once a file's history row is written. It updates that row when it extracts, and sends the
-  file's `Saved` event when it is done with it (a file with no slow step sends it at once, from
-  its download task). The engine closes the chain, waiting for the lane, before it closes
+  save whose link expired queues a refresh for that thread (`job._Refresh`), which answers it
+  between two posts, and waits for the fresh link.
+- **The save's steps** (`flnd.engine.save`) are jobs of the run's scheduler: blocking work
+  (opening and landing a part, a hash, an unpack, a program) runs on the threads of its kind
+  (`Scheduler.on`), one archive at a time. A post's rows commit on the loop, as a `WRITE` job
+  that another process's lock on `flnd.db` puts back in the queue every 20 ms
+  (`jobs.Busy`), so the loop never waits. The engine closes the save before the loop and
   history.
 - **Ctrl-C** is handled by `flnd.engine.run.stopping`, on the reader's thread when it is the main
   thread: the first one sets `stop.soon` (stop listing, drop queued files, let running files
@@ -310,7 +310,8 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
   quits, and the third calls `flnd.engine.run.quit_now`: it runs the undo steps registered with
   `flnd.engine.run.restoring` (whatever changed the terminal registers its undo there), then
   `os._exit(130)`, which runs no `finally` and joins no thread. `run.suspend()` sets
-  `stop.suspended`, which each source's limits wait on before a new request; a stop clears it.
+  `stop.suspended`, which every job of the scheduler waits on before it starts; a stop clears
+  it.
 - **The run's display** is drawn from a snapshot. Every part of a run counts on the run's
   `job.Tally`: a target's listings, each file's steps, the files in flight (their bytes, from
   the transfer's bar), the waits a site asked for. A `flnd-state` thread makes a frozen
@@ -326,17 +327,19 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
 Every saved file goes through the same steps, in one fixed order:
 
 ```
-download (hashing) → dedupe → unpack → sidecar → Saved → --exec
+download (hashing) → dedupe → sidecar → commit → unpack → Saved → --exec
 ```
 
-- **download, dedupe** run in the file's download task (`flnd.engine.job`): the bytes are hashed as
-  they are written, and a file whose bytes are already saved becomes a hard link to them before
-  its row is written (`[defaults] dedupe = "link"`).
-- **unpack** is slow, so the job hands the recorded archive to the run's `Chain`, whose one
-  lane runs it on a thread of its own: extract beside the archive ([storage.md](storage.md)),
-  record `unpacked` and the folder on the row. The archive stays on disk.
+- **download, dedupe** run in the file's `FILE` job (`flnd.engine.save`): the bytes are hashed
+  as they are written, and a file whose bytes match a saved one of its size becomes a hard link
+  to it before its row is written (`[defaults] dedupe = true`).
+- **commit**: once every file of the post settled, its rows go in one transaction.
+- **unpack** is slow, so it is an `UNPACK` job, one at a time on the unpack lane: extract
+  beside the archive ([storage.md](storage.md)), record `unpacked` and the folder on the row.
+  The archive stays on disk.
 - **sidecar** (`[defaults] sidecars = true`) writes the post's caption, author, tags and link
-  beside the file, and **Saved** is sent last, with the file's final path and size.
+  beside the file before the commit, so its row names it; **Saved** is sent once the file is
+  unpacked, with its final path and size.
 - **`--exec`** is the CLI's: it runs a command for each `Saved` event it reads, never through a
   shell ([cli.md](cli.md#running-a-command-per-file)).
 
@@ -442,7 +445,7 @@ loop:
   after waits of about 1, 2, 4 and 8 s for a timeout, a reset or a 5xx (only for a request
   safe to send twice); a 429 holds its bucket for the site's wait (30 s when it names none),
   and the third in a row is a block round.
-- **A file** (`transfer.save`) goes into its part: resumed with `Range` and `If-Range` from
+- **A file** (`save.Saver`) goes into its part: resumed with `Range` and `If-Range` from
   what a failed run kept, tried mirror by mirror, a DASH pair fetched at once and joined by
   ffmpeg in one join (`flnkit/media.py`).
 - **The fake** (`flnkit.net.fake`) answers every request from routes or a handler in tests and

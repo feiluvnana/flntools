@@ -12,7 +12,7 @@ What `flnd.db` holds (the storage guide in `src/docs/` shows every column):
   site answered 404 or 410), or `link` (a second name for a saved file, in another category's
   folder, keyed `<file's key>@<category>`). A file that failed has no row here (its record is
   in `failures`), unless the site said it is gone. The steps after a file lands fill in
-  `shrink`, `tools`, `before`, `unpacked`, `folder` and `sidecar` (`flnd.engine.steps`).
+  `shrink`, `tools`, `before`, `unpacked`, `folder` and `sidecar` (`flnd.engine.save`).
 - `posts`: a view of `files`, one row per post of a target with its category, day and how
   many files it has. The first file of a post of several holds the count (`files.files`),
   which tells whether a post listed again is whole: a table of its own would cost every commit
@@ -37,7 +37,7 @@ proves a login and `save` stores it in the source's slot of `secret.db` (`secret
 `load` for the jar, and `write_back` saves the cookies the site refreshed.
 
 Who calls it: the engine (`src/engine/core.py`), the job (`src/engine/job.py`), the steps after
-landing (`src/engine/steps.py`), `check` (`src/engine/check.py`) and the library
+landing (`src/engine/save.py`), `check` (`src/engine/check.py`) and the library
 (`src/_library.py`) for files,
 targets, runs and failures; the engine also for logins (`flnd login`, `flnd logout`, and
 `fl.logins`, each source's login state); `SourceRun` (`src/engine/site.py`) for a source's cookies,
@@ -447,6 +447,12 @@ class Home:
         """Close the connection; closing twice is harmless."""
         self._store.close()
 
+    def ready(self) -> Path:
+        """Make `flnd.db` and its tables now, for a connection of another's (the save's), and
+        return its path."""
+        self._store.connection()
+        return self.path
+
     def _setup(self, sql: sqlite3.Connection) -> None:
         """Set the connection up, and mark the schema's version.
 
@@ -683,9 +689,8 @@ class Home:
     def update(self, item: str, **fields: Any) -> None:
         """Record what a step after landing did to a saved file, in one statement.
 
-        This is how the steps (`flnd.engine.steps`) write: compress moves a file and sets `shrink`,
-        `tools`, `before` and its new `hash`; unpack sets `unpacked` and `folder`; the sidecar
-        step sets `sidecar`.
+        Used for what a step after a file did (unpack sets `unpacked` and `folder`; the sidecar
+        step sets `sidecar`); compress, which is gone, set `shrink`, `tools`, `before` and `hash`.
 
         Args:
             item: the file's key; a key with no row changes nothing.

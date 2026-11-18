@@ -8,12 +8,15 @@ works after new posts arrive on top. Each listing signs its file URLs afresh (`s
 CDN's signed URLs are, so a test can tell a fresh URL from a stored one.
 """
 
+import asyncio
 import datetime
 import io
 import os
+import threading
 import time
 import unittest
 from contextlib import redirect_stdout
+from unittest import mock
 
 import fakes
 from test_engine import CDN, EngineCase
@@ -21,6 +24,7 @@ from test_engine import CDN, EngineCase
 import flnd
 from flnd import cli as flnd_cli
 from flnd.engine import home as _home
+from flnd.engine import job, save
 from flnd.engine.core import Engine
 from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped, encode
 from flnd.errors import Changed
@@ -168,7 +172,25 @@ class GapTest(FeedCase):
         self.download()
         self.posts = [f"n{number}" for number in range(1, 13)] + self.posts
         self.fail_after = "n6"
-        self.assertFalse(self.sync().ok)
+        # n6's file, handed over before the listing failed, waits until it has: it still runs
+        # to its end, since the gap's cursor is kept after it.
+        failed = threading.Event()
+        real_finish, real_file = job.Downloads.finish, save.Saver._file
+
+        def finish(downloads, error=None):
+            if error is not None:
+                failed.set()
+            return real_finish(downloads, error)
+
+        async def held(saver, item, *args):
+            if item.key == "fed:n6":
+                self.assertTrue(await asyncio.to_thread(failed.wait, 30))
+            return await real_file(saver, item, *args)
+
+        with mock.patch.object(job.Downloads, "finish", finish), \
+                mock.patch.object(save.Saver, "_file", held):
+            self.assertFalse(self.sync().ok)
+        self.assertIn("n6", self.saved())
         self.assertEqual(self.pages()[:3], [None, "n3", "n6"])
         self.assertEqual(self.row().gaps, {"posts": ["n6"]})
         self.fail_after = None

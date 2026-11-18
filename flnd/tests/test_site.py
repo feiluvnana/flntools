@@ -22,15 +22,15 @@ from fakes import FakeSite
 from flnd.engine import home as _home
 from flnd.engine import jobs
 from flnd.engine import run as _run
-from flnd.engine import transfer as _transfer
 from flnd.engine.options import RunShared
 from flnd.engine.site import TargetSite, shared_browser, source_run
 from flnd.errors import Blocked, SourceError, UsageError
-from flnd.source import File, LoginError, Site, SiteError, Target
+from flnd.source import LoginError, Site, SiteError, Target
 from flnd.ui.log import ui
 from flnkit import browser as _browser
 from flnkit import clock as _time
 from flnkit import cookies as _cookies
+from flnkit import files as _files
 from flnkit import net as _net
 from flnkit.browser import Page
 
@@ -283,9 +283,10 @@ class BackOffTest(SiteCase):
         self.serve = lambda request: answers.pop(0)
         run, _ = self.open()
         host = _net.URL(CDN).host
-        run.loop.run(run.scheduler.run(jobs.Job(
-            kind=jobs.Kind.FILE, plugin="exm", host=host, work=lambda: _transfer.save(
-                run.files, File(f"{CDN}/a.7z"), self.home / "a.7z", label="a.7z"))))
+        with _files.part(self.home / "a.7z", resume=True) as held:
+            run.loop.run(run.scheduler.run(jobs.Job(
+                kind=jobs.Kind.FILE, plugin="exm", host=host,
+                work=lambda: run.files.fill(f"{CDN}/a.7z", held))))
         self.assertTrue(any("rate limited; waiting 5.0s" in line for line in self.lines()), self.lines())
         # The hold is the CDN's bucket alone: the source's pages are never held by it.
         self.assertEqual([hold.bucket for hold in run.scheduler._holds.values()], [host])

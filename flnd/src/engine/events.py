@@ -37,15 +37,17 @@ from flnd.errors import Error
 from flnd.source import Target
 
 __all__ = [
-    "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure", "FileState", "HoldState",
-    "Installed", "Login", "Phase", "Planned", "Record", "Report", "Saved",
+    "BUSY", "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure", "FileState",
+    "HoldState", "Installed", "Login", "Phase", "Planned", "Record", "Report", "Saved",
     "Skipped", "State", "Status", "TargetState", "Tracked", "encode",
 ]
 
 # `Skipped.reason` for a listing a sync found nothing new in.
 NOTHING_NEW = "nothing new"
-# `Skipped.reason` for a file or post already saved, or being saved by another run.
+# `Skipped.reason` for a file or post already saved.
 SAVED = "saved"
+# `Skipped.reason` for a file another run is saving: its part is locked.
+BUSY = "busy"
 # What the job sends the run's sink, beside the events, for a listing that goes on from where
 # an earlier run was cut short: the run counts it in `Report.resumed`, and never queues it.
 RESUMING = "resuming from the last run"
@@ -89,9 +91,9 @@ class Saved(msgspec.Struct, frozen=True, tag=True):
 class Skipped(msgspec.Struct, frozen=True, tag=True):
     """Something wasn't downloaded: a file or post already saved, or a listing with nothing new.
 
-    `reason` says which: `"saved"` for a file or a whole post that is already saved (or that
-    another run is saving), `"nothing new"` for a listing a sync found nothing new in, which has
-    no post and no path.
+    `reason` says which: `"saved"` for a file or a whole post that is already saved, `"busy"`
+    for a file another run is saving, `"nothing new"` for a listing a sync found nothing new
+    in, which has no post and no path.
 
     Example:
         >>> from flnd.source import Target

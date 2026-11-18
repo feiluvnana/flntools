@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import email.utils
-import enum
 import inspect
 import mimetypes
 import os
@@ -19,23 +18,25 @@ import stat
 import subprocess
 import sys
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextlib import AsyncExitStack, asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, TypeVar
+from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
 import msgspec
 
-from flnd.engine.events import Failed, Saved, Skipped
+from flnd.engine import home, jobs
+from flnd.engine.events import BUSY, Failed, Saved, Skipped
 from flnd.engine.home import FILE_COLUMNS, FileRow, _file_values, now
-from flnd.errors import DiskError, Error, NotFound, SiteError, UsageError, classify
+from flnd.engine.jobs import Job, Kind
+from flnd.errors import DiskError, Error, NotFound, SiteError, Stopped, UsageError, classify
 from flnd.source import Fetch, File, Target
 from flnd.ui.log import ui
-from flnkit import clock, files, media, text
+from flnkit import files, media, net, text
 
-__all__ = ["Item", "Job", "Kind", "Saver", "Scheduler", "Store"]
+__all__ = ["Item", "Saver", "Store"]
 
 T = TypeVar("T")
 
@@ -48,75 +49,15 @@ NOT_MEDIA_HINT = "it is usually a login wall: run flnd login <source>, then try 
 EXPIRED = frozenset({403, 410})
 # How many saved files of the same size dedupe hashes at most, to compare with a new one.
 CANDIDATES = 8
-# A commit that finds the write lock taken goes again after this many seconds, for up to
-# `BUSY_FOR`: a run never waits on the loop, and a lock held this long is a stuck process.
-BUSY_PAUSE, BUSY_FOR = 0.02, 30.0
 # The log is checkpointed into the database after this many committed rows, and at close.
 CHECKPOINT_ROWS = 1_000
 # A sidecar is its file's name with this after it: `9001.jpg.json`.
 SIDECAR = ".json"
-# Priorities: a retried failure first, then files, then the steps of a saved file.
-RETRIED, FILE_PRIORITY, STEP = 0, 2, 3
 # A post's rows: today's columns, and the sidecar written before them.
 INSERT = (f"INSERT OR REPLACE INTO files ({', '.join(FILE_COLUMNS)}, sidecar)"
           f" VALUES ({', '.join('?' * (len(FILE_COLUMNS) + 1))})")
 # `exec`'s placeholders, filled in one pass, so a value holding `{post}` stays literal.
 PLACEHOLDER = re.compile(r"\{(path|target|post)\}")
-
-
-# ---------------------------------------------------------------------------------------------
-# What the scheduler runs
-
-
-class Kind(enum.StrEnum):
-    """What a job waits for: the scheduler's pools, by name."""
-
-    PAGE = "page"
-    FILE = "file"
-    TAB = "tab"
-    CALL = "call"
-    HASH = "hash"
-    UNPACK = "unpack"
-    MERGE = "merge"
-    EXEC = "exec"
-    WRITE = "write"
-
-
-@dataclass(kw_only=True)
-class Job:
-    """One unit of work for the scheduler: what it waits for, and the coroutine it runs.
-
-    A blocking step (a file-system call, a hash, an unpack, exec) is a coroutine that runs it
-    on a thread, so the scheduler only decides when it starts and how many run at once.
-    """
-
-    kind: Kind
-    work: Callable[[], Awaitable[Any]]
-    plugin: str = ""
-    account: str | None = None
-    bucket: str = ""
-    host: str = ""
-    target: str | None = None
-    priority: int = STEP
-    size: int | None = None
-
-
-class Scheduler(Protocol):
-    """Runs a job once its pools have room, under the run's one retry policy."""
-
-    async def run(self, job: Job) -> Any:
-        """Wait for the job's pools, run its work (trying again as the policy says), and return
-        what it returned."""
-        ...
-
-
-class Fills(Protocol):
-    """What streams a URL into a part: a plugin's `flnkit.net.Client`."""
-
-    async def fill(self, url: str, held: files.Part, *,
-                   headers: Mapping[str, str] | None = None) -> Mapping[str, str]:
-        """Stream `url` into `held`, going on from the bytes it holds; returns the headers."""
-        ...
 
 
 @dataclass(frozen=True)
@@ -140,6 +81,11 @@ class Item:
         cursor: the page its post was listed on, kept with a failure for its retry.
         retried: whether an earlier run failed on it.
         refresh: asks the post for its files again when the link expired; None for none.
+        label: its path under its target, as the run's screen shows it.
+        dropped: whether a file whose transfer hasn't started is dropped (the first Ctrl-C);
+            None never drops it.
+        domain: the plugin's first domain, the host a file its `fetch` function writes counts
+            under, so the plugin's `limits` for it apply; "" uses the plugin's code.
     """
 
     key: str
@@ -158,6 +104,9 @@ class Item:
     cursor: str | None = None
     retried: bool = False
     refresh: Callable[[], Awaitable[File | None]] | None = None
+    label: str = ""
+    dropped: Callable[[], bool] | None = None
+    domain: str = ""
 
 
 @dataclass
@@ -180,20 +129,51 @@ class _Failure:
     error: Error
 
 
+class _Dropped(Stopped):
+    """A file whose transfer never started: the run, or its target, stopped first."""
+
+
+@dataclass
+class _Flow:
+    """One file's place in the run's counts: whether its transfer started."""
+
+    started: bool = False
+
+
+class _Bytes:
+    """A transfer's progress sink (`net.Meter`'s): the file's `Flight` on the run's screen,
+    and its job's `done`, the bytes the host's cap measures."""
+
+    def __init__(self, job: Job[Any]) -> None:
+        self._job = job
+        # The try's `Flight`, set as each try starts; None without a tally.
+        self.flight: Any = None
+
+    @property
+    def total(self) -> int | None:
+        return self.flight.total if self.flight is not None else None
+
+    @total.setter
+    def total(self, value: float | None) -> None:
+        if self.flight is not None:
+            self.flight.size(value)
+
+    def advance(self, n: float) -> None:
+        self._job.done += int(n)
+        if self.flight is not None:
+            self.flight.advance(n)
+
+
 # ---------------------------------------------------------------------------------------------
 # The store: the save's reads and writes of flnd.db
-
-
-class _Busy(Exception):
-    """Another process holds flnd.db's write lock (`SQLITE_BUSY`)."""
 
 
 class Store:
     """flnd.db as the save uses it: on the loop, and never waiting for another process's lock.
 
     Its one connection has `busy_timeout = 0` and `wal_autocheckpoint = 0`: a lock held
-    elsewhere is reported at once, and the log is checkpointed from a thread (`checkpoint`).
-    It writes the `files` and `failures` rows of the home's schema, version 1.
+    elsewhere is reported at once (`jobs.Busy`), and the log is checkpointed from a thread
+    (`checkpoint`). It writes the `files` and `failures` rows of the home's schema, version 1.
 
     Args:
         path: the home's `flnd.db`, its tables made already.
@@ -232,7 +212,12 @@ class Store:
 
     def commit(self, rows: Sequence[FileRow], failures: Sequence[_Failure],
                hashes: Mapping[str, bytes], run: int | None) -> None:
-        """Write a post's rows, its files' failures and the hashes found, in one transaction."""
+        """Write a post's rows, its files' failures and the hashes found, in one transaction.
+
+        Raises:
+            jobs.Busy: another process holds the write lock; nothing was written.
+            DiskError: flnd.db refused the write.
+        """
         def write() -> None:
             sql = self._sql
             sql.execute("BEGIN IMMEDIATE")
@@ -268,13 +253,13 @@ class Store:
             ui.debug("checkpoint skipped: {error}", error=error)
 
     def _run(self, call: Callable[[], T]) -> T:
-        """`call()`, its SQLite errors as `_Busy` (the lock is taken) or `DiskError`."""
+        """`call()`, its SQLite errors as `jobs.Busy` (the lock is taken) or `DiskError`."""
         try:
             return call()
         except sqlite3.Error as error:
             code = getattr(error, "sqlite_errorcode", 0) & 0xFF
             if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
-                raise _Busy(str(error)) from error
+                raise jobs.Busy(f"{self.path}: locked by another process") from error
             raise DiskError(f"{self.path}: {error}") from error
 
 
@@ -310,12 +295,26 @@ def _target_key(target: Target) -> str:
 # The save
 
 
+@dataclass
+class _Done:
+    """What the run's saves did, for the summary line at its end."""
+
+    unpacked: int = 0
+    unpack_failed: int = 0
+    linked: int = 0
+
+
 class Saver:
     """A run's saves: each post's files through the nine stages, their rows one commit a post.
 
+    Every step is a job of the run's scheduler: a file's transfer a `FILE` job (with its
+    mirrors), a DASH join a `MERGE` job, a hash a `HASH` job, an unpack an `UNPACK` job, a
+    program an `EXEC` job and a post's commit a `WRITE` job; blocking calls go to the threads
+    of their kind (`Scheduler.on`). Used on the run's loop only.
+
     Args:
         store: the run's flnd.db.
-        jobs: the run's scheduler.
+        scheduler: the run's scheduler.
         emit: where `Saved`, `Skipped` and `Failed` go.
         run: the run's id in `runs`, for failures; None outside a run.
         dedupe: whether a file whose bytes are saved already becomes a hard link to them.
@@ -324,24 +323,31 @@ class Saver:
             user's own config; None runs nothing.
         stop: the run's second Ctrl-C, which a plugin's `fetch` function stops at when it
             next reports its progress; None never stops it.
+        tally: the run's live counts (`flnd.engine.job.Tally`); None counts nothing.
+        sample: keeps a scrubbed sample of a `Changed` answer, and points its hint at it.
     """
 
-    def __init__(self, store: Store, jobs: Scheduler, emit: Callable[[Any], None], *,
+    def __init__(self, store: Store, scheduler: jobs.Scheduler, emit: Callable[[Any], None], *,
                  run: int | None = None, dedupe: bool = True, sidecars: bool = True,
-                 exec: Sequence[str] | None = None,
-                 stop: threading.Event | None = None) -> None:
+                 exec: Sequence[str] | None = None, stop: threading.Event | None = None,
+                 tally: Any = None, sample: Callable[[Error], None] | None = None) -> None:
         if exec is not None and (not isinstance(exec, (list, tuple)) or not exec
                                  or not all(isinstance(arg, str) for arg in exec)):
             raise UsageError("exec must be a list: the program, then its arguments",
                              hint='exec = ["echo", "{path}"]')
-        self.store, self.jobs, self.emit, self.run = store, jobs, emit, run
+        self.store, self.scheduler, self.emit, self.run = store, scheduler, emit, run
         self.dedupe, self.sidecars, self.exec, self.stop = dedupe, sidecars, exec, stop
+        self.tally, self.sample = tally, sample
+        self.done = _Done()
         self._rows = 0
         # The pairs of devices (saved file's, new file's) found unable to hard-link.
         self._unlinkable: set[tuple[int, int]] = set()
         self._checkpoints: set[asyncio.Task[Any]] = set()
+        # Each target's last file to join the scheduler's queue (`_turn`).
+        self._turns: dict[Target, asyncio.Event] = {}
 
-    async def post(self, items: Sequence[Item], *, client: Fills, plugin: str) -> None:
+    async def post(self, items: Sequence[Item], *, client: net.Client,
+                   plugin: str) -> dict[str, Path]:
         """Save one post's files at once, commit their rows together, then finish each.
 
         A file that fails or is busy is reported, and the others go on.
@@ -351,15 +357,17 @@ class Saver:
             client: the plugin's downloading client.
             plugin: the plugin's code, for its jobs.
 
+        Returns:
+            Where each file that landed is, by its key.
+
         Raises:
-            DiskError: the disk or flnd.db refused; what landed is committed first.
-            MissingError: ffmpeg isn't installed.
+            Error: what stops the run (`jobs.stops`); what landed is committed first.
+            Stopped: the second Ctrl-C; what landed is committed first.
         """
         if not mimetypes.inited:
             # `files.kind_of` reads the system's types once; that read stays off the loop.
             await self._call(mimetypes.init)
-        found = await asyncio.gather(*(self._file(item, client, plugin) for item in items),
-                                     return_exceptions=True)
+        found = await _all(*(self._file(item, client, plugin) for item in items))
         landed = [one for one in found if isinstance(one, _Landed)]
         failures = [one for one in found if isinstance(one, _Failure)]
         fatal = next((one for one in found if isinstance(one, BaseException)), None)
@@ -367,57 +375,101 @@ class Saver:
             await self._commit(landed, failures)
         if fatal is not None:
             raise fatal
-        await asyncio.gather(*(self._finish(one, plugin) for one in landed))
+        _raised(await _all(*(self._finish(one, plugin) for one in landed)))
+        return {one.item.key: one.path for one in landed}
 
     async def close(self) -> None:
-        """Wait for the checkpoints running, then checkpoint once more."""
+        """Wait for the checkpoints running, checkpoint once more, and say what was done."""
         await asyncio.gather(*self._checkpoints)
         await self._call(self.store.checkpoint)
+        done, parts = self.done, []
+        if done.unpacked:
+            parts.append(f"{text.count(done.unpacked, 'archive')} extracted")
+        if done.unpack_failed:
+            parts.append(f"{done.unpack_failed} not extracted")
+        if done.linked:
+            parts.append(f"{text.count(done.linked, 'file')} already saved elsewhere, linked")
+        if parts:
+            (ui.warn if done.unpack_failed else ui.ok)("Media: {line}", line="; ".join(parts))
 
     # -- stages 1 to 4: the part, the transfer, the content check, dedupe ---------------------
 
-    async def _file(self, item: Item, client: Fills, plugin: str) -> _Landed | _Failure | None:
-        """One file into place and its row made; None when it was busy or had no URL."""
+    async def _file(self, item: Item, client: net.Client,
+                    plugin: str) -> _Landed | _Failure | None:
+        """One file into place and its row made; None when it was dropped, busy or had no
+        URL."""
+        flow = _Flow()
         try:
-            return await self._land(item, client, plugin)
+            landed = await self._land(item, client, plugin, flow)
+        except _Dropped:
+            self._count(item, queued=-1)
+            return None
         except files.BusyError:
-            self.emit(Skipped(item.target, item.category, item.post, item.dest, reason="busy"))
+            self._count(item, downloading=-1, skipped=1)
+            self.emit(Skipped(item.target, item.category, item.post, item.dest, reason=BUSY))
+            ui.info("{name}: being saved by another run", name=item.label or item.dest.name)
             return None
         except Error as error:
-            if isinstance(error, (DiskError, files.MissingError)):
+            if jobs.stops(error):
                 raise
-            return self._failed(item, error)
+            return self._failed(item, error, flow)
         except Exception as error:
             wrapped = classify(error)
-            if isinstance(wrapped, DiskError):
+            if jobs.stops(wrapped):
                 raise wrapped from error
-            assert isinstance(wrapped, Error)
-            return self._failed(item, wrapped)
+            return self._failed(item, wrapped, flow)
+        if landed is None:
+            self._count(item, **({"downloading": -1} if flow.started else {"queued": -1}))
+        return landed
 
-    def _failed(self, item: Item, error: Error) -> _Failure:
+    def _failed(self, item: Item, error: Error, flow: _Flow) -> _Failure:
+        if self.sample is not None:
+            self.sample(error)
+        self._count(item, failed=1, **({"downloading": -1} if flow.started else {"queued": -1}))
         self.emit(Failed(item.target, error, post=item.post, path=item.dest))
+        ui.debug("{name}: {error}", name=item.label or item.dest.name, error=error)
         return _Failure(item, error)
 
-    async def _land(self, item: Item, client: Fills, plugin: str) -> _Landed | None:
+    def _count(self, item: Item, **steps: int) -> None:
+        if self.tally is not None:
+            self.tally.count(item.target, item.category, **steps)
+
+    def _start(self, item: Item, flow: _Flow) -> None:
+        """A transfer of `item` starts: drop it after the first Ctrl-C, else count it.
+
+        Raises:
+            _Dropped: it hadn't started, and is dropped.
+        """
+        if flow.started:
+            return
+        if item.dropped is not None and item.dropped():
+            raise _Dropped(f"{item.dest.name}: dropped")
+        flow.started = True
+        self._count(item, queued=-1, downloading=1)
+
+    async def _land(self, item: Item, client: net.Client, plugin: str,
+                    flow: _Flow) -> _Landed | None:
         file = item.file
         if file.url is None:
             return None
         received: dict[str, str] = {}
         try:
-            saved = await self._transfer(item, file, client, plugin, received)
+            saved = await self._transfer(item, file, client, plugin, received, flow)
         except SiteError as error:
             if error.status not in EXPIRED or item.refresh is None:
                 raise
+            ui.info("{name}: HTTP {status}, asking for a fresh link",
+                    name=item.label or item.dest.name, status=error.status)
             fresh = await item.refresh()
-            if fresh is None or fresh.url is None:
+            if fresh is None or fresh.url is None or fresh.content is not None:
                 raise
-            saved = await self._transfer(item, fresh, client, plugin, received)
+            saved = await self._transfer(item, fresh, client, plugin, received, flow)
         dated = item.day or served_day(received.get("last-modified"))
         row = FileRow(
             item.key, _target_key(item.target), str(saved.path), saved.size, saved.mtime,
             post_id=item.post, category=item.category,
             date=item.day.isoformat() if item.day else None, estimated=item.estimated,
-            kind=files.kind_of(saved.path.name), at=now(), files=item.count)
+            kind=files.kind_of(saved.path.name), at=now(), files=item.count, hash=saved.hash)
         landed = _Landed(item, saved.path, dated, row)
         if self.dedupe:
             await self._dedupe(landed, plugin)
@@ -432,42 +484,114 @@ class Saver:
                 ui.warn("{name}: no sidecar: {error}", name=saved.path.name, error=error)
         return landed
 
-    async def _transfer(self, item: Item, file: File, client: Fills, plugin: str,
-                        received: dict[str, str]) -> files.Saved:
-        """Open the part, fill it from each mirror in turn, check it and land it."""
+    async def _transfer(self, item: Item, file: File, client: net.Client, plugin: str,
+                        received: dict[str, str], flow: _Flow) -> files.Saved:
+        """Fill the file's part from its mirrors in order, check it and land it.
+
+        A DASH pair (`File.audio`) is the first mirror; when it fails, the other mirrors are
+        tried as plain files. Everything else opens its part on a thread, then fills it from its
+        mirrors as one `FILE` job (`_mirrors`), then is checked and lands on a thread.
+        """
         mirrors: list[str | Fetch] = (
             [file.url] if isinstance(file.url, str) or callable(file.url) else list(file.url))
-        async with self._part(item.dest) as held:
-            if item.day is not None:
-                held.mtime = noon(item.day)
-            for number, mirror in enumerate(mirrors, start=1):
-                try:
-                    if number == 1 and file.audio is not None and isinstance(mirror, str):
-                        await self._dash(item, mirror, file.audio, held, client, plugin)
-                        break
-                    received.update(await self._mirror(item, mirror, held, client, plugin))
-                    if item.kind is not None:
-                        await self._call(_place, held, item.kind)
-                    break
-                except (DiskError, files.MissingError):
+        if file.audio is not None and isinstance(mirrors[0], str):
+            try:
+                return await self._dash(item, mirrors[0], file.audio, client, plugin, flow)
+            except Exception as error:
+                if len(mirrors) == 1 or _final(error):
                     raise
-                except Exception as error:
-                    if number == len(mirrors):
-                        raise
-                    ui.warn("mirror {n} failed: {error}; trying the next", n=number, error=error)
-                    await self._call(held.reset)
-            if held.mtime is None:
-                served = served_day(received.get("last-modified"))
-                held.mtime = noon(served) if served is not None else None
+                ui.warn("mirror 1 failed: {error}; trying the next", error=error)
+                mirrors = mirrors[1:]
+        turn = self._turn(item.target)
+        try:
+            async with self._part(item.dest) as held:
+                if item.day is not None:
+                    held.mtime = noon(item.day)
+                try:
+                    await self._mirrors(item, mirrors, held, client, plugin, received, flow,
+                                        turn)
+                except _Dropped:
+                    if not held.size:
+                        # Never started: no empty part is left behind.
+                        await self._call(held.drop)
+                    raise
+                # The last mirror's content check, and the landing, come after the job gave
+                # back its places: a small file holds its host's cap for its transfer alone.
+                if item.kind is not None:
+                    await self._call(_place, held, item.kind)
+                if held.mtime is None:
+                    served = served_day(received.get("last-modified"))
+                    held.mtime = noon(served) if served is not None else None
+        finally:
+            # A file that never queued (a busy part) lets the next one go on.
+            turn[1].set()
         assert held.saved is not None
         return held.saved
 
-    async def _mirror(self, item: Item, mirror: str | Fetch, held: files.Part, client: Fills,
-                      plugin: str) -> Mapping[str, str]:
+    def _turn(self, target: Target) -> tuple[asyncio.Event | None, asyncio.Event]:
+        """The file's turn among its target's: the one before it, and its own. A part opens on
+        a thread, and threads finish in any order; a file joins the scheduler's queue only after
+        the one listed before it did, so the target's places go in the order of the listing."""
+        mine = asyncio.Event()
+        before = self._turns.get(target)
+        self._turns[target] = mine
+        return before, mine
+
+    async def _mirrors(self, item: Item, mirrors: Sequence[str | Fetch], held: files.Part,
+                       client: net.Client, plugin: str, received: dict[str, str], flow: _Flow,
+                       turn: tuple[asyncio.Event | None, asyncio.Event]) -> None:
+        """Fill the open part from each mirror in turn, as one `FILE` job, which the scheduler
+        tries again as its policy says. Each mirror but the last is checked in the job, so a
+        web page there moves on to the next."""
+        job = self._file_job(item, plugin, mirrors[0], _nothing)
+        sink = _Bytes(job)
+        # One meter for every try, so a try that resumes counts only what it adds.
+        meter = net.Meter(sink)
+
+        async def work() -> None:
+            self._start(item, flow)
+            sink.flight = self._fly(item)
+            try:
+                for number, mirror in enumerate(mirrors, start=1):
+                    try:
+                        received.update(await self._mirror(item, mirror, held, client, meter))
+                        if item.kind is not None and number < len(mirrors):
+                            await self._call(_place, held, item.kind)
+                        return
+                    except Exception as error:
+                        if number == len(mirrors) or _final(error):
+                            raise
+                        ui.warn("mirror {n} failed: {error}; trying the next", n=number,
+                                error=error)
+                        # The next mirror may serve other bytes: it starts from an empty part.
+                        await self._call(held.reset)
+            except Exception as error:
+                if isinstance(error, Error):
+                    raise
+                # A plugin's `fetch` function raises what it meets (a dropped connection):
+                # the scheduler's policy reads it as flnd's error for it.
+                raise classify(error) from error
+            finally:
+                if sink.flight is not None:
+                    sink.flight.land()
+
+        job.work = work
+        before, mine = turn
+        try:
+            if before is not None:
+                await before.wait()
+            running = self.scheduler.run(job)
+            # Set before the job queues, which it does at once, ahead of the next file's.
+            mine.set()
+            await running
+        finally:
+            mine.set()
+
+    async def _mirror(self, item: Item, mirror: str | Fetch, held: files.Part,
+                      client: net.Client, meter: net.Meter) -> Mapping[str, str]:
         """One mirror into the part: a URL by the client, or a plugin's `fetch` function."""
         if isinstance(mirror, str):
-            return await self.jobs.run(self._file_job(
-                item, plugin, mirror, lambda: client.fill(mirror, held, headers=item.headers)))
+            return await client.fill(mirror, held, headers=item.headers, progress=meter)
         # A fetch that resumes keeps its offsets in `<part>.json`, which goes when it lands.
         held.side = True
 
@@ -475,93 +599,149 @@ class Saver:
             if self.stop is not None and self.stop.is_set():
                 raise KeyboardInterrupt
 
-        async def fetch() -> None:
-            if inspect.iscoroutinefunction(mirror):
-                await mirror(held.path, progress)
-                return
-            outcome = await asyncio.to_thread(mirror, held.path, progress)
-            if inspect.isawaitable(outcome):
-                await outcome
-
-        await self.jobs.run(self._file_job(item, plugin, "", fetch))
+        if inspect.iscoroutinefunction(mirror):
+            await mirror(held.path, progress)
+            return {}
+        outcome = await self.scheduler.on(Kind.CALL, mirror, held.path, progress)
+        if inspect.isawaitable(outcome):
+            await outcome
         return {}
 
-    async def _dash(self, item: Item, video: str, audio: str, held: files.Part, client: Fills,
-                    plugin: str) -> None:
-        """A video and its audio as two transfers at once, then one ffmpeg join into `held`.
+    async def _dash(self, item: Item, video: str, audio: str, client: net.Client, plugin: str,
+                    flow: _Flow) -> files.Saved:
+        """A video and its audio as two `FILE` jobs at once, then one `MERGE` job into the
+        file's part.
 
         Each stream has a part of its own (`<name>.video.part`), kept for the next try while
         the join fails; once joined, or given up on, both go. Empty audio saves the video alone.
         """
         ffmpeg = files.ffmpeg()
-        async with AsyncExitStack() as stack:
-            streams = [await stack.enter_async_context(
-                self._part(held.dest.with_name(f"{held.dest.name}.{name}")))
-                for name in ("video", "audio")]
-            await _together(*(
-                self.jobs.run(self._file_job(
-                    item, plugin, url,
-                    lambda url=url, part=part: client.fill(url, part, headers=item.headers)))
-                for url, part in zip((video, audio), streams, strict=True)))
-            for stream in streams:
-                await self._call(stream.flush)
-            if self.stop is not None and self.stop.is_set():
-                raise KeyboardInterrupt
-
-            async def join() -> None:
-                try:
-                    await media.join(streams[0], streams[1], held, ffmpeg)
-                except files.RunError as error:
-                    # A join that failed may have read a stream cut short: worth another try.
-                    error.retryable = True
-                    raise
-
-            try:
-                if streams[1].size == 0 and streams[0].size > 0:
-                    await self._call(shutil.copyfile, streams[0].path, held.path)
-                else:
-                    await self.jobs.run(Job(kind=Kind.MERGE, work=join, plugin=plugin,
-                                            account=item.account, target=str(item.target)))
-            finally:
+        self._start(item, flow)
+        async with self._part(item.dest) as held:
+            if item.day is not None:
+                held.mtime = noon(item.day)
+            names = (f"{held.dest.name}.video", f"{held.dest.name}.audio")
+            async with self._part(held.dest.with_name(names[0])) as one, \
+                    self._part(held.dest.with_name(names[1])) as two:
+                streams = (one, two)
+                await _together(*(self._stream(item, plugin, url, part, client)
+                                  for url, part in zip((video, audio), streams, strict=True)))
                 for stream in streams:
-                    stream.drop()
+                    await self._call(stream.flush)
+                if self.stop is not None and self.stop.is_set():
+                    raise KeyboardInterrupt
 
-    def _file_job(self, item: Item, plugin: str, url: str,
-                  work: Callable[[], Awaitable[Any]]) -> Job:
-        host = (urlsplit(url).hostname or "") if url else ""
-        return Job(kind=Kind.FILE, work=work, plugin=plugin, account=item.account, bucket=host,
-                   host=host, target=str(item.target), size=item.file.size,
-                   priority=RETRIED if item.retried else FILE_PRIORITY)
+                async def join() -> None:
+                    try:
+                        await media.join(one, two, held, ffmpeg)
+                    except files.RunError as error:
+                        # A join that failed may have read a stream cut short: worth another
+                        # try, from the streams kept.
+                        error.retryable = True
+                        raise
+
+                try:
+                    if two.size == 0 and one.size > 0:
+                        await self._call(shutil.copyfile, one.path, held.path)
+                    else:
+                        await self.scheduler.run(Job(
+                            kind=Kind.MERGE, work=join, plugin=plugin, account=item.account,
+                            target=str(item.target)))
+                finally:
+                    for stream in streams:
+                        stream.drop()
+        assert held.saved is not None
+        return held.saved
+
+    async def _stream(self, item: Item, plugin: str, url: str, part: files.Part,
+                      client: net.Client) -> None:
+        """One stream of a DASH pair into its part, as a `FILE` job of its host."""
+        job = self._file_job(item, plugin, url, _nothing)
+        meter = net.Meter(_Bytes(job))
+
+        async def work() -> None:
+            await client.fill(url, part, headers=item.headers, progress=meter)
+
+        job.work = work
+        await self.scheduler.run(job)
+
+    def _file_job(self, item: Item, plugin: str, first: str | Fetch,
+                  work: Callable[[], Awaitable[Any]]) -> Job[Any]:
+        """A `FILE` job for `item`: of its first mirror's host, or of the plugin's first domain
+        for a file its `fetch` function writes."""
+        host = (urlsplit(first).hostname or "") if isinstance(first, str) else item.domain
+        return Job(kind=Kind.FILE, work=work, plugin=plugin, account=item.account,
+                   host=host or plugin, target=str(item.target), size=item.file.size,
+                   path=item.dest, priority=0 if item.retried else None)
+
+    def _fly(self, item: Item) -> Any:
+        """The file's `Flight` on the run's screen; None without a tally."""
+        if self.tally is None:
+            return None
+        return self.tally.fly(item.key, item.target, item.label or item.dest.name)
 
     @asynccontextmanager
     async def _part(self, dest: Path) -> AsyncIterator[files.Part]:
-        """`files.part(dest, resume=True)`, opened and landed on threads, never on the loop."""
-        manager = files.part(dest, resume=True)
-        held = await self.jobs.run(Job(kind=Kind.CALL, work=lambda: _enter(manager)))
+        """`files.part(dest, resume=True, digest=True)`, opened and landed on the scheduler's
+        threads, never on the loop.
+
+        Raises:
+            BusyError: another run holds the part: the file's, never the run's stop.
+        """
+        manager = files.part(dest, resume=True, digest=True)
+        held = await self._enter(manager)
         if held is None:
-            # Raised here, not in the job: a busy part is the file's, never the run's stop.
             raise files.BusyError(f"{dest.name}: being saved by another run")
         try:
             yield held
         except BaseException as error:
             # The part keeps its bytes for the next run, and raises `error` again.
-            await _through(manager.__exit__, type(error), error, error.__traceback__)
+            await self._call(manager.__exit__, type(error), error, error.__traceback__)
             raise
-        await _through(manager.__exit__, None, None, None)
+        await self._call(manager.__exit__, None, None, None)
+
+    async def _enter(self, manager: Any) -> files.Part | None:
+        """Open a part on a thread; None when another run holds it. A cancel waits for the
+        open, then leaves what it opened, so no lock outlives the save."""
+        opened: list[files.Part] = []
+
+        def enter() -> files.Part | None:
+            try:
+                held = manager.__enter__()
+            except files.BusyError:
+                return None
+            # An empty write makes the part's buffer here, so a write from the loop opens
+            # nothing; one the disk refuses leaves the part at once.
+            try:
+                held.write(b"")
+            except BaseException:
+                manager.__exit__(*sys.exc_info())
+                raise
+            opened.append(held)
+            return held
+
+        try:
+            return await self._call(enter)
+        except asyncio.CancelledError as error:
+            if opened:
+                await self._call(manager.__exit__, type(error), error, None)
+            raise
 
     async def _dedupe(self, landed: _Landed, plugin: str) -> None:
-        """Link the file to a saved one with the same bytes; hash only when sizes match."""
+        """Link the file to a saved one with the same bytes, among those of its size."""
         row = landed.row
+        # One indexed read on the loop, on the store's one connection, which no thread shares.
         found = self.store.sized(row.size, besides=row.key)
         if not found:
             return
         path = Path(row.path)
         unhashed = [(key, Path(where)) for key, where, digest in found if digest is None]
-        digests = await asyncio.gather(
-            self._hash(path, row.size, plugin),
-            *(self._hash(where, row.size, plugin) for _, where in unhashed))
-        row.hash = digests[0]
-        for (key, _), digest in zip(unhashed, digests[1:]):
+        mine = [] if row.hash is not None else [self._hash(path, row.size, plugin)]
+        digests = _raised(await _all(*mine, *(self._hash(where, row.size, plugin)
+                                              for _, where in unhashed)))
+        if mine:
+            row.hash = digests.pop(0)
+        for (key, _), digest in zip(unhashed, digests, strict=True):
             if digest is not None:
                 landed.hashes[key] = digest
         hashes = {key: digest for key, _, digest in found if digest is not None}
@@ -581,19 +761,21 @@ class Saver:
             if mtime is not None:
                 # One file now, with the saved one's modified time.
                 row.mtime = mtime
+                self.done.linked += 1
                 return
 
     async def _hash(self, path: Path, size: int, plugin: str) -> bytes | None:
-        """The SHA-256 of a file on a hashing thread; None when it isn't on disk at `size`."""
+        """The SHA-256 of a file on a hasher thread; None when it isn't on disk at `size`."""
         async def work() -> bytes | None:
-            return await asyncio.to_thread(_digest, path, size)
-        return await self.jobs.run(Job(kind=Kind.HASH, work=work, plugin=plugin, size=size))
+            return await self.scheduler.on(Kind.HASH, _digest, path, size)
+        return await self.scheduler.run(Job(kind=Kind.HASH, work=work, plugin=plugin, size=size))
 
     # -- stage 5: the commit ------------------------------------------------------------------
 
     async def _commit(self, landed: Sequence[_Landed], failures: Sequence[_Failure]) -> None:
-        """A post's rows in one transaction on the loop; a lock held elsewhere is waited out
-        `BUSY_PAUSE` at a time, so the loop never stalls."""
+        """A post's rows in one transaction on the loop, as a `WRITE` job: a lock held
+        elsewhere puts it back in the scheduler's queue (`jobs.Busy`), so the loop never
+        stalls."""
         rows = [one.row for one in landed]
         hashes = {key: digest for one in landed for key, digest in one.hashes.items()}
         await self._write(self.store.commit, rows, failures, hashes, self.run)
@@ -604,17 +786,11 @@ class Saver:
             self._checkpoints.add(task)
             task.add_done_callback(self._checkpoints.discard)
 
-    async def _write(self, call: Callable[..., T], *args: Any) -> T:
-        """`call(*args)` on the store, again every `BUSY_PAUSE` while another process writes."""
-        until = clock.now() + BUSY_FOR
-        while True:
-            try:
-                return call(*args)
-            except _Busy as error:
-                if clock.now() >= until:
-                    raise DiskError(f"{self.store.path}: locked by another process for"
-                                    f" {BUSY_FOR:.0f}s", hint="let the other run finish") from error
-                await clock.pause(BUSY_PAUSE)
+    async def _write(self, call: Callable[..., Any], *args: Any) -> None:
+        """`call(*args)` on the store, on the loop, as a `WRITE` job."""
+        async def work() -> None:
+            call(*args)
+        await self.scheduler.run(Job(kind=Kind.WRITE, work=work))
 
     # -- stages 6 to 9: unpack, `Saved`, exec; the sidecar went before the commit -----------
 
@@ -622,31 +798,94 @@ class Saver:
         item, path = landed.item, landed.path
         if item.file.password is not None or files.is_archive(path):
             await self._write(self.store.update, item.key, await self._unpack(item, path, plugin))
+        self._count(item, downloading=-1, saved=1, bytes=landed.row.size)
         self.emit(Saved(item.target, item.category, item.post, path, landed.day,
                         landed.row.size, retried=item.retried))
         if self.exec:
             argv = self.exec
 
             async def work() -> None:
-                await asyncio.to_thread(_exec, argv, path, item.target, item.post)
-            await self.jobs.run(Job(kind=Kind.EXEC, work=work, plugin=plugin,
-                                    target=str(item.target)))
+                await self.scheduler.on(Kind.EXEC, _exec, argv, path, item.target, item.post)
+            await self.scheduler.run(Job(kind=Kind.EXEC, work=work, plugin=plugin,
+                                         target=str(item.target)))
 
     async def _unpack(self, item: Item, path: Path, plugin: str) -> dict[str, Any]:
         """Extract an archive beside itself on the unpack lane; a failure keeps it, and warns."""
         async def work() -> Path:
-            return await asyncio.to_thread(files.extract, path, password=item.file.password)
+            return await self.scheduler.on(Kind.UNPACK, _extract, path, item.file.password)
         try:
-            folder = await self.jobs.run(Job(kind=Kind.UNPACK, work=work, plugin=plugin,
-                                             target=str(item.target)))
+            folder = await self.scheduler.run(Job(kind=Kind.UNPACK, work=work, plugin=plugin,
+                                                  target=str(item.target)))
         except Error as error:
+            if jobs.stops(error):
+                raise
+            self.done.unpack_failed += 1
             ui.warn("{name}: not extracted: {error}", name=path.name, error=error)
             return {"unpacked": "failed"}
+        self.done.unpacked += 1
         return {"unpacked": "extracted", "folder": str(folder)}
 
-    async def _call(self, call: Callable[..., T], *args: Any) -> T:
-        """`call(*args)` as a `CALL` job: on the scheduler's threads, waited for to its end."""
-        return await self.jobs.run(Job(kind=Kind.CALL, work=lambda: _through(call, *args)))
+    async def _call(self, call: Callable[..., T], *args: Any, **options: Any) -> T:
+        """`call(*args)` on the scheduler's `CALL` threads, waited for to its end."""
+        if options:
+            return await self.scheduler.on(Kind.CALL, lambda: call(*args, **options))
+        return await self.scheduler.on(Kind.CALL, call, *args)
+
+
+@contextmanager
+def attached(settings: Any) -> Iterator[Saver | None]:
+    """Give a run's settings their save for the block (`settings.saver`), then close it.
+
+    The save reads `dedupe` and `sidecars` from the home's `config.toml`, writes through a
+    store of its own on the home's `flnd.db`, and runs its jobs on the run's scheduler. It is
+    closed on the run's loop before the loop and the database close. A run with no database,
+    or a dry one, saves nothing.
+
+    Args:
+        settings: the run's `RunShared`, inside `site.shared_browser`.
+
+    Yields:
+        The save; None when the run saves nothing.
+
+    Raises:
+        UsageError: the home's `config.toml` is broken.
+    """
+    from flnd.engine import site
+    from flnd.engine.options import config
+
+    scheduler = site.scheduler(settings)
+    if settings.db is None or settings.dry or scheduler is None:
+        yield None
+        return
+    found = config(settings.home)
+    store = Store(settings.db.ready())
+    saver = Saver(store, scheduler, settings.emit, run=settings.run, dedupe=found.dedupe,
+                  sidecars=found.sidecars, stop=settings.stop.now, tally=settings.tally,
+                  sample=lambda error: sampled(settings, error))
+    settings.saver = saver
+    try:
+        yield saver
+    finally:
+        settings.saver = None
+        try:
+            settings.browser_pool.loop.run(saver.close())
+        finally:
+            store.close()
+
+
+def sampled(settings: Any, error: BaseException) -> None:
+    """Keep a `Changed` error's answer as a scrubbed sample, and point its hint at it.
+
+    Called before the failure is written and its `Failed` event sent, so both name the sample.
+
+    Args:
+        settings: the run's `RunShared`: its home and run id.
+        error: what failed; anything but a `Changed` with a response is left as it is.
+    """
+    path = home.sample(settings.home, settings.run, error)
+    if path is not None and isinstance(error, Error):
+        saved = f"the answer is saved, scrubbed, in {path}"
+        error.hint = f"{error.hint}; {saved}" if error.hint else saved
 
 
 # ---------------------------------------------------------------------------------------------
@@ -655,6 +894,16 @@ class Saver:
 
 # `_link`'s answer when the file system can't hard-link at all.
 _NO_LINKS = -1
+
+
+async def _nothing() -> None:
+    """A job's work until its own is set."""
+
+
+def _final(error: BaseException) -> bool:
+    """Whether a mirror's failure ends the file at once: it stops the run, or it is a 429,
+    which the scheduler waits out on the same mirror."""
+    return jobs.stops(error) or getattr(error, "status", None) == 429
 
 
 def _link(twin: Path, path: Path, size: int,
@@ -690,6 +939,10 @@ def _digest(path: Path, size: int) -> bytes | None:
         return files.digest(path)
     except (OSError, DiskError):
         return None
+
+
+def _extract(path: Path, password: str | None) -> Path:
+    return files.extract(path, password=password)
 
 
 def _exec(argv: Sequence[str], path: Path, target: Target, post: str) -> None:
@@ -729,39 +982,14 @@ def _place(held: files.Part, kind: str) -> None:
         raise
 
 
-async def _enter(manager: Any) -> files.Part | None:
-    """Open a part on a thread; None when another run holds it. A cancel waits for the open,
-    then leaves what it opened, so no lock outlives the save."""
-    def enter() -> files.Part | None:
-        try:
-            held = manager.__enter__()
-        except files.BusyError:
-            return None
-        # An empty write makes the part's buffer here, so a write from the loop opens nothing.
-        held.write(b"")
-        return held
-
-    work = asyncio.ensure_future(asyncio.to_thread(enter))
-    try:
-        return await asyncio.shield(work)
-    except asyncio.CancelledError as error:
-        while not work.done():
-            try:
-                await asyncio.shield(work)
-            except asyncio.CancelledError:
-                continue
-            except BaseException:
-                break
-        if not work.cancelled() and work.exception() is None and work.result() is not None:
-            await _through(manager.__exit__, type(error), error, None)
-        raise
-
-
 async def _together(*works: Awaitable[Any]) -> None:
     """Await `works` at once; the first failure cancels the others, then is raised."""
-    tasks = [asyncio.ensure_future(work) for work in works]
+    tasks = [asyncio.ensure_future(_kept(work)) for work in works]
     try:
-        await asyncio.gather(*tasks)
+        for done in asyncio.as_completed(tasks):
+            result = await done
+            if isinstance(result, BaseException):
+                raise result
     except BaseException:
         for task in tasks:
             task.cancel()
@@ -769,21 +997,31 @@ async def _together(*works: Awaitable[Any]) -> None:
         raise
 
 
-async def _through(call: Callable[..., T], *args: Any) -> T:
-    """`call(*args)` on a thread, waited for to its end even through a cancel: a part's file
-    calls must finish before anything else touches its descriptor."""
-    work = asyncio.ensure_future(asyncio.to_thread(call, *args))
+async def _kept(work: Awaitable[T]) -> T | BaseException:
+    """What `work` returned, or what it raised: a task must never raise a Ctrl-C
+    (`KeyboardInterrupt`), which would end the loop's thread rather than the task."""
     try:
-        return await asyncio.shield(work)
+        return await work
     except asyncio.CancelledError:
-        while not work.done():
-            try:
-                await asyncio.shield(work)
-            except asyncio.CancelledError:
-                continue
-            except BaseException:
-                break
         raise
+    except BaseException as error:
+        return error
+
+
+async def _all(*works: Awaitable[T]) -> list[T | BaseException]:
+    """Await `works` at once, each as a task; what one raised is its result (`_kept`). One work
+    alone is awaited here, with no task."""
+    if len(works) == 1:
+        return [await _kept(works[0])]
+    return await asyncio.gather(*(_kept(work) for work in works))
+
+
+def _raised(results: list[T | BaseException]) -> list[T]:
+    """`results`, once none of them is an error; else the first error is raised."""
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return results  # type: ignore[return-value]
 
 
 def noon(day: datetime.date) -> float:

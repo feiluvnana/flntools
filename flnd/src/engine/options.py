@@ -12,7 +12,7 @@ This is flnd's own module (not a library): it knows sources, targets and the hom
 
 Who calls it: the engine (`flnd.engine.core`) builds the `Options` and `RunShared` of a run and
 checks `--only`; the job reads them; the library (`flnd._library`) and the steps after a download
-(`flnd.engine.steps`), a source's run (`flnd.engine.site`) and the job read `config`. What it calls:
+(`flnd.engine.save`), a source's run (`flnd.engine.site`) and the job read `config`. What it calls:
 `flnd.engine.home` (the database type), `flnd.source` (`Source`, `Target`), `flnd.ui.log` (a
 warning for a key the config file has that flnd doesn't take) and `flnd.errors`.
 
@@ -113,14 +113,11 @@ class RunShared:
     # handles the event before, so it is never called with a lock held. By default, events
     # are dropped.
     emit: Callable[[Any], None] = field(default=lambda event: None, repr=False)
-    # The steps after a file lands (`flnd.engine.steps.Chain`); None outside a run, so nothing is
-    # unpacked or compressed.
-    chain: Any = field(default=None, repr=False)
+    # The run's save (`flnd.engine.save.Saver`), set by `save.attached`; None outside a run.
+    saver: Any = field(default=None, repr=False)
     # Resolves the text of a target a listing yielded, on any source (the engine's `resolve`);
     # None outside the engine, where a source reads only its own.
     resolve: Callable[[str], Target] | None = field(default=None, repr=False)
-    # Each file's lifecycle for this target (`flnd.engine.track.Tracks`); None outside a download.
-    tracks: Any = field(default=None, repr=False)
     # The run's live counts (`flnd.engine.job.Tally`), which `run.state` is made from; None
     # outside a run.
     tally: Any = field(default=None, repr=False)

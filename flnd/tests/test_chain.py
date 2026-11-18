@@ -184,18 +184,6 @@ class SavedTest(ChainCase):
         [event] = self.saved()
         self.assertEqual((event.path, event.size), (self.path("a"), len(self.body)))
 
-    def test_a_file_dropped_by_ctrl_c_before_its_steps_is_still_saved(self):
-        from flnd.engine import steps as _steps
-
-        stop = mock.Mock(soon=mock.Mock(is_set=lambda: True), now=mock.Mock())
-        events = []
-        chain = _steps.Chain(None, stop, emit=events.append)
-        event = Saved(target=mock.Mock(), category="", post="1", path=Path("a.jpg"), date=None,
-                      size=3)
-        chain.landed(_steps.Landed("aaa:a.jpg", Path("a.jpg"), event=event))
-        chain.close()
-        self.assertEqual(events, [event])
-
 
 if __name__ == "__main__":
     import unittest

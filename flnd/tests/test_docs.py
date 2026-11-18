@@ -62,7 +62,6 @@ LONG = frozenset({
     "src/engine/core.py", "src/engine/events.py",
     "src/engine/home.py", "src/engine/job.py", "src/engine/options.py",
     "src/engine/plugins.py", "src/engine/run.py", "src/engine/site.py",
-    "src/engine/transfer.py",
     "flnkit/browser.py", "flnkit/cookies.py", "flnkit/db.py", "flnkit/html.py",
     "flnkit/loop.py", "flnkit/net.py", "flnkit/text.py",
     "src/sources/__init__.py", "src/sources/_manifest.py", "src/sources/fbk.py",

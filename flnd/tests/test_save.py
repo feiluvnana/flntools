@@ -1,8 +1,8 @@
 """src/engine/save.py: a post's files through the save's nine stages.
 
-Each post runs through a real `flnkit.net.Client` on `net.fake`, a fake scheduler that keeps the
-retry policy's rules, ffmpeg faked by `files.fake`, and `clock.Fake`, in a temporary home.
-`RealSchedulerTest` runs the save on `flnd.engine.jobs` itself, once that module is in the tree.
+Each post runs through a real `flnkit.net.Client` on `net.fake`, the run's scheduler
+(`flnd.engine.jobs`), ffmpeg faked by `files.fake`, and `clock.Fake`, in a temporary home.
+`EngineTest` runs it inside the engine.
 """
 
 import asyncio
@@ -23,18 +23,16 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest import mock
 
-from flnd.engine import home, save
+from test_engine import EngineCase, make_source
+
+from flnd.engine import home, jobs, save
 from flnd.engine.events import Failed, Saved, Skipped
-from flnd.engine.save import Item, Kind, Saver, Store
-from flnd.errors import DiskError, Error, NotFound, SiteError, ToolError, UsageError
+from flnd.engine.jobs import Kind
+from flnd.engine.save import Item, Saver, Store
+from flnd.errors import DiskError, NotFound, UsageError
 from flnd.source import File, Target
 from flnd.ui.log import ui
 from flnkit import clock, files, net
-
-try:
-    from flnd.engine import jobs as real
-except ImportError:
-    real = None
 
 T = Target("ins:example_user", kind="user")
 CDN = "https://cdn.example.com"
@@ -42,30 +40,16 @@ PNG, JPEG, MP4 = b"\x89PNG\r\n\x1a\n" + b"p" * 8, b"\xff\xd8\xff" + b"j" * 8, b"
 DAY = date(2026, 5, 1)
 
 
-class Jobs:
-    """The scheduler, faked with the retry policy's rules: each job runs at once; a retryable
-    error or a 5xx is tried again, 4 times at most; a `DiskError` (a busy part's too) or a
-    missing tool stops the run, and every job after it raises it."""
+class Jobs(jobs.Scheduler):
+    """The run's scheduler, keeping the kind of each job it runs."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.kinds: list[Kind] = []
-        self.stop: BaseException | None = None
 
     async def run(self, job):
-        for tries in range(5):
-            if self.stop is not None:
-                raise self.stop
-            self.kinds.append(job.kind)
-            try:
-                return await job.work()
-            except Exception as error:
-                missing = isinstance(error, ToolError) and not isinstance(error, files.RunError)
-                if isinstance(error, DiskError) or missing:
-                    self.stop = error
-                    raise
-                server = isinstance(error, SiteError) and (error.status or 0) >= 500
-                if not (isinstance(error, Error) and error.retryable or server) or tries == 4:
-                    raise
+        self.kinds.append(job.kind)
+        return await super().run(job)
 
 
 class SaveCase(unittest.TestCase):
@@ -83,6 +67,7 @@ class SaveCase(unittest.TestCase):
         self.store = Store(self.tmp / home.DB)
         self.addCleanup(self.store.close)
         self.jobs = Jobs()
+        self.addCleanup(lambda: self.jobs.__exit__())
         self.events: list = []
 
     def serve(self, request):
@@ -124,8 +109,8 @@ class StagesTest(SaveCase):
                 self.assertEqual(path.read_bytes(), body)
                 noon = datetime(2026, 5, 1, 12, tzinfo=UTC).timestamp()
                 self.assertEqual(path.stat().st_mtime, noon)
-                self.assertIn((f"ins:{name}", str(path), len(body), "2026-05-01", None),
-                              self.rows())
+                self.assertIn((f"ins:{name}", str(path), len(body), "2026-05-01"),
+                              self.rows("key, path, size, date"))
                 self.assertEqual(self.saved()[-1], path)
         self.assertEqual(list((self.tmp / "media").glob("*.part")), [])
 
@@ -151,7 +136,7 @@ class StagesTest(SaveCase):
             self.save(self.item("a.jpg"))
         self.assertEqual(self.events, [Skipped(T, "posts", "1", self.tmp / "media" / "a.jpg",
                                                reason="busy")])
-        self.assertIsNone(self.jobs.stop, "a busy part is the file's, never the run's stop")
+        self.assertIsNone(self.jobs._stop, "a busy part is the file's, never the run's stop")
 
     def test_a_cancel_while_the_part_opens_leaves_no_lock(self) -> None:
         opening, go, real_open = threading.Event(), threading.Event(), files._open
@@ -265,8 +250,9 @@ class DedupeTest(SaveCase):
                 self.assertEqual(os.path.samefile(path, held), linked)
                 hashes = dict(self.rows("key, hash"))
                 sized = len(old) == len(new)
-                self.assertEqual(self.jobs.kinds.count(Kind.HASH), 2 if sized else 0)
-                self.assertEqual(hashes[f"ins:{number}.jpg"] is not None, sized)
+                # Every new file is hashed as it is written; a saved one only on a size match.
+                self.assertEqual(self.jobs.kinds.count(Kind.HASH), 1 if sized else 0)
+                self.assertIsNotNone(hashes[f"ins:{number}.jpg"])
                 self.assertEqual(hashes[f"ins:held{number}"] is not None, sized)
         self.assertEqual(self.lines.getvalue().count("can't hard-link"), 1)
 
@@ -282,31 +268,22 @@ class CommitTest(SaveCase):
         self.assertEqual(len(self.rows()), 3)
         self.assertEqual(self.store._sql.execute("PRAGMA busy_timeout").fetchone(), (0,))
 
-    def test_a_write_lock_held_elsewhere_never_stalls_the_loop(self) -> None:
+    def test_a_commit_that_meets_a_lock_is_queued_again(self) -> None:
         other = sqlite3.connect(self.store.path, isolation_level=None)
         other.execute("BEGIN IMMEDIATE")
-        slept, sleep = self.clock.slept, self.clock.sleep
+        tries, commit = [], self.store.commit
 
-        def pause(seconds, *, stop=None):
-            if len(slept) == 2:
+        def counted(*args):
+            tries.append(self.jobs.kinds[-1])
+            if len(tries) == 3:
                 other.execute("COMMIT")
-            return sleep(seconds, stop=stop)
-
-        stalls, commit = [], self.store.commit
-
-        def timed(*args):
-            start = time.perf_counter()
-            try:
-                return commit(*args)
-            finally:
-                stalls.append(time.perf_counter() - start)
+            return commit(*args)
 
         self.routes[f"{CDN}/a.jpg"] = JPEG
-        with mock.patch.object(self.clock, "sleep", pause), \
-                mock.patch.object(self.store, "commit", timed):
+        with mock.patch.object(self.store, "commit", counted):
             self.save(self.item("a.jpg"))
-        self.assertEqual(slept, [save.BUSY_PAUSE] * 3)
-        self.assertLessEqual(max(stalls), 0.1)
+        # The `WRITE` job, tried again at its priority, never a thread's wait.
+        self.assertEqual(tries, [Kind.WRITE] * 3)
         self.assertEqual([row[0] for row in self.rows()], ["ins:a.jpg"])
         other.close()
 
@@ -406,15 +383,173 @@ class FinishTest(SaveCase):
                 Saver(self.store, self.jobs, self.events.append, exec=wrong)
 
 
-@unittest.skipIf(real is None, "flnd.engine.jobs isn't in this tree yet")
-class RealSchedulerTest(SaveCase):
-    """The save on the scheduler itself: its pools, its retry rule and what stops a run."""
+class EngineTest(EngineCase):
+    """The save inside a run of the engine: what stops the run, and what each file ends as."""
 
-    def setUp(self) -> None:
-        super().setUp()
-        self.enterContext(mock.patch.object(save, "Kind", real.Kind))
-        self.enterContext(mock.patch.object(save, "Job", real.Job))
-        self.jobs = self.enterContext(real.Scheduler())
+    def run_files(self, *found: File, targets=("aaa:example_user",)):
+        return self.report(make_source("aaa", files=list(found)), targets=list(targets))
+
+    def saved(self) -> list[str]:
+        return sorted(event.path.name for event in self.events if isinstance(event, Saved))
+
+    def test_a_full_disk_or_a_refused_commit_stops_the_run(self) -> None:
+        # E1 and E15: the run raises the `DiskError` (exit 4), never a file's failure alone.
+        def full(*args, **options):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def refused(*args, **options):
+            raise DiskError("flnd.db: database or disk is full")
+
+        self.routes[f"{CDN}/a.jpg"] = JPEG
+        for where, how in (((files.Part, "write"), full), (COMMIT, refused)):
+            with self.subTest(where[1]), mock.patch.object(*where, how):
+                with self.assertRaises(DiskError):
+                    self.run_files(File(f"{CDN}/a.jpg", name="a.jpg"))
+
+    def test_a_join_that_fails_once_is_tried_again_and_empty_audio_saves_the_video(self):
+        # E6 and E7.
+        self.routes.update({f"{CDN}/v.mp4": b"V" * 9, f"{CDN}/a.mp4": b"A" * 9,
+                            f"{CDN}/w.mp4": b"W" * 9, f"{CDN}/silent.mp4": b""})
+        ran: list = []
+
+        def ffmpeg(argv):
+            ran.append(argv)
+            if len(ran) == 1:
+                return 1, "", "Invalid data found when processing input in#0"
+            Path(argv[-1]).write_bytes(b"merged")
+            return 0, "", ""
+
+        folder = self.target_dir("aaa", "example_user")
+        for name, audio, body in (("v.mp4", "a.mp4", b"merged"), ("w.mp4", "silent.mp4", b"W" * 9)):
+            with self.subTest(name), files.fake({"ffmpeg": ffmpeg}):
+                self.events.clear()
+                self.run_files(File(f"{CDN}/{name}", audio=f"{CDN}/{audio}", name=name))
+                self.assertEqual(self.saved(), [name])
+                self.assertEqual((folder / name).read_bytes(), body)
+
+    def test_a_fetch_file_takes_its_plugins_first_domain_and_its_limit(self) -> None:
+        def fetch(path, progress):
+            Path(path).write_bytes(JPEG)
+            progress(len(JPEG))
+
+        caps: list = []
+        real = jobs.Scheduler.run
+
+        async def run(scheduler, job):
+            if job.kind is Kind.FILE:
+                caps.append((job.host, scheduler.limits.cap(job.host).most))
+            return await real(scheduler, job)
+
+        source = make_source("aaa", files=[File(fetch, name="a.jpg"), File(fetch, name="b.jpg")],
+                             limits={"aaa.example": 1})
+        with mock.patch.object(jobs.Scheduler, "run", run):
+            self.report(source, targets=["aaa:example_user"])
+        self.assertEqual(self.saved(), ["a.jpg", "b.jpg"])
+        self.assertEqual(caps, [("aaa.example", 1)] * 2)
+
+    def test_no_part_opens_on_the_loops_thread(self) -> None:
+        # K7: a DASH pair's stream parts open off the loop, as every part does.
+        self.routes.update({f"{CDN}/v.mp4": b"V" * 9, f"{CDN}/a.mp4": b"A" * 9})
+        on_loop: list = []
+        real = files.part
+
+        @contextlib.contextmanager
+        def part(dest, *args, **options):
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(Path(dest).name)
+            except RuntimeError:
+                pass
+            with real(dest, *args, **options) as held:
+                yield held
+
+        def ffmpeg(argv):
+            Path(argv[-1]).write_bytes(b"merged")
+            return 0, "", ""
+
+        with files.fake({"ffmpeg": ffmpeg}), mock.patch.object(files, "part", part):
+            self.run_files(File(f"{CDN}/v.mp4", audio=f"{CDN}/a.mp4", name="v.mp4"))
+        self.assertEqual(self.saved(), ["v.mp4"])
+        self.assertEqual(on_loop, [])
+
+    def test_two_targets_with_an_archive_each_both_save(self) -> None:
+        # E13: each target's archive is unpacked, and each sends its `Saved`.
+        for name in ("example_user", "example_creator"):
+            body = io.BytesIO()
+            with zipfile.ZipFile(body, "w") as archive:
+                archive.writestr("inside.txt", name)
+            self.routes[f"{CDN}/{name}.zip"] = body.getvalue()
+        source = make_source("aaa", files=lambda site, context: [
+            File(f"{CDN}/{site.target.value}.zip", name=f"{site.target.value}.zip")])
+        self.report(source, targets=["aaa:example_user", "aaa:example_creator"])
+        self.assertEqual(self.saved(), ["example_creator.zip", "example_user.zip"])
+
+    def test_a_write_lock_held_elsewhere_never_stalls_the_loop(self) -> None:
+        # E18: another process holds flnd.db's write lock for half a second while a post
+        # commits; the loop's longest stall stays under 100 ms.
+        self.run_files()  # makes flnd.db
+        stalls = probe(self)
+        locked, release = threading.Event(), threading.Event()
+
+        def hold() -> None:
+            other = sqlite3.connect(self.home / home.DB, isolation_level=None)
+            other.execute("BEGIN IMMEDIATE")
+            locked.set()
+            release.wait(5)
+            other.execute("ROLLBACK")
+            other.close()
+
+        holder = threading.Thread(target=hold)
+
+        def answer(request):
+            # The lock is taken as the file comes, so its post's commit meets it.
+            holder.start()
+            locked.wait(5)
+            threading.Timer(0.5, release.set).start()
+            return JPEG
+
+        self.routes[f"{CDN}/a.jpg"] = answer
+        try:
+            self.run_files(File(f"{CDN}/a.jpg", name="a.jpg"))
+        finally:
+            release.set()
+            holder.join()
+        self.assertEqual(self.saved(), ["a.jpg"])
+        self.assertTrue(stalls)
+        self.assertLess(max(stalls), 0.1)
+
+
+# Where a post's rows are written.
+COMMIT = (Store, "commit")
+
+
+def probe(case) -> list[float]:
+    """The stalls of each run's loop, from a probe that wakes every 5 ms, in real time."""
+    from flnkit import loop as _loop
+
+    stalls: list[float] = []
+    real = _loop.Loop._started
+
+    def started(self):
+        made = real(self)
+        if not getattr(self, "_probed", False):
+            self._probed = True
+
+            async def wake():
+                while True:
+                    at = time.perf_counter()
+                    await asyncio.sleep(0.005)
+                    stalls.append(time.perf_counter() - at - 0.005)
+
+            asyncio.run_coroutine_threadsafe(wake(), made)
+        return made
+
+    case.enterContext(mock.patch.object(_loop.Loop, "_started", started))
+    return stalls
+
+
+class RealSchedulerTest(SaveCase):
+    """The save on the scheduler's pools and retry rule: a busy part, a flaky join, a sidecar."""
 
     def test_a_busy_part_a_flaky_join_and_a_sidecar(self) -> None:
         self.routes.update({f"{CDN}/a.jpg": JPEG, f"{CDN}/b.jpg": PNG,
