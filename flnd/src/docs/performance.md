@@ -177,7 +177,9 @@ How a file is written, and why:
 Two network targets are still missed on this machine, after the profiling below. The targets
 stay as they were; the numbers are from the recorded baseline.
 
-**`net.big_rate`: 2.2 to 2.4 GiB/s, against ≥ 4.** One 1 GiB file, one transfer:
+**`net.big_rate`: 2.2 to 2.4 GiB/s, against ≥ 4, until the hash left the transfer.** Met now
+(4.7 to 4.8 GiB/s): a file is hashed only when a saved one has its size (P2, below). What the
+profiling found, one 1 GiB file, one transfer:
 - every byte of a download is hashed (SHA-256, for dedupe and `check`), and one stream can't be
   hashed faster than one core runs SHA-256: 3.3 GiB/s on the M5 (`cpu.hash_sha256`, 297 µs a
   MiB). So with the hash, 4 GiB/s can't be reached by one transfer, however it is arranged;
@@ -191,6 +193,8 @@ stay as they were; the numbers are from the recorded baseline.
   interval (0.5 ms) each moved it by under 5%;
 - what would meet it is a hash that isn't on the transfer's path (a faster or parallel hash, or
   hashing after the file lands), which changes what `flnd.db` stores or when dedupe can run.
+  Step 5 did that: `hash` is set only for files whose size another saved file has, and dedupe
+  hashes both then (`perf:hash only files whose size matches a saved one`).
 
 **`net.small_8_at_once`: 0.48 s, against ≤ 0.3** (0.61 s at the baseline). 2,000 files of
 100 KiB, 8 at once:

@@ -250,9 +250,9 @@ class DedupeTest(SaveCase):
                 self.assertEqual(os.path.samefile(path, held), linked)
                 hashes = dict(self.rows("key, hash"))
                 sized = len(old) == len(new)
-                # Every new file is hashed as it is written; a saved one only on a size match.
-                self.assertEqual(self.jobs.kinds.count(Kind.HASH), 1 if sized else 0)
-                self.assertIsNotNone(hashes[f"ins:{number}.jpg"])
+                # A file is hashed only when a saved one has its size, and then both are.
+                self.assertEqual(self.jobs.kinds.count(Kind.HASH), 2 if sized else 0)
+                self.assertEqual(hashes[f"ins:{number}.jpg"] is not None, sized)
                 self.assertEqual(hashes[f"ins:held{number}"] is not None, sized)
         self.assertEqual(self.lines.getvalue().count("can't hard-link"), 1)
 

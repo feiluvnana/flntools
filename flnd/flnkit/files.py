@@ -178,6 +178,12 @@ class Part:
         if not fed:
             self.feed(data)
 
+    @property
+    def hashing(self) -> bool:
+        """Whether the part hashes what is appended (`digest`, from byte 0): a writer that hands
+        its pieces to `feed` itself needn't when it doesn't."""
+        return self._sha is not None
+
     def feed(self, data: bytes) -> None:
         """Add appended bytes to the part's running SHA-256 (see `write`'s `fed`).
 

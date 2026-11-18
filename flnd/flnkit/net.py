@@ -1239,6 +1239,10 @@ class _Sink:
         loop = asyncio.get_running_loop()
         if self._offset is None:
             work = loop.run_in_executor(_writer_thread(), self._append, data)
+            if not self._held.hashing:
+                await _settle(work)
+                self.written += len(data)
+                return
             fed = loop.run_in_executor(_hasher_thread(), self._held.feed, data)
             # Both are waited for, whatever the other did: a thread still holding the part
             # when its transfer ends would write or hash after the part is gone.

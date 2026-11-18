@@ -201,8 +201,7 @@ yours.
     [storage.md](storage.md)), skipping a file another run is saving, then streams the file
     into it, resuming what a failed run kept. It tries mirrors in order, merges a DASH video
     with its audio through ffmpeg, checks the content (a web page instead of a photo is a
-    failure, not a file) and gives it the extension its content calls for, hashing the bytes
-    (SHA-256) as they are written. The part gets its post's date (at noon UTC) as its modified
+    failure, not a file) and gives it the extension its content calls for. The part gets its post's date (at noon UTC) as its modified
     time and is renamed onto the real name. A file the site or the network fails fails alone: a
     `Failed` event, and a row in `failures` for the next run to retry.
 11. **Finishing a file.** As each file lands, dedupe replaces a file whose bytes are already
@@ -291,8 +290,8 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
     Telethon), and any `async def` route or category, which reaches the browser by awaiting
     `site.tab` instead of calling the verbs.
 
-  What would block the loop runs off it: a part's bytes go to one writer thread 4 MiB at a time
-  (and to one hasher thread for their SHA-256, beside the write), a part's open and rename and
+  What would block the loop runs off it: a part's bytes go to one writer thread 4 MiB at a time,
+  a hash to the hasher pool (`HASH` jobs, one thread per core), a part's open and rename and
   dedupe's hard link to worker threads, a source's blocking `fetch` function and ffmpeg's DASH
   merge to worker threads too.
 - **A lazy post's expired link.** A source's code runs on the listing thread only, so a
@@ -327,12 +326,12 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
 Every saved file goes through the same steps, in one fixed order:
 
 ```
-download (hashing) → dedupe → sidecar → commit → unpack → Saved → --exec
+download → dedupe → sidecar → commit → unpack → Saved → --exec
 ```
 
-- **download, dedupe** run in the file's `FILE` job (`flnd.engine.save`): the bytes are hashed
-  as they are written, and a file whose bytes match a saved one of its size becomes a hard link
-  to it before its row is written (`[defaults] dedupe = true`).
+- **download, dedupe** run in the file's `FILE` job (`flnd.engine.save`): a file is hashed only
+  when a saved one has its size, and one whose bytes match becomes a hard link to it before its
+  row is written (`[defaults] dedupe = true`); a file of a size no other has gets no hash.
 - **commit**: once every file of the post settled, its rows go in one transaction.
 - **unpack** is slow, so it is an `UNPACK` job, one at a time on the unpack lane: extract
   beside the archive ([storage.md](storage.md)), record `unpacked` and the folder on the row.

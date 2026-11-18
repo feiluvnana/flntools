@@ -682,13 +682,13 @@ class Saver:
 
     @asynccontextmanager
     async def _part(self, dest: Path) -> AsyncIterator[files.Part]:
-        """`files.part(dest, resume=True, digest=True)`, opened and landed on the scheduler's
+        """`files.part(dest, resume=True)`, opened and landed on the scheduler's
         threads, never on the loop.
 
         Raises:
             BusyError: another run holds the part: the file's, never the run's stop.
         """
-        manager = files.part(dest, resume=True, digest=True)
+        manager = files.part(dest, resume=True)
         held = await self._enter(manager)
         if held is None:
             raise files.BusyError(f"{dest.name}: being saved by another run")

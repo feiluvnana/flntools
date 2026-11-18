@@ -63,8 +63,8 @@ A download's part:
 1. is opened and locked before any request is sent (see [Sharing a home](#sharing-a-home));
 2. is written as the bytes arrive, from every mirror and retry of the file, and checked through
    the open file: a web page where a photo was expected is removed, never renamed. Its SHA-256
-   is computed from the same bytes as they are written; a part resumed from an earlier run, or
-   written by a tool (ffmpeg joining a DASH video), is read back once instead;
+   is computed only when a saved file has its size (dedupe, `files_size`): then it, and each
+   such file with no hash yet, is read once on the hasher pool;
 3. gets its post's day, at noon UTC, as its modified time, set on the open file just before it
    closes (the rename keeps it); with no post date, the server's `Last-Modified` day;
 4. is renamed under the name its content calls for (`a.jpg` holding a WebP lands as `a.webp`);
@@ -146,7 +146,7 @@ while the file at its `path` is there, and also a file already on disk at its pl
 | `files` | on the first file of a post of several, how many files the post has: it tells a run whether a post listed again is whole |
 | `state` | where it stands with the site: `saved`, or `gone` when the site answered 404 or 410; `link` for a second name of a saved file in another category's folder (see [Links](#links)) |
 | `at` | when it was saved, in UTC, ISO 8601 |
-| `hash` | the SHA-256 of its bytes (32 bytes); empty on a row from before hashes |
+| `hash` | the SHA-256 of its bytes (32 bytes), taken once a saved file of the same size is met; empty until then, and on a row from before hashes |
 | `unpacked` | on an archive: `extracted`, or `failed` (a wrong password, a damaged or unsafe archive, no 7-Zip) |
 | `folder` | on an extracted archive: the folder it was extracted into |
 | `sidecar` | where its sidecar is, `<path>.json`, when sidecars are on (see [Sidecars](#sidecars)) |

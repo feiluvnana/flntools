@@ -7,7 +7,6 @@ photos.
 from __future__ import annotations
 
 import errno
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -57,13 +56,6 @@ class ChainCase(EngineCase):
 
     def saved(self) -> list[Saved]:
         return [event for event in self.events if isinstance(event, Saved)]
-
-
-class HashTest(ChainCase):
-    def test_a_download_records_the_sha256_of_its_bytes(self):
-        self.engine().download(["aaa:a"], categories="all")
-        row = self.rows()["aaa:a.jpg"]
-        self.assertEqual(row.hash, hashlib.sha256(self.body).digest())
 
 
 class DedupeTest(ChainCase):
