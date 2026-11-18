@@ -1,8 +1,6 @@
 """Safari's cookies (`flnkit.cookies.parse_binarycookies`, `load("safari")`), from synthetic files.
 
-Every binarycookies file here is built by `binarycookies` below, in a temporary home folder
-(`Path.home` is patched), so Safari's real file is never read; `tests/no_profiles.py` makes a read
-of the real home's file fail before it opens anything.
+Each file is built by `binarycookies` below in a fake home, so Safari's real file is never read.
 """
 
 import os
@@ -93,9 +91,7 @@ class SafariHome(unittest.TestCase):
     platform = "darwin"
 
     def setUp(self):
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        self.home = Path(folder.name)
+        self.home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(mock.patch("pathlib.Path.home", return_value=self.home))
         self.enterContext(mock.patch.object(_cookies, "_PLATFORM", self.platform))
 
@@ -107,19 +103,21 @@ class SafariHome(unittest.TestCase):
 
 
 class LoadTest(SafariHome):
-    def test_the_container_file_is_read_first(self):
-        self.write(_cookies.SAFARI_FILES[0])
-        self.write(_cookies.SAFARI_FILES[1], binarycookies(page(cookie("old.example.com", "a", "b"))))
-        self.assertEqual([c["name"] for c in _cookies.load("safari")],
-                         ["sessionid", "theme", "csrftoken"])
-
-    def test_the_older_place_when_there_is_no_container(self):
-        self.write(_cookies.SAFARI_FILES[1])
-        self.assertEqual(len(_cookies.load("Safari")), 3)
-
-    def test_no_file(self):
+    def test_the_container_file_then_the_older_place_then_none(self):
+        container, older = (self.home / name for name in _cookies.SAFARI_FILES[:2])
         with self.assertRaises(FileNotFoundError):
             _cookies.load("safari")
+        self.write(_cookies.SAFARI_FILES[1])
+        self.assertEqual(len(_cookies.load("Safari")), 3)
+        older.write_bytes(binarycookies(page(cookie("old.example.com", "a", "b"))))
+        self.write(_cookies.SAFARI_FILES[0])
+        self.assertEqual([c["name"] for c in _cookies.load("safari")],
+                         ["sessionid", "theme", "csrftoken"])
+        container.write_bytes(b"nope")
+        with self.assertRaises(LoginError) as caught:
+            _cookies.load("safari")
+        self.assertIn("Cookies.binarycookies: not a Safari binarycookies file",
+                      str(caught.exception))
 
     @unittest.skipIf(sys.platform == "win32" or os.geteuid() == 0, "needs file modes")
     def test_macos_privacy_protection_says_how_to_allow_it(self):
@@ -139,12 +137,6 @@ class LoadTest(SafariHome):
         self.write(_cookies.SAFARI_FILES[0])
         jar = _home.from_browser(Instagram(), browser="safari")
         self.assertEqual(sorted(c["name"] for c in jar), ["csrftoken", "sessionid"])
-
-    def test_a_damaged_file_is_a_login_error(self):
-        self.write(_cookies.SAFARI_FILES[0], b"nope")
-        with self.assertRaises(LoginError) as caught:
-            _cookies.load("safari")
-        self.assertIn("Cookies.binarycookies: not a Safari binarycookies file", str(caught.exception))
 
 
 class OffMacTest(SafariHome):

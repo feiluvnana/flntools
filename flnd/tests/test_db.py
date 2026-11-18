@@ -1,4 +1,4 @@
-"""src/_db.py, the SQLite store library: lazy files, transactions, threads, read-only opens."""
+"""`flnkit.db`: lazy files, transactions, threads, and a closed `Db`."""
 
 import tempfile
 import threading
@@ -27,8 +27,7 @@ class DbTest(unittest.TestCase):
     def test_a_transaction_commits_once_and_rolls_back_on_an_error(self):
         with self.db.transaction() as sql:
             sql.execute("INSERT INTO t VALUES ('a', 1)")
-            # A nested block joins the outer transaction.
-            self.db.write("INSERT INTO t VALUES ('b', 2)")
+            self.db.write("INSERT INTO t VALUES ('b', 2)")  # joins the outer transaction
         with self.assertRaises(ValueError), self.db.transaction() as sql:
             sql.execute("INSERT INTO t VALUES ('c', 3)")
             raise ValueError
@@ -48,24 +47,17 @@ class DbTest(unittest.TestCase):
             thread.join()
         self.assertEqual(self.db.one("SELECT count(*) FROM t", ()), (800,))
 
-    def test_a_closed_db_refuses_and_setup_runs_once(self):
+    def test_setup_runs_once_and_a_closed_db_refuses(self):
         calls = []
         db = _db.Db(self.path, schema=SCHEMA, setup=calls.append)
         db.write("INSERT INTO t VALUES ('a', 1)")
         db.one("SELECT v FROM t", ())
         db.close()
         self.assertEqual(len(calls), 1)
-        with self.assertRaises(RuntimeError):
-            db.write("INSERT INTO t VALUES ('b', 2)")
-
-    def test_a_read_after_close_raises(self):
-        db = _db.Db(self.path, schema=SCHEMA)
-        db.write("INSERT INTO t VALUES ('a', 1)")
-        db.close()
-        with self.assertRaises(RuntimeError):
-            db.one("SELECT v FROM t", ())
-        with self.assertRaises(RuntimeError):
-            db.all("SELECT v FROM t")
+        for call in (lambda: db.write("INSERT INTO t VALUES ('b', 2)"),
+                     lambda: db.one("SELECT v FROM t", ()), lambda: db.all("SELECT v FROM t")):
+            with self.assertRaises(RuntimeError):
+                call()
 
 
 if __name__ == "__main__":

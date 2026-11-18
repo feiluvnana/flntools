@@ -1,10 +1,7 @@
-"""The vault's key in the OS keychain (`flnkit.vault.Keychain`), and `[vault] key` in a home.
+"""The vault's key in the OS keychain (`flnkit.vault.Keychain`).
 
-The keychain tools are stand-ins: small Python programs named `security` and `secret-tool`,
-written in a temporary folder, that keep their items in a JSON file beside them and log every
-argument list they get. `flnkit.vault.SECURITY` is pointed at the stand-in (macOS), or the folder
-put first on PATH (Linux), so the real keychain is never read or changed; under the test suite,
-flnd refuses the real tools anyway (`test_the_real_tool_is_refused_under_the_tests`).
+The tools are stand-ins: Python programs named `security` and `secret-tool` in a temporary folder,
+keeping items in a JSON file and logging each argument list, so the real keychain is never used.
 """
 
 import base64
@@ -84,15 +81,15 @@ class KeychainCase(unittest.TestCase):
     platform = "darwin"
 
     def setUp(self):
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        self.tools = Path(folder.name) / "bin"
+        folder = self.enterContext(tempfile.TemporaryDirectory())
+        self.tools = Path(folder) / "bin"
         self.tools.mkdir()
         for name in ("security", "secret-tool"):
             path = self.tools / name
-            path.write_text(f"#!{sys.executable}\n{TOOL}")
+            # -IS: no site packages to import, so each run starts fast.
+            path.write_text(f"#!{sys.executable} -IS\n{TOOL}")
             path.chmod(0o755)
-        self.home = Path(folder.name) / ".flnd"
+        self.home = Path(folder) / ".flnd"
         self.enterContext(mock.patch.object(_vault, "_PLATFORM", self.platform))
         self.enterContext(mock.patch.object(_vault, "SECURITY", str(self.tools / "security")))
         self.enterContext(mock.patch.dict(os.environ, {
@@ -107,28 +104,18 @@ class KeychainCase(unittest.TestCase):
         log = self.tools / "argv.log"
         return log.read_text() if log.exists() else ""
 
-    def configure(self, where):
-        self.home.mkdir(exist_ok=True)
-        (self.home / "config.toml").write_text(f'[vault]\nkey = "{where}"\n')
-
 
 @unittest.skipIf(sys.platform == "win32", "the stand-ins are POSIX scripts")
 class MacTest(KeychainCase):
-    def test_a_key_is_made_once_and_never_on_a_command_line(self):
+    def test_a_key_is_made_once_never_on_a_command_line_and_replaced(self):
+        self.assertIsNone(self.chain.read())
         made = self.chain.key()
         self.assertEqual(len(made), _vault.KEY_SIZE)
         self.assertEqual(self.chain.key(), made)
         self.assertEqual(self.items(), {"flnd/home-example": base64.b64encode(made).decode()})
         self.assertNotIn(base64.b64encode(made).decode(), self.logged())
-
-    def test_read_is_none_without_an_item(self):
-        self.assertIsNone(self.chain.read())
-
-    def test_write_replaces_and_reads_back(self):
-        first, second = bytes(range(32)), bytes(range(1, 33))
-        self.chain.write(first)
-        self.chain.write(second)
-        self.assertEqual(self.chain.read(), second)
+        self.chain.write(bytes(range(1, 33)))
+        self.assertEqual(self.chain.read(), bytes(range(1, 33)))
 
     def test_a_keychain_that_forgets_is_caught_by_the_read_back(self):
         (self.tools / "forgetful").touch()
@@ -175,7 +162,6 @@ class NoKeychainTest(KeychainCase):
         with self.assertRaises(UsageError) as caught:
             self.chain.key()
         self.assertIn("the OS keychain isn't available here", str(caught.exception))
-
 
 
 class GuardTest(unittest.TestCase):
