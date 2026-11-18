@@ -607,6 +607,13 @@ that isn't lazy.
 `await scheduler.run(job) -> T` waits for the job's pools in order, runs `work` under the
 retry policy, and releases the pools.
 
+**`work` is always a coroutine function,** for every kind, `CALL` and `HASH` included, and the
+scheduler awaits it on the loop. A pool only decides when a job starts. A job whose work
+blocks (hashing, unpacking, a plugin's `ctx.call`, a disk write) sends that work to a thread
+inside its own coroutine (`asyncio.to_thread`, or the pool's executor), so the loop never
+blocks and every kind goes through the same retry policy. Decided by the orchestrator on
+2026-11-18 while wiring `save.py` and `jobs.py` (15, item 6).
+
 **Pools and their numbers:**
 
 | kind | waits for | numbers |
@@ -639,6 +646,7 @@ first out.
 | what happened | what the scheduler does |
 | --- | --- |
 | `NetworkError`, or a 5xx | try again after 1, 2, 4, 8 s, each × a random 0.5–1.5; then fail the job |
+| any other `Error` with `retryable=True`, for any job kind (`MERGE` included): a transient ffmpeg failure, a `ToolError` or flnkit's `RunError(ToolError)` flagged retryable | the same back-off: 1, 2, 4, 8 s, then fail the job. This is how E6's merge is retried. A missing tool is never retryable, and stops the run as its own row says. Decided by the orchestrator on 2026-11-18 (15, item 6) |
 | 429 | hold the bucket for `Retry-After` or `x-rate-limit-reset` (at most 3600 s; else 30 s), and halve its rate for 20 clean requests; a third 429 in a row on a bucket counts as a block round |
 | `blocked()` returned seconds, `ctx.hold(...)`, or a block round | with switching on and another account free: move the job to it. Else hold (plugin, account, bucket) for the larger of the seconds and the round's wait (30, 120, 480 s); a fourth round fails the job with `Blocked`. Rounds reset after 600 s with no block |
 | `LoginError` | landing on a wall (5.3's `walls`: in `open`, or a `fetch` redirected to one) holds (plugin, account) and tries again, twice: after 30 s, then after 120 s, since a throttled session's wall lifts after a wait. These waits are not block rounds. A third landing, or a 401 or 403 from the plugin's domains: with switching on and another account, move the job; else fail it, and mark the account `expired` |
@@ -785,7 +793,9 @@ One `FILE` job (with its segments) does the following, in order:
    `busy_timeout = 0` and `wal_autocheckpoint = 0`. When the post's last file settles, all its
    rows go in one transaction on the loop; after every 1,000 committed rows and on run close,
    a `CALL` job runs `PRAGMA wal_checkpoint(PASSIVE)`. On `SQLITE_BUSY` from another process,
-   the commit is queued again after 20 ms, and the loop never waits (fixes E18).
+   the commit is queued again after 20 ms, and the loop never waits (fixes E18). Until step 5
+   wires `save.py` into the scheduler, it pauses 20 ms itself; from that commit, the pause is
+   a scheduler re-queue of the commit at its priority.
 6. **Unpack.** An archive (zip, 7z, rar, tar) is extracted beside itself by the `UNPACK` lane,
    and its row is updated.
 7. **Sidecar** (`[defaults] sidecars = true`): `<name>.json` with the post's fields.
@@ -1810,6 +1820,9 @@ is built on the earlier layout.
     `track.py`, `transfer.py` and `steps.py`, which are deleted;
   - dedupe by size;
   - `exec`.
+  - when `feat:save files as jobs` wires `save.py` in, its own 20 ms `SQLITE_BUSY` pause
+    becomes a scheduler re-queue (6.4, item 5); its temporary version-1 `Store` stays until
+    step 10;
 - **Tests:**
   - `tests/test_jobs.py`: each pool's numbers, priorities, every row of the retry table,
     holds per bucket, segments splitting and resuming from the sidecar, a `ranged` `Fetch`
@@ -2015,7 +2028,8 @@ is built on the earlier layout.
 - **Changes:**
   - `engine/resolve.py` (6.5);
   - `engine/store.py` holds schema 2 and its migration (7.1), and `check` and repair from
-    `engine/check.py`;
+    `engine/check.py`; the temporary version-1 `Store` inside `engine/save.py` (step 5)
+    merges into it, and goes;
   - `engine/config.py` (7.2), with the templates;
   - `engine/options.py` and `engine/check.py` are deleted, and `flnd.options.Options` is
     dropped from `pyproject.toml` (auth and vault code in `engine/home.py` and
