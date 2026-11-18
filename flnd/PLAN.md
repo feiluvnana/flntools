@@ -483,7 +483,7 @@ on the loop when its job kind is `none`.
 | `extension` | `async extension(op: str, **args) -> Any` | `tab`; an op of 6.8; `UsageError` with the hint `flnd extension install` when it isn't connected |
 | `storage` | `async storage(origin: str) -> Mapping[str, str]` | `tab`; reads `origin`'s `localStorage` via extension `storage`, or Chrome profile before step 12 |
 | `pause` | `async pause(seconds: float, reason: str) -> None` | none; sleeps on the run's clock so a page settles and `fake_clock` advances |
-| `hold` | `async hold(reason: str, *, seconds: float \| None = None, bucket: str \| None = None) -> None` | none; sets a block hold or switches accounts under 6.2 for feed, DOM or SDK blocks (`FloodWaitError`) |
+| `hold` | `async hold(reason: str, *, seconds: float \| None = None, bucket: str \| None = None) -> None` | none; calls `Scheduler.hold(plugin, account, *, seconds, reason, bucket=None)` (6.2), which sets a block hold or switches accounts for feed, DOM or SDK blocks (`FloodWaitError`) |
 | `call` | `async call(fn: Callable[..., T], *args) -> T` | `call`, in the thread pool |
 | `ask` | `async ask(message: str, *, secret: bool = False, description: str = "", choices: Sequence[str] = ()) -> str` | `UsageError` when nobody can answer (no terminal) |
 | `log` | `log(level: str, message: str, **fields) -> None` | none; `level` is `"debug"`, `"info"` or `"warn"` |
@@ -637,7 +637,7 @@ blocks and every kind goes through the same retry policy. Decided by the orchest
 | --- | --- | --- |
 | `PAGE` | the hold of (plugin, account, bucket), then its pace token | one-token bucket at `1 / pace`; `pace` from config, else the class (0.5 s) |
 | `FILE` | the target's place, then the host's cap, then the rate limit | places per target `max(32, max(limits.values(), default=0))`; queue per target 4 × places; cap starts at 8, grows to 32 or `limits[host]` |
-| `TAB` | the run's tab budget, and for a scrolling feed the account's scroll gate | 6 tabs; 2 scrolling tabs per account; one target's listing reuses one tab; an `open` or `load` from a lazy post's files, `refresh` or `date` takes a tab of its own from the budget and closes it when the call ends, and never navigates the listing's tab; a warm tab opens only when at least 2 slots are free and never blocks an active target |
+| `TAB` | for a scrolling feed, the account's scroll gate, then the tab budget; otherwise the tab budget. A tab waiting to scroll holds no tab, so it never blocks an active target, and nothing holds a tab while it waits for a gate (the gate is per account), so the two can't deadlock | 6 tabs; 2 scrolling tabs per account; one target's listing reuses one tab; an `open` or `load` from a lazy post's files, `refresh` or `date` takes a tab of its own from the budget and closes it when the call ends, and never navigates the listing's tab; a warm tab opens only when at least 2 slots are free and never blocks an active target |
 | `CALL` | the thread pool | `min(32, os.cpu_count() + 4)` threads |
 | `HASH` | the hasher pool | `os.cpu_count()` threads |
 | `UNPACK` | the archive lane | 1 thread |
@@ -652,6 +652,12 @@ blocks and every kind goes through the same retry policy. Decided by the orchest
 - it grows by 1 while throughput rises by at least half of what one more place would add;
 - a step that didn't help is taken back, and the cap holds for 100 transfers;
 - a window with a free place and nobody waiting is dropped.
+
+**Holds.** `Scheduler.hold(plugin, account, *, seconds, reason, bucket=None)` sets a hold;
+`ctx.hold` and the retry table call it. A hold on an account (no `bucket`) gates that
+account's `PAGE`, `TAB` and `CALL` jobs; a hold on a bucket gates that bucket's `PAGE` jobs
+only, so `FILE` jobs are held by neither (a decision of the `jobs.py` review,
+2026-11-18).
 
 **Priorities:** 0 a retried failure, 1 listing (`PAGE`, `TAB`), 2 a file, 3 a post step
 (`HASH`, `UNPACK`, `MERGE`, `EXEC`). Lower runs first, and equal priorities run first in,
@@ -930,6 +936,11 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
   `Ledger` skips posts already saved.
 - A post whose files were `Hidden` is listed again under the new account, since media links
   are signed per session.
+- A job never moves back to an account it already left in this run: the scheduler keeps,
+  per job, the accounts it has tried. Once every account has been tried, the job waits for
+  the earliest hold to end, or fails as 6.2's row says. Without this, two walled accounts
+  would pass a job back and forth forever (a decision of the `jobs.py` review, 2026-11-18;
+  15, item 6).
 - With every account held, the job waits for the earliest hold to end.
 - The account that worked is written to `targets.account`, and is tried first next time.
 - Each move is a journal record `{"type": "switch", "plugin", "from", "to", "reason"}`, and
