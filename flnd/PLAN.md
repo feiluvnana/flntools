@@ -426,13 +426,17 @@ dependency and `import flnd.plugin` stays cheap (P11).
 
 - **`Post(id: str | int, files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]] = (),
   *, date: DateLike = None, listed: DateLike = None,
-  headers: Mapping[str, str] | None = None, **fields)`:**
+  headers: Mapping[str, str] | None = None, pinned: bool = False, **fields)`:**
   - frozen, as API 1's was; converts `id` to `str`; has `.replace(**changes) -> Post`, the
     one way to change a post, and `.lazy: bool`;
   - `files` as a coroutine function is a *lazy* post, whose files are listed only once the
     post is known to be new;
   - `date` names the files;
-  - `listed` is the date the listing is ordered by (default: `date`).
+  - `listed` is the date the listing is ordered by (default: `date`);
+  - `pinned` marks a post the site shows above its date order (a pinned or featured post).
+    It is saved like any other post; 6.3 says how the crawl treats it. `listed=None` can't
+    mark one, since it already means "use `date`";
+  - `RESERVED`, the names `**fields` may not take, gains `pinned`.
 - **`File(url: str | None = None, *, mirrors: Sequence[str] = (), fetch: Fetch | None = None,
   audio: str | None = None, name: str | None = None, size: int | None = None,
   password: str | None = None, ranged: bool = False)`:**
@@ -594,7 +598,8 @@ that isn't lazy.
 - `collect(plugin, target: str, *, ctx: FakeCtx | None = None,
   categories: Sequence[str] | None = None, limit: int | None = None) -> list[Collected]` runs
   a target to its end, checks that a `newest_first` category's dated posts are non-increasing
-  and that every template field is filled, and returns the `Collected` files.
+  (skipping `pinned` posts) and that every template field is filled, and returns the
+  `Collected` files.
 - `check(plugin)` runs the class checks and verifies that every backticked example target in
   each route's docstring resolves to that route.
 - `fake_clock()` is today's, and also fakes `clock.day()` (K6).
@@ -781,7 +786,12 @@ What it does:
      `stop_after` saved posts in a row;
    - with `when`, a `newest_first` category stops after `OLDER_IN_A_ROW` older posts in a
      row;
-   - a sync cut short keeps a gap, which the next sync fills.
+   - a sync cut short keeps a gap, which the next sync fills;
+   - a `pinned` post never counts toward `HEAD_IN_A_ROW`, `stop_after` or `OLDER_IN_A_ROW`,
+     is never the head a sync saves, and is skipped by the newest-first order check. A site
+     that pins 2 or more posts (ins, tik) would otherwise end every sync at the pinned head
+     and the pinned post after it, before any new post. Decided by the orchestrator on
+     2026-11-19 (15, item 6).
 3. **The Ledger** gives each file its path and key:
    - a file whose key is in `files` is `Skipped(reason="saved")`;
    - check on disk with a single `stat()` (`try: st = dest.stat()` instead of `is_file()` +
