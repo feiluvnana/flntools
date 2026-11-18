@@ -307,6 +307,26 @@ every one of them; `flnd --help` imports none. `flnd login`, `flnd ls` and every
 the plugin sources as they know the built-ins. With `--json`, one object per source, with
 `"type": "Source"` and the fields of `flnd.Installed`.
 
+## `flnd extension`
+
+Install flnd's Chrome extension, or uninstall it. The extension lets flnd read this browser's
+cookies and pages; [extension.md](extension.md) explains it.
+
+```sh
+flnd extension install
+flnd extension uninstall
+```
+
+`install` copies the extension to `~/.config/flnd/extension/unpacked/` (its secret stays one
+folder up, outside the extension), writes its native-messaging host
+for every Chromium browser found (Chrome, Chromium, Edge, Brave), and prints three steps: open
+`chrome://extensions`, turn on Developer mode, and click Load unpacked on that folder. It then
+waits up to 10 minutes for the extension to connect. The popup acts on the home given here
+(`--home`, else `$FLND_HOME`, else `./.flnd`). `uninstall` removes the folder and the hosts.
+
+`flnd host` is hidden from the help: Chrome starts it, with the extension's origin (and, on
+Windows, `--parent-window`), and it refuses any other origin.
+
 ## What a run prints
 
 - **Standard terminal run** draws a live summary table on standard error while the run goes:

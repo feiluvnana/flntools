@@ -23,6 +23,7 @@ branch is; a part that isn't built yet is named as such, never described as work
 | [writing-a-source.md](writing-a-source.md) | a tutorial that builds and tests a small source |
 | [errors.md](errors.md) | each error, what causes it and what to do |
 | [storage.md](storage.md) | the home folder: every file, store, table and field |
+| [extension.md](extension.md) | the Chrome extension: what it may read, its host, the relay, its messages and ops, the popup, install |
 | [performance.md](performance.md) | the measured numbers, `make bench`, and how a speed-up is proven |
 | [glossary.md](glossary.md) | the words these pages use: target, source, route, category, post, … |
 

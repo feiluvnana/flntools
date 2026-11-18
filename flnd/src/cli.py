@@ -520,6 +520,43 @@ def sources(args: argparse.Namespace) -> int:
     return OK
 
 
+def extension(args: argparse.Namespace) -> int:
+    """Install flnd's Chrome extension, or uninstall it.
+
+    install copies the extension to ~/.config/flnd/extension/unpacked, writes its host for every
+    Chromium browser found, prints the three steps that load it in Chrome, and waits up to 10
+    minutes for it to connect. The popup acts on this home. uninstall removes all of it.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0.
+    """
+    from pathlib import Path
+
+    from flnd.engine import extension
+    from flnd.ui import out
+
+    if args.action == "uninstall":
+        for path in extension.uninstall():
+            out.line(("removed ", "dim"), str(path))
+        return OK
+    home = Path(args.home).expanduser() if args.home else None
+    with _open(args) as fl:
+        domains = [domain for row in fl.sources if row.origin != "built-in"
+                   for domain in row.domains]
+    extension.install(home=home, domains=domains)
+    return OK
+
+
+def host(args: argparse.Namespace) -> int:
+    """Serve flnd's Chrome extension on standard input and output; Chrome starts it."""
+    from flnd.engine import extension
+
+    return extension.host(args.origin)
+
+
 # ---------------------------------------------------------------------------------------------
 # The parser
 # ---------------------------------------------------------------------------------------------
@@ -635,6 +672,17 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("source", help="the source's code (ins)")
 
     command(sources)
+
+    sub = command(extension)
+    sub.add_argument("action", choices=("install", "uninstall"),
+                     help="install connects Chrome; uninstall removes the extension")
+
+    # Hidden from the help: Chrome starts it, with the extension's origin (and, on Windows,
+    # --parent-window).
+    sub = verbs.add_parser("host", add_help=False)
+    sub.set_defaults(command=host)
+    sub.add_argument("origin", nargs="?")
+    sub.add_argument("--parent-window", help=argparse.SUPPRESS)
     return top
 
 

@@ -17,7 +17,7 @@ from typing import Any
 from flnd.ui import theme
 
 __all__ = ["FOLD", "Folds", "clean", "close", "error", "fill", "help", "line", "names", "plain",
-           "styled", "table", "warn"]
+           "spin", "styled", "table", "warn"]
 
 # A part of a line: text in the body colour, or (text, style), the style made of theme tokens
 # and Rich attributes ("bold bad").
@@ -147,6 +147,22 @@ def plain(text: str, *, err: bool = False) -> None:
     """Print `text` as it is, then a line break: JSON lines, a traceback, argparse's messages."""
     stream = _stream(err)
     stream.write(text if text.endswith("\n") else text + "\n")
+    _flush(stream)
+
+
+def spin(text: str, *, at: float | None) -> None:
+    """Draw the spinner's frame at `at` seconds, then `text`, over the line, on a terminal.
+
+    `at=None` clears the line. A pipe gets nothing: the lines around the wait say it all.
+    """
+    stream = sys.stdout
+    if not theme.tty(stream):
+        return
+    stream.write("\r\x1b[2K")
+    if at is not None:
+        fancy = theme.unicode(stream)
+        frame = _text([(theme.spinner(at, fancy) + " ", "focus"), (text, "dim")], fancy=fancy)
+        _console(stream).print(frame, end="")
     _flush(stream)
 
 

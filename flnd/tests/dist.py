@@ -4,6 +4,7 @@ PyInstaller can't follow the editable install, which maps the name flnd to the f
 the copy is staged as build/stage/flnd (from src/) and build/stage/flnkit, and the copy's
 __main__.py is bundled."""
 
+import os
 import shutil
 from pathlib import Path
 
@@ -20,6 +21,8 @@ def main() -> None:
     shutil.copytree(ROOT / "flnkit", STAGE / "flnkit", ignore=ignore)
     run(["--onefile", "--noconfirm", "--name", "flnd",
          "--collect-submodules", "flnd", "--collect-submodules", "flnkit",
+         # The Chrome extension's files, which `flnd extension install` copies out.
+         "--add-data", f"{STAGE / 'flnd' / 'extension'}{os.pathsep}flnd/extension",
          "--distpath", str(ROOT / "dist"),
          "--specpath", str(ROOT / "build"), "--workpath", str(ROOT / "build" / "pyinstaller"),
          "--paths", str(STAGE), str(STAGE / "flnd" / "__main__.py")])

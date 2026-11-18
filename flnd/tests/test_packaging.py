@@ -10,21 +10,40 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def data_files() -> list[str]:
+    """Every file of src/ that isn't Python, as the wheel names it: `flnd/extension/popup.js`."""
+    found = [path for path in (ROOT / "src").rglob("*")
+             if path.is_file() and path.suffix not in (".py", ".pyc")
+             and "__pycache__" not in path.parts]
+    return sorted(f"flnd/{path.relative_to(ROOT / 'src').as_posix()}" for path in found)
+
+
 class WheelTest(unittest.TestCase):
     @unittest.skipIf(shutil.which("uv") is None, "uv is not installed")
-    def test_wheel_ships_py_typed(self):
-        # setup.py moves the egg-info into build/; a stale one from an older build may remain.
-        had_egg_info = (ROOT / "flntools.egg-info").exists()
-        with tempfile.TemporaryDirectory() as out_dir:
+    def test_wheel_ships_every_data_file(self):
+        # A folder of data (the docs, the Chrome extension) ships only when pyproject.toml maps
+        # it. The build runs on a clean copy, since setuptools reuses build/lib, where a file
+        # from an older build would hide a missing mapping.
+        with tempfile.TemporaryDirectory() as temp:
+            copy, out_dir = Path(temp) / "project", Path(temp) / "dist"
+            ignore = shutil.ignore_patterns("__pycache__")
+            for name in ("src", "flnkit"):
+                shutil.copytree(ROOT / name, copy / name, ignore=ignore)
+            for name in ("pyproject.toml", "setup.py", "README.md"):
+                shutil.copy2(ROOT / name, copy / name)
             subprocess.run(
-                ["uv", "build", "--wheel", "--out-dir", out_dir, str(ROOT)], check=True, capture_output=True,
+                ["uv", "build", "--wheel", "--out-dir", str(out_dir), str(copy)], check=True,
+                capture_output=True,
             )
-            if not had_egg_info:
-                self.assertFalse((ROOT / "flntools.egg-info").exists())
-            wheel = next(Path(out_dir).glob("*.whl"))
+            # setup.py moves the egg-info into build/, out of the project folder.
+            self.assertFalse((copy / "flntools.egg-info").exists())
+            wheel = next(out_dir.glob("*.whl"))
             with zipfile.ZipFile(wheel) as archive:
-                self.assertIn("flnd/py.typed", archive.namelist())
-                self.assertTrue(any(name.startswith("flnkit/") for name in archive.namelist()))
+                names = set(archive.namelist())
+        self.assertIn("flnd/extension/manifest.json", data_files())
+        self.assertEqual([name for name in data_files() if name not in names], [],
+                         "map these in [tool.setuptools.package-data] in pyproject.toml")
+        self.assertTrue(any(name.startswith("flnkit/") for name in names))
 
 
 def run_python(code: str) -> subprocess.CompletedProcess:
@@ -94,6 +113,7 @@ class BundleTest(unittest.TestCase):
         script = (ROOT / "tests" / "dist.py").read_text(encoding="utf-8")
         self.assertIn('"--collect-submodules", "flnd"', script)
         self.assertIn('"--collect-submodules", "flnkit"', script)
+        self.assertIn("flnd/extension", script)
 
 
 class LazyImportTest(unittest.TestCase):

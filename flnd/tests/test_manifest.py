@@ -33,6 +33,11 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(text, source_manifest.render(),
                          "src/sources/_manifest.py is stale: run make manifest")
 
+    def test_the_extension_may_read_every_built_in_domain(self):
+        text = source_manifest.EXTENSION.read_text(encoding="utf-8")
+        self.assertEqual(text, source_manifest.extension(),
+                         "src/extension/manifest.json is stale: run make manifest")
+
     def test_the_registry_lists_the_built_in_sources_in_order(self):
         codes = [getattr(__import__(module, fromlist=[name]), name).code
                  for module, name in sources.BUILT_IN]

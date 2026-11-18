@@ -34,7 +34,10 @@ docs:     ; $(RUN) pdoc -d google flnd flnd.source flnd.testing -o build/docs
 # `make try ARGS="ins:example_user --only reels"`. Log in there first for a site that needs it
 # (`uv run flnd --home .try login ins chrome`); `make clean` removes it.
 try:      ; $(RUN) flnd --home .try download --dry $(ARGS)
+# The real Chrome extension in Playwright's Chromium, every op against a local page, in a
+# temporary home (tests/ext.py; src/docs/extension.md). Never part of `check`.
+ext:      ; $(RUN) python tests/ext.py $(ARGS)
 # The one-file binary, from a staged copy of the two packages (tests/dist.py).
 dist:     ; $(RUN) --group dist python tests/dist.py
 clean:    ; $(RUN) python -c "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
-.PHONY: setup test lint check api manifest cdn-real docs try dist clean
+.PHONY: setup test lint check api manifest cdn-real docs try ext dist clean
