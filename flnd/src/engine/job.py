@@ -1861,6 +1861,8 @@ class Downloads:
         db = self.settings.db
         if db is None:
             return
+        if isinstance(error, Error):
+            classify(error)  # flnd's hint for a flnkit error that has none, before it is kept
         sampled(self.settings, error)
         placed = queued.placed
         url = placed.file.url if isinstance(placed.file.url, str) else ""

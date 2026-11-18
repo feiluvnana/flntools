@@ -37,13 +37,14 @@ flnd is one package, `flnd/`, in layers. Each layer imports only what its rule b
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
    │ 5. the kit               flnkit/: net, browser, loop, files, media, clock,   │
    │                          dig, html, text, db, cookies, vault                 │
-   │                          (and src/errors.py, the one error hierarchy)        │
+   │                          errors (the root of the one error hierarchy)        │
    └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 The rules between them:
 
-- **The kit imports only the kit** and `src/errors.py`. Each module does one general job —
+- **The kit imports only the kit**, the standard library and third-party packages: nothing
+  of flnd. Each module does one general job —
   HTTP, the browser, files, cookies, a SQLite store — that another program could use, and
   knows nothing of sources, targets or `flnd.db`'s schema: flnd's code passes those in. A kit
   module logs through the standard library's `logging` (`flnkit.<module>`), and
@@ -107,7 +108,7 @@ The rules between them:
 | `src/ui/out.py` | every line flnd prints: lines, folded warnings, errors and their hints, tables, the help; text from a site cleaned of escape codes | the CLI, `src/ui/log.py`, the run's hard exit |
 | `src/ui/log.py` | the levels of log lines, the progress rows and the run's summary table; the journal; the route of the kit's `logging` records | every layer above the kit |
 | `src/ui/forms.py` | questions on the terminal | the CLI, the site, the engine's browser screen |
-| `src/errors.py` | the one error hierarchy, `Stopped`, and `classify` and `disk`, which turn any exception into one of them | every module |
+| `src/errors.py` | flnd's face of the one error hierarchy: the kit's classes re-exported, `SourceError`, and `classify`, which turns any exception into one of them and gives flnd's hint to an error that has none | every module |
 
 The kit, `flnkit/` — each module a toolkit of its own:
 
@@ -118,6 +119,7 @@ The kit, `flnkit/` — each module a toolkit of its own:
 | `loop` | one asyncio loop on a thread of its own, which other threads hand work to (`run`, `submit`) |
 | `files` | atomic files: parts that lock themselves, hashing as bytes are written, renames, sweeps; running outside tools; archive extraction |
 | `media` | one ffmpeg join of a video stream and its audio stream |
+| `errors` | the error classes the kit raises, the root of flnd's hierarchy, and `disk` |
 | `clock`, `dig` | a clock tests can fake; JSON paths |
 | `html`, `text` | HTML parsing (selectolax); safe file names, redaction, readable numbers |
 | `db` | a SQLite store: one connection behind a lock, transactions, waiting for another process's writer |
@@ -459,7 +461,8 @@ its rows hold.
 
 ## Errors
 
-Every error is a `flnd.Error` from one hierarchy (`src/errors.py`, over the kit's): 
+Every error is a `flnd.Error` from one hierarchy, defined in `flnkit/errors.py` and
+`src/errors.py` ([errors.md](errors.md#where-the-classes-live)):
 `UsageError`, `LoginError`, `SiteError` (with `Blocked`, `NotFound` and `Changed`),
 `NetworkError`, `DiskError`, `ToolError` and `SourceError`. `str(e)` is the one-line message
 and `e.hint` says what to do. Ctrl-C is `flnd.Stopped`, a `KeyboardInterrupt`, so

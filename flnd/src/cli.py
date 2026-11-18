@@ -55,18 +55,18 @@ __all__ = ["exit_code", "main", "parser"]
 # The exit codes (src/docs/cli). A cron job can tell "some files failed" (1) from "flnd itself
 # stopped" (4).
 OK, FAILED, USAGE, LOGIN, BROKE, STOPPED = 0, 1, 2, 3, 4, 130
-# Each error class's exit code when it ends a command, by class name, so that reading it needs
-# no import. The first class in an error's MRO that is listed wins; an unlisted `flnd.Error`
-# exits 4.
-CODES = {
-    "UsageError": USAGE,
-    "LoginError": LOGIN,
-    "SiteError": FAILED,
-    "NetworkError": FAILED,
-    "DiskError": BROKE,
-    "ToolError": BROKE,
-    "SourceError": BROKE,
-}
+# Each error class's exit code when it ends a command, by class name: the first of these an
+# error is an instance of wins, and anything else exits 4. Read by `isinstance` on flnd's own
+# classes, so a plugin's own class that is merely named `LoginError` gets no special code.
+CODES = (
+    ("Stopped", STOPPED),
+    ("UsageError", USAGE),
+    ("LoginError", LOGIN),
+    ("DiskError", BROKE),
+    ("ToolError", BROKE),
+    ("SourceError", BROKE),
+    ("Error", FAILED),
+)
 # ---------------------------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------------------------
@@ -122,8 +122,9 @@ def exit_code(error: BaseException | None) -> int:
         error: the exception that ended the command; None if the command finished successfully.
 
     Returns:
-        0 if the command succeeded, 130 for Ctrl-C, the exit code from `CODES` for `flnd.Error` 
-        or its base classes, and 4 for other exceptions.
+        0 if the command succeeded, else the code of the first class in `CODES` the error is an
+        instance of: 130 for `flnd.Stopped`, 2, 3, 4 or 1 for a `flnd.Error`, and 4 for anything
+        else.
 
     Example:
         >>> import flnd
@@ -132,11 +133,11 @@ def exit_code(error: BaseException | None) -> int:
     """
     if error is None:
         return OK
-    if isinstance(error, KeyboardInterrupt):
-        return STOPPED
-    for kind in type(error).__mro__:
-        if kind.__module__ == "flnd.errors" and kind.__name__ in CODES:
-            return CODES[kind.__name__]
+    import flnd
+
+    for name, code in CODES:
+        if isinstance(error, getattr(flnd, name)):
+            return code
     return BROKE
 
 
@@ -165,11 +166,12 @@ def _report(error: Any, *, as_json: bool = False) -> None:
     """
     from flnd.ui import out
 
+    # `out.error` first: it gives the error flnd's hint when it has none, which the JSON shows.
+    out.error(error)
     if as_json:
         from flnd.engine.events import encode
 
         out.plain('{"type":"Error","error":' + encode(error).decode() + "}")
-    out.error(error)
 
 
 def _crashed(error: Exception, args: argparse.Namespace) -> int:
@@ -984,7 +986,7 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
         view.end(report)
         if journal is not None:
             journal.write(report)
-    if any(_kind(failed.error) == "LoginError" for failed in report.failed):
+    if any(_login(failed.error) for failed in report.failed):
         return LOGIN
     return FAILED if report.failed else OK
 
@@ -1098,9 +1100,11 @@ def _runner(args: argparse.Namespace) -> _Exec | None:
     return _Exec(command, quiet=args.json) if command is not None else None
 
 
-def _kind(error: BaseException) -> str:
-    """The name of the nearest class of `error` that `CODES` lists; "" for none."""
-    return next((kind.__name__ for kind in type(error).__mro__ if kind.__name__ in CODES), "")
+def _login(error: BaseException) -> bool:
+    """Whether `error` is a `flnd.LoginError`: a login the target needs, exit code 3."""
+    import flnd
+
+    return isinstance(error, flnd.LoginError)
 
 
 class _View:
@@ -1240,7 +1244,7 @@ def _hints(failed: Sequence[tuple[BaseException, bool]]) -> list[str]:
     """
     seen: list[str] = []
     for error, _ in failed:
-        if _kind(error) != "LoginError":
+        if not _login(error):
             continue
         hint = str(getattr(error, "hint", "") or "")
         if hint and hint not in seen:

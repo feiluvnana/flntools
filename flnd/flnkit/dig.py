@@ -9,8 +9,6 @@ import functools
 import re
 from typing import Any, NamedTuple
 
-from flnd.errors import SourceError
-
 __all__ = ["dig"]
 
 
@@ -49,7 +47,7 @@ def dig(data: Any, path: str) -> Any:
         plain path finds nothing; a spreading path finds nothing as `[]`.
 
     Raises:
-        SourceError: the path has a step that cannot be read.
+        ValueError: the path has a step that cannot be read.
 
     Example:
         >>> data = {"items": [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]}
@@ -81,7 +79,7 @@ def _compile(path: str) -> tuple[tuple[Any, ...], ...]:
         One tuple of steps per alternative.
 
     Raises:
-        SourceError: a part of the path is not a step.
+        ValueError: a part of the path is not a step.
     """
     alternatives = []
     for alternative in path.split("||"):
@@ -89,7 +87,7 @@ def _compile(path: str) -> tuple[tuple[Any, ...], ...]:
         while at < len(text):
             step = STEP.match(text, at)
             if step is None or step.end() == at:
-                raise SourceError(
+                raise ValueError(
                     f"dig: can't read {text[at:]!r} in {path!r}: use a.b, a[0], "
                     "a[], ..[field=value] or a || b"
                 )

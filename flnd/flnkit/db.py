@@ -32,7 +32,7 @@ Rules a change must keep:
 - Every statement runs under the `Db`'s lock, so threads share its one connection safely.
 - A transaction takes the write lock at its start (`IMMEDIATE`), so two processes never read a
   row, change it and write it back over each other: the second waits up to `BUSY_MS`.
-- It imports only the stdlib and `flnd.errors`: SQLite failures are `DiskError`s naming the file.
+- It imports only the stdlib and `flnkit.errors`: SQLite failures are `DiskError`s naming the file.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from flnd.errors import DiskError
+from flnkit.errors import DiskError
 
 __all__ = ["Db", "connect"]
 

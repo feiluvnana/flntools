@@ -26,8 +26,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import IO, Any, Literal
 
-from flnd.errors import DiskError, SiteError, ToolError, disk
 from flnkit import clock
+from flnkit.errors import DiskError, SiteError, ToolError, disk
 
 PART = ".part"
 SIDE = ".json"
@@ -493,7 +493,7 @@ def _open(path: Path, *, wait: bool, resume: bool = False) -> tuple[int, int]:
         try:
             if not _lock(fd, wait=wait):
                 raise BusyError(f"{path.name}: being saved by another run",
-                                hint="let the other flnd run finish; the next run skips it")
+                                hint="let the other run finish; the next run skips it")
             if fresh:
                 return fd, 0
             found = os.fstat(fd)
@@ -506,7 +506,7 @@ def _open(path: Path, *, wait: bool, resume: bool = False) -> tuple[int, int]:
                 landed = path.with_name(path.name[: -len(PART)])
                 if landed.is_file() and not path.is_file():
                     raise BusyError(f"{path.name}: just saved by another run",
-                                    hint="let the other flnd run finish; the next run skips it")
+                                    hint="let the other run finish; the next run skips it")
         except BaseException:
             os.close(fd)
             raise
@@ -1524,7 +1524,7 @@ def _unpack_tar(path: Path, dest: Path) -> None:
     except (tarfile.TarError, *DAMAGED, shutil.ReadError) as error:
         raise SiteError(f"{path.name}: {error}") from error
     except OSError as error:
-        raise DiskError.of(error, dest) from error
+        raise disk(error, dest) from error
 
 
 def _zip_link(info: zipfile.ZipInfo) -> bool:
@@ -1665,7 +1665,7 @@ def _verify(stage: Path, entries: list[Entry], name: str) -> None:
         try:
             size = written.stat().st_size
         except OSError as error:
-            raise DiskError.of(error, written) from error
+            raise disk(error, written) from error
         if entry.size is not None and size != entry.size:
             raise SiteError(f"{name}: {entry.name!r} came out {size} bytes, not {entry.size}")
 

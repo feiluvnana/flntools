@@ -19,6 +19,7 @@ from fakes import FakeSite, collect
 
 from flnd.engine.core import resolve
 from flnd.engine.site import Listing
+from flnd.errors import classify
 from flnd.source import (
     API,
     Cookies,
@@ -578,9 +579,14 @@ class DigTest(unittest.TestCase):
         self.assertEqual(dig(self.PAGE, "next || alt"), "z")
         self.assertEqual(dig(self.PAGE, "data.user.edges[].node.id || alt"), [1, 2])
 
-    def test_a_bad_bracket_is_a_source_error(self):
-        with self.assertRaisesRegex(SourceError, r"can't read '\[x\]'"):
+    def test_a_bad_bracket_is_a_value_error_and_a_source_error_once_it_escapes(self):
+        # S15: the path is the source's mistake, never `Changed`. tests/test_errors.py runs it
+        # through a whole listing.
+        with self.assertRaisesRegex(ValueError, r"can't read '\[x\]'") as caught:
             dig(self.PAGE, "data[x]")
+        made = classify(caught.exception, target="exm:example_user")
+        self.assertIsInstance(made, SourceError)
+        self.assertIn("can't read '[x]'", str(made))
 
 
 class PagesTest(unittest.TestCase):

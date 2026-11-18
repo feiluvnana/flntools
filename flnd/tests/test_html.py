@@ -3,7 +3,7 @@
 import unittest
 from unittest import mock
 
-from flnd.errors import Changed, SiteError, SourceError
+from flnd.errors import Changed, SiteError
 from flnkit import html as _html
 
 HTML = """<html><head><title>t</title>
@@ -81,11 +81,12 @@ class QueryTest(unittest.TestCase):
         # The document itself keeps its scripts.
         self.assertIn("_sharedData", self.page.text)
 
-    def test_invalid_css_raises_a_source_error(self):
+    def test_invalid_css_raises_a_value_error(self):
+        # The caller's mistake: flnd's `classify` makes it a SourceError when a source lets it out.
         for query in ("div[", "a[["):
-            with self.subTest(query), self.assertRaises(SourceError):
+            with self.subTest(query), self.assertRaisesRegex(ValueError, "invalid CSS selector"):
                 self.page.css(query)
-        with self.assertRaises(SourceError):
+        with self.assertRaises(ValueError):
             self.page.first("div[")
 
 
@@ -153,10 +154,10 @@ class DigTest(unittest.TestCase):
             deep = {"child": deep}
         self.assertEqual(_html.dig(deep, "..[t=x]"), [{"t": "x"}])
 
-    def test_a_bad_path_raises_a_source_error(self):
-        # A path is written by a source, so a broken one is a SourceError, not a site change.
+    def test_a_bad_path_raises_a_value_error(self):
+        # A path is written by its caller, so a broken one is a ValueError, never `Changed`.
         for path in ("data[x]", "a..b", "a.", "a[1", "..[novalue]", "a["):
-            with self.subTest(path), self.assertRaises(SourceError):
+            with self.subTest(path), self.assertRaises(ValueError):
                 _html.dig(self.PAGE, path)
 
     def test_flnd_source_dig_is_this_one(self):

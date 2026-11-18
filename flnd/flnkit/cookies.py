@@ -16,7 +16,7 @@ Who calls it: in flnd, the login code (`src/engine/site.py`, `src/engine/home.py
 at `flnd login` and saves it in the vault; the HTTP client (`flnkit/net.py`) and the browser
 (`flnkit/browser.py`) send it. It calls only the stdlib, `cryptography` (lazily, for a Chromium
 value), and the `_files` (atomic writes) and `_ui` (a debug line) libraries. Its errors are
-`flnd.errors.LoginError` and `UsageError`, so a caller can show them as they are.
+`flnkit.errors.LoginError` and `UsageError`, so a caller can show them as they are.
 
 How `load` reads a browser:
 1. find the profile folder for the platform (`_chromium_root`, `_firefox_profile`, or Safari's
@@ -53,8 +53,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from flnd.errors import LoginError, UsageError
 from flnkit import browser
+from flnkit.errors import LoginError, UsageError
 
 _log = logging.getLogger(__name__)
 

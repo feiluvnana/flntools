@@ -26,7 +26,7 @@ What it offers:
 
 Who calls it: in flnd, `flnd.source` re-exports `dig`; `flnd.engine.site` parses the page a source's
 browser loads, `flnkit.net.Response.html` a response body, and `flnd.testing` the pages of its
-fakes. What it calls: selectolax, msgspec and `flnd.errors`, nothing else.
+fakes. What it calls: selectolax, msgspec and `flnkit.errors`, nothing else.
 
 The main flow of a read:
 1. `parse` checks the size, decodes bytes as UTF-8 (a BOM dropped, bad bytes replaced) and
@@ -46,9 +46,9 @@ Rules a change must keep:
 - A `Document` is never changed once made, so `visible` works on a copy of the tree.
 - One document is read from one thread at a time; lexbor's trees aren't thread-safe.
 
-Errors (from `flnd.errors`): text over 64 MiB, or a script that should hold JSON but doesn't, is
+Errors (from `flnkit.errors`): text over 64 MiB, or a script that should hold JSON but doesn't, is
 `Changed` (the site changed what it sends); a bad CSS selector or a bad `dig` path is a
-`SourceError` (the caller's mistake).
+`ValueError` (the caller's mistake).
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ import functools
 import re
 from typing import TYPE_CHECKING, Any
 
-from flnd.errors import Changed, SourceError
+from flnkit.errors import Changed
 
 if TYPE_CHECKING:
     from selectolax.lexbor import LexborHTMLParser, LexborNode
@@ -128,7 +128,7 @@ class Element:
             The matches; empty when none match.
 
         Raises:
-            SourceError: the selector isn't valid CSS.
+            ValueError: the selector isn't valid CSS.
         """
         return [Element(node) for node in _select(self._node, query)]
 
@@ -142,7 +142,7 @@ class Element:
             The first match, or None when nothing matches.
 
         Raises:
-            SourceError: the selector isn't valid CSS.
+            ValueError: the selector isn't valid CSS.
         """
         found = _select(self._node, query)
         return Element(found[0]) if found else None
@@ -246,11 +246,11 @@ class Document(Element):
 
 
 def _select(node: LexborNode, query: str) -> list[LexborNode]:
-    """The nodes under `node` that match `query`, raising `SourceError` for a bad selector."""
+    """The nodes under `node` that match `query`, raising `ValueError` for a bad selector."""
     try:
         return node.css(query)
     except Exception as error:  # selectolax raises its own SelectolaxError, or a ValueError
-        raise SourceError(f"invalid CSS selector {query!r}: {error}") from None
+        raise ValueError(f"invalid CSS selector {query!r}: {error}") from None
 
 
 @functools.cache

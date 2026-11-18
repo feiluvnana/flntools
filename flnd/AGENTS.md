@@ -75,8 +75,8 @@ flnkit/              the standalone package flnkit, imports nothing of flnd
 ```
 
 The import rules, checked by `tests/test_layers.py` by reading every file's imports:
-1. `flnkit/*` imports only `flnkit/*`, `src/errors.py` (until the kit gets its own errors), the
-   standard library and third-party packages.
+1. `flnkit/*` imports only `flnkit/*`, the standard library and third-party packages: nothing
+   of flnd. `src/errors.py` imports only `flnkit/errors.py`.
 2. `src/ui/*` imports only `src/ui/*`, `flnkit`, `src/engine/events.py` and `src/errors.py`.
 3. `src/engine/*` imports `src/engine/*`, `flnkit`, `src/ui/*`, `src/errors.py` and
    `src/plugin.py`. `src/engine/events.py` imports only `src/errors.py`, `src/plugin.py`,
@@ -120,7 +120,9 @@ imports `src/plugins/`.
 - `tests/test_names.py` checks the public surface. Its allowlist may only shrink.
 
 ## Errors
-- Every error is a `flnd.Error` subclass from the one hierarchy in `src/errors.py`:
+- Every error is a `flnd.Error` subclass from the one hierarchy: `flnkit/errors.py` defines
+  what the kit raises, and `src/errors.py` re-exports it and adds flnd's own classes, hints
+  and `classify`:
 
 ```text
 Error(Exception)            .hint: str (what to do; "" when nothing)

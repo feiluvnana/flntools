@@ -16,7 +16,7 @@ A library: it knows nothing of flnd's sources or homes. What it offers, for any 
 
 Who calls it: in flnd, `src/engine/home.py` opens one `Vault` per source (`_home.secrets`), with the
 home's `secrets.db` and `secret.key`, and a source reaches it as `Site.secrets`
-(`src/engine/site.py`) to keep a login token or session. Its errors are `flnd.errors` classes.
+(`src/engine/site.py`) to keep a login token or session. Its errors are `flnkit.errors` classes.
 
 How a value is kept:
 1. `Vault[name] = value` reads (or makes) the key file, then seals the value with `encrypt`,
@@ -34,7 +34,7 @@ Rules a change must keep:
   that finds a short key waits `KEY_WAIT` for the other to finish writing it.
 - A key never goes on a command line or into a message: a keychain tool reads it on standard
   input, and prints it only to a pipe this module reads.
-- It imports only the stdlib, `cryptography` (on first use), `flnkit.db` and `flnd.errors`.
+- It imports only the stdlib, `cryptography` (on first use), `flnkit.db` and `flnkit.errors`.
 """
 
 from __future__ import annotations
@@ -51,8 +51,8 @@ from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
-from flnd.errors import DiskError, LoginError, ToolError, UsageError
 from flnkit import db
+from flnkit.errors import DiskError, LoginError, ToolError, UsageError
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM

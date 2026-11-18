@@ -1,12 +1,14 @@
 """The one error hierarchy (`flnd.errors`) and its policy (src/docs/errors.md).
 
-Three groups of tests:
+Four groups of tests:
 1. `ClassesTest`: one test per class, raising it where flnd raises it and checking its place in
    the tree and its `hint`, `target` and `retryable`.
 2. `PolicyTest`: one test per row of the policy table, through the real HTTP client, the job
    and the engine, on a fake network and a fake clock.
 3. `CliTest`: a usage error, and a login a source needs, through a whole download; the exit
    code of each class and the crash file are tests/test_cli.py's.
+4. `SplitTest`: the classes flnkit defines and flnd re-exports, `__module__`, the exit code by
+   class, and flnd's hints that `classify` fills in.
 
 The network, the clock and the browser are faked; nothing here touches a real site.
 """
@@ -47,6 +49,7 @@ from flnd.source import File, Source, Target, target
 from flnd.source import cookies as login_cookies
 from flnd.ui.log import ui
 from flnkit import clock as _time
+from flnkit import errors as kit
 from flnkit import files as _files
 from flnkit import files as _tools
 from flnkit import net as _net
@@ -159,9 +162,10 @@ class ClassesTest(HttpCase):
     def test_disk_error(self):
         made = disk(OSError(errno.ENOSPC, "No space left on device"), "media/a.jpg")
         self.assertEqual(str(made), "media/a.jpg: No space left on device")
-        self.assertIn("free some space", made.hint)
-        self.assertEqual(disk(OSError(errno.ENAMETOOLONG, "File name too long")).hint,
-                         "use a shorter --home or folder template")
+        self.assertEqual(made.hint, "")  # flnkit's: what to do is flnd's to say
+        self.assertIn("free some space", classify(made).hint)
+        too_long = disk(OSError(errno.ENAMETOOLONG, "File name too long"))
+        self.assertEqual(classify(too_long).hint, "use a shorter --home or folder template")
         refused = OSError(errno.EACCES, "Permission denied")
         with mock.patch.object(_files.os, "replace", side_effect=refused):
             with self.assertRaises(DiskError) as caught:
@@ -307,6 +311,15 @@ class PolicyTest(HttpCase):
 
 
 class PolicyEngineTest(EngineCase):
+    def test_a_malformed_dig_path_fails_its_target_as_a_bug_in_the_source(self):
+        from flnd.source import dig
+
+        report = self.report(make_source("aaa", lambda site: dig({"a": 1}, "a[")),
+                             targets=["aaa:example_user"])
+        error = report.targets[0].error
+        self.assertIsInstance(error, SourceError)
+        self.assertIn("dig: can't read", str(error))
+
     def test_a_file_that_fails_fails_alone(self):
         self.routes["https://cdn.example/bad.jpg"] = _net.reply(503)
         source = make_source("aaa", files=[File("https://cdn.example/bad.jpg", name="bad.jpg"),
@@ -364,6 +377,28 @@ class CliTest(FlndCase):
                     errors = [line for line in out.splitlines() if line.startswith("x ")]
                     self.assertEqual(len(errors), 1)
 
+    def test_a_flnkit_error_a_source_raises_reaches_the_cli_with_flnds_hint(self):
+        def refused(site):
+            raise kit.LoginError("the site asked for a login")
+
+        with mock.patch.dict(sources.SOURCES, {"aaa": make_source("aaa", refused)}):
+            code, out, err = self.run_app("download", "aaa:example_user")
+        self.assertEqual(code, 3)
+        # The end of the run names the command; flnkit's error had no hint at all.
+        self.assertIn("1 login", err)
+        self.assertIn("  run flnd login aaa", err)
+        self.assertNotIn("Traceback", out + err)
+
+    def test_a_full_disk_says_what_it_said_before_the_split(self):
+        def full(site):
+            raise kit.disk(OSError(errno.ENOSPC, "No space left on device"), "media/aaa")
+
+        with mock.patch.dict(sources.SOURCES, {"aaa": make_source("aaa", full)}):
+            code, out, err = self.run_app("download", "aaa:example_user")
+        self.assertEqual(code, 4)
+        self.assertIn("media/aaa: No space left on device", err)
+        self.assertIn("free some space on that disk, or use another --home", err)
+
     def test_a_login_the_source_needs_exits_3(self):
         source = make_source("aaa", login=login_cookies("sid", required=True))
         with mock.patch.dict(sources.SOURCES, {"aaa": source}):
@@ -371,6 +406,107 @@ class CliTest(FlndCase):
         self.assertEqual(code, 3)
         self.assertIn("  run flnd login aaa", err)
         self.assertNotIn("Traceback", out + err)
+
+
+# ---------------------------------------------------------------------------------------------
+# 4. flnkit's classes, flnd's face of them
+# ---------------------------------------------------------------------------------------------
+
+KIT = ("Error", "UsageError", "LoginError", "SiteError", "Blocked", "NotFound", "Changed",
+       "NetworkError", "DiskError", "ToolError", "Stopped")
+
+
+class SplitTest(unittest.TestCase):
+    def test_flnd_re_exports_flnkits_own_objects(self):
+        from flnd import errors as flnd_errors
+        from flnd import source as flnd_source
+
+        self.assertEqual(sorted(kit.__all__), sorted([*KIT, "disk"]))
+        for name in kit.__all__:
+            with self.subTest(name):
+                self.assertIs(getattr(flnd_errors, name), getattr(kit, name))
+                if name != "disk":
+                    self.assertIs(getattr(flnd, name), getattr(kit, name))
+                if hasattr(flnd_source, name):
+                    self.assertIs(getattr(flnd_source, name), getattr(kit, name))
+        self.assertIs(flnd.LoginError, kit.LoginError)
+
+    def test_each_class_names_the_module_it_is_defined_in(self):
+        for name in KIT:
+            with self.subTest(name):
+                self.assertEqual(getattr(kit, name).__module__, "flnkit.errors")
+        self.assertEqual(SourceError.__module__, "flnd.errors")
+        self.assertTrue(issubclass(SourceError, kit.Error))
+
+    def test_except_flnd_error_catches_what_flnkit_raises(self):
+        with self.assertRaises(flnd.Error):
+            raise kit.Changed("new shape")
+
+    def test_the_exit_code_goes_by_class(self):
+        from flnd import cli
+
+        class LoginError(Exception):  # a plugin's own, merely named so
+            pass
+
+        class Refused(kit.LoginError):  # a subclass of the real one
+            pass
+
+        class Own(flnd.Error):
+            pass
+
+        cases = [(kit.Stopped(), 130), (kit.UsageError("x"), 2), (kit.LoginError("x"), 3),
+                 (Refused("x"), 3), (kit.DiskError("x"), 4), (kit.ToolError("x"), 4),
+                 (SourceError("x"), 4), (kit.Blocked("x"), 1), (Own("x"), 1),
+                 (LoginError("x"), 4), (ValueError("x"), 4)]
+        for error, code in cases:
+            with self.subTest(type(error).__name__):
+                self.assertEqual(cli.exit_code(error), code)
+
+    def test_classify_fills_an_empty_hint_with_flnds(self):
+        login = classify(kit.LoginError("not logged in"), target="ins:example_user")
+        self.assertEqual(login.hint, "run flnd login ins")
+        kept = classify(kit.LoginError("refused", hint="log in again"), target="ins:example_user")
+        self.assertEqual(kept.hint, "log in again")
+        self.assertEqual(classify(kit.LoginError("not logged in")).hint, "")
+        full = classify(OSError(errno.ENOSPC, "No space left on device", "media/a.jpg"))
+        self.assertIsInstance(full, DiskError)
+        self.assertEqual(full.hint, "free some space on that disk, or use another --home")
+        refused = kit.disk(OSError(errno.EACCES, "Permission denied"))
+        self.assertEqual(classify(refused).hint, "check that you may write to that folder")
+
+    def test_a_malformed_dig_path_escaping_a_source_is_a_source_error(self):
+        from flnd.source import dig
+
+        with self.assertRaises(ValueError) as caught:
+            dig({"a": 1}, "a[")
+        made = classify(caught.exception, target="aaa:example_user")
+        self.assertIsInstance(made, SourceError)
+        self.assertNotIsInstance(made, Changed)
+        self.assertIn("dig: can't read", str(made))
+
+    def test_no_flnkit_hint_names_flnd(self):
+        for path in sorted(Path(kit.__file__).parent.glob("*.py")):
+            with self.subTest(path.name):
+                self.assertEqual([hint for hint in _hints(path) if "flnd" in hint], [])
+
+
+def _hints(path: Path) -> list[str]:
+    """The text of every hint a module gives: each `hint=` argument and `*HINT*` constant."""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    constants = {target.id: node.value for node in tree.body if isinstance(node, ast.Assign)
+                 for target in node.targets if isinstance(target, ast.Name)}
+    values = [node.value for node in ast.walk(tree)
+              if isinstance(node, ast.keyword) and node.arg == "hint"]
+    values += [value for name, value in constants.items() if "HINT" in name]
+    texts = []
+    for value in values:
+        if isinstance(value, ast.Name) and value.id in constants:
+            value = constants[value.id]
+        texts += [part.value for part in ast.walk(value)
+                  if isinstance(part, ast.Constant) and isinstance(part.value, str)]
+    return texts
 
 
 def _folder():

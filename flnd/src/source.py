@@ -964,7 +964,7 @@ class Cookies(Login):
         Example:
             >>> cookies("sid").start(None, "phone")
             Traceback (most recent call last):
-            flnd.errors.UsageError: phone: cookies are read from a browser or a cookies.txt file
+            flnkit.errors.UsageError: phone: cookies are read from a browser or a cookies.txt file
         """
         raise UsageError(f"{how}: cookies are read from a browser or a cookies.txt file")
 
@@ -1386,7 +1386,7 @@ class Site(Protocol):
             The parsed page.
 
         Raises:
-            SourceError: a CSS query on it isn't valid CSS.
+            ValueError: a CSS query on it isn't valid CSS.
             Changed: `script` found a script that doesn't hold JSON.
 
         Example:

@@ -44,6 +44,10 @@ POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR
 # Every breach the code is allowed, by the module it is in: none. Nothing is exempt, so a new name
 # that breaks a convention fails.
 ALLOWED: dict[str, tuple[str, ...]] = {}
+# The one exception to "no aliases" (PLAN.md 5.1): `flnd.errors` re-exports the classes flnkit
+# defines and raises, and `disk`, as the same objects, since flnkit imports nothing of flnd.
+REEXPORTS = ("Blocked", "Changed", "DiskError", "Error", "LoginError", "NetworkError", "NotFound",
+             "SiteError", "Stopped", "ToolError", "UsageError", "disk")
 
 
 def breaches() -> set[str]:
@@ -418,6 +422,13 @@ class NamesTest(unittest.TestCase):
         allowed = {breach for group in ALLOWED.values() for breach in group}
         stale = sorted(allowed - breaches())
         self.assertEqual(stale, [], "fixed: delete these from ALLOWED in tests/test_names.py")
+
+    def test_flnd_errors_re_exports_exactly_flnkits_errors(self):
+        from flnd import errors
+
+        found = sorted(name for name in errors.__all__
+                       if getattr(getattr(errors, name), "__module__", "") == "flnkit.errors")
+        self.assertEqual(found, sorted(REEXPORTS))
 
     def test_allowances_are_grouped_by_their_module(self):
         for module, group in ALLOWED.items():

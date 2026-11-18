@@ -177,7 +177,7 @@ class Flnd:
             ...     fl.download("ins:example_user", when="tomorrow")
             Traceback (most recent call last):
             ...
-            flnd.errors.UsageError: when takes a year (2026), a month (2026-06), ...
+            flnkit.errors.UsageError: when takes a year (2026), a month (2026-06), ...
         """
         from flnd.engine.options import _when
 
@@ -217,7 +217,7 @@ class Flnd:
             ...     fl.follow("zzz:example_user")
             Traceback (most recent call last):
             ...
-            flnd.errors.UsageError: unknown source 'zzz'. Sources: ...
+            flnkit.errors.UsageError: unknown source 'zzz'. Sources: ...
         """
         from flnd.engine.options import _when
 
@@ -326,7 +326,7 @@ class Flnd:
             ...     fl.unfollow("ins:example_user")
             Traceback (most recent call last):
             ...
-            flnd.errors.UsageError: ins:example_user: not a known target; download it first
+            flnkit.errors.UsageError: ins:example_user: not a known target; download it first
         """
         return self._engine().target_sync(self._resolve(targets), enabled=False)
 
@@ -461,7 +461,7 @@ class Flnd:
             ...     fl.login("ins", "netscape")
             Traceback (most recent call last):
             ...
-            flnd.errors.UsageError: ins logs in by a browser (chrome, ...) or a cookie file's ...
+            flnkit.errors.UsageError: ins logs in by a browser (chrome, ...) or a cookie file's ...
         """
         from flnd.engine.home import BROWSERS
 

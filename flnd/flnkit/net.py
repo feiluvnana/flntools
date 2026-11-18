@@ -30,7 +30,7 @@ Who calls it: flnd's site (`flnd.engine.site`) builds one session per source and
 it, and flnd's transfers (`flnd.engine.transfer`) fill a post's files; the browser
 (`flnkit.browser`) shapes a request its page sent as a `Response`. It calls curl_cffi,
 `flnkit.files` (parts), `flnkit.clock` (the clock, so tests wait on a fake one), `flnkit.html`
-(a page's HTML), `flnkit.text` (redaction) and `flnd.errors`, and logs through `logging`.
+(a page's HTML), `flnkit.text` (redaction) and `flnkit.errors`, and logs through `logging`.
 curl_cffi is imported on the first request, so importing this module is cheap.
 
 The main flow of one request (`Client.call`):
@@ -111,7 +111,8 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import msgspec
 
-from flnd.errors import (
+from flnkit import clock, files, html
+from flnkit.errors import (
     Blocked,
     Changed,
     Error,
@@ -121,7 +122,6 @@ from flnd.errors import (
     Stopped,
     disk,
 )
-from flnkit import clock, files, html
 from flnkit.text import duration, redact
 
 _log = logging.getLogger(__name__)
@@ -337,7 +337,7 @@ class Response:
 
     @property
     def json(self) -> Any:
-        """The body parsed as JSON. Raises `flnd.errors.Changed` when it isn't JSON."""
+        """The body parsed as JSON. Raises `flnkit.errors.Changed` when it isn't JSON."""
         return self._cached("json", self._json)
 
     @property

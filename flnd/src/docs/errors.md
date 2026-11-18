@@ -5,7 +5,8 @@ can do.
 
 ## The classes
 
-Every error flnd raises is a `flnd.Error`, from one hierarchy in `src/errors.py`:
+Every error flnd raises is a `flnd.Error`, from one hierarchy
+([Where the classes live](#where-the-classes-live)):
 
 ```
 flnd.Error                 str(e) says what went wrong; e.hint what to do
@@ -54,6 +55,37 @@ assert not issubclass(flnd.Stopped, flnd.Error)
 assert issubclass(flnd.Blocked, flnd.SiteError)
 ```
 
+## Where the classes live
+
+The hierarchy is defined in two modules, because the kit, `flnkit`, imports nothing of flnd:
+
+- **`flnkit/errors.py`** defines what the kit raises: `Error`, `UsageError`, `LoginError`,
+  `SiteError`, `Blocked`, `NotFound`, `Changed`, `NetworkError`, `DiskError`, `ToolError` and
+  `Stopped`, and `disk`, which turns an `OSError` into a `DiskError` with the `OSError` as its
+  cause. Their hints are generic: none names a flnd command or flag.
+- **`src/errors.py`** (`flnd.errors`) re-exports those same objects, so
+  `flnd.LoginError is flnkit.errors.LoginError` and `except flnd.Error` catches what the kit
+  raises. It adds what only flnd knows: `SourceError`, and `classify`.
+
+Each class's `__module__` is where it is defined: `flnkit.errors.LoginError`, but
+`flnd.errors.SourceError`. The exit code goes by class (`isinstance`), never by that name, so a
+plugin's own class that is merely named `LoginError` exits 4, not 3.
+
+`classify` gives an error that has no hint flnd's own, before it is printed or kept in
+`flnd.db`:
+
+| error | flnd's hint |
+| --- | --- |
+| a `LoginError` about a target (`ins:example_user`) | `run flnd login ins` |
+| a `DiskError` for a full disk or quota | `free some space on that disk, or use another --home` |
+| a `DiskError` for a read-only disk | `that disk is read-only; use another --home` |
+| a `DiskError` for a name too long | `use a shorter --home or folder template` |
+| any other exception a source lets escape (a `SourceError`) | `this is a bug; run with -v and report it` |
+
+A `ValueError` from the kit is its caller's mistake: `dig` raises one for a malformed path, and
+a page's `css` for a selector that isn't CSS. Escaping a source, it becomes that source's
+`SourceError`, never `Changed`.
+
 A source imports the classes it raises from `flnd.source`: `UsageError`, `LoginError`,
 `SiteError`, `Blocked`, `NotFound`, `Changed`, `NetworkError`, `SourceError`, and `Error` to
 catch them all. A mistake in a source's declaration (a pattern outside its domains, a category
@@ -95,8 +127,8 @@ failed files or targets, 2 for usage, 3 for a login, 4 when flnd itself stopped,
 
 A `flnd.Error` that ends a command, most often a `UsageError`, `LoginError`, `DiskError` or
 `ToolError`, prints one line saying what went wrong and one line saying what to do, and never a
-traceback. Its class gives the exit code: 2 for a `UsageError`, 3 for a `LoginError`, 1 for a
-`SiteError` or `NetworkError`, and 4 for a `DiskError`, `ToolError` or `SourceError`:
+traceback. Its class gives the exit code: 2 for a `UsageError`, 3 for a `LoginError`, 4 for a
+`DiskError`, `ToolError` or `SourceError`, and 1 for any other `flnd.Error`:
 
 ```
 ✗ ins:example_user needs a login

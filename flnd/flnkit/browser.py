@@ -3,7 +3,7 @@
 src/docs/architecture explains it.
 
 A standalone library: it imports the standard library, Playwright and the kit (`loop`, `net`,
-`files`, `text`, `clock`) and `flnd.errors`, and nothing of flnd's engine or screen. It logs
+`files`, `text`, `clock`) and `flnkit.errors`, and nothing of flnd's engine or screen. It logs
 through `logging`, and what it asks a person, or shows them, goes through the `Screen` its caller
 passes in. In flnd, `flnd.engine.site.TargetSite` builds the `Site` browser verbs a source calls
 on it, each one call across to the run's loop (`flnkit.loop.Loop.run`, about 40 µs).
@@ -78,8 +78,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Union
 from urllib.parse import urlsplit
 
-from flnd.errors import Changed, NetworkError, Stopped, ToolError, UsageError
 from flnkit import clock, net
+from flnkit.errors import Changed, NetworkError, Stopped, ToolError, UsageError
 from flnkit.text import redact
 
 _log = logging.getLogger(__name__)
@@ -466,7 +466,7 @@ WINDOWS_ROOTS = ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)")
 CHROMIUM_QUESTION = "Google Chrome isn't installed. Download Chromium for flnd (about 200 MB)?"
 NEEDS_CHROME = "flnd needs Google Chrome: install it from https://www.google.com/chrome/"
 # What a missing browser's `ToolError` says to do.
-INSTALL_CHROME = "install Google Chrome, or run flnd in a terminal and accept Chromium's download"
+INSTALL_CHROME = "install Google Chrome, or run in a terminal and accept Chromium's download"
 # Playwright's installer prints a line such as "|■■■■      |  20% of 167.3 MiB" every few
 # percent when its output isn't a terminal; the number is the progress row's.
 INSTALL_PERCENT = re.compile(r"(\d+)% of")

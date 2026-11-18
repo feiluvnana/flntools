@@ -264,7 +264,15 @@ def _warn(text: str, times: int) -> None:
 
 
 def error(error: BaseException) -> None:
-    """Print an error on standard error: `✗ <message>`, then `  hint  <hint>` on its own line."""
+    """Print an error on standard error: `✗ <message>`, then `  hint  <hint>` on its own line.
+
+    A `flnd.Error` with no hint gets flnd's first (`flnd.errors.classify`), so an error flnkit
+    raised says which flnd command to run.
+    """
+    from flnd.errors import Error, classify
+
+    if isinstance(error, Error):
+        classify(error)
     line((str(error), "bad"), mark="error", err=True)
     hint = str(getattr(error, "hint", "") or "")
     if hint:

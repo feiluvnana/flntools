@@ -64,14 +64,15 @@ class ExitCodeTest(TerminalCase):
         cases = [(UsageError("bad flag"), 2), (LoginError("not logged in"), 3),
                  (SiteError("refused"), 1), (Blocked("wait"), 1), (NotFound("gone"), 1),
                  (Changed("new shape"), 1), (NetworkError("reset"), 1), (DiskError("full"), 4),
-                 (ToolError("no ffmpeg"), 4), (SourceError("bug"), 4), (Error("other"), 4),
-                 (Stopped("stopped"), 130), (KeyboardInterrupt(), 130),
-                 (RuntimeError("bug"), 4)]
+                 (ToolError("no ffmpeg"), 4), (SourceError("bug"), 4), (Error("other"), 1),
+                 (Stopped("stopped"), 130), (RuntimeError("bug"), 4)]
         for error, code in cases:
             with self.subTest(type(error).__name__):
                 self.assertEqual(self.fail_with(error)[0], code)
                 self.assertEqual(cli.exit_code(error), code)
         self.assertEqual(cli.exit_code(None), 0)
+        # A bare Ctrl-C ends the command with 130 too, though only `Stopped` has that code.
+        self.assertEqual(self.fail_with(KeyboardInterrupt())[0], 130)
 
     def test_a_persons_mistake_is_one_line_and_a_hint_never_a_traceback(self) -> None:
         for error in (UsageError("give at least one target", hint="flnd download ins:example_user"),

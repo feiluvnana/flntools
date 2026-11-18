@@ -467,7 +467,7 @@ class FakeSite:
         Example:
             >>> FakeSite(Target("exm:example_user")).ask("Code")
             Traceback (most recent call last):
-            flnd.errors.UsageError: exm: a run can't ask 'Code'
+            flnkit.errors.UsageError: exm: a run can't ask 'Code'
         """
         raise UsageError(f"{self.target.source}: a run can't ask {message!r}")
 

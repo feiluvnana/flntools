@@ -6,8 +6,8 @@ dependency. Nothing is imported or run. Third-party packages are ruled on only w
 them (`engine/events.py`, the plugins); which SDK a plugin may use is tests/test_sources.py's guard.
 
 The rules:
-1. `flnkit/*` imports only `flnkit/*`, `flnd.errors` (until step 3½ part b), the standard
-   library and third-party packages. Nothing under `flnkit/` names `flnd` beyond that.
+1. `flnkit/*` imports only `flnkit/*`, the standard library and third-party packages. Nothing
+   under `flnkit/` imports `flnd`. `src/errors.py` imports only `flnkit.errors`.
 2. `src/ui/*` imports only `src/ui/*`, `flnkit`, `src/engine/events.py` and `src/errors.py`.
 3. `src/engine/*` imports `src/engine/*`, `flnkit`, `src/ui/*`, `src/errors.py` and `src/plugin.py`;
    `src/engine/events.py` only `src/errors.py`, `src/plugin.py`, `flnkit` and `msgspec`.
@@ -165,10 +165,12 @@ def under(name: str, *prefixes: str) -> bool:
 
 def allowed(importer: str, imported: str) -> bool:
     """Whether rules 1 to 6 let `importer` import `imported` (both read as API 2)."""
-    if imported == "flnd.errors" and not under(importer, "flnd.plugins"):
-        return importer != "flnd.cli"
     if under(importer, "flnkit"):
         return under(imported, "flnkit")
+    if importer == "flnd.errors":
+        return imported == "flnkit.errors"
+    if imported == "flnd.errors" and not under(importer, "flnd.plugins"):
+        return importer != "flnd.cli"
     if under(importer, "flnd.ui"):
         return under(imported, "flnd.ui", "flnkit") or imported == "flnd.engine.events"
     if importer == "flnd.engine.events":
@@ -261,6 +263,12 @@ class LayersTest(unittest.TestCase):
             with self.subTest(module=module_name(path)):
                 self.assertNotIn("flnd.cli", flnd_imports(path))
 
+    def test_nothing_under_flnkit_imports_flnd(self):
+        # Rule 1 in full: at import time, inside a function and under TYPE_CHECKING alike.
+        for path in sorted(FLNKIT.rglob("*.py")):
+            with self.subTest(module=module_name(path)):
+                self.assertNotIn("flnd", all_packages(path))
+
     def test_every_exemption_is_still_needed(self):
         # An exemption whose import is gone is dropped, so the list only shrinks.
         used = set()
@@ -280,6 +288,8 @@ class LayersTest(unittest.TestCase):
         self.assertIn("flnkit.net", flnd_imports(FLND / "engine" / "site.py"))
         self.assertIn("flnd", flnd_imports(FLND / "cli.py"))
         self.assertFalse(allowed("flnkit.net", "flnd.ui.log"))
+        self.assertFalse(allowed("flnkit.net", "flnd.errors"))
+        self.assertFalse(allowed("flnd.errors", "flnkit.net"))
         self.assertFalse(allowed("flnd.ui.log", "flnd.engine.core"))
         self.assertFalse(allowed("flnd.plugins.ins", "flnkit.net"))
 
