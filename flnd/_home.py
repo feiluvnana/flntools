@@ -1124,8 +1124,17 @@ def sample(home: Path, run: int | None, error: BaseException) -> Path | None:
     folder = home / LOGS / str(run) / "samples"
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"{len(list(folder.iterdir())) + 1}.txt"
-        path.write_text(f"{_text.redact(url)}\n\n{_text.scrub(body)}", encoding="utf-8")
+        count = len(list(folder.iterdir()))
+        while True:
+            count += 1
+            path = folder / f"{count}.txt"
+            try:
+                # An exclusive create, so two samples kept at once never take the same name.
+                with path.open("x", encoding="utf-8") as out:
+                    out.write(f"{_text.redact(url)}\n\n{_text.scrub(body)}")
+                break
+            except FileExistsError:
+                continue
     except OSError as failed:
         # A sample is a help for a bug report, never worth failing the run over.
         ui.debug("sample not kept: {error}", error=failed)

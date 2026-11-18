@@ -10,15 +10,17 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from test_engine import CDN, EngineCase, make_source, noise
 
 from flnd import _home, _net
 from flnd.engine import Engine
-from flnd.errors import NetworkError, NotFound
+from flnd.errors import Changed, NetworkError, NotFound
 from flnd.options import Options
 from flnd.source import File, Target
 
@@ -223,6 +225,24 @@ class TargetsTest(DbCase):
         self.assertEqual(dict(db.state("bbb")), {})
         with self.assertRaises(KeyError):
             del state["asked"]
+
+
+class SampleTest(DbCase):
+    def test_samples_saved_at_once_get_their_own_names(self):
+        response = SimpleNamespace(url="https://example.com/api", headers={}, content=b"{}")
+        barrier = threading.Barrier(2)
+
+        def keep():
+            barrier.wait(timeout=5)
+            for _ in range(50):
+                _home.sample(self.home, 1, Changed("bad shape", response=response))
+
+        threads = [threading.Thread(target=keep) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(list((self.home / _home.LOGS / "1" / "samples").iterdir())), 100)
 
 
 
