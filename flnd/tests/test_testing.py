@@ -240,6 +240,25 @@ class FakeCtxTest(unittest.TestCase):
         self.assertEqual(run(ctx.fetch(v2.Request(f"{BASE}/a", check=False))).status, 403)
         self.assertEqual([seconds for _, seconds, _ in ctx.seen.holds], [30.0])
 
+    def test_a_server_error_is_retried_with_check_on_or_off(self):
+        down, up = Reply(status=503), Reply({"ok": 1})
+        rows = [
+            (False, [down, up], 200, 2),
+            (False, [down], 503, 5),
+            (True, [down, up], 200, 2),
+            (True, [down], SiteError, 5),
+        ]
+        for checked, replies, wanted, tries in rows:
+            with self.subTest(check=checked, replies=len(replies)):
+                ctx = fake(routes={f"{BASE}/a": answers(*replies)})
+                request = v2.Request(f"{BASE}/a", check=checked)
+                if wanted is SiteError:
+                    with self.assertRaises(SiteError):
+                        run(ctx.fetch(request))
+                else:
+                    self.assertEqual(run(ctx.fetch(request)).status, wanted)
+                self.assertEqual(len(ctx.seen.requests), tries)
+
     def test_a_url_with_no_route_fails_the_test_and_only_own_domains_are_signed(self):
         with self.assertRaises(AssertionError):
             run(fake().fetch(f"{BASE}/nothing"))

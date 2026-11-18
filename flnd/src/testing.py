@@ -819,7 +819,8 @@ class FakeCtx:
             LoginError: a 401 or 403 from the plugin's domains while `request.check`, or a
                 redirect to a wall after the wall's waits.
             Blocked: still refused after the block rounds.
-            SiteError: another refusal, while `request.check`.
+            SiteError: another refusal, while `request.check`. A 5xx is retried with or
+                without `check`; without it, the last 5xx's answer is returned.
         """
         asked = request if isinstance(request, Request) else Request(request)
         own = self._own(asked.url)
@@ -833,11 +834,20 @@ class FakeCtx:
             self._refused(response, own)
             if response.url != sent.url:
                 self._walled(response.url)
-            return self._checked(response) if sent.check else response
+            # A 5xx is the server's trouble, retried even when the plugin reads refusals.
+            if sent.check or response.status >= 500:
+                return self._checked(response)
+            return response
 
         kind = jobs.Kind.PAGE if own else jobs.Kind.FILE
-        return await self._run(kind, attempt, bucket=bucket or "",
-                               host=urlsplit(asked.url).hostname or "")
+        try:
+            return await self._run(kind, attempt, bucket=bucket or "",
+                                   host=urlsplit(asked.url).hostname or "")
+        except SiteError as error:
+            # With `check` off, the last 5xx is handed back once the scheduler's tries ran out.
+            if asked.check or (error.status or 0) < 500 or error.response is None:
+                raise
+            return error.response
 
     def pages(self, request: str | Request, *,
               cursor: str | Callable[[Response], str | None],

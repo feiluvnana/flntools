@@ -234,7 +234,8 @@ pass at once. Every hold is recorded in `ctx.seen.holds`.
   an `AssertionError`.
 - With the request's `check` on, a 404 or 410 raises `NotFound`, a 401 or 403 from the
   plugin's domains `LoginError`, and another refusal `SiteError`. With it off, the refusal's
-  answer is returned.
+  answer is returned. A 5xx is the server's trouble, not a refusal: it is retried with the
+  engine's back-off either way, and with `check` off the last answer is returned.
 - Before that, seconds from the plugin's `blocked` hook are a block round, and a 429 holds its
   bucket for its `Retry-After` or `x-rate-limit-reset`; the third 429 in a row is a block
   round, and the fourth round raises `Blocked`. `ctx.hold` takes a round the same way.
