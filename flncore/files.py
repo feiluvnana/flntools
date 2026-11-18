@@ -982,7 +982,7 @@ def sniff(path: Path | bytes) -> str | None:
     return None
 
 
-UNSAFE_CHARACTERS = re.compile(r'[\/*?:"<>|\x00--]')
+UNSAFE_CHARACTERS = re.compile(r'[\\/*?:"<>|\x00--]')
 SEPARATOR_RUNS = re.compile(r"[\s_]+")
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
     f"{kind}{suffix}"
