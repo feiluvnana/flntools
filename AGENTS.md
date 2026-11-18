@@ -1,107 +1,198 @@
 # Agent guidelines
 
-These rules are for anyone, person or agent, who changes this repository: how to commit, check, lay out, name, write and measure. `flnd/docs/architecture.md` is the map of the code, and says why it is built the way it is.
+These rules are for anyone, person or agent, who changes this repository: how to commit, check,
+lay out, name, write and measure. `flnd/docs/architecture.md` is the map of the code, and says
+why it is built the way it is. `PLAN.md` is the plan of the rebuild under way. Some rules here
+lead the code until the plan's steps land: the ruff rules `ASYNC` and `RUF006`, the
+`-W error:coroutine` flag, and the removal of pyright and `make type` (all in step 2), and the
+layout tree below (built step by step). `PLAN.md` section 14 says when each lands.
 
-## Commit convention
-Every commit message has this form:
-```
-<action>:<summary>
-```
-- `<action>` is a lowercase type: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `chore` or `style`.
-- The colon follows it with no space.
-- `<summary>` is imperative, lowercase, with no trailing period.
-- **No co-author.** Never add a `Co-authored-by:` trailer or any other attribution.
-
-Examples:
-- `fix:flush a telegram part before saving its offsets`
-- `perf:stream archive entries to disk`
-- `docs:document the download pipeline`
-
-## Git
-- Commit as `feiluvnana`, SSH-signed, through the repo-local git config. Never change the global git config.
-- One logical change per commit, with `make check` green at every commit.
-- Commit or push only when asked. Pull first (`git pull --rebase`), and commit only your own paths (`git add <paths>`): other sessions may share the working tree.
-- **A performance commit** quotes its benchmark before and after in the message (`make bench`, `flnd/docs/performance.md`). Never claim a speed-up you didn't measure.
+## Commits
+- Every message has the form `<action>:<summary>`.
+  - `<action>` is one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `chore`, `style`.
+  - `<summary>` is lowercase and imperative, with no period at the end.
+  - Example: `fix:flush a telegram part before saving its offsets`.
+- No co-author trailer, and no other attribution line.
+- Commit as feiluvnana, signed with SSH, through the repo-local git config. Never change the
+  global config.
+- One logical change per commit.
+- Run `git pull --rebase` first. Commit only your own paths (`git commit -- <paths>`), because
+  other sessions may share the working tree.
+- Push only when the user says to.
 
 ## Checks
-- The `Makefile` holds every task; each recipe is one `uv` command.
-  - `make check` runs lint (ruff) and the tests, and must be green before every commit.
-  - `make setup` syncs `.venv` from `uv.lock`. To change a dependency, edit `pyproject.toml`, then run `uv lock`.
-  - `make api` regenerates `tests/data/api.txt` (`tests/api_snapshot.py`), the public surface (`flnd`, `flnd.source`, `flnd.testing`). Read its diff after any public change: it is the review of that change.
-  - `make docs` builds the API reference into `build/docs/`. `make dist` builds a one-file binary.
-  - `make type` runs pyright on the public modules. It is informational, never a gate, and a wrong public hint is still worth fixing.
-  - `make check PY=3.11` runs on the oldest Python `requires-python` allows; run it before a release.
-  - Ruff's rules are `F`, `E9`, `B`, `UP` and `I`, set in `pyproject.toml`.
-- **`make bench`** runs the offline benchmarks of `tests/bench/`, never part of `check`. `make bench ARGS=--gate` fails on a regression over 15% against `tests/bench/gates.json`; `ARGS=--record` stores a run as the new baseline. `flnd/docs/performance.md` says how to read them.
-- **On Windows**, install make with `winget install ezwinports.make`, or use the one that comes with Git for Windows. Each Makefile recipe is a single `uv` command you can also type yourself.
+- `make check` runs ruff, then the tests. It must be green at every commit, not only the last
+  one. Ruff is the one checker: `select = ["F", "E9", "B", "UP", "I", "ASYNC", "RUF006"]` in
+  `pyproject.toml`. There is no type checker; type hints are for readers.
+- `make setup` syncs `.venv` from `uv.lock`. To change a dependency, edit `pyproject.toml`,
+  then run `uv lock`.
+- `make test ARGS="-k fetch"` runs the tests, or some of them. It sets `FLND_TEST_NO_PROFILES=1`
+  and runs Python with `-W "error:coroutine:RuntimeWarning"`, so a never-awaited coroutine
+  fails its test.
+- `make lint` runs ruff alone.
+- `make api` regenerates the public surface snapshot (`tests/data/api.txt`). After any public
+  change, read its diff: it is the review of that change.
+- `make bench` runs the offline benchmarks in `tests/bench/`. `make bench ARGS=--gate` fails on
+  a regression over 15% against `tests/bench/gates.json`. Run the benchmarks before a speed
+  change, to get the "before" numbers. Run `ARGS=--gate` on any change that touches speed,
+  before its commit. `ARGS=--record` stores a run as the new baseline. See
+  `flnd/docs/performance.md`.
+- `make check PY=3.11` runs on the oldest Python that `requires-python` allows. Run it before
+  a release.
+- `make docs` builds the API reference into `build/docs/`. `make dist` builds a one-file binary.
+- `make clean` removes `build`, `dist` and `.try`.
+- **On Windows**, install make with `winget install ezwinports.make`, or use the one that comes
+  with Git for Windows. Each Makefile recipe is one `uv` command you can also type yourself.
 
-## Privacy and live data
-- Never read, print or commit the `*_cookies.txt` files in the repo root, or anything under `.flnd/`.
-- Never pass a file name, caption or any other text from a site to a shell. Run commands with an argument list.
-- Never put a cookie value, key, token or password in a log line, an error message, a comment, a doc or a test.
-- Use only example handles in code, tests and docs: `example_user`, `example_creator`, `example_handle`, `example.page`, `examplechannel`, and the domain `example.com`. Never use a real username.
-- Live checks against real sites are done by hand, on the authorized test accounts, and never in unit tests. Unit tests fake the network, the browser and the clock (`flnd.testing` and its `fake_clock` for sources, `flnd._net.fake` for HTTP, `flnd._tools.fake` for outside programs).
+## Privacy
+- Never read, print or commit `*_cookies.txt` or anything under `.flnd/`.
+- Never pass text from a site (a file name, a caption, any other text) to a shell. Run commands
+  with an argument list.
+- Never put a cookie value, key, token or password in a log, an error, a comment, a doc or a
+  test.
+- Use only example handles in code, tests and docs: `example_user`, `example_creator`,
+  `example_handle`, `example.page`, `examplechannel`, and the domain `example.com`.
+- Live checks are done by hand, on the test accounts, and never in unit tests. Unit tests fake
+  the network, the browser and the clock.
+- `FLND_TEST_NO_PROFILES=1` (set by `make test`) makes the tests refuse real browser profiles,
+  the real OS keychain and `~/.config/flnd/`.
 
 ## Layout
-- **`flnd/` is one package.** Only three modules are public:
-  - `flnd`: the library, with `Flnd`, events and errors;
-  - `flnd.source`: the API a source or plugin is written against;
-  - `flnd.testing`: the test kit for sources.
-- **Everything else is internal**, never imported by a script or a source: the `_*.py` modules (`flnd/_net.py`, `_browser.py`, `_db.py`, `_files.py`, `_transfer.py` and the rest) and the engine's modules (`engine.py`, `job.py`, `site.py`, `options.py`). `flnd/errors.py` holds the one error hierarchy, which `flnd` and `flnd.source` re-export.
-- **Library modules stay separate** (user, 2026-11-16). A private module that does a general job (HTTP, the browser, files, archives, outside tools, cookies, the vault, the SQLite store, HTML, text, time, prompts, progress, media) is a standalone library: it imports from flnd only other library modules and `flnd.errors`, never the engine, job, site, sources or the public API. flnd-specific code (a source's pace, flnd.db's schema, error advice) lives in flnd's modules and is passed in. So each library reads on its own and could leave flnd as a package later. `tests/test_layers.py` lists them and checks it.
-- **`flnd/cli.py`** is the thin CLI (argparse). It imports only `flnd`, so a script can do anything the CLI can.
-- **`flnd/sources/`** has one module per built-in site (`fbk`, `ins`, `loi`, `mht`, `tik`, `tlg`, `twt`) and `_manifest.py`, the list `flnd --help` and target resolution read without importing a source. A source imports only `flnd.source` and the stdlib.
-- **`flnd/docs/architecture.md`** is the map of the design; keep it true when a change moves a part. **`flnd/docs/`** holds the guides for people (see Writing).
-- **Plugins** live outside the repo: in the user's plugin folder (`$FLND_SOURCES`, else `~/.config/flnd/sources/`), or as installed packages with a `flnd.sources` entry point. flnd never loads code from a home folder, since a home may be a folder someone else made.
+`flnd/` is one package. Its tree:
 
-## API and naming
-- **Short names**, one word where one word says it.
-- **An action is a verb** (`download`, `follow`, `sync`, `unfollow`, `check`, `retry`), with no `get_`, `to_`, `try_` or `load_from_` names. A read is a property (`fl.logins`), or a method with keyword filters (`fl.files(target=…, kind=…)`).
-- **One word, one meaning**, across the whole package. `retry` is the verb, so an error's advice is `hint`. `wait` waits for a page or a run, so a timed sleep is `pause`. `File` is a file to download (`flnd.source`), so a saved file's row is `Record`.
-- **Options are keyword-only, at most 5.** Past that, use a record or the config file.
-- **Progress is the event stream** (`Saved`, `Skipped`, `Failed`, `Progress`). A script iterates a run. There are no callbacks and no hooks: one way to do one thing.
-- **A resource is a context manager** (`with flnd.open(home) as fl:`), so nothing leaks a thread, a browser or a connection.
-- **One spelling:** no aliases and no deprecated names.
-- **Errors are `flnd.Error` subclasses** from the one hierarchy in `flnd/errors.py` (`flnd/docs/errors.md`). The message is `str(e)`, and `e.hint` says what to do. A user error never shows a traceback. `flnd.Stopped` (Ctrl-C) derives from `KeyboardInterrupt`, never from `flnd.Error`.
-- **The source API is the most important API.** A source declares what it is (code, domains, login, routes, categories) and implements a few well-named hooks. A mistake in a source fails when the class is made, with a message naming the attribute and the fix. The source API is versioned (`api = 1`).
-- `tests/test_names.py` checks the naming rules on the public surface. Its allowlist may only shrink.
+```text
+flnd/
+  __init__.py      public names, each loaded on first use
+  __main__.py      python -m flnd
+  _library.py      open, Flnd, and the groups Targets, Auth, Plugins, Extension, Config
+  cli.py           the commands
+  errors.py        the one error hierarchy
+  plugin.py        plugin API 2 (public)
+  testing.py       the plugin test kit (public)
+  engine/
+    run.py         Run, the loop's thread, the event channel, Ctrl-C, the journal
+    events.py      the events, Report, State, and the rows the reads return
+    jobs.py        the scheduler: Job, pools, priorities, retry policy, holds, segments, lanes
+    crawl.py       one target: listing, smart sync, early stops, the Ledger
+    save.py        a file job: transfer, dedupe, unpack, sidecar, exec, the commit
+    resolve.py     target text -> (plugin, Target, categories)
+    plugins.py     the plugin manager
+    auth.py        accounts, switching, the sealed vault, login methods
+    extension.py   the native-messaging host, the protocol, the relay
+    store.py       flnd.db: schema, migrations, rows, check and repair
+    config.py      config.toml: structs, reading, editing
+  kit/             imports only kit/ and flnd/errors.py
+    net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py media.py
+  ui/              imports only kit/, ui/, engine/events.py and flnd/errors.py
+    theme.py out.py screen.py lists.py forms.py
+  plugins/         built-ins, importing only flnd.plugin and the standard library
+    __init__.py _manifest.py fbk.py ins.py loi.py mht.py tik.py tlg.py twt.py web.py
+  extension/       manifest.json background.js page.js popup.html popup.js
+  docs/
+```
 
-## Writing: signposts in code, answers in flnd/docs
-Explanation lives in `flnd/docs/`; the code keeps short signposts that point there. PLAN.md (step 0) and `flnd/docs/README.md` say which page owns what.
+The import rules, checked by `tests/test_layers.py` by reading every file's imports:
+1. `kit/*` imports only `kit/*`, `flnd/errors.py`, the standard library and third-party
+   packages.
+2. `ui/*` imports only `ui/*`, `kit/*`, `engine/events.py` and `flnd/errors.py`.
+3. `engine/*` imports `engine/*`, `kit/*`, `ui/*`, `flnd/errors.py` and `flnd/plugin.py`.
+   `engine/events.py` imports only `flnd/errors.py`, `flnd/plugin.py`, `kit/*`, `msgspec` and
+   the standard library.
+4. `flnd/plugin.py` imports only `kit/*`, `flnd/errors.py` and the standard library.
+   `flnd/testing.py` imports `flnd`, `flnd/plugin.py`, `engine/*` and `kit/*`.
+   `flnd/_library.py` imports `engine/*`, `kit/*`, `flnd/errors.py` and `flnd/plugin.py`.
+5. `flnd/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
+   (`telethon`, `qrcode`), imported inside a function.
+6. `flnd/cli.py` imports only `flnd`, `flnd/ui/*` and `flnd/plugins/_manifest.py`.
+7. `flnd/__init__.py` imports nothing at import time beyond the standard library.
 
-**Docstrings (signposts):**
-- **A module** is 1–3 lines: what it holds, and the `flnd/docs` page that explains it (no numbered flows; those belong in `flnd/docs/architecture.md`).
-- **A public class or function** has a summary line, then `Args:`, `Returns:` and `Raises:`—one line per item, only when they add more than the name and type. There is no `Example:`: runnable examples live in `flnd/docs/`, where `tests/test_docs.py` runs them.
-- **`Args:`** says what an argument means (unit, range, what `None` does), not its type.
-- **A private function** gets a docstring only when its name does not say what it does.
+Also: `kit/` never imports `engine/`, `ui/` or `plugins/`, and `ui/` never imports `plugins/`.
 
-**Comments** cover what the code cannot say: a site quirk with the date seen, a magic number's source, which thread or lock matters, why a failure is safe to ignore. One or two lines; point to `flnd/docs` for more. Section comments split long modules. A comment never restates the line below it or cites a plan step or commit.
+## Concurrency
+- One event loop per run.
+- Plugin code is async.
+- Only `engine/jobs.py` (and `ctx.pause`, on the run's clock) retries, sleeps, limits, or picks
+  threads or processes.
+- A commit is one per post, and it runs on the loop. It never blocks the loop.
 
-**Guides in `flnd/docs/`:**
-- `architecture`, `library`, `cli`, `writing-a-source`, `errors`, `storage`, `media` and `performance`;
-- one page per site, `flnd/docs/sources/<code>.md`;
-- a glossary.
+## Output
+- Everything printed goes through `flnd/ui` and its theme.
+- No `print`. No colour or glyph outside `theme.py`.
+- Debug output goes to the journal only.
 
-A behaviour change updates its `flnd/docs` page in the same commit. `tests/test_docs.py` runs every `python` block in the pages, checks links, and matches the CLI and source pages to the code.
+## Flags
+- Add a flag only when the target, the config and the library are all wrong for the choice.
 
-**Style:**
-- Plain English and short sentences. Define a term where it first appears.
-- Lines of at most 100 characters.
-- Prefer functions short enough to read in one screen, with shallow nesting.
-- Plain over clever: no chained ternaries; a three-way state is an `Enum`, not `bool | None`; no writing to a frozen object; declare what code would otherwise guess.
-- Type hints are for readers and editors, not a checking gate. Annotate the public API fully, and internals where it helps.
+## Naming
+- Short names.
+- An action is a verb, with no `get_`, `to_` or `try_` names. A read is a property, or a
+  method with keyword filters.
+- One word, one meaning across the package. `plugin` is the one word for an extension that
+  handles a site, never `source`. `retry` is the verb; `hint` is the advice on an error;
+  `hold` is a timed wait; `Record` is a saved file's row.
+- At most 5 options, and they are keyword-only.
+- A resource is a context manager (`with flnd.open(home) as fl:`).
+- No aliases.
+- `tests/test_names.py` checks the public surface. Its allowlist may only shrink.
 
-## Performance
-- Measure before changing anything for speed, with `make bench` or a script in your scratchpad, and keep the numbers in the commit message.
-- Keep the hot-path rules (`flnd/docs/architecture.md`, `flnd/docs/performance.md`):
-  - one asyncio loop for network and browser;
-  - no extra `stat` calls or lock files per file (a `.part` is its own lock);
-  - one database transaction per post, not per file and not on a writer thread;
-  - lazy imports, so `flnd --help` stays fast.
-- A regression guard in `make check` counts things (requests, `stat` calls, statements, imported modules) instead of timing them.
+## Errors
+- Every error is a `flnd.Error` subclass from the one hierarchy in `flnd/errors.py`:
+
+```text
+Error(Exception)            .hint: str (what to do; "" when nothing)
+├── UsageError              exit 2; raised before any request
+├── LoginError              exit 3; a 401 or 403 from the plugin's own domains,
+│                           a declared wall
+├── SiteError
+│   ├── Blocked             .wait: float | None (seconds the site asked for)
+│   ├── NotFound            404 or 410: recorded gone, never asked again
+│   ├── Hidden              it exists, but this account can't see it
+│   └── Changed             the answer can't be read; a scrubbed sample is kept
+├── NetworkError            timeout, reset, DNS, TLS; retried
+├── DiskError               exit 4; stops the run
+├── ToolError               missing tool: exit 4, the run stops; a failing tool fails its file
+└── PluginError             a bug in a plugin; exit 4 for a broken plugin
+Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
+```
+
+- `str(e)` is one line, and `e.hint` is one line.
+- `errors.classify(exception)` turns any exception into one of these. Anything a plugin lets
+  escape becomes a `PluginError`.
+- `errors.disk(OSError)` is the one disk mapper.
+- A user error never shows a traceback.
+- `Stopped` derives from `KeyboardInterrupt`, never from `flnd.Error`.
+
+## Bugs
+- Write the failing test first, and run it against the unfixed code. It must fail there.
+- Put the test and its fix in the same commit.
+
+## Speed
+- Measure before any speed change, with a benchmark. Keep the numbers.
+- A `perf:` commit quotes both runs (before and after) in its message.
+- A change that makes a gated number worse says why.
+- Never claim a speed-up you did not measure.
+- The counting guards in `make check` (requests, `stat` calls, SQL statements, imported
+  modules) stay.
+
+## Dead code
+- The dead-name, docstring and API-snapshot checks cover all of `flnd/`. Remove code they flag.
+
+## Dependencies
+- Each dependency has a reason beside it in `pyproject.toml`.
+- The planned set is curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode,
+  rich, msgspec, tomlkit and textual. Textual stays only if `ui.open` is at most 250 ms.
+
+## Writing
+- A module docstring is 1 to 3 lines. It names the `flnd/docs` page that explains the module.
+- A public name has a summary line. Then `Args:`, `Returns:` and `Raises:`, only when they add
+  something to the name and type.
+- Comments cover only what the code cannot say. Keep them short.
+- A behaviour change updates its `flnd/docs` page in the same commit.
+- Lines are at most 100 characters.
+- Use plain English.
 
 ## Models
-- **Mechanical changes use a low-cost model** (user, 2026-11-12): Claude Haiku in Claude Code, or the low-cost tier of whichever tool is in use.
-  - Mechanical means renames, moves, import updates, applying a given pattern to many call sites, regenerating snapshots, merge conflicts with an obvious answer, and doc edits that follow a decision.
-  - The orchestrator sets the model when it delegates such a task, for example `model: "haiku"` on a Claude Code subagent.
-- Design, new behaviour, debugging, security-sensitive code, reviews and new `flnd/docs` pages keep the stronger default model.
+- Mechanical work goes to the low-cost model (`model: "haiku"` for a subagent). Mechanical
+  means moves, renames, call sites, snapshots, and doc edits that follow a decision.
+- Design, new behaviour, debugging, security-sensitive code, reviews and new `flnd/docs` pages
+  use the default model.
