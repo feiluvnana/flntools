@@ -391,7 +391,9 @@ class File:
         mirrors: URLs of the same file, tried in order.
         fetch: an async function that writes the file's `Part`, for a file with no URL.
         audio: a DASH audio stream to join with the video; with `mirrors`, only with the first.
-        name: the stem to save it as, instead of the one `filename` makes.
+        name: the name to save it as, instead of the one `filename` makes. A name with its
+            own extension (`cover_12.png`) keeps it; a stem (`cover_12`) gets its extension
+            from the content type, else from the URL.
         size: its size in bytes, when the site says it.
         password: an archive's password: it is unpacked with it once saved.
         ranged: `fetch` can start and stop anywhere, so the engine may split it into parts.

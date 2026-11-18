@@ -244,11 +244,14 @@ pass at once. Every hold is recorded in `ctx.seen.holds`.
 - `pages` keeps its cursor through a hold, so a 429 asks for the same page again.
 - `ask` pops `answers`: one of `choices` when it has any, and `UsageError` when they run out.
   `extension` and `storage` read their own fakes, and `settings` sets the plugin's `Settings`.
-- `state` takes JSON values only, and `secrets` may be written only in `Login.start`.
+- `state` takes JSON values only, and `secrets` may be written only while `Login.start` runs,
+  by it or by the tasks and calls it starts.
 
 `collect` runs the target to its end on it, and checks the listing as it goes: a
 `newest_first` listing's dated posts must not get newer, and a post must give every field a
-template names.
+template names. A `File.name` with its own extension keeps it, and a stem takes its extension
+from the content type (the `Content-Type` of the file URL's route, when it has one), then from
+the URL's extension, then none.
 
 ```python
 from flnd import plugin    # API 2's names, kept apart from this page's API-1 ones

@@ -42,10 +42,10 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import functools
 import inspect
 import json as jsonlib
 import re
-import sys
 from collections import deque
 from collections.abc import (
     AsyncIterator,
@@ -58,6 +58,7 @@ from collections.abc import (
     Sequence,
 )
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -651,6 +652,10 @@ def _answer(answers: Mapping[str, Answer], url: str, request: dict[str, Any]) ->
 
 # What `ctx.log` takes as its level.
 LEVELS = ("debug", "info", "warn")
+# Set while a plugin's `Login.start` runs, the one time `ctx.secrets` may be written.
+LOGGING_IN: ContextVar[bool] = ContextVar("flnd.testing.logging_in", default=False)
+# A `File.name`'s own extension, which it keeps: `.png` in `cover_12.png`, not `.2` in `v1.2`.
+EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,4}")
 T = TypeVar("T")
 
 
@@ -1315,24 +1320,23 @@ def _plain(value: Any) -> bool:
 class _Secrets(MutableMapping[str, str]):
     """An account's secrets: written only while the plugin's `Login.start` runs.
 
+    The plugin's login object gets a `start` that marks its run in `LOGGING_IN`, a context
+    variable: the tasks and threads `start` begins inherit it, as they would in the engine.
+
     Raises:
         SourceError: a write or a delete outside `Login.start`.
     """
 
     def __init__(self, plugin: Plugin) -> None:
         login = type(plugin).login
-        # Every `start` of the login's classes: a running coroutine's frame is on the stack.
-        self._starts = {vars(owner)["start"].__code__ for owner in type(login).__mro__
-                        if "start" in vars(owner)} if login is not None else set()
+        if login is not None and not getattr(login.start, "marked", False):
+            login.start = _marked(login.start)
         self._data: dict[str, str] = {}
 
-    def _writable(self) -> None:
-        frame = sys._getframe(2)
-        while frame is not None:
-            if frame.f_code in self._starts:
-                return
-            frame = frame.f_back
-        raise SourceError("ctx.secrets is written only during Login.start")
+    @staticmethod
+    def _writable() -> None:
+        if not LOGGING_IN.get():
+            raise SourceError("ctx.secrets is written only during Login.start")
 
     def __getitem__(self, key: str) -> str:
         return self._data[key]
@@ -1350,6 +1354,20 @@ class _Secrets(MutableMapping[str, str]):
 
     def __len__(self) -> int:
         return len(self._data)
+
+
+def _marked(start: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
+    """`start`, with `LOGGING_IN` set while it runs."""
+    @functools.wraps(start)
+    async def marked(ctx: Any, method: str) -> None:
+        token = LOGGING_IN.set(True)
+        try:
+            await start(ctx, method)
+        finally:
+            LOGGING_IN.reset(token)
+
+    marked.marked = True  # type: ignore[attr-defined]
+    return marked
 
 
 def _resolved(plugin: type[Plugin], target: str | flnd.plugin.Target) -> flnd.plugin.Target:
@@ -1625,8 +1643,7 @@ class _Listing:
         if stray is not None:
             raise SourceError(f"{self.plugin.code}: post {post.id}'s files hold {stray!r}; "
                               "wrap each in File(...)")
-        for path, key, file in _placed(self.plugin, self.route, category, self.ctx.target,
-                                       post, files):
+        for path, key, file in _placed(self.ctx, self.route, category, post, files):
             if path in self._known or key in self._known:
                 continue
             self._known.update((path, key))
@@ -1634,16 +1651,21 @@ class _Listing:
             self.found.append(Collected(path, url, post, key, file))
 
 
-def _placed(plugin: Plugin, route: flnd.plugin.Route, category: flnd.plugin.Category | None,
-            target: flnd.plugin.Target, post: flnd.plugin.Post,
+def _placed(ctx: FakeCtx, route: flnd.plugin.Route, category: flnd.plugin.Category | None,
+            post: flnd.plugin.Post,
             files: Sequence[flnd.plugin.File]) -> list[tuple[str, str, flnd.plugin.File]]:
     """Each file's path under the target's folder and its history key, by the templates.
+
+    A `File.name` with an extension keeps it. A stem (or no name) takes its extension from
+    the content type, when its URL is routed and its `Content-Type` names a file, then from
+    the URL, then none. The kit doesn't sniff the bytes, which a save does as well.
 
     Raises:
         SourceError: a template names a field of the plugin's that the post doesn't give.
     """
     from flnkit import text
 
+    plugin, target = ctx._plugin, ctx.target
     folder = next(template for template in (category and category.folder, route.folder,
                                             plugin.folder) if template is not None)
     key = category.key if category is not None and category.key is not None else plugin.key
@@ -1655,13 +1677,17 @@ def _placed(plugin: Plugin, route: flnd.plugin.Route, category: flnd.plugin.Cate
                           hint="give the field on every post, None when it has none")
     placed, used = [], set()
     for num, file in enumerate(files):
-        extension = _extension(file)
+        own = file.name is not None and EXTENSION.fullmatch(PurePosixPath(file.name).suffix)
+        if own or file.content is not None:
+            extension = PurePosixPath(file.name or "").suffix
+        else:
+            extension = _typed(ctx, file) or _extension(file)
         values = {**post.fields, "plugin": plugin.code, "target": target.value,
                   "category": category.name if category else "", "post": post.id,
                   "num": num, "count": len(files), "index": "" if len(files) == 1 else f"_{num}",
                   "extension": extension, "date": clock.day(post.date),
                   "query": target.value if target.query else ""}
-        if file.content is not None:
+        if own or file.content is not None:
             name = text.filename(file.name or post.id)
         else:
             stem = file.name if file.name is not None else text.fill(plugin.filename, values)
@@ -1693,6 +1719,25 @@ def _extension(file: flnd.plugin.File) -> str:
     url = file.url or (file.mirrors[0] if file.mirrors else "")
     suffix = _suffix(url) if url else ""
     return suffix if suffix and files.kind_of(f"file{suffix}") else ""
+
+
+def _typed(ctx: FakeCtx, file: flnd.plugin.File) -> str | None:
+    """The extension a routed file's Content-Type names; None when its URL isn't routed, it
+    is joined or streamed, or its type is a page's or one no extension is known for."""
+    import mimetypes
+
+    from flnkit import files
+
+    url = file.url or (file.mirrors[0] if file.mirrors else None)
+    given = _lookup(ctx._routes, url) if url and not (file.audio or file.playlist) else None
+    if given is None:
+        return None
+    if callable(given):
+        given = given(Request(url))
+    reply = given if isinstance(given, Reply) else Reply(given)
+    kind = _response(reply, url).headers.get("content-type", "").split(";")[0].strip()
+    found = mimetypes.guess_extension(kind) if kind else None
+    return None if found is None or found in files.PAGES else found
 
 
 def _suffix(url: str) -> str:

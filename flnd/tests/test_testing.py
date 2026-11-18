@@ -164,6 +164,11 @@ class Signing(v2.Login):
 
     async def start(self, ctx, method):
         ctx.secrets["code"] = await ctx.ask("Code")
+        # A task the login starts writes as the login itself.
+        await asyncio.gather(self.keep(ctx))
+
+    async def keep(self, ctx):
+        ctx.secrets["kept"] = "1"
 
 
 def run(awaitable):
@@ -230,6 +235,10 @@ class FakeCtxTest(unittest.TestCase):
             with self.subTest(url=url, status=status):
                 ctx = fake(routes={url: Reply({"m": 1}, status=status)})
                 self.assertEqual(run(ctx.fetch(v2.Request(url, check=False))).status, status)
+        # A 429 is still held and asked again: holds act before `check`.
+        ctx = fake(routes={f"{BASE}/a": answers(Reply(status=429), Reply(status=403))})
+        self.assertEqual(run(ctx.fetch(v2.Request(f"{BASE}/a", check=False))).status, 403)
+        self.assertEqual([seconds for _, seconds, _ in ctx.seen.holds], [30.0])
 
     def test_a_url_with_no_route_fails_the_test_and_only_own_domains_are_signed(self):
         with self.assertRaises(AssertionError):
@@ -319,8 +328,16 @@ class FakeCtxTest(unittest.TestCase):
         later = answers(Reply(status=429), Reply({"items": [2], "next": "c2"}))
         ctx = fake(routes={f"{BASE}/posts": lambda request: (
             later(request) if request.params else Reply({"items": [1], "next": "c2"}))})
-        pages = bodies(ctx, ctx.pages(f"{BASE}/posts", cursor="next"))
-        self.assertEqual([page.json["items"] for page in pages], [[1], [2]])
+        async def capped():
+            # At most 5 pages, so a listing that never stops fails here instead of hanging.
+            found = []
+            async for page in ctx.pages(f"{BASE}/posts", cursor="next"):
+                found.append(page.json["items"])
+                if len(found) == 5:
+                    break
+            return found
+
+        self.assertEqual(run(capped()), [[1], [2]])
         self.assertEqual([options["params"] for _, _, options in ctx.seen.requests],
                          [None, {"cursor": "c2"}, {"cursor": "c2"}])
         self.assertEqual(len(ctx.seen.holds), 1)
@@ -349,7 +366,7 @@ class FakeCtxTest(unittest.TestCase):
         signed = type("Signed", (Gallery,), {"code": "sgn", "login": Signing()})
         ctx = FakeCtx(signed, answers=["123456"])
         run(signed.login.start(ctx, "code"))
-        self.assertEqual(dict(ctx.secrets), {"code": "123456"})
+        self.assertEqual(dict(ctx.secrets), {"code": "123456", "kept": "1"})
 
     def test_extension_and_storage_read_their_fakes(self):
         ctx = fake(extension={"title": "Hi", "evaluate": lambda js: len(js)},
@@ -451,6 +468,32 @@ class PluginCollectTest(unittest.TestCase):
                     Gallery.posts = original
                 self.assertEqual([found.post.id for found in saved], kept)
                 self.assertEqual(len(seen), listed)
+
+    def test_a_files_name_keeps_its_extension_else_takes_its_types_or_its_urls(self):
+        jpg, bare = "https://cdn.example.com/p1.jpg", "https://cdn.example.com/p1"
+        typed = {"png": Reply(b"x", headers={"content-type": "image/png"}),
+                 "unknown": Reply(b"x", headers={"content-type": "application/x-example"})}
+        rows = [
+            ("a stem", jpg, {"name": "cover_12"}, None, "posts/cover_12.jpg"),
+            ("a name with an extension", jpg, {"name": "cover_12.png"}, None,
+             "posts/cover_12.png"),
+            ("a content type", jpg, {}, typed["png"], "posts/p1_0.png"),
+            ("an unknown content type", jpg, {"name": "cover_12"}, typed["unknown"],
+             "posts/cover_12.jpg"),
+            ("neither", bare, {"name": "cover_12"}, None, "posts/cover_12"),
+        ]
+        for label, url, options, content, path in rows:
+            with self.subTest(label):
+                async def posts(plugin, ctx, profile, options=options, url=url):
+                    yield v2.Post("p1", [v2.File(url, **options)], album=None)
+
+                routes = {**PROFILE, **({url: content} if content else {})}
+                original, Gallery.posts = Gallery.posts, posts
+                try:
+                    saved = collect(Gallery, "gal:example_user", ctx=fake(routes=routes))
+                finally:
+                    Gallery.posts = original
+                self.assertEqual([found.path for found in saved], [path])
 
     def test_it_checks_the_listings_order_and_the_templates_fields(self):
         rows = [
