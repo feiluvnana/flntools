@@ -134,8 +134,8 @@ class SourceRunTest(SiteCase):
 
     def test_without_settings_the_source_decides(self):
         run, site = self.open()
-        self.assertEqual(run.web.limits.rate, 1.0 / Example.pace if Example.pace else None)
-        self.assertEqual(run.web.limits.caps, dict(Example.limits))
+        self.assertEqual(run.scheduler.pace["exm"], Example.pace)
+        self.assertEqual(run.scheduler.limits.limits, dict(Example.limits))
         self.assertIsNone(run.session.proxy)
         self.assertEqual(site._browser().scroll, Example.scroll)
 
@@ -143,8 +143,8 @@ class SourceRunTest(SiteCase):
         self.configure('[sources.exm]\npace = 4\nlimits = { "cdn.example.com" = 48 }\n'
                        'proxy = "socks5://127.0.0.1:1080"\nscroll = "fast"\n')
         run, site = self.open()
-        self.assertEqual(run.web.limits.rate, 0.25)
-        self.assertEqual(run.web.limits.caps, {**Example.limits, "cdn.example.com": 48})
+        self.assertEqual(run.scheduler.pace["exm"], 4.0)
+        self.assertEqual(run.scheduler.limits.limits, {**Example.limits, "cdn.example.com": 48})
         # One host's limit above the usual most lets a target keep that many files going.
         self.assertEqual(run.jobs, 48)
         self.assertEqual(run.session.proxy, "socks5://127.0.0.1:1080")
@@ -153,7 +153,7 @@ class SourceRunTest(SiteCase):
     def test_a_pace_of_0_is_no_pace(self):
         self.configure("[sources.exm]\npace = 0\n")
         run, _ = self.open()
-        self.assertIsNone(run.web.limits.rate)
+        self.assertEqual(run.scheduler.pace["exm"], 0)
 
     def test_the_proxy_reaches_curl(self):
         self.configure('[sources.exm]\nproxy = "http://127.0.0.1:8080"\n')

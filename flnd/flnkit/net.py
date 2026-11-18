@@ -1,68 +1,33 @@
-"""HTTP for any program on an asyncio loop: a `Session`, paced `Client`s, and downloads into parts.
+"""HTTP for any program on an asyncio loop: a `Session`, a `Client`, and downloads into parts.
 
 What it offers, for any caller:
 - `Session`: libcurl handles on one multi handle, through curl_cffi, kept from one transfer to
   the next (Chrome's TLS and HTTP/2 fingerprint), its default headers, its cookies, and a
   `prepare` hook that may add headers to each request before it goes out (a signature, a CSRF
   token).
-- `Limits`: how hard the session may press each host. A *paced* host gets a token bucket at a
-  rate in requests per second; any other host gets a `Cap` on its transfers at once, which
-  adapts to what the host can take (AIMD, below). `Limits.load` is a read-only snapshot of
-  each host's cap and transfers in flight. `Limits.suspended`, when set, holds every new request.
-- `Client`: a session with limits, a retry policy and a stop event. `fetch` sends one request;
-  `call` paces and retries any coroutine (a page loaded in a browser, a request sent by a page);
-  `fill` streams a file, or the first of its mirrors that works, into a `flnkit.files.Part`.
+- `Client`: a session with a stop event. `fetch` sends one request; `fill` streams one try of a
+  file into a `flnkit.files.Part`, going on from the bytes it holds. Neither paces nor retries:
+  the caller's scheduler does (flnd's is `flnd.engine.jobs`).
 - `follow(url)`: where a short link leads, from one HEAD request (blocking, for any thread).
 - `fake(routes)`: answers every request in the block from routes or a handler, never the
   network; `reply(...)` builds an answer for a handler.
 
-    limits = Limits(paced=lambda host: host.endswith("example.com"), rate=2.0,
-                    caps={"cdn.example.com": 4})
-    session = Session(headers={"User-Agent": agent}, cookies=jar, prepare=sign,
-                      handles=limits.total)
-    client = Client(session, limits=limits, stop=event)
+    session = Session(headers={"User-Agent": agent}, cookies=jar, prepare=sign)
+    client = Client(session, stop=event)
     page = await client.fetch("https://example.com/api", body={"q": "x"})   # page.json
     with files.part(dest, resume=True) as held:
-        headers = await client.fill([mirror1, mirror2], held, progress=row)
+        headers = await client.fill(url, held, progress=row)
     await session.close()
 
-Who calls it: flnd's site (`flnd.engine.site`) builds one session per source and two clients over
-it, and flnd's transfers (`flnd.engine.transfer`) fill a post's files; the browser
-(`flnkit.browser`) shapes a request its page sent as a `Response`. It calls curl_cffi,
-`flnkit.files` (parts), `flnkit.clock` (the clock, so tests wait on a fake one), `flnkit.html`
-(a page's HTML), `flnkit.text` (redaction) and `flnkit.errors`, and logs through `logging`.
-curl_cffi is imported on the first request, so importing this module is cheap.
-
-The main flow of one request (`Client.call`):
-1. take a slot for the URL's host from `Limits`: a token from a paced host's bucket, or a place
-   under another host's cap, held for the whole transfer;
-2. build the request (`body` is a query on a GET, JSON for a dict or list on any other method)
-   and let the session's `prepare` hook add its headers, before every try;
-3. send it through curl_cffi, or the active `fake`, and stream the answer;
-4. classify a failure by the policy below, wait, and try again, or raise.
-
-The retry policy (src/docs/errors):
-- a timeout, a reset, a cut-off transfer or a 5xx is tried again up to `RETRIES` more times,
-  after jittered waits of about 1, 2, 4 and 8 s; only methods that are safe to repeat are;
-- a 429 is `Blocked`: its `Retry-After`, or the site's rate-limit reset, is waited out (up to an
-  hour), a paced host's bucket is held and its rate halved until `CLEAN` clean requests; the
-  `ROUNDS`-th 429 in a row raises it;
-- a 404 or 410 is `NotFound`, any other 4xx a `SiteError`; neither is tried again;
+What a failure raises (src/docs/errors):
+- a timeout, a reset or a cut-off transfer is a retryable `NetworkError`, a 5xx a retryable
+  `SiteError`;
+- a 429 is `Blocked`, with its `Retry-After`, or the site's rate-limit reset, as `wait` (at most
+  an hour);
+- a 404 or 410 is `NotFound`, any other 4xx a `SiteError`; neither is retryable;
 - a malformed URL, a name that doesn't resolve or a certificate that fails is a `NetworkError`
-  that isn't tried again; a write the disk refuses is a `DiskError`; a set `stop` is `Stopped`.
-A host under a cap also tells its `Cap` how each try went:
-- it starts at `cap` (8 by default) transfers at once, and is halved on a 429, a 503, a reset, a
-  timeout or a cut-off transfer: once per round of transfers, so a burst of failures that
-  started together halves it once, not once each;
-- every `STEP` clean transfers it measures the host's throughput (the cap times the bytes those
-  transfers moved over the seconds they took), and adds one place, up to `most` (32 by
-  default), while each step still raised the throughput by at least half of what one more
-  place would add on a host that scales;
-- a step that didn't is taken back, and the cap holds for `HOLD` clean transfers before it
-  probes again; a window in which the host wasn't kept busy (a place stood free with nobody
-  waiting) says nothing about the cap, and is dropped.
-The session's handles (`Limits.total`) leave room for `SPREAD` hosts at their most at once, and
-every host with a cap of its own, so curl doesn't hold transfers below the caps.
+  that isn't retryable; a write the disk refuses is a `DiskError`; a set `stop` is `Stopped`.
+A refusal carries its `Response` as `error.response`.
 
 Every message names the URL redacted (`flnkit.text.redact`), and any secret the request carried
 (a cookie, a token, a query value) is scrubbed from a library's error text.
@@ -74,8 +39,6 @@ Rules a change must keep:
   the loop (and the browser and every other transfer on it); see src/docs/performance.
 - A write or hash in flight on those threads always finishes before its transfer gives the part
   back, even when the transfer is cancelled: the part's descriptor is closed only after it.
-- `Limits`, its buckets and its caps are used from the loop's thread only, so they need no
-  lock.
 """
 
 from __future__ import annotations
@@ -85,13 +48,10 @@ import email.message
 import email.utils
 import http.cookiejar
 import inspect
-import logging
 import math
-import random
 import re
 import time
 import urllib.request
-from collections import deque
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -103,10 +63,10 @@ from collections.abc import (
     Sequence,
 )
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, TypeVar
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import msgspec
@@ -115,59 +75,27 @@ from flnkit import clock, files, html
 from flnkit.errors import (
     Blocked,
     Changed,
-    Error,
     NetworkError,
     NotFound,
     SiteError,
     Stopped,
     disk,
 )
-from flnkit.text import duration, redact
-
-_log = logging.getLogger(__name__)
+from flnkit.text import redact
 
 __all__ = [
-    "Cap", "Client", "Headers", "Limits", "Load", "Place", "Reply", "Request",
-    "Response", "Session", "URL", "fake", "follow", "reply",
+    "Client", "Headers", "Meter", "Reply", "Request", "Response", "Session", "URL", "fake",
+    "follow", "reply",
 ]
 
-A = TypeVar("A")
 
-# More tries after the first, for a failure worth one: waits of about 1, 2, 4 and 8 s between.
-RETRIES = 4
-FIRST_WAIT = 1.0
-MAX_WAIT = 8.0
-# How many 429s in a row a request meets before it raises `Blocked`.
-ROUNDS = 3
-# The longest Retry-After or rate-limit reset a client waits out, in seconds.
+# The longest Retry-After or rate-limit reset a refusal carries, in seconds.
 MAX_BACKOFF = 3600.0
 # A reset larger than this is a Unix time, not a number of seconds.
 EPOCH = 1_000_000_000.0
-# After a 429, a paced host's rate stays halved for this many clean requests.
-CLEAN = 20
-# One token at most: a rate is a floor between two requests to a host, never a burst after a lull.
-BURST = 1.0
-# Transfers at once to a host that isn't paced and has no cap of its own: where its `Cap`
-# starts, and the most it grows to. 8 is what one host took at once before caps adapted; 32 is
-# the ceiling the real-CDN check (src/docs/performance, "Concurrency per host") is to confirm.
-CAP = 8
-MOST = 32
-# A cap measures its host's throughput, and may grow by one, every STEP clean transfers.
-STEP = 10
-# A step must raise the throughput by this share of what one more place adds on a host that
-# scales linearly (1 / the old cap), or it is taken back: a half, so noise isn't growth.
-RISE = 0.5
-# After a step that was taken back, clean transfers before the cap probes again.
-HOLD = 100
-# How often, in seconds, a request held by `Limits.suspended` looks again.
-SUSPENDED_POLL = 0.1
-# Statuses that say a host is overloaded, so its cap halves (with a reset and a timeout).
-OVERLOADED = (429, 503)
-# Room in the session for requests to the paced hosts, on top of the caps (`Limits.total`).
-PAGES = 4
-# Hosts without a cap of their own that `Limits.total` leaves room for at their most at once.
-# curl makes a handle only when one is needed, so room that is never used costs nothing.
-SPREAD = 8
+# Transfers at once a session has handles for, by default; more wait for a handle. curl makes
+# a handle only when one is needed, so room that is never used costs nothing.
+HANDLES = 260
 # Seconds before a connection counts as dead: to connect, or with no byte received.
 TIMEOUT = 30.0
 # The file system's writes go to the writer thread this many bytes at a time. Each hand-off to
@@ -180,8 +108,6 @@ HELD = 8 << 20
 REDIRECTS = 30
 # The statuses that mean the item is gone for good: never retried, recorded as gone.
 GONE = (404, 410)
-# Methods a server may receive twice without harm, so a failure of theirs is tried again.
-SAFE = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
 QUERY_METHODS = ("GET", "HEAD")
 SECRET_HEADERS = ("authorization", "cookie", "proxy-authorization")
 # The shortest secret `_scrub` replaces in a message; anything shorter is no secret.
@@ -360,410 +286,6 @@ class Response:
 
 
 # ---------------------------------------------------------------------------------------------
-# Pace and caps
-# ---------------------------------------------------------------------------------------------
-
-
-class Bucket:
-    """A token bucket: `rate` requests a second, one token deep, held by a site's wait.
-
-    It refills by the time elapsed, so a slow caller never waits again. A `hold` (a 429's
-    `Retry-After`) gives no token before its end, and a `slow` halves the rate until `CLEAN`
-    clean requests have passed.
-
-    Args:
-        rate: requests a second.
-    """
-
-    def __init__(self, rate: float) -> None:
-        if rate <= 0:
-            raise ValueError(f"rate must be positive, not {rate}")
-        self.rate = rate
-        self._tokens = BURST
-        self._at: float | None = None
-        self._until = 0.0
-        self._slow = 0
-
-    async def take(self, stop: Any = None) -> None:
-        """Wait for a token, and take it.
-
-        A token is taken at once, so callers waiting together queue one interval apart.
-
-        Args:
-            stop: a `threading.Event` that ends the wait.
-
-        Raises:
-            Stopped: `stop` was set while waiting.
-        """
-        rate = self.rate / 2 if self._slow else self.rate
-        now = clock.now()
-        at = now if self._at is None else self._at
-        self._tokens = min(BURST, self._tokens + (now - at) * rate) - 1.0
-        self._at = now
-        wait = max(-self._tokens / rate, self._until - now)
-        if wait > 0 and not await clock.pause(wait, stop=stop):
-            raise Stopped("stopped while pacing")
-
-    def hold(self, seconds: float) -> None:
-        """Give no token for `seconds` from now: the site said when to come back."""
-        self._until = max(self._until, clock.now() + seconds)
-
-    def slow(self) -> None:
-        """Halve the rate until `CLEAN` clean requests have passed: the site refused one."""
-        self._slow = CLEAN
-
-    def clean(self) -> None:
-        """Count one request that went through."""
-        if self._slow:
-            self._slow -= 1
-
-
-@dataclass(frozen=True)
-class Load:
-    """One host's transfers now, as `Limits.load` shows them.
-
-    Attributes:
-        cap: the transfers at once the host may have now.
-        busy: the transfers in flight to it.
-        waiting: the transfers waiting for a place.
-        most: the most its cap may grow to.
-    """
-
-    cap: int
-    busy: int
-    waiting: int
-    most: int
-
-
-class Cap:
-    """Transfers at once to one host, adapted to what the host can take (AIMD).
-
-        cap = Cap(8, most=32)
-        round = await cap.take()        # waits while `cap.value` transfers are in flight
-        try:
-            ...                         # the transfer
-            cap.done(size, seconds)     # it went through: its bytes, and how long it took
-        except Error:                   # for a 429, a 503, a reset or a timeout only:
-            cap.failed(round)           # halve
-        finally:
-            cap.give()
-
-    How the cap moves:
-    1. It starts at `start` and stays between 1 and `most`.
-    2. A failure halves it, rounded down, but once per round: `take` returns the round a
-       transfer started in, and only a failure of the current round halves it (and starts the
-       next). Transfers that started together and fail together halve it once.
-    3. Every `STEP` clean transfers close a window. Its throughput is what Little's law gives a
-       host kept busy: the cap times the bytes those transfers moved over the seconds they took,
-       each from its place to its last byte. Bytes over the wall time of so few transfers would
-       depend on where in their run the window closed; this doesn't.
-    4. A window in which a place stood free with nobody waiting (`give` found no one) wasn't
-       bound by the cap, so it says nothing about it: it is dropped.
-    5. Otherwise, if the window before it grew the cap, this one judges that step: a rate that
-       didn't rise by `RISE` of what one more place adds on a host that scales (1 / the old
-       cap) takes the step back, and holds the cap for `HOLD` clean transfers.
-    6. Else the rate is kept for the next judgement and, unless held or at `most`, the cap
-       grows by one.
-    A failure also forgets the rate and any hold, so growth starts afresh from the halved cap.
-
-    Used from the loop's thread only. Places are handed over in the order they were asked for.
-
-    Args:
-        start: transfers at once to begin with; more than `most` starts at `most`.
-        most: the most transfers at once it grows to.
-    """
-
-    def __init__(self, start: int, *, most: int) -> None:
-        if start < 1 or most < 1:
-            raise ValueError(f"a cap needs a start and a most of 1 or more, not {start}, {most}")
-        self.most = most
-        self.value = min(start, most)
-        self.busy = 0
-        self._waiting: deque[asyncio.Future[None]] = deque()
-        # The round transfers start in; a failure of the current round halves and ends it.
-        self._round = 0
-        # The open window: its clean transfers, their bytes and seconds, and whether a place
-        # stood free in it.
-        self._clean = 0
-        self._bytes = 0
-        self._seconds = 0.0
-        self._slack = False
-        # The throughput at `value` from the last window that counted, in bytes a second.
-        self._rate: float | None = None
-        # Whether the last window ended by growing the cap, so the next one judges that step.
-        self._grown = False
-        # Clean transfers left before a cap whose step was taken back probes again.
-        self._held = 0
-
-    @property
-    def waiting(self) -> int:
-        """Transfers waiting for a place."""
-        return len(self._waiting)
-
-    async def take(self) -> int:
-        """Wait for a place, and take it.
-
-        Returns:
-            The round the transfer starts in, for `failed`.
-        """
-        if self.busy < self.value and not self._waiting:
-            self.busy += 1
-            return self._round
-        place: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._waiting.append(place)
-        try:
-            await place
-        except asyncio.CancelledError:
-            if place.done() and not place.cancelled():
-                # The place was handed over just as the waiter was cancelled: pass it on.
-                self.give()
-            else:
-                self._waiting.remove(place)
-            raise
-        return self._round
-
-    def give(self) -> None:
-        """Give a place back, to the first transfer waiting when the cap allows."""
-        self.busy -= 1
-        if not self._waiting:
-            self._slack = True
-        self._wake()
-
-    def done(self, size: int, seconds: float) -> None:
-        """Count a clean transfer; the `STEP`-th closes the window.
-
-        Args:
-            size: the bytes it moved; 0 for none.
-            seconds: how long it held its place.
-        """
-        self._clean += 1
-        self._bytes += size
-        self._seconds += seconds
-        if self._held:
-            self._held -= 1
-        if self._clean >= STEP:
-            self._judge()
-
-    def failed(self, round: int) -> None:
-        """A transfer that started in `round` met an overloaded host: halve, once a round.
-
-        Args:
-            round: what `take` returned for it.
-        """
-        if round != self._round:
-            return
-        self._round += 1
-        self.value = max(1, self.value // 2)
-        self._rate, self._grown, self._held = None, False, 0
-        self._open()
-
-    def _judge(self) -> None:
-        """Close the window: drop it, take its step back, or grow (the class's steps 4 to 6)."""
-        rate = self.value * self._bytes / self._seconds if self._seconds > 0 else None
-        grown, self._grown = self._grown, False
-        slack = self._slack
-        self._open()
-        if slack or rate is None:
-            return
-        if grown and self._rate is not None and \
-                rate <= self._rate * (1 + RISE / (self.value - 1)):
-            self.value -= 1
-            self._held = HOLD
-            return
-        self._rate = rate
-        if self._held or self.value >= self.most:
-            return
-        self.value += 1
-        self._grown = True
-        self._wake()
-
-    def _open(self) -> None:
-        """Open a new window."""
-        self._clean = self._bytes = 0
-        self._seconds = 0.0
-        self._slack = False
-
-    def _wake(self) -> None:
-        """Hand free places to the transfers waiting, first come first served."""
-        while self._waiting and self.busy < self.value:
-            place = self._waiting.popleft()
-            if not place.done():
-                self.busy += 1
-                place.set_result(None)
-
-
-class Limits:
-    """How hard a session may press each host: a bucket for paced hosts, a cap for the others.
-
-    Each paced host has a bucket of its own, so a site's page host and its API host keep their
-    own pace, and a 429 from one doesn't slow the other. Every other host has a `Cap` of its
-    own, which adapts to what the host takes.
-
-        limits = Limits(paced=lambda host: host.endswith("example.com"), rate=2.0,
-                        caps={"cdn.example.com": 4})
-        async with limits.slot("cdn.example.com") as place:
-            ...                     # at most 4 transfers to that host at once
-            place.done(size)        # a clean transfer, for the cap's measure
-
-    A client that doesn't pace (`Client(pace=False)`, for downloads) treats a paced host as any
-    other: under its cap. So a site's media served from its own domain isn't held to its pace.
-
-    Args:
-        paced: whether a host is paced: its requests share its bucket at `rate`, with no cap.
-        rate: requests a second to the paced hosts; None paces nothing.
-        caps: the most transfers at once to a host and its subdomains, by host name. Each such
-            host starts at `cap`, or at its own when that is lower, and grows no further.
-        cap: transfers at once a host starts at.
-        most: the most transfers at once a host not in `caps` grows to; `most=cap` keeps every
-            such host at `cap` until a failure halves it.
-    """
-
-    def __init__(self, *, paced: Callable[[str], bool] = lambda host: False,
-                 rate: float | None = None, caps: Mapping[str, int] | None = None,
-                 cap: int = CAP, most: int = MOST) -> None:
-        self._paced = paced
-        self.rate = rate
-        self._buckets: dict[str, Bucket] = {}
-        self.caps = dict(caps or {})
-        self.cap = cap
-        self.most = max(cap, most)
-        self._caps: dict[str, Cap] = {}
-        # When set (a `threading.Event`), no new request starts until it is cleared: each
-        # `slot` waits first. The transfers in flight go on. None never holds.
-        self.suspended: Any = None
-
-    @property
-    def total(self) -> int:
-        """Transfers at once in all, for the session's handles: `SPREAD` hosts at `most`, every
-        host in `caps` at its own, and room for the paced hosts."""
-        return PAGES + SPREAD * self.most + sum(self.caps.values())
-
-    @property
-    def load(self) -> Mapping[str, Load]:
-        """A snapshot of each capped host's cap, and its transfers in flight and waiting."""
-        return MappingProxyType({
-            host: Load(cap.value, cap.busy, cap.waiting, cap.most)
-            for host, cap in self._caps.items()
-        })
-
-    @asynccontextmanager
-    async def slot(self, host: str, stop: Any = None, *,
-                   pace: bool = True) -> AsyncIterator[Place]:
-        """Hold a place for one request to `host` for the block.
-
-        Args:
-            host: the host, lower case.
-            stop: a `threading.Event` that ends a wait for a token.
-            pace: whether a paced host takes a token; False puts it under its cap instead.
-
-        Yields:
-            The place: tell it how the try went (`done`, `failed`), for the host's cap. A
-            block that tells it nothing counts for nothing.
-
-        Raises:
-            Stopped: `stop` was set while waiting for a token, or while `suspended`.
-        """
-        # A suspension is a person's (a key pressed), so it is waited out in real time, even
-        # under a test's fake clock, whose waits would pass at once and never let the loop run.
-        while self.suspended is not None and self.suspended.is_set():
-            if stop is not None and stop.is_set():
-                raise Stopped("stopped while suspended")
-            await asyncio.sleep(SUSPENDED_POLL)
-        if pace and self._paced(host):
-            bucket = self._bucket(host)
-            if bucket is not None:
-                await bucket.take(stop)
-                yield Place(None, 0, 0.0)
-                return
-        cap = self._caps.get(host)
-        if cap is None:
-            cap = self._caps[host] = Cap(self.cap, most=self._most(host))
-        round = await cap.take()
-        try:
-            yield Place(cap, round, clock.now())
-        finally:
-            cap.give()
-
-    def blocked(self, host: str, wait: float | None) -> None:
-        """A 429 from `host`: hold a paced host's bucket for `wait`, and halve its rate.
-
-        Args:
-            host: the host that answered 429, lower case; one that isn't paced is left alone.
-            wait: the seconds the site asked for; None holds nothing, but still halves.
-        """
-        bucket = self._bucket(host)
-        if bucket is not None:
-            if wait:
-                bucket.hold(wait)
-            bucket.slow()
-
-    def clean(self, host: str) -> None:
-        """A request to `host` went through."""
-        bucket = self._bucket(host)
-        if bucket is not None:
-            bucket.clean()
-
-    def _most(self, host: str) -> int:
-        """The most transfers at once to `host`: its own cap, a parent domain's, or `most`."""
-        for name, value in self.caps.items():
-            if host == name or host.endswith(f".{name}"):
-                return value
-        return self.most
-
-    def _bucket(self, host: str) -> Bucket | None:
-        """A paced host's bucket, made on first use.
-
-        Args:
-            host: the host, lower case.
-
-        Returns:
-            Its bucket; None for a host that isn't paced, or when nothing is.
-        """
-        if not self.rate or not self._paced(host):
-            return None
-        bucket = self._buckets.get(host)
-        if bucket is None:
-            bucket = self._buckets[host] = Bucket(self.rate)
-        return bucket
-
-
-@dataclass
-class Place:
-    """A place `Limits.slot` holds: what a try tells its host's cap, when it has one.
-
-    Attributes:
-        cap: the host's cap; None for a paced host, whose bucket learns from `Limits` instead.
-        round: the cap's round the place was taken in.
-        began: when the place was taken, on `flnkit.clock`'s clock.
-    """
-
-    cap: Cap | None
-    round: int
-    began: float
-
-    def done(self, size: int) -> None:
-        """The try went through, moving `size` bytes."""
-        if self.cap is not None:
-            self.cap.done(size, clock.now() - self.began)
-
-    def failed(self, error: BaseException) -> None:
-        """The try failed: halve the cap when `error` says the host is overloaded.
-
-        Overloaded is a 429 or a 503, or a retryable `NetworkError`: a reset, a timeout or a
-        transfer cut short. Any other failure (a 404, a 500, a URL that is wrong) leaves the
-        cap alone, since fewer transfers at once wouldn't mend it.
-
-        Args:
-            error: what the try raised.
-        """
-        if self.cap is None:
-            return
-        if getattr(error, "status", None) in OVERLOADED or (
-                isinstance(error, NetworkError) and error.retryable):
-            self.cap.failed(self.round)
-
-
-# ---------------------------------------------------------------------------------------------
 # The session: curl_cffi, cookies, and the fake
 # ---------------------------------------------------------------------------------------------
 
@@ -822,7 +344,7 @@ class Session:
             counts as dead.
         handles: transfers at once in all; more wait for a handle. curl makes a handle only
             when a transfer needs one, so a large number costs nothing until it is used; give
-            `Limits.total`, so the session never holds transfers below the caps.
+            the most transfers the caller lets go at once, so the session never holds them.
         proxy: the proxy every request goes through, as curl reads one
             (`http://host:port`, `socks5://host:port`, `socks5h://…` to look names up there
             too); None for none. A fake (`fake`) answers without it.
@@ -831,7 +353,7 @@ class Session:
     def __init__(self, *, headers: Mapping[str, str] | None = None,
                  cookies: Iterable[Mapping[str, Any]] = (),
                  prepare: Callable[[Request], Request | None] | None = None,
-                 timeout: float = TIMEOUT, handles: int = PAGES + SPREAD * MOST,
+                 timeout: float = TIMEOUT, handles: int = HANDLES,
                  proxy: str | None = None) -> None:
         self.headers = Headers(headers or {})
         self.prepare = prepare
@@ -1390,44 +912,33 @@ class _Info:
 
 
 # ---------------------------------------------------------------------------------------------
-# The client: pace, retries, downloads
+# The client: one try of a request or a download
 # ---------------------------------------------------------------------------------------------
 
 
 class Client:
-    """A session with limits, a retry policy and a stop event: what fetches and downloads.
+    """A session and a stop event: what fetches and downloads, one try at a time.
 
-        client = Client(session, limits=limits, stop=event)
+        client = Client(session, stop=event)
         page = await client.fetch(url)
         await client.fill(url, held, progress=row)
 
-    Two clients may share a session and its limits: flnd lists through one that stops at the
+    It neither paces nor retries: the caller's scheduler decides when a try goes and whether
+    another follows. Two clients may share a session: flnd lists through one that stops at the
     first Ctrl-C and downloads through one that stops at the second.
 
     Args:
         session: what sends.
-        limits: the pace and caps per host; None limits nothing.
-        retries: more tries after the first, for a failure worth one (the module's policy).
-        stop: a `threading.Event` that stops waits and transfers with `Stopped`.
-        pace: hold requests to the paced hosts to their bucket; False caps them instead, as
-            any other host (a downloading client).
+        stop: a `threading.Event` that stops transfers with `Stopped`.
     """
 
-    def __init__(self, session: Session, *, limits: Limits | None = None,
-                 retries: int = RETRIES, stop: Any = None,
-                 pace: bool = True) -> None:
-        if retries < 0:
-            raise ValueError(f"retries must be 0 or more, not {retries}")
+    def __init__(self, session: Session, *, stop: Any = None) -> None:
         self.session = session
-        self.limits = limits if limits is not None else Limits()
-        self.retries = retries
         self.stop = stop
-        self.pace = pace
 
     async def fetch(self, url: str, *, method: str = "GET",
-                    headers: Mapping[str, str] | None = None, body: Any = None,
-                    check: bool = True) -> Response:
-        """Send one request, paced and retried, and return its `Response`.
+                    headers: Mapping[str, str] | None = None, body: Any = None) -> Response:
+        """Send one request and return its `Response`.
 
         Args:
             url: where to.
@@ -1435,140 +946,42 @@ class Client:
             headers: headers for this request, over the session's.
             body: on a GET or HEAD a dict is the query; on any other method a dict or list is
                 JSON; bytes or str go as they are.
-            check: raise for a 4xx or 5xx (the module's policy); False returns it instead.
 
         Returns:
-            The response.
+            The response, when its status is under 400.
 
         Raises:
-            Error: as the module's policy says.
+            Error: as the module's policy says; a refusal carries its `response`.
         """
         method = method.upper()
+        answer = await self._open(_request(method, url, headers, body))
+        return _checked(await answer.read(), method)
 
-        async def send() -> Response:
-            answer = await self._open(_request(method, url, headers, body))
-            return _checked(await answer.read(), method)
-
-        return await self.call(url, send, method=method, check=check)
-
-    async def call(self, url: str, send: Callable[[], Awaitable[A]], *, method: str = "GET",
-                   check: bool = True, moved: Callable[[], int] | None = None) -> A:
-        """Pace and send, trying again as the policy allows; `check=False` returns a refusal.
-
-        `send` makes a new attempt each call: a request, or anything else sent to `url`'s host
-        (a page loaded in a browser), which raises flnd's errors as this module does.
-
-        Args:
-            url: what the attempt is for; its host picks the pace or the cap.
-            send: one attempt.
-            method: the attempt's method: only the safe ones are tried again after a failure,
-                but any after a 429, which the server didn't act on.
-            check: False returns the response of a refusal that isn't tried again.
-            moved: the bytes the attempts have moved so far, read before and after each one,
-                for the host's cap to measure its throughput; None counts a `Response`'s body,
-                and nothing for anything else.
-
-        Returns:
-            What the attempt that went through returned.
-
-        Raises:
-            Error: the last attempt's failure.
-            Stopped: `stop` was set while waiting.
-        """
-        host = _host(url)
-        tries = rounds = 0
-        while True:
-            async with self.limits.slot(host, self.stop, pace=self.pace) as place:
-                before = moved() if moved is not None else 0
-                try:
-                    result = await send()
-                except Error as error:
-                    failure = error
-                    place.failed(error)
-                else:
-                    if moved is not None:
-                        place.done(moved() - before)
-                    else:
-                        place.done(len(result.content) if isinstance(result, Response) else 0)
-                    if self.pace:
-                        self.limits.clean(host)
-                    return result
-            if getattr(failure, "status", None) == 429:
-                rounds += 1
-                wait = getattr(failure, "wait", None)
-                if self.pace:
-                    self.limits.blocked(host, wait)
-                if rounds >= ROUNDS:
-                    return _given_up(failure, check)
-                wait = _backoff(rounds) if wait is None else wait
-                _log.warning(
-                    "{host}: rate limited; waiting {time}",
-                    extra={"fields": {
-                        "host": host,
-                        "time": duration(round(wait)),
-                    }},
-                )
-            else:
-                tries += 1
-                if tries > self.retries or not _worth(method, failure):
-                    return _given_up(failure, check)
-                wait = _backoff(tries)
-                _log.debug(
-                    "retry {n}/{total} in {seconds:.1f}s: {reason}",
-                    extra={"fields": {
-                        "n": tries,
-                        "total": self.retries,
-                        "seconds": wait,
-                        "reason": failure,
-                    }},
-                )
-            if not await clock.pause(wait, stop=self.stop):
-                raise Stopped(f"{host}: stopped")
-
-    async def fill(self, url: str | Sequence[str], held: files.Part, *,
+    async def fill(self, url: str, held: files.Part, *,
                    headers: Mapping[str, str] | None = None, resume: bool = True,
                    progress: Any = None) -> Mapping[str, str]:
-        """Stream `url`, or the first of several mirrors that works, into the open part `held`.
+        """Stream `url` into the open part `held`: one try, going on from the bytes it holds.
 
         The caller owns the part: it decides where it lands and what happens on failure.
 
         Args:
-            url: the file's URL, or mirrors of it tried in order.
+            url: the file's URL.
             held: the locked part, from `flnkit.files.part`.
             headers: extra request headers.
             resume: go on from the bytes the part holds, with `If-Range` on the validator its
                 sidecar kept; False empties it first.
             progress: a sink for the bytes as they come: anything with a settable `total` and
-                an `advance(n)`; None reports nothing.
+                an `advance(n)`, or a `Meter` of one, which keeps where the tries before
+                this one left it; None reports nothing.
 
         Returns:
             The headers of the answer that filled the part, lower case.
 
         Raises:
-            Error: the last mirror failed (see the module's policy).
+            Error: the try failed (see the module's policy).
         """
-        mirrors = [url] if isinstance(url, str) else list(url)
-        if not mirrors:
-            raise ValueError("a download needs a URL")
-        meter = _Meter(progress)
-        for mirror in mirrors[:-1]:
-            try:
-                return await self.call(
-                    mirror, lambda m=mirror: self._file(m, held, headers, resume, meter),
-                    moved=meter.moved)
-            except Error as error:
-                _log.debug(
-                    "{url} failed: {reason}; trying the next mirror",
-                    extra={"fields": {
-                        "url": redact(mirror),
-                        "reason": error,
-                    }},
-                )
-                # The next mirror may serve other bytes: a Range on this part would splice.
-                held.reset()
-        last = mirrors[-1]
-        return await self.call(last, lambda: self._file(last, held, headers, resume, meter),
-                               moved=meter.moved)
+        meter = progress if isinstance(progress, Meter) else Meter(progress)
+        return await self._file(url, held, headers, resume, meter)
 
     async def _open(self, request: Request) -> _Answer:
         """Prepare `request` with the session's hook, send it, and raise for its stop.
@@ -1586,7 +999,7 @@ class Client:
         return await self.session.send(request)
 
     async def _file(self, url: str, held: files.Part, headers: Mapping[str, str] | None,
-                    resume: bool, meter: _Meter) -> Mapping[str, str]:
+                    resume: bool, meter: Meter) -> Mapping[str, str]:
         """One try at a file: resume the part, or start over.
 
         1. Start from 0 when not resuming, or when an older flnd's crash left a part with holes.
@@ -1636,7 +1049,7 @@ class Client:
 
     async def _unsatisfied(self, url: str, held: files.Part,
                            headers: Mapping[str, str] | None, offset: int, total: int | None,
-                           meter: _Meter) -> None:
+                           meter: Meter) -> None:
         """A 416 on `Range: bytes=offset-`: the part is whole, or it starts over from 0.
 
         Args:
@@ -1678,7 +1091,7 @@ class Client:
         return answer
 
     async def _write(self, url: str, answer: _Answer, held: files.Part, start: int,
-                     total: int | None, meter: _Meter) -> None:
+                     total: int | None, meter: Meter) -> None:
         """Append the answer's body to the part, and fail a transfer that came short.
 
         Args:
@@ -1712,11 +1125,12 @@ class Client:
             raise Stopped(f"{redact(url)}: stopped")
 
 
-class _Meter:
+class Meter:
     """Where a download stands on its sink: a `total` it sets and an `advance(n)` it calls.
 
     The sink is anything with a settable `total` and an `advance(n)`: a `ui.Item`, or the job's
-    per-file stream; None reports nothing.
+    per-file stream; None reports nothing. Give `Client.fill` the same meter for each try of
+    one download, so a try that resumes moves the sink only by what it adds.
 
     Args:
         sink: where the bytes are counted, or None.
@@ -1725,12 +1139,6 @@ class _Meter:
     def __init__(self, sink: Any):
         self._sink = sink
         self._at = 0
-        # Every byte the download's tries received, for the host's cap (`Client.call`).
-        self._moved = 0
-
-    def moved(self) -> int:
-        """The bytes every try of this download has received so far."""
-        return self._moved
 
     def start(self, total: int | None, at: int) -> None:
         """A try begins: set the sink's total, and move it to where the try starts.
@@ -1747,7 +1155,6 @@ class _Meter:
         self._at = at
 
     def add(self, n: int) -> None:
-        self._moved += n
         if self._sink is not None:
             self._sink.advance(n)
             self._at += n
@@ -2209,34 +1616,6 @@ def _request(method: str, url: str, headers: Mapping[str, str] | None, body: Any
         content = bytes(body)
     _host(url)
     return Request(method, URL(url), extra, content)
-
-
-def _backoff(attempt: int) -> float:
-    """The wait before try `attempt + 1`: 1, 2, 4, 8 s at most, each jittered to half of it."""
-    return min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT) * random.uniform(0.5, 1.0)
-
-
-def _worth(method: str, error: Error) -> bool:
-    """Whether `error` is worth another try of a `method` request.
-
-    Its raiser said whether it is (`retryable`): a 5xx, a timeout or a reset is; a 4xx, a
-    malformed URL or an unknown route isn't. Only methods safe to send twice are tried again.
-
-    Args:
-        method: the request's method.
-        error: what the try raised.
-
-    Returns:
-        True to wait and try again.
-    """
-    return error.retryable and method.upper() in SAFE
-
-
-def _given_up(error: Error, check: bool) -> Any:
-    response = getattr(error, "response", None)
-    if check or not isinstance(response, Response):
-        raise error
-    return response
 
 
 def _host(url: str) -> str:

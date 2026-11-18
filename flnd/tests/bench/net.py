@@ -1,8 +1,9 @@
 """Benchmark group `net`: flnd's HTTP client downloading from a loopback server to disk.
 
 The client is the one flnd builds for a source's downloads (`flnkit.net.Client` over a
-`Session`, with the per-host cap of `flnd.engine.site`), on a `flnkit.loop.Loop` as in a run, so these
-numbers are what a real download pays, minus the network. Loopback shows CPU and per-request
+`Session`), each transfer a `FILE` job of the run's scheduler (`flnd.engine.jobs`) under a
+fixed cap per host, on a `flnkit.loop.Loop` as in a run, so these numbers are what a real
+download pays, minus the network. Loopback shows CPU and per-request
 overhead and hides latency and bandwidth; the `e2e` group adds simulated latency.
 
 Steps:
@@ -49,6 +50,7 @@ from unittest import mock
 
 import kit
 
+from flnd.engine import jobs
 from flnd.engine import transfer as _transfer
 from flnd.ui.log import ui
 from flnkit import files as _files
@@ -60,8 +62,8 @@ BIG = kit.size(1 << 30, 1 << 20)
 # The big file is written in pieces of this size, so making it never holds 1 GiB in memory.
 PIECE = min(64 << 20, BIG)
 SMALL, COUNT = 100 * 1024, kit.size(2000, 20)
-# Transfers at once to one host: where flnd's cap starts (`flnd.engine.site.MEDIA_CAP`), held there.
-AT_ONCE = 8
+# Transfers at once to one host: where flnd's cap starts (`flnd.engine.jobs.CAP`), held there.
+AT_ONCE = jobs.CAP
 # The slow disk: four files of 16 MiB written at 20 MB/s.
 MEDIUM, SLOW_FILES, DISK_RATE = kit.size(16 << 20, 1 << 20), 4, 20e6
 PROBE = 0.005
@@ -100,19 +102,32 @@ def make_data(folder: Path) -> None:
     (folder / "hls.m3u8").write_text("\n".join([*lines, "#EXT-X-ENDLIST", ""]))
 
 
-async def fill(client: _net.Client, url: str, dest: Path) -> None:
+class Capped:
+    """A downloading client whose transfers are `FILE` jobs of a scheduler of its own, held to
+    `at_once` transfers per host (a limit at or under the cap's start fixes it there)."""
+
+    def __init__(self, session: _net.Session, at_once: int) -> None:
+        self.client = _net.Client(session)
+        self.scheduler = jobs.Scheduler(limits={"127.0.0.1": at_once, "localhost": at_once})
+
+    async def run(self, url: str, work: Any) -> Any:
+        return await self.scheduler.run(jobs.Job(
+            kind=jobs.Kind.FILE, work=work, host=_net.URL(url).host, target="bench"))
+
+
+async def fill(client: Capped, url: str, dest: Path) -> None:
     """Download `url` into `dest` as a source's file is: its part opened and landed off the loop
     (`flnd.engine.transfer`), filled by the client. No progress row: that is the UI's cost (`cpu`)."""
     async with _transfer._held(dest) as held:
-        await client.fill(url, held)
+        await client.run(url, lambda: client.client.fill(url, held))
 
 
-async def many(client: _net.Client, urls: list[str], out: Path) -> None:
-    """Download every URL, each a task; the client's cap per host bounds how many at once."""
+async def many(client: Capped, urls: list[str], out: Path) -> None:
+    """Download every URL, each a task; the scheduler's cap per host bounds how many at once."""
     await asyncio.gather(*(fill(client, url, out / str(n)) for n, url in enumerate(urls)))
 
 
-async def stalled(client: _net.Client, urls: list[str], out: Path) -> float:
+async def stalled(client: Capped, urls: list[str], out: Path) -> float:
     """Download `urls` at once while a probe measures how late the loop wakes it.
 
     Returns:
@@ -158,13 +173,13 @@ def plain(base: str, paths: list[str], *, span: str | None = None) -> float:
     return time.perf_counter() - start
 
 
-async def hls_at_once(client: _net.Client, url: str, dest: Path) -> None:
+async def hls_at_once(client: Capped, url: str, dest: Path) -> None:
     """Download a playlist with `flnkit.stream`: its segments `AT_ONCE` at a time, in order."""
-    playlist = _stream.hls((await client.fetch(url)).text, url)
+    playlist = _stream.hls((await client.client.fetch(url)).text, url)
 
     async def get(segment: str, span: tuple[int, int] | None) -> bytes:
         headers = {"Range": f"bytes={span[0]}-{span[1] - 1}"} if span else None
-        return (await client.fetch(segment, headers=headers)).content
+        return (await client.client.fetch(segment, headers=headers)).content
 
     async with _transfer._held(dest) as held:
         async def write(data: bytes) -> None:
@@ -173,7 +188,7 @@ async def hls_at_once(client: _net.Client, url: str, dest: Path) -> None:
         await _stream.fetch_all(playlist.segments, get, write, at_once=AT_ONCE)
 
 
-async def raced(fast: _net.Client, slow: _net.Client, fast_urls: list[str],
+async def raced(fast: Capped, slow: Capped, fast_urls: list[str],
                 slow_urls: list[str], out: Path, slow_out: Path) -> float:
     """Download `fast_urls` while `slow_urls` go to the throttled folder; return the fast time.
 
@@ -223,7 +238,7 @@ def own_device(folder: Path) -> Iterator[None]:
         yield
 
 
-def two_disks(report: kit.Report, loop: Loop, clients: tuple[_net.Client, _net.Client],
+def two_disks(report: kit.Report, loop: Loop, clients: tuple[Capped, Capped],
               base: str, folders: tuple[Path, Path], empty: Any) -> None:
     """Time step 5: the fast target alone, then beside the slow one.
 
@@ -260,10 +275,9 @@ def segments_and_disks(report: kit.Report, loop: Loop, base: str, scratch: Path,
                        empty: Any) -> None:
     """Time steps 5 to 8: two disks, the per-connection cap, four big files, the playlist."""
     out, slow_out = scratch / "out", scratch / "slow"
-    session = _net.Session(handles=_net.PAGES + AT_ONCE)
-    second = _net.Session(handles=_net.PAGES + AT_ONCE)
-    capped = _net.Client(session, limits=_net.Limits(cap=AT_ONCE, most=AT_ONCE), pace=False)
-    other = _net.Client(second, limits=_net.Limits(cap=AT_ONCE, most=AT_ONCE), pace=False)
+    session = _net.Session(handles=jobs.PAGES + AT_ONCE)
+    second = _net.Session(handles=jobs.PAGES + AT_ONCE)
+    capped, other = Capped(session, AT_ONCE), Capped(second, AT_ONCE)
 
     slow_out.mkdir()
     with own_device(slow_out):
@@ -305,11 +319,9 @@ def main() -> None:
 
         # Any line the client logs goes to a buffer: the terminal's speed is no part of this.
         with kit.serve(data) as base, Loop() as loop, ui.scope(dest=io.StringIO(), color=False):
-            session = _net.Session(handles=_net.PAGES + AT_ONCE)
-            # Fixed caps (`most` = `cap`), so the numbers don't depend on how a cap adapts.
-            one = _net.Client(session, limits=_net.Limits(cap=1, most=1), pace=False)
-            capped = _net.Client(session, limits=_net.Limits(cap=AT_ONCE, most=AT_ONCE),
-                                 pace=False)
+            session = _net.Session(handles=jobs.PAGES + AT_ONCE)
+            # Fixed caps, so the numbers don't depend on how a cap adapts.
+            one, capped = Capped(session, 1), Capped(session, AT_ONCE)
 
             took = kit.best(lambda: loop.run(fill(capped, f"{base}/big.bin", out / "big")),
                             before=empty)

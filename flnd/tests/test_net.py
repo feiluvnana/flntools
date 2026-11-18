@@ -1,10 +1,9 @@
-"""`flnkit.net`, the HTTP library: requests, the retry policy, secrets, the fake, pace and caps,
-and downloads into a part (resumed, mirrored, segmented, written off the loop).
+"""`flnkit.net`, the HTTP library: requests, what each failure raises, secrets, the fake, and
+downloads into a part (resumed, written off the loop).
 
-The network is `_net.fake`, the waits a fake clock whose jitter is pinned at its top (so a wait
-reads 1, 2, 4, 8 s), and each call runs on a loop of its own (`fakes.fetch`, `fakes.download`,
-or `asyncio.run`), so nothing opens a socket or sleeps, except the slow-disk test, which times
-the loop for real.
+The network is `_net.fake`, the clock a fake one, and each call runs on a loop of its own
+(`fakes.fetch`, `fakes.download`, or `asyncio.run`), so nothing opens a socket or sleeps, except
+the slow-disk test, which times the loop for real.
 """
 
 import asyncio
@@ -35,7 +34,6 @@ BODY = bytes(range(256)) * 16 + b"tail"
 class NetCase(unittest.TestCase):
     def setUp(self) -> None:
         self.clock = self.enterContext(_time.use(_time.Fake()))
-        self.enterContext(mock.patch.object(_net.random, "uniform", lambda low, high: high))
         self.enterContext(ui.scope(dest=io.StringIO(), color=False, width=80))
         self.seen: list[_net.Request] = []
         self.sent: list[tuple[float, _net.Request]] = []
@@ -114,12 +112,6 @@ class FetchTest(NetCase):
         self.assertEqual([request.content for request in self.seen], [b'{"id":1}', b"[1,2]", b"\x00raw", b"text"])
         self.assertEqual(self.seen[0].headers["content-type"], "application/json")
 
-    def test_check_false_returns_a_4xx_or_5xx_with_its_status(self):
-        for status in (401, 404, 410, 429, 500):
-            with self.subTest(status=status), _net.fake({SITE + "/*": status}):
-                page = fetch(f"{SITE}/example_user", check=False)
-                self.assertEqual((page.status, page.ok), (status, False))
-
     def test_a_refusal_raises_with_its_response(self):
         with _net.fake({f"{SITE}/gone": _net.Response(410, f"{SITE}/gone", {}, b'{"reason": "gone"}')}):
             with self.assertRaises(SiteError) as raised:
@@ -131,71 +123,36 @@ class FetchTest(NetCase):
         self.assertFalse(raised.exception.retryable)
         self.assertIn(f"GET {SITE}/gone: HTTP 410", str(raised.exception))
 
-    def test_a_429_three_times_raises_blocked_after_two_waits(self):
-        with _net.fake({SITE + "/": self.serve(_net.reply(429, headers={"Retry-After": "12"}))}):
-            with self.assertRaises(Blocked) as raised:
-                fetch(f"{SITE}/")
-        self.assertEqual(raised.exception.wait, 12.0)
-        self.assertEqual(self.clock.slept, [12.0, 12.0])
-        self.assertEqual(len(self.seen), _net.ROUNDS)
-        self.assertEqual(raised.exception.status, 429)
-        self.assertTrue(raised.exception.retryable)
-
-    def test_a_429s_retry_after_as_a_date_a_reset_or_missing(self):
-        # The first wait is the site's: a date a minute away, a reset 20 s away (and a second
-        # more, for clocks a little apart), or the backoff's 1 s when it says nothing.
-        for header, low, high in (("date", 55.0, 61.0), ("reset", 21.0, 21.0), (None, 1.0, 1.0)):
-            later = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(_time.wall() + 60))
-            given = {"date": {"Retry-After": later},
-                     "reset": {"x-rate-limit-reset": str(int(_time.wall()) + 20)}}.get(header, {})
-            self.clock.slept.clear()
-            with self.subTest(header=header), \
-                    _net.fake({SITE + "/": self.serve(_net.reply(429, headers=given), _net.reply(200))}):
-                fetch(f"{SITE}/")
-                self.assertTrue(low <= self.clock.slept[0] <= high, self.clock.slept)
+    def test_a_429_is_blocked_for_the_sites_wait(self):
+        # The site's wait: a date a minute away, a reset 20 s away (and a second more, for clocks
+        # a little apart), or None when it says nothing.
+        later = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(_time.wall() + 60))
+        for given, low, high in (({"Retry-After": "12"}, 12.0, 12.0),
+                                 ({"Retry-After": later}, 55.0, 61.0),
+                                 ({"x-rate-limit-reset": str(int(_time.wall()) + 20)}, 21.0, 21.0),
+                                 ({}, None, None)):
+            with self.subTest(given=given), _net.fake({SITE + "/": _net.reply(429, headers=given)}):
+                with self.assertRaises(Blocked) as raised:
+                    fetch(f"{SITE}/")
+                wait = raised.exception.wait
+                self.assertTrue(wait == low if low is None else low <= wait <= high, wait)
+                self.assertEqual(raised.exception.status, 429)
+        self.assertEqual(self.clock.slept, [])
 
 
-class RetryTest(NetCase):
-    def test_retries_a_5xx_then_succeeds(self):
-        route = self.serve(_net.reply(503), _net.reply(500), _net.reply(200))
-        with _net.fake({SITE + "/": route}):
-            self.assertEqual(fetch(f"{SITE}/").status, 200)
-        self.assertEqual(self.clock.slept, [1.0, 2.0])
+class FailureTest(NetCase):
+    """What each failure raises, for the scheduler's retry policy: one try, never a wait."""
 
-    def test_a_5xx_on_every_try_waits_1_2_4_8_s_then_raises(self):
-        with _net.fake({SITE + "/": self.serve(_net.reply(502))}):
-            with self.assertRaises(SiteError) as raised:
-                fetch(f"{SITE}/")
-        self.assertEqual(raised.exception.status, 502)
-        self.assertTrue(raised.exception.retryable)
-        self.assertEqual(len(self.seen), 1 + _net.RETRIES)
-        self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0, 8.0])
-
-    def test_the_waits_stop_growing_at_8_s(self):
-        with _net.fake({SITE + "/": 502}), self.assertRaises(SiteError):
-            fetch(f"{SITE}/", retries=6)
-        self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0, 8.0, 8.0, 8.0])
-
-    def test_each_wait_is_jittered_between_half_and_all_of_its_step(self):
-        with mock.patch.object(_net.random, "uniform", wraps=lambda low, high: low):
-            with _net.fake({SITE + "/": 500}):
-                fetch(f"{SITE}/", check=False, retries=3)
-        self.assertEqual(self.clock.slept, [0.5, 1.0, 2.0])
-
-    def test_retries_connection_errors(self):
-        with _net.fake({SITE + "/": self.serve(ConnectionRefusedError("connection refused"))}), \
-                self.assertRaises(NetworkError) as raised:
-            fetch(f"{SITE}/")
-        self.assertEqual((len(self.seen), len(self.clock.slept)), (5, 4))
-        self.assertIn("connection refused", str(raised.exception))
-        self.assertTrue(raised.exception.retryable)
-
-    def test_no_retries_never_waits_and_a_4xx_is_never_tried_again(self):
-        with _net.fake({SITE + "/": 500}), self.assertRaises(SiteError):
-            fetch(f"{SITE}/", retries=0)
-        with _net.fake({SITE + "/": self.serve(_net.reply(403))}), self.assertRaises(SiteError):
-            fetch(f"{SITE}/")
-        self.assertEqual((len(self.seen), self.clock.slept), (1, []))
+    def test_a_5xx_or_a_reset_is_retryable_and_a_4xx_is_not(self):
+        for answer, error, retryable in ((_net.reply(502), SiteError, True),
+                                         (ConnectionRefusedError("refused"), NetworkError, True),
+                                         (_net.reply(403), SiteError, False)):
+            self.seen.clear()
+            with self.subTest(answer=answer), _net.fake({SITE + "/": self.serve(answer)}):
+                with self.assertRaises(error) as raised:
+                    fetch(f"{SITE}/")
+                self.assertEqual((raised.exception.retryable, len(self.seen)), (retryable, 1))
+        self.assertEqual(self.clock.slept, [])
 
     def test_an_unknown_route_or_a_bad_url_is_raised_at_once(self):
         with _net.fake({}), self.assertRaises(NetworkError) as raised:
@@ -214,27 +171,6 @@ class RetryTest(NetCase):
         self.assertFalse(made.retryable)
         reset = _net._network(_net.Request("GET", SITE), ConnectionResetError("reset"))
         self.assertTrue(reset.retryable)
-
-    def test_a_post_is_never_tried_again_after_a_5xx_or_a_timeout(self):
-        for answer, error in ((_net.reply(503), SiteError), (TimeoutError("slow"), NetworkError)):
-            self.seen.clear()
-            with self.subTest(answer=answer), _net.fake({SITE + "/": self.serve(answer)}):
-                with self.assertRaises(error):
-                    fetch(f"{SITE}/", method="POST", body={"a": 1})
-                self.assertEqual(len(self.seen), 1)
-        self.assertEqual(self.clock.slept, [])
-
-    def test_a_post_is_tried_again_after_a_429(self):
-        route = self.serve(_net.reply(429, headers={"Retry-After": "3"}), _net.reply(200))
-        with _net.fake({SITE + "/": route}):
-            self.assertEqual(fetch(f"{SITE}/", method="POST", body=b"x").status, 200)
-        self.assertEqual(self.clock.slept, [3.0])
-
-    def test_stop_ends_a_wait(self):
-        stop = threading.Event()
-        stop.set()
-        with _net.fake({SITE + "/*": 429}), self.assertRaises(Stopped):
-            fetch(f"{SITE}/a", stop=stop)
 
 
 class ResponseTest(unittest.TestCase):
@@ -408,7 +344,7 @@ class SessionTest(NetCase):
         session = _net.Session(prepare=prepare)
         route = self.serve(ConnectionRefusedError("refused"), _net.reply(500), _net.reply(200))
         with _net.fake(route):
-            fetch("https://a.example/", session=session)
+            fetch("https://a.example/", session=session, retry=True)
         self.assertEqual([request.headers["x-signature"] for request in self.seen], ["0", "1", "2"])
 
     def test_follows_redirects(self):
@@ -424,24 +360,20 @@ class SessionTest(NetCase):
                                        f"{request.headers['authorization']} {request.url}")
 
         url = f"https://example_user:{self.PASSWORD}@www.example.com/?auth={self.COOKIE}"
-        with self.assertLogs("flnkit.net", "DEBUG") as logged:
-            for route in (403, 429, 500, connection_lost):
-                session = _net.Session(headers={"Authorization": self.TOKEN}, cookies=[
-                    {"name": "sessionid", "value": self.COOKIE, "domain": "www.example.com", "path": "/"}])
-                with _net.fake({SITE + "/*": route}), self.assertRaises(Error) as raised:
-                    fetch(url, session=session, retries=1)
-                self.assert_no_secret(str(raised.exception))
-                self.assert_no_secret(repr(raised.exception))
-        lines = [(record.msg, record.fields) for record in logged.records]
-        self.assertTrue(lines)
-        self.assert_no_secret(repr(lines))
+        for route in (403, 429, 500, connection_lost):
+            session = _net.Session(headers={"Authorization": self.TOKEN}, cookies=[
+                {"name": "sessionid", "value": self.COOKIE, "domain": "www.example.com", "path": "/"}])
+            with _net.fake({SITE + "/*": route}), self.assertRaises(Error) as raised:
+                fetch(url, session=session)
+            self.assert_no_secret(str(raised.exception))
+            self.assert_no_secret(repr(raised.exception))
 
     def test_a_urls_userinfo_never_reaches_a_message(self):
         url = f"https://example_user:{self.PASSWORD}@www.example.com/a"
         for route in (404, 500, ConnectionRefusedError("refused")):
             with self.subTest(route=route), _net.fake({SITE + "/*": self.serve(route)}):
                 with self.assertRaises(Error) as raised:
-                    fetch(url, retries=0)
+                    fetch(url)
                 self.assert_no_secret(str(raised.exception))
                 self.assertNotIn("example_user:", str(raised.exception))
 
@@ -476,7 +408,8 @@ class FakeTest(NetCase):
             self.assertEqual(fetch(f"{SITE}/list").json, [1])
             self.assertEqual(fetch(f"{SITE}/bytes").content, b"\x00")
             self.assertEqual(fetch(f"{SITE}/str").text, "hé")
-            self.assertEqual(fetch(f"{SITE}/int", check=False).status, 404)
+            with self.assertRaises(NotFound):
+                fetch(f"{SITE}/int")
             self.assertEqual(fetch(f"{SITE}/echo?q=1").text, "/echo")
             self.assertEqual(fetch(f"{SITE}/async").json, {"async": True})
             made = fetch(f"{SITE}/response")
@@ -504,247 +437,6 @@ class FakeTest(NetCase):
 
 # ---------------------------------------------------------------------------------------------
 # Pace and caps
-# ---------------------------------------------------------------------------------------------
-
-
-class LimitsTest(NetCase):
-    def paced(self, **options):
-        return _net.Limits(paced=lambda host: host.endswith("www.example.com"), **options)
-
-    def test_a_rate_is_a_token_bucket_per_host_one_token_deep(self):
-        limits = self.paced(rate=2.0)
-        session = _net.Session()
-        routes = {SITE + "/*": self.logged(b"ok"), "https://cdn.example.com/*": self.logged(b"ok")}
-        with _net.fake(routes):
-            for path in ("a", "b", "c"):
-                fetch(f"{SITE}/{path}", limits=limits, session=session)
-            fetch("https://cdn.example.com/a", limits=limits, session=session)
-            self.clock.advance(10.0)
-            fetch(f"{SITE}/d", limits=limits, session=session)
-            fetch(f"{SITE}/e", limits=limits, session=session)
-        self.assertEqual([at for at, _ in self.sent], [0.0, 0.5, 1.0, 1.0, 11.0, 11.5])
-        self.assertEqual(self.clock.slept, [0.5, 0.5, 0.5])
-
-    def test_callers_waiting_together_queue_one_interval_apart(self):
-        bucket = _net.Bucket(4.0)
-
-        async def four():
-            for _ in range(4):
-                await bucket.take()
-
-        asyncio.run(four())
-        self.assertEqual(self.clock.slept, [0.25, 0.25, 0.25])
-
-    def test_a_429_holds_the_bucket_and_halves_the_rate_for_20_clean_requests(self):
-        bucket = _net.Bucket(1.0)
-
-        async def run():
-            await bucket.take()
-            bucket.hold(30.0)
-            bucket.slow()
-            await bucket.take()               # waits out the hold
-            for _ in range(3):
-                await bucket.take()           # at half the rate
-            for _ in range(_net.CLEAN):
-                bucket.clean()
-            await bucket.take()               # the full rate again
-            await bucket.take()
-
-        asyncio.run(run())
-        self.assertEqual(self.clock.slept, [30.0, 2.0, 2.0, 1.0])
-
-    def test_a_cap_holds_transfers_to_a_host_and_its_subdomains(self):
-        limits = _net.Limits(caps={"cdn.example": 2}, cap=3)
-        self.assertEqual((limits._most("cdn.example"), limits._most("v1.cdn.example"),
-                          limits._most("other.example")), (2, 2, _net.MOST))
-        self.assertEqual(limits.total, _net.PAGES + _net.SPREAD * _net.MOST + 2)
-        at_once, most = 0, 0
-
-        async def one():
-            nonlocal at_once, most
-            async with limits.slot("v1.cdn.example"):
-                at_once += 1
-                most = max(most, at_once)
-                await asyncio.sleep(0.001)
-                at_once -= 1
-
-        async def many():
-            await asyncio.gather(*(one() for _ in range(6)))
-
-        asyncio.run(many())
-        self.assertEqual(most, 2)
-
-    def test_a_client_that_doesnt_pace_caps_a_paced_host_instead(self):
-        limits = self.paced(rate=1.0, cap=1)
-
-        async def run():
-            for _ in range(3):
-                async with limits.slot("www.example.com", pace=False):
-                    pass
-
-        asyncio.run(run())
-        self.assertEqual(self.clock.slept, [])
-
-
-CDN_FILE = "https://cdn.example.com/a.bin"
-
-
-class CapTest(NetCase):
-    """The adaptive cap per host: halving on overload, growth while throughput rises."""
-
-    def windows(self, cap, count, seconds):
-        """Close `count` windows of clean 1,000-byte transfers, each taking `seconds(value)`;
-        return the cap after each."""
-        seen = []
-        for _ in range(count):
-            for _ in range(_net.STEP):
-                cap.done(1000, seconds(cap.value))
-            seen.append(cap.value)
-        return seen
-
-    def test_it_grows_by_one_a_window_while_throughput_rises_up_to_most(self):
-        cap = _net.Cap(8, most=12)
-        # A host that scales: every transfer takes 1 s however many run, so the rate is the cap.
-        self.assertEqual(self.windows(cap, 6, lambda value: 1.0), [9, 10, 11, 12, 12, 12])
-
-    def test_a_step_that_doesnt_raise_throughput_is_taken_back_and_held(self):
-        cap = _net.Cap(8, most=32)
-        # A saturated link: a transfer takes as long as the cap is wide, so the rate is flat.
-        seen = self.windows(cap, 3, lambda value: value / 8)
-        self.assertEqual(seen, [9, 8, 8])
-        # Held for HOLD clean transfers from the step taken back, then it probes again.
-        held = self.windows(cap, _net.HOLD // _net.STEP - 2, lambda value: value / 8)
-        self.assertEqual(set(held), {8})
-        self.assertEqual(self.windows(cap, 1, lambda value: value / 8), [9])
-
-    def test_a_small_rise_is_noise_not_growth(self):
-        cap = _net.Cap(8, most=32)
-        # 9 at once moves 3% more than 8: under half of the 12.5% a scaling host would add.
-        seen = self.windows(cap, 2, lambda value: 1.0 if value == 8 else 9 / 8 / 1.03)
-        self.assertEqual(seen, [9, 8])
-
-    def test_a_window_with_a_free_place_says_nothing(self):
-        cap = _net.Cap(8, most=32)
-
-        async def run():
-            await cap.take()
-            cap.give()                  # nobody waited: the host wasn't kept busy
-
-        asyncio.run(run())
-        self.assertEqual(self.windows(cap, 2, lambda value: 1.0), [8, 9])
-
-    def test_a_failure_halves_once_a_round(self):
-        cap = _net.Cap(8, most=32)
-
-        async def run():
-            first, second = await cap.take(), await cap.take()
-            cap.failed(first)
-            cap.failed(second)          # started with the first: the same overload
-            third = await cap.take()
-            cap.failed(third)
-            return cap.value
-
-        self.assertEqual(asyncio.run(run()), 2)
-        cap = _net.Cap(3, most=32)
-        for _ in range(3):
-            cap.failed(cap._round)
-        self.assertEqual(cap.value, 1)
-
-    def test_a_lower_cap_holds_the_next_transfer_until_enough_finish(self):
-        cap = _net.Cap(2, most=32)
-        order = []
-
-        async def one(name, hold):
-            round = await cap.take()
-            order.append(name)
-            if hold:
-                cap.failed(round)
-                await asyncio.sleep(0.001)
-            cap.give()
-
-        async def run():
-            await asyncio.gather(one("a", True), one("b", True), one("c", False))
-
-        asyncio.run(run())
-        self.assertEqual((order, cap.value, cap.busy), (["a", "b", "c"], 1, 0))
-
-    def test_each_kind_of_overload_halves_the_hosts_cap_and_others_dont(self):
-        cases = [
-            (_net.reply(429), 4), (_net.reply(503), 4), (ConnectionResetError("reset"), 4),
-            (TimeoutError("slow"), 4), (_net.reply(500), 8), (_net.reply(404), 8),
-        ]
-        for answer, left in cases:
-            with self.subTest(answer=answer):
-                limits = _net.Limits()
-                with _net.fake({CDN_FILE: self.serve(answer, b"ok")}):
-                    try:
-                        fetch(CDN_FILE, limits=limits, retries=1)
-                    except NotFound:
-                        pass
-                self.assertEqual(limits.load["cdn.example.com"].cap, left)
-
-    def test_a_cut_off_download_halves_the_cap(self):
-        limits = _net.Limits()
-        routes = {CDN_FILE: self.serve(
-            _net.reply(200, headers={"content-length": "99"}, chunks=cut(b"half")), b"ok")}
-
-        async def run():
-            session = _net.Session()
-            client = _net.Client(session, limits=limits, retries=0)
-            try:
-                with _files.part(self.dest, resume=False) as held:
-                    await client.fill(CDN_FILE, held)
-            finally:
-                await session.close()
-
-        with _net.fake(routes), self.assertRaises(NetworkError):
-            asyncio.run(run())
-        self.assertEqual(limits.load["cdn.example.com"].cap, 4)
-
-    def test_a_client_measures_a_saturated_host_and_stops_growing_on_its_plateau(self):
-        # The fake serves one file at a time, each 10 ms: a link that is already full, so the
-        # cap may probe once but never stays above where it started.
-        limits = _net.Limits(cap=4)
-        peak = 0
-
-        async def route(request):
-            nonlocal peak
-            # Let every other transfer start (or queue) before this one ends.
-            await asyncio.sleep(0)
-            self.clock.advance(0.01)
-            peak = max(peak, limits.load["cdn.example.com"].cap)
-            return b"x" * 1000
-
-        async def run():
-            session = _net.Session()
-            client = _net.Client(session, limits=limits)
-            try:
-                await asyncio.gather(*(client.fetch(f"{CDN_FILE}?n={n}") for n in range(200)))
-            finally:
-                await session.close()
-
-        with _net.fake(route):
-            asyncio.run(run())
-        load = limits.load["cdn.example.com"]
-        self.assertLessEqual(peak, 5)
-        self.assertEqual((load.cap, load.busy, load.waiting, load.most), (4, 0, 0, _net.MOST))
-
-    def test_a_hosts_own_cap_bounds_where_it_starts_and_how_far_it_grows(self):
-        limits = _net.Limits(caps={"cdn.example": 10, "small.example": 4})
-
-        async def open_both():
-            async with limits.slot("v1.cdn.example"), limits.slot("small.example"):
-                pass
-
-        asyncio.run(open_both())
-        grown = limits._caps["v1.cdn.example"]
-        self.assertEqual(self.windows(grown, 5, lambda value: 1.0)[-1], 10)
-        self.assertEqual(limits.load["small.example"].cap, 4)
-        self.assertEqual(limits.load["v1.cdn.example"].most, 10)
-
-
-# ---------------------------------------------------------------------------------------------
-# Downloads
 # ---------------------------------------------------------------------------------------------
 
 
@@ -816,7 +508,7 @@ class DownloadTest(NetCase):
         answers = iter([_net.reply(200, headers={"content-length": str(len(BODY))}, chunks=cut(BODY[:100])),
                         BODY])
         with _net.fake({FILE: self.logged(lambda request: next(answers))}):
-            download(FILE, self.dest)
+            download(FILE, self.dest, retry=True)
         self.assertEqual(self.dest.read_bytes(), BODY)
         self.assertEqual(self.ranges(), ["bytes=0-", "bytes=100-"])
 
@@ -847,7 +539,7 @@ class DownloadTest(NetCase):
         broken = lambda request: _net.reply(200, headers={"content-length": str(len(BODY)), "ETag": '"v1"'},
                                             chunks=cut(BODY[:6]))
         with _net.fake({FILE: broken}), self.assertRaises(NetworkError):
-            download(FILE, self.dest, retries=0)
+            download(FILE, self.dest)
         self.assertEqual(self.stage.read_bytes(), BODY[:6])
         self.assertEqual(self.stage.with_name("file.bin.part.json").read_text(), '{"etag": "\\"v1\\""}')
         # The same file: the range comes, under its ETag.
@@ -872,19 +564,6 @@ class DownloadTest(NetCase):
         self.assertEqual(_net._validator({"etag": 'W/"x"', "last-modified": "Mon, 02 Jan 2026 00:00:00 GMT"}),
                          "Mon, 02 Jan 2026 00:00:00 GMT")
         self.assertEqual(_net._validator({"etag": '"x"'}), '"x"')
-
-    def test_a_failed_mirror_empties_the_part_before_the_next(self):
-        broken = lambda request: _net.reply(200, headers={"content-length": "5000"}, chunks=cut(b"A" * 100))
-        routes = {f"{SITE}/a/file.bin": self.logged(broken), f"{SITE}/b/file.bin": self.logged(BODY)}
-        with _net.fake(routes):
-            download([f"{SITE}/a/file.bin", f"{SITE}/b/file.bin"], self.dest, retries=0)
-        self.assertEqual(self.dest.read_bytes(), BODY)
-        self.assertEqual(self.ranges(), ["bytes=0-", "bytes=0-"])
-
-    def test_a_refusal_from_every_mirror_raises_and_keeps_nothing_in_place(self):
-        with _net.fake({SITE + "/*": 404}), self.assertRaises(SiteError):
-            download([f"{SITE}/a", f"{SITE}/b"], self.dest)
-        self.assertFalse(self.dest.exists())
 
     def test_a_stop_keeps_the_part_for_the_next_run(self):
         stop = threading.Event()
@@ -931,7 +610,7 @@ class SlowDiskTest(unittest.TestCase):
                     lags.append(loop.time() - at - 0.005)
 
             probing = asyncio.ensure_future(probe())
-            client = _net.Client(_net.Session(), pace=False)
+            client = _net.Client(_net.Session())
 
             async def one(n):
                 with _files.part(folder / f"{n}.bin", resume=True) as held:

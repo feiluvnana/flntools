@@ -743,24 +743,24 @@ class FakeBrowserTest(BrowserCase):
         with self.assertRaises(_browser._raw_error()):
             run(_browser.Page(cast(Any, raw), cast(Any, None)).content())
 
-    def test_one_gate_per_login_whoever_held_the_tab_before(self):
+    def test_each_logins_cookies_are_added_once_and_a_released_tab_is_reused(self):
+        added = []
+
         class Fake:
             async def tab(self, *, by_script=False):
                 return _browser.Page(cast(Any, SimpleNamespace()), cast(Any, self),
                                      by_script=by_script)
 
             async def add_cookies(self, jar):
-                pass
+                added.append(jar)
 
         shared = _browser.RunBrowser(LOOP)
         shared._browser = cast(Any, Fake())
         one, other = _cookies.Jar([]), _cookies.Jar([])
         first, second, third = (run(shared.tab(jar)) for jar in (one, one, other))
-        self.assertIs(first.gate, second.gate)
-        self.assertIsNot(first.gate, third.gate)
+        self.assertEqual([jar is one for jar in added], [True, False])
         run(shared.release([third]))
         self.assertIs(run(shared.tab(one)), third)
-        self.assertIs(third.gate, first.gate)
 
 
 class FakeFeed:
@@ -888,32 +888,24 @@ class ScrollTimingTest(BrowserCase):
         self.assertGreater(len(first), 60 * 2)
         self.assertTrue(any(delta < 0 for _, delta in first))  # back-ups included
 
-    def test_at_most_two_tabs_of_one_login_scroll_at_once_with_human(self):
-        inside, most = 0, 0
+    def test_a_human_step_waits_for_its_pages_turn_and_a_fast_one_never(self):
+        turns = []
+
+        async def turn(step):
+            turns.append(step)
+            return await step()
 
         async def step(self):
-            nonlocal inside, most
-            inside += 1
-            most = max(most, inside)
-            await asyncio.sleep(0)
-            inside -= 1
             return True
 
-        async def four(style):
-            gate = asyncio.Semaphore(_browser.HUMAN_TABS)
-            scrollers = []
-            for _ in range(4):
-                page = _browser.Page(cast(Any, SimpleNamespace()), cast(Any, None))
-                page.gate = gate
-                scrollers.append(_browser._Scroller(page, None, idle=2.0, style=style,
-                                                    watch=None, height=0))
-            await asyncio.gather(*(scroller.step() for scroller in scrollers))
-
+        page = _browser.Page(cast(Any, SimpleNamespace()), cast(Any, None))
+        page.turn = turn
         with mock.patch.object(_browser._Scroller, "_step", step):
-            for style, allowed in (("human", 2), ("fast", 4)):
-                most = 0
-                run(four(style))
-                self.assertEqual(most, allowed)
+            for style, waited in (("human", 1), ("fast", 1)):
+                scroller = _browser._Scroller(page, None, idle=2.0, style=style, watch=None,
+                                              height=0)
+                self.assertTrue(run(scroller.step()))
+                self.assertEqual(len(turns), waited)
 
 
 class NoProfilesTest(unittest.TestCase):

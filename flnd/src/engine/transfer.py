@@ -99,9 +99,10 @@ async def save(client: net.Client, file: File, dest: Path, *, label: str,
                               audio=audio, track=track)
                 break
             # The last mirror's failure is the file's; an earlier one's is a warning, and the
-            # next mirror is tried. A `Stopped` is a KeyboardInterrupt, so it is never caught.
+            # next mirror is tried, but a 429 is the scheduler's to wait out on this one. A
+            # `Stopped` is a KeyboardInterrupt, so it is never caught.
             except Exception as error:
-                if number == len(mirrors):
+                if number == len(mirrors) or getattr(error, "status", None) == 429:
                     raise
                 reason = error
             # The next mirror may serve other bytes, so it starts from an empty part.

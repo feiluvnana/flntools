@@ -13,6 +13,7 @@ import json
 import os
 import random
 import shutil
+import threading
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -24,9 +25,10 @@ from types import MappingProxyType
 from typing import Any, Generic, TypeVar
 
 from flnd import errors
+from flnd.ui.log import ui
 from flnkit import clock, files, text
 
-__all__ = ["Backlog", "Bucket", "Cap", "Hold", "Job", "Kind", "Limits", "Pool", "Rate",
+__all__ = ["Backlog", "Bucket", "Budget", "Cap", "Hold", "Job", "Kind", "Limits", "Pool", "Rate",
            "Scheduler", "Segment", "Segments", "Speed"]
 
 T = TypeVar("T")
@@ -94,6 +96,13 @@ STEP = 10
 RISE = 0.5
 # After a step that was undone, clean transfers before the cap probes again.
 HOLD = 100
+# A session's handles leave room for this many requests to the pages, and for SPREAD hosts at
+# their most at once (`Limits.handles`).
+PAGES = 4
+SPREAD = 8
+# How often, in seconds, a job held by a suspended run looks again: a person's key, waited out
+# in real time even under a test's fake clock.
+SUSPENDED_POLL = 0.1
 
 # ---------------------------------------------------------------------------------------------
 # The numbers of segments, `slowest` and `rate`
@@ -255,8 +264,8 @@ class Pool:
 class Bucket:
     """A token bucket: `rate` requests a second, one token deep, held by a site's wait.
 
-    Today's `flnkit.net.Bucket`, which moves here when the scheduler is wired in. A `hold`
-    gives no token before its end, and a `slow` halves the rate for `CLEAN` clean requests.
+    It refills by the time elapsed, so a slow caller never waits again. A `hold` gives no
+    token before its end, and a `slow` halves the rate for `CLEAN` clean requests.
 
     Args:
         rate: requests a second.
@@ -271,16 +280,20 @@ class Bucket:
         self._until = 0.0
         self._slow = 0
 
-    async def take(self) -> None:
-        """Wait for a token, and take it; callers waiting together queue one interval apart."""
+    async def take(self, stop: threading.Event | None = None) -> None:
+        """Wait for a token, and take it; callers waiting together queue one interval apart.
+
+        Raises:
+            Stopped: `stop` was set while waiting.
+        """
         rate = self.rate / 2 if self._slow else self.rate
         now = clock.now()
         at = now if self._at is None else self._at
         self._tokens = min(BURST, self._tokens + (now - at) * rate) - 1.0
         self._at = now
         wait = max(-self._tokens / rate, self._until - now)
-        if wait > 0:
-            await clock.pause(wait)
+        if wait > 0 and not await clock.pause(wait, stop=stop):
+            raise errors.Stopped("stopped while pacing")
 
     def hold(self, seconds: float) -> None:
         """Give no token for `seconds` from now: the site said when to come back."""
@@ -299,7 +312,6 @@ class Bucket:
 class Cap:
     """Transfers at once to one host, adapted to what the host can take (AIMD).
 
-    Today's `flnkit.net.Cap`, unchanged, which moves here when the scheduler is wired in;
     src/docs/performance explains its steps. `take` returns the round a transfer started in,
     and only a failure of the current round halves the cap.
 
@@ -414,8 +426,7 @@ class Cap:
 class Limits:
     """Each host's `Cap`, made on first use: from `CAP`, up to `MOST` or the host's own limit.
 
-    The caps half of today's `flnkit.net.Limits`, which moves here when the scheduler is wired
-    in; the paced half is the scheduler's `Bucket` per (plugin, account, bucket).
+    A page's pace is the scheduler's `Bucket` per (plugin, account, bucket) instead.
 
     Args:
         limits: the most transfers at once to a host and its subdomains, by host name.
@@ -429,6 +440,12 @@ class Limits:
     def places(self) -> int:
         """`FILE` places per target: `PLACES`, or the largest limit when that is more."""
         return max(PLACES, max(self.limits.values(), default=0))
+
+    @property
+    def handles(self) -> int:
+        """Transfers at once in all, for a session's handles: `SPREAD` hosts at `MOST`, every
+        host with a limit at its own, and room for the pages."""
+        return PAGES + SPREAD * MOST + sum(self.limits.values())
 
     @property
     def load(self) -> Mapping[str, tuple[int, int, int]]:
@@ -548,6 +565,43 @@ class Speed:
         return moved / SLOW_WINDOW < slowest
 
 
+class Budget:
+    """One target's share of the run's tabs, as `flnkit.browser.Tabs` takes it.
+
+    Each tab the target holds takes a place of the run's `TABS`; a warm tab opens only while
+    `WARM_FREE` of them are free; and a `human` scroll step waits for its account's scroll
+    gate (`SCROLLING` at once). A tab waiting for the gate holds no other place, and the gate's
+    holders wait for nothing, so the two can't deadlock.
+
+    Args:
+        scheduler: the run's.
+        plugin: the target's plugin.
+        account: the account it lists as.
+    """
+
+    def __init__(self, scheduler: Scheduler, plugin: str, account: str | None) -> None:
+        self._scheduler = scheduler
+        self._gate = scheduler._scrolls.setdefault((plugin, account), Pool(SCROLLING))
+
+    @property
+    def warm(self) -> bool:
+        """Whether a warm tab may open now."""
+        return self._scheduler.warm
+
+    async def take(self) -> None:
+        """Wait for a place for one more tab, and take it."""
+        await self._scheduler.tabs.take(PRIORITY[Kind.TAB])
+
+    def give(self) -> None:
+        """Give back a tab's place."""
+        self._scheduler.tabs.give()
+
+    async def turn(self, step: Callable[[], Awaitable[T]]) -> T:
+        """Run one scroll step once the account's scroll gate lets it."""
+        async with self._gate.place(PRIORITY[Kind.TAB]):
+            return await step()
+
+
 @dataclass
 class Hold:
     """A hold of (plugin, account, bucket), or of the whole account when `bucket` is None.
@@ -601,14 +655,18 @@ class Scheduler:
         slowest: bytes a second a transfer may average over 30 s; 0 is off.
         switch: given a job and what it raised, the same job moved to another free account,
             or None when there is none (the default).
+        stop: the run's stop (`flnd.engine.run.Stop`): its first Ctrl-C ends the waits of a
+            listing's jobs (`PAGE`, `TAB`, `CALL`), its second every other's, and while it is
+            `suspended` no job starts; None never stops.
     """
 
     def __init__(self, *, pace: Mapping[str, float] | None = None,
                  limits: Mapping[str, int] | None = None, rate: float = 0.0,
                  slowest: float = 0.0,
                  switch: Callable[[Job[Any], BaseException], Job[Any] | None] = _no_switch,
-                 ) -> None:
+                 stop: Any = None) -> None:
         cpus = os.cpu_count() or 1
+        self.stop = stop
         self.pace = dict(pace or {})
         self.limits = Limits(limits)
         self.rate = Rate(rate)
@@ -715,10 +773,35 @@ class Scheduler:
             return result
 
     async def _work(self, job: Job[T]) -> T:
-        """Run the work, once every pool is held, unless the run stopped while it waited."""
+        """Run the work, once every pool is held, unless the run stopped while it waited.
+
+        Raises:
+            Stopped: the run's stop came while the run was suspended.
+        """
+        suspended = getattr(self.stop, "suspended", None)
+        while suspended is not None and suspended.is_set():
+            halt = self._halt(job)
+            if halt is not None and halt.is_set():
+                raise errors.Stopped("stopped while suspended")
+            await asyncio.sleep(SUSPENDED_POLL)
         if self._stop is not None:
             raise self._stop
         return await job.work()
+
+    def _halt(self, job: Job[Any]) -> threading.Event | None:
+        """What ends `job`'s waits: the first Ctrl-C a listing's, the second any other's."""
+        if self.stop is None:
+            return None
+        return self.stop.soon if job.kind in ACCOUNT_HELD else self.stop.now
+
+    async def _pause(self, job: Job[Any], seconds: float) -> None:
+        """Wait `seconds` on the run's clock for `job`.
+
+        Raises:
+            Stopped: the run was stopped meanwhile.
+        """
+        if not await clock.pause(seconds, stop=self._halt(job)):
+            raise errors.Stopped("stopped while waiting")
 
     # The pools of each kind, in order -------------------------------------------------------
 
@@ -770,9 +853,13 @@ class Scheduler:
         await self._held(job)
         key = (job.plugin, job.account, job.bucket)
         bucket = self._buckets.get(key)
+        pace = self.pace.get(job.plugin, PACE)
+        if bucket is None and pace > 0:
+            bucket = self._buckets[key] = Bucket(1 / pace)
         if bucket is None:
-            bucket = self._buckets[key] = Bucket(1 / self.pace.get(job.plugin, PACE))
-        await bucket.take()
+            # A pace of 0 paces nothing.
+            return await self._work(job)
+        await bucket.take(self._halt(job))
         result = await self._work(job)
         bucket.clean()
         return result
@@ -830,14 +917,12 @@ class Scheduler:
         return writer
 
     def _device(self, path: Path | None) -> int:
-        """The device of `path`'s folder, from one `stat` per folder."""
+        """The device of `path`'s folder, from one `stat` per folder; a folder not made yet is
+        on its nearest parent's device."""
         folder = Path(path).parent if path is not None else Path(".")
         device = self._devices.get(folder)
         if device is None:
-            try:
-                device = self._devices[folder] = os.stat(folder).st_dev
-            except OSError as error:
-                raise errors.disk(error, folder) from error
+            device = self._devices[folder] = _made(folder)[1].st_dev
         return device
 
     # The free-space check --------------------------------------------------------------------
@@ -872,7 +957,7 @@ class Scheduler:
         """Free bytes on `device`, read from `path`'s folder at most once each `FREE_FOR` s."""
         at, free = self._free.get(device, (float("-inf"), 0))
         if clock.now() - at >= FREE_FOR:
-            folder = Path(path).parent
+            folder = _made(Path(path).parent)[0]
             try:
                 free = shutil.disk_usage(folder).free
             except OSError as error:
@@ -884,8 +969,7 @@ class Scheduler:
 
     async def _again(self, job: Job[T], error: Exception, tries: _Tries) -> Job[T]:
         """The job to run next after `error`, once its wait is over; raises when there is none."""
-        # A missing tool stops the run even when its error says another try may work.
-        if isinstance(error, errors.DiskError) or _broken(error) or _missing(error):
+        if stops(error):
             self._stop = error
             raise error
         if isinstance(error, errors.LoginError):
@@ -905,7 +989,7 @@ class Scheduler:
         if _again_later(error) and tries.network < len(NETWORK_WAITS):
             wait = NETWORK_WAITS[tries.network] * random.uniform(*JITTER)
             tries.network += 1
-            await clock.pause(wait)
+            await self._pause(job, wait)
             return _retried(job)
         raise error
 
@@ -937,6 +1021,8 @@ class Scheduler:
         if hold.refused >= REFUSALS:
             hold.refused = 0
             return await self._round(job, error, wait)
+        ui.warn("{host}: rate limited; waiting {time}", host=job.host or job.plugin,
+                time=text.duration(round(wait)))
         self._hold_for(hold, wait, str(error))
         await self._held(job)
         return _retried(job)
@@ -1004,7 +1090,7 @@ class Scheduler:
             left = until - clock.now()
             if left <= 0:
                 return
-            await clock.pause(left)
+            await self._pause(job, left)
 
 
 def _retried(job: Job[T]) -> Job[T]:
@@ -1016,6 +1102,31 @@ def _retried(job: Job[T]) -> Job[T]:
 
 def _priority(job: Job[Any]) -> int:
     return job.priority if job.priority is not None else PRIORITY[job.kind]
+
+
+def _made(folder: Path) -> tuple[Path, os.stat_result]:
+    """`folder`, or its nearest parent that exists (a file's folder is made with its part),
+    with its `stat`.
+
+    Raises:
+        DiskError: none of them can be read.
+    """
+    for one in (folder, *folder.parents):
+        try:
+            return one, os.stat(one)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise errors.disk(error, one) from error
+    raise errors.DiskError(f"{folder}: no folder of it exists", path=folder)
+
+
+def stops(error: BaseException) -> bool:
+    """Whether `error` stops the run, for every job after it: a full or refused disk (but not
+    a part another run holds, which skips only its file), a missing tool (even when its error
+    says another try may work), or a broken plugin class."""
+    disk = isinstance(error, errors.DiskError) and not isinstance(error, files.BusyError)
+    return disk or _broken(error) or _missing(error)
 
 
 def _again_later(error: Exception) -> bool:

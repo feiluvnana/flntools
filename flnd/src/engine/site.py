@@ -3,14 +3,15 @@
 This is flnd's side of the source API: it implements `flnd.source.Site` on the libraries. It
 holds:
 - `source_run` opens one source's resources for a run (`SourceRun`): its cookies, its HTTP
-  session and clients (`flnkit.net`), its store, and the run's loop that its async code and every
-  transfer run on.
+  session and clients (`flnkit.net`), its store, the run's loop that its async code and every
+  transfer run on, and the run's scheduler (`flnd.engine.jobs`) that every request waits for.
 - `TargetSite` is the `Site` a route or category gets for one target. `fetch` hands one request
   to the run's loop, through the source's listing client. The browser verbs (`open`, `wait`,
   `scroll`, `feed`, `document`, `evaluate`, `click`) each hand one call to the run's loop,
   where `flnkit.browser` drives the tab.
-- `shared_browser` gives a run its loop and its one browser (`flnkit.browser.RunBrowser`), shared
-  by every source and target, and closes both when the run ends.
+- `shared_browser` gives a run its loop, its scheduler and its one browser
+  (`flnkit.browser.RunBrowser`), shared by every source and target, and closes them when the run
+  ends.
 - `LoginSite` is the `Site` a source's `Login.start` gets during `flnd login`: it can ask in the
   terminal, and has no target.
 - `paged` walks a paged JSON listing for `TargetSite.pages`, and `Listing` carries a category's
@@ -28,7 +29,8 @@ A run, step by step:
    until a target asks for a tab.
 2. `source_run` reads the source's `[sources.<code>]` settings from the home's config.toml
    (`flnd.engine.options.config`), loads its login cookies from the home, warns of any about to
-   expire, and builds its `net.Session` and two clients over one `net.Limits` (below).
+   expire, builds its `net.Session` and two clients, and gives the scheduler its pace and its
+   hosts' limits (below).
 3. Each target gets a `TargetSite`. Its `fetch` and browser verbs run on the target's listing
    thread, and each hands one coroutine to the run's loop and waits for it.
 4. A refusal from the source's own domains with 401 or 403 becomes a `LoginError`; every other
@@ -43,23 +45,30 @@ call (`fetch`, `open`, …) made from code on the loop is refused, since it woul
 
 The network side of a source (src/docs/architecture, "Network"): one `flnkit.net.Session` with
 the login's cookies, the source's user agent and its `sign` hook (for requests to its own
-domains), and one `flnkit.net.Limits` with two pools:
-- *pages*, the listing's requests to the source's own `domains`: a token bucket at the
-  source's `pace` (or the config's `pace` for it), which a 429's wait holds and halves;
-- *media*, every file download, and the listing's requests to other hosts: a cap per host
-  that starts at `MEDIA_CAP` transfers at once and adapts (`flnkit.net.Cap`): it halves when
-  the host is overloaded, and grows up to `MEDIA_MOST`, or the `limits` for that host (the
-  source's, with the config's over them), while the host's throughput still rises. A site's
-  files often come from its own domain (TikTok's CDN hosts), and holding them to the
-  listing's pace would serialize them.
-Two clients share them: `web` lists (paced), and stops at the first Ctrl-C; `files` downloads
-(capped), and stops at the second. A `proxy` in the config carries every request of the
-session; the browser, shared by every source, isn't proxied.
+domains). Every request is a job of the run's scheduler (`flnd.engine.jobs`):
+- a listing's request to the source's own `domains`, and a page it opens, is a `PAGE` job:
+  paced at the source's `pace` (or the config's `pace` for it), held by a 429;
+- every file download, and a listing's request to another host, is a `FILE` job, under the
+  host's adapting cap, which grows up to the `limits` for that host (the source's, with the
+  config's over them). A site's files often come from its own domain (TikTok's CDN hosts),
+  and holding them to the listing's pace would serialize them.
+Two clients share the session: `web` lists, and stops at the first Ctrl-C; `files` downloads,
+and stops at the second. A `proxy` in the config carries every request of the session; the
+browser, shared by every source, isn't proxied.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, MutableMapping
+import weakref
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+)
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -69,9 +78,9 @@ from typing import (
     TypeVar,
 )
 
-from flnd.engine import home
+from flnd.engine import home, jobs
 from flnd.engine.options import SourceConfig, config
-from flnd.errors import Blocked, LoginError, SiteError, SourceError, Stopped, UsageError
+from flnd.errors import Blocked, Error, LoginError, SiteError, SourceError, Stopped, UsageError
 from flnd.source import Range, Request, Source, Target, dig
 from flnd.ui import forms
 from flnd.ui.log import ui
@@ -87,16 +96,13 @@ __all__ = ["Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "pa
            "shared_browser", "source_run"]
 
 T = TypeVar("T")
-# Transfers at once to one media host (a CDN): where its cap starts, and the most it grows to
-# while the host's throughput still rises. A source's `limits` sets the most for its hosts.
-# 32 is the ceiling the real-CDN check in src/docs/performance ("Concurrency per host") confirms.
-MEDIA_CAP = 8
-MEDIA_MOST = 32
 # How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
 # `flnd sync` warns the run before the one that meets the login wall.
 EXPIRY_WARNING = 24 * 3600
 # What a site's own domains answer for a login wall.
 LOGIN_WALLS = frozenset({401, 403})
+# Methods a server may receive twice without harm: only their failures are tried again.
+SAFE = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
 # `back_off`'s waits for a block a page showed, in seconds, for the first, second and third round
 # in a row; a fourth round raises `Blocked` (src/docs/errors). A site's own wait is capped at an
 # hour, as a 429's `Retry-After` is.
@@ -147,6 +153,8 @@ class SourceRun:
     _secrets: vault.Vault | None = field(default=None, repr=False)
     # A loop of the source's own, made only outside a run (`shared_browser` gives the run's).
     _own_loop: loop.Loop | None = field(default=None, repr=False)
+    # A scheduler of the source's own, made only outside a run, on its own loop.
+    _own_jobs: jobs.Scheduler | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
     # Whether a target already said that the browser doesn't use the config's proxy.
     _told_proxy: bool = field(default=False, repr=False)
@@ -162,17 +170,21 @@ class SourceRun:
         return self._own_loop
 
     @property
-    def jobs(self) -> int:
-        """The most files of one target downloading at once: as many as one host's cap may
-        grow to (`MEDIA_MOST`, or the largest `limits` above it, the source's or the config's),
-        so a target never holds a host below its cap. A target's queue holds 4 times as many
-        before its listing waits."""
-        return max([MEDIA_MOST, *_limits(self.source, self.config).values()])
+    def scheduler(self) -> jobs.Scheduler:
+        """The run's scheduler, which every request and file waits for; the source's own
+        outside a run."""
+        shared = _shared_jobs(self.settings)
+        if shared is not None:
+            return shared
+        if self._own_jobs is None:
+            self._own_jobs = jobs.Scheduler(stop=self.settings.stop)
+        return self._own_jobs
 
-    def gate(self) -> Any:
-        """A place under the cap of the source's first domain, for a file the source fetches
-        itself (a `fetch` function, such as Telegram's): `async with run.gate(): ...`."""
-        return self.files.limits.slot(self.source.domains[0], self.files.stop, pace=False)
+    @property
+    def jobs(self) -> int:
+        """The most files of one target downloading at once (`jobs.Limits.places`). A target's
+        queue holds 4 times as many before its listing waits."""
+        return self.scheduler.limits.places
 
     @property
     def state(self) -> home.State:
@@ -200,12 +212,14 @@ class SourceRun:
             return
         self._closed = True
         try:
-            if self.session.started:
-                # On the loop the session's transfers ran on; a loop already closed took them.
-                try:
+            # On the loop the session's transfers ran on; a loop already closed took them.
+            try:
+                if self.session.started:
                     self.loop.run(self.session.close())
-                except RuntimeError:
-                    pass
+                if self._own_jobs is not None:
+                    self.loop.run(self._own_jobs.close())
+            except RuntimeError:
+                pass
         finally:
             for db in (self._state, self._secrets):
                 if db is not None:
@@ -228,9 +242,9 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
 
     The login's cookies are read from the home once, here, and a cookie of the login that has
     expired or expires within `EXPIRY_WARNING` is a warning line. The source's
-    `[sources.<code>]` settings in the home's config.toml are read here too, and set its pace,
-    its hosts' caps and its proxy. Nothing is sent yet: the session connects on its first
-    request.
+    `[sources.<code>]` settings in the home's config.toml are read here too, and give the
+    run's scheduler its pace and its hosts' limits, and the session its proxy. Nothing is sent
+    yet: the session connects on its first request.
 
     Args:
         settings: what the run shares across sources: the home, its database, the stop flag
@@ -246,16 +260,17 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     configured = config(settings.home).source(source.code)
     jar = home.load(settings.home, source.code)
     _warn_expiring(source, jar)
-    session, limits = _network(source, jar, configured)
     stop: Stop | None = getattr(settings, "stop", None)
-    # `run.suspend()` holds every new request of the source, listing and downloads alike.
-    limits.suspended = stop.suspended if stop else None
-    run = SourceRun(
-        source, settings, jar, session,
-        net.Client(session, limits=limits, stop=stop.soon if stop else None),
-        net.Client(session, limits=limits, stop=stop.now if stop else None, pace=False),
-        configured,
-    )
+    # Outside a run, the source has a scheduler of its own.
+    own = jobs.Scheduler(stop=stop) if _shared_jobs(settings) is None else None
+    scheduler = _shared_jobs(settings) or own
+    scheduler.pace[source.code] = source.pace if configured.pace is None else configured.pace
+    scheduler.limits.limits.update(_limits(source, configured))
+    session = _network(source, jar, configured, handles=scheduler.limits.handles)
+    run = SourceRun(source, settings, jar, session,
+                    net.Client(session, stop=stop.soon if stop else None),
+                    net.Client(session, stop=stop.now if stop else None), configured,
+                    _own_jobs=own)
     try:
         yield run
     finally:
@@ -263,23 +278,19 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
 
 
 def _network(source: Source, jar: Iterable[Mapping[str, Any]],
-             settings: SourceConfig) -> tuple[net.Session, net.Limits]:
-    """A source's session and limits: its pace on its own domains, caps on every other host.
+             settings: SourceConfig, *, handles: int) -> net.Session:
+    """A source's session.
 
     Args:
-        source: the source; its `pace`, `limits`, `user_agent` and `sign` are read.
+        source: the source; its `user_agent` and `sign` are read.
         jar: the login's cookies.
-        settings: the source's config.toml settings, whose `pace`, `limits` and `proxy` win
-            over the source's own.
+        settings: the source's config.toml settings, whose `proxy` is used.
+        handles: transfers at once in all (`jobs.Limits.handles`).
 
     Returns:
         The session, with the source's `sign` hook on requests to its own domains and the
-        config's proxy, and the limits both of its clients share.
+        config's proxy.
     """
-    pace = source.pace if settings.pace is None else settings.pace
-    rate = 1.0 / pace if pace > 0 else None
-    limits = net.Limits(paced=lambda host: _matches_domain(source, host), rate=rate,
-                         caps=_limits(source, settings), cap=MEDIA_CAP, most=MEDIA_MOST)
 
     def prepare(request: net.Request) -> net.Request | None:
         # Runs on the loop before each try; the hook only adds headers, so it costs little. The
@@ -295,9 +306,9 @@ def _network(source: Source, jar: Iterable[Mapping[str, Any]],
         return None
 
     headers = {"User-Agent": source.user_agent} if source.user_agent else None
-    session = net.Session(headers=headers, cookies=jar, prepare=prepare, handles=limits.total,
+    session = net.Session(headers=headers, cookies=jar, prepare=prepare, handles=handles,
                            proxy=settings.proxy)
-    return session, limits
+    return session
 
 
 def _limits(source: Source, settings: SourceConfig) -> Mapping[str, int]:
@@ -351,10 +362,10 @@ class TargetSite:
               check: bool = True, in_page: bool = False, **request: Any) -> net.Response:
         """Make one request, paced and retried, on the run's loop; see `flnd.source.Site.fetch`.
 
-        The request goes through the run's `web` client, so it waits its turn under the
-        source's pace and stops at the first Ctrl-C. Cookies the browser has set are added to
-        the session first, so a request sends what a logged-in page would. With `in_page`, the
-        tab's own `fetch` sends it instead, the client still pacing and retrying it.
+        The request is a job of the run's scheduler (`_request`), which paces and retries it,
+        sent through the run's `web` client, which stops at the first Ctrl-C. Cookies the
+        browser has set are added to the session first, so a request sends what a logged-in
+        page would. With `in_page`, the tab's own `fetch` sends it instead, as the same job.
 
         Args:
             url: the URL; `params` from `request` are added to its query.
@@ -387,30 +398,62 @@ class TargetSite:
         if in_page:
             page = self._verbs().page
 
-            def send() -> Any:
-                # A new coroutine for each try: the client may send it again.
+            def send() -> Awaitable[net.Response]:
                 return page.fetch(url, method=method, headers=headers, body=body)
-
-            sending = web.call(url, send, method=method.upper(), check=check)
         else:
             # Cookies set in the browser reach the session too, as a logged-in page sends them.
             if cookies := self._browser_cookies():
                 self._run.session.add(cookies)
-            sending = web.fetch(url, method=method, headers=headers, body=body, check=check)
-        # The client raises flnd's errors as they are (`flnkit.net`): a refusal is a `SiteError`
-        # with its status and response, no answer a `NetworkError`, and a stop `Stopped`.
+
+            def send() -> Awaitable[net.Response]:
+                return web.fetch(url, method=method, headers=headers, body=body)
+
+        async def once() -> net.Response | Error:
+            try:
+                return await send()
+            except Error as error:
+                if not check and isinstance(error, SiteError) and error.response is not None \
+                        and not (error.retryable or error.status == 429):
+                    return error.response
+                wall = self._walled(url, error)
+                if wall is not None:
+                    raise wall from error
+                if method.upper() not in SAFE and getattr(error, "status", None) != 429:
+                    # A server may have acted on a request that isn't safe to send twice, so
+                    # the failure goes past the scheduler, which would try it again.
+                    return error
+                raise
+
         try:
-            return self._run.loop.run(sending)
+            sent = self._run.loop.run(self._request(url, once))
+            if isinstance(sent, Error):
+                raise sent
+            return sent
         except SiteError as error:
-            # A login wall: the site's own domains refuse the login. A 401 or 403 from another
-            # host (a CDN's expired link) stays the `SiteError` it is.
-            if (error.status in LOGIN_WALLS and type(error) is SiteError
-                    and _matches_domain(self._source, net.URL(url).host)):
-                raise LoginError(f"{self._source.code}: the site refused the login "
-                                 f"(HTTP {error.status})",
-                                 hint=f"run flnd login {self._source.code}",
-                                 target=str(self.target)) from error
+            if not check and error.response is not None:
+                return error.response
             raise
+
+    def _request(self, url: str, work: Callable[[], Awaitable[T]]) -> Awaitable[T]:
+        """`work` as a job of the run's scheduler: a `PAGE` job on the source's own domains,
+        paced; a `FILE` job on any other host, under its cap, ahead of the target's files."""
+        host = net.URL(url).host
+        own = _matches_domain(self._source, host)
+        job = jobs.Job(kind=jobs.Kind.PAGE if own else jobs.Kind.FILE, work=work,
+                       plugin=self._source.code, host=host, target=str(self.target),
+                       priority=None if own else jobs.PRIORITY[jobs.Kind.PAGE])
+        return self._run.scheduler.run(job)
+
+    def _walled(self, url: str, error: Error) -> LoginError | None:
+        """The login error a 401 or 403 from the source's own domains is; None for anything
+        else, such as a 401 or 403 from a CDN (an expired link), which stays a `SiteError`."""
+        if (type(error) is SiteError and error.status in LOGIN_WALLS
+                and _matches_domain(self._source, net.URL(url).host)):
+            return LoginError(f"{self._source.code}: the site refused the login "
+                              f"(HTTP {error.status})",
+                              hint=f"run flnd login {self._source.code}",
+                              target=str(self.target))
+        return None
 
     def pages(self, url: str, *, cursor: str | Callable[[Any], Any],
               params: Mapping[str, Any] | None = None,
@@ -432,8 +475,8 @@ class TargetSite:
 
         A warm tab already loading `url` (`flnkit.browser.Tabs.warm`) becomes the target's tab,
         and only its load is waited for: its request went out when it was warmed, so it isn't
-        paced again. Any other load waits its turn under the source's pace, through the source's
-        client, which waits out a 429 and tries again.
+        paced again. Any other load is a job of the run's scheduler, which paces it, waits out a
+        429 and tries again.
 
         Args:
             url: the page.
@@ -456,7 +499,7 @@ class TargetSite:
         else:
             page = tabs.page
             visit = self._run.loop.run(
-                self._run.web.call(url, lambda: self._visit(page, url, idle, timeout)))
+                self._request(url, lambda: self._visit(page, url, idle, timeout)))
         if visit is None:
             return False
         if visit.status >= 400:
@@ -466,7 +509,7 @@ class TargetSite:
 
     async def _visit(self, page: browser.Page, url: str, idle: bool,
                      timeout: float) -> browser.Visit | None:  # noqa: ASYNC109 (Playwright's own)
-        """Load `url` in the target's tab: one try, which the source's client paces and repeats.
+        """Load `url` in the target's tab: one try, which the run's scheduler paces and repeats.
 
         Runs on the loop.
 
@@ -480,7 +523,7 @@ class TargetSite:
             Where it landed, or None when it didn't load.
 
         Raises:
-            Blocked: the page answered 429, with its `Retry-After`, so the client waits it out.
+            Blocked: the page answered 429, with its `Retry-After`, so the scheduler waits it out.
         """
         visit = await page.goto(url, idle=idle, timeout=timeout)
         if visit is not None and visit.status == 429:
@@ -602,7 +645,8 @@ class TargetSite:
                 ui.warn("{code}: the browser doesn't use the proxy in config.toml; only the "
                         "source's HTTP requests do", code=self._source.code)
             style = settings.scroll or self._source.scroll
-            self._tabs = browser.Tabs(self._shared, self._run.jar, scroll=style)
+            budget = jobs.Budget(self._run.scheduler, self._source.code, None)
+            self._tabs = browser.Tabs(self._shared, self._run.jar, scroll=style, budget=budget)
         return self._tabs
 
     def _browser_cookies(self) -> list[Mapping[str, Any]]:
@@ -849,6 +893,7 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
         return
     run_loop = loop.Loop()
     shared = browser.RunBrowser(run_loop, screen=_Screen())
+    scheduler = _SCHEDULERS[shared] = jobs.Scheduler(stop=getattr(settings, "stop", None))
     settings.browser_pool = shared
     try:
         yield
@@ -856,8 +901,20 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
         settings.browser_pool = None
         try:
             shared.close()
+            run_loop.run(scheduler.close())
         finally:
             run_loop.close()
+
+
+# Each run's scheduler, by the run's browser, so every `RunShared` given that browser shares it.
+_SCHEDULERS: weakref.WeakKeyDictionary[browser.RunBrowser, jobs.Scheduler] = \
+    weakref.WeakKeyDictionary()
+
+
+def _shared_jobs(settings: RunShared) -> jobs.Scheduler | None:
+    """The scheduler of the run `settings` belong to; None outside a run."""
+    pool = settings.browser_pool
+    return _SCHEDULERS.get(pool) if pool is not None else None
 
 
 def login_names(source: Source) -> tuple[str, ...]:

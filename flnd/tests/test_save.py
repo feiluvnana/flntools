@@ -99,7 +99,7 @@ class SaveCase(unittest.TestCase):
         saver = Saver(self.store, self.jobs, self.events.append, **options)
 
         async def post() -> None:
-            await saver.post(items, client=net.Client(net.Session(), pace=False), plugin="ins")
+            await saver.post(items, client=net.Client(net.Session()), plugin="ins")
             await saver.close()
 
         asyncio.run(post())
@@ -164,7 +164,7 @@ class StagesTest(SaveCase):
 
         async def cancelled() -> None:
             saver = Saver(self.store, self.jobs, self.events.append)
-            client = net.Client(net.Session(), pace=False)
+            client = net.Client(net.Session())
             task = asyncio.ensure_future(saver.post([self.item("a.jpg")], client=client,
                                                     plugin="ins"))
             await asyncio.to_thread(opening.wait, 5)

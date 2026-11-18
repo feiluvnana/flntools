@@ -21,7 +21,7 @@ from unittest import mock
 from test_engine import CDN, EngineCase, make_source, noise
 
 import flnd
-from flnd.engine import site as site_module
+from flnd.engine import jobs as jobs_module
 from flnd.engine.events import encode
 from flnd.engine.options import _when
 from flnd.source import File, Post, Source, target
@@ -204,7 +204,7 @@ class RunTest(LibraryCase):
     def test_stop_ends_the_run_without_an_error(self):
         # One place, so most files are still queued when the first lands: a stop drops those and
         # finishes only what is downloading. At the default of 32 places all 30 would be in flight.
-        self.enterContext(mock.patch.object(site_module, "MEDIA_MOST", 1))
+        self.enterContext(mock.patch.object(jobs_module, "PLACES", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
         run = self.fl.download("exs:example_user", only="posts")
         for event in run:
@@ -218,7 +218,7 @@ class RunTest(LibraryCase):
         import signal
 
         # One place, as above: at 32 places every file could be in flight before the first lands.
-        self.enterContext(mock.patch.object(site_module, "MEDIA_MOST", 1))
+        self.enterContext(mock.patch.object(jobs_module, "PLACES", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
         run = self.fl.download("exs:example_user", only="posts")
         with self.assertRaises(flnd.Stopped):
@@ -240,7 +240,7 @@ class RunTest(LibraryCase):
             """What the patched `os._exit` raises, so the test sees the exit instead of dying."""
 
         undone = []
-        self.enterContext(mock.patch.object(site_module, "MEDIA_MOST", 1))
+        self.enterContext(mock.patch.object(jobs_module, "PLACES", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
         warn = self.enterContext(mock.patch.object(ui, "warn"))
         run = self.fl.download("exs:example_user", only="posts")

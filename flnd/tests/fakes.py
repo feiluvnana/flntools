@@ -105,34 +105,47 @@ def targets(home) -> dict[str, Any]:
 # whatever `_net.fake` the test opened. Each is a blocking call, as a script would make.
 
 
-def fetch(url: str, *, retries: int = _net.RETRIES, stop: Any = None, limits: Any = None,
+def fetch(url: str, *, retry: bool = False, stop: Any = None,
           session: _net.Session | None = None, **options: Any) -> _net.Response:
-    """`Client.fetch` on a loop of its own: the response, or the error the policy raises."""
-    return asyncio.run(_with_client(lambda client: client.fetch(url, **options), retries=retries,
-                                    stop=stop, limits=limits, session=session))
+    """`Client.fetch` on a loop of its own: the response, or the error it raises; with
+    `retry`, as a job of a scheduler, under the run's retry policy."""
+    return asyncio.run(_with_client(lambda client: client.fetch(url, **options), retry=retry,
+                                    stop=stop, session=session))
 
 
-def download(url: Any, dest: Any, *, retries: int = _net.RETRIES, stop: Any = None,
+def download(url: Any, dest: Any, *, retry: bool = False, stop: Any = None,
              resume: bool = True, progress: Any = None,
              headers: Mapping[str, str] | None = None) -> Any:
     """`Client.fill` into `dest`'s part on a loop of its own; returns where it landed."""
     from flnkit import files as _files
 
     async def fill(client: _net.Client) -> Any:
+        meter = _net.Meter(progress)
         with _files.part(dest, resume=resume) as held:
-            await client.fill(url, held, resume=resume, progress=progress, headers=headers)
+            await scheduled(lambda: client.fill(url, held, resume=resume, progress=meter,
+                                                headers=headers), retry=retry)
         return held.dest
 
-    return asyncio.run(_with_client(fill, retries=retries, stop=stop))
+    return asyncio.run(_with_client(fill, stop=stop))
 
 
-async def _with_client(call: Callable[[_net.Client], Any], *, retries: int, stop: Any,
-                       limits: Any = None, session: _net.Session | None = None) -> Any:
+async def scheduled(work: Callable[[], Any], *, retry: bool) -> Any:
+    """`work()`, or with `retry` a `FILE` job of a scheduler of its own, on the fake clock."""
+    if not retry:
+        return await work()
+    from flnd.engine import jobs
+
+    with jobs.Scheduler() as scheduler:
+        return await scheduler.run(jobs.Job(kind=jobs.Kind.FILE, work=work, host="example.com"))
+
+
+async def _with_client(call: Callable[[_net.Client], Any], *, stop: Any, retry: bool = False,
+                       session: _net.Session | None = None) -> Any:
     own = session is None
     session = session if session is not None else _net.Session()
     try:
-        client = _net.Client(session, retries=retries, stop=stop, limits=limits)
-        return await call(client)
+        client = _net.Client(session, stop=stop)
+        return await scheduled(lambda: call(client), retry=retry)
     finally:
         if own:
             await session.close()

@@ -28,8 +28,8 @@ from flnd import sources
 from flnd.engine import core as engine_module
 from flnd.engine import home as _home
 from flnd.engine import job
+from flnd.engine import jobs as jobs_module
 from flnd.engine import run as _run
-from flnd.engine import site as site_module
 from flnd.engine.core import Engine
 from flnd.engine.options import Options
 from flnd.errors import UsageError
@@ -961,7 +961,7 @@ class CtrlCTest(JobCase):
 
         self.routes[f"{CDN}/1.7z"] = first
         # A target's places follow the most a host's cap grows to, which would queue 128 files.
-        self.enterContext(mock.patch.object(site_module, "MEDIA_MOST", 1))
+        self.enterContext(mock.patch.object(jobs_module, "PLACES", 1))
         thread, outcome = self.start(Slow, "slw:example_user")
         # Post 5 waits for room in the queue: 1 is downloading and 2 to 4 are queued.
         self.until(lambda: started.is_set() and len(listed) == 5)

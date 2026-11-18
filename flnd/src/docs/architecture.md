@@ -282,8 +282,8 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
     one connection is shared behind a lock of its own;
   - **async Playwright**: one browser per run (`flnkit.browser.RunBrowser`), launched the
     first time a target needs a tab and shared by every source, so one Chrome window serves
-    them all. Each target gets its own tab, and up to six in all with the warm tabs that
-    pre-load the pages it will open next (`Tabs`, `MAX_TABS = 6`). A source never holds a
+    them all. Each target gets its own tab, and the warm tabs that pre-load the pages it will
+    open next while two of the run's six tabs stay free (`jobs.Budget`). A source never holds a
     Playwright object: each browser verb of `Site` (`open`, `wait`, `scroll`, `feed`, `warm`,
     `document`, `evaluate`, `click`) is one call handed to the loop (`Loop.run`), which waits
     for the answer. A response feed reads the matching bodies on the loop as they arrive, in
@@ -385,9 +385,10 @@ response whose URL `match` takes, and scrolls the tab only when no body is waiti
    same cursor came back twice more (the site answering one page again). Only a feed without
    that word ends on silence: a whole 3 s wait with nothing, then 2 s more.
 
-**At most two tabs of one login scroll at once with `human`** (`Page.gate`, one semaphore per
-login in the run's browser), since a person doesn't scroll many tabs of one account at the same
-moment. `fast` has no such limit.
+**At most two tabs of one login scroll at once with `human`** (each `human` step waits for its
+turn, `Page.turn`, at the account's scroll gate of the run's scheduler, `jobs.Budget.turn`),
+since a person doesn't scroll many tabs of one account at the same moment. `fast` has no such
+limit.
 
 **Where the style comes from.** A source sets `scroll = "human"` or `"fast"` on its class;
 `TargetSite` hands it to the target's `Tabs`, which every feed and `site.scroll` of that target
@@ -413,14 +414,15 @@ loop:
 - **The home's settings win over the class's**: `source_run` reads the source's
   `[sources.<code>]` table (`options.config`), whose `pace` replaces the source's, whose
   `limits` merge over the source's, and whose `scroll` the target's tabs take.
-- **Two pools** (`flnkit.net.Limits`). *Pages*: the listing's requests to the source's own domains
-  share a token bucket per host at the source's `pace`; a 429's `Retry-After` (or X's
-  `x-rate-limit-reset`) holds it, and halves its rate until 20 requests go through. *Media*:
-  every file, and the listing's requests to other hosts, under an adaptive cap per host
-  (below). A target's downloads also take one of its own places (32, or the source's largest
-  cap above that), and its queue holds 4 times as many.
-- **Adaptive concurrency per host** (`flnkit.net.Cap`, AIMD). Each media host starts at 8
-  transfers at once (`site.MEDIA_CAP`) and may grow to 32 (`site.MEDIA_MOST`), or to the cap the
+- **Every request is a job of the run's scheduler** (`flnd.engine.jobs`, one per run, made by
+  `site.shared_browser`). *Pages* (`PAGE` jobs): the listing's requests to the source's own
+  domains, and the pages it opens, share a token bucket per host at the source's `pace`; a
+  429's `Retry-After` (or X's `x-rate-limit-reset`) holds it, and halves its rate until 20
+  requests go through. *Files* (`FILE` jobs): every file, and the listing's requests to other
+  hosts, under an adaptive cap per host (below). A target's files also take one of its own
+  places (32, or the source's largest limit above that), and its queue holds 4 times as many.
+- **Adaptive concurrency per host** (`jobs.Cap`, AIMD). Each media host starts at 8
+  transfers at once (`jobs.CAP`) and may grow to 32 (`jobs.MOST`), or to the limit the
   source's `limits` gives it:
   - a 429, a 503, a reset, a timeout or a transfer cut short halves it, once per round of
     transfers that started together;
@@ -431,14 +433,15 @@ loop:
     more place would add on a host that scales is taken back, and the cap holds for 100 clean
     transfers before it probes again.
 
-  The session's curl handles (`Limits.total`) leave room for 8 hosts at 32, plus every host in
-  `limits`; curl makes a handle only when a transfer needs one. `Limits.load` is a
-  snapshot of each host's cap, transfers in flight and waiting.
-- **Two clients** share the session and the pools: `web` lists and stops at the first Ctrl-C;
-  `files` downloads and stops at the second.
-- **The retry policy** is the library's ([errors.md](errors.md)): 4 more tries after waits of
-  about 1, 2, 4 and 8 s for a timeout, a reset or a 5xx; a 429 waited out, and `Blocked` on the
-  third in a row.
+  The session's curl handles (`jobs.Limits.handles`) leave room for 8 hosts at 32, plus every
+  host in `limits`; curl makes a handle only when a transfer needs one. `jobs.Limits.load` is
+  a snapshot of each host's cap, transfers in flight and waiting.
+- **Two clients** share the session: `web` lists and stops at the first Ctrl-C; `files`
+  downloads and stops at the second. A client makes one try; it neither paces nor retries.
+- **The retry policy** is the scheduler's, the only one ([errors.md](errors.md)): 4 more tries
+  after waits of about 1, 2, 4 and 8 s for a timeout, a reset or a 5xx (only for a request
+  safe to send twice); a 429 holds its bucket for the site's wait (30 s when it names none),
+  and the third in a row is a block round.
 - **A file** (`transfer.save`) goes into its part: resumed with `Range` and `If-Range` from
   what a failed run kept, tried mirror by mirror, a DASH pair fetched at once and joined by
   ffmpeg in one join (`flnkit/media.py`).

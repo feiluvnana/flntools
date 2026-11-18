@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from flnd.engine import jobs
 from flnd.engine import transfer as _transfer
 from flnd.errors import Error, NetworkError
 from flnd.source import File, SiteError
@@ -41,8 +42,8 @@ class NetCase(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.tmp = Path(folder.name)
         self.fake = self.enterContext(_time.use(_time.Fake()))
-        # The backoff's jitter at its top, so a wait reads 1, 2, 4 s.
-        self.enterContext(mock.patch("flnkit.net.random.uniform", lambda low, high: high))
+        # The scheduler's jitter at 1, so a wait reads 1, 2, 4 s.
+        self.enterContext(mock.patch("flnd.engine.jobs.random.uniform", lambda low, high: 1.0))
         self.enterContext(_net.fake(lambda request: self.serve(request)))
         self.stop = threading.Event()
         self.requests = []
@@ -66,52 +67,25 @@ class NetCase(unittest.TestCase):
         and again); a context manager, for the tests' `with` blocks."""
         self.answers = list(answers)
         session = _net.Session(prepare=prepare)
-        return contextlib.nullcontext(_net.Client(session, stop=self.stop, pace=False))
+        return contextlib.nullcontext(_net.Client(session, stop=self.stop))
 
     def lines(self):
         return self.dest.getvalue().splitlines()
 
 
 def save(client, file, dest, **options):
-    """`_transfer.save` on a loop of its own."""
-    return asyncio.run(_transfer.save(client, file, dest, **options))
+    """`_transfer.save` on a loop of its own, as one `FILE` job of a scheduler, as in a run."""
+    async def saved():
+        with jobs.Scheduler() as scheduler:
+            return await scheduler.run(jobs.Job(
+                kind=jobs.Kind.FILE, host="cdn.example",
+                work=lambda: _transfer.save(client, file, dest, **options)))
+
+    return asyncio.run(saved())
 
 
 def fetch(client, url):
     return asyncio.run(client.fetch(url))
-
-
-class BackoffTest(NetCase):
-    def test_429_is_waited_out_and_sent_again(self):
-        with self.client(_net.reply(429), _net.reply(429), _net.reply(200)) as client:
-            self.assertEqual(fetch(client, "https://a.example/").status, 200)
-        self.assertEqual(self.sleeps, [1.0, 2.0])
-        warnings = [line for line in self.lines() if line.startswith("!")]
-        self.assertEqual(len(warnings), 2)
-        self.assertTrue(all(line.startswith("! a.example: rate limited; waiting") for line in warnings))
-
-    def test_retry_after_is_honored(self):
-        limited = _net.reply(429, headers={"retry-after": "120"})
-        with self.client(limited, _net.reply(200)) as client:
-            fetch(client, "https://a.example/")
-        self.assertEqual(self.sleeps, [120.0])
-        self.assertIn("! a.example: rate limited; waiting 2m", self.lines())
-
-    def test_a_rate_limit_reset_time_is_waited_for(self):
-        reset = str(int(_time.wall()) + 600)
-        with self.client(_net.reply(429, headers={"x-rate-limit-reset": reset}),
-                         _net.reply(200)) as client:
-            fetch(client, "https://a.example/")
-        self.assertEqual(sum(self.sleeps), 601.0)
-        self.assertIn("! a.example: rate limited; waiting 10m 1s", self.lines())
-
-    def test_ctrl_c_ends_the_wait(self):
-        self.stop.set()
-        with self.client(_net.reply(429), _net.reply(200)) as client, \
-                self.assertRaises(KeyboardInterrupt):
-            save(client, File("https://cdn.example/a.jpg"),
-                         self.tmp / "a.jpg", label="a.jpg")
-        self.assertEqual(self.sleeps, [])
 
 
 class DownloadTest(NetCase):
@@ -238,7 +212,7 @@ class DownloadTest(NetCase):
     def test_a_429_on_a_download_pauses_and_retries(self):
         with self.client(_net.reply(429), _net.reply(200, content=b"ok")) as client:
             self.assertTrue(self.download(client, "https://cdn.example/a.jpg"))
-        self.assertEqual(sum(self.sleeps), 1.0)
+        self.assertEqual(sum(self.sleeps), 30.0)  # no Retry-After: the bucket holds 30 s
 
     def test_a_429_during_a_mirror_is_waited_out_on_that_mirror(self):
         with self.client(_net.reply(429), _net.reply(429), _net.reply(200, content=b"ok")) as client:

@@ -73,7 +73,16 @@ import string
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Collection, Coroutine, Generator, Iterator, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+    Generator,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -86,7 +95,7 @@ from urllib.parse import urlsplit
 
 import msgspec
 
-from flnd.engine import home, transfer
+from flnd.engine import home, jobs, transfer
 from flnd.engine.events import (
     NOTHING_NEW,
     RESUMING,
@@ -116,7 +125,7 @@ from flnd.errors import (
 from flnd.source import Category, File, NotFound, Post, Range, Route, Site, Source, Target
 from flnd.sources import SOURCES
 from flnd.ui.log import ui
-from flnkit import clock, files, loop, text
+from flnkit import clock, files, loop, net, text
 from flnkit.clock import day
 from flnkit.text import fill
 
@@ -1443,8 +1452,6 @@ class Downloads:
         run.settings.tracks = self.tracks
         # Set once the listing failed, so a file that hasn't started ends at once.
         self._halted = False
-        # The target's `jobs` places, made on the loop on first use.
-        self._slots: asyncio.Semaphore | None = None
         self._written: dict[str, Path] = {}
         # Each post's files submitted and not settled yet, and those that landed meanwhile: a
         # post's rows commit together when its last file settles (`_settle`).
@@ -1613,22 +1620,17 @@ class Downloads:
         started = False
         track = self.tracks.get(queued.key)
         try:
-            if self._slots is None:
-                self._slots = asyncio.Semaphore(max(self.run.jobs, 1))
-            # A file waits here, queued, for one of the target's `jobs` places; the first
-            # Ctrl-C drops the ones still waiting and lets the running ones finish.
-            async with self._slots:
-                with self._changed:
-                    started = not (self._halted or self.settings.stop.soon.is_set())
-                    self._running += started
-                if not started:
-                    return False
-                if track is not None:
-                    track.active()
-                self._count(queued, queued=-1, downloading=1)
-                try:
-                    return await self._download(queued)
-                finally:
+            with self._changed:
+                started = not (self._halted or self.settings.stop.soon.is_set())
+            if not started:
+                return False
+            if track is not None:
+                track.active()
+            self._count(queued, queued=-1, downloading=1)
+            try:
+                return await self._download(queued)
+            finally:
+                if queued.flowing:
                     with self._changed:
                         self._running -= 1
         except asyncio.CancelledError:
@@ -1747,6 +1749,13 @@ class Downloads:
                          if refreshed is not None else None)
         # Another run holds this file's part: it saves the file and writes its row, so this run
         # skips it (src/docs/storage, "Sharing a home").
+        # The first Ctrl-C came, or the listing failed, while the file waited for its place.
+        except _Dropped:
+            self._count(queued, downloading=-1)
+            track = self.tracks.get(queued.key)
+            if track is not None:
+                track.dropped()
+            return False
         except files.BusyError:
             self._count(queued, downloading=-1, skipped=1)
             track = self.tracks.get(queued.key)
@@ -1837,15 +1846,43 @@ class Downloads:
             hash=saved.hash,
         )
 
+    async def _job(self, queued: _Queued, file: File,
+                   work: Callable[[], Awaitable[files.Saved]]) -> files.Saved:
+        """`file`'s save as one `FILE` job: it waits for a place of the target, then for the
+        cap of its first mirror's host (a file the plugin fetches itself is capped under the
+        plugin's code), and the scheduler tries it again as its policy says.
+
+        Raises:
+            _Dropped: the first Ctrl-C came, or the listing failed, while it waited.
+        """
+        async def once() -> files.Saved:
+            if not queued.flowing:
+                with self._changed:
+                    if self._halted or self.settings.stop.soon.is_set():
+                        raise _Dropped(f"{queued}: dropped")
+                    queued.flowing = True
+                    self._running += 1
+            saved = await work()
+            # The bytes it moved, for the host's cap to measure its throughput.
+            job.done = saved.size
+            return saved
+
+        code = self.source.code
+        first = file.url if isinstance(file.url, str) or callable(file.url) else file.url[0]
+        host = net.URL(first).host if isinstance(first, str) else code
+        job = jobs.Job(kind=jobs.Kind.FILE, work=once, plugin=code, host=host or code,
+                       target=str(self.target), size=file.size, path=queued.dest,
+                       priority=0 if queued.retried else None)
+        return await self.run.scheduler.run(job)
+
     async def _fetch(
         self, queued: _Queued, file: File, received: dict[str, str]
     ) -> files.Saved | None:
         """Save `file` into its part and onto its name (`flnd.engine.transfer.save`).
 
-        A file the source fetches itself (a callable `url`) takes a place under the source's
-        own gate, since the client has no host to cap it by. A 403 or 410 for a lazy post's
-        file, not refreshed yet, is an expired link: it is kept on `queued.refreshed`, and the
-        caller asks for a fresh one.
+        Each transfer is a `FILE` job of the run's scheduler (`_job`). A 403 or 410 for a lazy
+        post's file, not refreshed yet, is an expired link: it is kept on `queued.refreshed`, and
+        the caller asks for a fresh one.
 
         Args:
             queued: the file's queue entry.
@@ -1863,18 +1900,11 @@ class Downloads:
         if file.url is None:
             return None
         track = self.tracks.get(queued.key)
-        saving = transfer.save(
-            self.run.files, file, queued.dest, label=placed.path,
-            headers=placed.post.headers, kind=placed.kind, received=received,
-            day=day(placed.post.date), track=track,
-        )
         try:
-            if callable(file.url):
-                # A file the source fetches itself has no host for the client to cap, so it
-                # takes a place under its source's first domain.
-                async with self.run.gate():
-                    return await saving
-            return await saving
+            return await self._job(queued, file, lambda: transfer.save(
+                self.run.files, file, queued.dest, label=placed.path,
+                headers=placed.post.headers, kind=placed.kind, received=received,
+                day=day(placed.post.date), track=track))
         except SiteError as error:
             if error.status not in EXPIRED or not callable(placed.post.files) or queued.refreshed:
                 raise
@@ -2364,9 +2394,15 @@ class _Queued:
     cursor: str | None = None
     # Whether a retry queued it (`_retry_failed`).
     retried: bool = False
+    # Whether one of its transfers has started, past the drop at the first Ctrl-C.
+    flowing: bool = False
 
     def __str__(self) -> str:
         return self.placed.path
+
+
+class _Dropped(Stopped):
+    """A queued file whose transfer never started: the run or its listing stopped first."""
 
 
 @dataclass(eq=False)

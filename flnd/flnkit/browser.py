@@ -17,7 +17,7 @@ What it offers, from the bottom up:
 - `RunBrowser` is one browser shared by many users on one loop, launched the first time one asks
   for a tab, with each user's cookies added once. (In flnd, one per run.)
 - `Tabs` is one user's share of it (in flnd, a target's): the tab it works in, a stack of extra
-  tabs for nested scrolling feeds, and up to `MAX_TABS` tabs pre-loading the pages it will open
+  tabs for nested scrolling feeds, and tabs pre-loading the pages it will open
   next ("warm" tabs). Its methods are plain functions, called from the user's own thread.
 - `Feed` iterates the JSON of the matching responses a user's tab receives, in order, scrolling
   the tab for more when asked, and ending when the site's own cursor says there is no more.
@@ -49,8 +49,8 @@ Rules a change must keep:
 - `RunBrowser.run` must not be called on the loop itself: it would wait for itself; code on the
   loop awaits instead.
 - Responses are kept in the order they arrived, even though their bodies are read at once.
-- With `human`, at most `HUMAN_TABS` tabs of one login scroll at once (`Page.gate`), whatever
-  holds them, since a person doesn't scroll many tabs of one account at the same moment.
+- With `human`, a scroll step waits for its turn (`Page.turn`), which the caller's scheduler
+  gives, since a person doesn't scroll many tabs of one account at the same moment.
 """
 
 from __future__ import annotations
@@ -429,15 +429,11 @@ GLIDE = (0.008, 0.016)
 BACK_UP = 0.07
 BACK_UP_SCREENS = (0.2, 0.5)
 HESITATE = 0.15
-# At most this many tabs of one login scroll at once with `human`.
-HUMAN_TABS = 2
 # The times one cursor may come back before a feed counts as stuck at its end. Once is allowed:
 # a page may send one request twice, and both answers name the same next page.
 REPEATS = 1
 # Seconds between two checks that a person finished a handoff (a captcha).
 HANDOFF_POLL = 1.0
-# Most tabs one target holds at once: its own, nested feeds' and the warm ones.
-MAX_TABS = 6
 # How long a warm tab's first answer may take, in milliseconds: it only has to start loading.
 WARM_TIMEOUT = 15_000
 # A warm tab keeps the responses of its load, except these, which no source reads.
@@ -1012,8 +1008,8 @@ class Page:
             element (`scroll(within=…)`) is always scrolled with the wheel.
 
     Two attributes shape its scrolling: `random`, the source of every scroll's jitter (a test
-    seeds its own), and `gate`, the semaphore its login's tabs share so that at most
-    `HUMAN_TABS` of them scroll at once with `human` (None: no limit). `RunBrowser.tab` sets it.
+    seeds its own), and `turn`, which runs a `human` scroll step once it is the tab's turn
+    (None: at once). `Tabs` sets it from its budget.
     """
 
     def __init__(self, raw: RawPage, browser: Browser, *, by_script: bool = False):
@@ -1021,7 +1017,7 @@ class Page:
         self.browser = browser
         self.by_script = by_script
         self.random = random.Random()
-        self.gate: asyncio.Semaphore | None = None
+        self.turn: Callable[[Callable[[], Awaitable[bool]]], Awaitable[bool]] | None = None
 
     @property
     def url(self) -> str:
@@ -1423,7 +1419,7 @@ class _Scroller:
         height: the height measured before the first step.
 
     A step (`step`):
-    1. with `HUMAN`, waits for its turn: at most `HUMAN_TABS` tabs of one login scroll at once;
+    1. with `HUMAN`, waits for its turn (`Page.turn`);
     2. scrolls. `FAST` jumps past the bottom in one go. `HUMAN` glides down `SCREENS` screens in
        `WHEEL_STEPS` uneven wheel steps, and now and then (`BACK_UP`) first goes up a little and
        hesitates, as a reader going back to something does;
@@ -1452,10 +1448,9 @@ class _Scroller:
         Returns:
             False when the feed ended, so there is nothing more to scroll for; True otherwise.
         """
-        gate = self._page.gate
-        if self._style == HUMAN and gate is not None:
-            async with gate:
-                return await self._step()
+        turn = self._page.turn
+        if self._style == HUMAN and turn is not None:
+            return await turn(self._step)
         return await self._step()
 
     async def _step(self) -> bool:
@@ -1671,9 +1666,6 @@ class RunBrowser:
     time it asks. (In flnd there is one per run, and its users are the targets.) Its coroutines
     run on the loop; `run` hands one to the loop from another thread.
 
-    The tabs of one login (one `jar`) share one `Page.gate`, so at most `HUMAN_TABS` of them
-    scroll at once with `human`, however many users hold them.
-
     Args:
         loop: the loop the browser lives on.
         stealth: hide `navigator.webdriver` (see `launch`).
@@ -1693,8 +1685,8 @@ class RunBrowser:
         self._launching: asyncio.Lock | None = None
         # One tab a finished target left, for the next target to reuse, so the window stays open.
         self._idle: list[Page] = []
-        # Each login seen so far, by identity, with the gate its tabs share.
-        self._jars: list[tuple[Any, asyncio.Semaphore]] = []
+        # Each login whose cookies the browser has, by identity.
+        self._jars: list[Any] = []
 
     @property
     def headless(self) -> bool:
@@ -1711,7 +1703,6 @@ class RunBrowser:
         """How many tabs are open now, warm ones and the idle one included; 0 before launch.
 
         Read on the loop, where the browser lives: Playwright's list of the context's pages.
-        A user holds at most `MAX_TABS` of them.
         """
         return 0 if self._browser is None else len(self._browser.raw.pages)
 
@@ -1737,7 +1728,7 @@ class RunBrowser:
             jar: the source's login cookies, added to the browser the first time they come.
 
         Returns:
-            The tab, which scrolls by script, with the gate of `jar`'s tabs.
+            The tab, which scrolls by script.
         """
         if self._launching is None:
             self._launching = asyncio.Lock()
@@ -1745,15 +1736,10 @@ class RunBrowser:
             if self._browser is None:
                 self._browser = await launch(stealth=self._stealth, headless=self._headless,
                                              screen=self.screen)
-            gate = next((gate for seen, gate in self._jars if seen is jar), None)
-            if gate is None:
+            if not any(seen is jar for seen in self._jars):
                 await self._browser.add_cookies(jar)
-                gate = asyncio.Semaphore(HUMAN_TABS)
-                self._jars.append((jar, gate))
-        page = self._idle.pop() if self._idle else await self._browser.tab(by_script=True)
-        # A tab another login left behind takes this login's gate.
-        page.gate = gate
-        return page
+                self._jars.append(jar)
+        return self._idle.pop() if self._idle else await self._browser.tab(by_script=True)
 
     async def release(self, pages: Iterable[Page]) -> None:
         """Take back a finished target's tabs: keep one open for the next target, close the rest.
@@ -1802,8 +1788,9 @@ class Tabs:
     The target works in one tab, `page`, opened on first use. A scrolling feed opened while
     another scrolling feed is still open gets a tab of its own on a stack, so the outer feed's
     page stays where it was. `warm` loads the pages the source says it will open next in
-    background tabs, up to `MAX_TABS` in all, keeping the responses they get; `take_warm` then
-    switches to such a tab, and a feed that is open moves to it with those responses.
+    background tabs while the budget says one may open, keeping the responses they get;
+    `take_warm` then switches to such a tab, and a feed that is open moves to it with those
+    responses.
 
     Every Playwright call goes through `run`, one hop to the loop each.
 
@@ -1811,17 +1798,24 @@ class Tabs:
         shared: the run's browser.
         jar: the source's login cookies.
         scroll: how its feeds scroll: `HUMAN` (the default) or `FAST` (see `_Scroller`).
+        budget: the caller's tabs: each tab held takes a place (`await take()`, `give()`),
+            `warm` says whether a warm tab may open now, and `turn(step)` runs a `human` scroll
+            step in its turn. None limits nothing and opens no warm tab.
 
     Raises:
         ValueError: `scroll` is neither.
     """
 
-    def __init__(self, shared: RunBrowser, jar: Any, *, scroll: str = HUMAN):
+    def __init__(self, shared: RunBrowser, jar: Any, *, scroll: str = HUMAN,
+                 budget: Any = None):
         if scroll not in SCROLLS:
             raise ValueError(f"scroll must be one of {', '.join(SCROLLS)}, not {scroll!r}")
         self._shared = shared
         self._jar = jar
         self.scroll = scroll
+        self._budget = budget
+        # The places taken from the budget: one per tab the target holds.
+        self._held = 0
         self._page: Page | None = None
         self._stack: list[Page] = []
         self._idle: deque[Page] = deque()
@@ -1865,7 +1859,7 @@ class Tabs:
         if self._stack:
             return self._stack[-1]
         if self._page is None:
-            self._page = self._idle.popleft() if self._idle else await self._shared.tab(self._jar)
+            self._page = self._idle.popleft() if self._idle else await self._take()
         return self._page
 
     def handoff(self, *, until: Callable[[], bool], message: str, timeout: float | None,
@@ -1907,7 +1901,23 @@ class Tabs:
         """An idle tab of this target, or a tab from the run's browser."""
         if self._idle:
             return self._idle.popleft()
-        return self.run(self._shared.tab(self._jar))
+        return self.run(self._take())
+
+    async def _take(self) -> Page:
+        """A tab from the run's browser, once the budget has a place for it."""
+        budget = self._budget
+        if budget is not None:
+            await budget.take()
+            self._held += 1
+        try:
+            page = await self._shared.tab(self._jar)
+        except BaseException:
+            if budget is not None:
+                self._held -= 1
+                budget.give()
+            raise
+        page.turn = budget.turn if budget is not None else None
+        return page
 
     def _recycle(self, tab: Page) -> None:
         if tab not in self._idle:
@@ -1960,7 +1970,7 @@ class Tabs:
     # -- warm tabs ------------------------------------------------------------------------------
 
     def warm(self, urls: Iterable[str]) -> None:
-        """Start loading `urls` in background tabs, as many as `MAX_TABS` allows; queue the rest.
+        """Start loading `urls` in background tabs, while the budget allows; queue the rest.
 
         Args:
             urls: pages the target will open next, in order.
@@ -1971,11 +1981,10 @@ class Tabs:
         self._fill()
 
     def _fill(self) -> None:
-        """Start loading queued URLs in idle or new tabs, up to `MAX_TABS` held in all."""
+        """Start loading queued URLs in idle or new tabs, while the budget says one may open."""
         _ = self.page
         while self._pending:
-            held = (1 if self._page is not None else 0) + len(self._stack) + len(self._warmed)
-            if held >= MAX_TABS:
+            if not self._idle and (self._budget is None or not self._budget.warm):
                 return
             url = self._pending.popleft()
             if url in self._warmed:
@@ -2043,6 +2052,9 @@ class Tabs:
             if held:
                 self.run(self._shared.release(held))
         finally:
+            for _ in range(self._held):
+                self._budget.give()
+            self._held = 0
             self._page = None
             self._stack.clear()
             self._idle.clear()

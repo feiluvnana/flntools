@@ -63,11 +63,10 @@ ALL = (Error, UsageError, LoginError, SiteError, Blocked, NotFound, Changed, Net
 
 
 class HttpCase(unittest.TestCase):
-    """The real client on `_net.fake`, a fake clock, and jitter pinned to the full step."""
+    """The real client on `_net.fake` and a fake clock."""
 
     def setUp(self) -> None:
         self.clock = self.enterContext(_time.use(_time.Fake()))
-        self.enterContext(mock.patch.object(_net.random, "uniform", lambda low, high: high))
         self.enterContext(ui.scope(dest=io.StringIO(), color=False, width=80))
         self.seen: list[_net.Request] = []
 
@@ -155,7 +154,7 @@ class ClassesTest(HttpCase):
         reset = ConnectionResetError("connection reset")
         with _net.fake({f"{SITE}/": self.serve(reset)}):
             with self.assertRaises(NetworkError) as caught:
-                fetch(f"{SITE}/", retries=0)
+                fetch(f"{SITE}/")
         self.assertTrue(caught.exception.retryable)
         self.assertIn("connection reset", str(caught.exception))
 
@@ -215,7 +214,7 @@ class ClassesTest(HttpCase):
         """What the client raises for `status` at `url`, after its tries."""
         with _net.fake({url: status}):
             try:
-                fetch(url, retries=0)
+                fetch(url)
             except SiteError as error:
                 return error
         raise AssertionError(f"no error for HTTP {status}")
@@ -226,28 +225,6 @@ class ClassesTest(HttpCase):
 # ---------------------------------------------------------------------------------------------
 
 class PolicyTest(HttpCase):
-    def test_a_timeout_a_reset_or_a_5xx_is_retried_with_backoff_then_fails(self):
-        timeout = TimeoutError("slow")
-        for answer, kind in ((_net.reply(503), SiteError), (timeout, NetworkError)):
-            self.seen.clear()
-            self.clock.slept.clear()
-            with self.subTest(kind=kind.__name__), _net.fake({f"{SITE}/": self.serve(answer)}):
-                with self.assertRaises(kind) as caught:
-                    fetch(f"{SITE}/")
-                self.assertTrue(caught.exception.retryable)
-                # The first try and 4 more, after waits of 1, 2, 4 and 8 s.
-                self.assertEqual(len(self.seen), 5)
-                self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0, 8.0])
-
-    def test_a_429_waits_what_the_site_asks_then_is_blocked(self):
-        route = self.serve(_net.reply(429, headers={"Retry-After": "30"}))
-        with _net.fake({f"{SITE}/": route}):
-            with self.assertRaises(Blocked) as caught:
-                fetch(f"{SITE}/")
-        # The third 429 in a row is the last: two waits, then `Blocked`.
-        self.assertEqual(self.clock.slept, [30.0, 30.0])
-        self.assertEqual(caught.exception.wait, 30.0)
-
     def test_a_404_or_410_is_gone_and_never_asked_again(self):
         for status in (404, 410):
             self.seen.clear()
@@ -282,7 +259,7 @@ class PolicyTest(HttpCase):
         dest = folder / "a.mp4"
         with _net.fake({f"{SITE}/a.mp4": cut}):
             with self.assertRaises(NetworkError) as caught:
-                download(f"{SITE}/a.mp4", dest, retries=0)
+                download(f"{SITE}/a.mp4", dest)
         self.assertTrue(caught.exception.retryable)
         self.assertFalse(dest.exists())
         self.assertEqual(_files._part_path(dest).read_bytes(), body[:30])
@@ -305,7 +282,7 @@ class PolicyTest(HttpCase):
             with self.subTest(answer=type(answer).__name__), \
                     _net.fake({"https://example.com/a": self.serve(answer)}):
                 with self.assertRaises(Error) as caught:
-                    fetch(url, retries=0, headers={"Authorization": f"Bearer {TOKEN}"})
+                    fetch(url, headers={"Authorization": f"Bearer {TOKEN}"})
                 self.assertNotIn(TOKEN, str(caught.exception))
                 self.assertNotIn(PASSWORD, str(caught.exception))
 

@@ -5,7 +5,7 @@
     make cdn-real ARGS="--urls ~/flnd-cdn.txt --header 'Referer: https://www.example.com/'"
 
 Loopback can't show where a real CDN stops giving more for more transfers at once, so the
-ceiling a host's adaptive cap grows to (`flnd.engine.site.MEDIA_MOST`) is set by hand: the URLs of
+ceiling a host's adaptive cap grows to (`flnd.engine.jobs.MOST`) is set by hand: the URLs of
 about 200 files on one CDN host, taken from the authorized test accounts (from the browser's
 network panel, say), one per line in a file kept outside the repo, or given as arguments. This
 script is never part of `make check` or `make bench`. It prints no URL, file name or host, only
@@ -14,8 +14,9 @@ numbers, so its output can be pasted into src/docs/performance.md as it is.
 How it goes:
 1. Each round runs every cap in turn (rounds alternate, so a change in the link's load spreads
    over every cap). A cap downloads every URL through flnd's own client (`flnkit.net`, curl_cffi
-   on a `flnkit.loop.Loop`, the part and rename of `flnd.engine.transfer`) with a fixed cap: `Limits`
-   with `most` equal to `cap`, so it never grows, though an overload still halves it.
+   on a `flnkit.loop.Loop`, the part and rename of `flnd.engine.transfer`), each file a `FILE`
+   job of a scheduler whose cap for the host is fixed: `jobs.Cap` with `most` equal to its
+   start, so it never grows, though an overload still halves it.
 2. Then, once per round, the default adaptive cap (8, growing to 32) runs the same list.
 3. Every file goes into a scratch folder, removed at the end; each run starts empty.
 4. One table is printed: for each cap, the median seconds and MiB/s over the rounds, the files
@@ -36,6 +37,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from flnd.engine import jobs
 from flnd.engine import transfer as _transfer
 from flnd.ui.log import ui
 from flnkit import net as _net
@@ -65,23 +67,30 @@ def urls_from(args: argparse.Namespace) -> list[str]:
     return urls
 
 
-async def fetch_all(limits: _net.Limits, urls: list[str], headers: dict[str, str],
+async def fetch_all(cap: jobs.Cap, urls: list[str], headers: dict[str, str],
                     out: Path) -> tuple[float, int, int, int]:
-    """Download every URL into `out` under `limits`, one task each.
+    """Download every URL into `out` under `cap`, one `FILE` job each.
 
     Returns:
         The seconds it took, the bytes and the failures, and the host's cap at the end.
     """
-    session = _net.Session(handles=limits.total)
-    client = _net.Client(session, limits=limits, pace=False)
+    scheduler = jobs.Scheduler()
+    host = _net.URL(urls[0]).host
+    scheduler.limits._caps[host] = cap
+    session = _net.Session(handles=scheduler.limits.handles + cap.most)
+    client = _net.Client(session)
     failed = 0
+
+    async def fill(n: int, url: str) -> int:
+        async with _transfer._held(out / str(n)) as held:
+            await client.fill(url, held, headers=headers, resume=False)
+            return held.size
 
     async def one(n: int, url: str) -> int:
         nonlocal failed
         try:
-            async with _transfer._held(out / str(n)) as held:
-                await client.fill(url, held, headers=headers, resume=False)
-                return held.size
+            return await scheduler.run(jobs.Job(kind=jobs.Kind.FILE, host=host, target="cdn",
+                                                work=lambda: fill(n, url)))
         except Exception:
             failed += 1
             return 0
@@ -92,8 +101,7 @@ async def fetch_all(limits: _net.Limits, urls: list[str], headers: dict[str, str
     finally:
         await session.close()
     took = time.perf_counter() - start
-    loads = list(limits.load.values())
-    return took, sum(sizes), failed, loads[0].cap if loads else 0
+    return took, sum(sizes), failed, cap.value
 
 
 def main() -> None:
@@ -108,7 +116,7 @@ def main() -> None:
     caps = [int(cap) for cap in args.caps.split(",")]
     runs: list[tuple[str, int, int | None]] = [(str(cap), cap, cap) for cap in caps]
     if not args.no_adaptive:
-        runs.append((f"{_net.CAP} to {_net.MOST}", _net.CAP, None))
+        runs.append((f"{jobs.CAP} to {jobs.MOST}", jobs.CAP, None))
     seen: dict[str, list[tuple[float, int, int, int]]] = {name: [] for name, _, _ in runs}
     with tempfile.TemporaryDirectory(prefix="flnd-cdn-") as scratch, Loop() as loop, \
             ui.scope(dest=io.StringIO(), color=False):
@@ -117,8 +125,8 @@ def main() -> None:
             for name, start, most in runs:
                 shutil.rmtree(out, ignore_errors=True)
                 out.mkdir()
-                limits = _net.Limits(cap=start, most=most if most is not None else _net.MOST)
-                result = loop.run(fetch_all(limits, urls, headers, out))
+                cap = jobs.Cap(start, most=most if most is not None else jobs.MOST)
+                result = loop.run(fetch_all(cap, urls, headers, out))
                 seen[name].append(result)
                 print(f"round {round + 1}, cap {name}: {result[0]:.2f} s", file=sys.stderr)
     print(f"{len(urls)} files, {args.rounds} round(s)")

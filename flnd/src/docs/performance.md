@@ -224,10 +224,10 @@ stay as they were; the numbers are from the recorded baseline.
 
 ## Concurrency per host
 
-Each media host's cap adapts (`flnkit.net.Cap`, src/docs/architecture "Network"): it starts at 8
+Each media host's cap adapts (`jobs.Cap`, src/docs/architecture "Network"): it starts at 8
 transfers at once, halves on a 429, a 503, a reset or a timeout, and grows by one every 10
 clean transfers, up to 32, while the host's throughput still rises. The `net` group holds its
-caps fixed (`Limits(cap=8, most=8)`), so its numbers don't move with the adaptation.
+caps fixed (a limit of 8 for its host, `Capped`), so its numbers don't move with the adaptation.
 
 Throughput is measured by Little's law: the cap times the bytes over the seconds the window's
 transfers took. A first version took bytes over the window's wall time; with only 10 transfers
@@ -262,7 +262,7 @@ ceiling of 32 is confirmed by hand with `tests/bench/cdn_real.py`:
    default, alternating over the rounds, and prints the median seconds and MiB/s per cap, the
    failures, and the cap each run ended at. It prints no URL, name or host.
 4. Pick the smallest cap past which MiB/s stops rising by more than a few per cent. If it is
-   well under 32, lower `flnd.engine.site.MEDIA_MOST`; if a cap ended below the one asked, the host
+   well under 32, lower `flnd.engine.jobs.MOST`; if a cap ended below the one asked, the host
    overloaded there.
 
 ## Disk

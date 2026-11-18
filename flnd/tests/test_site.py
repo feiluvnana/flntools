@@ -20,6 +20,7 @@ from example_source import API, CDN, Example
 from fakes import FakeSite
 
 from flnd.engine import home as _home
+from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine import transfer as _transfer
 from flnd.engine.options import RunShared
@@ -281,8 +282,13 @@ class BackOffTest(SiteCase):
                    _net.reply(200, content=b"x")]
         self.serve = lambda request: answers.pop(0)
         run, _ = self.open()
-        run.loop.run(_transfer.save(run.files, File(f"{CDN}/a.7z"), self.home / "a.7z", label="a.7z"))
+        host = _net.URL(CDN).host
+        run.loop.run(run.scheduler.run(jobs.Job(
+            kind=jobs.Kind.FILE, plugin="exm", host=host, work=lambda: _transfer.save(
+                run.files, File(f"{CDN}/a.7z"), self.home / "a.7z", label="a.7z"))))
         self.assertTrue(any("rate limited; waiting 5.0s" in line for line in self.lines()), self.lines())
+        # The hold is the CDN's bucket alone: the source's pages are never held by it.
+        self.assertEqual([hold.bucket for hold in run.scheduler._holds.values()], [host])
 
 
 class FetchTest(SiteCase):
@@ -306,6 +312,21 @@ class FetchTest(SiteCase):
         assert response is not None
         self.assertEqual(response.status, 403)
         self.assertEqual(response.url, f"{API}/private")
+
+    def test_a_post_is_tried_again_only_after_a_429(self):
+        _, site = self.open()
+        for answers, sent in (([_net.reply(503)], 1),
+                              ([_net.reply(429, headers={"retry-after": "3"}), _net.reply(200)], 2)):
+            with self.subTest(first=answers[0].status):
+                self.requests.clear()
+                self.serve = lambda request, answers=answers: (
+                    self.requests.append(request),
+                    answers.pop(0) if len(answers) > 1 else answers[0])[1]
+                try:
+                    site.fetch(f"{API}/form", method="POST", body={"a": 1})
+                except SiteError:
+                    pass
+                self.assertEqual(len(self.requests), sent)
 
     def test_sign_runs_for_the_sources_own_domains_only(self):
         jar = [{"name": "token", "value": "t0k", "domain": ".example.com", "path": "/"}]
@@ -535,9 +556,10 @@ class TabTest(SiteCase):
         urls = [f"{API}/item/{i}" for i in range(8)]
         site.warm(urls)
         [browser] = self.browsers
-        self.assertEqual(len(browser.opened), _browser.MAX_TABS)
+        # The run's budget of 6 tabs opens warm ones while 2 stay free: 4 beside the own one.
+        self.assertEqual(len(browser.opened), jobs.TABS - jobs.WARM_FREE + 1)
         warmed = [call for tab in browser.opened[1:] for call in tab.wait_untils]
-        self.assertEqual(warmed, [(url, "commit") for url in urls[:_browser.MAX_TABS - 1]])
+        self.assertEqual(warmed, [(url, "commit") for url in urls[:4]])
 
         with site.feed("graphql") as responses:
             self.assertTrue(site.open(urls[0]))
@@ -548,7 +570,7 @@ class TabTest(SiteCase):
             self.assertEqual([item["n"] for item in responses], [42])
         # Taking urls[0] recycled the displaced tab and warmed the next URL in the same window.
         self.assertEqual(len(self.browsers), 1)
-        self.assertEqual(len(browser.opened), _browser.MAX_TABS)
+        self.assertEqual(len(browser.opened), jobs.TABS - jobs.WARM_FREE + 1)
         self.assertTrue(site.open(urls[1]))
         self.assertEqual(len(self.browsers), 1)
 

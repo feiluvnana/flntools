@@ -34,6 +34,7 @@ from pathlib import Path
 
 import kit
 
+from flnd.engine import jobs
 from flnkit import browser as _browser
 from flnkit import cookies as _cookies
 from flnkit import html as _html
@@ -84,7 +85,8 @@ def warm_4(shared: _browser.RunBrowser, base: str) -> float:
     """The best of 3 times `Tabs.warm` took to start `WARM` warm tabs, in seconds."""
     fastest = float("inf")
     for attempt in range(1 if kit.SMOKE else 3):
-        tabs = _browser.Tabs(shared, _cookies.Jar([]))
+        tabs = _browser.Tabs(shared, _cookies.Jar([]), budget=jobs.Budget(
+            jobs.Scheduler(), "bench", None))
         try:
             # The target's own tab is opened before the clock starts.
             _ = tabs.page
