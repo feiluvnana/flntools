@@ -471,7 +471,11 @@ dependency and `import flnd.plugin` stays cheap (P11).
   - With `check=False`, a refusal of any status returns its `Response` to read, a 401 or 403
     from the plugin's own domains and a 404 or 410 included (as API 1 did, and as loi's
     quota and VIP 403 and tik's embed-page 401 and 403 need).
-  - Walls, `blocked()` and 429 holds still act first.
+  - Walls, `blocked()` and 429 holds still act first, and a 5xx is still tried again with
+    6.2's back-off. Only the last response goes back to the plugin, so a plugin reads 4xx
+    refusals and never handles a transient server error itself. Decided by the orchestrator
+    on 2026-11-19 (15, item 6): tik's embed fetch moved to `check=False` and lost today's
+    5xx retries.
   - Such a 401 or 403 never marks the account `expired` (step 7's wiring).
 - **`Response`:** a Protocol: `status`, `url`, `headers`, `text`, `json`, `content`, `ok`,
   `html` (a `flnkit/html.py` document).
@@ -699,7 +703,7 @@ first out.
 
 | what happened | what the scheduler does |
 | --- | --- |
-| `NetworkError`, or a 5xx | try again after 1, 2, 4, 8 s, each × a random 0.5–1.5; then fail the job |
+| `NetworkError`, or a 5xx | try again after 1, 2, 4, 8 s, each × a random 0.5–1.5; then fail the job. Under `Request(check=False)` a 5xx is tried again the same way, and only the last response goes back to the plugin, instead of failing the job (5.3) |
 | any other `Error` with `retryable=True`, for any job kind (`MERGE` included): a transient ffmpeg failure, a `ToolError` or flnkit's `RunError(ToolError)` flagged retryable | the same back-off: 1, 2, 4, 8 s, then fail the job. This is how E6's merge is retried. A missing tool is never retryable, and stops the run as its own row says. Decided by the orchestrator on 2026-11-18 (15, item 6) |
 | 429 | hold the bucket for `Retry-After` or `x-rate-limit-reset` (at most 3600 s; else 30 s), and halve its rate for 20 clean requests; a third 429 in a row on a bucket counts as a block round |
 | `blocked()` returned seconds, `ctx.hold(...)`, or a block round | with switching on and another account free: move the job to it. Else hold (plugin, account, bucket) for the larger of the seconds and the round's wait (30, 120, 480 s); a fourth round fails the job with `Blocked`. Rounds reset after 600 s with no block |
