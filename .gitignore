@@ -16,15 +16,15 @@ build/
 .coverage
 
 # Local
-.flnd/
-.try/
+**/.flnd/
+**/.try/
 
 # Claude Code agent worktrees
 .claude/worktrees/
 
 # Cookie exports from a browser extension; never committed
-*_cookies.txt
-*cookies*.json
+**/*_cookies.txt
+**/*cookies*.json
 
-# The last `make bench` run; the baselines live in tests/bench/gates.json
-tests/bench/last.json
+# The last `make bench` run; the baselines live in flnd/tests/bench/gates.json
+flnd/tests/bench/last.json
