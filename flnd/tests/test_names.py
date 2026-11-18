@@ -320,6 +320,8 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     "src/engine/jobs.py:Segments.splittable": "the save, once wired; tests/test_jobs.py",
     "src/engine/jobs.py:Speed": "the save's `slowest`, once wired; tests/test_jobs.py",
     "src/engine/jobs.py:Speed.below": "the save's `slowest`, once wired; tests/test_jobs.py",
+    "src/engine/save.py:Saver": "the save pipeline, built ahead of the scheduler that runs it; "
+                                "tests/test_save.py drives it until `feat:save files as jobs`",
 }
 
 
