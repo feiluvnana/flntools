@@ -148,7 +148,7 @@ relative to the project folder; `src/engine/jobs.py` is the module `flnd.engine.
 
 ```text
 flnd/                the project folder
-  pyproject.toml     hatch maps src/ to the package flnd, and ships flnkit/ as flnkit
+  pyproject.toml     setuptools maps src/ to the package flnd, and ships flnkit/
   Makefile  PLAN.md  AGENTS.md  README.md
   src/               the package flnd
     __init__.py      public names, each loaded on first use
@@ -198,11 +198,16 @@ flnd/                the project folder
 6. `src/cli.py` imports only `flnd`, `src/ui/*` and `src/plugins/_manifest.py`.
 7. `src/__init__.py` imports nothing at import time beyond the standard library.
 
-**Packaging.** `pyproject.toml` (hatchling): the wheel's packages are `src` (installed as
-`flnd`, through `[tool.hatch.build.targets.wheel.sources] "src" = "flnd"`) and `flnkit`. `make
-setup` installs both editable; `python -c "import flnd, flnkit"` run from outside the project
-folder must work, which a test in `tests/test_packaging.py` checks with a subprocess. `make
-dist` collects the submodules of both. The distribution is still named `flntools`.
+**Packaging.** `pyproject.toml` builds with setuptools: `[tool.setuptools] package-dir =
+{"flnd" = "src", "flnkit" = "flnkit"}`, with an explicit list of packages, so `src/` installs
+as `flnd` beside `flnkit`. (Hatchling was tried first, in step 3½: it refuses an editable
+install when its `sources` option renames a prefix.) The explicit list must name every
+subpackage; a test in `tests/test_packaging.py` compares it with the folders that hold an
+`__init__.py`, so a new subpackage can't be left out of the wheel. `make setup` installs
+both editable; `python -c "import flnd, flnkit"` run from outside the project folder must
+work, which the same file checks with a subprocess. `make dist` stages a copy of both
+packages in `build/stage/` and runs PyInstaller on it. The distribution is still named
+`flntools`.
 
 ### 4.2 Where every module of today goes
 
@@ -1737,10 +1742,10 @@ The user's layout of 2026-11-18 (D1, 4.1). It runs after step 3's commits land, 
 is built on the earlier layout.
 - **Changes:**
   - (a) mechanical, with `git mv` (haiku): the package's files go from `flnd/` to `src/`
-    and the kit from `flnd/kit/` to `flnkit/`; every `flnd.kit` import becomes `flnkit`; the hatch
-    wheel config maps `src` to `flnd` and ships `flnkit` (4.1, Packaging); the Makefile (`dist`
-    collects both packages, every path recipe), `tests/test_layers.py` (4.1's rules, rule 1
-    with no `flnd` at all), `tests/api_snapshot.py`, `test_names` and `test_docs` (their
+    and the kit from `flnd/kit/` to `flnkit/`; every `flnd.kit` import becomes `flnkit`; the
+    build moves to setuptools with `package-dir` (4.1, Packaging); the Makefile (`dist`
+    stages both packages in `build/stage/`, every path recipe), `tests/test_layers.py`
+    (4.1's rules, rule 1 with no `flnd` at all), `tests/api_snapshot.py`, `test_names` and `test_docs` (their
     packages: `flnd` and `flnkit`), and the folder paths in `AGENTS.md`;
   - (b) the errors: `flnkit/errors.py` takes the eleven classes and `disk` of 5.1, every
     `flnkit/*` imports from it, `src/errors.py` re-exports them and keeps `SourceError` (renamed
