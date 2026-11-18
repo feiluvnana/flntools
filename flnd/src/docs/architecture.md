@@ -36,8 +36,8 @@ flnd is one package, `flnd/`, in layers. Each layer imports only what its rule b
    └──────────────┬───────────────────────────────────────────────────────────────┘
                   │
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
-   │ 5. the kit               flnkit/: net, browser, loop, files, media, clock,   │
-   │                          dig, html, text, db, cookies, vault                 │
+   │ 5. the kit               flnkit/: net, browser, loop, files, media, stream,  │
+   │                          clock, dig, html, text, db, cookies, vault          │
    │                          errors (the root of the one error hierarchy)        │
    └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -122,6 +122,7 @@ The kit, `flnkit/` — each module a toolkit of its own:
 | `loop` | one asyncio loop on a thread of its own, which other threads hand work to (`run`, `submit`) |
 | `files` | atomic files: parts that lock themselves, hashing as bytes are written, renames, sweeps; running outside tools; archive extraction |
 | `media` | one ffmpeg join of a video stream and its audio stream |
+| `stream` | HLS and segmented DASH playlists read into variants and segments (encrypted ones refused), `pick` for the tallest variant under a cap, and `fetch_all`, which fetches segments at once and writes them in order |
 | `errors` | the error classes the kit raises, the root of flnd's hierarchy, and `disk` |
 | `clock`, `dig` | a clock tests can fake; JSON paths |
 | `html`, `text` | HTML parsing (selectolax); safe file names, redaction, readable numbers |

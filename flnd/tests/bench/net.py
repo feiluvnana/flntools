@@ -25,9 +25,9 @@ Steps:
 7. `big_4_at_once`: four downloads of a 256 MiB file at once, each part hashed (SHA-256, as
    every download's is, for dedupe), as their throughput over that of one alone;
 8. `hls_200`: a playlist of 200 segments of 64 KiB, each answered 40 ms late (`/late/`), as
-   the time of fetching them serially over one plain connection divided by flnd's time. Today
-   a playlist is a source's `fetch` function, which fetches the segments one by one into the
-   part (`hls_today`).
+   the time of fetching them serially over one plain connection divided by flnd's time: the
+   playlist read by `flnkit.stream.hls` and its segments fetched 8 at once by `fetch_all`
+   into one part, written in order (`hls_at_once`).
 
 Each run starts with an empty output folder, so every file is written fresh.
 """
@@ -53,6 +53,7 @@ from flnd.engine import transfer as _transfer
 from flnd.ui.log import ui
 from flnkit import files as _files
 from flnkit import net as _net
+from flnkit import stream as _stream
 from flnkit.loop import Loop
 
 BIG = kit.size(1 << 30, 1 << 20)
@@ -157,14 +158,19 @@ def plain(base: str, paths: list[str], *, span: str | None = None) -> float:
     return time.perf_counter() - start
 
 
-async def hls_today(client: _net.Client, url: str, dest: Path) -> None:
-    """Download a playlist as a source's `fetch` function does today: segment after segment."""
-    playlist = (await client.fetch(url)).text
-    folder = url.rsplit("/", 1)[0]
-    segments = [line for line in playlist.splitlines() if line and not line.startswith("#")]
+async def hls_at_once(client: _net.Client, url: str, dest: Path) -> None:
+    """Download a playlist with `flnkit.stream`: its segments `AT_ONCE` at a time, in order."""
+    playlist = _stream.hls((await client.fetch(url)).text, url)
+
+    async def get(segment: str, span: tuple[int, int] | None) -> bytes:
+        headers = {"Range": f"bytes={span[0]}-{span[1] - 1}"} if span else None
+        return (await client.fetch(segment, headers=headers)).content
+
     async with _transfer._held(dest) as held:
-        for name in segments:
-            held.write((await client.fetch(f"{folder}/{name}")).content)
+        async def write(data: bytes) -> None:
+            held.write(data)
+
+        await _stream.fetch_all(playlist.segments, get, write, at_once=AT_ONCE)
 
 
 async def raced(fast: _net.Client, slow: _net.Client, fast_urls: list[str],
@@ -278,9 +284,9 @@ def segments_and_disks(report: kit.Report, loop: Loop, base: str, scratch: Path,
     paths = [f"/late/seg{n}.ts" for n in range(SEGMENTS)]
     serial = plain(base, paths)
     empty()
-    today = kit.best(lambda: loop.run(hls_today(capped, f"{base}/late/hls.m3u8", out / "v.ts")),
-                     runs=1)
-    report.add("hls_200", serial / today, "x", better="higher")
+    took = kit.best(lambda: loop.run(hls_at_once(capped, f"{base}/late/hls.m3u8", out / "v.ts")),
+                    runs=1)
+    report.add("hls_200", serial / took, "x", better="higher")
     loop.run(session.close())
     loop.run(second.close())
 
