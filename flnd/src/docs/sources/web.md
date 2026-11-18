@@ -5,8 +5,8 @@ HLS (`.m3u8`) or DASH (`.mpd`) stream by its playlist, or the videos and images 
 also takes the media the Chrome extension's popup lists on a tab, which sends each item's URL
 here. It owns no domain, needs no login and no browser, and reads everything over plain HTTP.
 
-It is built on plugin API 2 (`src/plugins/web.py`). The engine gives it links from step 7 of
-`PLAN.md`; until then it runs only in its tests.
+It is built on plugin API 2 (`src/plugins/web.py`). The engine hands it every link that no other
+plugin's domains claim.
 
 A *target* is what you give flnd. See the [glossary](../glossary.md) and the
 [CLI guide](../cli.md).
@@ -44,8 +44,8 @@ A link is read only when it is new: its post is lazy, so a saved link costs no r
    page, and anything else, or none, is a file, its `Content-Length` its size. A 404 or 410 is
    `NotFound`. HEAD comes first so that a large file with no extension is never read into
    memory to find out what it is.
-3. **A server that refuses `HEAD`** (405, 501, or the 403 of an S3 or CloudFront presigned
-   link) gets a `GET` of one byte (`Range: bytes=0-0`). A type that isn't HTML is the file, its
+3. **A server that refuses `HEAD`** (any answer that isn't a success, such as 405, 501, or the
+   403 of an S3 or CloudFront presigned link) gets a `GET` of one byte (`Range: bytes=0-0`). A type that isn't HTML is the file, its
    size read from `Content-Range`; only an HTML answer is read as a page, and an HTML 206 (the
    page cut to one byte) is fetched again whole. A server that ignores `Range` and sends a
    large body that isn't HTML is still read in full: a cap on that belongs in the engine's
