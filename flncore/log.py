@@ -290,6 +290,9 @@ class Journal:
         self.path = Path(path)
         self.owner = owner
         self._file: IO[str] | None = None
+        # Held for each whole line and for the close. Reentrant: a Ctrl-C handler logs on the
+        # main thread, which may be inside `write` already.
+        self._lock = threading.RLock()
 
     def __enter__(self) -> Journal:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -299,12 +302,13 @@ class Journal:
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.owner._journal = None
-        if self._file is not None:
-            try:
-                self._file.flush()
-                self._file.close()
-            finally:
-                self._file = None
+        with self._lock:
+            if self._file is not None:
+                try:
+                    self._file.flush()
+                    self._file.close()
+                finally:
+                    self._file = None
 
     def write(self, record: Any) -> None:
         """Write one JSON record object, adding `at` and `type` if omitted."""
@@ -329,9 +333,11 @@ class Journal:
             now = _time.now()
             data["at"] = datetime.fromtimestamp(now, tz=UTC).isoformat()
 
-        line = json.dumps(data, ensure_ascii=False)
-        self._file.write(line + "\n")
-        self._file.flush()
+        line = json.dumps(data, ensure_ascii=False) + "\n"
+        with self._lock:
+            if self._file is not None:
+                self._file.write(line)
+                self._file.flush()
 
 
 def _encode(value: Any) -> Any:

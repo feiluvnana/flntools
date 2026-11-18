@@ -5,13 +5,18 @@ from __future__ import annotations
 import io
 import json
 import re
+import subprocess
+import sys
 import tempfile
+import threading
 import time
 import unittest
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import flnd
+from flncore import clock as _time
 from flncore.log import REDRAW, UI, Journal, State
 from flnd._events import Failed, Saved
 from flnd.source import Target
@@ -22,6 +27,64 @@ class _TTY(io.StringIO):
 
     def isatty(self) -> bool:
         return True
+
+
+class _PiecewiseFile:
+    """A text file that writes in four pieces and lets other threads run between them."""
+
+    def __init__(self, file: Any) -> None:
+        self._inner = file
+
+    def write(self, text: str) -> int:
+        step = max(1, len(text) // 4)
+        for start in range(0, len(text), step):
+            self._inner.write(text[start:start + step])
+            time.sleep(0)
+        return len(text)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class _GateClock:
+    """A clock whose reads wait until the test has closed the journal."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.closed = threading.Event()
+
+    def _read(self) -> float:
+        self.entered.set()
+        self.closed.wait(2)
+        return time.time()
+
+    now = property(_read)
+    wall = property(_read)
+
+    def sleep(self, seconds: float, *, stop: Any = None) -> bool:
+        return True
+
+
+# Raises SIGINT inside the handle's write; the handler logs, which writes to the journal.
+_SIGNAL_PROBE = """
+import io, signal, sys
+from flncore.log import UI
+ui = UI()
+with ui.scope(dest=io.StringIO(), color=False, level="info"), ui.file(sys.argv[1]) as j:
+    signal.signal(signal.SIGINT, lambda *_: ui.warn("press Ctrl-C again to quit now"))
+    real = j._file
+    class Handle:
+        def write(self, text):
+            real.write(text)
+            if not getattr(Handle, "fired", False):
+                Handle.fired = True
+                signal.raise_signal(signal.SIGINT)
+            return len(text)
+        def __getattr__(self, name):
+            return getattr(real, name)
+    j._file = Handle()
+    j.write({"type": "Log", "message": "event"})
+"""
 
 
 class ItemTest(unittest.TestCase):
@@ -136,6 +199,61 @@ class JournalTest(unittest.TestCase):
             "class": "LoginError", "message": "not logged in",
             "hint": "run flnd login ins chrome",
         })
+
+    def test_lines_from_many_threads_stay_whole(self) -> None:
+        def write(j: Journal, n: int) -> None:
+            for i in range(1000):
+                j.write({"type": "Log", "thread": n, "i": i, "message": "x" * 200})
+
+        with UI().file(self.journal_path) as j:
+            # The journal promises whole lines whatever the handle does (PLAN.md 6.1), so this
+            # handle splits each write; a real one happens to write a short line in one go.
+            j._file = _PiecewiseFile(j._file)
+            threads = [threading.Thread(target=write, args=(j, n)) for n in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        lines = self.journal_path.read_text("utf-8").splitlines()
+        whole = [line for line in lines if re.fullmatch(r'\{"type": "Log", .*"x{200}".*\}', line)]
+        self.assertEqual(len(whole), 4000)
+        self.assertEqual(len(lines), 4000)
+        records = [json.loads(line) for line in whole]
+        self.assertEqual({(r["thread"], r["i"]) for r in records},
+                         {(n, i) for n in range(4) for i in range(1000)})
+
+    def test_a_write_racing_the_close_is_dropped(self) -> None:
+        clock = _GateClock()
+        errors: list[BaseException] = []
+
+        def write(j: Journal) -> None:
+            with _time.use(clock):
+                try:
+                    j.write({"type": "Log", "message": "late"})
+                except BaseException as e:
+                    errors.append(e)
+
+        j = UI().file(self.journal_path).__enter__()
+        writer = threading.Thread(target=write, args=(j,))
+        writer.start()
+        self.assertTrue(clock.entered.wait(2))
+        j.__exit__(None, None, None)
+        clock.closed.set()
+        writer.join(2)
+        self.assertEqual(errors, [])
+
+    def test_a_signal_handler_can_log_while_a_line_is_written(self) -> None:
+        # A second Ctrl-C logs from the main thread while it may be inside `write`.
+        try:
+            done = subprocess.run(
+                [sys.executable, "-c", _SIGNAL_PROBE, str(self.journal_path)],
+                capture_output=True, text=True, timeout=2,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("the handler's log line waited forever on the journal's lock")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(self.journal_path.read_text("utf-8").splitlines()), 2)
 
 
 class RendererTest(unittest.TestCase):
