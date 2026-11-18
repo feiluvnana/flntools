@@ -7,7 +7,7 @@
 
 Who calls it: `flnd` (the console script) and `python -m flnd`, through `main`. What it calls:
 the library alone (`flnd.open`, its `Run` and events), so anything the command line does, a
-script can do too; `flnd.sources._manifest` for the built-in sources `--help` lists;
+script can do too; `flnd.plugins._manifest` for the built-in plugins `--help` lists;
 `flnd.ui.out` for every line it prints; `flnd.ui.forms` (`flnd login`'s questions) and
 `flnd.ui.log` (the level of flnd's own log lines and progress bars).
 
@@ -753,9 +753,9 @@ def _short(text: str) -> str:
 
 def _sources() -> list[str]:
     """The code of every built-in source, read from the manifest, so no source is imported."""
-    from flnd.sources import _manifest
+    from flnd.plugins import _manifest
 
-    return list(_manifest.SOURCES)
+    return list(_manifest.PLUGINS)
 
 
 def _forms() -> list[tuple[str, list[Any]]]:
@@ -764,17 +764,18 @@ def _forms() -> list[tuple[str, list[Any]]]:
     Returns:
         The rows: the source's code, then its forms and categories as styled parts.
     """
-    from flnd.sources import _manifest
+    from flnd.plugins import _manifest
 
     rows: list[tuple[str, list[Any]]] = [("sources", [("the targets each reads, then its "
                                                       "categories", "dim")])]
-    for code, entry in _manifest.SOURCES.items():
+    for code, entry in _manifest.PLUGINS.items():
         forms: Any = entry["forms"]
         domains: Any = entry["domains"]
         categories: Any = entry["categories"]
         own = [form for form in forms if not form.startswith("http")]
-        rows.append((code, [", ".join([*own, f"a link on {', '.join(domains)}"]),
-                            ("\n--only ", "dim"), " ".join(categories)]))
+        on = [f"a link on {', '.join(domains)}"] if domains else []
+        only: list[Any] = [("\n--only ", "dim"), " ".join(categories)] if categories else []
+        rows.append((code, [", ".join([*own, *on]), *only]))
     return rows
 
 
@@ -829,10 +830,10 @@ def _ask_how(args: argparse.Namespace) -> str:
         UsageError: an unknown source, `--json`, or no terminal to ask in.
     """
     import flnd
-    from flnd.sources import _manifest
+    from flnd.plugins import _manifest
     from flnd.ui import forms
 
-    entry: Any = _manifest.SOURCES.get(args.source)
+    entry: Any = _manifest.PLUGINS.get(args.source)
     if entry is None:
         # Not built in: a plugin's ways are read from its class, which this imports.
         with _open(args) as fl:

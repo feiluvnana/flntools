@@ -1,12 +1,12 @@
-"""Plugins (`flnd.engine.plugins`, `flnd.sources.Registry`).
+"""Plugins (`flnd.engine.plugins`, `flnd.plugins.Registry`).
 
 Every test gets a registry that hasn't looked for plugins yet (`PluginCase`), a plugin folder
-of its own (`$FLND_SOURCES`), a temporary home, the fake network and the fake clock. A plugin
+of its own (`$FLND_PLUGINS`), a temporary home, the fake network and the fake clock. A plugin
 is written as a file in that folder, or faked as an installed package's entry point.
 
 The gates of plugins, each a test below:
 - the example plugin's own tests pass, and the example script downloads through it;
-- a broken plugin (a syntax error, an import error, a newer source API, a wrong code) disables
+- a broken plugin (a syntax error, an import error, a newer plugin API, a wrong code) disables
   only itself, with a warning naming its file and line, and a listing that raises fails only
   its own target;
 - nothing loads from a home: `<home>/sources/evil.py` never runs, whatever command reads it.
@@ -32,7 +32,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-import no_profiles  # noqa: F401  (also points $FLND_SOURCES away from the real folder)
+import no_profiles  # noqa: F401  (also points $FLND_PLUGINS away from the real folder)
 from fakes import EngineCase, noise
 
 import flnd
@@ -42,7 +42,7 @@ from flnd.engine import manager as _manager
 from flnd.engine import plugins as _plugins
 from flnd.engine.resolve import Manifest, resolve
 from flnd.errors import PluginError, UsageError
-from flnd.sources import SOURCES, _find
+from flnd.plugins import PLUGINS, _find
 from flnkit import clock
 from flnkit import net as _net
 
@@ -51,23 +51,23 @@ JPEG = noise("JPEG")
 
 # A working plugin: `exm:<user>` lists one post with one photo, which `serve` answers.
 GOOD = '''
-from flnd.source import File, Post, Source, target
+from flnd.plugin import File, Plugin, Post, route
 
 __version__ = "2.1"
 
 
-class {name}(Source):
-    code, domains, api = "{code}", ("{code}.example",), {api}
+class {name}(Plugin):
+    code, name, domains, api = "{code}", "{name}", ("{code}.example",), {api}
 
-    @target("{code}:{{user}}", "{code}.example/{{user}}")
-    def user(self, site, user):
+    @route("{code}:{{user}}", "{code}.example/{{user}}")
+    async def user(self, ctx, user):
         if user == "broken":
             raise KeyError("id")
         yield Post("p1", [File("https://cdn.example.com/" + user + ".jpg")])
 '''
 
 
-def plugin(code: str, *, name: str = "Example", api: int = 1) -> str:
+def plugin(code: str, *, name: str = "Example", api: int = 2) -> str:
     """The text of a working plugin file for `code`."""
     return GOOD.format(code=code, name=name, api=api)
 
@@ -89,8 +89,8 @@ class PluginCase(EngineCase):
         self.enterContext(mock.patch.dict(os.environ, {_plugins.VARIABLE: str(self.folder)}))
         # The registry looks for plugins once per process; each test starts before that.
         self.enterContext(mock.patch.multiple(
-            SOURCES, _find=_find, _found=[], _plugins={}, _codes=list(SOURCES._codes),
-            _loaded=dict(SOURCES._loaded)))
+            PLUGINS, _find=_find, _found=[], _plugins={}, _codes=list(PLUGINS._codes),
+            _loaded=dict(PLUGINS._loaded)))
         self.enterContext(mock.patch.dict(sys.modules))
         self.fl = self.enterContext(flnd.open(self.home))
 
@@ -131,7 +131,7 @@ class DiscoveryTest(PluginCase):
 
     def test_a_built_in_download_never_looks_for_plugins(self):
         looked = []
-        with mock.patch.object(SOURCES, "_find", lambda taken: looked.append(taken) or []):
+        with mock.patch.object(PLUGINS, "_find", lambda taken: looked.append(taken) or []):
             self.fl.download("mht:70982").wait()
         self.assertEqual(looked, [])
 
@@ -154,7 +154,7 @@ class DiscoveryTest(PluginCase):
         with mock.patch.object(metadata, "entry_points", return_value=[point]):
             self.assertEqual(self.fl._resolve(["exe:example_user"])[0].plugin, "exe")
             row = self.rows()["exe"]
-        self.assertEqual((row.origin, row.where, row.api), ("package", "flnd_example:Example", 1))
+        self.assertEqual((row.origin, row.where, row.api), ("package", "flnd_example:Example", 2))
 
     def test_a_later_plugin_never_shadows_an_earlier_one(self):
         self.write("ins.py", plugin("ins"))
@@ -170,17 +170,17 @@ class DiscoveryTest(PluginCase):
         self.assertIn(("ins", "file", True), found)
         self.assertIn(("exm", "package", False), found)
         self.assertIn(("exm", "file", True), found)
-        self.assertEqual(SOURCES["exm"].__name__, "Example")
+        self.assertEqual(PLUGINS["exm"].__name__, "Example")
         self.assertIn("ins: disabled", self.dest.getvalue())
         self.assertIn("taken by the built-in Instagram", self.dest.getvalue())
 
     def test_a_script_adds_after_the_plugins_and_is_refused_a_taken_code(self):
         self.write("exm.py", plugin("exm"))
-        Other = type(SOURCES["exm"])("Other", (SOURCES["exm"],), {})
+        Other = type(PLUGINS["exm"])("Other", (PLUGINS["exm"],), {})
         with self.assertRaises(flnd.UsageError) as caught:
             self.fl.add(Other)
         self.assertIn("exm: the code is taken by", str(caught.exception))
-        Own = type(SOURCES["exm"])("Own", (SOURCES["exm"],), {"code": "own"})
+        Own = type(PLUGINS["exm"])("Own", (PLUGINS["exm"],), {"code": "own"})
         self.fl.add(Own)
         self.assertEqual(self.rows()["own"].origin, "script")
 
@@ -190,12 +190,12 @@ class DiscoveryTest(PluginCase):
         self.assertEqual((rows["ins"].origin, rows["ins"].version), ("built-in", flnd.__version__))
         exm = rows["exm"]
         self.assertEqual((exm.origin, exm.version, exm.api, exm.login),
-                         ("file", "2.1", 1, "needs no login"))
+                         ("file", "2.1", 2, "needs no login"))
         self.assertEqual(exm.forms, ("exm:<user>", "https://www.exm.example/<user>/"))
 
     def test_a_folder_that_isnt_there_holds_no_plugin(self):
         os.environ[_plugins.VARIABLE] = str(self.folder / "missing")
-        self.assertEqual(list(SOURCES), ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht"])
+        self.assertEqual(list(PLUGINS), ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht", "web"])
 
     def test_the_default_folder_is_the_users_config(self):
         del os.environ[_plugins.VARIABLE]
@@ -226,39 +226,31 @@ class ContainmentTest(PluginCase):
         reason = self.disabled("bad")
         self.assertIn(f"{path}, line 2: ModuleNotFoundError", reason)
 
-    def test_a_newer_source_api_is_refused(self):
+    def test_a_newer_or_older_plugin_api_is_refused(self):
         self.write("exm.py", plugin("exm"))
-        path = self.write("new.py", plugin("new", api=2))
-        reason = self.disabled("new")
-        self.assertIn(f"{path}, line 7: new needs source API 2; this flnd has 1; update flnd",
-                      reason)
-
-    def test_an_older_source_api_points_to_the_changes(self):
-        self.write("old.py", plugin("old"))
-        [found] = _plugins.discover({})
-        # A flnd of source API 2 meets a plugin written for 1.
-        with mock.patch("flnd.source.API", 2):
-            self.assertIsNone(_plugins.load(found))
-        reason = found.error
-        self.assertIn("old was written for source API 1; this flnd has 2; see "
-                      "the API versions part of the writing-a-source page", reason)
+        new = self.write("new.py", plugin("new", api=3))
+        self.write("old.py", plugin("old", api=1))
+        self.assertIn(f"{new}, line 7: new needs plugin API 3; this flnd has 2; update flnd",
+                      self.disabled("new"))
+        self.assertIn("old was written for plugin API 1; this flnd has 2; see the API versions "
+                      "part of the writing-a-plugin page", self.rows()["old"].disabled)
 
     def test_a_class_with_another_code_is_refused(self):
         self.write("exm.py", plugin("exm"))
         self.write("odd.py", plugin("xyz"))
-        self.assertIn("its source's code is 'xyz', not its file's name; name the file xyz.py",
+        self.assertIn("its plugin's code is 'xyz', not its file's name; name the file xyz.py",
                       self.disabled("odd"))
 
     def test_a_file_name_that_isnt_a_code_is_refused(self):
         self.write("exm.py", plugin("exm"))
         self.write("Bad-Name.py", plugin("exm"))
-        self.assertIn("isn't a source code", self.disabled("Bad-Name"))
+        self.assertIn("isn't a plugin code", self.disabled("Bad-Name"))
 
     def test_a_disabled_plugin_is_an_unknown_source(self):
         self.write("bad.py", "raise RuntimeError('no')\n")
         with self.assertRaises(flnd.UsageError):
             self.fl._resolve(["bad:example_user"])
-        self.assertNotIn("bad", list(SOURCES))
+        self.assertNotIn("bad", list(PLUGINS))
 
     def test_a_listing_that_raises_fails_its_target_alone(self):
         self.write("exm.py", plugin("exm"))
@@ -274,13 +266,13 @@ class ContainmentTest(PluginCase):
     def test_an_async_category_that_holds_the_loop_warns(self):
         self.write("slow.py", '''
             import time
-            from flnd.source import File, Post, Source, target
+            from flnd.plugin import File, Plugin, Post, route
 
-            class Slow(Source):
-                code, domains, api = "slow", ("slow.example",), 1
+            class Slow(Plugin):
+                code, name, domains, api = "slow", "Slow", ("slow.example",), 2
 
-                @target("slow:{user}")
-                async def user(self, site, user):
+                @route("slow:{user}")
+                async def user(self, ctx, user):
                     time.sleep(0.05)
                     yield Post("p1", [File("https://cdn.example.com/p1.jpg")])
             ''')

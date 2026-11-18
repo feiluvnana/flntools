@@ -23,13 +23,14 @@ from fakes import CDN, login_cookies, make_plugin, noise, own_login
 from prompt_lines import select_from_lines
 from test_library import example_source
 
-from flnd import Blocked, Target, sources
+from flnd import Blocked, Target
 from flnd import cli as flnd_cli
 from flnd.engine import home as _home
 from flnd.engine.core import Engine, TargetReport, _Runner
 from flnd.engine.events import Saved
 from flnd.engine.options import Options
 from flnd.plugin import Plugin, Post, route
+from flnd.plugins import PLUGINS
 from flnd.ui.log import ui
 from flnkit import cookies as _cookies
 from flnkit import net as _net
@@ -367,7 +368,7 @@ class OutputTest(FlndCase):
 
         self.enterContext(_time.use(_time.Fake()))
         self.listing = {key: list(ids) for key, ids in type(self).listing.items()}
-        self.enterContext(mock.patch.dict(sources.SOURCES, {"exs": example_source(self.listing)}))
+        self.enterContext(mock.patch.dict(PLUGINS, {"exs": example_source(self.listing)}))
 
     def test_plain_lines_and_the_summary(self):
         code, out, err = self.run_app("download", "exs:example_user")
@@ -469,7 +470,7 @@ class ExitStatusTest(FlndCase):
             if ctx.target.value == "bad":
                 raise Blocked("blocked")
 
-        self.enterContext(mock.patch.dict(sources.SOURCES, {
+        self.enterContext(mock.patch.dict(PLUGINS, {
             "aaa": make_plugin("aaa", run), "bbb": make_plugin("bbb", run, connect=connect),
             "ccc": make_plugin("ccc", login=login_cookies("sid", required=True))}))
 
@@ -514,7 +515,8 @@ class HelpTest(FlndCase):
         code, out, _ = self.run_app("download", "--help")
         self.assertEqual(code, 0)
         # Placeholders show as written, then the categories.
-        self.assertIn("tlg:<@username, chat title or id>, a link on t.me", out)
+        self.assertIn("tlg:<@username, chat title or id>, tlg:@<chat>, a link on t.me",
+                      " ".join(out.split()))
         self.assertIn("fbk:<user>, a link on facebook.com, fb.com, fb.watch", out)
         self.assertIn("--only posts reels tagged", " ".join(out.split()))
 
@@ -532,7 +534,7 @@ class HelpTest(FlndCase):
         import subprocess
 
         code = ("import sys\nfrom flnd.cli import main\nmain(['--help'])\n"
-                "print(sorted(m for m in sys.modules if m.startswith(('flnd.engine.core', 'flnd.sources.ins', 'curl_cffi'))))")
+                "print(sorted(m for m in sys.modules if m.startswith(('flnd.engine.core', 'flnd.plugins.ins', 'curl_cffi'))))")
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                              check=True).stdout.splitlines()[-1]
         self.assertEqual(out, "[]")
@@ -558,7 +560,7 @@ class HelpTest(FlndCase):
         self.assertIn("  categories: posts, reels", out)
         code, out, _ = self.run_app("sources", "--json")
         rows = [json.loads(line) for line in out.splitlines()]
-        self.assertEqual([row["code"] for row in rows], ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht"])
+        self.assertEqual([row["code"] for row in rows], ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht", "web"])
 
     def test_status_and_retry_on_a_home_with_no_run(self):
         self.assertEqual(self.run_app("status")[:2], (0, "no run yet\n"))
@@ -658,8 +660,8 @@ class LoginQuestionsTest(FlndCase):
                 yield Post(user)
 
         self.answer("2")
-        with mock.patch.dict(sources.SOURCES, {"own": Own}), \
-                mock.patch.dict("flnd.sources._manifest.SOURCES", {"own": {
+        with mock.patch.dict(PLUGINS, {"own": Own}), \
+                mock.patch.dict("flnd.plugins._manifest.PLUGINS", {"own": {
                     "name": "Own", "domains": ("own.example",), "forms": (), "categories": (),
                     "logins": ("qr", "phone")}}):
             code, _, err = self.run_app("login", "own")

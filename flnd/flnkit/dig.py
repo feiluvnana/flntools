@@ -1,6 +1,6 @@
 """Walk parsed JSON by a path: `dig(data, path)`.
 
-src/docs/writing-a-source explains it.
+src/docs/writing-a-plugin explains it.
 """
 
 from __future__ import annotations

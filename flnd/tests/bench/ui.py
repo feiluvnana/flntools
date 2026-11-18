@@ -30,7 +30,7 @@ import kit
 from flnd.engine import run as job
 from flnd.engine.events import Skipped, State
 from flnd.engine.run import Run
-from flnd.source import Target
+from flnd.plugin import Target
 from flnd.ui.screen import Screen
 
 EVENTS = kit.size(100_000, 2_000)

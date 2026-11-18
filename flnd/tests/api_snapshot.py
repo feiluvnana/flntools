@@ -42,9 +42,9 @@ from typing import Any, NamedTuple
 ROOT = Path(__file__).resolve().parent.parent
 
 # The modules the snapshot lists, each through its `__all__`: the APIs a plugin is written
-# against (API 1 until it goes), the library a script imports, and the kit a plugin is tested
+# against, the library a script imports, and the kit a plugin is tested
 # with.
-API_MODULES = ("flnd.plugin", "flnd.source", "flnd", "flnd.testing")
+API_MODULES = ("flnd.plugin", "flnd", "flnd.testing")
 API_FILE = ROOT / "tests" / "data" / "api.txt"
 # Classes whose members are listed: the project's own. A base from the stdlib (MutableMapping,
 # NamedTuple, Exception) adds its own methods, which aren't this project's API.
@@ -56,7 +56,7 @@ PACKAGE_DIRS = {"flnd": ROOT / "src", "flnkit": ROOT / "flnkit"}
 class ApiName(NamedTuple):
     """One public name: one line of the API snapshot, and the object the line was made from."""
 
-    # The dotted name a caller types, such as "flnd.source.Source.fetch".
+    # The dotted name a caller types, such as "flnd.plugin.Plugin.resolve".
     name: str
     # "module" (also an object standing in for one, such as `flnd.ui`), "function", "method",
     # "class", "error", "property", "field", "attribute" or "value".

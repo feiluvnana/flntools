@@ -31,7 +31,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +41,7 @@ from flnd.engine import home as _home
 from flnd.engine import run as _run
 from flnd.engine.core import Engine, _drive
 from flnd.engine.options import Options
-from flnd.source import File, Post, Site, Source, Target, target
+from flnd.plugin import Ctx, File, Plugin, Post, Request, Target, route
 from flnd.ui.log import ui
 from flnkit import net as _net
 
@@ -88,23 +88,24 @@ class Fake:
     on_file: Any = None
 
 
-class Bench(Source):
-    """A minimal source over the fake site: one target, one category, paged by a cursor."""
+class Bench(Plugin):
+    """A minimal plugin over the fake site: one target, one category, paged by a cursor."""
 
-    code, name, api = "bnc", "Bench", 1
+    code, name, api = "bnc", "Bench", 2
     domains = ("bench.example",)
     folder = "{category}"
 
-    @target("bnc:{user}")
-    def user(self, site: Site, user: str) -> dict:
+    @route("bnc:{user}", newest_first=False)
+    async def user(self, ctx: Ctx, user: str) -> dict:
         """The target's profile; the fake site needs nothing but the handle."""
         return {"id": user}
 
     @user.category(newest_first=True)
-    def posts(self, site: Site, profile: dict) -> Iterator[Post]:
+    async def posts(self, ctx: Ctx, profile: dict) -> AsyncIterator[Post]:
         """Every post, newest first, page by page until the API sends no cursor."""
-        for page in site.pages(f"{API}/posts", cursor="next", params={"user": profile["id"]}):
-            for item in page["items"]:
+        first = Request(f"{API}/posts", params={"user": profile["id"]})
+        async for page in ctx.pages(first, cursor="next"):
+            for item in page.json["items"]:
                 yield Post(item["id"], [File(url) for url in item["urls"]], date=item["taken_at"])
 
 

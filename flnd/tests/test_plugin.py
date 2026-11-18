@@ -14,7 +14,8 @@ import unittest
 from unittest import mock
 
 from fakes import EngineCase
-from test_site import FakeRaw, SiteCase
+from test_ctx import CtxCase as RunCase
+from test_ctx import FakeRaw
 
 from flnd.engine import jobs
 from flnd.engine.core import Engine
@@ -733,7 +734,7 @@ class HelpersTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------------------------
-# The engine's `Ctx` (src/engine/ctx.py), on a real source run with tests/test_site.py's fake
+# The engine's `Ctx` (src/engine/ctx.py), on a real plugin run with tests/test_ctx.py's fake
 # browser and `flnkit.net.fake`
 # ---------------------------------------------------------------------------------------------
 
@@ -752,24 +753,16 @@ class Wired(Example):
         return request.replace(headers={**(request.headers or {}), "X-Signed": "1"})
 
 
-class CtxCase(SiteCase):
-    """A `flnd.engine.ctx.Ctx` for `exw:example_user`, on the run of the test's `SiteCase`."""
+class CtxCase(RunCase):
+    """tests/test_ctx.py's case, its `Ctx` for `exw:example_user`."""
 
     def ctx(self, plugin=Wired, **options):
-        from flnd.engine.ctx import Ctx
-
-        run, _ = self.open(source=plugin)
-        made = Ctx(run, Target(f"{plugin.code}:example_user", kind="user"), **options)
-        self.addCleanup(made.close)
-        return run, made
-
-    def call(self, run, coroutine):
-        return run.loop.run(coroutine)
+        return super().ctx(plugin, **options)
 
 
 class PagesTest(CtxCase):
     def listing(self, start):
-        from flnd.engine.site import Listing
+        from flnd.engine.ctx import Listing
 
         return Listing(start, label="exw:example_user: posts")
 
@@ -1000,10 +993,8 @@ class FetchTest(CtxCase):
         self.assertEqual(self.requests, [])
 
     def test_a_redirect_off_its_domains_carries_nothing_sign_added(self):
-        """API 1 and API 2: a signed request followed to another host goes unsigned."""
-        from test_site import Example as Source1
-
-        from flnd.engine import site
+        """A signed request followed to another host goes unsigned."""
+        from flnd.engine import ctx
         from flnd.engine.options import SourceConfig
 
         def serve(request):
@@ -1014,24 +1005,20 @@ class FetchTest(CtxCase):
 
         self.serve = serve
         jar = [{"name": "token", "value": "TOKEN-SECRET", "domain": ".example.com", "path": "/"}]
-        for source in (Wired(), Source1()):
-            with self.subTest(source.api):
-                self.requests.clear()
-                session = site._network(source, jar, SourceConfig(), handles=4)
-                client = _net.Client(session)
+        session = ctx._network(Wired(), jar, SourceConfig(), handles=4)
+        client = _net.Client(session)
 
-                async def fetched(client=client, session=session):
-                    try:
-                        return await client.fetch(f"{API_URL}/me")
-                    finally:
-                        await session.close()
+        async def fetched():
+            try:
+                return await client.fetch(f"{API_URL}/me")
+            finally:
+                await session.close()
 
-                self.assertEqual(asyncio.run(fetched()).url, "https://cdn.example/elsewhere")
-                first, second = self.requests
-                signed = {"x-signed", "authorization"}
-                self.assertTrue(signed & set(first.headers))
-                self.assertFalse(signed & set(second.headers), second.headers)
-                self.assertNotIn("TOKEN-SECRET", str(dict(second.headers)))
+        self.assertEqual(asyncio.run(fetched()).url, "https://cdn.example/elsewhere")
+        first, second = self.requests
+        self.assertIn("x-signed", first.headers)
+        self.assertNotIn("x-signed", second.headers)
+        self.assertNotIn("TOKEN-SECRET", str(dict(second.headers)))
 
 
 class ReadsTest(CtxCase):
@@ -1099,12 +1086,12 @@ class ReadsTest(CtxCase):
 
     def test_a_fetch_takes_only_the_browser_cookies_of_its_host(self):
         run, made = self.ctx()
-        made._site._tabs = object()
+        made._tabs._tabs = object()
         browser = [{"name": "sid", "value": "1", "domain": ".example.com", "path": "/"},
                    {"name": "other", "value": "2", "domain": ".example.org", "path": "/"}]
-        with mock.patch.object(type(made._site), "_browser_cookies", return_value=browser):
+        with mock.patch.object(type(made._tabs), "cookies", return_value=browser):
             self.call(run, made.fetch(f"{API_URL}/me"))
-        made._site._tabs = None
+        made._tabs._tabs = None
         self.assertEqual(set(run.session.names), {"sid"})
 
     def test_ask_runs_off_the_loop(self):
@@ -1145,7 +1132,7 @@ class ReadsTest(CtxCase):
         run, ctx = self.ctx()
         self.make_raw = lambda: FakeRaw([200])
         self.call(run, ctx.warm(["https://www.example.com/a/", "", "https://www.example.com/b/"]))
-        self.assertEqual(sorted(ctx._site._tabs._warmed), ["https://www.example.com/a/",
+        self.assertEqual(sorted(ctx._tabs._tabs._warmed), ["https://www.example.com/a/",
                                                            "https://www.example.com/b/"])
 
 

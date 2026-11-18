@@ -1,6 +1,6 @@
 """Plugin API 2: what a plugin declares, the types it yields and reads, `Ctx`, and its helpers.
 
-src/docs/writing-a-source explains it; a mistake in a plugin's class raises when it is made.
+src/docs/writing-a-plugin explains it; a mistake in a plugin's class raises when it is made.
 """
 
 from __future__ import annotations
@@ -1424,7 +1424,7 @@ def _check_api(cls: type[Plugin], code: str) -> None:
                           hint="update flnd")
     if api < API:
         raise PluginError(f"{code} was written for plugin API {api}; this flnd has {API}",
-                          hint="see the API versions part of the writing-a-source page of "
+                          hint="see the API versions part of the writing-a-plugin page of "
                                "flnd's docs")
 
 

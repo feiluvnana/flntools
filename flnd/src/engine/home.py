@@ -40,7 +40,7 @@ Who calls it: the engine (`src/engine/core.py`), the crawl (`src/engine/crawl.py
 landing (`src/engine/save.py`), `check` (`src/engine/check.py`) and the library
 (`src/_library.py`) for files,
 targets, runs and failures; the engine also for logins (`flnd login`, `flnd logout`, and
-`fl.logins`, each source's login state); `SourceRun` (`src/engine/site.py`) for a source's cookies,
+`fl.logins`, each plugin's login state); `PluginRun` (`src/engine/ctx.py`) for a plugin's cookies,
 state and secrets.
 
 How a home opens (`open`):
@@ -82,7 +82,7 @@ from flnkit import clock, cookies, db, text, vault
 
 if TYPE_CHECKING:
     from flnd.engine.options import Options
-    from flnd.source import Source, Target
+    from flnd.plugin import Plugin, Target
 
 __all__ = ["FailureRow", "FileRow", "Home", "RunRow", "TargetRow", "open", "sample", "secrets",
            "sweep"]
@@ -1286,7 +1286,7 @@ LOGIN_SECRETS = frozenset({COOKIES, LOGIN_SECRET})
 LOGIN_HINT = "log in again: flnd login <source> (a damaged secret.key: delete it first)"
 
 
-def from_browser(source: Source, *, browser: str, profile: str | None = None) -> cookies.Jar:
+def from_browser(source: Plugin, *, browser: str, profile: str | None = None) -> cookies.Jar:
     """The source's cookies from an installed browser, for each of its domains.
 
     Args:
@@ -1314,7 +1314,7 @@ def from_browser(source: Source, *, browser: str, profile: str | None = None) ->
             hint=hint) from None
 
 
-def from_file(source: Source, path: Path) -> cookies.Jar:
+def from_file(source: Plugin, path: Path) -> cookies.Jar:
     """The source's cookies from a Netscape or JSON cookie file; a whole browser export works.
 
     Args:
@@ -1333,7 +1333,7 @@ def from_file(source: Source, path: Path) -> cookies.Jar:
         raise LoginError(f"{source.code}: can't read {path}: {error}") from None
 
 
-def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
+def store(source: Plugin, jar: cookies.Jar, *, home: Path, origin: str) -> str:
     """Check that the jar proves a login, seal it in the source's vault, and return a summary.
 
     A plain cookie file a much older version left for the source is deleted once the new login
@@ -1412,7 +1412,7 @@ def origin(home: Path, code: str) -> str:
         return vault.get(ORIGIN, "")
 
 
-def expiring(home: Path, source: Source, *, within: float = 24 * 3600) -> list[tuple[str, float]]:
+def expiring(home: Path, source: Plugin, *, within: float = 24 * 3600) -> list[tuple[str, float]]:
     """Login cookies (the names its `login` gives) that expire soon, to warn before the wall.
 
     Args:
@@ -1654,7 +1654,7 @@ def fix_domains(jar: cookies.Jar) -> cookies.Jar:
     )
 
 
-def _own(source: Source, jar: cookies.Jar) -> cookies.Jar:
+def _own(source: Plugin, jar: cookies.Jar) -> cookies.Jar:
     """The cookies of `jar` for the source's domains and their subdomains, domain by domain."""
     return jar.filter(domains=source.domains)
 
@@ -1680,6 +1680,6 @@ def secrets(home: Path, code: str) -> vault.Vault:
     return vault.Vault(home / SECRETS, code, hint=LOGIN_HINT)
 
 
-def _login_names(source: Source) -> tuple[str, ...]:
+def _login_names(source: Plugin) -> tuple[str, ...]:
     """The cookies that prove a source's login (`cookies(...)`'s names); none for other logins."""
-    return source.login.names if source.login is not None else ()
+    return tuple(getattr(source.login, "names", ())) if source.login is not None else ()

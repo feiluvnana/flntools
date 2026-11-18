@@ -38,7 +38,7 @@ and `flnkit/cookies.py`, cookie jars read from files and browsers.
 ## `media/`
 
 Each target has a folder, `media/<code>/<value>/`, where `<value>` is the target's value made
-safe as a file name (`media/ins/example_user/`). Under it, each file goes where the source's
+safe as a file name (`media/ins/example_user/`). Under it, each file goes where the plugin's
 `folder` template puts it, `{category}` by default, named by its `filename` template, with the
 extension its content calls for:
 
@@ -47,7 +47,7 @@ media/ins/example_user/posts/2026-01-02_C1abc_0.jpg
 media/ins/example_user/reels/2026-01-03_C2def.mp4
 ```
 
-Each site's page under [sources/](README.md#sites) shows its own layout. A file's modified time
+Each site's page under [plugins/](README.md#sites) shows its own layout. A file's modified time
 is its post's date, at noon UTC, so a file browser sorts by when it was posted.
 
 ## Parts
@@ -133,15 +133,15 @@ How it is written:
 
 ### `files`
 
-One row per file, keyed `<code>:<key>`, where `<key>` comes from the source's `key` template
-(`{id}_{num}` by default): `ins:C1abc_0`. A later run skips a file whose row says it is saved
+One row per file, keyed `<code>:<key>`, where `<key>` comes from the plugin's `key` template
+(`{post}_{num}` by default): `ins:C1abc_0`. A later run skips a file whose row says it is saved
 while the file at its `path` is there, and also a file already on disk at its planned path.
 
 | column | what it holds |
 | --- | --- |
 | `key` | `<code>:<key>` |
 | `target` | the target it was saved for, `<code>:<value>` |
-| `source` | the source's code |
+| `source` | the plugin's code |
 | `post_id`, `category` | its post, and the category it was listed in ("" for a single post) |
 | `path` | where the file is, as flnd saved it |
 | `size`, `mtime` | its size in bytes, and its modified time in nanoseconds, when saved |
@@ -158,7 +158,7 @@ while the file at its `path` is there, and also a file already on disk at its pl
 | `shrink`, `tools`, `before`, `format` | columns an older home may still have; flnd writes nothing to them today |
 
 Indexed on `(target, post_id)`, on `hash` where there is one, and on the undated rows of each
-target, so the source's `date` hook finds them without reading the rest. There is no index on
+target, so the plugin's `date` hook finds them without reading the rest. There is no index on
 `path` yet: `check` reads every row once instead of looking files up by path, and each index
 costs every commit a page.
 
@@ -208,11 +208,12 @@ With `sidecars = true` under `[defaults]` in `config.toml` (off by default), eac
 }
 ```
 
-`url`, `caption`, `author` and `tags` are read from the post's fields under the names sources
+`url`, `caption`, `author` and `tags` are read from the post's fields under the names plugins
 give them (`url`, `link` or `permalink`; `caption`, `text`, `description` or `title`; `author`,
-`user`, `username`, `owner` or `channel`; `tags` or `hashtags`), and are `null` when the source
-gives none, as `date` is for a post with no day; `fields` holds every field as the source gave
-it. `file` is the file's own URL without its query and user info, which may carry a signature.
+`user`, `username`, `owner` or `channel`; `tags` or `hashtags`), and are `null` when the plugin
+gives none, as `date` is for a post with no day; `fields` holds every field as the plugin gave
+it. The sidecar's `source` key is the plugin's code. `file` is the file's own URL without its
+query and user info, which may carry a signature.
 The sidecar is written last, so it is named after the final file. Its path is in the row's
 `sidecar`.
 
@@ -229,7 +230,7 @@ One row per target the home knows, keyed `<code>:<value>` (`ins:example_user`).
 
 | column | what it holds |
 | --- | --- |
-| `source`, `value`, `kind` | the target: its source, its value, and the route that reads it (`user`, `post`, `query`, …) |
+| `source`, `value`, `kind` | the target: its plugin's code (the column is `source`), its value, and the route that reads it (`user`, `post`, `query`, …) |
 | `follow` | 1 when `sync` takes it |
 | `options` | JSON: `only`, the categories a followed target syncs |
 | `query` | for a target a search found: the search's words |
@@ -261,11 +262,14 @@ column. The next download or sync of the target retries every failed file that h
 
 ### `state`, `logins`, `probes`, `meta`
 
-- `state`: each source's own values between runs (`site.state`), as JSON, keyed `(source,
-  key)`. flnd keeps one entry of its own there too (`src/engine/crawl.py`): `redate.asked`, the posts
-  whose date a source's `date` hook couldn't find, so they aren't asked again for 30 days.
-- `logins`: how each source logged in (`origin`: "Chrome", "cookies.txt", "qr") and `at`. No
-  secret is ever here. `flnd logout` removes the source's row.
+- `state`: each plugin's own values between runs (`ctx.state`), as JSON, keyed `(source,
+  key)`, where `source` is the plugin's code. A run reads a plugin's values once, before its
+  first route, keeps the plugin's changes in memory, and writes them back as each target ends
+  and as the run ends, always off the loop. flnd keeps one entry of its own there too
+  (`src/engine/crawl.py`): `redate.asked`, the posts whose date a plugin's `date` hook couldn't
+  find, so they aren't asked again for 30 days.
+- `logins`: how each plugin logged in (`origin`: "Chrome", "cookies.txt", "qr") and `at`. No
+  secret is ever here. `flnd logout` removes the plugin's row.
 - `probes`: what ffmpeg found in a file; safe to empty.
 - `meta`: the schema's `version`, and `migrated`, when an old home was migrated.
 
@@ -286,11 +290,11 @@ rate = "0"           # the run's speed limit, such as "20 MB/s" or "500 KB/s"; "
 slowest = "0"        # cut a transfer slower than this over 30 s, and go on; "0" for off
 
 
-[sources.ins]        # one table per source, by its code
-pace = 1.0           # seconds between its page requests (over the source's own pace)
+[sources.ins]        # one table per plugin, by its code
+pace = 1.0           # seconds between its page requests (over the plugin's own pace)
 scroll = "human"     # "human" or "fast": how its browser feeds scroll
 limits = { "cdninstagram.com" = 8 }   # the most files at once from a host
-proxy = "socks5://127.0.0.1:1080"     # every HTTP request of the source goes through it
+proxy = "socks5://127.0.0.1:1080"     # every HTTP request of the plugin goes through it
 stop_after = 5       # saved posts in a row that end a sync of a newest-first listing
 ```
 
@@ -301,16 +305,16 @@ stop_after = 5       # saved posts in a row that end a sync of a newest-first li
   from the files in flight on that disk, and 64 MiB more, or the run stops with a `DiskError`.
 - **`[defaults] when`** bounds a sync too, which has no `--when` of its own. Give `--when ""` (or
   `when=""` in the library) for every day in one run.
-- **`[sources.<code>]`** settings win over what the source's class says: `pace` over
-  `Source.pace` (0 is no pace), `scroll` over `Source.scroll`, and `limits` merged over
-  `Source.limits`, so a host named in both takes the file's number. A host's cap still adapts
+- **`[sources.<code>]`** settings win over what the plugin's class says: `pace` over
+  `Plugin.pace` (0 is no pace), `scroll` over the default, `human`, and `limits` merged over
+  `Plugin.limits`, so a host named in both takes the file's number. A host's cap still adapts
   under it ([architecture.md](architecture.md#network)).
 - **`proxy`** takes `http://`, `https://`, `socks5://` or `socks5h://` (which also looks host
   names up through the proxy), with a user and password if the proxy needs them. It carries
-  every request and download of the source's HTTP session. **The browser isn't proxied**: one
-  window serves every source of a run, and a source's proxy can't be set per tab, so a source
+  every request and download of the plugin's HTTP session. **The browser isn't proxied**: one
+  window serves every plugin of a run, and a plugin's proxy can't be set per tab, so a plugin
   that opens pages (Instagram, TikTok, Facebook, Twitter/X) loads them directly. A run says so
-  once, as a warning, when such a source opens its first tab.
+  once, as a warning, when such a plugin opens its first tab.
 - **A bad value** stops the command as a usage error that names the file, the key and what it
   takes: `config.toml: [sources.ins] scroll is "human" or "fast", not 'slow'`. A key flnd
   doesn't know is a warning (`[defaults] compres is not a setting flnd knows; it is ignored`),
@@ -320,23 +324,23 @@ The code: `src/engine/options.py` (`config`) reads and checks the whole file, in
 
 ## The vault: `secret.db`
 
-`secret.db` in `metadata/` has one table, `secrets`: a row per secret of a source, keyed
-`(slot, name)`, where the slot is the source's code. A cookie source keeps its jar as `cookies`,
+`secret.db` in `metadata/` has one table, `secrets`: a row per secret of a plugin, keyed
+`(slot, name)`, where the slot is the plugin's code. A cookie plugin keeps its jar as `cookies`,
 a JSON list of cookies in Playwright's shape (each domain with a leading dot); Telegram keeps its
 `session` and its API credentials. Secrets are stored unencrypted in plaintext, so no key file
 is needed.
 
 A cookie login (`flnd login <code> chrome`, or a cookie file) keeps only the cookies of the
-source's domains and their subdomains, and is refused unless one of the cookies the source's
+plugin's domains and their subdomains, and is refused unless one of the cookies the plugin's
 login names is there. When a run ends, the cookies the site refreshed are written back into the
 jar, for the names already in it. A plain cookie file a much older flnd left,
-`cookies/<code>.txt` (or `.json`), is moved into `secret.db` the first time the source is used,
+`cookies/<code>.txt` (or `.json`), is moved into `secret.db` the first time the plugin is used,
 and deleted once it is saved.
 
 The code: `flnkit/cookies.py` reads cookies from a file or a browser, `flnkit/vault.py`
 stores them in `secret.db`, and `src/engine/home.py` holds the logins that use both.
 
-`flnd logout <code>` removes a source's rows.
+`flnd logout <code>` removes a plugin's rows.
 
 ## Checking a home
 

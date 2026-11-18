@@ -3,12 +3,13 @@
 import unittest
 
 from flnd.engine.core import resolve
-from flnd.source import Target, UsageError
-from flnd.sources import SOURCES
+from flnd.errors import UsageError
+from flnd.plugin import Target
+from flnd.plugins import PLUGINS
 
 
 def read(text, follow=None):
-    return resolve(text, SOURCES, follow=follow)
+    return resolve(text, PLUGINS, follow=follow)
 
 
 class AcceptedFormsTest(unittest.TestCase):
@@ -87,7 +88,7 @@ class AcceptedFormsTest(unittest.TestCase):
     def test_percent_encoded_path_segments_are_decoded(self):
         self.assertEqual(
             read("https://mimihentai.moe/author/some%20author"),
-            Target("mht:some author", kind="author"),
+            Target("mht:author/some author", kind="author"),
         )
 
 
@@ -141,11 +142,12 @@ class RefusedTest(unittest.TestCase):
                                                 "tlg:example_user, mht:example_user")
 
     def test_unknown_source(self):
-        with self.assertRaisesRegex(UsageError, "^unknown source 'ytb'. Sources: tik, fbk, ins, twt, loi, tlg, mht$"):
+        with self.assertRaisesRegex(UsageError, "^unknown source 'ytb'. Sources: tik, fbk, ins, twt, loi, tlg, mht, web$"):
             read("ytb:nasa")
 
-    def test_url_of_no_source(self):
-        with self.assertRaisesRegex(UsageError, "^which source is"):
+    def test_url_of_no_source_is_offered_to_web(self):
+        with self.assertRaisesRegex(UsageError, '^which source is "https://example.com/someone"'
+                                    r"\? Write it as web:https://example.com/someone$"):
             read("https://example.com/someone")
 
     def test_refused_forms_have_a_hint(self):

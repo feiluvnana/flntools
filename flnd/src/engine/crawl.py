@@ -31,13 +31,11 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
-import flnd.plugin
 from flnd.engine import home, jobs, save
-from flnd.engine.ctx import Ctx, native
+from flnd.engine.ctx import Ctx, Listing, PluginRun, met_turn
 from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped
 from flnd.engine.options import Options, Retry
 from flnd.engine.run import Counts, Tally
-from flnd.engine.site import Listing, SourceRun, TargetSite, met_turn
 from flnd.errors import (
     Blocked,
     Changed,
@@ -45,14 +43,15 @@ from flnd.errors import (
     Hidden,
     LoginError,
     NetworkError,
+    NotFound,
     PluginError,
     SiteError,
     Stopped,
     UsageError,
     classify,
 )
-from flnd.source import Category, File, NotFound, Post, Range, Route, Site, Source, Target
-from flnd.sources import SOURCES
+from flnd.plugin import Category, File, Plugin, Post, Range, Route, Target
+from flnd.plugins import PLUGINS
 from flnd.ui.log import ui
 from flnkit import files, text
 from flnkit.clock import day
@@ -112,12 +111,7 @@ ALL = "all"
 RETRY_WINDOW = 100
 _FORMATTER = string.Formatter()
 
-# Runs a source's plain code, `fn(*args)`: on a `CALL` thread in a run (`SourceRun.call`), at
-# once in the test kit.
-Call = Callable[..., Awaitable[Any]]
 T = TypeVar("T")
-# What `_steps` gives once a plain iterator is done.
-_DONE = object()
 # What a lazy post's files may raise that fails the post alone, never its target (PLAN 6.2).
 _POST_ERRORS: tuple[type[BaseException], ...] = (NotFound, Changed, Hidden)
 
@@ -152,7 +146,7 @@ class TargetReport:
     found: tuple[Target, ...] = ()
 
 
-def failure(error: BaseException, target: Target, source: Source | None = None) -> Error:
+def failure(error: BaseException, target: Target, source: Plugin | None = None) -> Error:
     """What a failure that ended `target` is, as a `flnd.Error` (see `flnd.errors.classify`).
 
     One more rule than `classify`'s: a 401 or 403 from the source's own domains that a listing
@@ -170,7 +164,7 @@ def failure(error: BaseException, target: Target, source: Source | None = None) 
     made = classify(error, target=str(target))
     assert isinstance(made, Error), made
     # A bug in a plugin is its author's to fix, not flnd's: the hint says whose code it is.
-    plugin = SOURCES.plugin(type(source)) if source is not None else None
+    plugin = PLUGINS.plugin(type(source)) if source is not None else None
     if plugin is not None and isinstance(made, PluginError) and made.__cause__ is error:
         made.hint = (f"a bug in the plugin {plugin.code} ({plugin.where}), not in flnd; "
                      "report it to its author")
@@ -247,16 +241,14 @@ def wanted(route: Route, options: Options) -> tuple[Category, ...]:
     if names is not None and ALL in names:
         return route.categories
     if names is None:
-        # API 2's default is the account's own content (`own`); API 1 has every category.
-        return tuple(category for category in route.categories
-                     if getattr(category, "own", True))
+        # The default is the account's own content (`own`).
+        return tuple(category for category in route.categories if category.own)
     selected = set(names)
     return tuple(category for category in route.categories if category.name in selected)
 
 
-async def posts(
-    source: Source, site: Site, target: Target, options: Options, *, call: Call
-) -> AsyncIterator[Post]:
+async def posts(source: Plugin, site: Ctx, target: Target,
+                options: Options) -> AsyncIterator[Post]:
     """Every post of `target`'s route, or of each wanted category, that `--when` keeps.
 
     It is the plain listing, with none of the crawl's stops at saved posts: `flnd.testing` and
@@ -264,10 +256,9 @@ async def posts(
 
     Args:
         source: the target's source.
-        site: the `Site` the route and categories are given.
+        site: the `Ctx` the route and categories are given.
         target: the target.
         options: its options: `--when` and `--only`.
-        call: runs the source's plain code (`Call`).
 
     Yields:
         Each post, filed under its category, in the order the source yields them.
@@ -277,61 +268,43 @@ async def posts(
     categories = wanted(route, options)
     if route.categories and not categories:
         return
-    context = await _context(source, route, site, target, call)
+    context = await _context(source, route, site, target)
     if not route.categories:
         async with contextlib.aclosing(_Kept(context, "", newest_first=route.newest_first,
-                                             span=span, call=call)) as kept:
+                                             span=span)) as kept:
             async for post in kept:
                 yield post
         return
     for category in categories:
         method = getattr(source, category.name)
         async with contextlib.aclosing(_Kept(
-                await _called(call, method, site, context), category.name,
-                newest_first=category.newest_first, span=span, call=call)) as kept:
+                await _called(method, site, context), category.name,
+                newest_first=category.newest_first, span=span)) as kept:
             async for post in kept:
                 yield post
 
 
-async def _context(source: Source, route: Route, site: Site, target: Target, call: Call) -> Any:
-    """Call `target`'s route method: plain code through `call`, an `async def` on the loop.
+async def _context(source: Plugin, route: Route, site: Ctx, target: Target) -> Any:
+    """Call `target`'s route method on the loop.
 
-    A route without categories returns its listing, which is left as it is (`_steps` iterates
-    it); a route with categories returns its context, the value every category gets.
-
-    Args:
-        source: the target's source.
-        route: its route.
-        site: the `Site` the route is given.
-        target: the target, whose `value` the route reads.
-        call: runs the source's plain code.
-
-    Returns:
-        What the route returned, awaited when it is a coroutine.
+    A route without categories gives its listing, an async generator `_steps` iterates; a
+    route with categories returns its context, the value every category gets.
     """
-    context = await _called(call, getattr(source, route.kind), site, target.value)
-    if route.categories and inspect.iscoroutine(context):
-        context = await context
-    return context
+    return await _called(getattr(source, route.kind), site, target.value)
 
 
-async def _called(call: Call, method: Callable[..., Any], *args: Any) -> Any:
-    """`method(*args)`: through `call`, unless it is a generator function, whose call only
-    makes the generator, so nothing of the source runs until it is stepped, or an `async def`
-    (API 2's routes), which runs on the loop."""
-    if inspect.isgeneratorfunction(method) or inspect.isasyncgenfunction(method):
-        return method(*args)
+async def _called(method: Callable[..., Any], *args: Any) -> Any:
+    """`method(*args)`: an async generator function's call only makes the generator, so
+    nothing of the plugin runs until it is stepped; a coroutine function's is awaited."""
     if inspect.iscoroutinefunction(method):
         return await method(*args)
-    return await call(method, *args)
+    return method(*args)
 
 
-def _site(run: SourceRun, target: Target, since: datetime.date | None = None,
-          until: datetime.date | None = None) -> TargetSite | Ctx:
-    """What a target's route and categories act through: API 2's `Ctx`, API 1's `Site`."""
-    if native(run.source):
-        return Ctx(run, target, when=flnd.plugin.Range(since, until))
-    return TargetSite(run, target, time=Range(since, until))
+def _site(run: PluginRun, target: Target, since: datetime.date | None = None,
+          until: datetime.date | None = None) -> Ctx:
+    """The `Ctx` a target's route and categories act through."""
+    return Ctx(run, target, when=Range(since, until))
 
 
 def _say(target: Target, level: str, message: str, **fields: Any) -> None:
@@ -339,7 +312,7 @@ def _say(target: Target, level: str, message: str, **fields: Any) -> None:
     getattr(ui, level)("{target}: " + message, target=str(target), **fields)
 
 
-async def plan(run: SourceRun, target: Target, options: Options) -> AsyncIterator[Placed]:
+async def plan(run: PluginRun, target: Target, options: Options) -> AsyncIterator[Placed]:
     """Every file a download of `target` would save, placed, with nothing written (`--dry`).
 
     A lazy post's files are listed, which may cost a request each. `--limit` counts posts.
@@ -357,8 +330,7 @@ async def plan(run: SourceRun, target: Target, options: Options) -> AsyncIterato
     categories = {c.name: c for c in route.categories}
     taken = 0
     try:
-        async with contextlib.aclosing(posts(run.source, site, target, options,
-                                             call=run.call)) as stream:
+        async with contextlib.aclosing(posts(run.source, site, target, options)) as stream:
             async for post in stream:
                 if options.limit is not None and taken >= options.limit:
                     break
@@ -372,40 +344,31 @@ async def plan(run: SourceRun, target: Target, options: Options) -> AsyncIterato
             await run.off(site.close)
 
 
-async def _files(run: SourceRun, site: TargetSite | Ctx, post: Post) -> list[File]:
-    """A post's files: a lazy post's listed with tabs of their own (`SourceRun.aside`, or
-    API 2's `Ctx.aside`).
+async def _files(run: PluginRun, site: Ctx, post: Post) -> list[File]:
+    """A post's files: a lazy post's listed with tabs of their own (`Ctx.aside`).
 
     Raises:
-        PluginError: an API 2 post's files hold something that isn't a `File`.
+        PluginError: the post's files hold something that isn't a `File`.
     """
     if not callable(post.files):
         return list(post.files)
-    if not isinstance(site, Ctx):
-        return await run.aside(_listed_files, post)
     async with site.aside():
         found = list(await post.files())
-    stray = next((file for file in found if not isinstance(file, flnd.plugin.File)), None)
+    stray = next((file for file in found if not isinstance(file, File)), None)
     if stray is not None:
         raise PluginError(f"{run.source.code}: post {post.id}'s files hold a "
-                          f"{type(stray).__name__}; wrap "
-                          "each in File(...)")
+                          f"{type(stray).__name__}; wrap each in File(...)")
     return found
 
 
-def _listed_files(post: Post) -> list[File]:
-    assert callable(post.files)
-    return list(post.files())
-
-
 def place(
-    source: Source, post: Post, files: Sequence[File], *, category: Category | None = None,
+    source: Plugin, post: Post, files: Sequence[File], *, category: Category | None = None,
     route: Route | None = None, target: Target | None = None, options: Options | None = None,
 ) -> list[Placed]:
     """Give each file of `post` its path under the target's folder and its history key.
 
     The path is the folder template (category, else route, else source) filled with the
-    file's fields, then its name (`_resolve_name`). Two files of one post with one name get
+    file's fields, then its name (`_named`). Two files of one post with one name get
     the later one's number added, so neither is skipped as already queued. The key template's
     default is the path itself.
 
@@ -427,12 +390,11 @@ def place(
     placed: list[Placed] = []
     used: set[str] = set()
     for num, file in enumerate(files):
-        extension, kind = _extension(file)
+        extension, kind = planned(file)
         values = _file_values(
             source, post, num, len(files), posted, extension, target, options,
         )
-        named = _named if isinstance(file, flnd.plugin.File) else _resolve_name
-        name = named(post, file, filename, values, extension)
+        name = _named(post, file, filename, values, extension)
         where = fill(folder, values)
         path = "/".join(part for part in (where, name) if part)
         # Files of one post may share a name (`cover.jpg`): a later one takes its number, or it
@@ -447,7 +409,7 @@ def place(
 
 
 def _file_values(
-    source: Source, post: Post, num: int, count: int, posted: datetime.date | None,
+    source: Plugin, post: Post, num: int, count: int, posted: datetime.date | None,
     extension: str, target: Target | None, options: Options | None,
 ) -> dict[str, Any]:
     """The fields a folder, filename or key template of one file may name.
@@ -470,7 +432,7 @@ def _file_values(
     code = target.plugin if target is not None else source.code
     target_val = target.value if target is not None else ""
     query_val = (options.query or "") if options is not None else ""
-    # `{plugin}` is API 2's name of API 1's `{source}`.
+    # `{source}` is the older name of `{plugin}`, kept for templates written with it.
     return {
         **post.fields, "post": post.id, "date": posted, "category": post.category,
         "num": num, "count": count, "index": "" if count == 1 else f"_{num}",
@@ -479,37 +441,10 @@ def _file_values(
     }
 
 
-def _resolve_name(
+def _named(
     post: Post, file: File, filename: str, values: Mapping[str, Any], extension: str
 ) -> str:
-    """The file's name: from the filename template, or the name the source gave it.
-
-    A file with no name of its own is named by the template, plus its extension. A file the
-    source named after the template (with or without the date) keeps the template's form and
-    its own suffix. Any other name the source gave is kept, made safe for every file system.
-
-    Args:
-        post: the post; its id names the file when the template comes out empty.
-        file: the file.
-        filename: the filename template.
-        values: the file's fields (`_file_values`).
-        extension: the file's extension, with its dot.
-
-    Returns:
-        The file's name, with no folder.
-    """
-    formatted = fill(filename, values) or text.filename(post.id)
-    if file.name is None:
-        return formatted + extension
-    if file.content is None and PurePosixPath(file.name).stem in _stems(filename, values):
-        return formatted + PurePosixPath(file.name).suffix
-    return text.filename(file.name)
-
-
-def _named(
-    post: Post, file: flnd.plugin.File, filename: str, values: Mapping[str, Any], extension: str
-) -> str:
-    """An API 2 file's name (5.3): its `name` when it has its own extension (or holds text),
+    """A file's name (5.3): its `name` when it has its own extension (or holds text),
     else its `name` or the filename template as a stem, with `extension` after it."""
     if file.content is not None or own_extension(file.name):
         return text.filename(file.name or post.id)
@@ -518,16 +453,11 @@ def _named(
 
 
 def own_extension(name: str | None) -> str:
-    """The extension an API 2 `File.name` keeps (`EXTENSION`); "" for a stem or no name."""
+    """The extension a `File.name` keeps (`EXTENSION`); "" for a stem or no name."""
     if name is None:
         return ""
     suffix = PurePosixPath(name).suffix
     return suffix if EXTENSION.fullmatch(suffix) else ""
-
-
-def _stems(filename: str, values: Mapping[str, Any]) -> set[str]:
-    """Return filename stems with and without the post's date."""
-    return {fill(filename, values), fill(filename, {**values, "date": None})} - {""}
 
 
 class Ledger:
@@ -540,8 +470,8 @@ class Ledger:
     its nearest dated neighbour's in listing order (marked estimated).
 
     What reads or writes the disk or `flnd.db` runs off the loop, one hop a post
-    (`SourceRun.off`): the crawl awaits it, so nothing else touches the ledger meanwhile. A
-    lazy post's files and the `date` hook run on a thread of the source (`SourceRun.aside`).
+    (`PluginRun.off`): the crawl awaits it, so nothing else touches the ledger meanwhile. The
+    `date` hook runs on the loop, with tabs of its own (`Ctx.aside`).
     The `Skipped` events the plan makes are sent on the loop after each hop (`_tell`).
 
     Args:
@@ -553,7 +483,7 @@ class Ledger:
     """
 
     def __init__(
-        self, run: SourceRun, site: TargetSite, target: Target, tally: Tally, *,
+        self, run: PluginRun, site: Ctx, target: Target, tally: Tally, *,
         options: Options | None = None,
     ) -> None:
         """Initialize a target ledger with its stores, dates, and category state."""
@@ -572,7 +502,7 @@ class Ledger:
         self._waiting: dict[str, Post] = {}
         self._order: list[tuple[str, datetime.date | None]] = []
         self._estimated: set[str] = set()
-        self._asking = type(self.source).date not in (Source.date, flnd.plugin.Plugin.date)
+        self._asking = type(self.source).date is not Plugin.date
         self._link_warned = False
         self._later: list[tuple[Path, str, str]] = []
         # The posts the `date` hook had no day for, read off the loop by `load`.
@@ -842,8 +772,7 @@ class Ledger:
         for row in await self.run.off(self._db.undated, home.key(self.target)):
             if row.post_id in self._asked:
                 continue
-            found = await self._ask(flnd.plugin.Post(row.post_id) if native(self.source)
-                                    else Post(row.post_id))
+            found = await self._ask(Post(row.post_id))
             if found is not None and await self.run.off(self._redate, row, found):
                 dated += 1
         await self.run.off(self._save_asked)
@@ -887,11 +816,8 @@ class Ledger:
         if not self._asking:
             return None
         try:
-            if isinstance(self.site, Ctx):
-                async with self.site.aside():
-                    found = day(await self.source.date(self.site, getattr(post, "post", post)))
-            else:
-                found = day(await self.run.aside(self.source.date, self.site, post))
+            async with self.site.aside():
+                found = day(await self.source.date(self.site, getattr(post, "post", post)))
         except (SiteError, NetworkError, LoginError) as error:
             blocked = isinstance(error, (LoginError, Blocked))
             if blocked or getattr(error, "status", None) in BLOCKS:
@@ -1146,13 +1072,13 @@ class Claims:
             return None
 
 
-def asked(run: SourceRun) -> None:
+def asked(run: PluginRun) -> None:
     """Read the posts the plugin's `date` hook had no day for, asked in the last 30 days, once
-    per plugin per run (`SourceRun.asked`), off the loop; nothing for a plugin with no hook.
+    per plugin per run (`PluginRun.asked`), off the loop; nothing for a plugin with no hook.
 
     Entries older than `ASKED_TTL` are dropped.
     """
-    if run.asked is not None or type(run.source).date is Source.date:
+    if run.asked is not None or type(run.source).date is Plugin.date:
         return
     now = time.time()
     raw = run.values.get(ASKED_KEY)
@@ -1235,11 +1161,11 @@ class Downloads:
         tally: the run's live counts, which its counts go to.
     """
 
-    def __init__(self, run: SourceRun, target: Target, tally: Tally, *,
+    def __init__(self, run: PluginRun, target: Target, tally: Tally, *,
                  swept: Awaitable[None] | None = None,
-                 site: TargetSite | Ctx | None = None) -> None:
+                 site: Ctx | None = None) -> None:
         self.run, self.target, self.tally = run, target, tally
-        # The target's site, whose `aside` tabs a refresh lists on; None for API 1's.
+        # The target's Ctx, whose `aside` tabs a refresh lists on; None for none.
         self._site = site
         # The sweep of the target's folder, which the first file waits for.
         self._swept = swept
@@ -1418,15 +1344,14 @@ class Downloads:
             await self._settled()
 
     def _refreshes(self, post: Post) -> bool:
-        """Whether a file of `post` can get a fresh link: a lazy post's, or any post's of an
-        API 2 plugin with a `refresh` hook of its own."""
+        """Whether a file of `post` can get a fresh link: a lazy post's, or any post's of a
+        plugin with a `refresh` hook of its own."""
         return callable(post.files) or (
-            isinstance(self._site, Ctx)
-            and type(self.source).refresh is not flnd.plugin.Plugin.refresh)
+            self._site is not None and type(self.source).refresh is not Plugin.refresh)
 
     async def _fresh(self, queued: _Queued) -> File | None:
-        """A post's files listed again, for a fresh copy of one link: API 1 lists a lazy post's
-        files again, API 2 asks the plugin's `refresh` hook.
+        """A post's files listed again, for a fresh copy of one link: the plugin's `refresh`
+        hook, which lists a lazy post's files again by default.
 
         Returns:
             The fresh file, at the same number in the post; None when no fresh link came (the
@@ -1434,13 +1359,11 @@ class Downloads:
         """
         try:
             site = self._site
-            if isinstance(site, Ctx):
-                post = queued.placed.post
-                async with site.aside():
-                    fresh = await self.source.refresh(site, getattr(post, "post", post))
-                    found = list(await fresh.files() if fresh.lazy else fresh.files)
-            else:
-                found = await self.run.aside(_listed_files, queued.placed.post)
+            assert site is not None
+            post = queued.placed.post
+            async with site.aside():
+                fresh = await self.source.refresh(site, getattr(post, "post", post))
+                found = list(await fresh.files() if fresh.lazy else fresh.files)
         except Exception as error:
             ui.warn("{name}: no fresh link: {error}", name=queued.placed.path, error=error)
             return None
@@ -1448,7 +1371,7 @@ class Downloads:
         return found[num] if num < len(found) else None
 
 
-async def download(run: SourceRun, target: Target, tally: Tally, options: Options, *,
+async def download(run: PluginRun, target: Target, tally: Tally, options: Options, *,
                    listed: Callable[[Downloads], Awaitable[None]] | None = None,
                    turn: Turn | None = None) -> TargetReport:
     """Download one target of a source, counting on `tally`: one coroutine on the run's loop.
@@ -1591,7 +1514,7 @@ class _Progress:
 
 
 async def _execute_listing(
-    work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
+    work: _Work, run: PluginRun, site: Ctx, target: Target, options: Options,
     progress: _Progress, listed: Callable[[Downloads], Awaitable[None]] | None = None,
     turn: Turn | None = None,
 ) -> BaseException | None:
@@ -1634,7 +1557,7 @@ async def _execute_listing(
 
 
 async def _ended(
-    run: SourceRun, tally: Tally, report: TargetReport, error: BaseException | None, *,
+    run: PluginRun, tally: Tally, report: TargetReport, error: BaseException | None, *,
     complete: str, started: float,
 ) -> TargetReport:
     """End a target's rows and report it: failed, stopped, or done.
@@ -1680,7 +1603,7 @@ async def _ended(
     return report
 
 
-def _failed(run: SourceRun, target: Target, failed: Error) -> None:
+def _failed(run: PluginRun, target: Target, failed: Error) -> None:
     """Record a target's failure, with a scrubbed sample of a `Changed` answer, off the loop."""
     assert run.settings.db is not None
     save.sampled(run.settings, failed)
@@ -1770,7 +1693,7 @@ def _redated(
     return dest
 
 
-def _metadata(source: Source, target: Target, placed: Placed) -> dict[str, Any]:
+def _metadata(source: Plugin, target: Target, placed: Placed) -> dict[str, Any]:
     """What a saved file's sidecar holds: its post's caption, author, tags, day and link.
 
     `caption`, `author` and `tags` are read from the post's fields under the names sources
@@ -1854,16 +1777,14 @@ class _Kept:
     never the head; its id is kept in `pinned` for the sync's stops.
 
     Args:
-        yielded: the generator (plain or async), or a coroutine giving one.
+        yielded: the async generator, or a coroutine giving one.
         category: the category's name; "" for a route's own posts.
         newest_first: whether the listing comes newest first.
         span: `--when`.
-        call: runs the source's plain code (`Call`).
-        close: closes a plain generator, even while the run stops; None uses `call`.
     """
 
-    def __init__(self, yielded: Any, category: str, *, newest_first: bool, span: Range,
-                 call: Call, close: Call | None = None) -> None:
+    def __init__(self, yielded: Any, category: str, *, newest_first: bool,
+                 span: Range) -> None:
         self.category, self.newest_first, self.time = category, newest_first, span
         self.ran_out = False
         # The targets the listing yielded, in order, each as the source wrote it.
@@ -1876,7 +1797,7 @@ class _Kept:
         self.queued = 0
         # The ids of the pinned posts it yielded.
         self.pinned: set[str] = set()
-        self._steps = _steps(yielded, call, close or call)
+        self._steps = _steps(yielded)
         self._iter: AsyncIterator[Post] | None = None
 
     def __aiter__(self) -> AsyncIterator[Post]:
@@ -1894,20 +1815,15 @@ class _Kept:
             if isinstance(post, Target):
                 self.linked.append(post)
                 continue
-            if not isinstance(post, (Post, flnd.plugin.Post)):
+            if not isinstance(post, Post):
                 raise TypeError(
                     f"{self.category or 'a route'} yielded {type(post).__name__}, "
                     "not a Post or a Target"
                 )
-            pinned = _pinned(post)
-            if isinstance(post, flnd.plugin.Post):
-                # API 2's posts are ordered by `listed`, which is `date` unless given.
-                listed = day(post.listed)
-                post = _Filed(post, self.category)
-            else:
-                listed = day(post.date)
-                if self.category:
-                    post = post.filed(self.category)
+            pinned = post.pinned
+            # Posts are ordered by `listed`, which is `date` unless given.
+            listed = day(post.listed)
+            post = _Filed(post, self.category)
             posted = day(post.date)
             if pinned:
                 self.pinned.add(post.id)
@@ -1939,16 +1855,11 @@ class _Kept:
             self.newest, self._newest_day = post, posted
 
 
-def _pinned(post: Post) -> bool:
-    """Whether the site shows `post` above its date order (API 2's `Post.pinned`)."""
-    return getattr(post, "pinned", False) is True
-
-
 class _Filed:
-    """A post on API 2 as the crawl files it: the post its plugin yielded, and its category.
+    """A post as the crawl files it: the post its plugin yielded, and its category.
 
-    API 1's `Post` carries its category (`Post.filed`); API 2's has no room for one, so the
-    crawl reads `category` here, and everything else from the post.
+    `Post` has no room for its category, so the crawl reads `category` here, and everything
+    else from the post.
 
     Args:
         post: the post.
@@ -1957,7 +1868,7 @@ class _Filed:
 
     __slots__ = ("category", "post")
 
-    def __init__(self, post: flnd.plugin.Post, category: str) -> None:
+    def __init__(self, post: Post, category: str) -> None:
         self.post, self.category = post, category
 
     def __getattr__(self, name: str) -> Any:
@@ -2023,7 +1934,7 @@ class _Work:
 
 
 async def discover(
-    run: SourceRun, target: Target, *, limit: int | None = None, time_range: Range = Range(),
+    run: PluginRun, target: Target, *, limit: int | None = None, time_range: Range = Range(),
 ) -> AsyncIterator[Target]:
     """The targets a search (or any route that yields targets) finds, each once, resolved.
 
@@ -2035,7 +1946,7 @@ async def discover(
         run: the source's run.
         target: the search.
         limit: at most this many targets; None for all.
-        time_range: `--when`, which the route's `Site` filters by.
+        time_range: `--when`, which the route's `Ctx` filters by.
 
     Yields:
         Each new target, resolved by the source that owns it.
@@ -2046,7 +1957,7 @@ async def discover(
     try:
         if _at_limit(run, yielded, limit):
             return
-        context = await _context(run.source, route, site, target, run.call)
+        context = await _context(run.source, route, site, target)
         async with contextlib.aclosing(_discovered(run, route, site, context,
                                                    Options())) as steps:
             async for item in steps:
@@ -2064,23 +1975,23 @@ async def discover(
             await run.off(site.close)
 
 
-async def _discovered(run: SourceRun, route: Route, site: TargetSite | Ctx, context: Any,
+async def _discovered(run: PluginRun, route: Route, site: Ctx, context: Any,
                       options: Options) -> AsyncIterator[Any]:
     """What a discovering route yields: its own listing, or each wanted category's in turn
     (`wanted`), given what the route returned."""
     if not route.categories:
-        async with contextlib.aclosing(_steps(context, run.call, run.off)) as items:
+        async with contextlib.aclosing(_steps(context)) as items:
             async for item in items:
                 yield item
         return
     for category in wanted(route, options):
-        listed = await _called(run.call, getattr(run.source, category.name), site, context)
-        async with contextlib.aclosing(_steps(listed, run.call, run.off)) as items:
+        listed = await _called(getattr(run.source, category.name), site, context)
+        async with contextlib.aclosing(_steps(listed)) as items:
             async for item in items:
                 yield item
 
 
-def _at_limit(run: SourceRun, yielded: set[Target], limit: int | None) -> bool:
+def _at_limit(run: PluginRun, yielded: set[Target], limit: int | None) -> bool:
     """Return whether discovery should stop due to Ctrl-C or `limit`."""
     return run.settings.stop.soon.is_set() or (limit is not None and len(yielded) >= limit)
 
@@ -2196,7 +2107,7 @@ async def _queue_listed(
 
 
 async def _read(
-    work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
+    work: _Work, run: PluginRun, site: Ctx, target: Target, options: Options,
     progress: _Progress, turn: Turn | None = None,
 ) -> None:
     """List the target's route, or its wanted categories, into `work`.
@@ -2222,7 +2133,7 @@ async def _read(
     if route.discovers:
         if turn is not None:
             turn.release()
-        context = await _context(run.source, route, site, target, run.call)
+        context = await _context(run.source, route, site, target)
         await _run_discovered(run, options, _discovered(run, route, site, context, options))
         return
     listings: list[_Listed]
@@ -2233,8 +2144,7 @@ async def _read(
         categories = wanted(route, options)
         if not categories:
             return
-        context = await _taking(turn, run, lambda: _context(run.source, route, site, target,
-                                                    run.call))
+        context = await _taking(turn, run, lambda: _context(run.source, route, site, target))
         listings = [_Listed(category.name, category.newest_first,
                             _caller(run, getattr(run.source, category.name), site, context))
                     for category in categories]
@@ -2291,7 +2201,7 @@ class Turn:
             self._loop.call_soon_threadsafe(self.passed.set)
 
 
-async def _taking(turn: Turn | None, run: SourceRun,
+async def _taking(turn: Turn | None, run: PluginRun,
                  route: Callable[[], Awaitable[T]]) -> T:
     """Call a target's route in its turn; the turn passes once the route returned, or meets
     the site, or the route's plugin is held. The route is called only in its turn, so a target
@@ -2315,9 +2225,10 @@ async def _taking(turn: Turn | None, run: SourceRun,
     return found
 
 
-def _caller(run: SourceRun, method: Callable[..., Any], *args: Any) -> Callable[[], Awaitable[Any]]:
+def _caller(run: PluginRun, method: Callable[..., Any],
+            *args: Any) -> Callable[[], Awaitable[Any]]:
     """What calls a category's method with `args` (`_called`), each time."""
-    return lambda: _called(run.call, method, *args)
+    return lambda: _called(method, *args)
 
 
 @dataclass(frozen=True)
@@ -2332,7 +2243,7 @@ class _Listed:
 
 
 async def _list_one(
-    work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
+    work: _Work, run: PluginRun, site: Ctx, target: Target, options: Options,
     progress: _Progress, *, name: str, newest_first: bool, items: Callable[[], Awaitable[Any]],
     remaining: int | None,
 ) -> tuple[Ended, int]:
@@ -2401,7 +2312,7 @@ async def _list_one(
 
 
 async def _sync_one(
-    work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
+    work: _Work, run: PluginRun, site: Ctx, target: Target, options: Options,
     progress: _Progress, *, name: str, items: Callable[[], Awaitable[Any]], stops: _Stops,
     remaining: int | None,
 ) -> tuple[Ended, int]:
@@ -2507,7 +2418,7 @@ async def _sync_one(
 
 
 async def _retry_failed(
-    work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
+    work: _Work, run: PluginRun, site: Ctx, target: Target, options: Options,
     listings: Sequence[_Listed],
 ) -> None:
     """List again each post earlier runs failed on, and queue its failed files, before new posts.
@@ -2562,7 +2473,7 @@ async def _retry_failed(
 
 
 async def _relist(
-    work: _Work, run: SourceRun, site: TargetSite, listed: _Listed, cursor: str | None,
+    work: _Work, run: PluginRun, site: Ctx, listed: _Listed, cursor: str | None,
     posts: set[str],
 ) -> tuple[set[str], bool]:
     """List one listing from `cursor` until it has met every post of `posts`, queueing each.
@@ -2586,7 +2497,7 @@ async def _relist(
     left, past, last = set(posts), 0, None
     site.listing = Listing(cursor, label=f"{site.target}: {listed.name or site.target.kind}")
     kept = _Kept(await listed.items(), listed.name, newest_first=listed.newest_first,
-                 span=Range(), call=run.call, close=run.off)
+                 span=Range())
     try:
         async for post in kept:
             if run.settings.stop.soon.is_set():
@@ -2611,7 +2522,7 @@ async def _relist(
 
 
 async def _lost(
-    work: _Work, run: SourceRun, target: Target, rows: Sequence[home.FailureRow], *,
+    work: _Work, run: PluginRun, target: Target, rows: Sequence[home.FailureRow], *,
     ran_out: bool,
 ) -> None:
     """Record that a retry didn't meet a failed post: a failure of each of its files.
@@ -2641,7 +2552,7 @@ async def _lost(
 
 
 async def _listed(
-    work: _Work, run: SourceRun, site: TargetSite, name: str, newest_first: bool,
+    work: _Work, run: PluginRun, site: Ctx, name: str, newest_first: bool,
     items: Callable[[], Awaitable[Any]], listing: Listing, stops: _Stops, options: Options,
     remaining: int | None,
 ) -> tuple[Ended, int, _Kept]:
@@ -2667,7 +2578,7 @@ async def _listed(
     site.listing = listing
     try:
         kept = _Kept(await items(), name, newest_first=newest_first,
-                     span=Range(options.since, options.until), call=run.call, close=run.off)
+                     span=Range(options.since, options.until))
         ended, taken = await _queue_all(work, kept, stops=stops, limit=remaining)
     finally:
         site.listing = None
@@ -2675,7 +2586,7 @@ async def _listed(
     return ended, taken, kept
 
 
-async def _run_discovered(run: SourceRun, options: Options, yielded: Any) -> None:
+async def _run_discovered(run: PluginRun, options: Options, yielded: Any) -> None:
     """Run each target a discovering route yields, in turn, as a target of its own.
 
     Such a route (an author's page listing their works) has no posts of its own; each target
@@ -2692,7 +2603,7 @@ async def _run_discovered(run: SourceRun, options: Options, yielded: Any) -> Non
     seen: set[Target] = set()
     child_options = replace(options, limit=None)
     follow = run.settings.follow
-    async with contextlib.aclosing(_steps(yielded, run.call, run.off)) as items:
+    async with contextlib.aclosing(_steps(yielded)) as items:
         async for item in items:
             if run.settings.stop.soon.is_set():
                 return
@@ -2708,39 +2619,31 @@ async def _run_discovered(run: SourceRun, options: Options, yielded: Any) -> Non
                 return
 
 
-async def _steps(yielded: Any, call: Call, close: Call) -> AsyncIterator[Any]:
-    """Iterate what a route or category yields, plain or async, closing it however it ends.
+async def _steps(yielded: Any) -> AsyncIterator[Any]:
+    """Iterate what a route or category yields, closing it however it ends.
 
-    A plain iterator is stepped through `call` (a thread of the source in a run), one item at a
-    time, and closed through `close`. An async generator is stepped on the loop; each stretch it
-    runs without awaiting is timed, and one past `HELD` seconds is warned about, since it stalls
-    every download. None yields nothing; a coroutine is awaited for what it gives.
+    It is stepped on the loop; each stretch it runs without awaiting is timed, and one past
+    `HELD` seconds is warned about, since it stalls every download. None yields nothing; a
+    coroutine is awaited for what it gives.
 
     Args:
-        yielded: a generator, an iterable, an async generator, a coroutine, or None.
-        call: runs the source's plain code.
-        close: runs a plain generator's `close`, even while the run stops.
+        yielded: an async generator, a coroutine giving one, or None.
 
     Yields:
-        Each item, as the source yielded it.
+        Each item, as the plugin yielded it.
     """
     if inspect.iscoroutine(yielded):
         yielded = await yielded
-    if not hasattr(yielded, "__anext__"):
-        iterator = iter(yielded if yielded is not None else ())
-        try:
-            while (item := await call(next, iterator, _DONE)) is not _DONE:
-                yield item
-        finally:
-            stop = getattr(iterator, "close", None)
-            if stop is not None:
-                await close(stop)
+    if yielded is None:
         return
+    if not hasattr(yielded, "__anext__"):
+        raise PluginError(f"a listing gave a {type(yielded).__name__}; make it an async def "
+                          "that yields Post and Target")
     name = getattr(yielded, "__qualname__", "an async listing")
 
     def slow(seconds: float) -> None:
-        ui.warn("{name} held the loop {seconds:.1f} s without awaiting; await, or use a plain "
-                "def, which runs on its own thread", name=name, seconds=seconds)
+        ui.warn("{name} held the loop {seconds:.1f} s without awaiting; await, or run "
+                "blocking code through ctx.call", name=name, seconds=seconds)
     try:
         while True:
             try:
@@ -2798,44 +2701,7 @@ class _Held:
             self._slow(took)
 
 
-def _extension(file: File) -> tuple[str, str | None]:
-    """A file's extension and kind (`files.VIDEO`, …), guessed before it is downloaded.
-
-    From its name, else its URL's path. A video with a separate audio track (DASH) is joined
-    into `.webm` when both are WebM, else `.mp4`. A file whose kind can't be told yet is
-    sniffed from its first bytes when it lands (`files.SNIFF`).
-
-    Args:
-        file: the file.
-
-    Returns:
-        The extension with its dot ("" when unknown), and the kind (None for inline content).
-    """
-    if isinstance(file, flnd.plugin.File):
-        return planned(file)
-    if file.content is not None:
-        return PurePosixPath(file.name or "").suffix, None
-    if file.name is not None:
-        return PurePosixPath(file.name).suffix, files.kind_of(file.name)
-    url = (
-        file.url if isinstance(file.url, str)
-        else file.url[0] if isinstance(file.url, tuple)
-        else ""
-    )
-    extension = PurePosixPath(urlsplit(url).path).suffix.lower() if url else ""
-    kind = files.kind_of(f"file{extension}") if extension else None
-    if file.audio is not None:
-        # A video and its audio track are joined without re-encoding: a WebM pair into WebM,
-        # anything else into MP4, which takes every codec the sites send.
-        audio = PurePosixPath(urlsplit(file.audio).path).suffix.lower()
-        both = extension == ".webm" and audio == ".webm"
-        return (".webm" if both else DASH_EXTENSION), files.VIDEO
-    if kind is None:
-        return "", files.SNIFF
-    return extension, kind
-
-
-def planned(file: flnd.plugin.File, content_type: str = "") -> tuple[str, str | None]:
+def planned(file: File, content_type: str = "") -> tuple[str, str | None]:
     """An API 2 file's extension and kind before its bytes are seen (5.3); the kit names by it.
 
     A name with its own extension keeps it, its content checked as it lands (`_extension`'s
@@ -2874,7 +2740,7 @@ def _fields(template: str) -> set[str]:
     }
 
 
-def _folder_format(source: Source, route: Route | None, category: Category | None) -> str:
+def _folder_format(source: Plugin, route: Route | None, category: Category | None) -> str:
     """The folder template a file is placed by: its category's, else its route's, else its
     source's.
 
@@ -2895,13 +2761,13 @@ def _folder_format(source: Source, route: Route | None, category: Category | Non
     return source.folder
 
 
-def _format(source: Source, category: Category | None, name: str) -> str:
+def _format(source: Plugin, category: Category | None, name: str) -> str:
     """Return format string `name` from `category` if set, else from `source`."""
     own = getattr(category, name, None)
     return own if own is not None else getattr(source, name)
 
 
-async def resolved(run: SourceRun, item: Target | str) -> Target | None:
+async def resolved(run: PluginRun, item: Target | str) -> Target | None:
     """A target a source yielded, resolved: by the run's resolver, which knows every source.
 
     A target already resolved (its `kind` set) is taken as it is. Any other is resolved on a

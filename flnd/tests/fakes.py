@@ -1,8 +1,5 @@
-"""flnd's own test helpers, over the public test kit `flnd.testing`.
+"""flnd's own test helpers for running the engine.
 
-- `FakeSite` and `collect` are `flnd.testing`'s, taking the run's whole `Options` as flnd's own
-  tests need (`options=Options(categories=…, stop_at_saved=…)`), where the public kit takes
-  `only` and `time`. `Seen` is the kit's own.
 - `history` and `targets` read what a run saved in a home's `flnd.db`.
 - `fetch` and `download` drive the HTTP library (`flnkit.net`) from a test's own thread.
 - `EngineCase`, `make_plugin`, `login_cookies`, `own_login` and `run_targets` run the engine on
@@ -15,7 +12,7 @@ import asyncio
 import inspect
 import io
 import unittest
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -23,68 +20,20 @@ from typing import Any
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 import unawaited  # noqa: F401  (a coroutine never awaited fails its test)
 
-from flnd import plugin, testing
+from flnd import plugin
 from flnd.engine import home as _home
 from flnd.engine import run as _run
 from flnd.engine.core import Engine, Report, _drive
 from flnd.engine.events import Failed, Phase, State
 from flnd.engine.options import Options
-from flnd.plugin import Post
-from flnd.source import Range, Source, Target
-from flnd.testing import Collected, Seen
+from flnd.plugin import Post, Target
 from flnd.ui.log import ui
 from flnkit import clock as _time
 from flnkit import cookies as _cookies
 from flnkit import net as _net
 
-__all__ = ["CDN", "Collected", "EngineCase", "FakeSite", "Seen", "collect", "download", "fetch",
-           "history", "login_cookies", "make_plugin", "noise", "own_login", "run_targets",
-           "targets"]
-
-# A fixture: data for a URL, a SiteError to raise, or a function of (url, request) giving either.
-Answer = Any
-
-
-class FakeSite(testing.FakeSite):
-    """`flnd.testing.FakeSite`, whose `--when` comes from the run's `Options`.
-
-        site = FakeSite(Target("exm:example_user", kind="user"), options=Options(since=day))
-
-    Args:
-        target: the target it acts for.
-        options: the run's options; `time` reads `--when` from them.
-        **given: the rest of `flnd.testing.FakeSite`'s arguments.
-    """
-
-    def __init__(self, target: Target | None = None, *, options: Options = Options(),
-                 **given: Any) -> None:
-        super().__init__(target, time=Range(options.since, options.until), **given)
-
-
-def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | None = None,
-            html: Mapping[str, Answer] | None = None, pages: Mapping[str, str] | None = None,
-            options: Options = Options(), cookies: Mapping[str, str] | None = None,
-            client: Any = None, seen: Seen | None = None,
-            state: MutableMapping[str, Any] | None = None, feeds: Any = ()) -> list[Collected]:
-    """`flnd.testing.collect` with the run's whole `Options`, and the site's fixtures inline.
-
-        saved = collect(Example, "exm:example_user", json=FIXTURES,
-                        options=Options(categories=("posts",)))
-        [s.path for s in saved]     # ["posts/2026-01-02_C1abc_0.jpg", …]
-
-    Args:
-        source: the source class.
-        text: the target as people write it, `code:` or a link.
-        json, html, pages, cookies, client, seen, feeds: the `FakeSite`'s, as it takes them.
-        state: the site's saved state, shared by runs that pass the same dict.
-        options: the run's options: `categories`, `--when`, `stop_at_saved`, ….
-
-    Returns:
-        What `flnd.testing.collect` returns.
-    """
-    site = FakeSite(None, cookies=cookies, json=json, html=html, pages=pages, options=options,
-                    client=client, seen=seen, state=state, feeds=feeds)
-    return testing._collect(source, text, site, options)
+__all__ = ["CDN", "EngineCase", "download", "fetch", "history", "login_cookies", "make_plugin",
+           "noise", "own_login", "run_targets", "targets"]
 
 
 def history(home) -> dict[str, dict[str, Any]]:

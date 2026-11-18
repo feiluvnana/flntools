@@ -22,21 +22,28 @@ from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
-import flnd.plugin
-from flnd.engine import crawl, home, jobs, save, site
+from flnd.engine import crawl, ctx, home, jobs, save
 from flnd.engine.crawl import TargetReport
-from flnd.engine.ctx import Ctx, native, start
+from flnd.engine.ctx import Ctx, PluginRun, plugin_run, shared_browser, start
 from flnd.engine.events import Failed, Planned
 from flnd.engine.options import Options, Retry, RunShared, categories_by_source, validate
 from flnd.engine.run import Stop, Tally, _shut_down, sink, stopping
-from flnd.engine.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
-from flnd.source import Cookies, Range, Source, Target, _Unmatched
-from flnd.sources import SOURCES
+from flnd.plugin import Browser, Cookies, Plugin, Range, Target
+from flnd.plugins import PLUGINS
 from flnd.ui.log import ui
 from flnkit import net, text
 
 __all__ = ["AuthInfo", "Engine", "Report", "TargetInfo", "TargetReport"]
+
+
+class _Unmatched(UsageError):
+    """A target text no route of its plugin reads; `url` is the link to follow once, if any."""
+
+    def __init__(self, message: str, *, url: str | None = None) -> None:
+        super().__init__(message)
+        self.url = url
+
 
 T = TypeVar("T")
 # The kind of the pseudo-target a source's account `Site` is made for (`_account`).
@@ -109,7 +116,7 @@ class Engine:
         self,
         *,
         home: Path = Path(".flnd"),
-        sources: Mapping[str, type[Source]] = SOURCES,
+        sources: Mapping[str, type[Plugin]] = PLUGINS,
         emit: Callable[[Any], Any] | None = None,
         stop: Stop | None = None,
     ) -> None:
@@ -382,7 +389,7 @@ class Engine:
     ) -> str:
         """Log in to a source by one of its login's `methods` and return a status message.
 
-        A cookie login (`flnd.source.cookies`) reads a browser's cookie store or a cookie file,
+        A cookie login (`flnd.plugin.cookies`) reads a browser's cookie store or a cookie file,
         checks that it holds the login's cookies, and seals it in the vault. Any other login
         runs the source's own `start` hook, interactively (a phone code, a browser window).
 
@@ -461,20 +468,20 @@ class Engine:
 
     @property
     def cookie_logins(self) -> tuple[str, ...]:
-        """Source codes that authenticate with browser or file cookies."""
+        """Plugin codes that authenticate with browser or file cookies."""
         return tuple(code for code, source in self.sources.items()
-                     if isinstance(source.login, (Cookies, flnd.plugin.Cookies)))
+                     if isinstance(source.login, Cookies))
 
-    def _interactive_login(self, code: str, source: Source, method: str) -> str:
-        """Run a source's own login hook (`Login.start`), with a terminal it may prompt on.
+    def _interactive_login(self, code: str, source: Plugin, method: str) -> str:
+        """Run a plugin's own login hook (`Login.start`), with a terminal it may prompt on.
 
-        The hook gets a `LoginSite` of a run of its own, with `interactive` on, so it may ask
-        for a code or open a browser window. Its Ctrl-C ends the login, not a download. Only a
-        login the hook saved has its origin recorded.
+        The hook gets the `Ctx` of the plugin's account in a run of its own, whose `ask` asks
+        in the terminal, so it may ask for a code or open a browser window. Its Ctrl-C ends
+        the login, not a download. Only a login the hook saved has its origin recorded.
 
         Args:
-            code: the source's code.
-            source: the source, made from it.
+            code: the plugin's code.
+            source: the plugin, made from it.
             method: the login method the hook is given.
 
         Returns:
@@ -482,16 +489,13 @@ class Engine:
         """
         with stopping() as stop:
             settings = RunShared(home=self.home, stop=stop, interactive=True)
-            with source_run(settings, source) as run:
+            with plugin_run(settings, source) as run:
                 assert source.login is not None
                 # Its state, read and written back here, off the loop the login runs on.
                 run.load_state()
                 try:
-                    if native(source):
-                        ctx = Ctx(run, Target(f"{code}:", kind=ACCOUNT), login=True)
-                        run.loop.run(start(source.login, ctx, method))
-                    else:
-                        source.login.start(LoginSite(run), method)
+                    account = Ctx(run, Target(f"{code}:", kind=ACCOUNT), login=True)
+                    run.loop.run(start(source.login, account, method))
                 finally:
                     run.save_state()
             if home.logged_in(self.home, code):
@@ -846,7 +850,7 @@ class Engine:
     async def _discover_and_run(
         self,
         runner: _Runner,
-        run: SourceRun,
+        run: PluginRun,
         target: Target,
         options: Options,
         reports: list[TargetReport],
@@ -937,7 +941,7 @@ class Engine:
     async def _sync_query_run(
         self,
         runner: _Runner,
-        run: SourceRun,
+        run: PluginRun,
         target: Target,
         options: Options,
         seen_keys: set[str],
@@ -987,7 +991,7 @@ class Engine:
     async def _sync_query_items(
         self,
         runner: _Runner,
-        run: SourceRun,
+        run: PluginRun,
         target: Target,
         options: Options,
         seen_keys: set[str],
@@ -1241,7 +1245,7 @@ class Engine:
 class _Entry:
     """One plugin's instance in a run: its source run, its login, and its `connect` hook."""
 
-    run: SourceRun
+    run: PluginRun
     stack: contextlib.AsyncExitStack
     # Whether its login is kept (a source without a login always is).
     logged_in: bool = True
@@ -1299,7 +1303,7 @@ class _Runner:
         # Kept before the first wait, so a target that comes meanwhile waits for this one.
         entry = self._entries[code] = _Entry(None, stack)  # type: ignore[arg-type]
         try:
-            run = entry.run = await stack.enter_async_context(site.opened(self.settings, source))
+            run = entry.run = await stack.enter_async_context(ctx.opened(self.settings, source))
         except BaseException as error:
             entry.error = error
             entry.started.set()
@@ -1470,10 +1474,7 @@ class _Runner:
         source = entry.run.source
         listing = self._listing.get(source.code)
         if listing is None:
-            # API 1 says so with a `browser` class attribute; API 2 with its `browser`, whose
-            # `Browser.NONE` is a member, so true too.
-            declared = getattr(type(source), "browser", False)
-            browser = declared is not flnd.plugin.Browser.NONE and bool(declared)
+            browser = type(source).browser is not Browser.NONE
             listing = self._listing[source.code] = asyncio.Semaphore(
                 1 if browser else HTTP_AT_ONCE)
         held = {"listing": False, "active": False}
@@ -1609,7 +1610,7 @@ class _Runner:
         A hook whose exit fails is reported, as a `Failed` event for the plugin's account:
         the files are saved, but the run isn't all right.
         """
-        scheduler = site.scheduler(self.settings)
+        scheduler = ctx.scheduler(self.settings)
         stopped = scheduler is not None and scheduler.stopped is not None
         while self._handed:
             handed, self._handed = self._handed, []
@@ -1672,7 +1673,7 @@ def _planned(options: Options) -> tuple[str, ...]:
 
 
 def _validate_targets(
-    sources: Mapping[str, type[Source]],
+    sources: Mapping[str, type[Plugin]],
     categories: str | Sequence[str] | None,
     resolved: Sequence[Target],
 ) -> None:
@@ -1680,30 +1681,26 @@ def _validate_targets(
     validate(sources, categories, resolved)
 
 
-def _account(run: SourceRun) -> TargetSite | Ctx:
-    """The `Site` (API 2's `Ctx`) of a source's account, not of a target: what `connect` and
-    `check` see."""
-    account = Target(f"{run.source.code}:", kind=ACCOUNT)
-    return Ctx(run, account) if native(run.source) else TargetSite(run, account)
+def _account(run: PluginRun) -> Ctx:
+    """The `Ctx` of a plugin's account, not of a target: what `connect` and `check` see."""
+    return Ctx(run, Target(f"{run.source.code}:", kind=ACCOUNT))
 
 
-async def _logged_in(run: SourceRun) -> bool:
-    """Whether the source's login is kept; a source without a login always is."""
+async def _logged_in(run: PluginRun) -> bool:
+    """Whether the plugin's login is kept; a plugin without a login always is."""
     login = run.source.login
     if login is None:
         return True
-    if native(run.source):
-        return bool(await login.check(_account(run)))
-    return await run.call(login.check, _account(run))
+    return bool(await login.check(_account(run)))
 
 
-def _required(source: Source) -> bool:
+def _required(source: Plugin) -> bool:
     """Whether the source lists nothing without a login."""
     return source.login is not None and source.login.required
 
 
 async def _log_dry(
-    run: SourceRun, target: Target, options: Options, span: Range, *, is_query: bool,
+    run: PluginRun, target: Target, options: Options, span: Range, *, is_query: bool,
 ) -> None:
     """List what a download of `target` would save: a log line and a `Planned` event each.
 
@@ -1757,14 +1754,14 @@ def _log_totals(report: Report) -> None:
 
 def resolve(
     target_text: str,
-    sources: Mapping[str, type[Source]],
+    sources: Mapping[str, type[Plugin]],
     *,
     follow: Callable[[str], str] | None = None,
 ) -> Target:
     """Read one target's text and return it resolved by its source.
 
     1. Find the source (`_split_target`): by the code before `:` or `?`, or by a link's host.
-    2. Let it resolve the rest (`Source.resolve`): the first route whose pattern matches.
+    2. Let it resolve the rest (`Plugin.resolve`): the first route whose pattern matches.
     3. A link no route reads (`_Unmatched`, such as a short link) is followed once, when
        `follow` is given, and the link it leads to is resolved instead, by whichever source
        owns that one.
@@ -1797,14 +1794,9 @@ def resolve(
         return _read(redirected() if redirected is not None else source, followed)
 
 
-def _read(source: Source | flnd.plugin.Plugin, text: str) -> Target:
-    """`source.resolve(text)`, a miss of either API as `_Unmatched`.
-
-    API 1's `resolve` raises it; API 2's gives None, read here as the same miss, with the link
-    to follow when `text` is one on the plugin's domains.
-    """
-    if not native(source):
-        return source.resolve(text)
+def _read(source: Plugin, text: str) -> Target:
+    """`source.resolve(text)`, its None as `_Unmatched`, with the link to follow when `text`
+    is one on the plugin's domains."""
     found = type(source).resolve(text)
     if found is not None:
         return found
@@ -1813,7 +1805,7 @@ def _read(source: Source | flnd.plugin.Plugin, text: str) -> Target:
                      f"{', '.join(source.forms)}", url=link)
 
 
-def _split_target(cleaned: str, sources: Mapping[str, type[Source]]) -> tuple[Source, str]:
+def _split_target(cleaned: str, sources: Mapping[str, type[Plugin]]) -> tuple[Plugin, str]:
     """Split a target's text into its source and what that source resolves.
 
     The forms, in the order they are tried:
@@ -1852,7 +1844,7 @@ def _split_target(cleaned: str, sources: Mapping[str, type[Source]]) -> tuple[So
     return _owner_source(cleaned, sources), cleaned
 
 
-def _owner_source(cleaned: str, sources: Mapping[str, type[Source]]) -> Source:
+def _owner_source(cleaned: str, sources: Mapping[str, type[Plugin]]) -> Plugin:
     """The source whose domains own a link or a bare `host/path`, made.
 
     Args:
@@ -1867,17 +1859,29 @@ def _owner_source(cleaned: str, sources: Mapping[str, type[Source]]) -> Source:
     """
     found = owner(cleaned, sources)
     if found is None:
-        choices = ", ".join(f"{code}:{cleaned}" for code in sources)
+        # A plugin with no domains (web) reads any link, and only links: a link no plugin owns
+        # is offered to it, and a bare text to the others.
+        link = _is_url(cleaned)
+        offered = [code for code in sources if link != bool(_domains(code, sources))]
+        choices = ", ".join(f"{code}:{cleaned}" for code in offered or sources)
         raise UsageError(f'which source is "{cleaned}"? Write it as {choices}')
     return found()
 
 
-def owner(target_text: str, sources: Mapping[str, type[Source]]) -> type[Source] | None:
+def _domains(code: str, sources: Mapping[str, type[Plugin]]) -> Sequence[str]:
+    """A plugin's domains: a built-in's from the manifest, so no plugin is imported."""
+    from flnd.plugins import _manifest
+
+    known = _manifest.PLUGINS.get(code)
+    return known["domains"] if known is not None else sources[code].domains  # type: ignore
+
+
+def owner(target_text: str, sources: Mapping[str, type[Plugin]]) -> type[Plugin] | None:
     """Return the source whose domains `target_text` belongs to, or None.
 
     A built-in source's domains come from the manifest, so matching a link imports only the
     source that owns it. The built-ins are asked first: only a link none of them owns asks the
-    other sources, which imports every plugin (`flnd.sources.Registry`).
+    other plugins, which imports every installed one (`flnd.plugins.Registry`).
 
     Args:
         target_text: a link, or a target written without its source.
@@ -1886,13 +1890,13 @@ def owner(target_text: str, sources: Mapping[str, type[Source]]) -> type[Source]
     Returns:
         The class of the source whose domains the link is on; None when no source's are.
     """
-    from flnd.sources import _manifest
+    from flnd.plugins import _manifest
 
-    for code, known in _manifest.SOURCES.items():
+    for code, known in _manifest.PLUGINS.items():
         if code in sources and _on(target_text, known["domains"]):  # type: ignore[arg-type]
             return sources[code]
     for code in sources:
-        cls = None if code in _manifest.SOURCES else sources.get(code)
+        cls = None if code in _manifest.PLUGINS else sources.get(code)
         if cls is not None and _on(target_text, cls.domains):
             return cls
     return None
@@ -1940,38 +1944,9 @@ def _follow(url: str) -> str:
 
 
 @contextlib.asynccontextmanager
-async def _connected(run: SourceRun, account: Any) -> AsyncIterator[None]:
-    """Run the source's `connect` hook around a block, keeping what it gives as `run.client`.
-
-    `connect` returns a context manager, plain or async (Telegram's Telethon client is async).
-    A plain one is entered and left on a thread of the source; an async one on the run's loop,
-    where its client lives. An error in the block is handed to its exit, which may swallow it,
-    as `with` would; an error of the exit itself goes on up, for the run to report.
-
-    Args:
-        run: the source's run.
-        account: the account `Site` the hook gets (`_account`).
-    """
-    if native(run.source):
-        async with run.source.connect(account):
-            yield
-        return
-    manager = await run.call(run.source.connect, account)
-    if not hasattr(manager, "__aenter__"):
-        run.client = await run.call(manager.__enter__)
-        try:
-            yield
-        except BaseException as error:
-            if not await run.off(manager.__exit__, type(error), error, error.__traceback__):
-                raise
-        else:
-            await run.off(manager.__exit__, None, None, None)
-        return
-    run.client = await manager.__aenter__()
-    try:
+async def _connected(run: PluginRun, account: Ctx) -> AsyncIterator[None]:
+    """Run the plugin's `connect` hook, an async context manager, around a block, on the run's
+    loop. An error in the block is handed to its exit, which may swallow it, as `async with`
+    would; an error of the exit itself goes on up, for the run to report."""
+    async with run.source.connect(account):
         yield
-    except BaseException as error:
-        if not await manager.__aexit__(type(error), error, error.__traceback__):
-            raise
-    else:
-        await manager.__aexit__(None, None, None)

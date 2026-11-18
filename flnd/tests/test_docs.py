@@ -1,4 +1,4 @@
-"""Keeps the docs in step with the code: docstrings, `src/docs/` pages, links, CLI flags and sources.
+"""Keeps the docs in step with the code: docstrings, `src/docs/` pages, links, CLI flags, plugins.
 
 PLAN.md section 13 › Writing sets the rules this file checks. Each check is a test class below:
 
@@ -10,8 +10,8 @@ PLAN.md section 13 › Writing sets the rules this file checks. Each check is a 
 3. `LinkTest` checks that every relative link in `src/docs/` and in the root's markdown resolves:
    the file exists, and a `#fragment` names one of its headings.
 4. `CliTest` checks that `src/docs/cli.md` names every command and every option the CLI parses.
-5. `SourcePageTest` checks that each built-in source has `src/docs/sources/<code>.md`, and that no
-   page is left for a source that is gone.
+5. `PluginPageTest` checks that each built-in plugin has `src/docs/plugins/<code>.md`, and that
+   no page is left for a plugin that is gone.
 6. `ReadmeTest` runs the `python` blocks of `README.md` offline, and parses every `flnd …`
    command line of its `bash` blocks with the CLI's own argparse parser, so a command, a flag or
    an example the README shows can't drift from the code.
@@ -52,20 +52,17 @@ PACKAGES = ("src", "flnkit")
 DOCS = ROOT / "src" / "docs"
 # The longest a module docstring may be, in lines: what the module holds, and its src/docs page.
 MODULE_LINES = 3
-# The modules that keep a longer docstring for now (25 of them): their flows and rules aren't
+# The modules that keep a longer docstring for now (17 of them): their flows and rules aren't
 # in a src/docs page yet. Step 16 (PLAN.md section 14) empties this list by moving each into
 # its page, or the module goes when a step replaces it. The list may only shrink:
 # `test_long_docstrings_are_still_long`.
 LONG = frozenset({
-    "src/__init__.py", "src/_library.py", "src/cli.py", "src/errors.py", "src/source.py",
-    "src/testing.py",
+    "src/__init__.py", "src/_library.py", "src/cli.py", "src/errors.py", "src/testing.py",
     "src/engine/events.py", "src/engine/home.py", "src/engine/options.py",
     "src/engine/plugins.py",
     "flnkit/browser.py", "flnkit/cookies.py", "flnkit/db.py", "flnkit/html.py",
     "flnkit/net.py", "flnkit/text.py",
-    "src/sources/__init__.py", "src/sources/_manifest.py", "src/sources/fbk.py",
-    "src/sources/ins.py", "src/sources/loi.py", "src/sources/mht.py", "src/sources/tik.py",
-    "src/sources/tlg.py", "src/sources/twt.py",
+    "src/plugins/__init__.py", "src/plugins/_manifest.py",
 })
 # The marker that skips the `python` block right after it, with an optional reason:
 # `<!-- docs-test: skip -->` or `<!-- docs-test: skip: it needs a real site -->`. A skipped block
@@ -73,7 +70,7 @@ LONG = frozenset({
 SKIP = re.compile(r"^<!-- docs-test: skip(?:: (?P<reason>.+?))? -->$")
 README = ROOT / "README.md"
 # The terms the glossary must define: the words every page uses.
-TERMS = ("target", "source", "route", "category", "post", "file", "event", "home")
+TERMS = ("target", "plugin", "route", "category", "post", "file", "event", "home")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -417,14 +414,14 @@ class CliTest(unittest.TestCase):
 # 5. One page per source
 # ---------------------------------------------------------------------------------------------
 
-class SourcePageTest(unittest.TestCase):
-    """Each built-in source has `src/docs/sources/<code>.md`, and each page a source."""
+class PluginPageTest(unittest.TestCase):
+    """Each built-in plugin has `src/docs/plugins/<code>.md`, and each page a plugin."""
 
-    def test_one_page_per_source(self) -> None:
-        from flnd.sources import SOURCES
+    def test_one_page_per_plugin(self) -> None:
+        from flnd.plugins import PLUGINS
 
-        pages = {page.stem for page in (DOCS / "sources").glob("*.md")}
-        self.assertEqual(sorted(pages), sorted([*SOURCES, "web"]))
+        pages = {page.stem for page in (DOCS / "plugins").glob("*.md")}
+        self.assertEqual(sorted(pages), sorted(PLUGINS))
 
 
 # ---------------------------------------------------------------------------------------------

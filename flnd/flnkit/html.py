@@ -1,6 +1,6 @@
 """Getting data out of HTML and JSON: `parse` an HTML page, and `dig` a path in parsed JSON.
 
-src/docs/writing-a-source explains it.
+src/docs/writing-a-plugin explains it.
 
 A small library over selectolax's lexbor parser (a C HTML parser with its own CSS engine) and
 msgspec's JSON decoder. It knows nothing of flnd: any program can use it.
@@ -24,7 +24,7 @@ What it offers:
    `visible` is the text a reader sees: the page without its scripts and styles.
 4. `dig(data, path)` walks parsed JSON by a short path; see its docstring for the four forms.
 
-Who calls it: in flnd, `flnd.source` re-exports `dig`; `flnd.engine.site` parses the page a source's
+Who calls it: in flnd, `flnd.plugin` re-exports `dig`; `flnd.engine.ctx` parses the page a plugin's
 browser loads, `flnkit.net.Response.html` a response body, and `flnd.testing` the pages of its
 fakes. What it calls: selectolax, msgspec and `flnkit.errors`, nothing else.
 
@@ -41,7 +41,7 @@ say the same thing in plain Python.
 
 Rules a change must keep:
 - selectolax is imported on the first `parse`, and msgspec on the first decode, so importing
-  this module (which `flnd.source` does, for `dig`) costs nothing at startup: `flnd --help`
+  this module (which `flnd.plugin` does, for `dig`) costs nothing at startup: `flnd --help`
   must not load either.
 - A `Document` is never changed once made, so `visible` works on a copy of the tree.
 - One document is read from one thread at a time; lexbor's trees aren't thread-safe.

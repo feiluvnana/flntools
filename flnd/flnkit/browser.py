@@ -5,7 +5,7 @@ src/docs/architecture explains it.
 A standalone library: it imports the standard library, Playwright and the kit (`net`, `files`,
 `text`, `clock`) and `flnkit.errors`, and nothing of flnd's engine or screen. It logs through
 `logging`, and what it asks a person, or shows them, goes through the `Screen` its caller passes
-in. In flnd, `flnd.engine.site.TargetSite` builds the `Site` browser verbs a source calls on it,
+in. In flnd, `flnd.engine.ctx.TargetTabs` builds the browser verbs a plugin's `Ctx` calls on it,
 each one call across to the run's loop from the source's thread (`RunBrowser.run`).
 
 What it offers, from the bottom up:
@@ -92,7 +92,7 @@ class Screen:
     """What the browser asks of a person and shows them: a yes-or-no question and a progress row.
 
     This default asks on a plain terminal, says no without one, and draws no rows. flnd passes
-    its own (`flnd.engine.site`), so its questions and rows look like the rest of its screen.
+    its own (`flnd.engine.ctx`), so its questions and rows look like the rest of its screen.
     """
 
     def confirm(self, question: str) -> bool:

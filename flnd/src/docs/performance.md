@@ -331,4 +331,4 @@ about 5), the median of 9 alternating rounds, each the best of 3:
   comprehension. The old 682 µs baseline went through parsel's JSON selectors; jmespath alone
   is the 238 µs above.
 - **Neither parser loads at startup**: `flnkit.html` imports selectolax on the first parse and
-  msgspec on the first decode, so `flnd --help` and `import flnd.source` load neither.
+  msgspec on the first decode, so `flnd --help` and `import flnd.plugin` load neither.

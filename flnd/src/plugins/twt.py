@@ -1,5 +1,5 @@
 """Twitter / X on plugin API 2: a user's timelines and a search read in the browser, the profile
-and one tweet from X's GraphQL API, each operation in its own bucket. See src/docs/sources/twt.
+and one tweet from X's GraphQL API, each operation in its own bucket. See src/docs/plugins/twt.
 """
 
 from __future__ import annotations

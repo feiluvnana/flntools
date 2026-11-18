@@ -9,8 +9,8 @@ from test_library import LibraryCase, example_source
 from flnd.engine import home
 from flnd.engine.resolve import Manifest, Resolved, resolve
 from flnd.errors import PluginError, UsageError
-from flnd.source import Target, target
-from flnd.sources import _manifest
+from flnd.plugin import Target, route
+from flnd.plugins import _manifest
 
 BUILT_IN = {
     "exm": {
@@ -211,13 +211,12 @@ class ResolveTest(unittest.TestCase):
                 self.assertEqual(list(manifest.plugins), list(BUILT_IN))
         self.assertEqual(list(MANIFEST.broken), ["bad"])
 
-    def test_an_api_1_entry_has_every_category_its_own(self):
-        # Today's `_manifest.py` names no routes and no `own` (until API 2).
-        manifest = Manifest(_manifest.SOURCES)
+    def test_the_built_ins_resolve_from_their_manifest(self):
+        manifest = Manifest(_manifest.PLUGINS)
         for text, expected in [
-            ("ins:example_user/tagged", R("ins", "example_user", "", ("tagged",))),
-            ("loi:12", R("loi", "12", "", ("photo", "archive"))),
-            ("mht?cats/cover", R("mht", "cats", "", ("cover",), query=True)),
+            ("ins:example_user/tagged", R("ins", "example_user", "user", ("tagged",))),
+            ("loi:12", R("loi", "12", "post", ("archive", "photo"))),
+            ("mht?cats/cover", R("mht", "cats", "query", ("cover",), query=True)),
         ]:
             with self.subTest(text=text):
                 self.assertEqual(resolve(text, manifest=manifest, known={}), expected)
@@ -225,29 +224,28 @@ class ResolveTest(unittest.TestCase):
     def test_resolving_imports_no_plugin(self):
         code = ("import sys\n"
                 "from flnd.engine.resolve import Manifest, resolve\n"
-                "from flnd.sources import _manifest\n"
-                "manifest = Manifest(_manifest.SOURCES)\n"
+                "from flnd.plugins import _manifest\n"
+                "manifest = Manifest(_manifest.PLUGINS)\n"
                 "for text in ('ins:example_user/reels', 'twt?cats', "
                 "'https://www.instagram.com/example_user'):\n"
                 "    try:\n"
                 "        resolve(text, manifest=manifest, known={})\n"
                 "    except Exception as error:\n"
                 "        print(type(error).__name__)\n"
-                "print(sorted(n for n in sys.modules if n.startswith(('flnd.sources.', "
-                "'flnd.plugins.')) or n in ('flnd.source', 'flnd.plugin')))\n")
+                "print(sorted(n for n in sys.modules if n.startswith('flnd.plugins.') "
+                "or n == 'flnd.plugin'))\n")
         found = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                                check=True)
-        # An API 1 manifest has no link routes yet, so the link is a UsageError.
-        self.assertEqual(found.stdout.split(), ["UsageError", "['flnd.sources._manifest']"])
+        self.assertEqual(found.stdout.split(), ["['flnd.plugins._manifest']"])
 
 
 @unittest.skip("E4 is the wiring's: `feat:read categories from the target` stores both")
 class MixedRunTest(LibraryCase):
     def test_a_search_and_a_user_with_categories_are_both_stored(self):
-        def search(self, site, words):
+        async def search(self, ctx, words):
             yield Target("exq:example_creator")
 
-        searches = target("exq?{words}")(search)
+        searches = route("exq?{words}")(search)
         self.fl.add(example_source(self.listing, code="exq", search=searches))
         self.fl.follow(["exq?words/reels", "exq:example_user/posts"]).wait()
         with home.open(self.home) as db:

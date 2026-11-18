@@ -12,8 +12,8 @@ This is flnd's own module (not a library): it knows sources, targets and the hom
 
 Who calls it: the engine (`flnd.engine.core`) builds the `Options` and `RunShared` of a run and
 checks `--only`; the job reads them; the library (`flnd._library`) and the steps after a download
-(`flnd.engine.save`), a source's run (`flnd.engine.site`) and the job read `config`. What it calls:
-`flnd.engine.home` (the database type), `flnd.source` (`Source`, `Target`), `flnd.ui.log` (a
+(`flnd.engine.save`), a plugin's run (`flnd.engine.ctx`) and the job read `config`. What it calls:
+`flnd.engine.home` (the database type), `flnd.plugin` (`Plugin`, `Target`), `flnd.ui.log` (a
 warning for a key the config file has that flnd doesn't take) and `flnd.errors`.
 
 How a setting resolves: a flag (or a library argument) given for one run, then the environment
@@ -29,7 +29,7 @@ How `--only` is checked, before any request:
    categories is refused, so a typo never downloads nothing quietly.
 4. A single post (a route without categories) takes no `--only` at all.
 
-A source's own templates are checked when its class is made (`flnd.source`), so a run never
+A plugin's own templates are checked when its class is made (`flnd.plugin`), so a run never
 meets a broken one. Every check here raises `UsageError`, which the CLI shows without a
 traceback.
 """
@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any
 from flnd.engine import home
 from flnd.engine.run import sink
 from flnd.errors import UsageError
-from flnd.source import SCROLLS, Range, Source, Target
+from flnd.plugin import Plugin, Range, Target
 from flnd.ui.log import ui
 
 if TYPE_CHECKING:
@@ -132,7 +132,7 @@ class RunShared:
 def categories_by_source(
     categories: str | Sequence[str] | None,
     targets: Sequence[Target],
-    sources: Mapping[str, type[Source]],
+    sources: Mapping[str, type[Plugin]],
 ) -> dict[str, tuple[str, ...] | None]:
     """Check `--only` (plain or `<source>:<cats>`) and give each target source its categories.
 
@@ -175,7 +175,7 @@ def _single(source: Any, kind: str) -> bool:
     return route is not None and not route.categories and not route.discovers
 
 
-def unknown(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None:
+def unknown(names: Sequence[str], sources: Sequence[type[Plugin]]) -> str | None:
     """Why `--only names` fits none of these sources; None when it fits.
 
     `all` always fits. A name fits when any one of the sources has a category of that name.
@@ -189,14 +189,14 @@ def unknown(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None
         None when every name is known.
 
     Example:
-        >>> from flnd.source import Post, Source, target
-        >>> class Example(Source):
-        ...     code, domains, api = "exm", ("example.com",), 1
-        ...     @target("exm:{user}")
-        ...     def profile(self, site, user):
-        ...         return user
+        >>> from flnd.plugin import Plugin, Post, route
+        >>> class Example(Plugin):
+        ...     code, name, domains, api = "exm", "Example", ("example.com",), 2
+        ...     @route("exm:{user}")
+        ...     async def profile(self, ctx, user):
+        ...         return {}
         ...     @profile.category
-        ...     def posts(self, site, profile):
+        ...     async def posts(self, ctx, profile):
         ...         yield Post("p1")
         >>> unknown(["posts", "all"], [Example]) is None
         True
@@ -211,7 +211,7 @@ def unknown(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None
 
 
 def _split(
-    items: Sequence[str], used: set[str], sources: Mapping[str, type[Source]],
+    items: Sequence[str], used: set[str], sources: Mapping[str, type[Plugin]],
 ) -> tuple[list[str], dict[str, list[str]]]:
     """Split `--only` tokens into plain names and `<source>:<cats>` buckets.
 
@@ -248,7 +248,7 @@ def _split(
 
 
 def _names(
-    source: type[Source], plain: Sequence[str], scoped: Mapping[str, Sequence[str]],
+    source: type[Plugin], plain: Sequence[str], scoped: Mapping[str, Sequence[str]],
 ) -> tuple[str, ...]:
     """The validated categories one source takes.
 
@@ -279,7 +279,7 @@ def _names(
     return names
 
 
-def _lists(sources: Sequence[type[Source]]) -> str:
+def _lists(sources: Sequence[type[Plugin]]) -> str:
     return "; ".join(f"{source.code}: {', '.join(source.categories)}" for source in sources)
 
 
@@ -288,7 +288,7 @@ def _lists(sources: Sequence[type[Source]]) -> str:
 # ---------------------------------------------------------------------------------------------
 
 def validate(
-    sources: Mapping[str, type[Source]] | Sequence[type[Source]],
+    sources: Mapping[str, type[Plugin]] | Sequence[type[Plugin]],
     from_selection: str | Sequence[str] | None = None,
     targets: Sequence[Target] = (),
 ) -> None:
@@ -306,7 +306,7 @@ def validate(
         UsageError: a category is unknown, or given for a single post.
     """
     # The mapping itself, not a copy: a copy would import every source and plugin, where the
-    # check needs only the targets' own (`flnd.sources.Registry` loads each on first lookup).
+    # check needs only the targets' own (`flnd.plugins.Registry` loads each on first lookup).
     by_code = (sources if isinstance(sources, Mapping)
                else {src.code: src for src in sources})
     if from_selection is not None:
@@ -314,7 +314,7 @@ def validate(
 
 
 def _validate_from(
-    by_code: Mapping[str, type[Source]],
+    by_code: Mapping[str, type[Plugin]],
     from_selection: str | Sequence[str],
     targets: Sequence[Target],
 ) -> None:
@@ -349,7 +349,7 @@ def _validate_from(
 
 
 def _check_from_entry(
-    entry: str, by_code: Mapping[str, type[Source]], known: set[str]
+    entry: str, by_code: Mapping[str, type[Plugin]], known: set[str]
 ) -> None:
     """Check one entry of `--only`: `<cats>` or `<source>:<cats>`, comma-separated.
 
@@ -376,7 +376,7 @@ def _check_from_entry(
 
 
 def _target_routes(
-    by_code: Mapping[str, type[Source]], targets: Sequence[Target]
+    by_code: Mapping[str, type[Plugin]], targets: Sequence[Target]
 ) -> list[tuple[Target, Any]]:
     """Pair each target with the route of its kind.
 
@@ -419,6 +419,9 @@ VAULTS = (FILE, KEYCHAIN)
 # The proxy schemes `[sources.<code>] proxy` takes: the ones curl speaks. `socks5h` also looks
 # host names up through the proxy.
 PROXIES = ("http", "https", "socks5", "socks5h")
+# How `[sources.<code>] scroll` makes a plugin's feeds scroll: like a person, or as fast as
+# the page loads.
+SCROLLS = ("human", "fast")
 # How many saved posts in a row end a sync by default (`stop_after`).
 STOP_AFTER = 5
 # Every key each table takes. A key not listed is warned about, never silently ignored, so a
@@ -434,14 +437,14 @@ SOURCE_KEYS = ("pace", "scroll", "limits", "proxy", "stop_after")
 class SourceConfig:
     """One source's `[sources.<code>]` settings in config.toml; None leaves it to the source.
 
-    Each setting overrides what the source's class says (`flnd.source.Source`), for this home.
+    Each setting overrides what the plugin's class says (`flnd.plugin.Plugin`), for this home.
     """
 
-    # Seconds between the source's page requests; overrides `Source.pace`.
+    # Seconds between the source's page requests; overrides `Plugin.pace`.
     pace: float | None = None
-    # How its browser feeds scroll, "human" or "fast"; overrides `Source.scroll`.
+    # How its browser feeds scroll, "human" or "fast"; overrides `Plugin.scroll`.
     scroll: str | None = None
-    # The most files at once from a media host, by host; merged over `Source.limits`, so a host
+    # The most files at once from a media host, by host; merged over `Plugin.limits`, so a host
     # named in both takes this number.
     limits: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
     # The proxy every HTTP request of the source goes through (`socks5://127.0.0.1:1080`);

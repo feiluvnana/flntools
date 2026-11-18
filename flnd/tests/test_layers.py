@@ -3,7 +3,7 @@
 Every file under `src/` (the package flnd) and `flnkit/` is read with `ast`, and every import
 counts: at the top, inside a function and under `if TYPE_CHECKING:` alike, since each is a
 dependency. Nothing is imported or run. Third-party packages are ruled on only where a rule names
-them (`engine/events.py`, the plugins); which SDK a plugin may use is tests/test_sources.py's guard.
+them (`engine/events.py`, the plugins).
 
 The rules:
 1. `flnkit/*` imports only `flnkit/*`, the standard library and third-party packages. Nothing
@@ -19,10 +19,7 @@ The rules:
 6. `src/cli.py` imports only `flnd`, `src/ui/*` and `src/plugins/_manifest.py`.
 7. `src/__init__.py` imports nothing at import time beyond the standard library.
 And nothing imports `flnd.cli` but `src/__main__.py`, which is how `python -m flnd` starts it.
-
-Until step 8, plugin API 1 stands in for API 2: `src/source.py` is checked as `src/plugin.py`
-and `src/sources/*` as `src/plugins/*` (`API_1`). What API 1 can't follow is in `EXEMPT`, each
-entry with the step that removes it.
+What can't follow a rule yet is in `EXEMPT`, each entry with the step that removes it.
 """
 
 import ast
@@ -35,20 +32,15 @@ ROOT = Path(__file__).resolve().parent.parent
 FLND = ROOT / "src"
 FLNKIT = ROOT / "flnkit"
 
-# Until step 8: the API 1 module that stands for each API 2 one, as a prefix of a dotted name.
-API_1 = {"flnd.source": "flnd.plugin", "flnd.sources": "flnd.plugins"}
-
 # Imports a rule forbids that stay for now: (importer, imported) -> the step that removes them.
 # An importer or an import ending in ".*" covers every module under it.
 EXEMPT = {
-    # The registry lists the built-ins through the plugin manager; it moves to
-    # src/plugins/__init__.py when API 1 goes.
-    ("flnd.plugins", "flnd.engine.plugins"): 8,
-    # The engine and the library reach the API 1 registry directly; step 8 moves the registry,
-    # and the plugin manager (`engine/plugins.py`) owns it from then on.
-    ("flnd.engine.core", "flnd.plugins.*"): 8,
-    ("flnd.engine.crawl", "flnd.plugins"): 8,
-    ("flnd._library", "flnd.plugins"): 8,
+    # The registry (src/plugins/__init__.py) finds installed plugins through the old loader,
+    # and the engine and the library reach the registry directly, until step 9's plugin
+    # manager (`engine/plugins.py`) owns the lookup.
+    ("flnd.plugins", "flnd.engine.plugins"): 9,
+    ("flnd.engine.*", "flnd.plugins.*"): 9,
+    ("flnd._library", "flnd.plugins"): 9,
     # The CLI still reads the engine's events, the home's paths and the kit's text and cookie
     # names, and the library reads `flnd.__version__`; step 13 rewrites both.
     ("flnd.cli", "flnd.engine.*"): 13,
@@ -61,16 +53,8 @@ EXEMPT = {
 OWN = ("flnd", "flnkit")
 
 
-def canonical(name: str) -> str:
-    """A dotted module name with API 1 read as API 2: `flnd.sources.ins` as `flnd.plugins.ins`."""
-    for old, new in API_1.items():
-        if name == old or name.startswith(old + "."):
-            return new + name[len(old):]
-    return name
-
-
 def module_name(path: Path) -> str:
-    """`src/sources/ins.py` as `flnd.sources.ins`; a package's `__init__.py` as the package."""
+    """`src/plugins/ins.py` as `flnd.plugins.ins`; a package's `__init__.py` as the package."""
     parts = path.relative_to(ROOT).with_suffix("").parts
     if parts[0] == "src":
         parts = ("flnd", *parts[1:])
@@ -107,7 +91,7 @@ def _flnd_names(node: ast.AST) -> set[str]:
 
 
 def flnd_imports(path: Path) -> set[str]:
-    """Every flnd module a file imports, anywhere in it, as written (API 1 names kept)."""
+    """Every flnd module a file imports, anywhere in it, as written."""
     found: set[str] = set()
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         found |= _flnd_names(node)
@@ -207,10 +191,10 @@ def exempt(importer: str, imported: str) -> bool:
 
 def breaches(path: Path) -> list[str]:
     """The imports of `path` that rules 1 to 6 forbid and `EXEMPT` doesn't keep."""
-    importer = canonical(module_name(path))
+    importer = module_name(path)
     found = []
     for name in sorted(flnd_imports(path)):
-        imported = canonical(name)
+        imported = name
         if imported != importer and not allowed(importer, imported) \
                 and not exempt(importer, imported):
             found.append(name)
@@ -235,18 +219,14 @@ class LayersTest(unittest.TestCase):
                  if third_party(name)}
         self.assertLessEqual(found, {"msgspec"})
 
-    def test_the_source_api_imports_only_the_stdlib_kit_and_errors(self):
-        # Rule 4 in full: `src/plugin.py` (today `src/source.py`) takes no third-party
-        # package, at import time or inside a function.
-        for path in (FLND / "source.py", FLND / "plugin.py"):
-            if not path.exists():
-                continue
-            with self.subTest(module=module_name(path)):
-                self.assertEqual(sorted(name for name in all_packages(path)
-                                        if third_party(name)), [])
+    def test_the_plugin_api_imports_only_the_stdlib_kit_and_errors(self):
+        # Rule 4 in full: `src/plugin.py` takes no third-party package, at import time or
+        # inside a function.
+        self.assertEqual(sorted(name for name in all_packages(FLND / "plugin.py")
+                                if third_party(name)), [])
 
     def test_a_plugin_imports_its_sdk_only_inside_a_function(self):
-        for path in sorted([*(FLND / "sources").glob("*.py"), *(FLND / "plugins").glob("*.py")]):
+        for path in sorted((FLND / "plugins").glob("*.py")):
             with self.subTest(module=module_name(path)):
                 self.assertEqual(sorted(name for name in import_time_packages(path)
                                         if third_party(name)), [])
@@ -273,9 +253,9 @@ class LayersTest(unittest.TestCase):
         # An exemption whose import is gone is dropped, so the list only shrinks.
         used = set()
         for path in _files():
-            importer = canonical(module_name(path))
+            importer = module_name(path)
             for name in flnd_imports(path):
-                imported = canonical(name)
+                imported = name
                 if imported != importer and not allowed(importer, imported):
                     used |= {(who, what) for who, what in EXEMPT
                              if covers(who, importer) and covers(what, imported)}
@@ -285,7 +265,7 @@ class LayersTest(unittest.TestCase):
         # Guards the guard: `from flnd import Engine` is the package, `from flnd import errors`
         # a module, and `from flnkit import net` the module flnkit.net.
         self.assertIn("flnd.engine.crawl", flnd_imports(FLND / "engine" / "core.py"))
-        self.assertIn("flnkit.net", flnd_imports(FLND / "engine" / "site.py"))
+        self.assertIn("flnkit.net", flnd_imports(FLND / "engine" / "ctx.py"))
         self.assertIn("flnd", flnd_imports(FLND / "cli.py"))
         self.assertFalse(allowed("flnkit.net", "flnd.ui.log"))
         self.assertFalse(allowed("flnkit.net", "flnd.errors"))

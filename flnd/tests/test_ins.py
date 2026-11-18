@@ -1,80 +1,42 @@
-"""Instagram: tabs scrolled to the end, posts read through the media API (or their page), stories,
-highlights, the picture, one post, and every throttle waited out.
+"""Instagram on plugin API 2 (`src/plugins/ins.py`), run on `FakeCtx`: no network, no browser.
 
-What is faked: the site's answers (`FakeSite` through `collect`), and the tab's scrolling, by `FakeWatch`,
-which hands out the GraphQL responses scrolling a tab would bring. No network, no browser, no wait
-is slept: `back_off` only records.
+The tabs are faked pages whose feeds bring the scrolled results; a lazy post's page answers the
+in-page fetch of `/p/<code>/`, and the post's own page answers `open` when the HTML lacks it.
 """
 
+import asyncio
 import json
-import os
-import tempfile
-import time
 import unittest
+from collections.abc import Sequence
 from datetime import date
-from pathlib import Path
 from typing import Any
 from unittest import mock
 
 import fakes
-from fakes import FakeSite, Seen, collect
 
+from flnd.engine import home as _home
 from flnd.engine.core import Engine
-from flnd.engine.options import Options
-from flnd.source import Changed, LoginError, Request, SiteError, Target, UsageError
-from flnd.sources.ins import (
-    APP_ID,
-    Instagram,
-    best_file,
-    embedded_results,
-    files_of,
-    full_size,
-    is_complete,
-    pk_of_code,
-    pk_stamp,
-    post_files,
-    reel_posts,
-    tab_media,
-)
-from flnkit import html as _html
+from flnd.errors import Blocked, Changed, LoginError, NotFound, SiteError, UsageError
+from flnd.plugin import File, Post, Range, Request, Target
+from flnd.plugins.ins import APP_ID, Instagram, best_file, pk_stamp
+from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
+from flnkit import cookies as _cookies
 from flnkit import net as _net
 from flnkit.clock import day
 
-# A DASH manifest as Meta serves it, for the reels' video and audio.
-MANIFEST_HEAD = '<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period>'
-
-
-def representation(mime, url, *, height=None, bandwidth=1000):
-    size = f' height="{height}"' if height else ""
-    return (f'<Representation mimeType="{mime}"{size} bandwidth="{bandwidth}">'
-            f"<BaseURL>{url}</BaseURL></Representation>")
-
-
-def manifest(*videos, audios=()):
-    sets = f'<AdaptationSet>{"".join(videos)}</AdaptationSet>'
-    if audios:
-        sets += f'<AdaptationSet>{"".join(audios)}</AdaptationSet>'
-    return MANIFEST_HEAD + sets + "</Period></MPD>"
-
-
-# Meta serves each quality as one representation; some list the same height twice, told apart only
-# by bandwidth.
-INSTAGRAM = manifest(
-    representation("video/mp4", "https://cdn.example/360.mp4", height=640, bandwidth=168170),
-    representation("video/mp4", "https://cdn.example/1080.mp4", height=1920, bandwidth=1160975),
-    representation("video/mp4", "https://cdn.example/720.mp4", height=1280, bandwidth=825291),
-    audios=[representation("audio/mp4", "https://cdn.example/a64.mp4", bandwidth=64353),
-            representation("audio/mp4", "https://cdn.example/a95.mp4", bandwidth=95480)])
-
 SITE = "https://www.instagram.com"
-API = f"{SITE}/api/v1"
 GRAPHQL = f"{SITE}/graphql/query"
-# 2023-11-15 12:00 UTC: the same day in every time zone, so a name doesn't depend on where the tests run.
+# 2023-11-15 12:00 UTC: the same day in every time zone.
 STAMP = 1700049600
 DAY = "2023-11-15"
-# Instagram's id epoch, in milliseconds: an id holds its creation time above its lowest 23 bits.
 EPOCH_MS = 1314220021721
 THROTTLE = {"message": "Please wait a few minutes before you try again.", "status": "fail"}
+MPD = ('<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period>'
+       '<AdaptationSet><Representation mimeType="video/mp4" height="1920" bandwidth="1160975">'
+       "<BaseURL>https://cdn.example/1080.mp4</BaseURL></Representation></AdaptationSet>"
+       '<AdaptationSet><Representation mimeType="audio/mp4" bandwidth="95480">'
+       "<BaseURL>https://cdn.example/a95.mp4</BaseURL></Representation></AdaptationSet>"
+       "</Period></MPD>")
 
 
 def pk_at(stamp, n=1):
@@ -84,313 +46,116 @@ def pk_at(stamp, n=1):
 
 def embedded(*results):
     """A page whose HTML embeds `results` as Instagram's server does."""
-    blocks = "".join(f'<script type="application/json">{json.dumps({"require": [["x", {"__bbox": {"result": result}}]]})}'
-                     "</script>" for result in results)
-    return f"<html><body>{blocks}<script type='application/json'>{{'__bbox': not json</script></body></html>"
+    blocks = "".join('<script type="application/json">'
+                     f'{json.dumps({"require": [["x", {"__bbox": {"result": result}}]]})}</script>'
+                     for result in results)
+    return f"<html><body>{blocks}</body></html>"
 
 
 def image(url, width=640):
-    return {"original_width": width,
-            "image_versions2": {"candidates": [{"url": url.replace(".jpg", "_s.jpg"), "width": 150, "height": 150},
-                                               {"url": url, "width": width, "height": width}]}}
+    return {"original_width": width, "image_versions2": {"candidates": [
+        {"url": url.replace(".jpg", "_s.jpg"), "width": 150, "height": 150},
+        {"url": url, "width": width, "height": width}]}}
 
 
 def video(url):
-    return {**image(url.replace(".mp4", ".jpg")), "media_type": 2,
-            "video_versions": [{"url": url.replace(".mp4", "_low.mp4"), "width": 480, "height": 854},
-                               {"url": url, "width": 720, "height": 1280}]}
+    return {**image(url.replace(".mp4", ".jpg")), "media_type": 2, "video_versions": [
+        {"url": url.replace(".mp4", "_low.mp4"), "width": 480, "height": 854},
+        {"url": url, "width": 720, "height": 1280}]}
 
 
 def feed(code, **media):
-    """A grid item that is a whole post: a plain feed photo, dated, at full size."""
+    """A grid item that is a whole post: a feed photo, dated, at full size."""
     return {"code": code, "product_type": "feed", "taken_at": STAMP, **media}
 
 
 def grid(*nodes, more=None):
-    """A posts-tab result; `more` is the next page's cursor, "" for the last page, None for no `page_info`."""
+    """A posts-tab result; `more` is the next cursor, "" for the last page, None for none."""
     connection: dict[str, Any] = {"edges": [{"node": node} for node in nodes]}
     if more is not None:
         connection["page_info"] = {"has_next_page": bool(more), "end_cursor": more or None}
     return {"data": {"xdt_api__v1__feed__user_timeline_graphql_connection": connection}}
 
 
-def reels_grid(*items):
-    return {"data": {"fetch__XDTUserDict": {"clips_connection": {"edges": [
-        {"node": {"media": {"code": code, **({"pk": pk} if pk else {}), "product_type": "clips",
-                            **image(f"https://cdn.example/{code}_thumb.jpg")}}} for code, pk in items]}}}}
-
-
-def info(pk, media):
-    """The media API's answer for one post."""
-    return {f"{API}/media/{pk}/info/": {"items": [media], "num_results": 1, "status": "ok"}}
-
-
-PROFILE = {"data": {"user": {"id": "42", "hd_profile_pic_url_info": {"url": "https://cdn.example/v/123_456_n.jpg?x=1"}}}}
-HIGHLIGHTS = {"data": {"highlights": {"edges": [{"node": {"id": "highlight:9001", "title": "Trip/2026"}}]}}}
-
-
-# Every form ins reads, as people write it, and what it becomes: (kind, value), or a refusal's text.
-# The kinds and values are the keys of targets.db and the history, so a change here is a migration.
-ROUTES = [
-    ("ins:me", ("me", "me")),
-    ("ins:example_user", ("user", "example_user")),
-    ("ins:@example_user", ("user", "example_user")),
-    ("ins:example.user", ("user", "example.user")),
-    ("ins:instagram.com/example_user", ("user", "example_user")),
-    ("https://www.instagram.com/example_user/", ("user", "example_user")),
-    ("https://instagram.com/example_user/?hl=en", ("user", "example_user")),
-    ("instagram.com/example_user", ("user", "example_user")),
-    ("http://instagram.com/example_user#top", ("user", "example_user")),
-    ("https://www.instagram.com/@example_user", ("user", "example_user")),
-    # A profile's tab is the profile.
-    ("https://m.instagram.com/example_user/reels/", ("user", "example_user")),
-    ("https://www.instagram.com/example_user/tagged/", ("user", "example_user")),
-    ("https://www.instagram.com/p/C1abcDEFghi/", ("post", "C1abcDEFghi")),
-    ("https://www.instagram.com/p/C1a-bc_DEF/", ("post", "C1a-bc_DEF")),
-    ("https://www.instagram.com/reel/C1abcDEFghi/?igsh=1", ("post", "C1abcDEFghi")),
-    ("ins:https://www.instagram.com/reel/C1abcDEFghi/", ("post", "C1abcDEFghi")),
-    ("https://www.instagram.com/reels/C1abcDEFghi/", ("post", "C1abcDEFghi")),
-    ("https://www.instagram.com/tv/C1abcDEFghi/", ("post", "C1abcDEFghi")),
-    ("instagram.com/example_user/p/C1abcDEFghi", ("post", "C1abcDEFghi")),
-    ("https://www.instagram.com/example_user/reel/C1abcDEFghi/", ("post", "C1abcDEFghi")),
-    ("https://www.instagram.com/example_user/reels/C1abcDEFghi/", ("post", "C1abcDEFghi")),
-    ("https://www.instagram.com/example_user/tv/C1abcDEFghi/", ("post", "C1abcDEFghi")),
-    ("https://www.instagram.com/stories/example_user/3141592653589793238/", "story links aren't supported"),
-    ("https://www.instagram.com/stories/highlights/17900000000000000/", "story links aren't supported"),
-    ("https://www.instagram.com/explore/", "that's not a profile"),
-    ("https://www.instagram.com/accounts/login/", "that's not a profile"),
-    ("https://www.instagram.com/direct/inbox/", "that's not a profile"),
-    ("ins:not a name", "can't read"),
-    ("ins:ex-ample", "can't read"),
-    ("https://www.instagram.com/", "can't read"),
-    ("ins:example.com/example_user", "can't read"),
-    ("ins:https://example.com/example_user", "can't read"),
-]
-
-
-class RoutesTest(unittest.TestCase):
-    def test_every_form(self):
-        for text, expected in ROUTES:
-            with self.subTest(text=text):
-                value = text.removeprefix("ins:")
-                if isinstance(expected, tuple):
-                    kind, found = expected
-                    self.assertEqual(Instagram().resolve(value), Target(f"ins:{found}", kind=kind))
-                else:
-                    with self.assertRaisesRegex(UsageError, f"^ins: {expected}"):
-                        Instagram().resolve(value)
-
-
-class MediaTest(unittest.TestCase):
-    def test_each_carousel_item_keeps_its_own_kind_at_its_best_size(self):
-        post = {"code": "ABC", "taken_at": STAMP, "carousel_media": [image("https://cdn.example/1.jpg"),
-                                                                   video("https://cdn.example/2.mp4")]}
-        self.assertEqual(post_files(post), [("https://cdn.example/1.jpg", "jpg", None),
-                                            ("https://cdn.example/2.mp4", "mp4", None)])
-
-    def test_a_dash_manifest_gives_its_best_video_and_audio(self):
-        reel = {**video("https://cdn.example/r.mp4"), "video_dash_manifest": INSTAGRAM}
-        expected = (
-            ("https://cdn.example/1080.mp4", "https://cdn.example/r.mp4"),
-            "mp4",
-            "https://cdn.example/a95.mp4",
-        )
-        self.assertEqual(best_file(reel), expected)
-        # Without progressive video versions, only the DASH stream URL is returned.
-        no_prog = {"video_dash_manifest": INSTAGRAM}
-        expected_no_prog = ("https://cdn.example/1080.mp4", "mp4", "https://cdn.example/a95.mp4")
-        self.assertEqual(best_file(no_prog), expected_no_prog)
-        # A manifest dash.best can't use falls back to the progressive file.
-        bad = {**reel, "video_dash_manifest": "<MPD/>"}
-        self.assertEqual(best_file(bad), ("https://cdn.example/r.mp4", "mp4", None))
-        # A segmented manifest also falls back to the progressive file.
-        seg = {
-            **video("https://cdn.example/r.mp4"),
-            "video_dash_manifest": INSTAGRAM.replace(
-                "</AdaptationSet>", '<SegmentTemplate media="seg-$Number$.m4s"/></AdaptationSet>', 1
-            ),
-        }
-        self.assertEqual(best_file(seg), ("https://cdn.example/r.mp4", "mp4", None))
-
-    def test_only_a_whole_feed_post_is_complete(self):
-        """ins.md §3: product_type "feed", dated, and every image within 10% of its original width."""
-        self.assertTrue(is_complete(feed("P", **image("https://cdn.example/p.jpg"))))
-        self.assertTrue(is_complete(feed("V", **video("https://cdn.example/v.mp4"))))
-        # A reel, a carousel, or an item without a product_type goes through the API.
-        for product_type in ("clips", "carousel_container", None):
-            with self.subTest(product_type=product_type):
-                self.assertFalse(is_complete({**feed("P", **image("https://cdn.example/p.jpg")),
-                                              "product_type": product_type}))
-        # No date, a thumbnail (more than 10% under the original width), or a video without its paths.
-        self.assertFalse(is_complete({**feed("P", **image("https://cdn.example/p.jpg")), "taken_at": None}))
-        self.assertFalse(is_complete(feed("P", **{**image("https://cdn.example/p.jpg"), "original_width": 1080})))
-        self.assertTrue(full_size({**image("https://cdn.example/p.jpg", width=980), "original_width": 1080}))
-        self.assertFalse(full_size({**image("https://cdn.example/p.jpg"), "original_width": None}))
-        self.assertFalse(is_complete(feed("V", media_type=2, **image("https://cdn.example/v.jpg"))))
-        self.assertFalse(is_complete(reels_grid(("R1", None))["data"]["fetch__XDTUserDict"]["clips_connection"]
-                                     ["edges"][0]["node"]["media"]))
-
-    def test_reposts_and_tagged_connections(self):
-        reposts = {"data": {"fetch__XDTUserDict": {"user_reposts_timeline": {"repost_grid_items": [
-            {"media": {"code": "RP"}}]}}}}
-        tagged = {"data": {"xdt_api__v1__usertags__user_id__feed_connection": {"edges": [{"node": {"code": "TG"}}]}}}
-        self.assertEqual(tab_media(reposts, "reposts"), [{"code": "RP"}])
-        self.assertEqual(tab_media(tagged, "tagged"), [{"code": "TG"}])
-        self.assertEqual(tab_media({"data": {}}, "posts"), [])
-
-    def test_embedded_results_are_found_in_the_page(self):
-        page = _html.parse(embedded(PROFILE, HIGHLIGHTS))
-        self.assertEqual(embedded_results(page), [PROFILE, HIGHLIGHTS])
-
-    def test_a_file_is_named_here_only_when_the_formats_would_name_it_otherwise(self):
-        post = {"code": "C", "taken_at": STAMP, "carousel_media": [image("https://cdn.example/a.jpg"),
-                                                                 image("https://cdn.example/media/bare")]}
-        self.assertEqual([file.name for file in files_of(post)], [None, f"{DAY}_C_1.jpg"])
-        self.assertEqual([file.name for file in files_of(post, pinned=True)], [f"{DAY}_C_0.jpg", f"{DAY}_C_1.jpg"])
-        # A post without a date is named by its code alone.
-        self.assertEqual(files_of({"code": "C", **image("https://cdn.example/a.jpg")}, pinned=True)[0].name, "C.jpg")
-
-    def test_an_id_holds_its_date(self):
-        self.assertEqual(day(pk_stamp(pk_at(STAMP))), date(2023, 11, 15))
-        self.assertEqual(day(pk_stamp("3141592653589793238")), date(2023, 7, 7))
-        # An id too large for a real one gives no date (the engine refuses one after next year), and no id none.
-        self.assertIsNone(day(pk_stamp(str(2 ** 90))))
-        self.assertIsNone(pk_stamp(None))
-        self.assertIsNone(pk_stamp("C1abc"))
-
-    def test_a_code_spells_its_pk(self):
-        self.assertEqual(pk_of_code("CuZLd-iMknW"), "3141592653589793238")
-        # A private post's longer code, and anything outside base64url, isn't a pk.
-        self.assertIsNone(pk_of_code("CuZLd-iMknWxyzxyzxyzxyzxyzxyzxyzxyzxyz"))
-        self.assertIsNone(pk_of_code("bad code"))
-
-    def test_sign_adds_instagrams_web_headers(self):
-        source = Instagram()
-        source.api.claim = "hmac.claim"
-        request = Request("GET", f"{API}/media/1/info/", {}, None, {"csrftoken": "tok"})
-        source.sign(request)
-        self.assertEqual(request.headers, {"X-IG-App-ID": APP_ID, "X-ASBD-ID": "129477", "X-IG-WWW-Claim": "hmac.claim",
-                                           "X-CSRFToken": "tok", "X-Requested-With": "XMLHttpRequest",
-                                           "Referer": f"{SITE}/"})
-
-
-def page_of(code, **media):
+def post_page(code, **media):
     return embedded({"data": {"xig_fetch_media": {"code": code, **media}}})
 
 
-def shortcode_page(*posts):
-    return embedded({"data": {"xdt_api__v1__media__shortcode__web_info": {"items": list(posts)}}})
+class Loads(Sequence):
+    """A FakePage's feeds that change with each load: the first batch, then the next; the last
+    batch stays."""
+
+    def __init__(self, *batches):
+        self.batches = [list(batch) for batch in batches]
+
+    def __iter__(self):
+        return iter(self.batches.pop(0) if len(self.batches) > 1 else self.batches[0])
+
+    def __len__(self):
+        return len(self.batches[0])
+
+    def __getitem__(self, index):
+        return self.batches[0][index]
 
 
 def story_page(*stories):
-    return embedded({"data": {"xdt_api__v1__feed__reels_media": {"reels_media": [{"items": list(stories)}]}}})
+    return embedded({"data": {"xdt_api__v1__feed__reels_media": {
+        "reels_media": [{"items": list(stories)}]}}})
 
 
-# The ids of the posts the grids list incompletely, all made on STAMP's day.
-PK = {code: pk_at(STAMP, n) for n, code in enumerate(("CAR", "R1", "NOFILE", "R2", "T1"), start=1)}
-# What scrolling each tab of `example_creator` fetches. Whole feed posts are saved as listed; a carousel, a
-# reel, a post without files and the reels grid's thumbnails come from the media API by their pk;
-# GONE and RP2 have no pk, so their pages are read.
-GRIDS = {
-    "posts": grid(
-        feed("P1", **image("https://cdn.example/p1.jpg")),
-        {"code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container", "taken_at": STAMP,
-         **image("https://cdn.example/c0.jpg")},
-        {"code": "R1", "pk": PK["R1"], "product_type": "clips", "taken_at": STAMP, **image("https://cdn.example/r1.jpg")},
-        feed("WEB", **image("https://cdn.example/w.webp")),
-        feed("BARE", **image("https://cdn.example/media/bare")),
-        {"code": "NOFILE", "pk": PK["NOFILE"], "product_type": "feed", "taken_at": STAMP}),
-    "reels": reels_grid(("R1", PK["R1"]), ("R2", PK["R2"]), ("GONE", None)),
-    "tagged": {"data": {"xdt_api__v1__usertags__user_id__feed_connection": {"edges": [
-        {"node": {"code": "T1", "pk": PK["T1"]}}, {"node": feed("P1", **image("https://cdn.example/p1.jpg"))}]}}},
-    "reposts": {"data": {"fetch__XDTUserDict": {"user_reposts_timeline": {"repost_grid_items": [
+PROFILE = {"data": {"user": {"id": "42", "hd_profile_pic_url_info": {
+    "url": "https://cdn.example/v/123_456_n.jpg?x=1"}}}}
+HIGHLIGHTS = {"data": {"highlights": {"edges": [
+    {"node": {"id": "highlight:9001", "title": "Trip/2026"}}]}}}
+PK = {code: pk_at(STAMP, n) for n, code in enumerate(("CAR", "R1", "NOFILE", "R2", "T1"), 1)}
+# Each tab of `example_creator`: whole posts are saved as listed, the rest are lazy.
+TABS = {
+    "": grid(feed("P1", **image("https://cdn.example/p1.jpg")),
+             {"code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container",
+              "taken_at": STAMP, **image("https://cdn.example/c0.jpg")},
+             {"code": "R1", "pk": PK["R1"], "product_type": "clips", "taken_at": STAMP},
+             feed("WEB", **image("https://cdn.example/w.webp")),
+             feed("BARE", **image("https://cdn.example/media/bare")),
+             {"code": "NOFILE", "pk": PK["NOFILE"], "product_type": "feed", "taken_at": STAMP}),
+    "reels/": {"data": {"fetch__XDTUserDict": {"clips_connection": {"edges": [
+        {"node": {"media": {"code": code, "pk": PK[code], "product_type": "clips"}}}
+        for code in ("R1", "R2")]}}}},
+    "tagged/": {"data": {"xdt_api__v1__usertags__user_id__feed_connection": {"edges": [
+        {"node": {"code": "T1", "pk": PK["T1"]}},
+        {"node": feed("P1", **image("https://cdn.example/p1.jpg"))}]}}},
+    "reposts/": {"data": {"fetch__XDTUserDict": {"user_reposts_timeline": {"repost_grid_items": [
         {"media": feed("RP1", **image("https://cdn.example/rp1.jpg"))},
         {"media": {"code": "RP2"}}]}}}},
 }
-TABS = {"posts": "", "reels": "reels/", "tagged": "tagged/", "reposts": "reposts/"}
-STORY_5001 = {"pk": "5001", "taken_at": STAMP, **image("https://cdn.example/s.jpg")}
-# A story without `taken_at` isn't dated by its small pk (which would say 2011): it has no date.
-STORY_5003 = {"pk": "5003_42", **video("https://cdn.example/s3.mp4")}
-HIGHLIGHT_ITEMS = [{"id": "5002_42", "taken_at": STAMP, **video("https://cdn.example/h.mp4")},
-                   {"id": "5004", "taken_at": STAMP, **image("https://cdn.example/h2.jpg")}]
-JSON = {
-    **info(PK["CAR"], {"code": "CAR", "taken_at": STAMP, "carousel_media": [
-        image("https://cdn.example/c0.jpg"), {**video("https://cdn.example/c1.mp4"), "video_dash_manifest": INSTAGRAM}]}),
-    **info(PK["R1"], {"code": "R1", "taken_at": STAMP, **video("https://cdn.example/r1.mp4")}),
-    **info(PK["NOFILE"], {"code": "NOFILE", "taken_at": STAMP}),
-    **info(PK["R2"], {"code": "R2", "taken_at": STAMP, **video("https://cdn.example/r2.mp4")}),
-    **info(PK["T1"], {"code": "T1", "taken_at": STAMP, "carousel_media": [
-        image("https://cdn.example/t0.jpg"), image("https://cdn.example/t1.jpg")]}),
+# The pages of the lazy posts, as the in-page fetch of `/p/<code>/` answers them.
+POSTS = {
+    "CAR": post_page("CAR", taken_at=STAMP, carousel_media=[
+        image("https://cdn.example/c0.jpg"),
+        {**video("https://cdn.example/c1.mp4"), "video_dash_manifest": MPD}]),
+    "R1": post_page("R1", taken_at=STAMP, **video("https://cdn.example/r1.mp4")),
+    "NOFILE": post_page("NOFILE", taken_at=STAMP),
+    "R2": post_page("R2", taken_at=STAMP, **video("https://cdn.example/r2.mp4")),
+    "T1": post_page("T1", taken_at=STAMP, carousel_media=[
+        image("https://cdn.example/t0.jpg"), image("https://cdn.example/t1.jpg")]),
+    "RP2": post_page("RP2", taken_at=STAMP, **image("https://cdn.example/rp2.jpg")),
 }
+ROUTES = {f"{SITE}/p/{code}/": Reply(page) for code, page in POSTS.items()}
 PAGES = {
-    f"{SITE}/example_creator/": embedded(PROFILE, HIGHLIGHTS),
-    f"{SITE}/p/GONE/": "<html></html>",
-    f"{SITE}/p/RP2/": page_of("RP2", taken_at=STAMP, **image("https://cdn.example/rp2.jpg")),
-    f"{SITE}/stories/example_creator/": story_page(STORY_5001, STORY_5003),
-    f"{SITE}/stories/highlights/9001/": embedded({"data": {"xdt_api__v1__feed__reels_media__connection": {"edges": [
-        {"node": {"items": HIGHLIGHT_ITEMS}}]}}}),
-    f"{SITE}/p/SINGLE/": shortcode_page({"code": "SINGLE", "taken_at": STAMP, "carousel_media": [
-        image("https://cdn.example/a.jpg"), {**video("https://cdn.example/r.mp4"), "video_dash_manifest": INSTAGRAM}]}),
+    # The profile page is the posts tab: its HTML embeds the user and the first grid page.
+    f"{SITE}/example_creator/": embedded(PROFILE, HIGHLIGHTS, TABS[""]),
+    **{f"{SITE}/example_creator/{tab}": embedded(result)
+       for tab, result in TABS.items() if tab},
+    f"{SITE}/stories/example_creator/": story_page(
+        {"pk": "5001", "taken_at": STAMP, **image("https://cdn.example/s.jpg")},
+        # Without `taken_at`, a story has no date, so its name has none.
+        {"pk": "5003_42", **video("https://cdn.example/s3.mp4")}),
+    f"{SITE}/stories/highlights/9001/": embedded({"data": {
+        "xdt_api__v1__feed__reels_media__connection": {"edges": [{"node": {"items": [
+            {"id": "5002_42", "taken_at": STAMP, **video("https://cdn.example/h.mp4")},
+            {"id": "5004", "taken_at": STAMP, **image("https://cdn.example/h2.jpg")}]}}]}}}),
 }
-
-
-class FakeWatch:
-    """`site.feed` over a fake tab: scrolling gives the responses held for the URL last loaded."""
-
-    def __init__(self, batches):
-        self.batches = {url: list(entries) for url, entries in batches.items()}
-        self.opened = 0
-
-    def __call__(self, site, match, *, scroll=False, lines=False, cursor=None):
-        self.opened += 1
-        batches = self.batches
-
-        class Responses:
-            request = None
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc_info):
-                pass
-
-            def __iter__(self):
-                # Read once the page is loaded, as the first scroll would.
-                queue = batches.get(site.url, [])
-                while queue:
-                    yield queue.pop(0)
-
-        return Responses()
-
-
-def watching(watch):
-    """Patch `FakeSite.feed` to be `watch`, a `FakeWatch`."""
-    return mock.patch.object(FakeSite, "feed", lambda site, match, **options: watch(site, match, **options))
-
-
-def scrolled(*tabs):
-    """The responses scrolling each of `tabs` of `example_creator` fetches."""
-    return FakeWatch({f"{SITE}/example_creator/{TABS[tab]}": [GRIDS[tab]] for tab in tabs})
-
-
-def read(text="ins:example_creator", *, options=Options(), watch=None, pages=PAGES, json=JSON, seen=None, cookies=None,
-         state=None):
-    """What the job would download for `text`, with `watch` as the tabs' scrolling (every tab's by default)."""
-    with watching(watch or scrolled(*TABS)):
-        return collect(Instagram, text, pages=pages, json=json, options=options, seen=seen, cookies=cookies,
-                       state=state)
-
-
-def api_urls(seen):
-    """The API calls a run made, without their query, in order."""
-    return [url.split("?")[0] for _, url, _ in seen.requests]
-
-
-# What ins named and keyed before routes, recorded with the pre-routes `run(session)` source in
-# a UTC time zone over these fixtures (then read from each post's page, now from the media API for
-# the posts with a pk). They are sorted: the old run opened every lazy post after the last tab, and
-# the new one reads each where its tab lists it.
-OLD_PROFILE = [
+# What every category saves, (path, key): the names saved files have always had.
+SAVED = [
     ("highlights/Trip_2026/2023-11-15_5002.mp4", "highlights/Trip_2026/2023-11-15_5002.mp4"),
     ("highlights/Trip_2026/2023-11-15_5004.jpg", "highlights/Trip_2026/2023-11-15_5004.jpg"),
     ("posts/2023-11-15_BARE.jpg", "BARE_0"),
@@ -408,603 +173,431 @@ OLD_PROFILE = [
     ("tagged/2023-11-15_T1_0.jpg", "T1_0"),
     ("tagged/2023-11-15_T1_1.jpg", "T1_1"),
 ]
-OLD_SINGLE = [("2023-11-15_SINGLE_0.jpg", "SINGLE_0"), ("2023-11-15_SINGLE_1.mp4", "SINGLE_1")]
 
 
-class StoryMusicTest(unittest.TestCase):
-    """fixes #11: a story's music is saved beside it, as a second file of its post."""
-
-    def story(self, **extra):
-        return {"pk": "31", "taken_at": 1767312000, "image_versions2": {"candidates": [
-            {"url": "https://cdn.example/s.jpg", "width": 1080, "height": 1920}]}, **extra}
-
-    def test_both_shapes_of_music_become_an_m4a_beside_the_story(self):
-        sticker = {"story_music_stickers": [{"music_asset_info": {"progressive_download_url": "https://cdn.example/m1"}}]}
-        metadata = {"music_metadata": {"music_info": {"music_asset_info": {
-            "progressive_download_url": "https://cdn.example/m2"}}}}
-        for extra, url in ((sticker, "https://cdn.example/m1"), (metadata, "https://cdn.example/m2")):
-            [post] = reel_posts(FakeSite(Target("ins:example_creator", kind="user")), [self.story(**extra)], "stories")
-            files = list(post.files() if callable(post.files) else post.files)
-            self.assertEqual([(file.url, file.name) for file in files],
-                             [("https://cdn.example/s.jpg", "2026-01-02_31.jpg"), (url, "2026-01-02_31_music.m4a")])
-
-    def test_a_story_without_music_has_one_file(self):
-        [post] = reel_posts(FakeSite(Target("ins:example_creator", kind="user")), [self.story()], "stories")
-        files = list(post.files() if callable(post.files) else post.files)
-        self.assertEqual(len(files), 1)
+def fake(*, routes=None, pages=None, **options):
+    return FakeCtx(Instagram, routes=ROUTES if routes is None else routes,
+                   pages=PAGES if pages is None else pages, **options)
 
 
-class NamesAndKeysTest(unittest.TestCase):
-    def test_a_profile_is_named_and_keyed_as_before_routes(self):
-        saved = read(options=Options(categories=("all",)))
-        self.assertEqual(sorted((item.path, item.key) for item in saved), OLD_PROFILE)
+def run(target="ins:example_creator", categories=None, ctx=None):
+    return collect(Instagram, target, ctx=ctx or fake(), categories=categories)
 
-    def test_the_story_pages_name_and_key_them_the_same(self):
-        """The story pages give the expected paths and keys."""
-        saved = read(options=Options(categories=("stories", "highlights")))
-        self.assertEqual(sorted((item.path, item.key) for item in saved),
-                         [pair for pair in OLD_PROFILE if pair[0].startswith(("stories/", "highlights/"))])
 
-    def test_a_post_is_named_and_keyed_as_before_routes(self):
-        saved = read("https://www.instagram.com/p/SINGLE/")
-        self.assertEqual([(item.path, item.key) for item in saved], OLD_SINGLE)
-        expected_url = ("https://cdn.example/1080.mp4", "https://cdn.example/r.mp4")
-        self.assertEqual(
-            (saved[1].file.url, saved[1].file.audio),
-            (expected_url, "https://cdn.example/a95.mp4"),
-        )
+def fetched(ctx):
+    return [url for _, url, _ in ctx.seen.requests]
 
-    def test_a_post_from_the_media_api_is_named_and_keyed_as_from_its_page(self):
-        code = "CuZLd-iMknW"
-        media = {"code": code, "taken_at": STAMP, "carousel_media": [
-            image("https://cdn.example/a.jpg"), {**video("https://cdn.example/r.mp4"), "video_dash_manifest": INSTAGRAM}]}
-        seen = Seen()
-        saved = read(f"https://www.instagram.com/p/{code}/", json=info("3141592653589793238", media), seen=seen)
-        self.assertEqual([(item.path, item.key) for item in saved],
-                         [(f"{DAY}_{code}_0.jpg", f"{code}_0"), (f"{DAY}_{code}_1.mp4", f"{code}_1")])
-        self.assertEqual(seen.visited, [])
 
-    @unittest.skipUnless(hasattr(time, "tzset"), "no time.tzset on this platform")
-    def test_the_date_in_a_name_is_the_utc_day(self):
-        # 23:00 UTC on 14 November is already the 15th in Auckland, where the old names took their day from.
-        late = 1700002800
-        pages = {f"{SITE}/p/LATE/": shortcode_page({"code": "LATE", "taken_at": late,
-                                                    **image("https://cdn.example/l.jpg")})}
-        with mock.patch.dict(os.environ, {"TZ": "Pacific/Auckland"}):
-            time.tzset()
-            saved = read("https://www.instagram.com/p/LATE/", pages=pages)
-        time.tzset()
-        self.assertEqual([(item.path, item.key) for item in saved], [("2023-11-14_LATE.jpg", "LATE_0")])
+def listed(listing):
+    async def take():
+        return [item async for item in listing]
+    return asyncio.run(take())
+
+
+class RoutesTest(unittest.TestCase):
+    def test_every_form(self):
+        forms = [
+            ("ins:me", "me", "me"), ("ins:example_user", "user", "example_user"),
+            ("ins:@example_user", "user", "example_user"),
+            ("https://instagram.com/example_user/?hl=en", "user", "example_user"),
+            ("https://m.instagram.com/example_user/reels/", "user", "example_user"),
+            ("https://www.instagram.com/me/", "user", "me"),
+            ("https://www.instagram.com/p/C1a-bc_DEF/", "post", "C1a-bc_DEF"),
+            ("https://www.instagram.com/reel/C1abcDEFghi/?igsh=1", "post", "C1abcDEFghi"),
+            ("instagram.com/example_user/tv/C1abcDEFghi", "post", "C1abcDEFghi"),
+            ("https://www.instagram.com/stories/example_user/31/", None, "story links"),
+            ("https://www.instagram.com/accounts/login/", None, "that's not a profile"),
+            ("https://www.instagram.com/direct/inbox/", None, "that's not a profile"),
+            ("ins:not a name", None, None), ("https://www.instagram.com/", None, None),
+        ]
+        for text, kind, value in forms:
+            with self.subTest(text=text):
+                if kind is not None:
+                    self.assertEqual(Instagram.resolve(text), Target(f"ins:{value}", kind=kind))
+                elif value is not None:
+                    with self.assertRaisesRegex(UsageError, f"^ins: {value}"):
+                        Instagram.resolve(text)
+                else:
+                    self.assertIsNone(Instagram.resolve(text))
+
+    def test_declarations(self):
+        # S13: the API version is no longer shadowed by an API client on the instance.
+        self.assertEqual((Instagram.api, Instagram().api), (2, 2))
+        self.assertEqual(Instagram.pace, 0.5)
+        self.assertEqual(Instagram.walls, ("/accounts/login", "/challenge", "/accounts/suspended"))
+        route = next(known for known in Instagram.routes if known.kind == "user")
+        self.assertEqual([c.name for c in route.categories if not c.own], ["tagged", "reposts"])
+        self.assertEqual([c.link({"user": "example_user"}) for c in route.categories][:5], [
+            "", f"{SITE}/example_user/reels/", f"{SITE}/example_user/tagged/",
+            f"{SITE}/example_user/reposts/", f"{SITE}/stories/example_user/"])
+        self.assertEqual(len(check(Instagram)), 4)
+
+    def test_sign_adds_the_web_headers_only_to_api_calls(self):
+        plugin = Instagram()
+        plugin.claim = "hmac.claim"
+        cookies = {"csrftoken": "tok"}
+        signed = plugin.sign(Request(f"{SITE}/api/v1/friendships/1/following/"), cookies)
+        self.assertEqual(signed.headers, {
+            "X-IG-App-ID": APP_ID, "X-ASBD-ID": "129477", "X-IG-WWW-Claim": "hmac.claim",
+            "X-Requested-With": "XMLHttpRequest", "Referer": f"{SITE}/", "X-CSRFToken": "tok"})
+        self.assertIn("X-IG-App-ID", plugin.sign(Request(GRAPHQL), cookies).headers)
+        page = Request(f"{SITE}/p/C1abcDEFghi/")
+        self.assertIs(plugin.sign(page, cookies), page)
 
 
 class ProfileTest(unittest.TestCase):
-    def test_every_category_has_its_own_folder_and_headers(self):
-        saved = read(options=Options(categories=("all",)))
-        self.assertEqual({item.post.category for item in saved},
-                         {"posts", "reels", "tagged", "reposts", "stories", "highlights", "profile"})
+    def test_every_category_is_named_and_keyed_as_before(self):
+        ctx = fake()
+        saved = run(categories=["all"], ctx=ctx)
+        self.assertEqual(sorted((item.path, item.key) for item in saved), SAVED)
         by_path = {item.path: item for item in saved}
-        self.assertEqual(by_path[f"posts/{DAY}_R1.mp4"].file.url, "https://cdn.example/r1.mp4")
-        self.assertIsNone(by_path[f"posts/{DAY}_R1.mp4"].file.audio)
-        self.assertEqual(by_path[f"posts/{DAY}_CAR_1.mp4"].file.audio, "https://cdn.example/a95.mp4")
-        self.assertEqual(by_path[f"posts/{DAY}_P1.jpg"].post.headers, {"Referer": f"{SITE}/"})
-        self.assertEqual(by_path["profile/123_456_n.jpg"].post.headers, {"Referer": f"{SITE}/"})
+        self.assertEqual(by_path["posts/2023-11-15_CAR_1.mp4"].file.audio,
+                         "https://cdn.example/a95.mp4")
+        self.assertEqual(by_path["posts/2023-11-15_P1.jpg"].post.headers, {"Referer": f"{SITE}/"})
+        # S22: no media-API call; each lazy post is one in-page fetch of its page, R1 once a tab.
+        self.assertEqual(fetched(ctx), [f"{SITE}/p/{code}/" for code in (
+            "CAR", "R1", "NOFILE", "R1", "R2", "T1", "RP2")])
+        self.assertTrue(all(options["in_page"] for _, _, options in ctx.seen.requests))
+        # The profile page is the posts tab, so highlights and the picture load nothing more.
+        self.assertEqual(ctx.seen.visited, [
+            f"{SITE}/example_creator/", f"{SITE}/example_creator/reels/",
+            f"{SITE}/example_creator/tagged/", f"{SITE}/example_creator/reposts/",
+            f"{SITE}/stories/example_creator/", f"{SITE}/stories/highlights/9001/"])
 
-    def test_a_grid_post_without_details_is_lazy_and_dated_by_its_pk(self):
-        site = FakeSite(Target("ins:example_creator", kind="user"), pages=PAGES, json=JSON)
-        instance = Instagram()
-        with watching(scrolled(*TABS)):
-            listed = list(instance.reels(site, instance.user(site, "example_creator")))
-        self.assertEqual([(post.id, post.lazy, day(post.date)) for post in listed],
-                         [("R1", True, date(2023, 11, 15)), ("R2", True, date(2023, 11, 15)), ("GONE", True, None)])
-        # Nothing is asked before the engine wants a post's paths.
-        self.assertEqual(site._seen.requests, [])
+    def test_the_default_takes_only_the_accounts_own(self):
+        folders = {item.path.split("/")[0] for item in run()}
+        self.assertEqual(folders, {"posts", "reels", "stories", "highlights", "profile"})
 
-    def test_tagged_posts_come_from_the_media_api_and_a_post_without_a_pk_from_its_page(self):
-        seen = Seen()
-        read(options=Options(categories=("tagged", "reposts")), seen=seen)
-        self.assertEqual(api_urls(seen), [f"{API}/media/{PK['T1']}/info/"])
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/tagged/", f"{SITE}/example_creator/reposts/", f"{SITE}/p/RP2/"])
+    def test_a_lazy_post_is_dated_by_its_pk_and_skipped_by_when_with_no_request(self):
+        self.assertEqual(day(pk_stamp(PK["R2"])).isoformat(), DAY)
+        ctx = fake(when=Range(since=date(2023, 11, 16)))
+        self.assertEqual(run(categories=["reels"], ctx=ctx), [])
+        self.assertEqual(ctx.seen.requests, [])
 
-    def test_a_reel_the_posts_grid_lists_is_not_read_again(self):
-        seen = Seen()
-        read(options=Options(categories=("posts", "reels")), seen=seen)
-        # R1 is on the posts grid already, so only R2 is asked for, and the gone post's page opened.
-        self.assertEqual(api_urls(seen), [f"{API}/media/{PK[code]}/info/" for code in ("CAR", "R1", "NOFILE", "R2")])
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/example_creator/reels/", f"{SITE}/p/GONE/"])
-        self.assertIn("! post GONE: its page holds no post; skipped", seen.messages)
+    def test_the_story_categories_and_the_picture_read_their_pages(self):
+        # 2026-11: the profile page embeds neither the user nor the highlights; its calls do.
+        pages = {**PAGES, f"{SITE}/example_creator/": FakePage(
+            "<html></html>", feeds=[Sent(GRAPHQL, PROFILE), Sent(GRAPHQL, HIGHLIGHTS)])}
+        ctx = fake(pages=pages)
+        saved = run(categories=["stories", "highlights", "profile"], ctx=ctx)
+        self.assertEqual(sorted(item.path for item in saved), sorted(
+            path for path, _ in SAVED if path.startswith(("stories", "highlights", "profile"))))
+        # The stories page is opened directly; the profile page once, for both of the others.
+        self.assertEqual(ctx.seen.visited, [
+            f"{SITE}/stories/example_creator/", f"{SITE}/example_creator/",
+            f"{SITE}/stories/highlights/9001/"])
+        self.assertEqual((ctx.seen.requests, ctx.seen.scrolls), ([], 0))
+        self.assertIn(("info", "stories: 2 stories"), ctx.seen.logs)
 
-    def test_a_lazy_post_outside_time_makes_no_request(self):
-        seen = Seen()
-        options = Options(categories=("reels",), since=date(2023, 11, 16))
-        self.assertEqual(read(options=options, seen=seen), [])
-        # R1 and R2 are dated by their pk and skipped before any request; GONE has no date, so its page is read.
-        self.assertEqual(seen.requests, [])
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/reels/", f"{SITE}/p/GONE/"])
+    def test_a_throttled_page_load_holds_and_loads_again(self):
+        """A "please wait" answer on a page's own calls is a hold, never an empty page: the
+        post isn't `NotFound`, and the profile's highlights and picture aren't lost."""
+        single = {"data": {"xig_fetch_media": {"code": "SINGLE", "taken_at": STAMP,
+                                               **image("https://cdn.example/a.jpg")}}}
+        rows = [
+            ("https://www.instagram.com/p/SINGLE/", None, f"{SITE}/p/SINGLE/",
+             [single], [f"{DAY}_SINGLE.jpg"]),
+            ("ins:example_creator", ["highlights", "profile"], f"{SITE}/example_creator/",
+             [PROFILE, HIGHLIGHTS], [path for path, _ in SAVED
+                                     if path.startswith(("highlights", "profile"))]),
+        ]
+        for target, categories, url, answers, paths in rows:
+            with self.subTest(target=target):
+                feeds = Loads([Sent(GRAPHQL, THROTTLE)], [Sent(GRAPHQL, a) for a in answers])
+                ctx = fake(routes={}, pages={**PAGES, url: FakePage("<html></html>",
+                                                                    feeds=feeds)})
+                saved = run(target, categories, ctx=ctx)
+                self.assertEqual(sorted(item.path for item in saved), paths)
+                self.assertEqual([reason for reason, _, _ in ctx.seen.holds],
+                                 ["Instagram asked to wait a few minutes"])
+                self.assertEqual(ctx.seen.visited[:2], [url, url])
+        # A post already on its page is taken at once: a throttle beside it holds nothing.
+        feeds = [Sent(GRAPHQL, THROTTLE), Sent(GRAPHQL, single)]
+        ctx = fake(routes={}, pages={f"{SITE}/p/SINGLE/": FakePage("<html></html>",
+                                                                   feeds=feeds)})
+        saved = run("https://www.instagram.com/p/SINGLE/", ctx=ctx)
+        self.assertEqual([item.path for item in saved], [f"{DAY}_SINGLE.jpg"])
+        self.assertEqual((ctx.seen.holds, ctx.seen.visited), ([], [f"{SITE}/p/SINGLE/"]))
 
-    def test_the_profile_alone_loads_the_profile_page_once(self):
-        seen = Seen()
-        saved = read(options=Options(categories=("profile",)), seen=seen)
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/"])
-        self.assertEqual([(item.path, item.key) for item in saved], [("profile/123_456_n.jpg", "profile/123_456_n.jpg")])
+    def test_a_story_or_highlight_page_that_fails_fails_its_category(self):
+        """S18: a page that doesn't load raises, so nothing is recorded complete."""
+        for url in (f"{SITE}/stories/example_creator/", f"{SITE}/stories/highlights/9001/"):
+            with self.subTest(url=url):
+                pages = {**PAGES, url: FakePage(status=500)}
+                with self.assertRaisesRegex(SiteError, "the page didn't load"):
+                    run(categories=["stories", "highlights"], ctx=fake(pages=pages))
 
-    def test_stories_and_highlights_come_from_their_pages_directly(self):
-        seen = Seen()
-        read(options=Options(categories=("stories", "highlights", "profile")), seen=seen)
-        self.assertEqual(seen.visited, [
-            f"{SITE}/example_creator/",
-            f"{SITE}/stories/example_creator/",
-            f"{SITE}/stories/highlights/9001/",
-        ])
-        self.assertEqual(seen.requests, [])
-
-    def test_a_profile_page_that_embeds_nothing_gives_its_user_and_highlights_by_its_own_calls(self):
-        # 2026-11, live: the page's HTML holds neither the user nor the highlights; its GraphQL calls do.
-        pages = {**PAGES, f"{SITE}/example_creator/": "<html></html>"}
-        watch = FakeWatch({f"{SITE}/example_creator/": [PROFILE, HIGHLIGHTS]})
-        seen = Seen()
-        read(options=Options(categories=("stories", "highlights")), pages=pages, watch=watch, seen=seen)
-        self.assertEqual(seen.visited, [
-            f"{SITE}/example_creator/",
-            f"{SITE}/stories/example_creator/",
-            f"{SITE}/stories/highlights/9001/",
-        ])
-        self.assertEqual(seen.requests, [])
-
-    def test_highlights_load_their_story_pages_directly(self):
-        nodes = [{"node": {"id": f"highlight:{n}", "title": f"H{n}"}} for n in range(3)]
-        profile = embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}})
-        pages = {
-            **PAGES,
-            f"{SITE}/example_creator/": profile,
-            **{f"{SITE}/stories/highlights/{n}/": "<html></html>" for n in range(3)},
-        }
-        seen = Seen()
-        read(options=Options(categories=("highlights",)), pages=pages, seen=seen)
-        self.assertEqual(seen.visited, [
-            f"{SITE}/example_creator/",
-            f"{SITE}/stories/highlights/0/",
-            f"{SITE}/stories/highlights/1/",
-            f"{SITE}/stories/highlights/2/",
-        ])
-        self.assertEqual(seen.requests, [])
-
-    def test_an_empty_story_page_yields_no_stories(self):
-        pages = {**PAGES, f"{SITE}/stories/example_creator/": "<html></html>"}
-        seen = Seen()
-        saved = read(options=Options(categories=("stories",)), pages=pages, seen=seen)
-        self.assertEqual(saved, [])
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/stories/example_creator/"])
-
-    def test_a_story_page_without_reel_items_yields_no_stories(self):
-        pages = {**PAGES, f"{SITE}/stories/example_creator/": embedded({"data": {}})}
-        seen = Seen()
-        saved = read(options=Options(categories=("stories",)), pages=pages, seen=seen)
-        self.assertEqual(saved, [])
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/stories/example_creator/"])
-
-    def test_a_throttled_response_backs_off_and_the_scroll_goes_on(self):
-        seen = Seen()
-        watch = FakeWatch({f"{SITE}/example_creator/": [THROTTLE, GRIDS["posts"]]})
-        saved = read(options=Options(categories=("posts",)), watch=watch, seen=seen)
-        self.assertEqual(seen.back_offs, ["Instagram asked to wait a few minutes"])
-        self.assertIn(f"posts/{DAY}_P1.jpg", [item.path for item in saved])
+    def test_a_storys_music_is_saved_beside_it_in_both_shapes(self):
+        sticker = {"story_music_stickers": [{"music_asset_info": {
+            "progressive_download_url": "https://cdn.example/m1"}}]}
+        metadata = {"music_metadata": {"music_info": {"music_asset_info": {
+            "progressive_download_url": "https://cdn.example/m2"}}}}
+        for extra, url in ((sticker, "https://cdn.example/m1"),
+                           (metadata, "https://cdn.example/m2")):
+            with self.subTest(url=url):
+                story = {"pk": "31", "taken_at": STAMP, **image("https://cdn.example/s.jpg"),
+                         **extra}
+                pages = {**PAGES, f"{SITE}/stories/example_creator/": story_page(story)}
+                saved = run(categories=["stories"], ctx=fake(pages=pages))
+                self.assertEqual([(item.path, item.url) for item in saved], [
+                    (f"stories/{DAY}_31.jpg", "https://cdn.example/s.jpg"),
+                    (f"stories/{DAY}_31_music.m4a", url)])
 
 
-class ScrollTest(unittest.TestCase):
-    def test_a_lazy_post_is_read_where_the_tab_lists_it(self):
-        """The engine asks for a lazy post's files as it is listed, so a sync can stop the scroll early."""
-        page_1 = grid({"code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container", "taken_at": STAMP},
-                      more="c1")
-        page_2 = grid(feed("P2", **image("https://cdn.example/p2.jpg")), more="c2")
-        page_3 = grid({"code": "R1", "pk": PK["R1"], "product_type": "clips", "taken_at": STAMP}, more="")
-        watch = FakeWatch({f"{SITE}/example_creator/": [page_2, page_3]})
-        scroll_left_when_api_called = []
+class TabTest(unittest.TestCase):
+    def tab(self, *results, embeds=None, routes=None, pages=None, **options):
+        """A posts tab whose page embeds `embeds`, and whose n-th scroll brings `results[n-1]`."""
+        page = FakePage(embedded(*(embeds or [])), feeds=[
+            Sent(GRAPHQL, result, scroll=n) for n, result in enumerate(results, 1)])
+        return fake(pages={f"{SITE}/example_creator/": page, **(pages or {})}, routes=routes,
+                    **options)
 
-        def car_info(url, request):
-            scroll_left_when_api_called.append(len(watch.batches[f"{SITE}/example_creator/"]))
-            return JSON[f"{API}/media/{PK['CAR']}/info/"]
+    def test_each_lazy_post_is_read_where_the_tab_lists_it(self):
+        """S17: a lazy post's files come from an in-page fetch while the tab scrolls on, so
+        none is put aside for after the scroll, and no page is opened for it."""
+        ctx = self.tab(grid(feed("P2", **image("https://cdn.example/p2.jpg")), more=""),
+                       embeds=[grid({"code": "RP2", "product_type": "feed"}, more="c1")])
+        saved = run(categories=["posts"], ctx=ctx)
+        self.assertEqual([item.path for item in saved],
+                         [f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_P2.jpg"])
+        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/"])
+        self.assertEqual(fetched(ctx), [f"{SITE}/p/RP2/"])
 
-        seen = Seen()
-        saved = read(options=Options(categories=("posts",)), watch=watch, seen=seen,
-                     pages={f"{SITE}/example_creator/": embedded(PROFILE, page_1)},
-                     json={**JSON, f"{API}/media/{PK['CAR']}/info/": car_info})
-        # CAR is on the embedded first page: its files are asked for before any scroll.
-        self.assertEqual(scroll_left_when_api_called, [2])
-        self.assertEqual(sorted(item.path for item in saved), [
-            f"posts/{DAY}_CAR_0.jpg", f"posts/{DAY}_CAR_1.mp4", f"posts/{DAY}_P2.jpg", f"posts/{DAY}_R1.mp4",
-        ])
+    def test_a_post_page_without_the_post_is_read_from_its_own_tab(self):
+        """The fallback page is opened from the post's files, in a tab of its own: the
+        scrolling tab keeps its page and brings P2 after it."""
+        own = FakePage("<html></html>", feeds=[Sent(GRAPHQL, {"data": {"xig_fetch_media": {
+            "code": "RP2", "taken_at": STAMP, **image("https://cdn.example/rp2.jpg")}}})])
+        ctx = self.tab(grid(feed("P2", **image("https://cdn.example/p2.jpg")), more=""),
+                       embeds=[grid({"code": "RP2", "product_type": "feed"}, more="c1")],
+                       routes={f"{SITE}/p/RP2/": Reply("<html></html>")},
+                       pages={f"{SITE}/p/RP2/": own})
+        self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
+                         [f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_P2.jpg"])
+        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/RP2/"])
+
+    def test_a_pinned_post_keeps_its_date_and_is_marked_pinned(self):
+        """Pinned posts above newer ones don't break newest-first; `--when` still drops them."""
+        pinned = {"timeline_pinned_user_ids": [42], "taken_at": STAMP - 30 * 86400}
+        old = feed("OLD", **pinned, **image("https://cdn.example/old.jpg"))
+        lazy = {"code": "RP2", "pk": PK["T1"], "product_type": "feed",
+                "clips_tab_pinned_user_ids": [42]}
+        new = feed("NEW", taken_at=STAMP + 86400, **image("https://cdn.example/new.jpg"))
+        embeds = [grid(old, lazy, new, more="")]
+        saved = run(categories=["posts"], ctx=self.tab(embeds=embeds))
+        self.assertEqual([(item.path, day(item.post.date).isoformat(), item.post.pinned)
+                          for item in saved], [
+            ("posts/2023-10-16_OLD.jpg", "2023-10-16", True),
+            (f"posts/{DAY}_RP2.jpg", DAY, True), ("posts/2023-11-16_NEW.jpg", "2023-11-16", False)])
+        ctx = self.tab(embeds=embeds, when=Range(since=date(2023, 11, 1)))
+        self.assertEqual([item.post.id for item in run(categories=["posts"], ctx=ctx)],
+                         ["RP2", "NEW"])
+
+    def test_a_lazy_post_gone_fails_alone(self):
+        """A lazy post whose page answers 404 is that post's failure; the tab goes on."""
+        ctx = self.tab(grid(feed("P2", **image("https://cdn.example/p2.jpg")), more=""),
+                       embeds=[grid({"code": "RP2", "product_type": "feed"}, more="c1")],
+                       routes={f"{SITE}/p/RP2/": Reply(status=404)})
+        self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
+                         [f"posts/{DAY}_P2.jpg"])
+        self.assertEqual([(post, type(error)) for post, error in ctx.seen.failed],
+                         [("RP2", NotFound)])
 
     def test_a_tab_whose_embedded_page_is_its_last_is_not_scrolled(self):
-        watch = FakeWatch({})
-        pages = {f"{SITE}/example_creator/": embedded(PROFILE, grid(feed("P1", **image("https://cdn.example/p1.jpg")), more=""))}
-        saved = read(options=Options(categories=("posts",)), watch=watch, pages=pages)
-        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"])
-        self.assertEqual(watch.batches, {})
+        """Every embedded result is read, the highlights after the last grid page too; then
+        the tab ends without a scroll."""
+        highlight = f"{SITE}/stories/highlights/9001/"
+        ctx = self.tab(grid(feed("LATE", **image("https://cdn.example/l.jpg"))), embeds=[
+            PROFILE, grid(feed("P1", **image("https://cdn.example/p1.jpg")), more=""),
+            HIGHLIGHTS], pages={highlight: PAGES[highlight]})
+        saved = run(categories=["posts", "highlights"], ctx=ctx)
+        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"] + [
+            path for path, _ in SAVED if path.startswith("highlights")])
+        self.assertEqual(ctx.seen.scrolls, 0)
 
-    def test_the_engine_stops_the_scroll_after_five_posts_in_a_row_older_than_when(self):
-        old_stamp = STAMP - 10 * 86400
-        old_posts = [feed(f"OLD{i}", taken_at=old_stamp, **image(f"https://cdn.example/o{i}.jpg")) for i in range(5)]
-        page_1 = grid(feed("NEW", taken_at=STAMP, **image("https://cdn.example/new.jpg")), more="c1")
-        page_2 = grid(*old_posts, more="c2")
-        page_3 = grid(feed("LATER", taken_at=old_stamp, **image("https://cdn.example/later.jpg")), more="")
-        watch = FakeWatch({f"{SITE}/example_creator/": [page_2, page_3]})
-        saved = read(options=Options(categories=("posts",), since=date(2023, 11, 14)), watch=watch,
-                     pages={f"{SITE}/example_creator/": embedded(PROFILE, page_1)})
-        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_NEW.jpg"])
-        self.assertEqual(watch.batches[f"{SITE}/example_creator/"], [page_3])
+    def test_which_grid_items_are_whole_posts(self):
+        """An image under 90% of its original width is a thumbnail, read again from its page;
+        a code a later result repeats is listed once."""
+        rows = [(640, 640, []), (980, 1080, []), (640, 1080, [f"{SITE}/p/RP2/"])]
+        for width, original, requests in rows:
+            with self.subTest(width=width, original=original):
+                item = feed("RP2", **{**image("https://cdn.example/rp2.jpg", width=width),
+                                      "original_width": original})
+                ctx = self.tab(grid(item, more=""), embeds=[grid(item, more="c1")])
+                self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
+                                 [f"posts/{DAY}_RP2.jpg"])
+                self.assertEqual(fetched(ctx), requests)
 
-    # A sync's stop at saved posts is the engine's (`flnd.engine.job._queue_listed`), tested in
-    # tests/test_job.py; the source no longer asks whether a post is saved.
-    def test_the_tab_alone_has_no_early_stop(self):
-        """Without the engine, the tab reads to its end, old posts and all: only the site ends it."""
-        old_stamp = STAMP - 10 * 86400
-        page_1 = grid(feed("NEW", **image("https://cdn.example/new.jpg")), more="c1")
-        page_2 = grid(*[feed(f"OLD{i}", taken_at=old_stamp, **image(f"https://cdn.example/o{i}.jpg"))
-                        for i in range(6)], more="")
-        watch = FakeWatch({f"{SITE}/example_creator/": [page_2]})
-        site = FakeSite(Target("ins:example_creator", kind="user"),
-                        pages={f"{SITE}/example_creator/": embedded(page_1)},
-                        options=Options(since=date(2023, 11, 14)))
-        instance = Instagram()
-        with watching(watch):
-            listed = [post.id for post in instance.posts(site, instance.user(site, "example_creator"))]
-        self.assertEqual(listed, ["NEW"] + [f"OLD{i}" for i in range(6)])
+    def test_a_lazy_post_outside_when_by_its_own_date_saves_nothing(self):
+        """Its pk says the 15th, which `--when` keeps; its page says the 14th, which it drops."""
+        page = post_page("RP2", taken_at=STAMP - 86400, **image("https://cdn.example/rp2.jpg"))
+        ctx = self.tab(embeds=[grid({"code": "RP2", "pk": PK["T1"], "product_type": "feed"},
+                                    more="")],
+                       routes={f"{SITE}/p/RP2/": Reply(page)}, when=Range(since=date(2023, 11, 15)))
+        self.assertEqual(run(categories=["posts"], ctx=ctx), [])
+        self.assertEqual(fetched(ctx), [f"{SITE}/p/RP2/"])
 
-    def test_a_post_without_a_pk_opens_its_page_only_after_the_scroll(self):
-        """fixes the tab being navigated mid-scroll: a page-only post is listed once the scroll ends."""
-        page_1 = grid({"code": "GONE", "product_type": "clips", "taken_at": STAMP}, more="c1")
-        page_2 = grid(feed("P2", **image("https://cdn.example/p2.jpg")), more="")
-        watch = FakeWatch({f"{SITE}/example_creator/": [page_2]})
-        seen = Seen()
-        saved = read(options=Options(categories=("posts",)), watch=watch, seen=seen,
-                     pages={f"{SITE}/example_creator/": embedded(page_1),
-                            f"{SITE}/p/GONE/": page_of("GONE", taken_at=STAMP, **image("https://cdn.example/g.jpg"))})
-        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P2.jpg", f"posts/{DAY}_GONE.jpg"])
-        self.assertEqual(watch.batches[f"{SITE}/example_creator/"], [])
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/GONE/"])
+    def test_a_please_wait_answer_holds_and_the_same_post_is_saved(self):
+        throttles = [Reply(THROTTLE)]
 
-    def test_complete_carousel_and_clips_in_grid_skip_lazy_api(self):
-        car = {
-            "code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container", "taken_at": STAMP,
-            "carousel_media": [image("https://cdn.example/c0.jpg"), video("https://cdn.example/c1.mp4")],
-        }
-        reel = {"code": "R1", "pk": PK["R1"], "product_type": "clips", "taken_at": STAMP,
-                **video("https://cdn.example/r1.mp4")}
-        seen = Seen()
-        saved = read(options=Options(categories=("posts",)), watch=FakeWatch({}), seen=seen,
-                     pages={f"{SITE}/example_creator/": embedded(PROFILE, grid(car, reel))})
-        self.assertEqual(seen.requests, [])
-        self.assertEqual([item.path for item in saved], [
-            f"posts/{DAY}_CAR_0.jpg", f"posts/{DAY}_CAR_1.mp4", f"posts/{DAY}_R1.mp4",
-        ])
+        def page(request):
+            return throttles.pop() if throttles else Reply(POSTS["RP2"])
 
+        ctx = self.tab(THROTTLE, grid(feed("P2", **image("https://cdn.example/p2.jpg")), more=""),
+                       embeds=[grid({"code": "RP2", "product_type": "feed"}, more="c1")],
+                       routes={f"{SITE}/p/RP2/": page})
+        saved = run(categories=["posts"], ctx=ctx)
+        self.assertEqual([item.path for item in saved],
+                         [f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_P2.jpg"])
+        # One hold for the fetch's answer (blocked), one for the feed's (ctx.hold).
+        [fetch, scroll] = [reason for reason, _, _ in ctx.seen.holds]
+        self.assertTrue(fetch.startswith("ins: blocked, HTTP 200"), fetch)
+        self.assertEqual(scroll, "Instagram asked to wait a few minutes")
 
-class Landing(FakeSite):
-    """A `FakeSite` whose tab lands elsewhere on a URL's first visits: `lands={url: [landing, …]}`."""
+    def test_while_blocked_no_post_page_opens(self):
+        """S3: a lazy post refused for good raises; it never opens its page instead."""
+        ctx = self.tab(embeds=[grid({"code": "RP2", "product_type": "feed"}, more="")],
+                       routes={f"{SITE}/p/RP2/": Reply(THROTTLE)})
+        with self.assertRaises(Blocked):
+            run(categories=["posts"], ctx=ctx)
+        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/"])
 
-    def __init__(self, target, *, lands, **options):
-        super().__init__(target, **options)
-        self.lands = lands
+    def test_a_dash_video_keeps_its_mp4_as_a_mirror_without_the_audio(self):
+        """S9: the audio joins only the DASH video, so the MP4 saves alone when it fails."""
+        found = best_file({**video("https://cdn.example/r.mp4"), "video_dash_manifest": MPD})
+        self.assertEqual(found, (("https://cdn.example/1080.mp4", "https://cdn.example/r.mp4"),
+                                 "mp4", "https://cdn.example/a95.mp4"))
+        [saved] = run(categories=["posts"], ctx=self.tab(embeds=[grid(
+            {"code": "D1", "product_type": "clips", "taken_at": STAMP, "video_dash_manifest": MPD,
+             **video("https://cdn.example/r.mp4")}, more="")]))
+        self.assertEqual((saved.file.url, saved.file.mirrors, saved.file.audio), (
+            None, ("https://cdn.example/1080.mp4", "https://cdn.example/r.mp4"),
+            "https://cdn.example/a95.mp4"))
 
-    @property
-    def url(self):
-        url = self._seen.visited[-1] if self._seen.visited else "about:blank"
-        visits = self._seen.visited.count(url)
-        landings = self.lands.get(url, [])
-        return landings[visits - 1] if 1 <= visits <= len(landings) else url
+    def test_a_webm_dash_video_is_saved_as_webm(self):
+        webm = MPD.replace("video/mp4", "video/webm").replace("1080.mp4", "1080.webm")
+        found = best_file({"video_dash_manifest": webm})
+        self.assertEqual(found, (("https://cdn.example/1080.webm",), "webm",
+                                 "https://cdn.example/a95.mp4"))
 
 
-class ThrottleTest(unittest.TestCase):
-    def test_a_please_wait_answer_is_waited_out_and_the_same_post_saved(self):
-        answers = [SiteError("HTTP 400", status=400, response=_net.Response(
-            400, f"{API}/media/{PK['T1']}/info/", {"content-type": "application/json"},
-            json.dumps({**THROTTLE, "require_login": True}).encode())), THROTTLE]
-        calls = []
+class PostTest(unittest.TestCase):
+    def test_one_post_from_its_page_or_its_calls(self):
+        carousel = {"code": "SINGLE", "taken_at": STAMP, "carousel_media": [
+            image("https://cdn.example/a.jpg"), video("https://cdn.example/r.mp4")]}
+        shortcode = embedded({"data": {"xdt_api__v1__media__shortcode__web_info": {
+            "items": [carousel]}}})
+        called = FakePage("<html></html>",
+                          feeds=[Sent(GRAPHQL, {"data": {"xig_fetch_media": carousel}})])
+        for page in (shortcode, called):
+            with self.subTest(page=type(page).__name__):
+                ctx = fake(routes={}, pages={f"{SITE}/p/SINGLE/": page})
+                saved = run("https://www.instagram.com/p/SINGLE/", ctx=ctx)
+                self.assertEqual([(item.path, item.key) for item in saved], [
+                    (f"{DAY}_SINGLE_0.jpg", "SINGLE_0"), (f"{DAY}_SINGLE_1.mp4", "SINGLE_1")])
+                self.assertEqual((ctx.seen.requests, ctx.seen.scrolls), ([], 0))
 
-        def media(url, request):
-            calls.append(url)
-            return answers.pop(0) if answers else JSON[f"{API}/media/{PK['T1']}/info/"]
-
-        seen = Seen()
-        saved = read(options=Options(categories=("tagged",)), json={**JSON, f"{API}/media/{PK['T1']}/info/": media},
-                     seen=seen)
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(seen.back_offs, ["Instagram asked to wait a few minutes"] * 2)
-        # In the tab's order: T1, read where it is listed, then P1.
-        self.assertEqual(
-            [item.path for item in saved],
-            [f"tagged/{DAY}_T1_0.jpg", f"tagged/{DAY}_T1_1.jpg", f"tagged/{DAY}_P1.jpg"],
-        )
-
-    def test_a_refusal_of_flnds_client_moves_the_calls_into_the_page(self):
-        seen = Seen()
-
-        def media(url, request):
-            # flnd's own client is refused; the tab's fetch is answered.
-            if not seen.requests[-1][2]["in_page"]:
-                return SiteError("HTTP 403", status=403)
-            return JSON[f"{API}/media/{PK['T1']}/info/"]
-
-        saved = read(options=Options(categories=("tagged",)), json={**JSON, f"{API}/media/{PK['T1']}/info/": media},
-                     seen=seen, cookies={"csrftoken": "tok", "sessionid": "s"})
-        self.assertEqual([options["in_page"] for _, _, options in seen.requests], [False, True])
-        self.assertEqual(seen.requests[1][2]["headers"]["X-CSRFToken"], "tok")
-        self.assertEqual(seen.requests[1][2]["headers"]["X-IG-App-ID"], APP_ID)
-        self.assertEqual(seen.back_offs, [])
-        self.assertIn(f"tagged/{DAY}_T1_0.jpg", [item.path for item in saved])
-
-    def test_a_403_the_engine_takes_for_a_login_wall_still_moves_the_calls_into_the_page(self):
-        """site.fetch raises a 401 or 403 as a LoginError; the API reads it with check=False instead."""
-
-        class Walling(FakeSite):
-            def fetch(self, url, *, check=True, **options):
-                response = super().fetch(url, check=False, **options)
-                if check and response.status in (401, 403):
-                    raise LoginError("ins: the site refused the login (HTTP 403)")
-                return response
-
-        seen = Seen()
-
-        def media(url, request):
-            if not seen.requests[-1][2]["in_page"]:
-                return SiteError("HTTP 403", status=403)
-            return JSON[f"{API}/media/{PK['T1']}/info/"]
-
-        site = Walling(Target("ins:example_creator", kind="user"), seen=seen,
-                       json={**JSON, f"{API}/media/{PK['T1']}/info/": media})
-        source = Instagram()
-        self.assertEqual(source.api.media(site, PK["T1"])["code"], "T1")
-        self.assertEqual([options["in_page"] for _, _, options in seen.requests], [False, True])
-        self.assertIn("! Instagram refused flnd's own client; sending its API calls from the page", seen.messages)
-
-    def test_a_page_answered_to_the_api_moves_the_calls_into_the_page(self):
-        """A 200 answer whose body is a page isn't an answer: the tab's own fetch is asked."""
-        seen = Seen()
-
-        def media(url, request):
-            # flnd's own client is answered with a page; the tab's fetch with JSON.
-            if not seen.requests[-1][2]["in_page"]:
-                return SiteError("HTTP 200", status=200, response=_net.Response(
-                    200, url, {"content-type": "text/html"}, b"<html></html>"))
-            return JSON[f"{API}/media/{PK['T1']}/info/"]
-
-        saved = read(options=Options(categories=("tagged",)),
-                     json={**JSON, f"{API}/media/{PK['T1']}/info/": media}, seen=seen)
-        self.assertEqual([options["in_page"] for _, _, options in seen.requests], [False, True])
-        self.assertIn("! Instagram answered the API with a page; sending its API calls from the page",
-                      seen.messages)
-        self.assertIn(f"tagged/{DAY}_T1_0.jpg", [item.path for item in saved])
-
-    def test_a_page_answered_from_the_tab_is_a_refusal(self):
-        """From the tab, a page instead of an answer stays `Changed`: the callers read the page."""
-        seen = Seen()
-        page = SiteError("HTTP 200", status=200, response=_net.Response(
-            200, f"{API}/media/{PK['T1']}/info/", {"content-type": "text/html"}, b"<html></html>"))
-        site = FakeSite(seen=seen, json={f"{API}/media/{PK['T1']}/info/": page})
-        with self.assertRaises(Changed):
-            Instagram().api.media(site, PK["T1"])
-        self.assertEqual([options["in_page"] for _, _, options in seen.requests], [False, True])
-
-    def test_a_refused_media_call_reads_the_posts_page(self):
-        seen = Seen()
-        pages = {**PAGES, f"{SITE}/p/T1/": shortcode_page({"code": "T1", "taken_at": STAMP,
-                                                           **image("https://cdn.example/t.jpg")})}
-        refused = {**JSON, f"{API}/media/{PK['T1']}/info/": SiteError("HTTP 500", status=None)}
-        saved = read(options=Options(categories=("tagged",)), json=refused, pages=pages, seen=seen)
-        self.assertIn(f"tagged/{DAY}_T1.jpg", [item.path for item in saved])
-        self.assertIn(f"{SITE}/p/T1/", seen.visited)
-        self.assertIn("media API refused", "\n".join(seen.messages))
-
-    def test_a_page_answered_to_the_media_call_reads_the_page_quietly(self):
-        """A page instead of media JSON is the mode `get` announced once: no warning per post."""
-        seen = Seen()
-        page = SiteError("HTTP 200", status=200, response=_net.Response(
-            200, f"{API}/media/{PK['T1']}/info/", {"content-type": "text/html"}, b"<html></html>"))
-        pages = {**PAGES, f"{SITE}/p/T1/": shortcode_page({"code": "T1", "taken_at": STAMP,
-                                                           **image("https://cdn.example/t.jpg")})}
-        answered = {**JSON, f"{API}/media/{PK['T1']}/info/": page}
-        saved = read(options=Options(categories=("tagged",)), json=answered, pages=pages, seen=seen)
-        self.assertIn(f"tagged/{DAY}_T1.jpg", [item.path for item in saved])
-        self.assertIn(f"{SITE}/p/T1/", seen.visited)
-        self.assertNotIn("media API refused", "\n".join(seen.messages))
-
-    def test_a_login_wall_is_waited_out_and_the_page_loaded_again(self):
-        site = Landing(Target("ins:SINGLE", kind="post"), pages=PAGES,
-                       lands={f"{SITE}/p/SINGLE/": [f"{SITE}/accounts/login/?next=/p/SINGLE/", f"{SITE}/challenge/"]})
-        posts = list(Instagram().post(site, "SINGLE"))
-        self.assertEqual([post.id for post in posts], ["SINGLE"])
-        self.assertEqual(site._seen.visited, [f"{SITE}/p/SINGLE/"] * 3)
-        self.assertEqual(site._seen.back_offs, ["Instagram showed a login wall"] * 2)
-
-    def test_a_suspended_account_is_a_hard_stop(self):
-        site = Landing(Target("ins:SINGLE", kind="post"), pages=PAGES,
-                       lands={f"{SITE}/p/SINGLE/": [f"{SITE}/accounts/suspended/?next=/p/SINGLE/"]})
-        with self.assertRaisesRegex(LoginError, "suspended or locked"):
-            list(Instagram().post(site, "SINGLE"))
-        suspended = SiteError("HTTP 403", status=403, response=_net.Response(
-            403, f"{SITE}/accounts/suspended/", {"content-type": "text/html"}, b"<html></html>"))
-        with self.assertRaisesRegex(LoginError, "suspended or locked"):
-            read(options=Options(categories=("tagged",)), json={**JSON, f"{API}/media/{PK['T1']}/info/": suspended})
-
-    def test_the_www_claim_is_kept_from_each_answer(self):
-        source = Instagram()
-
-        class Claiming(FakeSite):
-            def fetch(self, url, **options):
-                answer = super().fetch(url, **options)
-                assert answer is not None
-                return _net.Response(200, url, {"x-ig-set-www-claim": "hmac.new"}, answer.content)
-
-        site = Claiming(Target("ins:example_creator", kind="user"), json=JSON)
-        source.api.media(site, PK["R1"])
-        self.assertEqual(source.api.claim, "hmac.new")
-
-    def test_persistent_login_wall_in_load_raises_login_error(self):
-        site = Landing(Target("ins:SINGLE", kind="post"), pages=PAGES,
-                       lands={f"{SITE}/p/SINGLE/": [f"{SITE}/accounts/login/?next=/p/SINGLE/"] * 4})
-        with self.assertRaisesRegex(LoginError, "login wall or challenge"):
-            list(Instagram().post(site, "SINGLE"))
-        self.assertEqual(site._seen.back_offs, ["Instagram showed a login wall"] * 2)
-
-    def test_a_profile_page_without_its_user_is_loaded_once(self):
-        from flnd.sources.ins import Profile
-
-        site = FakeSite(Target("ins:example_user", kind="user"),
-                        pages={f"{SITE}/example_user/": "<html></html>"})
-        profile = Profile("example_user")
-        for _ in range(3):
-            profile.describe(site)
-        self.assertEqual(site._seen.visited, [f"{SITE}/example_user/"])
-
-    def test_persistent_login_wall_in_api_get_marks_media_refused_and_falls_back(self):
-        seen = Seen()
-        pages = {
-            **PAGES,
-            f"{SITE}/example_user/": embedded(PROFILE, grid(
-                {"code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container", "taken_at": STAMP},
-                {"code": "R1", "pk": PK["R1"], "product_type": "clips", "taken_at": STAMP},
-            )),
-            f"{SITE}/p/CAR/": shortcode_page({"code": "CAR", "taken_at": STAMP,
-                                              **image("https://cdn.example/car.jpg")}),
-            f"{SITE}/p/R1/": shortcode_page({"code": "R1", "taken_at": STAMP,
-                                             **video("https://cdn.example/r1.mp4")}),
-        }
-        walled = {"require_login": True, "status": "fail"}
-        bad_json = {**JSON, f"{API}/media/{PK['CAR']}/info/": walled, f"{API}/media/{PK['R1']}/info/": walled}
-        saved = read("ins:example_user", options=Options(categories=("posts",)), pages=pages,
-                     json=bad_json, watch=FakeWatch({}), seen=seen)
-        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_CAR.jpg", f"posts/{DAY}_R1.mp4"])
-        self.assertEqual(api_urls(seen).count(f"{API}/media/{PK['CAR']}/info/"), 4)
-        self.assertEqual(api_urls(seen).count(f"{API}/media/{PK['R1']}/info/"), 0)
-        # Both pages are opened after the scroll, never while the tab scrolls.
-        self.assertEqual(seen.visited, [f"{SITE}/example_user/", f"{SITE}/p/CAR/", f"{SITE}/p/R1/"])
-        self.assertEqual(seen.back_offs, ["Instagram showed a login wall"] * 2)
-
-    def test_post_page_reads_captured_graphql_when_embedded_is_empty(self):
-        pages = {f"{SITE}/p/SINGLE/": "<html></html>"}
-        watch = FakeWatch({f"{SITE}/p/SINGLE/": [
-            {"data": {"xig_fetch_media": {"code": "SINGLE", "taken_at": STAMP,
-                                          **image("https://cdn.example/g.jpg")}}}
-        ]})
-        saved = read("https://www.instagram.com/p/SINGLE/", pages=pages, watch=watch)
-        self.assertEqual([item.path for item in saved], [f"{DAY}_SINGLE.jpg"])
-
-
-class SinglePostTest(unittest.TestCase):
-    def test_a_carousel_post_from_its_page_has_no_category(self):
-        saved = read("https://www.instagram.com/p/SINGLE/")
-        self.assertEqual([item.path for item in saved], [f"{DAY}_SINGLE_0.jpg", f"{DAY}_SINGLE_1.mp4"])
-        self.assertEqual([item.post.category for item in saved], ["", ""])
-
-    def test_a_page_without_a_post_is_a_warning(self):
-        seen = Seen()
-        self.assertEqual(read("https://www.instagram.com/p/GONE/", seen=seen), [])
-        self.assertIn("! post GONE: its page holds no post; skipped", seen.messages)
-
-    def test_a_post_outside_time_is_dropped(self):
-        self.assertEqual(read("https://www.instagram.com/p/SINGLE/", options=Options(until=date(2023, 11, 14))), [])
-
-    def test_a_pk_that_gives_another_post_is_not_taken_for_it(self):
-        seen = Seen()
-        other = info(pk_of_code("SINGLE"), {"code": "OTHER", "taken_at": STAMP, **image("https://cdn.example/o.jpg")})
-        saved = read("https://www.instagram.com/p/SINGLE/", json=other, seen=seen)
-        self.assertEqual([(item.path, item.key) for item in saved], OLD_SINGLE)
-        self.assertEqual(seen.visited, [f"{SITE}/p/SINGLE/"])
+    def test_a_page_without_the_post_is_not_found(self):
+        """S3: no post, another post's code, or a post without files is `NotFound`."""
+        other = post_page("OTHER", taken_at=STAMP, **image("https://cdn.example/o.jpg"))
+        for html in ("<html></html>", other, post_page("SINGLE", taken_at=STAMP)):
+            with self.subTest(html=html[:40]):
+                ctx = fake(routes={}, pages={f"{SITE}/p/SINGLE/": html})
+                with self.assertRaises(NotFound):
+                    run("https://www.instagram.com/p/SINGLE/", ctx=ctx)
 
 
 class MeTest(unittest.TestCase):
-    def test_resolve_ins_me(self):
-        target = Instagram().resolve("me")
-        self.assertEqual(target, Target("ins:me", kind="me"))
-        self.assertEqual(str(target), "ins:me")
-        self.assertFalse(target.query)
-        self.assertNotIn("me", Instagram.single_kinds)
-        self.assertIn("ins:me", Instagram.forms)
-        self.assertEqual(Instagram().resolve("https://www.instagram.com/me/"), Target("ins:me", kind="user"))
+    URL = f"{SITE}/api/v1/friendships/{{}}/following/"
 
-    def test_me_paginates_following_with_ds_user_id_cookie(self):
-        seen = Seen()
-        pages = [
-            {"users": [{"username": "example_user"}], "next_max_id": "1"},
-            {"users": [{"username": "example_creator"}], "next_max_id": None},
-        ]
-        json_map = {f"{API}/friendships/99/following/": lambda u, req: pages.pop(0)}
-        site = FakeSite(Target("ins:me", kind="me"), cookies={"sessionid": "s", "ds_user_id": "99"}, json=json_map, seen=seen)
-        found = list(Instagram().me(site, "me"))
-        # Each account is a target as people write it; the engine resolves and downloads it.
-        self.assertEqual(found, [Target("ins:example_user"), Target("ins:example_creator")])
+    def follows(self, cookies, routes=None):
+        """The targets `ins:me` yields on a FakeCtx with these cookies, and the ctx."""
+        plugin = Instagram()
+        ctx = FakeCtx(plugin, "ins:me", cookies=cookies, routes=routes)
+        return listed(plugin.me(ctx, "me")), ctx
 
-    def test_me_falls_back_to_sessionid_prefix_and_current_user_api(self):
-        json_map = {
-            f"{API}/friendships/77/following/": {"users": [{"username": "example_user"}]},
-            f"{API}/accounts/current_user/": {"user": {"pk": 88}},
-            f"{API}/friendships/88/following/": {"users": [{"username": "example_handle"}]},
-        }
-        site_session = FakeSite(Target("ins:me", kind="me"), cookies={"sessionid": "77%3Aabc%3A2"}, json=json_map)
-        self.assertEqual(list(Instagram().me(site_session, "me")), [Target("ins:example_user")])
+    def test_the_follows_page_by_page_from_the_tab(self):
+        answers = {None: Reply({"users": [{"username": "example_user"}], "next_max_id": "1"},
+                               headers={"x-ig-set-www-claim": "c1"}),
+                   "1": Reply({"users": [{"username": "example_creator"}]})}
 
-        site_api = FakeSite(Target("ins:me", kind="me"), cookies={"sessionid": "opaque"}, json=json_map)
-        self.assertEqual(list(Instagram().me(site_api, "me")), [Target("ins:example_handle")])
+        def following(request):
+            return answers[(request.params or {}).get("max_id")]
 
-    def test_me_rejects_unexpected_response(self):
-        site = FakeSite(Target("ins:me", kind="me"), cookies={"sessionid": "s", "ds_user_id": "99"}, json={f"{API}/friendships/99/following/": {}})
-        with self.assertRaises(SiteError):
-            list(Instagram().me(site, "me"))
+        for cookies, user_id in (({"sessionid": "s", "ds_user_id": "99"}, "99"),
+                                 ({"sessionid": "77%3Aabc%3A2"}, "77")):
+            with self.subTest(user_id=user_id):
+                found, ctx = self.follows(cookies, {self.URL.format(user_id): following})
+                self.assertEqual(found, [Target("ins:example_user"), Target("ins:example_creator")])
+                [first, second] = ctx.seen.requests
+                self.assertEqual((first[2]["params"], first[2]["in_page"]), ({"count": 100}, True))
+                self.assertEqual(second[2]["headers"]["X-IG-WWW-Claim"], "c1")
 
-    def test_engine_treats_ins_me_as_query_target(self):
-        from flnd.engine import home as _home
-        from flnd.source import File, Post
-        from flnkit import cookies as _cookies
+    def test_no_login_or_an_odd_answer_raises(self):
+        with self.assertRaises(LoginError):
+            self.follows({"sessionid": "opaque"})
+        with self.assertRaises(Changed):
+            self.follows({"ds_user_id": "99"}, {self.URL.format("99"): Reply({"status": "ok"})})
 
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            following_pages = [
-                {"users": [{"username": "example_user"}]},
-                {"users": [{"username": "example_creator"}, {"username": "example_user"}]},
-            ]
-            step = {"i": 0}
 
-            def handler(request: _net.Request) -> _net.Reply:
-                url = str(request.url).split("?", 1)[0]
-                if url == f"{API}/friendships/99/following/":
-                    body = following_pages[min(step["i"], len(following_pages) - 1)]
-                    return _net.reply(200, json=body)
-                if url.startswith("https://cdn.example/"):
-                    return _net.reply(200, content=b"IMG")
-                return _net.reply(404)
+class InPage:
+    """The target's tab, as `ins:me`'s in-page calls reach it: answered by the case's `serve`."""
 
-            def fake_read_tab(profile, site, api, tab):
-                code = "A1" if profile.user == "example_user" else "B1"
-                yield Post(code, [File(f"https://cdn.example/{code.lower()}.jpg")], date=day(STAMP))
+    def __init__(self, case):
+        self.case = case
 
-            _home.save(home, "ins", _cookies.Jar([
-                {"name": "sessionid", "value": "99:abc:1", "domain": ".instagram.com", "path": "/"},
-            ]))
-            engine = Engine(home=home, sources={"ins": Instagram})
-            with _net.fake(handler), mock.patch("flnd.sources.ins.Profile.read_tab", fake_read_tab):
-                dry = engine.download(["ins:me"], categories="posts", dry=True)
-                self.assertTrue(dry.ok)
-                self.assertEqual(fakes.targets(home), {})
+    async def fetch(self, url, **options):
+        reply = self.case.serve(_net.Request("GET", _net.URL(url), {}, None))
+        return _net.Response(reply.status, url, {}, reply.body)
 
-                report = engine.download(["ins:me"], categories="posts", sync=True)
-                self.assertTrue(report.ok)
-                rows = fakes.targets(home)
-                self.assertEqual(list(rows), ["ins:me"])
-                self.assertEqual(rows["ins:me"].seen, ["ins:example_user"])
-                ls = engine.target_ls()
-                self.assertEqual(len(ls), 1)
-                self.assertEqual(str(ls[0].target), "ins:me")
-                self.assertTrue(ls[0].query)
-                self.assertEqual(ls[0].seen, 1)
-                self.assertTrue((home / "media" / "ins" / "example_user" / "posts" / f"{DAY}_A1.jpg").exists())
 
-                step["i"] = 1
-                sync_report = engine.sync()
-                self.assertTrue(sync_report.ok)
-                self.assertEqual(len(sync_report.targets), 1)
-                self.assertEqual(str(sync_report.targets[0].target), "ins:me")
-                self.assertEqual(list(fakes.targets(home)), ["ins:me"])
-                self.assertTrue((home / "media" / "ins" / "example_creator" / "posts" / f"{DAY}_B1.jpg").exists())
+class MeEngineTest(fakes.EngineCase):
+    """`ins:me` through the real engine: a target that finds the follows, recorded once."""
+
+    def setUp(self):
+        super().setUp()
+        self.follows = [{"users": [{"username": "example_user"}]},
+                        {"users": [{"username": "example_creator"},
+                                   {"username": "example_user"}]}]
+        self.routes[f"{SITE}/api/v1/friendships/99/following/"] = (
+            lambda request: _net.reply(200, json=self.follows[0]))
+        _home.save(self.home, "ins", _cookies.Jar([{"name": "sessionid", "value": "99:abc:1",
+                                                    "domain": ".instagram.com", "path": "/"}]))
+
+        async def read_tab(ctx, profile, tab):
+            code = "A1" if profile.user == "example_user" else "B1"
+            yield Post(code, [File(f"https://cdn.example/{code.lower()}.jpg")], date=day(STAMP))
+
+        async def nothing(*args, **options):
+            return []
+
+        # The tabs and the pages a sync's every category reads, so no browser opens.
+        self.enterContext(mock.patch("flnd.plugins.ins.read_tab", read_tab))
+        self.enterContext(mock.patch("flnd.plugins.ins.story_page", nothing))
+        self.enterContext(mock.patch("flnd.plugins.ins.page_results", nothing))
+        self.enterContext(mock.patch("flnd.engine.ctx.Ctx._page", lambda ctx: InPage(self)))
+
+    def saved(self, user, code):
+        return (self.target_dir("ins", user) / "posts" / f"{DAY}_{code}.jpg").exists()
+
+    def test_a_dry_run_keeps_nothing_and_a_sync_finds_new_follows(self):
+        engine = Engine(home=self.home, sources={"ins": Instagram})
+        dry = engine.download(["ins:me"], categories="posts", dry=True)
+        self.assertTrue(dry.ok, (dry, self.lines()))
+        self.assertEqual(fakes.targets(self.home), {})
+        report = engine.download(["ins:me"], categories="posts", sync=True)
+        self.assertTrue(report.ok, report)
+        rows = fakes.targets(self.home)
+        self.assertEqual((list(rows), rows["ins:me"].seen), (["ins:me"], ["ins:example_user"]))
+        [listed] = engine.target_ls()
+        self.assertEqual((str(listed.target), listed.query, listed.seen), ("ins:me", True, 1))
+        self.assertTrue(self.saved("example_user", "A1"))
+        self.follows.pop(0)
+        report = engine.sync()
+        self.assertTrue(report.ok, report)
+        self.assertEqual([str(found.target) for found in report.targets], ["ins:me"])
+        self.assertEqual(list(fakes.targets(self.home)), ["ins:me"])
+        self.assertTrue(self.saved("example_creator", "B1"))
 
 
 if __name__ == "__main__":

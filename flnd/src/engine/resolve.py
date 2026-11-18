@@ -257,9 +257,8 @@ class Manifest:
 
     An entry is one plugin of `plugins.json`: `domains`, `unsupported` (pattern
     to reason) and `routes`, each with `name`, `patterns` (a text, or a `[pattern, template]`
-    pair), `single`, `discovers`, `shown` and `categories` (`{"name", "own"}`). An entry of
-    today's `_manifest.py` (API 1) has no routes and no `own`: it gets one catch-all route per
-    form (`code:<value>`, `code?<query>`), with every category its own, until API 2.
+    pair), `single`, `discovers`, `shown` and `categories` (`{"name", "own"}`); the
+    built-ins' entries in `_manifest.py` hold the same (`flnd.plugins.facts`).
 
     Args:
         built_in: the built-ins' entries by code, in the order they are tried.
@@ -303,15 +302,7 @@ def _entry(code: str, entry: Mapping[str, Any]) -> _Plugin:
 
 
 def _compiled(code: str, entry: Mapping[str, Any]) -> _Plugin:
-    if "routes" in entry:
-        routes = tuple(_route(route) for route in entry["routes"])
-    else:
-        # API 1: no patterns in the manifest yet, and no `own`; every category is own.
-        categories = tuple((str(name), True) for name in entry.get("categories", ()))
-        searches = any(str(form).startswith(f"{code}?") for form in entry.get("forms", ()))
-        routes = (_Route("", (_Pattern(f"{code}:{{value:.+}}"),), categories),)
-        if searches:
-            routes += (_Route("", (_Pattern(f"{code}?{{query}}"),), categories),)
+    routes = tuple(_route(route) for route in entry.get("routes", ()))
     unsupported = tuple((_Pattern(text), reason)
                         for text, reason in dict(entry.get("unsupported", {})).items())
     return _Plugin(code, tuple(entry.get("domains", ())), routes, unsupported)

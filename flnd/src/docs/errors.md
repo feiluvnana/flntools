@@ -16,7 +16,7 @@ flnd.Error                 str(e) says what went wrong; e.hint what to do
 │   ├── Blocked            rate limited or blocked for a while (e.wait)
 │   ├── NotFound           deleted, or never there
 │   ├── Hidden             it exists, but this account can't see it (a private profile)
-│   └── Changed            the answer no longer has the shape the source expects
+│   └── Changed            the answer no longer has the shape the plugin expects
 ├── NetworkError           DNS, TLS, a timeout, a reset, a transfer cut short
 ├── DiskError              no space, no permission, a name too long, a damaged store
 ├── ToolError              ffmpeg, 7zz or a browser: missing, or failed
@@ -36,7 +36,7 @@ Each error has:
   exist won't heal, while one for a timeout may.
 
 A `SiteError` also has `status`, the HTTP status (`None` when there was no HTTP answer), and
-`response`, the answer itself, so a source can read the site's reason from its body.
+`response`, the answer itself, so a plugin can read the site's reason from its body.
 `Blocked` has `wait`, the seconds the site asked to wait, or `None`.
 
 `flnd.Stopped` derives from `KeyboardInterrupt`, so `except flnd.Error` (or `except Exception`)
@@ -66,7 +66,7 @@ The hierarchy is defined in two modules, because the kit, `flnkit`, imports noth
   cause. Their hints are generic: none names a flnd command or flag.
 - **`src/errors.py`** (`flnd.errors`) re-exports those same objects, so
   `flnd.LoginError is flnkit.errors.LoginError` and `except flnd.Error` catches what the kit
-  raises. It adds what only flnd knows: `Hidden`, `PluginError` (API 1 named it
+  raises. It adds what only flnd knows: `Hidden`, `PluginError` (plugin API 1 called it
   `SourceError`), and `classify`.
 
 Each class's `__module__` is where it is defined: `flnkit.errors.LoginError`, but
@@ -82,15 +82,15 @@ plugin's own class that is merely named `LoginError` exits 4, not 3.
 | a `DiskError` for a full disk or quota | `free some space on that disk, or use another --home` |
 | a `DiskError` for a read-only disk | `that disk is read-only; use another --home` |
 | a `DiskError` for a name too long | `use a shorter --home or folder template` |
-| any other exception a source lets escape (a `PluginError`) | `this is a bug; run with -v and report it` |
+| any other exception a plugin lets escape (a `PluginError`) | `this is a bug; run with -v and report it` |
 
 A `ValueError` from the kit is its caller's mistake: `dig` raises one for a malformed path, and
-a page's `css` for a selector that isn't CSS. Escaping a source, it becomes that source's
+a page's `css` for a selector that isn't CSS. Escaping a plugin, it becomes that plugin's
 `PluginError`, never `Changed`.
 
-A source imports the classes it raises from `flnd.source`: `UsageError`, `LoginError`,
+A plugin imports the classes it raises from `flnd.plugin`: `UsageError`, `LoginError`,
 `SiteError`, `Blocked`, `NotFound`, `Changed`, `NetworkError`, `PluginError`, and `Error` to
-catch them all. A mistake in a source's declaration (a pattern outside its domains, a category
+catch them all. A mistake in a plugin's declaration (a pattern outside its domains, a category
 declared twice) raises `PluginError` when its class is made.
 
 ## The policy
@@ -99,11 +99,11 @@ declared twice) raises `PluginError` when its class is made.
 | --- | --- | --- | --- |
 | a timeout, a reset, a 5xx | `NetworkError`, or `SiteError` with the status | 4 more tries by the run's scheduler, waiting about 1, 2, 4 and 8 s (each times 0.5 to 1.5); a POST never, since the server may have acted | the file fails alone; the run goes on |
 | a 429 | `Blocked` | its bucket (the host's, for the plugin) is held for what the site asks (`Retry-After`, or its rate-limit reset, up to 1 h), or 30 s when it doesn't say, and its pace halved for 20 requests; the third 429 in a row is a block round (below) | the file or target fails |
-| a block a source reads from a page's content (`site.back_off`) | `Blocked` | a block round of the run's scheduler: the source's account (every target of it) is held for the larger of what the site asks (up to 1 h) and the round's wait, 30 s, then 2 min, then 8 min for the rounds in a row; 10 minutes without a block start the rounds again; the fourth round in a row raises | the target fails |
+| a block the plugin's `blocked` hook reads from a page's content | `Blocked` | a block round of the run's scheduler: the plugin's account (every target of it) is held for the larger of what the site asks (up to 1 h) and the round's wait, 30 s, then 2 min, then 8 min for the rounds in a row; 10 minutes without a block start the rounds again; the fourth round in a row raises | the target fails |
 | a 404 or 410 | `NotFound` | never | the file or target fails |
-| an item this account can't see (a plugin on API 2 says so) | `Hidden` | with switching on, on another account | the file or target fails; from a lazy post's files, that post alone |
-| a 401 or 403 from the source's own domains, a login wall | `LoginError`, raised by `site.fetch` itself (the refusal is its cause) unless the source asked `check=False` | never | the source stops: its other targets fail with the same error, and the other sources go on |
-| a 401 or 403 from another host (a CDN's expired link) | `SiteError` | a 403 or 410 on a post whose files the source lists lazily lists them again once, for a fresh link | the file fails alone |
+| an item this account can't see (the plugin raises `Hidden`) | `Hidden` | with switching on, on another account | the file or target fails; from a lazy post's files, that post alone |
+| a 401 or 403 from the plugin's own domains, a login wall | `LoginError`, raised by `ctx.fetch` itself (the refusal is its cause) unless the plugin asked `check=False` | never | the plugin stops: its other targets fail with the same error, and the other plugins go on |
+| a 401 or 403 from another host (a CDN's expired link) | `SiteError` | a 403 or 410 on a post whose files the plugin lists lazily lists them again once, for a fresh link | the file fails alone |
 | a truncated transfer | `NetworkError` | yes, resuming from the part | the part is kept for the next run |
 | an answer that doesn't parse, a web page where media was expected | `Changed`, `SiteError` | never | the file or target fails |
 | no space, no permission, a name too long | `DiskError` | never | the run stops |
@@ -118,8 +118,8 @@ What "fails" means at each level:
   to (`--again`). The rest of the target goes on.
 - **A target** whose listing fails ends with its error printed, then its hint on the next line,
   and `TargetReport.error` holds the error. The other targets still run.
-- **A source** whose login fails, or that can't start (its `connect` fails), fails each of its
-  targets; the other sources still run.
+- **A plugin** whose login fails, or that can't start (its `connect` fails), fails each of its
+  targets; the other plugins still run.
 - **A usage mistake** stops the command before anything is fetched.
 - **A full or refused disk** stops the run; the files already saved keep their rows.
 
@@ -176,7 +176,7 @@ tools, and `fl.status` returns it as a `flnd.Status` ([library.md](library.md#re
 
 ### Samples of changed answers
 
-An answer that doesn't have the shape a source expects (`Changed`, with the answer in
+An answer that doesn't have the shape a plugin expects (`Changed`, with the answer in
 `e.response`) is kept as a sample, so a bug report can show what the site sent:
 `log/<run>/samples/<n>.txt`, its first line the redacted URL. The failure's hint names the
 file. A sample is scrubbed before it is written:
@@ -194,7 +194,7 @@ Each run's logs and samples are swept after 30 days, at the start of a later run
 
 A retry never reuses a stored URL: the one `flnd.db` keeps is redacted, and a CDN's signed URL
 expires within hours anyway. It works from `(target, post, file)` instead: it lists the failed
-post again through its source, starting from the cursor of the page the post was on, so a post
+post again through its plugin, starting from the cursor of the page the post was on, so a post
 deep in a long listing costs one page, and downloads the post's files that aren't saved, which
 are the ones that failed. A post the listing no longer has is recorded gone.
 
@@ -218,10 +218,10 @@ A file a retry brought back is a `Saved` event with `retried=True`; the end of t
 | message | meaning | fix |
 | --- | --- | --- |
 | `--only applies to profiles and chats; <target> is one post` | a single post has no categories | leave `--only` out |
-| `<target>: not logged in` | the source requires a login | `flnd login <code>` |
+| `<target>: not logged in` | the plugin requires a login | `flnd login <code>` |
 | `<code>: not logged in, using public access` | a warning: only public posts are listed | log in to get more |
 | `<code>: the site refused the login (HTTP 403)` | the saved login expired or was revoked | `flnd login <code>` |
-| `which source is "<text>"?` | a bare name, not a link, without a source | write it as `<code>:<text>` |
+| `which source is "<text>"?` | a bare name, not a link, without a plugin's code | write it as `<code>:<text>` |
 | `got a web page instead of a photo` | the site answered a file request with a page | usually a login wall: log in again |
 | `<home>/flnd.db: database is locked` | another flnd run held the home's database for more than 30 s | wait for it to end, or use another `--home` |
-| `unexpected <Type>: …` | a bug in a source or in flnd | run with `-v` and report it |
+| `unexpected <Type>: …` | a bug in a plugin or in flnd | run with `-v` and report it |

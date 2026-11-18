@@ -1,6 +1,6 @@
 """Telegram (`tlg`): a chat's photos, videos and files, through Telethon on the run's loop.
 
-Telethon and qrcode are imported inside functions. src/docs/sources/tlg explains it.
+Telethon and qrcode are imported inside functions. src/docs/plugins/tlg explains it.
 """
 
 from __future__ import annotations

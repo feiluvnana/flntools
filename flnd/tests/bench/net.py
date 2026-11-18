@@ -54,7 +54,7 @@ import kit
 from kit import Loop
 
 from flnd.engine import jobs, save
-from flnd.source import File, Target
+from flnd.plugin import File, Target
 from flnd.ui.log import ui
 from flnkit import files as _files
 from flnkit import net as _net

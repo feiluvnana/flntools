@@ -1,14 +1,17 @@
-"""The engine's `Ctx`: what a plugin on API 2 acts through, for one target of a run.
+"""The engine's `Ctx` for one target of a run, and a plugin's run: its session, tabs, listings.
 
 src/docs/architecture explains it; `flnd.testing.FakeCtx` answers the same way from fakes.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import datetime
 import functools
 import json
+import threading
+import weakref
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -20,12 +23,14 @@ from collections.abc import (
     Sequence,
 )
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.plugin
-from flnd.engine import jobs, site
+from flnd.engine import home, jobs
+from flnd.engine.options import SourceConfig, config
 from flnd.errors import (
     Blocked,
     LoginError,
@@ -38,13 +43,18 @@ from flnd.errors import (
 from flnd.plugin import Landed, Plugin, Range, Request, Target
 from flnd.ui import forms
 from flnd.ui.log import ui
-from flnkit import browser, clock, net, text
+from flnkit import browser, clock, net, text, vault
 
 if TYPE_CHECKING:
+    from flnd.engine.options import RunShared
+    from flnd.engine.run import Stop
+    from flnkit import cookies
     from flnkit.html import Document
 
-__all__ = ["LOGGING_IN", "PAGE_LIMIT", "Ctx", "JsonState", "Secrets", "Time", "checked",
-           "empty", "granted", "native", "refused", "start", "walled", "writable"]
+__all__ = ["LOGGING_IN", "PAGE_LIMIT", "Bridge", "Ctx", "JsonState", "Listing", "PluginRun",
+           "Secrets", "TargetTabs", "Time", "checked", "empty", "first_page", "granted",
+           "login_names", "met_turn", "opened", "plugin_run", "refused", "scheduler",
+           "shared_browser", "start", "walled", "writable"]
 
 T = TypeVar("T")
 # While a plugin's `Login.start` runs, its leave to write `ctx.secrets` (6.7): what it starts
@@ -56,13 +66,11 @@ PAGE_LIMIT = 32 << 20
 LEVELS = ("debug", "info", "warn")
 # What `_Feed.__anext__` gets from a feed that ended.
 _DONE = object()
-
-
-def native(source: object) -> bool:
-    """Whether `source` (a class or an instance) is a plugin on API 2, which the engine runs
-    natively; anything else is an API-1 source, run through `flnd.engine.site`'s bridge."""
-    cls = source if isinstance(source, type) else type(source)
-    return issubclass(cls, Plugin)
+# Methods a server may receive twice without harm: only their failures are tried again.
+SAFE = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+# How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
+# `flnd sync` warns the run before the one that meets the login wall.
+EXPIRY_WARNING = 24 * 3600
 
 
 class _Leave:
@@ -185,7 +193,7 @@ def once(request: Request, error: Exception) -> Any:
     Raises:
         Exception: `error`, for one the scheduler may wait out and send again.
     """
-    if request.method.upper() in site.SAFE or isinstance(error, (Blocked, LoginError)):
+    if request.method.upper() in SAFE or isinstance(error, (Blocked, LoginError)):
         raise error
     if (isinstance(error, SiteError) and not request.check and error.response is not None
             and (error.status or 0) >= 500):
@@ -349,7 +357,7 @@ class Ctx:
 
     Each request is a scheduler job: a page job on the plugin's domains, a file-pooled one
     elsewhere, retried and held by the scheduler's policy. The browser's verbs go through the
-    target's `flnd.engine.site.TargetSite`, one call on a thread each, as API 1's do.
+    target's `TargetTabs`, one call on a thread each.
 
     Args:
         run: the plugin's resources for the run.
@@ -358,41 +366,41 @@ class Ctx:
         login: for `flnd login`: `ask` asks in the terminal.
     """
 
-    def __init__(self, run: site.SourceRun, target: Target, *, when: Range = Range(),
+    def __init__(self, run: PluginRun, target: Target, *, when: Range = Range(),
                  login: bool = False) -> None:
         self._run = run
         self._plugin: Plugin = run.source
         self._target = target
         self._when = when
         self._login = login
-        self._site = site.TargetSite(run, target)
+        self._tabs = TargetTabs(run)
         self._settings = type(self._plugin).Settings()
         self._state = JsonState(run.values)
         self._secrets = Secrets(lambda: run.secrets)
         # The category's listing, which `pages` resumes and reports to; the crawl sets it.
-        self.listing: site.Listing | None = None
+        self.listing: Listing | None = None
 
     # -- what the crawl reads -------------------------------------------------------------
 
     @property
     def _idle(self) -> bool:
         """Whether it never opened a tab, so `close` has nothing to do."""
-        return self._site._idle
+        return self._tabs.idle
 
     def close(self) -> None:
-        """Give back the target's tabs; on a thread, as `TargetSite.close`."""
-        self._site.close()
+        """Give back the target's tabs; on a thread."""
+        self._tabs.close()
 
     @contextlib.asynccontextmanager
     async def aside(self) -> AsyncIterator[None]:
         """Tabs of its own for the block: a lazy post's files, `refresh` and `date` open their
         own, never the listing's, and they close when it ends."""
-        opened: list[tuple[site.TargetSite, browser.Tabs]] = []
-        token = site._ASIDE.set(opened)
+        opened: list[tuple[TargetTabs, browser.Tabs]] = []
+        token = _ASIDE.set(opened)
         try:
             yield
         finally:
-            site._ASIDE.reset(token)
+            _ASIDE.reset(token)
             if opened:
                 await self._run.off(_close_tabs, opened)
 
@@ -446,10 +454,10 @@ class Ctx:
             page = await self._run.off(self._page)
             return capped(await page.fetch(url, method=asked.method, headers=headers,
                                            body=body, check=False))
-        if self._site._tabs is not None:
+        if self._tabs.opened:
             # Cookies the browser set for the request's host reach the session too, as a
             # logged-in page sends them; another site's never do.
-            cookies = host_cookies(await self._run.off(self._site._browser_cookies),
+            cookies = host_cookies(await self._run.off(self._tabs.cookies),
                                    net.URL(url).host)
             if cookies:
                 self._run.session.add(cookies)
@@ -489,7 +497,7 @@ class Ctx:
                 asked = first.replace(params={**(first.params or {}), **more})
             return await self.fetch(asked, bucket=bucket, in_page=in_page)
 
-        response = await site.first_page(ask, listing)
+        response = await first_page(ask, listing)
         seen: set[str] = set()
         while not empty(response):
             if listing is not None:
@@ -509,7 +517,7 @@ class Ctx:
 
     def _page(self) -> browser.Page:
         """The tab the target works in now (a lazy post's own one in `aside`), on a thread."""
-        return self._site._verbs().page
+        return self._tabs.verbs().page
 
     async def open(self, url: str) -> Landed:
         """See `flnd.plugin.Ctx.open`: a warm tab loading `url` becomes the target's."""
@@ -544,7 +552,7 @@ class Ctx:
     def _take(self, url: str) -> tuple[browser.Page, browser.Visit | None]:
         """The target's tab for `url`, a warm one if it loads `url`, and the warm one's first
         answer; on a thread."""
-        tabs = self._site._verbs()
+        tabs = self._tabs.verbs()
         warmed, first = tabs.take_warm(url)
         return tabs.page, first if warmed else None
 
@@ -571,12 +579,12 @@ class Ctx:
 
     async def document(self) -> Document:
         """See `flnd.plugin.Ctx.document`."""
-        return await self._run.off(self._site.document)
+        return await self._run.off(self._tabs.document)
 
     async def click(self, css: str, *,
                     timeout: float = 10.0) -> None:  # noqa: ASYNC109 (the tab job's own limit)
         """See `flnd.plugin.Ctx.click`."""
-        await self._run.off(functools.partial(self._site.click, css, timeout=timeout))
+        await self._run.off(functools.partial(self._tabs.click, css, timeout=timeout))
 
     async def handoff(self, message: str, *, until: Callable[[], Awaitable[bool]],
                       timeout: float | None = None) -> bool:  # noqa: ASYNC109 (a person's)
@@ -587,7 +595,7 @@ class Ctx:
             return bool(browser.run_on(loop, until()))
 
         return await self._run.off(functools.partial(
-            self._site.handoff, until=done, message=message, timeout=timeout))
+            self._tabs.handoff, until=done, message=message, timeout=timeout))
 
     async def warm(self, urls: Sequence[str]) -> None:
         """Start loading `urls` in warm tabs, while the run's tab budget has room.
@@ -595,7 +603,7 @@ class Ctx:
         For pages a listing opens next that no category's `url=` names (an album's pages, a
         profile's story buckets); an empty URL opens nothing.
         """
-        await self._run.off(self._site.warm, list(urls))
+        await self._run.off(self._tabs.warm, list(urls))
 
     async def extension(self, op: str, **args: Any) -> Any:
         """See `flnd.plugin.Ctx.extension`: the relay to the extension isn't wired in yet.
@@ -740,7 +748,7 @@ def _reads_blocks(plugin: Plugin) -> bool:
     return type(plugin).blocked is not Plugin.blocked
 
 
-def _close_tabs(opened: Sequence[tuple[site.TargetSite, browser.Tabs]]) -> None:
+def _close_tabs(opened: Sequence[tuple[TargetTabs, browser.Tabs]]) -> None:
     for _, tabs in opened:
         tabs.close()
 
@@ -756,7 +764,7 @@ class _Feed:
         self._done = False
 
     def _made(self, match: Any, scroll: bool, lines: bool, cursor: Any) -> browser.Feed:
-        return browser.Feed(self._ctx._site._verbs(), match, scroll=scroll, lines=lines,
+        return browser.Feed(self._ctx._tabs.verbs(), match, scroll=scroll, lines=lines,
                             cursor=cursor)
 
     async def _open(self) -> browser.Feed:
@@ -790,3 +798,622 @@ class _Feed:
         if self._feed is not None:
             feed, self._feed = self._feed, None
             await self._ctx._run.off(feed.close)
+
+
+# ---------------------------------------------------------------------------------------------
+# A plugin's run: its cookies, session, clients, stores and loop
+# ---------------------------------------------------------------------------------------------
+
+class _Screen(browser.Screen):
+    """The browser's questions, asked as flnd's others are; its rows are a line each.
+
+    A run's screen shows only what the run's snapshot holds, so a browser step that would draw
+    a bar (Chromium's download, a wait for a person) warns its label instead.
+    """
+
+    def confirm(self, question: str) -> bool:
+        return forms.confirm(question, default=False)
+
+    def progress(self, label: str, *, total: float | None = None) -> Any:
+        ui.warn("{label}", label=label)
+        return super().progress(label, total=total)
+
+
+# The side tabs of the block running in this context (`Ctx.aside`): a lazy post's files, a
+# refresh or a `date` opens its own tab, never the listing's. None outside such a block.
+_ASIDE: ContextVar[list[tuple[TargetTabs, browser.Tabs]] | None] = \
+    ContextVar("flnd_aside", default=None)
+# Releases the target's turn (`flnd.engine.crawl.Turn`) once its route meets the site; None
+# outside a route's call.
+met_turn: ContextVar[Callable[[], None] | None] = ContextVar("flnd_turn", default=None)
+
+
+def _met() -> None:
+    """The route running here met the site: its target's turn passes."""
+    release = met_turn.get()
+    if release is not None:
+        release()
+
+
+class Bridge:
+    """The run's loop, as code on a `CALL` thread reaches it.
+
+    In a run it is the run's own loop. Outside one (`flnd login`), it starts a loop of its own
+    on a thread the first time it is used, and `close` ends it.
+
+    Args:
+        loop: the run's loop; None for one of its own.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        self._loop = loop
+        self._own = loop is None
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        """The asyncio loop; one of its own is started on first use."""
+        with self._lock:
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                self._thread = threading.Thread(target=self._loop.run_forever,
+                                                name="flnd-bridge", daemon=True)
+                self._thread.start()
+            return self._loop
+
+    def run(self, awaitable: Awaitable[T]) -> T:
+        """Run `awaitable` on the loop from this thread, and return its value.
+
+        Raises:
+            RuntimeError: called on the loop's own thread.
+        """
+        return browser.run_on(self.loop, awaitable)
+
+    def close(self) -> None:
+        """End a loop of its own, cancelling what still runs on it; nothing for the run's."""
+        with self._lock:
+            loop, thread, self._thread = self._loop, self._thread, None
+        if not self._own or loop is None or thread is None:
+            return
+        browser.run_on(loop, _cancel_others())
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+
+
+async def _cancel_others() -> None:
+    current = asyncio.current_task()
+    pending = [task for task in asyncio.all_tasks() if task is not current]
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+    await asyncio.get_running_loop().shutdown_asyncgens()
+
+
+@dataclass
+class PluginRun:
+    """One plugin's resources for a run: cookies, HTTP clients, stores, loop and scheduler."""
+
+    # The plugin, as one instance for the whole run.
+    source: Plugin
+    # What the run shares across plugins: the home, its database, the stop flag.
+    settings: RunShared
+    # The login's cookies.
+    jar: cookies.Jar
+    # What sends: curl on the run's loop, with the cookies the site sets kept beside the login's.
+    session: net.Session
+    # The listing's requests: stopped by the first Ctrl-C.
+    web: net.Client
+    # The files' downloads, over the same session and limits: stopped by the second Ctrl-C.
+    files: net.Client
+    # The plugin's `[sources.<code>]` settings in the home's config.toml: pace, scroll, limits,
+    # proxy and stop_after, each over what the plugin's class says.
+    config: SourceConfig = field(default_factory=SourceConfig)
+    # The posts its `date` hook had no day for, read once for the run (`crawl.asked`).
+    asked: dict[str, float] | None = None
+    _state: home.Home | None = field(default=None, repr=False)
+    _secrets: vault.Vault | None = field(default=None, repr=False)
+    # A loop of the plugin's own, made only outside a run (`shared_browser` gives the run's).
+    _own_loop: Bridge | None = field(default=None, repr=False)
+    # A scheduler of the plugin's own, made only outside a run, on its own loop.
+    _own_jobs: jobs.Scheduler | None = field(default=None, repr=False)
+    _closed: bool = field(default=False, repr=False)
+    # Whether a target already said that the browser doesn't use the config's proxy.
+    _told_proxy: bool = field(default=False, repr=False)
+    # The plugin's state for the run, read from flnd.db once, off the loop (`load_state`); the
+    # keys changed since the last `save_state`; and a lock, as the loop and the engine's
+    # threads both reach them.
+    _values: dict[str, Any] | None = field(default=None, repr=False)
+    _changed: set[str] = field(default_factory=set, repr=False)
+    _guard: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @property
+    def loop(self) -> Bridge:
+        """The run's loop, where the browser and async code run; the plugin's own outside a
+        run."""
+        shared = self.settings.browser_pool
+        if shared is not None:
+            return Bridge(shared.loop)
+        if self._own_loop is None:
+            self._own_loop = Bridge()
+        return self._own_loop
+
+    @property
+    def scheduler(self) -> jobs.Scheduler:
+        """The run's scheduler, which every request and file waits for; the plugin's own
+        outside a run."""
+        shared = scheduler(self.settings)
+        if shared is not None:
+            return shared
+        if self._own_jobs is None:
+            self._own_jobs = jobs.Scheduler(stop=self.settings.stop)
+        return self._own_jobs
+
+    @property
+    def jobs(self) -> int:
+        """The most files of one target downloading at once (`jobs.Limits.places`). A target's
+        queue holds 4 times as many before its listing waits."""
+        return self.scheduler.limits.places
+
+    @property
+    def state(self) -> home.State:
+        """The plugin's own values in the home's `flnd.db`: the run's, or one opened here."""
+        if self.settings.db is not None:
+            return self.settings.db.state(self.source.code)
+        if self._state is None:
+            self._state = home.open(self.settings.home)
+        return self._state.state(self.source.code)
+
+    @property
+    def values(self) -> MutableMapping[str, Any]:
+        """The plugin's state as the run reads and writes it: in memory, read from flnd.db
+        once (`load_state`) and written back by `save_state`, both off the loop."""
+        return _Values(self)
+
+    def load_state(self) -> None:
+        """Read the plugin's state from flnd.db, once; off the loop."""
+        with self._guard:
+            if self._values is None:
+                self._values = dict(self.state.items())
+
+    def save_state(self) -> None:
+        """Write the values changed since the last save back to flnd.db; off the loop."""
+        with self._guard:
+            if self._values is None or not self._changed:
+                return
+            changed, self._changed = self._changed, set()
+            kept = {key: self._values[key] for key in changed if key in self._values}
+        stored = self.state
+        for key in sorted(changed):
+            if key in kept:
+                stored[key] = kept[key]
+            else:
+                stored.pop(key, None)
+
+    @property
+    def secrets(self) -> vault.Vault:
+        """The plugin's sealed secrets in the home's `secrets.db`, opened on first use."""
+        if self._secrets is None:
+            self._secrets = home.secrets(self.settings.home, self.source.code)
+        return self._secrets
+
+    async def call(self, fn: Callable[..., T], *args: Any) -> T:
+        """Run the plugin's blocking `fn(*args)` (`ctx.call`) on a `CALL` thread, as a step of
+        the run (`jobs.Scheduler.step`): it waits for the plugin's holds, and is never tried
+        again."""
+        return await self.scheduler.step(self.source.code, None, fn, *args)
+
+    async def off(self, fn: Callable[..., T], *args: Any) -> T:
+        """Run the engine's own blocking step, `fn(*args)`, on a `CALL` thread, with no job.
+
+        For what must run even while the plugin is held or the run is stopping: a browser
+        verb, closing a target's tabs, writing back the cookies.
+        """
+        return await self.scheduler.on(jobs.Kind.CALL, fn, *args)
+
+    async def aclose(self) -> None:
+        """Close the session and the stores, on the run's loop; once."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.session.started:
+                await self.session.close()
+        finally:
+            for db in (self._state, self._secrets):
+                if db is not None:
+                    db.close()
+
+    def close(self) -> None:
+        """Close the session, stores and the plugin's own loop; once."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            # On the loop the session's transfers ran on; a loop already closed took them.
+            try:
+                if self.session.started:
+                    self.loop.run(self.session.close())
+                if self._own_jobs is not None:
+                    self.loop.run(self._own_jobs.close())
+            except RuntimeError:
+                pass
+        finally:
+            for db in (self._state, self._secrets):
+                if db is not None:
+                    db.close()
+            if self._own_loop is not None:
+                self._own_loop.close()
+
+
+
+class _Values(MutableMapping[str, Any]):
+    """A plugin's state in memory (`PluginRun.values`): each change is noted for
+    `save_state`. Read before `load_state` (outside a run), it loads first."""
+
+    def __init__(self, run: Any) -> None:
+        self._run = run
+
+    def _data(self) -> dict[str, Any]:
+        if self._run._values is None:
+            self._run.load_state()
+        return self._run._values
+
+    def __getitem__(self, key: str) -> Any:
+        data = self._data()
+        with self._run._guard:
+            return data[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        data = self._data()
+        with self._run._guard:
+            data[key] = value
+            self._run._changed.add(key)
+
+    def __delitem__(self, key: str) -> None:
+        data = self._data()
+        with self._run._guard:
+            del data[key]
+            self._run._changed.add(key)
+
+    def __iter__(self) -> Iterator[str]:
+        data = self._data()
+        with self._run._guard:
+            return iter(list(data))
+
+    def __len__(self) -> int:
+        data = self._data()
+        with self._run._guard:
+            return len(data)
+
+@contextlib.contextmanager
+def plugin_run(settings: RunShared, plugin: Plugin) -> Iterator[PluginRun]:
+    """Open one plugin's resources outside a run (`flnd login`), and close them however the
+    block ends.
+
+    The login's cookies are read from the home once, here, and a cookie of the login that has
+    expired or expires within `EXPIRY_WARNING` is a warning line. The plugin's
+    `[sources.<code>]` settings in the home's config.toml give the scheduler its pace and its
+    hosts' limits, and the session its proxy. Nothing is sent yet.
+
+    Raises:
+        UsageError: the home's config.toml has a value it doesn't take.
+    """
+    run = _made(settings, plugin)
+    try:
+        yield run
+    finally:
+        run.close()
+
+
+@contextlib.asynccontextmanager
+async def opened(settings: RunShared, plugin: Plugin) -> AsyncIterator[PluginRun]:
+    """`plugin_run` inside a run, on its loop: the plugin's resources, closed on the loop.
+
+    Raises:
+        UsageError: the home's config.toml has a value it doesn't take.
+    """
+    # The home's config.toml and the login's cookies are read off the loop.
+    run = _made(settings, plugin, *await asyncio.to_thread(_read, settings, plugin))
+    try:
+        yield run
+    finally:
+        await run.aclose()
+
+
+def _read(settings: RunShared, plugin: Plugin) -> tuple[SourceConfig, cookies.Jar]:
+    """A plugin's `[sources.<code>]` settings and its login's cookies, from the home."""
+    return config(settings.home).source(plugin.code), home.load(settings.home, plugin.code)
+
+
+def _made(settings: RunShared, plugin: Plugin, configured: SourceConfig | None = None,
+          jar: cookies.Jar | None = None) -> PluginRun:
+    """A plugin's `PluginRun`: its login's cookies warned of, its settings applied; both
+    read here unless given."""
+    if configured is None or jar is None:
+        configured, jar = _read(settings, plugin)
+    _warn_expiring(plugin, jar)
+    stop: Stop | None = getattr(settings, "stop", None)
+    # Outside a run, the plugin has a scheduler of its own.
+    own = jobs.Scheduler(stop=stop) if scheduler(settings) is None else None
+    used = scheduler(settings) or own
+    assert used is not None
+    used.pace[plugin.code] = plugin.pace if configured.pace is None else configured.pace
+    used.limits.limits.update({**plugin.limits, **configured.limits})
+    session = _network(plugin, jar, configured, handles=used.limits.handles)
+    return PluginRun(plugin, settings, jar, session,
+                     net.Client(session, stop=stop.soon if stop else None),
+                     net.Client(session, stop=stop.now if stop else None), configured,
+                     _own_jobs=own)
+
+
+def _network(plugin: Plugin, jar: Iterable[Mapping[str, Any]],
+             settings: SourceConfig, *, handles: int) -> net.Session:
+    """A plugin's session: its `sign` hook and `user_agent` on requests to its own domains
+    only, and the config's proxy.
+
+    Args:
+        plugin: the plugin; its `user_agent` and `sign` are read.
+        jar: the login's cookies.
+        settings: the plugin's config.toml settings, whose `proxy` is used.
+        handles: transfers at once in all (`jobs.Limits.handles`).
+    """
+
+    def prepare(request: net.Request) -> net.Request | None:
+        # Runs on the loop before each try. The plugin sees its API's own request, never the
+        # HTTP client's type; what it sets in `headers` is copied back.
+        if not _on(request.url.host or "", plugin.domains):
+            return None
+        if plugin.user_agent:
+            request.headers["User-Agent"] = plugin.user_agent
+        asked = Request(str(request.url), method=request.method,
+                        headers=dict(request.headers), body=request.content)
+        given = plugin.sign(asked, MappingProxyType(domain_cookies(session.cookies,
+                                                                   plugin.domains)))
+        if not isinstance(given, Request):
+            # The type alone: what `sign` gave may hold a token.
+            raise PluginError(f"{plugin.code}.sign: return the request, not a "
+                              f"{type(given).__name__}")
+        for name, value in (given.headers or {}).items():
+            request.headers[name] = value
+        return None
+
+    session = net.Session(cookies=jar, prepare=prepare, handles=handles, proxy=settings.proxy)
+    return session
+
+
+@contextlib.asynccontextmanager
+async def shared_browser(settings: RunShared) -> AsyncIterator[None]:
+    """Give a run its scheduler and its one browser, on the run's loop; then close both.
+
+    Entered again inside a run, it changes nothing. The browser launches only when a target
+    first asks for a tab. On the way out the browser is closed before the scheduler, even when
+    closing it fails.
+
+    Args:
+        settings: the run's; `browser_pool` holds the `flnkit.browser.RunBrowser` while it runs.
+    """
+    if settings.browser_pool is not None:
+        yield
+        return
+    shared = browser.RunBrowser(asyncio.get_running_loop(), screen=_Screen())
+    found = await asyncio.to_thread(config, settings.home)
+    made = _SCHEDULERS[shared] = jobs.Scheduler(
+        stop=getattr(settings, "stop", None), rate=found.rate, slowest=found.slowest)
+    settings.browser_pool = shared
+    try:
+        yield
+    finally:
+        settings.browser_pool = None
+        try:
+            await shared.aclose()
+        finally:
+            await made.close()
+
+
+# Each run's scheduler, by the run's browser, so every `RunShared` given that browser shares it.
+_SCHEDULERS: weakref.WeakKeyDictionary[browser.RunBrowser, jobs.Scheduler] = \
+    weakref.WeakKeyDictionary()
+
+
+def scheduler(settings: RunShared) -> jobs.Scheduler | None:
+    """The scheduler of the run `settings` belong to; None outside a run."""
+    pool = settings.browser_pool
+    return _SCHEDULERS.get(pool) if pool is not None else None
+
+
+def login_names(plugin: Plugin) -> tuple[str, ...]:
+    """The cookies that prove a plugin's login (`cookies(...)`'s names); none for others."""
+    return tuple(getattr(plugin.login, "names", ())) if plugin.login is not None else ()
+
+
+def _warn_expiring(plugin: Plugin, jar: Any) -> None:
+    """Warn of login cookies (`login_names`) that have expired or will expire soon.
+
+    Only the cookies that prove the login are read, and a session cookie (expiry 0 or -1) never
+    warns. The warning names the cookie, never its value.
+    """
+    now = clock.wall()
+    names = login_names(plugin)
+    for cookie in jar:
+        expires = cookie.get("expires", -1)
+        # -1 (or 0) is a session cookie, which lasts as long as the browser it came from said.
+        if (cookie.get("name") not in names or not isinstance(expires, (int, float))
+                or expires <= 0):
+            continue
+        if expires <= now:
+            ui.warn("{code}: the login cookie {name} has expired; run flnd login {code} again",
+                    code=plugin.code, name=cookie["name"])
+        elif expires - now <= EXPIRY_WARNING:
+            ui.warn("{code}: the login cookie {name} expires in {time}; "
+                    "run flnd login {code} again soon",
+                    code=plugin.code, name=cookie["name"], time=text.duration(expires - now))
+
+
+# ---------------------------------------------------------------------------------------------
+# A target's tabs
+# ---------------------------------------------------------------------------------------------
+
+class TargetTabs:
+    """A target's share of the run's browser, which `Ctx`'s browser verbs drive on a thread.
+
+    Made on first use; outside a run, in a browser of its own, which `close` closes.
+
+    Args:
+        run: the plugin's resources for the run.
+    """
+
+    def __init__(self, run: PluginRun) -> None:
+        self._run = run
+        self._source = run.source
+        # The run's browser; outside a run, one of its own, made on first use.
+        self._shared: browser.RunBrowser | None = run.settings.browser_pool
+        self._own = False
+        self._tabs: browser.Tabs | None = None
+
+    def verbs(self) -> browser.Tabs:
+        """The tabs a browser verb acts in: the block's own in `Ctx.aside`, else the
+        target's; on a thread."""
+        _met()
+        aside = _ASIDE.get()
+        if aside is None:
+            return self._browser()
+        tabs = next((tabs for owner, tabs in aside if owner is self), None)
+        if tabs is None:
+            tabs = self._made()
+            aside.append((self, tabs))
+        return tabs
+
+    def _browser(self) -> browser.Tabs:
+        """The target's tabs, made on first use."""
+        if self._tabs is None:
+            self._tabs = self._made()
+        return self._tabs
+
+    def _made(self) -> browser.Tabs:
+        """A share of the run's browser for this target, which scrolls in the config's `scroll`
+        for the plugin, else like a person."""
+        if self._shared is None:
+            self._shared = browser.RunBrowser(self._run.loop.loop, stealth=self._source.stealth,
+                                              screen=_Screen())
+            self._own = True
+        settings = self._run.config
+        if settings.proxy is not None and not self._run._told_proxy:
+            self._run._told_proxy = True
+            # The browser is one window every plugin of the run shares, so it can't take one
+            # plugin's proxy: say so, rather than let page loads leave unproxied silently.
+            ui.warn("{code}: the browser doesn't use the proxy in config.toml; only the "
+                    "plugin's HTTP requests do", code=self._source.code)
+        budget = jobs.Budget(self._run.scheduler, self._source.code, None)
+        return browser.Tabs(self._shared, self._run.jar, scroll=settings.scroll or browser.HUMAN,
+                            budget=budget)
+
+    @property
+    def opened(self) -> bool:
+        """Whether the target's own tabs were made."""
+        return self._tabs is not None
+
+    def cookies(self) -> list[Mapping[str, Any]]:
+        """The browser's cookies, or none when this target never opened a tab."""
+        if self._tabs is None or self._shared is None or not self._shared.launched:
+            return []
+        return list(self._tabs.run(self._shared.cookies()))
+
+    def document(self) -> Document:
+        """The tab's page now, parsed on this thread, not on the loop."""
+        from flnkit.html import parse
+
+        tabs = self.verbs()
+        return parse(tabs.run(tabs.page.content()))
+
+    def click(self, css: str, *, timeout: float = 10.0) -> None:
+        tabs = self.verbs()
+        tabs.run(tabs.page.click(css, timeout=timeout))
+
+    def handoff(self, *, until: Callable[[], bool], message: str,
+                timeout: float | None = None) -> bool:
+        return self.verbs().handoff(until=until, message=message, timeout=timeout,
+                                    stop=self._run.web.stop)
+
+    def warm(self, urls: Iterable[str]) -> None:
+        """Start loading `urls` in warm tabs; an empty URL opens none."""
+        self.verbs().warm([url for url in urls if url])
+
+    @property
+    def idle(self) -> bool:
+        """Whether it never opened a tab, so `close` has nothing to do."""
+        return self._tabs is None and not self._own
+
+    def close(self) -> None:
+        """Give back the target's tabs, handing the session the cookies set in them."""
+        tabs, found = self._tabs, self.cookies()
+        self._tabs = None
+        try:
+            if found:
+                self._run.session.add(found)
+            if tabs is not None:
+                tabs.close()
+        finally:
+            if self._own and self._shared is not None:
+                self._shared.close()
+                self._shared, self._own = None, False
+
+
+# ---------------------------------------------------------------------------------------------
+# Paged listings
+# ---------------------------------------------------------------------------------------------
+
+class Listing:
+    """One category's listing in a run: where `pages` starts, and the cursor of the page it
+    reads.
+
+    The crawl makes one per category it lists and sets it as `Ctx.listing`; the first `pages`
+    call of the category starts from `start` and tells it the cursor of each page it reads,
+    which the crawl saves when the listing is cut short. Later `pages` calls of the same
+    category start from their beginning.
+
+    Args:
+        start: the cursor an interrupted run saved; None starts from the newest.
+        label: names the listing in the line that says a saved cursor was refused.
+
+    Example:
+        >>> listing = Listing("c42", label="exm:example_user: posts")
+        >>> listing.cursor, listing.taken
+        ('c42', False)
+    """
+
+    def __init__(self, start: str | None = None, *, label: str = "") -> None:
+        self.start = start
+        self.label = label
+        # The cursor of the page being read, for the crawl to save if the listing is cut short.
+        self.cursor: str | None = start
+        # Whether a `pages` call took this listing already; only the first one resumes.
+        self.taken = False
+        # Whether the site refused `start`, so the listing began again from the newest.
+        self.refused = False
+        # The pages `pages` has read for it so far, for the live stats.
+        self.read = 0
+
+
+async def first_page(ask: Callable[[Any], Awaitable[Any]], listing: Listing | None) -> Any:
+    """The first page of `ctx.pages`: from the saved cursor if any, else from the newest.
+
+    A saved cursor the site refuses with a 4xx has gone stale, which is the site's answer for
+    good: it is dropped, said once, and the listing starts from the newest. Any other failure
+    (a 429 or a block says nothing of the cursor, S6) is raised.
+    """
+    start = listing.start if listing is not None else None
+    if not start:
+        return await ask(None)
+    try:
+        return await ask(start)
+    except SiteError as error:
+        if (isinstance(error, Blocked) or error.status is None
+                or not 400 <= error.status < 500 or error.status == 429):
+            raise
+    assert listing is not None
+    ui.info("{label}: the cursor an interrupted run saved was refused; listing from the newest",
+            label=listing.label)
+    listing.refused, listing.cursor = True, None
+    return await ask(None)

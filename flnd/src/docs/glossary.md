@@ -4,31 +4,31 @@ The words every page of these docs uses, with what each means in flnd, and the n
 gives it.
 
 ## Target
-Something to download. It is written `<source>:<what>`, as in `ins:example_user`, or given as a
-link, as in `https://www.instagram.com/example_user/`. A search is written `<source>?<words>`, as
-in `mht?example`. In code, a target is `flnd.source.Target(text)`; resolving it sets its
-`kind`, the name of the route that reads it, so a resolved target has its source's code, its
+Something to download. It is written `<plugin>:<what>`, as in `ins:example_user`, or given as a
+link, as in `https://www.instagram.com/example_user/`. A search is written `<plugin>?<words>`, as
+in `mht?example`. In code, a target is `flnd.plugin.Target(text)`; resolving it sets its
+`kind`, the name of the route that reads it, so a resolved target has its plugin's code, its
 kind and its captured value (`example_user`).
 
-## Source
-The code for one site, as one `flnd.source.Source` subclass: a built-in one in
-`src/sources/<code>.py`, or a plugin. Its **code** is the prefix of its targets, 2 to 16
-lowercase letters and digits; the built-ins use three (`ins`, `tik`, `twt`, `fbk`, `tlg`, `loi`,
-`mht`). `flnd.sources.SOURCES` lists every source, built in or a plugin. See
-[writing-a-source.md](writing-a-source.md).
-
 ## Plugin
-A source that isn't built in: an installed package's `flnd.sources` entry point, or a
-`<code>.py` file (or `<code>/` package) in the user's plugin folder, `$FLND_SOURCES`, else
-`~/.config/flnd/sources/`. Never a file in a home. See
-[writing-a-source.md](writing-a-source.md#10-shipping-it-as-a-plugin).
+The code for one site: one `flnd.plugin.Plugin` subclass. Its **code** is the prefix of its
+targets, 2 to 16 lowercase letters and digits. The built-in plugins are `src/plugins/<code>.py`
+(`ins`, `tik`, `twt`, `fbk`, `tlg`, `loi`, `mht`, and `web` for any other link), listed in
+`src/plugins/_manifest.py`; `flnd.plugins.PLUGINS` maps every code to its class. See
+[writing-a-plugin.md](writing-a-plugin.md).
+
+A plugin that isn't built in is an installed one: a package with an entry point in the
+`flnd.sources` group, or a `<code>.py` file (or `<code>/` package) in the user's plugin folder,
+`$FLND_SOURCES`, else `~/.config/flnd/sources/`. Never a file in a home. See
+[writing-a-plugin.md](writing-a-plugin.md#10-shipping-it-as-a-plugin).
 
 ## Route
-A method of a source that reads one kind of target, made with the `@target(...)` decorator. Its
-patterns say which texts and links it accepts, and its method name is the target's **kind**
-(`user`, `post`, `video`, `chat`). A route either yields posts itself (a single post's link) or
-returns a context for its categories (a profile). Routes are tried in the order the source
-declares them, and the first whose pattern matches reads the target.
+A method of a plugin that reads one kind of target, made with the `@route(...)` decorator of
+`flnd.plugin`. Its patterns say which texts and links it accepts, and its method name is the
+target's **kind** (`user`, `post`, `video`, `chat`). A route either yields posts itself (a
+single post's link, with `single=True`) or returns a value its categories receive (a profile).
+Routes are tried in the order the class declares them, and the first whose pattern matches
+reads the target.
 
 ## Category
 One part of a target, such as a profile's `posts`, `reels` or `stories`. It is a method made
@@ -42,32 +42,32 @@ yields other targets instead of posts, and each one found is downloaded as if it
 A route that isn't a query but yields targets too says `discovers=True`.
 
 ## Post
-One item a site lists: an id, a date, and one or more files (`flnd.source.Post`). A post's id
+One item a site lists: an id, a date, and one or more files (`flnd.plugin.Post`). A post's id
 names its files and starts their history keys. A post whose files need extra requests may give a
 function instead of a list, so the requests happen only for a post not saved yet (a **lazy**
 post).
 
 ## File
-One thing to download in a post (`flnd.source.File`): a URL, mirror URLs tried in order, a fetch
+One thing to download in a post (`flnd.plugin.File`): a URL, mirror URLs tried in order, a fetch
 function (Telegram's), or a video URL with a separate audio URL (DASH), which flnd merges with
-ffmpeg. `File.text(name, text)` is a small text file the source writes itself.
+ffmpeg. `File.text(name, text)` is a small text file the plugin writes itself.
 
 ## History
 What flnd remembers about each saved file, so a second run skips it: the `files` table of
 `<home>/flnd.db`, one row per file, keyed `<code>:<key>` (see
-[storage.md](storage.md)). A file's **key** comes from the source's `key` template,
+[storage.md](storage.md)). A file's **key** comes from the plugin's `key` template,
 `{post}_{num}` by default; changing it makes every saved file look new.
 
 ## Sync
 Downloading only what is new, for followed targets. `flnd follow` follows a target, and
 `flnd sync` updates them: it downloads what is new for every followed target. On a sync, a
-category marked `newest_first` stops after 5 saved posts in a row (a source's `stop_after` in
-`config.toml` changes it), or sooner at its head
+category marked `newest_first` stops after 5 saved posts in a row (`stop_after` under the
+plugin's `[sources.<code>]` table in `config.toml` changes it), or sooner at its head
 ([architecture.md](architecture.md#smart-sync)).
 
 ## Cursor
-Where a paged listing got to. flnd saves each category's cursor when a run is interrupted, and the
-next run resumes from it, then catches up from the newest post.
+Where a paged listing got to. flnd saves each category's cursor when a run is interrupted, and
+the next run resumes from it, then catches up from the newest post.
 
 ## Head
 The newest post of a `newest_first` category, as the last run that read it from the top saw
@@ -103,14 +103,14 @@ The folder flnd keeps everything in: downloads, history, logins and settings. Th
 which is also the CLI's. Its layout is in [storage.md](storage.md).
 
 ## Login
-A source's saved credentials: browser cookies for most sites, a session for Telegram. Logins are
+A plugin's saved credentials: browser cookies for most sites, a session for Telegram. Logins are
 kept in the home's vault, `metadata/secret.db`, in plaintext
 ([storage.md](storage.md#the-vault)).
 
 ## Pace
-The least time between two requests to a source's own domains, in seconds (`Source.pace`, 0.5 by
-default). File downloads aren't paced; they are capped per host, from 8 at once up to 32 as the
-host keeps up, or up to the source's `limits` for that host.
+The least time between two requests to a plugin's own domains, in seconds (`Plugin.pace`, 0.5
+by default). File downloads aren't paced; they are capped per host, from 8 at once up to 32 as
+the host keeps up, or up to the plugin's `limits` for that host.
 
 ## Part
 A file being written: `<name>.part` beside its destination. The part is its own lock: the run

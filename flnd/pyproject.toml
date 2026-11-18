@@ -35,8 +35,8 @@ flnd = "flnd.cli:main"
 # src/ installs as the package flnd; flnkit/ ships beside it (PLAN.md 4.1). Setuptools maps the
 # folder src/ to the name flnd, which hatchling's dev mode cannot do (it rejects such a rewrite).
 # setup.py only moves the egg-info into build/, as no pyproject setting can.
-packages = ["flnd", "flnd.engine", "flnd.ui", "flnd.sources", "flnd.plugins", "flnd.docs",
-            "flnd.docs.sources", "flnd.extension", "flnkit"]
+packages = ["flnd", "flnd.engine", "flnd.ui", "flnd.plugins", "flnd.docs", "flnd.docs.plugins",
+            "flnd.extension", "flnkit"]
 package-dir = {"flnd" = "src", "flnkit" = "flnkit"}
 
 [tool.setuptools.package-data]
@@ -44,7 +44,7 @@ package-dir = {"flnd" = "src", "flnkit" = "flnkit"}
 # packages, so setuptools ships them and does not warn that they are absent.
 flnd = ["py.typed"]
 "flnd.docs" = ["*.md"]
-"flnd.docs.sources" = ["*.md"]
+"flnd.docs.plugins" = ["*.md"]
 "flnd.extension" = ["*.json", "*.js", "*.html"]
 
 [dependency-groups]
@@ -82,4 +82,4 @@ known-first-party = ["flnd", "flnkit"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Frozen dataclasses: a shared default instance can't be changed, so B008 has nothing to warn of.
-extend-immutable-calls = ["flnd.engine.options.Options", "flnd.plugin.Range", "flnd.source.Range"]
+extend-immutable-calls = ["flnd.engine.options.Options", "flnd.plugin.Range"]

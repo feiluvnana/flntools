@@ -139,7 +139,7 @@ class PluginRunTest(EngineCase):
 
         def route(ctx):
             run = ctx._run
-            tabs = ctx._site._browser()
+            tabs = ctx._tabs.verbs()
             seen.update(pace=run.scheduler.pace["exm"], limits=dict(run.scheduler.limits.limits),
                         jobs=run.jobs, proxy=run.session.proxy, scroll=tabs.scroll)
             if check is not None:

@@ -45,8 +45,8 @@ SCROLLING = 2
 # A warm tab opens only while this many tabs of the budget are free, so it never takes the
 # last one an active target would wait for.
 WARM_FREE = 2
-# The threads of plugin API 1's listing steps: one for each of the run's active targets
-# (`flnd.engine.core.ACTIVE`), whatever the number of cores, beside the `CALL` threads.
+# The threads of the plugins' blocking steps (`ctx.call`): one for each of the run's active
+# targets (`flnd.engine.core.ACTIVE`), whatever the number of cores, beside the `CALL` threads.
 LISTINGS = 16
 # Places per target at least, and FILE jobs a target may queue per place.
 PLACES = 32

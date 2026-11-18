@@ -15,7 +15,7 @@ What it holds: the public names a script uses, and nothing else. `flnd.open(home
 (a `State`) says what it is doing now; `Report`, `Login`, `Record`, `Tracked`, `Status`,
 `Failure`, `Checked` and `Installed` are what the reads return; the errors are the one
 hierarchy of `flnd.errors`. A
-plugin is written against `flnd.plugin` instead (src/docs/writing-a-source explains
+plugin is written against `flnd.plugin` instead (src/docs/writing-a-plugin explains
 it), and tested with `flnd.testing`.
 
 How it loads: every name is lazy. `import flnd` imports nothing but this file, and the first

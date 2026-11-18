@@ -20,15 +20,15 @@ flnd is one package, `flnd/`, in layers. Each layer imports only what its rule b
    └──────────────┬───────────────────────────────────────────────────────────────┘
                   │ imports `flnd`, src/ui/ and the plugins' manifest
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
-   │ 2. the public API        flnd (Flnd, Run, events, errors), flnd.source,      │
+   │ 2. the public API        flnd (Flnd, Run, events, errors), flnd.plugin,      │
    │                          flnd.testing                                        │
    └──────────────┬───────────────────────────────────────────────────────────────┘
                   │
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
-   │ 3. the engine            src/engine/: core, job, site, options, home, run,   │
-   │                          events, track, transfer, steps, check, plugins,     │
-   │                          extension (Chrome's host and the relay);            │
-   │                          and the sources, src/sources/                       │
+   │ 3. the engine            src/engine/: core, crawl, save, jobs, ctx, options, │
+   │                          home, store, run, events, resolve, check, config,   │
+   │                          plugins, extension (Chrome's host and the relay);   │
+   │                          and the built-in plugins, src/plugins/             │
    └──────────────┬───────────────────────────────────────────────────────────────┘
                   │
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
@@ -47,17 +47,18 @@ The rules between them:
 - **The kit imports only the kit**, the standard library and third-party packages: nothing
   of flnd. Each module does one general job —
   HTTP, the browser, files, cookies, a SQLite store — that another program could use, and
-  knows nothing of sources, targets or `flnd.db`'s schema: flnd's code passes those in. A kit
+  knows nothing of plugins, targets or `flnd.db`'s schema: flnd's code passes those in. A kit
   module logs through the standard library's `logging` (`flnkit.<module>`), and
   `src/ui/log.py` routes those records into flnd's lines and the journal. What the browser
   asks a person, and the rows it shows, come from a `Screen` its caller passes in.
 - **The screen** (`src/ui/`) imports only itself, the kit, `src/engine/events.py` and
   `src/errors.py`.
-- **The engine** imports itself, the kit, the screen, `src/errors.py` and the source API.
-- **The CLI imports only the library** (`flnd`), the screen, and the sources' manifest for
-  `--help`. Every decision is the library's, so a script can do anything the command line
+- **The engine** imports itself, the kit, the screen, `src/errors.py` and the plugin API
+  (`flnd.plugin`).
+- **The CLI imports only the library** (`flnd`), the screen, and the built-in plugins' manifest
+  for `--help`. Every decision is the library's, so a script can do anything the command line
   does. Until the commands are rewritten, it still reads a few engine and kit names.
-- **A source imports only `flnd.source`** and the standard library (and, inside a function,
+- **A plugin imports only `flnd.plugin`** and the standard library (and, inside a function,
   an SDK its site needs). The engine can change without breaking one.
 - **Nothing heavy loads at import.** `import flnd` imports only `src/__init__.py`; each public
   name loads its own module on first use, and curl_cffi, Playwright and Rich load only when a
@@ -72,18 +73,18 @@ The rules between them:
    src/engine/run.py        Run: one command on the run's loop, read as a stream of events
         │
         ▼
-   src/engine/core.py       Engine: resolves targets, checks options, runs each source's targets
+   src/engine/core.py       Engine: resolves targets, checks options, runs each plugin's targets
         │
         ├── src/engine/options.py   Options (what one target downloads), RunShared (a run's)
         ├── src/engine/home.py      the home: flnd.db (files, targets, runs, failures), logins
-        ├── src/engine/ctx.py       Ctx: what a plugin on API 2 acts through
-        ├── src/engine/site.py      SourceRun and TargetSite: API 1's bridge
+        ├── src/engine/ctx.py       PluginRun (a plugin's resources for a run) and Ctx (what
+        │                           a plugin acts through, for one target)
         ├── src/engine/jobs.py      the scheduler: every request and step as a job
         ├── src/engine/save.py      a post's files: transfer, dedupe, commit, unpack, sidecar
         └── src/engine/crawl.py     one target: list its posts, plan its files, download
                 │
-                └── src/sources/<code>.py   one class per site (src/source.py is their API),
-                    and the plugins: <code>.py files in the plugin folder, or installed packages
+                └── src/plugins/<code>.py   one class per site (src/plugin.py is their API),
+                    and the installed plugins: <code>.py files in the plugin folder, or packages
 ```
 
 | part | what it holds | who calls it |
@@ -94,23 +95,22 @@ The rules between them:
 | `src/engine/events.py` | the events (`Saved`, `Skipped`, `Failed`, `Planned`), the public `Report`, the `State` snapshot, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the crawl, `Run`, `Flnd` |
 | `src/engine/core.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
 | `src/engine/crawl.py` | one target, as a coroutine on the run's loop: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads (`Downloads`), history rows | the engine |
-| `src/engine/site.py` | plugin API 1's bridge: `SourceRun` (a source's cookies, HTTP session, clients and browser for a run, and `call`, which runs its plain code on a `CALL` thread), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`), `LoginSite`, and `shared_browser`, the run's browser and scheduler | the engine, the crawl |
-| `src/engine/ctx.py` | plugin API 2's `Ctx` for one target of a run: `fetch` and `pages` as page jobs (signed, `blocked` read, a 429 or a wall held, a refusal raised or, with `check=False`, read; a page body capped at 32 MiB), the browser verbs through the target's `TargetSite` on a thread (`open` gives `Landed`, a 404 is `NotFound`), `warm`, `hold`, `pause`, `call`, `ask` and `log`; the account's `state` (JSON values) and `secrets` (written only while `Login.start` runs, `LOGGING_IN`); the answer rules `refused`, `walled` and `checked`, which `flnd.testing.FakeCtx` shares | the crawl, the engine's login and `connect` |
-| `src/engine/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, `when`'s reading, and `config`: every setting of config.toml, read and checked in one place | the engine, the crawl, the library, `site` |
-| `src/source.py` | source API 1: `Source` and its checks, `@target`, `Post`, `File`, `Target`, `Site`, `Login` and `cookies`, `Request`, `dig`, errors | every source |
-| `src/sources/` | the seven built-in sources, one module each, and `SOURCES`, the registry of every source, plugins included, each imported on first use | the engine and the library |
-| `src/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
-| `src/engine/plugins.py` | finding plugins (installed packages' `flnd.sources` entry points, then the user's plugin folder), importing one when its code is first used, and disabling one that breaks, with its file and line | `SOURCES` |
+| `src/engine/ctx.py` | `PluginRun`, a plugin's resources for a run: its cookies, HTTP session, clients, stores, loop and scheduler; `call` runs a blocking function as a step on a `CALL` thread, `off` runs the engine's own blocking step on one. `plugin_run` and `opened` make one (outside a run, or on the run's loop), and `shared_browser` gives the run its scheduler and its one browser. `TargetTabs` is a target's share of that browser, which `Ctx`'s verbs drive on a thread. `Listing` holds a category's saved cursor, and `first_page` reads the first page from it. `Ctx`, the plugin API 2 context for one target of a run: `fetch` and `pages` as page jobs (signed, `blocked` read, a 429 or a wall held, a refusal raised or, with `check=False`, read; a page body capped at 32 MiB), the browser verbs (`open` gives `Landed`, a 404 is `NotFound`; `feed`, `load`, `document`, `warm`, `click`, `handoff`) on the target's `TargetTabs`, a thread each, `hold`, `pause`, `call`, `ask` and `log`; the account's `state` (JSON values) and `secrets` (written only while `Login.start` runs, `LOGGING_IN`); the answer rules `refused`, `walled` and `checked`, which `flnd.testing.FakeCtx` shares | the crawl, the engine's login and `connect` |
+| `src/engine/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, `when`'s reading, and `config`: every setting of config.toml, read and checked in one place | the engine, the crawl, the library, `ctx` |
+| `src/plugin.py` | plugin API 2 (public, `flnd.plugin`): `Plugin` and its checks, `@route`, `Post`, `File`, `Target`, `Ctx` (its protocol), `Login` and `cookies`, `Request`, `Response`, `dig`, the errors | every plugin |
+| `src/plugins/` | the eight built-in plugins, one module each, and `PLUGINS` (`src/plugins/__init__.py`), the registry of every plugin, installed ones included, each imported on first use | the engine and the library |
+| `src/plugins/_manifest.py` | each built-in plugin as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `PLUGINS` (which imports a plugin only when used), link resolution |
+| `src/engine/plugins.py` | finding installed plugins (installed packages' `flnd.sources` entry points, then the user's plugin folder), importing one when its code is first used, and disabling one that breaks, with its file and line | `PLUGINS` |
 | `src/engine/extension.py` | the Chrome extension's native-messaging host (`flnd host`), the relay a run reaches it by, the run's client, and `install` ([extension.md](extension.md)); the extension's own files are in `src/extension/` | Chrome, the CLI's `flnd extension` |
-| `src/testing.py` | the public test kit: `FakeCtx` (with `Reply`, `FakePage` and `Seen`) for a plugin on API 2, `FakeSite` for an API-1 source, `collect`, `check`, `fake_clock` | a plugin's tests, flnd's own (`tests/fakes.py`) |
-| `src/engine/home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the crawl, the site, `Flnd` |
-| `src/engine/save.py` | a post's files as jobs (`Saver`): part, transfer by mirrors or a DASH pair (joined by `flnkit/media.py`) or a source's `fetch` function, the content check, dedupe, the post's commit, unpack, the sidecar, `Saved`, exec ([storage.md](storage.md)) | the crawl and the engine |
+| `src/testing.py` | the public test kit: `FakeCtx` (with `Reply`, `FakePage` and `Seen`) for a plugin, `collect`, `check`, `fake_clock` | a plugin's tests, flnd's own (`tests/fakes.py`) |
+| `src/engine/home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, the plugins' state), the migration of an old home, and the logins in the vault | the engine, the crawl, `ctx`, `Flnd` |
+| `src/engine/save.py` | a post's files as jobs (`Saver`): part, transfer by mirrors or a DASH pair (joined by `flnkit/media.py`) or a plugin's `fetch` function, the content check, dedupe, the post's commit, unpack, the sidecar, `Saved`, exec ([storage.md](storage.md)) | the crawl and the engine |
 | `src/engine/check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
 | `src/ui/theme.py` | every colour and glyph flnd draws with, and when to drop colour or Unicode | `src/ui/*` |
 | `src/ui/out.py` | every line flnd prints: lines, folded warnings, errors and their hints, tables, the help; text from a site cleaned of escape codes | the CLI, `src/ui/log.py`, the run's hard exit |
 | `src/ui/log.py` | the levels of log lines and their scope; the journal; the route of the kit's `logging` records | every layer above the kit |
 | `src/ui/screen.py` | the run's screen, drawn from `run.state` on its `flnd-screen` thread, and the end summary | the CLI |
-| `src/ui/forms.py` | questions on the terminal in Huh's look (Textual, inline): `select`, `text`, `confirm`; without a terminal, `select` and `text` raise `UsageError` and `confirm` gives its default | the CLI, the site, the engine's browser screen, `src/ui/lists.py` |
+| `src/ui/forms.py` | questions on the terminal in Huh's look (Textual, inline): `select`, `text`, `confirm`; without a terminal, `select` and `text` raise `UsageError` and `confirm` gives its default | the CLI, `Ctx.ask`, the engine's browser screen, `src/ui/lists.py` |
 | `src/ui/lists.py` | the interactive lists (Textual, inline) of targets, accounts and plugins: ↑↓, `/` filter, enter details, `d` delete after a confirmation, `q` quit, each list's own keys; a plain table on a pipe | step 13's `target list`, `auth list` and `plugin list` |
 | `src/errors.py` | flnd's face of the one error hierarchy: the kit's classes re-exported, `PluginError`, and `classify`, which turns any exception into one of them and gives flnd's hint to an error that has none | every module |
 
@@ -132,17 +132,17 @@ The kit, `flnkit/` — each module a toolkit of its own:
 
 ## Plugins
 
-A plugin is a source that isn't built in. `SOURCES` knows the built-ins from the manifest, and
-looks for plugins the first time a code that isn't built in is needed: first the `flnd.sources`
-entry points of installed packages, then `<code>.py` files and `<code>/` packages in the plugin
-folder (`$FLND_SOURCES`, else `~/.config/flnd/sources/`, `%APPDATA%\flnd\sources\` on
-Windows). Finding them reads names only, since a plugin's code is its entry point's or its
-file's name; `exm:example_user` then imports `exm` alone. A link imports the plugins only when
-no built-in's domains match it, `flnd sources` imports them all, and `--help` none. A code that
-is taken already is refused, never replaced.
+A plugin that isn't built in is an installed one. `PLUGINS` knows the built-ins from the
+manifest, and looks for installed plugins the first time a code that isn't built in is needed:
+first the `flnd.sources` entry points of installed packages, then `<code>.py` files and `<code>/`
+packages in the plugin folder (`$FLND_SOURCES`, else `~/.config/flnd/sources/`,
+`%APPDATA%\flnd\sources\` on Windows). Finding them reads names only, since a plugin's code is its
+entry point's or its file's name; `exm:example_user` then imports `exm` alone. A link imports the
+plugins only when no built-in's domains match it, `flnd sources` imports them all, and `--help`
+none. A code that is taken already is refused, never replaced.
 
 A plugin runs in flnd's process. A broken one (an import error, a class that fails its checks,
-a newer source API) is disabled alone, with a warning naming its file and line. An error inside
+a newer plugin API) is disabled alone, with a warning naming its file and line. An error inside
 its listing fails that target alone, like a built-in's, with a hint naming the plugin. flnd
 never loads code from a home: a home is often the folder you are in, and code there may not be
 yours.
@@ -154,10 +154,10 @@ yours.
 1. **The CLI** (`src/cli.py`) parses the flags with argparse, opens the home (`flnd.open`), and
    calls `fl.follow("ins:example_user", only=["posts"])`.
 2. **Resolving.** The library resolves the target at once (`engine.resolve`): it splits the text
-   at `:` (or `?` for a search), finds the source by its code (or a bare link by its `domains`),
-   and calls `Source.resolve`. The first route whose pattern matches gives
-   `Target("ins:example_user", kind="user")`. A short link no route reads is followed once with
-   a HEAD request, and the link it leads to is resolved instead.
+   at `:` (or `?` for a search), finds the plugin by its code (or a bare link by its `domains`),
+   and the plugin's routes resolve it (`Plugin.resolve`). The first route whose pattern
+   matches gives `Target("ins:example_user", kind="user")`. A short link no route reads is
+   followed once with a HEAD request, and the link it leads to is resolved instead.
 3. **Checking.** Before any request, `options.categories_by_source` and `options.validate` check
    `--only` against the target's route, and every folder template against its fields. `--when`
    and `--limit` are read too. A mistake is a `UsageError` (exit code 2).
@@ -165,33 +165,33 @@ yours.
    reads it: the first read starts the run's loop on its thread, `flnd-loop`, which makes an
    `Engine` with the run's event sink and stop state, and awaits
    `Engine.run_download(..., sync=True, keep=True)`. From here to step 12 everything runs on
-   that loop, except a plain source's own code, which runs on a thread of the scheduler's
+   that loop, except a plugin's own blocking code, which runs on a thread of the scheduler's
    (see "Threads and queues").
 5. **Recording.** The engine opens the command's row in `runs` (each failure names it), then
    `Home.record` writes the target's row in `flnd.db`, followed, with `--only posts` kept for
    later syncs, keeping its cursors, heads and gaps from earlier runs.
-6. **One instance per source.** The engine makes one instance of each source per run, the
-   first time one of its targets runs, discovered and linked targets included: the source's
+6. **One `PluginRun` per plugin.** The engine makes one `PluginRun` per plugin per run, the
+   first time one of its targets runs, discovered and linked targets included: the plugin's
    saved cookies are read from the vault, its HTTP session is made (see "Network"), and its
    `connect` hook runs (Telegram's client), once; it is left when the run ends, and an error
-   of its exit is the run's failure. A source whose `login` is `required` and missing fails
-   each of its targets; any other source without a login warns and goes on with public
-   access. The run's one browser (`site.shared_browser`) is shared by every source.
-   Targets run at once: a source that reads in the browser (`browser = True`) lists one
-   target at a time, one that only sends requests four, and the run holds at most 16 active
-   targets, each while it lists or has more files queued than its places; the next target
-   lists while the last one's files download. They all start at once, and call their routes
-   in the order they started: a route waits until every earlier target has called its own,
-   or waits for a place, a hold or the site. So a full disk at a target's first step stops
-   the run before a later target's route runs, and a full disk ends every target at once,
-   the ones a listing handed to the run included. A target named
-   twice runs once; a file one target queued is held for the others (`crawl.Claims`), as
-   one saved would be. A target a listing discovered runs inside that listing when it is of
-   the same plugin; one of another plugin is handed to the run as a target of its own, which
-   the listing doesn't wait for, so no two listings ever wait for each other's places. A
-   login a target's site refused fails the source's targets that hadn't started.
-   API 1's listing steps run on 16 threads of their own (`jobs.LISTINGS`), whatever the
-   cores, beside the `CALL` threads that a lazy post's files and the engine's own steps use.
+   of its exit is the run's failure. A plugin whose `login` is `required` and missing fails
+   each of its targets; any other plugin without a login warns and goes on with public
+   access. The run's one browser (`ctx.shared_browser`) is shared by every plugin.
+   Targets run at once: a plugin whose `browser` is not `Browser.NONE` lists one target at a
+   time, one that only sends requests four, and the run holds at most 16 active targets, each
+   while it lists or has more files queued than its places; the next target lists while the
+   last one's files download. They all start at once, and call their routes in the order they
+   started: a route waits until every earlier target has called its own, or waits for a place,
+   a hold or the site. So a full disk at a target's first step stops the run before a later
+   target's route runs, and a full disk ends every target at once, the ones a listing handed to
+   the run included. A target named twice runs once; a file one target queued is held for the
+   others (`crawl.Claims`), as one saved would be. A target a listing discovered runs inside
+   that listing when it is of the same plugin; one of another plugin is handed to the run as a
+   target of its own, which the listing doesn't wait for, so no two listings ever wait for each
+   other's places. A login a target's site refused fails the plugin's targets that hadn't
+   started. The run's listing steps run on 16 threads of their own (`jobs.LISTINGS`), one for
+   each active target, whatever the cores, beside the `CALL` threads that a lazy post's files
+   and the engine's own steps use.
 7. **One target** (`crawl.download`). The crawl removes the stale parts an interrupted run left in
    the target's folder (a week old, and held by no run). Nothing locks the target: each file's
    part locks itself.
@@ -201,7 +201,7 @@ yours.
    category whose full download was interrupted resumes from its saved cursor, then catches up
    from the newest post. `--when` drops posts outside the range; after 5 posts in a row older
    than the range, a `newest_first` category stops.
-9. **Planning each post** (`Ledger.take`). Each file is given its path (from the source's
+9. **Planning each post** (`Ledger.take`). Each file is given its path (from the plugin's
    `folder` and `filename` templates) and its history key (`<code>:<key>`). A file whose key is
    in the history, or whose file is on disk, is skipped (a `Skipped` event); a file on disk
    whose key has no row (after `target clean` without `--media`) gets its row then, with no
@@ -210,14 +210,14 @@ yours.
    ends, then takes the day of its nearest dated neighbour (marked estimated). Once a
    `newest_first` category was read to its end, a later run stops it after 5 saved posts in a
    row (`stop_after` in config.toml), or sooner, after the head (the newest post the last full
-   listing saw, kept in `flnd.db`) and the post after it. The source never stops a listing
+   listing saw, kept in `flnd.db`) and the post after it. The plugin never stops a listing
    itself: the crawl closes its generator. A lazy post's files are listed only once the post is
    known to be new.
 10. **Downloading** (`Downloads`). Each post's new files go to the run's save
     (`save.Saver.post`) as one task on the run's loop. The target's queue holds 4 times its
     places, so the listing waits when downloads fall behind and memory stays flat; each file is
     a `FILE` job of the run's scheduler, which waits for one of the target's places (32, as
-    many as one host's cap grows to, or the source's largest `limits` above that), then for a
+    many as one host's cap grows to, or the plugin's largest `limits` above that), then for a
     place under its host's cap. The save opens and locks the file's part (`<name>.part`, see
     [storage.md](storage.md)), skipping a file another run is saving, then streams the file
     into it, resuming what a failed run kept. It tries mirrors in order, merges a DASH video
@@ -234,14 +234,14 @@ yours.
     saves the categories it listed to their end, the cursors of those a download cut short, the
     gaps a sync left and the heads in `flnd.db` (each failed file was written there as it
     failed). It counts the target's files for `flnd ls`, then ends the target's rows. A failed
-    listing fails the target alone (a `Failed` event); a refused login fails the source's
+    listing fails the target alone (a `Failed` event); a refused login fails the plugin's
     remaining targets; a full disk stops the run.
 13. **Links to other sites.** Targets a listing yielded (a post linking to another site) are
-    downloaded after the run's own targets, each by its own source, up to two links deep.
+    downloaded after the run's own targets, each by its own plugin, up to two links deep.
 14. **The end.** The engine writes refreshed cookies back to the vault and closes the `runs`
     row with the count of saved files. The run's thread ends; the CLI prints the summary and
     exits with 0, 1 if a file or a target failed, 3 if a login is needed, 4 if flnd itself
-    stopped (a full disk, a missing tool, a broken source), 130 on Ctrl-C ([cli.md](cli.md)).
+    stopped (a full disk, a missing tool, a broken plugin), 130 on Ctrl-C ([cli.md](cli.md)).
 
 `flnd sync` runs steps 6 to 14 for every target whose row has `sync` on, always stopping at
 saved posts. A search (`mht?words`) first lists the targets it finds, then downloads each one;
@@ -291,37 +291,36 @@ A run has one loop, and every rule below protects it:
   memory. The end marker goes in after the loop has closed, so it is always the last thing
   read. `run.wait()` stops listening (events are still counted into the report) and waits for
   the loop's thread. Ctrl-C's handler runs on the reader's thread when it is the main thread.
-- **A plain source's own code** (an API 1 `def` route or category, a lazy post's files, a
-  `date` hook, a login check, a `connect` hook) runs on a `CALL` thread of the run's scheduler,
-  one call a job (`SourceRun.call`), while the crawl awaits it. A generator is stepped one
-  item a call. Each of its `site` verbs hands one job to the loop and waits for it there. A
-  lazy post's files, a refresh and a `date` hook open any tab they need as one of their own
-  (`SourceRun.aside`), so the listing's tab never leaves its feed.
+- **A plugin's blocking code** (a `File`'s `fetch` function, a `ctx.call` step, the `connect`
+  hook, a login check) runs on a `CALL` thread of the run's scheduler, one call a job
+  (`PluginRun.call`), while the crawl awaits it. Each browser verb of `Ctx` runs on a thread
+  of its target's `TargetTabs`, and each step it needs in the browser is handed to the loop
+  one call at a time. A lazy post's files, a `refresh` and a `date` hook open any tab they
+  need as one of their own (`Ctx.aside`), so the listing's tab never leaves its feed.
 - **On the loop**:
   - **every HTTP transfer**: the listing's requests and every file's download;
   - **the downloads**: one task per post. Each target's queue holds 4 times its places; the
     crawl waits while it is full. A post's files stream into their parts, are dated and
     renamed, and its rows commit when its last file settles;
   - **async Playwright**: one browser per run (`flnkit.browser.RunBrowser`), launched the
-    first time a target needs a tab and shared by every source, so one Chrome window serves
+    first time a target needs a tab and shared by every plugin, so one Chrome window serves
     them all. Each target gets its own tab, and the warm tabs that pre-load the pages it will
     open next while two of the run's six tabs stay free (`jobs.Budget`), opened together in one
     call to the loop. A warm tab keeps its load's responses unread: a body is read only when an
     open feed takes the tab and wants that response. A login's cookies go into the browser in
-    one call. A source never holds a
-    Playwright object: each browser verb of `Site` (`open`, `wait`, `scroll`, `feed`, `warm`,
-    `document`, `evaluate`, `click`) is one call handed to the loop (`RunBrowser.run`), which
-    waits for the answer. A response feed reads the matching bodies on the loop as they
-    arrive, in order, and the source's thread parses them;
-  - **async sources**: a source with an async SDK (Telegram's Telethon), and any `async def`
-    route or category, which reaches the browser by awaiting `site.tab` instead of calling the
-    verbs.
+    one call. A plugin never holds a Playwright object: each browser step a `Ctx` verb needs
+    is one call handed to the loop (`RunBrowser.run`), which waits for the answer. A response
+    feed reads the matching bodies on the loop as they arrive, in order, and the plugin's
+    thread parses them;
+  - **async plugin code**: a plugin with an async SDK (Telegram's Telethon), and any `async def`
+    route or category, which reaches the browser by awaiting the `Ctx` verbs (`open`,
+    `document`, `warm`, `click`) directly.
 
   What would block the loop runs off it: a part's bytes go to its device's writer thread 4 MiB at
   a time, a hash to the hasher pool (`HASH` jobs, one thread per core), a part's open and rename and
-  dedupe's hard link to worker threads, a source's blocking `fetch` function and ffmpeg's DASH
+  dedupe's hard link to worker threads, a plugin's blocking `fetch` function and ffmpeg's DASH
   merge to worker threads too, and so do the target's rows at its end.
-- **A lazy post's expired link.** The save lists the post's files again (`SourceRun.aside`),
+- **A lazy post's expired link.** The save lists the post's files again (`Ctx.aside`),
   at any time: the listing needn't be running.
 - **A lazy post the site refuses** (gone, hidden, or an answer that can't be read) fails
   alone: its `failures` row is under the post's first key, a gone one is never asked again,
@@ -400,8 +399,8 @@ script iterates the run.
 ## The browser
 
 `flnkit.browser` is a library of its own: it knows Playwright, tabs and scrolling, and nothing
-of sources. A source reads a site that only shows its data to a logged-in page by watching the
-page's own API calls: `site.feed(match, scroll=True, cursor=reader)` keeps the JSON of every
+of plugins. A plugin reads a site that only shows its data to a logged-in page by watching the
+page's own API calls: `ctx.feed(match, scroll=True, cursor=reader)` keeps the JSON of every
 response whose URL `match` takes, and scrolls the tab only when no body is waiting.
 
 **A scroll step is driven by what the page does**, never by a fixed sleep:
@@ -416,7 +415,7 @@ response whose URL `match` takes, and scrolls the tab only when no body is waiti
    a median of 0.4 s when new media just came, 0.25 s when not (a glance), never more than four
    medians.
 3. **Go on, or end.** Progress, or room left to scroll, means another step. The feed ends as
-   soon as the site says so: the source's cursor reader read a page with no next one, or the
+   soon as the site says so: the plugin's cursor reader read a page with no next one, or the
    same cursor came back twice more (the site answering one page again). Only a feed without
    that word ends on silence: a whole 3 s wait with nothing, then 2 s more.
 
@@ -425,10 +424,10 @@ turn, `Page.turn`, at the account's scroll gate of the run's scheduler, `jobs.Bu
 since a person doesn't scroll many tabs of one account at the same moment. `fast` has no such
 limit.
 
-**Where the style comes from.** A source sets `scroll = "human"` or `"fast"` on its class;
-`TargetSite` hands it to the target's `Tabs`, which every feed and `site.scroll` of that target
-use. The home's `[sources.<code>] scroll` in config.toml overrides it at that same spot
-(`TargetSite._browser`).
+**Where the style comes from.** A plugin has no scroll setting of its own: every feed scrolls
+`"human"`, unless the home's `[sources.<code>] scroll` in config.toml says `"fast"` for that
+plugin. `TargetTabs._made` hands the style to the target's `Tabs`, which every feed of that
+target uses.
 
 A target's tab scrolls by script (`window.scrollBy` with a wheel event per step), not with real
 mouse input: the tabs of one shared window are background tabs to Chrome, which gives them no
@@ -439,26 +438,26 @@ mouse events. An element that scrolls on its own (`scroll(within=…)`) gets rea
 One HTTP library (`flnkit.net`, as `flnkit.net`) does every request and download, on the run's
 loop:
 
-- **A session per source** (`flnkit.net.Session`, made by `site.source_run`): libcurl handles
-  on one multi handle (through curl_cffi), set up once with Chrome's TLS and HTTP/2 fingerprint
-  and kept from one transfer to the next, the login's cookies (kept by the
-  session, and written back to the vault at the end), the source's `user_agent`, and its `sign`
+- **A session per plugin** (`flnkit.net.Session`, made with the plugin's `PluginRun`): libcurl
+  handles on one multi handle (through curl_cffi), set up once with Chrome's TLS and HTTP/2
+  fingerprint and kept from one transfer to the next, the login's cookies (kept by the
+  session, and written back to the vault at the end), the plugin's `user_agent`, and its `sign`
   hook for requests to its own domains, run before every try. A `proxy` under
   `[sources.<code>]` in config.toml goes to curl for every transfer of the session; the
-  browser, one window for every source, isn't proxied.
-- **The home's settings win over the class's**: `source_run` reads the source's
-  `[sources.<code>]` table (`options.config`), whose `pace` replaces the source's, whose
-  `limits` merge over the source's, and whose `scroll` the target's tabs take.
+  browser, one window for every plugin, isn't proxied.
+- **The home's settings win over the class's**: `_read` reads the plugin's
+  `[sources.<code>]` table (`options.config`), whose `pace` replaces the plugin's, whose
+  `limits` merge over the plugin's, and whose `scroll` the target's tabs take.
 - **Every request is a job of the run's scheduler** (`flnd.engine.jobs`, one per run, made by
-  `site.shared_browser`). *Pages* (`PAGE` jobs): the listing's requests to the source's own
-  domains, and the pages it opens, share a token bucket per host at the source's `pace`; a
+  `shared_browser`). *Pages* (`PAGE` jobs): the listing's requests to the plugin's own
+  domains, and the pages it opens, share a token bucket per host at the plugin's `pace`; a
   429's `Retry-After` (or X's `x-rate-limit-reset`) holds it, and halves its rate until 20
   requests go through. *Files* (`FILE` jobs): every file, and the listing's requests to other
   hosts, under an adaptive cap per host (below). A target's files also take one of its own
-  places (32, or the source's largest limit above that), and its queue holds 4 times as many.
+  places (32, or the plugin's largest limit above that), and its queue holds 4 times as many.
 - **Adaptive concurrency per host** (`jobs.Cap`, AIMD). Each media host starts at 8
   transfers at once (`jobs.CAP`) and may grow to 32 (`jobs.MOST`), or to the limit the
-  source's `limits` gives it:
+  plugin's `limits` gives it:
   - a 429, a 503, a reset, a timeout or a transfer cut short halves it, once per round of
     transfers that started together;
   - every 10 clean transfers close a window, whose throughput is the cap times the bytes moved
@@ -500,7 +499,7 @@ loop:
 - **The fake** (`flnkit.net.fake`) answers every request from routes or a handler in tests and
   benchmarks; nothing in `make check` reaches the network.
 
-Instagram's API calls move into the page (`site.fetch(in_page=True)`) when the site refuses
+Instagram's API calls move into the page (`ctx.fetch(..., in_page=True)`) when the site refuses
 flnd's client or answers one with a page instead of JSON, and the tab's own fetch is one.
 
 ## Where things are kept
@@ -511,9 +510,9 @@ Everything lives in the home folder, `.flnd` in the current folder unless `--hom
 - `media/<code>/<target>/<category>/…`: the files, each written as `<name>.part` first, which
   locks itself, so two runs may share a home and never write one file twice;
 - `metadata/`: the databases: `flnd.db` for what the home remembers (`files`, `targets`,
-  `runs`, `failures`, `state`, `logins`), and `secret.db` for source logins and credentials in
+  `runs`, `failures`, `state`, `logins`), and `secret.db` for plugin logins and credentials in
   plaintext;
-- `log/`: each run's scrubbed samples of answers a source couldn't read, kept 30 days.
+- `log/`: each run's scrubbed samples of answers a plugin couldn't read, kept 30 days.
 
 Two rules hold every write together: a post's rows commit in one transaction once all its files
 are in place, and a row is written only after its file, so a crash in between leaves a whole
@@ -533,14 +532,14 @@ and `e.hint` says what to do. Ctrl-C is `flnd.Stopped`, a `KeyboardInterrupt`, s
 How a failure travels:
 
 1. **Where it starts.** The HTTP client classifies what it meets (a status, a timeout); a
-   source raises the same classes from `flnd.source`; anything else a listing lets escape is
-   turned into one by `errors.classify` (a bug in a source is a `PluginError`, and its hint
-   names a plugin's author).
+   plugin raises the same classes from `flnd.plugin`; anything else a listing lets escape is
+   turned into one by `errors.classify` (a bug in a plugin is a `PluginError`, and its hint
+   names the plugin's author).
 2. **A file's failure** stays the file's: a `Failed` event with its post and path, a row in
    `failures`, and a retry on the next runs. A 404 or 410 records it gone, never asked again.
 3. **A target's failure** (its listing failed) ends that target alone: a `Failed` event, and a
-   `failures` row for the whole target. A 401 or 403 from the source's own domains is a
-   `LoginError`, which ends the source's later targets too.
+   `failures` row for the whole target. A 401 or 403 from the plugin's own domains is a
+   `LoginError`, which ends the plugin's later targets too.
 4. **A run's failure**: a usage mistake (before anything is fetched) or a full disk stops the
    run, and `Run` raises it to the reader. Nothing else is raised: a script reads
    `report.failed`.
@@ -557,13 +556,13 @@ in November 2026: gallery-dl and yt-dlp (many sites each), instaloader (Instagra
 
 | question | gallery-dl | yt-dlp | instaloader, twscrape | flnd |
 | --- | --- | --- | --- | --- |
-| How is a site written? | an `Extractor` class per kind of URL, each with a `pattern` regex | an `InfoExtractor` per site, with `_VALID_URL` and `_TESTS` | one package for one site | **one `Source` class per site**; each kind of target is a decorated method, a *route* |
-| What does a site produce? | message tuples: `Directory`, `Url`, and `Queue` (hand a URL to another extractor) | info dicts with standard fields | Python objects (`Post`, `Profile`, `Tweet`) | **typed objects**: `Post`, `File`, and `Target` to hand a link to another source |
+| How is a site written? | an `Extractor` class per kind of URL, each with a `pattern` regex | an `InfoExtractor` per site, with `_VALID_URL` and `_TESTS` | one package for one site | **one `Plugin` class per site**; each kind of target is a decorated method, a *route* |
+| What does a site produce? | message tuples: `Directory`, `Url`, and `Queue` (hand a URL to another extractor) | info dicts with standard fields | Python objects (`Post`, `Profile`, `Tweet`) | **typed objects**: `Post`, `File`, and `Target` to hand a link to another plugin |
 | The parts of a profile | a "user" extractor dispatching to sub-extractors, picked with `include` | — | — | **categories** under a route, picked with `--only` |
 | Stopping at old posts | `skip = "abort:N"` | `--break-on-existing` | `--fast-update` | **the engine** stops a sync after 5 saved posts in a row, and after the newest post it had |
 | What was downloaded | a SQLite archive of keys | a text file of ids | a timestamps file | **`flnd.db`**: files, targets, runs and failures, with real columns |
 | After a file lands | post-processor modules on events | a post-processor chain (ffmpeg merge, metadata, exec) | — | **a fixed step chain**: dedupe, unpack, sidecar, then `--exec` |
-| Loading only what is used | imports extractor modules until a pattern matches | a generated `lazy_extractors.py` | — | **a generated manifest** (`src/sources/_manifest.py`), like yt-dlp's |
+| Loading only what is used | imports extractor modules until a pattern matches | a generated `lazy_extractors.py` | — | **a generated manifest** (`src/plugins/_manifest.py`), like yt-dlp's |
 | Plugins | extra module folders in the config | a `yt_dlp_plugins` package in the user's folder, or from pip | — | **the user's plugin folder, or a `flnd.sources` entry point**, never the current folder |
 | HTTP | `requests`, with browser-like headers | pluggable handlers; curl_cffi for `--impersonate` | httpx; twscrape async with a pool of accounts | **curl_cffi on one asyncio loop**, with Chrome's TLS and HTTP/2 fingerprint |
 | Concurrency | one file at a time | the fragments of one video | twscrape: async, rotating accounts | **listing and downloading overlap**, with adaptive concurrency per host |
@@ -572,13 +571,13 @@ in November 2026: gallery-dl and yt-dlp (many sites each), instaloader (Instagra
 
 What flnd took from them:
 
-- yt-dlp's **generated manifest**, so `flnd --help` imports no source, and its **plugin
+- yt-dlp's **generated manifest**, so `flnd --help` imports no plugin, and its **plugin
   locations**: the user's own folder and installed packages.
 - gallery-dl's **`Queue`**, as `Target`: a search, or a post that links to another site, hands
-  the target on, and the source that reads it downloads it.
+  the target on, and the plugin that reads it downloads it.
 - gallery-dl's **job types**, as readers of one event stream: the screen, `--json`,
   `--dry` and a script's loop all read the same events.
-- gallery-dl's **skip-and-abort**, owned by the engine, so no source repeats it.
+- gallery-dl's **skip-and-abort**, owned by the engine, so no plugin repeats it.
 - yt-dlp's **expected errors**: an error the user can fix prints one line and a hint.
 
 Where flnd differs on purpose:
@@ -591,7 +590,7 @@ Where flnd differs on purpose:
 - **Concurrency is built in.** flnd follows whole profiles, where overlapping the listing with
   the downloads is most of the speed.
 - **A browser when a site demands it.** Some of flnd's sites only show their data to a
-  logged-in page, so a source can scroll a real tab and read the site's own API responses.
+  logged-in page, so a plugin can scroll a real tab and read the site's own API responses.
 
 Why flnd doesn't reuse their site code:
 
@@ -600,16 +599,17 @@ Why flnd doesn't reuse their site code:
 - **yt-dlp is about one video per URL**, while flnd follows whole accounts with categories,
   stories and logins. flnd doesn't hand unknown links to it.
 - The cost is real: four of flnd's sites (Instagram, X, TikTok, Facebook) are kept up by large
-  communities in those tools, and by one person here. Offline fixtures per source
-  (`tests/test_<code>.py`) and the scrubbed samples of answers a source couldn't read
+  communities in those tools, and by one person here. Offline fixtures per plugin
+  (`tests/test_<code>.py`) and the scrubbed samples of answers a plugin couldn't read
   ([errors.md](errors.md#samples-of-changed-answers)) are how a site change is found and fixed.
 
 What flnd leaves out, and why:
 
 - **Making things from the files** (slideshows, cards, albums): flnd downloads and keeps; the
   rest is another tool's job.
-- **Process isolation for plugins.** A plugin needs a logged-in `Site`, so a separate process
-  wouldn't protect the logins. The safeguard is where plugins load from: never a home folder.
+- **Process isolation for plugins.** A plugin needs its login's session in the same process,
+  so a separate process wouldn't protect the logins. The safeguard is where plugins load from:
+  never a home folder.
 - **A plugin API for steps.** The chain after a file lands has one fixed order.
 
 ## Decisions
@@ -622,13 +622,13 @@ The choices that explain how flnd behaves, made with its user in November 2026:
    category, other people's content (tagged posts, reposts, likes) included.
 3. **Following is a verb.** `flnd follow` opts a target in; a one-off `download` never grows
    every later sync.
-4. **Scrolling is human-like by default** (a source's `scroll = "human"`), with `"fast"` for a
-   source that can take it.
+4. **Scrolling is human-like by default** (`scroll = "human"`), with `"fast"` in a plugin's
+   `[sources.<code>]` table for a site that can take it.
 5. **Concurrency per media host starts at 8 and adapts up to 32** while throughput still rises
    ([performance.md](performance.md#concurrency-per-host)). Parallel-range downloads of big
    files are built but off, until a real-CDN check shows they pay.
 6. **SQLite stores everything** in `metadata/`: `flnd.db` for the library state and `secret.db`
-   for source logins and secrets ([storage.md](storage.md)).
+   for plugin logins and secrets ([storage.md](storage.md)).
 7. **Dedupe hard-links** a file whose bytes are already saved; a file system without hard links
    keeps both copies ([storage.md](storage.md#dedupe)).
 8. **Sidecars are off** by default; `sidecars = true` turns them on.
@@ -638,7 +638,7 @@ The choices that explain how flnd behaves, made with its user in November 2026:
     home is often the current folder, and code there may not be the user's own.
 11. **Secrets are stored in `metadata/secret.db`** in plaintext, so an unattended sync can open
     it without passwords or key files.
-12. **One `Source` class per site**, with routes and categories (above).
+12. **One `Plugin` class per site**, with routes and categories (above).
 13. **A fixed chain of steps** after each file (above).
 14. **Ruff is the one checker** (`make lint`), with no type checker: type hints are for readers,
     and a never-awaited coroutine fails its test instead.
@@ -650,7 +650,7 @@ The choices that explain how flnd behaves, made with its user in November 2026:
 
 - [cli.md](cli.md): every command and flag.
 - [library.md](library.md): flnd from a Python script.
-- [writing-a-source.md](writing-a-source.md): adding a site, testing it, and shipping it as a
+- [writing-a-plugin.md](writing-a-plugin.md): adding a site, testing it, and shipping it as a
   plugin.
 - [storage.md](storage.md): every file of a home, and the rows of `flnd.db`.
 - [performance.md](performance.md): what is fast, what isn't, and how it is measured.

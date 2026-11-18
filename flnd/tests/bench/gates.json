@@ -25,11 +25,6 @@
       "better": "lower",
       "baseline": 13.9658
     },
-    "startup.import_flnd_source": {
-      "unit": "ms",
-      "better": "lower",
-      "baseline": 33.8465
-    },
     "startup.import_flnd_plugin": {
       "unit": "ms",
       "better": "lower",

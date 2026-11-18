@@ -1,8 +1,8 @@
-"""Plugins: sources from installed packages and from the user's plugin folder, found lazily.
+"""Plugins: installed packages and files in the user's plugin folder, found lazily.
 
-src/docs/writing-a-source explains it.
+src/docs/writing-a-plugin explains it.
 
-A plugin is a source that isn't built in. flnd finds them in this order, after the built-ins:
+A plugin here is one that isn't built in. flnd finds them in this order, after the built-ins:
 1. installed packages that declare an entry point in the `flnd.sources` group:
    `[project.entry-points."flnd.sources"] exm = "flnd_example:Example"`;
 2. the user's plugin folder (`folder()`): `$FLND_SOURCES`, else `~/.config/flnd/sources/`
@@ -11,9 +11,9 @@ A plugin is a source that isn't built in. flnd finds them in this order, after t
 
 A later one with a code already taken is refused with a warning, never shadowing the first.
 
-Who calls it: the source registry (`flnd.sources.Registry`), which runs `discover` the first
+Who calls it: the plugin registry (`flnd.plugins.Registry`), which runs `discover` the first
 time a code it doesn't know is asked for, and `load` the first time a plugin's class is needed.
-What it calls: `importlib` and `importlib.metadata`, `flnd.source` to check what a plugin
+What it calls: `importlib` and `importlib.metadata`, `flnd.plugin` to check what a plugin
 defines, and `flnd.ui.log` for the warnings.
 
 How loading stays lazy:
@@ -31,7 +31,7 @@ Rules a change must keep:
   the folder above and from installed packages. `tests/test_plugins.py` keeps a
   `<home>/sources/evil.py` that must never run.
 - **Containment.** An import error, or a class that fails its checks when it is made (a newer
-  source API, a bad pattern), disables that plugin alone, with a warning naming its file and
+  plugin API, a bad pattern), disables that plugin alone, with a warning naming its file and
   line. The plugin folder is never put on `sys.path`, so a stray `json.py` in it can't shadow
   the standard library; a `<code>/` package imports its own modules relatively.
 - It is not a security boundary: a plugin runs in flnd's process with the user's logins, like
@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, Any
 from flnd.ui.log import ui
 
 if TYPE_CHECKING:
-    from flnd.source import Source
+    import flnd.plugin
 
 __all__ = ["BUILT_IN", "FILE", "PACKAGE", "SCRIPT", "Plugin", "discover", "folder", "load"]
 
@@ -90,7 +90,7 @@ class Plugin:
     where: str
     version: str = ""
     error: str = ""
-    cls: type[Source] | None = None
+    cls: type[flnd.plugin.Plugin] | None = None
     # How to import it: an entry point's `load`, or a file's import; None once refused.
     _load: Callable[[], Any] | None = field(default=None, repr=False)
 
@@ -125,7 +125,7 @@ def discover(taken: Mapping[str, str]) -> list[Plugin]:
         The plugins in discovery order: packages by entry point name, then files and folders
         by name.
     """
-    from flnd.source import CODE
+    from flnd.plugin import CODE
 
     owners = dict(taken)
     found: list[Plugin] = []
@@ -133,11 +133,11 @@ def discover(taken: Mapping[str, str]) -> list[Plugin]:
         if plugin.error:
             pass
         elif not CODE.fullmatch(plugin.code):
-            plugin.error = (f"{plugin.where}: {plugin.code!r} isn't a source code; name it "
+            plugin.error = (f"{plugin.where}: {plugin.code!r} isn't a plugin code; name it "
                             "2 to 16 lowercase letters and digits, what targets start with")
         elif plugin.code in owners:
             plugin.error = (f"{plugin.where}: the code {plugin.code} is taken by "
-                            f"{owners[plugin.code]}; a plugin never replaces another source")
+                            f"{owners[plugin.code]}; a plugin never replaces another")
         else:
             owners[plugin.code] = f"{plugin.origin} {plugin.where}"
         if plugin.error:
@@ -147,7 +147,7 @@ def discover(taken: Mapping[str, str]) -> list[Plugin]:
     return found
 
 
-def load(plugin: Plugin) -> type[Source] | None:
+def load(plugin: Plugin) -> type[flnd.plugin.Plugin] | None:
     """Import a plugin once and check what it gives; on any failure, disable it with a warning.
 
     Args:
@@ -258,12 +258,12 @@ def _importer(code: str, path: Path) -> Callable[[], Any]:
 # Checking what a plugin gives
 # ---------------------------------------------------------------------------------------------
 
-def _checked(plugin: Plugin, made: Any) -> type[Source]:
-    """The source class a loaded plugin gives, checked against its code.
+def _checked(plugin: Plugin, made: Any) -> type[flnd.plugin.Plugin]:
+    """The plugin class a loaded plugin gives, checked against its code.
 
-    An entry point names its class; a file's module is searched for the `Source` subclass it
-    defines with its file's name as its code. The class's own checks already ran when it was
-    made, so a newer source API or a bad pattern has failed by now.
+    An entry point names its class; a file's module is searched for the `flnd.plugin.Plugin`
+    subclass it defines with its file's name as its code. The class's own checks already ran
+    when it was made, so a newer plugin API or a bad pattern has failed by now.
 
     Args:
         plugin: the plugin.
@@ -273,30 +273,31 @@ def _checked(plugin: Plugin, made: Any) -> type[Source]:
         The class.
 
     Raises:
-        PluginError: it gives no source class, or one with another code.
+        PluginError: it gives no plugin class, or one with another code.
     """
+    import flnd.plugin
     from flnd.errors import PluginError
-    from flnd.source import Source
 
     if plugin.origin == FILE:
         version = getattr(made, "__version__", "")
         plugin.version = version if isinstance(version, str) else ""
         classes = [value for value in vars(made).values()
-                   if inspect.isclass(value) and issubclass(value, Source) and value is not Source
+                   if inspect.isclass(value) and issubclass(value, flnd.plugin.Plugin)
+                   and value is not flnd.plugin.Plugin
                    and _inside(value.__module__, made.__name__) and getattr(value, "code", None)]
         mine = [cls for cls in classes if cls.code == plugin.code]
         if mine:
             return mine[0]
         if classes:
-            raise PluginError(f"its source's code is {classes[0].code!r}, not its file's name",
+            raise PluginError(f"its plugin's code is {classes[0].code!r}, not its file's name",
                               hint=f"name the file {classes[0].code}.py, or set "
                                    f'code = "{plugin.code}"')
-        raise PluginError("it defines no flnd.source.Source subclass",
-                          hint="see the writing-a-source page of flnd's docs")
-    if not (inspect.isclass(made) and issubclass(made, Source)):
-        raise PluginError(f"the entry point gives {made!r}, not a flnd.source.Source subclass")
+        raise PluginError("it defines no flnd.plugin.Plugin subclass",
+                          hint="see the writing-a-plugin page of flnd's docs")
+    if not (inspect.isclass(made) and issubclass(made, flnd.plugin.Plugin)):
+        raise PluginError(f"the entry point gives {made!r}, not a flnd.plugin.Plugin subclass")
     if made.code != plugin.code:
-        raise PluginError(f"its source's code is {made.code!r}, not the entry point's name",
+        raise PluginError(f"its plugin's code is {made.code!r}, not the entry point's name",
                           hint=f"name the entry point {made.code}, or set "
                                f'code = "{plugin.code}"')
     return made
@@ -332,7 +333,7 @@ def _place(plugin: Plugin, error: BaseException) -> str:
     A syntax error names its own place. Otherwise the traceback is read from the deepest
     frame up: the first frame in the plugin's file or package wins; for an installed package,
     the first frame that isn't importlib's or flnd's own (flnd raises a class's `PluginError`
-    from `src/source.py`, but the mistake is where the class is).
+    from `src/plugin.py`, but the mistake is where the class is).
 
     Args:
         plugin: the plugin.

@@ -57,9 +57,9 @@ flnd ls [targets…]            the targets this home knows: followed or not, fi
 flnd status                   the last run: what it saved, each failure, why, and what to do
 flnd retry                    download again every file that failed
 flnd check [--fix]            compare the history with the files on disk, and repair it
-flnd login [source] [how]     log in; alone, lists every source's login
+flnd login [source] [how]     log in; alone, lists every plugin's login
 flnd logout <source>          remove a saved login
-flnd sources                  every source: built in, from a package or the plugin folder
+flnd sources                  every plugin: built in, from a package or the plugin folder
 
 global flags: --home DIR · -v/--verbose · --json · -V/--version
 ```
@@ -67,7 +67,7 @@ global flags: --home DIR · -v/--verbose · --json · -V/--version
 `flnd --help` lists every command and every form of target each site reads, and
 `flnd <command> --help` a command's flags. [src/docs/cli.md](src/docs/cli.md) covers each in full.
 
-- **A target** is `<source>:<name, id or link>`, `<source>?<words>` for a search, or just the
+- **A target** is `<plugin>:<name, id or link>`, `<plugin>?<words>` for a search, or just the
   link: `ins:example_user` and `https://www.instagram.com/example_user/` are the same target,
   and `mht?romance` is a search. With no targets, `download` and `follow` read them from
   standard input, one per line.
@@ -89,7 +89,7 @@ global flags: --home DIR · -v/--verbose · --json · -V/--version
   `status`, `check`, `login` and `sources` print their rows the same way. It never asks a
   question, which suits scripts and cron.
 - **Exit codes:** 0 everything worked, 1 some files or targets failed, 2 a usage error, 3 a login
-  is needed, 4 flnd stopped on an error (a full disk, a missing browser, a broken source, a bug),
+  is needed, 4 flnd stopped on an error (a full disk, a missing browser, a broken plugin, a bug),
   130 stopped with Ctrl-C.
 
 ### Following and syncing
@@ -169,7 +169,7 @@ with numbered choices.
 flnd login ins chrome
 flnd login twt ~/Downloads/cookies.txt
 flnd login tlg qr
-flnd login                                   # each source's login, and what expires soon
+flnd login                                   # each plugin's login, and what expires soon
 flnd logout ins
 ```
 
@@ -211,8 +211,7 @@ what it takes; an unknown key is a warning.
 
 ## Use it from Python
 `flnd.open(home)` gives a `Flnd`, whose methods are the commands. A download returns a run that
-yields events as it goes: `Saved`, `Skipped`, `Failed`, `Progress`, and `Planned`
-about once a second.
+yields events as it goes: `Saved`, `Skipped`, `Failed`, and `Planned` for a dry run.
 
 <!-- docs-test: skip: it downloads from Instagram, which needs the network and a login -->
 ```python
@@ -233,49 +232,49 @@ with flnd.open("~/Media/flnd") as fl:
 that run offline.
 
 ## Add a site
-A source is a small Python class: it says which targets and links it reads and how to list a
+A plugin is a small Python class: it says which targets and links it reads and how to list a
 target's posts, and flnd does the rest (downloading, resuming, dating, deduping, retrying,
 progress).
 
 ```python
-from flnd.source import File, Post, Site, Source, cookies, target
-
-
-class Example(Source):
-    """example.com: a user's posts."""
-    code = "exm"                     # targets look like exm:example_user
-    domains = ("example.com",)       # links, cookies and pacing
-    api = 1                          # the source API this was written for
-    login = cookies("session")       # logged in when this cookie is there
-
-    @target("exm:{user}", "example.com/{user}")
-    def profile(self, site: Site, user: str) -> dict:
-        """A user's profile: `exm:example_user`, or `https://example.com/example_user`."""
-        return site.fetch(f"https://api.example.com/users/{user}").json
-
-    @profile.category(newest_first=True)
-    def posts(self, site: Site, profile: dict):
-        url = f"https://api.example.com/users/{profile['id']}/posts"
-        for page in site.pages(url, cursor="next"):
-            for p in page["items"]:
-                yield Post(p["id"], [File(p["url"])], date=p["time"])
-```
-
-`flnd.testing` runs a source against fixtures, with no network and no home:
-
-```python
-from flnd.testing import check, collect
+from flnd.plugin import Ctx, File, Plugin, Post, cookies, route
 
 API = "https://api.example.com"
-saved = collect(Example, "exm:example_user", json={
-    f"{API}/users/example_user": {"id": "42"},
-    f"{API}/users/42/posts": {
-        "items": [{"id": "p1", "time": "2026-01-02", "url": "https://cdn.example.com/p1.jpg"}],
-        "next": None,
-    },
+
+
+class Example(Plugin):
+    """example.com: a user's posts."""
+    code = "exm"                     # targets look like exm:example_user
+    name = "Example"                 # the site's name, shown in lists and help
+    domains = ("example.com",)       # links, cookies and pacing
+    api = 2                          # the plugin API this was written for
+    login = cookies("session", url="https://www.example.com/login")   # logged in with it
+
+    @route("exm:{user}", "example.com/{user}")
+    async def user(self, ctx: Ctx, user: str) -> dict:
+        """A user's profile: `exm:example_user`, or `https://example.com/example_user`."""
+        return (await ctx.fetch(f"{API}/users/{user}")).json
+
+    @user.category
+    async def posts(self, ctx: Ctx, profile: dict):
+        """The profile's posts, newest first, page by page."""
+        async for page in ctx.pages(f"{API}/users/{profile['id']}/posts", cursor="next"):
+            for item in page.json["items"]:
+                yield Post(item["id"], [File(url) for url in item["urls"]], date=item["time"])
+```
+
+`flnd.testing` runs a plugin against fixtures, with no network and no home:
+
+```python
+from flnd.testing import FakeCtx, Reply, collect
+
+ctx = FakeCtx(Example, routes={
+    f"{API}/users/example_user": Reply({"id": "42"}),
+    f"{API}/users/42/posts": Reply({"items": [
+        {"id": "p1", "time": "2026-01-02", "urls": ["https://cdn.example.com/p1.jpg"]}]}),
 })
-assert [(file.path, str(file.date)) for file in saved] == [("posts/p1_0.jpg", "2026-01-02")]
-assert [str(found) for found in check(Example)] == ["exm:example_user", "exm:example_user"]
+saved = collect(Example, "exm:example_user", ctx=ctx)
+assert [str(file.date) for file in saved] == ["2026-01-02"]
 ```
 
 To make flnd know it, either:
@@ -287,12 +286,12 @@ To make flnd know it, either:
 
 `flnd sources` then lists it. A plugin runs with your logins, so install only code you trust;
 flnd never loads one from a home folder. A broken plugin disables itself alone, with a warning
-naming its file and line. [src/docs/writing-a-source.md](src/docs/writing-a-source.md) walks through it
-all.
+naming its file and line. [src/docs/writing-a-plugin.md](src/docs/writing-a-plugin.md) walks
+through it all.
 
 ## Documentation
-[src/docs/](src/docs/README.md) is the guide: the CLI, the library, writing a source, errors, storage,
-performance, a glossary and a page per site.
+[src/docs/](src/docs/README.md) is the guide: the CLI, the library, writing a plugin, errors,
+storage, performance, a glossary and a page per built-in plugin.
 [src/docs/architecture.md](src/docs/architecture.md) explains how flnd is built, how it compares with
 similar tools, and the decisions behind it.
 
@@ -304,7 +303,7 @@ similar tools, and the decisions behind it.
 | `make test ARGS=…` | the tests, or some of them (`ARGS="-k fetch"`) |
 | `make lint` | ruff alone |
 | `make api` | regenerates `tests/data/api.txt`, the public API snapshot |
-| `make manifest` | regenerates `src/sources/_manifest.py`, what `--help` and target resolution read; run it after changing a source's domains, routes or categories |
+| `make manifest` | regenerates `src/plugins/_manifest.py`, what `--help` and target resolution read; run it after changing a built-in plugin's domains, routes or categories |
 | `make bench` | the offline benchmarks; `ARGS=--gate` compares them with the targets |
 | `make cdn-real ARGS=…` | a hand check: throughput from one real CDN host at several caps |
 | `make docs` | builds the API reference into `build/docs/` |

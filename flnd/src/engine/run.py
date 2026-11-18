@@ -37,8 +37,8 @@ from flnd.engine.events import (
 from flnkit import clock
 
 if TYPE_CHECKING:
+    from flnd.engine.ctx import Listing
     from flnd.engine.events import Event
-    from flnd.engine.site import Listing
     from flnd.plugin import Target
 
 __all__ = ["Counts", "Flight", "Run", "Stop", "Tally", "quit_now", "restoring", "sink", "stopping"]

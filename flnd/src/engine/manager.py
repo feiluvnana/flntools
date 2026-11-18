@@ -543,7 +543,7 @@ def _api(paths: list[Path], code: str, shown: Path, root: Path) -> None:
         used = sorted({old for cls in classes for node in _scope(cls) for old in OLD_NAMES
                        if _sets(node, old)})
         hint = "; ".join(f"{old} becomes {OLD_NAMES[old]}" for old in used) or (
-            "see the writing-a-source page of flnd's docs")
+            "see the writing-a-plugin page of flnd's docs")
         raise PluginError(f"{code} is written for plugin API {min(values)}; this flnd has "
                           f"{API}", hint=hint)
 
@@ -585,7 +585,7 @@ def _checked(path: Path, code: str, *, shown: Path, keep: bool) -> type[Plugin]:
     if len(found) != 1:
         what = ", ".join(cls.__name__ for cls in found) or "no flnd.plugin.Plugin subclass"
         raise PluginError(f"{shown} defines {what}; a plugin defines exactly one",
-                          hint="see the writing-a-source page of flnd's docs")
+                          hint="see the writing-a-plugin page of flnd's docs")
     if found[0].api != API:
         raise PluginError(f"{shown}: its api is {found[0].api!r} once it has run, not {API}",
                           hint=f"set api = {API} in the class, and never change it after")
@@ -673,18 +673,9 @@ def _entry(cls: type[Plugin], file: str, digest: str, *, installed: str) -> dict
 
     Its `api` is the literal its files declare, which `_api` has checked is `API`.
     """
-    return {
-        "name": cls.name, "api": API, "domains": list(cls.domains), "file": file,
-        "sha256": digest, "installed": installed,
-        "routes": [{"name": known.kind, "single": known.single, "discovers": known.discovers,
-                    "shown": known.shown,
-                    "patterns": [list(item) if isinstance(item, tuple) else item
-                                 for item in known.patterns],
-                    "categories": [{"name": category.name, "own": category.own}
-                                   for category in known.categories]}
-                   for known in cls.routes],
-        "unsupported": dict(cls.unsupported),
-    }
+    from flnd.plugins import facts
+
+    return {**facts(cls), "api": API, "file": file, "sha256": digest, "installed": installed}
 
 
 def _stamp() -> str:

@@ -21,15 +21,15 @@ test:     ; $(RUN) python -W "error:coroutine:RuntimeWarning" -m unittest discov
 lint:     ; $(RUN) ruff check src flnkit tests
 check: lint test
 api:      ; $(RUN) python tests/api_snapshot.py --write
-# The data `flnd --help` and target resolution read instead of importing every source; run it
-# after changing a source's domains, routes or categories (tests/test_manifest.py checks it).
-manifest: ; $(RUN) python tests/source_manifest.py --write
+# The data `flnd --help` and target resolution read instead of importing every plugin; run it
+# after changing a plugin's domains, routes or categories (tests/test_manifest.py checks it).
+manifest: ; $(RUN) python tests/plugin_manifest.py --write
 bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
 # A hand check: throughput from one real CDN host at caps 8, 16, 24 and 32, from URLs kept
 # outside the repo: `make cdn-real ARGS="--urls ~/flnd-cdn.txt"` (src/docs/performance.md).
 cdn-real: ; $(RUN) python tests/bench/cdn_real.py $(ARGS)
-# The reference of the three public modules: the library, the source API and the test kit.
-docs:     ; $(RUN) pdoc -d google flnd flnd.source flnd.testing -o build/docs
+# The reference of the three public modules: the library, the plugin API and the test kit.
+docs:     ; $(RUN) pdoc -d google flnd flnd.plugin flnd.testing -o build/docs
 # Lists, live, what a download would save, without saving anything, in a scratch home `.try`:
 # `make try ARGS="ins:example_user --only reels"`. Log in there first for a site that needs it
 # (`uv run flnd --home .try login ins chrome`); `make clean` removes it.

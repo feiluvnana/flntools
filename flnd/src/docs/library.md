@@ -3,7 +3,7 @@
 A script uses flnd through one object: `flnd.open(home)` gives a `Flnd` for a home folder, and
 its methods are the CLI's commands. A download returns a `Run`, which reports what it does as a
 stream of events. Every `python` block on this page runs offline in the docs test, against a
-small source defined below, so each one is a working example.
+small plugin defined below, so each one is a working example.
 
 ```python
 import tempfile
@@ -26,45 +26,49 @@ saves something makes the layout.
 A `Flnd` is a context manager. Leaving the `with` (or calling `fl.close()`) stops every run still
 going, as a first Ctrl-C does, and waits for it. A run made but not started can't start after.
 
-## A source to try things with
+## A plugin to try things with
 
-`fl.add(source)` adds a source for this `Flnd` alone. Here it is a two-category source whose
+`fl.add(Notes)` adds a plugin for this `Flnd` alone. Here it is a two-category plugin whose
 files are written by a fetch function, so nothing goes to the network.
-[writing-a-source.md](writing-a-source.md) explains each part. A source added this way comes
-after the built-ins and the plugins, so a code one of them has is refused with a `UsageError`,
-never replaced. To make a source every script and the CLI know, ship it as a plugin instead
-([writing-a-source.md](writing-a-source.md#10-shipping-it-as-a-plugin)).
+[writing-a-plugin.md](writing-a-plugin.md) explains each part. A plugin added this way comes
+after the built-ins and the installed plugins, so a code one of them has is refused with a
+`UsageError`, never replaced. To make a plugin every script and the CLI know, ship it as a plugin
+instead
+([writing-a-plugin.md](writing-a-plugin.md#10-shipping-it-as-a-plugin)).
 
 ```python
 import datetime
 
-from flnd.source import File, Post, Source, target
+from flnd.plugin import File, Plugin, Post, route
 
 
-def write(text):
-    """A fetch function: it writes the file itself, instead of downloading a URL."""
-    def fetch(dest, progress):
-        dest.write_bytes(text.encode())
-    return fetch
+def note(name, body):
+    """A file the plugin writes itself: its fetch function writes into a `Part`."""
+    data = body.encode()
+
+    async def fetch(part):
+        part.total(len(data))
+        await part.write(data[part.offset:part.end])
+
+    return File(fetch=fetch, name=name)
 
 
-class Notes(Source):
-    code, name, domains, api = "nts", "Notes", ("notes.example.com",), 1
-    folder, key = "{category}", "{post}"
+class Notes(Plugin):
+    code, name, domains, api = "nts", "Notes", ("notes.example.com",), 2
 
-    @target("nts:{user}")
-    def user(self, site, user):
+    @route("nts:{user}")
+    async def user(self, ctx, user):
         return user
 
     @user.category
-    def posts(self, site, user):
+    async def posts(self, ctx, user):
         for number in (1, 2):
-            yield Post(f"p{number}", [File(write(f"post {number}"), name=f"p{number}.txt")],
+            yield Post(f"p{number}", [note(f"p{number}.txt", f"post {number}")],
                        date=datetime.date(2026, 3, number))
 
     @user.category
-    def reels(self, site, user):
-        yield Post("r1", [File(write("reel"), name="r1.txt")], date=datetime.date(2026, 4, 1))
+    async def reels(self, ctx, user):
+        yield Post("r1", [note("r1.txt", "reel")], date=datetime.date(2026, 4, 1))
 ```
 
 ## Downloading: runs and events
@@ -259,19 +263,18 @@ with flnd.open(home) as fl:
 | --- | --- |
 | `fl.targets(source=None)` | a `flnd.Tracked` per target the home knows: `target`, `follow`, `at` (last sync), `files`, `size`, `seen` (for a search), `categories` (each one's state), `query` |
 | `fl.files(target=None, kind=None, since=None)` | read from the home's `flnd.db`: a `flnd.Record` per saved file: `key`, `path`, `size`, `post`, `category`, `date`, `at`, and `kind` (`"image"`, `"video"`, `"audio"`) |
-| `fl.logins` | a `flnd.Login` per source: `source`, `name`, `state`, `origin`, `expiring` |
+| `fl.logins` | a `flnd.Login` per plugin: `source` (its code), `name`, `state`, `origin`, `expiring` |
 | `fl.status` | the last run that downloaded, as a `flnd.Status`: `command`, `started`, `ended`, `saved`, and `failures`, a `flnd.Failure` per file or target it left failed (`target`, `post`, `path`, `error`, `attempts`, `url`, `at`); `None` before the first run ([errors.md](errors.md#the-failure-report)) |
 | `fl.check(fix=False)` | a `flnd.Checked`: the history against the disk. `missing` and `resized` (each a `Record`, as the history has it), `unknown` (paths under `media/` no row names), `files` (rows checked), `fixed`, and `ok`. `fix=True` makes the history match the disk, and never deletes, moves or downloads a file ([storage.md](storage.md#checking-a-home)) |
 
-## Logins and sources
+## Logins and plugins
 
 | method | what it does |
 | --- | --- |
-| `fl.login(source, how)` | log in: `how` is a browser to read cookies from (`"chrome"`, `"firefox"`, `"edge"`, `"brave"`, `"chromium"`, `"safari"` on macOS), a cookies.txt path, or the source's own way (`"qr"`, `"phone"` for tlg). Returns the source's `Login` |
+| `fl.login(source, how)` | log in to the plugin with that code: `how` is a browser to read cookies from (`"chrome"`, `"firefox"`, `"edge"`, `"brave"`, `"chromium"`, `"safari"` on macOS), a cookies.txt path, or the plugin's own way (`"qr"`, `"phone"` for tlg). Returns the plugin's `Login` |
 | `fl.logout(source)` | remove a login; whether there was one |
-| `fl.add(source)` | a source for this `Flnd` alone; a code another source has is a `UsageError` |
-| `fl.sources` | a `flnd.Installed` per source: the built-ins, the plugins (a disabled one too, with `disabled` saying why) and `add`'s. Each has `code`, `name`, `origin` (`"built-in"`, `"package"`, `"file"` or `"script"`), `where`, `version`, `api`, `login` (its state), `domains`, `forms`, `categories` and `logins` (its ways to log in). Reading it imports every plugin |
-| `fl.site(source)` | a context manager giving the source's `Site`, with its saved login, pacing and retries, for a script's own requests |
+| `fl.add(source)` | a plugin class for this `Flnd` alone; a code another plugin has is a `UsageError` |
+| `fl.sources` | a `flnd.Installed` per plugin: the built-ins, the installed plugins (a disabled one too, with `disabled` saying why) and `add`'s. Each has `code`, `name`, `origin` (`"built-in"`, `"package"`, `"file"` or `"script"`), `where`, `version`, `api`, `login` (its state), `domains`, `forms`, `categories` and `logins` (its ways to log in). Reading it imports every plugin |
 
 ```python
 import pathlib
@@ -282,10 +285,6 @@ cookies.write_text("# Netscape HTTP Cookie File\n"
 
 with flnd.open(home) as fl:
     assert fl.login("ins", str(cookies)).state == "logged in"
-    with fl.site("ins") as site:
-        assert sorted(site.cookies) == ["sessionid"]
-        # site.fetch("https://www.instagram.com/example_user/") would now ask the real site,
-        # with this login, Instagram's pacing and its retries.
 ```
 
 The docs test runs this block offline: logging in from a cookie file reads the file and asks
@@ -302,7 +301,7 @@ no site. `fl.login("ins", "chrome")` reads a browser's cookies the same way.
 | `flnd unfollow T` | `fl.unfollow(T)` |
 | `flnd login S HOW` | `fl.login(S, HOW)` |
 | `flnd logout S` | `fl.logout(S)` |
-| `flnd login` (no source) | `fl.logins` |
+| `flnd login` (no plugin) | `fl.logins` |
 | `flnd check [--fix]` | `fl.check(fix=…)` |
 | `flnd status` | `fl.status` |
 | `flnd retry` | `fl.retry()` |
@@ -313,7 +312,7 @@ no site. `fl.login("ins", "chrome")` reads a browser's cookies the same way.
 404 or 410 for (recorded as gone, [storage.md](storage.md)). Without it, `again = true` under
 `[defaults]` in the home's `config.toml` does the same. The same table turns off dedupe
 (`dedupe = "off"`), turns on sidecars (`sidecars = true`), and gives `when` its
-defaults; `[sources.<code>]` sets a source's pace, scroll, limits and proxy
+defaults; `[sources.<code>]` sets a plugin's pace, scroll, limits and proxy
 ([storage.md](storage.md#settings-configtoml)). An argument given to a call always wins over
 the file.
 A run draws nothing on the terminal:

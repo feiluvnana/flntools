@@ -20,7 +20,7 @@ from typing import Any
 import msgspec
 
 from flnd.errors import UsageError
-from flnd.source import Range
+from flnd.plugin import Range
 from flnd.ui.log import ui
 from flnkit import clock, files, text
 

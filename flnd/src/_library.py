@@ -35,8 +35,7 @@ import datetime
 import os
 import threading
 import weakref
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -48,7 +47,7 @@ if TYPE_CHECKING:
     from flnd.engine.core import Engine
     from flnd.engine.home import FailureRow
     from flnd.engine.options import Config
-    from flnd.source import Site, Source, Target
+    from flnd.plugin import Plugin, Target
 
 __all__ = ["Flnd", "open"]
 
@@ -109,7 +108,7 @@ class Flnd:
         self.home = Path(chosen).expanduser()
         # Whether downloads ask again for everything; None reads the home's config.toml.
         self._again = again
-        self._added: dict[str, type[Source]] = {}
+        self._added: dict[str, type[Plugin]] = {}
         self._runs: weakref.WeakSet[Run] = weakref.WeakSet()
         self._closed = threading.Event()
 
@@ -523,12 +522,12 @@ class Flnd:
             ['built-in']
         """
         from flnd.engine import plugins
-        from flnd.sources import SOURCES
+        from flnd.plugins import PLUGINS
 
         logins = self._engine().logins
-        found = SOURCES.plugins
+        found = PLUGINS.plugins
         by_code = {plugin.code: plugin for plugin in found if not plugin.error}
-        rows = [_installed(SOURCES[code], by_code.get(code), logins) for code in SOURCES]
+        rows = [_installed(PLUGINS[code], by_code.get(code), logins) for code in PLUGINS]
         rows += [Installed(plugin.code, plugin.code, plugin.origin, where=plugin.where,
                            version=plugin.version, disabled=plugin.error)
                  for plugin in found if plugin.error]
@@ -536,96 +535,62 @@ class Flnd:
                  for cls in self._added.values()]
         return rows
 
-    def add(self, source: type[Source]) -> None:
-        """Add a source for this `Flnd` alone: its targets resolve and download like a built-in's.
+    def add(self, source: type[Plugin]) -> None:
+        """Add a plugin for this `Flnd` alone: its targets resolve and download like a
+        built-in's.
 
-        It comes after the built-ins and the plugins, so a code one of them has is refused,
-        never replaced.
+        It comes after the built-ins and the installed plugins, so a code one of them has is
+        refused, never replaced.
 
         Args:
-            source: the `flnd.plugin.Plugin` subclass, or an API 1 `flnd.source.Source` one.
+            source: the `flnd.plugin.Plugin` subclass.
 
         Raises:
-            UsageError: it isn't either, or its code is taken.
+            UsageError: it isn't one, or its code is taken.
 
         Example:
             >>> import flnd
-            >>> from flnd.source import Source, target
-            >>> class Example(Source):
-            ...     code, name, domains, api = "exa", "Example", ("example.com",), 1
-            ...     @target("exa:{user}")
-            ...     def user(self, site, user):
-            ...         return []
+            >>> from flnd.plugin import Plugin, Post, route
+            >>> class Example(Plugin):
+            ...     code, name, domains, api = "exa", "Example", ("example.com",), 2
+            ...     @route("exa:{user}")
+            ...     async def user(self, ctx, user):
+            ...         yield Post("p1")
             >>> with flnd.open("example-home") as fl:
             ...     fl.add(Example)
             ...     fl.targets(source="exa")
             []
         """
         from flnd.plugin import Plugin
-        from flnd.source import Source
 
-        if not (isinstance(source, type) and issubclass(source, (Source, Plugin))):
-            raise UsageError("add takes a flnd.plugin.Plugin subclass (or an API 1 source)")
+        if not (isinstance(source, type) and issubclass(source, Plugin)):
+            raise UsageError("add takes a flnd.plugin.Plugin subclass")
         if source.code in self._sources():
             taken = self._sources()[source.code]
             raise UsageError(f"{source.code}: the code is taken by {taken.__module__}."
                              f"{taken.__qualname__}", hint="give the class another code")
         self._added[source.code] = source
 
-    @contextmanager
-    def site(self, source: str) -> Iterator[Site]:
-        """A source's `Site`, with its saved login, pacing and retries, for a script's requests.
-
-        Args:
-            source: the source's code.
-
-        Yields:
-            The `flnd.source.Site`, open for the block.
-
-        Raises:
-            UsageError: `source` is no source's code.
-
-        Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl, fl.site("ins") as site:
-            ...     str(site.target)
-            'ins'
-        """
-        from flnd.engine.options import RunShared
-        from flnd.engine.run import stopping
-        from flnd.engine.site import TargetSite, source_run
-        from flnd.plugin import Target
-
-        cls = self._source(source)
-        with stopping() as stop:
-            settings = RunShared(home=self.home, stop=stop)
-            with source_run(settings, cls()) as run:
-                opened = TargetSite(run, Target(f"{cls.code}:", kind="account"))
-                try:
-                    yield opened
-                finally:
-                    opened.close()
-
     # -----------------------------------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------------------------------
 
-    def _sources(self) -> Mapping[str, type[Source]]:
-        """The built-in sources, then the ones `add` added.
+    def _sources(self) -> Mapping[str, type[Plugin]]:
+        """The built-in plugins and the installed ones, then the ones `add` added.
 
-        A view, not a copy: a built-in source is imported only when its code is looked up, so
+        A view, not a copy: a built-in plugin is imported only when its code is looked up, so
         resolving `ins:example_user` imports Instagram's module and no other.
 
         Returns:
-            The sources by code; an added source comes first when looked up.
+            The plugins by code; an added plugin comes first when looked up.
         """
         from collections import ChainMap
 
-        from flnd.sources import SOURCES
+        from flnd.plugins import PLUGINS
 
-        return ChainMap(self._added, SOURCES)
+        return ChainMap(self._added, PLUGINS)
 
-    def _source(self, code: str) -> type[Source]:
+    def _source(self, code: str) -> type[Plugin]:
         """The source of a code, built-in or added.
 
         Args:
@@ -712,7 +677,7 @@ class Flnd:
         return run
 
 
-def _installed(cls: type[Source], plugin: Any, logins: Mapping[str, str], *,
+def _installed(cls: type[Plugin], plugin: Any, logins: Mapping[str, str], *,
                origin: str | None = None) -> Installed:
     """A working source's row for `Flnd.sources`.
 

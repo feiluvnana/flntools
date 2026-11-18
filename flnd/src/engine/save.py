@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import email.utils
-import inspect
 import mimetypes
 import os
 import re
@@ -28,7 +27,6 @@ from urllib.parse import urlsplit
 
 import msgspec
 
-import flnd.plugin
 from flnd.engine import home, jobs
 from flnd.engine.events import BUSY, Failed, Saved, Skipped
 from flnd.engine.home import FILE_COLUMNS, FileRow, _file_values, now
@@ -44,8 +42,7 @@ from flnd.errors import (
     UsageError,
     classify,
 )
-from flnd.plugin import Target
-from flnd.source import Fetch, File
+from flnd.plugin import Fetch, File, Part, Target
 from flnd.ui.log import ui
 from flnkit import clock, files, media, net, text
 
@@ -307,7 +304,7 @@ class _Fetching:
         plan: its segments.
     """
 
-    def __init__(self, saver: Saver, item: Item, fetch: flnd.plugin.Fetch, held: files.Part,
+    def __init__(self, saver: Saver, item: Item, fetch: Fetch, held: files.Part,
                  job: Job[Any], plan: jobs.Segments) -> None:
         self.saver, self.item, self.fetch, self.held, self.job = saver, item, fetch, held, job
         self.plan = plan
@@ -368,7 +365,7 @@ class _Fetching:
                 unkept = 0
                 await self.keep()
 
-        await self.fetch(flnd.plugin.Part(sink, offset=part.at, end=part.end))
+        await self.fetch(Part(sink, offset=part.at, end=part.end))
         await self.keep()
         if part.left:
             raise NetworkError(f"{self.item.dest.name}: a part stopped {part.left} bytes short",
@@ -986,27 +983,12 @@ class Saver:
         """One mirror into the part: a URL by the client, or a plugin's `fetch` function."""
         if isinstance(mirror, str):
             return await client.fill(mirror, held, headers=item.headers, progress=meter)
-        if isinstance(item.file, flnd.plugin.File):
-            await self._fetched(item, mirror, held, meter, job)
-            return {}
-        # A fetch that resumes keeps its offsets in `<part>.json`, which goes when it lands.
-        held.side = True
-
-        def progress(*_: Any) -> None:
-            if self.stop is not None and self.stop.is_set():
-                raise KeyboardInterrupt
-
-        if inspect.iscoroutinefunction(mirror):
-            await mirror(held.path, progress)
-            return {}
-        outcome = await self.scheduler.on(Kind.CALL, mirror, held.path, progress)
-        if inspect.isawaitable(outcome):
-            await outcome
+        await self._fetched(item, mirror, held, meter, job)
         return {}
 
-    async def _fetched(self, item: Item, fetch: flnd.plugin.Fetch, held: files.Part,
+    async def _fetched(self, item: Item, fetch: Fetch, held: files.Part,
                        meter: net.Meter, job: Job[Any]) -> None:
-        """A plugin's `fetch` (API 2) into the part, as `flnd.plugin.Part`s.
+        """A plugin's `fetch` into the part, as `flnd.plugin.Part`s.
 
         A file that isn't `ranged`, or whose size is unknown or under `jobs.SPLIT_FILE`, is one
         part, from what the part holds already (a resumed try or run). So is a `ranged` one
@@ -1040,13 +1022,13 @@ class Saver:
             state["total"] = total
             meter.start(total, state["at"])
 
-        await fetch(flnd.plugin.Part(sink, offset=held.size, sized=sized))
+        await fetch(Part(sink, offset=held.size, sized=sized))
         total = state["total"]
         if total is not None and state["at"] < total:
             raise NetworkError(f"{item.dest.name}: {state['at']} of {total} bytes",
                                retryable=True)
 
-    async def _ranged(self, item: Item, fetch: flnd.plugin.Fetch, held: files.Part, job: Job[Any],
+    async def _ranged(self, item: Item, fetch: Fetch, held: files.Part, job: Job[Any],
                       size: int) -> _Fetching | None:
         """A `ranged` fetch file's segments: those its sidecar kept, else even ones when the
         host has a free place; None to fetch it as one part (a part begun whole, no room)."""
@@ -1320,7 +1302,7 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     or a dry one, saves nothing.
 
     Args:
-        settings: the run's `RunShared`, inside `site.shared_browser`.
+        settings: the run's `RunShared`, inside `ctx.shared_browser`.
 
     Yields:
         The save; None when the run saves nothing.
@@ -1328,9 +1310,9 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     Raises:
         UsageError: the home's `config.toml` is broken.
     """
-    from flnd.engine import site
+    from flnd.engine import ctx
 
-    scheduler = site.scheduler(settings)
+    scheduler = ctx.scheduler(settings)
     if settings.db is None or settings.dry or scheduler is None:
         yield None
         return
@@ -1532,14 +1514,11 @@ def _append(held: files.Part, data: bytes) -> None:
 
 
 def _sources(file: Any) -> list[Any]:
-    """A file's mirrors in order: its URLs, or its fetch function; empty for none."""
-    if isinstance(file, flnd.plugin.File):
-        if file.url:
-            return [file.url]
-        return list(file.mirrors) if file.mirrors else [file.fetch] if file.fetch else []
-    if file.url is None:
-        return []
-    return [file.url] if isinstance(file.url, str) or callable(file.url) else list(file.url)
+    """A file's mirrors in order: its URL, its mirrors, or its fetch function; empty for
+    none."""
+    if file.url:
+        return [file.url]
+    return list(file.mirrors) if file.mirrors else [file.fetch] if file.fetch else []
 
 
 def _url(file: Any) -> str:

@@ -17,9 +17,10 @@ uv run flnd --help
 uv run flnd download ins:example_user --only posts
 ```
 
-`flnd --help` fits in 24 lines: a row per command, the flags, and the code of every source.
-`flnd download --help` and `flnd follow --help` add a row per source: the targets it reads, then
-its categories. The help imports no source, so it answers in a few tens of milliseconds.
+`flnd --help` fits in 24 lines: a row per command, the flags, and the code of every built-in
+plugin. `flnd download --help` and `flnd follow --help` add a row per built-in plugin: the targets
+it reads, then its categories. The help imports no plugin, so it answers in a few tens of
+milliseconds.
 
 ```text
   flnd 0.1.0 · download whole accounts from the web
@@ -72,7 +73,7 @@ A flag given on the command line wins; then the environment (`FLND_HOME`); then 
 
 ## Targets
 
-A target is `<source>:<name, id or link>`, `<source>?<words>` for a search, or a bare link:
+A target is `<plugin>:<name, id or link>`, `<plugin>?<words>` for a search, or a bare link:
 
 ```sh
 flnd download ins:example_user
@@ -81,8 +82,8 @@ flnd download "mht?example words" --only chapters
 flnd download https://www.tiktok.com/@example_user/video/1234567890
 ```
 
-`flnd download --help` shows the forms each source accepts in one row, and `flnd sources` lists
-each source with its first forms. The pages under [sources/](README.md#sites) explain them site
+`flnd download --help` shows the forms each plugin accepts in one row, and `flnd sources` lists
+each plugin with its first forms. The pages under [plugins/](README.md#sites) explain them site
 by site.
 
 ## `flnd download`
@@ -97,7 +98,7 @@ flnd download <targets…> [--only CATS] [--when WHEN] [--limit N] [--dry] [--ag
 | flag | default | what it does |
 | --- | --- | --- |
 | `<targets…>` | standard input | the targets; with none, flnd reads them from standard input, one per line, skipping blank lines and lines starting with `#` |
-| `--only CATS` | every category | only these categories, such as `reels,posts`; may be given more than once. With targets from several sources, `ins:reels` names one source's. A single post has no categories, so `--only` with one is a usage error |
+| `--only CATS` | every category | only these categories, such as `reels,posts`; may be given more than once. With targets from several plugins, `ins:reels` names one plugin's. A single post has no categories, so `--only` with one is a usage error |
 | `--when WHEN` | `when` under `[defaults]` in `config.toml`, else every day | only posts from these days: a year `2026`, a month `2026-06`, a day `2026-06-15`, a range `2026-01..2026-03` (either end may be left out), or a span back from today `30d`, `8w`, `1y`; `--when ""` takes every day, whatever the config says |
 | `--limit N` | no limit | at most N posts per target, or N targets found by a search; at least 1 |
 | `--dry` | off | list what would be downloaded (each file `new` or `saved`, or the targets a search finds), and download and write nothing |
@@ -238,8 +239,8 @@ runs per file ([errors.md](errors.md#retrying)).
 
 ## `flnd login`
 
-Log in to a source, or with no source list every source's login: logged in or not, where the
-login came from, and the login cookies that expire soon.
+Log in to a plugin's site, or with no source list every plugin's login: logged in or not, where
+the login came from, and the login cookies that expire soon.
 
 ```sh
 flnd login [source] [how]
@@ -252,12 +253,12 @@ flnd login [source] [how]
   error says so when it is missing). flnd reads the site's
   cookies from it and keeps only those of the site's domains;
 - **a cookie file's path**: a Netscape `cookies.txt` or a JSON export;
-- **the source's own way**: Telegram (`tlg`) logs in by `browser` (Telegram Web's session),
+- **the plugin's own way**: Telegram (`tlg`) logs in by `browser` (Telegram Web's session),
   `qr` or `phone`, which ask their questions in the terminal.
 
 Left out in a terminal, `how` is asked with numbered choices. Off a terminal, or with `--json`,
 leaving it out is a usage error. A login is checked before it is saved: the cookies must hold
-one of the source's login cookies. It is stored in the home's vault, `metadata/secret.db`, a
+one of the plugin's login cookies. It is stored in the home's vault, `metadata/secret.db`, a
 file only your account can read ([storage.md](storage.md)).
 
 ```sh
@@ -269,7 +270,7 @@ flnd login tlg qr
 
 ## `flnd logout`
 
-Remove a source's saved login.
+Remove a plugin's saved login.
 
 ```sh
 flnd logout ins
@@ -277,8 +278,9 @@ flnd logout ins
 
 ## `flnd sources`
 
-List every source: the built-ins, the plugins, and where each came from (`built-in`, `package`
-for an installed package's entry point, `file` for the plugin folder), its version, the targets
+List every plugin: the built-ins, the installed ones, and where each came from (`built-in`,
+`package` for an installed package's entry point, `file` for the plugin folder), its version,
+the targets
 it reads, its categories, and its login state with its ways to log in. A plugin that is
 disabled is listed with the reason, naming its file and line:
 
@@ -302,9 +304,9 @@ bad  bad  (file)
 
 Plugins load from `$FLND_SOURCES`, else `~/.config/flnd/sources/` (`%APPDATA%\flnd\sources\`
 on Windows), and from installed packages; never from a home
-([writing-a-source.md](writing-a-source.md#10-shipping-it-as-a-plugin)). This command imports
+([writing-a-plugin.md](writing-a-plugin.md#10-shipping-it-as-a-plugin)). This command imports
 every one of them; `flnd --help` imports none. `flnd login`, `flnd ls` and every download know
-the plugin sources as they know the built-ins. With `--json`, one object per source, with
+the installed plugins as they know the built-ins. With `--json`, one object per plugin, with
 `"type": "Source"` and the fields of `flnd.Installed`.
 
 ## `flnd extension`
@@ -391,9 +393,9 @@ and the repeats of a warning within 10 seconds fold into one line ([How it looks
 | --- | --- |
 | 0 | everything worked |
 | 1 | some files or targets failed (each is named above the exit); flnd went on with the rest |
-| 2 | a usage error: an unknown command or flag, a target no source reads, a bad `--only`, `--when` or `--limit` |
-| 3 | a login is needed: a source isn't logged in, its login was refused, or `flnd login` failed |
-| 4 | flnd itself stopped: a full or refused disk, a missing tool, a broken source, or a bug |
+| 2 | a usage error: an unknown command or flag, a target no plugin reads, a bad `--only`, `--when` or `--limit` |
+| 3 | a login is needed: a plugin isn't logged in, its login was refused, or `flnd login` failed |
+| 4 | flnd itself stopped: a full or refused disk, a missing tool, a broken plugin, or a bug |
 | 130 | stopped with Ctrl-C |
 
 A cron job can tell "some files failed" (1) from "flnd broke" (4). Each error class has its
@@ -439,6 +441,6 @@ target: it lists, live, the files a download would save, and downloads and recor
 scratch home `.try` holds no login at first; log in there for a site that needs one
 (`uv run flnd --home .try login ins chrome`). `make clean` removes it.
 
-`make manifest` regenerates `src/sources/_manifest.py`, the sources as plain data that
-`--help` and target resolution read; run it after changing a source's domains, routes or
+`make manifest` regenerates `src/plugins/_manifest.py`, the built-in plugins as plain data that
+`--help` and target resolution read; run it after changing a plugin's domains, routes or
 categories (`tests/test_manifest.py` fails until then).

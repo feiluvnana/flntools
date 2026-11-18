@@ -173,7 +173,7 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
     Args:
         names: the snapshot's names; a test passes made-up ones.
 
-    An error re-exported under another module's name (`flnd.source.LoginError` is
+    An error re-exported under another module's name (`flnd.plugin.LoginError` is
     `flnd.LoginError`) belongs to the module that defines it: it is a breach only when no
     module listing it has an `Error` it is under. A library's own error passed through by name
     (`browser.RawError` is Playwright's) is the library's, not the module's. `flnd.Stopped` is
@@ -293,7 +293,7 @@ FLNKIT = snapshot.PACKAGE_DIRS["flnkit"]
 # The modules whose names must each be used: all of flnd/. A public name (in the API snapshot)
 # is a script's to call, so it never counts as dead.
 PRIVATE = ("**/*.py",)
-# A string constant that reads as a name or a dotted path (`"chapter"`, `"flnd.sources.twt"`)
+# A string constant that reads as a name or a dotted path (`"chapter"`, `"flnd.plugins.twt"`)
 # counts as a use of its words: routes, categories and lazy imports name code in strings.
 NAMEISH = re.compile(r"[\w.:]+")
 WORD = re.compile(r"[A-Za-z_]\w*")
@@ -311,7 +311,6 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     "src/engine/config.py:unset": "early part; `flnd config` and `Flnd.config` call it",
     "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
-    "src/plugins/web.py:Web": "the built-in web plugin; the registry loads it from step 7",
     "src/engine/manager.py:Manager": "the plugin manager, built early; tests/test_plugins.py "
                                      "drives it until the wiring renames it plugins.py",
 }
@@ -319,7 +318,7 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
 # word search finds, until a module of src/ or flnkit/ calls it as `<module>.<name>`. Then
 # `test_built_early_is_not_called_yet` fails, so the entry goes when its caller lands.
 BUILT_EARLY: dict[str, str] = {
-    name: "built early; src/plugins/web.py calls it from PLAN.md step 14"
+    name: "built early; the engine's save calls it for File.stream from PLAN.md step 14"
     for name in ("flnkit/stream.py:dash", "flnkit/stream.py:fetch_all", "flnkit/stream.py:hls",
                  "flnkit/stream.py:pick")
 }
@@ -659,7 +658,7 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(error_breaches(names), set())
 
     def test_a_reexported_error_belongs_to_the_module_that_defines_it(self):
-        # `flnd.source.LoginError` is `flnd.LoginError`: it belongs to the module defining it.
+        # `flnd.plugin.LoginError` is `flnd.LoginError`: it belongs to the module defining it.
         class PluginError(Exception): ...
 
         class Kept(PluginError): ...
@@ -667,9 +666,9 @@ class ChecksTest(unittest.TestCase):
         class Stray(ValueError): ...
 
         names = [self.name("module", None, name="flnd"),
-                 self.name("module", None, name="flnd.source"),
-                 self.name("error", PluginError, name="flnd.source.Error"),
-                 self.name("error", Kept, name="flnd.source.TargetError"),
+                 self.name("module", None, name="flnd.plugin"),
+                 self.name("error", PluginError, name="flnd.plugin.Error"),
+                 self.name("error", Kept, name="flnd.plugin.TargetError"),
                  self.name("error", Kept, name="flnd.TargetError"), self.name("error", Stray, name="flnd.StrayError")]
         self.assertEqual(error_breaches(names), {"flnd: errors outside flnd.Error: flnd.StrayError"})
 

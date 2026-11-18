@@ -1,6 +1,6 @@
 """LOIBUS (loix.cc): one post's info, preview images and, for a VIP account, its archives.
 
-src/docs/sources/loi explains it: the signed API, the encrypted links and the daily VIP quota.
+src/docs/plugins/loi explains it: the signed API, the encrypted links and the daily VIP quota.
 """
 
 from __future__ import annotations

@@ -15,13 +15,13 @@ A *target* is what you give flnd. See the [glossary](../glossary.md) and the
 
 | You type | Route | What it downloads |
 | --- | --- | --- |
-| `https://example.com/clip.mp4` | `page` | the file |
-| `https://example.com/hls/master.m3u8` | `page` | the stream, as one video |
-| `https://example.com/watch/42` | `page` | what the link is: a file, a stream, or a page's media |
-| `web:https://example.com/watch/42` | `page` | the same, by its code |
+| `web:https://example.com/clip.mp4` | `page` | the file |
+| `web:https://example.com/hls/master.m3u8` | `page` | the stream, as one video |
+| `web:https://example.com/watch/42` | `page` | what the link is: a file, a stream, or a page's media |
 
-A link needs its `http://` or `https://`: `example.com/clip.mp4` alone is no link, and the
-resolver asks which plugin is meant. A link on another plugin's domains goes to that plugin;
+A link needs its `http://` or `https://`: `example.com/clip.mp4` alone is no link. Until the
+resolver of PLAN.md step 10 reads a link no plugin owns as `web`'s, such a link is refused
+with a hint to write `web:<link>`. A link on another plugin's domains goes to that plugin;
 write `web:<link>` to take it here instead. A link's `#fragment` stays in the target's key, but
 is never sent, and is no part of the history key.
 

@@ -1,6 +1,6 @@
 """Facebook: a profile's tabs, stories and pictures, and one video, photo or post by its link.
 
-src/docs/sources/fbk explains it: the pages it reads, the site's quirks, the rules a change keeps.
+src/docs/plugins/fbk explains it: the pages it reads, the site's quirks, the rules a change keeps.
 """
 
 from __future__ import annotations

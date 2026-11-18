@@ -26,7 +26,6 @@ from fakes import EngineCase, download, fetch, login_cookies, make_plugin
 from test_commands import FlndCase
 
 import flnd
-from flnd import sources
 from flnd.engine import crawl as job
 from flnd.errors import (
     Blocked,
@@ -45,6 +44,7 @@ from flnd.errors import (
     disk,
 )
 from flnd.plugin import File, Plugin, Target, dig, route
+from flnd.plugins import PLUGINS
 from flnd.ui.log import ui
 from flnkit import clock as _time
 from flnkit import errors as kit
@@ -347,7 +347,7 @@ class CliTest(FlndCase):
         self.enterContext(_time.use(_time.Fake()))
 
     def test_a_usage_error_from_flnd_itself_has_no_traceback(self):
-        with mock.patch.dict(sources.SOURCES, {"aaa": make_plugin("aaa")}):
+        with mock.patch.dict(PLUGINS, {"aaa": make_plugin("aaa")}):
             for argv in (("download", "aaa:example_user", "--when", "yesterday"),
                          ("download", "nosuchsource:example_user"), ("download", "--no-such-flag")):
                 self.dest.seek(0)
@@ -363,7 +363,7 @@ class CliTest(FlndCase):
         def refused(ctx):
             raise kit.LoginError("the site asked for a login")
 
-        with mock.patch.dict(sources.SOURCES, {"aaa": make_plugin("aaa", refused)}):
+        with mock.patch.dict(PLUGINS, {"aaa": make_plugin("aaa", refused)}):
             code, out, err = self.run_app("download", "aaa:example_user")
         self.assertEqual(code, 3)
         # The end of the run names the command; flnkit's error had no hint at all.
@@ -375,7 +375,7 @@ class CliTest(FlndCase):
         def full(ctx):
             raise kit.disk(OSError(errno.ENOSPC, "No space left on device"), "media/aaa")
 
-        with mock.patch.dict(sources.SOURCES, {"aaa": make_plugin("aaa", full)}):
+        with mock.patch.dict(PLUGINS, {"aaa": make_plugin("aaa", full)}):
             code, out, err = self.run_app("download", "aaa:example_user")
         self.assertEqual(code, 4)
         self.assertIn("media/aaa: No space left on device", err)
@@ -383,7 +383,7 @@ class CliTest(FlndCase):
 
     def test_a_login_the_source_needs_exits_3(self):
         source = make_plugin("aaa", login=login_cookies("sid", required=True))
-        with mock.patch.dict(sources.SOURCES, {"aaa": source}):
+        with mock.patch.dict(PLUGINS, {"aaa": source}):
             code, out, err = self.run_app("download", "aaa:example_user")
         self.assertEqual(code, 3)
         self.assertIn("  run flnd login aaa", err)

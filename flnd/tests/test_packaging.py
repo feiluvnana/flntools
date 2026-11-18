@@ -101,15 +101,15 @@ class EditableTest(unittest.TestCase):
 
 # What only a command may load: the engine, the network, the browser and the screen. `import
 # flnd` must load none of them, or every script and `flnd --help` pays.
-HEAVY = {"flnd.engine.core", "flnd.engine.job", "flnd.engine.site", "playwright", "rich", "curl_cffi",
+HEAVY = {"flnd.engine.core", "flnd.engine.ctx", "playwright", "rich", "curl_cffi",
          "msgspec"}
 
 
 class BundleTest(unittest.TestCase):
     def test_the_bundle_collects_the_modules_flnd_imports_by_name(self):
-        # Sources, plugins and libraries load lazily by name (`importlib.import_module`), which
+        # Plugins and libraries load lazily by name (`importlib.import_module`), which
         # PyInstaller's import scan can't follow: without this flag, `flnd sources` in the
-        # bundle fails with "No module named 'flnd.sources.tik'".
+        # bundle fails with "No module named 'flnd.plugins.tik'".
         script = (ROOT / "tests" / "dist.py").read_text(encoding="utf-8")
         self.assertIn('"--collect-submodules", "flnd"', script)
         self.assertIn('"--collect-submodules", "flnkit"', script)
@@ -164,7 +164,7 @@ class MissingDependencyTest(unittest.TestCase):
                          "flnkit.html needs selectolax: pip install selectolax")
 
     def test_importing_the_html_library_loads_no_parser(self):
-        # `flnd.source` imports `flnkit.html` for `dig`, so the import must stay free.
+        # `flnd.plugin` reads `dig` from the kit, so importing the HTML library must stay free.
         self.assertEqual(loaded_after("from flnkit import html") & {"selectolax", "msgspec"}, set())
 
 
