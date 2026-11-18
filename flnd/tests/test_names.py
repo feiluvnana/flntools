@@ -313,6 +313,13 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     # and the test kit `_wall`, once `flnd.plugin` is public. Until then only its tests do.
     "src/plugin.py:numbered": "tests/test_plugin.py, until the plugins on API 2 use it",
     "src/plugin.py:_wall": "tests/test_plugin.py, until the engine and FakeCtx match walls",
+    # The scheduler is built ahead of the code that calls it: the save (a transfer's backlog,
+    # `slowest`, a segment's start) and the screen (the holds) take these when they are wired.
+    "src/engine/jobs.py:Backlog": "the save's transfers, once wired; tests/test_jobs.py",
+    "src/engine/jobs.py:Scheduler.holds": "the screen's State, once wired; tests/test_jobs.py",
+    "src/engine/jobs.py:Segments.splittable": "the save, once wired; tests/test_jobs.py",
+    "src/engine/jobs.py:Speed": "the save's `slowest`, once wired; tests/test_jobs.py",
+    "src/engine/jobs.py:Speed.below": "the save's `slowest`, once wired; tests/test_jobs.py",
 }
 
 
