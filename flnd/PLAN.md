@@ -26,7 +26,7 @@ The numbers today:
 - **Benchmarks:** recorded at 1e01feb on an Apple M5. Step 0 records them again at HEAD.
 
 **The goals:**
-- 24,000 lines of Python or fewer in `src/` and `kit/`, counted with `wc -l` over their
+- 24,000 lines of Python or fewer in `src/` and `flnkit/`, counted with `wc -l` over their
   `**/*.py`;
 - no feature lost by accident (section 9);
 - every gated number equal or better;
@@ -84,7 +84,7 @@ the reason the decision was taken.
 
 | # | decision | why |
 | --- | --- | --- |
-| D1 | `flncore/` folds into the kit: `kit/` in step 2, then, from step 3½, `kit/`, a standalone top-level package (`from kit import net`) beside `src/`, the package `flnd` (4.1). `test_layers` keeps `kit` standalone: it imports nothing of flnd, and owns the error classes it raises (5.1) | its only user is flnd; the shims double every name; dead code hid outside the checks. The user chose the layout on 2026-11-18: "src folder have flnd inner things, while standalone thing go to flnd root", and `import kit` over `kit` |
+| D1 | `flncore/` folds into the kit: `flnd/kit/` in step 2, then, from step 3½, `flnkit/`, a standalone top-level package (`from flnkit import net`) beside `src/`, the package `flnd` (4.1). `test_layers` keeps `flnkit` standalone: it imports nothing of flnd, and owns the error classes it raises (5.1) | its only user is flnd; the shims double every name; dead code hid outside the checks. The user chose the layout on 2026-11-18: "src folder have flnd inner things, while standalone thing go to flnd root", and a top-level package over `flnd.kit`. Its name: told that a package named `kit` could clash with another installed one, the user said "Okay. Maybe flnkit." |
 | D2 | Plugin hooks are `async def` | no listing thread, no lock bugs, no 40 µs hop per verb; a plugin can run requests at once |
 | D3 | One asyncio loop per run coordinates; pools use the other cores; transfer lanes only if measured | the GIL makes more threads useless for Python code, and the heavy work is already outside Python |
 | D4 | `get` follows every target that isn't a single post; `get` with no target syncs every followed target | the brief: "a target flnd already has is synced" |
@@ -141,14 +141,14 @@ the reason the decision was taken.
 ### 4.1 The final tree
 
 From step 3½ on (14), the project folder `flnd/` holds two packages side by side: `src/`,
-which installs as the package `flnd`, and `kit/`, a standalone package of its own, imported
-as `kit` (`from kit import net`). `tests/`, `pyproject.toml`, the Makefile, `PLAN.md` and
+which installs as the package `flnd`, and `flnkit/`, a standalone package of its own, imported
+as `flnkit` (`from flnkit import net`). `tests/`, `pyproject.toml`, the Makefile, `PLAN.md` and
 `AGENTS.md` stay at the project folder's top. Every path below and in sections 5–14 is
 relative to the project folder; `src/engine/jobs.py` is the module `flnd.engine.jobs`.
 
 ```text
 flnd/                the project folder
-  pyproject.toml     hatch maps src/ to the package flnd, and ships kit/ as kit
+  pyproject.toml     hatch maps src/ to the package flnd, and ships flnkit/ as flnkit
   Makefile  PLAN.md  AGENTS.md  README.md
   src/               the package flnd
     __init__.py      public names, each loaded on first use
@@ -170,37 +170,37 @@ flnd/                the project folder
       extension.py   the native-messaging host, the protocol, the relay
       store.py       flnd.db: schema, migrations, rows, check and repair
       config.py      config.toml: structs, reading, editing
-    ui/              imports only kit, ui/, engine/events.py and src/errors.py
+    ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
       theme.py out.py screen.py lists.py forms.py
     plugins/         built-ins, importing only flnd.plugin and the standard library
       __init__.py _manifest.py fbk.py ins.py loi.py mht.py tik.py tlg.py twt.py web.py
     extension/       manifest.json background.js page.js popup.html popup.js
     docs/
-  kit/               the package kit: standalone, imports nothing of flnd
-    errors.py        the error classes kit raises, the root of the one hierarchy (5.1)
+  flnkit/            the package flnkit: standalone, imports nothing of flnd
+    errors.py        the error classes flnkit raises, the root of the one hierarchy (5.1)
     net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py
     media.py loop.py
   tests/
 ```
 
 **The import rules,** checked by `tests/test_layers.py` reading every file's imports:
-1. `kit/*` imports only `kit/*`, the standard library and third-party packages. Nothing
-   under `kit/` names `flnd`.
-2. `src/ui/*` imports only `src/ui/*`, `kit`, `src/engine/events.py` and `src/errors.py`.
-3. `src/engine/*` imports `src/engine/*`, `kit`, `src/ui/*`, `src/errors.py` and
+1. `flnkit/*` imports only `flnkit/*`, the standard library and third-party packages. Nothing
+   under `flnkit/` names `flnd`.
+2. `src/ui/*` imports only `src/ui/*`, `flnkit`, `src/engine/events.py` and `src/errors.py`.
+3. `src/engine/*` imports `src/engine/*`, `flnkit`, `src/ui/*`, `src/errors.py` and
    `src/plugin.py` (`src/engine/events.py` imports only `src/errors.py`, `src/plugin.py`,
-   `kit`, `msgspec` and the standard library).
-4. `src/plugin.py` imports only `kit`, `src/errors.py` and the standard library.
-   `src/testing.py` imports `flnd`, `src/plugin.py`, `src/engine/*` and `kit`.
-   `src/_library.py` imports `src/engine/*`, `kit`, `src/errors.py` and `src/plugin.py`.
+   `flnkit`, `msgspec` and the standard library).
+4. `src/plugin.py` imports only `flnkit`, `src/errors.py` and the standard library.
+   `src/testing.py` imports `flnd`, `src/plugin.py`, `src/engine/*` and `flnkit`.
+   `src/_library.py` imports `src/engine/*`, `flnkit`, `src/errors.py` and `src/plugin.py`.
 5. `src/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
    (`telethon`, `qrcode`), imported inside a function.
 6. `src/cli.py` imports only `flnd`, `src/ui/*` and `src/plugins/_manifest.py`.
 7. `src/__init__.py` imports nothing at import time beyond the standard library.
 
 **Packaging.** `pyproject.toml` (hatchling): the wheel's packages are `src` (installed as
-`flnd`, through `[tool.hatch.build.targets.wheel.sources] "src" = "flnd"`) and `kit`. `make
-setup` installs both editable; `python -c "import flnd, kit"` run from outside the project
+`flnd`, through `[tool.hatch.build.targets.wheel.sources] "src" = "flnd"`) and `flnkit`. `make
+setup` installs both editable; `python -c "import flnd, flnkit"` run from outside the project
 folder must work, which a test in `tests/test_packaging.py` checks with a subprocess. `make
 dist` collects the submodules of both. The distribution is still named `flntools`.
 
@@ -212,19 +212,19 @@ folder) and `flnd/kit/`.
 
 | today | goes to | in step |
 | --- | --- | --- |
-| `flncore/__init__.py`, `flncore/testing.py` | deleted (the fakes live in their kit modules) | 2 |
-| `flncore/net.py` | `kit/net.py`; `Limits`, `Cap` and `Bucket` move to `engine/jobs.py` | 2, 5 |
-| `flncore/browser.py` | `kit/browser.py`; the tab budget and scroll gate move to `engine/jobs.py` | 2, 5 |
-| `flncore/files.py` | `kit/files.py` (parts, atomic writes, tools, archives) | 2 |
-| `flncore/loop.py` | `kit/loop.py`, then deleted (`engine/run.py` owns the loop) | 2, 6 |
+| `flncore/__init__.py`, `flncore/testing.py` | deleted (the fakes live in their flnkit modules) | 2 |
+| `flncore/net.py` | `flnkit/net.py`; `Limits`, `Cap` and `Bucket` move to `engine/jobs.py` | 2, 5 |
+| `flncore/browser.py` | `flnkit/browser.py`; the tab budget and scroll gate move to `engine/jobs.py` | 2, 5 |
+| `flncore/files.py` | `flnkit/files.py` (parts, atomic writes, tools, archives) | 2 |
+| `flncore/loop.py` | `flnkit/loop.py`, then deleted (`engine/run.py` owns the loop) | 2, 6 |
 | `flncore/log.py` | `ui/log.py` (temporary), then `ui/out.py` (lines, styles), `ui/screen.py` (drawing), `engine/run.py` (the journal) | 2, 3, 4 |
 | `flncore/prompt.py` | `ui/forms.py` | 2, 13 |
-| `flncore/clock.py`, `flncore/dig.py` | `kit/clock.py`, `kit/dig.py` | 2 |
-| `flncore/errors.py` | merged into `flnd/errors.py`, then split: `kit/errors.py` and `src/errors.py` (5.1) | 2, 3½ |
-| `flncore/media.py` | rewritten as `kit/media.py` from `_transfer._dash_merge` (one ffmpeg join) | 2 |
+| `flncore/clock.py`, `flncore/dig.py` | `flnkit/clock.py`, `flnkit/dig.py` | 2 |
+| `flncore/errors.py` | merged into `flnd/errors.py`, then split: `flnkit/errors.py` and `src/errors.py` (5.1) | 2, 3½ |
+| `flncore/media.py` | rewritten as `flnkit/media.py` from `_transfer._dash_merge` (one ffmpeg join) | 2 |
 | `flncore/config.py`, `run.py`, `cli.py` | deleted (dead) | 2 |
 | `flnd/_net.py`, `_browser.py`, `_files.py`, `_loop.py`, `_tools.py`, `_unpack.py`, `_ui.py`, `_prompt.py`, `_time.py` | deleted (shims) | 2 |
-| `flnd/_html.py`, `_text.py`, `_db.py`, `_cookies.py`, `_vault.py` | `kit/html.py`, `kit/text.py`, `kit/db.py`, `kit/cookies.py`, `kit/vault.py` | 2 |
+| `flnd/_html.py`, `_text.py`, `_db.py`, `_cookies.py`, `_vault.py` | `flnkit/html.py`, `flnkit/text.py`, `flnkit/db.py`, `flnkit/cookies.py`, `flnkit/vault.py` | 2 |
 | `flnd/engine.py` | `engine/core.py` (temporary), then `resolve.py`, `auth.py`, `crawl.py`, `run.py` | 2, 6, 10, 11 |
 | `flnd/job.py` | `engine/job.py` (temporary), then `crawl.py` and `save.py` | 2, 5, 6 |
 | `flnd/site.py` | `engine/site.py` (temporary), deleted when API 1 goes | 2, 8 |
@@ -241,7 +241,7 @@ folder) and `flnd/kit/`.
 | `flnd/sources/<code>.py` | `src/plugins/<code>.py`, one per commit as it is ported | 8 |
 | `flnd/sources/_manifest.py` | `src/plugins/_manifest.py` | 8, 9 |
 | `flnd/testing.py`, `flnd/cli.py`, `flnd/errors.py` | kept, rewritten; at `src/` from step 3½ | 7, 13, 2 |
-| `flnd/kit/*` (after step 2) | `kit/*`, the top-level package `kit` | 3½ |
+| `flnd/kit/*` (after step 2) | `flnkit/*`, the top-level package `flnkit` | 3½ |
 | `flnd/*` (the package after step 2) | `src/*`, still the package `flnd` | 3½ |
 
 A temporary module named above must be gone by the end of the step that replaces it. Step 16
@@ -249,7 +249,7 @@ checks that none is left.
 
 ## 5. Contracts: errors, public names, the plugin API, the test kit
 
-### 5.1 Errors (`kit/errors.py` and `src/errors.py`)
+### 5.1 Errors (`flnkit/errors.py` and `src/errors.py`)
 
 ```text
 Error(Exception)            .hint: str (what to do; "" when nothing)
@@ -269,20 +269,20 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 
 - `str(e)` is one line, and `e.hint` is one line.
 - **Where each class lives** (from step 3½). One hierarchy, defined in two modules, because
-  `kit` imports nothing of flnd:
-  - **`kit/errors.py`** defines what `kit` raises: `Error` (with `hint`, `target` and
+  `flnkit` imports nothing of flnd:
+  - **`flnkit/errors.py`** defines what `flnkit` raises: `Error` (with `hint`, `target` and
     `retryable`), `UsageError`, `LoginError`, `SiteError` (with `status` and `response`),
     `Blocked`, `NotFound`, `Changed`, `NetworkError`, `DiskError`, `ToolError` and `Stopped`,
-    and `disk(OSError, path=None) -> DiskError`. Their hints are generic: no hint in `kit`
+    and `disk(OSError, path=None) -> DiskError`. Their hints are generic: no hint in `flnkit`
     names a flnd command.
   - **`src/errors.py`** (`flnd.errors`) imports those same objects and re-exports them, and
     defines what only flnd knows: `Hidden(SiteError)`, `PluginError(Error)`, and
-    `classify`. It adds no subclass of a kit class beyond `Hidden`, so
-    `flnd.LoginError is kit.errors.LoginError`, and an `except flnd.Error` catches what
-    `kit` raises.
-  - **`__module__`** stays where a class is defined: `kit.errors` for kit's eleven,
+    `classify`. It adds no subclass of a flnkit class beyond `Hidden`, so
+    `flnd.LoginError is flnkit.errors.LoginError`, and an `except flnd.Error` catches what
+    `flnkit` raises.
+  - **`__module__`** stays where a class is defined: `flnkit.errors` for flnkit's eleven,
     `flnd.errors` for `Hidden` and `PluginError`. `tests/data/api.txt` shows signatures with
-    those names (`error: kit.errors.Error`). The re-exports are the one exception to "no
+    those names (`error: flnkit.errors.Error`). The re-exports are the one exception to "no
     aliases" (13): `test_names.py` lists exactly these eleven classes and `disk`.
   - **Exit codes** (`cli.exit_code`) go by class, not by `__module__`: the first match in
     `((Stopped, 130), (UsageError, 2), (LoginError, 3), (DiskError, 4), (ToolError, 4),
@@ -291,7 +291,7 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
   - **flnd's hints.** `classify` fills an empty hint from a table in `src/errors.py`, by
     class and plugin: a `LoginError` gets `flnd auth login <plugin>`, a `ToolError` the
     install line of its tool, a `Blocked` "wait, or turn on switching for <plugin>".
-  - `kit/dig.py`'s malformed path raises `ValueError` (it is the caller's bug); `classify`
+  - `flnkit/dig.py`'s malformed path raises `ValueError` (it is the caller's bug); `classify`
     turns it into a `PluginError` when a plugin let it escape (S15's intent: never
     `Changed`).
 - `errors.classify(exception) -> Error` turns any exception into one of these: anything a
@@ -430,7 +430,7 @@ async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Pos
   body: bytes | str | Any = None, headers: Mapping[str, str] | None = None,
   check: bool = True)`:** a frozen struct with `.replace(**changes) -> Request`.
 - **`Response`:** `status`, `url`, `headers`, `text`, `json`, `content`, `ok`, `html` (a
-  `kit/html.py` document).
+  `flnkit/html.py` document).
 - **`Landed(url: str, status: int)`:** where `open` ended up.
 - **`Stream`:** `url: str`, `height: int = 0`, `width: int = 0`, `bitrate: int = 0`,
   `audio: str | None = None`.
@@ -752,7 +752,7 @@ One `FILE` job (with its segments) does the following, in order:
 1. **Open the part**, `<folder>/<name>.part`. It opens with `O_EXCL` semantics and locks
    itself. A part held by another run is `Skipped(reason="busy")`.
 2. **Transfer**, following the mirrors in order. For DASH, video and audio download as two
-   jobs and are joined by one `MERGE` job (`kit/media.py`). Empty audio saves the video alone
+   jobs and are joined by one `MERGE` job (`flnkit/media.py`). Empty audio saves the video alone
    (fixes E7).
 3. **The content check, as today:**
    - a web page where media was expected fails the file;
@@ -893,12 +893,12 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
 - Each move is a journal record `{"type": "switch", "plugin", "from", "to", "reason"}`, and
   the `now` line shows it.
 
-**The sealed vault** (`kit/vault.py`, using its existing `encrypt` and `decrypt`):
+**The sealed vault** (`flnkit/vault.py`, using its existing `encrypt` and `decrypt`):
 - **A value** is `bytes([1]) + nonce(12) + AES-256-GCM(ciphertext + tag)`, with associated
   data `f"{account_id}\0{name}".encode()`. A value moved to another slot doesn't decrypt.
 - **The key** is 32 random bytes, one per user, shared by every home, stored in
   `~/.config/flnd/key` (or `%APPDATA%\flnd\key` on Windows), mode 0600, written atomically.
-  The OS keychain in `kit/vault.py` is deleted in step 11.
+  The OS keychain in `flnkit/vault.py` is deleted in step 11.
 - **When there is no key file** and a login (or the schema-2 migration) writes a secret, the
   key file is created. Rows sealed under an earlier key stay, and raise the `LoginError`
   below until their account logs in again.
@@ -1378,8 +1378,8 @@ The events and rows are frozen msgspec structs (`Target` and `Account` are defin
 - **What goes in it:** every event, every log line at every level (debug included), every
   hold and every switch. The first record is `{"type": "run", "command", "version",
   "targets"}`, and the last is `{"type": "run", "report": {…}}`.
-- **Secrets never go in:** `kit/text.redact` strips userinfo, queries and fragments from URLs
-  (including URLs inside messages), and `kit/text.scrub` scrubs secret-looking keys and
+- **Secrets never go in:** `flnkit/text.redact` strips userinfo, queries and fragments from URLs
+  (including URLs inside messages), and `flnkit/text.scrub` scrubs secret-looking keys and
   header values in dicts and text before writing.
 
 ## 9. Every feature, and where it goes
@@ -1418,7 +1418,7 @@ The events and rows are frozen msgspec structs (`Target` and `Account` are defin
 | plugin folder, entry points, manifest | `plugin install` and `plugins.json`; entry points go |
 | samples of unreadable answers, crash files | kept |
 | the library, `Flnd.site(code)`, `flnd.testing` | kept (8.3: `Flnd.home`, `Flnd.close()`, `Flnd.targets.list(plugin=)`, `Run` `ResourceWarning`); `fl.plugin(code)`; `FakeCtx` |
-| `FLND_TEST_NO_PROFILES` | kept in `Makefile` and `kit/cookies.py`, `kit/vault.py`, `kit/browser.py`, `engine/plugins.py`, `engine/extension.py`; isolates browser profiles, keychain and `~/.config/flnd/` in tests |
+| `FLND_TEST_NO_PROFILES` | kept in `Makefile` and `flnkit/cookies.py`, `flnkit/vault.py`, `flnkit/browser.py`, `engine/plugins.py`, `engine/extension.py`; isolates browser profiles, keychain and `~/.config/flnd/` in tests |
 | `make try`, `dist`, `cdn-real` | kept; new `make live`, `make ext` |
 | the Chrome extension (planned, never built) | built (6.8) |
 | unknown links (refused) | the `web` plugin |
@@ -1586,8 +1586,8 @@ Step 0 rewrites AGENTS.md to exactly these sections.
   - live checks only by hand, on the test accounts; unit tests fake the network, the
     browser and the clock, and `FLND_TEST_NO_PROFILES=1` (set by `make test`) refuses real
     browser profiles, the real OS keychain and `~/.config/flnd/`.
-- **Layout:** section 4.1 and its import rules. `src/` is the package `flnd`; `kit/` is the
-  standalone package `kit`, which imports nothing of flnd; `src/ui/` never imports
+- **Layout:** section 4.1 and its import rules. `src/` is the package `flnd`; `flnkit/` is the
+  standalone package `flnkit`, which imports nothing of flnd; `src/ui/` never imports
   `src/plugins/`.
 - **Concurrency:**
   - one loop per run;
@@ -1623,7 +1623,7 @@ Step 0 rewrites AGENTS.md to exactly these sections.
   - the counting guards in `make check` (requests, `stat` calls, SQL statements, imported
     modules) stay.
 - **Dead code:** the dead-name, docstring and API-snapshot checks cover all of `src/` and
-  `kit/`.
+  `flnkit/`.
 - **Dependencies:** each one has a reason beside it in `pyproject.toml`. After this plan
   they are curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode, rich,
   msgspec, tomlkit and textual (kept only if `ui.open ≤ 250 ms` in step 13).
@@ -1732,26 +1732,26 @@ its commits.
   - `perf:build the cookie header once per domain` (with its numbers);
   - `perf:reuse curl handles across requests`, if it is needed.
 
-### Step 3½. The project's layout: `src/` and `kit`
+### Step 3½. The project's layout: `src/` and `flnkit`
 The user's layout of 2026-11-18 (D1, 4.1). It runs after step 3's commits land, since step 3
 is built on the earlier layout.
 - **Changes:**
   - (a) mechanical, with `git mv` (haiku): the package's files go from `flnd/` to `src/`
-    and the kit from `flnd/kit/` to `kit/`; every `flnd.kit` import becomes `kit`; the hatch
-    wheel config maps `src` to `flnd` and ships `kit` (4.1, Packaging); the Makefile (`dist`
+    and the kit from `flnd/kit/` to `flnkit/`; every `flnd.kit` import becomes `flnkit`; the hatch
+    wheel config maps `src` to `flnd` and ships `flnkit` (4.1, Packaging); the Makefile (`dist`
     collects both packages, every path recipe), `tests/test_layers.py` (4.1's rules, rule 1
     with no `flnd` at all), `tests/api_snapshot.py`, `test_names` and `test_docs` (their
-    packages: `flnd` and `kit`), and the folder paths in `AGENTS.md`;
-  - (b) the errors: `kit/errors.py` takes the eleven classes and `disk` of 5.1, every
-    `kit/*` imports from it, `src/errors.py` re-exports them and keeps `SourceError` (renamed
+    packages: `flnd` and `flnkit`), and the folder paths in `AGENTS.md`;
+  - (b) the errors: `flnkit/errors.py` takes the eleven classes and `disk` of 5.1, every
+    `flnkit/*` imports from it, `src/errors.py` re-exports them and keeps `SourceError` (renamed
     `PluginError` in step 7, when `Hidden` is added) and `classify`, with its hint table;
-    `cli.exit_code` goes by class; `kit/dig.py` raises `ValueError` on a malformed path.
-- **Tests:** `test_layers` (nothing under `kit/` names `flnd`); `tests/test_packaging.py`
-  (`import flnd, kit` from outside the folder, in a subprocess); `tests/test_errors.py`
-  (`flnd.LoginError is kit.errors.LoginError`; each public error's `__module__` as 5.1
+    `cli.exit_code` goes by class; `flnkit/dig.py` raises `ValueError` on a malformed path.
+- **Tests:** `test_layers` (nothing under `flnkit/` names `flnd`); `tests/test_packaging.py`
+  (`import flnd, flnkit` from outside the folder, in a subprocess); `tests/test_errors.py`
+  (`flnd.LoginError is flnkit.errors.LoginError`; each public error's `__module__` as 5.1
   says; exit codes by class, and a plugin's own class named `LoginError` gets 4, not 3; an
-  empty hint is filled by `classify`, and no kit hint names `flnd`); `make api`'s diff shows
-  only the `kit.errors` names.
+  empty hint is filled by `classify`, and no flnkit hint names `flnd`); `make api`'s diff shows
+  only the `flnkit.errors` names.
 - **Done when:** `make check` and `make dist` pass from the project folder, and the project
   folder has no `flnd/` package folder and no `flnd/kit/` left.
 - **Commits:** `refactor:put flnd's code in src and the kit beside it`, then
@@ -1774,7 +1774,7 @@ is built on the earlier layout.
 ### Step 5. The scheduler
 - **Changes:**
   - `engine/jobs.py` holds `Job`, `Kind` and the pools of 6.2: `Cap`, `Limits` and `Bucket`
-    moved from `kit/net.py`, the tab budget and the scroll gate from `kit/browser.py`, and
+    moved from `flnkit/net.py`, the tab budget and the scroll gate from `flnkit/browser.py`, and
     the lanes and writers;
   - the retry table (with the wall row's two retries, 30 s then 120 s), the holds with
     buckets, the segments (with `ranged` `Fetch` files, at most 4 segments), `rate`,
@@ -1808,7 +1808,7 @@ is built on the earlier layout.
     checks on-disk files in `Ledger` with one `dest.stat()` (P8);
   - `engine/run.py` (6.1) owns the loop, the event channel and `Run`'s unstarted
     `ResourceWarning`;
-  - the worker thread, `kit/loop.py`, the loop bridge and `_Refresh` are deleted;
+  - the worker thread, `flnkit/loop.py`, the loop bridge and `_Refresh` are deleted;
   - API-1 sources run through `engine/site.py`'s temporary bridge, which runs a sync source's
     route on a `CALL` thread and turns each `site.<verb>` into a scheduler job;
   - active targets are bounded and run at once (6.2), with one plugin instance per (plugin,
@@ -1990,7 +1990,7 @@ is built on the earlier layout.
   - `engine/auth.py` (6.7): accounts, the default, the methods (`browser` is new), expiry,
     write-back, logout, switching;
   - the sealed vault with `~/.config/flnd/key` (deleting the OS keychain code from
-    `kit/vault.py`), and the migration of `secret.db`;
+    `flnkit/vault.py`), and the migration of `secret.db`;
   - delete `engine/home.py` and `engine/core.py`.
 - **Tests:** `tests/test_auth.py`:
   - each method;
@@ -2014,7 +2014,7 @@ is built on the earlier layout.
     `chrome` method, the Chrome backend for `Ctx`'s browser verbs, the popup;
   - `make ext` in the Makefile;
   - then delete the keychain readers for Chrome, Edge, Brave and Chromium in
-    `kit/cookies.py`.
+    `flnkit/cookies.py`.
 - **Tests:** `tests/test_extension.py`, the protocol against a fake extension: every op,
   chunked answers, a second run sharing the host, a refused origin.
 - **Commits:**
