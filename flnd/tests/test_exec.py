@@ -57,7 +57,8 @@ class ExecTest(unittest.TestCase):
 
     def test_the_values_are_in_the_environment_too(self):
         cli._Exec(self.command()).run(self.event)
-        env = {name: value for name, value in self.got()["env"].items() if name not in ("FLND_TEST_NO_PROFILES", "FLND_SOURCES")}
+        test_only = ("FLND_TEST_NO_PROFILES", "FLND_SOURCES", "FLND_PLUGINS")
+        env = {name: value for name, value in self.got()["env"].items() if name not in test_only}
         self.assertEqual(env, {"FLND_PATH": str(self.tmp / NASTY),
                                "FLND_TARGET": "ins:example_user",
                                "FLND_POST": "9001"})

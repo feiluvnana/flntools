@@ -321,6 +321,8 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     "src/engine/save.py:Saver": "the save pipeline, built ahead of the scheduler that runs it; "
                                 "tests/test_save.py drives it until `feat:save files as jobs`",
     "src/plugins/web.py:Web": "the built-in web plugin; the registry loads it from step 7",
+    "src/engine/manager.py:Manager": "the plugin manager, built early; tests/test_plugins.py "
+                                     "drives it until the wiring renames it plugins.py",
 }
 # Kit names built early, before the code that calls them: each counts as unused, whatever the
 # word search finds, until a module of src/ or flnkit/ calls it as `<module>.<name>`. Then
