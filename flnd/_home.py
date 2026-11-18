@@ -76,7 +76,7 @@ from typing import TYPE_CHECKING, Any
 
 import msgspec
 
-from flnd import _cookies, _db, _text, _vault
+from flnd import _cookies, _db, _text, _time, _vault
 from flnd._ui import ui
 from flnd.errors import DiskError, Error, LoginError, UsageError
 
@@ -894,7 +894,7 @@ class Home:
         """
         if not cursors and not complete and not heads and not gaps:
             return
-        today = datetime.date.today().isoformat()
+        today = datetime.datetime.fromtimestamp(_time.wall(), datetime.UTC).date().isoformat()
         with self._store.transaction():
             # A target nothing recorded (a run of the engine's own, a test) follows, as a row of
             # an old home without a `sync` field did.

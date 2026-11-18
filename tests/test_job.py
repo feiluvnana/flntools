@@ -513,7 +513,7 @@ class SyncStopTest(JobCase):
 
     def test_sync_stops_after_5_saved_posts_in_a_row_with_a_record_and_closes_the_listing(self):
         self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
-        self.assertEqual(self.record(), {"posts": datetime.date.today().isoformat()})
+        self.assertEqual(self.record(), {"posts": "2026-01-01"})
         self.ids = ["n1", "n2", *self.ids]
         self.listed.clear()
         self.finished.clear()
@@ -528,7 +528,7 @@ class SyncStopTest(JobCase):
     def test_sync_keeps_complete_record_and_fast_completes_on_subsequent_runs(self):
         """A caught-up sync stays complete and stops after 5 saved posts on subsequent runs."""
         self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
-        self.assertEqual(self.record(), {"posts": datetime.date.today().isoformat()})
+        self.assertEqual(self.record(), {"posts": "2026-01-01"})
         self.listed.clear()
         self.forget_head()
         report = self.engine.sync(["fed:example_user"])

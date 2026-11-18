@@ -6,7 +6,6 @@ once per run), then the API itself (redesign B1): `download`, `sync`, `login`, `
 """
 
 import asyncio
-import datetime
 import inspect
 import io
 import signal
@@ -575,7 +574,7 @@ class ApiTest(EngineCase):
 
         self.engine(make_source("aaa", files=files)).download(["aaa:whole", "aaa:cut"], categories="all")
         rows = self.saved()
-        self.assertEqual(rows["aaa:whole"].complete, {"posts": datetime.date.today().isoformat()})
+        self.assertEqual(rows["aaa:whole"].complete, {"posts": "2026-01-01"})
         self.assertEqual(rows["aaa:cut"].complete, {})
         # Re-running keeps the record.
         self.engine(make_source("aaa")).download(["aaa:whole"], categories="all")

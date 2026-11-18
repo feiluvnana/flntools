@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +24,7 @@ from flnd.engine import Engine
 from flnd.errors import Changed, NetworkError, NotFound
 from flnd.options import Options
 from flnd.source import File, Target
+from flnd.testing import fake_clock
 
 USER = Target("aaa:example_user", kind="user")
 
@@ -213,6 +215,18 @@ class TargetsTest(DbCase):
                          (True, ("posts",), {}, ["posts"]))
         self.assertEqual((saved.seen, saved.files, saved.bytes), (["aaa:a", "aaa:b", "aaa:c"], 2, 20))
         self.assertEqual(len(db.records()), 2)
+
+    @unittest.skipUnless(hasattr(time, "tzset"), "needs time.tzset")
+    def test_a_listing_is_stamped_complete_on_the_utc_day(self):
+        with mock.patch.dict(os.environ, {"TZ": "EST5"}):
+            time.tzset()
+            self.addCleanup(time.tzset)
+            db = self.open()
+            # 04:30 UTC on 2026-01-01 is 23:30 the day before at UTC-5.
+            with fake_clock() as clock:
+                clock.advance(4.5 * 3600)
+                db.progress(USER, cursors={}, complete=["posts"])
+        self.assertEqual(db.target(USER).complete, {"posts": "2026-01-01"})
 
     def test_a_sources_state_is_a_mapping_of_json_values(self):
         db = self.open()

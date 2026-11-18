@@ -228,7 +228,7 @@ One row per target the home knows, keyed `<code>:<value>` (`ins:example_user`).
 | `follow` | 1 when `sync` takes it |
 | `options` | JSON: `only`, the categories a followed target syncs |
 | `query` | for a target a search found: the search's words |
-| `complete` | JSON: each category listed to its end, with the day it was |
+| `complete` | JSON: each category listed to its end, with the UTC day it was |
 | `cursors` | JSON: each category's cursor, saved when a full download of it was cut short, so the next run resumes |
 | `heads` | JSON: each `newest_first` category's head: the newest post the last run that read it from the top saw, and left no gap; a sync stops after it and the post after it |
 | `gaps` | JSON: each category's gaps, newest first: the cursor where a sync of it was cut short, which the next sync jumps to once it meets saved posts on top; `""` is a gap without a cursor (a feed that isn't paged by cursor), which makes the next sync read down to the head |
