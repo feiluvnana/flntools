@@ -139,8 +139,8 @@ class Gallery(v2.Plugin):
         async for page in ctx.pages(f"{BASE}/users/{profile['id']}/posts", cursor="next"):
             for item in page.json["items"]:
                 yield v2.Post(item["id"], [v2.File(f"https://cdn.example.com/{item['id']}.jpg")],
-                              date=item.get("time"), **{key: item[key] for key in ("album",)
-                                                        if key in item})
+                              date=item.get("time"), pinned=item.get("pinned", False),
+                              **{key: item[key] for key in ("album",) if key in item})
 
     @user.category(own=False)
     async def liked(self, ctx, profile):
@@ -441,6 +441,23 @@ class PluginCollectTest(unittest.TestCase):
         saved = collect(Gallery, "gal:example_user", ctx=ctx, categories=["liked"])
         self.assertEqual([found.url for found in saved], ["https://cdn.example.com/l1.jpg"])
         self.assertEqual(ctx.seen.visited, [f"{PAGE}/liked", "https://www.example.com/p/l1"])
+
+    def test_a_pinned_post_is_saved_out_of_order_and_never_ends_the_listing(self):
+        def post(day, **more):
+            return {"id": f"p{day}", "time": f"2026-01-{day:02d}", "album": None, **more}
+
+        rows = [
+            ("pinned above newer posts", None, [post(1, pinned=True), post(3), post(2)],
+             ["p1", "p3", "p2"]),
+            ("pinned posts older than when", v2.Range(datetime.date(2026, 1, 9)),
+             [*(post(day, pinned=True) for day in range(1, 7)), post(10), post(9)],
+             ["p10", "p9"]),
+        ]
+        for label, when, items, kept in rows:
+            with self.subTest(label):
+                ctx = self.ctx(items, **({"when": when} if when else {}))
+                saved = collect(Gallery, "gal:example_user", ctx=ctx)
+                self.assertEqual([found.post.id for found in saved], kept)
 
     def test_when_keeps_its_days_and_ends_after_older_posts_in_a_row(self):
         items = [{"id": f"p{day}", "time": f"2026-01-{day:02d}", "album": None}

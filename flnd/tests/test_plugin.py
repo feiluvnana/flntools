@@ -451,6 +451,12 @@ class TypesTest(unittest.TestCase):
         self.assertEqual((moved.listed, moved.fields["album"], post.fields["album"]),
                          ("2026-02-03", "Home", "Trip"))
         self.assertEqual(Post("1", date=1, listed=2).replace(date=3).listed, 2)
+        pinned = Post("1", pinned=True)
+        self.assertEqual((post.pinned, pinned.replace(date=3).pinned,
+                          pinned.replace(pinned=False).pinned, pinned.listed), (False, True, False,
+                                                                                None))
+        with self.assertRaises(SourceError):
+            Post("1", pinned=1)
         lazy = Post("1", files)
         self.assertTrue(lazy.lazy)
         for made, name in ((post, "id"), (post, "date"), (File("https://a.example.com/x"), "url")):

@@ -1612,7 +1612,8 @@ class _Listing:
             if not isinstance(item, flnd.plugin.Post):
                 raise SourceError(f"{label}: it yielded {item!r}; yield a Post or a Target")
             listed = clock.day(item.listed)
-            if newest_first and listed is not None:
+            # A pinned post sits outside the date order: neither checked nor counted.
+            if newest_first and listed is not None and not item.pinned:
                 if last is not None and listed > last:
                     raise SourceError(f"{label}: post {item.id} ({listed}) is newer than one "
                                       f"before it ({last}), in a newest_first listing",
@@ -1620,13 +1621,13 @@ class _Listing:
                 last = listed
             if item.date not in when:
                 # A post in parts (one id, yielded once per part) counts once.
-                older += item.id != previous and bool(
+                older += item.id != previous and not item.pinned and bool(
                     newest_first and when.since and listed and listed < when.since)
                 previous = item.id
                 if older >= job.OLDER_IN_A_ROW:
                     return
                 continue
-            older = 0
+            older = older if item.pinned else 0
             self._taken += item.id != previous
             previous = item.id
             await self._place(item, category)

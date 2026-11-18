@@ -70,7 +70,7 @@ TEMPLATE_FIELDS = (
     "date", "query",
 )
 # The fields a `Post` may not set: the engine's own, so a plugin never overwrites one.
-RESERVED = frozenset(TEMPLATE_FIELDS) | {"id", "files", "headers", "listed"}
+RESERVED = frozenset(TEMPLATE_FIELDS) | {"id", "files", "headers", "listed", "pinned"}
 # Names of older plugin APIs, refused with how API 2 spells them.
 OLD_NAMES = {
     "needs": 'login = cookies("<name>", url=...)',
@@ -514,10 +514,12 @@ class Post:
         date: when it was posted, which names its files; None for an undated post.
         listed: the date its listing is ordered by; None means `date`.
         headers: headers for downloading each of its files, such as a CDN's Referer.
+        pinned: a post the site shows above its date order; saved like any other.
         **fields: the site's own fields (`caption`, `title`, ...), for templates and sidecars.
 
     Raises:
-        SourceError: no id, a field the engine sets, or `files` holding something not a `File`.
+        SourceError: no id, a field the engine sets, `files` holding something not a `File`,
+            or `pinned` not True or False.
     """
 
     id: str
@@ -526,14 +528,18 @@ class Post:
     # `listed` as given; the property falls back to `date`.
     _listed: DateLike
     headers: Mapping[str, str] | None
+    pinned: bool
     fields: Mapping[str, Any]
 
     def __init__(self, id: str | int,
                  files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]] = (), *,
                  date: DateLike = None, listed: DateLike = None,
-                 headers: Mapping[str, str] | None = None, **fields: Any):
+                 headers: Mapping[str, str] | None = None, pinned: bool = False,
+                 **fields: Any):
         if id is None or not str(id).strip():
             raise SourceError(f"Post({id!r}): a post needs an id, the one the site gives it")
+        if not isinstance(pinned, bool):
+            raise SourceError(f"Post {id}: pinned is True or False, not {pinned!r}")
         reserved = sorted(RESERVED & fields.keys())
         if reserved:
             raise SourceError(f"Post {id}: {', '.join(reserved)} is the engine's; name the "
@@ -549,6 +555,7 @@ class Post:
         # Frozen: its own constructor is the one place that sets its fields.
         for name, value in (("id", str(id)), ("files", files), ("date", date),
                             ("_listed", listed), ("headers", _frozen(headers)),
+                            ("pinned", pinned),
                             ("fields", MappingProxyType(dict(fields)))):
             object.__setattr__(self, name, value)
 
@@ -563,11 +570,12 @@ class Post:
         return callable(self.files)
 
     def replace(self, **changes: Any) -> Post:
-        """A copy with `id`, `files`, `date`, `listed`, `headers` or fields changed."""
+        """A copy with `id`, `files`, `date`, `listed`, `headers`, `pinned` or fields changed."""
         return Post(
             changes.pop("id", self.id), changes.pop("files", self.files),
             date=changes.pop("date", self.date), listed=changes.pop("listed", self._listed),
-            headers=changes.pop("headers", self.headers), **{**self.fields, **changes},
+            headers=changes.pop("headers", self.headers),
+            pinned=changes.pop("pinned", self.pinned), **{**self.fields, **changes},
         )
 
 

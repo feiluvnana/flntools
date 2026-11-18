@@ -249,7 +249,8 @@ pass at once. Every hold is recorded in `ctx.seen.holds`.
 
 `collect` runs the target to its end on it, and checks the listing as it goes: a
 `newest_first` listing's dated posts must not get newer, and a post must give every field a
-template names. A `File.name` with its own extension keeps it, and a stem takes its extension
+template names. A pinned post (`Post(..., pinned=True)`) is outside the date order, so the
+check skips it. A `File.name` with its own extension keeps it, and a stem takes its extension
 from the content type (the `Content-Type` of the file URL's route, when it has one), then from
 the URL's extension, then none.
 
