@@ -600,6 +600,44 @@ class EngineTest(EngineCase):
         self.report(source, targets=["aaa:example_user", "aaa:example_creator"])
         self.assertEqual(self.saved(), ["example_creator.zip", "example_user.zip"])
 
+    def configure(self, text: str) -> None:
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.toml").write_text(text, encoding="utf-8")
+
+    def test_rate_slowest_and_free_space_from_the_config(self) -> None:
+        body = b"\xff\xd8\xff" + bytes(999_997)
+        self.routes[f"{CDN}/a.jpg"] = body
+        self.configure('[defaults]\nrate = "100 KB/s"\n')
+        self.run_files(File(f"{CDN}/a.jpg", name="a.jpg"))
+        # A second's worth (100 KiB) goes at once; the rest waits about 8.8 s on the run's clock.
+        self.assertGreaterEqual(self.now, 8.5)
+
+        sent, requests = iter([body[:1000], body[1000:]]), []
+
+        def slow(request):
+            requests.append(request.headers.get("range"))
+            if len(requests) == 1:
+                def trickle():
+                    yield next(sent)
+                    self.fake.advance(31)
+                    yield b"x"
+                return net.reply(200, headers={"content-length": str(len(body))},
+                                 chunks=trickle())
+            return net.reply(206, content=body[1001:], headers={
+                "content-range": f"bytes 1001-{len(body) - 1}/{len(body)}"})
+
+        self.routes[f"{CDN}/b.jpg"] = slow
+        self.configure('[defaults]\nslowest = "1 KB/s"\n')
+        self.run_files(File(f"{CDN}/b.jpg", name="b.jpg"))
+        # Under 1 KB/s over 30 s: cancelled, and tried again from where it was.
+        self.assertEqual(requests, ["bytes=0-", "bytes=1001-"])
+
+        self.configure("")
+        with mock.patch.object(jobs.shutil, "disk_usage",
+                               return_value=mock.Mock(free=10 << 20)), \
+                self.assertRaisesRegex(DiskError, "not enough free space"):
+            self.run_files(File(f"{CDN}/c.jpg", name="c.jpg", size=1 << 30))
+
     def test_four_files_are_hashed_at_once_on_four_threads(self) -> None:
         # K9: four new files meet four saved ones of their size; each thread's first hash waits
         # for three others, which one hasher thread for the whole process never gives.

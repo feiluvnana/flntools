@@ -312,10 +312,6 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     "src/engine/config.py:user_file": "early part; the engine passes it to read and write",
     "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
-    # The scheduler is built ahead of the code that calls it: the save (`slowest`) takes these
-    # when it is wired.
-    "src/engine/jobs.py:Speed": "the save's `slowest`, once wired; tests/test_jobs.py",
-    "src/engine/jobs.py:Speed.below": "the save's `slowest`, once wired; tests/test_jobs.py",
     "src/plugins/web.py:Web": "the built-in web plugin; the registry loads it from step 7",
     "src/engine/manager.py:Manager": "the plugin manager, built early; tests/test_plugins.py "
                                      "drives it until the wiring renames it plugins.py",

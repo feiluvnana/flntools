@@ -412,7 +412,7 @@ STOP_AFTER = 5
 # Every key each table takes. A key not listed is warned about, never silently ignored, so a
 # typo (`[defaults] compres = true`) can't pass for a setting that works.
 KEYS = {
-    "defaults": ("again", "dedupe", "sidecars", "when"),
+    "defaults": ("again", "dedupe", "sidecars", "when", "rate", "slowest"),
     "vault": ("key",),
 }
 SOURCE_KEYS = ("pace", "scroll", "limits", "proxy", "stop_after")
@@ -458,6 +458,10 @@ class Config:
     when: str = ""
     # Where the vault's key is kept: "file" (`secret.key` in the home) or "keychain".
     vault: str = FILE
+    # The run's speed limit, in bytes a second (`"20 MB/s"` in the file); 0 for none.
+    rate: int = 0
+    # A transfer slower than this over 30 s, in bytes a second, is cut and goes on; 0 for off.
+    slowest: int = 0
     # Each source's own settings, by code; a source not named has `SourceConfig()`.
     sources: Mapping[str, SourceConfig] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -539,6 +543,8 @@ def _parsed(path: Path, text: str) -> Config:
         dedupe=_choice(path, where, "dedupe", defaults.get("dedupe", "link"), DEDUPE) == "link",
         sidecars=_flag(path, where, "sidecars", defaults.get("sidecars", False)),
         when=_when_text(path, defaults.get("when", "")),
+        rate=_speed(path, "rate", defaults.get("rate", "0")),
+        slowest=_speed(path, "slowest", defaults.get("slowest", "0")),
         vault=_choice(path, "vault", "key", vault.get("key", FILE), VAULTS),
         sources=MappingProxyType({
             code: _source(path, code, _table(path, sources, code, within="sources"))
@@ -633,6 +639,21 @@ def _table(path: Path, data: Mapping[str, Any], name: str, *,
         raise UsageError(f"{path}: {shown} is a table ([{shown}]), not {value!r}",
                          hint="fix the file, or move it away")
     return value
+
+
+def _speed(path: Path, name: str, value: Any) -> int:
+    """A `[defaults]` speed: `"20 MB/s"`, `"500 KB/s"`, or `"0"` for off, in bytes a second.
+
+    Raises:
+        UsageError: anything else.
+    """
+    from flnd.engine.config import SPEED, speed
+
+    if not isinstance(value, str) or not SPEED.fullmatch(value.strip()) \
+            and value.strip() != "0":
+        raise UsageError(f"{path}: [defaults] {name} = {value!r} isn't a speed",
+                         hint=f'set {name} = "20 MB/s", "500 KB/s", or "0" for off')
+    return speed(value)
 
 
 def _flag(path: Path, where: str, name: str, value: Any) -> bool:

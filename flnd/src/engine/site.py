@@ -878,7 +878,9 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
         return
     run_loop = loop.Loop()
     shared = browser.RunBrowser(run_loop, screen=_Screen())
-    scheduler = _SCHEDULERS[shared] = jobs.Scheduler(stop=getattr(settings, "stop", None))
+    found = config(settings.home)
+    scheduler = _SCHEDULERS[shared] = jobs.Scheduler(
+        stop=getattr(settings, "stop", None), rate=found.rate, slowest=found.slowest)
     settings.browser_pool = shared
     try:
         yield

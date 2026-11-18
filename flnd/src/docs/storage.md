@@ -282,6 +282,8 @@ dedupe = "link"      # "link" a file whose bytes are saved already, or "off" to 
 sidecars = false     # write <file>.json beside each saved file
 when = ""            # the days every download, follow and sync takes, as --when writes them
                      # ("1y", "2026", "2026-01.."); "" for every day
+rate = "0"           # the run's speed limit, such as "20 MB/s" or "500 KB/s"; "0" for none
+slowest = "0"        # cut a transfer slower than this over 30 s, and go on; "0" for off
 
 
 [sources.ins]        # one table per source, by its code
@@ -292,6 +294,11 @@ proxy = "socks5://127.0.0.1:1080"     # every HTTP request of the source goes th
 stop_after = 5       # saved posts in a row that end a sync of a newest-first listing
 ```
 
+- **`[defaults] rate`** is one byte bucket for every file of the run, a second deep: a file's
+  transfer waits after each chunk for the bytes owed. **`slowest`** cuts a transfer that
+  averaged under it over its last 30 s; it goes on from where it was, as one of its network
+  tries. Before a file of known size starts, its disk must have its size, the bytes still due
+  from the files in flight on that disk, and 64 MiB more, or the run stops with a `DiskError`.
 - **`[defaults] when`** bounds a sync too, which has no `--when` of its own. Give `--when ""` (or
   `when=""` in the library) for every day in one run.
 - **`[sources.<code>]`** settings win over what the source's class says: `pace` over

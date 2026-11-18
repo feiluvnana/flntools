@@ -31,7 +31,16 @@ from flnd.engine import home, jobs
 from flnd.engine.events import BUSY, Failed, Saved, Skipped
 from flnd.engine.home import FILE_COLUMNS, FileRow, _file_values, now
 from flnd.engine.jobs import Job, Kind
-from flnd.errors import DiskError, Error, NotFound, SiteError, Stopped, UsageError, classify
+from flnd.errors import (
+    DiskError,
+    Error,
+    NetworkError,
+    NotFound,
+    SiteError,
+    Stopped,
+    UsageError,
+    classify,
+)
 from flnd.source import Fetch, File, Target
 from flnd.ui.log import ui
 from flnkit import clock, files, media, net, text
@@ -246,7 +255,8 @@ class _Split:
         saver, plan = self.saver, self.plan
         assert plan is not None
         job = saver._file_job(self.item, self.job.plugin, url, _nothing)
-        job.host, job.bucket = self.job.host, self.job.host
+        # The first transfer counts the whole file against its disk's free space.
+        job.host, job.bucket, job.size = self.job.host, self.job.host, None
 
         def opened(status: int, headers: Mapping[str, str], start: int,
                    total: int | None) -> None:
@@ -259,9 +269,9 @@ class _Split:
             await self.check()
 
         async def work() -> None:
-            sink = _Bytes(job)
+            sink = _Bytes(job, saver.scheduler.slowest)
             sink.flight = saver._fly(self.item)
-            meter = net.Meter(sink, write=saver._writer(self.item.dest), at=part.at)
+            meter = saver._meter(sink, self.item.dest, at=part.at)
             meter.opened, meter.wrote = opened, wrote
             await self.client.span(url, self.held, part.at, headers=self.item.headers,
                                    validator=plan.etag or None, progress=meter,
@@ -286,10 +296,13 @@ class _Bytes:
     """A transfer's progress sink (`net.Meter`'s): the file's `Flight` on the run's screen,
     and its job's `done`, the bytes the host's cap measures."""
 
-    def __init__(self, job: Job[Any]) -> None:
+    def __init__(self, job: Job[Any], slowest: float = 0.0) -> None:
         self._job = job
+        self._slowest = slowest
         # The try's `Flight`, set as each try starts; None without a tally.
         self.flight: Any = None
+        # The try's speed, for `slowest`.
+        self.speed = jobs.Speed()
 
     @property
     def total(self) -> int | None:
@@ -301,9 +314,19 @@ class _Bytes:
             self.flight.size(value)
 
     def advance(self, n: float) -> None:
+        """Count `n` more bytes.
+
+        Raises:
+            NetworkError: the try averaged under `slowest` over its last 30 s: it is cut, and
+                the scheduler tries it again from where it was, as one of its network tries.
+        """
         self._job.done += int(n)
         if self.flight is not None:
             self.flight.advance(n)
+        self.speed.add(int(n))
+        if self.speed.below(self._slowest):
+            raise NetworkError(f"slower than {text.size(self._slowest)}/s for "
+                               f"{jobs.SLOW_WINDOW:.0f} s", retryable=True)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -686,14 +709,14 @@ class Saver:
         tries again as its policy says. Each mirror but the last is checked in the job, so a
         web page there moves on to the next."""
         job = self._file_job(item, plugin, mirrors[0], _nothing)
-        sink = _Bytes(job)
+        sink = _Bytes(job, self.scheduler.slowest)
         # One meter for every try, so a try that resumes counts only what it adds; its writes go
         # to the thread of the device the file is on.
-        meter = net.Meter(sink, write=self._writer(item.dest))
+        meter = self._meter(sink, item.dest)
 
         async def work() -> None:
             self._start(item, flow)
-            sink.flight = self._fly(item)
+            sink.flight, sink.speed = self._fly(item), jobs.Speed()
             try:
                 for number, mirror in enumerate(mirrors, start=1):
                     try:
@@ -879,9 +902,11 @@ class Saver:
                       client: net.Client) -> None:
         """One stream of a DASH pair into its part, as a `FILE` job of its host."""
         job = self._file_job(item, plugin, url, _nothing)
-        meter = net.Meter(_Bytes(job), write=self._writer(item.dest))
+        sink = _Bytes(job, self.scheduler.slowest)
+        meter = self._meter(sink, item.dest)
 
         async def work() -> None:
+            sink.speed = jobs.Speed()
             await client.fill(url, part, headers=item.headers, progress=meter)
 
         job.work = work
@@ -895,6 +920,14 @@ class Saver:
         return Job(kind=Kind.FILE, work=work, plugin=plugin, account=item.account,
                    host=host or plugin, target=str(item.target), size=item.file.size,
                    path=item.dest, priority=0 if item.retried else None)
+
+    def _meter(self, sink: _Bytes, dest: Path, *, at: int = 0) -> net.Meter:
+        """A transfer's meter: its writes on the thread of `dest`'s device, each chunk under
+        the run's `rate` when it has one; `at` is where a segment starts."""
+        meter = net.Meter(sink, write=self._writer(dest), at=at)
+        if self.scheduler.rate.rate:
+            meter.pace = self.scheduler.rate.take
+        return meter
 
     def _writer(self, dest: Path) -> net.Write:
         """What writes a transfer's pieces: the `WRITE` thread of `dest`'s device."""
