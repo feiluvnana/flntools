@@ -394,8 +394,9 @@ mouse events. An element that scrolls on its own (`scroll(within=…)`) gets rea
 One HTTP library (`flnd.kit.net`, as `flnd.kit.net`) does every request and download, on the run's
 loop:
 
-- **A session per source** (`flnd.kit.net.Session`, made by `site.source_run`): one curl_cffi
-  `AsyncSession` with Chrome's TLS and HTTP/2 fingerprint, the login's cookies (kept by the
+- **A session per source** (`flnd.kit.net.Session`, made by `site.source_run`): libcurl handles
+  on one multi handle (through curl_cffi), set up once with Chrome's TLS and HTTP/2 fingerprint
+  and kept from one transfer to the next, the login's cookies (kept by the
   session, and written back to the vault at the end), the source's `user_agent`, and its `sign`
   hook for requests to its own domains, run before every try. A `proxy` under
   `[sources.<code>]` in config.toml goes to curl for every transfer of the session; the

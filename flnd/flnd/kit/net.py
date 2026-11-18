@@ -1,9 +1,10 @@
 """HTTP for any program on an asyncio loop: a `Session`, paced `Client`s, and downloads into parts.
 
 What it offers, for any caller:
-- `Session`: one curl_cffi `AsyncSession` (libcurl's multi interface, Chrome's TLS and HTTP/2
-  fingerprint), its default headers, its cookies, and a `prepare` hook that may add headers to
-  each request before it goes out (a signature, a CSRF token).
+- `Session`: libcurl handles on one multi handle, through curl_cffi, kept from one transfer to
+  the next (Chrome's TLS and HTTP/2 fingerprint), its default headers, its cookies, and a
+  `prepare` hook that may add headers to each request before it goes out (a signature, a CSRF
+  token).
 - `Limits`: how hard the session may press each host. A *paced* host gets a token bucket at a
   rate in requests per second; any other host gets a `Cap` on its transfers at once, which
   adapts to what the host can take (AIMD, below). `Limits.load` is a read-only snapshot of
@@ -943,30 +944,28 @@ class Session:
             info["Set-Cookie"] = value
         self.jar.extract_cookies(_Info(info), urllib.request.Request(_bare(answer.url or url)))
 
-    def _session(self) -> Any:
-        """curl_cffi's `AsyncSession`, made on first use, on the running loop.
+    def _session(self) -> _Curls:
+        """The session's curl handles, made on first use.
 
         Returns:
-            The session, with Chrome's fingerprint, `handles` curl handles and the proxy.
+            The handles, `handles` at most, with Chrome's fingerprint and the proxy.
 
         Raises:
             ImportError: curl_cffi isn't installed, with the command that installs it.
         """
         if self._raw is None:
             try:
-                from curl_cffi.requests import AsyncSession
+                import curl_cffi  # noqa: F401
             except ImportError:
                 raise ImportError("flnd.kit.net needs curl_cffi: pip install curl_cffi") from None
 
-            # `proxy` (None for none) is curl's CURLOPT_PROXY for every transfer of the session.
-            self._raw = AsyncSession(max_clients=self.handles, impersonate=IMPERSONATE,
-                                     proxy=self.proxy)
+            self._raw = _Curls(self.handles, self.timeout, self.proxy)
         return self._raw
 
     async def _curl(self, request: Request) -> _Answer:
-        """Send `request` through curl_cffi, streaming the answer.
+        """Send `request` through curl, streaming the answer.
 
-        Cookies are never left to curl (`discard_cookies`): the session keeps them itself.
+        Cookies are never left to curl: the session keeps them itself.
 
         Args:
             request: the request, with every header it goes out with.
@@ -979,93 +978,317 @@ class Session:
         """
         from curl_cffi import CurlError
 
-        raw = self._session()
         try:
-            answer = await raw.request(
-                request.method, str(request.url), headers=dict(request.headers),
-                data=request.content, stream=True, timeout=self.timeout, allow_redirects=True,
-                discard_cookies=True,
-            )
+            transfer = await self._session().open(request)
         except CurlError as error:
             raise _network(request, error) from None
-        valve = _Valve(answer)
 
         async def chunks() -> AsyncIterator[bytes]:
             try:
-                async for chunk in answer.aiter_content():
-                    valve.took(len(chunk))
+                async for chunk in transfer.chunks():
                     yield chunk
             except CurlError as error:
                 raise _network(request, error) from None
 
-        async def close() -> None:
-            # Setting `quit_now` makes curl's write callback abort a transfer still running;
-            # `aclose` then waits for curl to give the handle back. A paused transfer would
-            # never reach that callback, so it is let go first.
-            valve.open()
-            if answer.quit_now is not None:
-                answer.quit_now.set()
-            try:
-                await answer.aclose()
-            except CurlError:
-                pass
-
-        pairs = [(name.lower(), value) for name, value in answer.headers.multi_items()]
-        return _Answer(answer.status_code, str(answer.url), _joined(pairs), chunks(), close,
+        pairs = transfer.headers
+        return _Answer(transfer.status, transfer.url, _joined(pairs), chunks(), transfer.close,
                        [value for name, value in pairs if name == "set-cookie"])
 
 
-class _Valve:
-    """Holds a streamed transfer while its body waits for the disk: at most `HELD` bytes.
+class _Curls:
+    """libcurl handles on one multi handle, set up once and kept from one transfer to the next.
 
-    curl_cffi puts each chunk curl receives into the answer's queue, which has no bound: on a
-    disk slower than the network, a whole file would wait there in memory. So the queue's
-    `put_nowait` is wrapped: once `HELD` bytes wait, the transfer is paused
-    (`curl_easy_pause`, which libcurl allows from its write callback), and once the reader
-    has taken them down to `HELD / 2`, it goes on. libcurl keeps the socket open meanwhile,
-    and TCP's own window holds the server back.
-
-    All of it runs on the loop's thread: curl's callbacks are called from `socket_action` on
-    the loop, and the reader is a coroutine on it.
+    curl_cffi's `AsyncSession` resets a handle after each transfer, sets some 15 options again
+    (Chrome's fingerprint among them) and reads as many back: about 50 µs of the loop's time a
+    request. A handle here keeps what every request shares: the fingerprint, the timeouts, the
+    redirects and the proxy. A GET sets only its URL, its headers and its callbacks; a request
+    with another method or a body sets those too, and its handle is set up afresh after it.
+    Every option is the one `AsyncSession.request(stream=True, discard_cookies=True)` set.
 
     Args:
-        answer: curl_cffi's streaming response.
+        handles: transfers at once in all; more wait for a handle.
+        timeout: seconds to connect, and seconds with no byte received.
+        proxy: the proxy for every transfer, or None.
     """
 
-    def __init__(self, answer: Any) -> None:
-        self._answer = answer
+    def __init__(self, handles: int, timeout: float, proxy: str | None) -> None:
+        self._free = asyncio.Semaphore(handles)
+        self._timeout = timeout
+        self._proxy = proxy
+        self._idle: list[Any] = []
+        self._multi: Any = None
+        self._closed = False
+
+    async def open(self, request: Request) -> _Transfer:
+        """Start `request` on a free handle, and wait for its answer's head.
+
+        Returns:
+            The transfer, its status and headers read; its body still streaming.
+
+        Raises:
+            CurlError: the transfer failed before any of the body came.
+        """
+        from curl_cffi.aio import AsyncCurl
+
+        await self._free.acquire()
+        try:
+            if self._multi is None:
+                self._multi = AsyncCurl()
+            curl = self._idle.pop() if self._idle else self._new()
+        except BaseException:
+            self._free.release()
+            raise
+        transfer = _Transfer(curl, self._give)
+        try:
+            transfer.plain = self._ask(curl, request, transfer)
+        except BaseException:
+            self._give(curl, False)
+            raise
+        transfer.start(self._multi)
+        try:
+            await asyncio.shield(transfer.head)
+        except asyncio.CancelledError:
+            transfer.quit()
+            raise
+        if transfer.error is not None and not transfer.wrote:
+            raise transfer.error
+        return transfer
+
+    def _new(self) -> Any:
+        from curl_cffi import Curl
+
+        curl = Curl()
+        self._setup(curl)
+        return curl
+
+    def _setup(self, curl: Any) -> None:
+        """Set what every request on `curl` shares, in the order curl_cffi sets it."""
+        from curl_cffi import CurlOpt
+        from curl_cffi.requests.exceptions import ImpersonateError
+        from curl_cffi.requests.impersonate import resolve_latest_browser_type
+
+        # curl's own cookie engine stays on, as curl_cffi has it: a cookie set by a redirect
+        # goes to the redirect's target. `COOKIELIST` empties it before each request.
+        curl.setopt(CurlOpt.COOKIEFILE, b"")
+        curl.setopt(CurlOpt.CONNECTTIMEOUT_MS, int(self._timeout * 1000))
+        curl.setopt(CurlOpt.LOW_SPEED_LIMIT, 1)
+        curl.setopt(CurlOpt.LOW_SPEED_TIME, math.ceil(self._timeout))
+        curl.setopt(CurlOpt.FOLLOWLOCATION, 1)
+        curl.setopt(CurlOpt.MAXREDIRS, MAX_REDIRECTS)
+        if self._proxy:
+            curl.setopt(CurlOpt.PROXY_CREDENTIAL_NO_REUSE, 1)
+            curl.setopt(CurlOpt.PROXY, self._proxy)
+        curl.setopt(CurlOpt.ACCEPT_ENCODING, ACCEPT_ENCODING.encode())
+        target = resolve_latest_browser_type(IMPERSONATE)
+        if curl.impersonate(target, default_headers=True) != 0:
+            raise ImpersonateError(f"Impersonating {target} is not supported")
+
+    def _ask(self, curl: Any, request: Request, transfer: _Transfer) -> bool:
+        """Set `request`'s own options on `curl`.
+
+        Returns:
+            Whether it was a plain GET, which leaves the handle as it was set up.
+        """
+        from curl_cffi import CurlOpt
+        from curl_cffi.requests.headers import Headers as CurlHeaders
+        from curl_cffi.requests.utils import requote_uri, update_header_line
+
+        url, method, body = str(request.url), request.method, request.content or b""
+        curl.setopt(CurlOpt.URL, requote_uri(url).encode())
+        lines = []
+        for name, value in CurlHeaders(dict(request.headers)).multi_items():
+            lines.append(f"{name};" if value == "" else f"{name}: {value}")
+        if body:
+            update_header_line(lines, "Content-Type", "application/octet-stream")
+        update_header_line(lines, "Expect", "", replace=True)
+        curl.setopt(CurlOpt.HTTPHEADER, [line.encode() for line in lines])
+        curl.setopt(CurlOpt.COOKIELIST, "ALL")
+        if self._proxy:
+            tunnel = url.startswith("https:") and not self._proxy.startswith("socks")
+            curl.setopt(CurlOpt.HTTPPROXYTUNNEL, int(tunnel))
+        curl.setopt(CurlOpt.WRITEFUNCTION, transfer.write)
+        curl.setopt(CurlOpt.HEADERFUNCTION, transfer.line)
+        if method == "GET" and not body:
+            return True
+        if method == "POST":
+            curl.setopt(CurlOpt.POST, 1)
+        elif method != "GET":
+            curl.setopt(CurlOpt.CUSTOMREQUEST, method.encode())
+        if method == "HEAD":
+            curl.setopt(CurlOpt.NOBODY, 1)
+        if body or method in ("POST", "PUT", "PATCH"):
+            transfer.body = body
+            curl.setopt(CurlOpt.POSTFIELDS, body)
+            curl.setopt(CurlOpt.POSTFIELDSIZE, len(body))
+            if method == "GET":
+                curl.setopt(CurlOpt.CUSTOMREQUEST, method)
+        return False
+
+    def _give(self, curl: Any, plain: bool) -> None:
+        """Take `curl` back once its transfer ended: kept as it is, or set up afresh."""
+        # Frees the request's header list and drops its callbacks. curl keeps pointing at them,
+        # but reads options only during a transfer, and the next one sets its own first.
+        curl.clean_handles_and_buffers()
+        self._free.release()
+        if self._closed:
+            curl.close()
+            return
+        if not plain:
+            curl.reset()
+            self._setup(curl)
+        self._idle.append(curl)
+
+    async def close(self) -> None:
+        """Stop every transfer and close the handles; nothing can be sent after this."""
+        self._closed = True
+        if self._multi is not None:
+            # Ends the transfers still running, whose handles are closed as they come back.
+            await self._multi.close()
+        for curl in self._idle:
+            curl.close()
+        self._idle.clear()
+
+
+# What curl_cffi's `AsyncSession` asks for: its `max_redirects`, and `request`'s
+# `accept_encoding` (Chrome's fingerprint then puts its own).
+MAX_REDIRECTS = 30
+ACCEPT_ENCODING = "gzip, deflate, br"
+# curl's write callback returns this to abort its transfer (curl/curl.h).
+WRITE_ERROR = 0xFFFFFFFF
+
+
+class _Transfer:
+    """One request on a kept handle: its answer's head, then its body as it streams in.
+
+    The body waits in a queue for the reader. Once `HELD` bytes wait, the transfer is paused
+    (`curl_easy_pause`, which libcurl allows from its write callback), and once the reader has
+    taken them down to `HELD / 2`, it goes on. libcurl keeps the socket open meanwhile, and
+    TCP's own window holds the server back. So on a disk slower than the network, no whole file
+    waits in memory.
+
+    All of it runs on the loop's thread: curl's callbacks are called from `socket_action` on the
+    loop, and the reader is a coroutine on it.
+
+    Args:
+        curl: the handle.
+        give: takes the handle back once the transfer ended.
+
+    Attributes:
+        head: done once the head of the answer is read: at the first byte of its body, or at
+            its end.
+        status: the HTTP status.
+        url: where the answer came from, after redirects.
+        headers: the answer's headers as `(name, value)` pairs, the names lower case.
+        error: what ended the transfer, when it failed.
+        wrote: whether any of the body came.
+    """
+
+    def __init__(self, curl: Any, give: Callable[[Any, bool], None]) -> None:
+        self._curl = curl
+        self._give = give
+        loop = asyncio.get_running_loop()
+        self.head: asyncio.Future[None] = loop.create_future()
+        self._ended = loop.create_future()
+        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._lines: list[bytes] = []
         self._held = 0
         self._paused = False
-        queue = answer.queue
-        if queue is None or answer.curl is None:
-            self._put = None
-            return
-        self._put = queue.put_nowait
+        self._quit = False
+        self.plain = True
+        self.body = b""
+        self.status = 0
+        self.url = ""
+        self.headers: list[tuple[str, str]] = []
+        self.error: BaseException | None = None
+        self.wrote = False
 
-        def put(item: Any) -> None:
-            if isinstance(item, bytes):
-                self._held += len(item)
-                if self._held >= HELD and not self._paused:
-                    self._pause(True)
-            self._put(item)  # type: ignore[misc]
+    def start(self, multi: Any) -> None:
+        """Hand the handle to the multi handle, which runs the transfer on the loop."""
+        try:
+            done = multi.add_handle(self._curl)
+        except BaseException:
+            self._give(self._curl, False)
+            raise
+        done.add_done_callback(self._end)
 
-        queue.put_nowait = put
+    def line(self, line: bytes) -> int:
+        """curl's header callback: one line of the head (of each answer, redirects too)."""
+        self._lines.append(line)
+        return len(line)
 
-    def took(self, size: int) -> None:
-        """The reader took `size` bytes; let the transfer go on when few enough wait."""
+    def write(self, chunk: bytes) -> int:
+        """curl's write callback: a piece of the body."""
+        if not self.head.done():
+            self._read()
+        if self._quit:
+            return WRITE_ERROR
+        self.wrote = True
+        self._held += len(chunk)
+        if self._held >= HELD and not self._paused:
+            self._pause(True)
+        self._queue.put_nowait(chunk)
+        return len(chunk)
+
+    def _end(self, done: asyncio.Future[None]) -> None:
+        # The multi handle let go of the handle before it settled `done`.
+        if not done.cancelled():
+            self.error = done.exception()
+        if not self.head.done():
+            self._read()
+        self._queue.put_nowait(None)
+        self._give(self._curl, self.plain)
+        self._ended.set_result(None)
+
+    def _read(self) -> None:
+        """Read the head: the status, the URL, and the last answer's headers, as curl_cffi does."""
+        from curl_cffi import CurlInfo
+        from curl_cffi.requests.headers import Headers as CurlHeaders
+
+        self.status = int(self._curl.getinfo(CurlInfo.RESPONSE_CODE))
+        self.url = self._curl.getinfo(CurlInfo.EFFECTIVE_URL).decode()
+        kept: list[bytes] = []
+        for line in b"".join(self._lines).splitlines():
+            if not line.strip():
+                continue
+            if line.startswith(b"HTTP/"):
+                kept = []
+            elif line.startswith((b" ", b"\t")) and kept:
+                kept[-1] += line
+            else:
+                kept.append(line)
+        if kept:
+            self.headers = [(name.lower(), value or "")
+                            for name, value in CurlHeaders(kept).multi_items()]
+        self.head.set_result(None)
+
+    async def chunks(self) -> AsyncIterator[bytes]:
+        """The body, as it comes; raises what ended the transfer, when it failed."""
+        while (chunk := await self._queue.get()) is not None:
+            self._took(len(chunk))
+            yield chunk
+        if self.error is not None:
+            raise self.error
+
+    def _took(self, size: int) -> None:
         self._held -= size
         if self._paused and self._held <= HELD // 2:
             self._pause(False)
 
-    def open(self) -> None:
-        """Let a paused transfer go, for good: it is closing."""
+    def quit(self) -> None:
+        """Abort the transfer at its next byte: nothing more of it is read."""
+        self._quit = True
         if self._paused:
             self._pause(False)
+
+    async def close(self) -> None:
+        """Stop the transfer, and wait until curl gives the handle back."""
+        self.quit()
+        await asyncio.shield(self._ended)
 
     def _pause(self, paused: bool) -> None:
         self._paused = paused
         # 1 is CURLPAUSE_RECV, 0 CURLPAUSE_CONT (curl/curl.h).
-        _curl_pause(self._answer.curl._curl, 1 if paused else 0)
+        _curl_pause(self._curl._curl, 1 if paused else 0)
 
 
 def _curl_pause(handle: Any, how: int) -> None:

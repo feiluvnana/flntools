@@ -154,19 +154,18 @@ How a file is written, and why:
   (5 ms) while the loop runs Python: a thread hashing 1 MiB pieces beside a busy Python thread
   managed 0.13 GiB/s. Hashing beside the write, and handing off 4 MiB instead of 1 MiB, took
   `net.big_rate` from 1.91 to 2.35 GiB/s (median of 3 alternating runs).
-- **A transfer waits for the disk with at most 8 MiB in memory.** curl_cffi queues every chunk
-  curl receives, with no bound; on a disk slower than the network a whole file would wait
-  there. Once 8 MiB of a transfer wait (4 MiB before the pieces grew), flnd pauses it
+- **A transfer waits for the disk with at most 8 MiB in memory.** Every chunk curl receives
+  waits in the transfer's queue, which has no bound; on a disk slower than the network a
+  whole file would wait there. Once 8 MiB of a transfer wait (4 MiB before the pieces grew), flnd pauses it
   (`curl_easy_pause`) until the writer has taken them down to half, and TCP holds the server
   back meanwhile. Measured at 4 MiB with two 64 MiB files onto a disk throttled to 20 MB/s: at
   most 4.0 MiB waited per transfer, against 62.9 MiB unpaused, in the same time (7.3 s against
   7.2 s).
 - **A part's open and rename run on worker threads.** Each is a file-system call of 50 to 150
   µs, more on a busy disk; on the loop they would run one at a time.
-- **Small files are bound by the loop's own work.** The loop thread is busy for 0.53 s of the
-  0.61 s that `net.small_8_at_once` takes. The client alone (`Client.fetch` of the same 2,000
-  files, no part) takes 0.30 s, all of it the loop's CPU; the part's path adds the rest (see
-  "Targets not met" below).
+- **Small files are bound by the loop's own work.** At the baseline the loop thread was busy
+  for 0.53 s of the 0.61 s that `net.small_8_at_once` took; kept curl handles bring it to 0.48
+  s (see "Targets not met" below).
 - `net.stall_20mbs` charges every write of a part as a disk write at 20 MB/s, the last piece's
   copy into memory included, so it overstates a real slow disk.
 
@@ -190,10 +189,11 @@ stay as they were; the numbers are from the recorded baseline.
 - what would meet it is a hash that isn't on the transfer's path (a faster or parallel hash, or
   hashing after the file lands), which changes what `flnd.db` stores or when dedupe can run.
 
-**`net.small_8_at_once`: 0.61 s, against ≤ 0.3.** 2,000 files of 100 KiB, 8 at once:
-- the loop thread is the bottleneck: 0.53 s of its CPU for 0.61 s of wall time;
-- the client alone (`Client.fetch` of the same files, no part) takes 0.30 s, which is already
-  the target. Per request, curl_cffi's request layer costs about 150 µs of the loop's time: 15
+**`net.small_8_at_once`: 0.48 s, against ≤ 0.3** (0.61 s at the baseline). 2,000 files of
+100 KiB, 8 at once:
+- the loop thread is the bottleneck: at the baseline, 0.53 s of its CPU for 0.61 s of wall time;
+- the client alone (`Client.fetch` of the same files, no part) took 0.30 s at the baseline. Per
+  request, curl_cffi's request layer then cost about 150 µs of the loop's time: 15
   `setopt` and 15 `getinfo` calls through cffi (about 55 µs), re-applying Chrome's fingerprint
   to the reused handle, and parsing the answer's headers (about 50 µs);
 - a part adds about 115 µs of the loop's time per file: two hops to a worker thread (15 µs
@@ -208,10 +208,20 @@ stay as they were; the numbers are from the recorded baseline.
   went from 52 µs a request (a `urllib.request.Request` and `add_cookie_header`) to 0.3 µs. The
   `net` group sends no cookie, so it moved within noise (`small_8_at_once` 622 and 644 ms
   before, 638 and 605 ms after, alternating);
-- moving the last piece's write and hash to the landing thread, or the part's calls onto the
-  loop, made it no faster (the second, 5% slower). Meeting the target needs a lighter request
-  path than curl_cffi's `AsyncSession`: driving libcurl's handles directly with only the
-  options a request needs.
+- curl's handles are now driven directly (`flnd.kit.net._Curls`), not through curl_cffi's
+  `AsyncSession`. A handle is set up once (the fingerprint, the timeouts, the redirects, the
+  proxy) and kept; a GET sets only its URL, its headers and its callbacks, and reads back only
+  its status and URL. A request with another method or a body sets those too, and its handle is
+  set up afresh after it. A test sends the same requests both ways to a loopback server and
+  compares them byte for byte. Alternating `make bench ARGS=net` runs, before and after:
+  `small_8_at_once` 641 and 619 ms before, 480 and 477 ms after; `small_1_at_once` 997 and 943
+  ms before, 820 and 721 ms after; `big_rate` unchanged (2.38 to 2.42 GiB/s before, 2.39 to
+  2.46 after, three alternating pairs of the big file alone);
+- what is left, about 0.48 s, is mostly the part's path above and the loop's own work per
+  transfer (asyncio's callbacks, curl's socket actions, the client's retry and cap). Moving
+  the last piece's write and hash to the landing thread, or the part's calls onto the loop,
+  made it no faster (the second, 5% slower). The target needs the transfers spread over more
+  than one loop (PLAN.md's transfer lanes).
 
 ## Concurrency per host
 

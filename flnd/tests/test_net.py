@@ -8,6 +8,7 @@ the loop for real.
 """
 
 import asyncio
+import http.server
 import io
 import tempfile
 import threading
@@ -952,27 +953,60 @@ class SlowDiskTest(unittest.TestCase):
 class ValveTest(unittest.TestCase):
     """A streamed transfer pauses once `HELD` bytes wait for the disk, and goes on at half."""
 
+    class Curl:
+        _curl = object()
+
+        def getinfo(self, info):
+            return b"https://www.example.com/a" if "URL" in info.name else 200
+
     def test_pauses_at_held_and_goes_on_at_half(self):
-        class Answer:
-            queue = asyncio.Queue()
-
-            class curl:
-                _curl = object()
-
         calls = []
-        with mock.patch.object(_net, "_curl_pause", lambda handle, how: calls.append(how)):
-            valve = _net._Valve(Answer)
+
+        async def run():
+            transfer = _net._Transfer(self.Curl(), lambda curl, plain: None)
             chunk = bytes(1 << 20)
             for _ in range(_net.HELD >> 20):
-                Answer.queue.put_nowait(chunk)
+                self.assertEqual(transfer.write(chunk), len(chunk))
             self.assertEqual(calls, [1])
-            valve.took(len(chunk))
+            self.assertEqual((transfer.status, transfer.url), (200, "https://www.example.com/a"))
+            body = transfer.chunks()
+            await anext(body)
             self.assertEqual(calls, [1])
             for _ in range(1, (_net.HELD >> 20) // 2):
-                valve.took(len(chunk))
+                await anext(body)
             self.assertEqual(calls, [1, 0])
-            valve.open()
+            transfer.quit()
             self.assertEqual(calls, [1, 0])
+            self.assertEqual(transfer.write(chunk), _net.WRITE_ERROR)
+
+        with mock.patch.object(_net, "_curl_pause", lambda handle, how: calls.append(how)):
+            asyncio.run(run())
+
+    def test_a_paused_transfer_is_let_go_when_it_closes(self):
+        calls = []
+
+        async def run():
+            transfer = _net._Transfer(self.Curl(), lambda curl, plain: None)
+            for _ in range(_net.HELD >> 20):
+                transfer.write(bytes(1 << 20))
+            transfer.quit()
+
+        with mock.patch.object(_net, "_curl_pause", lambda handle, how: calls.append(how)):
+            asyncio.run(run())
+        self.assertEqual(calls, [1, 0])
+
+    def test_the_head_is_the_last_answers_after_redirects(self):
+        async def run():
+            transfer = _net._Transfer(self.Curl(), lambda curl, plain: None)
+            for line in (b"HTTP/1.1 302 Found\r\n", b"Location: /a\r\n", b"Set-Cookie: r=1\r\n",
+                         b"\r\n", b"HTTP/1.1 200 OK\r\n", b"Content-Type: text/plain;\r\n",
+                         b"  charset=utf-8\r\n", b"X-Two: a\r\n", b"X-Two: b\r\n", b"\r\n"):
+                transfer.line(line)
+            transfer.write(b"body")
+            return transfer.headers
+
+        self.assertEqual(asyncio.run(run()), [("content-type", "text/plain;  charset=utf-8"),
+                                              ("x-two", "a"), ("x-two", "b")])
 
 
 class HolesTest(NetCase):
@@ -998,6 +1032,122 @@ class FollowTest(NetCase):
             self.assertEqual(_net.follow("https://vm.example.com/ZM1/"),
                              "https://www.example.com/@example_user/video/1")
         self.assertEqual({request.method for request in self.seen}, {"HEAD"})
+
+
+class _Loopback(http.server.BaseHTTPRequestHandler):
+    """A server on 127.0.0.1 that keeps each request it got, as it came over the socket."""
+
+    protocol_version = "HTTP/1.1"
+    seen: list[tuple[str, str, list[tuple[str, str]], bytes]] = []
+
+    def answer(self):
+        size = int(self.headers.get("Content-Length") or 0)
+        self.seen.append((self.command, self.path, list(self.headers.items()),
+                          self.rfile.read(size)))
+        status, headers, body = 200, [("X-Two", "a"), ("X-Two", "b")], b"body"
+        if self.path == "/moved":
+            status, headers, body = 302, [("Location", "/end"), ("Set-Cookie", "r=1; Path=/")], b""
+        elif self.path == "/gone":
+            status, body = 404, b"gone"
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    do_GET = do_POST = do_PUT = do_HEAD = answer
+
+    def log_message(self, *args):
+        pass
+
+
+class CurlTest(unittest.TestCase):
+    """The kept handles send what curl_cffi's `AsyncSession` sent, byte for byte, on loopback."""
+
+    # GETs between the others, on one handle: a handle a POST, a PUT or a HEAD used is set up
+    # afresh, and a plain GET's handle is kept.
+    ASKS = [("GET", "/a", None), ("GET", "/moved", None), ("POST", "/form", b"q=1"),
+            ("GET", "/b", None), ("HEAD", "/c", None), ("GET", "/d", None),
+            ("PUT", "/e", b"\x00\x01"), ("GET", "/gone", None), ("GET", "/f", b"x")]
+    HEADERS = {"user-agent": "Agent/1", "range": "bytes=0-", "cookie": "a=1", "x-empty": ""}
+
+    def setUp(self):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Loopback)
+        threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.base = f"http://127.0.0.1:{server.server_port}"
+        _Loopback.seen = []
+
+    async def through_session(self):
+        session = _net.Session(headers=self.HEADERS, handles=1)
+        answers = []
+        try:
+            for method, path, body in self.ASKS:
+                answer = await session.send(_net.Request(method, self.base + path, {}, body))
+                read = await answer.read()
+                answers.append((read.status, read.url, dict(read.headers), read.content))
+        finally:
+            await session.close()
+        return answers
+
+    async def through_curl_cffi(self):
+        from curl_cffi.requests import AsyncSession
+
+        answers = []
+        async with AsyncSession(max_clients=1, impersonate=_net.IMPERSONATE) as raw:
+            for method, path, body in self.ASKS:
+                answer = await raw.request(method, self.base + path, headers=self.HEADERS,
+                                           data=body, stream=True, timeout=_net.TIMEOUT,
+                                           allow_redirects=True, discard_cookies=True)
+                chunks = [chunk async for chunk in answer.aiter_content()]
+                await answer.aclose()
+                pairs = [(name.lower(), value) for name, value in answer.headers.multi_items()]
+                answers.append((answer.status_code, str(answer.url), _net._joined(pairs),
+                                b"".join(chunks)))
+        return answers
+
+    def test_the_same_requests_and_answers_as_curl_cffi(self):
+        before = asyncio.run(self.through_curl_cffi())
+        sent_before, _Loopback.seen = _Loopback.seen, []
+        after = asyncio.run(self.through_session())
+        for was, now in zip(sent_before, _Loopback.seen, strict=True):
+            self.assertEqual(now, was)
+        for was, now in zip(before, after, strict=True):
+            self.assertEqual(now[:2], was[:2])
+            self.assertEqual({k: v for k, v in now[2].items() if k != "date"},
+                             {k: v for k, v in was[2].items() if k != "date"})
+            self.assertEqual(now[3], was[3])
+        self.assertEqual([answer[0] for answer in after], [200, 200, 200, 200, 200, 200, 200,
+                                                           404, 200])
+
+    def test_a_refused_connection_is_a_network_error(self):
+        async def run():
+            session = _net.Session()
+            try:
+                await session.send(_net.Request("GET", "http://127.0.0.1:9/"))
+            finally:
+                await session.close()
+
+        with self.assertRaises(NetworkError) as raised:
+            asyncio.run(run())
+        self.assertIn("GET http://127.0.0.1:9/", str(raised.exception))
+
+    def test_closing_half_way_gives_the_handle_back(self):
+        async def run():
+            session = _net.Session(handles=1)
+            try:
+                for _ in range(3):
+                    answer = await session.send(_net.Request("GET", self.base + "/a"))
+                    await answer.close()
+                answer = await session.send(_net.Request("GET", self.base + "/b"))
+                return (await answer.read()).content
+            finally:
+                await session.close()
+
+        self.assertEqual(asyncio.run(run()), b"body")
 
 
 if __name__ == "__main__":

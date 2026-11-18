@@ -158,11 +158,23 @@ class SourceRunTest(SiteCase):
     def test_the_proxy_reaches_curl(self):
         self.configure('[sources.exm]\nproxy = "http://127.0.0.1:8080"\n')
         run, _ = self.open()
-        with mock.patch("curl_cffi.requests.AsyncSession") as made:
-            run.session._session()
-            # The fake session never sent anything, so there is nothing for the run to close.
-            run.session._raw = None
-        self.assertEqual(made.call_args.kwargs["proxy"], "http://127.0.0.1:8080")
+        from curl_cffi import CurlOpt
+
+        class Curl:
+            def __init__(self):
+                self.options = {}
+
+            def setopt(self, option, value):
+                self.options[option] = value
+
+            def impersonate(self, target, default_headers):
+                return 0
+
+        curl = Curl()
+        run.session._session()._setup(curl)
+        # Nothing was sent, so there is nothing for the run to close.
+        run.session._raw = None
+        self.assertEqual(curl.options[CurlOpt.PROXY], "http://127.0.0.1:8080")
 
     def test_the_browser_says_once_that_it_isnt_proxied(self):
         self.configure('[sources.exm]\nproxy = "http://127.0.0.1:8080"\n')
