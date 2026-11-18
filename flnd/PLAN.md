@@ -26,7 +26,8 @@ The numbers today:
 - **Benchmarks:** recorded at 1e01feb on an Apple M5. Step 0 records them again at HEAD.
 
 **The goals:**
-- 24,000 lines of Python or fewer in `flnd/`, counted with `wc -l` over `flnd/**/*.py`;
+- 24,000 lines of Python or fewer in `src/` and `kit/`, counted with `wc -l` over their
+  `**/*.py`;
 - no feature lost by accident (section 9);
 - every gated number equal or better;
 - `make check` green at every commit.
@@ -83,7 +84,7 @@ the reason the decision was taken.
 
 | # | decision | why |
 | --- | --- | --- |
-| D1 | `flncore/` folds into `flnd/kit/`; `test_layers` keeps `kit/` standalone | its only user is flnd; the shims double every name; dead code hid outside the checks |
+| D1 | `flncore/` folds into the kit: `kit/` in step 2, then, from step 3½, `kit/`, a standalone top-level package (`from kit import net`) beside `src/`, the package `flnd` (4.1). `test_layers` keeps `kit` standalone: it imports nothing of flnd, and owns the error classes it raises (5.1) | its only user is flnd; the shims double every name; dead code hid outside the checks. The user chose the layout on 2026-11-18: "src folder have flnd inner things, while standalone thing go to flnd root", and `import kit` over `kit` |
 | D2 | Plugin hooks are `async def` | no listing thread, no lock bugs, no 40 µs hop per verb; a plugin can run requests at once |
 | D3 | One asyncio loop per run coordinates; pools use the other cores; transfer lanes only if measured | the GIL makes more threads useless for Python code, and the heavy work is already outside Python |
 | D4 | `get` follows every target that isn't a single post; `get` with no target syncs every followed target | the brief: "a target flnd already has is synced" |
@@ -139,53 +140,75 @@ the reason the decision was taken.
 
 ### 4.1 The final tree
 
+From step 3½ on (14), the project folder `flnd/` holds two packages side by side: `src/`,
+which installs as the package `flnd`, and `kit/`, a standalone package of its own, imported
+as `kit` (`from kit import net`). `tests/`, `pyproject.toml`, the Makefile, `PLAN.md` and
+`AGENTS.md` stay at the project folder's top. Every path below and in sections 5–14 is
+relative to the project folder; `src/engine/jobs.py` is the module `flnd.engine.jobs`.
+
 ```text
-flnd/
-  __init__.py      public names, each loaded on first use
-  __main__.py      python -m flnd
-  _library.py      open, Flnd, and the groups Targets, Auth, Plugins, Extension, Config
-  cli.py           the commands
-  errors.py        the one error hierarchy
-  plugin.py        plugin API 2 (public)
-  testing.py       the plugin test kit (public)
-  engine/
-    run.py         Run, the loop's thread, the event channel, Ctrl-C, the journal
-    events.py      the events, Report, State, and the rows the reads return
-    jobs.py        the scheduler: Job, pools, priorities, retry policy, holds, segments, lanes
-    crawl.py       one target: listing, smart sync, early stops, the Ledger
-    save.py        a file job: transfer, dedupe, unpack, sidecar, exec, the commit
-    resolve.py     target text -> (plugin, Target, categories)
-    plugins.py     the plugin manager
-    auth.py        accounts, switching, the sealed vault, login methods
-    extension.py   the native-messaging host, the protocol, the relay
-    store.py       flnd.db: schema, migrations, rows, check and repair
-    config.py      config.toml: structs, reading, editing
-  kit/             imports only kit/ and flnd/errors.py
-    net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py media.py
-  ui/              imports only kit/, ui/, engine/events.py and flnd/errors.py
-    theme.py out.py screen.py lists.py forms.py
-  plugins/         built-ins, importing only flnd.plugin and the standard library
-    __init__.py _manifest.py fbk.py ins.py loi.py mht.py tik.py tlg.py twt.py web.py
-  extension/       manifest.json background.js page.js popup.html popup.js
-  docs/
+flnd/                the project folder
+  pyproject.toml     hatch maps src/ to the package flnd, and ships kit/ as kit
+  Makefile  PLAN.md  AGENTS.md  README.md
+  src/               the package flnd
+    __init__.py      public names, each loaded on first use
+    __main__.py      python -m flnd
+    _library.py      open, Flnd, and the groups Targets, Auth, Plugins, Extension, Config
+    cli.py           the commands
+    errors.py        flnd's face of the one error hierarchy (5.1)
+    plugin.py        plugin API 2 (public)
+    testing.py       the plugin test kit (public)
+    engine/
+      run.py         Run, the loop's thread, the event channel, Ctrl-C, the journal
+      events.py      the events, Report, State, and the rows the reads return
+      jobs.py        the scheduler: Job, pools, priorities, retry policy, holds, segments, lanes
+      crawl.py       one target: listing, smart sync, early stops, the Ledger
+      save.py        a file job: transfer, dedupe, unpack, sidecar, exec, the commit
+      resolve.py     target text -> (plugin, Target, categories)
+      plugins.py     the plugin manager
+      auth.py        accounts, switching, the sealed vault, login methods
+      extension.py   the native-messaging host, the protocol, the relay
+      store.py       flnd.db: schema, migrations, rows, check and repair
+      config.py      config.toml: structs, reading, editing
+    ui/              imports only kit, ui/, engine/events.py and src/errors.py
+      theme.py out.py screen.py lists.py forms.py
+    plugins/         built-ins, importing only flnd.plugin and the standard library
+      __init__.py _manifest.py fbk.py ins.py loi.py mht.py tik.py tlg.py twt.py web.py
+    extension/       manifest.json background.js page.js popup.html popup.js
+    docs/
+  kit/               the package kit: standalone, imports nothing of flnd
+    errors.py        the error classes kit raises, the root of the one hierarchy (5.1)
+    net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py
+    media.py loop.py
+  tests/
 ```
 
 **The import rules,** checked by `tests/test_layers.py` reading every file's imports:
-1. `kit/*` imports only `kit/*`, `flnd/errors.py`, the standard library and third-party
-   packages.
-2. `ui/*` imports only `ui/*`, `kit/*`, `engine/events.py` and `flnd/errors.py`.
-3. `engine/*` imports `engine/*`, `kit/*`, `ui/*`, `flnd/errors.py` and `flnd/plugin.py`
-   (`engine/events.py` imports only `flnd/errors.py`, `flnd/plugin.py`, `kit/*`, `msgspec` and the
-   standard library).
-4. `flnd/plugin.py` imports only `kit/*`, `flnd/errors.py` and the standard library.
-   `flnd/testing.py` imports `flnd`, `flnd/plugin.py`, `engine/*` and `kit/*`. `flnd/_library.py`
-   imports `engine/*`, `kit/*`, `flnd/errors.py` and `flnd/plugin.py`.
-5. `flnd/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
+1. `kit/*` imports only `kit/*`, the standard library and third-party packages. Nothing
+   under `kit/` names `flnd`.
+2. `src/ui/*` imports only `src/ui/*`, `kit`, `src/engine/events.py` and `src/errors.py`.
+3. `src/engine/*` imports `src/engine/*`, `kit`, `src/ui/*`, `src/errors.py` and
+   `src/plugin.py` (`src/engine/events.py` imports only `src/errors.py`, `src/plugin.py`,
+   `kit`, `msgspec` and the standard library).
+4. `src/plugin.py` imports only `kit`, `src/errors.py` and the standard library.
+   `src/testing.py` imports `flnd`, `src/plugin.py`, `src/engine/*` and `kit`.
+   `src/_library.py` imports `src/engine/*`, `kit`, `src/errors.py` and `src/plugin.py`.
+5. `src/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
    (`telethon`, `qrcode`), imported inside a function.
-6. `flnd/cli.py` imports only `flnd`, `flnd/ui/*` and `flnd/plugins/_manifest.py`.
-7. `flnd/__init__.py` imports nothing at import time beyond the standard library.
+6. `src/cli.py` imports only `flnd`, `src/ui/*` and `src/plugins/_manifest.py`.
+7. `src/__init__.py` imports nothing at import time beyond the standard library.
+
+**Packaging.** `pyproject.toml` (hatchling): the wheel's packages are `src` (installed as
+`flnd`, through `[tool.hatch.build.targets.wheel.sources] "src" = "flnd"`) and `kit`. `make
+setup` installs both editable; `python -c "import flnd, kit"` run from outside the project
+folder must work, which a test in `tests/test_packaging.py` checks with a subprocess. `make
+dist` collects the submodules of both. The distribution is still named `flntools`.
 
 ### 4.2 Where every module of today goes
+
+The left column names modules as they were at 92e694b. The right column names their homes in
+4.1's layout; until step 3½ they sit in the project folder under `flnd/` (the package's
+folder) and `flnd/kit/`.
 
 | today | goes to | in step |
 | --- | --- | --- |
@@ -197,7 +220,7 @@ flnd/
 | `flncore/log.py` | `ui/log.py` (temporary), then `ui/out.py` (lines, styles), `ui/screen.py` (drawing), `engine/run.py` (the journal) | 2, 3, 4 |
 | `flncore/prompt.py` | `ui/forms.py` | 2, 13 |
 | `flncore/clock.py`, `flncore/dig.py` | `kit/clock.py`, `kit/dig.py` | 2 |
-| `flncore/errors.py` | merged into `flnd/errors.py` | 2 |
+| `flncore/errors.py` | merged into `flnd/errors.py`, then split: `kit/errors.py` and `src/errors.py` (5.1) | 2, 3½ |
 | `flncore/media.py` | rewritten as `kit/media.py` from `_transfer._dash_merge` (one ffmpeg join) | 2 |
 | `flncore/config.py`, `run.py`, `cli.py` | deleted (dead) | 2 |
 | `flnd/_net.py`, `_browser.py`, `_files.py`, `_loop.py`, `_tools.py`, `_unpack.py`, `_ui.py`, `_prompt.py`, `_time.py` | deleted (shims) | 2 |
@@ -211,20 +234,22 @@ flnd/
 | `flnd/_track.py`, `_transfer.py`, `_steps.py` | `engine/track.py`, `transfer.py`, `steps.py` (temporary), then `save.py` | 2, 5 |
 | `flnd/_check.py` | `engine/check.py` (temporary), then `store.py` | 2, 10 |
 | `flnd/_plugins.py` | `engine/plugins.py` | 2, 9 |
-| `flnd/sources/__init__.py` | `flnd/plugins/__init__.py` (registry stays lazy over manifest) | 8 |
-| `flnd/__init__.py`, `flnd/__main__.py` | kept in place, updated for public names | 4, 7, 13 |
-| `flnd/_library.py` | kept at `flnd/_library.py`, rewritten | 13 |
-| `flnd/source.py` | kept for API 1 until step 8; `flnd/plugin.py` is new in step 7 | 7, 8 |
-| `flnd/sources/<code>.py` | `flnd/plugins/<code>.py`, one per commit as it is ported | 8 |
-| `flnd/sources/_manifest.py` | `flnd/plugins/_manifest.py` | 8, 9 |
-| `flnd/testing.py`, `flnd/cli.py`, `flnd/errors.py` | kept in place, rewritten | 7, 13, 2 |
+| `flnd/sources/__init__.py` | `src/plugins/__init__.py` (registry stays lazy over manifest) | 8 |
+| `flnd/__init__.py`, `flnd/__main__.py` | `src/__init__.py`, `src/__main__.py`, updated for public names | 4, 7, 13 |
+| `flnd/_library.py` | `src/_library.py`, rewritten | 13 |
+| `flnd/source.py` | kept for API 1 until step 8; `src/plugin.py` is new in step 7 | 7, 8 |
+| `flnd/sources/<code>.py` | `src/plugins/<code>.py`, one per commit as it is ported | 8 |
+| `flnd/sources/_manifest.py` | `src/plugins/_manifest.py` | 8, 9 |
+| `flnd/testing.py`, `flnd/cli.py`, `flnd/errors.py` | kept, rewritten; at `src/` from step 3½ | 7, 13, 2 |
+| `flnd/kit/*` (after step 2) | `kit/*`, the top-level package `kit` | 3½ |
+| `flnd/*` (the package after step 2) | `src/*`, still the package `flnd` | 3½ |
 
 A temporary module named above must be gone by the end of the step that replaces it. Step 16
 checks that none is left.
 
 ## 5. Contracts: errors, public names, the plugin API, the test kit
 
-### 5.1 Errors (`flnd/errors.py`)
+### 5.1 Errors (`kit/errors.py` and `src/errors.py`)
 
 ```text
 Error(Exception)            .hint: str (what to do; "" when nothing)
@@ -243,6 +268,32 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 ```
 
 - `str(e)` is one line, and `e.hint` is one line.
+- **Where each class lives** (from step 3½). One hierarchy, defined in two modules, because
+  `kit` imports nothing of flnd:
+  - **`kit/errors.py`** defines what `kit` raises: `Error` (with `hint`, `target` and
+    `retryable`), `UsageError`, `LoginError`, `SiteError` (with `status` and `response`),
+    `Blocked`, `NotFound`, `Changed`, `NetworkError`, `DiskError`, `ToolError` and `Stopped`,
+    and `disk(OSError, path=None) -> DiskError`. Their hints are generic: no hint in `kit`
+    names a flnd command.
+  - **`src/errors.py`** (`flnd.errors`) imports those same objects and re-exports them, and
+    defines what only flnd knows: `Hidden(SiteError)`, `PluginError(Error)`, and
+    `classify`. It adds no subclass of a kit class beyond `Hidden`, so
+    `flnd.LoginError is kit.errors.LoginError`, and an `except flnd.Error` catches what
+    `kit` raises.
+  - **`__module__`** stays where a class is defined: `kit.errors` for kit's eleven,
+    `flnd.errors` for `Hidden` and `PluginError`. `tests/data/api.txt` shows signatures with
+    those names (`error: kit.errors.Error`). The re-exports are the one exception to "no
+    aliases" (13): `test_names.py` lists exactly these eleven classes and `disk`.
+  - **Exit codes** (`cli.exit_code`) go by class, not by `__module__`: the first match in
+    `((Stopped, 130), (UsageError, 2), (LoginError, 3), (DiskError, 4), (ToolError, 4),
+    (PluginError, 4), (Error, 1))` by `isinstance`, and 4 for anything else. A plugin's own
+    class that happens to be named `LoginError` gets no special code.
+  - **flnd's hints.** `classify` fills an empty hint from a table in `src/errors.py`, by
+    class and plugin: a `LoginError` gets `flnd auth login <plugin>`, a `ToolError` the
+    install line of its tool, a `Blocked` "wait, or turn on switching for <plugin>".
+  - `kit/dig.py`'s malformed path raises `ValueError` (it is the caller's bug); `classify`
+    turns it into a `PluginError` when a plugin let it escape (S15's intent: never
+    `Changed`).
 - `errors.classify(exception) -> Error` turns any exception into one of these: anything a
   plugin lets escape becomes a `PluginError`.
 - `Error.of` is deleted; `classify` is the one way.
@@ -272,7 +323,7 @@ Removed from `flnd`: `Progress`, `Login` (the row is now `Account`), `SourceErro
 - the errors `Blocked`, `NotFound`, `Hidden`, `Changed`, `LoginError`, `NetworkError`,
   `SiteError`, `UsageError`, `PluginError`, `Error`.
 
-`Target` and `Account` are defined in `flnd/plugin.py` and re-exported by `engine/events.py`
+`Target` and `Account` are defined in `src/plugin.py` and re-exported by `engine/events.py`
 and `flnd`.
 
 `flnd.testing`: `FakeCtx`, `FakePage`, `Reply`, `Collected`, `Seen`, `collect`, `check`,
@@ -281,7 +332,7 @@ and `flnd`.
 `tests/data/api.txt` (`make api`) pins all three. Its diff is reviewed in every step that
 changes a public name.
 
-### 5.3 The plugin API (`flnd/plugin.py`, `api = 2`)
+### 5.3 The plugin API (`src/plugin.py`, `api = 2`)
 
 **Declarations on the class.** All are `ClassVar`s; a mistake raises `PluginError` when the
 class is made, naming the attribute and the fix.
@@ -466,7 +517,7 @@ that isn't lazy.
   replaces loi's and mht's copies.
 - `dig(data, path)`: today's. A malformed path raises `PluginError`.
 
-### 5.4 The test kit (`flnd/testing.py`)
+### 5.4 The test kit (`src/testing.py`)
 
 - **`FakeCtx(plugin: type[Plugin] | Plugin, target: str | Target = "", *,
   routes: Mapping[str, Reply | Callable] | None = None,
@@ -861,7 +912,7 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
   gets a default `accounts` row (`name = 'default'`, `is_default = 1`), and every plaintext
   value is sealed under its `account.id` in one transaction when schema 2 first opens it.
 
-### 6.8 The extension (`flnd/extension/`, `engine/extension.py`)
+### 6.8 The extension (`src/extension/`, `engine/extension.py`)
 
 - **The files:**
   - `manifest.json`: Manifest V3, with a fixed `key` so the extension ID never changes;
@@ -1096,7 +1147,7 @@ only from `~/.config/flnd/config.toml`).
   writes `<home>/log/crash-<stamp>.txt`, prints "flnd hit a bug: <one line>" with the hint
   "details in <path>", and exits 4.
 
-### 8.2 The screen (`flnd/ui/`)
+### 8.2 The screen (`src/ui/`)
 
 **The theme (`ui/theme.py`)** is the only place colours and glyphs are written:
 
@@ -1260,7 +1311,7 @@ Lines from other threads (warnings) go through its queue and print above the liv
     hint  flnd auth login ins
 ```
 
-### 8.3 The library (`flnd/_library.py`)
+### 8.3 The library (`src/_library.py`)
 
 ```python
 flnd.open(home: str | Path | None = None) -> Flnd   # None: $FLND_HOME or ./.flnd
@@ -1294,7 +1345,7 @@ Run: iterate (events) · async for · await · .state · .report · .wait() -> R
 ```
 
 The events and rows are frozen msgspec structs (`Target` and `Account` are defined in
-`flnd/plugin.py` and re-exported by `engine/events.py` and `flnd`):
+`src/plugin.py` and re-exported by `engine/events.py` and `flnd`):
 - `Saved(target: Target, category: str, post: str, path: Path, date: date | None, size: int,
   retried: bool = False)`;
 - `Skipped(target: Target, category: str, post: str, path: Path | None = None,
@@ -1535,8 +1586,9 @@ Step 0 rewrites AGENTS.md to exactly these sections.
   - live checks only by hand, on the test accounts; unit tests fake the network, the
     browser and the clock, and `FLND_TEST_NO_PROFILES=1` (set by `make test`) refuses real
     browser profiles, the real OS keychain and `~/.config/flnd/`.
-- **Layout:** section 4.1 and its import rules. `kit/` never imports `engine/`, `ui/` or
-  `plugins/`, and `ui/` never imports `plugins/`.
+- **Layout:** section 4.1 and its import rules. `src/` is the package `flnd`; `kit/` is the
+  standalone package `kit`, which imports nothing of flnd; `src/ui/` never imports
+  `src/plugins/`.
 - **Concurrency:**
   - one loop per run;
   - plugin code is async;
@@ -1544,7 +1596,7 @@ Step 0 rewrites AGENTS.md to exactly these sections.
     picks threads or processes;
   - a commit is one per post and on the loop, and never blocks it.
 - **Output:**
-  - everything printed goes through `flnd/ui` and its theme;
+  - everything printed goes through `src/ui` and its theme;
   - no `print`, and no colour or glyph outside `theme.py`;
   - debug goes to the journal only.
 - **Flags:** a flag only when the target, the config and the library are all wrong for the
@@ -1570,16 +1622,17 @@ Step 0 rewrites AGENTS.md to exactly these sections.
   - never claim a speed-up you didn't measure;
   - the counting guards in `make check` (requests, `stat` calls, SQL statements, imported
     modules) stay.
-- **Dead code:** the dead-name, docstring and API-snapshot checks cover all of `flnd/`.
+- **Dead code:** the dead-name, docstring and API-snapshot checks cover all of `src/` and
+  `kit/`.
 - **Dependencies:** each one has a reason beside it in `pyproject.toml`. After this plan
   they are curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode, rich,
   msgspec, tomlkit and textual (kept only if `ui.open ≤ 250 ms` in step 13).
 - **Writing:**
-  - a module docstring of 1–3 lines naming its `flnd/docs` page;
+  - a module docstring of 1–3 lines naming its `src/docs` page;
   - a public name gets a summary, then `Args`, `Returns` and `Raises` only when they add
     something;
   - comments cover only what the code can't say;
-  - a behaviour change updates its `flnd/docs` page in the same commit;
+  - a behaviour change updates its `src/docs` page in the same commit;
   - lines of at most 100 characters;
   - plain English.
 - **Models:** mechanical work (moves, renames, call sites, snapshots, doc edits that follow a
@@ -1679,6 +1732,31 @@ its commits.
   - `perf:build the cookie header once per domain` (with its numbers);
   - `perf:reuse curl handles across requests`, if it is needed.
 
+### Step 3½. The project's layout: `src/` and `kit`
+The user's layout of 2026-11-18 (D1, 4.1). It runs after step 3's commits land, since step 3
+is built on the earlier layout.
+- **Changes:**
+  - (a) mechanical, with `git mv` (haiku): the package's files go from `flnd/` to `src/`
+    and the kit from `flnd/kit/` to `kit/`; every `flnd.kit` import becomes `kit`; the hatch
+    wheel config maps `src` to `flnd` and ships `kit` (4.1, Packaging); the Makefile (`dist`
+    collects both packages, every path recipe), `tests/test_layers.py` (4.1's rules, rule 1
+    with no `flnd` at all), `tests/api_snapshot.py`, `test_names` and `test_docs` (their
+    packages: `flnd` and `kit`), and the folder paths in `AGENTS.md`;
+  - (b) the errors: `kit/errors.py` takes the eleven classes and `disk` of 5.1, every
+    `kit/*` imports from it, `src/errors.py` re-exports them and keeps `SourceError` (renamed
+    `PluginError` in step 7, when `Hidden` is added) and `classify`, with its hint table;
+    `cli.exit_code` goes by class; `kit/dig.py` raises `ValueError` on a malformed path.
+- **Tests:** `test_layers` (nothing under `kit/` names `flnd`); `tests/test_packaging.py`
+  (`import flnd, kit` from outside the folder, in a subprocess); `tests/test_errors.py`
+  (`flnd.LoginError is kit.errors.LoginError`; each public error's `__module__` as 5.1
+  says; exit codes by class, and a plugin's own class named `LoginError` gets 4, not 3; an
+  empty hint is filled by `classify`, and no kit hint names `flnd`); `make api`'s diff shows
+  only the `kit.errors` names.
+- **Done when:** `make check` and `make dist` pass from the project folder, and the project
+  folder has no `flnd/` package folder and no `flnd/kit/` left.
+- **Commits:** `refactor:put flnd's code in src and the kit beside it`, then
+  `refactor:give the kit its own errors`.
+
 ### Step 4. The run's screen
 - **Changes:**
   - `engine/events.py` gets `State`, `TargetState`, `FileState` and `HoldState`;
@@ -1755,10 +1833,10 @@ its commits.
 
 ### Step 7. Plugin API 2
 - **Changes:**
-  - `flnd/plugin.py` (5.3), with `Hidden` and `PluginError` added to `flnd/errors.py`
-    (`SourceError` renamed); `Target` and `Account` live in `flnd/plugin.py`;
+  - `src/plugin.py` (5.3), with `Hidden` and `PluginError` added to `src/errors.py`
+    (`SourceError` renamed); `Target` and `Account` live in `src/plugin.py`;
   - `engine/` runs `api = 2` plugins natively;
-  - `flnd/testing.py` gets `FakeCtx` (5.4);
+  - `src/testing.py` gets `FakeCtx` (5.4);
   - `open` returns `Landed` and raises `NotFound` and `LoginError` (S5);
   - `pages` keeps the cursor on a 429 (S6), and takes `in_page`;
   - `walls` match whole path segments; today's three tests
@@ -1788,7 +1866,7 @@ its commits.
   check.
 - **Order,** one commit each: `mht`, `loi`, `tlg`, `tik`, `twt`, `fbk`, `ins`.
 - **Each port:**
-  1. moves `flnd/sources/<code>.py` to `flnd/plugins/<code>.py`;
+  1. moves `src/sources/<code>.py` to `src/plugins/<code>.py`;
   2. becomes async;
   3. replaces its copied helpers with 5.3's (`meta`, `page_info`, `numbered`, `best`,
      `load`);
@@ -1801,7 +1879,7 @@ its commits.
   8. quotes its lines before and after.
 
   While porting one plugin per commit, the registry and `tests/source_manifest.py` read from
-  both `flnd/sources/` and `flnd/plugins/`.
+  both `src/sources/` and `src/plugins/`.
 - **Per port,** beyond the common items:
   1. **`mht`:** `browser = NONE`; searches by `ctx.pages(…, cursor="next_cursor")` with
      `cursor_res=true`; `numbered(n, width=3)`; adds `mht:author/{author}` and
@@ -1869,11 +1947,11 @@ its commits.
      - *Live:* that the HTML of `/p/<code>/` embeds the post (until confirmed, the fallback
        tab above is the measured path); story pages by `fetch(in_page=True)`; the pace;
        the private-account marker for `Hidden` (until found, no post is `NotFound`).
-- **Then:** delete `flnd/source.py`, `engine/site.py`, the bridge, `flnd/sources/` and
+- **Then:** delete `src/source.py`, `engine/site.py`, the bridge, `src/sources/` and
   `test_layers.py`'s temporary API-1 exemptions; update imports in `engine/*`,
-  `flnd/_library.py`, `flnd/cli.py`, `Makefile` (`docs`), `pyproject.toml` (drop
+  `src/_library.py`, `src/cli.py`, `Makefile` (`docs`), `pyproject.toml` (drop
   `flnd.source.Range`), `tests/api_snapshot.py`, `tests/source_manifest.py` and
-  `tests/test_docs.py` (`SourcePageTest`, `TERMS`); rename `flnd/docs/sources/` to `plugins/`
+  `tests/test_docs.py` (`SourcePageTest`, `TERMS`); rename `src/docs/sources/` to `plugins/`
   and `writing-a-source.md` to `writing-a-plugin.md` (with `flnd.plugin` blocks), and
   regenerate the manifest.
 - **Commits:** `refactor:port <name> to plugin api 2`, then `refactor:remove source api 1`.
@@ -1932,7 +2010,7 @@ its commits.
 
 ### Step 12. The extension
 - **Changes:**
-  - `flnd/extension/` and `engine/extension.py` (6.8): the host, the relay, the ops, the
+  - `src/extension/` and `engine/extension.py` (6.8): the host, the relay, the ops, the
     `chrome` method, the Chrome backend for `Ctx`'s browser verbs, the popup;
   - `make ext` in the Makefile;
   - then delete the keychain readers for Chrome, Edge, Brave and Chromium in
@@ -1946,8 +2024,8 @@ its commits.
 
 ### Step 13. The commands
 - **Changes:**
-  - `flnd/cli.py` on 8.1's tree;
-  - `flnd/_library.py` on 8.3;
+  - `src/cli.py` on 8.1's tree;
+  - `src/_library.py` on 8.3;
   - choose Textual inline (8.2) or Rich with raw key input from step 0's `ui.open` benchmark
     (≤ 250 ms, P17) before writing `ui/lists.py` and `ui/forms.py`;
   - `status` with its repair;
@@ -1956,7 +2034,7 @@ its commits.
   - the exit codes;
   - remove questionary (and textual if Rich was chosen), add tomlkit;
   - update `Makefile`'s `try` recipe (`python -c` calling `fl.get(..., dry=True)` in `.try`),
-    `flnd/docs/cli.md`, `flnd/docs/library.md` and `README.md` so `tests/test_docs.py` stays
+    `src/docs/cli.md`, `src/docs/library.md` and `README.md` so `tests/test_docs.py` stays
     green.
 - **Tests:**
   - `tests/test_cli.py`: every command, on a pipe and on a pyte terminal; the exit codes;
@@ -1971,9 +2049,9 @@ its commits.
 
 ### Step 14. The web plugin and HLS
 - **Changes:**
-  - `flnd/plugins/web.py`: direct file links; HLS (`.m3u8`) and DASH (`.mpd`) through
+  - `src/plugins/web.py`: direct file links; HLS (`.m3u8`) and DASH (`.mpd`) through
     `File.stream`; a page's `og:video`, `og:image` and `<video src>`; the popup's media;
-  - add `flnd/docs/plugins/web.md` and link it in `flnd/docs/README.md`;
+  - add `src/docs/plugins/web.md` and link it in `src/docs/README.md`;
   - `make live` (section 10).
 - **Tests:** `tests/test_web.py`.
 - **Bench:** `net.hls_200` (P16).
@@ -1992,14 +2070,14 @@ its commits.
 
 ### Step 16. Docs and size
 - **Changes:**
-  - rewrite `flnd/docs/`: `architecture.md` (sections 3–7 of this plan, as built),
+  - rewrite `src/docs/`: `architecture.md` (sections 3–7 of this plan, as built),
     `extension.md`, `errors.md`, `storage.md`, `performance.md` and `glossary.md`, and
     polish `cli.md`, `library.md`, `writing-a-plugin.md` and `plugins/<code>.md`;
   - polish the README;
   - check that no temporary module is left;
   - empty `tests/test_docs.py`'s `LONG`: the 32 modules allowed a long docstring until
-    their flows move into `flnd/docs` get section 13's docstring of 1–3 lines, which step 2
-    deferred for them, and their flows go to the `flnd/docs` page they name;
+    their flows move into `src/docs` get section 13's docstring of 1–3 lines, which step 2
+    deferred for them, and their flows go to the `src/docs` page they name;
   - report the line count against 24,000;
   - run `make bench ARGS=--record`.
 - **Done when:** `tests/test_docs.py` is green on the new pages.
