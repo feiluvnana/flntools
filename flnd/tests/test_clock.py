@@ -17,7 +17,7 @@ class RealClockTest(unittest.TestCase):
         stop.set()
         self.assertFalse(_time.sleep(10.0, stop=stop))
         with self.assertRaises(TypeError):
-            _time.sleep(0.0, stop)  # pyright: ignore[reportCallIssue]
+            _time.sleep(0.0, stop)
 
 
 class FakeClockTest(unittest.TestCase):

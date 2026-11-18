@@ -52,9 +52,10 @@ PACKAGES = ("flnd",)
 DOCS = ROOT / "flnd" / "docs"
 # The longest a module docstring may be, in lines: what the module holds, and its flnd/docs page.
 MODULE_LINES = 3
-# The modules that keep a longer docstring for now: their flows and rules aren't in a flnd/docs
-# page yet. Each moves into its page in step 16 (PLAN.md section 14), or goes with its module
-# when a step replaces it. The list may only shrink: `test_long_docstrings_are_still_long`.
+# The modules that keep a longer docstring for now (32 of them): their flows and rules aren't
+# in a flnd/docs page yet. Step 16 (PLAN.md section 14) empties this list by moving each into
+# its page, or the module goes when a step replaces it. The list may only shrink:
+# `test_long_docstrings_are_still_long`.
 LONG = frozenset({
     "flnd/__init__.py", "flnd/_library.py", "flnd/cli.py", "flnd/errors.py", "flnd/source.py",
     "flnd/testing.py",

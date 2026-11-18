@@ -10,9 +10,9 @@ The rules:
 2. `ui/*` imports only `ui/*`, `kit/*`, `engine/events.py` and `flnd/errors.py`.
 3. `engine/*` imports `engine/*`, `kit/*`, `ui/*`, `flnd/errors.py` and `flnd/plugin.py`;
    `engine/events.py` only `flnd/errors.py`, `flnd/plugin.py`, `kit/*` and `msgspec`.
-4. `flnd/plugin.py` imports only `kit/*` and `flnd/errors.py`; `flnd/testing.py` imports
-   `flnd`, `flnd/plugin.py`, `engine/*` and `kit/*`; `flnd/_library.py` imports `engine/*`,
-   `kit/*`, `flnd/errors.py` and `flnd/plugin.py`.
+4. `flnd/plugin.py` imports only `kit/*`, `flnd/errors.py` and the standard library;
+   `flnd/testing.py` imports `flnd`, `flnd/plugin.py`, `engine/*` and `kit/*`;
+   `flnd/_library.py` imports `engine/*`, `kit/*`, `flnd/errors.py` and `flnd/plugin.py`.
 5. `flnd/plugins/*` imports from flnd only `flnd.plugin`, and a third-party SDK only inside a
    function; the registry, `flnd/plugins/__init__.py`, also reads `_manifest.py`.
 6. `flnd/cli.py` imports only `flnd`, `flnd/ui/*` and `flnd/plugins/_manifest.py`.
@@ -128,6 +128,17 @@ def import_time_packages(path: Path) -> set[str]:
     return found - {"__future__"}
 
 
+def all_packages(path: Path) -> set[str]:
+    """The top-level package of every import in `path`, lazy ones inside a function included."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            found |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            found.add(node.module.split(".")[0])
+    return found - {"__future__"}
+
+
 def third_party(name: str) -> bool:
     return name.split(".")[0] not in sys.stdlib_module_names and name.split(".")[0] != "flnd"
 
@@ -201,9 +212,20 @@ class LayersTest(unittest.TestCase):
                 self.assertEqual(breaches(path), [])
 
     def test_engine_events_uses_only_msgspec_from_outside(self):
-        found = {name for name in import_time_packages(FLND / "engine" / "events.py")
+        # Lazy imports inside a function count too: they run later, but they are still deps.
+        found = {name for name in all_packages(FLND / "engine" / "events.py")
                  if third_party(name)}
         self.assertLessEqual(found, {"msgspec"})
+
+    def test_the_source_api_imports_only_the_stdlib_kit_and_errors(self):
+        # Rule 4 in full: `flnd/plugin.py` (today `flnd/source.py`) takes no third-party
+        # package, at import time or inside a function.
+        for path in (FLND / "source.py", FLND / "plugin.py"):
+            if not path.exists():
+                continue
+            with self.subTest(module=module_name(path)):
+                self.assertEqual(sorted(name for name in all_packages(path)
+                                        if third_party(name)), [])
 
     def test_a_plugin_imports_its_sdk_only_inside_a_function(self):
         for path in sorted((FLND / "sources").glob("*.py")):

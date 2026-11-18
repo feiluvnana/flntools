@@ -45,8 +45,8 @@ def dig(data: Any, path: str) -> Any:
         path: the path to walk; see above.
 
     Returns:
-        What the path reaches: a value, or a list when it spreads over items. None when
-        nothing is there.
+        What the path reaches: a value, or a list when it spreads over items. None when a
+        plain path finds nothing; a spreading path finds nothing as `[]`.
 
     Raises:
         SourceError: the path has a step that cannot be read.

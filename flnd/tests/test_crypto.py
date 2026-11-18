@@ -77,7 +77,7 @@ class HashTest(unittest.TestCase):
 
     def test_other_types_refused(self):
         with self.assertRaises(TypeError):
-            _vault.digest(123)  # pyright: ignore[reportArgumentType]
+            _vault.digest(123)
 
 
 @unittest.skipUnless(HAS_CRYPTOGRAPHY, "cryptography is not installed")
@@ -138,7 +138,7 @@ class CipherTest(unittest.TestCase):
             lambda: _vault.decrypt(cookie.encode(), key),
             lambda: _vault.encrypt(cookie, key[:20], context=password.encode()),
             lambda: _vault.decrypt(blob, wrong_key[:20], context=password.encode()),
-            lambda: _vault.encrypt(123, key),  # pyright: ignore[reportArgumentType]
+            lambda: _vault.encrypt(123, key),
         ]
         secret_texts = [cookie, password, "8f1c2e5a9b7d4013"]
         for key_bytes in (key, wrong_key, key[:20], wrong_key[:20]):

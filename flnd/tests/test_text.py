@@ -80,7 +80,7 @@ class CountTest(unittest.TestCase):
         self.assertEqual(_text.count(1, "story", plural="stories"), "1 story")
         self.assertEqual(_text.count(2, "story", plural="stories"), "2 stories")
         with self.assertRaises(TypeError):
-            _text.count(2, "story", "stories")  # pyright: ignore[reportCallIssue]
+            _text.count(2, "story", "stories")
 
 
 class FilenameTest(unittest.TestCase):
@@ -116,7 +116,7 @@ class FilenameTest(unittest.TestCase):
 
     def test_options_are_keyword_only(self):
         with self.assertRaises(TypeError):
-            _text.filename("a", "b")  # pyright: ignore[reportCallIssue]
+            _text.filename("a", "b")
 
 
 if __name__ == "__main__":

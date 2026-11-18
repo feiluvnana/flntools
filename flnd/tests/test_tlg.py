@@ -253,7 +253,7 @@ class FakeQR:
     def url(self):
         return f"tg://login?token=token{self.number}"
 
-    async def wait(self, timeout=None):  # noqa: ASYNC109 (mirrors Playwright's)
+    async def wait(self, timeout=None):  # noqa: ASYNC109 (mirrors Telethon's)
         outcome = self.client.telegram.qr_outcomes.pop(0)
         if outcome == "timeout":
             raise TimeoutError()
