@@ -302,7 +302,7 @@ class Facebook(Plugin):
         """The albums tab, scrolled to its end for each album's link, then each album.
 
         Media on the tab itself is yielded as it comes; each album's goes in
-        `albums/<title>/`.
+        `albums/<title>/`. The albums' pages load in warm tabs while the first is read.
         """
         url, owner = profile["albums_url"], profile["owner"]
         if not url:
@@ -314,6 +314,7 @@ class Facebook(Plugin):
                 listed.update(album_links(result))
             for post in media_posts(result, "albums", owner=owner):
                 yield post
+        await ctx.warm(list(listed))
         for album, title in listed.items():
             async for result in tab_results(ctx, album):
                 for post in media_posts(result, "albums", album=title, owner=owner):
@@ -343,9 +344,11 @@ class Facebook(Plugin):
         if not profile["header"]:
             ctx.log("warn", "the profile header wasn't found; its stories are skipped")
             return
-        # Live check pending: a bucket by `fetch(in_page=True)`; until then one page each.
-        for bucket in profile["buckets"]:
-            url = f"{SITE}/stories/{bucket}/"
+        # Live check pending: a bucket by `fetch(in_page=True)`; until then one page each,
+        # loading in warm tabs while the first is read.
+        urls = [f"{SITE}/stories/{bucket}/" for bucket in profile["buckets"]]
+        await ctx.warm(urls)
+        for url in urls:
             results = await page_results(ctx, url)
             if results is None:
                 raise SiteError(f"fbk: the story bucket {url} didn't load")

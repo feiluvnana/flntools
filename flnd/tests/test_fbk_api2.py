@@ -268,6 +268,14 @@ class ProfileTest(unittest.TestCase):
                 if keys is not None:
                     self.assertEqual([s.key for s in saved], keys)
 
+    def test_album_pages_and_story_buckets_load_in_warm_tabs_first(self):
+        cases = [(["albums"], [ALBUMS["Trip"], ALBUMS["Home: 1"]]),
+                 (["stories"], [f"{SITE}/stories/900/"]), (["posts"], [])]
+        for categories, warmed in cases:
+            with self.subTest(categories=categories):
+                _, ctx = run(categories=categories)
+                self.assertEqual(ctx.seen.warmed, warmed)
+
     def test_a_tab_the_header_lacks_is_skipped_and_without_a_header_each_is_tried(self):
         _, ctx = run(categories=["tagged"], pages={BASE: page(header("photos_by"))})
         self.assertEqual(ctx.seen.visited, [BASE])
