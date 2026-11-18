@@ -978,6 +978,12 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
   named pipe `\\.\pipe\flnd-host-<user>` with a DACL allowing only the current user SID. A run
   connects there and sends the shared secret from `~/.config/flnd/extension/token.json`
   (mode 0600) in `hello` before any other op runs.
+  - The host waits at most 5 s for `hello` on a new connection, then closes it.
+  - On Windows, the client checks that the pipe server's owner SID is the current user's
+    before it sends the token, so another user's pipe of the same name never receives it.
+  - A malformed message or part from the extension (bad JSON, an unknown `id`, a part out of
+    order or past `of`) drops that message, with a journal line, and the host keeps
+    running.
 - **Messages** are `{"id": int, "op": str, "args": {…}}`, answered by `{"id", "ok": true,
   "value"}` or `{"id", "ok": false, "error": {"class", "message"}}`. An answer over 768 KiB
   is sent in parts `{"id", "part": i, "of": n, "chunk": "<base64>"}`, since Chrome caps a
@@ -1012,15 +1018,19 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
     (runs `flnd get <target>`) and **Follow**;
   - `media {tab}`, whose items each have **Get**, which sends the URL to the `web` plugin.
 - **Install.** `flnd extension install`:
-  1. copies the files to `~/.config/flnd/extension/`, generates a 32-byte shared secret in
-     `~/.config/flnd/extension/token.json` (mode 0600), and records the default home
-     (`$FLND_HOME`, else `Path.cwd() / ".flnd"`) in `host.json`;
+  1. copies the extension's files to `~/.config/flnd/extension/unpacked/`, the folder Load
+     unpacked points at; generates a 32-byte shared secret in
+     `~/.config/flnd/extension/token.json` (mode 0600); and records the default home
+     (`$FLND_HOME`, else `Path.cwd() / ".flnd"`) in `~/.config/flnd/extension/host.json`.
+     The token and `host.json` stay outside `unpacked/`, so they are never inside the
+     extension's folder, and its own origin can't fetch `chrome-extension://<id>/token.json`
+     (a decision of the extension's security review, 2026-11-18; 15, item 6);
   2. writes the host manifest for every Chromium browser found;
   3. prints three numbered steps (open `chrome://extensions`, turn on Developer mode, Load
-     unpacked with that path);
+     unpacked with the `unpacked/` path);
   4. waits, with a spinner, up to 10 minutes for `hello`.
 
-  `uninstall` removes the files and the host manifests.
+  `uninstall` removes `unpacked/`, `token.json`, `host.json` and the host manifests.
 - **Tests:**
   - `tests/test_extension.py` drives the protocol against a fake extension, in
     `make check`;
