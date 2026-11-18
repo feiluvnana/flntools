@@ -162,6 +162,7 @@ class GroupsTest(EngineCase):
         self.assertEqual(self.failures(), ["aaa:bad: blocked"])
         self.assertIn(("aaa:good", "posts"), self.listed())
 
+
     def test_a_group_whose_connect_fails_ends_its_rows_failed(self):
         # Fix 5: before it, only the error line was written and log.group ended the rows at ok.
         def connect(self, ctx):
@@ -598,6 +599,36 @@ class EngineLoginTest(EngineCase):
         self.assertEqual(answers, ["1"])
         asked.assert_called_once_with("Phone number", secret=False)
         self.assertIn("With the country code, such as +44", "\n".join(self.lines()))
+
+
+class OffTheLoopTest(EngineCase):
+    def test_flnd_db_and_the_disk_are_never_read_or_written_on_the_loop(self):
+        # flnd.db's connection waits up to 30 s for another process's lock: on the loop, that
+        # would stall every transfer of the run.
+        on_loop = []
+
+        def spied(name, real):
+            def call(*args, **kwargs):
+                try:
+                    asyncio.get_running_loop()
+                    on_loop.append(name)
+                except RuntimeError:
+                    pass
+                return real(*args, **kwargs)
+            return call
+
+        names = [name for name in vars(_home.Home) if not name.startswith("_")
+                 and callable(getattr(_home.Home, name))]
+        for name in names:
+            self.enterContext(mock.patch.object(_home.Home, name,
+                                                spied(name, getattr(_home.Home, name))))
+        self.enterContext(mock.patch.object(job, "_on_disk", spied("stat", job._on_disk)))
+        files = [File(f"{CDN}/a.jpg", name="a.jpg"), File(f"{CDN}/b.txt", name="b.txt")]
+        engine = Engine(home=self.home, sources={"aaa": make_plugin("aaa", files=files)})
+        engine.download(["aaa:example_user"], sync=True)
+        engine.sync()
+        engine.retry()
+        self.assertEqual(on_loop, [])
 
 
 class ApiTest(EngineCase):
