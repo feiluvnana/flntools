@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,7 @@ from flncore import clock as _time
 from flncore.log import REDRAW, UI, Journal, State
 from flnd._events import Failed, Saved
 from flnd.source import Target
+from flnd.testing import fake_clock
 
 
 class _TTY(io.StringIO):
@@ -254,6 +255,19 @@ class JournalTest(unittest.TestCase):
             self.fail("the handler's log line waited forever on the journal's lock")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(len(self.journal_path.read_text("utf-8").splitlines()), 2)
+
+    def test_lines_are_stamped_with_the_wall_clock(self) -> None:
+        with UI().file(self.journal_path) as j:
+            j.write({"type": "Log", "message": "now"})
+            with fake_clock() as clock:
+                clock.advance(90)
+                j.write({"type": "Log", "message": "fake"})
+
+        real, fake = map(json.loads, self.journal_path.read_text("utf-8").splitlines())
+        gap = datetime.now(UTC) - datetime.fromisoformat(real["at"])
+        self.assertLess(abs(gap.total_seconds()), 5)
+        self.assertEqual(datetime.fromisoformat(fake["at"]),
+                         datetime(2026, 1, 1, 0, 1, 30, tzinfo=UTC))
 
 
 class RendererTest(unittest.TestCase):

@@ -330,8 +330,7 @@ class Journal:
         if "type" not in data:
             data["type"] = event_type
         if "at" not in data:
-            now = _time.now()
-            data["at"] = datetime.fromtimestamp(now, tz=UTC).isoformat()
+            data["at"] = datetime.fromtimestamp(_time.wall(), tz=UTC).isoformat()
 
         line = json.dumps(data, ensure_ascii=False) + "\n"
         with self._lock:
