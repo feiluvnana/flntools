@@ -1233,7 +1233,8 @@ class Plugin:
     user_agent: ClassVar[str | None] = None
     # URL paths meaning "log in" or a stopped account, matched by whole path segments.
     walls: ClassVar[tuple[str, ...]] = ()
-    # The templates of a file's folder under the target's, its name, and its history key.
+    # The templates of a file's folder under the target's ("" is the target's own), its name,
+    # and its history key.
     folder: ClassVar[str] = "{category}"
     filename: ClassVar[str] = "{post}_{num}"
     key: ClassVar[str] = "{post}_{num}"
@@ -1563,7 +1564,8 @@ def _check_templates(cls: type[Plugin], code: str) -> None:
             templates += [(f"{category.name}.folder", category.folder),
                           (f"{category.name}.key", category.key)]
     for attribute, template in templates:
-        if template is None:
+        # An empty folder is the target's own folder; an empty name or key names nothing.
+        if template is None or (template == "" and attribute.endswith("folder")):
             continue
         if not isinstance(template, str) or not template:
             raise PluginError(f"{code}.{attribute}: {template!r}; set a template such as "

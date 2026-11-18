@@ -220,6 +220,7 @@ class DeclarationTest(unittest.TestCase):
             ("folder", lambda: plugin(folder="../up"), r"exm\.folder: '\.\./up' leaves"),
             ("folder", lambda: plugin(folder="{album}"), r"exm\.folder: unknown field \{album\}"),
             ("key", lambda: plugin(key="{post"), r"exm\.key: '\{post'"),
+            ("key", lambda: plugin(key=""), r"exm\.key: ''; set a template"),
             ("unsupported", lambda: plugin(unsupported={"example.com/{x}": "no"}),
              r"exm\.unsupported: pattern 'example\.com/\{x\}' has \{x\}, but a refusal captures "
              r"nothing; write \* for that segment"),
@@ -252,6 +253,8 @@ class DeclarationTest(unittest.TestCase):
             with self.subTest(attribute, message=message), self.assertRaisesRegex(
                     PluginError, message):
                 make()
+        # An empty folder is the target's own; an empty name or key is a mistake (above).
+        self.assertEqual(plugin(folder="").folder, "")
 
     def test_each_pattern_mistake_is_named(self):
         rows = [
