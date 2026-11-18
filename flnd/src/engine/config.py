@@ -5,12 +5,14 @@ src/docs/storage explains every key ("config.toml").
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import enum
 import os
 import re
 import sys
 import tomllib
+import typing
 import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -46,6 +48,9 @@ WHEN_USAGE = ("when takes a year (2026), a month (2026-06), a day (2026-06-15), 
 PERIOD = re.compile(r"(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?")
 SPAN = re.compile(r"(\d+)([dwy])")
 SPAN_DAYS = {"d": 1, "w": 7, "y": 365}
+# The warnings about the files said so far (`_warn`).
+WARNED: set[str] = set()
+
 
 
 class Where(enum.StrEnum):
@@ -320,52 +325,57 @@ def _guard(path: Path) -> None:
         raise RuntimeError(f"{NO_PROFILES} is set: refusing the real user config {path}")
 
 
-def program(user: Path) -> tuple[str, ...]:
-    """`[defaults] exec` of the user file, the one place it is read from: the program and its
-    arguments to run after each saved file; () when unset.
+def settings(home: Path, *, plugins: Mapping[str, type] | None = None,
+             given: Mapping[str, Any] | None = None) -> Config:
+    """Every setting of a home, with the user's own file (`user_file`): what a run reads.
 
-    Under `FLND_TEST_NO_PROFILES` the account's real user file is never read, so it sets none.
+    Under `FLND_TEST_NO_PROFILES` the account's real user file is never read, so it adds none.
+
+    Args:
+        plugins: the plugin classes by code, as `read` takes them; a lazy mapping imports only
+            the plugins a file names.
 
     Raises:
-        UsageError: the file isn't TOML, or `exec` isn't a list of text.
+        UsageError: a file isn't TOML, or a value is one its key doesn't take.
     """
+    user: Path | None = user_file()
     try:
-        data = _load(user, Where.USER)
+        _guard(user)
     except RuntimeError:
-        return ()
-    defaults = data.get("defaults", {})
-    if not isinstance(defaults, dict) or "exec" not in defaults:
-        return ()
-    return _checked(str(user), "defaults.exec", DEFAULTS["exec"], defaults["exec"])
+        user = None
+    return read(home, user=user, plugins=plugins, given=given)
 
 
-def read(home: Path, *, user: Path, plugins: Mapping[str, type] | None = None,
+def read(home: Path, *, user: Path | None, plugins: Mapping[str, type] | None = None,
          given: Mapping[str, Any] | None = None) -> Config:
     """Read and resolve every setting: `given`, then the home's file, the user file, the default.
 
     Args:
         home: the home folder; its `config.toml` may be missing.
-        user: the user file (`user_file()` outside tests); it may be missing.
+        user: the user file (`user_file()` outside tests); it may be missing; None reads none.
         plugins: the plugin classes by code, whose `fields`, `Settings` and `browser` check
-            their tables; a code not here has only the engine's keys.
+            their tables; a code not here has only the engine's keys. Only a plain `dict`'s
+            codes all resolve; another mapping is asked only for the codes a file names.
         given: values for one call, by dotted name (`"when"`, `"plugins.ins.pace"`).
 
     Raises:
         UsageError: a file isn't TOML, or a value is one its key doesn't take.
     """
-    plugins = plugins or {}
+    plugins = {} if plugins is None else plugins
     called = _from_dotted(given or {})
     if "exec" in called.get("defaults", {}):
         raise UsageError("defaults.exec is read only from the user file, not from a call",
-                         hint=f"set it in {user}")
+                         hint=f"set it in {user or user_file()}")
     layers = [
         (Where.ARGUMENT, "the call", called),
         (Where.HOME, str(home / FILE), _load(home / FILE, Where.HOME)),
-        (Where.USER, str(user), _load(user, Where.USER)),
+        *([(Where.USER, str(user), _load(user, Where.USER))] if user is not None else []),
     ]
     values: dict[str, Any] = {}
     where: dict[str, Where] = {}
-    codes = set(plugins)
+    # A plain mapping's codes all resolve; a lazy one (the registry) only those a layer names,
+    # so no plugin is imported for nothing.
+    codes = set(plugins) if isinstance(plugins, dict) else set()
     for origin, label, data in reversed(layers):
         for key, value in _checked_layer(label, data, plugins).items():
             values[key], where[key] = value, origin
@@ -395,20 +405,20 @@ def _load(path: Path, origin: Where) -> dict[str, Any]:
         raise _syntax(path, error) from None
     old = data.pop("sources", None)
     if old is not None and not isinstance(old, dict):
-        ui.warn("{path}: sources is not a table; it is ignored", path=str(path))
+        _warn("{path}: sources is not a table; it is ignored", path=str(path))
     if isinstance(old, dict):
-        ui.warn("{path}: [sources.<code>] is now [plugins.<code>]; rename it", path=str(path))
+        _warn("{path}: [sources.<code>] is now [plugins.<code>]; rename it", path=str(path))
         plugins = data.setdefault("plugins", {})
         for code, table in old.items():
             own = plugins.get(code, {}) if isinstance(plugins, dict) else None
             if not isinstance(table, dict):
-                ui.warn("{path}: [sources] {code} is not a table; it is ignored",
+                _warn("{path}: [sources] {code} is not a table; it is ignored",
                         path=str(path), code=code)
             elif isinstance(own, dict):
                 plugins[code] = {**table, **own}
     defaults = data.get("defaults")
     if origin is Where.HOME and isinstance(defaults, dict) and "exec" in defaults:
-        ui.warn("{path}: [defaults] exec is read only from the user file; it is ignored",
+        _warn("{path}: [defaults] exec is read only from the user file; it is ignored",
                 path=str(path))
         del defaults["exec"]
     return data
@@ -480,7 +490,7 @@ def _keys(label: str, where: str, table: Mapping[str, Any],
 
 def _value(label: str, key: str, spec: Key, value: Any) -> Any:
     if key == "defaults.dedupe" and value in ("link", "off"):
-        ui.warn('{label}: dedupe = "{value}" is now dedupe = {flag}', label=label, value=value,
+        _warn('{label}: dedupe = "{value}" is now dedupe = {flag}', label=label, value=value,
                 flag="true" if value == "link" else "false")
         return value == "link"
     return _checked(label, key, spec, value)
@@ -493,14 +503,28 @@ def _table(label: str, name: str, value: Any) -> None:
 
 
 def _unknown(label: str, setting: str) -> None:
-    ui.warn("{label}: {setting} is not a setting flnd knows; it is ignored", label=label,
+    _warn("{label}: {setting} is not a setting flnd knows; it is ignored", label=label,
             setting=setting)
 
 
+def _warn(message: str, **fields: str) -> None:
+    """A warning about a file, said once per process: the library reads a home's settings,
+    then its run reads them again."""
+    said = message.format(**fields)
+    if said not in WARNED:
+        WARNED.add(said)
+        ui.warn(message, **fields)
+
+
 def _settings_fields(cls: type | None) -> dict[str, Any]:
+    """A plugin's own keys and their types: its `Settings`, a dataclass (`flnd.plugin`) or a
+    msgspec struct."""
     settings = getattr(cls, "Settings", None)
     if settings is None:
         return {}
+    if dataclasses.is_dataclass(settings):
+        hints = typing.get_type_hints(settings)
+        return {field.name: hints.get(field.name, Any) for field in dataclasses.fields(settings)}
     return {field.name: field.type for field in msgspec.structs.fields(settings)}
 
 
@@ -585,7 +609,12 @@ def _edit(key: str, value: Any, *, home: Path, user: Path,
                 place[table] = tomlkit.table(is_super_table=i < len(tables) - 1)
             place = place[table]
             _table(str(path), ".".join(tables[: i + 1]), place)
-        place[name] = value
+        try:
+            place[name] = value
+        except (TypeError, ValueError):  # tomlkit's ConvertError is a TypeError and ValueError
+            raise UsageError(f"{key}: a {type(value).__name__} isn't a TOML value",
+                             hint="give text, a number, true or false, a list or a table") \
+                from None
     content = tomlkit.dumps(document)
     origin = Where.USER if path == user else Where.HOME
     _checked_layer(str(path), _without_exec(tomllib.loads(content), origin), plugins)

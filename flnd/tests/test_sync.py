@@ -14,8 +14,8 @@ from fakes import CDN, EngineCase, make_plugin, noise
 
 from flnd.engine import store as _store
 from flnd.engine.core import Engine, TargetReport, _Runner
+from flnd.engine.crawl import Options
 from flnd.engine.events import State
-from flnd.engine.options import Options
 from flnd.plugin import File, Plugin, Post, Range, Target, route
 from flnkit import net as _net
 

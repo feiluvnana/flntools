@@ -25,8 +25,8 @@ from flnd.engine import home as _home
 from flnd.engine import run as _run
 from flnd.engine import store as _store
 from flnd.engine.core import Engine, Report, _drive
+from flnd.engine.crawl import Options
 from flnd.engine.events import Failed, Phase, State
-from flnd.engine.options import Options
 from flnd.plugin import Post, Target
 from flnd.ui.log import ui
 from flnkit import clock as _time

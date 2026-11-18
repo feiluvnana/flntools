@@ -29,8 +29,8 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.plugin
-from flnd.engine import home, jobs, store
-from flnd.engine.options import SourceConfig, config
+from flnd.engine import config, home, jobs, store
+from flnd.engine.config import PluginConfig
 from flnd.errors import (
     Blocked,
     LoginError,
@@ -46,7 +46,7 @@ from flnd.ui.log import ui
 from flnkit import browser, clock, net, text, vault
 
 if TYPE_CHECKING:
-    from flnd.engine.options import RunShared
+    from flnd.engine.crawl import RunShared
     from flnd.engine.run import Stop
     from flnkit import cookies
     from flnkit.html import Document
@@ -374,7 +374,10 @@ class Ctx:
         self._when = when
         self._login = login
         self._tabs = TargetTabs(run)
-        self._settings = type(self._plugin).Settings()
+        # The plugin's own keys of config.toml (`[plugins.<code>]`), else its defaults.
+        configured = getattr(run.config, "settings", None)
+        self._settings = (configured if configured is not None
+                          else type(self._plugin).Settings())
         self._state = JsonState(run.values)
         self._secrets = Secrets(lambda: run.secrets)
         # The category's listing, which `pages` resumes and reports to; the crawl sets it.
@@ -716,7 +719,7 @@ class Ctx:
 
     @property
     def settings(self) -> flnd.plugin.Settings:
-        """The plugin's `Settings`: its defaults; config.toml's aren't read yet."""
+        """The plugin's `Settings`: its keys of config.toml, over its defaults."""
         return self._settings
 
     @property
@@ -907,9 +910,9 @@ class PluginRun:
     web: net.Client
     # The files' downloads, over the same session and limits: stopped by the second Ctrl-C.
     files: net.Client
-    # The plugin's `[sources.<code>]` settings in the home's config.toml: pace, scroll, limits,
-    # proxy and stop_after, each over what the plugin's class says.
-    config: SourceConfig = field(default_factory=SourceConfig)
+    # The plugin's `[plugins.<code>]` settings in config.toml: pace, limits, proxy, stop_after,
+    # its templates and its own `Settings`, each over what its class says.
+    config: PluginConfig = field(default_factory=PluginConfig)
     # The posts its `date` hook had no day for, read once for the run (`crawl.asked`).
     asked: dict[str, float] | None = None
     _state: store.Store | None = field(default=None, repr=False)
@@ -1094,8 +1097,9 @@ def plugin_run(settings: RunShared, plugin: Plugin) -> Iterator[PluginRun]:
 
     The login's cookies are read from the home once, here, and a cookie of the login that has
     expired or expires within `EXPIRY_WARNING` is a warning line. The plugin's
-    `[sources.<code>]` settings in the home's config.toml give the scheduler its pace and its
-    hosts' limits, and the session its proxy. Nothing is sent yet.
+    `[plugins.<code>]` settings in config.toml are read here too (the run's, read as it began),
+    and give the run's scheduler its pace and its hosts' limits, the session its proxy, and the
+    instance its `folder` and `filename` templates. Nothing is sent yet.
 
     Raises:
         UsageError: the home's config.toml has a value it doesn't take.
@@ -1122,18 +1126,25 @@ async def opened(settings: RunShared, plugin: Plugin) -> AsyncIterator[PluginRun
         await run.aclose()
 
 
-def _read(settings: RunShared, plugin: Plugin) -> tuple[SourceConfig, cookies.Jar]:
-    """A plugin's `[sources.<code>]` settings and its login's cookies, from the home."""
-    return config(settings.home).source(plugin.code), home.load(settings.home, plugin.code)
+def _read(settings: RunShared, plugin: Plugin) -> tuple[PluginConfig, cookies.Jar]:
+    """A plugin's `[plugins.<code>]` settings (the run's, or read here) and its login's
+    cookies, from the home."""
+    found = getattr(settings, "config", None) or config.settings(
+        settings.home, plugins={plugin.code: type(plugin)})
+    return found.plugin(plugin.code), home.load(settings.home, plugin.code)
 
 
-def _made(settings: RunShared, plugin: Plugin, configured: SourceConfig | None = None,
+def _made(settings: RunShared, plugin: Plugin, configured: PluginConfig | None = None,
           jar: cookies.Jar | None = None) -> PluginRun:
     """A plugin's `PluginRun`: its login's cookies warned of, its settings applied; both
-    read here unless given."""
+    read here unless given. A configured template replaces its class's on this instance; a
+    category's or a route's own still wins (`crawl._format`)."""
     if configured is None or jar is None:
         configured, jar = _read(settings, plugin)
     _warn_expiring(plugin, jar)
+    for name in ("folder", "filename"):
+        if getattr(configured, name) is not None:
+            setattr(plugin, name, getattr(configured, name))
     stop: Stop | None = getattr(settings, "stop", None)
     # Outside a run, the plugin has a scheduler of its own.
     own = jobs.Scheduler(stop=stop) if scheduler(settings) is None else None
@@ -1149,7 +1160,7 @@ def _made(settings: RunShared, plugin: Plugin, configured: SourceConfig | None =
 
 
 def _network(plugin: Plugin, jar: Iterable[Mapping[str, Any]],
-             settings: SourceConfig, *, handles: int) -> net.Session:
+             settings: PluginConfig, *, handles: int) -> net.Session:
     """A plugin's session: its `sign` hook and `user_agent` on requests to its own domains
     only, and the config's proxy.
 
@@ -1198,9 +1209,11 @@ async def shared_browser(settings: RunShared) -> AsyncIterator[None]:
         yield
         return
     shared = browser.RunBrowser(asyncio.get_running_loop(), screen=_Screen())
-    found = await asyncio.to_thread(config, settings.home)
+    found = getattr(settings, "config", None) or await asyncio.to_thread(
+        config.settings, settings.home)
     made = _SCHEDULERS[shared] = jobs.Scheduler(
-        stop=getattr(settings, "stop", None), rate=found.rate, slowest=found.slowest)
+        stop=getattr(settings, "stop", None), rate=config.speed(found.defaults.rate),
+        slowest=config.speed(found.defaults.slowest))
     settings.browser_pool = shared
     try:
         yield
@@ -1306,8 +1319,8 @@ class TargetTabs:
             ui.warn("{code}: the browser doesn't use the proxy in config.toml; only the "
                     "plugin's HTTP requests do", code=self._source.code)
         budget = jobs.Budget(self._run.scheduler, self._source.code, None)
-        return browser.Tabs(self._shared, self._run.jar, scroll=settings.scroll or browser.HUMAN,
-                            budget=budget)
+        return browser.Tabs(self._shared, self._run.jar,
+                            scroll=getattr(self._source, "scroll", browser.HUMAN), budget=budget)
 
     @property
     def opened(self) -> bool:

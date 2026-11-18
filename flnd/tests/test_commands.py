@@ -28,8 +28,8 @@ from flnd import cli as flnd_cli
 from flnd.engine import home as _home
 from flnd.engine import store as _store
 from flnd.engine.core import Engine, TargetReport, _Runner
+from flnd.engine.crawl import Options
 from flnd.engine.events import Saved
-from flnd.engine.options import Options
 from flnd.plugin import Plugin, Post, route
 from flnd.plugins import PLUGINS
 from flnd.ui.log import ui

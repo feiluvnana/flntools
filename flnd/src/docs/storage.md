@@ -20,7 +20,7 @@ holds your logins and cookies.
   log/
     crash-<time>.txt     the traceback of a crash, for a bug report
     <run>/samples/<n>.txt  the answer a site change was found in, scrubbed (see below)
-  config.toml      settings (optional): `[defaults]`, `[sources.<code>]`
+  config.toml      settings (optional): `[defaults]`, `[plugins.<code>]`
                    (see Settings, below)
   cache/           reserved for things safe to delete; nothing writes there yet
 ```
@@ -176,7 +176,7 @@ is on disk at the size its row says, the new file is replaced, atomically, by a 
 it. Both paths stay real files, both rows stay, and the bytes are on disk once. A hard link has
 one modified time, so the second file shows the first one's day, and its row says so.
 
-- It is on by default. `dedupe = "off"` under `[defaults]` in `config.toml` keeps both copies.
+- It is on by default. `dedupe = false` under `[defaults]` in `config.toml` keeps both copies.
 - A file system that can't hard-link (FAT and exFAT drives, a link across two volumes) keeps both
   copies, with one warning per run.
 - A hard link is one file: editing it in one folder edits it in the other.
@@ -289,27 +289,29 @@ A home of a later version, or one with files and no version, is refused.
 
 ## Settings: config.toml
 
-The home's settings, all optional; a home without the file has every default. A setting given for
-one run (a flag, or a library argument) wins over the file, and the file over the default. The
-environment only says where things are (`FLND_HOME`, `FLND_SOURCES`), so it never meets these.
+All optional; a home without the file has every default. A setting resolves in this order: a
+library argument (or a flag) given for one run, the home's `config.toml`, your user file
+(`~/.config/flnd/config.toml`, or `%APPDATA%\flnd\config.toml` on Windows), then the default.
+The user file holds what every home shares, and is the only place `exec` is read from.
 
 ```toml
 [defaults]
-again = false        # list every post again, and ask again for files recorded gone (--again)
-dedupe = "link"      # "link" a file whose bytes are saved already, or "off" to keep both
+dedupe = true        # hard-link a file whose bytes are saved already; false keeps both
 sidecars = false     # write <file>.json beside each saved file
 when = ""            # the days every download, follow and sync takes, as --when writes them
                      # ("1y", "2026", "2026-01.."); "" for every day
 rate = "0"           # the run's speed limit, such as "20 MB/s" or "500 KB/s"; "0" for none
 slowest = "0"        # cut a transfer slower than this over 30 s, and go on; "0" for off
+# exec = ["notify-send", "{path}"]   # read only from the user file; see the CLI guide
 
 
-[sources.ins]        # one table per plugin, by its code
+[plugins.ins]        # one table per plugin, by its code
 pace = 1.0           # seconds between its page requests (over the plugin's own pace)
-scroll = "human"     # "human" or "fast": how its browser feeds scroll
 limits = { "cdninstagram.com" = 8 }   # the most files at once from a host
 proxy = "socks5://127.0.0.1:1080"     # every HTTP request of the plugin goes through it
 stop_after = 5       # saved posts in a row that end a sync of a newest-first listing
+folder = "{category}"                # the folder and file name templates, over the plugin's
+filename = "{date}_{post}{index}"
 ```
 
 - **`[defaults] rate`** is one byte bucket for every file of the run, a second deep: a file's
@@ -319,10 +321,12 @@ stop_after = 5       # saved posts in a row that end a sync of a newest-first li
   from the files in flight on that disk, and 64 MiB more, or the run stops with a `DiskError`.
 - **`[defaults] when`** bounds a sync too, which has no `--when` of its own. Give `--when ""` (or
   `when=""` in the library) for every day in one run.
-- **`[sources.<code>]`** settings win over what the plugin's class says: `pace` over
-  `Plugin.pace` (0 is no pace), `scroll` over the default, `human`, and `limits` merged over
-  `Plugin.limits`, so a host named in both takes the file's number. A host's cap still adapts
-  under it ([architecture.md](architecture.md#network)).
+- **`[plugins.<code>]`** settings win over what the plugin's class says: `pace` over its `pace`
+  (0 is no pace), and `limits` merged over its `limits`, so a host named in both takes the
+  file's number. A host's cap still adapts under it ([architecture.md](architecture.md#network)).
+  `folder` and `filename` replace the class's templates (a category's own `folder` still wins),
+  and are checked against the plugin's fields before any request. A plugin's own settings (its
+  `Settings`) are keys of its table too, and reach it as `ctx.settings`.
 - **`proxy`** takes `http://`, `https://`, `socks5://` or `socks5h://` (which also looks host
   names up through the proxy), with a user and password if the proxy needs them. It carries
   every request and download of the plugin's HTTP session. **The browser isn't proxied**: one
@@ -330,11 +334,15 @@ stop_after = 5       # saved posts in a row that end a sync of a newest-first li
   that opens pages (Instagram, TikTok, Facebook, Twitter/X) loads them directly. A run says so
   once, as a warning, when such a plugin opens its first tab.
 - **A bad value** stops the command as a usage error that names the file, the key and what it
-  takes: `config.toml: [sources.ins] scroll is "human" or "fast", not 'slow'`. A key flnd
-  doesn't know is a warning (`[defaults] compres is not a setting flnd knows; it is ignored`),
-  so a typo never passes for a setting that works.
+  takes, never the value written there (it may be a proxy's password):
+  `config.toml: plugins.ins.pace is a number of seconds, 0 or more, not this text`. A key flnd
+  doesn't know is a warning, said once (`[defaults] compres is not a setting flnd knows; it is
+  ignored`), so a typo never passes for a setting that works.
+- **Gone:** `[defaults] again` (the CLI's `--again` stays), `[vault] key` and `scroll`.
+  `[sources.<code>]` is read as `[plugins.<code>]`, with a warning to rename it, and
+  `dedupe = "link"` or `"off"` as `true` or `false`.
 
-The code: `src/engine/options.py` (`config`) reads and checks the whole file, in one place.
+The code: `src/engine/config.py` reads, checks and edits both files, in one place.
 
 ## The vault: `secret.db`
 

@@ -146,7 +146,7 @@ on disk after extraction.
 
 ### Dedupe and sidecars
 - **Dedupe:** a file whose bytes are already saved (a repost, a photo in two albums) becomes a
-  hard link to the saved one, so it takes no more space. `dedupe = "off"` under `[defaults]` in
+  hard link to the saved one, so it takes no more space. `dedupe = false` under `[defaults]` in
   the home's `config.toml` keeps both copies.
 - **Sidecars:** with `sidecars = true` under `[defaults]`, each saved file gets `<file>.json`
   beside it, with its post's date, link, caption, author and tags.
@@ -198,9 +198,9 @@ wins over it, and it wins over flnd's default:
 [defaults]
 when = "1y"                     # as if every download, follow and sync had --when 1y
 
-[sources.ins]
+[plugins.ins]
 pace = 1.0                      # seconds between page requests
-scroll = "fast"                 # or "human", the default
+folder = "{category}"           # where its files go, over its own template
 limits = { "cdninstagram.com" = 8 }   # files at once from that host
 proxy = "socks5://127.0.0.1:1080"     # HTTP requests only: the browser isn't proxied
 stop_after = 5                  # saved posts in a row that end a sync

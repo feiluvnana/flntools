@@ -75,7 +75,7 @@ The rules between them:
         ▼
    src/engine/core.py       Engine: resolves targets, checks options, runs each plugin's targets
         │
-        ├── src/engine/options.py   Options (what one target downloads), RunShared (a run's)
+        ├── src/engine/config.py    config.toml: every setting, read, checked and edited
         ├── src/engine/store.py     flnd.db: files, targets, runs, failures, accounts; check
         ├── src/engine/home.py      the home's layout, logs and the logins in the vault
         ├── src/engine/ctx.py       PluginRun (a plugin's resources for a run) and Ctx (what
@@ -95,10 +95,10 @@ The rules between them:
 | `src/engine/run.py` | `Run`: a command on the run's loop, `flnd-loop`, read as a stream of events through a channel of 256; `Stop` (the Ctrl-C stages) and `suspend`; the run's live counts and their snapshots (`Tally`) | `Flnd`, the engine |
 | `src/engine/events.py` | the events (`Saved`, `Skipped`, `Failed`, `Planned`), the public `Report`, the `State` snapshot, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the crawl, `Run`, `Flnd` |
 | `src/engine/core.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
-| `src/engine/crawl.py` | one target, as a coroutine on the run's loop: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads (`Downloads`), history rows | the engine |
+| `src/engine/crawl.py` | `Options` (what one target downloads) and `RunShared` (what a run shares); one target, as a coroutine on the run's loop: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads (`Downloads`), history rows | the engine |
 | `src/engine/ctx.py` | `PluginRun`, a plugin's resources for a run: its cookies, HTTP session, clients, stores, loop and scheduler; `call` runs a blocking function as a step on a `CALL` thread, `off` runs the engine's own blocking step on one. `plugin_run` and `opened` make one (outside a run, or on the run's loop), and `shared_browser` gives the run its scheduler and its one browser. `TargetTabs` is a target's share of that browser, which `Ctx`'s verbs drive on a thread. `Listing` holds a category's saved cursor, and `first_page` reads the first page from it. `Ctx`, the plugin API 2 context for one target of a run: `fetch` and `pages` as page jobs (signed, `blocked` read, a 429 or a wall held, a refusal raised or, with `check=False`, read; a page body capped at 32 MiB), the browser verbs (`open` gives `Landed`, a 404 is `NotFound`; `feed`, `load`, `document`, `warm`, `click`, `handoff`) on the target's `TargetTabs`, a thread each, `hold`, `pause`, `call`, `ask` and `log`; the account's `state` (JSON values) and `secrets` (written only while `Login.start` runs, `LOGGING_IN`); the answer rules `refused`, `walled` and `checked`, which `flnd.testing.FakeCtx` shares | the crawl, the engine's login and `connect` |
 | `src/engine/resolve.py` | resolving target text (`code:value[/categories]`, `code?query`, links) from the manifest's plain data without importing any plugin | `Engine` |
-| `src/engine/options.py` | `Options` and `RunShared`, `when`'s reading, and `config`: every setting of config.toml, read and checked in one place | the engine, the crawl, the library, `ctx` |
+| `src/engine/config.py` | config.toml, the home's and the user's: every setting, read and checked in one place, `when`'s reading, the templates' check, and editing a key with its comments kept ([storage.md](storage.md#settings-configtoml)) | the engine, the save, the library, `ctx` |
 | `src/plugin.py` | plugin API 2 (public, `flnd.plugin`): `Plugin` and its checks, `@route`, `Post`, `File`, `Target`, `Ctx` (its protocol), `Login` and `cookies`, `Request`, `Response`, `dig`, the errors | every plugin |
 | `src/plugins/` | the eight built-in plugins, one module each, and `PLUGINS` (`src/plugins/__init__.py`), the registry of every plugin, installed ones included, each imported on first use | the engine and the library |
 | `src/plugins/_manifest.py` | each built-in plugin as plain data (code, domains, forms, categories, routes), made by `make manifest` | `--help`, `PLUGINS` (which imports a plugin only when used), link resolution |
@@ -427,10 +427,9 @@ turn, `Page.turn`, at the account's scroll gate of the run's scheduler, `jobs.Bu
 since a person doesn't scroll many tabs of one account at the same moment. `fast` has no such
 limit.
 
-**Where the style comes from.** A plugin has no scroll setting of its own: every feed scrolls
-`"human"`, unless the home's `[sources.<code>] scroll` in config.toml says `"fast"` for that
-plugin. `TargetTabs._made` hands the style to the target's `Tabs`, which every feed of that
-target uses.
+**Where the style comes from.** A plugin sets `scroll = "human"` or `"fast"` on its class
+(default `"human"`); `TargetTabs._made` hands it to the target's `Tabs`, which every feed of that
+target uses; config.toml has no `scroll`.
 
 A target's tab scrolls by script (`window.scrollBy` with a wheel event per step), not with real
 mouse input: the tabs of one shared window are background tabs to Chrome, which gives them no
@@ -446,11 +445,12 @@ loop:
   fingerprint and kept from one transfer to the next, the login's cookies (kept by the
   session, and written back to the vault at the end), the plugin's `user_agent`, and its `sign`
   hook for requests to its own domains, run before every try. A `proxy` under
-  `[sources.<code>]` in config.toml goes to curl for every transfer of the session; the
+  `[plugins.<code>]` in config.toml goes to curl for every transfer of the session; the
   browser, one window for every plugin, isn't proxied.
-- **The home's settings win over the class's**: `_read` reads the plugin's
-  `[sources.<code>]` table (`options.config`), whose `pace` replaces the plugin's, whose
-  `limits` merge over the plugin's, and whose `scroll` the target's tabs take.
+- **The home's settings win over the class's**: the run reads config.toml once as it
+  starts (`config.settings`), and `plugin_run` takes the plugin's `[plugins.<code>]`
+  table, whose `pace` replaces the plugin's, whose `limits` merge over its own, and whose
+  `folder` and `filename` replace its class's templates on the run's instance.
 - **Every request is a job of the run's scheduler** (`flnd.engine.jobs`, one per run, made by
   `shared_browser`). *Pages* (`PAGE` jobs): the listing's requests to the plugin's own
   domains, and the pages it opens, share a token bucket per host at the plugin's `pace`; a

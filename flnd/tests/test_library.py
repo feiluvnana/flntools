@@ -24,7 +24,6 @@ import flnd
 from flnd.engine import jobs as jobs_module
 from flnd.engine.core import Engine
 from flnd.engine.events import encode
-from flnd.engine.options import _when
 from flnd.plugin import File, Plugin, Post, Target, route
 from flnkit import net as _net
 
@@ -480,35 +479,6 @@ class ReadsTest(LibraryCase):
             self.assertEqual(flnd.Flnd().home, Path("~/example-home").expanduser())
         with mock.patch.dict("os.environ", {}, clear=True):
             self.assertEqual(flnd.open().home, Path(".flnd"))
-
-
-class WhenTest(unittest.TestCase):
-    def test_periods_ranges_and_spans(self):
-        day = datetime.date
-        for text, span in ((None, (None, None)),
-                           ("2026", (day(2026, 1, 1), day(2026, 12, 31))),
-                           ("2024-02", (day(2024, 2, 1), day(2024, 2, 29))),
-                           ("2026-12", (day(2026, 12, 1), day(2026, 12, 31))),
-                           ("2026-06-15", (day(2026, 6, 15), day(2026, 6, 15))),
-                           ("2026-01..2026-03", (day(2026, 1, 1), day(2026, 3, 31))),
-                           ("2026-01..", (day(2026, 1, 1), None)),
-                           ("..2026-03", (None, day(2026, 3, 31)))):
-            with self.subTest(text=text):
-                found = _when(text)
-                self.assertEqual((found.since, found.until), span)
-
-    def test_a_span_counts_back_from_today_on_the_clock(self):
-        from flnkit import clock as _time
-
-        with _time.use(_time.Fake()):
-            today = datetime.date.fromtimestamp(_time.wall())
-            self.assertEqual(_when("30d").since, today - datetime.timedelta(days=30))
-            self.assertEqual(_when("1y").since, today - datetime.timedelta(days=365))
-
-    def test_bad_values(self):
-        for text in ("yesterday", "2026-13", "2026-02-30", "2026-03..2026-01", "30", "d30"):
-            with self.subTest(text=text), self.assertRaises(flnd.UsageError):
-                _when(text)
 
 
 if __name__ == "__main__":

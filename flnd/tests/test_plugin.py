@@ -19,8 +19,8 @@ from test_ctx import FakeRaw
 
 from flnd.engine import jobs
 from flnd.engine.core import Engine
+from flnd.engine.crawl import Options
 from flnd.engine.events import Planned
-from flnd.engine.options import Options
 from flnd.errors import Blocked
 from flnd.plugin import (
     API,
@@ -995,7 +995,7 @@ class FetchTest(CtxCase):
     def test_a_redirect_off_its_domains_carries_nothing_sign_added(self):
         """A signed request followed to another host goes unsigned."""
         from flnd.engine import ctx
-        from flnd.engine.options import SourceConfig
+        from flnd.engine.config import PluginConfig
 
         def serve(request):
             self.requests.append(request)
@@ -1005,7 +1005,7 @@ class FetchTest(CtxCase):
 
         self.serve = serve
         jar = [{"name": "token", "value": "TOKEN-SECRET", "domain": ".example.com", "path": "/"}]
-        session = ctx._network(Wired(), jar, SourceConfig(), handles=4)
+        session = ctx._network(Wired(), jar, PluginConfig(), handles=4)
         client = _net.Client(session)
 
         async def fetched():

@@ -82,4 +82,4 @@ known-first-party = ["flnd", "flnkit"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Frozen dataclasses: a shared default instance can't be changed, so B008 has nothing to warn of.
-extend-immutable-calls = ["flnd.engine.options.Options", "flnd.plugin.Range"]
+extend-immutable-calls = ["flnd.engine.crawl.Options", "flnd.plugin.Range"]

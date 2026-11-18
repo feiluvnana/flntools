@@ -19,8 +19,8 @@ from example_plugin import API, CDN, Example
 from flnd.engine import home as _home
 from flnd.engine import jobs
 from flnd.engine import run as _run
+from flnd.engine.crawl import RunShared
 from flnd.engine.ctx import Ctx, opened, plugin_run, shared_browser
-from flnd.engine.options import RunShared
 from flnd.errors import NetworkError, SiteError, UsageError
 from flnd.plugin import Landed, Request, Target
 from flnd.ui.log import ui

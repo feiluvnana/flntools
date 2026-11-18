@@ -30,8 +30,8 @@ from flnd.engine import jobs as jobs_module
 from flnd.engine import run as _run
 from flnd.engine import store as _store
 from flnd.engine.core import Engine
+from flnd.engine.crawl import Options
 from flnd.engine.events import Skipped
-from flnd.engine.options import Options
 from flnd.errors import DiskError, LoginError, NotFound, PluginError, SiteError, UsageError, disk
 from flnd.plugin import Browser, File, Plugin, Post, Target, route
 from flnd.ui.log import ui
@@ -560,16 +560,16 @@ class SyncStopTest(JobCase):
 
     def test_stop_after_in_the_config_changes_the_run_of_5(self):
         self.engine.download(["fed:example_user/all"])
-        self.home.joinpath("config.toml").write_text("[sources.fed]\nstop_after = 3\n")
+        self.home.joinpath("config.toml").write_text("[plugins.fed]\nstop_after = 3\n")
         self.listed.clear()
         self.forget_head()
         self.engine.sync(["fed:example_user"])
         self.assertEqual(self.listed, self.ids[:3])
-        self.home.joinpath("config.toml").write_text("[sources.fed]\nstop_after = 0\n")
+        self.home.joinpath("config.toml").write_text("[plugins.fed]\nstop_after = 0\n")
         # A bad setting stops the whole run as a usage error, before the source sends anything.
         with self.assertRaises(UsageError) as caught:
             self.engine.sync(["fed:example_user"])
-        self.assertIn("[sources.fed] stop_after is a whole number of at least 1", str(caught.exception))
+        self.assertIn("plugins.fed.stop_after is a whole number of at least 1", str(caught.exception))
 
     def test_a_feed_that_is_not_newest_first_is_never_stopped(self):
         listed = []

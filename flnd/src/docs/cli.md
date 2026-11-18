@@ -105,7 +105,7 @@ flnd download <targets…> [--when WHEN] [--limit N] [--dry] [--again] [--exec C
 | `--when WHEN` | `when` under `[defaults]` in `config.toml`, else every day | only posts from these days: a year `2026`, a month `2026-06`, a day `2026-06-15`, a range `2026-01..2026-03` (either end may be left out), or a span back from today `30d`, `8w`, `1y`; `--when ""` takes every day, whatever the config says |
 | `--limit N` | no limit | at most N posts per target, or N targets found by a search; at least 1 |
 | `--dry` | off | list what would be downloaded (each file `new` or `saved`, or the targets a search finds), and download and write nothing |
-| `--again` | off | list every post again, past the stop at saved posts and the saved cursors, and ask again for files the site answered 404 or 410 for, which are otherwise recorded gone and skipped ([storage.md](storage.md)); `again = true` under `[defaults]` in the home's `config.toml` makes it the default |
+| `--again` | off | list every post again, past the stop at saved posts and the saved cursors, and ask again for files the site answered 404 or 410 for, which are otherwise recorded gone and skipped ([storage.md](storage.md)) |
 | `--exec CMD` | none | run a command once for each saved file, after every steps chain, without a shell: see [Running a command per file](#running-a-command-per-file) |
 
 Archives (`.zip`, `.7z`, `.rar`, `.tar*`) are always extracted beside themselves, into a folder

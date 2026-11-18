@@ -26,8 +26,8 @@ from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine import store as _store
 from flnd.engine.core import Engine, Report, TargetReport, _Runner
+from flnd.engine.crawl import Options
 from flnd.engine.events import Failed, Skipped
-from flnd.engine.options import Options
 from flnd.errors import Error, SiteError
 from flnd.plugin import File, Plugin, Post, Request, route
 from flnd.ui.log import ui

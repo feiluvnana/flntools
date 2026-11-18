@@ -312,12 +312,11 @@ no site. `fl.login("ins", "chrome")` reads a browser's cookies the same way.
 
 `--again` (the CLI's flag on `download` and `follow`) is `flnd.open(home, again=True)`: every
 `download` and `follow` then lists each post again and asks again for files the site answered
-404 or 410 for (recorded as gone, [storage.md](storage.md)). Without it, `again = true` under
-`[defaults]` in the home's `config.toml` does the same. The same table turns off dedupe
-(`dedupe = "off"`), turns on sidecars (`sidecars = true`), and gives `when` its
-defaults; `[sources.<code>]` sets a plugin's pace, scroll, limits and proxy
-([storage.md](storage.md#settings-configtoml)). An argument given to a call always wins over
-the file.
+404 or 410 for (recorded as gone, [storage.md](storage.md)). `[defaults]` in the home's
+`config.toml` turns off dedupe (`dedupe = false`), turns on sidecars (`sidecars = true`),
+and gives `when` its default; `[plugins.<code>]` sets a plugin's pace, limits, proxy and
+templates ([storage.md](storage.md#settings-configtoml)). An argument given to a call
+always wins over the file.
 A run draws nothing on the terminal:
 the CLI draws it from the run's events, and flnd's own warnings (a wait a site asked for, a
 login about to expire) go to standard error.

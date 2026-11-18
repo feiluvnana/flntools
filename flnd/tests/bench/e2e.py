@@ -41,7 +41,7 @@ from flnd.engine import home as _home
 from flnd.engine import run as _run
 from flnd.engine import store as _store
 from flnd.engine.core import Engine, _drive
-from flnd.engine.options import Options
+from flnd.engine.crawl import Options
 from flnd.plugin import Ctx, File, Plugin, Post, Request, Target, route
 from flnd.ui.log import ui
 from flnkit import net as _net

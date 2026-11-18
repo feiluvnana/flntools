@@ -34,8 +34,7 @@ from urllib.parse import urlsplit
 from flnd.engine import home, jobs, save, store
 from flnd.engine.ctx import Ctx, Listing, PluginRun, met_turn
 from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped
-from flnd.engine.options import Options, Retry
-from flnd.engine.run import Counts, Tally
+from flnd.engine.run import Counts, Tally, sink
 from flnd.errors import (
     Blocked,
     Changed,
@@ -59,12 +58,87 @@ from flnkit.text import fill
 
 if TYPE_CHECKING:
     from flnd.engine.events import Event
+    from flnd.engine.run import Stop
 
 __all__ = [
-    "STOPPED", "Claims", "Downloads", "Ledger", "Placed", "TargetReport", "Turn", "asked",
-    "causes",
+    "STOPPED", "Claims", "Downloads", "Ledger", "Options", "Placed", "Retry", "RunShared",
+    "TargetReport", "Turn", "asked", "causes",
     "discover", "download", "failure", "logged_out", "place", "plan", "posts", "tell", "wanted",
 ]
+
+class Retry(Enum):
+    """What a target's run does with the files earlier runs failed on (src/docs/errors)."""
+
+    # List each of their posts again first, for those failed on at most `store.RETRIES` runs;
+    # then the target's listings: every download and sync.
+    FIRST = "first"
+    # List each of their posts again, every one of them, and nothing else: `flnd retry`.
+    ONLY = "only"
+
+
+@dataclass(frozen=True)
+class Options:
+    """What one target's run downloads and how: `Options(categories=("reels",))`."""
+
+    # None (a single post) or "all" means every category of each source.
+    categories: tuple[str, ...] | None = None
+    # `--when`'s two days, both included; None is no limit on that side.
+    since: datetime.date | None = None
+    until: datetime.date | None = None
+    # A synced target with nothing lost stops a `newest_first` listing after 5 saved posts.
+    stop_at_saved: bool = False
+    # Max discovered targets on a discovering route, or max posts on a normal target.
+    limit: int | None = None
+    # Ignore the new-post-only check and saved cursors.
+    again: bool = False
+    # The query text when this target was discovered from a `?query` route.
+    query: str | None = None
+    # What to do with the files earlier runs failed on; `again` skips them, since it lists
+    # every post anyway.
+    retry: Retry = Retry.FIRST
+    # The value as typed, with a link's `user:pw@` the target's value leaves out: what its
+    # route reads. None reads the target's value. A target it finds never takes it.
+    link: str | None = None
+
+
+@dataclass
+class RunShared:
+    """What all sources of a run share: the home, its database, the stop signal, the browser."""
+
+    home: Path
+    stop: Stop
+    # The home's `flnd.db`, open for the run; None where nothing is read or saved (a login).
+    db: store.Store | None = None
+    # The home's settings (`flnd.engine.config.Config`), read once as the run starts; None
+    # reads them where they are needed (outside a run).
+    config: Any = field(default=None, repr=False)
+    # The `runs` row the run's failures name; None outside a recorded run (a dry run).
+    run: int | None = None
+    # Whether a person can be asked a question, which a source's own login needs.
+    interactive: bool = False
+    # List what would be downloaded without writing or downloading anything.
+    dry: bool = False
+    # The run's browser (`flnkit.browser.RunBrowser`), on the run's loop, set by
+    # `site.shared_browser`; None outside a run.
+    browser_pool: Any = field(default=None, repr=False)
+    # Where the run's events go, awaited on the loop (`flnd.engine.run.sink`): it waits while
+    # the channel to the reader is full. By default, events are dropped.
+    emit: Callable[[Any], Awaitable[None]] = field(default=sink(None), repr=False)
+    # The run's save (`flnd.engine.save.Saver`), set by `save.attached`; None outside a run.
+    saver: Any = field(default=None, repr=False)
+    # Resolves the text of a target a listing yielded, on any source (the engine's `resolve`);
+    # None outside the engine, where a source reads only its own.
+    resolve: Callable[[str], Target] | None = field(default=None, repr=False)
+    # The run's live counts (`flnd.engine.run.Tally`), which `run.state` is made from; None
+    # outside a run.
+    tally: Any = field(default=None, repr=False)
+    # Runs a target a listing discovered as a target of its own, on its own plugin's instance
+    # (the engine's); None outside the engine.
+    follow: Callable[..., Awaitable[Any]] | None = field(default=None, repr=False)
+    # The files the run has queued, shared by every target (`flnd.engine.crawl.Claims`); None
+    # outside the engine, where each target keeps its own.
+    claims: Any = field(default=None, repr=False)
+
 
 # The statuses that end a listing as a login problem when the site's own domain answers them.
 LOGIN_WALLS = frozenset({401, 403})

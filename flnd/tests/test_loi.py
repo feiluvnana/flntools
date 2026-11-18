@@ -15,7 +15,7 @@ from fakes import EngineCase
 
 from flnd.engine import home as _home
 from flnd.engine.core import Engine
-from flnd.engine.options import Options
+from flnd.engine.crawl import Options
 from flnd.errors import Blocked, NotFound, SiteError
 from flnd.plugin import Range, Request
 from flnd.plugins.loi import (

@@ -32,8 +32,8 @@ from test_commands import FlndCase
 from flnd.engine import home as _home
 from flnd.engine import jobs
 from flnd.engine.core import Engine
+from flnd.engine.crawl import Options
 from flnd.engine.events import Failed
-from flnd.engine.options import Options
 from flnd.plugin import Hidden, LoginError, NetworkError, NotFound, Part, Range, UsageError
 from flnd.plugins import tlg
 from flnd.plugins.tlg import FLOOD_SLEEP, Telegram, from_web_storage, half_blocks

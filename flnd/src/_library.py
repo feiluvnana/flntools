@@ -25,7 +25,7 @@ Rules a change must keep:
 - Importing this module imports nothing heavy: the engine, curl_cffi, Playwright and Rich load on
   the first call that needs them, so `import flnd` stays fast.
 - Options are keyword-only and at most five per call; a setting past that belongs in the
-  config file (`flnd.engine.options.config`). An option left as None takes the file's setting
+  config file (`flnd.engine.config`). An option left as None takes the file's setting
   (`[defaults] when`), so a value given for one call always wins.
 - No callbacks: a run reports through its events alone.
 """
@@ -46,7 +46,6 @@ from flnd.errors import UsageError
 
 if TYPE_CHECKING:
     from flnd.engine.core import Chosen, Engine
-    from flnd.engine.options import Config
     from flnd.engine.store import FailureRow
     from flnd.plugin import Plugin, Target
 
@@ -69,8 +68,8 @@ def open(home: str | os.PathLike[str] | None = None, *, again: bool | None = Non
             current folder.
         again: whether every `download` and `follow` lists each post again, past the stop at
             saved posts and the saved cursors, and asks again for files the site answered 404
-            or 410 for (recorded as gone). None reads `again` under `[defaults]` in the home's
-            `config.toml` (false without one); the CLI's `--again` sets it.
+            or 410 for (recorded as gone). None (or False) doesn't; the CLI's `--again` sets
+            it.
 
     Returns:
         The `Flnd` of that home, to use in a `with` block.
@@ -107,7 +106,7 @@ class Flnd:
         chosen = home if home is not None else os.environ.get(HOME_VARIABLE) or DEFAULT_HOME
         # The folder the home is.
         self.home = Path(chosen).expanduser()
-        # Whether downloads ask again for everything; None reads the home's config.toml.
+        # Whether downloads ask again for everything.
         self._again = again
         self._added: dict[str, type[Plugin]] = {}
         self._runs: weakref.WeakSet[Run] = weakref.WeakSet()
@@ -179,14 +178,11 @@ class Flnd:
             ...
             flnkit.errors.UsageError: when takes a year (2026), a month (2026-06), ...
         """
-        from flnd.engine.options import _when
-
-        found = _config(self.home)
-        span = _when(found.when if when is None else when)
+        span = self._when(when)
         if limit is not None and limit < 1:
             raise UsageError("limit must be at least 1")
         resolved = self._checked(targets)
-        again = found.again if self._again is None else self._again
+        again = bool(self._again)
         return self._run(f"download {_names(resolved)}", lambda engine: engine.run_download(
             resolved, time=span, limit=limit, dry=dry, again=again))
 
@@ -218,12 +214,9 @@ class Flnd:
             ...
             flnkit.errors.UsageError: no plugin named zzz
         """
-        from flnd.engine.options import _when
-
-        found = _config(self.home)
-        span = _when(found.when if when is None else when)
+        span = self._when(when)
         resolved = self._checked(targets)
-        again = found.again if self._again is None else self._again
+        again = bool(self._again)
         return self._run(f"follow {_names(resolved)}", lambda engine: engine.run_download(
             resolved, time=span, sync=True, keep=True, again=again))
 
@@ -248,10 +241,7 @@ class Flnd:
             ...     fl.sync().wait().saved
             0
         """
-        from flnd.engine.options import _when
-
-        found = _config(self.home)
-        span = _when(found.when)
+        span = self._when(None)
         resolved = self._engine().chosen(_listed(targets))
         named = f"sync {_names(resolved)}" if resolved else "sync"
         return self._run(named, lambda engine: engine.run_sync(resolved, time=span))
@@ -385,10 +375,9 @@ class Flnd:
         """
         if kind is not None and kind not in KINDS:
             raise UsageError(f"kind is one of {', '.join(KINDS)}, not {kind!r}")
-        from flnd.engine import store
-        from flnd.engine.options import _period
+        from flnd.engine import config, store
 
-        first = None if since is None else _period(since)[0]
+        first = None if since is None else config.when(since).since
         owner = None
         if target is not None:
             [resolved] = self._resolve(target)
@@ -608,6 +597,18 @@ class Flnd:
             raise UsageError(f"unknown source {code!r}. Sources: {', '.join(sources)}")
         return sources[code]
 
+    def _when(self, when: str | None) -> Any:
+        """The days a call takes posts from: `when` as given, else the home's `[defaults]
+        when` (`flnd.engine.config`), checked with every other setting before any run.
+
+        Raises:
+            UsageError: `when`, or the home's config.toml, is wrong.
+        """
+        from flnd.engine import config
+
+        found = config.settings(self.home, plugins=self._sources())
+        return config.when(found.defaults.when if when is None else when)
+
     def _engine(self, emit: Any = None, stop: Any = None) -> Engine:
         """An engine of this home and its sources, sending events to `emit`."""
         from flnd.engine.core import Engine
@@ -722,26 +723,6 @@ def _names(targets: Sequence[Chosen]) -> str:
     shown = " ".join(str(found.target) for found in targets[:2])
     return shown if len(targets) <= 2 else f"{shown} and {len(targets) - 2} more"
 
-
-def _config(home: Path) -> Config:
-    """The home's `config.toml`, read and checked (`flnd.engine.options.config`).
-
-    Its `[defaults]` fill what a call leaves as None: `again` (list each post again, and ask
-    again for files recorded gone), and `when`. The library's calls keep their five
-    options, so the settings past them live there.
-
-    Args:
-        home: the home folder; a home without the file reads as every default.
-
-    Returns:
-        The settings.
-
-    Raises:
-        UsageError: the file isn't TOML, or one of its settings has a value it doesn't take.
-    """
-    from flnd.engine.options import config
-
-    return config(home)
 
 
 # ---------------------------------------------------------------------------------------------

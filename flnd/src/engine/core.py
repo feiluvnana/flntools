@@ -25,11 +25,10 @@ from typing import Any, NamedTuple, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.engine.resolve
-from flnd.engine import crawl, ctx, home, jobs, save, store
-from flnd.engine.crawl import TargetReport
+from flnd.engine import config, crawl, ctx, home, jobs, save, store
+from flnd.engine.crawl import Options, Retry, RunShared, TargetReport
 from flnd.engine.ctx import Ctx, PluginRun, plugin_run, shared_browser, start
 from flnd.engine.events import Failed, Planned
-from flnd.engine.options import Options, Retry, RunShared
 from flnd.engine.run import Stop, Tally, _shut_down, sink, stopping
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.plugin import Browser, Cookies, Plugin, Range, Target
@@ -1119,11 +1118,14 @@ class Engine:
         Yields:
             The run, whose plugin instances are closed when the block ends.
         """
+        # The home's settings are read once, off the loop: its browser, its save and each
+        # plugin's run take theirs from them, and a file's warnings are said once.
+        found = await _off(config.settings, self.home, plugins=self.sources)
         db = await _off(store.open, self.home)
         try:
             settings = RunShared(home=self.home, db=db, run=None if dry else self.run,
                                  stop=stop, dry=dry, emit=self.emit, resolve=self._one,
-                                 tally=self.tally)
+                                 tally=self.tally, config=found)
             settings.claims = crawl.Claims()
             runner = _Runner(self, settings)
             settings.follow = runner.follow

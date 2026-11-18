@@ -1177,9 +1177,9 @@ class Saver:
 async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     """Give a run's settings their save for the block (`settings.saver`), then close it.
 
-    The save reads `dedupe` and `sidecars` from the home's `config.toml`, and `exec` from the
-    user's (`config.program`, the one file it is read from); it writes through a
-    store of its own on the home's `flnd.db`, and runs its jobs on the run's scheduler. It is
+    The save reads `dedupe` and `sidecars` from the home's settings, and `exec` from the
+    user's file, the one it is read from (`config.settings`); it commits through a connection
+    of its own to the home's `flnd.db`, and runs its jobs on the run's scheduler. It is
     closed on the run's loop before the loop and the database close. A run with no database,
     or a dry one, saves nothing.
 
@@ -1199,9 +1199,10 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
         yield None
         return
     # The configs and the store are read and opened off the loop.
-    found, argv, db = await asyncio.to_thread(_opened, settings)
-    saver = Saver(db, scheduler, settings.emit, run=settings.run, dedupe=found.dedupe,
-                  sidecars=found.sidecars, exec=argv or None, stop=settings.stop.now,
+    found, db = await asyncio.to_thread(_opened, settings)
+    defaults = found.defaults
+    saver = Saver(db, scheduler, settings.emit, run=settings.run, dedupe=defaults.dedupe,
+                  sidecars=defaults.sidecars, exec=defaults.exec or None, stop=settings.stop.now,
                   tally=settings.tally, sample=lambda error: sampled(settings, error))
     settings.saver = saver
     try:
@@ -1214,20 +1215,21 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
             await asyncio.to_thread(db.close)
 
 
-def _opened(settings: Any) -> tuple[Any, Any, store.Store]:
-    """`attached`'s reads, off the loop: the home's config, the user's `exec`, and the run's
-    commit connection (`loop=True`: it waits for no lock), made now; the config modules are
-    imported here too, since an import reads files."""
-    from flnd.engine.config import program, user_file
-    from flnd.engine.options import config
+def _opened(settings: Any) -> tuple[Any, store.Store]:
+    """`attached`'s reads, off the loop: the home's settings (the run's, else read here, with
+    `exec` from the user's file alone), and the run's commit connection (`loop=True`: it waits
+    for no lock), made now; the config module is imported here too, since an import reads
+    files."""
+    from flnd.engine import config
 
+    found = getattr(settings, "config", None) or config.settings(settings.home)
     db = store.open(settings.home, loop=True)
     try:
         db.ready()
     except BaseException:
         db.close()
         raise
-    return config(settings.home), program(user_file()), db
+    return found, db
 
 
 def sampled(settings: Any, error: BaseException) -> None:
