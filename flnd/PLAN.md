@@ -364,7 +364,7 @@ class is made, naming the attribute and the fix.
 | `browser` | `Browser` | `Browser.NONE` | `NONE` (HTTP only), `ANY` (flnd's Chromium or the user's Chrome; defaults to Chromium), `CHROME` (needs the extension) |
 | `stealth` | `bool` | `True` | hide automation in its tabs, applied per tab by an init script |
 | `user_agent` | `str \| None` | `None` | User-Agent sent to its domains (HTTP only); `None` keeps the client's Chrome UA |
-| `walls` | `tuple[str, ...]` | `()` | URL paths meaning "log in", or an account the site stopped (`/accounts/suspended`). A wall matches whole path segments: a path `p` lands on the wall `w` when `p == w` or `p.startswith(w + "/")`, so `/challengers/` and `/login_example` are no walls. Landing on one is 6.2's wall row. The rule lives in `src/plugin.py` (`_wall` while it is built early); the engine and `FakeCtx` call it from step 7's wiring, which settles its name |
+| `walls` | `tuple[str, ...]` | `()` | URL paths meaning "log in", or an account the site stopped (`/accounts/suspended`). A wall matches whole path segments: a path `p` lands on the wall `w` when `p == w` or `p.startswith(w + "/")`, so `/challengers/` and `/login_example` are no walls. Landing on one means `open`'s final URL is on it, or a `fetch` was redirected to it; a direct request to a wall path is no wall. Landing on one is 6.2's wall row. The rule lives in `src/plugin.py` (`_wall` while it is built early); the engine and `FakeCtx` call it from step 7's wiring, which settles its name |
 | `folder` | `str` | `"{category}"` | a template under `media/<code>/<target>/` |
 | `filename` | `str` | `"{post}_{num}"` | a template; the extension is added from the content |
 | `key` | `str` | `"{post}_{num}"` | the history key under `<code>:` |
@@ -460,6 +460,11 @@ dependency and `import flnd.plugin` stays cheap (P11).
 - **`Request(url: str, *, method: str = "GET", params: Mapping[str, Any] | None = None,
   body: bytes | str | Any = None, headers: Mapping[str, str] | None = None,
   check: bool = True)`:** a frozen dataclass with `.replace(**changes) -> Request`.
+  - With `check=False`, a refusal of any status returns its `Response` to read, a 401 or 403
+    from the plugin's own domains and a 404 or 410 included (as API 1 did, and as loi's
+    quota and VIP 403 and tik's embed-page 401 and 403 need).
+  - Walls, `blocked()` and 429 holds still act first.
+  - Such a 401 or 403 never marks the account `expired` (step 7's wiring).
 - **`Response`:** a Protocol: `status`, `url`, `headers`, `text`, `json`, `content`, `ok`,
   `html` (a `flnkit/html.py` document).
 - **`Landed(url: str, status: int)`:** where `open` ended up.
@@ -475,7 +480,7 @@ on the loop when its job kind is `none`.
 | `fetch` | `async fetch(request: str \| Request, *, bucket: str \| None = None, in_page: bool = False) -> Response` | `page` on the plugin's domains, `file`-pooled elsewhere |
 | `pages` | `pages(request: str \| Request, *, cursor: str \| Callable[[Response], str \| None], send: str \| Callable[[str], Mapping[str, Any]] = "cursor", bucket: str \| None = None, in_page: bool = False) -> AsyncIterator[Response]` | `page`, one per page; the engine keeps and resumes the cursor; with `in_page`, each page is fetched from the account's logged-in tab, as `fetch` does |
 | `open` | `async open(url: str) -> Landed` | `tab`; a 404 raises `NotFound`; landing on a wall is 6.2's wall row; called from a lazy post's files, `refresh` or `date`, it opens its own tab (6.2's `TAB` row), never the listing's |
-| `feed` | `feed(match: str \| Pattern \| Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str \| None] \| None] \| None = None) -> AsyncIterator[Any]` | `tab`; attaches its response listener immediately when called (usable with `async with` before `click`/`open`, or `async for`) |
+| `feed` | `feed(match: str \| Pattern \| Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str \| None] \| None] \| None = None) -> AsyncIterator[Any]` | `tab`; attaches its response listener immediately when called, and responses before that call are dropped (usable with `async with` before `click`/`open`, or `async for`) |
 | `load` | `load(url: str, match, *, scroll: bool = True, lines: bool = False, cursor=None) -> AsyncIterator[Any]` | `tab`; attaches `feed` before `open(url)`, yields `meta(document)`, then `feed` items |
 | `document` | `async document() -> Document` | `tab` |
 | `click` | `async click(css: str, *, timeout: float = 10.0) -> None` | `tab` |
@@ -558,7 +563,8 @@ that isn't lazy.
   when: Range = Range(), answers: Sequence[str] = (),
   state: MutableMapping[str, Any] | None = None,
   storage: Mapping[str, str] | None = None,
-  extension: Mapping[str, Any] | None = None)`.**
+  extension: Mapping[str, Any] | None = None,
+  settings: Mapping[str, Any] | None = None)`.**
   - `Reply(body: Any = None, *, status: int = 200,
     headers: Mapping[str, str] | None = None, url: str = "")` answers `fetch` and `pages`;
   - `FakePage(html: str = "", *, status: int = 200, url: str = "",
@@ -566,14 +572,24 @@ that isn't lazy.
   - `Seen` (`ctx.seen`) records `requests`, `visited`, `scrolls`, `logs` and `holds`.
 
   `FakeCtx` behaves like the engine:
-  - a 401 or 403 from the plugin's domains raises `LoginError`;
+  - it runs the real `jobs.Scheduler` on the fake clock for holds, block rounds, 429s and
+    walls, so the fake can't drift from the engine;
+  - a 401 or 403 from the plugin's domains raises `LoginError`, and with `check=False` any
+    refusal returns its `Response` (5.3's `Request`);
   - `blocked` returning seconds or `ctx.hold` records the hold in `ctx.seen.holds` and moves
     on with the fake clock;
   - `open` returns `Landed` with the page's status, raising `NotFound` and `LoginError` as
-    the engine does, with walls matched by whole segments and the wall row's two retries on
-    the fake clock;
+    the engine does, with walls matched by whole segments (landing on one, never a direct
+    request to it) and the wall row's two retries on the fake clock;
+  - an `open` from a lazy post's files, `refresh` or `date` runs in its own tab, as in the
+    engine;
+  - a `feed` hears only the responses after `feed()` is called; earlier ones are dropped;
+  - `secrets` is writable only during `Login.start`, `state` takes only JSON values, and
+    `ask` with `choices` takes only an answer among them;
   - `ask` pops `answers`, and raises `UsageError` when they run out;
-  - `extension` and `storage` read the given fakes.
+  - `settings` fills the plugin's `Settings`;
+  - `extension` and `storage` read the given fakes;
+  - a URL with no route or page raises `AssertionError` naming it.
 - `Collected(path: str, url: Any, post: Post, key: str, file: File)` with `.date: date | None`.
 - `collect(plugin, target: str, *, ctx: FakeCtx | None = None,
   categories: Sequence[str] | None = None, limit: int | None = None) -> list[Collected]` runs
@@ -672,7 +688,7 @@ first out.
 | any other `Error` with `retryable=True`, for any job kind (`MERGE` included): a transient ffmpeg failure, a `ToolError` or flnkit's `RunError(ToolError)` flagged retryable | the same back-off: 1, 2, 4, 8 s, then fail the job. This is how E6's merge is retried. A missing tool is never retryable, and stops the run as its own row says. Decided by the orchestrator on 2026-11-18 (15, item 6) |
 | 429 | hold the bucket for `Retry-After` or `x-rate-limit-reset` (at most 3600 s; else 30 s), and halve its rate for 20 clean requests; a third 429 in a row on a bucket counts as a block round |
 | `blocked()` returned seconds, `ctx.hold(...)`, or a block round | with switching on and another account free: move the job to it. Else hold (plugin, account, bucket) for the larger of the seconds and the round's wait (30, 120, 480 s); a fourth round fails the job with `Blocked`. Rounds reset after 600 s with no block |
-| `LoginError` | landing on a wall (5.3's `walls`: in `open`, or a `fetch` redirected to one) holds (plugin, account) and tries again, twice: after 30 s, then after 120 s, since a throttled session's wall lifts after a wait. These waits are not block rounds. A third landing, or a 401 or 403 from the plugin's domains: with switching on and another account, move the job; else fail it, and mark the account `expired` |
+| `LoginError` | landing on a wall (5.3's `walls`: in `open`, or a `fetch` redirected to one) holds (plugin, account) and tries again, twice: after 30 s, then after 120 s, since a throttled session's wall lifts after a wait. These waits are not block rounds. A third landing, or a 401 or 403 from the plugin's domains on a `check=True` request: with switching on and another account, move the job; else fail it, and mark the account `expired` |
 | `Hidden` | with switching on: move the job. Else fail it: a file is recorded failed, a target fails |
 | `NotFound` | on a target's first page with switching on: move the job. Else a file is recorded gone, and a target fails |
 | `Changed` | fail the job, save a scrubbed sample, never retry |
@@ -1924,6 +1940,8 @@ is built on the earlier layout.
   - `engine/` runs `api = 2` plugins natively;
   - `src/testing.py` gets `FakeCtx` (5.4);
   - `open` returns `Landed` and raises `NotFound` and `LoginError` (S5);
+  - `Request(check=False)` returns any refusal's `Response`, and its 401 or 403 never marks
+    the account `expired` (5.3);
   - `pages` keeps the cursor on a 429 (S6), and takes `in_page`;
   - `walls` match whole path segments; today's three tests
     (`test_a_profile_whose_name_starts_like_a_wall_is_not_one`,
