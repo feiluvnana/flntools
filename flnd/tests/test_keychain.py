@@ -180,7 +180,7 @@ class NoKeychainTest(KeychainCase):
 
 class GuardTest(unittest.TestCase):
     def test_the_real_tool_is_refused_under_the_tests(self):
-        self.assertTrue(os.environ.get(_vault.NO_REAL_KEYCHAIN))
+        self.assertTrue(os.environ.get(_vault.NO_PROFILES))
         with mock.patch.object(_vault, "_PLATFORM", "darwin"), \
                 mock.patch.object(_vault.subprocess, "run") as run:
             self.assertIsNone(_vault.Keychain.tool())

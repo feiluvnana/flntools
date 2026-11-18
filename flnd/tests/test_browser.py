@@ -1088,7 +1088,7 @@ class NoProfilesTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
             run(_browser.launch(profile="Default", headless=True))
         with self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
-            run(_browser._open_context(cast(Any, None), _cookies._real_home() / "profile", "chrome",
+            run(_browser._open_context(cast(Any, None), _cookies.home() / "profile", "chrome",
                                        {"headless": True, "args": []}, {}))
 
     def test_real_browser_cookies_are_not_read(self):
@@ -1100,7 +1100,7 @@ class NoProfilesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             _cookies.refuse_profile(Path(folder) / "Default")
         with mock.patch.dict(os.environ, {_cookies.NO_PROFILES: ""}):
-            _cookies.refuse_profile(_cookies._real_home() / "Default")
+            _cookies.refuse_profile(_cookies.home() / "Default")
 
 
 class LoopTest(unittest.TestCase):

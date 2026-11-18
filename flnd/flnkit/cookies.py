@@ -137,13 +137,13 @@ def refuse_profile(folder: Path) -> None:
             return
     except (ValueError, OSError):
         pass
-    real_home = _real_home().resolve()
+    real_home = home().resolve()
     if resolved.is_relative_to(real_home):
         raise RuntimeError(f"{NO_PROFILES} is set: a test may not read or copy the real browser "
                            f"profile {folder}; fake the home folder or the browser instead")
 
 
-def _real_home() -> Path:
+def home() -> Path:
     """The account's home folder, from the operating system, whatever `Path.home` says.
 
     Returns:

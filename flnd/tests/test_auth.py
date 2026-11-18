@@ -1,16 +1,14 @@
 """flnkit/vault.py: cookie jars in the vault, the one-time move of plain cookie files, whether a
-source is logged in, logout, secrets sealed per source and name, and the key file.
+source is logged in, logout, and secrets per source and name.
 
-No browser, no network: cookie files are written by the tests, and the vault's key is a real one
+No browser, no network: cookie files are written by the tests, and the vault is a real one
 in a temporary `.flnd`.
 """
 
 import io
 import os
 import sqlite3
-import stat
 import tempfile
-import threading
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,7 +17,6 @@ from unittest import mock
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
 from flnd.engine import home as _home
-from flnd.errors import DiskError
 from flnd.sources.ins import Instagram
 from flnd.ui.log import ui
 from flnkit import cookies as _cookies
@@ -278,87 +275,6 @@ class VaultTest(AuthCase):
         with _home.secrets(self.home, "tlg") as secrets:
             self.assertEqual(len(secrets), 0)
         self.assertFalse((self.home / "secret.key").exists())
-
-
-class KeyTest(AuthCase):
-    def test_created_with_mode_0600(self):
-        secret = _vault.key(self.home / "secret.key")
-        path = self.home / "secret.key"
-        self.assertEqual(len(secret), 32)
-        if os.name != "nt":
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(_vault.key(self.home / "secret.key"), secret)
-        self.assertEqual([entry.name for entry in self.home.iterdir()], ["secret.key"])
-
-    def test_key_is_created_where_hard_links_fail(self):
-        # Fix #2: FAT, exFAT and some network drives refuse os.link with a plain OSError.
-        with mock.patch.object(_vault.os, "link", side_effect=OSError("operation not permitted")):
-            secret = _vault.key(self.home / "secret.key")
-        self.assertEqual(len(secret), 32)
-        self.assertEqual(_vault.key(self.home / "secret.key"), secret)
-        self.assertEqual([entry.name for entry in self.home.iterdir()], ["secret.key"])
-
-    def test_two_creators_end_with_one_key(self):
-        """Fix #2: the loser of the create race reads the winner's key, even while it is still short."""
-        winner = os.urandom(32)
-        real_open = os.open
-        finish = threading.Timer(0.05, lambda: (self.home / "secret.key").write_bytes(winner))
-
-        def other_run_wins(path, flags, *args, **kwargs):
-            if Path(path).name == "secret.key" and flags & os.O_EXCL:
-                # The other run has created the file and written only part of its key so far.
-                (self.home / "secret.key").write_bytes(winner[:5])
-                finish.start()
-                raise FileExistsError(path)
-            return real_open(path, flags, *args, **kwargs)
-
-        self.home.mkdir(parents=True, exist_ok=True)
-        with mock.patch.object(_vault.os, "open", other_run_wins):
-            self.assertEqual(_vault.key(self.home / "secret.key"), winner)
-        finish.join()
-        self.assertEqual([entry.name for entry in self.home.iterdir()], ["secret.key"])
-
-    def test_a_failed_write_leaves_no_key(self):
-        with mock.patch.object(_vault.os, "fdopen", side_effect=OSError("disk full")):
-            with self.assertRaises(OSError):
-                _vault.key(self.home / "secret.key")
-        self.assertEqual([path for path in self.home.rglob("*") if path.is_file()], [])
-
-    def test_many_threads_agree_on_one_key(self):
-        keys = []
-        barrier = threading.Barrier(8)
-
-        def read():
-            barrier.wait()
-            keys.append(_vault.key(self.home / "secret.key"))
-
-        threads = [threading.Thread(target=read) for _ in range(8)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        self.assertEqual(len(set(keys)), 1)
-
-    def test_a_damaged_key_is_refused(self):
-        self.home.mkdir(parents=True, exist_ok=True)
-        for content in (b"", b"x" * 5, b"x" * 33):
-            with self.subTest(size=len(content)):
-                (self.home / "secret.key").write_bytes(content)
-                with mock.patch.object(_vault, "KEY_WAIT", 0.05), \
-                        self.assertRaisesRegex(DiskError, f"damaged: it should hold 32 bytes, not {len(content)}") as caught:
-                    _vault.key(self.home / "secret.key")
-                self.assertIn("delete it", caught.exception.hint)
-
-    def test_a_dangling_symlink_key_is_refused_in_time(self):
-        """A dangling link at secret.key can be neither read nor created, so it once spun forever at 100% CPU."""
-        self.home.mkdir(parents=True, exist_ok=True)
-        try:
-            (self.home / "secret.key").symlink_to(self.home / "missing.key")
-        except (OSError, NotImplementedError):
-            self.skipTest("symlinks aren't supported here")
-        with mock.patch.object(_vault, "KEY_WAIT", 0.05), \
-                self.assertRaisesRegex(DiskError, "damaged: exists but cannot be read"):
-            _vault.key(self.home / "secret.key")
 
 
 class OriginAndExpiryTest(AuthCase):

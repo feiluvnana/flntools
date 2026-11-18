@@ -1,40 +1,5 @@
-"""Plaintext secrets per slot in `secret.db`, mode 0600.
-
-src/docs/storage explains it.
-
-A library: it knows nothing of flnd's sources or homes. What it offers, for any caller:
-- `encrypt` and `decrypt`: authenticated encryption of a value under a 32-byte key, bound to a
-  context (associated data), so a sealed value moved elsewhere doesn't open.
-- `Vault(path, slot)`: one slot's secrets as a mapping of text to text in the database at `path`.
-- `key(path)`: the key in a key file, made with mode 0600 on first use.
-- `Keychain(account)`: the key in the operating system's keychain instead (macOS's
-  `security`, Linux's `secret-tool`).
-- `digest`: the hex hash of text, bytes, a file or a stream.
-
-    with Vault(Path("secrets.db"), "tlg") as saved:
-        saved["session"] = "1BVts…"
-
-Who calls it: in flnd, `src/engine/home.py` opens one `Vault` per source (`_home.secrets`), with the
-home's `secrets.db` and `secret.key`, and a source reaches it as `Site.secrets`
-(`src/engine/site.py`) to keep a login token or session. Its errors are `flnkit.errors` classes.
-
-How a value is kept:
-1. `Vault[name] = value` reads (or makes) the key file, then seals the value with `encrypt`,
-   binding it to `<slot>\\0<name>` as associated data;
-2. the blob (version byte, nonce, ciphertext and tag) is written to the `secrets` table, one
-   row per `(slot, name)`, in its own transaction (`flnkit.db.Db.write`);
-3. `Vault[name]` reads the row and opens it with `decrypt`; a wrong key, a moved row or a
-   changed byte all fail the same way, as `LoginError` with the vault's `hint`.
-
-Rules a change must keep:
-- A secret's value never reaches a message: every way decryption fails says the same thing.
-- Opening a vault creates nothing: the database is made on the first write, the key on the
-  first value read or written.
-- The key file is made with `O_EXCL` and mode 0600, so two processes never make two keys; one
-  that finds a short key waits `KEY_WAIT` for the other to finish writing it.
-- A key never goes on a command line or into a message: a keychain tool reads it on standard
-  input, and prints it only to a pipe this module reads.
-- It imports only the stdlib, `cryptography` (on first use), `flnkit.db` and `flnkit.errors`.
+"""Secrets sealed per account and name under a key file kept outside any home, the plaintext
+`Vault` of `secret.db`, and `digest`. src/docs/storage explains it.
 """
 
 from __future__ import annotations
@@ -42,22 +7,32 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import operator
 import os
 import secrets as _secrets
 import subprocess
 import sys
 import time
+import unicodedata
 from collections.abc import Iterator, MutableMapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 from flnkit import db
-from flnkit.errors import DiskError, LoginError, ToolError, UsageError
+from flnkit.errors import DiskError, LoginError, ToolError, UsageError, disk
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-__all__ = ["Keychain", "Vault", "decrypt", "digest", "encrypt", "key"]
+__all__ = ["Keychain", "Vault", "decrypt", "digest", "encrypt", "key", "keyfile", "seal",
+           "unseal"]
+
+# Rules a change must keep:
+# - no secret or key reaches a message: every way a value fails to open says the same thing;
+# - a key file is written whole, with mode 0600, and never replaced: the first creator wins;
+# - a key never goes on a command line: a keychain tool reads it on standard input.
+
+_PLATFORM = sys.platform
 
 # ---------------------------------------------------------------------------------------------
 # Sealing
@@ -196,20 +171,14 @@ def _aes_gcm(key: bytes) -> AESGCM:
     return AESGCM(key)
 
 
-
 # ---------------------------------------------------------------------------------------------
-# The vault: sealed values in a database, under a key file
+# The plaintext vault of `secret.db`
 # ---------------------------------------------------------------------------------------------
 
 # The vault's one table: each value stored in plaintext, bound to its slot and name. `{}` takes
 # a schema name ("" or "<name>." for an attached database).
 SCHEMA = ("CREATE TABLE IF NOT EXISTS {}secrets (slot TEXT NOT NULL, name TEXT NOT NULL,"
           " value TEXT NOT NULL, PRIMARY KEY (slot, name)) WITHOUT ROWID")
-# How long a key file shorter than KEY_SIZE may be another process's key still being written, in
-# seconds, before it counts as damaged; 32 bytes are written in microseconds, so 2 s is ample.
-KEY_WAIT = 2.0
-# How often a short key file is read again while waiting, in seconds.
-KEY_POLL = 0.01
 # What a damaged key file says to do, unless the caller gives its own advice.
 DAMAGED_KEY = "delete it, then seal the secrets again"
 
@@ -286,19 +255,135 @@ class Vault(MutableMapping[str, str]):
         self._db.close()
 
 
-def key(path: Path, *, hint: str = DAMAGED_KEY) -> bytes:
-    """The 32-byte key in a key file, made with mode 0600 when missing.
+# ---------------------------------------------------------------------------------------------
+# Sealed values, under one key file kept outside any home
+# ---------------------------------------------------------------------------------------------
+
+# Every way a sealed value fails to open says this, with no advice: the caller adds its own.
+KEY_GONE = "the vault's key is gone"
+# How long a key file shorter than KEY_SIZE may be another process's key still being written, in
+# seconds, before it counts as damaged. Only a drive without hard links writes a key in place
+# (`_create`); 32 bytes are written in microseconds, so 2 s is ample.
+KEY_WAIT = 2.0
+# How often a short key file is read again while waiting, in seconds.
+KEY_POLL = 0.01
+# The variable flnd's test suite sets (as `flnkit.cookies.NO_PROFILES` reads it): while it is
+# set, the real key folder and the real keychain tools are refused, so no test can touch them.
+NO_PROFILES = "FLND_TEST_NO_PROFILES"
+
+
+def seal(key: bytes, account: int, name: str, value: str) -> bytes:
+    """Seal one secret into its slot, an account's `name`; only `unseal` of that slot opens it.
 
     Args:
-        path: the key file.
-        hint: what a damaged key says to do.
+        key: the 32-byte key, from `key`.
+        account: the account's id; with `name`, the slot the value is bound to.
+        name: the secret's name, such as `cookies`.
+        value: the secret, sealed as UTF-8.
+
+    Returns:
+        The version byte (1), a 12-byte nonce, then the AES-256-GCM ciphertext and its tag.
+
+    Raises:
+        TypeError: `account` isn't an int, or `name` or `value` isn't text.
+        ValueError: the key isn't 32 bytes.
+        ToolError: `cryptography` isn't installed.
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"a sealed value is text, not {type(value).__name__}")
+    return encrypt(value, key, context=_slot(account, name))
+
+
+def unseal(key: bytes, account: int, name: str, sealed: bytes) -> str:
+    """Open a value that `seal` made for the same slot.
+
+    Args:
+        key: the key it was sealed with.
+        account: the account's id it was sealed for.
+        name: the secret's name it was sealed for.
+        sealed: what `seal` returned; anything that isn't bytes is a damaged value.
+
+    Returns:
+        The secret.
+
+    Raises:
+        LoginError: `KEY_GONE`, for a wrong key, a value sealed for another slot, a damaged
+            value, or one of another version alike.
+        TypeError: `account` isn't an int, or `name` isn't text.
+        ValueError: the key isn't 32 bytes.
+        ToolError: `cryptography` isn't installed.
+    """
+    context = _slot(account, name)
+    opened = None
+    # A row that isn't bytes, or a value that doesn't decode, is damaged like a wrong tag.
+    if isinstance(sealed, (bytes, bytearray, memoryview)):
+        try:
+            opened = decrypt(bytes(sealed), key, context=context).decode("utf-8")
+        except (LoginError, UnicodeDecodeError):
+            pass
+    if opened is None:
+        # Raised outside the `except`, so no context keeps the failure, whose
+        # UnicodeDecodeError holds the plaintext.
+        raise LoginError(KEY_GONE)
+    return opened
+
+
+def _slot(account: int, name: str) -> bytes:
+    """The associated data that binds a sealed value to its slot.
+
+    Raises:
+        TypeError: `account` isn't an int, or `name` isn't text; the message names no value.
+    """
+    try:
+        # `True` is an int to Python, but never account 1.
+        if isinstance(account, bool):
+            raise TypeError
+        number = operator.index(account)
+    except TypeError:
+        raise TypeError(f"an account is an int, not {type(account).__name__}") from None
+    if not isinstance(name, str):
+        raise TypeError(f"a secret's name is text, not {type(name).__name__}")
+    return f"{number}\0{name}".encode()
+
+
+def keyfile() -> Path:
+    """Where the user's key file is kept: `~/.config/flnd/key`, `%APPDATA%\\flnd\\key` on Windows.
+
+    Returns:
+        The path; nothing is read or made.
+    """
+    if _PLATFORM == "win32":
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+        return base / "flnd" / "key"
+    return Path.home() / ".config" / "flnd" / "key"
+
+
+def key(path: Path, *, home: Path, create: bool = False) -> bytes:
+    """The 32-byte key in the key file at `path`.
+
+    Args:
+        path: the key file, usually `keyfile()`.
+        home: the folder whose secrets the key seals; a key file inside it is refused, since a
+            copy of the folder would carry its key.
+        create: True before sealing: a missing file is made with a new key, mode 0600, written
+            whole or not at all. False before opening: a missing file is `KEY_GONE`.
 
     Returns:
         The key's 32 bytes.
 
     Raises:
-        DiskError: the file is damaged: too long, or still short after `KEY_WAIT`.
+        UsageError: `path` is inside `home`.
+        LoginError: there is no key file, and `create` is False.
+        DiskError: the file is damaged (too long, still short after `KEY_WAIT`, or a folder),
+            or can't be read.
+        RuntimeError: the test suite's guard (`NO_PROFILES`) is set, and `path` is in the real
+            `~/.config/flnd` (or `%APPDATA%\\flnd`).
     """
+    path, home = Path(path), Path(home)
+    _refuse_real(path)
+    if _inside(path, home):
+        raise UsageError(f"the key file {path} is inside {home}: a copy of it would carry the key")
     # A short key may be another process's that is still being written, so it is read again
     # until `KEY_WAIT` has passed; only then is it damaged (a process that died writing it).
     deadline = time.monotonic() + KEY_WAIT
@@ -306,28 +391,39 @@ def key(path: Path, *, hint: str = DAMAGED_KEY) -> bytes:
         try:
             secret = path.read_bytes()
         except FileNotFoundError:
-            created = _create_key(path)
-            if created is not None:
-                return created
-            # Lost the race: the winner's file exists now, maybe still short, so read it again.
+            if not create:
+                raise LoginError(KEY_GONE) from None
+            made = _create(path)
+            if made is not None:
+                return made
+            # Lost the race: the winner's file exists now, so read it again.
             if time.monotonic() >= deadline:
                 raise DiskError(
-                    f"{path} is damaged: exists but cannot be read (e.g. broken link)", hint=hint,
+                    f"{path} is damaged: exists but cannot be read (e.g. broken link)",
+                    hint=DAMAGED_KEY,
                 ) from None
             time.sleep(KEY_POLL)
             continue
+        except OSError as error:
+            # Windows says PermissionError where POSIX says IsADirectoryError.
+            if path.is_dir():
+                raise DiskError(f"{path} is damaged: it is a folder, not a key file",
+                                hint=DAMAGED_KEY) from None
+            raise disk(error, path) from error
         if len(secret) == KEY_SIZE:
             return secret
-        # A process killed between creating the file and writing it leaves it empty for good.
+        # A process killed between creating the file and writing it leaves it short for good.
         if len(secret) > KEY_SIZE or time.monotonic() >= deadline:
-            raise DiskError(
-                f"{path} is damaged: it should hold {KEY_SIZE} bytes, not {len(secret)}", hint=hint,
-            )
+            raise DiskError(f"{path} is damaged: it should hold {KEY_SIZE} bytes, "
+                            f"not {len(secret)}", hint=DAMAGED_KEY)
         time.sleep(KEY_POLL)
 
 
-def _create_key(path: Path) -> bytes | None:
+def _create(path: Path) -> bytes | None:
     """Make the key file with a new key; None when another process made it first.
+
+    The key is written whole to a draft beside it, then hard-linked into place, which fails
+    when the file exists: a reader never sees part of a key, and the first creator wins.
 
     Args:
         path: the key file, which must not exist yet.
@@ -335,17 +431,34 @@ def _create_key(path: Path) -> bytes | None:
     Returns:
         The new key; None when the file was there already.
     """
-    if path.is_symlink():
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    secret = _secrets.token_bytes(KEY_SIZE)
+    draft = path.with_name(f".{path.name}.{_secrets.token_hex(8)}")
+    if not _write_new(draft, secret):
         return None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # O_EXCL makes "the first creator wins" without a hard link.
+    try:
+        os.link(draft, path)
+    except FileExistsError:
+        return None
+    except OSError:
+        # FAT, exFAT and some network drives have no hard links: write in place, with O_EXCL so
+        # the first creator still wins; readers wait out a short file (`KEY_WAIT`).
+        return secret if _write_new(path, secret) else None
+    finally:
+        draft.unlink(missing_ok=True)
+    return secret
+
+
+def _write_new(path: Path, secret: bytes) -> bool:
+    """Write `secret` to a new file with mode 0600, synced to disk; False when it exists.
+
+    A failed write removes the file, so no damaged key is left behind.
+    """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     try:
         handle = os.open(path, flags, 0o600)
     except FileExistsError:
-        return None
-    # Safe because the key is 32 bytes, written in one write, and readers wait up to KEY_WAIT.
-    secret = _secrets.token_bytes(KEY_SIZE)
+        return False
     try:
         try:
             file = os.fdopen(handle, "wb")
@@ -354,17 +467,70 @@ def _create_key(path: Path) -> bytes | None:
             raise
         with file:
             file.write(secret)
+            file.flush()
+            os.fsync(file.fileno())
     except BaseException:
         path.unlink(missing_ok=True)
         raise
-    return secret
+    return True
+
+
+def _inside(path: Path, folder: Path) -> bool:
+    """Whether `path` is in `folder`, through links and `..`, in any case or Unicode form.
+
+    Paths are compared casefolded and normalised whatever the file system, since macOS's and
+    Windows' ignore case and form: a refusal that is too wide is safe, one too narrow isn't.
+    """
+    resolved, folder = path.resolve(), folder.resolve()
+    if _fold(resolved).is_relative_to(_fold(folder)):
+        return True
+    # A second spelling of the same folder (macOS's /System/Volumes/Data, a mount, a Windows
+    # short name) only `samefile` sees, and only for what exists: so match the folder's
+    # nearest existing ancestor, and compare the missing rest by name.
+    anchor, rest = folder, Path()
+    while not anchor.exists() and anchor != anchor.parent:
+        anchor, rest = anchor.parent, Path(anchor.name) / rest
+    for parent in (resolved, *resolved.parents):
+        try:
+            if os.path.samefile(parent, anchor):
+                return _fold(resolved.relative_to(parent)).is_relative_to(_fold(rest))
+        except OSError:
+            continue
+    return False
+
+
+def _fold(path: Path) -> PurePosixPath:
+    """A path in one case and one Unicode form, for comparing (Unicode's caseless match)."""
+    text = unicodedata.normalize("NFD", str(path).replace("\\", "/"))
+    return PurePosixPath(unicodedata.normalize("NFD", text.casefold()))
+
+
+def _refuse_real(path: Path) -> None:
+    """Refuse the real `~/.config/flnd` (and, on Windows, `%APPDATA%\\flnd`) under the guard.
+
+    The real home is the account's own, not `Path.home()`, which a test may point elsewhere.
+
+    Raises:
+        RuntimeError: the guard is set and `path` is in the real folder.
+    """
+    if not os.environ.get(NO_PROFILES):
+        return
+    from flnkit import cookies
+
+    real = cookies.home()
+    folders = [real / ".config" / "flnd", real / "AppData" / "Roaming" / "flnd"]
+    if _PLATFORM == "win32" and os.environ.get("APPDATA"):
+        folders.append(Path(os.environ["APPDATA"]) / "flnd")
+    for folder in folders:
+        if _inside(path, folder):
+            raise RuntimeError(f"{NO_PROFILES} is set: a test may not use the real key file "
+                               f"{path}; give one in a temporary folder")
 
 
 # ---------------------------------------------------------------------------------------------
-# The key in the OS keychain
+# The key in the OS keychain, kept only until the sealed vault above replaces the plaintext one
 # ---------------------------------------------------------------------------------------------
 
-_PLATFORM = sys.platform
 # macOS's keychain tool, at the path every Mac has it; a fixed path, so no program named
 # `security` earlier on PATH is ever handed a key.
 SECURITY = "/usr/bin/security"
@@ -377,9 +543,6 @@ NOT_FOUND = 44
 TOOL_TIMEOUT = 30.0
 # What a missing keychain says, unless the caller gives its own advice.
 NO_KEYCHAIN = "keep the key in a file instead"
-# The variable flnd's test suite sets (as `flnkit.cookies.NO_PROFILES` reads it): while it is
-# set, the real keychain tools are refused, so no test can read or change a person's keychain.
-NO_REAL_KEYCHAIN = "FLND_TEST_NO_PROFILES"
 
 
 class Keychain:
@@ -417,7 +580,7 @@ class Keychain:
 
         Returns:
             The tool's path, or None when there is none, or when the test suite's guard
-            (`NO_REAL_KEYCHAIN`) refuses the real one.
+            (`NO_PROFILES`) refuses the real one.
         """
         import shutil
 
@@ -428,7 +591,7 @@ class Keychain:
             found = None
         else:
             found = shutil.which(SECRET_TOOL)
-        if found is not None and os.environ.get(NO_REAL_KEYCHAIN) and not _is_fake(found):
+        if found is not None and os.environ.get(NO_PROFILES) and not _is_fake(found):
             return None
         return found
 

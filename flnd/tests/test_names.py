@@ -301,7 +301,11 @@ WORD = re.compile(r"[A-Za-z_]\w*")
 # when nothing in flnd/ could use it instead. The list may only shrink: a listed name that
 # becomes used, or goes, fails `test_no_stale_allowance`.
 CALLED_FROM_OUTSIDE: dict[str, str] = {
-    "flnkit/vault.py:Keychain": "tests/test_keychain.py exercises the OS keychain path",
+    # Step 11 deletes the keychain, and wires the sealed vault into src/engine/auth.py.
+    "flnkit/vault.py:Keychain": "tests/test_keychain.py exercises the OS keychain path; "
+                                "deleted in step 11",
+    "flnkit/vault.py:keyfile": "the sealed vault, built early; step 11 wires it in",
+    "flnkit/vault.py:unseal": "the sealed vault, built early; step 11 wires it in",
     # An early part (PLAN.md 15): step 10's `feat:let config override a plugin's templates`
     # wires config.py in and removes these three.
     "src/engine/config.py:speed": "early part; the transfer reads rate and slowest from step 10",
