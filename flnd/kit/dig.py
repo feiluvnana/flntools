@@ -1,4 +1,7 @@
-"""Walk parsed JSON by a path: `dig(data, path)`."""
+"""Walk parsed JSON by a path: `dig(data, path)`.
+
+flnd/docs/writing-a-source explains it.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +15,8 @@ __all__ = ["dig"]
 
 
 class _Search(NamedTuple):
+    """One `..[field=value]` step: every object whose `field` equals `value`."""
+
     field: str
     value: str
 
@@ -29,7 +34,32 @@ STEP = re.compile(
 
 
 def dig(data: Any, path: str) -> Any:
-    """Walk parsed JSON by a path, and return what it reaches."""
+    """Walk parsed JSON by a path, and return what it reaches.
+
+    A path is steps joined by dots: `key`, `[0]` for an index, `[]` for every item, and
+    `..[field=value]` for every object, at any depth, with that field. Several paths joined
+    by `||` are tried in order, and the first one that finds something wins.
+
+    Args:
+        data: the parsed JSON: dicts, lists and plain values.
+        path: the path to walk; see above.
+
+    Returns:
+        What the path reaches: a value, or a list when it spreads over items. None when
+        nothing is there.
+
+    Raises:
+        SourceError: the path has a step that cannot be read.
+
+    Example:
+        >>> data = {"items": [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]}
+        >>> dig(data, "items[0].name")
+        'a'
+        >>> dig(data, "items[].id")
+        [1, 2]
+        >>> dig(data, "missing || items[1].id")
+        2
+    """
     found = None
     for steps in _compile(path):
         found = _walk(data, steps)
@@ -42,6 +72,17 @@ def dig(data: Any, path: str) -> Any:
 
 @functools.lru_cache(maxsize=512)
 def _compile(path: str) -> tuple[tuple[Any, ...], ...]:
+    """Split a path into its `||` alternatives, each a tuple of steps. Cached.
+
+    Args:
+        path: the path text, as `dig` takes it.
+
+    Returns:
+        One tuple of steps per alternative.
+
+    Raises:
+        SourceError: a part of the path is not a step.
+    """
     alternatives = []
     for alternative in path.split("||"):
         text, steps, at = alternative.strip(), [], 0
@@ -68,6 +109,15 @@ def _spreads(step: Any) -> bool:
 
 
 def _walk(data: Any, steps: tuple[Any, ...]) -> Any:
+    """Follow `steps` from `data`, spreading over items at each `[]` or search step.
+
+    Args:
+        data: the JSON value to start from.
+        steps: the steps of one alternative, as `_compile` makes them.
+
+    Returns:
+        What the steps reach: a list when they spread, otherwise the value itself or None.
+    """
     for position, step in enumerate(steps):
         if not _spreads(step):
             data = _step(data, step)
@@ -118,6 +168,15 @@ def _step(data: Any, step: str | int) -> Any:
 
 
 def _search(data: Any, step: _Search) -> Any:
+    """Yield each object under `data`, at any depth, whose field equals the step's value.
+
+    Args:
+        data: the JSON value to search.
+        step: the `..[field=value]` step to match.
+
+    Yields:
+        Each matching dict, outermost first.
+    """
     stack = [data]
     while stack:
         node = stack.pop()

@@ -1,5 +1,7 @@
 """Plugins: sources from installed packages and from the user's plugin folder, found lazily.
 
+flnd/docs/writing-a-source explains it.
+
 A plugin is a source that isn't built in. flnd finds them in this order, after the built-ins:
 1. installed packages that declare an entry point in the `flnd.sources` group:
    `[project.entry-points."flnd.sources"] exm = "flnd_example:Example"`;

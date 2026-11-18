@@ -1,5 +1,7 @@
 """The engine: every flnd command as a method of `Engine`, and target resolution.
 
+flnd/docs/architecture explains it.
+
 What it holds: `Engine`, whose methods are the commands (`download`, `sync`, `retry`,
 `target_ls`, `target_sync`, `auth_ls`, `login`, `logout`); `resolve` and `owner`,
 which turn a target's text into a `Target` of the right source; and the reports a command

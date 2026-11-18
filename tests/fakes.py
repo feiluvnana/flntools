@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping, MutableMapping
 from typing import Any
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
+import unawaited  # noqa: F401  (a coroutine never awaited fails its test)
 
 from flnd import testing
 from flnd.engine.options import Options

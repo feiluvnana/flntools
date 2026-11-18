@@ -1,4 +1,7 @@
-"""Safe file writes, tool execution, archives and file helpers."""
+"""Safe file writes, tool execution, archives and file helpers.
+
+flnd/docs/storage explains it.
+"""
 
 from __future__ import annotations
 
@@ -157,11 +160,6 @@ class Part:
                 else:
                     meta[name] = value
                 self._noted = True
-
-    def flush_note(self) -> None:
-        """Write the sidecar now, before bytes it describes are written (segmented downloads)."""
-        _write_side(self.side_path, self.meta)
-        self.side = True
 
     def write(self, data: bytes, *, fed: bool = False) -> None:
         """Append `data` after the part's bytes, through a 1 MiB buffer.

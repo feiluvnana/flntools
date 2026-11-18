@@ -32,9 +32,9 @@ flnd = "flnd.cli:main"
 packages = ["flnd"]
 
 [dependency-groups]
-# The tools `make` runs: ruff for `make lint`, pdoc for `make docs`, and pyright for `make type`.
-# pyright[nodejs] brings its own Node.js wheel, so `make type` downloads nothing and works on Windows.
-dev = ["ruff>=0.14", "pdoc>=15", "pyright[nodejs]==1.1.414", "pyte>=0.8"]
+# The tools `make` runs: ruff for `make lint` and pdoc for `make docs`; pyte draws a terminal in
+# the screen's tests.
+dev = ["ruff>=0.14", "pdoc>=15", "pyte>=0.8"]
 # Only `make dist` needs PyInstaller; its recipe adds this group with `uv run --group dist`.
 dist = ["pyinstaller>=6"]
 
@@ -47,9 +47,10 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-# A small, named rule set: undefined and unused names (F), syntax errors (E9), likely bugs
-# (B, bugbear), syntax older than the floor version (UP) and import order (I).
-select = ["F", "E9", "B", "UP", "I"]
+# A small, named rule set, and the one checker: undefined and unused names (F), syntax errors
+# (E9), likely bugs (B, bugbear), syntax older than the floor version (UP), import order (I),
+# blocking calls inside coroutines (ASYNC), and a task nothing keeps (RUF006).
+select = ["F", "E9", "B", "UP", "I", "ASYNC", "RUF006"]
 ignore = [
     # `zip(strict=)` needs a decision per call, and many zips here pair a list with its own tail
     # or a pattern with a longer path on purpose.
@@ -63,11 +64,3 @@ ignore = [
 [tool.ruff.lint.flake8-bugbear]
 # Frozen dataclasses: a shared default instance can't be changed, so B008 has nothing to warn of.
 extend-immutable-calls = ["flnd.engine.options.Options", "flnd.source.Range"]
-
-[tool.pyright]
-# `make type` names the public modules itself; this only says how to read them. Informational:
-# pyright is not part of `make check`.
-typeCheckingMode = "standard"
-pythonVersion = "3.11"
-venvPath = "."
-venv = ".venv"

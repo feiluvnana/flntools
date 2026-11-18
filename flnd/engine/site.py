@@ -16,15 +16,12 @@ holds:
 - `paged` walks a paged JSON listing for `TargetSite.pages`, and `Listing` carries a category's
   saved cursor in and its last cursor out.
 
-Who calls it: the engine (`flnd.engine.core` opens `shared_browser` and one `source_run` per
-source, and hands `flnd login` a `LoginSite`), the job (`flnd.engine.job` makes a
-`TargetSite` per target and sets its `listing`), the library (`flnd._library` opens a
-`TargetSite` on a source's account), and the test kit (`flnd.testing` reuses `paged`).
-What it
-calls: the libraries `flnd.kit.net` (HTTP), `flnd.kit.browser` (tabs), `flnd.kit.loop` (the run's
-event
-loop), `flnd.kit.vault` and `flnd.engine.home` (secrets, state, cookies), `flnd.ui.forms` and
-`flnd.ui.log`.
+Who calls it: the engine (`flnd.engine.core` opens `shared_browser` and one `source_run` per source,
+and hands `flnd login` a `LoginSite`), the job (`flnd.engine.job` makes a `TargetSite` per target
+and sets its `listing`), the library (`flnd._library` opens a `TargetSite` on a source's account),
+and the test kit (`flnd.testing` reuses `paged`). What it calls: the libraries `flnd.kit.net`
+(HTTP), `flnd.kit.browser` (tabs), `flnd.kit.loop` (the run's event loop), `flnd.kit.vault` and
+`flnd.engine.home` (secrets, state, cookies), `flnd.ui.forms` and `flnd.ui.log`.
 
 A run, step by step:
 1. `shared_browser` makes the run's one event loop and its `RunBrowser`, which launches nothing
@@ -107,6 +104,16 @@ BACK_OFF = (30.0, 120.0, 480.0)
 LONGEST_WAIT = 3600.0
 # Seconds without a block after which the next one counts as the first round again.
 QUIET = 600.0
+
+
+class _Screen(browser.Screen):
+    """The browser's questions and rows, drawn as the rest of flnd's screen is."""
+
+    def confirm(self, question: str) -> bool:
+        return forms.confirm(question, default=False)
+
+    def progress(self, label: str, *, total: float | None = None) -> Any:
+        return ui.progress(label, total=total)
 
 
 @dataclass
@@ -452,7 +459,7 @@ class TargetSite:
         return True
 
     async def _visit(self, page: browser.Page, url: str, idle: bool,
-                     timeout: float) -> browser.Visit | None:
+                     timeout: float) -> browser.Visit | None:  # noqa: ASYNC109 (Playwright's own)
         """Load `url` in the target's tab: one try, which the source's client paces and repeats.
 
         Runs on the loop.
@@ -553,7 +560,7 @@ class TargetSite:
         self._verbs().warm(urls)
 
     def _verbs(self) -> browser.Tabs:
-        """`browser()`, for a browser verb, which only plain `def` code may call.
+        """`_browser()`, for a browser verb, which only plain `def` code may call.
 
         Returns:
             The target's tabs.
@@ -577,7 +584,8 @@ class TargetSite:
         """
         if self._tabs is None:
             if self._shared is None:
-                self._shared = browser.RunBrowser(self._run.loop, stealth=self._source.stealth)
+                self._shared = browser.RunBrowser(self._run.loop, stealth=self._source.stealth,
+                                                  screen=_Screen())
                 self._own = True
             settings = self._run.config
             if settings.proxy is not None and not self._run._told_proxy:
@@ -817,7 +825,7 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
         yield
         return
     run_loop = loop.Loop()
-    shared = browser.RunBrowser(run_loop)
+    shared = browser.RunBrowser(run_loop, screen=_Screen())
     settings.browser_pool = shared
     try:
         yield

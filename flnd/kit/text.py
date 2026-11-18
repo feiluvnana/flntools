@@ -1,5 +1,7 @@
 """Text helpers: safe file names, URLs and bodies without secrets, readable numbers, templates.
 
+flnd/docs/architecture explains it.
+
 A library module. It imports only the stdlib, holds no state, and every function is pure, so any
 program and any thread may call it. Inside flnd, the file layer names files with `filename` and
 `fill`, every log line and error message passes URLs through `redact`, a bug report's sample body

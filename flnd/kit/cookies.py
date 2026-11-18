@@ -1,5 +1,7 @@
 """Cookie jars, a library: read cookies from a file, a browser or text, narrow and save them.
 
+flnd/docs/storage explains it.
+
 What it offers any caller:
 - `Jar`, an immutable collection of cookies in Playwright's dictionary shape (`name`, `value`,
   `domain`, `path`, `expires`, `secure`, `httpOnly`, `sameSite`). It filters by domain and name,
@@ -40,6 +42,7 @@ import configparser
 import ctypes
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import struct
@@ -52,7 +55,8 @@ from typing import Any
 
 from flnd.errors import LoginError, UsageError
 from flnd.kit import browser
-from flnd.ui.log import ui
+
+_log = logging.getLogger(__name__)
 
 __all__ = ["BROWSERS", "Jar", "load", "parse_binarycookies"]
 
@@ -601,10 +605,12 @@ def _load_chromium(browser: str, profile: str) -> list[Cookie]:
         )
     if failures:
         # The count only: a cookie's name or host says which sites a person uses.
-        ui.debug(
+        _log.debug(
             "skipped {count} {browser} cookies that can't be decrypted",
-            count=len(failures),
-            browser=browser,
+            extra={"fields": {
+                "count": len(failures),
+                "browser": browser,
+            }},
         )
     return jar
 

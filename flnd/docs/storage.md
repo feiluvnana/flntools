@@ -30,10 +30,10 @@ keys that look like secrets (`token`, `session`, `cookie`, …) are replaced by 
 from a login URL or one that sets a cookie is never kept, and the file is named by a count,
 never by anything the site sent.
 
-The code: `flnd/_home.py` is flnd's storage (the layout, `flnd.db`'s tables and queries, the
-logins). It is built on three library modules: `flnd/_db.py`, a SQLite store (WAL, one
-connection shared by threads, transactions), `flnd/_vault.py`, secrets stored in `secret.db`,
-and `flnd/_cookies.py`, cookie jars read from files and browsers.
+The code: `flnd/engine/home.py` is flnd's storage (the layout, `flnd.db`'s tables and queries,
+the logins). It is built on three kit modules: `flnd/kit/db.py`, a SQLite store (WAL, one
+connection shared by threads, transactions), `flnd/kit/vault.py`, secrets stored in `secret.db`,
+and `flnd/kit/cookies.py`, cookie jars read from files and browsers.
 
 ## `media/`
 
@@ -257,7 +257,7 @@ column. The next download or sync of the target retries every failed file that h
 ### `state`, `logins`, `probes`, `meta`
 
 - `state`: each source's own values between runs (`site.state`), as JSON, keyed `(source,
-  key)`. flnd keeps one entry of its own there too (`flnd/job.py`): `redate.asked`, the posts
+  key)`. flnd keeps one entry of its own there too (`flnd/engine/job.py`): `redate.asked`, the posts
   whose date a source's `date` hook couldn't find, so they aren't asked again for 30 days.
 - `logins`: how each source logged in (`origin`: "Chrome", "cookies.txt", "qr") and `at`. No
   secret is ever here. `flnd logout` removes the source's row.
@@ -304,7 +304,7 @@ stop_after = 5       # saved posts in a row that end a sync of a newest-first li
   doesn't know is a warning (`[defaults] compres is not a setting flnd knows; it is ignored`),
   so a typo never passes for a setting that works.
 
-The code: `flnd/options.py` (`config`) reads and checks the whole file, in one place.
+The code: `flnd/engine/options.py` (`config`) reads and checks the whole file, in one place.
 
 ## The vault: `secret.db`
 
@@ -321,8 +321,8 @@ jar, for the names already in it. A plain cookie file a much older flnd left,
 `cookies/<code>.txt` (or `.json`), is moved into `secret.db` the first time the source is used,
 and deleted once it is saved.
 
-The code: `flnd/_cookies.py` reads cookies from a file or a browser, `flnd/_vault.py` stores
-them in `secret.db`, and `flnd/_home.py` holds the logins that use both.
+The code: `flnd/kit/cookies.py` reads cookies from a file or a browser, `flnd/kit/vault.py`
+stores them in `secret.db`, and `flnd/engine/home.py` holds the logins that use both.
 
 `flnd logout <code>` removes a source's rows.
 

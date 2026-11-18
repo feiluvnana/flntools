@@ -1,4 +1,7 @@
-"""Questions in the terminal (questionary, Charm style)."""
+"""Questions in the terminal (questionary, Charm style).
+
+flnd/docs/cli explains it.
+"""
 
 from __future__ import annotations
 
@@ -36,7 +39,27 @@ def interactive() -> bool:
 
 
 def ask(message: str, *, secret: bool = False, default: str | None = None) -> str:
-    """Ask for one line of text; off a terminal, return `default` (required when set)."""
+    """Ask for one line of text; off a terminal, return `default` (required when set).
+
+    Args:
+        message: the question to show.
+        secret: True to hide what is typed.
+        default: the answer when nothing is typed, and the answer off a terminal. None means
+            there is no default, so off a terminal the call fails.
+
+    Returns:
+        The text typed, or `default` (or "") when nothing was typed.
+
+    Raises:
+        UsageError: the input ended before an answer, or there is no terminal and no default.
+
+    Example:
+        >>> import io
+        >>> from unittest import mock
+        >>> with mock.patch("sys.stdin", io.StringIO()):
+        ...     ask("Account name?", default="example_user")
+        'example_user'
+    """
     if not interactive():
         return _required(message, default)
     with _paused():
@@ -58,7 +81,25 @@ def ask(message: str, *, secret: bool = False, default: str | None = None) -> st
 
 
 def confirm(message: str, *, default: bool = True) -> bool:
-    """Ask a yes-or-no question; off a terminal, return `default`."""
+    """Ask a yes-or-no question; off a terminal, return `default`.
+
+    Args:
+        message: the question to show.
+        default: the answer when there is no terminal, and the one shown first.
+
+    Returns:
+        True for a yes, False for a no.
+
+    Raises:
+        UsageError: the input ended before an answer.
+
+    Example:
+        >>> import io
+        >>> from unittest import mock
+        >>> with mock.patch("sys.stdin", io.StringIO()):
+        ...     confirm("Download again?", default=False)
+        False
+    """
     if not interactive():
         return default
     with _paused():
@@ -80,7 +121,28 @@ def confirm(message: str, *, default: bool = True) -> bool:
 
 def choose(message: str, choices: Sequence[Any] | Mapping[str, Any], *,
            default: Any = None) -> Any:
-    """Ask to pick one of `choices` by number or label."""
+    """Ask to pick one of `choices` by number or label.
+
+    Args:
+        message: the question to show.
+        choices: the values to pick from, or a dict of label to value to show the labels.
+        default: the value picked first, and the answer when there is no terminal. It must be
+            one of the values; None means there is no default.
+
+    Returns:
+        The value picked.
+
+    Raises:
+        UsageError: there are no choices, `default` is not one of them, the input ended
+            before an answer, or there is no terminal and no default.
+
+    Example:
+        >>> import io
+        >>> from unittest import mock
+        >>> with mock.patch("sys.stdin", io.StringIO()):
+        ...     choose("Quality?", {"high": 2, "low": 1}, default=2)
+        2
+    """
     pairs = list(choices.items()) if isinstance(choices, Mapping) else [(c, c) for c in choices]
     if not pairs:
         raise UsageError(f"{message}: there is nothing to choose from")
@@ -111,6 +173,18 @@ def choose(message: str, choices: Sequence[Any] | Mapping[str, Any], *,
 
 
 def _required(message: str, default: Any) -> Any:
+    """The default off a terminal, or a UsageError when there is none.
+
+    Args:
+        message: the question, named in the error.
+        default: the answer to use; None means there is none.
+
+    Returns:
+        `default`, when it is not None.
+
+    Raises:
+        UsageError: `default` is None.
+    """
     if default is None:
         raise UsageError(
             f"{message!r} needs an answer, and there is no terminal to ask in",

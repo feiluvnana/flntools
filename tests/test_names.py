@@ -8,13 +8,12 @@ A breach the code may keep would be listed in `ALLOWED`, by module, and nowhere 
 is empty. A new breach fails `test_no_new_breach`, and a fixed one still listed fails
 `test_no_stale_allowance`, so the list can only shrink.
 
-`DeadNameTest` checks that flnd holds no dead code: every name defined at the top of a private
-module (`flnd/_*.py`, `engine`, `job`, `site`, `options`, `cli`, `sources/*`), and every method
-of its classes, is used somewhere in flnd/ beyond its definition, or is public (in the API
-snapshot), or is a hook Python or the framework calls (a dunder, a source's route or category).
-It reads the modules with `ast` and searches by word, so a docstring, a comment or an `__all__`
-entry isn't a use, and neither is a test: code only tests call is dead. The few names called
-from outside flnd are in `CALLED_FROM_OUTSIDE`, each with who calls it; that list may only
+`DeadNameTest` checks that flnd holds no dead code: every name defined at the top of any module of
+flnd/, and every method of its classes, is used somewhere in flnd/ beyond its definition, or is
+public (in the API snapshot), or is a hook Python or the framework calls (a dunder, a source's route
+or category). It reads the modules with `ast` and searches by word, so a docstring, a comment or an
+`__all__` entry isn't a use, and neither is a test: code only tests call is dead. The few names
+called from outside flnd are in `CALLED_FROM_OUTSIDE`, each with who calls it; that list may only
 shrink.
 """
 
@@ -285,9 +284,9 @@ def from_a_library(error: type) -> bool:
 # ---------------------------------------------------------------------------------------------
 
 FLND = snapshot.ROOT / "flnd"
-# The modules whose names must each be used: the private ones. `flnd`, `flnd.source`,
-# `flnd.testing` and `flnd.errors` are public, and the API snapshot covers them.
-PRIVATE = ("_*.py", "engine/*.py", "cli.py", "sources/*.py")
+# The modules whose names must each be used: all of flnd/. A public name (in the API snapshot)
+# is a script's to call, so it never counts as dead.
+PRIVATE = ("**/*.py",)
 # A string constant that reads as a name or a dotted path (`"chapter"`, `"flnd.sources.twt"`)
 # counts as a use of its words: routes, categories and lazy imports name code in strings.
 NAMEISH = re.compile(r"[\w.:]+")
@@ -296,6 +295,7 @@ WORD = re.compile(r"[A-Za-z_]\w*")
 # when nothing in flnd/ could use it instead. The list may only shrink: a listed name that
 # becomes used, or goes, fails `test_no_stale_allowance`.
 CALLED_FROM_OUTSIDE: dict[str, str] = {
+    "flnd/kit/vault.py:Keychain": "tests/test_keychain.py exercises the OS keychain path",
     "flnd/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
 }

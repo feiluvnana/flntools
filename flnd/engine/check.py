@@ -1,7 +1,6 @@
-"""Compare `flnd.db` file rows to files on disk; optional repair drops missing rows.
+"""Compare `flnd.db` file rows to files on disk; `fix` drops rows whose files are missing.
 
-`fix` only removes rows whose files are missing and corrects wrong sizes. Unknown files are
-reported only.
+flnd/docs/storage ("Checking a home") explains it, and what a repair changes.
 """
 
 from __future__ import annotations

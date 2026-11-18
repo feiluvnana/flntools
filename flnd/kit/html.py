@@ -1,5 +1,7 @@
 """Getting data out of HTML and JSON: `parse` an HTML page, and `dig` a path in parsed JSON.
 
+flnd/docs/writing-a-source explains it.
+
 A small library over selectolax's lexbor parser (a C HTML parser with its own CSS engine) and
 msgspec's JSON decoder. It knows nothing of flnd: any program can use it.
 

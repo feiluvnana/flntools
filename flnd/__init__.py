@@ -1,5 +1,7 @@
 """flnd: a media downloader for Instagram, TikTok, X, Facebook, Telegram and more, as a library.
 
+flnd/docs/library explains it.
+
     import flnd
 
     with flnd.open("~/Media/flnd") as fl:

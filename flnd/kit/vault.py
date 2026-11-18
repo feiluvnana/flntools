@@ -1,5 +1,7 @@
 """Plaintext secrets per slot in `secret.db`, mode 0600.
 
+flnd/docs/storage explains it.
+
 A library: it knows nothing of flnd's sources or homes. What it offers, for any caller:
 - `encrypt` and `decrypt`: authenticated encryption of a value under a 32-byte key, bound to a
   context (associated data), so a sealed value moved elsewhere doesn't open.

@@ -1,5 +1,7 @@
 """The test kit for sources: run one on fixtures, with no network, no browser and no clock.
 
+flnd/docs/writing-a-source explains it.
+
     from flnd.testing import FakeSite, check, collect
 
     check(Example)                                      # the class, and its routes' examples
@@ -863,9 +865,9 @@ def fake_clock(start: float = 0.0) -> Iterator[clock.Fake]:
 
     Example:
         >>> from flnd.kit import clock
-        >>> with fake_clock() as clock:
+        >>> with fake_clock() as fake:
         ...     clock.sleep(30)
-        ...     clock.now, clock.slept
+        ...     fake.now, fake.slept
         True
         (30.0, [30])
     """

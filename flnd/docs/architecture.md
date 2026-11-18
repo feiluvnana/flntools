@@ -8,9 +8,8 @@ detail.
 
 ## The layers
 
-flnd's modules sit in four layers, and the kit `flncore/` sits under them all. Each layer imports
-only from the layers below it; `tests/test_layers.py` checks the rules by reading every file's
-imports.
+flnd is one package, `flnd/`, in layers. Each layer imports only what its rule below allows;
+`tests/test_layers.py` checks the rules by reading every file's imports.
 
 ```
                  you
@@ -19,48 +18,45 @@ imports.
    │ 1. the command line      flnd/cli.py                                         │
    │    argparse: flags in, one library call, events out as lines or a table      │
    └──────────────┬───────────────────────────────────────────────────────────────┘
-                  │ imports only `flnd` (plus the manifest for --help, and _prompt, _ui)
+                  │ imports `flnd`, flnd/ui/ and the plugins' manifest
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
    │ 2. the public API        flnd (Flnd, Run, events, errors), flnd.source,      │
    │                          flnd.testing                                        │
    └──────────────┬───────────────────────────────────────────────────────────────┘
                   │
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
-   │ 3. the engine side       engine, job, site, options, _home, _run, _events,   │
-   │                          _track, _transfer, _steps, _check, _plugins,        │
-   │                          sources/                                            │
+   │ 3. the engine            flnd/engine/: core, job, site, options, home, run,  │
+   │                          events, track, transfer, steps, check, plugins;     │
+   │                          and the sources, flnd/sources/                      │
    └──────────────┬───────────────────────────────────────────────────────────────┘
                   │
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
-   │ 4. the library modules   _net, _browser, _loop, _files, _unpack, _tools,     │
-   │                          _cookies, _vault, _db, _html, _text, _time,         │
-   │                          _prompt, _ui   (and flnd/errors.py)                 │
+   │ 4. the screen            flnd/ui/: log (lines, rows, the journal), forms     │
    └──────────────┬───────────────────────────────────────────────────────────────┘
                   │
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
-   │ flncore/  a kit for any program that fetches things from the web: net,       │
-   │ browser, loop, files, log, prompt, clock, dig, config, errors, …             │
+   │ 5. the kit               flnd/kit/: net, browser, loop, files, media, clock, │
+   │                          dig, html, text, db, cookies, vault                 │
+   │                          (and flnd/errors.py, the one error hierarchy)       │
    └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 The rules between them:
 
-- **flncore imports nothing from flnd** (rule 0). It is a standalone package — HTTP, the
-  browser, files, terminal output — that another program could use. Most of flnd's library
-  modules are thin shims over it: `_net`, `_browser`, `_loop`, `_files`, `_tools` and `_unpack`
-  replace themselves in `sys.modules` with their flncore module; `_ui`, `_prompt` and `_time`
-  re-export flncore's `log`, `prompt` and `clock`; `flnd.errors` re-exports flncore's hierarchy
-  and adds `LoginError` and `SourceError`. The shims keep flnd's import names stable.
-- **The CLI imports only the library** (`flnd`), the sources' manifest for `--help`, and the
-  prompt and UI modules. Every decision is the library's, so a script can do anything the
-  command line does.
-- **A source imports only `flnd.source`** and the standard library (and, lazily, an SDK its
-  site needs). The engine and the private modules can change without breaking one.
-- **A library module** does one general job and imports from flnd only other library modules
-  and `flnd/errors.py`. It knows nothing of sources, targets or `flnd.db`'s schema: flnd's own
-  code passes those in. flnd's own libraries are `_cookies`, `_vault`, `_db`, `_html` and
-  `_text`.
-- **`flnd/errors.py`** imports only the kit's errors, so every layer raises one hierarchy.
+- **The kit imports only the kit** and `flnd/errors.py`. Each module does one general job —
+  HTTP, the browser, files, cookies, a SQLite store — that another program could use, and
+  knows nothing of sources, targets or `flnd.db`'s schema: flnd's code passes those in. A kit
+  module logs through the standard library's `logging` (`flnd.kit.<module>`), and
+  `flnd/ui/log.py` routes those records into flnd's lines and the journal. What the browser
+  asks a person, and the rows it shows, come from a `Screen` its caller passes in.
+- **The screen** (`flnd/ui/`) imports only itself, the kit, `flnd/engine/events.py` and
+  `flnd/errors.py`.
+- **The engine** imports itself, the kit, the screen, `flnd/errors.py` and the source API.
+- **The CLI imports only the library** (`flnd`), the screen, and the sources' manifest for
+  `--help`. Every decision is the library's, so a script can do anything the command line
+  does. Until the commands are rewritten, it still reads a few engine and kit names.
+- **A source imports only `flnd.source`** and the standard library (and, inside a function,
+  an SDK its site needs). The engine can change without breaking one.
 - **Nothing heavy loads at import.** `import flnd` imports only `flnd/__init__.py`; each public
   name loads its own module on first use, and curl_cffi, Playwright and Rich load only when a
   command needs them, so `flnd --help` stays fast (`tests/test_packaging.py`).
@@ -68,20 +64,20 @@ The rules between them:
 ## The parts
 
 ```
-   flnd/cli.py        the command line: flags in, progress lines out
-   flnd/__init__.py   the library's names, each loaded on first use
-   flnd/_library.py   flnd.open and Flnd: each command as a method
-   flnd/_run.py       Run: one command on its own thread, read as a stream of events
+   flnd/cli.py               the command line: flags in, progress lines out
+   flnd/__init__.py          the library's names, each loaded on first use
+   flnd/_library.py          flnd.open and Flnd: each command as a method
+   flnd/engine/run.py        Run: one command on its own thread, read as a stream of events
         │
         ▼
-   flnd/engine.py     Engine: resolves targets, checks options, runs each source's targets
+   flnd/engine/core.py       Engine: resolves targets, checks options, runs each source's targets
         │
-        ├── flnd/options.py     Options (what one target downloads), RunShared (what a run shares)
-        ├── flnd/_home.py       the home: flnd.db (files, targets, runs, failures), the logins
-        ├── flnd/site.py        SourceRun and TargetSite: what a source acts through
-        │       └── flnd/_transfer.py   one file into its part, checked by its content
-        ├── flnd/_steps.py      the step chain after each file: dedupe, unpack, sidecar
-        └── flnd/job.py         one target: list its posts, plan its files, download, record
+        ├── flnd/engine/options.py   Options (what one target downloads), RunShared (a run's)
+        ├── flnd/engine/home.py      the home: flnd.db (files, targets, runs, failures), logins
+        ├── flnd/engine/site.py      SourceRun and TargetSite: what a source acts through
+        │       └── flnd/engine/transfer.py   one file into its part, checked by its content
+        ├── flnd/engine/steps.py     the step chain after each file: dedupe, unpack, sidecar
+        └── flnd/engine/job.py       one target: list its posts, plan its files, download
                 │
                 └── flnd/sources/<code>.py   one class per site (flnd/source.py is their API),
                     and the plugins: <code>.py files in the plugin folder, or installed packages
@@ -91,25 +87,27 @@ The rules between them:
 | --- | --- | --- |
 | `flnd/cli.py` | the commands: `download`, `follow`, `sync`, `retry`, `ls`, `status`, `check`, `login`, `logout` and the rest; a run's summary table or `--json` lines; `--exec`; the exit codes | the `flnd` script, `python -m flnd` |
 | `flnd/_library.py` | `open` and `Flnd`: each command as a method, over the engine; the reads (`targets`, `files`, `logins`, `status`), as rows | scripts and the CLI |
-| `flnd/_run.py` | `Run`: a command on its own worker thread, read as a stream of events; `Stop` (the Ctrl-C stages) and `suspend` | `Flnd`, the engine |
-| `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), the public `Report`, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the job, `Run`, `Flnd` |
-| `flnd/engine.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
-| `flnd/job.py` | one target's run: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads on the loop (`Downloads`), the progress rows (`Board`), history rows | the engine |
-| `flnd/_track.py` | each file's lifecycle (`FileTrack`): phases, and the only path that emits `Saved` / `Skipped` / `Failed` for a file | the job, `_transfer`, `_steps` |
-| `flnd/site.py` | `SourceRun` (a source's cookies, HTTP session, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`), `LoginSite`, and `shared_browser`, the run's loop and browser | the engine, the job |
-| `flnd/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, and `config`: every setting of config.toml, read and checked in one place | the engine, the job, the library, `site`, `_steps` |
+| `flnd/engine/run.py` | `Run`: a command on its own worker thread, read as a stream of events; `Stop` (the Ctrl-C stages) and `suspend` | `Flnd`, the engine |
+| `flnd/engine/events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), the public `Report`, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the job, `Run`, `Flnd` |
+| `flnd/engine/core.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
+| `flnd/engine/job.py` | one target's run: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads on the loop (`Downloads`), the progress rows (`Board`), history rows | the engine |
+| `flnd/engine/track.py` | each file's lifecycle (`FileTrack`): phases, and the only path that emits `Saved` / `Skipped` / `Failed` for a file | the job, `transfer`, `steps` |
+| `flnd/engine/site.py` | `SourceRun` (a source's cookies, HTTP session, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`), `LoginSite`, and `shared_browser`, the run's loop and browser | the engine, the job |
+| `flnd/engine/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, `when`'s reading, and `config`: every setting of config.toml, read and checked in one place | the engine, the job, the library, `site`, `steps` |
 | `flnd/source.py` | source API 1: `Source` and its checks, `@target`, `Post`, `File`, `Target`, `Site`, `Login` and `cookies`, `Request`, `dig`, errors | every source |
 | `flnd/sources/` | the seven built-in sources, one module each, and `SOURCES`, the registry of every source, plugins included, each imported on first use | the engine and the library |
 | `flnd/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
-| `flnd/_plugins.py` | finding plugins (installed packages' `flnd.sources` entry points, then the user's plugin folder), importing one when its code is first used, and disabling one that breaks, with its file and line | `SOURCES` |
+| `flnd/engine/plugins.py` | finding plugins (installed packages' `flnd.sources` entry points, then the user's plugin folder), importing one when its code is first used, and disabling one that breaks, with its file and line | `SOURCES` |
 | `flnd/testing.py` | the public test kit: `FakeSite`, `collect`, `check`, `fake_clock` | a source's tests, flnd's own (`tests/fakes.py`) |
-| `flnd/_home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the job, the site, `Flnd` |
-| `flnd/_transfer.py` | one post's file into its part: mirrors, DASH merges, a source's `fetch` function, the content check | the job |
-| `flnd/_steps.py` | the step chain and its archive lane: dedupe, unpack, the sidecar, `Saved` ([storage.md](storage.md)) | the job and the engine |
-| `flnd/_check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
+| `flnd/engine/home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the job, the site, `Flnd` |
+| `flnd/engine/transfer.py` | one post's file into its part: mirrors, DASH pairs (joined by `flnd/kit/media.py`), a source's `fetch` function, the content check | the job |
+| `flnd/engine/steps.py` | the step chain and its archive lane: dedupe, unpack, the sidecar, `Saved` ([storage.md](storage.md)) | the job and the engine |
+| `flnd/engine/check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
+| `flnd/ui/log.py` | log lines, progress rows and the run's summary table, safe for site text; the journal; the route of the kit's `logging` records | every layer above the kit |
+| `flnd/ui/forms.py` | questions on the terminal | the CLI, the site, the engine's browser screen |
 | `flnd/errors.py` | the one error hierarchy, `Stopped`, and `classify` and `disk`, which turn any exception into one of them | every module |
 
-The kit under it all, `flncore/` — each module a toolkit of its own:
+The kit, `flnd/kit/` — each module a toolkit of its own:
 
 | module | what it offers |
 | --- | --- |
@@ -117,19 +115,11 @@ The kit under it all, `flncore/` — each module a toolkit of its own:
 | `browser` | the run's one browser on async Playwright: tabs and warm tabs, response feeds, human-like scrolling |
 | `loop` | one asyncio loop on a thread of its own, which other threads hand work to (`run`, `submit`) |
 | `files` | atomic files: parts that lock themselves, hashing as bytes are written, renames, sweeps; running outside tools; archive extraction |
-| `log` | log lines and the renderer of the run's summary table, safe for site text |
-| `prompt` | questions on the terminal |
-| `clock` | a clock tests can fake |
-| `dig`, `config`, `media` | JSON paths; a TOML file into a typed struct; ffmpeg joins |
-| `cli`, `run`, `testing` | a command line from annotated functions; run work on a thread and read it as events; fakes for HTTP, the clock, the terminal and tools |
-
-flnd's own library modules, which flncore doesn't cover:
-
-| module | what it offers |
-| --- | --- |
-| `_cookies`, `_vault` | reading browsers' cookie stores and cookie files; plaintext secrets per slot in SQLite |
-| `_db` | a SQLite store: one connection behind a lock, transactions, waiting for another process's writer |
-| `_html`, `_text` | HTML parsing (selectolax) and JSON paths; safe file names, redaction, readable numbers |
+| `media` | one ffmpeg join of a video stream and its audio stream |
+| `clock`, `dig` | a clock tests can fake; JSON paths |
+| `html`, `text` | HTML parsing (selectolax); safe file names, redaction, readable numbers |
+| `db` | a SQLite store: one connection behind a lock, transactions, waiting for another process's writer |
+| `cookies`, `vault` | reading browsers' cookie stores and cookie files; secrets per slot in SQLite |
 
 ## Plugins
 
@@ -199,7 +189,7 @@ yours.
     target's queue holds 4 times its places, so the listing waits when downloads fall behind
     and memory stays flat; a task waits for one of the target's places (32, as many as one
     host's cap grows to, or the source's largest `limits` above that), then for a place under
-    its host's cap. `_transfer.save` opens and locks the file's part (`<name>.part`, see
+    its host's cap. `transfer.save` opens and locks the file's part (`<name>.part`, see
     [storage.md](storage.md)), skipping a file another run is saving, then streams the file
     into it, resuming what a failed run kept. It tries mirrors in order, merges a DASH video
     with its audio through ffmpeg, checks the content (a web page instead of a photo is a
@@ -345,7 +335,7 @@ file's, never the run's: it is logged, and the file is still finished.
 
 ## Events
 
-A run's only output is its events (`flnd/_events.py`), each a frozen msgspec struct a script
+A run's only output is its events (`flnd/engine/events.py`), each a frozen msgspec struct a script
 may keep after the run and `encode` to JSON:
 
 | event | sent when | made by |
@@ -402,7 +392,7 @@ mouse events. An element that scrolls on its own (`scroll(within=…)`) gets rea
 One HTTP library (`flnd.kit.net`, as `flnd.kit.net`) does every request and download, on the run's
 loop:
 
-- **A session per source** (`_net.Session`, made by `site.source_run`): one curl_cffi
+- **A session per source** (`flnd.kit.net.Session`, made by `site.source_run`): one curl_cffi
   `AsyncSession` with Chrome's TLS and HTTP/2 fingerprint, the login's cookies (kept by the
   session, and written back to the vault at the end), the source's `user_agent`, and its `sign`
   hook for requests to its own domains, run before every try. A `proxy` under
@@ -411,15 +401,15 @@ loop:
 - **The home's settings win over the class's**: `source_run` reads the source's
   `[sources.<code>]` table (`options.config`), whose `pace` replaces the source's, whose
   `limits` merge over the source's, and whose `scroll` the target's tabs take.
-- **Two pools** (`_net.Limits`). *Pages*: the listing's requests to the source's own domains
+- **Two pools** (`flnd.kit.net.Limits`). *Pages*: the listing's requests to the source's own domains
   share a token bucket per host at the source's `pace`; a 429's `Retry-After` (or X's
   `x-rate-limit-reset`) holds it, and halves its rate until 20 requests go through. *Media*:
   every file, and the listing's requests to other hosts, under an adaptive cap per host
   (below). A target's downloads also take one of its own places (32, or the source's largest
   cap above that), and its queue holds 4 times as many.
-- **Adaptive concurrency per host** (`_net.Cap`, AIMD). Each media host starts at 8 transfers
-  at once (`site.MEDIA_CAP`) and may grow to 32 (`site.MEDIA_MOST`), or to the cap the source's
-  `limits` gives it:
+- **Adaptive concurrency per host** (`flnd.kit.net.Cap`, AIMD). Each media host starts at 8
+  transfers at once (`site.MEDIA_CAP`) and may grow to 32 (`site.MEDIA_MOST`), or to the cap the
+  source's `limits` gives it:
   - a 429, a 503, a reset, a timeout or a transfer cut short halves it, once per round of
     transfers that started together;
   - every 10 clean transfers close a window, whose throughput is the cap times the bytes moved
@@ -437,10 +427,10 @@ loop:
 - **The retry policy** is the library's ([errors.md](errors.md)): 4 more tries after waits of
   about 1, 2, 4 and 8 s for a timeout, a reset or a 5xx; a 429 waited out, and `Blocked` on the
   third in a row.
-- **A file** (`_transfer.save`) goes into its part: resumed with `Range` and `If-Range` from
+- **A file** (`transfer.save`) goes into its part: resumed with `Range` and `If-Range` from
   what a failed run kept, tried mirror by mirror, a DASH pair fetched at once and joined by
   ffmpeg in one join (`flnd/kit/media.py`).
-- **The fake** (`_net.fake`) answers every request from routes or a handler in tests and
+- **The fake** (`flnd.kit.net.fake`) answers every request from routes or a handler in tests and
   benchmarks; nothing in `make check` reaches the network.
 
 Instagram's API calls move into the page (`site.fetch(in_page=True)`) when the site refuses
@@ -582,7 +572,8 @@ The choices that explain how flnd behaves, made with its user in November 2026:
     it without passwords or key files.
 12. **One `Source` class per site**, with routes and categories (above).
 13. **A fixed chain of steps** after each file (above).
-14. **Ruff is the only lint, and pyright is informational** (`make type`), never a gate.
+14. **Ruff is the one checker** (`make lint`), with no type checker: type hints are for readers,
+    and a never-awaited coroutine fails its test instead.
 15. **Settings resolve in one order**: a flag (or a library argument), then the environment,
     then config.toml, then the default. The file is read and checked in one place; a bad value
     is a usage error naming the key, and an unknown key a warning.

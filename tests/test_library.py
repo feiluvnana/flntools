@@ -21,9 +21,9 @@ from unittest import mock
 from test_engine import CDN, EngineCase, make_source, noise
 
 import flnd
-from flnd._library import _when
 from flnd.engine import site as site_module
 from flnd.engine.events import encode
+from flnd.engine.options import _when
 from flnd.kit import net as _net
 from flnd.source import File, Post, Source, target
 from flnd.source import cookies as login_cookies

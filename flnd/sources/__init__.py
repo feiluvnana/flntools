@@ -1,5 +1,7 @@
 """The source registry: `SOURCES` maps each source's code to its class, loaded lazily.
 
+flnd/docs/writing-a-source explains it.
+
 It holds the built-in sources and the plugins (`flnd.engine.plugins`): installed packages' and the
 user's plugin folder's. Who reads it: the engine and the library (to resolve and run targets),
 login and logout. The CLI's help reads `flnd.sources._manifest` instead, which holds the

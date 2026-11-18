@@ -1,12 +1,12 @@
 """flnd's transfers: one post's `File` into its part, by URL, mirrors, DASH pair or `fetch`.
 
+flnd/docs/architecture explains it.
+
 Who calls it: a target's downloads (`flnd.engine.job.Downloads`), one coroutine per file on the
-run's
-loop. What it calls: the source's `flnd.kit.net.Client` for URLs, `flnd.kit.files.part` for the
-part,
-`flnd.kit.files` for ffmpeg, and `flnd.kit.files` to tell that a file is the media it should be.
-It is flnd's side, not a library: it knows a source's `File` and `Fetch` (`flnd.source`), and
-reports each transfer to its progress row (`flnd.ui.log`).
+run's loop. What it calls: the source's `flnd.kit.net.Client` for URLs, `flnd.kit.files.part` for
+the part, `flnd.kit.files` for ffmpeg, and `flnd.kit.files` to tell that a file is the media it
+should be. It is flnd's side, not a library: it knows a source's `File` and `Fetch` (`flnd.source`),
+and reports each transfer to its progress row (`flnd.ui.log`).
 
 The flow of one file (`save`):
 1. open and lock `<dest>.part` once, before any request, so a file another run is saving raises

@@ -1,5 +1,7 @@
 """`Run`: one download, follow or sync, started lazily and read as a stream of events.
 
+flnd/docs/library explains it.
+
 `Flnd.download`, `follow` and `sync` return a `Run`. Nothing happens until someone reads it:
 
 1. **Start.** The first `for event in run`, `run.wait()`, `async for` or `await run` starts a
@@ -31,8 +33,7 @@ Rules a change must keep:
 - `suspend()` holds new requests and files (`Stop.suspended`, which each source's limits
   watch); a stop always wins over it, so a suspended run still stops.
 - The module imports only the stdlib, `flnd.engine.events` and `flnd.ui.log` on a second Ctrl-C,
-never
-  the engine, so `flnd.Run` is cheap to reach.
+  never the engine, so `flnd.Run` is cheap to reach.
 """
 
 from __future__ import annotations

@@ -1,5 +1,7 @@
-"""The steps after a file lands, in their one fixed order,
-and the threads that run the slow ones."""
+"""The steps after a file lands, in their one fixed order, and the threads that run the slow ones.
+
+flnd/docs/storage explains it.
+"""
 
 from __future__ import annotations
 

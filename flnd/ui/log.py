@@ -1,12 +1,12 @@
-"""Terminal output: log lines and progress items, safe for site text.
+"""Terminal output: log lines, progress items and the run journal, safe for site text.
 
-The single renderer, stable keys, and the run journal.
+flnd/docs/cli explains it.
 """
 
 from __future__ import annotations
 
-import io
 import json
+import logging
 import os
 import re
 import string
@@ -65,7 +65,6 @@ SPIN_FRAMES: tuple[tuple[str, ...], tuple[str, ...]] = (
     ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
     ("|", "/", "-", "\\"),
 )
-BAR_CELLS = 20
 # Seconds between redraws of the live block: the pace of the update throttle, and of the
 # ticker thread that redraws rows which only move with the clock (the spinner, and counts
 # that wait on events). 60 a second is the most a terminal shows.
@@ -94,6 +93,14 @@ def _sanitize(value: str) -> str:
 
 @lru_cache(maxsize=256)
 def _field_names(message: str) -> frozenset[str]:
+    """The names of the `{fields}` in a message template, nested format specs included.
+
+    Args:
+        message: a message template in `str.format` syntax.
+
+    Returns:
+        The top-level names, so `{user.name}` gives `user`.
+    """
     names: set[str] = set()
     for _, field_name, format_spec, _ in string.Formatter().parse(message):
         if field_name:
@@ -106,6 +113,20 @@ def _field_names(message: str) -> frozenset[str]:
 def _color_settings(
     color: str | bool | None, base: RichConsole | None,
 ) -> tuple[Any, bool | None, bool | None]:
+    """The Rich settings for a `color` choice: color system, no-color and force-terminal.
+
+    Args:
+        color: None copies `base`, or auto-detects when there is no base. False or "none"
+            turns color off. True, "16m" or "truecolor", "256", and "8" or "standard" pick the
+            color depth.
+        base: the console to copy from when `color` is None; None when there is none.
+
+    Returns:
+        The three values `RichConsole` takes for those settings.
+
+    Raises:
+        ValueError: `color` is not one of the choices above.
+    """
     if color is None and base is not None:
         return base.color_system, base.no_color, base._force_terminal
     table: dict[Any, tuple[Any, bool | None, bool | None]] = {
@@ -125,7 +146,16 @@ def _color_settings(
 
 
 def _detect_unicode(stream: Any) -> bool:
-    encoding = getattr(stream, "encoding", None) or ""
+    """Whether `stream` can show the Unicode glyphs, from its encoding and the locale.
+
+    Args:
+        stream: the file the output goes to.
+
+    Returns:
+        True for a UTF-8 stream, except under a Japanese, Korean or Chinese locale. On Windows
+        it is True only in a terminal that sets one of its known variables, or under ConEmu.
+    """
+    encoding =getattr(stream, "encoding", None) or ""
     if not encoding and getattr(stream, "isatty", lambda: False)():
         encoding = "utf-8"
     if encoding.lower().replace("-", "").replace("_", "") != "utf8":
@@ -140,6 +170,15 @@ def _detect_unicode(stream: Any) -> bool:
 
 
 def _elide_middle(text: str, max_len: int) -> str:
+    """Shorten `text` to `max_len` characters by cutting its middle, with a `…` in the gap.
+
+    Args:
+        text: the text to shorten.
+        max_len: the most characters to return, the `…` included.
+
+    Returns:
+        `text` itself when it fits, otherwise the shortened text.
+    """
     if len(text) <= max_len:
         return text
     if max_len <= 1:
@@ -178,6 +217,14 @@ class Item:
 
     `unit` picks the stats segment: None counts (`3`), `"bytes"` sizes (`1.2 MB`), and
     `"none"` renders no bar and no stats, for a row whose label says it all.
+
+    Args:
+        key: the stable key the item is kept under.
+        label: the text shown; `key` when empty.
+        total: the count that is 100%; None when it is not known.
+        unit: None for a count, "bytes" for sizes, or "none" for a text row with no bar.
+        drawn: False to keep the item off the screen; it is still counted.
+        owner: the `UI` that draws it.
     """
 
     def __init__(
@@ -216,7 +263,11 @@ class Item:
             self.owner._item_updated(self)
 
     def ok(self, note: str = "") -> None:
-        """Mark the item as successfully finished."""
+        """Mark the item as successfully finished.
+
+        Args:
+            note: the text to show after the bar; empty keeps the current note.
+        """
         if self._ended is not None:
             return
         self.state = State.DONE
@@ -227,7 +278,11 @@ class Item:
         self.owner._item_finished(self)
 
     def skip(self, note: str = "") -> None:
-        """Mark the item as skipped."""
+        """Mark the item as skipped.
+
+        Args:
+            note: the text to show after the bar; empty keeps the current note.
+        """
         if self._ended is not None:
             return
         self.state = State.SKIPPED
@@ -238,7 +293,11 @@ class Item:
         self.owner._item_finished(self)
 
     def fail(self, note: str = "") -> None:
-        """Mark the item as failed."""
+        """Mark the item as failed.
+
+        Args:
+            note: the text to show after the bar; empty keeps the current note.
+        """
         if self._ended is not None:
             return
         self.state = State.FAILED
@@ -266,12 +325,14 @@ class Item:
                 self.fail(_brief(exc_val) if exc_val else "failed")
 
 
-# Backwards compatibility alias for flnd
-Row = Item
-
 
 class Journal:
-    """A JSON Lines run journal file recording outcome records and log lines."""
+    """A JSON Lines run journal file recording outcome records and log lines.
+
+    Args:
+        path: the file to append to; its folder is made when it is missing.
+        owner: the `UI` whose log lines are journalled while this is open.
+    """
 
     def __init__(self, path: str | os.PathLike[str], owner: UI) -> None:
         self.path = Path(path)
@@ -298,7 +359,13 @@ class Journal:
                     self._file = None
 
     def write(self, record: Any) -> None:
-        """Write one JSON record object, adding `at` and `type` if omitted."""
+        """Write one JSON record object, adding `at` and `type` if omitted.
+
+        Does nothing when the journal is not open. A `Progress` record is never written.
+
+        Args:
+            record: a dict, an object with attributes, or a value msgspec can encode.
+        """
         if self._file is None:
             return
 
@@ -327,7 +394,14 @@ class Journal:
 
 
 def _encode(value: Any) -> Any:
-    """Write a value msgspec has no form for: a path as a string, an error as its parts."""
+    """Write a value msgspec has no form for: a path as a string, an error as its parts.
+
+    Args:
+        value: the value msgspec could not encode.
+
+    Returns:
+        A string, or for an error a dict of its class name, message and hint.
+    """
     if isinstance(value, os.PathLike):
         return os.fspath(value)
     if isinstance(value, BaseException):
@@ -337,7 +411,13 @@ def _encode(value: Any) -> Any:
 
 
 class Group:
-    """A collection of progress items belonging to one logical task."""
+    """A collection of progress items belonging to one logical task.
+
+    Args:
+        owner: the `UI` that draws the items.
+        title: a line logged when the group opens; empty for none.
+        drawn: False to keep the group's items off the screen.
+    """
 
     def __init__(self, owner: UI, title: str = "", *, drawn: bool = True) -> None:
         self.owner = owner
@@ -431,6 +511,11 @@ class UI:
         return frames[int(clock.now() * 10) % len(frames)]
 
     def _get_width(self) -> int:
+        """The width in columns: the console's, else the terminal's, else 80.
+
+        Returns:
+            The number of columns to lay a line out in.
+        """
         if self._console.width is not None:
             return self._console.width
         try:
@@ -439,6 +524,11 @@ class UI:
             return 80
 
     def _get_height(self) -> int:
+        """The height in lines: the console's, else the terminal's, else 24.
+
+        Returns:
+            The number of lines the terminal shows.
+        """
         if self._console.height is not None:
             return self._console.height
         try:
@@ -461,6 +551,17 @@ class UI:
         width: int | None = None,
         base: RichConsole | None = None,
     ) -> RichConsole:
+        """A Rich console for the given settings; `base` supplies any setting left as None.
+
+        Args:
+            color: the color choice, as `_color_settings` takes it; None copies `base`.
+            dest: the file to write to; None writes to stderr, or to `base`'s file.
+            width: the width in columns; None copies `base`, or lets Rich decide.
+            base: the console to copy from; None when there is none.
+
+        Returns:
+            The new console. It has no highlighting and soft-wraps long lines.
+        """
         color_system, no_color, force_terminal = _color_settings(color, base)
         file = dest if dest is not None else (base.file if base is not None else None)
         return RichConsole(
@@ -476,6 +577,16 @@ class UI:
         )
 
     def _render_item(self, it: Item, width: int, unicode: bool) -> Text:
+        """The one-line row for `it`: a glyph, its label, a bar and its stats, cut to `width`.
+
+        Args:
+            it: the item to draw.
+            width: the most columns the row may take.
+            unicode: True to use the Unicode glyphs and bar characters.
+
+        Returns:
+            The row as styled text.
+        """
         if it.state == State.ACTIVE:
             spinner = self._spinner()
             glyph_style = "accent"
@@ -569,7 +680,13 @@ class UI:
 
     @contextmanager
     def hold(self) -> Iterator[None]:
-        """Pause live redraws while something else uses the terminal."""
+        """Pause live redraws while something else uses the terminal.
+
+        The live rows are cleared while the block runs, and drawn again after it.
+
+        Yields:
+            Nothing; the block only needs the terminal to itself.
+        """
         with self._lock:
             self._hold_depth += 1
             if self._live_lines > 0:
@@ -586,6 +703,14 @@ class UI:
                     self._redraw(force=True)
 
     def _redraw(self, force: bool = False) -> None:
+        """Redraw the live block: the pending lines first, then the active rows.
+
+        Nothing is drawn while a `hold` is open. Rows beyond the screen are folded into one
+        "and N more" line.
+
+        Args:
+            force: True to draw now, even when the last draw was less than `REDRAW` ago.
+        """
         if self._hold_depth > 0:
             return
         now = clock.now()
@@ -644,7 +769,19 @@ class UI:
         unit: str | None = None,
         drawn: bool = True,
     ) -> Item:
-        """Create and register a progress item under a stable key."""
+        """Create and register a progress item under a stable key.
+
+        Args:
+            key: the stable name the item is kept under. A new item with the same key replaces
+                the one before it.
+            label: the text shown; `key` when empty.
+            total: the count that is 100%; None when it is not known.
+            unit: None for a count, "bytes" for sizes, or "none" for a text row with no bar.
+            drawn: False to keep the item off the screen; it is still counted.
+
+        Returns:
+            The new `Item`.
+        """
         with self._lock:
             it = Item(key, label or key, total=total, unit=unit, drawn=drawn, owner=self)
             self._items[key] = it
@@ -656,6 +793,11 @@ class UI:
             return it
 
     def _item_updated(self, item: Item) -> None:
+        """Redraw the live block for `item`, at most once per `REDRAW` interval.
+
+        Args:
+            item: the item whose count or note changed.
+        """
         if not item.drawn or not self.live:
             return
         now = clock.now()
@@ -664,6 +806,11 @@ class UI:
                 self._redraw()
 
     def _item_finished(self, item: Item) -> None:
+        """Take `item` off the live rows, and print its final line.
+
+        Args:
+            item: the item that ended: done, skipped or failed.
+        """
         with self._lock:
             if item.key in self._active_keys:
                 self._active_keys.remove(item.key)
@@ -678,7 +825,18 @@ class UI:
                     self._redraw(force=True)
 
     def _log(self, _kind: Level, message: str, *args: Any, **fields: Any) -> None:
-        unused = set(fields) - _field_names(message) if fields else set()
+        """Write one log line of `_kind` if its level is on, and journal it when a journal is open.
+
+        Args:
+            _kind: the level: debug, info, ok, warn or error.
+            message: the message template; `{name}` marks a field.
+            *args: positional values for the template.
+            **fields: values for the template's named fields. Each must be named in it.
+
+        Raises:
+            TypeError: `fields` holds a name the message does not use.
+        """
+        unused =set(fields) - _field_names(message) if fields else set()
         if unused:
             raise TypeError(
                 f"ui message {message!r} has no field {', '.join(sorted(unused))}"
@@ -754,7 +912,17 @@ class UI:
         width: int | None = None,
         level: Level | None = None,
     ) -> Iterator[UI]:
-        """Inside the block, write to another destination, or with other colors, width or level."""
+        """Inside the block, write to another destination, or with other colors, width or level.
+
+        Args:
+            color: the color choice, as `_color_settings` takes it; None keeps the current one.
+            dest: the file to write to; None keeps the current destination.
+            width: the width in columns; None keeps the current width.
+            level: the level for the block; None keeps the current level.
+
+        Yields:
+            This `UI`, with the new settings in place.
+        """
         old_console, old_level, old_live = self._console, self._level, self._live
         try:
             self._console = self._make_console(
@@ -793,11 +961,39 @@ ui = UI()
 log = ui
 
 
-class TTY(io.StringIO):
-    """A text buffer treated as a terminal (`isatty` is True), for tests of the screen."""
+class _KitLines(logging.Handler):
+    """Routes the kit's `logging` records (`flnd.kit.*`) to `ui`'s lines and the journal.
 
-    def isatty(self) -> bool:
+    A kit module logs `logger.warning(template, extra={"fields": {...}})`; the record becomes
+    `ui.warn(template, **fields)`, so it reads and is journalled as flnd's own lines are.
+    """
+
+    def handle(self, record: logging.LogRecord) -> bool:
+        # No handler lock: `ui` has its own, and a record is passed on whole.
+        self.emit(record)
         return True
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Pass one `logging` record to `ui` as a line of the matching level.
+
+        Args:
+            record: the record a kit module logged.
+        """
+        kind: Level = "debug"
+        if record.levelno >= logging.ERROR:
+            kind = "error"
+        elif record.levelno >= logging.WARNING:
+            kind = "warn"
+        elif record.levelno >= logging.INFO:
+            kind = "info"
+        ui._log(kind, str(record.msg), **getattr(record, "fields", {}))
+
+
+_kit = logging.getLogger("flnd.kit")
+_kit.setLevel(logging.DEBUG)
+_kit.addHandler(_KitLines())
+# The kit's lines are flnd's own: a script's root handler doesn't print them a second time.
+_kit.propagate = False
 
 
 __all__ = [

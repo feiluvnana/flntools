@@ -1,7 +1,6 @@
-"""One file's download lifecycle: the only place its events come from.
+"""One file's download lifecycle: its phase, and the only place its events come from.
 
-The run's display is the board's summary rows (`flnd.engine.job.Board`), so a file tracks its phase
-and its events here, and draws nothing of its own. Architecture guide: flnd/docs/architecture.
+flnd/docs/architecture explains it; the board's rows (`flnd.engine.job.Board`) draw the run.
 """
 
 from __future__ import annotations

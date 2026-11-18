@@ -1,5 +1,7 @@
 """Every error flnd raises: one hierarchy under `flnd.Error`, plus `flnd.Stopped` for Ctrl-C.
 
+flnd/docs/errors explains it.
+
 The hierarchy:
 
     Error                   the root: str(e) is the one-line message, e.hint what to do
@@ -38,7 +40,14 @@ __all__ = [
 
 
 class Error(Exception):
-    """Base class for errors with a message and hint."""
+    """Base class for errors with a message and hint.
+
+    Args:
+        message: the one-line description; it is what `str(e)` gives.
+        hint: what the person can do about it; empty when there is nothing to add.
+        target: the target the error happened in, as written; None when it isn't about one.
+        retryable: whether trying again later may work.
+    """
 
     def __init__(
         self,
@@ -55,7 +64,26 @@ class Error(Exception):
 
     @classmethod
     def of(cls, error: BaseException, *, target: str | None = None) -> Error | BaseException:
-        """Convert any exception into an Error without mutating the original."""
+        """Convert any exception into an Error.
+
+        An `Error` comes back as it is, with `target` set when it had none. A `KeyboardInterrupt`
+        or `SystemExit` comes back unchanged. Any other exception becomes a `NetworkError`, a
+        `DiskError` or a plain `Error`, with the original as its `__cause__`.
+
+        Args:
+            error: what was raised.
+            target: the target it happened in, as written; None when it isn't about one.
+
+        Returns:
+            The `Error`, or the `KeyboardInterrupt` or `SystemExit` itself.
+
+        Example:
+            >>> made = Error.of(ValueError("bad value"))
+            >>> print(made)
+            unexpected ValueError: bad value
+            >>> made.hint
+            'this is a bug; run with -v and report it'
+        """
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             return error
         if isinstance(error, Error):
@@ -81,7 +109,16 @@ class UsageError(Error):
 
 
 class SiteError(Error):
-    """The site answered, but not usefully."""
+    """The site answered, but not usefully.
+
+    Args:
+        message: the one-line description.
+        status: the HTTP status the site sent; None when it sent none.
+        response: the response, or its body, kept for a log to show; None when not kept.
+        hint: what the person can do about it; empty when there is nothing to add.
+        target: the target the error happened in, as written; None when it isn't about one.
+        retryable: whether trying again later may work.
+    """
 
     def __init__(
         self,
@@ -99,7 +136,17 @@ class SiteError(Error):
 
 
 class Blocked(SiteError):
-    """Rate limited or blocked for a while."""
+    """Rate limited or blocked for a while.
+
+    Args:
+        message: the one-line description.
+        wait: the seconds to wait before trying again; None when the site gave no time.
+        status: the HTTP status the site sent; None when it sent none.
+        response: the response, or its body, kept for a log to show; None when not kept.
+        hint: what the person can do about it; empty when there is nothing to add.
+        target: the target the error happened in, as written; None when it isn't about one.
+        retryable: whether trying again later may work; True by default.
+    """
 
     def __init__(
         self,
@@ -146,7 +193,15 @@ _DISK_HINTS = {
 
 
 class DiskError(Error):
-    """A file system or storage error."""
+    """A file system or storage error.
+
+    Args:
+        message: the one-line description.
+        path: the file or folder the error is about; None when it isn't known.
+        hint: what the person can do about it; empty when there is nothing to add.
+        target: the target the error happened in, as written; None when it isn't about one.
+        retryable: whether trying again later may work.
+    """
 
     def __init__(
         self,
@@ -162,7 +217,26 @@ class DiskError(Error):
 
     @classmethod
     def of(cls, error: OSError, *, path: object = None) -> DiskError:
-        """Create a DiskError from an OSError."""
+        """Create a DiskError from an OSError.
+
+        The hint depends on the error number: a full disk, a missing permission, a read-only
+        disk and a name that is too long each get their own.
+
+        Args:
+            error: the OSError the file system raised.
+            path: the path to show in the message; None uses the error's own file name.
+
+        Returns:
+            The DiskError, with `path` set to the path it shows.
+
+        Example:
+            >>> import errno
+            >>> made = DiskError.of(OSError(errno.ENOSPC, "No space left", "example/file.bin"))
+            >>> print(made)
+            example/file.bin: No space left
+            >>> made.hint
+            'free some space on that disk, or use another --home'
+        """
         where = path if path is not None else error.filename
         reason = error.strerror or str(error) or type(error).__name__
         message = f"{where}: {reason}" if where is not None else reason
@@ -171,7 +245,16 @@ class DiskError(Error):
 
 
 class ToolError(Error):
-    """An external tool (ffmpeg, 7zz, browser) failed or is missing."""
+    """An external tool (ffmpeg, 7zz, browser) failed or is missing.
+
+    Args:
+        message: the one-line description.
+        command: the command that was run, as a tuple; empty when none ran.
+        tail: the last lines of the tool's output, or None when there were none.
+        hint: what the person can do about it; empty when there is nothing to add.
+        target: the target the error happened in, as written; None when it isn't about one.
+        retryable: whether trying again later may work.
+    """
 
     def __init__(
         self,

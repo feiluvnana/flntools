@@ -6,9 +6,11 @@ flnd/docs/architecture says where it sits in a transfer.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from flnd.kit import files
-from flnd.ui.log import ui
+
+_log = logging.getLogger(__name__)
 
 __all__ = ["join"]
 
@@ -18,6 +20,11 @@ async def join(video: files.Part, audio: files.Part, out: files.Part) -> None:
 
     The container follows `out.dest`'s suffix: `.webm` is WebM, anything else MP4 with
     `+faststart`. When ffmpeg rejects only the audio stream, the video is saved alone.
+
+    Args:
+        video: the part holding the video stream, already downloaded.
+        audio: the part holding the audio stream, already downloaded.
+        out: the part to write the joined file to; its `dest` gives the name and container.
 
     Raises:
         ToolError: ffmpeg is missing.
@@ -37,7 +44,12 @@ async def join(video: files.Part, audio: files.Part, out: files.Part) -> None:
     except files.RunError as error:
         if not _audio_only(str(error), video, audio):
             raise
-        ui.debug("audio stream invalid for {dest}; saving video only", dest=out.dest.name)
+        _log.debug(
+            "audio stream invalid for {dest}; saving video only",
+            extra={"fields": {
+                "dest": out.dest.name,
+            }},
+        )
         await asyncio.to_thread(ffmpeg.run, "-y", "-i", str(video.path), "-c", "copy", *flags,
                                 "-f", fmt, str(out.path))
 

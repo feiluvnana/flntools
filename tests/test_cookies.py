@@ -214,13 +214,13 @@ class ChromiumLinuxTest(BrowserTestCase):
             ("c.example", "damaged", "", encrypt_chromium("two", "another", 1, "c.example"), "/", 0, 0, 0, 0),
             ("d.example", "plain", "visible", b"", "/", 0, 0, 0, 0),
         ])
-        with mock.patch.object(_cookies.ui, "debug") as debug:
+        with self.assertLogs("flnd.kit.cookies", "DEBUG") as said:
             jar = _cookies.load("chrome")
         self.assertEqual([c["name"] for c in jar.list], ["good", "plain"])
         self.assertEqual((jar["good"], jar["plain"]), ("one", "visible"))
-        debug.assert_called_once()
-        self.assertEqual(debug.call_args.kwargs["count"], 2)
-        logged = repr(debug.call_args)
+        [record] = said.records
+        self.assertEqual(record.fields["count"], 2)
+        logged = repr((record.msg, record.fields))
         for secret in ("s3cr3t-value", "app-bound", "damaged", "b.example", "c.example"):
             self.assertNotIn(secret, logged)
 

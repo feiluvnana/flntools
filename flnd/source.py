@@ -1065,9 +1065,8 @@ class Site(Protocol):
             title = site.document().first("h1").text
 
     The engine's is `flnd.engine.site.TargetSite`; tests use `flnd.testing.FakeSite`. Every request
-    to the
-    source's own `domains` waits its turn under the source's `pace`, and a rate limit or a 5xx is
-    waited out and tried again here, so a source never sleeps or retries itself. A login wall
+    to the source's own `domains` waits its turn under the source's `pace`, and a rate limit or a
+    5xx is waited out and tried again here, so a source never sleeps or retries itself. A login wall
     (a 401 or 403 from the source's own domains) raises `LoginError`.
 
     The browser verbs (`open`, `wait`, `scroll`, `feed`, `warm`, `document`, `evaluate`,

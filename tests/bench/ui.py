@@ -1,6 +1,6 @@
 """Benchmark group `ui`: what the run's screen costs, and how fast a full-screen view opens.
 
-The screen is today's renderer, `flncore/log.py`'s `UI` drawing a `job.Board` (one text row per
+The screen is today's renderer, `flnd/ui/log.py`'s `UI` drawing a `job.Board` (one text row per
 target and category) and a byte bar per file in flight. Its output goes to a counting sink that
 says it is a UTF-8 terminal, so the live block draws as it would on a real one.
 

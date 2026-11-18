@@ -203,6 +203,8 @@ def contended(home: Path) -> float:
     holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(home / _home.DB), str(HOLD)],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     lags: list[float] = []
+    # The probe's task, kept so the loop can't drop it half way.
+    probes: list[asyncio.Future] = []
 
     async def probe() -> None:
         loop = asyncio.get_running_loop()
@@ -217,7 +219,7 @@ def contended(home: Path) -> float:
     def on_file() -> None:
         # Called on the run's loop: the first file starts the probe, the HELD_AFTER-th the hold.
         if Fake.answered == 1:
-            asyncio.ensure_future(probe())
+            probes.append(asyncio.ensure_future(probe()))
         if Fake.answered == HELD_AFTER:
             # Its answer is read after the run: waiting for it here would stall the loop.
             assert holder.stdin is not None

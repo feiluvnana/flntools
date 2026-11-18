@@ -58,7 +58,8 @@ class FakeRaw:
         if listener in listeners:
             listeners.remove(listener)
 
-    async def goto(self, url, wait_until="load", timeout=30000):
+    async def goto(self, url, wait_until="load",
+                   timeout=30000):  # noqa: ASYNC109 (mirrors Playwright's)
         self.loaded.append(url)
         self.wait_untils.append((url, wait_until))
         status = self.statuses.pop(0)
@@ -68,7 +69,8 @@ class FakeRaw:
         self.url = url
         return SimpleNamespace(status=status, url=url, headers=self.headers.get(status, {}))
 
-    async def wait_for_load_state(self, state, timeout=30000):
+    async def wait_for_load_state(self, state,
+                                  timeout=30000):  # noqa: ASYNC109 (mirrors Playwright's)
         self.waits.append(state)
 
     async def close(self):
@@ -349,6 +351,7 @@ class FetchTest(SiteCase):
         self.assertTrue(site.open(PAGE))
         [browser] = self.browsers
         # Visible (launch's default, so no headless=).
+        self.assertIsInstance(browser.options.pop("screen"), _browser.Screen)
         self.assertEqual(browser.options, {"stealth": False, "headless": False})
         self.assertEqual([cookie["name"] for cookie in browser.added], ["token"])
         self.assertEqual(site.url, PAGE)
@@ -359,7 +362,9 @@ class FetchTest(SiteCase):
     def test_the_default_browser_is_stealthy(self):
         _, site = self.open()
         site.open(PAGE)
-        self.assertEqual([browser.options for browser in self.browsers], [{"stealth": True, "headless": False}])
+        [browser] = self.browsers
+        self.assertIsInstance(browser.options.pop("screen"), _browser.Screen)
+        self.assertEqual(browser.options, {"stealth": True, "headless": False})
 
     def test_before_a_page_the_tab_is_blank_and_no_browser_starts(self):
         _, site = self.open()
@@ -398,7 +403,8 @@ class FeedRaw(FakeRaw):
         for data in self.batches.pop(0) if self.batches else []:
             await self.emit("https://example.com/graphql", json.dumps(data))
 
-    async def wait_for_load_state(self, state, timeout=30000):
+    async def wait_for_load_state(self, state,
+                                  timeout=30000):  # noqa: ASYNC109 (mirrors Playwright's)
         await super().wait_for_load_state(state, timeout)
         await self.deliver()
 

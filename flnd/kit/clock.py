@@ -1,4 +1,7 @@
-"""A swappable clock: monotonic time, wall time, interruptible sleeps, and site dates."""
+"""A swappable clock: monotonic time, wall time, interruptible sleeps, and site dates.
+
+flnd/docs/architecture explains it.
+"""
 
 from __future__ import annotations
 
@@ -57,7 +60,11 @@ class _RealClock:
 
 
 class Fake(Clock):
-    """A clock for tests: every sleep passes at once, and is recorded."""
+    """A clock for tests: every sleep passes at once, and is recorded.
+
+    Args:
+        start: the monotonic time to start at, in seconds.
+    """
 
     def __init__(self, start: float = 0.0) -> None:
         self.slept: list[float] = []
@@ -76,6 +83,15 @@ class Fake(Clock):
             return FAKE_WALL + self._time - self._start
 
     def sleep(self, seconds: float, *, stop: threading.Event | None = None) -> bool:
+        """Advance the fake time by `seconds` at once, and record the sleep.
+
+        Args:
+            seconds: how long to sleep; a negative value counts as zero.
+            stop: when already set, nothing is recorded and this returns False.
+
+        Returns:
+            True when the sleep passed, False when `stop` was already set.
+        """
         if stop is not None and stop.is_set():
             return False
         with self._lock:
@@ -108,7 +124,15 @@ def sleep(seconds: float, *, stop: threading.Event | None = None) -> bool:
 
 
 async def pause(seconds: float, *, stop: threading.Event | None = None) -> bool:
-    """Wait `seconds` on the active clock without blocking the loop."""
+    """Wait `seconds` on the active clock without blocking the loop.
+
+    Args:
+        seconds: how long to wait; a negative value counts as zero.
+        stop: an event that ends the wait early when it is set.
+
+    Returns:
+        True when the full time passed, False when `stop` was set first.
+    """
     clock = _current.get()
     if not isinstance(clock, _RealClock):
         return clock.sleep(seconds, stop=stop)
@@ -124,7 +148,14 @@ async def pause(seconds: float, *, stop: threading.Event | None = None) -> bool:
 
 @contextmanager
 def use(replacement: C) -> Iterator[C]:
-    """Make `replacement` the active clock inside the `with`, then restore the one before."""
+    """Make `replacement` the active clock inside the `with`, then restore the one before.
+
+    Args:
+        replacement: the clock to use inside the block.
+
+    Yields:
+        `replacement`, so the block can read or change it.
+    """
     token = _current.set(replacement)
     try:
         yield replacement
@@ -136,6 +167,13 @@ def day(value: object) -> datetime.date | None:
     """The UTC day of any date a site gives, or None when it isn't one or can't be right.
 
     "Right" means from 2004 to next year, on the active clock's wall time.
+
+    Args:
+        value: a `date` or `datetime`, a Unix time in seconds or milliseconds, an ISO 8601 text,
+            or a text of digits for a Unix time. A bool is never a date.
+
+    Returns:
+        The UTC day, or None when `value` is not a date or is not right.
     """
     if isinstance(value, bool) or value is None:
         return None

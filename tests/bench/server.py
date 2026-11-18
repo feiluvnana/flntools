@@ -59,11 +59,13 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, roo
             capped = path.startswith("/capped/")
             path = path.removeprefix("/capped")
             full = os.path.join(root, path.lstrip("/"))
-            if not os.path.isfile(full):
+            # A local file's stat and open are kept on the loop: a thread hop per request would
+            # be the bench server's cost, not flnd's.
+            if not os.path.isfile(full):  # noqa: ASYNC240
                 writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
                 continue
-            size = os.path.getsize(full)
+            size = os.path.getsize(full)  # noqa: ASYNC240
             start, end = 0, size - 1
             status, extra = "200 OK", "Accept-Ranges: bytes\r\n"
             if "range" in headers:
@@ -75,7 +77,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, roo
             kind = TYPES.get(os.path.splitext(full)[1], "application/octet-stream")
             writer.write(f"HTTP/1.1 {status}\r\nContent-Length: {length}\r\n"
                          f'Content-Type: {kind}\r\nETag: "x"\r\n{extra}\r\n'.encode())
-            with open(full, "rb") as body:
+            with open(full, "rb") as body:  # noqa: ASYNC230
                 if capped:
                     await capped_send(writer, body, start, length)
                 else:

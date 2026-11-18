@@ -1,5 +1,7 @@
 """SQLite WAL store: one shared connection, explicit transactions.
 
+flnd/docs/storage explains it.
+
 What it offers, for any caller:
 - `connect(path)`: a connection in WAL mode with `synchronous = NORMAL` (and `fullfsync` on
   macOS), a busy timeout, autocommit, usable from any thread.

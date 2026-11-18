@@ -6,7 +6,7 @@ import unittest
 from rich.console import Console as RichConsole
 
 from flnd.kit import clock as _time
-from flnd.ui.log import Group, Row, ui
+from flnd.ui.log import Group, Item, ui
 
 
 class UICase(unittest.TestCase):
@@ -80,17 +80,17 @@ class LoggingTest(UICase):
 
 
 class ProgressTest(UICase):
-    """Tests for `progress`, `group`, and `Row`."""
+    """Tests for `progress`, `group`, and `Item`."""
 
     def test_progress_ok_and_error(self) -> None:
         with ui.progress("photos/a.jpg", total=10) as row:
-            self.assertIsInstance(row, Row)
+            self.assertIsInstance(row, Item)
             row.advance(4)
             self.assertEqual(row.count, 4)
             row.finish()
         self.assertIn("photos/a.jpg", self.output())
 
-        bad: Row | None = None
+        bad: Item | None = None
         with self.assertRaises(RuntimeError):
             with ui.progress("photos/b.jpg", total=10) as bad:
                 bad.fail()

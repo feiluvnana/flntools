@@ -1,12 +1,11 @@
 """Keeps the docs in step with the code: docstrings, `flnd/docs/` pages, links, CLI flags and sources.
 
-AGENTS.md › Writing sets the rules this file checks. Each check is a test class below:
+PLAN.md section 13 › Writing sets the rules this file checks. Each check is a test class below:
 
-1. `DocstringTest` reads every module of `flnd` with `ast` (nothing is imported)
-   and lists each docstring gap: a module, class or function without a docstring, a Google-style
-   section it lacks (`Args:` naming each argument, `Returns:`, `Yields:`, `Raises:`), and a
-   public name without a runnable `Example:` (one with `>>>` lines). Every docstring with `>>>`
-   lines then runs as a doctest.
+1. `DocstringTest` reads every module of `flnd` with `ast` (nothing is imported) and lists each
+   docstring gap: a module without a docstring, one longer than `MODULE_LINES` lines (but the
+   modules of `LONG`), one that names no `flnd/docs` page, and a public name without a summary.
+   Every docstring with `>>>` lines then runs as a doctest.
 2. `PageTest` runs every `python` block of `flnd/docs/**/*.md`, page by page, in a scratch folder.
 3. `LinkTest` checks that every relative link in `flnd/docs/` and in the root's markdown resolves:
    the file exists, and a `#fragment` names one of its headings.
@@ -18,8 +17,8 @@ AGENTS.md › Writing sets the rules this file checks. Each check is a test clas
    an example the README shows can't drift from the code.
 
 A gap fails `test_no_gap`, with one line per gap naming the module or the name and the rule it
-breaks, so new code is documented as it is written. There is no allowlist: fix the gap, or
-the docs page, in the same commit.
+breaks, so new code is documented as it is written. The one allowlist, `LONG`, may only shrink:
+fix the gap, or the docs page, in the same commit.
 
 The whole file runs in well under a second on a laptop, since it parses and never imports the
 modules it checks; only the API snapshot's names are imported, as `test_names.py` does.
@@ -51,11 +50,24 @@ from test_packaging import ROOT
 # product, so it is left out.
 PACKAGES = ("flnd",)
 DOCS = ROOT / "flnd" / "docs"
-# A private function this short (body lines, docstring included) needs no docstring: AGENTS.md
-# exempts "a few obvious lines".
-SHORT = 5
-# The headings of a Google-style docstring this file reads. `Examples:` is accepted too.
-SECTION = re.compile(r"^\s*(Args|Arguments|Returns|Yields|Raises|Examples?):\s*$")
+# The longest a module docstring may be, in lines: what the module holds, and its flnd/docs page.
+MODULE_LINES = 3
+# The modules that keep a longer docstring for now: their flows and rules aren't in a flnd/docs
+# page yet. Each moves into its page in step 16 (PLAN.md section 14), or goes with its module
+# when a step replaces it. The list may only shrink: `test_long_docstrings_are_still_long`.
+LONG = frozenset({
+    "flnd/__init__.py", "flnd/_library.py", "flnd/cli.py", "flnd/errors.py", "flnd/source.py",
+    "flnd/testing.py",
+    "flnd/engine/core.py", "flnd/engine/events.py",
+    "flnd/engine/home.py", "flnd/engine/job.py", "flnd/engine/options.py",
+    "flnd/engine/plugins.py", "flnd/engine/run.py", "flnd/engine/site.py",
+    "flnd/engine/transfer.py",
+    "flnd/kit/browser.py", "flnd/kit/cookies.py", "flnd/kit/db.py", "flnd/kit/html.py",
+    "flnd/kit/loop.py", "flnd/kit/net.py", "flnd/kit/text.py", "flnd/kit/vault.py",
+    "flnd/sources/__init__.py", "flnd/sources/_manifest.py", "flnd/sources/fbk.py",
+    "flnd/sources/ins.py", "flnd/sources/loi.py", "flnd/sources/mht.py", "flnd/sources/tik.py",
+    "flnd/sources/tlg.py", "flnd/sources/twt.py",
+})
 # The marker that skips the `python` block right after it, with an optional reason:
 # `<!-- docs-test: skip -->` or `<!-- docs-test: skip: it needs a real site -->`. A skipped block
 # in `flnd/docs/` is a gap; one in the README must give its reason, and is still compiled.
@@ -98,217 +110,47 @@ def public_names() -> dict[tuple[str, str], str]:
 
 def modules() -> list[Path]:
     """Every module of `PACKAGES`, sorted, so the gaps are reported in one order on every OS."""
-    # The kit, the screen and the error classes were flncore, which this check never covered.
-    # They stay out until the whole-package check of PLAN.md step 2 (commit 4) brings them in.
-    outside = (ROOT / "flnd" / "kit", ROOT / "flnd" / "ui", ROOT / "flnd" / "errors.py")
-    return sorted(path for package in PACKAGES for path in (ROOT / package).rglob("*.py")
-                  if not any(path.is_relative_to(folder) for folder in outside))
-
-
-def sections(doc: str) -> dict[str, list[str]]:
-    """A docstring's Google-style sections: each heading, with the lines under it.
-
-    Args:
-        doc: the docstring, as `ast.get_docstring` cleans it.
-
-    Returns:
-        `{"Args": [...], "Returns": [...], ...}`; `Arguments` counts as `Args`, `Examples` as
-        `Example`. The summary and the paragraphs before the first heading are left out.
-    """
-    found: dict[str, list[str]] = {}
-    current: list[str] | None = None
-    for line in doc.splitlines():
-        heading = SECTION.match(line)
-        if heading:
-            name = {"Arguments": "Args", "Examples": "Example"}.get(heading[1], heading[1])
-            current = found.setdefault(name, [])
-        elif current is not None:
-            current.append(line)
-    return found
-
-
-def documented_args(lines: list[str]) -> set[str]:
-    """The argument names an `Args:` section documents.
-
-    An entry is a line at the section's first indent, written `name:`, `name (type):`,
-    `*args:` or `a, b, c:` (several arguments sharing one meaning). Deeper lines continue the
-    entry above them.
-
-    Args:
-        lines: the lines under the `Args:` heading.
-
-    Returns:
-        The names, without their `*` or `**`.
-    """
-    entries = [line for line in lines if line.strip()]
-    if not entries:
-        return set()
-    indent = len(entries[0]) - len(entries[0].lstrip())
-    names: set[str] = set()
-    for line in entries:
-        if len(line) - len(line.lstrip()) != indent:
-            continue
-        head = re.match(r"\s*([\w*][\w*, ]*?)\s*(\([^)]*\))?:", line)
-        if head:
-            names.update(part.strip().lstrip("*") for part in head[1].split(","))
-    return names
-
-
-def own_nodes(function: ast.AST) -> Iterator[ast.AST]:
-    """The nodes of a function's own body, without nested functions, lambdas or classes.
-
-    A `return` or `raise` in a nested function is that function's, not this one's.
-    """
-    stack = list(ast.iter_child_nodes(function))
-    while stack:
-        node = stack.pop()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
-            continue
-        yield node
-        stack.extend(ast.iter_child_nodes(node))
-
-
-def caught_raises(function: ast.AST) -> set[ast.AST]:
-    """The `raise` statements inside a `try` body that has handlers: those may never escape."""
-    caught: set[ast.AST] = set()
-    for node in own_nodes(function):
-        if isinstance(node, ast.Try) and node.handlers:
-            for statement in node.body:
-                caught.update(n for n in ast.walk(statement) if isinstance(n, ast.Raise))
-    return caught
-
-
-def function_gaps(node: ast.FunctionDef | ast.AsyncFunctionDef, method: bool,
-                  public: str) -> list[str]:
-    """The docstring gaps of one function or method.
-
-    The rules, in order:
-    1. A private function whose body is at most `SHORT` lines needs nothing.
-    2. Every other function needs a docstring.
-    3. `Args:` names each argument but `self` and `cls`.
-    4. `Returns:` when the body returns a value, `Yields:` when it yields.
-    5. `Raises:` when the body raises outside a `try` that may catch it.
-    6. A public function or method has an `Example:` with `>>>` lines. A property documents
-       itself like an attribute, so it needs no example.
-    Rules 3 to 5 don't apply to a property either.
-
-    Args:
-        node: the function's AST node.
-        method: whether it is defined in a class body, so its first argument is bound.
-        public: the API snapshot's kind for it; "" when it isn't public.
-
-    Returns:
-        One line per gap, as the failure message spells it after the name.
-    """
-    doc = ast.get_docstring(node)
-    lines = node.end_lineno - node.body[0].lineno + 1
-    if not public and lines <= SHORT:
-        return []
-    if doc is None:
-        return ["no docstring"]
-    names = {decorator.id if isinstance(decorator, ast.Name) else getattr(decorator, "attr", "")
-             for decorator in node.decorator_list}
-    found = sections(doc)
-    gaps: list[str] = []
-    if "property" not in names and "setter" not in names:
-        params = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
-        if method and "staticmethod" not in names and params:
-            params = params[1:]
-        wanted = [arg.arg for arg in params]
-        wanted += [arg.arg for arg in (node.args.vararg, node.args.kwarg) if arg is not None]
-        have = documented_args(found.get("Args", []))
-        gaps += [f"Args: no {name}" for name in wanted if name not in have]
-        body = list(own_nodes(node))
-        yields = any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in body)
-        returns = any(isinstance(n, ast.Return) and n.value is not None
-                      and not (isinstance(n.value, ast.Constant) and n.value.value is None)
-                      for n in body)
-        if yields and "Yields" not in found:
-            gaps.append("no Yields:")
-        elif returns and not yields and "Returns" not in found:
-            gaps.append("no Returns:")
-        caught = caught_raises(node)
-        if "Raises" not in found and any(isinstance(n, ast.Raise) and n.exc is not None
-                                         and n not in caught for n in body):
-            gaps.append("no Raises:")
-    if public in ("function", "method") and ">>>" not in "\n".join(found.get("Example", [])):
-        gaps.append("no Example:")
-    return gaps
-
-
-def class_gaps(node: ast.ClassDef, public: str) -> list[str]:
-    """The docstring gaps of a class itself; its methods are checked one by one.
-
-    A class needs a docstring, and a public one an `Example:`; an error needs none, since its
-    message shows how it reads. An explicit `__init__` takes arguments the class must document,
-    in the class's `Args:` or in `__init__`'s own.
-
-    Args:
-        node: the class's AST node.
-        public: the API snapshot's kind for it; "" when it isn't public.
-
-    Returns:
-        One line per gap, as the failure message spells it after the name.
-    """
-    doc = ast.get_docstring(node)
-    if doc is None:
-        return ["no docstring"]
-    found = sections(doc)
-    gaps: list[str] = []
-    init = next((item for item in node.body if isinstance(item, ast.FunctionDef)
-                 and item.name == "__init__"), None)
-    if init is not None:
-        have = documented_args(found.get("Args", []))
-        have |= documented_args(sections(ast.get_docstring(init) or "").get("Args", []))
-        params = (init.args.posonlyargs + init.args.args + init.args.kwonlyargs)[1:]
-        params += [arg for arg in (init.args.vararg, init.args.kwarg) if arg is not None]
-        gaps += [f"Args: no {arg.arg}" for arg in params if arg.arg not in have]
-    if public == "class" and ">>>" not in "\n".join(found.get("Example", [])):
-        gaps.append("no Example:")
-    return gaps
-
-
-def overload(node: ast.AST) -> bool:
-    """Whether a function is an `@overload` stub, documented by the function it describes."""
-    return any((isinstance(d, ast.Name) and d.id == "overload")
-               or (isinstance(d, ast.Attribute) and d.attr == "overload")
-               for d in getattr(node, "decorator_list", []))
+    return sorted(path for package in PACKAGES for path in (ROOT / package).rglob("*.py"))
 
 
 def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
     """Every docstring gap of one module, one line each.
 
-    The walk goes into classes (and their nested classes), but not into functions: a closure
-    is part of the function that holds it. Dunder methods other than `__init__` are skipped,
-    since the language says what they do; `__init__` is checked as part of its class.
+    The rules (PLAN.md section 13): a module starts with a docstring of at most `MODULE_LINES`
+    lines that names its `flnd/docs` page; a public name (in the API snapshot) has a docstring
+    whose first line sums it up. `Args:`, `Returns:` and `Raises:` are written only when they
+    add something, so nothing asks for them, and an `Example:` is never required.
 
     Args:
         path: the module's file.
         public: the API snapshot's names, from `public_names`.
 
     Returns:
-        `<path>: <gap>` for the module itself, `<path>:<qualname>: <gap>` for what is in it.
+        `<path>: <gap>` for the module itself, `<path>:<qualname>: <gap>` for a public name.
     """
     relative = path.relative_to(ROOT).as_posix()
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
-    gaps = [] if ast.get_docstring(tree) else [f"{relative}: no module docstring"]
+    doc = ast.get_docstring(tree)
+    if not doc:
+        return [f"{relative}: no module docstring"]
+    gaps = []
+    if "flnd/docs" not in doc:
+        gaps.append(f"{relative}: the module docstring names no flnd/docs page")
+    if len(doc.splitlines()) > MODULE_LINES and relative not in LONG:
+        gaps.append(f"{relative}: the module docstring is over {MODULE_LINES} lines")
 
-    def walk(body: list[ast.stmt], prefix: str, in_class: bool) -> None:
+    def walk(body: list[ast.stmt], prefix: str) -> None:
         for node in body:
+            if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            name = prefix + node.name
+            summary = (ast.get_docstring(node) or "").strip()
+            if (relative, name) in public and not summary:
+                gaps.append(f"{relative}:{name}: no summary")
             if isinstance(node, ast.ClassDef):
-                name = prefix + node.name
-                gaps.extend(f"{relative}:{name}: {gap}"
-                            for gap in class_gaps(node, public.get((relative, name), "")))
-                walk(node.body, name + ".", True)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if overload(node) or (node.name.startswith("__") and node.name.endswith("__")):
-                    continue
-                name = prefix + node.name
-                gaps.extend(f"{relative}:{name}: {gap}"
-                            for gap in function_gaps(node, in_class,
-                                                     public.get((relative, name), "")))
+                walk(node.body, name + ".")
 
-    walk(tree.body, "", False)
+    walk(tree.body, "")
     return gaps
 
 
@@ -331,7 +173,7 @@ def gaps() -> list[str]:
 
 
 def rule(gap: str) -> str:
-    """The rule of AGENTS.md › Writing that one gap breaks, for the failure message.
+    """The rule of PLAN.md section 13 › Writing that one gap breaks, for the failure message.
 
     Args:
         gap: one line of `gaps()`.
@@ -343,22 +185,28 @@ def rule(gap: str) -> str:
         return "every python block in flnd/docs/ runs; drop its skip marker and make it run"
     if gap.endswith("no module docstring"):
         return "a module starts with a docstring"
-    if gap.endswith("no docstring"):
-        return "a class or function has a docstring (a private one of a few lines may skip it)"
-    if ": Args: no " in gap:
-        return "`Args:` names each argument"
-    if gap.endswith("no Example:"):
-        return "a public name has an `Example:` with `>>>` lines"
-    return "a docstring has `Returns:`, `Yields:` or `Raises:` when the body does that"
+    if gap.endswith("names no flnd/docs page"):
+        return "a module docstring names the flnd/docs page that explains it"
+    if gap.endswith(f"over {MODULE_LINES} lines"):
+        return (f"a module docstring is 1 to {MODULE_LINES} lines; the explanation lives in "
+                "flnd/docs")
+    return "a public name has a docstring that sums it up"
 
 
 class DocstringTest(unittest.TestCase):
-    """The docstring rules of AGENTS.md › Writing: any gap fails, naming it and its rule."""
+    """The docstring rules of PLAN.md section 13: any gap fails, naming it and its rule."""
 
     def test_no_gap(self) -> None:
         found = gaps()
         self.assertFalse(found, "document these (AGENTS.md › Writing), or fix the docs page:\n"
                          + "\n".join(f"{gap}  [rule: {rule(gap)}]" for gap in found))
+
+    def test_long_docstrings_are_still_long(self) -> None:
+        # A module of `LONG` trimmed to `MODULE_LINES` lines leaves the list.
+        short = sorted(name for name in LONG
+                       if len((ast.get_docstring(ast.parse((ROOT / name).read_text(
+                           encoding="utf-8"))) or "").splitlines()) <= MODULE_LINES)
+        self.assertEqual(short, [], "these are short now: delete them from LONG")
 
     def test_examples_run(self) -> None:
         """Every docstring with `>>>` lines runs as a doctest, in a scratch folder."""

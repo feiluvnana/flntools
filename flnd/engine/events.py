@@ -1,6 +1,8 @@
 """What a run reports, and the rows the library reads: events, `Report`, `Login`,
 `Record`, `Tracked`, `Checked`, `Status`, `Failure` and `Installed`.
 
+flnd/docs/library explains it.
+
 Every type here is a frozen msgspec struct, so it is cheap to make, safe to share between the
 run's threads, and encodes to JSON (`encode`) for a script or a cron job. The module imports
 msgspec, the errors and `flnd.source` (for `Target`), never the engine, so `flnd.Saved` is

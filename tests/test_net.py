@@ -338,7 +338,7 @@ class SessionTest(NetCase):
                                        f"{request.headers['authorization']} {request.url}")
 
         url = f"https://example_user:{self.PASSWORD}@www.example.com/?auth={self.COOKIE}"
-        with mock.patch.object(_net.ui, "debug") as debug:
+        with self.assertLogs("flnd.kit.net", "DEBUG") as logged:
             for route in (403, 429, 500, connection_lost):
                 session = _net.Session(headers={"Authorization": self.TOKEN}, cookies=[
                     {"name": "sessionid", "value": self.COOKIE, "domain": "www.example.com", "path": "/"}])
@@ -346,8 +346,9 @@ class SessionTest(NetCase):
                     fetch(url, session=session, retries=1)
                 self.assert_no_secret(str(raised.exception))
                 self.assert_no_secret(repr(raised.exception))
-        self.assertTrue(debug.called)
-        self.assert_no_secret(repr(debug.call_args_list))
+        lines = [(record.msg, record.fields) for record in logged.records]
+        self.assertTrue(lines)
+        self.assert_no_secret(repr(lines))
 
     def test_a_urls_userinfo_never_reaches_a_message(self):
         url = f"https://example_user:{self.PASSWORD}@www.example.com/a"

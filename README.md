@@ -306,7 +306,6 @@ similar tools, and the decisions behind it.
 | `make bench` | the offline benchmarks; `ARGS=--gate` compares them with the targets |
 | `make cdn-real ARGS=…` | a hand check: throughput from one real CDN host at several caps |
 | `make docs` | builds the API reference into `build/docs/` |
-| `make type` | pyright on the public modules (informational, not part of `check`) |
 | `make try ARGS=…` | lists, live, what one target would save, in a scratch home `.try`, downloading nothing |
 | `make dist` | a single-file `flnd` binary for this OS (PyInstaller) |
 | `make clean` | removes `build/`, `dist/` and `.try` |

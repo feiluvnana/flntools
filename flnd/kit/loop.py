@@ -1,5 +1,7 @@
 """One asyncio loop on a daemon thread; sync code uses `run` or `submit`.
 
+flnd/docs/architecture explains it.
+
 A library module: it imports only the stdlib, and any threaded program that needs async code
 (a browser driver, an async HTTP client) can use it. It offers:
 - `Loop`: one event loop on a daemon thread, started on first use. Any other thread hands it a
@@ -11,9 +13,8 @@ A library module: it imports only the stdlib, and any threaded program that need
   `async def`): every other task on the loop waits while it does.
 
 Inside flnd a run makes one `Loop` (`flnd.engine.site.shared_browser`), and everything async of that
-run
-happens on it: the browser (`flnd.kit.browser`), every HTTP transfer (`flnd.kit.net`), a target's
-downloads, and an async source's coroutines (Telegram's Telethon).
+run happens on it: the browser (`flnd.kit.browser`), every HTTP transfer (`flnd.kit.net`), a
+target's downloads, and an async source's coroutines (Telegram's Telethon).
 
     with Loop() as loop:
         title = loop.run(page.evaluate("document.title"))
@@ -110,7 +111,14 @@ class Loop:
             if inspect.iscoroutine(awaitable):
                 awaitable.close()
             raise RuntimeError("Loop.run was called on the loop's own thread; await it instead")
-        future = self.submit(_carried(awaitable))
+        try:
+            future = self.submit(_carried(awaitable))
+        except RuntimeError:
+            # Closed: `submit` closed the wrapper, which never started, so nothing would ever
+            # close the coroutine inside it, and Python would warn that it was never awaited.
+            if inspect.iscoroutine(awaitable):
+                awaitable.close()
+            raise
         try:
             ok, value = future.result()
         except BaseException:

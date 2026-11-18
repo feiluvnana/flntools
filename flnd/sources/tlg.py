@@ -515,7 +515,7 @@ def fetcher(site: Site, message: Any) -> Fetch:
             sidecar = Path(f"{dest_path}.json")
             done = _load_offsets(dest_path, sidecar, message.document.size)
             mode = "r+b" if done is not None else "wb"
-            with open(dest_path, mode) as file:
+            with await asyncio.to_thread(open, dest_path, mode) as file:
                 await _Download(
                     site, message.document, file, progress, sidecar=sidecar, done=done,
                 ).run()
@@ -527,7 +527,7 @@ def fetcher(site: Site, message: Any) -> Fetch:
 
 async def _photo(site: Site, message: Any, dest: Any, progress: Any) -> None:
     """Write a photo to `dest`, from its start: a photo is small, so it never resumes."""
-    with open(dest, "wb") as file:
+    with await asyncio.to_thread(open, dest, "wb") as file:
         await site.client.download_media(message, file=file, progress_callback=progress)
 
 

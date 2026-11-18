@@ -318,6 +318,11 @@ class FakeInstaller:
         return None
 
 
+def drawn(screen, label, *, total=None):
+    """A `Screen.progress` that draws its row as flnd's screen does."""
+    return ui.progress(label, total=total)
+
+
 class ChromeOnlyTest(BrowserCase):
     """Which browser launch starts, and the Chromium download offered without Chrome. No browser starts."""
 
@@ -337,6 +342,8 @@ class ChromeOnlyTest(BrowserCase):
         for patcher in (mock.patch.object(_browser, "_start_playwright", start),
                         mock.patch.object(_browser, "_open_context", self.open_context),
                         mock.patch.object(_browser.subprocess, "Popen", self.popen),
+                        # The rows draw as flnd's screen draws them (`flnd.engine.site`).
+                        mock.patch.object(_browser.Screen, "progress", drawn),
                         mock.patch("playwright._impl._driver.compute_driver_executable",
                                    return_value=("/driver/node", "/driver/cli.js"))):
             patcher.start()
@@ -356,7 +363,8 @@ class ChromeOnlyTest(BrowserCase):
 
     def terminal(self, *keys):
         answers = iter(keys)
-        p = mock.patch.object(_browser.forms, "confirm", side_effect=lambda *a, **kw: next(answers) == "y")
+        p = mock.patch.object(_browser.Screen, "confirm",
+                              side_effect=lambda *a: next(answers) == "y")
         p.start()
         self.addCleanup(p.stop)
 
@@ -421,7 +429,8 @@ class ChromeOnlyTest(BrowserCase):
     def test_a_failed_download_is_raised_again_without_asking(self):
         asked = []
         failure = ToolError("Chromium was not downloaded: Playwright's installer exited with 1: Error: ENOSPC")
-        with mock.patch.object(_browser.forms, "confirm", lambda *args, **options: asked.append(args) or True), \
+        with mock.patch.object(_browser.Screen, "confirm",
+                               lambda *args: asked.append(args) or True), \
                 mock.patch.object(_browser, "_install_chromium", side_effect=failure) as install:
             for _ in range(2):
                 with self.assertRaises(ToolError) as caught:
@@ -434,22 +443,22 @@ class ChromeOnlyTest(BrowserCase):
         asked, installs, channels = [], [], []
         start = threading.Barrier(2)
 
-        def confirm(*args, **options):
+        def confirm(*args):
             asked.append(args)
             # Long enough for the other thread to reach the question too, were nothing holding it back.
             time.sleep(0.1)
             return True
 
-        def install():
+        def install(screen):
             installs.append(1)
             self.chromium.parent.mkdir(parents=True)
             self.chromium.write_text("")
 
         def open_one():
             start.wait()
-            channels.append(_browser._channel(self.playwright))
+            channels.append(_browser._channel(self.playwright, _browser.Screen()))
 
-        with mock.patch.object(_browser.forms, "confirm", confirm), \
+        with mock.patch.object(_browser.Screen, "confirm", confirm), \
                 mock.patch.object(_browser, "_install_chromium", install):
             threads = [threading.Thread(target=open_one) for _ in range(2)]
             for thread in threads:
@@ -1034,7 +1043,7 @@ class NavigationRaceTest(BrowserCase):
                 raise errors.pop()
             return "<html><body><p id='x'>hi</p></body></html>"
 
-        async def wait_for_load_state(state, timeout):
+        async def wait_for_load_state(state, timeout):  # noqa: ASYNC109 (mirrors Playwright's)
             loads.append(state)
 
         raw = SimpleNamespace(content=content, wait_for_load_state=wait_for_load_state)

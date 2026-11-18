@@ -1,5 +1,7 @@
 """`Flnd` and `open`: the library a script uses, over the engine every command runs on.
 
+flnd/docs/library explains it.
+
     with flnd.open("~/Media/flnd") as fl:
         for event in fl.download("ins:example_user", only=["reels"]):
             ...
@@ -31,7 +33,6 @@ from __future__ import annotations
 
 import datetime
 import os
-import re
 import threading
 import weakref
 from collections.abc import Iterator, Mapping, Sequence
@@ -47,7 +48,7 @@ if TYPE_CHECKING:
     from flnd.engine.core import Engine
     from flnd.engine.home import FailureRow
     from flnd.engine.options import Config
-    from flnd.source import Range, Site, Source, Target
+    from flnd.source import Site, Source, Target
 
 __all__ = ["Flnd", "open"]
 
@@ -56,16 +57,6 @@ HOME_VARIABLE = "FLND_HOME"
 DEFAULT_HOME = ".flnd"
 # The kinds `files(kind=...)` filters by.
 KINDS = ("image", "video", "audio")
-# What `when` takes; the message of its usage error.
-WHEN_USAGE = ("when takes a year (2026), a month (2026-06), a day (2026-06-15), a range of "
-              "those (2026-01..2026-03, 2026-01.., ..2026-03), or a span back from today "
-              "(30d, 8w, 1y)")
-# One side of a `when` range: a year, a month or a day (`2026`, `2026-06`, `2026-06-15`), and a
-# span back from today (`30d`, `8w`, `1y`).
-PERIOD = re.compile(r"(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?")
-SPAN = re.compile(r"(\d+)([dwy])")
-# The days of each span unit: a year is 365 days, which is close enough for "the last year".
-SPAN_DAYS = {"d": 1, "w": 7, "y": 365}
 
 
 def open(home: str | os.PathLike[str] | None = None, *, again: bool | None = None) -> Flnd:
@@ -188,6 +179,8 @@ class Flnd:
             ...
             flnd.errors.UsageError: when takes a year (2026), a month (2026-06), ...
         """
+        from flnd.engine.options import _when
+
         found = _config(self.home)
         span = _when(found.when if when is None else when)
         if limit is not None and limit < 1:
@@ -226,6 +219,8 @@ class Flnd:
             ...
             flnd.errors.UsageError: unknown source 'zzz'. Sources: ...
         """
+        from flnd.engine.options import _when
+
         found = _config(self.home)
         span = _when(found.when if when is None else when)
         resolved = self._checked(targets, only)
@@ -254,6 +249,8 @@ class Flnd:
             ...     fl.sync().wait().saved
             0
         """
+        from flnd.engine.options import _when
+
         found = _config(self.home)
         span = _when(found.when)
         resolved = self._resolve(targets)
@@ -390,6 +387,7 @@ class Flnd:
         if kind is not None and kind not in KINDS:
             raise UsageError(f"kind is one of {', '.join(KINDS)}, not {kind!r}")
         from flnd.engine import home
+        from flnd.engine.options import _period
 
         first = None if since is None else _period(since)[0]
         owner = None
@@ -773,73 +771,6 @@ def _config(home: Path) -> Config:
     from flnd.engine.options import config
 
     return config(home)
-
-
-def _when(text: str | None) -> Range:
-    """Read `when`: a period, a range of periods, or a span back from today.
-
-    Args:
-        text: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"` (either end may be
-            left out), or `"30d"`, `"8w"`, `"1y"`; None or "" for every day.
-
-    Returns:
-        The days, both ends included.
-
-    Raises:
-        UsageError: the text is none of those, or the range ends before it starts.
-
-    Example:
-        >>> _when("2026-02")
-        Range(since=datetime.date(2026, 2, 1), until=datetime.date(2026, 2, 28))
-    """
-    from flnd.source import Range
-
-    text = (text or "").strip()
-    if not text:
-        return Range()
-    if span := SPAN.fullmatch(text):
-        from flnd.kit import clock
-
-        today = datetime.date.fromtimestamp(clock.wall())
-        return Range(since=today - datetime.timedelta(days=int(span[1]) * SPAN_DAYS[span[2]]))
-    first, dots, last = text.partition("..")
-    if not dots:
-        return Range(*_period(text))
-    since = _period(first)[0] if first.strip() else None
-    until = _period(last)[1] if last.strip() else None
-    if since is not None and until is not None and since > until:
-        raise UsageError(WHEN_USAGE)
-    return Range(since, until)
-
-
-def _period(text: str) -> tuple[datetime.date, datetime.date]:
-    """The first and last day of a year, a month or a day written as `when` writes them.
-
-    Args:
-        text: `"2026"`, `"2026-06"` or `"2026-06-15"`.
-
-    Returns:
-        The first day and the last, the same day for a day.
-
-    Raises:
-        UsageError: the text isn't one.
-    """
-    found = PERIOD.fullmatch(text.strip())
-    if found is None:
-        raise UsageError(WHEN_USAGE)
-    year, month, day = (int(part) if part else None for part in found.groups())
-    try:
-        if day is not None:
-            first = last = datetime.date(year, month, day)  # type: ignore[arg-type]
-        elif month is not None:
-            first = datetime.date(year, month, 1)  # type: ignore[arg-type]
-            following = datetime.date(year + (month == 12), month % 12 + 1, 1)  # type: ignore
-            last = following - datetime.timedelta(days=1)
-        else:
-            first, last = datetime.date(year, 1, 1), datetime.date(year, 12, 31)  # type: ignore
-    except ValueError:
-        raise UsageError(WHEN_USAGE) from None
-    return first, last
 
 
 # ---------------------------------------------------------------------------------------------

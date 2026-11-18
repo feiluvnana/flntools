@@ -1,9 +1,11 @@
 """A browser library: async Playwright on an asyncio loop, shared tabs, response capture, scrolling.
 
-A standalone library: it imports the standard library, Playwright and flnd's other library
-modules (`_loop`, `net`, `_cookies`, `forms`, `_ui`, `_text`, `clock`, `errors`), and nothing
-of flnd's engine. In flnd, `flnd.engine.site.TargetSite` builds the `Site` browser verbs a source
-calls
+flnd/docs/architecture explains it.
+
+A standalone library: it imports the standard library, Playwright and the kit (`loop`, `net`,
+`files`, `text`, `clock`) and `flnd.errors`, and nothing of flnd's engine or screen. It logs
+through `logging`, and what it asks a person, or shows them, goes through the `Screen` its caller
+passes in. In flnd, `flnd.engine.site.TargetSite` builds the `Site` browser verbs a source calls
 on it, each one call across to the run's loop (`flnd.kit.loop.Loop.run`, about 40 µs).
 
 What it offers, from the bottom up:
@@ -55,8 +57,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import functools
 import json
+import logging
 import math
 import os
 import random
@@ -77,13 +81,59 @@ from urllib.parse import urlsplit
 from flnd.errors import Changed, NetworkError, Stopped, ToolError, UsageError
 from flnd.kit import clock, net
 from flnd.kit.text import redact
-from flnd.ui import forms
-from flnd.ui.log import ui
+
+_log = logging.getLogger(__name__)
 
 NO_PROFILES = "FLND_TEST_NO_PROFILES"
 
 
+class Screen:
+    """What the browser asks of a person and shows them: a yes-or-no question and a progress row.
+
+    This default asks on a plain terminal, says no without one, and draws no rows. flnd passes
+    its own (`flnd.engine.site`), so its questions and rows look like the rest of its screen.
+    """
+
+    def confirm(self, question: str) -> bool:
+        """Ask `question`; True only for a yes. No terminal is a no, at once.
+
+        Args:
+            question: the yes-or-no question, shown with a `[y/N]` suffix.
+
+        Returns:
+            True when the answer is `y` or `yes` in any case, with spaces around it ignored.
+            False for anything else, and for no terminal.
+        """
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return False
+        try:
+            return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+        except EOFError:
+            return False
+
+    def progress(self, label: str, *, total: float | None = None) -> Any:
+        """A row for `label`, as a context manager giving a bar with `count` and `fail()`."""
+        return contextlib.nullcontext(_Bar())
+
+
+class _Bar:
+    """The bar of the default `Screen`: it counts, and draws nothing."""
+
+    count: float = 0
+
+    def fail(self) -> None:
+        """Mark the row failed; the default screen has nothing to mark."""
+
+
 def _real_home() -> Path:
+    """The home folder of the account running flnd, which a changed `$HOME` does not move.
+
+    On Windows it reads `%USERPROFILE%`. Elsewhere it reads the account's entry in the
+    password database.
+
+    Returns:
+        The home folder, or `Path.home()` when the password database is not there.
+    """
     if sys.platform == "win32":
         return Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
     try:
@@ -94,6 +144,17 @@ def _real_home() -> Path:
 
 
 def refuse_profile(folder: Path | str | None = None) -> None:
+    """Raise when a test would read the real browser profile under the home folder.
+
+    Does nothing unless `FLND_TEST_NO_PROFILES` is set. A folder inside the temp directory
+    is always allowed.
+
+    Args:
+        folder: the folder a test is about to read or copy; None lets it pass.
+
+    Raises:
+        RuntimeError: the folder is inside the real home folder, outside the temp directory.
+    """
     if not os.environ.get(NO_PROFILES) or folder is None:
         return
     import tempfile
@@ -116,7 +177,12 @@ def _belongs(domain: str, to: str) -> bool:
 
 
 class Jar:
-    """An immutable collection of cookies: filter it, read it by name, send or save it."""
+    """An immutable collection of cookies: filter it, read it by name, send or save it.
+
+    Args:
+        cookies: the cookies, each a dict with at least a `name` and a `value`.
+        error: the exception class a bad cookie raises; `UsageError` by default.
+    """
 
     __slots__ = ("_cookies", "_error")
 
@@ -135,6 +201,16 @@ class Jar:
     def filter(
         self, *, domains: str | Iterable[str] | None = None, names: Iterable[str] | None = None
     ) -> Jar:
+        """A new Jar with the cookies that match `domains` and `names`.
+
+        Args:
+            domains: one domain or several. A cookie matches when its domain is one of them
+                or a subdomain of one. None keeps every domain.
+            names: the cookie names to keep; a single name counts as one. None keeps all.
+
+        Returns:
+            A new Jar of the matching cookies. This one is not changed.
+        """
         if domains is None:
             wanted_domains: tuple[str, ...] | None = None
         elif isinstance(domains, str):
@@ -166,6 +242,18 @@ class Jar:
         return [dict(cookie) for cookie in self._cookies]
 
     def save(self, dest: Path | str) -> Path:
+        """Write the cookies to `dest` as a Netscape cookie file, readable only by its owner.
+
+        Args:
+            dest: the file to write; its folder is made when it is missing.
+
+        Returns:
+            `dest` as a Path.
+
+        Raises:
+            UsageError: a cookie has a tab or newline in a field. The error class the jar was
+                made with is raised instead when it is not `UsageError`.
+        """
         path = Path(dest)
         lines = ["# Netscape HTTP Cookie File"]
         for cookie in self._cookies:
@@ -472,7 +560,7 @@ class Visit:
 # ---------------------------------------------------------------------------------------------
 
 async def launch(*, profile: str | None = None, headless: bool = False,
-                 stealth: bool = True) -> Browser:
+                 stealth: bool = True, screen: Screen | None = None) -> Browser:
     """Launch Chrome, or Playwright's Chromium, and return it as a `Browser`. Runs on the loop.
 
         chrome = await launch()
@@ -483,6 +571,8 @@ async def launch(*, profile: str | None = None, headless: bool = False,
             for its logins; None opens a fresh incognito browser.
         headless: hide the window. A visible one (the default) lets a person solve a captcha.
         stealth: hide `navigator.webdriver`, which sites read to tell automation apart.
+        screen: where the offer to download Chromium is asked and its progress shown; None
+            for the plain `Screen`.
 
     Returns:
         The browser, which `Browser.close` closes, deleting the profile copy.
@@ -498,7 +588,8 @@ async def launch(*, profile: str | None = None, headless: bool = False,
     try:
         playwright = await _start_playwright()
         try:
-            return await _launch(playwright, copy, headless=headless, stealth=stealth)
+            return await _launch(playwright, copy, headless=headless, stealth=stealth,
+                                 screen=screen or Screen())
         # Any exception, Ctrl-C included, stops Playwright's driver before it goes on up.
         except BaseException:
             await playwright.stop()
@@ -580,7 +671,7 @@ def _copy_profile(name: str) -> Path:
 
 
 async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
-                  stealth: bool) -> Browser:
+                  stealth: bool, screen: Screen) -> Browser:
     """Launch a browser for `launch`, with or without a copied profile.
 
     Args:
@@ -588,6 +679,7 @@ async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
         copy: a copied profile's folder, or None for an incognito browser.
         headless: hide the window.
         stealth: hide `navigator.webdriver`.
+        screen: where the offer to download Chromium is asked.
 
     Returns:
         The browser. `launch` deletes the copy when this raises; on success, the Browser's
@@ -603,7 +695,7 @@ async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
         launch_options["args"].append("--profile-directory=Default")
     else:
         # It may ask a person and download Chromium: off the loop, so nothing else stalls.
-        channel = await asyncio.to_thread(_channel, playwright)
+        channel = await asyncio.to_thread(_channel, playwright, screen)
     context, close_steps = await _open_context(
         playwright, copy, channel, launch_options, context_options
     )
@@ -616,7 +708,7 @@ async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
     return Browser(context, close_steps=close_steps, headless=headless)
 
 
-def _channel(playwright: Playwright) -> str:
+def _channel(playwright: Playwright, screen: Screen) -> str:
     """The channel `launch` uses: `chrome` when Google Chrome is installed, `chromium` otherwise.
 
     Without Chrome or a downloaded Chromium, it asks to download Chromium, and raises
@@ -629,6 +721,7 @@ def _channel(playwright: Playwright) -> str:
 
     Args:
         playwright: the started driver, which says where its downloaded Chromium would be.
+        screen: where the question is asked and the download's progress shown.
 
     Returns:
         `"chrome"` or `"chromium"`, Playwright's channel name.
@@ -651,13 +744,13 @@ def _channel(playwright: Playwright) -> str:
             return "chromium"
         if _chromium_failed is not None:
             raise _chromium_failed
-        # Without a terminal `confirm` answers its default, no, at once. A no is kept for the
-        # process, so it is asked only once.
-        if _chromium_declined or not forms.confirm(CHROMIUM_QUESTION, default=False):
+        # Without a terminal `confirm` says no at once. A no is kept for the process, so it is
+        # asked only once.
+        if _chromium_declined or not screen.confirm(CHROMIUM_QUESTION):
             _chromium_declined = True
             raise ToolError(NEEDS_CHROME, hint=INSTALL_CHROME)
         try:
-            _install_chromium()
+            _install_chromium(screen)
         except ToolError as error:
             # A failed download (no space, no network) would likely fail again after asking again.
             _chromium_failed = error
@@ -692,11 +785,14 @@ def _chrome_installed() -> bool:
     return _chrome_executable() is not None
 
 
-def _install_chromium() -> None:
+def _install_chromium(screen: Screen) -> None:
     """Download Chromium with Playwright's installer under a progress row into the user cache.
 
     `--no-shell` skips the separate headless shell: `launch` runs Chromium itself in Chrome's
     new headless mode (the `chromium` channel), so the shell would never be used.
+
+    Args:
+        screen: where the progress row is shown.
 
     Raises:
         ToolError: the installer failed, with its last line of output.
@@ -706,7 +802,7 @@ def _install_chromium() -> None:
 
     node, cli_js = compute_driver_executable()
     lines: list[str] = []
-    with ui.progress("Downloading Chromium", total=100) as bar:
+    with screen.progress("Downloading Chromium", total=100) as bar:
         # The installer's output is read here, not shown: its own bars would tear the live area.
         cmd = [node, cli_js, "install", "--no-shell", "chromium"]
         with subprocess.Popen(cmd, env=get_driver_env(), stdout=subprocess.PIPE,
@@ -866,8 +962,13 @@ class Browser:
             except _raw_error() as error:
                 value = str(cookie.get("value", ""))
                 message = _first_line(error)
-                ui.warn("cookie {name} was rejected: {error}", name=cookie.get("name", ""),
-                        error=message.replace(value, "…") if value else message)
+                _log.warning(
+                    "cookie {name} was rejected: {error}",
+                    extra={"fields": {
+                        "name": cookie.get("name", ""),
+                        "error": message.replace(value, "…") if value else message,
+                    }},
+                )
 
     async def close(self) -> None:
         """Close the tabs, the browser and Playwright in order; a second call does nothing.
@@ -887,7 +988,12 @@ class Browser:
             except Exception as error:
                 failures.append(error)
         if failures:
-            ui.warn("closing the browser failed: {error}", error=_first_line(failures[0]))
+            _log.warning(
+                "closing the browser failed: {error}",
+                extra={"fields": {
+                    "error": _first_line(failures[0]),
+                }},
+            )
 
 
 class Page:
@@ -922,7 +1028,8 @@ class Page:
         """The tab's URL now; Playwright keeps it, so reading it asks the browser nothing."""
         return self.raw.url
 
-    async def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> Visit | None:
+    async def goto(self, url: str, *, idle: bool = False,
+                   timeout: float = 30.0) -> Visit | None:  # noqa: ASYNC109 (Playwright's own)
         """Go to `url`, and return its main document's status, final URL and headers.
 
         Args:
@@ -942,8 +1049,13 @@ class Page:
         # Playwright's Error covers DNS failures, aborted requests and timeouts ("not loaded").
         except _raw_error() as error:
             clean = redact(url)
-            ui.warn("could not open {url}: {error}", url=clean,
-                    error=_first_line(error).replace(url, clean))
+            _log.warning(
+                "could not open {url}: {error}",
+                extra={"fields": {
+                    "url": clean,
+                    "error": _first_line(error).replace(url, clean),
+                }},
+            )
             return None
         if response is None:
             return None
@@ -967,7 +1079,8 @@ class Page:
         return Visit(response.status, response.url, dict(response.headers))
 
     async def wait(self, css: str | None = None, *, url: Match | None = None,
-                   idle: bool = False, timeout: float = 30.0) -> None:
+                   idle: bool = False,
+                   timeout: float = 30.0) -> None:  # noqa: ASYNC109 (Playwright's own)
         """Wait until `css` matches an element, `url` matches the URL, and (`idle`) network stops.
 
         Args:
@@ -1021,7 +1134,8 @@ class Page:
         """
         return await self._steady(lambda: self.raw.evaluate(js, arg), None, "run a script")
 
-    async def click(self, css: str, *, timeout: float = 10.0) -> None:
+    async def click(self, css: str, *,
+                    timeout: float = 10.0) -> None:  # noqa: ASYNC109 (Playwright's own)
         """Click the first element `css` matches, waiting for it to be there and clickable.
 
         Args:
@@ -1183,8 +1297,13 @@ class Page:
                 if not _gone(error):
                     raise
                 if attempt + 1 == tries:
-                    ui.warn("could not {what}, the page kept navigating: {error}", what=what,
-                            error=_first_line(error))
+                    _log.warning(
+                        "could not {what}, the page kept navigating: {error}",
+                        extra={"fields": {
+                            "what": what,
+                            "error": _first_line(error),
+                        }},
+                    )
                     return fallback
                 try:
                     # Up to 10 s for the navigation to finish, in milliseconds.
@@ -1501,8 +1620,13 @@ class Capture:
             # after that finds nothing: expected, so it is skipped without a line. Any other
             # unreadable body is still worth a debug line.
             if not _gone(error):
-                ui.debug("responses: no body for {url}: {error}",
-                         url=redact(response.url), error=_first_line(error))
+                _log.debug(
+                    "responses: no body for {url}: {error}",
+                    extra={"fields": {
+                        "url": redact(response.url),
+                        "error": _first_line(error),
+                    }},
+                )
         finally:
             self._ready[number] = entry
             while self._flushed in self._ready:
@@ -1554,10 +1678,14 @@ class RunBrowser:
         loop: the loop the browser lives on.
         stealth: hide `navigator.webdriver` (see `launch`).
         headless: hide the window. A visible one (the default) lets a person solve a captcha.
+        screen: what asks a person and shows them progress (see `Screen`); None for the plain
+            one.
     """
 
-    def __init__(self, loop: Loop, *, stealth: bool = True, headless: bool = False):
+    def __init__(self, loop: Loop, *, stealth: bool = True, headless: bool = False,
+                 screen: Screen | None = None):
         self.loop = loop
+        self.screen = screen or Screen()
         self._stealth = stealth
         self._headless = headless
         self._browser: Browser | None = None
@@ -1615,7 +1743,8 @@ class RunBrowser:
             self._launching = asyncio.Lock()
         async with self._launching:
             if self._browser is None:
-                self._browser = await launch(stealth=self._stealth, headless=self._headless)
+                self._browser = await launch(stealth=self._stealth, headless=self._headless,
+                                             screen=self.screen)
             gate = next((gate for seen, gate in self._jars if seen is jar), None)
             if gate is None:
                 await self._browser.add_cookies(jar)
@@ -1761,9 +1890,9 @@ class Tabs:
         if self.headless:
             raise UsageError(f"cannot hand off to a person in a headless browser: {message}",
                              hint="run it again with a visible browser")
-        ui.warn(message)
+        _log.warning(message)
         deadline = None if timeout is None else clock.now() + timeout
-        with ui.progress(message) as bar:
+        with self._shared.screen.progress(message) as bar:
             while not until():
                 if deadline is not None and clock.now() >= deadline:
                     bar.fail()
@@ -2090,8 +2219,12 @@ class Feed:
                 value = json.loads(piece)
             # A piece that isn't JSON (an HTML error page, say) is skipped; the others still count.
             except ValueError:
-                ui.debug("responses: skipped a body that is not JSON from {url}",
-                         url=redact(url))
+                _log.debug(
+                    "responses: skipped a body that is not JSON from {url}",
+                    extra={"fields": {
+                        "url": redact(url),
+                    }},
+                )
                 continue
             self._waiting.append(value)
             self._cursors.read(value)

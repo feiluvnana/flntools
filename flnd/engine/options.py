@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import datetime
 import functools
+import re
 import tomllib
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
@@ -49,7 +50,7 @@ from typing import TYPE_CHECKING, Any
 
 from flnd.engine import home
 from flnd.errors import UsageError
-from flnd.source import SCROLLS, Source, Target
+from flnd.source import SCROLLS, Range, Source, Target
 from flnd.ui.log import ui
 
 if TYPE_CHECKING:
@@ -688,8 +689,6 @@ def _when_text(path: Path, value: Any) -> str:
     Raises:
         UsageError: it isn't text `--when` takes.
     """
-    from flnd._library import WHEN_USAGE, _when
-
     allowed = 'text --when takes ("1y", "2026", "2026-01..2026-03"), or ""'
     if not isinstance(value, str):
         raise _bad(path, "defaults", "when", allowed, value)
@@ -745,3 +744,80 @@ def _bad(path: Path, where: str, name: str, allowed: str, value: Any, *,
     """
     return UsageError(f"{path}: [{where}] {name} is {allowed}, not {value!r}",
                       hint=hint or f"fix the line in {path}, or remove it for the default")
+
+
+# What `when` takes; the message of its usage error.
+WHEN_USAGE = ("when takes a year (2026), a month (2026-06), a day (2026-06-15), a range of "
+              "those (2026-01..2026-03, 2026-01.., ..2026-03), or a span back from today "
+              "(30d, 8w, 1y)")
+# One side of a `when` range: a year, a month or a day (`2026`, `2026-06`, `2026-06-15`), and a
+# span back from today (`30d`, `8w`, `1y`).
+PERIOD = re.compile(r"(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?")
+SPAN = re.compile(r"(\d+)([dwy])")
+# The days of each span unit: a year is 365 days, which is close enough for "the last year".
+SPAN_DAYS = {"d": 1, "w": 7, "y": 365}
+
+
+def _when(text: str | None) -> Range:
+    """Read `when`: a period, a range of periods, or a span back from today.
+
+    Args:
+        text: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"` (either end may be
+            left out), or `"30d"`, `"8w"`, `"1y"`; None or "" for every day.
+
+    Returns:
+        The days, both ends included.
+
+    Raises:
+        UsageError: the text is none of those, or the range ends before it starts.
+
+    Example:
+        >>> _when("2026-02")
+        Range(since=datetime.date(2026, 2, 1), until=datetime.date(2026, 2, 28))
+    """
+    text = (text or "").strip()
+    if not text:
+        return Range()
+    if span := SPAN.fullmatch(text):
+        from flnd.kit import clock
+
+        today = datetime.date.fromtimestamp(clock.wall())
+        return Range(since=today - datetime.timedelta(days=int(span[1]) * SPAN_DAYS[span[2]]))
+    first, dots, last = text.partition("..")
+    if not dots:
+        return Range(*_period(text))
+    since = _period(first)[0] if first.strip() else None
+    until = _period(last)[1] if last.strip() else None
+    if since is not None and until is not None and since > until:
+        raise UsageError(WHEN_USAGE)
+    return Range(since, until)
+
+
+def _period(text: str) -> tuple[datetime.date, datetime.date]:
+    """The first and last day of a year, a month or a day written as `when` writes them.
+
+    Args:
+        text: `"2026"`, `"2026-06"` or `"2026-06-15"`.
+
+    Returns:
+        The first day and the last, the same day for a day.
+
+    Raises:
+        UsageError: the text isn't one.
+    """
+    found = PERIOD.fullmatch(text.strip())
+    if found is None:
+        raise UsageError(WHEN_USAGE)
+    year, month, day = (int(part) if part else None for part in found.groups())
+    try:
+        if day is not None:
+            first = last = datetime.date(year, month, day)  # type: ignore[arg-type]
+        elif month is not None:
+            first = datetime.date(year, month, 1)  # type: ignore[arg-type]
+            following = datetime.date(year + (month == 12), month % 12 + 1, 1)  # type: ignore
+            last = following - datetime.timedelta(days=1)
+        else:
+            first, last = datetime.date(year, 1, 1), datetime.date(year, 12, 31)  # type: ignore
+    except ValueError:
+        raise UsageError(WHEN_USAGE) from None
+    return first, last

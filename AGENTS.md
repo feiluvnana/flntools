@@ -2,10 +2,9 @@
 
 These rules are for anyone, person or agent, who changes this repository: how to commit, check,
 lay out, name, write and measure. `flnd/docs/architecture.md` is the map of the code, and says
-why it is built the way it is. `PLAN.md` is the plan of the rebuild under way. Some rules here
-lead the code until the plan's steps land: the ruff rules `ASYNC` and `RUF006`, the
-`-W error:coroutine` flag, and the removal of pyright and `make type` (all in step 2), and the
-layout tree below (built step by step). `PLAN.md` section 14 says when each lands.
+why it is built the way it is. `PLAN.md` is the plan of the rebuild under way. The layout tree
+below leads the code until the plan's steps build it; `PLAN.md` section 14 says when each part
+lands.
 
 ## Commits
 - Every message has the form `<action>:<summary>`.

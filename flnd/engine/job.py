@@ -1,5 +1,7 @@
 """The job: one target of a source, from its route to its rows in `flnd.db`.
 
+flnd/docs/architecture explains it.
+
 What it holds: `download`, the one entry for a target; `Board`, the progress rows and the source
 of `Progress` events; `Ledger`, which plans each post's files (skip, link, hold for a day,
 queue); `Downloads`, which runs the queued files on the run's loop and commits each post's
@@ -467,7 +469,7 @@ class Board:
                         skipped=c.skipped, failed=c.failed, bytes=c.bytes, listed=line.listed)
 
     def _open(self, target: Target, category: str) -> _Line:
-        """Open a new `ui.Row` for `(target, category)` under the lock.
+        """Open a new `ui.Item` for `(target, category)` under the lock.
 
         Args:
             target: the target the line counts for.

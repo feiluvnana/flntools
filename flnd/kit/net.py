@@ -1,5 +1,3 @@
-
-
 """HTTP for any program on an asyncio loop: a `Session`, paced `Client`s, and downloads into parts.
 
 What it offers, for any caller:
@@ -28,13 +26,11 @@ What it offers, for any caller:
     await session.close()
 
 Who calls it: flnd's site (`flnd.engine.site`) builds one session per source and two clients over
-it,
-and flnd's transfers (`flnd.engine.transfer`) fill a post's files; the browser (`flnd.kit.browser`)
-shapes
-a request its page sent as a `Response`. It calls curl_cffi, `flnd.kit.files` (parts),
-`flnd.kit.clock`
-(the clock, so tests wait on a fake one), `flnd.kit.cookies`, `flnd.kit.text` (redaction) and
-`flnd.errors`. curl_cffi is imported on the first request, so importing this module is cheap.
+it, and flnd's transfers (`flnd.engine.transfer`) fill a post's files; the browser
+(`flnd.kit.browser`) shapes a request its page sent as a `Response`. It calls curl_cffi,
+`flnd.kit.files` (parts), `flnd.kit.clock` (the clock, so tests wait on a fake one), `flnd.kit.html`
+(a page's HTML), `flnd.kit.text` (redaction) and `flnd.errors`, and logs through `logging`.
+curl_cffi is imported on the first request, so importing this module is cheap.
 
 The main flow of one request (`Client.call`):
 1. take a slot for the URL's host from `Limits`: a token from a paced host's bucket, or a place
@@ -88,6 +84,7 @@ import email.message
 import email.utils
 import http.cookiejar
 import inspect
+import logging
 import math
 import random
 import re
@@ -124,7 +121,8 @@ from flnd.errors import (
 )
 from flnd.kit import clock, files, html
 from flnd.kit.text import duration, redact
-from flnd.ui.log import ui
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "Cap", "Client", "Headers", "Limits", "Load", "Place", "Reply", "Request",
@@ -1171,15 +1169,27 @@ class Client:
                 if rounds >= ROUNDS:
                     return _given_up(failure, check)
                 wait = _backoff(rounds) if wait is None else wait
-                ui.warn("{host}: rate limited; waiting {time}",
-                        host=host, time=duration(round(wait)))
+                _log.warning(
+                    "{host}: rate limited; waiting {time}",
+                    extra={"fields": {
+                        "host": host,
+                        "time": duration(round(wait)),
+                    }},
+                )
             else:
                 tries += 1
                 if tries > self.retries or not _worth(method, failure):
                     return _given_up(failure, check)
                 wait = _backoff(tries)
-                ui.debug("retry {n}/{total} in {seconds:.1f}s: {reason}",
-                         n=tries, total=self.retries, seconds=wait, reason=failure)
+                _log.debug(
+                    "retry {n}/{total} in {seconds:.1f}s: {reason}",
+                    extra={"fields": {
+                        "n": tries,
+                        "total": self.retries,
+                        "seconds": wait,
+                        "reason": failure,
+                    }},
+                )
             if not await clock.pause(wait, stop=self.stop):
                 raise Stopped(f"{host}: stopped")
 
@@ -1215,8 +1225,13 @@ class Client:
                     mirror, lambda m=mirror: self._file(m, held, headers, resume, meter),
                     moved=meter.moved)
             except Error as error:
-                ui.debug("{url} failed: {reason}; trying the next mirror",
-                         url=redact(mirror), reason=error)
+                _log.debug(
+                    "{url} failed: {reason}; trying the next mirror",
+                    extra={"fields": {
+                        "url": redact(mirror),
+                        "reason": error,
+                    }},
+                )
                 # The next mirror may serve other bytes: a Range on this part would splice.
                 held.reset()
         last = mirrors[-1]
@@ -1368,7 +1383,7 @@ class Client:
 class _Meter:
     """Where a download stands on its sink: a `total` it sets and an `advance(n)` it calls.
 
-    The sink is anything with a settable `total` and an `advance(n)`: a `ui.Row`, or the job's
+    The sink is anything with a settable `total` and an `advance(n)`: a `ui.Item`, or the job's
     per-file stream; None reports nothing.
 
     Args:

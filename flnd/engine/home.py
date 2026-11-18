@@ -1,12 +1,10 @@
 """The home: its layout, `flnd.db` (what the home remembers) and the logins in its vault.
 
-The home folder holds `media/` (the downloads), `metadata/` (`flnd.db` and `secret.db`), and
-`log/` (crash files and each run's samples), and an optional `config.toml`; `cache/` is
-reserved. This module is flnd's own storage, not a library: it knows flnd's tables, targets and
-sources. It is built on three library modules: `flnd.kit.db` (a SQLite store), `flnd.kit.vault`
-(source secrets in `secret.db`) and `flnd.kit.cookies` (cookie jars). `flnd/docs/storage` is the
-guide
-to it.
+The home folder holds `media/` (the downloads), `metadata/` (`flnd.db` and `secret.db`), and `log/`
+(crash files and each run's samples), and an optional `config.toml`; `cache/` is reserved. This
+module is flnd's own storage, not a library: it knows flnd's tables, targets and sources. It is
+built on three library modules: `flnd.kit.db` (a SQLite store), `flnd.kit.vault` (source secrets in
+`secret.db`) and `flnd.kit.cookies` (cookie jars). `flnd/docs/storage` is the guide to it.
 
 What `flnd.db` holds (the storage guide in `flnd/docs/` shows every column):
 - `files`: one row per saved file, keyed `<code>:<key>` (the source's `key` template), with its
