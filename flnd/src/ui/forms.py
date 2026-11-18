@@ -1,4 +1,4 @@
-"""Questions in the terminal (questionary, Charm style).
+"""Questions in the terminal, in Huh's look: a pick, a line of text, a yes or no (Textual, inline).
 
 src/docs/cli explains it.
 """
@@ -6,32 +6,29 @@ src/docs/cli explains it.
 from __future__ import annotations
 
 import sys
+import threading
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, NamedTuple
 
-import questionary
-
-from flnd.errors import UsageError
+from flnd.errors import Stopped, UsageError
 from flnd.ui import theme
-from flnd.ui.log import log
 
-__all__ = ["ask", "choose", "confirm", "interactive"]
+__all__ = ["Option", "ask", "choose", "confirm", "interactive", "select", "text"]
 
-_COLOR = theme.TOKENS
-CHARM_STYLE = questionary.Style([
-    ("qmark", f"fg:{_COLOR['focus']} bold"),
-    ("question", f"fg:{_COLOR['text']} bold"),
-    ("answer", f"fg:{_COLOR['good']} bold"),
-    ("pointer", f"fg:{_COLOR['focus']} bold"),
-    ("highlighted", f"fg:{_COLOR['focus']} bold"),
-    ("selected", f"fg:{_COLOR['good']}"),
-    ("separator", f"fg:{_COLOR['dim']}"),
-    ("instruction", f"fg:{_COLOR['dim']}"),
-    ("text", f"fg:{_COLOR['text']}"),
-])
-QMARK = theme.glyph("bullet", True)
-POINTER = theme.glyph("cursor", True)
+
+class Option(NamedTuple):
+    """One answer `select` offers.
+
+    Args:
+        label: what is shown and, without a `value`, what is returned.
+        value: what `select` returns for it; None returns `label`.
+        note: a dim note shown beside the label.
+    """
+
+    label: str
+    value: Any = None
+    note: str = ""
 
 
 def interactive() -> bool:
@@ -40,162 +37,512 @@ def interactive() -> bool:
     return bool(stdin and stdin.isatty())
 
 
-def ask(message: str, *, secret: bool = False, default: str | None = None) -> str:
-    """Ask for one line of text; off a terminal, return `default` (required when set).
+def select(title: str, options: Sequence[Option | str] | Mapping[str, Any], *,
+           default: Any = None) -> Any:
+    """Ask to pick one of `options` with ↑↓ and enter.
 
     Args:
-        message: the question to show.
-        secret: True to hide what is typed.
-        default: the answer when nothing is typed, and the answer off a terminal. None means
-            there is no default, so off a terminal the call fails.
+        options: the answers: labels, `Option`s, or a dict of label to value.
+        default: the value the cursor starts on; None starts on the first.
 
     Returns:
-        The text typed, or `default` (or "") when nothing was typed.
+        The value picked, or None when esc goes back.
 
     Raises:
-        UsageError: the input ended before an answer, or there is no terminal and no default.
+        UsageError: there are no options, or no terminal to ask in.
+        Stopped: Ctrl-C.
+    """
+    picks = _options(options)
+    if not picks:
+        raise UsageError(f"{title}: there is nothing to choose from")
+    if not interactive():
+        raise _needed(title)
+    values = [pick.value for pick in picks]
+    start = values.index(default) if default in values else 0
+    return run(_Select(title, picks, start), keep=True)
 
-    Example:
-        >>> import io
-        >>> from unittest import mock
-        >>> with mock.patch("sys.stdin", io.StringIO()):
-        ...     ask("Account name?", default="example_user")
-        'example_user'
+
+def text(title: str, *, secret: bool = False, default: str | None = None) -> str | None:
+    """Ask for one line of text.
+
+    Args:
+        secret: hide what is typed, showing a bullet per character.
+        default: the answer when enter is pressed on an empty line, shown dim; None for "".
+
+    Returns:
+        The text, or None when esc goes back.
+
+    Raises:
+        UsageError: there is no terminal to ask in.
+        Stopped: Ctrl-C.
     """
     if not interactive():
-        return _required(message, default)
-    with _paused():
-        fn = questionary.password if secret else questionary.text
-        try:
-            answer = fn(
-                message,
-                default=default or "",
-                qmark=QMARK,
-                style=CHARM_STYLE,
-            ).unsafe_ask()
-        except KeyboardInterrupt:
-            raise
-        except EOFError as error:
-            raise UsageError("the input ended before an answer") from error
-        if answer is None:
-            raise UsageError("the input ended before an answer")
-        return answer or default or ""
+        raise _needed(title)
+    return run(_Text(title, secret=secret, default=default or ""), keep=True)
 
 
-def confirm(message: str, *, default: bool = True) -> bool:
-    """Ask a yes-or-no question; off a terminal, return `default`.
+def confirm(title: str, *, default: bool = True) -> bool:
+    """Ask a yes-or-no question. Without a terminal nothing is asked and `default` is the answer.
 
     Args:
-        message: the question to show.
-        default: the answer when there is no terminal, and the one shown first.
+        default: the answer the cursor starts on, and the answer without a terminal, so a
+            command such as `target clean` proceeds on a pipe.
 
     Returns:
-        True for a yes, False for a no.
+        True for yes; False for no, or when esc goes back.
 
     Raises:
-        UsageError: the input ended before an answer.
-
-    Example:
-        >>> import io
-        >>> from unittest import mock
-        >>> with mock.patch("sys.stdin", io.StringIO()):
-        ...     confirm("Download again?", default=False)
-        False
+        Stopped: Ctrl-C.
     """
     if not interactive():
         return default
-    with _paused():
-        try:
-            answer = questionary.confirm(
-                message,
-                default=default,
-                qmark=QMARK,
-                style=CHARM_STYLE,
-            ).unsafe_ask()
-        except KeyboardInterrupt:
-            raise
-        except EOFError as error:
-            raise UsageError("the input ended before an answer") from error
-        if answer is None:
-            raise UsageError("the input ended before an answer")
-        return bool(answer)
+    return bool(run(_Confirm(title, default=default), keep=True))
+
+
+def ask(message: str, *, secret: bool = False, default: str | None = None) -> str:
+    """`text` as today's callers use it: off a terminal it returns `default`, when one is set.
+
+    Raises:
+        UsageError: esc went back, or there is no terminal and no default.
+    """
+    if not interactive() and default is not None:
+        return default
+    answer = text(message, secret=secret, default=default)
+    if answer is None:
+        raise UsageError("the input ended before an answer")
+    return answer
 
 
 def choose(message: str, choices: Sequence[Any] | Mapping[str, Any], *,
            default: Any = None) -> Any:
-    """Ask to pick one of `choices` by number or label.
-
-    Args:
-        message: the question to show.
-        choices: the values to pick from, or a dict of label to value to show the labels.
-        default: the value picked first, and the answer when there is no terminal. It must be
-            one of the values; None means there is no default.
-
-    Returns:
-        The value picked.
+    """`select` as today's callers use it: off a terminal it returns `default`, when one is set.
 
     Raises:
-        UsageError: there are no choices, `default` is not one of them, the input ended
-            before an answer, or there is no terminal and no default.
-
-    Example:
-        >>> import io
-        >>> from unittest import mock
-        >>> with mock.patch("sys.stdin", io.StringIO()):
-        ...     choose("Quality?", {"high": 2, "low": 1}, default=2)
-        2
+        UsageError: no choices, a `default` that isn't one, esc, or no terminal and no default.
     """
-    pairs = list(choices.items()) if isinstance(choices, Mapping) else [(c, c) for c in choices]
-    if not pairs:
-        raise UsageError(f"{message}: there is nothing to choose from")
-    values = [value for _, value in pairs]
-    if default is not None and default not in values:
+    picks = _options(choices)
+    if default is not None and default not in [pick.value for pick in picks]:
         raise UsageError(f"{default!r} is not a choice for {message!r}")
-    if not interactive():
-        return _required(message, default)
-    with _paused():
-        items = [questionary.Choice(title=str(label), value=val) for label, val in pairs]
-        initial = next((item for item in items if item.value == default), None)
-        try:
-            answer = questionary.select(
-                message,
-                choices=items,
-                default=initial,
-                qmark=QMARK,
-                pointer=POINTER,
-                style=CHARM_STYLE,
-            ).unsafe_ask()
-        except KeyboardInterrupt:
-            raise
-        except EOFError as error:
-            raise UsageError("the input ended before an answer") from error
-        if answer is None:
-            raise UsageError("the input ended before an answer")
+    if picks and not interactive() and default is not None:
+        return default
+    answer = select(message, picks, default=default)
+    if answer is None:
+        raise UsageError("the input ended before an answer")
+    return answer
+
+
+def _options(options: Sequence[Option | str] | Mapping[str, Any]) -> list[Option]:
+    if isinstance(options, Mapping):
+        return [Option(str(label), value) for label, value in options.items()]
+    picks = [pick if isinstance(pick, Option) else Option(str(pick), pick) for pick in options]
+    return [pick if pick.value is not None else pick._replace(value=pick.label) for pick in picks]
+
+
+def _needed(title: str) -> UsageError:
+    return UsageError(f"{title!r} needs an answer, and there is no terminal to ask in",
+                      hint="run it in a terminal")
+
+
+# ---------------------------------------------------------------------------------------------
+# The fields: each draws itself and takes keys. `press` returns PENDING until it has an answer.
+# ---------------------------------------------------------------------------------------------
+
+PENDING = object()
+_STOP = object()
+
+
+def hints(pairs: Sequence[tuple[str, str]], fancy: bool, *, off: frozenset[str] = frozenset()
+          ) -> Any:
+    """The bottom line of keys: each key, then what it does, a dot between; `off` ones all dim."""
+    from rich.text import Text
+
+    line = Text("  ")
+    dot = f" {theme.glyph('waiting', fancy)} "
+    for n, (key, does) in enumerate(pairs):
+        if n:
+            line.append(dot, style=theme.style("dim"))
+        shown = theme.glyph(key, fancy) if key in theme.GLYPHS else key
+        line.append(shown, style=theme.style("dim" if key in off else "text"))
+        line.append(f" {does}", style=theme.style("dim"))
+    return line
+
+
+class Owner:
+    """What the app draws and feeds: `view` is a Rich renderable, `press` PENDING or the end."""
+
+    # Whether the last frame is an answer worth leaving on the terminal.
+    answered = False
+
+    def view(self, fancy: bool) -> Any:
+        raise NotImplementedError
+
+    def press(self, key: str, char: str | None) -> Any:
+        raise NotImplementedError
+
+    def paste(self, text: str) -> None:
+        """Take pasted text; ignored unless the owner has a place to type."""
+
+
+class Field(Owner):
+    """A question inside the bar `┃`: its title, then its body, then the keys below."""
+
+    keys: tuple[tuple[str, str], ...] = ()
+
+    def __init__(self, title: str) -> None:
+        self.title = title
+        self.answer: Any = PENDING
+
+    def body(self, fancy: bool) -> list[Any]:
+        raise NotImplementedError
+
+    def done(self, fancy: bool) -> list[Any]:
+        """The body once answered: the answer, in `good`."""
+        from rich.text import Text
+
+        return [Text(self.shown(), style=theme.style("good"))]
+
+    def shown(self) -> str:
+        return str(self.answer)
+
+    def press(self, key: str, char: str | None) -> Any:
+        raise NotImplementedError
+
+    def view(self, fancy: bool) -> Any:
+        from rich.console import Group
+        from rich.text import Text
+
+        answered = self.answer is not PENDING
+        bar = Text(f"  {theme.glyph('bar', fancy)} ", style=theme.style("dim" if answered
+                                                                        else "focus"))
+        title = Text(self.title, style=theme.style("bold focus" if not answered else "text"))
+        lines = [title, *(self.done(fancy) if answered else self.body(fancy))]
+        drawn: list[Any] = [Text.assemble(bar, line) for line in lines]
+        if not answered:
+            drawn += [Text(""), hints(self.keys, fancy)]
+        return Group(*drawn)
+
+    def finish(self, answer: Any) -> Any:
+        self.answer = answer
+        self.answered = True
         return answer
 
 
-def _required(message: str, default: Any) -> Any:
-    """The default off a terminal, or a UsageError when there is none.
+class _Select(Field):
+    keys = (("updown", "choose"), ("enter", "confirm"), ("esc", "back"))
+
+    def __init__(self, title: str, options: list[Option], start: int) -> None:
+        super().__init__(title)
+        self.options = options
+        self.at = start
+
+    def body(self, fancy: bool) -> list[Any]:
+        from rich.text import Text
+
+        width = max(len(pick.label) for pick in self.options)
+        lines = []
+        for n, pick in enumerate(self.options):
+            here = n == self.at
+            line = Text(f"{theme.glyph('cursor', fancy) if here else ' '} ",
+                        style=theme.style("focus"))
+            line.append(pick.label.ljust(width), style=theme.style("focus" if here else "text"))
+            if pick.note:
+                line.append(f"   {pick.note}", style=theme.style("dim"))
+            lines.append(line)
+        return lines
+
+    def shown(self) -> str:
+        return self.options[self.at].label
+
+    def press(self, key: str, char: str | None) -> Any:
+        if key in ("up", "k"):
+            self.at = (self.at - 1) % len(self.options)
+        elif key in ("down", "j", "tab"):
+            self.at = (self.at + 1) % len(self.options)
+        elif key == "enter":
+            return self.finish(self.options[self.at].value)
+        elif key == "escape":
+            return None
+        return PENDING
+
+
+class _Text(Field):
+    keys = (("enter", "confirm"), ("esc", "back"))
+
+    def __init__(self, title: str, *, secret: bool, default: str) -> None:
+        super().__init__(title)
+        self.secret = secret
+        self.default = default
+        self.typed = ""
+
+    def masked(self, fancy: bool) -> str:
+        return theme.glyph("bullet", fancy) * len(self.typed) if self.secret else self.typed
+
+    def body(self, fancy: bool) -> list[Any]:
+        from rich.text import Text
+
+        line = Text("> ", style=theme.style("focus"))
+        line.append(self.masked(fancy), style=theme.style("text"))
+        line.append(" ", style="reverse")
+        if not self.typed and self.default:
+            line.append(self.default, style=theme.style("dim"))
+        return [line]
+
+    def done(self, fancy: bool) -> list[Any]:
+        from rich.text import Text
+
+        shown = self.masked(fancy) if self.typed else self.answer
+        return [Text(f"> {shown}", style=theme.style("good"))]
+
+    def press(self, key: str, char: str | None) -> Any:
+        if key == "enter":
+            return self.finish(self.typed or self.default)
+        if key == "escape":
+            return None
+        if key == "backspace":
+            self.typed = self.typed[:-1]
+        elif key == "ctrl+u":
+            self.typed = ""
+        elif char:
+            self.typed += char
+        return PENDING
+
+    def paste(self, text: str) -> None:
+        self.typed += " ".join(text.splitlines())
+
+
+class _Confirm(Field):
+    keys = (("leftright", "choose"), ("y", "yes"), ("n", "no"), ("enter", "confirm"),
+            ("esc", "back"))
+
+    def __init__(self, title: str, *, default: bool) -> None:
+        super().__init__(title)
+        self.yes = default
+
+    def body(self, fancy: bool) -> list[Any]:
+        from rich.text import Text
+
+        line = Text()
+        for label, on in (("Yes", self.yes), ("No", not self.yes)):
+            style = theme.style("bold text on focus" if on else "dim")
+            line.append(f" {label} ", style=style)
+            line.append("  ")
+        return [line]
+
+    def shown(self) -> str:
+        return "Yes" if self.answer else "No"
+
+    def press(self, key: str, char: str | None) -> Any:
+        if key in ("left", "right", "up", "down", "tab", "h", "l"):
+            self.yes = not self.yes
+        elif key == "y":
+            return self.finish(True)
+        elif key == "n":
+            return self.finish(False)
+        elif key == "enter":
+            return self.finish(self.yes)
+        elif key == "escape":
+            return False
+        return PENDING
+
+
+# ---------------------------------------------------------------------------------------------
+# The inline app: draws an owner (a field, or a list) under the prompt and feeds it keys.
+# ---------------------------------------------------------------------------------------------
+
+def _app(owner: Any) -> Any:
+    """The Textual app that shows `owner` until it answers; its `return_value` is the answer."""
+    from textual.app import App
+    from textual.widget import Widget
+
+    fancy = theme.unicode(sys.stdout)
+
+    class View(Widget):
+        DEFAULT_CSS = "View { height: auto; }"
+
+        def render(self) -> Any:
+            return owner.view(fancy)
+
+    class Inline(App, inherit_bindings=False):
+        CSS = "Screen:inline { border: none; height: auto; } Screen { background: ansi_default; }"
+        ENABLE_COMMAND_PALETTE = False
+
+        def compose(self) -> Any:
+            yield View()
+
+        def on_key(self, event: Any) -> None:
+            event.stop()
+            event.prevent_default()
+            if event.key == "ctrl+c":
+                self.exit(_STOP)
+                return
+            char = event.character if event.is_printable else None
+            result = owner.press(event.key, char)
+            self.query_one(View).refresh(layout=True)
+            if result is not PENDING:
+                self.exit(result)
+
+        def on_paste(self, event: Any) -> None:
+            owner.paste(event.text)
+            self.query_one(View).refresh(layout=True)
+
+    return Inline(ansi_color=True)
+
+
+def run(owner: Any, *, keep: bool) -> Any:
+    """Show `owner` under the prompt until it answers, and return the answer.
+
+    Textual draws it on the main thread. Off it (Textual sets signal handlers, which only the
+    main thread may) or inside a running loop, a plain drawing with raw key input stands in.
 
     Args:
-        message: the question, named in the error.
-        default: the answer to use; None means there is none.
-
-    Returns:
-        `default`, when it is not None.
+        keep: leave the answer on the terminal (a form's); esc and Ctrl-C always clear it.
 
     Raises:
-        UsageError: `default` is None.
+        Stopped: Ctrl-C.
     """
-    if default is None:
-        raise UsageError(
-            f"{message!r} needs an answer, and there is no terminal to ask in",
-            hint="run it in a terminal",
-        )
-    return default
+    with _paused():
+        if threading.current_thread() is threading.main_thread() and not _looping():
+            app = _app(owner)
+            _show(app)
+            result = app.return_value
+        else:
+            result = _plain(owner)
+    if result is _STOP:
+        raise Stopped("stopped by Ctrl-C")
+    if keep and owner.answered:
+        from rich.console import Console
+
+        console = Console(file=sys.stdout, highlight=False,
+                          color_system="auto" if theme.color(sys.stdout) else None)
+        console.print(owner.view(theme.unicode(sys.stdout)))
+    return result
+
+
+def _show(app: Any) -> None:
+    """Run `app` under the prompt, cleared on exit. Tests replace it with Textual's pilot."""
+    app.run(inline=True, mouse=False)
+
+
+def _looping() -> bool:
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------------------------
+# The plain stand-in: the same owner drawn with Rich, keys read raw from standard input.
+# ---------------------------------------------------------------------------------------------
+
+# What a terminal sends for each key the owners know, beside printable text.
+_SEQUENCES = {"\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right", "\x1b[D": "left",
+              "\x1bOA": "up", "\x1bOB": "down", "\x1bOC": "right", "\x1bOD": "left"}
+_CONTROLS = {"\r": "enter", "\n": "enter", "\x7f": "backspace", "\x08": "backspace",
+             "\x03": "ctrl+c", "\x15": "ctrl+u", "\t": "tab", "\x1b": "escape"}
+
+
+def _plain(owner: Any) -> Any:
+    """Show `owner` without Textual until it answers; its frame is cleared at the end."""
+    import select
+    import termios
+    import tty
+
+    fd, stream = sys.stdin.fileno(), sys.stdout
+    fancy = theme.unicode(stream)
+    saved = termios.tcgetattr(fd)
+    drawn = 0
+    result: Any = PENDING
+    try:
+        # Raw: no echo, and Ctrl-C arrives as a key instead of a signal. TCSANOW keeps keys
+        # typed ahead, which the default TCSAFLUSH would drop.
+        tty.setraw(fd, termios.TCSANOW)
+        stream.write("\x1b[?25l")
+        while result is PENDING:
+            drawn = _frame(stream, owner.view(fancy), drawn)
+            for key, char in _keys(fd):
+                if key == "ctrl+c":
+                    result = _STOP
+                elif key == "paste":
+                    owner.paste(char)
+                else:
+                    result = owner.press(key, char)
+                if result is not PENDING:
+                    break
+    finally:
+        _frame(stream, None, drawn)
+        stream.write("\x1b[?25h")
+        stream.flush()
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        # Back in canonical mode, macOS marks the input PENDIN until it is next polled: poll it
+        # now, so the terminal's modes read exactly as they were.
+        select.select([fd], [], [], 0)
+    return result
+
+
+def _frame(stream: Any, renderable: Any, drawn: int) -> int:
+    """Draw `renderable` over the `drawn` lines of the last frame (None: erase them)."""
+    import io
+    import shutil
+
+    from rich.console import Console
+
+    if drawn:
+        stream.write(f"\x1b[{drawn - 1}A\r\x1b[J" if drawn > 1 else "\r\x1b[J")
+    lines: list[str] = []
+    if renderable is not None:
+        console = Console(file=io.StringIO(), force_terminal=True, highlight=False,
+                          width=shutil.get_terminal_size().columns,
+                          color_system="auto" if theme.color(stream) else None)
+        with console.capture() as captured:
+            console.print(renderable)
+        lines = captured.get().rstrip("\n").split("\n")
+        # Raw mode doesn't turn a line break into a carriage return too.
+        stream.write("\r\n".join(lines))
+    stream.flush()
+    return len(lines)
+
+
+def _keys(fd: int) -> list[tuple[str, str | None]]:
+    """The keys in what the terminal sends next; printable text of more than one character is
+    one ("paste", text)."""
+    import os
+    import select
+
+    data = os.read(fd, 1024)
+    # A lone escape may be the start of a sequence still on its way.
+    while data.endswith(b"\x1b") and select.select([fd], [], [], 0.03)[0]:
+        data += os.read(fd, 1024)
+    text = data.decode(errors="replace")
+    if len(text) > 1 and text.isprintable():
+        return [("paste", text)]
+    keys: list[tuple[str, str | None]] = []
+    at = 0
+    while at < len(text):
+        sequence = next((s for s in _SEQUENCES if text.startswith(s, at)), None)
+        if sequence is not None:
+            keys.append((_SEQUENCES[sequence], None))
+            at += len(sequence)
+        elif text.startswith("\x1b[", at):
+            # An unknown sequence: skipped up to its final letter.
+            end = at + 2
+            while end < len(text) and not text[end].isalpha() and text[end] != "~":
+                end += 1
+            at = end + 1
+        elif text[at] in _CONTROLS:
+            keys.append((_CONTROLS[text[at]], None))
+            at += 1
+        else:
+            keys.append((text[at], text[at] if text[at].isprintable() else None))
+            at += 1
+    return keys
 
 
 @contextmanager
 def _paused() -> Iterator[None]:
+    from flnd.ui.log import log
+
     with log.hold():
         yield

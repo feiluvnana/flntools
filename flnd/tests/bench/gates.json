@@ -59,7 +59,7 @@
     "ui.open": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 50.6665,
+      "baseline": 100.5,
       "target": 250,
       "gate": "P17: lists and forms open fast"
     },

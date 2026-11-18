@@ -41,6 +41,9 @@ GLYPHS: dict[str, tuple[str, str]] = {
     "empty": ("─", "-"),
     "more": ("…", "..."),
     "times": ("×", "x"),
+    # The arrow keys, as the bottom line of a list or a form names them.
+    "updown": ("↑↓", "up/down"),
+    "leftright": ("←→", "left/right"),
 }
 
 # The mark and the token of each kind of line.

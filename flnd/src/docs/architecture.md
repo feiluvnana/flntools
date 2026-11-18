@@ -107,7 +107,8 @@ The rules between them:
 | `src/ui/theme.py` | every colour and glyph flnd draws with, and when to drop colour or Unicode | `src/ui/*` |
 | `src/ui/out.py` | every line flnd prints: lines, folded warnings, errors and their hints, tables, the help; text from a site cleaned of escape codes | the CLI, `src/ui/log.py`, the run's hard exit |
 | `src/ui/log.py` | the levels of log lines, the progress rows and the run's summary table; the journal; the route of the kit's `logging` records | every layer above the kit |
-| `src/ui/forms.py` | questions on the terminal | the CLI, the site, the engine's browser screen |
+| `src/ui/forms.py` | questions on the terminal in Huh's look (Textual, inline): `select`, `text`, `confirm`; without a terminal, `select` and `text` raise `UsageError` and `confirm` gives its default | the CLI, the site, the engine's browser screen, `src/ui/lists.py` |
+| `src/ui/lists.py` | the interactive lists (Textual, inline) of targets, accounts and plugins: ↑↓, `/` filter, enter details, `d` delete after a confirmation, `q` quit, each list's own keys; a plain table on a pipe | step 13's `target list`, `auth list` and `plugin list` |
 | `src/errors.py` | flnd's face of the one error hierarchy: the kit's classes re-exported, `SourceError`, and `classify`, which turns any exception into one of them and gives flnd's hint to an error that has none | every module |
 
 The kit, `flnkit/` — each module a toolkit of its own:
