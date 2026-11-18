@@ -245,6 +245,9 @@ class Twitter(Source):
     login = cookies("auth_token")
     # X's `x-rate-limit-*` headers stop flnd exactly at the limit, so the floor only spaces a burst.
     pace = 0.2
+    # It reads in the browser: one of its targets lists at a time (the engine's `HTTP_AT_ONCE`
+    # is for a source that only sends requests).
+    browser = True
     user_agent = CHROME
     # This browser never hid navigator.webdriver, so stealth stays off.
     stealth = False

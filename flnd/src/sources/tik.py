@@ -479,6 +479,9 @@ class TikTok(Source):
     user_agent = TIKTOK_UA
     # No known limit; a captcha doubles the gap.
     pace = 0.2
+    # It reads in the browser: one of its targets lists at a time (the engine's `HTTP_AT_ONCE`
+    # is for a source that only sends requests).
+    browser = True
     # What a post's files are named and keyed by, as they always were: `<date>_<post>` for a video
     # and `<date>_<post>_<n>` for the n-th photo (n from 1), the key the same without the date.
     # `idx` is empty for a video, so the `_` before it goes. A post's `part` is its folder (videos,

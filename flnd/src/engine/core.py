@@ -17,12 +17,12 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
-from flnd.engine import crawl, home, save, site
+from flnd.engine import crawl, home, jobs, save, site
 from flnd.engine.crawl import TargetReport
 from flnd.engine.events import Failed, Planned
 from flnd.engine.options import Options, Retry, RunShared, categories_by_source, validate
@@ -46,6 +46,11 @@ FOLLOW_DEPTH = 2
 # Targets a search's sync downloads at most per run, among those it hadn't seen: a search that
 # suddenly finds hundreds (a popular tag) is taken a slice per sync, never all at once.
 MAX_SYNC_NEW = 25
+# Targets active at once in a run (listing, or with more files queued than their places), and
+# targets listing at once per plugin and account: one for a plugin that reads in the browser,
+# whose site sees one person, and `HTTP_AT_ONCE` for one that only sends requests.
+ACTIVE = jobs.LISTINGS
+HTTP_AT_ONCE = 4
 
 
 @dataclass(frozen=True)
@@ -1048,8 +1053,9 @@ class Engine:
             settings = RunShared(home=self.home, db=db, run=None if dry else self.run,
                                  stop=stop, dry=dry, emit=self.emit, resolve=self._one,
                                  tally=self.tally)
+            settings.claims = crawl.Claims()
             runner = _Runner(self, settings)
-            settings.follow = runner.target
+            settings.follow = runner.follow
             async with shared_browser(settings), save.attached(settings):
                 try:
                     yield runner
@@ -1232,6 +1238,8 @@ class _Entry:
     error: BaseException | None = None
     # A login the site refused: its later targets would hit the same wall, so they fail with it.
     refused: LoginError | None = None
+    # Set once its login is checked and its `connect` entered: what its other targets wait for.
+    started: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class _Runner:
@@ -1249,6 +1257,17 @@ class _Runner:
     def __init__(self, engine: Engine, settings: RunShared) -> None:
         self.engine, self.settings = engine, settings
         self._entries: dict[str, _Entry] = {}
+        self._active = asyncio.Semaphore(ACTIVE)
+        # Each plugin's (and account's) listings at once.
+        self._listing: dict[str, asyncio.Semaphore] = {}
+        # The targets the run has started, each run once however often it is named; set
+        # once each ends, with its report.
+        self._once: dict[Target, asyncio.Event] = {}
+        self._reports: dict[Target, TargetReport] = {}
+        # Targets a listing of another plugin discovered, handed to the run (`follow`).
+        self._handed: list[asyncio.Future[tuple[bool, Any]]] = []
+        # Each target's turn at its first step, in the order they started (`crawl.Turn`).
+        self._turns: list[asyncio.Event] = []
 
     async def entry(self, code: str) -> _Entry:
         """The run's instance of the plugin `code`, started on first use.
@@ -1258,11 +1277,22 @@ class _Runner:
         """
         entry = self._entries.get(code)
         if entry is not None:
+            await entry.started.wait()
+            if entry.run is None:
+                # Its plugin's run didn't open: each of its targets fails with that.
+                assert entry.error is not None
+                raise entry.error
             return entry
         source = self.engine.sources[code]()
         stack = contextlib.AsyncExitStack()
-        run = await stack.enter_async_context(site.opened(self.settings, source))
-        entry = self._entries[code] = _Entry(run, stack)
+        # Kept before the first wait, so a target that comes meanwhile waits for this one.
+        entry = self._entries[code] = _Entry(None, stack)  # type: ignore[arg-type]
+        try:
+            run = entry.run = await stack.enter_async_context(site.opened(self.settings, source))
+        except BaseException as error:
+            entry.error = error
+            entry.started.set()
+            raise
         try:
             entry.logged_in = await _logged_in(run)
             if not entry.logged_in and _required(source):
@@ -1273,9 +1303,13 @@ class _Runner:
             stack.push_async_callback(run.off, home.write_back, run.settings.home, code,
                                       run.session.jar)
             await stack.enter_async_context(_connected(run, _account(run)))
+            # One cache of the posts the `date` hook had no day for, shared by its targets.
+            await run.off(crawl.asked, run)
         except Exception as error:
             entry.error = error
             ui.debug("{source}: {error}", source=code, error=error)
+        finally:
+            entry.started.set()
         return entry
 
     async def ready(self, target: Target) -> tuple[_Entry | None, TargetReport | None]:
@@ -1301,22 +1335,49 @@ class _Runner:
             failed = entry.refused
         if failed is None:
             return entry, None
-        tally.end(target, failed=True)
         if failed is entry.refused:
-            await settings.emit(Failed(target, failed))
-        else:
-            await crawl.tell(target, failed, settings.emit)
+            return entry, await self._refused(target, failed)
+        tally.end(target, failed=True)
+        await crawl.tell(target, failed, settings.emit)
         return entry, TargetReport(target, (), 0, error=failed)
 
+    async def _refused(self, target: Target, login: LoginError) -> TargetReport:
+        """A target whose plugin's login an earlier target had refused: it fails, unasked."""
+        self.settings.tally.end(target, failed=True)
+        await self.settings.emit(Failed(target, login))
+        return TargetReport(target, (), 0, error=login)
+
+    async def follow(self, target: Target, options: Options, *, inside: str) -> None:
+        """Run a target a listing of the plugin `inside` discovered.
+
+        One of the same plugin runs inside that listing, which holds its places. One of
+        another plugin is handed to the run as a target of its own, which the listing doesn't
+        wait for: waiting for that plugin's listing place while holding its own could wait
+        forever, for a listing of that plugin waiting the other way.
+        """
+        if inside == target.source:
+            await self.target(target, options, inside=inside)
+            return
+        self.settings.tally.add(target, _planned(options))
+        self._handed.append(asyncio.ensure_future(_carried(self.target(target, options))))
+
     async def target(self, target: Target, options: Options, *,
-                     parent: Target | None = None) -> TargetReport:
-        """Run one target on its plugin's instance, a discovered or linked one included.
+                     parent: Target | None = None, inside: str | None = None,
+                     turn: crawl.Turn | None = None) -> TargetReport:
+        """Run one target on its plugin's instance, a discovered or linked one included; a
+        target named twice in the run runs once, and the second gets the first's report.
+
+        It waits for a place among its plugin's listings, then among the run's active
+        targets (`_held`). A target a listing of its own plugin discovered runs inside that
+        listing (`inside`), and takes no place of its own (`follow`).
 
         Args:
             target: the target, resolved.
             options: its options.
             parent: the search that found it; a target of the search's own plugin counts on
                 the search's row of the run's snapshot.
+            inside: the plugin of the listing it runs inside; None for a target of its own.
+            turn: its turn at its route's call (`crawl.Turn`); None takes the next.
 
         Returns:
             Its report.
@@ -1324,13 +1385,49 @@ class _Runner:
         Raises:
             DiskError: its files can't be written; the whole run stops.
         """
+        began = turn or self._turn()
+        started = self._once.get(target)
+        if started is not None:
+            began.release()
+            await started.wait()
+            return self._reports.get(target) or TargetReport(target, (), 0)
+        self._once[target] = asyncio.Event()
+        try:
+            report = self._reports[target] = await self._run(target, options, parent, inside,
+                                                             began)
+            return report
+        finally:
+            began.release()
+            self._once[target].set()
+
+    def _turn(self) -> crawl.Turn:
+        """The next target's turn at its first step, after every turn given out so far."""
+        turn = crawl.Turn(self._turns)
+        self._turns.append(turn.passed)
+        return turn
+
+    async def _run(self, target: Target, options: Options, parent: Target | None,
+                   inside: str | None, began: crawl.Turn) -> TargetReport:
         if parent is not None and parent.source == target.source:
             self.settings.tally.adopt(target, parent)
         entry, failed = await self.ready(target)
         if entry is None or failed is not None:
             assert failed is not None
             return failed
-        report = await crawl.download(entry.run, target, self.settings.tally, options)
+        refused = None
+        if inside == target.source:
+            report = await crawl.download(entry.run, target, self.settings.tally, options,
+                                          turn=began)
+        else:
+            async with self._held(entry, began) as listed:
+                # Refused while this target waited for its place: it fails, unasked, once
+                # it has given its places back.
+                refused = entry.refused
+                if refused is None:
+                    report = await crawl.download(entry.run, target, self.settings.tally,
+                                                  options, listed=listed, turn=began)
+        if refused is not None:
+            return await self._refused(target, refused)
         if isinstance(report.error, LoginError):
             entry.refused = report.error
         # A full or refused disk stops the whole run: every later file would fail too.
@@ -1338,9 +1435,58 @@ class _Runner:
             raise report.error
         return report
 
+    @contextlib.asynccontextmanager
+    async def _held(self, entry: _Entry,
+                    turn: crawl.Turn) -> AsyncIterator[Callable[[Any], Awaitable[None]]]:
+        """A target's places: one of its plugin's listings, then one of the run's active ones;
+        a target that waits for one lets the next targets have their turns.
+
+        Yields:
+            What the crawl awaits once the target's listings ended: it gives the listing's
+            place back at once, and the active one when the target has no more files queued
+            than its places, so the next target lists while these download.
+        """
+        source = entry.run.source
+        listing = self._listing.get(source.code)
+        if listing is None:
+            # API 1 says so with a `browser` class attribute; API 2 with its `browser`.
+            browser = bool(getattr(type(source), "browser", False))
+            listing = self._listing[source.code] = asyncio.Semaphore(
+                1 if browser else HTTP_AT_ONCE)
+        held = {"listing": False, "active": False}
+        if listing.locked():
+            turn.release()
+        await listing.acquire()
+        held["listing"] = True
+        try:
+            if self._active.locked():
+                turn.release()
+            await self._active.acquire()
+            held["active"] = True
+
+            async def listed(downloads: Any) -> None:
+                if held["listing"]:
+                    held["listing"] = False
+                    listing.release()
+                await downloads.below(entry.run.jobs)
+                if held["active"]:
+                    held["active"] = False
+                    self._active.release()
+
+            yield listed
+        finally:
+            if held["active"]:
+                self._active.release()
+            if held["listing"]:
+                listing.release()
+
     async def run(self, chosen: Sequence[tuple[Target, Options]], *,
                   depth: int = 0) -> list[TargetReport]:
-        """Run each target in order; then the targets their listings found (`found`).
+        """Run the targets at once, as their places allow; then the targets their listings
+        found (`found`).
+
+        They start in order: each once the one before it has called its route, so what stops
+        the run at a target's first step (a full disk) stops it before the next starts.
 
         Args:
             chosen: the targets, each with its options.
@@ -1348,10 +1494,49 @@ class _Runner:
 
         Returns:
             One report per target of `chosen`, in order, then one per target found.
+
+        Raises:
+            DiskError: a target's files can't be written; the whole run stops.
+            KeyboardInterrupt: the second Ctrl-C.
         """
+        # A target named twice runs once, with one report.
+        once: dict[Target, tuple[Target, Options]] = {}
+        for target, options in chosen:
+            once.setdefault(target, (target, options))
+        chosen = list(once.values())
         for target, options in chosen:
             self.settings.tally.add(target, _planned(options))
-        reports = [await self.target(target, options) for target, options in chosen]
+        tasks: list[asyncio.Future[tuple[bool, Any]]] = []
+        try:
+            tasks = [asyncio.ensure_future(_carried(self.target(target, options,
+                                                                turn=self._turn())))
+                     for target, options in chosen]
+            pending = list(tasks)
+            while pending:
+                for ended in asyncio.as_completed(pending):
+                    ok, value = await ended
+                    if not ok:
+                        # A full disk or a second Ctrl-C stops the run: the targets still
+                        # listing or waiting for a place end at once.
+                        raise value
+                # The targets the listings handed over meanwhile run too, as the run's own.
+                pending, self._handed = self._handed, []
+                tasks.extend(pending)
+        except BaseException:
+            # The targets handed over by a listing end with the rest.
+            tasks.extend(self._handed)
+            self._handed = []
+            raise
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        reports: list[TargetReport] = []
+        for task in tasks:
+            report = task.result()[1]
+            # A handed target that was one of the run's own already has its report.
+            if all(report.target != kept.target for kept in reports):
+                reports.append(report)
         return reports + await self.found(chosen, reports, depth=depth)
 
     async def found(self, chosen: Sequence[tuple[Target, Options]],
@@ -1394,11 +1579,22 @@ class _Runner:
         return await self.run(list(found.items()), depth=depth + 1)
 
     async def close(self) -> None:
-        """Leave each plugin's `connect` hook, write back its cookies and close its run.
+        """End the targets handed to the run that no `run` waited for (a search's found
+        targets', say), then leave each plugin's `connect` hook, write back its cookies and
+        close its run.
 
         A hook whose exit fails is reported, as a `Failed` event for the plugin's account:
         the files are saved, but the run isn't all right.
         """
+        scheduler = site.scheduler(self.settings)
+        stopped = scheduler is not None and scheduler.stopped is not None
+        while self._handed:
+            handed, self._handed = self._handed, []
+            if stopped or self.settings.stop.now.is_set():
+                # What stopped the run ends them, as it ends the run's own targets.
+                for task in handed:
+                    task.cancel()
+            await asyncio.gather(*handed, return_exceptions=True)
         entries, self._entries = list(self._entries.values()), {}
         for entry in entries:
             try:

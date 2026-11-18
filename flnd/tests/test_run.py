@@ -22,6 +22,7 @@ from fakes import CDN, EngineCase, make_source, own_login
 from flnd import Blocked, LoginError, Target, UsageError
 from flnd.engine import crawl as job
 from flnd.engine import home as _home
+from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine.core import Engine, Report, TargetReport, _Runner
 from flnd.engine.events import Failed, Skipped
@@ -36,31 +37,96 @@ from flnkit import net as _net
 
 
 class GroupsTest(EngineCase):
-    def test_same_source_targets_never_overlap_and_sources_run_together(self):
+    def test_an_http_plugin_lists_4_targets_at_once_and_a_browser_plugin_one(self):
         lock = threading.Lock()
-        running, peaks = {"aaa": 0, "bbb": 0}, {"aaa": 0, "bbb": 0, "all": 0}
+        running, peaks = {"aaa": 0, "bbb": 0}, {"aaa": 0, "bbb": 0}
+        # The first four of the HTTP plugin's six wait for each other: they list together.
+        together = threading.Barrier(4, timeout=10)
 
-        def run(site):
+        def files(site, context):
+            # The listing's first step, after its route: a target lists from its route on.
             code = site.target.source
             with lock:
                 running[code] += 1
                 peaks[code] = max(peaks[code], running[code])
-                peaks["all"] = max(peaks["all"], sum(running.values()))
-            time.sleep(0.05)
+            if code == "aaa" and site.target.value in "1234":
+                together.wait()
             with lock:
                 running[code] -= 1
+            return []
 
-        first, second = make_source("aaa", run), make_source("bbb", run)
-        self.run_engine(first, second, targets=["aaa:1", "aaa:2", "bbb:1", "aaa:3", "bbb:2"])
-        self.assertEqual((peaks["aaa"], peaks["bbb"], peaks["all"]), (1, 1, 1))
+        http = make_source("aaa", files=files)
+        browser = make_source("bbb", files=files, browser=True)
+        self.run_engine(http, browser, targets=[*(f"aaa:{n}" for n in range(1, 7)),
+                                                "bbb:1", "bbb:2", "bbb:3"])
+        self.assertEqual(peaks, {"aaa": 4, "bbb": 1})
+
+    def test_targets_of_other_plugins_never_wait_behind_a_browser_plugins_place(self):
+        # The browser plugin's second target waits for its one place; the HTTP plugin's
+        # target, started after it, lists at once, while the first still lists.
+        started, seen = threading.Event(), []
+
+        def slow(site, context):
+            if site.target.value == "1":
+                seen.append(started.wait(5))
+            return []
+
+        def http(site):
+            started.set()
+
+        browser = make_source("bbb", files=slow, browser=True)
+        self.run_engine(browser, make_source("aaa", http),
+                        targets=["bbb:1", "bbb:2", "aaa:1"])
+        self.assertEqual(seen, [True])
+
+    def test_the_run_lists_16_targets_at_once_whatever_its_cores(self):
+        lock, entered = threading.Lock(), []
+        # Sixteen listings wait for each other: the run's `ACTIVE`, on their own threads.
+        together = threading.Barrier(16, timeout=10)
+        running, peak = [0], [0]
+
+        def files(site, context):
+            with lock:
+                entered.append(site.target)
+                first = len(entered) <= 16
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+            if first:
+                together.wait()
+            with lock:
+                running[0] -= 1
+            return []
+
+        sources = [make_source(code, files=files) for code in ("paa", "pbb", "pcc", "pdd",
+                                                               "pee", "pff")]
+        self.enterContext(mock.patch.object(jobs.os, "cpu_count", return_value=2))
+        self.run_engine(*sources, targets=[f"{source.code}:{n}" for source in sources
+                                           for n in range(4)])
+        self.assertEqual((len(entered), peak[0]), (24, 16))
+
+    def test_two_targets_of_one_file_save_it_once_and_a_target_named_twice_runs_once(self):
+        listed = []
+
+        def files(site, context):
+            listed.append(site.target.value)
+            return [File(f"{CDN}/a.jpg", name="a.jpg")]
+
+        source = make_source("aaa", files=files)
+        report = self.report(source, targets=["aaa:x", "aaa:y", "aaa:x"])
+        self.assertEqual(([str(one.target) for one in report.targets], report.files),
+                         (["aaa:x", "aaa:y"], 1))
+        # One key: the second target finds it queued by the first, as it would find it saved.
+        self.assertEqual(len([r for r in self.requests if r.url.path == "/a.jpg"]), 1)
+        self.assertEqual(sorted(listed), ["x", "y"])
+        self.assertEqual(list(fakes.history(self.home)), ["aaa:a.jpg"])
 
     def test_targets_with_their_own_options_run_sequentially_and_targets_db_opens_once(self):
         seen, opened = [], []
         real_download, real_open = job.download, _home.open
 
-        async def download(run, target, row, options):
+        async def download(run, target, row, options, **listed):
             seen.append((target.value, options.again))
-            return await real_download(run, target, row, options)
+            return await real_download(run, target, row, options, **listed)
 
         def opening(home):
             opened.append(home)
@@ -73,7 +139,7 @@ class GroupsTest(EngineCase):
         stop = _run.Stop()
         with mock.patch.object(job, "download", download), mock.patch.object(_home, "open", opening):
             reports = fakes.run_targets(engine, chosen, stop).targets
-        self.assertEqual(seen, [("a", True), ("b", False), ("c", False)])
+        self.assertEqual(sorted(seen), [("a", True), ("b", False), ("c", False)])
         self.assertEqual(opened, [self.home])
         self.assertEqual([report.target for report in reports], [target for target, _ in chosen])
 
@@ -237,7 +303,7 @@ class HttpTest(EngineCase):
 
         self.routes["https://api.aaa.example/feed"] = lambda request: answers.pop(0) if len(answers) > 1 else answers[0]
         self.run_engine(make_source("aaa", run), targets=["aaa:a", "aaa:b", "aaa:c"])
-        self.assertEqual(ran, [("a", {"ok": 1}), ("b", {"ok": 1}), ("c", {"ok": 1})])
+        self.assertEqual(sorted(ran), [("a", {"ok": 1}), ("b", {"ok": 1}), ("c", {"ok": 1})])
         self.assertIn("rate limited; waiting", " ".join(self.lines()))
         self.assertIn(("aaa:c", "posts"), self.listed())
 
@@ -248,7 +314,8 @@ class HttpTest(EngineCase):
         # The rounds are the account's, across its targets: 30, 120 and 480 s, then the
         # fourth in a row fails its target (`Blocked`).
         self.assertEqual([wait.rsplit(" ", 1)[1] for wait in waits], ["30.0s", "2m", "8m"])
-        self.assertEqual(self.listed(), {("aaa:a", "posts"), ("aaa:b", "posts"), ("aaa:c", "posts")})
+        # Its targets list at once, so any one of them meets the fourth.
+        self.assertEqual(len(self.listed()), 3)
 
     def test_ctrl_c_during_a_wait_stops_the_run(self):
         """The first Ctrl-C ends a rate-limit wait at once; the target ends as stopped and the command as Ctrl-C."""

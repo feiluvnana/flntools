@@ -307,7 +307,9 @@ class PolicyEngineTest(EngineCase):
 
     def test_a_refused_login_stops_its_source_and_the_others_go_on(self):
         self.routes["https://api.aaa.example/me"] = _net.reply(403)
-        refused = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/me"))
+        # One target at a time, so the one after the refused login hasn't started.
+        refused = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/me"),
+                              browser=True)
         report = self.report(refused, make_source("bbb"),
                              targets=["aaa:example_user", "aaa:example_creator",
                                       "bbb:example_user"])
@@ -326,6 +328,12 @@ class PolicyEngineTest(EngineCase):
         with self.assertRaises(DiskError):
             self.report(make_source("aaa", full), make_source("bbb", ran.append),
                         targets=["aaa:example_user", "bbb:example_user"])
+        self.assertEqual(ran, [])
+        # Targets list at once, but each starts once the one before it has called its route.
+        with self.assertRaises(DiskError):
+            self.report(make_source("ccc", lambda site: site.target.value == "0" and full(site)
+                                    or ran.append(site)),
+                        targets=[f"ccc:{n}" for n in range(30)])
         self.assertEqual(ran, [])
 
 

@@ -7,6 +7,7 @@ lazy posts, an expired link's refresh, both Ctrl-Cs, and searches. No network, n
 
 import asyncio
 import datetime
+import errno
 import os
 import sqlite3
 import threading
@@ -31,7 +32,7 @@ from flnd.engine import run as _run
 from flnd.engine.core import Engine
 from flnd.engine.events import Skipped
 from flnd.engine.options import Options
-from flnd.errors import UsageError
+from flnd.errors import DiskError, UsageError, disk
 from flnd.source import (
     File,
     LoginError,
@@ -44,6 +45,7 @@ from flnd.source import (
     target,
 )
 from flnd.ui.log import ui
+from flnkit import files as files_module
 from flnkit import net as _net
 
 
@@ -747,6 +749,8 @@ class FailureTest(JobCase):
             api = 1
             filename = "{date}_{post}{index}"
             folder = ""
+            # One target at a time, so the one after the refused login hasn't started.
+            browser = True
 
             @target("err:{user}")
             def user(self, site, user):
@@ -1197,6 +1201,30 @@ class LazyPostTest(JobCase):
         self.assertEqual(asked, [])
 
 
+class AskedTest(JobCase):
+    def test_targets_listing_at_once_keep_every_post_their_date_hook_had_no_day_for(self):
+        # One cache a plugin, shared by its targets: neither's save drops the other's posts.
+        class Undated(Source):
+            code, name, domains, api, key = "und", "Undated", ("example.com",), 1, "{post}"
+
+            @target("und:{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category(newest_first=True)
+            def posts(self, site, user):
+                yield Post(f"{user}-p", [File(f"{CDN}/{user}.jpg")])
+
+            def date(self, site, post):
+                return None
+
+        engine = Engine(home=self.home, sources={"und": Undated})
+        engine.download(["und:a", "und:b"], sync=True)
+        engine.sync()
+        with _home.open(self.home) as db:
+            self.assertEqual(sorted(db.state("und")[job.ASKED_KEY]), ["a-p", "b-p"])
+
+
 class UnkeyedLazyPostTest(JobCase):
     """A lazy post keyed by its files' paths (LOIBUS's archives) isn't listed again once saved."""
 
@@ -1568,6 +1596,101 @@ class DiscoveredTest(EngineCase):
         self.assertIs(made[0], made[1])
 
 
+    def test_a_discovered_target_takes_its_own_plugins_listing_place(self):
+        # A browser plugin lists one target at a time, also one another plugin's route found.
+        lock, running, peak, second = threading.Lock(), [0], [0], threading.Event()
+
+        def files(site, context):
+            with lock:
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+            if site.target.value == "1":
+                second.wait(1)
+            else:
+                second.set()
+            with lock:
+                running[0] -= 1
+            return []
+
+        class Author(Source):
+            code, name, domains, api = "aut", "Author", ("aut.example",), 1
+
+            @target("aut:{name}", discovers=True)
+            def author(self, site, name):
+                yield "bbb:2"
+
+        browser = make_source("bbb", files=files, browser=True)
+        self.run_engine(browser, Author, targets=["bbb:1", "aut:example_user"])
+        self.assertEqual(self.failures(), [])
+        self.assertEqual(peak[0], 1)
+
+
+    def test_two_browser_plugins_discovering_each_others_targets_finish_each_target_once(self):
+        # Each lists one target at a time. A child waiting for the other plugin's place while
+        # its parent held its own would wait forever, for the other's child waiting back.
+        listed = []
+
+        def plugin(own, other):
+            class Lister(Source):
+                code, name, domains, api = own, own.upper(), (f"{own}.example",), 1
+                folder, key, browser = "", "{path}", True
+
+                @target(f"{own}:list/{{name}}", discovers=True)
+                def lists(self, site, name):
+                    yield f"{other}:{name}"
+
+                @target(f"{own}:{{user}}")
+                def user(self, site, user):
+                    listed.append(f"{own}:{user}")
+                    return user
+
+                @user.category
+                def posts(self, site, user):
+                    yield from ()
+
+            return Lister
+
+        first, second = plugin("aaa", "bbb"), plugin("bbb", "aaa")
+        done = []
+        runner = threading.Thread(target=lambda: done.append(self.run_engine(
+            first, second, targets=["aaa:list/x", "bbb:list/y", "aaa:y"])), daemon=True)
+        runner.start()
+        runner.join(20)
+        self.assertEqual(done, [0], "the run never finished")
+        self.assertEqual(sorted(listed), ["aaa:y", "bbb:x"])
+
+
+    def test_a_full_disk_ends_the_targets_a_listing_handed_to_the_run(self):
+        ran = []
+
+        class Author(Source):
+            code, name, domains, api = "aut", "Author", ("aut.example",), 1
+
+            @target("aut:{name}", discovers=True)
+            def author(self, site, name):
+                for number in range(10):
+                    yield f"bbb:{number}"
+
+        def slow(site, context):
+            time.sleep(0.2)
+            return []
+
+        real = files_module.sweep
+
+        def sweep(folder):
+            if folder.name == "full":
+                raise disk(OSError(errno.ENOSPC, "No space left on device"), folder)
+            return real(folder)
+
+        handed = make_source("bbb", ran.append, files=slow, browser=True)
+        full = make_source("ccc", files=[File(f"{CDN}/a.jpg", name="a.jpg")])
+        self.enterContext(mock.patch.object(files_module, "sweep", sweep))
+        with self.assertRaises(DiskError):
+            self.report(Author, handed, full, targets=["aut:example_user", "ccc:full"])
+        # The one listing when the disk filled may have begun; the nine waiting never do.
+        self.assertLessEqual(len(ran), 1)
+
+
 class QueryAndLimitDryTest(EngineCase):
     """Query targets, target-yielding routes, `--limit`, `--dry`, and early close."""
 
@@ -1641,9 +1764,9 @@ class QueryAndLimitDryTest(EngineCase):
         engine = Engine(home=self.home, sources={"srch": src})
         orig_download = job.download
 
-        async def spy(run, target, board, options):
+        async def spy(run, target, board, options, **listed):
             seen_options.append(options)
-            return await orig_download(run, target, board, options)
+            return await orig_download(run, target, board, options, **listed)
 
         with mock.patch("flnd.engine.crawl.download", spy):
             engine.download(["srch:1", "srch?action"], categories="photo", limit=1, again=True)
@@ -1800,10 +1923,10 @@ class SyncedQueryTest(EngineCase):
                 stop_ref.append(stop)
                 yield stop
 
-        async def stop_on_second(run, child, board, opts):
+        async def stop_on_second(run, child, board, opts, **listed):
             if child.value == "2":
                 stop_ref[0].soon.set()
-            return await real_download(run, child, board, opts)
+            return await real_download(run, child, board, opts, **listed)
 
         with mock.patch("flnd.engine.crawl.download", stop_on_second), \
                 mock.patch("flnd.engine.core.stopping", capture_stopping), \

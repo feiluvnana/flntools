@@ -886,7 +886,7 @@ class ArchiveTest(DownloadCase):
 
 
 class WithOtherSourcesTest(DownloadCase):
-    def test_groups_run_sequentially_with_telegram_on_its_loop(self):
+    def test_telegram_runs_beside_another_source_on_the_runs_loop(self):
         order = []
         self.telegram.messages[1001] = [message(11, "photo")]
         original = FakeClient.iter_messages
@@ -900,7 +900,7 @@ class WithOtherSourcesTest(DownloadCase):
         with mock.patch.object(FakeClient, "iter_messages", iter_messages):
             total = self.run_engine(Telegram, other, targets=["tlg:@examplechannel", "aaa:a"])
         self.assertEqual(total, 1)
-        self.assertEqual(order, ["tlg", "aaa"])
+        self.assertEqual(sorted(order), ["aaa", "tlg"])
 
 
 if __name__ == "__main__":

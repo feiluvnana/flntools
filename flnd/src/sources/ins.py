@@ -196,6 +196,9 @@ class Instagram(Source):
     # At least 0.2 s between requests, page loads included: Instagram publishes no limit, and
     # its throttle answers are waited out (`Api.get`), so this only keeps bursts apart.
     pace = 0.2
+    # It reads in the browser: one of its targets lists at a time (the engine's `HTTP_AT_ONCE`
+    # is for a source that only sends requests).
+    browser = True
     # A post's category, then a highlight's title: "posts", "highlights/<title>".
     folder = "{category}/{album}"
     fields = ("album",)

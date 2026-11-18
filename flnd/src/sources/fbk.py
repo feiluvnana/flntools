@@ -248,6 +248,9 @@ class Facebook(Source):
     # No published limit: the learned gap doubles on a throttle and is saved, so the first block
     # teaches it; the floor only keeps a burst slower than the other sites'.
     pace = 0.2
+    # It reads in the browser: one of its targets lists at a time (the engine's `HTTP_AT_ONCE`
+    # is for a source that only sends requests).
+    browser = True
     # A file's folder is where it was found: `part` is its tab (or "videos" or "albums"), `album`
     # the album's title when it has one. A single link's files have neither.
     folder = "{part}/{album}"

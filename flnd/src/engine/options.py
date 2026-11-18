@@ -123,7 +123,10 @@ class RunShared:
     tally: Any = field(default=None, repr=False)
     # Runs a target a listing discovered as a target of its own, on its own plugin's instance
     # (the engine's); None outside the engine.
-    follow: Callable[[Target, Options], Awaitable[Any]] | None = field(default=None, repr=False)
+    follow: Callable[..., Awaitable[Any]] | None = field(default=None, repr=False)
+    # The files the run has queued, shared by every target (`flnd.engine.crawl.Claims`); None
+    # outside the engine, where each target keeps its own.
+    claims: Any = field(default=None, repr=False)
 
 
 def categories_by_source(

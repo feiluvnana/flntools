@@ -15,6 +15,7 @@ import os
 import re
 import stat
 import string
+import threading
 import time
 from collections.abc import (
     AsyncIterator,
@@ -27,14 +28,14 @@ from collections.abc import (
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 from flnd.engine import home, jobs, save
 from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped
 from flnd.engine.options import Options, Retry
 from flnd.engine.run import Counts, Tally
-from flnd.engine.site import Listing, SourceRun, TargetSite
+from flnd.engine.site import Listing, SourceRun, TargetSite, met_turn
 from flnd.errors import (
     Blocked,
     Changed,
@@ -57,8 +58,9 @@ if TYPE_CHECKING:
     from flnd.engine.events import Event
 
 __all__ = [
-    "STOPPED", "Downloads", "Ledger", "Placed", "TargetReport", "causes", "discover",
-    "download", "failure", "logged_out", "place", "plan", "posts", "tell", "wanted",
+    "STOPPED", "Claims", "Downloads", "Ledger", "Placed", "TargetReport", "Turn", "asked",
+    "causes",
+    "discover", "download", "failure", "logged_out", "place", "plan", "posts", "tell", "wanted",
 ]
 
 # The statuses that end a listing as a login problem when the site's own domain answers them.
@@ -106,6 +108,7 @@ _FORMATTER = string.Formatter()
 # Runs a source's plain code, `fn(*args)`: on a `CALL` thread in a run (`SourceRun.call`), at
 # once in the test kit.
 Call = Callable[..., Awaitable[Any]]
+T = TypeVar("T")
 # What `_steps` gives once a plain iterator is done.
 _DONE = object()
 # What a lazy post's files may raise that fails the post alone, never its target (PLAN 6.2).
@@ -273,7 +276,7 @@ async def posts(
     for category in categories:
         method = getattr(source, category.name)
         async with contextlib.aclosing(_Kept(
-                await call(method, site, context), category.name,
+                await _called(call, method, site, context), category.name,
                 newest_first=category.newest_first, span=span, call=call)) as kept:
             async for post in kept:
                 yield post
@@ -295,10 +298,18 @@ async def _context(source: Source, route: Route, site: Site, target: Target, cal
     Returns:
         What the route returned, awaited when it is a coroutine.
     """
-    context = await call(getattr(source, route.kind), site, target.value)
+    context = await _called(call, getattr(source, route.kind), site, target.value)
     if route.categories and inspect.iscoroutine(context):
         context = await context
     return context
+
+
+async def _called(call: Call, method: Callable[..., Any], *args: Any) -> Any:
+    """`method(*args)`: through `call`, unless it is a generator function, whose call only
+    makes the generator, so nothing of the source runs until it is stepped."""
+    if inspect.isgeneratorfunction(method) or inspect.isasyncgenfunction(method):
+        return method(*args)
+    return await call(method, *args)
 
 
 async def plan(run: SourceRun, target: Target, options: Options) -> AsyncIterator[Placed]:
@@ -330,7 +341,8 @@ async def plan(run: SourceRun, target: Target, options: Options) -> AsyncIterato
                                     target=target, options=options):
                     yield placed
     finally:
-        await run.off(site.close)
+        if not site._idle:
+            await run.off(site.close)
 
 
 async def _files(run: SourceRun, post: Post) -> list[File]:
@@ -491,7 +503,8 @@ class Ledger:
         self._again = options is not None and options.again
         self._route = next((r for r in self.source.routes if r.kind == target.kind), None)
         self._categories = {c.name: c for r in self.source.routes for c in r.categories}
-        self._queued: dict[Path | str, str] = {}
+        # The files the run queued, by path and key: every target's (`Claims`).
+        self._queued: Claims = self.settings.claims or Claims()
         self._dates: dict[str, datetime.date] = {}
         self._waiting: dict[str, Post] = {}
         self._order: list[tuple[str, datetime.date | None]] = []
@@ -515,7 +528,9 @@ class Ledger:
         Off the loop: it reads `flnd.db`.
         """
         if self._asking:
-            self._asked = self._load_asked()
+            if self.run.asked is None:
+                asked(self.run)
+            self._asked = self.run.asked if self.run.asked is not None else {}
 
     async def take(self, post: Post, *, hold: bool = True) -> tuple[Outcome, list[_Queued]]:
         """Plan one post: the files to download, after skipping what is saved.
@@ -608,8 +623,12 @@ class Ledger:
                     found += 1
                 self._skip_held(post, placed.path, dest, item_key, held)
                 continue
+            # Another target of the run may have queued the same file meanwhile.
+            holder = self._queued.claim(dest, item_key, placed.path)
+            if holder is not None:
+                self._skip_held(post, placed.path, dest, item_key, holder)
+                continue
             self.tally.count(self.target, post.category, found=1)
-            self._queued.update(dict.fromkeys((dest, item_key), placed.path))
             # The cursor of the page the post is on, which a failure keeps for its retry.
             listing = self.site.listing
             todo.append(_Queued(placed, dest, item_key, estimated=first in self._estimated,
@@ -783,26 +802,12 @@ class Ledger:
         self._db.redate(row.key, path, found)
         return True
 
-    def _load_asked(self) -> dict[str, float]:
-        """The posts the `date` hook had no day for, asked in the last 30 days.
-
-        Returns:
-            Each post id with the time it was asked, from the source's saved state; entries
-            older than `ASKED_TTL` are dropped.
-        """
-        now = time.time()
-        raw = self.site.state.get(ASKED_KEY)
-        if not isinstance(raw, dict):
-            return {}
-        return {
-            str(k): float(v) for k, v in raw.items()
-            if isinstance(v, (int, float)) and now - v < ASKED_TTL
-        }
-
     def _save_asked(self) -> None:
-        """Persist the 30-day `asked` cache to `site.state` when non-empty; off the loop."""
+        """Persist the 30-day `asked` cache to `site.state` when non-empty; off the loop.
+
+        The cache is the plugin's, shared by its targets, so each saves every target's."""
         if self._asked:
-            self.site.state[ASKED_KEY] = self._asked
+            self.site.state[ASKED_KEY] = dict(self._asked)
     async def _ask(self, post: Post) -> datetime.date | None:
         """Ask the source's `date` hook for `post`'s day; a miss isn't asked again for 30 days.
 
@@ -992,8 +997,9 @@ class Ledger:
             file is new.
         """
         for known in (dest, item_key):
-            if known is not None and known in self._queued:
-                return self._queued[known]
+            holder = self._queued.get(known) if known is not None else None
+            if holder is not None:
+                return holder
         on_disk = _on_disk(dest) if dest is not None else None
         if dest is not None and on_disk is not None:
             if placed is not None and self._db is not None and self._db.held(item_key) is None:
@@ -1035,6 +1041,56 @@ class Ledger:
             if path.is_relative_to(self.folder)
             else str(path)
         )
+
+
+class Claims:
+    """The files a run has queued, by path and by key, shared by every target's `Ledger`.
+
+    A file one target queued is held for the others, as it would be once saved. The Ledgers
+    plan off the loop, several at once, so it keeps its map behind a lock.
+    """
+
+    def __init__(self) -> None:
+        self._held: dict[Path | str, str] = {}
+        self._lock = threading.Lock()
+
+    def __contains__(self, known: object) -> bool:
+        with self._lock:
+            return known in self._held
+
+    def get(self, known: Path | str) -> str | None:
+        """The name of the queued file `known` (a path or a key) is; None for none."""
+        with self._lock:
+            return self._held.get(known)
+
+    def claim(self, dest: Path, key: str, name: str) -> str | None:
+        """Queue the file at `dest` keyed `key` as `name`, unless one of the two is queued.
+
+        Returns:
+            None once it is queued; the queued file's name when another target had it.
+        """
+        with self._lock:
+            for known in (dest, key):
+                if known in self._held:
+                    return self._held[known]
+            self._held[dest] = self._held[key] = name
+            return None
+
+
+def asked(run: SourceRun) -> None:
+    """Read the posts the plugin's `date` hook had no day for, asked in the last 30 days, once
+    per plugin per run (`SourceRun.asked`), off the loop; nothing for a plugin with no hook.
+
+    Entries older than `ASKED_TTL` are dropped.
+    """
+    if run.asked is not None or type(run.source).date is Source.date:
+        return
+    now = time.time()
+    raw = run.state.get(ASKED_KEY)
+    run.asked = {} if not isinstance(raw, dict) else {
+        str(k): float(v) for k, v in raw.items()
+        if isinstance(v, (int, float)) and now - v < ASKED_TTL
+    }
 
 
 def _on_disk(path: Path) -> os.stat_result | None:
@@ -1110,8 +1166,11 @@ class Downloads:
         tally: the run's live counts, which its counts go to.
     """
 
-    def __init__(self, run: SourceRun, target: Target, tally: Tally) -> None:
+    def __init__(self, run: SourceRun, target: Target, tally: Tally, *,
+                 swept: Awaitable[None] | None = None) -> None:
         self.run, self.target, self.tally = run, target, tally
+        # The sweep of the target's folder, which the first file waits for.
+        self._swept = swept
         self.source, self.settings = run.source, run.settings
         # What stopped the run while a post saved; the listing raises it at its next post.
         self.fatal: BaseException | None = None
@@ -1143,6 +1202,9 @@ class Downloads:
         Raises:
             Error: what stopped the run while an earlier post saved (`fatal`).
         """
+        if self._swept is not None:
+            await self._swept
+            self._swept = None
         if not await self._room():
             return False
         saver = self.settings.saver
@@ -1199,6 +1261,13 @@ class Downloads:
             while self._pending:
                 await self._settled()
         return tuple(self._written.values())
+
+    async def below(self, places: int) -> None:
+        """Wait until at most `places` of the target's files are queued or downloading, or
+        the run stops: its next listing may start then."""
+        while (self._pending > places and self.fatal is None
+               and not self.settings.stop.soon.is_set()):
+            await self._settled()
 
     async def _settled(self) -> None:
         """Wait for a post to settle, or `WAKE` seconds, so a Ctrl-C is seen at once."""
@@ -1292,8 +1361,9 @@ class Downloads:
         return found[num] if num < len(found) else None
 
 
-async def download(run: SourceRun, target: Target, tally: Tally,
-                   options: Options) -> TargetReport:
+async def download(run: SourceRun, target: Target, tally: Tally, options: Options, *,
+                   listed: Callable[[Downloads], Awaitable[None]] | None = None,
+                   turn: Turn | None = None) -> TargetReport:
     """Download one target of a source, counting on `tally`: one coroutine on the run's loop.
 
     A failure of the listing fails the target alone: it is in the report, never raised.
@@ -1310,6 +1380,9 @@ async def download(run: SourceRun, target: Target, tally: Tally,
         target: the target, resolved.
         tally: the run's live counts, which its counts go to.
         options: its options: `--when`, `--only`, `--limit`, `--again`, sync and retry.
+        listed: awaited once its listings ended, before its downloads are waited for, so the
+            run can start the next target meanwhile; None for nothing.
+        turn: its turn at its first step, its route's call (`Turn`); None for none.
 
     Returns:
         Its report: the files written, the skips, the targets its listings yielded, and the
@@ -1319,16 +1392,22 @@ async def download(run: SourceRun, target: Target, tally: Tally,
         return TargetReport(target, (), 0, error=Stopped(STOPPED))
     started = time.monotonic()
     # No lock on the target: each file's part locks itself, so two runs may share a target and
-    # the sweep passes over the parts another run holds.
-    await run.off(files.sweep, home.target_folder(run.settings.home, target))
+    # the sweep passes over the parts another run holds. It runs while the listing starts, and
+    # ends before the first file is handed over.
+    sweeping = asyncio.ensure_future(
+        run.off(files.sweep, home.target_folder(run.settings.home, target)))
     site = TargetSite(run, target, time=Range(options.since, options.until))
     ledger = Ledger(run, site, target, tally, options=options)
-    downloads = Downloads(run, target, tally)
+    downloads = Downloads(run, target, tally, swept=sweeping)
     work = _Work(ledger, downloads)
     db = run.settings.db
     row = await run.off(_opened, ledger, db, target)
     progress = _Progress(row, again=options.again)
-    error = await _execute_listing(work, run, site, target, options, progress)
+    error = await _execute_listing(work, run, site, target, options, progress, listed, turn)
+    try:
+        await sweeping
+    except Exception as failed:
+        error = error or failed
     written = await downloads.finish(error)
     if error is None and downloads.fatal is not None:
         error = downloads.fatal
@@ -1424,7 +1503,8 @@ class _Progress:
 
 async def _execute_listing(
     work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
-    progress: _Progress,
+    progress: _Progress, listed: Callable[[Downloads], Awaitable[None]] | None = None,
+    turn: Turn | None = None,
 ) -> BaseException | None:
     """List the target, then wait for its downloads; any error that ended it is returned.
 
@@ -1435,6 +1515,8 @@ async def _execute_listing(
         target: the target.
         options: the target's options: `--when`, `--only`, `--limit`, `--again`.
         progress: where the earlier runs left the target's listings, and this run's.
+        listed: awaited once the listings ended (`download`).
+        turn: its turn at its route's call (`download`).
 
     Returns:
         What ended the target (a `KeyboardInterrupt` past the first Ctrl-C included); None
@@ -1444,13 +1526,16 @@ async def _execute_listing(
         try:
             if options.stop_at_saved:
                 await work.ledger.redate()
-            await _read(work, run, site, target, options, progress)
+            await _read(work, run, site, target, options, progress, turn)
             work.ledger.tally.downloading(target)
         except KeyboardInterrupt:
             if not run.settings.stop.soon.is_set() or run.settings.stop.now.is_set():
                 raise
         finally:
-            await run.off(site.close)
+            if not site._idle:
+                await run.off(site.close)
+        if listed is not None:
+            await listed(work.downloads)
         await work.downloads.wait()
         return None
     except asyncio.CancelledError:
@@ -1855,7 +1940,8 @@ async def discover(
                 if _at_limit(run, yielded, limit):
                     return
     finally:
-        await run.off(site.close)
+        if not site._idle:
+            await run.off(site.close)
 
 
 def _at_limit(run: SourceRun, yielded: set[Target], limit: int | None) -> bool:
@@ -1975,7 +2061,7 @@ async def _queue_listed(
 
 async def _read(
     work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
-    progress: _Progress,
+    progress: _Progress, turn: Turn | None = None,
 ) -> None:
     """List the target's route, or its wanted categories, into `work`.
 
@@ -1994,24 +2080,30 @@ async def _read(
         options: the target's options: `--when`, `--only`, `--limit`, `--again`, and what to do
             with earlier failures (`retry`).
         progress: where the earlier runs left the target's listings, and this run's.
+        turn: its turn at its route's call (`Turn`).
     """
     route = next(r for r in run.source.routes if r.kind == target.kind)
     if route.discovers:
-        await _run_discovered(run, options, await _context(run.source, route, site, target,
-                                                           run.call))
+        if turn is not None:
+            turn.release()
+        await _run_discovered(run, options,
+                              await _context(run.source, route, site, target, run.call))
         return
     listings: list[_Listed]
     if not route.categories:
         method = getattr(run.source, route.kind)
-        listings = [_Listed("", route.newest_first, lambda: run.call(method, site, target.value))]
+        listings = [_Listed("", route.newest_first, _caller(run, method, site, target.value))]
     else:
         categories = wanted(route, options)
         if not categories:
             return
-        context = await _context(run.source, route, site, target, run.call)
+        context = await _taking(turn, run, _context(run.source, route, site, target,
+                                                    run.call))
         listings = [_Listed(category.name, category.newest_first,
                             _caller(run, getattr(run.source, category.name), site, context))
                     for category in categories]
+    if turn is not None:
+        turn.release()
     remaining = options.limit
     for listed in listings:
         await _retry_failed(work, run, site, target, options, [listed])
@@ -2029,9 +2121,59 @@ async def _read(
             return
 
 
+class Turn:
+    """A target's turn at its first step, its route's call: the run's targets call their routes
+    in the order they started.
+
+    A target's route waits until every target started before it has called its route, or
+    waits itself: for a place (`release`), a hold, or the site (the route's first `site` verb,
+    `release_soon` from its thread). So what stops the run at a target's first step (a full
+    disk) stops it before a later target's route runs, and no target waits behind another
+    that waits.
+
+    Args:
+        before: the turns of the targets started before it.
+    """
+
+    def __init__(self, before: Sequence[asyncio.Event] = ()) -> None:
+        self.passed = asyncio.Event()
+        self._before = list(before)
+        self._loop = asyncio.get_running_loop()
+
+    async def wait(self) -> None:
+        """Wait for every earlier target's turn to pass."""
+        for passed in self._before:
+            await passed.wait()
+
+    def release(self) -> None:
+        """Let the later targets go on: this one called its route, waits, or ended."""
+        self.passed.set()
+
+    def release_soon(self) -> None:
+        """`release`, from the route's thread."""
+        if not self.passed.is_set():
+            self._loop.call_soon_threadsafe(self.passed.set)
+
+
+async def _taking(turn: Turn | None, run: SourceRun, route: Awaitable[T]) -> T:
+    """Call a target's route in its turn; the turn passes once the route returned, or meets
+    the site, or the route's plugin is held."""
+    if turn is None:
+        return await route
+    await turn.wait()
+    if any(hold.plugin == run.source.code for hold in run.scheduler.holds):
+        turn.release()
+    token = met_turn.set(turn.release_soon)
+    try:
+        return await route
+    finally:
+        met_turn.reset(token)
+        turn.release()
+
+
 def _caller(run: SourceRun, method: Callable[..., Any], *args: Any) -> Callable[[], Awaitable[Any]]:
-    """What calls a category's method with `args` on a thread of the source, each time."""
-    return lambda: run.call(method, *args)
+    """What calls a category's method with `args` (`_called`), each time."""
+    return lambda: _called(run.call, method, *args)
 
 
 @dataclass(frozen=True)
@@ -2415,7 +2557,7 @@ async def _run_discovered(run: SourceRun, options: Options, yielded: Any) -> Non
                 continue
             seen.add(child)
             if follow is not None:
-                await follow(child, child_options)
+                await follow(child, child_options, inside=run.source.code)
             elif child.source == run.source.code:
                 await download(run, child, run.settings.tally or Tally(), child_options)
             if options.limit is not None and len(seen) >= options.limit:

@@ -175,6 +175,21 @@ yours.
    of its exit is the run's failure. A source whose `login` is `required` and missing fails
    each of its targets; any other source without a login warns and goes on with public
    access. The run's one browser (`site.shared_browser`) is shared by every source.
+   Targets run at once: a source that reads in the browser (`browser = True`) lists one
+   target at a time, one that only sends requests four, and the run holds at most 16 active
+   targets, each while it lists or has more files queued than its places; the next target
+   lists while the last one's files download. They all start at once, and call their routes
+   in the order they started: a route waits until every earlier target has called its own,
+   or waits for a place, a hold or the site. So a full disk at a target's first step stops
+   the run before a later target's route runs, and a full disk ends every target at once,
+   the ones a listing handed to the run included. A target named
+   twice runs once; a file one target queued is held for the others (`crawl.Claims`), as
+   one saved would be. A target a listing discovered runs inside that listing when it is of
+   the same plugin; one of another plugin is handed to the run as a target of its own, which
+   the listing doesn't wait for, so no two listings ever wait for each other's places. A
+   login a target's site refused fails the source's targets that hadn't started.
+   API 1's listing steps run on 16 threads of their own (`jobs.LISTINGS`), whatever the
+   cores, beside the `CALL` threads that a lazy post's files and the engine's own steps use.
 7. **One target** (`crawl.download`). The crawl removes the stale parts an interrupted run left in
    the target's folder (a week old, and held by no run). Nothing locks the target: each file's
    part locks itself.

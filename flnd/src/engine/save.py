@@ -1019,9 +1019,11 @@ class Saver:
             mtime, pair = await self._call(_link, twin, path, row.size,
                                            frozenset(self._unlinkable))
             if mtime == _NO_LINKS:
-                self._unlinkable.add(pair)
-                ui.warn("{folder} can't hard-link to {other}, so the same file saved twice is"
-                        " kept twice", folder=path.parent, other=twin.parent)
+                # Two targets' files may meet the same pair at once: one warning for it.
+                if pair not in self._unlinkable:
+                    self._unlinkable.add(pair)
+                    ui.warn("{folder} can't hard-link to {other}, so the same file saved twice"
+                            " is kept twice", folder=path.parent, other=twin.parent)
                 return
             if mtime is not None:
                 # One file now, with the saved one's modified time.

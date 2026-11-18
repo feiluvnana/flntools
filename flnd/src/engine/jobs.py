@@ -45,6 +45,9 @@ SCROLLING = 2
 # A warm tab opens only while this many tabs of the budget are free, so it never takes the
 # last one an active target would wait for.
 WARM_FREE = 2
+# The threads of plugin API 1's listing steps: one for each of the run's active targets
+# (`flnd.engine.core.ACTIVE`), whatever the number of cores, beside the `CALL` threads.
+LISTINGS = 16
 # Places per target at least, and FILE jobs a target may queue per place.
 PLACES = 32
 QUEUED = 4
@@ -542,6 +545,11 @@ class Budget:
         self._gate = scheduler._scrolls.setdefault((plugin, account), Pool(SCROLLING))
 
     @property
+    def stopped(self) -> BaseException | None:
+        """What stopped the run (a full disk, a missing tool); None while nothing did."""
+        return self._stop
+
+    @property
     def warm(self) -> bool:
         """Whether a warm tab may open now."""
         return self._scheduler.warm
@@ -643,6 +651,7 @@ class Scheduler:
                  Kind.MERGE: max(1, cpus // 2), Kind.EXEC: 1}
         self.pools = {kind: Pool(size) for kind, size in sizes.items()}
         self._threads: dict[Kind, ThreadPoolExecutor] = {}
+        self._listings: ThreadPoolExecutor | None = None
         self._writers: dict[int, ThreadPoolExecutor] = {}
         self._scrolls: dict[tuple[str, str | None], Pool] = {}
         self._targets: dict[str | None, tuple[Pool, Pool]] = {}
@@ -659,20 +668,51 @@ class Scheduler:
 
     def __exit__(self, *exc: object) -> None:
         # The block may end on the loop, which must not wait for a thread; `close` does.
-        for pool in [*self._threads.values(), *self._writers.values()]:
+        for pool in self._pools():
             pool.shutdown(wait=False)
 
     async def close(self) -> None:
         """End the threads, once the work on them is done, without blocking the loop."""
         loop = asyncio.get_running_loop()
-        for pool in [*self._threads.values(), *self._writers.values()]:
+        for pool in self._pools():
             await loop.run_in_executor(None, pool.shutdown)
+
+    def _pools(self) -> list[ThreadPoolExecutor]:
+        return [*self._threads.values(), *self._writers.values(),
+                *([self._listings] if self._listings is not None else [])]
+
+    async def step(self, plugin: str, account: str | None, work: Callable[..., T],
+                   *args: Any) -> T:
+        """Run one step of a plugin's plain listing, `work(*args)`, on a listing thread.
+
+        It waits as a `CALL` job would, for its account's holds and a suspension, and raises
+        what stopped the run, but takes no `CALL` place: the `LISTINGS` threads are its own,
+        so a lazy post's files or the engine's own steps never queue behind listings. It is
+        never tried again.
+        """
+        job: Job[None] = Job(kind=Kind.CALL, work=_nothing, plugin=plugin, account=account)
+        await self._held(job, bucket=False)
+        await self._work(job)
+        if self._listings is None:
+            self._listings = ThreadPoolExecutor(LISTINGS, thread_name_prefix="flnd-listing")
+        try:
+            return await self._thread(self._listings, work, *args)
+        except Exception as error:
+            # A full disk met at a listing's step stops the run, as it would in a job.
+            if stops(error):
+                self._stop = self._stop or error
+            raise
 
     @property
     def holds(self) -> tuple[Hold, ...]:
         """The holds in force now, oldest first."""
         now = clock.now()
         return tuple(hold for hold in self._holds.values() if hold.until > now)
+
+    @property
+    def stopped(self) -> BaseException | None:
+        """What stopped the run (a full disk, a missing tool); None while nothing did."""
+        return self._stop
 
     @property
     def warm(self) -> bool:

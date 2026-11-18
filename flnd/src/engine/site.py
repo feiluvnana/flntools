@@ -41,8 +41,8 @@ if TYPE_CHECKING:
     from flnkit import cookies
     from flnkit.html import Document
 
-__all__ = ["Bridge", "Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "opened",
-           "paged", "scheduler", "shared_browser", "source_run"]
+__all__ = ["Bridge", "Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "met_turn",
+           "opened", "paged", "scheduler", "shared_browser", "source_run"]
 
 T = TypeVar("T")
 # How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
@@ -76,6 +76,19 @@ class _Screen(browser.Screen):
 # a refresh or a `date` opens its own tab, never the listing's. None outside such a call.
 _ASIDE: contextvars.ContextVar[list[tuple[TargetSite, browser.Tabs]] | None] = \
     contextvars.ContextVar("flnd_aside", default=None)
+
+
+# Releases the target's turn (`flnd.engine.crawl.Turn`) once its route meets the site; None
+# outside a route's call.
+met_turn: contextvars.ContextVar[Callable[[], None] | None] = \
+    contextvars.ContextVar("flnd_turn", default=None)
+
+
+def _met() -> None:
+    """The route running on this thread met the site: its target's turn passes."""
+    release = met_turn.get()
+    if release is not None:
+        release()
 
 
 class Bridge:
@@ -119,6 +132,7 @@ class Bridge:
         Raises:
             RuntimeError: called on the loop's own thread.
         """
+        _met()
         return browser.run_on(self.loop, awaitable)
 
     def close(self) -> None:
@@ -175,6 +189,8 @@ class SourceRun:
     config: SourceConfig = field(default_factory=SourceConfig)
     # What the source's `connect` gave, entered once for the run.
     client: Any = None
+    # The posts its `date` hook had no day for, read once for the run (`crawl.asked`).
+    asked: dict[str, float] | None = None
     _state: home.Home | None = field(default=None, repr=False)
     _secrets: vault.Vault | None = field(default=None, repr=False)
     # A loop of the source's own, made only outside a run (`shared_browser` gives the run's).
@@ -229,16 +245,27 @@ class SourceRun:
         return self._secrets
 
     async def call(self, fn: Callable[..., T], *args: Any) -> T:
-        """Run the source's plain code, `fn(*args)`, on a `CALL` thread: a job of the run.
+        """Run a step of the source's plain listing, `fn(*args)`, on a listing thread
+        (`jobs.Scheduler.step`).
 
-        The job waits for the source's holds, as its listing did on its own thread, and is
-        never tried again: what the code raises is raised here.
+        It waits for the source's holds, as its listing did on its own thread, and is never
+        tried again: what the code raises is raised here.
+        """
+        return await self.scheduler.step(self.source.code, None, fn, *args)
+
+    async def aside(self, fn: Callable[..., T], *args: Any) -> T:
+        """Run the source's plain code for a lazy post's files, a refresh or `date`, on a
+        `CALL` thread, as a job of the run: any tab it opens is its own.
+
+        Such a tab comes from the run's budget and closes when the call ends, so the listing's
+        tab is never navigated away from its feed. The job waits for the source's holds and
+        is never tried again.
         """
         scheduler = self.scheduler
 
         async def work() -> tuple[bool, Any]:
             try:
-                return True, await scheduler.on(jobs.Kind.CALL, fn, *args)
+                return True, await scheduler.on(jobs.Kind.CALL, _aside, fn, *args)
             except Exception as error:
                 return False, error
 
@@ -247,14 +274,6 @@ class SourceRun:
         if not ok:
             raise value
         return value
-
-    async def aside(self, fn: Callable[..., T], *args: Any) -> T:
-        """`call`, for a lazy post's files, a refresh or `date`: any tab it opens is its own.
-
-        Such a tab comes from the run's budget and closes when the call ends, so the listing's
-        tab is never navigated away from its feed.
-        """
-        return await self.call(_aside, fn, *args)
 
     async def off(self, fn: Callable[..., T], *args: Any) -> T:
         """Run the engine's own blocking step, `fn(*args)`, on a `CALL` thread, with no job.
@@ -721,6 +740,7 @@ class TargetSite:
         if self._run.loop.here:
             raise SourceError("the browser verbs of `site` are for a plain `def` route or "
                               "category; an `async def` one awaits `site.tab` instead")
+        _met()
         aside = _ASIDE.get()
         if aside is None:
             return self._browser()
@@ -871,6 +891,11 @@ class TargetSite:
         with held:
             if not clock.sleep(seconds, stop=self._run.web.stop):
                 raise Stopped(f"{self.target}: stopped while waiting: {reason}")
+
+    @property
+    def _idle(self) -> bool:
+        """Whether it never opened a tab, so `close` has nothing to do."""
+        return self._tabs is None and not self._own
 
     def close(self) -> None:
         """Give back the target's tabs, handing the client the cookies set in them."""
