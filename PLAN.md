@@ -105,6 +105,7 @@ the reason the decision was taken.
 | D24 | Chromium cookie stores read through the keychain go once the extension lands; Firefox, Safari and cookie files stay | the extension does Chrome's job better; the others have no extension |
 | D25 | Plugin installs copy a `.py` file or a package folder into the plugin folder and record it in `plugins.json` | help and resolution never import a plugin |
 | D26 | Pushing: the orchestrator asks the user once, before the first push, whether to push after each step | outward-facing; AGENTS.md says push only when asked |
+| D27 | One checker: ruff, with the rules `F E9 B UP I ASYNC RUF006`. pyright, `make type` and `[tool.pyright]` go. The tests turn a never-awaited coroutine into an error | the user: one tool, not a mix; ruff runs in milliseconds and today's code passes it; `ASYNC` catches blocking calls inside coroutines, the one-loop rule's main risk; a missed `await` fails a test instead of being guessed at by types |
 
 ## 3. Words used here
 
@@ -1491,7 +1492,10 @@ Step 0 rewrites AGENTS.md to exactly these sections.
   - `git pull --rebase` first, and commit only your own paths (`git commit -- <paths>`);
   - push only when the user said to (D26).
 - **Checks:**
-  - `make check` (ruff `F E9 B UP I`, then the tests) is green at every commit;
+  - `make check` (ruff, then the tests) is green at every commit. Ruff is the one checker
+    (D27): `select = ["F", "E9", "B", "UP", "I", "ASYNC", "RUF006"]` in `pyproject.toml`.
+    There is no type checker; type hints are for readers. `make test` runs Python with
+    `-W "error:coroutine:RuntimeWarning"`, so a never-awaited coroutine fails its test;
   - `make api` after any public change, and its diff is the review;
   - `make bench ARGS=--gate` for anything touching speed;
   - `make check PY=3.11` before a release.
@@ -1608,6 +1612,10 @@ its commits.
     `kit/text.py`; `filename` stays one copy; `disk()` stays one copy; `with_query` stays
     one copy;
   - remove cyclopts from `pyproject.toml`;
+  - one checker (D27): remove `pyright` from the dev group, `[tool.pyright]` from
+    `pyproject.toml`, and the `type` recipe from the `Makefile`; add `ASYNC` and `RUF006` to
+    ruff's `select` (fixing what they find); add `-W "error:coroutine:RuntimeWarning"` to the
+    `test` recipe;
   - update `Makefile` (`lint`, `dist`), `pyproject.toml` (`packages = ["flnd"]`),
     `tests/api_snapshot.py` and `tests/test_api.py` (drop `CORE_API_MODULES` and
     `tests/data/flncore-api.txt`); delete `tests/test_core_cli.py`,
@@ -1749,7 +1757,7 @@ its commits.
   both `flnd/sources/` and `flnd/plugins/`.
 - **Then:** delete `flnd/source.py`, `engine/site.py`, the bridge, `flnd/sources/` and
   `test_layers.py`'s temporary API-1 exemptions; update imports in `engine/*`,
-  `flnd/_library.py`, `flnd/cli.py`, `Makefile` (`docs`, `type`), `pyproject.toml` (drop
+  `flnd/_library.py`, `flnd/cli.py`, `Makefile` (`docs`), `pyproject.toml` (drop
   `flnd.source.Range`), `tests/api_snapshot.py`, `tests/source_manifest.py` and
   `tests/test_docs.py` (`SourcePageTest`, `TERMS`); rename `flnd/docs/sources/` to `plugins/`
   and `writing-a-source.md` to `writing-a-plugin.md` (with `flnd.plugin` blocks), and
