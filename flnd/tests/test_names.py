@@ -302,6 +302,11 @@ WORD = re.compile(r"[A-Za-z_]\w*")
 # becomes used, or goes, fails `test_no_stale_allowance`.
 CALLED_FROM_OUTSIDE: dict[str, str] = {
     "flnkit/vault.py:Keychain": "tests/test_keychain.py exercises the OS keychain path",
+    # An early part (PLAN.md 15): step 10's `feat:let config override a plugin's templates`
+    # wires config.py in and removes these three.
+    "src/engine/config.py:speed": "early part; the transfer reads rate and slowest from step 10",
+    "src/engine/config.py:unset": "early part; `flnd config` and `Flnd.config` call it",
+    "src/engine/config.py:user_file": "early part; the engine passes it to read and write",
     "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
 }

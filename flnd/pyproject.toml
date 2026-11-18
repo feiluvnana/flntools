@@ -21,6 +21,8 @@ dependencies = [
     "qrcode>=7.4",
     "rich",
     "msgspec",
+    # Edits config.toml in place, keeping the comments a person wrote (src/engine/config.py).
+    "tomlkit>=0.13",
     "questionary>=2.1",
     # The full-screen lists and forms of step 13; kept only if `ui.open` stays at most 250 ms.
     "textual>=8.2",
