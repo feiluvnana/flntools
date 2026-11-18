@@ -30,7 +30,13 @@ The numbers today:
   `**/*.py`;
 - no feature lost by accident (section 9);
 - every gated number equal or better;
-- `make check` green at every commit.
+- `make check` green at every commit;
+- tests of 12,000 lines or fewer by step 16, counted with `wc -l tests/*.py` (so `bench/` and
+  `data/` are left out), from 22,792 lines in 64 files and 1,316 tests on 2026-11-18;
+- `make check` in 30 s or less on the Apple M5, from about 60–70 s.
+
+The user asked for the smaller suite on 2026-11-18: "current test suite are too masssive,
+please reduce it."
 
 ## Contents
 
@@ -1620,6 +1626,17 @@ Step 0 rewrites AGENTS.md to exactly these sections.
 - **Errors:** 5.1. A user error never shows a traceback. `Stopped` derives from
   `KeyboardInterrupt`.
 - **Bugs:** the failing test comes first, in the same commit as its fix.
+- **Tests:**
+  - every step deletes the tests of the code it removes;
+  - a step's new tests replace old ones, with no net growth in test lines, unless the step
+    adds a feature, and then its last commit says why;
+  - cases that differ only in their data are one table-driven test, with a `subTest` per
+    row;
+  - a test checks one behaviour once: a behaviour already checked at one layer (the kit, the
+    engine, a plugin) isn't checked again at another;
+  - each step's last commit reports the test line count (`wc -l tests/*.py`) beside the code
+    line count, and the time `make check` took;
+  - the goals are 12,000 test lines by step 16 and `make check` in 30 s (the goals above).
 - **Speed:**
   - a benchmark before the change it measures;
   - a `perf:` commit quotes both runs;
@@ -1745,8 +1762,8 @@ is built on the earlier layout.
     and the kit from `flnd/kit/` to `flnkit/`; every `flnd.kit` import becomes `flnkit`; the
     build moves to setuptools with `package-dir` (4.1, Packaging); the Makefile (`dist`
     stages both packages in `build/stage/`, every path recipe), `tests/test_layers.py`
-    (4.1's rules, rule 1 with no `flnd` at all), `tests/api_snapshot.py`, `test_names` and `test_docs` (their
-    packages: `flnd` and `flnkit`), and the folder paths in `AGENTS.md`;
+    (4.1's rules, rule 1 with no `flnd` at all), `tests/api_snapshot.py`, `test_names` and
+    `test_docs` (their packages: `flnd` and `flnkit`), and the folder paths in `AGENTS.md`;
   - (b) the errors: `flnkit/errors.py` takes the eleven classes and `disk` of 5.1, every
     `flnkit/*` imports from it, `src/errors.py` re-exports them and keeps `SourceError` (renamed
     `PluginError` in step 7, when `Hidden` is added) and `classify`, with its hint table;
@@ -1796,6 +1813,9 @@ is built on the earlier layout.
   - `tests/test_save.py`: the save's 9 stages, dedupe by size, the commit on `SQLITE_BUSY`;
   - E1, E5, E6, E7, E13, E15, E18, K7, K9.
 - **Bench:** `net.*` (P2, P6, P13, P14), `e2e.*` (P9).
+- **Test budget:** `tests/test_job.py`'s scheduling and download tests are rewritten as
+  `tests/test_jobs.py` and `tests/test_save.py`, under 13's rules; the old file shrinks by at
+  least as many lines as the new ones hold, and the commit quotes both counts.
 - **Commits:**
   - `feat:schedule every request as a job`;
   - `refactor:retry in one policy`;
@@ -1829,6 +1849,8 @@ is built on the earlier layout.
   guard for `Ledger` in `tests/test_fs.py` (P8). E3, E10, E11, E12, E16.
 - **Bench:** `cpu.loop_bridge` (gone), `e2e.latency_500_posts` (P3), `e2e.sync_100_targets`
   (P4), `browser.*` (P5), `test_fs` counts (P8).
+- **Test budget:** what is left of `tests/test_job.py` and `tests/test_engine.py` is rewritten
+  as `tests/test_crawl.py` and `tests/test_run.py`, and both old files are deleted.
 - **Commits:**
   - `feat:list targets on the run's loop`;
   - `perf:list targets at once`;
@@ -1860,6 +1882,8 @@ is built on the earlier layout.
 - **Bench:** `startup.import_flnd_plugin` (P11).
 - **Done when:** `tests/example_source.py` is rewritten as `tests/example_plugin.py` on API 2
   and passes through the real engine.
+- **Test budget:** `tests/test_source.py` is rewritten as `tests/test_plugin.py` on API 2,
+  and deleted with API 1 in step 8; the API-1 tests that only test the bridge go with it.
 - **Commits:** `feat:add plugin api 2`, then `feat:make the test kit behave like the engine`.
 
 ### Step 8. The plugins on API 2
@@ -1959,6 +1983,9 @@ is built on the earlier layout.
   `tests/test_docs.py` (`SourcePageTest`, `TERMS`); rename `src/docs/sources/` to `plugins/`
   and `writing-a-source.md` to `writing-a-plugin.md` (with `flnd.plugin` blocks), and
   regenerate the manifest.
+- **Test budget:** each port rewrites its plugin's tests on `FakeCtx` and keeps them smaller
+  than today's: fixtures are shared per plugin, and a case per category is one table. The
+  port's commit quotes the test lines before and after.
 - **Commits:** `refactor:port <name> to plugin api 2`, then `refactor:remove source api 1`.
 
 ### Step 9. The plugin manager
@@ -2084,9 +2111,13 @@ is built on the earlier layout.
     their flows move into `src/docs` get section 13's docstring of 1–3 lines, which step 2
     deferred for them, and their flows go to the `src/docs` page they name;
   - report the line count against 24,000;
+  - a last pass over the tests that remain, under 13's rules, to reach 12,000 lines and
+    `make check` in 30 s; report both;
   - run `make bench ARGS=--record`.
-- **Done when:** `tests/test_docs.py` is green on the new pages.
-- **Commits:** `docs:describe flnd as built`, then `chore:record the benchmarks`.
+- **Done when:** `tests/test_docs.py` is green on the new pages, `wc -l tests/*.py` is at most
+  12,000, and `make check` takes at most 30 s on the M5.
+- **Commits:** `docs:describe flnd as built`, `test:trim the tests to their budget`, then
+  `chore:record the benchmarks`.
 
 ## 15. How the plan is carried out
 
@@ -2104,7 +2135,9 @@ order:
    - the `make api` diff matches the step;
    - each bug of the step has its test, and the test failed before the fix (the builder
      shows the failing run);
-   - the step's "done when" holds.
+   - the step's "done when" holds;
+   - the test line count and `make check`'s time are reported, and the test lines didn't grow
+     without the reason 13 asks for.
 
    A finding goes back to the same builder (`SendMessage`), until the step passes.
 3. **Commit** the step's commits as section 14 names them, with only that step's paths.
