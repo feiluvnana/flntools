@@ -659,8 +659,9 @@ LOGGING_IN: ContextVar[bool] = ContextVar("flnd.testing.logging_in", default=Fal
 # What a lazy post's files may raise that fails only that post, never its listing.
 LAZY_FAILURES: tuple[type[Exception], ...] = (
     NotFound, Changed, *filter(None, [getattr(flnd.errors, "Hidden", None)]))
-# A `File.name`'s own extension, which it keeps: `.png` in `cover_12.png`, not `.2` in `v1.2`.
-EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,4}")
+# A `File.name`'s own extension, which it keeps, of up to 7 characters: `.png` in
+# `cover_12.png` and `.torrent` in `file.torrent`, not `.2` in `v1.2`.
+EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,6}")
 T = TypeVar("T")
 
 
@@ -807,6 +808,8 @@ class FakeCtx:
         self._jobs = _Scheduler(self.seen, pace={plugin.code: plugin.pace})
         # The tabs open: the target's, then one per lazy post's files, `date` or `refresh`.
         self._tabs = [_Tab()]
+        # The last answer each URL (without its query) got, which naming a file may read.
+        self._answered: dict[str, Any] = {}
 
     # -- HTTP --------------------------------------------------------------------------------
 
@@ -1134,7 +1137,9 @@ class FakeCtx:
             raise AssertionError(f"FakeCtx has no route for {request.url}")
         if callable(given):
             given = given(request)
-        return _response(given if isinstance(given, Reply) else Reply(given), request.url)
+        response = _response(given if isinstance(given, Reply) else Reply(given), request.url)
+        self._answered[_bare(request.url)] = response
+        return response
 
     def _refused(self, response: Any, own: bool) -> None:
         """Raise the `Blocked` the scheduler holds for: a block `blocked` reads, or a 429.
@@ -1336,7 +1341,9 @@ class _Secrets(MutableMapping[str, str]):
     """An account's secrets: written only while the plugin's `Login.start` runs.
 
     The plugin's login object gets a `start` that marks its run in `LOGGING_IN`, a context
-    variable: the tasks and threads `start` begins inherit it, as they would in the engine.
+    variable. What `start` begins inherits it, as in the engine: an `asyncio` task, a
+    `ctx.call`, an `asyncio.to_thread`. A plain `threading.Thread` doesn't, since by default
+    it starts with an empty context.
 
     Raises:
         SourceError: a write or a delete outside `Login.start`.
@@ -1743,8 +1750,12 @@ def _extension(file: flnd.plugin.File) -> str:
 
 
 def _typed(ctx: FakeCtx, file: flnd.plugin.File) -> str | None:
-    """The extension a routed file's Content-Type names; None when its URL isn't routed, it
-    is joined or streamed, or its type is a page's or one no extension is known for."""
+    """The media extension a routed file's Content-Type names; None when its URL isn't routed,
+    it is joined or streamed, or its type names no image, video or audio.
+
+    A `Reply` route is read as it is. A function route isn't called, since it may answer in
+    turn: the answer it last gave the plugin for that URL is read, if any.
+    """
     import mimetypes
 
     from flnkit import files
@@ -1754,11 +1765,14 @@ def _typed(ctx: FakeCtx, file: flnd.plugin.File) -> str | None:
     if given is None:
         return None
     if callable(given):
-        given = given(Request(url))
-    reply = given if isinstance(given, Reply) else Reply(given)
-    kind = _response(reply, url).headers.get("content-type", "").split(";")[0].strip()
+        response = ctx._answered.get(_bare(url))
+        if response is None:
+            return None
+    else:
+        response = _response(given if isinstance(given, Reply) else Reply(given), url)
+    kind = response.headers.get("content-type", "").split(";")[0].strip()
     found = mimetypes.guess_extension(kind) if kind else None
-    return None if found is None or found in files.PAGES else found
+    return found if found and files.kind_of(f"file{found}") else None
 
 
 def _suffix(url: str) -> str:

@@ -483,6 +483,23 @@ class PluginCollectTest(unittest.TestCase):
         self.assertEqual([(post, type(error)) for post, error in ctx.seen.failed],
                          [("p2", NotFound)])
 
+    def test_any_other_error_from_a_lazy_posts_files_ends_the_run(self):
+        async def refused():
+            raise LoginError("gal: HTTP 401 for https://www.example.com/p/p2")
+
+        async def posts(plugin, ctx, profile):
+            yield v2.Post("p2", refused, album=None)
+            yield v2.Post("p1", [v2.File("https://cdn.example.com/p1.jpg")], album=None)
+
+        ctx = self.ctx()
+        original, Gallery.posts = Gallery.posts, posts
+        try:
+            with self.assertRaises(LoginError):
+                collect(Gallery, "gal:example_user", ctx=ctx)
+        finally:
+            Gallery.posts = original
+        self.assertEqual(ctx.seen.failed, [])
+
     def test_a_pinned_post_is_saved_out_of_order_and_never_ends_the_listing(self):
         def post(day, **more):
             return {"id": f"p{day}", "time": f"2026-01-{day:02d}", "album": None, **more}
@@ -493,6 +510,13 @@ class PluginCollectTest(unittest.TestCase):
             ("pinned posts older than when", v2.Range(datetime.date(2026, 1, 9)),
              [*(post(day, pinned=True) for day in range(1, 7)), post(10), post(9)],
              ["p10", "p9"]),
+            # Older posts 8, 7, 6, a pinned one in range, then 5 and 4: the fifth older post
+            # in a row (4) ends the listing, since the pinned post doesn't reset the count. The
+            # last post breaks the date order, so a listing that reaches it fails the test.
+            ("a pinned post in range keeps the older count", v2.Range(datetime.date(2026, 1, 9)),
+             [post(8), post(7), post(6), post(15, pinned=True), post(5), post(4), post(3),
+              {"id": "p2", "time": "2026-01-30", "album": None}],
+             ["p15"]),
         ]
         for label, when, items, kept in rows:
             with self.subTest(label):
@@ -529,20 +553,38 @@ class PluginCollectTest(unittest.TestCase):
 
     def test_a_files_name_keeps_its_extension_else_takes_its_types_or_its_urls(self):
         jpg, bare = "https://cdn.example.com/p1.jpg", "https://cdn.example.com/p1"
-        typed = {"png": Reply(b"x", headers={"content-type": "image/png"}),
-                 "unknown": Reply(b"x", headers={"content-type": "application/x-example"})}
+
+        def typed(kind):
+            return Reply(b"x", headers={"content-type": kind})
+
+        calls = []
+
+        def counted(request):
+            calls.append(request.url)
+            return typed("image/png")
+
         rows = [
-            ("a stem", jpg, {"name": "cover_12"}, None, "posts/cover_12.jpg"),
-            ("a name with an extension", jpg, {"name": "cover_12.png"}, None,
+            ("a stem", jpg, {"name": "cover_12"}, None, False, "posts/cover_12.jpg"),
+            ("a name with an extension", jpg, {"name": "cover_12.png"}, None, False,
              "posts/cover_12.png"),
-            ("a content type", jpg, {}, typed["png"], "posts/p1_0.png"),
-            ("an unknown content type", jpg, {"name": "cover_12"}, typed["unknown"],
-             "posts/cover_12.jpg"),
-            ("neither", bare, {"name": "cover_12"}, None, "posts/cover_12"),
+            ("a 7-character extension", jpg, {"name": "file.torrent"}, None, False,
+             "posts/file.torrent"),
+            ("a content type", jpg, {}, typed("image/png"), False, "posts/p1_0.png"),
+            ("an unknown content type", jpg, {"name": "cover_12"}, typed("application/x-example"),
+             False, "posts/cover_12.jpg"),
+            ("octet-stream", jpg, {}, typed("application/octet-stream"), False, "posts/p1_0.jpg"),
+            ("text/plain", jpg, {}, typed("text/plain"), False, "posts/p1_0.jpg"),
+            ("neither", bare, {"name": "cover_12"}, None, False, "posts/cover_12"),
+            ("a function route, never fetched", jpg, {}, counted, False, "posts/p1_0.jpg"),
+            ("a function route, fetched once", jpg, {}, counted, True, "posts/p1_0.png"),
         ]
-        for label, url, options, content, path in rows:
+        for label, url, options, content, fetched, path in rows:
             with self.subTest(label):
-                async def posts(plugin, ctx, profile, options=options, url=url):
+                calls.clear()
+
+                async def posts(plugin, ctx, profile, options=options, url=url, fetched=fetched):
+                    if fetched:
+                        await ctx.fetch(url)
                     yield v2.Post("p1", [v2.File(url, **options)], album=None)
 
                 routes = {**PROFILE, **({url: content} if content else {})}
@@ -552,6 +594,8 @@ class PluginCollectTest(unittest.TestCase):
                 finally:
                     Gallery.posts = original
                 self.assertEqual([found.path for found in saved], [path])
+                # Naming never calls a function route: only the plugin's own fetch did.
+                self.assertEqual(len(calls), int(fetched and content is counted))
 
     def test_it_checks_the_listings_order_and_the_templates_fields(self):
         rows = [

@@ -246,14 +246,17 @@ pass at once. Every hold is recorded in `ctx.seen.holds`.
 - `ask` pops `answers`: one of `choices` when it has any, and `UsageError` when they run out.
   `extension` and `storage` read their own fakes, and `settings` sets the plugin's `Settings`.
 - `state` takes JSON values only, and `secrets` may be written only while `Login.start` runs,
-  by it or by the tasks and calls it starts.
+  by it or by the `asyncio` tasks, `ctx.call`s and `asyncio.to_thread`s it starts (not by a
+  plain `threading.Thread`, which starts without its context).
 
 `collect` runs the target to its end on it, and checks the listing as it goes: a
 `newest_first` listing's dated posts must not get newer, and a post must give every field a
 template names. A pinned post (`Post(..., pinned=True)`) is outside the date order, so the
-check skips it. A `File.name` with its own extension keeps it, and a stem takes its extension
-from the content type (the `Content-Type` of the file URL's route, when it has one), then from
-the URL's extension, then none. When a lazy post's files raise `NotFound` or `Changed`, that
+check skips it. A `File.name` with its own extension (up to 7 characters, as `.torrent`) keeps
+it, and a stem takes its extension from the content type, then from the URL's extension, then
+none. The content type is the `Content-Type` of the file URL's route when it names an image, a
+video or an audio file; a function route isn't called for it, but its last answer to the plugin
+is read. When a lazy post's files raise `NotFound` or `Changed`, that
 post fails alone: `collect` records it in `ctx.seen.failed` and goes on with the listing.
 
 ```python
