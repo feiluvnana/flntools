@@ -738,14 +738,16 @@ class Scheduler:
                                  wait=seconds or None, retryable=False)
         return hold.until - clock.now()
 
-    async def wait(self, plugin: str, account: str | None) -> None:
-        """Wait out the hold of an account, as its `PAGE` jobs do.
+    async def wait(self, plugin: str, account: str | None, *,
+                   bucket: str | None = None) -> None:
+        """Wait out the hold of an account, or of one of its buckets as well, as its `PAGE`
+        jobs do.
 
         Raises:
             Stopped: the run's first Ctrl-C came meanwhile.
         """
-        await self._held(Job(kind=Kind.PAGE, work=_nothing, plugin=plugin, account=account),
-                         bucket=False)
+        await self._held(Job(kind=Kind.PAGE, work=_nothing, plugin=plugin, account=account,
+                             bucket=bucket or ""), bucket=bucket is not None)
 
     def room(self, host: str) -> bool:
         """Whether `host`'s cap has a free place and no `FILE` job waits for it."""

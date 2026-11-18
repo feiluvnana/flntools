@@ -1017,7 +1017,8 @@ class FakeCtx:
 
     async def hold(self, reason: str, *, seconds: float | None = None,
                    bucket: str | None = None) -> None:
-        """Take a block round, as the scheduler's `hold`: the next job waits it out.
+        """Take a block round, as the scheduler's `hold`, and wait it out on the fake clock,
+        as the engine does.
 
         Raises:
             Blocked: past the last round.
@@ -1025,6 +1026,7 @@ class FakeCtx:
         with clock.use(self._clock()):
             self._jobs.hold(self._plugin.code, self._account, seconds=seconds or 0.0,
                             reason=reason, bucket=bucket)
+            await self._jobs.wait(self._plugin.code, self._account, bucket=bucket)
 
     async def call(self, fn: Callable[..., T], *args: Any) -> T:
         """Run `fn` as a call job, once the account's holds end, on a thread as the engine's

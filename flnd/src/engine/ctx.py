@@ -631,10 +631,13 @@ class Ctx:
 
     async def hold(self, reason: str, *, seconds: float | None = None,
                    bucket: str | None = None) -> None:
-        """See `flnd.plugin.Ctx.hold`: a block round, which the plugin's next job waits out.
+        """See `flnd.plugin.Ctx.hold`: a block round, waited out here before the plugin goes
+        on, as its next job would wait it out: a listing that reads a feed or an SDK, which
+        aren't jobs, resumes only once the hold ends.
 
         Raises:
             Blocked: past the last round.
+            Stopped: the run's first Ctrl-C came while waiting.
         """
         code = self._plugin.code
         try:
@@ -646,6 +649,14 @@ class Ctx:
                           target=str(self._target)) from error
         ui.warn("{target}: {reason}; waiting {time}", target=str(self._target), reason=reason,
                 time=text.duration(round(held)))
+        tally = self._run.settings.tally
+        shown = (tally.hold(code, None, "pages", held, reason) if tally is not None
+                 else contextlib.nullcontext())
+        with shown:
+            try:
+                await self._run.scheduler.wait(code, None, bucket=bucket)
+            except Stopped:
+                raise Stopped(f"{self._target}: stopped while waiting: {reason}") from None
 
     async def call(self, fn: Callable[..., T], *args: Any) -> T:
         """See `flnd.plugin.Ctx.call`: a `CALL` job, on the thread pool."""

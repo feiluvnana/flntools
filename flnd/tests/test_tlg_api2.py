@@ -853,6 +853,27 @@ class EngineDownloadTest(TelegramCase):
         self.assertEqual([client.connected for client in self.telegram.clients], [False, False])
         self.assertEqual(self.telegram.clients[0].flood_sleep_threshold, FLOOD_SLEEP)
 
+    def test_a_flood_wait_is_held_on_the_runs_clock_and_tried_again(self):
+        self.telegram.messages[1001] = [message(11, "photo")]
+        self.telegram.errors["download_media"] = [FloodWaitError(None, capture=120)]
+        self.assertEqual(self.download(), 1)
+        self.assertTrue((self.folder / "photo" / "2026-01-05_11.jpg").is_file())
+        self.assertEqual(self.now, 120)
+
+    def test_a_video_goes_on_from_where_a_flood_wait_or_a_drop_stopped_it(self):
+        body = bytes(range(40))
+        self.telegram.messages[1001] = [message(21, "video", content=body)]
+        # A flood wait first, then the connection drops at the third and the sixth chunk.
+        self.telegram.errors["iter_download"] = [FloodWaitError(None, capture=300)]
+        self.telegram.drops = {3, 6}
+        with mock.patch.object(tlg, "REQUEST", 8):
+            self.assertEqual(self.download(categories=("video",)), 1)
+        self.assertEqual((self.folder / "video" / "2026-01-05_21.mp4").read_bytes(), body)
+        # Each try asks from the last whole chunk written, never from 0 again.
+        self.assertEqual(self.telegram.reads, [(0, 5), (16, 3), (32, 1)])
+        # The flood wait was waited out, beside the network retries' own waits.
+        self.assertGreaterEqual(self.now, 300)
+
     def test_a_file_that_drops_on_every_try_fails_alone(self):
         self.telegram.messages[1001] = [message(22, "video", content=bytes(40))]
         self.telegram.drops = set(range(1, 100))
