@@ -41,7 +41,7 @@ import functools
 import re
 import tomllib
 import urllib.parse
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -49,6 +49,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from flnd.engine import home
+from flnd.engine.run import sink
 from flnd.errors import UsageError
 from flnd.source import SCROLLS, Range, Source, Target
 from flnd.ui.log import ui
@@ -106,21 +107,23 @@ class RunShared:
     interactive: bool = False
     # List what would be downloaded without writing or downloading anything.
     dry: bool = False
-    # The run's browser and loop (`flnkit.browser.RunBrowser`), set by `site.shared_browser`;
-    # None outside a run.
+    # The run's browser (`flnkit.browser.RunBrowser`), on the run's loop, set by
+    # `site.shared_browser`; None outside a run.
     browser_pool: Any = field(default=None, repr=False)
-    # Where the run's events go (`flnd.engine.run.Run._emit`). It may wait while a script
-    # handles the event before, so it is never called with a lock held. By default, events
-    # are dropped.
-    emit: Callable[[Any], None] = field(default=lambda event: None, repr=False)
+    # Where the run's events go, awaited on the loop (`flnd.engine.run.sink`): it waits while
+    # the channel to the reader is full. By default, events are dropped.
+    emit: Callable[[Any], Awaitable[None]] = field(default=sink(None), repr=False)
     # The run's save (`flnd.engine.save.Saver`), set by `save.attached`; None outside a run.
     saver: Any = field(default=None, repr=False)
     # Resolves the text of a target a listing yielded, on any source (the engine's `resolve`);
     # None outside the engine, where a source reads only its own.
     resolve: Callable[[str], Target] | None = field(default=None, repr=False)
-    # The run's live counts (`flnd.engine.job.Tally`), which `run.state` is made from; None
+    # The run's live counts (`flnd.engine.run.Tally`), which `run.state` is made from; None
     # outside a run.
     tally: Any = field(default=None, repr=False)
+    # Runs a target a listing discovered as a target of its own, on its own plugin's instance
+    # (the engine's); None outside the engine.
+    follow: Callable[[Target, Options], Awaitable[Any]] | None = field(default=None, repr=False)
 
 
 def categories_by_source(

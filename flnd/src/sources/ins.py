@@ -5,9 +5,9 @@ one post or reel by its link, and every account the login follows.
     flnd download https://www.instagram.com/p/C1abcDEFghi/
     flnd download ins:me
 
-Who calls it: the engine (`flnd.engine.job`), through the routes and categories below, on the
-target's listing thread. What it calls: only its `Site` (`site.fetch` for Instagram's REST API, the
-browser verbs for the profile's tabs and the post and story pages) and the stdlib.
+Who calls it: the engine (`flnd.engine.crawl`), through the routes and categories below, on a thread
+of the run's (`SourceRun.call`). What it calls: only its `Site` (`site.fetch` for Instagram's REST
+API, the browser verbs for the profile's tabs and the post and story pages) and the stdlib.
 
 How a profile (`ins:example_user`) is read:
 1. The `user` route returns an empty `Profile`; nothing is loaded until a category needs it.

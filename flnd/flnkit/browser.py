@@ -2,11 +2,11 @@
 
 src/docs/architecture explains it.
 
-A standalone library: it imports the standard library, Playwright and the kit (`loop`, `net`,
-`files`, `text`, `clock`) and `flnkit.errors`, and nothing of flnd's engine or screen. It logs
-through `logging`, and what it asks a person, or shows them, goes through the `Screen` its caller
-passes in. In flnd, `flnd.engine.site.TargetSite` builds the `Site` browser verbs a source calls
-on it, each one call across to the run's loop (`flnkit.loop.Loop.run`, about 40 µs).
+A standalone library: it imports the standard library, Playwright and the kit (`net`, `files`,
+`text`, `clock`) and `flnkit.errors`, and nothing of flnd's engine or screen. It logs through
+`logging`, and what it asks a person, or shows them, goes through the `Screen` its caller passes
+in. In flnd, `flnd.engine.site.TargetSite` builds the `Site` browser verbs a source calls on it,
+each one call across to the run's loop from the source's thread (`RunBrowser.run`).
 
 What it offers, from the bottom up:
 - `launch` starts Chrome (or Playwright's Chromium, offering to download it) and gives a
@@ -59,6 +59,7 @@ import asyncio
 import base64
 import contextlib
 import functools
+import inspect
 import json
 import logging
 import math
@@ -314,11 +315,10 @@ if TYPE_CHECKING:
     from playwright.async_api import BrowserContext, Locator, Playwright, Response
     from playwright.async_api import Page as RawPage
 
-    from flnkit.loop import Loop
-
 __all__ = [
     "FAST", "HUMAN", "Browser", "Capture", "Feed", "Jar", "Match", "Page", "Reader",
     "Cursors", "RunBrowser", "Tabs", "Visit", "WaitError", "launch", "local_storage", "matcher",
+    "run_on",
 ]
 
 # ---------------------------------------------------------------------------------------------
@@ -1558,9 +1558,10 @@ class Capture:
     read at once in a task of its own, and `items` gets `(url, body)` in arrival order however the
     reads finish. A body Chrome already freed (its page moved on) is skipped.
 
-    `items` is a deque: the loop appends and a listing thread pops, which a deque allows without a
-    lock. Everything else runs on the loop. `count` and `news` are what a scroll step watches:
-    how many responses have had their turn so far, and an event set each time more have.
+    `items` is a deque: the loop appends and the caller's thread pops, which a deque allows
+    without a lock. Everything else runs on the loop. `count` and `news` are what a scroll step
+    watches: how many responses have had their turn so far, and an event set each time more
+    have.
 
     Args:
         page: the tab it listens on.
@@ -1655,11 +1656,50 @@ class Capture:
 # The run's browser, and one target's tabs
 # ---------------------------------------------------------------------------------------------
 
+def run_on(loop: asyncio.AbstractEventLoop, awaitable: Awaitable[Any]) -> Any:
+    """Run `awaitable` on `loop` from another thread, wait for it, and return its value.
+
+    The coroutine runs in a copy of the caller's context, so a test's fake clock reaches it. Its
+    error, a `KeyboardInterrupt` included, is raised on the caller's thread, never let out of
+    the loop. A Ctrl-C while waiting cancels it on the loop before it goes on up.
+
+    Raises:
+        RuntimeError: called on `loop`'s own thread, which would wait for itself.
+    """
+    try:
+        here = asyncio.get_running_loop() is loop
+    except RuntimeError:
+        here = False
+    if here:
+        if inspect.iscoroutine(awaitable):
+            awaitable.close()
+        raise RuntimeError("run_on was called on the loop's own thread; await it instead")
+    future = asyncio.run_coroutine_threadsafe(_carried(awaitable), loop)
+    try:
+        ok, value = future.result()
+    except BaseException:
+        future.cancel()
+        raise
+    if not ok:
+        raise value
+    return value
+
+
+async def _carried(awaitable: Awaitable[Any]) -> tuple[bool, Any]:
+    """`(True, value)`, or `(False, error)` for any error but a cancel, for `run_on` to raise."""
+    try:
+        return True, await awaitable
+    except asyncio.CancelledError:
+        raise
+    except BaseException as error:
+        return False, error
+
+
 class RunBrowser:
     """One browser shared by many users on one loop, launched the first time one asks for a tab.
 
-        shared = RunBrowser(loop)
-        tab = shared.run(shared.tab(jar))
+        shared = RunBrowser(asyncio.get_running_loop())   # on the loop
+        tab = shared.run(shared.tab(jar))                 # from another thread
         shared.close()
 
     Every user shares it, so one window serves them all; each user's cookies are added the first
@@ -1667,14 +1707,15 @@ class RunBrowser:
     run on the loop; `run` hands one to the loop from another thread.
 
     Args:
-        loop: the loop the browser lives on.
+        loop: the asyncio loop the browser lives on, running on its own thread.
         stealth: hide `navigator.webdriver` (see `launch`).
         headless: hide the window. A visible one (the default) lets a person solve a captcha.
         screen: what asks a person and shows them progress (see `Screen`); None for the plain
             one.
     """
 
-    def __init__(self, loop: Loop, *, stealth: bool = True, headless: bool = False,
+    def __init__(self, loop: asyncio.AbstractEventLoop, *, stealth: bool = True,
+                 headless: bool = False,
                  screen: Screen | None = None):
         self.loop = loop
         self.screen = screen or Screen()
@@ -1719,7 +1760,7 @@ class RunBrowser:
             RuntimeError: called on the loop's own thread, which would wait for itself; code
                 there awaits instead.
         """
-        return self.loop.run(awaitable)
+        return run_on(self.loop, awaitable)
 
     async def tab(self, jar: Any) -> Page:
         """A tab for a target whose login is `jar`: the idle one, or a new one.
@@ -1768,12 +1809,20 @@ class RunBrowser:
         return await self._browser.cookies()
 
     def close(self) -> None:
-        """Close the browser, from the thread that made the run; a second call does nothing."""
+        """Close the browser, from a thread other than the loop's; a second call does nothing."""
         browser, self._browser = self._browser, None
         self._idle.clear()
         self._jars.clear()
         if browser is not None:
-            self.loop.run(browser.close())
+            self.run(browser.close())
+
+    async def aclose(self) -> None:
+        """Close the browser, on the loop; a second call does nothing."""
+        browser, self._browser = self._browser, None
+        self._idle.clear()
+        self._jars.clear()
+        if browser is not None:
+            await browser.close()
 
 
 class Tabs:
@@ -2090,7 +2139,7 @@ class Feed:
     Without `scroll`, it waits once for the network to go quiet (up to `QUIET`), yields what
     came, and ends. Leaving `with`, or the end of the iteration, closes it.
 
-    Made on the listing thread, used there only; the cursor reader runs there too.
+    Made on the caller's thread, used there only; the cursor reader runs there too.
 
     Args:
         tabs: the target's tabs.
@@ -2291,9 +2340,9 @@ def local_storage(url: str, *, profile: str = "Default") -> dict[str, str] | Non
 
         storage = local_storage("https://web.telegram.org/k/")
 
-    For a login that reads a web app's saved session (Telegram's). It runs outside any run, so it
-    starts a loop of its own and closes it, with the browser and the profile copy, before
-    returning.
+    For a login that reads a web app's saved session (Telegram's). It runs outside any run, on a
+    thread with no loop of its own, so it starts a loop and closes it, with the browser and the
+    profile copy, before returning.
 
     Args:
         url: the page.
@@ -2308,10 +2357,7 @@ def local_storage(url: str, *, profile: str = "Default") -> dict[str, str] | Non
         FileNotFoundError: Chrome has no such profile.
         ToolError: Chrome isn't installed.
     """
-    from flnkit.loop import Loop
-
-    with Loop() as loop:
-        return loop.run(_local_storage(url, profile))
+    return asyncio.run(_local_storage(url, profile))
 
 
 async def _local_storage(url: str, profile: str) -> dict[str, str] | None:

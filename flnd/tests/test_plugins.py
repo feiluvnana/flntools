@@ -33,11 +33,11 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 import no_profiles  # noqa: F401  (also points $FLND_SOURCES away from the real folder)
-from test_engine import EngineCase, noise
+from fakes import EngineCase, noise
 
 import flnd
 from flnd import cli as flnd_cli
-from flnd.engine import job
+from flnd.engine import crawl as job
 from flnd.engine import manager as _manager
 from flnd.engine import plugins as _plugins
 from flnd.engine.resolve import Manifest, resolve

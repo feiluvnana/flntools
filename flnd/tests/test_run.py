@@ -1,13 +1,11 @@
-"""The engine end to end on `flnkit.net.fake`, with test sources. No network, no browser.
+"""The run (src/engine/run.py) and the engine on it, on `flnkit.net.fake`, with test sources.
 
-Its runs, groups, HTTP, clients and logins through `Engine._run` (what `download` and `sync` call
-once per run), then the API itself (redesign B1): `download`, `sync`, `login`, `logout` and
-`Report`, the options read from text, and `--from` refused for a post. The screen is a fake one.
+The event channel and `END`, then the engine's runs, plugin instances, HTTP, clients and logins
+through its run (what `download` and `sync` await), then its commands: `download`, `sync`,
+`login`, `logout` and `Report`. No network, no browser; the screen is a fake one.
 """
 
 import asyncio
-import inspect
-import io
 import signal
 import sys
 import threading
@@ -15,154 +13,26 @@ import time
 import unittest
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 from unittest import mock
 
 import fakes
+from fakes import CDN, EngineCase, make_source, own_login
 
 from flnd import Blocked, LoginError, Target, UsageError
+from flnd.engine import crawl as job
 from flnd.engine import home as _home
-from flnd.engine import job
 from flnd.engine import run as _run
-from flnd.engine.core import Engine, Report, TargetReport
-from flnd.engine.events import Failed, Phase, State
+from flnd.engine.core import Engine, Report, TargetReport, _Runner
+from flnd.engine.events import Failed, Skipped
 from flnd.engine.options import Options
 from flnd.engine.site import LoginSite
 from flnd.errors import Error
-from flnd.source import File, Login, Post, SiteError, Source, target
+from flnd.source import File, Post, SiteError, Source, target
 from flnd.source import cookies as login_cookies
 from flnd.ui.log import ui
-from flnkit import clock as _time
 from flnkit import cookies as _cookies
 from flnkit import net as _net
-
-CDN = "https://cdn.example"
-
-
-def noise(format, size=(64, 48)):
-    if format.upper() == "PNG":
-        return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + bytes(32)
-    return b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + bytes(32)
-
-
-def make_source(code, route=None, *, files: Any = (), **declared):
-    """A routed test source: `code:<name>` reads a user, `route(site)` is its route, and `files` are its `posts`.
-
-        make_source("aaa", lambda site: seen.append(site.target.value), files=[File(url, name="a.jpg")])
-
-    Args:
-        code: the source's code; its domain is `<code>.example`.
-        route: called with the target's `Site` when the target is read; what it returns is the
-            context of the category. A coroutine function makes the route and the category `async def`.
-        files: the files `posts` yields, each in a post of its own, kept as the site names them and
-            filed in the target's own folder, keyed by their path (`aaa:a.jpg`); or a function of
-            `(site, context)` giving them.
-        **declared: the class's other fields and methods, such as `login`, `connect` or `sign`.
-    """
-    def listed(site, context):
-        found: Any = files(site, context) if callable(files) else files
-        return [Post(file.name or str(number), [file]) for number, file in enumerate(found)]
-
-    if inspect.iscoroutinefunction(route):
-        @target(f"{code}:{{user}}")
-        async def user(self, site, user):
-            return await route(site)
-
-        @user.category
-        async def posts(self, site, context):
-            for post in listed(site, context):
-                yield post
-    else:
-        @target(f"{code}:{{user}}")
-        def user(self, site, user):
-            return route(site) if route is not None else None
-
-        @user.category
-        def posts(self, site, context):
-            yield from listed(site, context)
-
-    attributes = {"code": code, "name": code.upper(), "domains": (f"{code}.example",), "api": 1, "folder": "",
-                  "key": "{path}", "user": user, "posts": posts, **declared}
-    return type(f"Source_{code}", (Source,), attributes)
-
-
-def own_login(start=None, *, methods=("qr",), check=None):
-    """A source's own `Login`: `start(self, site, how)` logs in; `check(self, site)` says whether it did."""
-    attributes = {"methods": methods}
-    if start is not None:
-        attributes["start"] = start
-    attributes["check"] = check or (lambda self, site: "session" in site.secrets)
-    return type("OwnLogin", (Login,), attributes)()
-
-
-class EngineCase(unittest.TestCase):
-    def setUp(self):
-        self.dest = io.StringIO()
-        scope = ui.scope(dest=self.dest, width=400, color=False)
-        scope.__enter__()
-        self.addCleanup(scope.__exit__, None, None, None)
-        folder = TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        self.home = Path(folder.name) / ".flnd"
-        self.requests = []
-        self.routes = {}
-        # A lambda, so a test that replaces `self.serve` is answered by its own.
-        self.enterContext(_net.fake(lambda request: self.serve(request)))
-        # Every wait (pacing, back-offs, retries) passes at once on the fake clock.
-        self.fake = self.enterContext(_time.use(_time.Fake()))
-        # The events of the runs `report` makes: what the CLI shows, now that the engine logs no rows.
-        self.events = []
-        # The run's snapshots, kept apart from its events.
-        self.states = []
-
-    @property
-    def now(self):
-        return self.fake.now
-
-    def serve(self, request: _net.Request) -> _net.Reply:
-        self.requests.append(request)
-        answer = self.routes.get(str(request.url).split("?")[0])
-        if callable(answer):
-            return answer(request)  # type: ignore[return-value]
-        if answer is None:
-            return _net.reply(200, content=request.url.path.encode())
-        return answer
-
-    def run_engine(self, *sources, targets, options=Options(), **settings):
-        """Run the targets, each with `options`, and return how many files were written."""
-        return self.report(*sources, targets=targets, options=options, **settings).files
-
-    def report(self, *sources, targets, options=Options(), stop=None, **settings):
-        """Run the targets, each with `options`, and return the `Report`; its events go in `events`."""
-        settings.setdefault("emit", lambda event: (
-            self.states if isinstance(event, State) else self.events).append(event))
-        engine = Engine(home=self.home, sources={source.code: source for source in sources}, **settings)
-        stop = stop or _run.Stop()
-        with engine._live():
-            return Report(tuple(engine._run([(target, options) for target in engine.resolve(targets)],
-                                            stop=stop)))
-
-    def log_in(self, code, **values):
-        jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
-        _home.save(self.home, code, _cookies.Jar(jar))
-
-    def lines(self):
-        return self.dest.getvalue().splitlines()
-
-    def failures(self):
-        """Each `Failed` event of the runs so far, as `<target>: <message>` (a file's: `<name>: ...`)."""
-        return [f"{event.path.name if event.path else event.target}: {event.error}"
-                for event in self.events if isinstance(event, Failed)]
-
-    def listed(self):
-        """Each `(target, category)` of a target that ended done, from the run's last snapshot."""
-        state = self.states[-1]
-        return {(row.text, name) for row in state.targets if row.phase is Phase.DONE
-                for name in row.categories}
-
-    def target_dir(self, code, name):
-        return self.home / _home.MEDIA / code / name
 
 
 class GroupsTest(EngineCase):
@@ -188,9 +58,9 @@ class GroupsTest(EngineCase):
         seen, opened = [], []
         real_download, real_open = job.download, _home.open
 
-        def download(run, target, row, options):
+        async def download(run, target, row, options):
             seen.append((target.value, options.again))
-            return real_download(run, target, row, options)
+            return await real_download(run, target, row, options)
 
         def opening(home):
             opened.append(home)
@@ -202,7 +72,7 @@ class GroupsTest(EngineCase):
                   (Target("aaa:b", kind="user"), Options()), (Target("bbb:c", kind="user"), Options())]
         stop = _run.Stop()
         with mock.patch.object(job, "download", download), mock.patch.object(_home, "open", opening):
-            reports = engine._run(chosen, stop=stop)
+            reports = fakes.run_targets(engine, chosen, stop).targets
         self.assertEqual(seen, [("a", True), ("b", False), ("c", False)])
         self.assertEqual(opened, [self.home])
         self.assertEqual([report.target for report in reports], [target for target, _ in chosen])
@@ -404,6 +274,104 @@ class HttpTest(EngineCase):
         self.assertTrue(any(line.endswith("aaa:a: stopped") for line in self.lines()), self.lines())
 
 
+class ChannelTest(unittest.TestCase):
+    """The run's event channel: producers on the loop wait for room; `END` comes last."""
+
+    def events(self, count, *, then=None):
+        async def work(emit, stop):
+            for number in range(count):
+                await emit(Skipped(Target("aaa:a"), "posts", str(number)))
+            if then is not None:
+                await then()
+
+        return _run.Run(work, name="events")
+
+    def test_every_event_reaches_the_reader_before_the_end(self):
+        # E10: the events a full channel held back are read before the end, never lost behind it.
+        count = _run.QUEUE + 100
+        run = self.events(count)
+        self.assertEqual([event.post for event in run], [str(number) for number in range(count)])
+        self.assertEqual(run.report.skipped, count)
+
+    def test_a_reader_that_doesnt_read_holds_at_most_a_channel_of_events(self):
+        # E11: past `QUEUE` events, the producer waits on the loop instead of queueing more.
+        run = self.events(4 * _run.QUEUE)
+        reading = iter(run)
+        next(reading)
+        deadline = time.monotonic() + 10
+        while not run._channel._waiting and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(run._channel._waiting, "the producer never waited for room")
+        self.assertEqual(len(run._channel), _run.QUEUE)
+        self.assertEqual(len(list(reading)), 4 * _run.QUEUE - 1)
+
+
+class PacingTest(EngineCase):
+    """A run read by a script: a slow reader paces it, and `suspend` holds every new job."""
+
+    def setUp(self):
+        super().setUp()
+        self.listed = []
+        test = self
+
+        class Many(Source):
+            code, name, domains, api, folder, key = "mny", "Many", ("mny.example",), 1, "", "{post}"
+
+            @target("mny:{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                for number in range(20):
+                    test.listed.append(number)
+                    # Dated, so no post is held back for its day.
+                    yield Post(str(number), [File(f"{CDN}/{number}.jpg", name=f"{number}.jpg")],
+                               date=1767312000)
+
+        self.Many = Many
+
+    def run_of(self):
+        async def work(emit, stop):
+            engine = Engine(home=self.home, sources={"mny": self.Many}, emit=emit, stop=stop)
+            await engine.run_download(["mny:example_user"])
+
+        return _run.Run(work, name="paced")
+
+    def until(self, condition):
+        deadline = time.monotonic() + 10
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, "timed out")
+            time.sleep(0.01)
+
+    def test_a_reader_that_stops_reading_pauses_the_listing(self):
+        fakes.run_targets(Engine(home=self.home, sources={"mny": self.Many}),
+                          [(Target("mny:example_user", kind="user"), Options())], _run.Stop())
+        self.listed.clear()
+        self.enterContext(mock.patch.object(_run, "QUEUE", 2))
+        run = self.run_of()
+        reading = iter(run)
+        next(reading)
+        self.until(lambda: run._channel._waiting)
+        # Every post is saved, so each is one `Skipped`: the listing waits for the reader.
+        self.assertLess(len(self.listed), 20)
+        self.assertEqual(len(list(reading)), 19)
+        self.assertEqual(len(self.listed), 20)
+
+    def test_a_suspended_run_starts_no_job_until_it_resumes(self):
+        run = self.run_of()
+        run.suspend()
+        got = []
+        reader = threading.Thread(target=lambda: got.extend(run), daemon=True)
+        reader.start()
+        self.addCleanup(reader.join, 10)
+        time.sleep(0.3)
+        self.assertEqual((self.requests, self.listed), ([], []))
+        run.resume()
+        reader.join(10)
+        self.assertEqual(run.report.saved, 20)
+
+
 class CtrlCTest(unittest.TestCase):
     def test_the_first_ctrl_c_stops_gracefully_and_the_second_interrupts(self):
         """D8: the first only sets `soon`, so the running downloads finish; the second stops now."""
@@ -437,6 +405,20 @@ class ClientTest(EngineCase):
         source = make_source("aaa", lambda site: events.append(site.client), connect=connect)
         self.run_engine(source, targets=["aaa:a", "aaa:b"])
         self.assertEqual(events, ["enter", "client", "client", "exit"])
+
+    def test_an_error_of_connects_exit_is_reported(self):
+        # E16: the targets were saved, but a client that didn't close is the run's failure.
+        @contextmanager
+        def connect(self, site):
+            yield "client"
+            raise RuntimeError("the client didn't close")
+
+        files = [File(f"{CDN}/a.jpg", name="a.jpg")]
+        report = self.report(make_source("aaa", connect=connect, files=files), targets=["aaa:a"])
+        self.assertTrue(report.ok)
+        [failed] = [event for event in self.events if isinstance(event, Failed)]
+        self.assertEqual((str(failed.target), str(failed.error)),
+                         ("aaa", "unexpected RuntimeError: the client didn't close"))
 
     def test_async_connect_run_and_fetch_share_one_loop(self):
         loops = []
@@ -529,6 +511,36 @@ class EngineLoginTest(EngineCase):
         self.assertIn("With the country code, such as +44", "\n".join(self.lines()))
 
 
+class OffTheLoopTest(EngineCase):
+    def test_flnd_db_and_the_disk_are_never_read_or_written_on_the_loop(self):
+        # flnd.db's connection waits up to 30 s for another process's lock: on the loop, that
+        # would stall every transfer of the run.
+        on_loop = []
+
+        def spied(name, real):
+            def call(*args, **kwargs):
+                try:
+                    asyncio.get_running_loop()
+                    on_loop.append(name)
+                except RuntimeError:
+                    pass
+                return real(*args, **kwargs)
+            return call
+
+        names = [name for name in vars(_home.Home) if not name.startswith("_")
+                 and callable(getattr(_home.Home, name))]
+        for name in names:
+            self.enterContext(mock.patch.object(_home.Home, name,
+                                                spied(name, getattr(_home.Home, name))))
+        self.enterContext(mock.patch.object(job, "_on_disk", spied("stat", job._on_disk)))
+        files = [File(f"{CDN}/a.jpg", name="a.jpg"), File(f"{CDN}/b.txt", name="b.txt")]
+        engine = Engine(home=self.home, sources={"aaa": make_source("aaa", files=files)})
+        engine.download(["aaa:example_user"], sync=True)
+        engine.sync()
+        engine.retry()
+        self.assertEqual(on_loop, [])
+
+
 class ApiTest(EngineCase):
     """The engine API of redesign B1: what `src/__init__.py` exports, `Report`, and `download`'s options."""
 
@@ -537,20 +549,6 @@ class ApiTest(EngineCase):
 
     def saved(self):
         return fakes.targets(self.home)
-
-    def test_flnd_exports_exactly_the_library(self):
-        import flnd
-
-        self.assertEqual(sorted(flnd.__all__), [
-            "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure",
-            "FileState", "Flnd", "HoldState", "Installed", "Login", "LoginError", "NetworkError",
-            "NotFound", "Phase", "Planned", "Record", "Report", "Run", "Saved",
-            "SiteError", "Skipped", "SourceError", "State", "Status", "Stopped", "Target",
-            "TargetState", "ToolError", "Tracked", "UsageError", "__version__", "open",
-        ])
-        self.assertFalse(hasattr(Engine, "LoginError"))
-        self.assertFalse(hasattr(Engine, "run"))
-        self.assertFalse(hasattr(Engine(home=self.home), "failed"))
 
     def test_report_files_failed_and_ok(self):
         good, bad = Target("aaa:good", kind="user"), Target("aaa:bad", kind="user")
@@ -625,11 +623,11 @@ class ApiTest(EngineCase):
         self.assertFalse((self.home / _home.DB).exists())
         # Without --from the same link downloads whole.
         runs = []
-        def run(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
+        async def run(runner, chosen, *, depth=0):
             runs.extend(options for _, options in chosen)
             return [TargetReport(target, (), 0) for target, _ in chosen]
 
-        with mock.patch.object(Engine, "_run", run):
+        with mock.patch.object(_Runner, "run", run):
             self.assertTrue(engine.download(["https://www.instagram.com/p/C1abcDEFghi/"]).ok)
         self.assertEqual(runs, [Options()])
 
@@ -711,285 +709,53 @@ class ApiLoginTest(EngineCase):
         self.assertFalse(any("not logged in" in line for line in self.lines()))
 
 
-class QueryAndLimitDryTest(EngineCase):
-    """Query targets, target-yielding routes, `--limit`, `--dry`, and early close."""
+class LoginStaysAtHomeTest(EngineCase):
+    """twt through the engine: what its API and its media servers each receive, with a `ct0`
+    that the site rotates (moved from tests/test_twt.py, which plugin API 2 replaces)."""
 
-    def _query_source(self, *, closed: list[bool]):
-        class Searchable(Source):
-            code, name, domains = "srch", "Searchable", ("srch.example",)
-            api = 1
+    def setUp(self):
+        super().setUp()
+        from flnd.sources.twt import QUERIES
 
-            @target("srch:{id:\\d+}")
-            def post(self, site, id):
-                return id
+        def url(query):
+            return f"https://x.com/i/api/graphql/{QUERIES[query]}/{query}"
 
-            @post.category
-            def photo(self, site, id):
-                yield Post(id, [File(f"{CDN}/{id}.jpg", name=f"{id}.jpg")])
+        jar = [{"name": name, "value": value, "domain": ".x.com", "path": "/"}
+               for name, value in {"auth_token": "secret", "ct0": "old"}.items()]
+        _home.save(self.home, "twt", _cookies.Jar(jar))
+        user = {"data": {"user": {"result": {"rest_id": "42"}}}}
+        self.routes[url("UserByScreenName")] = _net.reply(
+            200, json=user, headers={"set-cookie": "ct0=new; Domain=x.com; Path=/"})
+        media = [{"type": "photo", "media_url_https": "https://pbs.twimg.com/media/p.jpg"},
+                 {"type": "video", "video_info": {"variants": [
+                     {"content_type": "video/mp4", "bitrate": 9,
+                      "url": "https://video.twimg.com/v/v.mp4"}]}}]
+        legacy = {"id_str": "100", "user_id_str": "42", "extended_entities": {"media": media},
+                  "created_at": "Mon Nov 09 10:00:00 +0000 2026"}
+        self.routes[url("TweetResultByRestId")] = lambda request: _net.reply(200, json={
+            "data": {"tweetResult": {"result": {"__typename": "Tweet", "rest_id": "100",
+                                                "legacy": legacy}}}})
 
-            @post.category
-            def extra(self, site, id):
-                yield Post(id, [File(f"{CDN}/{id}_extra.jpg", name=f"{id}_extra.jpg")])
+    def test_media_servers_never_see_the_login_and_the_api_sees_the_refreshed_token(self):
+        from flnd.sources.twt import TWITTER_BEARER, Twitter
 
-            @target("srch:list/{name}", discovers=True)
-            def listing(self, site, name):
-                yield Target("srch:1", kind="post")
-                yield "srch:2"
-
-            @target("srch?{query}")
-            def query(self, site, query: str):
-                try:
-                    if "action" in query:
-                        yield Target("srch:1", kind="post")
-                        yield Target("srch:2", kind="post")
-                        yield Target("srch:3", kind="post")
-                    if "comedy" in query:
-                        yield Target("srch:2", kind="post")
-                        yield Target("srch:4", kind="post")
-                finally:
-                    closed.append(True)
-
-        return Searchable
-
-    def test_query_route_dedupes_and_respects_from(self):
-        closed = []
-        src = self._query_source(closed=closed)
-        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
-        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
-        self.routes[f"{CDN}/3.jpg"] = _net.reply(200, content=b"3")
-        self.routes[f"{CDN}/4.jpg"] = _net.reply(200, content=b"4")
-        engine = Engine(home=self.home, sources={"srch": src})
-
-        report = engine.download(["srch?action comedy"], categories="photo", limit=4)
-        self.assertTrue(report.ok)
-        self.assertEqual([r.target.value for r in report.targets], ["1", "2", "3", "4"])
-        self.assertEqual(len(closed), 1)
-        self.assertFalse((self.target_dir("srch", "1") / "extra").exists())
-
-    def test_limit_and_stop_close_generator_early(self):
-        closed = []
-        src = self._query_source(closed=closed)
-        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
-        engine = Engine(home=self.home, sources={"srch": src})
-
-        # --limit 1 on query route stops after 1 target and closes the generator.
-        report = engine.download(["srch?action"], categories="photo", limit=1)
-        self.assertEqual(len(report.targets), 1)
-        self.assertEqual(closed, [True])
-
-    def test_again_preserves_flag_for_normal_and_query_targets(self):
-        seen_options: list[Options] = []
-        src = self._query_source(closed=[])
-        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
-        engine = Engine(home=self.home, sources={"srch": src})
-        orig_download = job.download
-
-        def spy(run, target, board, options):
-            seen_options.append(options)
-            return orig_download(run, target, board, options)
-
-        with mock.patch("flnd.engine.job.download", side_effect=spy):
-            engine.download(["srch:1", "srch?action"], categories="photo", limit=1, again=True)
-        self.assertTrue(seen_options)
-        self.assertTrue(all(opt.again for opt in seen_options))
-
-    def test_dry_run_on_query_and_normal_target_writes_nothing(self):
-        closed = []
-        src = self._query_source(closed=closed)
-        engine = Engine(home=self.home, sources={"srch": src})
-
-        report = engine.download(["srch?action"], categories="photo", limit=2, dry=True)
-        self.assertTrue(report.ok)
-        output = "\n".join(self.lines())
-        self.assertIn("srch:1", output)
-        self.assertIn("srch:2", output)
-        self.assertFalse((self.home / _home.DB).exists())
-        self.assertFalse((self.home / _home.DB).exists())
-        self.assertFalse((self.home / _home.MEDIA).exists())
-
-        report_normal = engine.download(["srch:1"], categories="photo", dry=True)
-        self.assertTrue(report_normal.ok)
-        self.assertIn("1.jpg", "\n".join(self.lines()))
-        self.assertFalse((self.home / _home.MEDIA).exists())
-
-    def test_limit_on_normal_target_and_target_yielding_route(self):
-        class Multi(Source):
-            code, name, domains = "mlt", "Multi", ("mlt.example",)
-            api = 1
-
-            @target("mlt:{user}")
-            def user(self, site, user):
-                return user
-
-            @user.category
-            def posts(self, site, user):
-                for n in range(1, 5):
-                    yield Post(str(n), [File(f"{CDN}/{n}.jpg", name=f"{n}.jpg")])
-
-        for n in range(1, 5):
-            self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
-        engine = Engine(home=self.home, sources={"mlt": Multi})
-        report = engine.download(["mlt:example_user"], categories="all", limit=2)
-        self.assertTrue(report.ok)
-        self.assertEqual(len(report.targets[0].written), 2)
-
-        closed = []
-        src = self._query_source(closed=closed)
-        engine2 = Engine(home=self.home, sources={"srch": src})
-        report2 = engine2.download(["srch:list/all"], categories="all", limit=1)
-        self.assertTrue(report2.ok)
-        self.assertTrue((self.target_dir("srch", "1") / "photo" / "1.jpg").is_file())
-        self.assertFalse((self.target_dir("srch", "2") / "photo" / "2.jpg").exists())
-
-
-class SyncedQueryTest(EngineCase):
-    """Synced queries: 25 cap, known targets marked seen, `--dry`, Ctrl-C / `--limit` close, failing route."""
-
-    def _paged_source(self, pages, *, closed, seen_pages, fail_on=None):
-        class Paged(Source):
-            code, name, domains = "pgd", "Paged", ("pgd.example",)
-            api = 1
-
-            @target("pgd:{id:\\d+}")
-            def post(self, site, id):
-                return id
-
-            @post.category
-            def photo(self, site, id):
-                yield Post(id, [File(f"{CDN}/{id}.jpg", name=f"{id}.jpg")])
-
-            @target("pgd?{query}")
-            def query(self, site, query: str):
-                try:
-                    for page_num, ids in enumerate(pages):
-                        seen_pages.append(page_num)
-                        if fail_on is not None and query == fail_on:
-                            raise RuntimeError("search failed")
-                        for item_id in ids:
-                            yield Target(f"pgd:{item_id}", kind="post")
-                finally:
-                    closed.append(True)
-
-        return Paged
-
-    def test_30_new_results_start_25_and_leave_5_for_next_sync(self):
-        pages = [list(range(1, 16)), list(range(16, 31))]
-        closed, seen_pages = [], []
-        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
-        for n in range(1, 31):
-            self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
-        engine = Engine(home=self.home, sources={"pgd": src})
-        # Save the query as synced with 0 initial results by patching pages for initial download,
-        # or download --sync with limit=0? No, download --sync with 1st item, or toggle after dry?
-        # Even simpler: record the synced query via download --sync on an empty page, then sync with 30 results!
-        empty_src = self._paged_source([], closed=[], seen_pages=[])
-        Engine(home=self.home, sources={"pgd": empty_src}).download(
-            ["pgd?cats"], categories="photo", sync=True
-        )
-
-        report1 = engine.sync()
-        self.assertTrue(report1.ok)
-        self.assertEqual(len(report1.targets[0].written), 25)
-        self.assertEqual(closed, [True])
-        self.assertEqual(len(fakes.targets(self.home)["pgd:cats"].seen), 25)
-
-        closed.clear()
-        seen_pages.clear()
-        pages[:] = [list(range(31, 36)), *pages]
-        for n in range(31, 36):
-            self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
-        report2 = engine.sync()
-        self.assertTrue(report2.ok)
-        self.assertEqual(len(report2.targets[0].written), 5)
-        # Stopped at pgd:1 on page 1 without asking for page 2.
-        self.assertEqual(seen_pages, [0, 1])
-        self.assertEqual(len(fakes.targets(self.home)["pgd:cats"].seen), 30)
-
-    def test_already_known_target_is_marked_seen_and_not_touched(self):
-        pages = [[1, 2]]
-        closed, seen_pages = [], []
-        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
-        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
-        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
-        engine = Engine(home=self.home, sources={"pgd": src})
-        # User already downloaded pgd:1 (not synced).
-        engine.download(["pgd:1"], categories="photo")
-        empty_src = self._paged_source([], closed=[], seen_pages=[])
-        Engine(home=self.home, sources={"pgd": empty_src}).download(
-            ["pgd?cats"], categories="photo", sync=True
-        )
-
-        self.requests.clear()
-        report = engine.sync()
-        self.assertTrue(report.ok)
-        # Only pgd:2 was downloaded; pgd:1 was not touched and was marked seen.
-        self.assertEqual([p.name for p in report.targets[0].written], ["2.jpg"])
-        self.assertEqual(fakes.targets(self.home)["pgd:cats"].seen, ["pgd:1", "pgd:2"])
-
-    def test_dry_lists_targets_and_marks_no_result_seen(self):
-        pages = [[1, 2]]
-        closed, seen_pages = [], []
-        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
-        engine = Engine(home=self.home, sources={"pgd": src})
-        report = engine.download(["pgd?cats"], categories="photo", dry=True, sync=True)
-        self.assertTrue(report.ok)
-        self.assertFalse((self.home / _home.DB).exists())
-
-    def test_ctrl_c_and_limit_close_generator_and_keep_partial_seen(self):
-        pages = [[1], [2], [3]]
-        closed, seen_pages = [], []
-        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
-        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
-        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
-        engine = Engine(home=self.home, sources={"pgd": src})
-        # --limit 1 stops after page 0 and closes the generator without asking for page 1.
-        report = engine.download(["pgd?cats"], categories="photo", limit=1, sync=True)
-        self.assertTrue(report.ok)
-        self.assertEqual(seen_pages, [0])
-        self.assertEqual(closed, [True])
-        self.assertEqual(fakes.targets(self.home)["pgd:cats"].seen, ["pgd:1"])
-
-        # Ctrl-C during item 2 stops before page 2 and keeps item 1 seen.
-        closed.clear()
-        seen_pages.clear()
-        real_download = job.download
-        stop_ref: list[_run.Stop] = []
-        real_stopping = _run.stopping
-
-        @contextmanager
-        def capture_stopping(state=None):
-            with real_stopping(state) as stop:
-                stop_ref.append(stop)
-                yield stop
-
-        def stop_on_second(run, child, board, opts):
-            if child.value == "2":
-                stop_ref[0].soon.set()
-            return real_download(run, child, board, opts)
-
-        with mock.patch("flnd.engine.job.download", stop_on_second), \
-                mock.patch("flnd.engine.core.stopping", capture_stopping), \
-                self.assertRaises(KeyboardInterrupt):
-            engine.download(["pgd?dogs"], categories="photo", sync=True)
-        self.assertEqual(seen_pages, [0, 1])
-        self.assertEqual(closed, [True])
-        self.assertEqual(fakes.targets(self.home)["pgd:dogs"].seen, ["pgd:1"])
-
-    def test_failing_route_fails_target_and_next_target_still_runs(self):
-        pages = [[1]]
-        closed, seen_pages = [], []
-        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages, fail_on="bad")
-        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
-        empty_src = self._paged_source([], closed=[], seen_pages=[])
-        Engine(home=self.home, sources={"pgd": empty_src}).download(
-            ["pgd?bad", "pgd?good"], categories="photo", sync=True
-        )
-
-        engine = Engine(home=self.home, sources={"pgd": src})
-        report = engine.sync()
-        self.assertFalse(report.ok)
-        self.assertEqual([str(t) for t in report.failed], ["pgd?bad"])
-        self.assertEqual([p.name for p in report.targets[1].written], ["1.jpg"])
+        self.run_engine(Twitter, targets=["twt:example_handle", "twt:https://x.com/example_handle/status/100"],
+                        options=Options(categories=("profile",)))
+        api = [request for request in self.requests if request.url.host == "x.com"]
+        media = [request for request in self.requests if request.url.host.endswith("twimg.com")]
+        self.assertEqual(sorted(request.url.host for request in media), ["pbs.twimg.com", "video.twimg.com"])
+        for request in media:
+            with self.subTest(host=request.url.host):
+                self.assertNotIn("authorization", request.headers)
+                self.assertNotIn("x-csrf-token", request.headers)
+                self.assertNotIn("cookie", request.headers)
+        self.assertEqual({request.headers["authorization"] for request in api}, {TWITTER_BEARER})
+        # The first request carries the token it was saved with; x.com rotated it, and the rest carry the new one.
+        tokens = [request.headers["x-csrf-token"] for request in api]
+        self.assertEqual((tokens[0], set(tokens[1:]), len(tokens) >= 2), ("old", {"new"}, True))
+        self.assertIn("ct0=new", api[1].headers["cookie"])
+        self.assertNotIn("ct0=old", api[1].headers["cookie"])
+        self.assertTrue(any(path.name.endswith("_100_0.jpg") for path in self.target_dir("twt", "100").rglob("*")))
 
 
 if __name__ == "__main__":

@@ -39,7 +39,7 @@ import kit
 
 from flnd.engine import home as _home
 from flnd.engine import run as _run
-from flnd.engine.core import Engine
+from flnd.engine.core import Engine, _drive
 from flnd.engine.options import Options
 from flnd.source import File, Post, Site, Source, Target, target
 from flnd.ui.log import ui
@@ -145,9 +145,14 @@ def run(home: Path, *, again: bool = False) -> float:
     engine = Engine(home=home, sources={"bnc": Bench})
     stop = _run.Stop()
     options = Options(categories=("posts",), stop_at_saved=again)
+    chosen = [(t, options) for t in engine.resolve(["bnc:example_user"])]
+
+    async def command() -> None:
+        async with engine._live(), engine._running(stop) as runner:
+            await runner.run(chosen)
+
     start = time.perf_counter()
-    for _ in engine._run([(t, options) for t in engine.resolve(["bnc:example_user"])], stop=stop):
-        pass
+    _drive(command())
     return time.perf_counter() - start
 
 

@@ -22,13 +22,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fakes import download, fetch
+from fakes import EngineCase, download, fetch, make_source
 from test_commands import FlndCase
-from test_engine import EngineCase, make_source
 
 import flnd
 from flnd import sources
-from flnd.engine import job
+from flnd.engine import crawl as job
 from flnd.errors import (
     Blocked,
     Changed,

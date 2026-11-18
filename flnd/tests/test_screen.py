@@ -1,4 +1,4 @@
-"""The run's screen (`flnd.ui.screen`) and the snapshot it draws (`flnd.engine.job.Tally`).
+"""The run's screen (`flnd.ui.screen`) and the snapshot it draws (`flnd.engine.run.Tally`).
 
 The block is drawn into pyte, a terminal emulator, and read back as the cells a person sees.
 """
@@ -23,7 +23,7 @@ from rich.cells import cell_len
 from rich.console import Console
 
 import flnd
-from flnd.engine import job
+from flnd.engine import run as job
 from flnd.engine.events import FileState, HoldState, Phase, State, TargetState
 from flnd.source import Target
 from flnd.ui import screen

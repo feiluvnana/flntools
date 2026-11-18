@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest import mock
 
-from test_engine import EngineCase, make_source
+from fakes import EngineCase, make_source
 
 from flnd.engine import home, jobs, save
 from flnd.engine.events import Failed, Saved, Skipped
@@ -727,26 +727,27 @@ COMMIT = (Store, "commit")
 
 def probe(case) -> list[float]:
     """The stalls of each run's loop, from a probe that wakes every 5 ms, in real time."""
-    from flnkit import loop as _loop
+    from flnd.engine import core
 
     stalls: list[float] = []
-    real = _loop.Loop._started
+    real = core.shared_browser
 
-    def started(self):
-        made = real(self)
-        if not getattr(self, "_probed", False):
-            self._probed = True
+    @contextlib.asynccontextmanager
+    async def probed(settings):
+        async def wake():
+            while True:
+                at = time.perf_counter()
+                await asyncio.sleep(0.005)
+                stalls.append(time.perf_counter() - at - 0.005)
 
-            async def wake():
-                while True:
-                    at = time.perf_counter()
-                    await asyncio.sleep(0.005)
-                    stalls.append(time.perf_counter() - at - 0.005)
+        waking = asyncio.get_running_loop().create_task(wake())
+        try:
+            async with real(settings):
+                yield
+        finally:
+            waking.cancel()
 
-            asyncio.run_coroutine_threadsafe(wake(), made)
-        return made
-
-    case.enterContext(mock.patch.object(_loop.Loop, "_started", started))
+    case.enterContext(mock.patch.object(core, "shared_browser", probed))
     return stalls
 
 

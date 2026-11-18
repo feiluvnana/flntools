@@ -176,8 +176,11 @@ with flnd.open(home) as fl:
 ### Reading a run
 
 - **Breaking out of the loop pauses the run.** Iterating again goes on where it was, `wait()`
-  finishes it, and leaving the `with` stops it. The listing waits while the script handles an
-  event, so events never pile up in memory.
+  finishes it, and leaving the `with` stops it.
+- **A slow reader paces the run.** At most 256 events wait for the reader; past that, the
+  run's next event waits for room, and the run waits with it, so events never pile up in
+  memory. Nothing waits for room while it holds a place another file needs: the transfers
+  already started finish their bytes meanwhile.
 - **`run.stop()`** asks the run to stop as a first Ctrl-C does: listing stops, the files in
   progress finish, and the run ends normally with `report.stopped` set.
 - **Ctrl-C** while a script reads a run on the main thread works in three stages: the first

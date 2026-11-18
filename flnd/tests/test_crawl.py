@@ -1,10 +1,8 @@
-"""The job (src/engine/job.py): one target of a ported source, from its route to its history
-rows.
+"""The crawl (src/engine/crawl.py): one target, from its route to its history rows; searches.
 
-Run through the engine with tests/example_source.py on `flnkit.net.fake`, the clocks of
-`flnkit.net` and src/engine/site.py faked, and through `job.posts` on a `FakeSite` for the listing rules. Also the
-"download Chromium?" question asked up front, an expired link's refresh, and both Ctrl-Cs (with
-a CDN that blocks on events, and the run on a thread of its own). No network, no browser.
+Run through the engine with tests/example_source.py on `flnkit.net.fake` and a fake clock, and
+through `crawl.posts` on a `FakeSite` for the listing rules: smart sync, early stops, gaps,
+lazy posts, an expired link's refresh, both Ctrl-Cs, and searches. No network, no browser.
 """
 
 import asyncio
@@ -14,23 +12,24 @@ import sqlite3
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from unittest import mock
 
 import fakes
 from example_source import API, CDN, FIXTURES, Example
-from fakes import FakeSite, collect
+from fakes import EngineCase, FakeSite, collect, make_source
 from test_commands import FlndCase
-from test_engine import EngineCase, make_source
 
 from flnd import sources
 from flnd.engine import core as engine_module
+from flnd.engine import crawl as job
 from flnd.engine import home as _home
-from flnd.engine import job
 from flnd.engine import jobs as jobs_module
 from flnd.engine import run as _run
 from flnd.engine.core import Engine
+from flnd.engine.events import Skipped
 from flnd.engine.options import Options
 from flnd.errors import UsageError
 from flnd.source import (
@@ -159,7 +158,7 @@ class CategoriesTest(JobCase):
 class FromCommandTest(FlndCase):
     def test_from_with_a_post_link_exits_2_through_the_command(self):
         with mock.patch.dict(sources.SOURCES, {"exm": Example}), \
-                mock.patch.object(engine_module.Engine, "_run") as run:
+                mock.patch.object(engine_module._Runner, "run") as run:
             code, _, out = self.run_app("download", "--only", "posts", "https://www.example.com/p/C1abc/")
         self.assertEqual(code, 2)
         self.assertIn("--only applies to profiles and chats; exm:C1abc is one post", out)
@@ -416,7 +415,13 @@ class TimeTest(unittest.TestCase):
     def listed(self, source, options):
         target = Target(f"{source.code}:example_user", kind="user")
         site = FakeSite(target, options=options)
-        return [post.id for post in job.posts(source(), site, target, options, run_async=lambda coro: None)]
+        async def now(fn, *args):
+            return fn(*args)
+
+        async def listed():
+            return [post.id async for post in job.posts(source(), site, target, options, call=now)]
+
+        return asyncio.run(listed())
 
     def feed(self, newest_first, finished):
         days = [2020, 2021, 2022, 2026, 2026, 2025, 2025, 2025, 2025, 2025, 2025, 2024]
@@ -705,7 +710,8 @@ class AsyncTest(JobCase):
                     yield Post(str(number), [File(f"{CDN}/{chat}/{number}.jpg")], date=1767312000 - number)
 
         self.assertEqual(self.run_engine(Chats, targets=["cht:examplechannel"]), 4)
-        self.assertEqual(set(threads), {"flnd-loop"})
+        # The run's one loop: this thread's, outside a `Run`.
+        self.assertEqual(set(threads), {threading.current_thread().name})
         self.assertFalse([thread for thread in threading.enumerate() if thread.name.endswith("-saves")])
 
 
@@ -868,22 +874,6 @@ class RefreshTest(JobCase):
         self.assertEqual(str(report.targets[0].error), job.STOPPED)
         self.assertEqual(self.listings, 2)
 
-    def test_a_refresh_cut_by_the_first_ctrl_c_answers_no_link_and_one_by_the_second_raises(self):
-        stop = _run.Stop()
-
-        def files():
-            raise KeyboardInterrupt
-
-        stop.soon.set()
-        refresh = job._Refresh(Post("A1", files), stop)
-        refresh.run()
-        self.assertTrue(refresh.done.is_set())
-        self.assertEqual((refresh.files, refresh.error), (None, None))
-        stop.now.set()
-        second = job._Refresh(Post("A1", files), stop)
-        with self.assertRaises(KeyboardInterrupt):
-            second.run()
-        self.assertTrue(second.done.is_set())
 
     def test_a_post_with_its_files_listed_is_not_refreshed(self):
         self.routes[f"{CDN}/C1abc_0.jpg"] = _net.reply(403)
@@ -1034,43 +1024,6 @@ class CtrlCTest(JobCase):
         self.assertEqual(last.headers["if-range"], '"b1"')
         self.assertEqual(sorted(path.name for path in folder.iterdir()), ["big.7z"])
 
-    def test_two_runs_on_one_home_save_a_file_once(self):
-        """A second run finds the file's part locked, skips it, and the first run writes its row."""
-        sent, gate = threading.Event(), threading.Event()
-        self.addCleanup(gate.set)
-
-        class Big(Source):
-            code, name, domains = "big", "Big", ("example.com",)
-            api = 1
-            filename = "{date}_{post}{index}"
-            folder = ""
-
-            @target("big:{user}")
-            def user(self, site, user):
-                return user
-
-            @user.category
-            def posts(self, site, user):
-                yield Post("1", [File(f"{CDN}/big.7z", name="big.7z")])
-
-        body = b"0123456789"
-        self.routes[f"{CDN}/big.7z"] = lambda request: _net.reply(
-            200, headers={"Content-Length": "10"}, chunks=Cut(body, gate=gate, sent=sent))
-        thread, outcome = self.start(Big, "big:example_user")
-        self.until(sent.is_set)
-        # The first run holds the part, half written: the second run, on the same home, skips it.
-        second = self.report(Big, targets=["big:example_user"])
-        self.assertEqual(second.files, 0)
-        self.assertIn("big.7z: being saved by another run", self.dest.getvalue())
-        gate.set()
-        thread.join(10)
-        self.assertEqual(outcome["report"].files, 1)
-        folder = self.target_dir("big", "example_user")
-        self.assertEqual((folder / "big.7z").read_bytes(), body)
-        self.assertEqual(sorted(path.name for path in folder.iterdir()), ["big.7z"])
-        self.assertEqual(list(self.history()), ["big:1_0"])
-        self.assertEqual(len(self.fetched(f"{CDN}/big.7z")), 1)
-
 
 class HeadTest(JobCase):
     """Smart sync, the head: a sync stops at the newest post an earlier run saw, and the post after it."""
@@ -1093,8 +1046,11 @@ class HeadTest(JobCase):
             def posts(self, site, user):
                 for post_id, day in list(test.posts):
                     test.listed.append(post_id)
-                    yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 1, day))
+                    made = Pinned if post_id in test.pinned else Post
+                    yield made(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 1, day))
 
+        # The posts the site shows above its date order.
+        self.pinned = set()
         self.engine = Engine(home=self.home, sources={"hed": Feed})
 
     def heads(self):
@@ -1129,6 +1085,14 @@ class HeadTest(JobCase):
         # The newest post by its day is the head now, not the pinned one listed first.
         self.assertEqual(self.heads(), {"posts": "n1"})
 
+    def test_posts_pinned_above_new_ones_never_end_the_sync_nor_become_the_head(self):
+        self.engine.download(["hed:example_user"], categories="all")
+        # The site pinned the old head and the post after it above two new posts.
+        self.posts, self.pinned = [("p3", 3), ("p2", 2), ("n1", 5), ("n0", 4), ("p1", 1)], {"p3", "p2"}
+        report = self.engine.sync(["hed:example_user"])
+        self.assertEqual(sorted(path.stem for path in report.targets[0].written), ["n0_0", "n1_0"])
+        self.assertEqual(self.heads(), {"posts": "n1"})
+
     def test_parts_of_one_post_count_once(self):
         # A source yielding a photo post as one post per photo, all of one id (TikTok's).
         self.posts = [("c1", 5), ("c1", 5), ("c1", 5), ("p3", 3)]
@@ -1141,6 +1105,96 @@ class HeadTest(JobCase):
         self.posts = [("n1", 5), *self.posts]
         self.engine.download(["hed:example_user"], categories="all", limit=1)
         self.assertEqual(self.heads(), {"posts": "p3"})
+
+
+class RetryOrderTest(JobCase):
+    def test_no_category_is_retried_in_the_routes_tab_before_the_first_one(self):
+        # fbk's `posts` reads the page its route left open: a failure of a later category is
+        # listed again right before that category, never before the first.
+        called = []
+
+        class Tabs(Source):
+            code, name, domains, api, key = "tab", "Tabs", ("example.com",), 1, "{post}"
+
+            @target("tab:{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category(newest_first=True)
+            def posts(self, site, user):
+                called.append("posts")
+                yield Post("p1", [File(f"{CDN}/p1.jpg")], date=datetime.date(2026, 1, 2))
+
+            @user.category(newest_first=True)
+            def photos(self, site, user):
+                called.append("photos")
+                yield Post("f1", [File(f"{CDN}/f1.jpg")], date=datetime.date(2026, 1, 2))
+
+        self.routes[f"{CDN}/f1.jpg"] = _net.reply(403)
+        engine = Engine(home=self.home, sources={"tab": Tabs})
+        engine.download(["tab:example_user"])
+        called.clear()
+        del self.routes[f"{CDN}/f1.jpg"]
+        engine.download(["tab:example_user"])
+        self.assertEqual(called, ["posts", "photos", "photos"])
+        self.assertIn("tab:f1", self.history())
+
+
+class Pinned(Post):
+    """A post the site shows above its date order (plugin API 2's `Post(pinned=True)`)."""
+
+    pinned = True
+
+
+class OnDiskTest(JobCase):
+    def test_a_file_on_disk_whose_key_has_no_row_gets_its_row_and_is_skipped(self):
+        # PLAN 6.3, as after `target clean` without `--media`: the file stays, its row goes.
+        source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")])
+        self.run_engine(source, targets=["aaa:example_user"])
+        self.sql("DELETE FROM files")
+        self.requests.clear()
+        self.assertEqual(self.run_engine(source, targets=["aaa:example_user"]), 0)
+        self.assertEqual(self.fetched(f"{CDN}/a.jpg"), [])
+        row = self.history()["aaa:a.jpg"]
+        self.assertEqual((row["size"], row["hash"], row["post_id"]),
+                         ((self.target_dir("aaa", "example_user") / "a.jpg").stat().st_size,
+                          None, "a.jpg"))
+        self.assertEqual([event.reason for event in self.events if isinstance(event, Skipped)],
+                         ["saved"])
+
+
+class LazyPostTest(JobCase):
+    def test_a_lazy_post_the_site_lost_fails_alone_and_is_never_asked_again(self):
+        asked = []
+
+        def files_of(post_id):
+            def listed():
+                asked.append(post_id)
+                if post_id == "gone":
+                    raise NotFound("the post is gone")
+                return [File(f"{CDN}/{post_id}.jpg")]
+            return listed
+
+        class Lazy(Source):
+            code, name, domains, api, key = "lzy", "Lazy", ("example.com",), 1, "{post}"
+
+            @target("lzy:{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category(newest_first=True)
+            def posts(self, site, user):
+                for post_id in ("gone", "here"):
+                    yield Post(post_id, files_of(post_id), date=datetime.date(2026, 1, 2))
+
+        engine = Engine(home=self.home, sources={"lzy": Lazy}, emit=self.events.append)
+        report = engine.download(["lzy:example_user"])
+        self.assertIsNone(report.targets[0].error)
+        self.assertEqual([path.name for path in report.targets[0].written], ["here_0.jpg"])
+        self.assertEqual(self.failures(), ["lzy:example_user: the post is gone"])
+        asked.clear()
+        engine.download(["lzy:example_user"])
+        self.assertEqual(asked, [])
 
 
 class UnkeyedLazyPostTest(JobCase):
@@ -1473,6 +1527,307 @@ class VerboseTest(EngineCase):
         self.dest.seek(0)
         self.run_engine(self.source, targets=["aaa:example_user"])
         self.assertIn(". skip a.jpg", self.lines())
+
+
+class DiscoveredTest(EngineCase):
+    """Discovered and linked targets run as targets of their own, each on its plugin's instance."""
+
+    def test_a_target_a_route_discovers_runs_on_its_own_plugin(self):
+        # E12: an author's page of one plugin listing a target of another plugin.
+        class Author(Source):
+            code, name, domains, api = "aut", "Author", ("aut.example",), 1
+
+            @target("aut:{name}", discovers=True)
+            def author(self, site, name):
+                yield "bbb:example_creator"
+
+        files = [File(f"{CDN}/a.jpg", name="a.jpg")]
+        self.run_engine(Author, make_source("bbb", files=files), targets=["aut:example_user"])
+        self.assertEqual(self.failures(), [])
+        self.assertTrue((self.target_dir("bbb", "example_creator") / "a.jpg").is_file())
+
+    def test_a_target_a_listing_links_to_sees_its_parents_instance(self):
+        made = []
+
+        class Linking(Source):
+            code, name, domains, api, folder, key = "lnk", "Linking", ("lnk.example",), 1, "", "{path}"
+
+            @target("lnk:{user}")
+            def user(self, site, user):
+                made.append(self)
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                if user == "1":
+                    yield Post("1", [File(f"{CDN}/1.jpg", name="1.jpg")])
+                    yield Target("lnk:2")
+
+        self.run_engine(Linking, targets=["lnk:1"])
+        self.assertEqual(len(made), 2)
+        self.assertIs(made[0], made[1])
+
+
+class QueryAndLimitDryTest(EngineCase):
+    """Query targets, target-yielding routes, `--limit`, `--dry`, and early close."""
+
+    def _query_source(self, *, closed: list[bool]):
+        class Searchable(Source):
+            code, name, domains = "srch", "Searchable", ("srch.example",)
+            api = 1
+
+            @target("srch:{id:\\d+}")
+            def post(self, site, id):
+                return id
+
+            @post.category
+            def photo(self, site, id):
+                yield Post(id, [File(f"{CDN}/{id}.jpg", name=f"{id}.jpg")])
+
+            @post.category
+            def extra(self, site, id):
+                yield Post(id, [File(f"{CDN}/{id}_extra.jpg", name=f"{id}_extra.jpg")])
+
+            @target("srch:list/{name}", discovers=True)
+            def listing(self, site, name):
+                yield Target("srch:1", kind="post")
+                yield "srch:2"
+
+            @target("srch?{query}")
+            def query(self, site, query: str):
+                try:
+                    if "action" in query:
+                        yield Target("srch:1", kind="post")
+                        yield Target("srch:2", kind="post")
+                        yield Target("srch:3", kind="post")
+                    if "comedy" in query:
+                        yield Target("srch:2", kind="post")
+                        yield Target("srch:4", kind="post")
+                finally:
+                    closed.append(True)
+
+        return Searchable
+
+    def test_query_route_dedupes_and_respects_from(self):
+        closed = []
+        src = self._query_source(closed=closed)
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
+        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
+        self.routes[f"{CDN}/3.jpg"] = _net.reply(200, content=b"3")
+        self.routes[f"{CDN}/4.jpg"] = _net.reply(200, content=b"4")
+        engine = Engine(home=self.home, sources={"srch": src})
+
+        report = engine.download(["srch?action comedy"], categories="photo", limit=4)
+        self.assertTrue(report.ok)
+        self.assertEqual([r.target.value for r in report.targets], ["1", "2", "3", "4"])
+        self.assertEqual(len(closed), 1)
+        self.assertFalse((self.target_dir("srch", "1") / "extra").exists())
+
+    def test_limit_and_stop_close_generator_early(self):
+        closed = []
+        src = self._query_source(closed=closed)
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
+        engine = Engine(home=self.home, sources={"srch": src})
+
+        # --limit 1 on query route stops after 1 target and closes the generator.
+        report = engine.download(["srch?action"], categories="photo", limit=1)
+        self.assertEqual(len(report.targets), 1)
+        self.assertEqual(closed, [True])
+
+    def test_again_preserves_flag_for_normal_and_query_targets(self):
+        seen_options: list[Options] = []
+        src = self._query_source(closed=[])
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
+        engine = Engine(home=self.home, sources={"srch": src})
+        orig_download = job.download
+
+        async def spy(run, target, board, options):
+            seen_options.append(options)
+            return await orig_download(run, target, board, options)
+
+        with mock.patch("flnd.engine.crawl.download", spy):
+            engine.download(["srch:1", "srch?action"], categories="photo", limit=1, again=True)
+        self.assertTrue(seen_options)
+        self.assertTrue(all(opt.again for opt in seen_options))
+
+    def test_dry_run_on_query_and_normal_target_writes_nothing(self):
+        closed = []
+        src = self._query_source(closed=closed)
+        engine = Engine(home=self.home, sources={"srch": src})
+
+        report = engine.download(["srch?action"], categories="photo", limit=2, dry=True)
+        self.assertTrue(report.ok)
+        output = "\n".join(self.lines())
+        self.assertIn("srch:1", output)
+        self.assertIn("srch:2", output)
+        self.assertFalse((self.home / _home.DB).exists())
+        self.assertFalse((self.home / _home.DB).exists())
+        self.assertFalse((self.home / _home.MEDIA).exists())
+
+        report_normal = engine.download(["srch:1"], categories="photo", dry=True)
+        self.assertTrue(report_normal.ok)
+        self.assertIn("1.jpg", "\n".join(self.lines()))
+        self.assertFalse((self.home / _home.MEDIA).exists())
+
+    def test_limit_on_normal_target_and_target_yielding_route(self):
+        class Multi(Source):
+            code, name, domains = "mlt", "Multi", ("mlt.example",)
+            api = 1
+
+            @target("mlt:{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                for n in range(1, 5):
+                    yield Post(str(n), [File(f"{CDN}/{n}.jpg", name=f"{n}.jpg")])
+
+        for n in range(1, 5):
+            self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
+        engine = Engine(home=self.home, sources={"mlt": Multi})
+        report = engine.download(["mlt:example_user"], categories="all", limit=2)
+        self.assertTrue(report.ok)
+        self.assertEqual(len(report.targets[0].written), 2)
+
+        closed = []
+        src = self._query_source(closed=closed)
+        engine2 = Engine(home=self.home, sources={"srch": src})
+        report2 = engine2.download(["srch:list/all"], categories="all", limit=1)
+        self.assertTrue(report2.ok)
+        self.assertTrue((self.target_dir("srch", "1") / "photo" / "1.jpg").is_file())
+        self.assertFalse((self.target_dir("srch", "2") / "photo" / "2.jpg").exists())
+
+
+class SyncedQueryTest(EngineCase):
+    """Synced queries: 25 cap, known targets marked seen, `--dry`, Ctrl-C / `--limit` close, failing route."""
+
+    def _paged_source(self, pages, *, closed, seen_pages, fail_on=None):
+        class Paged(Source):
+            code, name, domains = "pgd", "Paged", ("pgd.example",)
+            api = 1
+
+            @target("pgd:{id:\\d+}")
+            def post(self, site, id):
+                return id
+
+            @post.category
+            def photo(self, site, id):
+                yield Post(id, [File(f"{CDN}/{id}.jpg", name=f"{id}.jpg")])
+
+            @target("pgd?{query}")
+            def query(self, site, query: str):
+                try:
+                    for page_num, ids in enumerate(pages):
+                        seen_pages.append(page_num)
+                        if fail_on is not None and query == fail_on:
+                            raise RuntimeError("search failed")
+                        for item_id in ids:
+                            yield Target(f"pgd:{item_id}", kind="post")
+                finally:
+                    closed.append(True)
+
+        return Paged
+
+    def test_three_syncs_of_a_search_of_60_reach_all_60(self):
+        # E3: a sync walks past the targets earlier syncs saw, so each takes the next 25 new ones.
+        pages = [list(range(1, 31)), list(range(31, 61))]
+        src = self._paged_source(pages, closed=[], seen_pages=[])
+        for n in range(1, 61):
+            self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
+        empty_src = self._paged_source([], closed=[], seen_pages=[])
+        Engine(home=self.home, sources={"pgd": empty_src}).download(
+            ["pgd?cats"], categories="photo", sync=True)
+        engine = Engine(home=self.home, sources={"pgd": src})
+        written = [len(engine.sync().targets[0].written) for _ in range(3)]
+        self.assertEqual(written, [25, 25, 10])
+        self.assertEqual(len(fakes.targets(self.home)["pgd:cats"].seen), 60)
+
+    def test_already_known_target_is_marked_seen_and_not_touched(self):
+        pages = [[1, 2]]
+        closed, seen_pages = [], []
+        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
+        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
+        engine = Engine(home=self.home, sources={"pgd": src})
+        # User already downloaded pgd:1 (not synced).
+        engine.download(["pgd:1"], categories="photo")
+        empty_src = self._paged_source([], closed=[], seen_pages=[])
+        Engine(home=self.home, sources={"pgd": empty_src}).download(
+            ["pgd?cats"], categories="photo", sync=True
+        )
+
+        self.requests.clear()
+        report = engine.sync()
+        self.assertTrue(report.ok)
+        # Only pgd:2 was downloaded; pgd:1 was not touched and was marked seen.
+        self.assertEqual([p.name for p in report.targets[0].written], ["2.jpg"])
+        self.assertEqual(fakes.targets(self.home)["pgd:cats"].seen, ["pgd:1", "pgd:2"])
+
+    def test_dry_lists_targets_and_marks_no_result_seen(self):
+        pages = [[1, 2]]
+        closed, seen_pages = [], []
+        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
+        engine = Engine(home=self.home, sources={"pgd": src})
+        report = engine.download(["pgd?cats"], categories="photo", dry=True, sync=True)
+        self.assertTrue(report.ok)
+        self.assertFalse((self.home / _home.DB).exists())
+
+    def test_ctrl_c_and_limit_close_generator_and_keep_partial_seen(self):
+        pages = [[1], [2], [3]]
+        closed, seen_pages = [], []
+        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
+        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
+        engine = Engine(home=self.home, sources={"pgd": src})
+        # --limit 1 stops after page 0 and closes the generator without asking for page 1.
+        report = engine.download(["pgd?cats"], categories="photo", limit=1, sync=True)
+        self.assertTrue(report.ok)
+        self.assertEqual(seen_pages, [0])
+        self.assertEqual(closed, [True])
+        self.assertEqual(fakes.targets(self.home)["pgd:cats"].seen, ["pgd:1"])
+
+        # Ctrl-C during item 2 stops before page 2 and keeps item 1 seen.
+        closed.clear()
+        seen_pages.clear()
+        real_download = job.download
+        stop_ref: list[_run.Stop] = []
+        real_stopping = _run.stopping
+
+        @contextmanager
+        def capture_stopping(state=None):
+            with real_stopping(state) as stop:
+                stop_ref.append(stop)
+                yield stop
+
+        async def stop_on_second(run, child, board, opts):
+            if child.value == "2":
+                stop_ref[0].soon.set()
+            return await real_download(run, child, board, opts)
+
+        with mock.patch("flnd.engine.crawl.download", stop_on_second), \
+                mock.patch("flnd.engine.core.stopping", capture_stopping), \
+                self.assertRaises(KeyboardInterrupt):
+            engine.download(["pgd?dogs"], categories="photo", sync=True)
+        self.assertEqual(seen_pages, [0, 1])
+        self.assertEqual(closed, [True])
+        self.assertEqual(fakes.targets(self.home)["pgd:dogs"].seen, ["pgd:1"])
+
+    def test_failing_route_fails_target_and_next_target_still_runs(self):
+        pages = [[1]]
+        closed, seen_pages = [], []
+        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages, fail_on="bad")
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
+        empty_src = self._paged_source([], closed=[], seen_pages=[])
+        Engine(home=self.home, sources={"pgd": empty_src}).download(
+            ["pgd?bad", "pgd?good"], categories="photo", sync=True
+        )
+
+        engine = Engine(home=self.home, sources={"pgd": src})
+        report = engine.sync()
+        self.assertFalse(report.ok)
+        self.assertEqual([str(t) for t in report.failed], ["pgd?bad"])
+        self.assertEqual([p.name for p in report.targets[1].written], ["1.jpg"])
 
 
 if __name__ == "__main__":

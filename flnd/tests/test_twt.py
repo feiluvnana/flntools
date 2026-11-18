@@ -13,9 +13,7 @@ from datetime import date
 from unittest import mock
 
 from fakes import FakeSite, Seen, collect
-from test_engine import EngineCase
 
-from flnd.engine import home as _home
 from flnd.engine.core import resolve
 from flnd.engine.options import Options
 from flnd.source import LoginError, Request, SiteError, Target, UsageError
@@ -28,8 +26,6 @@ from flnd.sources.twt import (
     read_timeline_page,
     tweet_posts,
 )
-from flnkit import cookies as _cookies
-from flnkit import net as _net
 
 API = "https://x.com/i/api/graphql/"
 USER_ID = "42"
@@ -567,41 +563,7 @@ class SignTest(unittest.TestCase):
                           if name in request.headers], [])
 
 
-class LoginStaysAtHomeTest(EngineCase):
-    """Through the engine: what the API and the media servers each receive, with a `ct0` that rotates."""
-
-    def setUp(self):
-        super().setUp()
-        jar = [{"name": name, "value": value, "domain": ".x.com", "path": "/"}
-               for name, value in {"auth_token": "secret", "ct0": "old"}.items()]
-        _home.save(self.home, "twt", _cookies.Jar(jar))
-        self.routes[url("UserByScreenName")] = _net.reply(
-            200, json=USER, headers={"set-cookie": "ct0=new; Domain=x.com; Path=/"})
-        self.routes[url("TweetResultByRestId")] = lambda request: _net.reply(
-            200, json={"data": {"tweetResult": {"result": tweet("100", [
-                {"type": "photo", "media_url_https": "https://pbs.twimg.com/media/p.jpg"},
-                {"type": "video", "video_info": {"variants": [
-                    {"content_type": "video/mp4", "bitrate": 9, "url": "https://video.twimg.com/v/v.mp4"}]}}])}}})
-
-    def test_media_servers_never_see_the_login_and_the_api_sees_the_refreshed_token(self):
-        self.run_engine(Twitter, targets=["twt:example_handle", "twt:https://x.com/example_handle/status/100"],
-                        options=Options(categories=("profile",)))
-        api = [request for request in self.requests if request.url.host == "x.com"]
-        media = [request for request in self.requests if request.url.host.endswith("twimg.com")]
-        self.assertEqual(sorted(request.url.host for request in media), ["pbs.twimg.com", "video.twimg.com"])
-        for request in media:
-            with self.subTest(host=request.url.host):
-                self.assertNotIn("authorization", request.headers)
-                self.assertNotIn("x-csrf-token", request.headers)
-                self.assertNotIn("cookie", request.headers)
-        self.assertEqual({request.headers["authorization"] for request in api}, {TWITTER_BEARER})
-        # The first request carries the token it was saved with; x.com rotated it, and the rest carry the new one.
-        tokens = [request.headers["x-csrf-token"] for request in api]
-        self.assertEqual((tokens[0], set(tokens[1:]), len(tokens) >= 2), ("old", {"new"}, True))
-        self.assertIn("ct0=new", api[1].headers["cookie"])
-        self.assertNotIn("ct0=old", api[1].headers["cookie"])
-        self.assertTrue(any(path.name.endswith("_100_0.jpg") for path in self.target_dir("twt", "100").rglob("*")))
-
+class BrowserWallTest(unittest.TestCase):
     def test_read_browser_login_wall_raises_login_error(self):
         site = FakeSite(Target("twt:example_handle", kind="user"),
                         pages={"https://x.com/example_handle": "<html></html>"})

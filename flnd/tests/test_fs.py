@@ -193,6 +193,19 @@ class CountTest(FsCase):
                     held.mtime = 1_000_000.0
             self.assertEqual({call: n for call, n in counts.items() if n}, expected, name)
 
+    def test_the_ledger_checks_a_saved_file_on_disk_with_one_stat(self):
+        # P8: one `stat` tells a file with bytes on disk, where `is_file` and `stat` took two.
+        from flnd.engine import crawl
+
+        ledger = object.__new__(crawl.Ledger)
+        ledger.folder, ledger._queued, ledger._db, ledger._again = self.folder, {}, None, False
+        self.dest.write_bytes(b"x")
+        counts = {"stat": 0}
+        with mock.patch.object(os, "stat", self.spy("stat", counts)):
+            self.assertEqual(ledger._held(self.dest, "exm:a"), "a.txt")
+            self.assertIsNone(ledger._held(self.folder / "b.txt", "exm:b"))
+        self.assertEqual(counts["stat"], 2)
+
     def spy(self, name, counts):
         real = getattr(os, name)
 

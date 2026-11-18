@@ -166,3 +166,50 @@ def serve(folder: Path) -> Iterator[str]:
     finally:
         server.terminate()
         server.wait()
+
+
+class Loop:
+    """An asyncio loop on a thread of its own, closed with the block; `run` hands it a coroutine.
+
+        with kit.Loop() as loop:
+            loop.run(client.fetch(url))
+
+    The way a plain-`def` source's thread reaches a run's loop, so the numbers include that hop.
+    """
+
+    def __init__(self) -> None:
+        import asyncio
+        import threading
+
+        self.loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self._thread.start()
+
+    def __enter__(self) -> Loop:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self._thread.join()
+        self.loop.close()
+
+    def run(self, awaitable: Any) -> Any:
+        """Run `awaitable` on the loop, wait for it, and return its value."""
+        from flnkit.browser import run_on
+
+        return run_on(self.loop, awaitable)
+
+    def submit(self, awaitable: Any) -> Any:
+        """Start `awaitable` on the loop, and return its `concurrent.futures.Future`."""
+        import asyncio
+
+        return asyncio.run_coroutine_threadsafe(awaitable, self.loop)
+
+    @contextmanager
+    def entered(self, manager: Any) -> Iterator[Any]:
+        """Enter an async context manager on the loop for the block."""
+        value = self.run(manager.__aenter__())
+        try:
+            yield value
+        finally:
+            self.run(manager.__aexit__(None, None, None))

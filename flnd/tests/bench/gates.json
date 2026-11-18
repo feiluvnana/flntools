@@ -275,11 +275,6 @@
       "better": "lower",
       "baseline": 21.7404
     },
-    "cpu.loop_bridge": {
-      "unit": "us",
-      "better": "lower",
-      "baseline": 39.4385
-    },
     "cpu.place": {
       "unit": "us",
       "better": "lower",

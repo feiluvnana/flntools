@@ -1,65 +1,32 @@
-"""The engine: every flnd command as a method of `Engine`, and target resolution.
+"""The engine: every flnd command as a method of `Engine`, run on one loop; target resolution.
 
 src/docs/architecture explains it.
-
-What it holds: `Engine`, whose methods are the commands (`download`, `sync`, `retry`,
-`target_ls`, `target_sync`, `auth_ls`, `login`, `logout`); `resolve` and `owner`,
-which turn a target's text into a `Target` of the right source; and the reports a command
-returns (`Report`, one `flnd.engine.job.TargetReport` per target), with `TargetInfo` and
-`AuthInfo` for the reads behind `fl.targets()` (`flnd ls`) and `fl.logins`.
-
-Who calls it: `flnd._library.Flnd` alone (the CLI reaches it through the library). A command
-that downloads makes its `Engine` inside a `flnd.Run`, on the run's worker thread, with the
-run's event sink and stop state; a read or a quick change (`targets`, `logins`, `unfollow`,
-`login`, `logout`) makes one on the caller's thread. Nothing in a source calls it.
-
-What it calls: `flnd.engine.options` to check a command's options before any request,
-`flnd.engine.home` for
-`flnd.db` and the logins, `flnd.engine.site` for each source's run (`source_run`) and the run's one
-browser and loop (`shared_browser`), `flnd.engine.save` for the save of each post's files, and
-`flnd.engine.job` for each target.
-
-How one command that downloads goes (`download`):
-1. Check the options (`--limit`, `--when`, `--only`) and resolve every target, so a usage
-   error comes before anything is fetched or written.
-2. Open the command's `runs` row in `flnd.db` (`_recording`), which each failure names.
-3. Record each target's row (`Home.record`), followed when the command follows.
-4. Group the targets by source, in the order given, and run each group inside one
-   `source_run` (`_run_site`): its login is checked, its `connect` hook runs once, and each
-   target goes through `job.download` in turn.
-5. Download the targets the listings yielded (`_found`), up to `FOLLOW_DEPTH` links deep.
-6. Close the `runs` row with the count of saved files, and return a `Report`.
-
-A search (a target whose route `discovers`, such as `mht?words`) lists the targets it finds and
-runs each one (`_run_query`); its sync takes only the found targets it hadn't seen
-(`_sync_query`), at most `MAX_SYNC_NEW` a run.
-
-Rules a change must keep:
-- Every check that can fail on what the user typed runs before the first request, and fails
-  with a `UsageError` (exit code 2).
-- A target's failure ends that target alone. A refused login ends its source's later targets
-  (`_run_site`); a full disk (`DiskError`) ends the whole run; Ctrl-C ends it with
-  `KeyboardInterrupt` once the reports are in.
-- The commands run on one thread: the run's worker thread for a library run, or the caller's.
-  Each `flnd.db` access opens the home for that call (`home.open`), so no connection is shared
-  across threads; the job's download tasks use the run's own connection, held in `RunShared`.
-- A dry run (`dry=True`) reads `flnd.db` and the disk, and writes nothing.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import closing, contextmanager
+import asyncio
+import contextlib
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
-from flnd.engine import home, job, save
+from flnd.engine import crawl, home, save, site
+from flnd.engine.crawl import TargetReport
 from flnd.engine.events import Failed, Planned
-from flnd.engine.job import TargetReport
 from flnd.engine.options import Options, Retry, RunShared, categories_by_source, validate
-from flnd.engine.run import Stop, stopping
+from flnd.engine.run import Stop, Tally, _shut_down, sink, stopping
 from flnd.engine.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.source import Cookies, Range, Source, Target, _Unmatched
@@ -69,6 +36,7 @@ from flnkit import net, text
 
 __all__ = ["AuthInfo", "Engine", "Report", "TargetInfo", "TargetReport"]
 
+T = TypeVar("T")
 # The kind of the pseudo-target a source's account `Site` is made for (`_account`).
 ACCOUNT = "account"
 # What `logout` takes for every source.
@@ -127,15 +95,6 @@ class Report:
         return not self.failed
 
 
-@dataclass(frozen=True)
-class _Planned:
-    """One target in a source's sequential batch."""
-
-    number: int
-    target: Target
-    options: Options
-
-
 class Engine:
     """flnd's commands as methods: `resolve`, `download`, `sync`, `retry`, `login`, `logout`."""
 
@@ -144,7 +103,7 @@ class Engine:
         *,
         home: Path = Path(".flnd"),
         sources: Mapping[str, type[Source]] = SOURCES,
-        emit: Callable[[Any], None] | None = None,
+        emit: Callable[[Any], Any] | None = None,
         stop: Stop | None = None,
     ) -> None:
         """Make the engine of one home.
@@ -152,17 +111,20 @@ class Engine:
         Args:
             home: the home folder.
             sources: the sources it knows, by code.
-            emit: where its runs send their events (`flnd.engine.run.Run._emit`); None drops them.
+            emit: where its runs send their events (`flnd.engine.run.Run._emit`, whose answer
+                is awaited; a plain function is called); None drops them.
             stop: the stop state its runs watch, when the caller owns it (a library run, whose
                 `stop()` sets it); None makes one per command, set by Ctrl-C.
         """
         self.home, self.sources = home, sources
-        self.emit: Callable[[Any], None] = emit or (lambda event: None)
+        self.emit = sink(emit)
+        # Where the snapshots go (`run.state`), at once and never awaited.
+        self._shown: Callable[[Any], Any] = emit or (lambda state: None)
         self.stop = stop
         # The `runs` row of the command going on, which its failures name; None between them.
         self.run: int | None = None
         # The live counts of the command going on, which `run.state` is made from.
-        self.tally = job.Tally(self.emit)
+        self.tally = Tally(self._shown)
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
         """Resolve every target string through its owning source (see `resolve`).
@@ -179,7 +141,19 @@ class Engine:
         """
         return [resolve(text_item, self.sources, follow=_follow) for text_item in texts]
 
-    def download(
+    def download(self, targets: Sequence[Target | str], **options: Any) -> Report:
+        """`run_download`, on a loop of its own on this thread, for a caller outside a run."""
+        return _drive(self.run_download(targets, **options))
+
+    def sync(self, targets: Sequence[Target | str] = (), *, time: Range | None = None) -> Report:
+        """`run_sync`, on a loop of its own on this thread, for a caller outside a run."""
+        return _drive(self.run_sync(targets, time=time))
+
+    def retry(self) -> Report:
+        """`run_retry`, on a loop of its own on this thread, for a caller outside a run."""
+        return _drive(self.run_retry())
+
+    async def run_download(
         self,
         targets: Sequence[Target | str],
         *,
@@ -214,7 +188,8 @@ class Engine:
         if limit is not None and limit < 1:
             raise UsageError("--limit must be at least 1")
         span = time or Range()
-        resolved = self._resolved(targets)
+        # On a thread: a short link is followed with a request of its own.
+        resolved = await asyncio.to_thread(self._resolved, targets)
         cats_map = categories_by_source(categories, resolved, self.sources)
         _validate_targets(self.sources, categories, resolved)
         base = Options(
@@ -228,23 +203,27 @@ class Engine:
             code: replace(base, categories=cats_map.get(code))
             for code in {t.source for t in resolved}
         }
-        with stopping(self.stop) as stop, self._live():
-            if dry:
-                return self._finish_report(self._dry_run(resolved, by_source, span, stop), stop)
-            ui.info("Storage: {path}", path=(self.home / home.MEDIA).resolve())
-            with self._recording("download", resolved) as ended:
-                if any(self._is_query(t) for t in resolved):
-                    reports = self._download_mixed(
-                        resolved, by_source, span=span, sync=sync, stop=stop
-                    )
-                    report = self._complete_download(resolved, reports, sync=sync, stop=stop)
-                else:
-                    report = self._download_normal(
-                        resolved, by_source, sync=sync, stop=stop, keep=keep)
-                ended.append(report)
-                return report
+        with stopping(self.stop) as stop:
+            async with self._live():
+                if dry:
+                    return self._finish_report(
+                        await self._dry_run(resolved, by_source, span, stop), stop)
+                ui.info("Storage: {path}", path=await _off((self.home / home.MEDIA).resolve))
+                async with self._recording("download", resolved) as ended:
+                    async with self._running(stop) as runner:
+                        if any(self._is_query(t) for t in resolved):
+                            reports = await self._download_mixed(
+                                runner, resolved, by_source, span=span, sync=sync, stop=stop)
+                            report = await self._complete_download(resolved, reports,
+                                                                   sync=sync, stop=stop)
+                        else:
+                            report = await self._download_normal(
+                                runner, resolved, by_source, sync=sync, stop=stop, keep=keep)
+                    ended.append(report)
+                    return report
 
-    def sync(self, targets: Sequence[Target | str] = (), *, time: Range | None = None) -> Report:
+    async def run_sync(self, targets: Sequence[Target | str] = (), *,
+                       time: Range | None = None) -> Report:
         """Bring synced targets up to date: fetch new posts and sum up.
 
         Args:
@@ -255,26 +234,26 @@ class Engine:
         Returns:
             One `TargetReport` per target.
         """
-        resolved = self._resolved(targets)
+        # On a thread: a short link is followed with a request of its own.
+        resolved = await asyncio.to_thread(self._resolved, targets)
         span = time or Range()
         chosen = [(target, replace(options, since=span.since, until=span.until))
-                  for target, options in self._plan(resolved)]
+                  for target, options in await _off(self._plan, resolved)]
         if not chosen:
             ui.info("nothing to sync")
             return Report(())
         _validate_targets(self.sources, None, [t for t, _ in chosen])
-        with stopping(self.stop) as stop, self._live(), \
-                self._recording("sync", [t for t, _ in chosen]) as ended:
-            results: dict[int, TargetReport] = {}
-            pool_settings = RunShared(home=self.home, stop=stop, emit=self.emit)
-            with shared_browser(pool_settings):
-                self._sync_normal(chosen, results, pool_settings, stop)
-                self._sync_queries(chosen, results, pool_settings, stop)
-            report = Report(tuple(results[i] for i in range(len(chosen))))
-            ended.append(report)
+        with stopping(self.stop) as stop:
+            async with self._recording("sync", [t for t, _ in chosen]) as ended, \
+                    self._live(), self._running(stop) as runner:
+                results: dict[int, TargetReport] = {}
+                await self._sync_normal(runner, chosen, results, stop)
+                await self._sync_queries(runner, chosen, results, stop)
+                report = Report(tuple(results[i] for i in range(len(chosen))))
+                ended.append(report)
             return self._finish_report(report, stop)
 
-    def retry(self) -> Report:
+    async def run_retry(self) -> Report:
         """Retry every failure the home keeps, however many runs failed it (`flnd retry`).
 
         Each target with failed files lists each failed post again, from the cursor of the page
@@ -288,16 +267,14 @@ class Engine:
         Raises:
             KeyboardInterrupt: Ctrl-C (or the run's stop) ended it.
         """
-        with home.open(self.home) as db:
-            failed = db.failed()
-            rows = db.targets()
+        failed, rows = await _off(self._failures)
         chosen: list[tuple[Target, Options]] = []
         for item, whole in failed.items():
             row = rows.get(item)
             # A target a search found has no row of its own: its key resolves it.
             recorded = self._recorded({item: row}) if row is not None else []
             try:
-                target = recorded[0] if recorded else self._one(item)
+                target = recorded[0] if recorded else await asyncio.to_thread(self._one, item)
             except Error as error:
                 ui.warn("{target}: can't retry: {error}", target=item, error=error)
                 continue
@@ -311,11 +288,17 @@ class Engine:
         if not chosen:
             ui.info("nothing to retry")
             return Report(())
-        with stopping(self.stop) as stop, self._live(), \
-                self._recording("retry", [target for target, _ in chosen]) as ended:
-            report = Report(tuple(self._run(chosen, stop=stop)))
-            ended.append(report)
+        with stopping(self.stop) as stop:
+            async with self._recording("retry", [target for target, _ in chosen]) as ended, \
+                    self._live(), self._running(stop) as runner:
+                report = Report(tuple(await runner.run(chosen)))
+                ended.append(report)
             return self._finish_report(report, stop)
+
+    def _failures(self) -> tuple[dict[str, bool], dict[str, home.TargetRow]]:
+        """The targets with failures `flnd retry` takes, and every target's row."""
+        with home.open(self.home) as db:
+            return db.failed(), db.targets()
 
     def target_ls(self) -> list[TargetInfo]:
         """Every known target with its state and saved files, all read from `flnd.db`.
@@ -499,8 +482,9 @@ class Engine:
                 home.record_origin(self.home, code, method)
         return ""
 
-    def _download_normal(
+    async def _download_normal(
         self,
+        runner: _Runner,
         resolved: Sequence[Target],
         by_source: Mapping[str, Options],
         *,
@@ -511,6 +495,7 @@ class Engine:
         """Download non-query targets in order, recording each in flnd.db first.
 
         Args:
+            runner: the command's run.
             resolved: the targets, in order.
             by_source: each source's options, by code.
             sync: whether to follow the targets.
@@ -523,7 +508,7 @@ class Engine:
         Raises:
             KeyboardInterrupt: the run was stopped.
         """
-        rows = self._rows()
+        rows = await _off(self._rows)
         chosen = []
         for target in resolved:
             options = by_source[target.source]
@@ -532,11 +517,11 @@ class Engine:
             followed = row is not None and row.follow and not options.again
             chosen.append((target, replace(
                 options, stop_at_saved=options.stop_at_saved or followed)))
-        self._record(chosen, follow=sync, keep=keep)
-        reports = self._run(chosen, stop=stop)
-        return self._complete_download(resolved, reports, sync=sync, stop=stop, rows=rows)
+        await _off(self._record, chosen, follow=sync, keep=keep)
+        reports = await runner.run(chosen)
+        return await self._complete_download(resolved, reports, sync=sync, stop=stop, rows=rows)
 
-    def _complete_download(
+    async def _complete_download(
         self,
         resolved: Sequence[Target],
         reports: Sequence[TargetReport],
@@ -562,7 +547,7 @@ class Engine:
         """
         report = self._finish_report(Report(tuple(reports)), stop)
         if not sync:
-            self._warn_unsynced(resolved, rows=rows)
+            await _off(self._warn_unsynced, resolved, rows=rows)
         return report
 
     def _finish_report(self, report: Report, stop: Stop) -> Report:
@@ -586,19 +571,19 @@ class Engine:
         _log_totals(report)
         return report
 
-    def _sync_normal(
+    async def _sync_normal(
         self,
+        runner: _Runner,
         chosen: Sequence[tuple[Target, Options]],
         results: dict[int, TargetReport],
-        pool_settings: RunShared,
         stop: Stop,
     ) -> None:
         """Sync the plain targets of `chosen` (not searches), each stopping at saved posts.
 
         Args:
+            runner: the sync's run, which every target shares.
             chosen: every target of the sync, with its options; searches are left out here.
             results: filled with each plain target's report, by its index in `chosen`.
-            pool_settings: the sync's shared settings, whose browser every source reuses.
             stop: the run's stop state.
 
         Raises:
@@ -608,30 +593,27 @@ class Engine:
         if not indices:
             return
         normal = [chosen[i] for i in indices]
-        self._record(normal)
-        ui.info("Storage: {path}", path=(self.home / home.MEDIA).resolve())
-        run_items = [(t, replace(opts, stop_at_saved=True)) for t, opts in normal]
-        reports = self._run(
-            run_items, stop=stop, browser_pool=pool_settings.browser_pool
-        )
+        await _off(self._record, normal)
+        ui.info("Storage: {path}", path=await _off((self.home / home.MEDIA).resolve))
+        reports = await runner.run([(t, replace(opts, stop_at_saved=True)) for t, opts in normal])
         if stop.soon.is_set():
             raise KeyboardInterrupt
         for pos, rep in zip(indices, reports):
             results[pos] = rep
 
-    def _sync_queries(
+    async def _sync_queries(
         self,
+        runner: _Runner,
         chosen: Sequence[tuple[Target, Options]],
         results: dict[int, TargetReport],
-        pool_settings: RunShared,
         stop: Stop,
     ) -> None:
         """Sync the searches of `chosen`, one after another, after the plain targets.
 
         Args:
+            runner: the sync's run, which every target shares.
             chosen: every target of the sync, with its options; plain targets are left out.
             results: filled with each search's report, by its index in `chosen`.
-            pool_settings: the sync's shared settings, whose browser every source reuses.
             stop: the run's stop state.
 
         Raises:
@@ -641,11 +623,9 @@ class Engine:
         if not indices:
             return
         query_chosen = [chosen[i] for i in indices]
-        self._record(query_chosen)
+        await _off(self._record, query_chosen)
         for pos, (target, options) in zip(indices, query_chosen):
-            results[pos] = self._sync_query(
-                target, options, stop=stop, browser_pool=pool_settings.browser_pool
-            )
+            results[pos] = await self._sync_query(runner, target, options, stop=stop)
             if stop.soon.is_set():
                 raise KeyboardInterrupt
 
@@ -705,7 +685,7 @@ class Engine:
         route = next((r for r in source.routes if r.kind == target.kind), None)
         return route is not None and route.discovers
 
-    def _dry_run(
+    async def _dry_run(
         self,
         resolved: Sequence[Target],
         by_source: Mapping[str, Options],
@@ -723,33 +703,28 @@ class Engine:
         Returns:
             One report per target, with no files written; a failed plan carries its error.
         """
-        reports: list[TargetReport] = []
         # A dry run reads `flnd.db` to tell "saved" from "new", but never writes it: a home
         # without one stays untouched.
-        with home.open(self.home) as db:
-            settings = RunShared(home=self.home, db=db, stop=stop, dry=True, emit=self.emit,
-                                 resolve=self._one)
-            with shared_browser(settings):
-                for target in resolved:
-                    opts = by_source[target.source]
-                    reports.append(self._dry_one(settings, target, opts, span, stop))
-        return Report(tuple(reports))
+        async with self._running(stop, dry=True) as runner:
+            return Report(tuple([await self._dry_one(runner, target, by_source[target.source],
+                                                     span, stop)
+                                 for target in resolved]))
 
-    def _dry_one(
+    async def _dry_one(
         self,
-        settings: RunShared,
+        runner: _Runner,
         target: Target,
         options: Options,
         span: Range,
         stop: Stop,
     ) -> TargetReport:
-        """Plan one target of a dry run inside its own `source_run`.
+        """Plan one target of a dry run, on its plugin's instance.
 
         A failure ends this target's plan alone, as a failed report and a `Failed` event; the
         first Ctrl-C ends it as stopped, and the second goes on up.
 
         Args:
-            settings: the dry run's shared settings (`dry` on, the database read-only).
+            runner: the dry run's run (`dry` on, the database read-only).
             target: the target to plan.
             options: its options.
             span: `--when`, for a search.
@@ -761,27 +736,25 @@ class Engine:
         Raises:
             KeyboardInterrupt: the second Ctrl-C, or a stop that isn't the run's.
         """
-        source = self.sources[target.source]()
-        with source_run(settings, source) as run:
-            if not _logged_in(run) and _required(source):
-                failed = job.logged_out(target)
-                job.tell(target, failed, self.emit)
-                return TargetReport(target, (), 0, error=failed)
-            try:
-                with _connected(run, _account(run)):
-                    _log_dry(run, target, options, span, is_query=self._is_query(target))
-            except KeyboardInterrupt:
-                if not stop.soon.is_set() or stop.now.is_set():
-                    raise
-                return TargetReport(target, (), 0, error=Stopped(job.STOPPED))
-            except Exception as error:
-                failed = job.failure(error, target, source)
-                job.tell(target, failed, self.emit)
-                return TargetReport(target, (), 0, error=failed)
-            return TargetReport(target, (), 0)
+        entry, failed = await runner.ready(target)
+        if entry is None or failed is not None:
+            assert failed is not None
+            return failed
+        try:
+            await _log_dry(entry.run, target, options, span, is_query=self._is_query(target))
+        except KeyboardInterrupt:
+            if not stop.soon.is_set() or stop.now.is_set():
+                raise
+            return TargetReport(target, (), 0, error=Stopped(crawl.STOPPED))
+        except Exception as error:
+            failure = crawl.failure(error, target, entry.run.source)
+            await crawl.tell(target, failure, self.emit)
+            return TargetReport(target, (), 0, error=failure)
+        return TargetReport(target, (), 0)
 
-    def _download_mixed(
+    async def _download_mixed(
         self,
+        runner: _Runner,
         resolved: Sequence[Target],
         by_source: Mapping[str, Options],
         *,
@@ -789,12 +762,13 @@ class Engine:
         sync: bool,
         stop: Stop,
     ) -> list[TargetReport]:
-        """Download targets of which some are searches, in the order given, on one browser.
+        """Download targets of which some are searches, in the order given.
 
-        A plain target runs alone through `_run` (its own source run); a search runs through
-        `_run_query`, which downloads each target it finds.
+        A plain target runs alone through the run's `run`; a search runs through `_run_query`,
+        which downloads each target it finds.
 
         Args:
+            runner: the command's run.
             resolved: the targets, in order.
             by_source: each source's options, by code.
             span: `--when`, which a search filters what it finds by.
@@ -806,32 +780,25 @@ class Engine:
             one for the search itself when it failed or was stopped).
         """
         reports: list[TargetReport] = []
-        pool_settings = RunShared(home=self.home, stop=stop, emit=self.emit)
-        with shared_browser(pool_settings):
-            for target in resolved:
-                options = by_source[target.source]
-                if self._is_query(target):
-                    reports.extend(self._run_query(
-                        target, options, span=span, sync=sync, stop=stop,
-                        browser_pool=pool_settings.browser_pool,
-                    ))
-                    continue
-                self._record([(target, options)], follow=sync)
-                [rep] = self._run(
-                    [(target, options)], stop=stop, browser_pool=pool_settings.browser_pool
-                )
-                reports.append(rep)
+        for target in resolved:
+            options = by_source[target.source]
+            if self._is_query(target):
+                reports.extend(await self._run_query(runner, target, options, span=span,
+                                                     sync=sync, stop=stop))
+                continue
+            await _off(self._record, [(target, options)], follow=sync)
+            reports.extend(await runner.run([(target, options)]))
         return reports
 
-    def _run_query(
+    async def _run_query(
         self,
+        runner: _Runner,
         target: Target,
         options: Options,
         *,
         span: Range,
         sync: bool,
         stop: Stop,
-        browser_pool: Any = None,
     ) -> list[TargetReport]:
         """Download a search: list the targets it finds, then download each one.
 
@@ -839,35 +806,30 @@ class Engine:
         Its found targets count on the search's row of the run's snapshot (`Tally.adopt`).
 
         Args:
+            runner: the command's run.
             target: the search.
             options: its options; `limit` bounds how many targets it takes.
             span: `--when`, which the search filters what it finds by.
             sync: whether to follow the search.
             stop: the run's stop state.
-            browser_pool: the run's browser; None makes one.
 
         Returns:
             One report per target found; only the search's own when it needs a login it lacks.
         """
-        source = self.sources[target.source]()
-        self._record([(target, options)], follow=sync)
+        await _off(self._record, [(target, options)], follow=sync)
         self.tally.add(target, _planned(options))
+        entry, failed = await runner.ready(target)
+        if entry is None or failed is not None:
+            assert failed is not None
+            return [failed]
         reports: list[TargetReport] = []
-        with home.open(self.home) as db:
-            settings = RunShared(
-                home=self.home, db=db, run=self.run,
-                stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
-                tally=self.tally,
-            )
-            with (shared_browser(settings), save.attached(settings),
-                  source_run(settings, source) as run):
-                if err := _require_auth(source, run, target):
-                    return [err]
-                self._discover_and_run(run, target, options, reports, span=span, stop=stop)
+        await self._discover_and_run(runner, entry.run, target, options, reports, span=span,
+                                     stop=stop)
         return reports
 
-    def _discover_and_run(
+    async def _discover_and_run(
         self,
+        runner: _Runner,
         run: SourceRun,
         target: Target,
         options: Options,
@@ -884,7 +846,8 @@ class Engine:
         on, and the second goes on up.
 
         Args:
-            run: the search's source run, connected for the listing.
+            runner: the command's run, which runs each found target on its own plugin.
+            run: the search's source run.
             target: the search.
             options: its options; the found targets get them with no limit, and the search's
                 text as their `query` (for the `{query}` folder field).
@@ -897,69 +860,36 @@ class Engine:
         """
         seen_keys: list[str] = []
         try:
-            with _written_back(run), _connected(run, _account(run)):
-                with closing(job.discover(
-                    run, target, limit=options.limit, time_range=span, seen=()
-                )) as found:
-                    for child in found:
-                        if stop.soon.is_set():
-                            break
-                        child_opts = replace(options, limit=None, query=target.value)
-                        rep = self._run_child(run, target, child, child_opts, stop)
-                        if rep.error is None:
-                            seen_keys.append(home.key(child))
-                        reports.append(rep)
+            async with contextlib.aclosing(crawl.discover(run, target, limit=options.limit,
+                                                          time_range=span)) as found:
+                async for child in found:
+                    if stop.soon.is_set():
+                        break
+                    child_opts = replace(options, limit=None, query=target.value)
+                    rep = await runner.target(child, child_opts, parent=target)
+                    if rep.error is None:
+                        seen_keys.append(home.key(child))
+                    reports.append(rep)
         except KeyboardInterrupt:
             if not stop.soon.is_set() or stop.now.is_set():
                 raise
-            reports.append(TargetReport(target, (), 0, error=Stopped(job.STOPPED)))
+            reports.append(TargetReport(target, (), 0, error=Stopped(crawl.STOPPED)))
         except Exception as error:
-            failed = job.failure(error, target, run.source)
-            job.tell(target, failed, self.emit)
+            failed = crawl.failure(error, target, run.source)
+            await crawl.tell(target, failed, self.emit)
             reports.append(TargetReport(target, (), 0, error=failed))
         finally:
             self.tally.end(target, failed=any(r.error is not None for r in reports))
             if seen_keys and run.settings.db is not None:
-                run.settings.db.seen(target, seen_keys)
+                await run.off(run.settings.db.seen, target, seen_keys)
 
-    def _run_child(
+    async def _sync_query(
         self,
-        run: SourceRun,
-        parent: Target,
-        child: Target,
-        child_opts: Options,
-        stop: Stop,
-    ) -> TargetReport:
-        """Download one target a search found.
-
-        A target of the search's own source reuses the search's run (its session and client);
-        one of another source (a link the search found) gets a run of its own through `_run`.
-
-        Args:
-            run: the search's source run.
-            parent: the search.
-            child: the target it found.
-            child_opts: the found target's options.
-            stop: the run's stop state.
-
-        Returns:
-            The found target's report.
-        """
-        if child.source == parent.source:
-            self.tally.adopt(child, parent)
-            return job.download(run, child, self.tally, child_opts)
-        [rep] = self._run(
-            [(child, child_opts)], stop=stop, browser_pool=run.settings.browser_pool
-        )
-        return rep
-
-    def _sync_query(
-        self,
+        runner: _Runner,
         target: Target,
         options: Options,
         *,
         stop: Stop,
-        browser_pool: Any = None,
     ) -> TargetReport:
         """Sync one search: download the targets it finds that it hadn't seen before.
 
@@ -967,35 +897,30 @@ class Engine:
         home knows already (followed or downloaded on its own).
 
         Args:
+            runner: the sync's run.
             target: the search.
             options: its saved options.
             stop: the run's stop state.
-            browser_pool: the sync's browser; None makes one.
 
         Returns:
             The search's report: the files its new targets saved, the targets skipped, and the
             first error, if any.
         """
-        source = self.sources[target.source]()
-        rows = self._rows()
+        rows = await _off(self._rows)
         row = rows.get(home.key(target))
         seen_keys = set(row.seen if row is not None else ())
         known_keys = set(rows)
         self.tally.add(target, _planned(options))
-        with home.open(self.home) as db:
-            settings = RunShared(
-                home=self.home, db=db, run=self.run,
-                stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
-                tally=self.tally,
-            )
-            with (shared_browser(settings), save.attached(settings),
-                  source_run(settings, source) as run):
-                if err := _require_auth(source, run, target):
-                    return err
-                return self._sync_query_run(run, target, options, seen_keys, known_keys, stop)
+        entry, failed = await runner.ready(target)
+        if entry is None or failed is not None:
+            assert failed is not None
+            return failed
+        return await self._sync_query_run(runner, entry.run, target, options, seen_keys,
+                                          known_keys, stop)
 
-    def _sync_query_run(
+    async def _sync_query_run(
         self,
+        runner: _Runner,
         run: SourceRun,
         target: Target,
         options: Options,
@@ -1003,9 +928,10 @@ class Engine:
         known_keys: set[str],
         stop: Stop,
     ) -> TargetReport:
-        """Run a search's sync inside its source run, and keep the keys it saw, however it ends.
+        """Run a search's sync, and keep the keys it saw, however it ends.
 
         Args:
+            runner: the sync's run.
             run: the search's source run.
             target: the search.
             options: its saved options.
@@ -1023,27 +949,28 @@ class Engine:
         written: list[Path] = []
         skipped, child_failed, seen_to_mark, failed = 0, None, [], False
         try:
-            skipped, child_failed = self._sync_query_items(
-                run, target, options, seen_keys, known_keys, stop, written, seen_to_mark
-            )
+            skipped, child_failed = await self._sync_query_items(
+                runner, run, target, options, seen_keys, known_keys, stop, written,
+                seen_to_mark)
         except KeyboardInterrupt:
             if not stop.soon.is_set() or stop.now.is_set():
                 raise
             failed = True
-            return TargetReport(target, tuple(written), skipped, error=Stopped(job.STOPPED))
+            return TargetReport(target, tuple(written), skipped, error=Stopped(crawl.STOPPED))
         except Exception as error:
             failed = True
-            ended = job.failure(error, target, run.source)
-            job.tell(target, ended, self.emit)
+            ended = crawl.failure(error, target, run.source)
+            await crawl.tell(target, ended, self.emit)
             return TargetReport(target, tuple(written), skipped, error=ended)
         finally:
             self.tally.end(target, failed=failed or child_failed is not None)
             if seen_to_mark and run.settings.db is not None:
-                run.settings.db.seen(target, seen_to_mark)
+                await run.off(run.settings.db.seen, target, seen_to_mark)
         return TargetReport(target, tuple(written), skipped, error=child_failed)
 
-    def _sync_query_items(
+    async def _sync_query_items(
         self,
+        runner: _Runner,
         run: SourceRun,
         target: Target,
         options: Options,
@@ -1055,15 +982,17 @@ class Engine:
     ) -> tuple[int, Error | Stopped | None]:
         """List a search's targets and download the new ones, at most `MAX_SYNC_NEW` of them.
 
-        A target seen before (or known to the home) is skipped and marked seen. A new one is
-        downloaded, and marked seen only when it downloaded without error, so a failed one is
-        tried again on the next sync.
+        The listing walks past the targets seen before (or known to the home), which are
+        skipped and marked seen, so a sync that took its slice of new ones leaves the rest for
+        the next. A new one is downloaded, and marked seen only when it downloaded without
+        error, so a failed one is tried again on the next sync.
 
         Args:
+            runner: the sync's run.
             run: the search's source run.
             target: the search.
             options: its saved options.
-            seen_keys: the keys of the targets earlier syncs saw; the listing stops at them.
+            seen_keys: the keys of the targets earlier syncs saw.
             known_keys: the keys of every target the home has a row for.
             stop: the run's stop state.
             written: filled with the paths the new targets saved.
@@ -1074,35 +1003,60 @@ class Engine:
             none failed).
         """
         skipped, new_count, child_failed = 0, 0, None
-        with _written_back(run), _connected(run, _account(run)):
-            with closing(job.discover(run, target, time_range=Range(), seen=seen_keys)) as found:
-                for child in found:
-                    if stop.soon.is_set():
-                        break
-                    child_key = home.key(child)
-                    if child_key in seen_keys or child_key in known_keys:
-                        seen_to_mark.append(child_key)
-                        skipped += 1
-                        continue
-                    if new_count >= MAX_SYNC_NEW:
-                        break
-                    new_count += 1
-                    child_opts = replace(options, limit=None, query=target.value)
-                    rep = self._run_child(run, target, child, child_opts, stop)
-                    written.extend(rep.written)
-                    skipped += rep.skipped
-                    if rep.error is None:
-                        seen_to_mark.append(child_key)
-                    else:
-                        child_failed = rep.error
+        async with contextlib.aclosing(crawl.discover(run, target, time_range=Range())) as found:
+            async for child in found:
+                if stop.soon.is_set():
+                    break
+                child_key = home.key(child)
+                if child_key in seen_keys or child_key in known_keys:
+                    seen_to_mark.append(child_key)
+                    skipped += 1
+                    continue
+                if new_count >= MAX_SYNC_NEW:
+                    break
+                new_count += 1
+                child_opts = replace(options, limit=None, query=target.value)
+                rep = await runner.target(child, child_opts, parent=target)
+                written.extend(rep.written)
+                skipped += rep.skipped
+                if rep.error is None:
+                    seen_to_mark.append(child_key)
+                else:
+                    child_failed = rep.error
         return skipped, child_failed
 
-    @contextmanager
-    def _live(self) -> Iterator[None]:
+    @contextlib.asynccontextmanager
+    async def _live(self) -> AsyncIterator[None]:
         """Count one command afresh, publishing its snapshots while it runs (`run.state`)."""
-        self.tally = job.Tally(self.emit)
-        with self.tally.publishing():
+        self.tally = Tally(self._shown)
+        async with self.tally.publishing():
             yield
+
+    @contextlib.asynccontextmanager
+    async def _running(self, stop: Stop, *, dry: bool = False) -> AsyncIterator[_Runner]:
+        """A command's run: the home's database, the browser, the save and the plugin instances.
+
+        Args:
+            stop: the run's stop state.
+            dry: a dry run, which reads the database and writes nothing.
+
+        Yields:
+            The run, whose plugin instances are closed when the block ends.
+        """
+        db = await _off(home.open, self.home)
+        try:
+            settings = RunShared(home=self.home, db=db, run=None if dry else self.run,
+                                 stop=stop, dry=dry, emit=self.emit, resolve=self._one,
+                                 tally=self.tally)
+            runner = _Runner(self, settings)
+            settings.follow = runner.target
+            async with shared_browser(settings), save.attached(settings):
+                try:
+                    yield runner
+                finally:
+                    await runner.close()
+        finally:
+            await _off(db.close)
 
     def _warn_unsynced(
         self, resolved: Sequence[Target], *, rows: Mapping[str, home.TargetRow] | None = None,
@@ -1142,9 +1096,11 @@ class Engine:
         with home.open(self.home) as db:
             db.record(chosen, **how)
 
-    @contextmanager
-    def _recording(self, command: str, targets: Sequence[Target]) -> Iterator[list[Report]]:
-        """A `runs` row for a command that downloads, ended with what it saved.
+    @contextlib.asynccontextmanager
+    async def _recording(self, command: str,
+                         targets: Sequence[Target]) -> AsyncIterator[list[Report]]:
+        """A `runs` row for a command that downloads, ended with what it saved; its reads and
+        writes are off the loop.
 
         Args:
             command: the command's name.
@@ -1154,17 +1110,23 @@ class Engine:
             A list the command appends its report to, for the row's count of saved files.
         """
         named = " ".join([command, *map(str, targets[:3])])
-        # Each run's logs and samples are kept for a month (src/docs/storage).
-        home.sweep(self.home)
-        with home.open(self.home) as db:
-            self.run = db.start(named if len(targets) <= 3 else f"{named} …")
+        self.run = await _off(self._started, named if len(targets) <= 3 else f"{named} …")
         ended: list[Report] = []
         try:
             yield ended
         finally:
             run, self.run = self.run, None
-            with home.open(self.home) as db:
-                db.end(run, saved=sum(report.files for report in ended))
+            await _off(self._ended, run, sum(report.files for report in ended))
+
+    def _started(self, named: str) -> int:
+        """Open a command's `runs` row, after sweeping the month-old logs (src/docs/storage)."""
+        home.sweep(self.home)
+        with home.open(self.home) as db:
+            return db.start(named)
+
+    def _ended(self, run: int | None, saved: int) -> None:
+        with home.open(self.home) as db:
+            db.end(run, saved=saved)
 
     def _is_query_kind(self, code: str, kind: str) -> bool:
         """Whether the route of `kind` in source `code` takes a query (`<code>?<query>`)."""
@@ -1253,56 +1215,147 @@ class Engine:
                             error=error,
                         )
 
-    def _run(
-        self,
-        chosen: Sequence[tuple[Target, Options]],
-        *,
-        stop: Stop,
-        browser_pool: Any = None,
-        depth: int = 0,
-    ) -> list[TargetReport]:
-        """Run each target in order, grouped by source; then the targets their listings found.
+    def _one(self, text: str) -> Target:
+        """Resolve one target's text on any source, following a short link once."""
+        return resolve(text, self.sources, follow=_follow)
+
+
+@dataclass(eq=False)
+class _Entry:
+    """One plugin's instance in a run: its source run, its login, and its `connect` hook."""
+
+    run: SourceRun
+    stack: contextlib.AsyncExitStack
+    # Whether its login is kept (a source without a login always is).
+    logged_in: bool = True
+    # What broke it as it started (its `connect`, its login check); its targets fail with it.
+    error: BaseException | None = None
+    # A login the site refused: its later targets would hit the same wall, so they fail with it.
+    refused: LoginError | None = None
+
+
+class _Runner:
+    """A command's run: what its targets share, one instance per plugin, and the targets.
+
+    Each plugin gets one instance for the whole run (`entry`), made the first time one of its
+    targets runs, discovered and linked ones included, so a cache it keeps serves them all.
+    Its login is checked and its `connect` hook entered then, once; `close` leaves them.
+
+    Args:
+        engine: the engine running the command.
+        settings: what every target of the run shares.
+    """
+
+    def __init__(self, engine: Engine, settings: RunShared) -> None:
+        self.engine, self.settings = engine, settings
+        self._entries: dict[str, _Entry] = {}
+
+    async def entry(self, code: str) -> _Entry:
+        """The run's instance of the plugin `code`, started on first use.
+
+        Raises:
+            UsageError: the home's config.toml has a value the plugin doesn't take.
+        """
+        entry = self._entries.get(code)
+        if entry is not None:
+            return entry
+        source = self.engine.sources[code]()
+        stack = contextlib.AsyncExitStack()
+        run = await stack.enter_async_context(site.opened(self.settings, source))
+        entry = self._entries[code] = _Entry(run, stack)
+        try:
+            entry.logged_in = await _logged_in(run)
+            if not entry.logged_in and _required(source):
+                return entry
+            if not entry.logged_in:
+                ui.warn("{code}: not logged in, using public access; run flnd login {code}",
+                        code=code)
+            stack.push_async_callback(run.off, home.write_back, run.settings.home, code,
+                                      run.session.jar)
+            await stack.enter_async_context(_connected(run, _account(run)))
+        except Exception as error:
+            entry.error = error
+            ui.debug("{source}: {error}", source=code, error=error)
+        return entry
+
+    async def ready(self, target: Target) -> tuple[_Entry | None, TargetReport | None]:
+        """The instance `target` runs on, or the failed report of a target that can't run.
+
+        A target fails here, with a `Failed` event, when its plugin didn't start, needs a
+        login it lacks, or had its login refused by an earlier target of the run.
+        """
+        settings, tally = self.settings, self.settings.tally
+        try:
+            entry = await self.entry(target.source)
+        except Exception as error:
+            failed = crawl.failure(error, target)
+            tally.end(target, failed=True)
+            await crawl.tell(target, failed, settings.emit)
+            return None, TargetReport(target, (), 0, error=failed)
+        failed = None
+        if entry.error is not None:
+            failed = crawl.failure(entry.error, target, entry.run.source)
+        elif not entry.logged_in and _required(entry.run.source):
+            failed = crawl.logged_out(target)
+        elif entry.refused is not None:
+            failed = entry.refused
+        if failed is None:
+            return entry, None
+        tally.end(target, failed=True)
+        if failed is entry.refused:
+            await settings.emit(Failed(target, failed))
+        else:
+            await crawl.tell(target, failed, settings.emit)
+        return entry, TargetReport(target, (), 0, error=failed)
+
+    async def target(self, target: Target, options: Options, *,
+                     parent: Target | None = None) -> TargetReport:
+        """Run one target on its plugin's instance, a discovered or linked one included.
+
+        Args:
+            target: the target, resolved.
+            options: its options.
+            parent: the search that found it; a target of the search's own plugin counts on
+                the search's row of the run's snapshot.
+
+        Returns:
+            Its report.
+
+        Raises:
+            DiskError: its files can't be written; the whole run stops.
+        """
+        if parent is not None and parent.source == target.source:
+            self.settings.tally.adopt(target, parent)
+        entry, failed = await self.ready(target)
+        if entry is None or failed is not None:
+            assert failed is not None
+            return failed
+        report = await crawl.download(entry.run, target, self.settings.tally, options)
+        if isinstance(report.error, LoginError):
+            entry.refused = report.error
+        # A full or refused disk stops the whole run: every later file would fail too.
+        elif isinstance(report.error, DiskError):
+            raise report.error
+        return report
+
+    async def run(self, chosen: Sequence[tuple[Target, Options]], *,
+                  depth: int = 0) -> list[TargetReport]:
+        """Run each target in order; then the targets their listings found (`found`).
 
         Args:
             chosen: the targets, each with its options.
-            stop: the run's stop state.
-            browser_pool: the run's browser; None makes one for these targets.
-            depth: how many links deep these targets are (`_found`); 0 for the run's own.
+            depth: how many links deep these targets are; 0 for the run's own.
 
         Returns:
-            One report per target of `chosen`, in order, then one per target found (`_found`).
+            One report per target of `chosen`, in order, then one per target found.
         """
-        groups: dict[str, list[int]] = {}
-        for number, (target, options) in enumerate(chosen):
-            groups.setdefault(target.source, []).append(number)
-            self.tally.add(target, _planned(options))
-        reports: dict[int, TargetReport] = {}
-        with home.open(self.home) as db:
-            run_settings = RunShared(
-                home=self.home, db=db, run=self.run,
-                stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
-                tally=self.tally,
-            )
-            work = [
-                (
-                    self.sources[code](),
-                    [_Planned(number, *chosen[number]) for number in numbers],
-                )
-                for code, numbers in groups.items()
-            ]
-            with shared_browser(run_settings), save.attached(run_settings):
-                for item in work:
-                    try:
-                        _run_site(run_settings, reports, item)
-                    except (KeyboardInterrupt, DiskError):
-                        raise
-                    except BaseException as error:
-                        _fail_unreached(run_settings, item, error, reports)
-        done = [reports[number] for number in range(len(chosen))]
-        return done + self._found(chosen, done, stop=stop, browser_pool=browser_pool, depth=depth)
+        for target, options in chosen:
+            self.settings.tally.add(target, _planned(options))
+        reports = [await self.target(target, options) for target, options in chosen]
+        return reports + await self.found(chosen, reports, depth=depth)
 
-    def _found(self, chosen: Sequence[tuple[Target, Options]], reports: Sequence[TargetReport],
-               *, stop: Stop, browser_pool: Any, depth: int) -> list[TargetReport]:
+    async def found(self, chosen: Sequence[tuple[Target, Options]],
+                    reports: Sequence[TargetReport], *, depth: int) -> list[TargetReport]:
         """Download the targets the run's listings yielded (`TargetReport.found`), once each.
 
         A post that links to another site hands the link on this way. Each found target is
@@ -1313,21 +1366,20 @@ class Engine:
         Args:
             chosen: the targets that ran, with their options.
             reports: their reports, in order.
-            stop: the run's stop state.
-            browser_pool: the run's browser.
             depth: how many links deep these reports are.
 
         Returns:
             The found targets' reports, in the order they were found.
         """
-        if depth >= FOLLOW_DEPTH or stop.soon.is_set():
+        if depth >= FOLLOW_DEPTH or self.settings.stop.soon.is_set():
             return []
         ran = {target for target, _ in chosen}
         found: dict[Target, Options] = {}
         for (target, options), report in zip(chosen, reports):
             for item in report.found:
                 try:
-                    child = item if item.kind else self._one(str(item))
+                    child = item if item.kind else await asyncio.to_thread(self.engine._one,
+                                                                           str(item))
                 except Error as error:
                     ui.warn("{target}: can't follow {link}: {error}", target=str(target),
                             link=str(item), error=error)
@@ -1338,19 +1390,61 @@ class Engine:
         if not found:
             return []
         ui.info("{targets} linked from the listings", targets=text.count(len(found), "target"))
-        self._record(list(found.items()), follow=False)
-        return self._run(list(found.items()), stop=stop, browser_pool=browser_pool,
-                         depth=depth + 1)
+        await _off(self.engine._record, list(found.items()), follow=False)
+        return await self.run(list(found.items()), depth=depth + 1)
 
-    def _one(self, text: str) -> Target:
-        """Resolve one target's text on any source, following a short link once."""
-        return resolve(text, self.sources, follow=_follow)
+    async def close(self) -> None:
+        """Leave each plugin's `connect` hook, write back its cookies and close its run.
+
+        A hook whose exit fails is reported, as a `Failed` event for the plugin's account:
+        the files are saved, but the run isn't all right.
+        """
+        entries, self._entries = list(self._entries.values()), {}
+        for entry in entries:
+            try:
+                await entry.stack.aclose()
+            except Exception as error:
+                account = Target(f"{entry.run.source.code}:", kind=ACCOUNT)
+                await crawl.tell(account, crawl.failure(error, account, entry.run.source),
+                                 self.settings.emit)
+
+
+async def _off(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """`fn(*args, **kwargs)` on a thread: the engine's own blocking step (a read or write of
+    `flnd.db`, a stat), so the loop never waits for it. The thread is the loop's default
+    executor's, which the run shuts down at its end."""
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+def _drive(command: Coroutine[Any, Any, T]) -> T:
+    """Run an engine command on a loop of its own, on this thread, and return what it gives.
+
+    Raises:
+        BaseException: what the command raised, `KeyboardInterrupt` included.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        ok, value = loop.run_until_complete(_carried(command))
+        loop.run_until_complete(_shut_down())
+    finally:
+        loop.close()
+    if not ok:
+        raise value
+    return value
+
+
+async def _carried(awaitable: Awaitable[T]) -> tuple[bool, Any]:
+    """`(True, value)`, or `(False, error)`, so a `KeyboardInterrupt` never leaves the loop."""
+    try:
+        return True, await awaitable
+    except BaseException as error:
+        return False, error
 
 
 def _planned(options: Options) -> tuple[str, ...]:
     """The categories a target's row shows before its listings start: those `--only` names."""
     names = options.categories or ()
-    return () if job.ALL in names else tuple(names)
+    return () if crawl.ALL in names else tuple(names)
 
 
 def _validate_targets(
@@ -1367,10 +1461,10 @@ def _account(run: SourceRun) -> TargetSite:
     return TargetSite(run, Target(f"{run.source.code}:", kind=ACCOUNT))
 
 
-def _logged_in(run: SourceRun) -> bool:
+async def _logged_in(run: SourceRun) -> bool:
     """Whether the source's login is kept; a source without a login always is."""
     login = run.source.login
-    return login is None or login.check(_account(run))
+    return login is None or await run.call(login.check, _account(run))
 
 
 def _required(source: Source) -> bool:
@@ -1378,29 +1472,7 @@ def _required(source: Source) -> bool:
     return source.login is not None and source.login.required
 
 
-def _require_auth(source: Source, run: SourceRun, target: Target) -> TargetReport | None:
-    """Check a search's login before it lists: fail it when required, else warn when missing.
-
-    Args:
-        source: the search's source.
-        run: its source run, whose account `Site` the login checks.
-        target: the search.
-
-    Returns:
-        A failed report (after its `Failed` event) when the source needs a login it lacks;
-        None when the search may go on.
-    """
-    if not _logged_in(run) and _required(source):
-        failed = job.logged_out(target)
-        job.tell(target, failed, run.settings.emit)
-        return TargetReport(target, (), 0, error=failed)
-    if not _logged_in(run):
-        ui.warn("{code}: not logged in, using public access; run flnd login {code}",
-                code=source.code)
-    return None
-
-
-def _log_dry(
+async def _log_dry(
     run: SourceRun, target: Target, options: Options, span: Range, *, is_query: bool,
 ) -> None:
     """List what a download of `target` would save: a log line and a `Planned` event each.
@@ -1417,19 +1489,24 @@ def _log_dry(
     """
     emit = run.settings.emit
     if is_query:
-        with closing(job.discover(run, target, limit=options.limit, time_range=span)) as found:
-            for item in found:
+        async with contextlib.aclosing(crawl.discover(run, target, limit=options.limit,
+                                                      time_range=span)) as found:
+            async for item in found:
                 ui.info("{target}", target=str(item))
-                emit(Planned(item, "", None, "new"))
+                await emit(Planned(item, "", None, "new"))
         return
     folder = home.target_folder(run.settings.home, target)
     db = run.settings.db
-    for placed in job.plan(run, target, options):
-        ui.info("{target}: {path}", target=str(target), path=placed.path)
-        dest = folder.joinpath(*placed.path.split("/"))
-        saved = ((db is not None and db.held(f"{run.source.code}:{placed.key}") is not None)
-                 or dest.is_file())
-        emit(Planned(target, placed.post.id, dest, "saved" if saved else "new"))
+    async with contextlib.aclosing(crawl.plan(run, target, options)) as planned:
+        async for placed in planned:
+            ui.info("{target}: {path}", target=str(target), path=placed.path)
+            dest = folder.joinpath(*placed.path.split("/"))
+            saved = await run.off(_planned_saved, db, f"{run.source.code}:{placed.key}", dest)
+            await emit(Planned(target, placed.post.id, dest, "saved" if saved else "new"))
+
+def _planned_saved(db: home.Home | None, key: str, dest: Path) -> bool:
+    """Whether a planned file is saved: its row or its file is there (off the loop)."""
+    return (db is not None and db.held(key) is not None) or dest.is_file()
 
 
 def _log_totals(report: Report) -> None:
@@ -1616,117 +1693,35 @@ def _follow(url: str) -> str:
                            retryable=error.retryable) from None
 
 
-def _run_site(
-    run_settings: RunShared,
-    reports: dict[int, TargetReport],
-    work: tuple[Source, list[_Planned]],
-) -> None:
-    """Execute all planned targets for one source site and record their reports.
-
-    A target that ends in a `LoginError` stops the source: the targets after it get the same
-    error without being asked. The other sources still run.
-
-    Args:
-        run_settings: what every source of the run shares, its tally too.
-        reports: filled with each target's report, by its number in the run.
-        work: the source, and its targets in order.
-
-    Raises:
-        DiskError: a target's files can't be written; the whole run stops.
-    """
-    source, group = work
-    with source_run(run_settings, source) as run:
-        if not _logged_in(run) and _required(source):
-            for planned in group:
-                failed = job.logged_out(planned.target)
-                job.tell(planned.target, failed, run_settings.emit)
-                reports[planned.number] = TargetReport(planned.target, (), 0, error=failed)
-            return
-        if not _logged_in(run):
-            ui.warn(
-                "{code}: not logged in, using public access; run flnd login {code}",
-                code=source.code,
-            )
-        with _written_back(run), _connected(run, _account(run)):
-            login: LoginError | None = None
-            for planned in group:
-                # A login the site refused stops this source: its other targets would hit the
-                # same wall. The other sources go on, and the run exits 3 at the end.
-                if login is not None:
-                    run_settings.tally.end(planned.target, failed=True)
-                    reports[planned.number] = TargetReport(planned.target, (), 0, error=login)
-                    run_settings.emit(Failed(planned.target, login))
-                    continue
-                report = job.download(run, planned.target, run_settings.tally, planned.options)
-                reports[planned.number] = report
-                if isinstance(report.error, LoginError):
-                    login = report.error
-                # A full or refused disk stops the whole run: every later file would fail too.
-                elif isinstance(report.error, DiskError):
-                    raise report.error
-
-
-def _fail_unreached(
-    run_settings: RunShared,
-    work: tuple[Source, list[_Planned]],
-    error: BaseException,
-    reports: dict[int, TargetReport],
-) -> None:
-    """Fail every target of a source that broke before it could run them, one event each.
-
-    Args:
-        run_settings: the run's: its tally ends each target failed, and its sink gets one
-            `Failed` per target.
-        work: the source, and its targets in order.
-        error: what broke it (a source that can't start, a bug in its `connect`).
-        reports: filled with a failed report for each target not reported yet.
-    """
-    source, group = work
-    ui.debug("{source}: {error}", source=source.code, error=error)
-    for planned in group:
-        run_settings.tally.end(planned.target, failed=True)
-        if planned.number not in reports:
-            failed = job.failure(error, planned.target, source)
-            reports[planned.number] = TargetReport(planned.target, (), 0, error=failed)
-            run_settings.emit(Failed(planned.target, failed))
-
-
-@contextmanager
-def _written_back(run: SourceRun) -> Iterator[None]:
-    """Write the cookies a site refreshed back to the vault when the block ends, however."""
-    try:
-        yield
-    finally:
-        home.write_back(run.settings.home, run.source.code, run.session.jar)
-
-
-@contextmanager
-def _connected(run: SourceRun, account: Any) -> Iterator[None]:
+@contextlib.asynccontextmanager
+async def _connected(run: SourceRun, account: Any) -> AsyncIterator[None]:
     """Run the source's `connect` hook around a block, keeping what it gives as `run.client`.
 
     `connect` returns a context manager, plain or async (Telegram's Telethon client is async).
-    A plain one is entered on this thread. An async one is entered and left on the run's loop
-    (`run.run_async`), since its client lives there; an error in the block is handed to its
-    `__aexit__`, which may swallow it, as `async with` would.
+    A plain one is entered and left on a thread of the source; an async one on the run's loop,
+    where its client lives. An error in the block is handed to its exit, which may swallow it,
+    as `with` would; an error of the exit itself goes on up, for the run to report.
 
     Args:
         run: the source's run.
         account: the account `Site` the hook gets (`_account`).
-
-    Yields:
-        Nothing; the client is on `run.client` for the block.
     """
-    manager = run.source.connect(account)
+    manager = await run.call(run.source.connect, account)
     if not hasattr(manager, "__aenter__"):
-        with manager as client:
-            run.client = client
+        run.client = await run.call(manager.__enter__)
+        try:
             yield
+        except BaseException as error:
+            if not await run.off(manager.__exit__, type(error), error, error.__traceback__):
+                raise
+        else:
+            await run.off(manager.__exit__, None, None, None)
         return
-    run.client = run.run_async(manager.__aenter__())
+    run.client = await manager.__aenter__()
     try:
         yield
     except BaseException as error:
-        if not run.run_async(manager.__aexit__(type(error), error, error.__traceback__)):
+        if not await manager.__aexit__(type(error), error, error.__traceback__):
             raise
     else:
-        run.run_async(manager.__aexit__(None, None, None))
+        await manager.__aexit__(None, None, None)

@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from unittest import mock
 
-from test_engine import CDN, EngineCase, make_source, noise
+from fakes import CDN, EngineCase, make_source, noise
 
 JPEG = noise("JPEG")
 

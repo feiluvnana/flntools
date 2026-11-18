@@ -19,12 +19,13 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 import fakes
-from test_engine import CDN, EngineCase
+from fakes import CDN, EngineCase
 
 import flnd
 from flnd import cli as flnd_cli
+from flnd.engine import crawl as job
 from flnd.engine import home as _home
-from flnd.engine import job, save
+from flnd.engine import save
 from flnd.engine.core import Engine
 from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped, encode
 from flnd.errors import Changed
@@ -177,10 +178,10 @@ class GapTest(FeedCase):
         failed = threading.Event()
         real_finish, real_file = job.Downloads.finish, save.Saver._file
 
-        def finish(downloads, error=None):
+        async def finish(downloads, error=None):
             if error is not None:
                 failed.set()
-            return real_finish(downloads, error)
+            return await real_finish(downloads, error)
 
         async def held(saver, item, *args):
             if item.key == "fed:n6":

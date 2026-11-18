@@ -2,8 +2,7 @@
 
 import unittest
 
-from fakes import FakeSite, Seen, collect
-from test_engine import EngineCase
+from fakes import EngineCase, FakeSite, Seen, collect
 
 from flnd.engine.core import Engine, resolve
 from flnd.engine.options import Options, categories_by_source, validate

@@ -27,7 +27,7 @@ What it holds:
 
 Who calls it: a source's tests, flnd's own tests (`tests/fakes.py` builds on it), and the
 doctests of `flnd.source`. What it calls: the engine's own naming and listing code
-(`flnd.engine.job.posts` and `flnd.engine.job.place`, `flnd.engine.core.resolve`,
+(`flnd.engine.crawl.posts` and `flnd.engine.crawl.place`, `flnd.engine.core.resolve`,
 `flnd.engine.site.paged`), imported when
 a function first needs it, so a source's test runs the same code a download does.
 
@@ -1563,11 +1563,11 @@ def _wanted(plugin: type[Plugin], route: flnd.plugin.Route,
     Raises:
         UsageError: a name isn't one of the route's categories.
     """
-    from flnd.engine import job
+    from flnd.engine import crawl
 
     if categories is None:
         return [category for category in route.categories if category.own]
-    if job.ALL in categories:
+    if crawl.ALL in categories:
         return list(route.categories)
     known = [category.name for category in route.categories]
     unknown = sorted(set(categories) - set(known))
@@ -1620,7 +1620,7 @@ class _Listing:
             SourceError: a `newest_first` listing's post is newer than one before it, or the
                 listing yielded something not a `Post` or a `Target`.
         """
-        from flnd.engine import job
+        from flnd.engine import crawl
 
         label = f"{self.plugin.code}.{category.name if category else self.route.kind}"
         newest_first = category.newest_first if category else self.route.newest_first
@@ -1646,7 +1646,7 @@ class _Listing:
                 older += item.id != previous and not item.pinned and bool(
                     newest_first and when.since and listed and listed < when.since)
                 previous = item.id
-                if older >= job.OLDER_IN_A_ROW:
+                if older >= crawl.OLDER_IN_A_ROW:
                     return
                 continue
             older = older if item.pinned else 0
@@ -1792,7 +1792,7 @@ def _collect(source: type[Source], text: str, site: FakeSite,
     Returns:
         What `collect` returns.
     """
-    from flnd.engine import job
+    from flnd.engine import crawl
     from flnd.engine.core import resolve
 
     target = resolve(text, {source.code: source})
@@ -1800,25 +1800,30 @@ def _collect(source: type[Source], text: str, site: FakeSite,
     instance = source()
     categories = {category.name: category
                   for route in source.routes for category in route.categories}
-    loop = asyncio.new_event_loop()
     found: list[Collected] = []
     known: set[str] = set()
-    try:
-        for post in job.posts(instance, site, target, options,
-                              run_async=loop.run_until_complete):
+
+    async def listed() -> None:
+        async for post in crawl.posts(instance, site, target, options, call=_now):
             if post.lazy and _first_key(instance, post, categories.get(post.category)) in known:
                 # A download skips a lazy post whose first file is queued, before listing it.
                 continue
-            listed = list(post.files()) if callable(post.files) else list(post.files)
-            for placed in job.place(instance, post, listed, category=categories.get(post.category)):
+            files = list(post.files()) if callable(post.files) else list(post.files)
+            for placed in crawl.place(instance, post, files,
+                                      category=categories.get(post.category)):
                 if placed.path in known or placed.key in known:
                     continue
                 known.update((placed.path, placed.key))
                 found.append(Collected(placed.path, placed.file.url, post, placed.key,
                                        placed.file))
-    finally:
-        loop.close()
+
+    asyncio.run(listed())
     return found
+
+
+async def _now(fn: Callable[..., Any], *args: Any) -> Any:
+    """A source's plain code, called at once on the loop: the fake site never waits for it."""
+    return fn(*args)
 
 
 def _first_key(source: Source, post: Post, category: Any) -> str | None:
@@ -1832,11 +1837,11 @@ def _first_key(source: Source, post: Post, category: Any) -> str | None:
     Returns:
         The key; None when the template needs the files' paths to be filled.
     """
-    from flnd.engine import job
+    from flnd.engine import crawl
     from flnkit import text
 
-    template = job._format(source, category, "key")
-    if not template or job._fields(template) & job.LISTED_FIELDS:
+    template = crawl._format(source, category, "key")
+    if not template or crawl._fields(template) & crawl.LISTED_FIELDS:
         return None
     return text.fill(template, {**post.fields, "post": post.id, "category": post.category,
                                  "num": 0}, safe=False) or None

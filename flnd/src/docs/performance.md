@@ -39,7 +39,7 @@ Each group is one script in `tests/bench/`, run in a fresh interpreter.
 | `disk` | writing 5,000 files of 100 KiB: a plain write, a temp file and rename, a download's part |
 | `db` | the history store over 100k rows; SQLite commits per file, per post and per 500 rows |
 | `walk` | listing 100,000 files, and `stat` on known paths |
-| `cpu` | JSON, a JSON path, HTML parsing, hashing, the loop bridge, path planning, a task handed to the loop |
+| `cpu` | JSON, a JSON path, HTML parsing, hashing, path planning, a task handed to the loop |
 | `e2e` | a whole run of the real engine on a faked site, with and without latency; a sync of 100 targets; a run while another process holds `flnd.db` |
 | `browser` | headless Chromium on a synthetic infinite-scroll feed, and warm tabs; skipped without Chromium |
 

@@ -137,7 +137,7 @@ flnd.Report.saved: attribute -> int
 flnd.Report.skipped: attribute -> int
 flnd.Report.stopped: attribute -> bool
 flnd.Report.unchanged: attribute -> int
-flnd.Run(work: Callable[[Callable[[Any], None], Stop], Any], *, name: str, closed: threading.Event | None = None)
+flnd.Run(work: Callable[[Callable[[Any], Awaitable[None]], Stop], Any], *, name: str, closed: threading.Event | None = None)
 flnd.Run.name: attribute
 flnd.Run.report: property -> Report
 flnd.Run.resume() -> None

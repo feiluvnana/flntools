@@ -1,8 +1,8 @@
 """Benchmark group `ui`: what the run's screen costs, and how fast a full-screen view opens.
 
 The screen is `src/ui/screen.py`'s `Screen`, drawing the run's snapshot (`run.state`, made by
-`job.Tally`) of 20 targets and 6 files in flight. Its output goes to a counting sink that says
-it is a UTF-8 terminal, so the block draws as it would on a real one.
+`flnd.engine.run.Tally`) of 20 targets and 6 files in flight. Its output goes to a counting sink
+that says it is a UTF-8 terminal, so the block draws as it would on a real one.
 
 What it times:
 1. `overhead`: 100,000 file events through a `flnd.engine.run.Run`, each a `Tally.count` and
@@ -27,7 +27,7 @@ from typing import Any
 
 import kit
 
-from flnd.engine import job
+from flnd.engine import run as job
 from flnd.engine.events import Skipped, State
 from flnd.engine.run import Run
 from flnd.source import Target
@@ -88,13 +88,13 @@ def tally(emit: Any = None) -> tuple[job.Tally, list[Target]]:
 
 def run_events(*, on: bool) -> float:
     """Time `EVENTS` file events through a `Run`, the screen on or off, in seconds."""
-    def work(emit: Any, stop: Any) -> None:
+    async def work(emit: Any, stop: Any) -> None:
         counted, chosen = tally(emit)
-        with counted.publishing():
+        async with counted.publishing():
             for n in range(EVENTS):
                 target = chosen[n % TARGETS]
                 counted.count(target, "posts", skipped=1)
-                emit(Skipped(target, "posts", str(n)))
+                await emit(Skipped(target, "posts", str(n)))
 
     def read() -> None:
         run = Run(work, name="bench")

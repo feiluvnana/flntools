@@ -10,8 +10,7 @@ from unittest import mock
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
-from fakes import FakeSite, Seen, collect
-from test_engine import EngineCase
+from fakes import EngineCase, FakeSite, Seen, collect
 
 from flnd.engine import home as _home
 from flnd.engine.core import resolve

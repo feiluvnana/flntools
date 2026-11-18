@@ -18,8 +18,8 @@ the 30th batch's word, with no idle wait.
 section 6.2 allows), each on a page the server answers 50 ms late, until each had its first
 answer; today they open one after the other. Best of 3, each with fresh tabs.
 
-The browser runs on a loop thread of its own (`flnkit.loop.Loop`), and every step is handed to it
-from this thread with `Loop.run`, as a source's listing thread does through `Site`'s verbs, so
+The browser runs on a loop thread of its own (`kit.Loop`), and every step is handed to it
+from this thread with `Loop.run`, as a plain source's thread does through `Site`'s verbs, so
 each time includes that hop.
 
 The group is skipped when Chromium can't be launched (run `playwright install chromium`).
@@ -33,13 +33,13 @@ import time
 from pathlib import Path
 
 import kit
+from kit import Loop
 
 from flnd.engine import jobs
 from flnkit import browser as _browser
 from flnkit import cookies as _cookies
 from flnkit import html as _html
 from flnkit import net as _net
-from flnkit.loop import Loop
 
 BATCHES = kit.size(30, 3)
 WARM = 4
@@ -148,7 +148,7 @@ def main() -> None:
             report.add("close", took * 1e3, "ms")
 
             # A target's tabs in a run's browser, as a source's feed gets them.
-            shared = _browser.RunBrowser(loop, headless=True)
+            shared = _browser.RunBrowser(loop.loop, headless=True)
             try:
                 for name, style in (("scroll_default", _browser.HUMAN),
                                     ("scroll_fast", _browser.FAST)):

@@ -5,9 +5,9 @@ tweet by its link, and a search's tweets.
     flnd download https://x.com/example_handle/status/1790000000000000000
     flnd download "twt?example words"
 
-Who calls it: the engine (`flnd.engine.job`), through the routes and categories below, on the
-target's listing thread. What it calls: only its `Site` (`site.fetch` for X's GraphQL API, the
-browser verbs for the timelines) and the stdlib.
+Who calls it: the engine (`flnd.engine.crawl`), through the routes and categories below, on a thread
+of the run's (`SourceRun.call`). What it calls: only its `Site` (`site.fetch` for X's GraphQL API,
+the browser verbs for the timelines) and the stdlib.
 
 How a target is read:
 1. A `user` target (`twt:<handle>`, `twt:<user id>`, a profile link) asks the API for the

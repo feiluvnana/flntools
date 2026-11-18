@@ -1,6 +1,6 @@
 """`flnkit.browser`: `launch`, the profile copy, the Chromium offer, `Page`, `Capture`, scrolling.
 
-Every coroutine runs on one `flnkit.loop.Loop` for the module (`run`). Profile and Chromium tests
+Every coroutine runs on one loop on a thread of its own for the module (`run`). Profile and Chromium tests
 fake Playwright, the home and the temp folder. Page tests run Playwright's own headless Chromium
 on pages served from memory (`fulfill`), or from 127.0.0.1 for `Page.fetch`, and skip without it.
 """
@@ -34,12 +34,17 @@ from flnkit import browser as _browser
 from flnkit import clock as _time
 from flnkit import cookies as _cookies
 from flnkit import net as _net
-from flnkit.loop import Loop
 
 # The real lookup, before BrowserCase patches it out.
 CHROME_INSTALLED = _browser._chrome_installed
-LOOP = Loop()
-run = LOOP.run
+LOOP = asyncio.new_event_loop()
+SERVING = threading.Thread(target=LOOP.run_forever, name="test-browser-loop", daemon=True)
+SERVING.start()
+
+
+def run(awaitable):
+    """`awaitable` on the module's loop, from the test's thread."""
+    return _browser.run_on(LOOP, awaitable)
 
 
 # The one browser the page tests share, launched by the first of them.
@@ -49,6 +54,8 @@ SHARED: list[_browser.Browser] = []
 def tearDownModule():
     for browser in SHARED:
         run(browser.close())
+    LOOP.call_soon_threadsafe(LOOP.stop)
+    SERVING.join()
     LOOP.close()
 
 
@@ -940,19 +947,21 @@ class NoProfilesTest(unittest.TestCase):
             _cookies.refuse_profile(_cookies.home() / "Default")
 
 
-class LoopTest(unittest.TestCase):
-    def test_run_from_the_loop_itself_raises_and_a_closed_loop_refuses(self):
-        loop = Loop()
-
+class RunOnTest(unittest.TestCase):
+    def test_run_from_the_loop_itself_raises_and_a_ctrl_c_comes_back_as_it_was(self):
         async def inner():
-            return loop.run(asyncio.sleep(0))
+            return run(asyncio.sleep(0))
+
+        async def stopped():
+            raise KeyboardInterrupt
 
         with self.assertRaisesRegex(RuntimeError, "own thread"):
-            loop.run(inner())
-        self.assertEqual(loop.run(asyncio.sleep(0, "done")), "done")
-        loop.close()
-        with self.assertRaisesRegex(RuntimeError, "closed"):
-            loop.run(asyncio.sleep(0))
+            run(inner())
+        self.assertEqual(run(asyncio.sleep(0, "done")), "done")
+        with self.assertRaises(KeyboardInterrupt):
+            run(stopped())
+        # The loop outlived the Ctrl-C its coroutine raised.
+        self.assertEqual(run(asyncio.sleep(0, "still")), "still")
 
     def test_the_callers_clock_is_the_coroutines(self):
         async def now():

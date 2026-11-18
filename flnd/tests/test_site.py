@@ -32,7 +32,7 @@ from flnkit import clock as _time
 from flnkit import cookies as _cookies
 from flnkit import files as _files
 from flnkit import net as _net
-from flnkit.browser import Page
+from flnkit.browser import Page, run_on
 
 PAGE = "https://www.example.com/example_user/"
 
@@ -402,7 +402,7 @@ class FetchTest(SiteCase):
             site.open(PAGE)
 
         with self.assertRaisesRegex(SourceError, "await"):
-            run.run_async(category())
+            run.loop.run(category())
 
     def test_async_code_gets_the_raw_tab(self):
         run, site = self.open()
@@ -410,7 +410,7 @@ class FetchTest(SiteCase):
         async def category():
             return await site.tab
 
-        self.assertIs(run.run_async(category()), self.raw)
+        self.assertIs(run.loop.run(category()), self.raw)
 
 
 class FeedRaw(FakeRaw):
@@ -575,6 +575,23 @@ class TabTest(SiteCase):
         self.assertTrue(site.open(urls[1]))
         self.assertEqual(len(self.browsers), 1)
 
+    def test_a_lazy_posts_open_takes_a_tab_of_its_own_and_an_empty_url_opens_none(self):
+        run, site = self.open()
+        self.assertTrue(site.open(PAGE))
+        listing = site._browser().page.raw
+
+        def files():
+            self.assertTrue(site.open(f"{API}/post/1"))
+            return site.url
+
+        self.assertEqual(run.loop.run(run.aside(files)), f"{API}/post/1")
+        # The listing's tab never left its page.
+        self.assertEqual((listing.url, site.url), (PAGE, PAGE))
+        [browser] = self.browsers
+        opened = len(browser.opened)
+        site.warm(["", ""])
+        self.assertEqual(len(browser.opened), opened)
+
     def test_nested_scrolling_feed_opens_a_second_tab_while_a_passive_feed_shares_the_tab(self):
         _, site = self.open()
         tabs = site._browser()
@@ -603,7 +620,16 @@ class TabTest(SiteCase):
 
         settings = RunShared(home=self.home, stop=self.stop)
         failures = []
-        with shared_browser(settings):
+        # The run's loop, on a thread of its own, where the run's browser lives.
+        loop = asyncio.new_event_loop()
+        serving = threading.Thread(target=loop.run_forever, daemon=True)
+        serving.start()
+        self.addCleanup(loop.close)
+        self.addCleanup(serving.join)
+        self.addCleanup(loop.call_soon_threadsafe, loop.stop)
+        shared = shared_browser(settings)
+        run_on(loop, shared.__aenter__())
+        try:
             def run_target(source_cls, target, warm_url):
                 try:
                     with source_run(settings, source_cls()) as run:
@@ -634,6 +660,8 @@ class TabTest(SiteCase):
             self.assertEqual(failures, [])
             self.assertEqual(len(self.browsers), 1)
             self.assertFalse(self.browsers[0].closed)
+        finally:
+            run_on(loop, shared.__aexit__(None, None, None))
         self.assertTrue(self.browsers[0].closed)
 
 

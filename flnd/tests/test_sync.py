@@ -10,10 +10,10 @@ import unittest
 from unittest import mock
 
 import fakes
-from test_engine import CDN, EngineCase, make_source, noise
+from fakes import CDN, EngineCase, make_source, noise
 
 from flnd.engine import home as _home
-from flnd.engine.core import Engine, TargetReport
+from flnd.engine.core import Engine, TargetReport, _Runner
 from flnd.engine.events import State
 from flnd.engine.options import Options
 from flnd.source import File, Post, Range, Source, Target, target
@@ -36,7 +36,7 @@ class Site:
 
 def recorded(record):
     """An `Engine._run` that only calls `record(chosen)`, and reports each target done, empty."""
-    def run(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
+    async def run(runner, chosen, *, depth=0):
         record(chosen)
         return [TargetReport(target, (), 0) for target, _ in chosen]
 
@@ -112,7 +112,7 @@ class FetchTest(SyncCase):
         runs = []
         self.download(Options(categories=("posts",)))
         record = recorded(lambda chosen: runs.extend(options for _, options in chosen))
-        with mock.patch.object(Engine, "_run", record):
+        with mock.patch.object(_Runner, "run", record):
             self.sync()
         self.assertEqual(runs, [Options(stop_at_saved=True)])
 

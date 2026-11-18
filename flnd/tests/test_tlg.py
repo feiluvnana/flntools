@@ -22,11 +22,10 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
-from fakes import FakeSite, Seen, collect
+from fakes import EngineCase, FakeSite, Seen, collect, make_source
 from playwright.sync_api import Error as PlaywrightError
 from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswordNeededError
 from test_commands import FlndCase, Stdin
-from test_engine import EngineCase, make_source
 
 from flnd.engine import home as _home
 from flnd.engine import jobs
@@ -685,9 +684,9 @@ class DownloadTest(DownloadCase):
         self.assertEqual((self.folder / "video" / "2026-01-05_13.mp4").read_bytes(), b"video")
         self.assertEqual(self.download(), 0)
         self.assertEqual(len(self.telegram.downloads), 5)
-        # One client per run, closed at its end, on the run's loop.
+        # One client per run, closed at its end, on the run's loop: this thread's, outside a Run.
         self.assertEqual([client.connected for client in self.telegram.clients], [False, False])
-        self.assertEqual(self.telegram.threads, {"flnd-loop"})
+        self.assertEqual(self.telegram.threads, {threading.current_thread().name})
         self.assertEqual(self.telegram.clients[0].flood_sleep_threshold, FLOOD_SLEEP)
 
     def test_a_flood_wait_is_waited_out_and_retried(self):

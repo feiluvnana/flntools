@@ -52,18 +52,17 @@ PACKAGES = ("src", "flnkit")
 DOCS = ROOT / "src" / "docs"
 # The longest a module docstring may be, in lines: what the module holds, and its src/docs page.
 MODULE_LINES = 3
-# The modules that keep a longer docstring for now (31 of them): their flows and rules aren't
+# The modules that keep a longer docstring for now (25 of them): their flows and rules aren't
 # in a src/docs page yet. Step 16 (PLAN.md section 14) empties this list by moving each into
 # its page, or the module goes when a step replaces it. The list may only shrink:
 # `test_long_docstrings_are_still_long`.
 LONG = frozenset({
     "src/__init__.py", "src/_library.py", "src/cli.py", "src/errors.py", "src/source.py",
     "src/testing.py",
-    "src/engine/core.py", "src/engine/events.py",
-    "src/engine/home.py", "src/engine/job.py", "src/engine/options.py",
-    "src/engine/plugins.py", "src/engine/run.py", "src/engine/site.py",
+    "src/engine/events.py", "src/engine/home.py", "src/engine/options.py",
+    "src/engine/plugins.py",
     "flnkit/browser.py", "flnkit/cookies.py", "flnkit/db.py", "flnkit/html.py",
-    "flnkit/loop.py", "flnkit/net.py", "flnkit/text.py",
+    "flnkit/net.py", "flnkit/text.py",
     "src/sources/__init__.py", "src/sources/_manifest.py", "src/sources/fbk.py",
     "src/sources/ins.py", "src/sources/loi.py", "src/sources/mht.py", "src/sources/tik.py",
     "src/sources/tlg.py", "src/sources/twt.py",

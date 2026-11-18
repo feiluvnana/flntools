@@ -262,7 +262,7 @@ column. The next download or sync of the target retries every failed file that h
 ### `state`, `logins`, `probes`, `meta`
 
 - `state`: each source's own values between runs (`site.state`), as JSON, keyed `(source,
-  key)`. flnd keeps one entry of its own there too (`src/engine/job.py`): `redate.asked`, the posts
+  key)`. flnd keeps one entry of its own there too (`src/engine/crawl.py`): `redate.asked`, the posts
   whose date a source's `date` hook couldn't find, so they aren't asked again for 30 days.
 - `logins`: how each source logged in (`origin`: "Chrome", "cookies.txt", "qr") and `at`. No
   secret is ever here. `flnd logout` removes the source's row.

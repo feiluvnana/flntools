@@ -18,7 +18,7 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
-from test_engine import CDN, EngineCase, make_source, noise
+from fakes import CDN, EngineCase, make_source, noise
 
 import flnd
 from flnd.engine import jobs as jobs_module
@@ -212,9 +212,10 @@ class RunTest(LibraryCase):
         landed, real = threading.Event(), run._emit
 
         def emit(event):
-            real(event)
+            done = real(event)
             if run.report.saved == 6:
                 landed.set()
+            return done
 
         run._emit = emit
         events = iter(run)

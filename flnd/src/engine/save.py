@@ -18,8 +18,8 @@ import stat
 import subprocess
 import sys
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
@@ -31,6 +31,7 @@ from flnd.engine import home, jobs
 from flnd.engine.events import BUSY, Failed, Saved, Skipped
 from flnd.engine.home import FILE_COLUMNS, FileRow, _file_values, now
 from flnd.engine.jobs import Job, Kind
+from flnd.engine.run import sink
 from flnd.errors import (
     DiskError,
     Error,
@@ -480,7 +481,7 @@ class Saver:
     Args:
         store: the run's flnd.db.
         scheduler: the run's scheduler.
-        emit: where `Saved`, `Skipped` and `Failed` go.
+        emit: where `Saved`, `Skipped` and `Failed` go; what it gives is awaited.
         run: the run's id in `runs`, for failures; None outside a run.
         dedupe: whether a file whose bytes are saved already becomes a hard link to them.
         sidecars: whether a file with `meta` gets `<name>.json`.
@@ -488,11 +489,12 @@ class Saver:
             user's own config; None runs nothing.
         stop: the run's second Ctrl-C, which a plugin's `fetch` function stops at when it
             next reports its progress; None never stops it.
-        tally: the run's live counts (`flnd.engine.job.Tally`); None counts nothing.
+        tally: the run's live counts (`flnd.engine.run.Tally`); None counts nothing.
         sample: keeps a scrubbed sample of a `Changed` answer, and points its hint at it.
     """
 
-    def __init__(self, store: Store, scheduler: jobs.Scheduler, emit: Callable[[Any], None], *,
+    def __init__(self, store: Store, scheduler: jobs.Scheduler,
+                 emit: Callable[[Any], Awaitable[None]], *,
                  run: int | None = None, dedupe: bool = True, sidecars: bool = True,
                  exec: Sequence[str] | None = None, stop: threading.Event | None = None,
                  tally: Any = None, sample: Callable[[Error], None] | None = None) -> None:
@@ -500,7 +502,8 @@ class Saver:
                                  or not all(isinstance(arg, str) for arg in exec)):
             raise UsageError("exec must be a list: the program, then its arguments",
                              hint='exec = ["echo", "{path}"]')
-        self.store, self.scheduler, self.emit, self.run = store, scheduler, emit, run
+        self.store, self.scheduler, self.run = store, scheduler, run
+        self.emit = sink(emit)
         self.dedupe, self.sidecars, self.exec, self.stop = dedupe, sidecars, exec, stop
         self.tally, self.sample = tally, sample
         self.done = _Done()
@@ -571,27 +574,28 @@ class Saver:
             return None
         except files.BusyError:
             self._count(item, downloading=-1, skipped=1)
-            self.emit(Skipped(item.target, item.category, item.post, item.dest, reason=BUSY))
+            await self.emit(Skipped(item.target, item.category, item.post, item.dest,
+                                    reason=BUSY))
             ui.info("{name}: being saved by another run", name=item.label or item.dest.name)
             return None
         except Error as error:
             if jobs.stops(error):
                 raise
-            return self._failed(item, error, flow)
+            return await self._failed(item, error, flow)
         except Exception as error:
             wrapped = classify(error)
             if jobs.stops(wrapped):
                 raise wrapped from error
-            return self._failed(item, wrapped, flow)
+            return await self._failed(item, wrapped, flow)
         if landed is None:
             self._count(item, **({"downloading": -1} if flow.started else {"queued": -1}))
         return landed
 
-    def _failed(self, item: Item, error: Error, flow: _Flow) -> _Failure:
+    async def _failed(self, item: Item, error: Error, flow: _Flow) -> _Failure:
         if self.sample is not None:
             self.sample(error)
         self._count(item, failed=1, **({"downloading": -1} if flow.started else {"queued": -1}))
-        self.emit(Failed(item.target, error, post=item.post, path=item.dest))
+        await self.emit(Failed(item.target, error, post=item.post, path=item.dest))
         ui.debug("{name}: {error}", name=item.label or item.dest.name, error=error)
         return _Failure(item, error)
 
@@ -1060,8 +1064,8 @@ class Saver:
         if item.file.password is not None or files.is_archive(path):
             await self._write(self.store.update, item.key, await self._unpack(item, path, plugin))
         self._count(item, downloading=-1, saved=1, bytes=landed.row.size)
-        self.emit(Saved(item.target, item.category, item.post, path, landed.day,
-                        landed.row.size, retried=item.retried))
+        await self.emit(Saved(item.target, item.category, item.post, path, landed.day,
+                              landed.row.size, retried=item.retried))
         if self.exec:
             argv = self.exec
 
@@ -1093,8 +1097,8 @@ class Saver:
         return await self.scheduler.on(Kind.CALL, call, *args)
 
 
-@contextmanager
-def attached(settings: Any) -> Iterator[Saver | None]:
+@asynccontextmanager
+async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     """Give a run's settings their save for the block (`settings.saver`), then close it.
 
     The save reads `dedupe` and `sidecars` from the home's `config.toml`, and `exec` from the
@@ -1113,16 +1117,13 @@ def attached(settings: Any) -> Iterator[Saver | None]:
         UsageError: the home's `config.toml` is broken.
     """
     from flnd.engine import site
-    from flnd.engine.config import program, user_file
-    from flnd.engine.options import config
 
     scheduler = site.scheduler(settings)
     if settings.db is None or settings.dry or scheduler is None:
         yield None
         return
-    found = config(settings.home)
-    argv = program(user_file())
-    store = Store(settings.db.ready())
+    # The configs and the store are read and opened off the loop.
+    found, argv, store = await asyncio.to_thread(_opened, settings)
     saver = Saver(store, scheduler, settings.emit, run=settings.run, dedupe=found.dedupe,
                   sidecars=found.sidecars, exec=argv or None, stop=settings.stop.now,
                   tally=settings.tally, sample=lambda error: sampled(settings, error))
@@ -1132,9 +1133,18 @@ def attached(settings: Any) -> Iterator[Saver | None]:
     finally:
         settings.saver = None
         try:
-            settings.browser_pool.loop.run(saver.close())
+            await saver.close()
         finally:
-            store.close()
+            await asyncio.to_thread(store.close)
+
+
+def _opened(settings: Any) -> tuple[Any, Any, Store]:
+    """`attached`'s reads, off the loop: the home's config, the user's `exec`, the store; the
+    config modules are imported here too, since an import reads files."""
+    from flnd.engine.config import program, user_file
+    from flnd.engine.options import config
+
+    return config(settings.home), program(user_file()), Store(settings.db.ready())
 
 
 def sampled(settings: Any, error: BaseException) -> None:

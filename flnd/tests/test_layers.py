@@ -47,7 +47,7 @@ EXEMPT = {
     # The engine and the library reach the API 1 registry directly; step 8 moves the registry,
     # and the plugin manager (`engine/plugins.py`) owns it from then on.
     ("flnd.engine.core", "flnd.plugins.*"): 8,
-    ("flnd.engine.job", "flnd.plugins"): 8,
+    ("flnd.engine.crawl", "flnd.plugins"): 8,
     ("flnd._library", "flnd.plugins"): 8,
     # The CLI still reads the engine's events, the home's paths and the kit's text and cookie
     # names, and the library reads `flnd.__version__`; step 13 rewrites both.
@@ -284,7 +284,7 @@ class LayersTest(unittest.TestCase):
     def test_the_rules_see_imports_of_names_and_of_modules(self):
         # Guards the guard: `from flnd import Engine` is the package, `from flnd import errors`
         # a module, and `from flnkit import net` the module flnkit.net.
-        self.assertIn("flnd.engine.job", flnd_imports(FLND / "engine" / "core.py"))
+        self.assertIn("flnd.engine.crawl", flnd_imports(FLND / "engine" / "core.py"))
         self.assertIn("flnkit.net", flnd_imports(FLND / "engine" / "site.py"))
         self.assertIn("flnd", flnd_imports(FLND / "cli.py"))
         self.assertFalse(allowed("flnkit.net", "flnd.ui.log"))

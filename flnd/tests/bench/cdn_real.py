@@ -37,11 +37,12 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from kit import Loop
+
 from flnd.engine import jobs
 from flnd.ui.log import ui
 from flnkit import files as _files
 from flnkit import net as _net
-from flnkit.loop import Loop
 
 
 def arguments() -> argparse.Namespace:

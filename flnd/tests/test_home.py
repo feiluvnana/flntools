@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from test_engine import CDN, EngineCase, make_source, noise
+from fakes import CDN, EngineCase, make_source, noise
 
 from flnd.engine import home as _home
 from flnd.engine.core import Engine

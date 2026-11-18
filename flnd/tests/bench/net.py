@@ -51,6 +51,7 @@ from typing import Any
 from unittest import mock
 
 import kit
+from kit import Loop
 
 from flnd.engine import jobs, save
 from flnd.source import File, Target
@@ -58,7 +59,6 @@ from flnd.ui.log import ui
 from flnkit import files as _files
 from flnkit import net as _net
 from flnkit import stream as _stream
-from flnkit.loop import Loop
 
 BIG = kit.size(1 << 30, 1 << 20)
 # The big file is written in pieces of this size, so making it never holds 1 GiB in memory.

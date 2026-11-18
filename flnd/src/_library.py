@@ -187,7 +187,7 @@ class Flnd:
             raise UsageError("limit must be at least 1")
         resolved = self._checked(targets, only)
         again = found.again if self._again is None else self._again
-        return self._run(f"download {_names(resolved)}", lambda engine: engine.download(
+        return self._run(f"download {_names(resolved)}", lambda engine: engine.run_download(
             resolved, categories=only, time=span, limit=limit, dry=dry, again=again))
 
     def follow(
@@ -225,7 +225,7 @@ class Flnd:
         span = _when(found.when if when is None else when)
         resolved = self._checked(targets, only)
         again = found.again if self._again is None else self._again
-        return self._run(f"follow {_names(resolved)}", lambda engine: engine.download(
+        return self._run(f"follow {_names(resolved)}", lambda engine: engine.run_download(
             resolved, categories=only, time=span, sync=True, keep=True, again=again))
 
     def sync(self, targets: str | Target | Sequence[str | Target] = (),) -> Run:
@@ -255,7 +255,7 @@ class Flnd:
         span = _when(found.when)
         resolved = self._resolve(targets)
         named = f"sync {_names(resolved)}" if resolved else "sync"
-        return self._run(named, lambda engine: engine.sync(resolved, time=span))
+        return self._run(named, lambda engine: engine.run_sync(resolved, time=span))
 
     def retry(self) -> Run:
         """Download again every file the home's failures name, however many runs failed it.
@@ -277,7 +277,7 @@ class Flnd:
             ...     fl.retry().wait().retried
             0
         """
-        return self._run("retry", lambda engine: engine.retry())
+        return self._run("retry", lambda engine: engine.run_retry())
 
     @property
     def status(self) -> Status | None:
@@ -690,20 +690,21 @@ class Flnd:
         return resolved
 
     def _run(self, name: str, command: Any) -> Run:
-        """A `Run` whose worker makes this home's engine and calls `command` with it.
+        """A `Run` whose loop makes this home's engine and awaits `command` with it.
 
-        The engine is made on the worker thread, with the run's sink and stop state, so the
-        run alone decides when the work starts and how it stops.
+        The engine is made on the run's loop, with the run's sink and stop state, so the run
+        alone decides when the work starts and how it stops.
 
         Args:
-            name: what the run does, for its thread's name and its warning.
-            command: called with the engine; what it returns is dropped (the events tell it).
+            name: what the run does, for its warning.
+            command: called with the engine, giving the command to await; what it returns is
+                dropped (the events tell it).
 
         Returns:
             The run, not started, and remembered so `close()` can stop it.
         """
-        def work(emit: Any, stop: Any) -> None:
-            command(self._engine(emit, stop))
+        async def work(emit: Any, stop: Any) -> None:
+            await command(self._engine(emit, stop))
 
         run = Run(work, name=name, closed=self._closed)
         self._runs.add(run)

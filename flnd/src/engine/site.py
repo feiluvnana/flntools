@@ -1,75 +1,24 @@
-"""The engine's `Site`: what a source's routes, categories and login act through.
+"""API 1's temporary bridge: a sync source runs on a `CALL` thread, each `site.<verb>` a job.
 
-This is flnd's side of the source API: it implements `flnd.source.Site` on the libraries. It
-holds:
-- `source_run` opens one source's resources for a run (`SourceRun`): its cookies, its HTTP
-  session and clients (`flnkit.net`), its store, the run's loop that its async code and every
-  transfer run on, and the run's scheduler (`flnd.engine.jobs`) that every request waits for.
-- `TargetSite` is the `Site` a route or category gets for one target. `fetch` hands one request
-  to the run's loop, through the source's listing client. The browser verbs (`open`, `wait`,
-  `scroll`, `feed`, `document`, `evaluate`, `click`) each hand one call to the run's loop,
-  where `flnkit.browser` drives the tab.
-- `shared_browser` gives a run its loop, its scheduler and its one browser
-  (`flnkit.browser.RunBrowser`), shared by every source and target, and closes them when the run
-  ends.
-- `LoginSite` is the `Site` a source's `Login.start` gets during `flnd login`: it can ask in the
-  terminal, and has no target.
-- `paged` walks a paged JSON listing for `TargetSite.pages`, and `Listing` carries a category's
-  saved cursor in and its last cursor out.
-
-Who calls it: the engine (`flnd.engine.core` opens `shared_browser` and one `source_run` per source,
-and hands `flnd login` a `LoginSite`), the job (`flnd.engine.job` makes a `TargetSite` per target
-and sets its `listing`), the library (`flnd._library` opens a `TargetSite` on a source's account),
-and the test kit (`flnd.testing` reuses `paged`). What it calls: the libraries `flnkit.net`
-(HTTP), `flnkit.browser` (tabs), `flnkit.loop` (the run's event loop), `flnkit.vault` and
-`flnd.engine.home` (secrets, state, cookies), `flnd.ui.forms` and `flnd.ui.log`.
-
-A run, step by step:
-1. `shared_browser` makes the run's one event loop and its `RunBrowser`, which launches nothing
-   until a target asks for a tab.
-2. `source_run` reads the source's `[sources.<code>]` settings from the home's config.toml
-   (`flnd.engine.options.config`), loads its login cookies from the home, warns of any about to
-   expire, builds its `net.Session` and two clients, and gives the scheduler its pace and its
-   hosts' limits (below).
-3. Each target gets a `TargetSite`. Its `fetch` and browser verbs run on the target's listing
-   thread, and each hands one coroutine to the run's loop and waits for it.
-4. A refusal from the source's own domains with 401 or 403 becomes a `LoginError`; every other
-   error from `flnkit.net` passes through as it is.
-5. When the source's last target is done, the `SourceRun` closes its session, its stores and any
-   loop of its own; when the run ends, `shared_browser` closes the browser, then the loop.
-
-Threads: a `TargetSite` is used on its target's listing thread, or, in an `async def` category,
-on the loop, where only `site.tab` (awaited) reaches the browser. A `Listing` belongs to the
-listing thread too: the job sets it before a category is listed and reads it after. A blocking
-call (`fetch`, `open`, …) made from code on the loop is refused, since it would wait for itself.
-
-The network side of a source (src/docs/architecture, "Network"): one `flnkit.net.Session` with
-the login's cookies, the source's user agent and its `sign` hook (for requests to its own
-domains). Every request is a job of the run's scheduler (`flnd.engine.jobs`):
-- a listing's request to the source's own `domains`, and a page it opens, is a `PAGE` job:
-  paced at the source's `pace` (or the config's `pace` for it), held by a 429;
-- every file download, and a listing's request to another host, is a `FILE` job, under the
-  host's adapting cap, which grows up to the `limits` for that host (the source's, with the
-  config's over them). A site's files often come from its own domain (TikTok's CDN hosts),
-  and holding them to the listing's pace would serialize them.
-Two clients share the session: `web` lists, and stops at the first Ctrl-C; `files` downloads,
-and stops at the second. A `proxy` in the config carries every request of the session; the
-browser, shared by every source, isn't proxied.
+src/docs/architecture explains it; it goes with plugin API 1.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import threading
 import weakref
 from collections.abc import (
+    AsyncIterator,
     Awaitable,
     Callable,
-    Coroutine,
     Iterable,
     Iterator,
     Mapping,
     MutableMapping,
 )
-from contextlib import contextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import (
@@ -84,7 +33,7 @@ from flnd.errors import Blocked, Error, LoginError, SiteError, SourceError, Stop
 from flnd.source import Range, Request, Source, Target, dig
 from flnd.ui import forms
 from flnd.ui.log import ui
-from flnkit import browser, clock, loop, net, text, vault
+from flnkit import browser, clock, net, text, vault
 
 if TYPE_CHECKING:
     from flnd.engine.options import RunShared
@@ -92,8 +41,8 @@ if TYPE_CHECKING:
     from flnkit import cookies
     from flnkit.html import Document
 
-__all__ = ["Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "paged",
-           "scheduler", "shared_browser", "source_run"]
+__all__ = ["Bridge", "Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "opened",
+           "paged", "scheduler", "shared_browser", "source_run"]
 
 T = TypeVar("T")
 # How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
@@ -123,6 +72,88 @@ class _Screen(browser.Screen):
         return super().progress(label, total=total)
 
 
+# The side tabs of the call running on this thread (`SourceRun.aside`): a lazy post's files,
+# a refresh or a `date` opens its own tab, never the listing's. None outside such a call.
+_ASIDE: contextvars.ContextVar[list[tuple[TargetSite, browser.Tabs]] | None] = \
+    contextvars.ContextVar("flnd_aside", default=None)
+
+
+class Bridge:
+    """The run's loop, as a sync source's code on a `CALL` thread reaches it.
+
+    In a run it is the run's own loop. Outside one (`flnd login`, `fl.site()`), it starts a loop
+    of its own on a thread the first time it is used, and `close` ends it.
+
+    Args:
+        loop: the run's loop; None for one of its own.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        self._loop = loop
+        self._own = loop is None
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        """The asyncio loop; one of its own is started on first use."""
+        with self._lock:
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                self._thread = threading.Thread(target=self._loop.run_forever,
+                                                name="flnd-bridge", daemon=True)
+                self._thread.start()
+            return self._loop
+
+    @property
+    def here(self) -> bool:
+        """Whether the calling code runs on the loop, where it must await, not `run`."""
+        try:
+            return self._loop is not None and asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            return False
+
+    def run(self, awaitable: Awaitable[T]) -> T:
+        """Run `awaitable` on the loop from this thread, and return its value.
+
+        Raises:
+            RuntimeError: called on the loop's own thread.
+        """
+        return browser.run_on(self.loop, awaitable)
+
+    def close(self) -> None:
+        """End a loop of its own, cancelling what still runs on it; nothing for the run's."""
+        with self._lock:
+            loop, thread, self._thread = self._loop, self._thread, None
+        if not self._own or loop is None or thread is None:
+            return
+        browser.run_on(loop, _cancel_others())
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+
+
+async def _cancel_others() -> None:
+    current = asyncio.current_task()
+    pending = [task for task in asyncio.all_tasks() if task is not current]
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+    await asyncio.get_running_loop().shutdown_asyncgens()
+
+
+def _aside(fn: Callable[..., T], *args: Any) -> T:
+    """`fn(*args)` on this thread, with the tabs it opens its own, closed when it ends."""
+    opened: list[tuple[TargetSite, browser.Tabs]] = []
+    token = _ASIDE.set(opened)
+    try:
+        return fn(*args)
+    finally:
+        _ASIDE.reset(token)
+        for _, tabs in opened:
+            tabs.close()
+
+
 @dataclass
 class SourceRun:
     """One source's resources for a run: cookies, HTTP clients, `connect` client, stores, loop."""
@@ -147,7 +178,7 @@ class SourceRun:
     _state: home.Home | None = field(default=None, repr=False)
     _secrets: vault.Vault | None = field(default=None, repr=False)
     # A loop of the source's own, made only outside a run (`shared_browser` gives the run's).
-    _own_loop: loop.Loop | None = field(default=None, repr=False)
+    _own_loop: Bridge | None = field(default=None, repr=False)
     # A scheduler of the source's own, made only outside a run, on its own loop.
     _own_jobs: jobs.Scheduler | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
@@ -155,13 +186,13 @@ class SourceRun:
     _told_proxy: bool = field(default=False, repr=False)
 
     @property
-    def loop(self) -> loop.Loop:
+    def loop(self) -> Bridge:
         """The run's loop, where the browser and async code run; the source's own outside a run."""
         shared = self.settings.browser_pool
         if shared is not None:
-            return shared.loop
+            return Bridge(shared.loop)
         if self._own_loop is None:
-            self._own_loop = loop.Loop()
+            self._own_loop = Bridge()
         return self._own_loop
 
     @property
@@ -197,9 +228,54 @@ class SourceRun:
             self._secrets = home.secrets(self.settings.home, self.source.code)
         return self._secrets
 
-    def run_async(self, coroutine: Coroutine[Any, Any, T]) -> T:
-        """Run a coroutine on `loop`, wait for it, and return its value."""
-        return self.loop.run(coroutine)
+    async def call(self, fn: Callable[..., T], *args: Any) -> T:
+        """Run the source's plain code, `fn(*args)`, on a `CALL` thread: a job of the run.
+
+        The job waits for the source's holds, as its listing did on its own thread, and is
+        never tried again: what the code raises is raised here.
+        """
+        scheduler = self.scheduler
+
+        async def work() -> tuple[bool, Any]:
+            try:
+                return True, await scheduler.on(jobs.Kind.CALL, fn, *args)
+            except Exception as error:
+                return False, error
+
+        ok, value = await scheduler.run(jobs.Job(kind=jobs.Kind.CALL, work=work,
+                                                 plugin=self.source.code))
+        if not ok:
+            raise value
+        return value
+
+    async def aside(self, fn: Callable[..., T], *args: Any) -> T:
+        """`call`, for a lazy post's files, a refresh or `date`: any tab it opens is its own.
+
+        Such a tab comes from the run's budget and closes when the call ends, so the listing's
+        tab is never navigated away from its feed.
+        """
+        return await self.call(_aside, fn, *args)
+
+    async def off(self, fn: Callable[..., T], *args: Any) -> T:
+        """Run the engine's own blocking step, `fn(*args)`, on a `CALL` thread, with no job.
+
+        For what must run even while the source is held or the run is stopping: closing a
+        target's tabs, writing back the cookies.
+        """
+        return await self.scheduler.on(jobs.Kind.CALL, fn, *args)
+
+    async def aclose(self) -> None:
+        """Close the session and the stores, on the run's loop; once."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.session.started:
+                await self.session.close()
+        finally:
+            for db in (self._state, self._secrets):
+                if db is not None:
+                    db.close()
 
     def close(self) -> None:
         """Close the session, stores and the source's own loop; once."""
@@ -252,8 +328,39 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     Raises:
         UsageError: the home's config.toml has a value it doesn't take.
     """
-    configured = config(settings.home).source(source.code)
-    jar = home.load(settings.home, source.code)
+    run = _made(settings, source)
+    try:
+        yield run
+    finally:
+        run.close()
+
+
+@asynccontextmanager
+async def opened(settings: RunShared, source: Source) -> AsyncIterator[SourceRun]:
+    """`source_run` inside a run, on its loop: the source's resources, closed on the loop.
+
+    Raises:
+        UsageError: the home's config.toml has a value it doesn't take.
+    """
+    # The home's config.toml and the login's cookies are read off the loop.
+    run = _made(settings, source, *await asyncio.to_thread(_read, settings, source))
+    try:
+        yield run
+    finally:
+        await run.aclose()
+
+
+def _read(settings: RunShared, source: Source) -> tuple[SourceConfig, cookies.Jar]:
+    """A source's `[sources.<code>]` settings and its login's cookies, from the home."""
+    return config(settings.home).source(source.code), home.load(settings.home, source.code)
+
+
+def _made(settings: RunShared, source: Source, configured: SourceConfig | None = None,
+          jar: cookies.Jar | None = None) -> SourceRun:
+    """A source's `SourceRun`: its login's cookies warned of, its settings applied; both
+    read here unless given."""
+    if configured is None or jar is None:
+        configured, jar = _read(settings, source)
     _warn_expiring(source, jar)
     stop: Stop | None = getattr(settings, "stop", None)
     # Outside a run, the source has a scheduler of its own.
@@ -262,14 +369,10 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     used.pace[source.code] = source.pace if configured.pace is None else configured.pace
     used.limits.limits.update(_limits(source, configured))
     session = _network(source, jar, configured, handles=used.limits.handles)
-    run = SourceRun(source, settings, jar, session,
-                    net.Client(session, stop=stop.soon if stop else None),
-                    net.Client(session, stop=stop.now if stop else None), configured,
-                    _own_jobs=own)
-    try:
-        yield run
-    finally:
-        run.close()
+    return SourceRun(source, settings, jar, session,
+                     net.Client(session, stop=stop.soon if stop else None),
+                     net.Client(session, stop=stop.now if stop else None), configured,
+                     _own_jobs=own)
 
 
 def _network(source: Source, jar: Iterable[Mapping[str, Any]],
@@ -323,8 +426,9 @@ class TargetSite:
         target: the target it acts for.
         time: the target's `--when`, as days.
 
-    Used on the target's listing thread. Each browser verb makes one call to the run's loop; the
-    tabs are the target's share of the run's browser (`flnkit.browser.Tabs`), opened on first use.
+    Used on a thread of the source (`SourceRun.call`). Each browser verb makes one call to the
+    run's loop; the tabs are the target's share of the run's browser (`flnkit.browser.Tabs`),
+    opened on first use.
     `close()` gives them back, and closes a browser the site launched for itself outside a run.
     """
 
@@ -527,9 +631,10 @@ class TargetSite:
     @property
     def url(self) -> str:
         """See `flnd.source.Site.url`."""
-        if self._tabs is None or not self._tabs.opened:
+        tabs = self._aside() or self._tabs
+        if tabs is None or not tabs.opened:
             return "about:blank"
-        return self._tabs.page.url
+        return tabs.page.url
 
     def wait(self, css: str | None = None, *, url: browser.Match | None = None,
              idle: bool = False, timeout: float = 30.0) -> None:
@@ -544,7 +649,7 @@ class TargetSite:
         It scrolls in the source's `scroll` style, as its feeds do.
 
         Args:
-            until: asked here, on the listing thread, before each scroll; True stops.
+            until: asked here, on the source's thread, before each scroll; True stops.
             idle: seconds the bottom may stay quiet, after a whole wait for more brought nothing,
                 before the feed counts as ended.
 
@@ -553,7 +658,7 @@ class TargetSite:
         """
         tabs = self._verbs()
         scroller = tabs.run(tabs.page.scroller(idle=idle, style=tabs.scroll))
-        # One step per call to the loop, with `until` asked here, on the listing thread.
+        # One step per call to the loop, with `until` asked here, on the source's thread.
         while not (until is not None and until()) and tabs.run(scroller.step()):
             pass
         return scroller.scrolls
@@ -567,7 +672,7 @@ class TargetSite:
         """The tab's page now, parsed; see `flnd.source.Site.document`.
 
         Returns:
-            The page as a `flnkit.html.Document`, parsed on the listing thread, not on the loop.
+            The page as a `flnkit.html.Document`, parsed on the source's thread, not on the loop.
         """
         from flnkit.html import parse
 
@@ -597,8 +702,11 @@ class TargetSite:
         return (await self._browser().current()).raw
 
     def warm(self, urls: Iterable[str]) -> None:
-        """Start loading `urls` in background tabs; see `flnd.source.Site.warm`."""
-        self._verbs().warm(urls)
+        """Start loading `urls` in background tabs; see `flnd.source.Site.warm`.
+
+        An empty URL (a page the profile lacks) opens no tab.
+        """
+        self._verbs().warm([url for url in urls if url])
 
     def _verbs(self) -> browser.Tabs:
         """`_browser()`, for a browser verb, which only plain `def` code may call.
@@ -613,7 +721,18 @@ class TargetSite:
         if self._run.loop.here:
             raise SourceError("the browser verbs of `site` are for a plain `def` route or "
                               "category; an `async def` one awaits `site.tab` instead")
-        return self._browser()
+        aside = _ASIDE.get()
+        if aside is None:
+            return self._browser()
+        tabs = self._aside()
+        if tabs is None:
+            tabs = self._made()
+            aside.append((self, tabs))
+        return tabs
+
+    def _aside(self) -> browser.Tabs | None:
+        """This site's own tabs in the side call running on this thread (`SourceRun.aside`)."""
+        return next((tabs for site, tabs in _ASIDE.get() or () if site is self), None)
 
     def _browser(self) -> browser.Tabs:
         """The target's tabs, made on first use.
@@ -624,22 +743,27 @@ class TargetSite:
             source, else the source's own.
         """
         if self._tabs is None:
-            if self._shared is None:
-                self._shared = browser.RunBrowser(self._run.loop, stealth=self._source.stealth,
-                                                  screen=_Screen())
-                self._own = True
-            settings = self._run.config
-            if settings.proxy is not None and not self._run._told_proxy:
-                self._run._told_proxy = True
-                # The browser is one window every source of the run shares, so it can't take
-                # one source's proxy: say so, rather than let page loads leave unproxied
-                # without a word.
-                ui.warn("{code}: the browser doesn't use the proxy in config.toml; only the "
-                        "source's HTTP requests do", code=self._source.code)
-            style = settings.scroll or self._source.scroll
-            budget = jobs.Budget(self._run.scheduler, self._source.code, None)
-            self._tabs = browser.Tabs(self._shared, self._run.jar, scroll=style, budget=budget)
+            self._tabs = self._made()
         return self._tabs
+
+    def _made(self) -> browser.Tabs:
+        """A share of the run's browser for this target, which scrolls in the config's `scroll`
+        for the source, else the source's own."""
+        if self._shared is None:
+            self._shared = browser.RunBrowser(self._run.loop.loop, stealth=self._source.stealth,
+                                              screen=_Screen())
+            self._own = True
+        settings = self._run.config
+        if settings.proxy is not None and not self._run._told_proxy:
+            self._run._told_proxy = True
+            # The browser is one window every source of the run shares, so it can't take
+            # one source's proxy: say so, rather than let page loads leave unproxied
+            # without a word.
+            ui.warn("{code}: the browser doesn't use the proxy in config.toml; only the "
+                    "source's HTTP requests do", code=self._source.code)
+        style = settings.scroll or self._source.scroll
+        budget = jobs.Budget(self._run.scheduler, self._source.code, None)
+        return browser.Tabs(self._shared, self._run.jar, scroll=style, budget=budget)
 
     def _browser_cookies(self) -> list[Mapping[str, Any]]:
         """The browser's cookies, or none when this target never opened a tab."""
@@ -856,29 +980,25 @@ class LoginSite:
             raise Stopped(f"{self._run.source.code}: stopped while waiting: {reason}")
 
 
-@contextmanager
-def shared_browser(settings: RunShared) -> Iterator[None]:
-    """Give a run its loop and its one browser, shared by every source and target; then close both.
+@asynccontextmanager
+async def shared_browser(settings: RunShared) -> AsyncIterator[None]:
+    """Give a run its scheduler and its one browser, on the run's loop; then close both.
 
-        with shared_browser(settings):
+        async with shared_browser(settings):
             ...                     # settings.browser_pool is the run's `RunBrowser`
 
     Entered again inside a run, it changes nothing. The browser launches only when a target first
     asks for a tab, so a run that never needs one never starts it. On the way out the browser is
-    closed before the loop it runs on, even when closing it fails.
+    closed before the scheduler, even when closing it fails.
 
     Args:
         settings: the run's; `browser_pool` holds the `flnkit.browser.RunBrowser` while it runs.
-
-    Yields:
-        Nothing: the browser is reached through `settings.browser_pool`.
     """
     if settings.browser_pool is not None:
         yield
         return
-    run_loop = loop.Loop()
-    shared = browser.RunBrowser(run_loop, screen=_Screen())
-    found = config(settings.home)
+    shared = browser.RunBrowser(asyncio.get_running_loop(), screen=_Screen())
+    found = await asyncio.to_thread(config, settings.home)
     scheduler = _SCHEDULERS[shared] = jobs.Scheduler(
         stop=getattr(settings, "stop", None), rate=found.rate, slowest=found.slowest)
     settings.browser_pool = shared
@@ -887,10 +1007,9 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
     finally:
         settings.browser_pool = None
         try:
-            shared.close()
-            run_loop.run(scheduler.close())
+            await shared.aclose()
         finally:
-            run_loop.close()
+            await scheduler.close()
 
 
 # Each run's scheduler, by the run's browser, so every `RunShared` given that browser shares it.

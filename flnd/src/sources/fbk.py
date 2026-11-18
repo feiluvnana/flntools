@@ -6,8 +6,8 @@ embeds GraphQL results in its pages, inside `<script type="application/json">` b
 `__bbox`, and asks its GraphQL endpoint for more while a page scrolls, answered as one JSON
 value per line. This module reads both; it never calls the GraphQL API itself.
 
-Who calls it: the engine, through the routes and categories below (`flnd.engine.job.posts`), and the
-`date` hook for a post the listing left undated. It calls only `flnd.source` and the stdlib.
+Who calls it: the engine, through the routes and categories below (`flnd.engine.crawl.posts`), and
+the `date` hook for a post the listing left undated. It calls only `flnd.source` and the stdlib.
 
 The flow of a profile (`fbk:example.page`):
 1. The `user` route loads the profile page once and keeps its embedded results and the

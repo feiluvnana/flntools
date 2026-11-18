@@ -5,25 +5,39 @@
   `only` and `time`. `Seen` is the kit's own.
 - `history` and `targets` read what a run saved in a home's `flnd.db`.
 - `fetch` and `download` drive the HTTP library (`flnkit.net`) from a test's own thread.
+- `EngineCase`, `make_source` and `run_targets` run the engine on test sources, on
+  `flnkit.net.fake` and a fake clock.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping, MutableMapping
+import inspect
+import io
+import unittest
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 import unawaited  # noqa: F401  (a coroutine never awaited fails its test)
 
 from flnd import testing
+from flnd.engine import home as _home
+from flnd.engine import run as _run
+from flnd.engine.core import Engine, Report, _drive
+from flnd.engine.events import Failed, Phase, State
 from flnd.engine.options import Options
-from flnd.source import Range, Source, Target
+from flnd.source import Login, Post, Range, Source, Target, target
 from flnd.testing import Collected, Seen
+from flnd.ui.log import ui
+from flnkit import clock as _time
+from flnkit import cookies as _cookies
 from flnkit import net as _net
 
-__all__ = ["Collected", "FakeSite", "Seen", "collect", "download", "fetch", "history",
-           "targets"]
+__all__ = ["CDN", "Collected", "EngineCase", "FakeSite", "Seen", "collect", "download", "fetch",
+           "history", "make_source", "noise", "own_login", "run_targets", "targets"]
 
 # A fixture: data for a URL, a SiteError to raise, or a function of (url, request) giving either.
 Answer = Any
@@ -149,3 +163,143 @@ async def _with_client(call: Callable[[_net.Client], Any], *, stop: Any, retry: 
     finally:
         if own:
             await session.close()
+
+
+# ---------------------------------------------------------------------------------------------
+# The engine on test sources
+# ---------------------------------------------------------------------------------------------
+
+def run_targets(engine: Engine, chosen: Sequence[tuple[Target, Options]],
+                stop: _run.Stop) -> Report:
+    """Run `chosen` through the engine's run, as a command does, on a loop on this thread."""
+    async def command() -> Report:
+        async with engine._live(), engine._running(stop) as runner:
+            return Report(tuple(await runner.run(chosen)))
+
+    return _drive(command())
+
+
+CDN = "https://cdn.example"
+
+
+def noise(format, size=(64, 48)):
+    if format.upper() == "PNG":
+        return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + bytes(32)
+    return b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + bytes(32)
+
+
+def make_source(code, route=None, *, files: Any = (), **declared):
+    """A routed test source: `code:<name>` reads a user, `route(site)` is its route, and `files` are its `posts`.
+
+        make_source("aaa", lambda site: seen.append(site.target.value), files=[File(url, name="a.jpg")])
+
+    Args:
+        code: the source's code; its domain is `<code>.example`.
+        route: called with the target's `Site` when the target is read; what it returns is the
+            context of the category. A coroutine function makes the route and the category `async def`.
+        files: the files `posts` yields, each in a post of its own, kept as the site names them and
+            filed in the target's own folder, keyed by their path (`aaa:a.jpg`); or a function of
+            `(site, context)` giving them.
+        **declared: the class's other fields and methods, such as `login`, `connect` or `sign`.
+    """
+    def listed(site, context):
+        found: Any = files(site, context) if callable(files) else files
+        return [Post(file.name or str(number), [file]) for number, file in enumerate(found)]
+
+    if inspect.iscoroutinefunction(route):
+        @target(f"{code}:{{user}}")
+        async def user(self, site, user):
+            return await route(site)
+
+        @user.category
+        async def posts(self, site, context):
+            for post in listed(site, context):
+                yield post
+    else:
+        @target(f"{code}:{{user}}")
+        def user(self, site, user):
+            return route(site) if route is not None else None
+
+        @user.category
+        def posts(self, site, context):
+            yield from listed(site, context)
+
+    attributes = {"code": code, "name": code.upper(), "domains": (f"{code}.example",), "api": 1, "folder": "",
+                  "key": "{path}", "user": user, "posts": posts, **declared}
+    return type(f"Source_{code}", (Source,), attributes)
+
+
+def own_login(start=None, *, methods=("qr",), check=None):
+    """A source's own `Login`: `start(self, site, how)` logs in; `check(self, site)` says whether it did."""
+    attributes = {"methods": methods}
+    if start is not None:
+        attributes["start"] = start
+    attributes["check"] = check or (lambda self, site: "session" in site.secrets)
+    return type("OwnLogin", (Login,), attributes)()
+
+
+class EngineCase(unittest.TestCase):
+    def setUp(self):
+        self.dest = io.StringIO()
+        scope = ui.scope(dest=self.dest, width=400, color=False)
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.home = Path(folder.name) / ".flnd"
+        self.requests = []
+        self.routes = {}
+        # A lambda, so a test that replaces `self.serve` is answered by its own.
+        self.enterContext(_net.fake(lambda request: self.serve(request)))
+        # Every wait (pacing, back-offs, retries) passes at once on the fake clock.
+        self.fake = self.enterContext(_time.use(_time.Fake()))
+        # The events of the runs `report` makes: what the CLI shows, now that the engine logs no rows.
+        self.events = []
+        # The run's snapshots, kept apart from its events.
+        self.states = []
+
+    @property
+    def now(self):
+        return self.fake.now
+
+    def serve(self, request: _net.Request) -> _net.Reply:
+        self.requests.append(request)
+        answer = self.routes.get(str(request.url).split("?")[0])
+        if callable(answer):
+            return answer(request)  # type: ignore[return-value]
+        if answer is None:
+            return _net.reply(200, content=request.url.path.encode())
+        return answer
+
+    def run_engine(self, *sources, targets, options=Options(), **settings):
+        """Run the targets, each with `options`, and return how many files were written."""
+        return self.report(*sources, targets=targets, options=options, **settings).files
+
+    def report(self, *sources, targets, options=Options(), stop=None, **settings):
+        """Run the targets, each with `options`, and return the `Report`; its events go in `events`."""
+        settings.setdefault("emit", lambda event: (
+            self.states if isinstance(event, State) else self.events).append(event))
+        engine = Engine(home=self.home, sources={source.code: source for source in sources}, **settings)
+        return run_targets(engine, [(target, options) for target in engine.resolve(targets)],
+                           stop or _run.Stop())
+
+    def log_in(self, code, **values):
+        jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
+        _home.save(self.home, code, _cookies.Jar(jar))
+
+    def lines(self):
+        return self.dest.getvalue().splitlines()
+
+    def failures(self):
+        """Each `Failed` event of the runs so far, as `<target>: <message>` (a file's: `<name>: ...`)."""
+        return [f"{event.path.name if event.path else event.target}: {event.error}"
+                for event in self.events if isinstance(event, Failed)]
+
+    def listed(self):
+        """Each `(target, category)` of a target that ended done, from the run's last snapshot."""
+        state = self.states[-1]
+        return {(row.text, name) for row in state.targets if row.phase is Phase.DONE
+                for name in row.categories}
+
+    def target_dir(self, code, name):
+        return self.home / _home.MEDIA / code / name

@@ -8,9 +8,8 @@ What it times, in order:
    `flnkit.html` (selectolax), then decoding its JSON script blocks (`html_meta`, the number a
    Facebook or Instagram page costs) or reading its 20,000 `img[src]` (`html_images`);
 4. hashing 256 MiB in memory, per MiB;
-5. the loop bridge: a thread calling a coroutine on an event loop thread and waiting for it;
-6. flnd's per-file work: `job.place` (paths and names), `text.filename` and `day()`;
-7. a no-op task handed to the run's loop, and a file's bytes counted on its `Flight` (with
+5. flnd's per-file work: `crawl.place` (paths and names), `text.filename` and `day()`;
+6. a no-op task handed to a loop, and a file's bytes counted on its `Flight` (with
    the snapshots made and drawn meanwhile, or not).
 
 Every number is the best of 3 runs (5 for the short per-call ones). The pages are synthetic and
@@ -19,13 +18,11 @@ use only example handles and example.com-style hosts.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import io
 import json
 import os
 import sys
-import threading
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
@@ -38,15 +35,15 @@ import msgspec
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from example_source import CDN, Example  # noqa: E402
+from kit import Loop  # noqa: E402
 
-from flnd.engine.core import job  # noqa: E402
+from flnd.engine import crawl, run  # noqa: E402
 from flnd.engine.events import State  # noqa: E402
 from flnd.source import File, Post, Target  # noqa: E402
 from flnd.ui.screen import Screen  # noqa: E402
 from flnkit import html as _html  # noqa: E402
 from flnkit import text as _text  # noqa: E402
 from flnkit.clock import day  # noqa: E402
-from flnkit.loop import Loop  # noqa: E402
 
 EDGES = "data.user.edge_owner_to_timeline_media.edges[].node"
 
@@ -139,28 +136,8 @@ def hashes(report: kit.Report) -> None:
     report.add("hash_crc32", kit.best(lambda: zlib.crc32(blob)) / 256 * 1e6, "us")
 
 
-def bridge(report: kit.Report) -> None:
-    """Time step 5: `run_coroutine_threadsafe(...).result()` from a thread, per call."""
-    calls = 20_000
-    loop = asyncio.new_event_loop()
-    thread = threading.Thread(target=loop.run_forever, daemon=True)
-    thread.start()
-
-    async def noop() -> int:
-        return 1
-
-    def work() -> None:
-        for _ in range(calls):
-            asyncio.run_coroutine_threadsafe(noop(), loop).result()
-
-    report.add("loop_bridge", kit.best(work) / calls * 1e6, "us")
-    loop.call_soon_threadsafe(loop.stop)
-    thread.join()
-    loop.close()
-
-
 def per_file(report: kit.Report) -> None:
-    """Time step 6: `job.place`, `text.filename` and `day()`, per call."""
+    """Time step 5: `crawl.place`, `text.filename` and `day()`, per call."""
     files = [File(f"{CDN}/a/{n}.jpg") for n in range(2)]
     posts = [Post(f"C{n:08d}", files, date=1767312000 + n,
                   title=f"a title number {n} with é and / slash").filed("posts")
@@ -169,7 +146,7 @@ def per_file(report: kit.Report) -> None:
 
     def place() -> None:
         for post in posts:
-            job.place(source, post, files)
+            crawl.place(source, post, files)
 
     report.add("place", kit.best(place, runs=5) / (2 * len(posts)) * 1e6, "us")
     names = [f"un nom très long / avec: des <caractères> spéciaux {n}" for n in range(20000)]
@@ -185,10 +162,10 @@ def per_file(report: kit.Report) -> None:
 
 
 def pool_and_ui(report: kit.Report) -> None:
-    """Time step 7: a no-op task handed to the run's loop, and a flight's `advance`.
+    """Time step 6: a no-op task handed to the run's loop, and a flight's `advance`.
 
-    The downloads are tasks on the run's loop, each handed over from the listing thread
-    (`Loop.submit`); `loop_task` is that hop's cost, end to end.
+    `loop_task` is the cost of a task handed to a loop from another thread (`Loop.submit`),
+    end to end.
     """
     tasks = 20_000
 
@@ -212,12 +189,13 @@ def pool_and_ui(report: kit.Report) -> None:
     for live, name in ((False, "advance_plain"), (True, "advance_live")):
         def advance(live: bool = live) -> None:
             newest = [State()]
-            tally = job.Tally(lambda state: newest.__setitem__(0, state))
+            tally = run.Tally(lambda state: newest.__setitem__(0, state))
             flight = tally.fly("file", target, "posts/file.mp4")
             with ExitStack() as stack:
                 if live:
                     # The snapshots are made, and drawn on a terminal, while the bytes come.
-                    stack.enter_context(tally.publishing())
+                    loop = stack.enter_context(Loop())
+                    stack.enter_context(loop.entered(tally.publishing()))
                     stack.enter_context(Screen(lambda: newest[0], command="bench",
                                                stream=_Terminal()))
                 for _ in range(advances):
@@ -244,7 +222,6 @@ def main() -> None:
     json_and_paths(report)
     html(report)
     hashes(report)
-    bridge(report)
     per_file(report)
     pool_and_ui(report)
     report.emit()

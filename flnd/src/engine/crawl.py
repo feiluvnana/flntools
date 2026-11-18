@@ -1,115 +1,43 @@
-"""The job: one target of a source, from its route to its rows in `flnd.db`.
+"""The crawl: one target's listings on the run's loop, its smart sync and early stops, the Ledger.
 
 src/docs/architecture explains it.
-
-What it holds: `download`, the one entry for a target; `Tally`, the run's live counts and
-the `State` snapshots made from them; `Ledger`, which plans each post's files (skip, link,
-hold for a day, queue); `Downloads`, which hands each post's queued files to the run's save on
-the run's loop; the listing loop (`_read`, `_list_one`, `_sync_one`, `_retry_failed`) with its
-early stops; and `plan`, `place`, `posts` and `discover`, the pieces a dry run and
-`flnd.testing` reuse.
-
-Who calls it: the engine (`flnd.engine.core`), once per target, on the target's listing thread.
-What it calls: the source's route and categories through a `TargetSite`, the save
-(`flnd.engine.save`) on the run's loop for each post's files, and the home's `flnd.db`
-(`flnd.engine.home`).
-
-How one target goes (`download`):
-1. Sweep stale parts from the target's folder, and read the target's row: which categories
-   were listed to their end, the cursors of cut-short listings, each listing's head (the
-   newest post an earlier run saw) and its gaps (where syncs cut short stopped).
-2. Call the route, then retry the files earlier runs failed on (`_retry_failed`): each failed
-   post is listed again, from the cursor of the page it was on, for fresh URLs, and its failed
-   files are queued. A file is retried this way on at most `home.RETRIES` runs; `flnd retry`
-   (`Retry.ONLY`) takes every one and lists nothing else. A gone file (`NotFound`) never is.
-3. List the route, or each wanted category (`_list_one`), queueing each post's files that
-   aren't saved. The engine owns the early stops, never the source (`_Stops`):
-   - a sync of a `newest_first` listing stops after `stop_after` saved posts in a row (5, or
-     `[sources.<code>] stop_after` in the home's config.toml), and sooner, after the head and
-     one more saved post, once it meets the head an earlier run saw. With nothing new, that
-     is one page: one request (a `Skipped` event with the reason "nothing new");
-   - a sync whose listing has gaps, once it meets saved posts at the top, jumps to each gap's
-     cursor and goes on there, so a sync cut short never leaves posts behind (`_sync_one`);
-   - a `newest_first` listing stops after 5 posts in a row older than `--when`;
-   - `--limit` cuts it.
-4. Wait for the downloads, then keep where each listing stopped: its cursor when a full
-   download was cut short, its gaps when a sync was, `complete` when it ran out or caught up,
-   and its new head when it was read from the top and left no gap (`Home.progress`).
-
-Targets a listing yields (a post linking to another site) are handed back in the report's
-`found`, and the engine downloads them after the run's own targets.
-
-Rules a change must keep:
-- A source never decides when a listing stops: it yields, and the job closes its generator.
-- A cursor is kept only for a listing cut short; a listing that ran out drops it.
-- A head is kept only for a listing read from its newest post, with no gap left: a run that
-  resumed from a cursor read the middle of the listing, not its top, and a gap lies above the
-  old head, which a later sync with no cursor to jump to reads down to.
-- A retry never uses a stored URL: `flnd.db` keeps only a redacted one, and a CDN's signed URL
-  expires within hours. It lists the post again, through the source, from `(target, post,
-  file)` and the cursor of the post's page.
-- Two threads touch a target. The listing thread runs the source, the `Ledger` and
-  `Downloads.post`; each post's save runs on the run's loop. They share only what a lock
-  guards: the tally's counts (`Tally._lock`), the downloads' written files
-  (`Downloads._writing`) and its queue count (`Downloads._changed`). A source's code runs on
-  the listing thread only, so a save that needs a lazy post's files again asks that thread
-  (`_Refresh`), which answers between two posts.
-- A post's rows commit in one transaction, once its last file settled, and only after each of
-  its files is in place: a row never names a file that isn't there. `Saved` comes after the
-  commit and the unpack, so a script that reads the history on `Saved` finds the row.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextvars
+import contextlib
 import datetime
 import filecmp
 import functools
 import inspect
 import os
 import re
+import stat
 import string
-import threading
 import time
-from collections import deque
 from collections.abc import (
+    AsyncIterator,
+    Awaitable,
     Callable,
-    Collection,
-    Coroutine,
     Generator,
-    Iterator,
     Mapping,
     Sequence,
 )
-from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import (
-    TYPE_CHECKING,
-    Any,
-)
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-import msgspec
-
 from flnd.engine import home, jobs, save
-from flnd.engine.events import (
-    NOTHING_NEW,
-    RESUMING,
-    Failed,
-    FileState,
-    HoldState,
-    Phase,
-    Skipped,
-    State,
-    TargetState,
-)
+from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped
 from flnd.engine.options import Options, Retry
+from flnd.engine.run import Counts, Tally
 from flnd.engine.site import Listing, SourceRun, TargetSite
 from flnd.errors import (
     Blocked,
+    Changed,
     Error,
     LoginError,
     NetworkError,
@@ -121,17 +49,16 @@ from flnd.errors import (
 from flnd.source import Category, File, NotFound, Post, Range, Route, Site, Source, Target
 from flnd.sources import SOURCES
 from flnd.ui.log import ui
-from flnkit import clock, files, loop, text
+from flnkit import files, text
 from flnkit.clock import day
 from flnkit.text import fill
 
 if TYPE_CHECKING:
-    from flnd.engine.run import Stop
+    from flnd.engine.events import Event
 
 __all__ = [
-    "STOPPED", "Counts", "Downloads", "Flight", "Ledger", "Placed", "Tally",
-    "TargetReport", "causes", "discover", "download", "failure", "logged_out", "place", "plan",
-    "posts", "tell", "wanted",
+    "STOPPED", "Downloads", "Ledger", "Placed", "TargetReport", "causes", "discover",
+    "download", "failure", "logged_out", "place", "plan", "posts", "tell", "wanted",
 ]
 
 # The statuses that end a listing as a login problem when the site's own domain answers them.
@@ -156,8 +83,8 @@ LISTED_FIELDS = frozenset({"count", "index", "extension", "path"})
 DASH_EXTENSION = ".mp4"
 STOPPED = "stopped by Ctrl-C"
 FINISHING = "stopping: {files} finishing (Ctrl-C again to stop now)"
-# Seconds a waiting thread sleeps between checks of the stop state and the refresh queue: short
-# enough that Ctrl-C feels at once, long enough to cost nothing.
+# Seconds a wait on the loop looks again at the stop state: short enough that Ctrl-C feels at
+# once, long enough to cost nothing.
 WAKE = 0.1
 # Seconds an async listing may run without awaiting before it is warned about (`_steps`).
 HELD = 10.0
@@ -176,7 +103,13 @@ ALL = "all"
 RETRY_WINDOW = 100
 _FORMATTER = string.Formatter()
 
-RunAsync = Callable[[Coroutine[Any, Any, Any]], Any]
+# Runs a source's plain code, `fn(*args)`: on a `CALL` thread in a run (`SourceRun.call`), at
+# once in the test kit.
+Call = Callable[..., Awaitable[Any]]
+# What `_steps` gives once a plain iterator is done.
+_DONE = object()
+# What a lazy post's files may raise that fails the post alone, never its target (PLAN 6.2).
+_POST_ERRORS: tuple[type[BaseException], ...] = (NotFound, Changed, *jobs._HIDDEN)
 
 
 @dataclass(frozen=True)
@@ -240,7 +173,8 @@ def failure(error: BaseException, target: Target, source: Source | None = None) 
     return made
 
 
-def tell(target: Target, error: Error, emit: Callable[[Any], None]) -> None:
+async def tell(target: Target, error: Error,
+               emit: Callable[[Event], Awaitable[None]]) -> None:
     """Report the failure that ended `target`: a `Failed` event, and debug lines for `-v`.
 
     The event is what the CLI and a script show; the debug lines add the error's causes.
@@ -250,7 +184,7 @@ def tell(target: Target, error: Error, emit: Callable[[Any], None]) -> None:
         error: the failure, as `failure` made it.
         emit: the run's event sink (`RunShared.emit`), which gets one `Failed` event.
     """
-    emit(Failed(target, error))
+    await emit(Failed(target, error))
     ui.debug("{target}: {error}", target=str(target), error=error)
     ui.debug("{target}: {chain}", target=str(target), chain=causes(error))
 
@@ -288,370 +222,6 @@ def _on_domains(error: SiteError, domains: Sequence[str]) -> bool:
     return any(host == domain or host.endswith("." + domain) for domain in domains)
 
 
-@dataclass
-class Counts:
-    """One category's counts of files, as the run's tally keeps them.
-
-    A file moves from `queued` to `downloading`, then to `saved`, `skipped` or `failed`.
-    `linked` counts files linked from another category's folder, `later` the links held back
-    until the file they point to lands, and `bytes` the bytes saved.
-    """
-
-    found: int = 0
-    queued: int = 0
-    downloading: int = 0
-    saved: int = 0
-    linked: int = 0
-    later: int = 0
-    skipped: int = 0
-    failed: int = 0
-    bytes: int = 0
-
-    @property
-    def pending(self) -> int:
-        """Return files and links not yet finished."""
-        return self.queued + self.downloading + self.later
-
-
-def _ignore(event: Any) -> None:
-    """The sink of a run nobody listens to: the event is dropped."""
-
-
-# ---------------------------------------------------------------------------------------------
-# The tally: the run's live counts, and the `State` snapshots made from them
-# ---------------------------------------------------------------------------------------------
-
-# Seconds between two snapshots, and the window a speed is measured over.
-TICK = 0.1
-SPEED_WINDOW = 3.0
-# The files in flight a snapshot names; `State.more` counts the rest.
-FILES_SHOWN = 6
-
-
-class _Rate:
-    """Bytes a second over the last `SPEED_WINDOW` seconds, from samples taken at each tick."""
-
-    def __init__(self) -> None:
-        self._samples: deque[tuple[float, float]] = deque()
-
-    def at(self, now: float, value: float) -> float:
-        samples = self._samples
-        samples.append((now, value))
-        while len(samples) > 1 and now - samples[0][0] > SPEED_WINDOW:
-            samples.popleft()
-        then, before = samples[0]
-        return (value - before) / (now - then) if now > then else 0.0
-
-
-@dataclass
-class _Row:
-    """One target's row of the snapshot; changed under the tally's lock."""
-
-    text: str
-    planned: tuple[str, ...]
-    phase: Phase = Phase.WAITING
-    categories: list[str] = field(default_factory=list)
-    counts: Counts = field(default_factory=Counts)
-    received: int = 0
-    rate: _Rate = field(default_factory=_Rate)
-
-
-class Flight:
-    """One file in flight: the bytes it received so far, and its size.
-
-    Made by `Tally.fly`; the transfer counts on it from the loop, the snapshot reads it under
-    the tally's lock.
-    """
-
-    def __init__(self, tally: Tally, key: str, row: _Row, path: str) -> None:
-        self._tally, self.key, self._row, self.path = tally, key, row, path
-        self.done = 0
-        self.total: int | None = None
-        self.rate = _Rate()
-
-    def size(self, total: float | None) -> None:
-        """Set the file's size; None when it isn't known."""
-        self.total = int(total) if total is not None else None
-
-    def advance(self, n: float) -> None:
-        """Count `n` more bytes received."""
-        # No lock: only the file's transfer writes it, and a snapshot reading it a chunk late
-        # is still right at the next tick.
-        self.done += int(n)
-
-    def land(self) -> None:
-        """Take the file off the snapshot: its transfer ended, however it ended."""
-        tally = self._tally
-        with tally._lock:
-            if tally._flights.pop(self.key, None) is not None:
-                self._row.received += self.done
-                tally._received += self.done
-
-
-@dataclass
-class _Hold:
-    """A wait going on, as the snapshot's `HoldState` shows it."""
-
-    plugin: str
-    account: str | None
-    bucket: str
-    until: float
-    reason: str
-    count: int
-
-
-class Tally:
-    """The run's live counts, and the `State` snapshots made from them (`run.state`).
-
-    Every part of a run counts here: each target's listings (`start`, `downloading`, `end`),
-    each file's steps (`count`), the files in flight (`fly`) and the waits (`hold`). Every
-    `TICK` seconds, while something changed, `publish` makes a new `State` and sends it to the
-    run's sink, which swaps it in as `run.state`; the screen reads only that.
-
-    A target a search found counts on the search's row (`adopt`). Everything changes under one
-    lock, which is never held while calling out.
-
-    Args:
-        emit: the run's event sink; None drops the snapshots.
-    """
-
-    def __init__(self, emit: Callable[[Any], None] | None = None) -> None:
-        self.emit = emit or _ignore
-        self._lock = threading.Lock()
-        self._rows: dict[Target, _Row] = {}
-        self._owners: dict[Target, Target] = {}
-        # Counts by the target and category they belong to, a found target's on its own.
-        self._lines: dict[tuple[Target, str], Counts] = {}
-        self._flights: dict[str, Flight] = {}
-        self._holds: list[_Hold] = []
-        # The newest listing step: its row, its category, and its `Listing` (pages read).
-        self._step: tuple[_Row, str, Listing | None] | None = None
-        self._received = 0
-        self._rate = _Rate()
-        self._started = clock.now()
-        self._version = 0
-        self._last: State | None = None
-
-    # -- what the run counts ------------------------------------------------------------------
-
-    def add(self, target: Target, categories: Sequence[str] = ()) -> None:
-        """Give `target` a row, waiting, unless it has one.
-
-        Args:
-            target: the target.
-            categories: the categories it will take, shown until its listings start.
-        """
-        with self._lock:
-            if target not in self._rows and target not in self._owners:
-                self._rows[target] = _Row(str(target), tuple(categories))
-
-    def adopt(self, child: Target, parent: Target) -> None:
-        """Count a target a search found on the search's row."""
-        with self._lock:
-            self._owners[child] = parent
-
-    def start(self, target: Target, category: str, listing: Listing | None = None) -> None:
-        """A listing of `target` starts: its row is listing, and it is the newest step.
-
-        Args:
-            target: the target listed.
-            category: its category; "" for a target without categories.
-            listing: the category's `Listing`, whose pages read show on the `now` line.
-        """
-        with self._lock:
-            row = self._row(target)
-            row.phase = Phase.LISTING
-            name = category or target.kind
-            if name not in row.categories:
-                row.categories.append(name)
-            self._step = (row, name, listing)
-
-    def downloading(self, target: Target) -> None:
-        """`target`'s listings ended; what is left is its files in flight."""
-        with self._lock:
-            row = self._row(target)
-            if row.phase is Phase.LISTING:
-                row.phase = Phase.DOWNLOADING
-
-    def end(self, target: Target, *, failed: bool) -> None:
-        """`target` is over: done, or failed (a stop included). A found target ends nothing."""
-        with self._lock:
-            if target in self._owners:
-                return
-            self._row(target).phase = Phase.FAILED if failed else Phase.DONE
-
-    def count(self, target: Target, category: str, **steps: int) -> None:
-        """Move the counts of `Counts` for one file or post of `target`'s category.
-
-        Args:
-            target: the target the files belong to.
-            category: their category; "" for a target without categories.
-            steps: how much each count moves, such as `saved=1, downloading=-1`.
-        """
-        with self._lock:
-            line = self._lines.setdefault((target, category), Counts())
-            row = self._row(target)
-            for name, step in steps.items():
-                setattr(line, name, getattr(line, name) + step)
-                setattr(row.counts, name, getattr(row.counts, name) + step)
-
-    def totals(self, target: Target) -> Counts:
-        """The counts of every category of `target` itself, summed, as a new `Counts`."""
-        total = Counts()
-        with self._lock:
-            for (owner, _), line in self._lines.items():
-                if owner == target:
-                    for name in vars(total):
-                        setattr(total, name, getattr(total, name) + getattr(line, name))
-        return total
-
-    def fly(self, key: str, target: Target, path: str) -> Flight:
-        """A file of `target` starts its transfer: it shows until it `land`s.
-
-        Args:
-            key: the file's key in the run.
-            target: the target it belongs to.
-            path: where it goes, under the target's folder.
-
-        Returns:
-            The file's `Flight`, which the transfer counts its bytes on.
-        """
-        with self._lock:
-            flight = self._flights.get(key)
-            if flight is None:
-                flight = self._flights[key] = Flight(self, key, self._row(target), path)
-            return flight
-
-    @contextmanager
-    def hold(self, plugin: str, account: str | None, bucket: str, seconds: float, reason: str,
-             *, count: int = 1) -> Iterator[None]:
-        """Show a wait for the block: a site asked the run to come back later, or a source waits.
-
-        Args:
-            plugin: the source's code.
-            account: its account's name; None when it has none.
-            bucket: what waits: "pages" for a listing.
-            seconds: how long the wait is.
-            reason: why, in the site's or the source's words.
-            count: the round of waits in a row this one is, from 1.
-        """
-        with self._lock:
-            hold = _Hold(plugin, account, bucket, clock.now() - self._started + seconds, reason,
-                         count)
-            self._holds.append(hold)
-        try:
-            yield
-        finally:
-            with self._lock:
-                self._holds.remove(hold)
-
-    def _row(self, target: Target) -> _Row:
-        """The row `target` counts on, made when it has none; the caller holds the lock."""
-        owner = self._owners.get(target, target)
-        row = self._rows.get(owner)
-        if row is None:
-            row = self._rows[owner] = _Row(str(owner), ())
-        return row
-
-    # -- the snapshots ------------------------------------------------------------------------
-
-    def publish(self, *, force: bool = False) -> State | None:
-        """Make a new `State` and send it to the sink, when it differs from the last one.
-
-        The speeds move with the clock alone, so they are sampled at each call even when no
-        count changed; the time the run has taken never makes a snapshot new by itself.
-
-        Args:
-            force: send one even when nothing changed (the run's last).
-
-        Returns:
-            The new snapshot; None when nothing changed.
-        """
-        with self._lock:
-            state = self._state(clock.now())
-            last = self._last
-            same = last is not None and msgspec.structs.replace(
-                last, version=state.version, elapsed=state.elapsed) == state
-            if same and not force:
-                return None
-            self._version += 1
-            state = msgspec.structs.replace(state, version=self._version)
-            self._last = state
-        self.emit(state)
-        return state
-
-    @contextmanager
-    def publishing(self) -> Iterator[Tally]:
-        """Publish a snapshot every `TICK` seconds on a thread of its own, then a last one.
-
-        Yields:
-            This tally.
-        """
-        done = threading.Event()
-
-        def tick() -> None:
-            while not done.wait(TICK):
-                self.publish()
-
-        context = contextvars.copy_context()
-        thread = threading.Thread(target=context.run, args=(tick,), name="flnd-state",
-                                  daemon=True)
-        thread.start()
-        try:
-            yield self
-        finally:
-            done.set()
-            thread.join()
-            self.publish(force=True)
-
-    def _state(self, now: float) -> State:
-        """The snapshot of the counts as they are; the caller holds the lock."""
-        elapsed = now - self._started
-        flights = list(self._flights.values())
-        flying: dict[int, int] = {}
-        for flight in flights:
-            flying[id(flight._row)] = flying.get(id(flight._row), 0) + flight.done
-        targets = tuple(
-            self._target(row, now, row.received + flying.get(id(row), 0))
-            for row in self._rows.values()
-        )
-        files = tuple(
-            FileState(f._row.text, f.path, f.done, f.total, f.rate.at(now, f.done))
-            for f in flights[:FILES_SHOWN]
-        )
-        holds = tuple(HoldState(h.plugin, h.account, h.bucket, h.until, h.reason, h.count)
-                      for h in self._holds)
-        return State(
-            version=self._version, elapsed=elapsed, targets=targets, files=files,
-            more=max(0, len(flights) - FILES_SHOWN), holds=holds, now=self._now(elapsed),
-            saved=sum(t.saved for t in targets), skipped=sum(t.skipped for t in targets),
-            failed=sum(t.failed for t in targets), bytes=sum(t.bytes for t in targets),
-            speed=self._rate.at(now, self._received + sum(flying.values())),
-        )
-
-    @staticmethod
-    def _target(row: _Row, now: float, received: int) -> TargetState:
-        c = row.counts
-        return TargetState(
-            row.text, tuple(row.categories) or row.planned, row.phase, found=c.found,
-            saved=c.saved + c.linked, skipped=c.skipped, failed=c.failed, bytes=c.bytes,
-            speed=row.rate.at(now, received),
-        )
-
-    def _now(self, elapsed: float) -> str:
-        """The `now` line: the newest listing step, then the newest wait going on."""
-        step = ""
-        if self._step is not None:
-            row, name, listing = self._step
-            pages = listing.read if listing is not None else 0
-            step = f"{row.text} · {name}" + (f", page {pages}" if pages else "")
-        if not self._holds:
-            return step
-        hold = self._holds[-1]
-        held = f"held {max(0, round(hold.until - elapsed))} s: {hold.reason}"
-        return f"{step} · {held}" if step else held
-
-
 def wanted(route: Route, options: Options) -> tuple[Category, ...]:
     """The categories of `route` that `--only` selects, in the order the source declares them.
 
@@ -670,20 +240,20 @@ def wanted(route: Route, options: Options) -> tuple[Category, ...]:
     return tuple(category for category in route.categories if category.name in selected)
 
 
-def posts(
-    source: Source, site: Site, target: Target, options: Options, *, run_async: RunAsync
-) -> Generator[Post, None, None]:
+async def posts(
+    source: Source, site: Site, target: Target, options: Options, *, call: Call
+) -> AsyncIterator[Post]:
     """Every post of `target`'s route, or of each wanted category, that `--when` keeps.
 
-    It is the plain listing, with none of the job's stops at saved posts: `flnd.testing` and a
-    plan use it. The route is called once, and each category gets what it returned.
+    It is the plain listing, with none of the crawl's stops at saved posts: `flnd.testing` and
+    a plan use it. The route is called once, and each category gets what it returned.
 
     Args:
         source: the target's source.
         site: the `Site` the route and categories are given.
         target: the target.
         options: its options: `--when` and `--only`.
-        run_async: runs a coroutine on the run's loop, for an async route or category.
+        call: runs the source's plain code (`Call`).
 
     Yields:
         Each post, filed under its category, in the order the source yields them.
@@ -693,47 +263,45 @@ def posts(
     categories = wanted(route, options)
     if route.categories and not categories:
         return
-    context = _context(source, route, site, target, run_async)
+    context = await _context(source, route, site, target, call)
     if not route.categories:
-        yield from _Kept(context, "", newest_first=route.newest_first, span=span,
-                         run_async=run_async)
+        async with contextlib.aclosing(_Kept(context, "", newest_first=route.newest_first,
+                                             span=span, call=call)) as kept:
+            async for post in kept:
+                yield post
         return
     for category in categories:
         method = getattr(source, category.name)
-        yield from _Kept(
-            method(site, context), category.name, newest_first=category.newest_first,
-            span=span, run_async=run_async,
-        )
+        async with contextlib.aclosing(_Kept(
+                await call(method, site, context), category.name,
+                newest_first=category.newest_first, span=span, call=call)) as kept:
+            async for post in kept:
+                yield post
 
 
-def _context(
-    source: Source, route: Route, site: Site, target: Target, run_async: RunAsync
-) -> Any:
-    """Call `target`'s route method, awaiting it on the run's loop when it is async.
+async def _context(source: Source, route: Route, site: Site, target: Target, call: Call) -> Any:
+    """Call `target`'s route method: plain code through `call`, an `async def` on the loop.
 
-    A route without categories returns its listing, which is left as it is (an async
-    generator is iterated by `_steps`); a route with categories returns its context, the value
-    every category gets.
+    A route without categories returns its listing, which is left as it is (`_steps` iterates
+    it); a route with categories returns its context, the value every category gets.
 
     Args:
         source: the target's source.
         route: its route.
         site: the `Site` the route is given.
         target: the target, whose `value` the route reads.
-        run_async: runs a coroutine on the run's loop.
+        call: runs the source's plain code.
 
     Returns:
         What the route returned, awaited when it is a coroutine.
     """
-    context = getattr(source, route.kind)(site, target.value)
+    context = await call(getattr(source, route.kind), site, target.value)
     if route.categories and inspect.iscoroutine(context):
-        context = run_async(context)
+        context = await context
     return context
 
 
-def plan(
-    run: SourceRun, target: Target, options: Options,
-) -> Generator[Placed, None, None]:
+async def plan(run: SourceRun, target: Target, options: Options) -> AsyncIterator[Placed]:
     """Every file a download of `target` would save, placed, with nothing written (`--dry`).
 
     A lazy post's files are listed, which may cost a request each. `--limit` counts posts.
@@ -749,21 +317,32 @@ def plan(
     site = TargetSite(run, target, time=Range(options.since, options.until))
     route = next(r for r in run.source.routes if r.kind == target.kind)
     categories = {c.name: c for c in route.categories}
-    stream = posts(run.source, site, target, options, run_async=run.run_async)
     taken = 0
     try:
-        for post in stream:
-            if options.limit is not None and taken >= options.limit:
-                break
-            taken += 1
-            files = list(post.files()) if callable(post.files) else list(post.files)
-            yield from place(
-                run.source, post, files, category=categories.get(post.category),
-                route=route, target=target, options=options,
-            )
+        async with contextlib.aclosing(posts(run.source, site, target, options,
+                                             call=run.call)) as stream:
+            async for post in stream:
+                if options.limit is not None and taken >= options.limit:
+                    break
+                taken += 1
+                for placed in place(run.source, post, await _files(run, post),
+                                    category=categories.get(post.category), route=route,
+                                    target=target, options=options):
+                    yield placed
     finally:
-        stream.close()
-        site.close()
+        await run.off(site.close)
+
+
+async def _files(run: SourceRun, post: Post) -> list[File]:
+    """A post's files: a lazy post's listed with tabs of their own (`SourceRun.aside`)."""
+    if callable(post.files):
+        return await run.aside(_listed_files, post)
+    return list(post.files)
+
+
+def _listed_files(post: Post) -> list[File]:
+    assert callable(post.files)
+    return list(post.files())
 
 
 def place(
@@ -879,13 +458,16 @@ def _stems(filename: str, values: Mapping[str, Any]) -> set[str]:
 class Ledger:
     """One target's plan of what to download: which files are new, skipped, linked or held.
 
-    The listing thread hands it each post (`take`); it places the post's files, skips those
-    the history or the disk already has, links a file saved in another category's folder, and
-    returns the rest for `Downloads`. It also dates posts the site gave no day: a post is held
-    until its category ends, then given the day its key's row has, the source's `date` hook's
-    answer, or its nearest dated neighbour's in listing order (marked estimated).
+    The crawl hands it each post (`take`); it places the post's files, skips those the history
+    or the disk already has, links a file saved in another category's folder, and returns the
+    rest for `Downloads`. It also dates posts the site gave no day: a post is held until its
+    category ends, then given the day its key's row has, the source's `date` hook's answer, or
+    its nearest dated neighbour's in listing order (marked estimated).
 
-    Only the listing thread calls it, so its own state needs no lock.
+    What reads or writes the disk or `flnd.db` runs off the loop, one hop a post
+    (`SourceRun.off`): the crawl awaits it, so nothing else touches the ledger meanwhile. A
+    lazy post's files and the `date` hook run on a thread of the source (`SourceRun.aside`).
+    The `Skipped` events the plan makes are sent on the loop after each hop (`_tell`).
 
     Args:
         run: the source's run: its source and settings (the home, the database, the sink).
@@ -900,7 +482,7 @@ class Ledger:
         options: Options | None = None,
     ) -> None:
         """Initialize a target ledger with its stores, dates, and category state."""
-        self.source, self.settings, self.site = run.source, run.settings, site
+        self.run, self.source, self.settings, self.site = run, run.source, run.settings, site
         self.target, self.tally, self._options = target, tally, options
         self.folder = home.target_folder(self.settings.home, target)
         # The home's database; None for a plan with nothing to read (`flnd.dry`).
@@ -917,12 +499,25 @@ class Ledger:
         self._asking = type(self.source).date is not Source.date
         self._link_warned = False
         self._later: list[tuple[Path, str, str]] = []
-        self._asked: dict[str, float] = self._load_asked()
+        # The posts the `date` hook had no day for, read off the loop by `load`.
+        self._asked: dict[str, float] = {}
+        # The rows of files found on disk with none, written with their post's (`_held`).
+        self._unrecorded: list[home.FileRow] = []
+        # The `Skipped` events made off the loop, sent by `_tell`.
+        self._told: list[Skipped] = []
         # Whether the files queued now are a retry's (`_retry_failed`), which their `Saved`
         # events say.
         self.retrying = False
 
-    def take(self, post: Post, *, hold: bool = True) -> tuple[Outcome, list[_Queued]]:
+    def load(self) -> None:
+        """Read what the ledger keeps between runs: the posts the `date` hook had no day for.
+
+        Off the loop: it reads `flnd.db`.
+        """
+        if self._asking:
+            self._asked = self._load_asked()
+
+    async def take(self, post: Post, *, hold: bool = True) -> tuple[Outcome, list[_Queued]]:
         """Plan one post: the files to download, after skipping what is saved.
 
         1. Date it (`_dated`): an undated post may be held until its category ends.
@@ -939,33 +534,51 @@ class Ledger:
         """
         category = self._categories.get(post.category)
         first = self._first_key(post, category)
-        dated = self._dated(post, category, hold=hold)
+        dated, skipped = await self.run.off(self._before_files, post, category, hold)
+        await self._tell()
         if dated is None:
             return Outcome.EMPTY, []
-        post = dated
-        skipped = self._saved_first(post, category) if post.lazy else None
-        if skipped is None and post.lazy and self._unkeyed(category) and self._db is not None \
+        if skipped is not None:
+            return skipped, []
+        listed = await _files(self.run, post)
+        planned = await self.run.off(self._queue_post_files, dated, listed, category, first)
+        await self._tell()
+        return planned
+
+    def _before_files(self, post: Post, category: Category | None,
+                      hold: bool) -> tuple[Post | None, Outcome | None]:
+        """`take`'s first two steps, off the loop: the post dated (None when it is held), and
+        what became of a lazy one already saved (None when its files are to be listed)."""
+        dated = self._dated(post, category, hold=hold)
+        if dated is None or not dated.lazy:
+            return dated, None
+        skipped = self._saved_first(dated, category)
+        if skipped is None and self._unkeyed(category) and self._db is not None \
                 and not self._again \
-                and self._db.post_saved(home.key(self.target), post.id, post.category):
+                and self._db.post_saved(home.key(self.target), dated.id, dated.category):
             # Its keys are its files' paths, known only once listed (LOIBUS's archives): the
             # post's own rows say it was saved, so its files function, which may cost the
             # account a download from its quota, isn't called again.
             skipped = Outcome.SAVED
         if skipped is not None:
-            self._skip(post.category, post.id)
-            ui.debug("{post}: already saved", post=post.id)
-            return skipped, []
-        listed = list(post.files()) if callable(post.files) else list(post.files)
-        return self._queue_post_files(post, listed, category, first)
+            self._skip(dated.category, dated.id)
+            ui.debug("{post}: already saved", post=dated.id)
+        return dated, skipped
+
+    async def _tell(self) -> None:
+        """Send the `Skipped` events the last hop made, on the loop."""
+        told, self._told = self._told, []
+        for event in told:
+            await self.settings.emit(event)
 
     def _queue_post_files(
         self, post: Post, listed: Sequence[File], category: Category | None, first: str | None
     ) -> tuple[Outcome, list[_Queued]]:
         """Place each file of `post` and queue those not held, writing inline text files now.
 
-        A file with `content` (a caption, a text post) is written at once, never queued. A
-        held file is skipped, or linked from another category's folder. Videos go to the end
-        of the post's queue, so its small files land first.
+        Off the loop. A file with `content` (a caption, a text post) is written at once, never
+        queued. A held file is skipped, or linked from another category's folder. Videos go to
+        the end of the post's queue, so its small files land first.
 
         Args:
             post: the post, dated.
@@ -989,7 +602,7 @@ class Ledger:
                 files.write(dest, placed.file.content)
                 continue
             item_key = f"{self.source.code}:{placed.key}"
-            held = self._held(dest, item_key)
+            held = self._held(dest, item_key, placed)
             if held is not None:
                 if dest not in self._queued and item_key not in self._queued:
                     found += 1
@@ -1002,6 +615,9 @@ class Ledger:
             todo.append(_Queued(placed, dest, item_key, estimated=first in self._estimated,
                                 cursor=listing.cursor if listing is not None else None,
                                 retried=self.retrying))
+        if self._unrecorded and self._db is not None:
+            rows, self._unrecorded = self._unrecorded, []
+            self._db.save(rows)
         if todo:
             todo.sort(key=lambda queued: queued.placed.kind != files.VIDEO)
             return Outcome.QUEUED, todo
@@ -1030,11 +646,36 @@ class Ledger:
             candidate = self.folder.joinpath(*held.split("/"))
             self._link(dest, candidate if candidate.is_file() else Path(held), category, item_key)
 
+    async def lost(self, post: Post, error: BaseException) -> None:
+        """A lazy post whose files the site refused: a failure of that post alone.
+
+        Its `failures` row is under the post's first key, so a later run retries it; a
+        `NotFound` marks it gone, so later runs skip it unless told to ask again.
+
+        Args:
+            post: the post.
+            error: what its files raised.
+        """
+        category = self._categories.get(post.category)
+        failed = classify(error, target=str(self.target))
+        key = self._first_key(post, category) or f"{self.source.code}:{post.id}"
+        dest = self.folder / post.category / post.id
+        listing = self.site.listing
+        if self._db is not None:
+            await self.run.off(functools.partial(
+                self._db.fail, run=self.settings.run, item=key, target=home.key(self.target),
+                error=failed, post=post.id, category=post.category, file=str(dest),
+                cursor=listing.cursor if listing is not None else None))
+        self.tally.count(self.target, post.category, found=1, failed=1)
+        ui.debug("{post}: {error}", post=post.id, error=failed)
+        await self.settings.emit(Failed(self.target, failed, post=post.id))
+
     def link_queued(self, written: Mapping[str, Path]) -> None:
         """Make the links held back because their file was still queued in this run.
 
-        Called once the downloads finished. The file's row gives its final path, since the
-        compress step may have changed its suffix; a file that never landed gets no link.
+        Called once the downloads finished, off the loop. The file's row gives its final path,
+        since the compress step may have changed its suffix; a file that never landed gets no
+        link.
 
         Args:
             written: each landed file's path, by history key.
@@ -1079,7 +720,7 @@ class Ledger:
         self.tally.count(self.target, category, linked=1)
         ui.debug("link {name} -> {held}", name=self._name(dest), held=self._name(holder))
 
-    def release(self) -> list[Post]:
+    async def release(self) -> list[Post]:
         """Hand back the posts held for a day, as their category ends, each dated if it can be.
 
         A post's day comes from the listing (its key seen dated later), the source's `date`
@@ -1093,7 +734,7 @@ class Ledger:
         nearest = self._nearest_dates() if waiting else {}
         released: list[Post] = []
         for item_key, post in waiting.items():
-            found = self._dates.get(item_key) or self._ask(post)
+            found = self._dates.get(item_key) or await self._ask(post)
             if found is None and item_key in nearest:
                 found = nearest[item_key]
                 self._estimated.add(item_key)
@@ -1101,41 +742,46 @@ class Ledger:
         self._order.clear()
         return released
 
-    def redate(self) -> int:
+    async def redate(self) -> int:
         """Date the target's saved files that have no day, or an estimated one (a sync's start).
 
         Only for a source with a `date` hook. Each such row's post is asked once; the answer
         renames the file when its filename template starts with `{date}_`, sets its modified
-        time, and updates its row. A post the hook had no day for isn't asked again for 30
-        days (`ASKED_TTL`).
+        time, and updates its row, off the loop. A post the hook had no day for isn't asked
+        again for 30 days (`ASKED_TTL`).
 
         Returns:
             How many files were dated.
         """
-        if not self._asking:
-            return 0
-        if self._db is None:
+        if not self._asking or self._db is None:
             return 0
         dated = 0
         # A partial index holds only undated rows, so a target with none costs one lookup.
-        for row in self._db.undated(home.key(self.target)):
+        for row in await self.run.off(self._db.undated, home.key(self.target)):
             if row.post_id in self._asked:
                 continue
-            found = self._ask(Post(row.post_id))
-            if found is None:
-                continue
-            cat = self._categories.get(row.category)
-            filename_tpl = _format(self.source, cat, "filename")
-            path = _redated(Path(row.path), found, filename_tpl, estimated=row.estimated)
-            if path is None:
-                continue
-            _set_mtime(path, found)
-            self._db.redate(row.key, path, found)
-            dated += 1
-        self._save_asked()
+            found = await self._ask(Post(row.post_id))
+            if found is not None and await self.run.off(self._redate, row, found):
+                dated += 1
+        await self.run.off(self._save_asked)
         if dated:
             self.site.info("{files} dated", files=text.count(dated, "saved file"))
         return dated
+
+    def _redate(self, row: home.FileRow, found: datetime.date) -> bool:
+        """Rename one saved file for its day, set its time and update its row; off the loop.
+
+        Returns:
+            Whether it was dated: False when it is gone, or its new name holds another file.
+        """
+        assert self._db is not None
+        filename_tpl = _format(self.source, self._categories.get(row.category), "filename")
+        path = _redated(Path(row.path), found, filename_tpl, estimated=row.estimated)
+        if path is None:
+            return False
+        _set_mtime(path, found)
+        self._db.redate(row.key, path, found)
+        return True
 
     def _load_asked(self) -> dict[str, float]:
         """The posts the `date` hook had no day for, asked in the last 30 days.
@@ -1154,11 +800,10 @@ class Ledger:
         }
 
     def _save_asked(self) -> None:
-        """Persist the 30-day `asked` cache to `site.state` when non-empty."""
+        """Persist the 30-day `asked` cache to `site.state` when non-empty; off the loop."""
         if self._asked:
             self.site.state[ASKED_KEY] = self._asked
-
-    def _ask(self, post: Post) -> datetime.date | None:
+    async def _ask(self, post: Post) -> datetime.date | None:
         """Ask the source's `date` hook for `post`'s day; a miss isn't asked again for 30 days.
 
         A refused login, a block, a 401, 403 or 429 stops asking for the rest of the run, with
@@ -1173,7 +818,7 @@ class Ledger:
         if not self._asking:
             return None
         try:
-            found = day(self.source.date(self.site, post))
+            found = day(await self.run.aside(self.source.date, self.site, post))
         except (SiteError, NetworkError, LoginError) as error:
             blocked = isinstance(error, (LoginError, Blocked))
             if blocked or getattr(error, "status", None) in BLOCKS:
@@ -1317,7 +962,7 @@ class Ledger:
         return Outcome.EMPTY if any(k in self._queued for k in checked) else Outcome.SAVED
 
     def _skip(self, category: str, post: str, path: Path | None = None) -> None:
-        """Count one file (or post) found and skipped, and send its `Skipped` event.
+        """Count one file (or post) found and skipped, and make its `Skipped` event (`_tell`).
 
         Args:
             category: the category whose status line counts it.
@@ -1325,19 +970,22 @@ class Ledger:
             path: the file skipped; None when the whole post was.
         """
         self.tally.count(self.target, category, found=1, skipped=1)
-        self.settings.emit(Skipped(self.target, category, post, path))
+        self._told.append(Skipped(self.target, category, post, path))
 
-    def _held(self, dest: Path | None, item_key: str) -> str | None:
+    def _held(self, dest: Path | None, item_key: str, placed: Placed | None = None) -> str | None:
         """The name of what holds a file already: queued, on disk, saved, or gone.
 
         A file the site answered 404 or 410 for is recorded gone, and held by its planned name,
         so it isn't asked for again unless the run was told to (`again`). An archive removed
         once extracted is held by the folder it was extracted to. The disk is checked before
-        the database, since a file there with bytes is saved whatever the rows say.
+        the database, with one `stat`, since a file there with bytes is saved whatever the rows
+        say; one whose key has no row (after `target clean` without `--media`) gets its row,
+        with no hash, written with the post's others (`_unrecorded`).
 
         Args:
             dest: where the file would go; None to check by key only.
             item_key: its history key.
+            placed: the file, placed, for the row of one on disk; None to record nothing.
 
         Returns:
             The holder's name (relative to the target's folder when inside it); None when the
@@ -1346,7 +994,10 @@ class Ledger:
         for known in (dest, item_key):
             if known is not None and known in self._queued:
                 return self._queued[known]
-        if dest is not None and dest.is_file() and dest.stat().st_size > 0:
+        on_disk = _on_disk(dest) if dest is not None else None
+        if dest is not None and on_disk is not None:
+            if placed is not None and self._db is not None and self._db.held(item_key) is None:
+                self._unrecorded.append(self._row(dest, item_key, placed, on_disk))
             return self._name(dest)
         found = self._db.held(item_key) if self._db is not None else None
         if found is None:
@@ -1357,6 +1008,18 @@ class Ledger:
         if Path(path).is_file():
             return self._name(Path(path))
         return self._name(Path(folder)) if folder and Path(folder).is_dir() else None
+
+    def _row(self, dest: Path, item_key: str, placed: Placed,
+             found: os.stat_result) -> home.FileRow:
+        """The row of a file found on disk with none: its size and time from its `stat`."""
+        posted = day(placed.post.date)
+        count = placed.values.get("count", 1)
+        return home.FileRow(
+            item_key, home.key(self.target), str(dest), found.st_size, found.st_mtime_ns,
+            post_id=placed.post.id, category=placed.post.category,
+            date=posted.isoformat() if posted else None, kind=files.kind_of(dest.name),
+            at=home.now(),
+            files=count if placed.num == 0 and isinstance(count, int) and count > 1 else None)
 
     def _name(self, path: Path) -> str:
         """A path as the debug lines and links name it.
@@ -1372,6 +1035,15 @@ class Ledger:
             if path.is_relative_to(self.folder)
             else str(path)
         )
+
+
+def _on_disk(path: Path) -> os.stat_result | None:
+    """The `stat` of a file with bytes at `path`, from one call (P8); None for none."""
+    try:
+        found = path.stat()
+    except OSError:
+        return None
+    return found if found.st_size > 0 and stat.S_ISREG(found.st_mode) else None
 
 
 def _distinct_folders(root: Path, dest: Path, holder: Path) -> bool:
@@ -1421,19 +1093,19 @@ def _try_link(dest: Path, holder: Path) -> bool:
 class Downloads:
     """One target's downloads: each post's files handed to the run's save (`save.Saver`).
 
-    1. The listing thread hands each post's new files over at once (`post`). The queue holds
-       `QUEUE` times the target's places (`jobs.Limits.places`) files; past that, `post` waits,
-       so a listing never runs far ahead of its downloads and memory stays flat.
+    1. The crawl hands each post's new files over at once (`post`). The queue holds `QUEUE`
+       times the target's places (`jobs.Limits.places`) files; past that, `post` waits, so a
+       listing never runs far ahead of its downloads and memory stays flat.
     2. Each post becomes a task on the run's loop (`save.Saver.post`), whose files are `FILE`
        jobs of the run's scheduler: each waits for one of the target's places, then for its
        host's cap. The post's rows commit together once its last file settled.
-    3. An expired link of a lazy post is asked for again on the listing thread, which answers
-       between two posts (`_answer`), since a source's listing runs only there.
+    3. An expired link of a lazy post lists the post's files again (`_fresh`), on a thread of
+       the source with a tab of its own, at any time: the listing needn't be running.
     4. What stops the run (a full disk, a missing tool) is kept as `fatal`: the listing stops
        at its next post, and the target ends with it.
 
     Args:
-        run: the source's run: its settings, clients and loop.
+        run: the source's run: its settings, clients and scheduler.
         target: the target the files belong to.
         tally: the run's live counts, which its counts go to.
     """
@@ -1446,25 +1118,20 @@ class Downloads:
         # Set once the run stopped, so a file that hasn't started ends at once.
         self._halted = False
         self._written: dict[str, Path] = {}
-        self._writing = threading.Lock()
-        self._changed = threading.Condition()
+        # Set each time a post settles, for whoever waits for room or for the end.
+        self._changed = asyncio.Event()
         # Files handed over and not settled, and the keys of those whose transfer started.
         self._pending = 0
         self._started: set[str] = set()
-        self._refreshes: deque[_Refresh] = deque()
-        self._answering = True
+        self._tasks: set[asyncio.Task[None]] = set()
 
     @property
     def written(self) -> dict[str, Path]:
         """Return each file written so far by its history key."""
-        with self._writing:
-            return dict(self._written)
+        return dict(self._written)
 
-    def post(self, todo: Sequence[_Queued]) -> bool:
+    async def post(self, todo: Sequence[_Queued]) -> bool:
         """Hand one post's files to the run's save, once the queue has room.
-
-        Called on the listing thread; it waits while the queue is full, answering the
-        refreshes the saves ask for meanwhile.
 
         Args:
             todo: the post's files, placed, with their destinations and keys.
@@ -1476,25 +1143,20 @@ class Downloads:
         Raises:
             Error: what stopped the run while an earlier post saved (`fatal`).
         """
-        if not self._room():
+        if not await self._room():
             return False
         saver = self.settings.saver
         items = [self._item(queued, saver) for queued in todo]
         for queued in todo:
             self.tally.count(self.target, queued.placed.post.category, queued=1)
-        with self._changed:
-            self._pending += len(todo)
-        try:
-            # The task never raises (see `_post`), so its future isn't kept.
-            self.run.loop.submit(self._post(saver, todo, items))
-        except BaseException:
-            self._settle(todo)
-            raise
+        self._pending += len(todo)
+        task = asyncio.get_running_loop().create_task(self._post(saver, todo, items))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         return True
 
-    def wait(self) -> None:
-        """Wait on the listing thread until every post handed over is saved, answering
-        refreshes.
+    async def wait(self) -> None:
+        """Wait until every post handed over is saved.
 
         After the first Ctrl-C, a warning says how many of the target's files are finishing.
 
@@ -1504,25 +1166,18 @@ class Downloads:
         """
         shown: str | None = None
         while True:
-            self._answer()
-            with self._changed:
-                if self.settings.stop.now.is_set():
-                    raise KeyboardInterrupt
-                if not self._pending:
-                    return
-                note_text = (
-                    FINISHING.format(files=text.count(len(self._started), "file"))
-                    if self.settings.stop.soon.is_set()
-                    else None
-                )
-                if note_text == shown:
-                    self._changed.wait(WAKE)
-                    continue
-            if note_text is not None and shown is None:
-                ui.warn("{target}: {note}", target=str(self.target), note=note_text)
-            shown = note_text
+            if self.settings.stop.now.is_set():
+                raise KeyboardInterrupt
+            if not self._pending:
+                return
+            note = (FINISHING.format(files=text.count(len(self._started), "file"))
+                    if self.settings.stop.soon.is_set() else None)
+            if note is not None and shown is None:
+                ui.warn("{target}: {note}", target=str(self.target), note=note)
+            shown = note
+            await self._settled()
 
-    def finish(self, error: BaseException | None = None) -> tuple[Path, ...]:
+    async def finish(self, error: BaseException | None = None) -> tuple[Path, ...]:
         """Wait for the downloads and return what landed; after a stop, drop the ones not
         started.
 
@@ -1536,20 +1191,20 @@ class Downloads:
             The paths written, in the order they landed.
         """
         if not isinstance(error, (Stopped, KeyboardInterrupt)):
-            if error is not None:
-                # The listing can't answer a refresh any more: such a file fails, and is retried.
-                self._cancel_refreshes()
-            self.wait()
+            await self.wait()
         else:
-            self._cancel_refreshes()
             # The files still queued are dropped; the running ones finish (a second Ctrl-C
             # stops them through the client's stop), so what they fetched isn't lost.
             self._halted = True
-            with self._changed:
-                while self._pending:
-                    self._changed.wait(WAKE)
-        with self._writing:
-            return tuple(self._written.values())
+            while self._pending:
+                await self._settled()
+        return tuple(self._written.values())
+
+    async def _settled(self) -> None:
+        """Wait for a post to settle, or `WAKE` seconds, so a Ctrl-C is seen at once."""
+        self._changed.clear()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._changed.wait(), WAKE)
 
     def _item(self, queued: _Queued, saver: Any) -> save.Item:
         """The save's `Item` for a queued file."""
@@ -1564,30 +1219,28 @@ class Downloads:
             meta=(_metadata(self.source, self.target, placed)
                   if saver is not None and saver.sidecars else None),
             cursor=queued.cursor, retried=queued.retried,
-            refresh=(functools.partial(self._fresh, queued) if callable(post.files) else None),
-            label=placed.path, dropped=functools.partial(self._dropped, queued),
+            refresh=(lambda: self._fresh(queued)) if callable(post.files) else None,
+            label=placed.path, dropped=lambda: self._dropped(queued),
             domain=self.source.domains[0] if self.source.domains else "")
 
     def _dropped(self, queued: _Queued) -> bool:
         """Whether a file whose transfer is about to start is dropped instead: the first Ctrl-C
         came, or the listing was stopped. Asked once, as it starts."""
-        with self._changed:
-            if self._halted or self.settings.stop.soon.is_set():
-                return True
-            self._started.add(queued.key)
-            return False
+        if self._halted or self.settings.stop.soon.is_set():
+            return True
+        self._started.add(queued.key)
+        return False
 
     async def _post(self, saver: Any, todo: Sequence[_Queued], items: list[save.Item]) -> None:
         """One post's save on the loop; never an exception out.
 
         A `KeyboardInterrupt` (the second Ctrl-C, `Stopped`) escaping a task would end the
-        loop's thread, so it is let go here: the listing thread sees the stop through the run's
-        events. What stops the run is kept as `fatal` for the listing thread.
+        loop, so it is let go here: the crawl sees the stop through the run's stop state. What
+        stops the run is kept as `fatal` for the crawl.
         """
         try:
             written = await saver.post(items, client=self.run.files, plugin=self.source.code)
-            with self._writing:
-                self._written.update(written)
+            self._written.update(written)
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -1600,16 +1253,12 @@ class Downloads:
         except BaseException:
             pass
         finally:
-            self._settle(todo)
-
-    def _settle(self, todo: Sequence[_Queued]) -> None:
-        with self._changed:
             self._pending -= len(todo)
             self._started.difference_update(queued.key for queued in todo)
-            self._changed.notify_all()
+            self._changed.set()
 
-    def _room(self) -> bool:
-        """Wait for room in the target's queue (`QUEUE` times its places), answering refreshes.
+    async def _room(self) -> bool:
+        """Wait for room in the target's queue (`QUEUE` times its places).
 
         Returns:
             True once there is room; False once the run was told to stop.
@@ -1619,85 +1268,45 @@ class Downloads:
         """
         limit = QUEUE * max(self.run.jobs, 1)
         while True:
-            self._answer()
-            with self._changed:
-                if self.fatal is not None:
-                    raise self.fatal
-                if self.settings.stop.soon.is_set():
-                    return False
-                if self._pending < limit:
-                    return True
-                self._changed.wait(WAKE)
-
-    def _cancel_refreshes(self) -> None:
-        """Stop answering refresh requests so waiting downloads fail fast."""
-        with self._changed:
-            self._answering = False
-            waiting, self._refreshes = list(self._refreshes), deque()
-        for refresh in waiting:
-            refresh.done.set()
+            if self.fatal is not None:
+                raise self.fatal
+            if self.settings.stop.soon.is_set():
+                return False
+            if self._pending < limit:
+                return True
+            await self._settled()
 
     async def _fresh(self, queued: _Queued) -> File | None:
-        """Ask the listing thread for a lazy post's files again, for a fresh copy of one link.
-
-        A source's listing runs only on its thread, so the save queues a `_Refresh` there and
-        waits for it (`_dispatch_refresh`).
+        """A lazy post's files listed again, for a fresh copy of one link.
 
         Returns:
             The fresh file, at the same number in the post; None when no fresh link came (the
             listing failed, or the post has fewer files now).
         """
-        refresh = _Refresh(queued.placed.post, self.settings.stop)
-        await self._dispatch_refresh(refresh)
-        if refresh.error is not None:
-            ui.warn("{name}: no fresh link: {error}", name=queued.placed.path, error=refresh.error)
+        try:
+            found = await self.run.aside(_listed_files, queued.placed.post)
+        except Exception as error:
+            ui.warn("{name}: no fresh link: {error}", name=queued.placed.path, error=error)
             return None
         num = queued.placed.num
-        found = refresh.files
-        return found[num] if found is not None and num < len(found) else None
-
-    async def _dispatch_refresh(self, refresh: _Refresh) -> None:
-        """Queue a refresh onto the listing thread and wait, on the loop, for it to be done.
-
-        Once the listing ended (`_cancel_refreshes`), the refresh is done at once, with no
-        files, so the save fails fast instead of waiting for an answer that won't come.
-
-        Args:
-            refresh: the request; `done` is set once it is answered.
-
-        Raises:
-            KeyboardInterrupt: the second Ctrl-C came while waiting.
-        """
-        with self._changed:
-            if self._answering:
-                self._refreshes.append(refresh)
-                self._changed.notify_all()
-            else:
-                refresh.done.set()
-        # A threading event can't wake a coroutine, so it is polled.
-        while not refresh.done.is_set():
-            if self.settings.stop.now.is_set():
-                raise KeyboardInterrupt
-            await asyncio.sleep(WAKE)
-
-    def _answer(self) -> None:
-        """Process pending link refreshes on the lister thread."""
-        while True:
-            with self._changed:
-                if not self._refreshes:
-                    return
-                refresh = self._refreshes.popleft()
-            refresh.run()
+        return found[num] if num < len(found) else None
 
 
-def download(run: SourceRun, target: Target, tally: Tally, options: Options) -> TargetReport:
-    """Download one target of a source, counting on `tally` (see the module's steps).
+async def download(run: SourceRun, target: Target, tally: Tally,
+                   options: Options) -> TargetReport:
+    """Download one target of a source, counting on `tally`: one coroutine on the run's loop.
 
-    Called by the engine on the listing thread, inside the source's run. A failure of the
-    listing fails the target alone: it is in the report, never raised.
+    A failure of the listing fails the target alone: it is in the report, never raised.
+
+    1. Sweep stale parts, make its ledger and downloads, and read its row.
+    2. List it and wait for its downloads (`_execute_listing`), then make the held links.
+    3. Keep its listings' cursors, heads, gaps and completeness (`Home.progress`); a found
+       target of a search keeps nothing, since the search's row keeps what it found.
+    4. A target that ran to its end clears its whole-target failure and recounts its files.
+    5. Report it, and end its rows (`_ended`).
 
     Args:
-        run: the source's run: its session, clients, loop and settings.
+        run: the source's run: its session, clients, scheduler and settings.
         target: the target, resolved.
         tally: the run's live counts, which its counts go to.
         options: its options: `--when`, `--only`, `--limit`, `--again`, sync and retry.
@@ -1708,63 +1317,51 @@ def download(run: SourceRun, target: Target, tally: Tally, options: Options) -> 
     """
     if run.settings.stop.soon.is_set():
         return TargetReport(target, (), 0, error=Stopped(STOPPED))
+    started = time.monotonic()
     # No lock on the target: each file's part locks itself, so two runs may share a target and
     # the sweep passes over the parts another run holds.
-    files.sweep(home.target_folder(run.settings.home, target))
-    return _run_download(run, target, tally, options)
-
-
-def _run_download(
-    run: SourceRun, target: Target, tally: Tally, options: Options
-) -> TargetReport:
-    """Run one target from its listing to its rows: the steps of the module docstring.
-
-    1. Make its ledger and downloads, and read its row (what earlier runs left).
-    2. List it and wait for its downloads (`_execute_listing`), then make the held links.
-    3. Keep its listings' cursors, heads, gaps and completeness (`Home.progress`); a found
-       target of a search keeps nothing, since the search's row keeps what it found.
-    4. A target that ran to its end clears its whole-target failure and recounts its files.
-    5. Report it, and end its rows (`_ended`).
-
-    Args:
-        run: the source's run.
-        target: the target.
-        tally: the run's live counts.
-        options: its options.
-
-    Returns:
-        Its report.
-    """
-    started = time.monotonic()
+    await run.off(files.sweep, home.target_folder(run.settings.home, target))
     site = TargetSite(run, target, time=Range(options.since, options.until))
     ledger = Ledger(run, site, target, tally, options=options)
     downloads = Downloads(run, target, tally)
     work = _Work(ledger, downloads)
     db = run.settings.db
-    row = db.target(target) if db is not None else None
+    row = await run.off(_opened, ledger, db, target)
     progress = _Progress(row, again=options.again)
-    error = _execute_listing(work, run, site, target, options, progress)
-    written = downloads.finish(error)
+    error = await _execute_listing(work, run, site, target, options, progress)
+    written = await downloads.finish(error)
     if error is None and downloads.fatal is not None:
         error = downloads.fatal
-    ledger.link_queued(downloads.written)
+    await run.off(ledger.link_queued, downloads.written)
+    if db is not None:
+        await run.off(_keep, db, target, options, progress, row,
+                      error is None and not run.settings.stop.soon.is_set(), bool(written))
+    report = TargetReport(target, written, tally.totals(target).skipped,
+                          found=tuple(dict.fromkeys(work.linked)))
+    return await _ended(run, tally, report, error,
+                        complete=", ".join(progress.complete) or "none", started=started)
+
+
+def _opened(ledger: Ledger, db: home.Home | None, target: Target) -> home.TargetRow | None:
+    """What a target starts from, off the loop: its row, and what its ledger keeps."""
+    ledger.load()
+    return db.target(target) if db is not None else None
+
+
+def _keep(db: home.Home, target: Target, options: Options, progress: _Progress,
+          row: home.TargetRow | None, finished: bool, written: bool) -> None:
+    """Write where a target's listings stand, off the loop: a write may wait for the lock."""
     # A target a search found has no row of its own: the search's row keeps what it found.
-    if db is not None and not options.query:
+    if not options.query:
         db.progress(target, cursors=progress.cursors(), complete=progress.complete,
                     heads=progress.heads, gaps=progress.gaps)
-    if db is not None and error is None and not run.settings.stop.soon.is_set():
+    if finished:
         # A failure of the whole target is over once it ran to its end.
         db.clear(home.key(target))
         # Counting reads every row of the target (35 ms for 100,000), so a run that saved
         # nothing keeps the count it has, unless it has none yet.
         if written or row is None or not row.files:
             db.tally(target)
-    report = TargetReport(target, written, tally.totals(target).skipped,
-                          found=tuple(dict.fromkeys(work.linked)))
-    return _ended(
-        run, tally, report, error, complete=", ".join(progress.complete) or "none",
-        started=started,
-    )
 
 
 class _Progress:
@@ -1825,7 +1422,7 @@ class _Progress:
         }
 
 
-def _execute_listing(
+async def _execute_listing(
     work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
     progress: _Progress,
 ) -> BaseException | None:
@@ -1846,21 +1443,23 @@ def _execute_listing(
     try:
         try:
             if options.stop_at_saved:
-                work.ledger.redate()
-            _read(work, run, site, target, options, progress)
+                await work.ledger.redate()
+            await _read(work, run, site, target, options, progress)
             work.ledger.tally.downloading(target)
         except KeyboardInterrupt:
             if not run.settings.stop.soon.is_set() or run.settings.stop.now.is_set():
                 raise
         finally:
-            site.close()
-        work.downloads.wait()
+            await run.off(site.close)
+        await work.downloads.wait()
         return None
+    except asyncio.CancelledError:
+        raise
     except BaseException as caught:
         return caught
 
 
-def _ended(
+async def _ended(
     run: SourceRun, tally: Tally, report: TargetReport, error: BaseException | None, *,
     complete: str, started: float,
 ) -> TargetReport:
@@ -1889,10 +1488,8 @@ def _ended(
             raise error
         failed = failure(error, target, run.source)
         if run.settings.db is not None:
-            save.sampled(run.settings, failed)
-            run.settings.db.fail(run=run.settings.run, item=home.key(target),
-                                 target=home.key(target), error=failed)
-        tell(target, failed, run.settings.emit)
+            await run.off(_failed, run, target, failed)
+        await tell(target, failed, run.settings.emit)
         tally.end(target, failed=True)
         return replace(report, error=failed)
     if run.settings.stop.soon.is_set():
@@ -1907,6 +1504,14 @@ def _ended(
         skipped=report.skipped, complete=complete,
     )
     return report
+
+
+def _failed(run: SourceRun, target: Target, failed: Error) -> None:
+    """Record a target's failure, with a scrubbed sample of a `Changed` answer, off the loop."""
+    assert run.settings.db is not None
+    save.sampled(run.settings, failed)
+    run.settings.db.fail(run=run.settings.run, item=home.key(target), target=home.key(target),
+                         error=failed)
 
 
 def _summary(totals: Counts, target: Target, seconds: float) -> None:
@@ -2046,7 +1651,7 @@ def _set_mtime(path: Path, dated: datetime.date) -> None:
 
 @dataclass
 class _Queued:
-    """One file handed from the listing thread to `Downloads`.
+    """One file handed from the crawl to `Downloads`.
 
     `refreshed` is set on the loop by the file's own task, once, when its link expired; no
     other thread reads it.
@@ -2065,50 +1670,26 @@ class _Queued:
         return self.placed.path
 
 
-@dataclass(eq=False)
-class _Refresh:
-    """A download's request for a lazy post's files on the lister thread."""
-
-    post: Post
-    stop: Stop
-    done: threading.Event = field(default_factory=threading.Event)
-    files: list[File] | None = None
-    error: Exception | None = None
-
-    def run(self) -> None:
-        """Invoke `post.files()` and signal completion."""
-        try:
-            assert callable(self.post.files)
-            self.files = list(self.post.files())
-        except Exception as error:
-            self.error = error
-        except KeyboardInterrupt:
-            if not self.stop.soon.is_set() or self.stop.now.is_set():
-                raise
-        finally:
-            self.done.set()
-
-
 class _Kept:
-    """The posts a route or category yields, filtered by `--when`.
+    """The posts a route or category yields, filtered by `--when`: an async iterator.
 
-    It is where the engine reads a listing as it goes: it stops a `newest_first` listing after
+    It is where the crawl reads a listing as it goes: it stops a `newest_first` listing after
     `OLDER_IN_A_ROW` posts older than `--when`, notes the newest post (the listing's head), and
-    keeps the `Target`s a listing yields (`linked`) for the engine, rather than as posts.
+    keeps the `Target`s a listing yields (`linked`) for the engine, rather than as posts. A
+    pinned post (`pinned` on the post) never counts toward the older posts in a row and is
+    never the head; its id is kept in `pinned` for the sync's stops.
 
     Args:
-        yielded: the generator (sync or async), or a coroutine giving one.
+        yielded: the generator (plain or async), or a coroutine giving one.
         category: the category's name; "" for a route's own posts.
         newest_first: whether the listing comes newest first.
         span: `--when`.
-        run_async: runs a coroutine on the run's loop.
+        call: runs the source's plain code (`Call`).
+        close: closes a plain generator, even while the run stops; None uses `call`.
     """
 
-    def __init__(
-        self, yielded: Any, category: str, *, newest_first: bool, span: Range, run_async: RunAsync
-    ) -> None:
-        if inspect.iscoroutine(yielded):
-            yielded = run_async(yielded)
+    def __init__(self, yielded: Any, category: str, *, newest_first: bool, span: Range,
+                 call: Call, close: Call | None = None) -> None:
         self.category, self.newest_first, self.time = category, newest_first, span
         self.ran_out = False
         # The targets the listing yielded, in order, each as the source wrote it.
@@ -2119,45 +1700,57 @@ class _Kept:
         self._newest_day: datetime.date | None = None
         # Posts it queued files of, counted by `_queue_listed`: none means nothing new.
         self.queued = 0
-        self._steps = _steps(yielded, run_async)
+        # The ids of the pinned posts it yielded.
+        self.pinned: set[str] = set()
+        self._steps = _steps(yielded, call, close or call)
+        self._iter: AsyncIterator[Post] | None = None
 
-    def __iter__(self) -> Iterator[Post]:
+    def __aiter__(self) -> AsyncIterator[Post]:
+        if self._iter is None:
+            self._iter = self._kept()
+        return self._iter
+
+    async def _kept(self) -> AsyncIterator[Post]:
         """Yield kept posts, stopping early after 5 older posts on `newest_first` feeds."""
         older = 0
         # A post a source yields in parts (TikTok yields each photo of a photo post as a post of
         # the same id) is one post to the streaks: only its first part counts.
         last: str | None = None
-        try:
-            for post in self._steps:
-                if isinstance(post, Target):
-                    self.linked.append(post)
-                    continue
-                if not isinstance(post, Post):
-                    raise TypeError(
-                        f"{self.category or 'a route'} yielded {type(post).__name__}, "
-                        "not a Post or a Target"
-                    )
-                if self.category:
-                    post = post.filed(self.category)
-                posted = day(post.date)
+        async for post in self._steps:
+            if isinstance(post, Target):
+                self.linked.append(post)
+                continue
+            if not isinstance(post, Post):
+                raise TypeError(
+                    f"{self.category or 'a route'} yielded {type(post).__name__}, "
+                    "not a Post or a Target"
+                )
+            pinned = _pinned(post)
+            if self.category:
+                post = post.filed(self.category)
+            posted = day(post.date)
+            if pinned:
+                self.pinned.add(post.id)
+            else:
                 self._note(post.id, posted)
-                if posted in self.time:
-                    older, last = 0, post.id
-                    yield post
-                    continue
-                since = self.time.since
-                if self.newest_first and since and posted and posted < since:
-                    older += post.id != last
-                    last = post.id
-                    if older >= OLDER_IN_A_ROW:
-                        return
-            self.ran_out = True
-        finally:
-            self.close()
+            if posted in self.time:
+                older = older if pinned else 0
+                last = post.id
+                yield post
+                continue
+            since = self.time.since
+            if self.newest_first and since and posted and posted < since and not pinned:
+                older += post.id != last
+                last = post.id
+                if older >= OLDER_IN_A_ROW:
+                    return
+        self.ran_out = True
 
-    def close(self) -> None:
-        """Close the underlying generator."""
-        self._steps.close()
+    async def aclose(self) -> None:
+        """Close the listing, and the generator under it."""
+        if self._iter is not None:
+            await self._iter.aclose()  # type: ignore[attr-defined]
+        await self._steps.aclose()
 
     def _note(self, post: str, posted: datetime.date | None) -> None:
         """Keep `post` as the newest so far when it is the first, or newer than the newest."""
@@ -2166,12 +1759,19 @@ class _Kept:
             self.newest, self._newest_day = post, posted
 
 
+def _pinned(post: Post) -> bool:
+    """Whether the site shows `post` above its date order (API 2's `Post.pinned`)."""
+    return getattr(post, "pinned", False) is True
+
+
 class Outcome(Enum):
     """Outcome of queuing one post into `Ledger`."""
 
     QUEUED = "queued"
     SAVED = "saved"
     EMPTY = "empty"
+    # A lazy post whose files the site refused: it failed alone.
+    FAILED = "failed"
     STOPPED = "stopped"
 
 
@@ -2193,8 +1793,11 @@ class _Work:
     # The targets its listings yielded (`_Kept.linked`), in order.
     linked: list[Target] = field(default_factory=list)
 
-    def queue(self, post: Post, *, hold: bool = True) -> Outcome:
+    async def queue(self, post: Post, *, hold: bool = True) -> Outcome:
         """Plan one post (`Ledger.take`), then submit each of its new files for download.
+
+        A lazy post whose files the site refuses (gone, hidden, or an answer that can't be
+        read) fails alone (`_lost_post`); the listing goes on.
 
         Args:
             post: the post.
@@ -2203,82 +1806,56 @@ class _Work:
         Returns:
             What became of the post; `STOPPED` when the run stopped while its files queued.
         """
-        outcome, todo = self.ledger.take(post, hold=hold)
-        if todo and not self.downloads.post(todo):
+        try:
+            outcome, todo = await self.ledger.take(post, hold=hold)
+        except _POST_ERRORS as error:
+            if not post.lazy:
+                raise
+            await self.ledger.lost(post, error)
+            return Outcome.FAILED
+        if todo and not await self.downloads.post(todo):
             return Outcome.STOPPED
         return outcome
 
 
-def discover(
-    run: SourceRun, target: Target, *, limit: int | None = None,
-    time_range: Range = Range(), seen: Collection[str] = (),
-) -> Generator[Target, None, None]:
+async def discover(
+    run: SourceRun, target: Target, *, limit: int | None = None, time_range: Range = Range(),
+) -> AsyncIterator[Target]:
     """The targets a search (or any route that yields targets) finds, each once, resolved.
 
-    Called by the engine for a search, and for its dry run. It stops at the first target in
-    `seen` (a sync's earlier finds, newest first), at `limit`, or at Ctrl-C.
+    Called by the engine for a search, and for its dry run. It reads the whole listing, past
+    the targets earlier syncs saw (the caller skips those), so a sync that takes a slice of
+    what is new reaches the rest on the next syncs. It stops at `limit`, or at Ctrl-C.
 
     Args:
         run: the source's run.
         target: the search.
         limit: at most this many targets; None for all.
         time_range: `--when`, which the route's `Site` filters by.
-        seen: keys of targets found before; the listing stops at the first.
 
     Yields:
         Each new target, resolved by the source that owns it.
     """
     route = next(r for r in run.source.routes if r.kind == target.kind)
     site = TargetSite(run, target, time=time_range)
-    seen_keys = set(seen)
     yielded: set[Target] = set()
-    method = getattr(run.source, route.kind)
     try:
         if _at_limit(run, yielded, limit):
             return
-        yield from _yield_arg_targets(run, method, site, target.value, seen_keys, yielded, limit)
+        context = await _context(run.source, route, site, target, run.call)
+        async with contextlib.aclosing(_steps(context, run.call, run.off)) as steps:
+            async for item in steps:
+                if run.settings.stop.soon.is_set():
+                    return
+                child = await resolved(run, item)
+                if child is None or child in yielded:
+                    continue
+                yielded.add(child)
+                yield child
+                if _at_limit(run, yielded, limit):
+                    return
     finally:
-        site.close()
-
-
-def _yield_arg_targets(
-    run: SourceRun, method: Any, site: TargetSite, arg: Any, seen_keys: set[str],
-    yielded: set[Target], limit: int | None,
-) -> Generator[Target, None, None]:
-    """Run a route that yields targets, resolving and deduplicating what it yields.
-
-    A text the run can't resolve is warned about and passed over (`resolved`).
-
-    Args:
-        run: the source's run.
-        method: the route's method.
-        site: the search's `Site`.
-        arg: the value the route is called with.
-        seen_keys: keys that end the listing.
-        yielded: the targets yielded so far; each new one is added.
-        limit: at most this many targets in `yielded`; None for all.
-
-    Yields:
-        Each new target.
-    """
-    steps = _steps(method(site, arg), run.run_async)
-    try:
-        for item in steps:
-            if run.settings.stop.soon.is_set():
-                return
-            child = resolved(run, item)
-            if child is None:
-                continue
-            if home.key(child) in seen_keys:
-                break
-            if child in yielded:
-                continue
-            yielded.add(child)
-            yield child
-            if _at_limit(run, yielded, limit):
-                return
-    finally:
-        steps.close()
+        await run.off(site.close)
 
 
 def _at_limit(run: SourceRun, yielded: set[Target], limit: int | None) -> bool:
@@ -2303,7 +1880,7 @@ class _Stops:
     head: str | None = None
 
 
-def _queue_all(
+async def _queue_all(
     work: _Work, kept: _Kept, *, stops: _Stops = _Stops(), limit: int | None = None
 ) -> tuple[Ended, int]:
     """Queue kept posts, then release held undated posts.
@@ -2317,13 +1894,13 @@ def _queue_all(
     Returns:
         How the listing ended, and how many posts it took.
     """
-    ended, taken = _queue_listed(work, kept, stops=stops, limit=limit)
+    ended, taken = await _queue_listed(work, kept, stops=stops, limit=limit)
     if ended is Ended.STOPPED:
         return ended, taken
-    for post in work.ledger.release():
+    for post in await work.ledger.release():
         if limit is not None and taken >= limit:
             return Ended.CUT, taken
-        outcome = work.queue(post, hold=False)
+        outcome = await work.queue(post, hold=False)
         if outcome is Outcome.STOPPED:
             return Ended.STOPPED, taken
         if outcome is not Outcome.EMPTY:
@@ -2331,7 +1908,7 @@ def _queue_all(
     return ended, taken
 
 
-def _queue_listed(
+async def _queue_listed(
     work: _Work, kept: _Kept, *, stops: _Stops, limit: int | None = None
 ) -> tuple[Ended, int]:
     """Queue each post in `kept` until stopped, `limit`, or a sync caught up (`_Stops`).
@@ -2339,6 +1916,7 @@ def _queue_listed(
     A sync has caught up after `stops.streak` saved posts in a row, or, once it met the head an
     earlier run saw, after `HEAD_IN_A_ROW`: the head and the post after it. Requiring the post
     after it keeps a head the site later pinned above new posts from ending the sync too soon.
+    A pinned post (`_Kept.pinned`) is queued like any other, and never counts toward either.
 
     Args:
         work: the target's ledger and downloads.
@@ -2356,23 +1934,28 @@ def _queue_listed(
     last: str | None = None
     stop = work.downloads.settings.stop.soon
     try:
-        for post in kept:
+        async for post in kept:
             part = post.id == last
             if limit is not None and taken >= limit and not part:
                 return Ended.CUT, taken
-            outcome = Outcome.STOPPED if stop.is_set() else work.queue(post)
+            outcome = Outcome.STOPPED if stop.is_set() else await work.queue(post)
             if outcome is Outcome.STOPPED:
                 return Ended.STOPPED, taken
-            if outcome is not Outcome.EMPTY:
-                last = post.id
-                if part:
-                    # A part saved like the rest leaves the streak as it was; a new part breaks it.
-                    if outcome is Outcome.QUEUED:
-                        kept.queued, saved_in_a_row = kept.queued + 1, 0
-                    continue
-                taken += 1
+            if outcome is Outcome.EMPTY:
+                continue
+            last = post.id
+            if post.id in kept.pinned:
+                taken += not part
                 kept.queued += outcome is Outcome.QUEUED
-                saved_in_a_row = saved_in_a_row + 1 if outcome is Outcome.SAVED else 0
+                continue
+            if part:
+                # A part saved like the rest leaves the streak as it was; a new part breaks it.
+                if outcome is Outcome.QUEUED:
+                    kept.queued, saved_in_a_row = kept.queued + 1, 0
+                continue
+            taken += 1
+            kept.queued += outcome is Outcome.QUEUED
+            saved_in_a_row = saved_in_a_row + 1 if outcome is Outcome.SAVED else 0
             met_head = met_head or (stops.head is not None and post.id == stops.head)
             # `--limit` is checked as the next post comes, not here: the next may be another part
             # of this one. That reads one more item of the listing, never one more post.
@@ -2386,20 +1969,22 @@ def _queue_listed(
                         category=kept.category or "posts", count=saved_in_a_row)
                 return Ended.CAUGHT_UP, taken
     finally:
-        kept.close()
+        await kept.aclose()
     return (Ended.RAN_OUT if kept.ran_out else Ended.CUT), taken
 
 
-def _read(
+async def _read(
     work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
     progress: _Progress,
 ) -> None:
     """List the target's route, or its wanted categories, into `work`.
 
-    A discovering route downloads each target it yields; a route without categories is one
-    listing (named ""); otherwise the route is called once, and each wanted category listed
-    with what it returned, sharing `--limit`. The files earlier runs failed on go first
-    (`_retry_failed`), once the route has run, since a category needs what it returned.
+    A discovering route runs each target it yields as a target of its own; a route without
+    categories is one listing (named ""); otherwise the route is called once, and each wanted
+    category listed with what it returned, sharing `--limit`. The files earlier runs failed on
+    in a listing go first, right before it (`_retry_failed`): no other category runs in the
+    route's tab before the first one, which may read the page the route left open (fbk's
+    `posts`).
 
     Args:
         work: the target's ledger and downloads, which queue each post's files.
@@ -2412,30 +1997,29 @@ def _read(
     """
     route = next(r for r in run.source.routes if r.kind == target.kind)
     if route.discovers:
-        _run_discovered(run, work.ledger.tally, options,
-                        _steps(_context(run.source, route, site, target, run.run_async),
-                               run.run_async))
+        await _run_discovered(run, options, await _context(run.source, route, site, target,
+                                                           run.call))
         return
     listings: list[_Listed]
     if not route.categories:
-        listings = [_Listed("", route.newest_first,
-                            lambda: getattr(run.source, route.kind)(site, target.value))]
+        method = getattr(run.source, route.kind)
+        listings = [_Listed("", route.newest_first, lambda: run.call(method, site, target.value))]
     else:
         categories = wanted(route, options)
         if not categories:
             return
-        context = _context(run.source, route, site, target, run.run_async)
+        context = await _context(run.source, route, site, target, run.call)
         listings = [_Listed(category.name, category.newest_first,
-                            functools.partial(getattr(run.source, category.name), site, context))
+                            _caller(run, getattr(run.source, category.name), site, context))
                     for category in categories]
-    _retry_failed(work, run, site, target, options, listings)
-    if options.retry is Retry.ONLY:
-        return
     remaining = options.limit
     for listed in listings:
+        await _retry_failed(work, run, site, target, options, [listed])
+        if options.retry is Retry.ONLY:
+            continue
         if remaining is not None and remaining <= 0:
             return
-        ended, taken = _list_one(
+        ended, taken = await _list_one(
             work, run, site, target, options, progress, name=listed.name,
             newest_first=listed.newest_first, items=listed.items, remaining=remaining,
         )
@@ -2445,6 +2029,11 @@ def _read(
             return
 
 
+def _caller(run: SourceRun, method: Callable[..., Any], *args: Any) -> Callable[[], Awaitable[Any]]:
+    """What calls a category's method with `args` on a thread of the source, each time."""
+    return lambda: run.call(method, *args)
+
+
 @dataclass(frozen=True)
 class _Listed:
     """One listing of a target: a category, or a route's own posts."""
@@ -2452,13 +2041,13 @@ class _Listed:
     # The category's name; "" for a route's own posts.
     name: str
     newest_first: bool
-    # Calls the category (or route) method, returning what it yields.
-    items: Callable[[], Any]
+    # Calls the category (or route) method, giving what it yields.
+    items: Callable[[], Awaitable[Any]]
 
 
-def _list_one(
+async def _list_one(
     work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
-    progress: _Progress, *, name: str, newest_first: bool, items: Callable[[], Any],
+    progress: _Progress, *, name: str, newest_first: bool, items: Callable[[], Awaitable[Any]],
     remaining: int | None,
 ) -> tuple[Ended, int]:
     """List one category (or a route's own posts) into `work`, and note where it ended.
@@ -2482,7 +2071,7 @@ def _list_one(
         progress: where the earlier runs left the target's listings, and this run's.
         name: the category's name; "" for a route's own posts.
         newest_first: whether the listing comes newest first.
-        items: calls the category (or route) method, returning what it yields.
+        items: calls the category (or route) method, giving what it yields.
         remaining: posts the target may still take under `--limit`; None for no limit.
 
     Returns:
@@ -2495,18 +2084,17 @@ def _list_one(
         head=progress.seen_heads.get(name),
     )
     if stops.sync:
-        ended, taken = _sync_one(work, run, site, target, options, progress, name=name,
-                                 items=items, stops=stops, remaining=remaining)
-        return ended, taken
+        return await _sync_one(work, run, site, target, options, progress, name=name,
+                               items=items, stops=stops, remaining=remaining)
     start = progress.started.get(name) if newest_first else None
     listing = progress.listings[name] = Listing(start, label=f"{target}: {name or target.kind}")
     work.ledger.tally.start(target, name, listing)
     if start:
         ui.info("{target}: {name}: going on where an interrupted run stopped",
                 target=str(target), name=name or target.kind)
-        run.settings.emit(RESUMING)
-    ended, taken, kept = _listed(work, run, site, name, newest_first, items, listing, stops,
-                                 options, remaining)
+        await run.settings.emit(RESUMING)
+    ended, taken, kept = await _listed(work, run, site, name, newest_first, items, listing,
+                                       stops, options, remaining)
     if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP):
         progress.complete.append(name)
         if not start and kept.newest is not None:
@@ -2518,17 +2106,17 @@ def _list_one(
         if rest is None or rest > 0:
             ui.debug("{target}: list {name} from the newest", target=str(target),
                      name=name or target.kind)
-            ended, extra, newest = _listed(work, run, site, name, True, items, Listing(),
-                                           replace(stops, sync=True), options, rest)
+            ended, extra, newest = await _listed(work, run, site, name, True, items, Listing(),
+                                                 replace(stops, sync=True), options, rest)
             taken += extra
             if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and newest.newest is not None:
                 progress.heads[name] = newest.newest
     return ended, taken
 
 
-def _sync_one(
+async def _sync_one(
     work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
-    progress: _Progress, *, name: str, items: Callable[[], Any], stops: _Stops,
+    progress: _Progress, *, name: str, items: Callable[[], Awaitable[Any]], stops: _Stops,
     remaining: int | None,
 ) -> tuple[Ended, int]:
     """Sync a `newest_first` listing an earlier run read to its end: the newest, then its gaps.
@@ -2558,7 +2146,7 @@ def _sync_one(
         progress: where the earlier runs left the target's listings; this run's gaps, heads and
             completeness are written to it.
         name: the category's name; "" for a route's own posts.
-        items: calls the category (or route) method, returning what it yields.
+        items: calls the category (or route) method, giving what it yields.
         stops: the sync's stops, with the head an earlier run saw.
         remaining: posts the target may still take under `--limit`; None for no limit.
 
@@ -2576,8 +2164,8 @@ def _sync_one(
     # 1. The newest posts. A listing that raises (the site failed it) is cut short like any:
     # where it was is kept as a gap before the error goes on to fail the target.
     try:
-        ended, taken, kept = _listed(work, run, site, name, True, items, listing, stops,
-                                     options, remaining)
+        ended, taken, kept = await _listed(work, run, site, name, True, items, listing, stops,
+                                           options, remaining)
     except BaseException:
         progress.gaps[name] = list(dict.fromkeys([listing.cursor or "", *gaps]))
         raise
@@ -2594,12 +2182,12 @@ def _sync_one(
                 ended = Ended.CUT
                 break
             ui.info("{target}: resuming from the last run", target=label)
-            run.settings.emit(RESUMING)
+            await run.settings.emit(RESUMING)
             jump = progress.listings[name] = Listing(left[0], label=label)
             work.ledger.tally.start(target, name, jump)
             try:
-                ended, extra, filled = _listed(work, run, site, name, True, items, jump, stops,
-                                               options, rest)
+                ended, extra, filled = await _listed(work, run, site, name, True, items, jump,
+                                                     stops, options, rest)
             except BaseException:
                 progress.gaps[name] = [jump.cursor or left[0], *left[1:]]
                 raise
@@ -2628,11 +2216,11 @@ def _sync_one(
     if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and not queued and not gaps:
         # 4. Nothing new.
         ui.info("{category}: nothing new", category=name or "posts")
-        run.settings.emit(Skipped(target, name, "", None, reason=NOTHING_NEW))
+        await run.settings.emit(Skipped(target, name, "", None, reason=NOTHING_NEW))
     return ended, taken
 
 
-def _retry_failed(
+async def _retry_failed(
     work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
     listings: Sequence[_Listed],
 ) -> None:
@@ -2662,7 +2250,8 @@ def _retry_failed(
     db = run.settings.db
     if run.settings.dry or options.again or db is None:
         return
-    failed = db.pending(home.key(target), every=options.retry is Retry.ONLY)
+    failed = await run.off(functools.partial(db.pending, home.key(target),
+                                             every=options.retry is Retry.ONLY))
     by_name = {listed.name: listed for listed in listings}
     groups: dict[tuple[str, str | None], dict[str, list[home.FailureRow]]] = {}
     for row in failed:
@@ -2670,23 +2259,23 @@ def _retry_failed(
             groups.setdefault((row.category, row.cursor), {}).setdefault(row.post, []).append(row)
     if not groups:
         return
-    files = sum(len(rows) for posts in groups.values() for rows in posts.values())
+    count = sum(len(rows) for posts in groups.values() for rows in posts.values())
     ui.info("{target}: retrying {files} earlier runs failed on", target=str(target),
-            files=text.count(files, "file"))
+            files=text.count(count, "file"))
     work.ledger.retrying = True
     try:
         for (name, cursor), posts in groups.items():
             if run.settings.stop.soon.is_set():
                 return
             listed = by_name[name]
-            missing, ran_out = _relist(work, run, site, listed, cursor, set(posts))
+            missing, ran_out = await _relist(work, run, site, listed, cursor, set(posts))
             for post in missing:
-                _lost(work, run, target, posts[post], ran_out=ran_out)
+                await _lost(work, run, target, posts[post], ran_out=ran_out)
     finally:
         work.ledger.retrying = False
 
 
-def _relist(
+async def _relist(
     work: _Work, run: SourceRun, site: TargetSite, listed: _Listed, cursor: str | None,
     posts: set[str],
 ) -> tuple[set[str], bool]:
@@ -2710,16 +2299,16 @@ def _relist(
     """
     left, past, last = set(posts), 0, None
     site.listing = Listing(cursor, label=f"{site.target}: {listed.name or site.target.kind}")
-    kept = _Kept(listed.items(), listed.name, newest_first=listed.newest_first, span=Range(),
-                 run_async=run.run_async)
+    kept = _Kept(await listed.items(), listed.name, newest_first=listed.newest_first,
+                 span=Range(), call=run.call, close=run.off)
     try:
-        for post in kept:
+        async for post in kept:
             if run.settings.stop.soon.is_set():
                 return set(), False
             # A post the source yields in parts (one id) is queued part by part.
             if post.id in left or post.id == last:
                 # Not held for a day from the posts around it: a retry reads too few of them.
-                if work.queue(post, hold=False) is Outcome.STOPPED:
+                if await work.queue(post, hold=False) is Outcome.STOPPED:
                     return set(), False
                 left.discard(post.id)
                 last, past = post.id, 0
@@ -2730,12 +2319,12 @@ def _relist(
             if cursor is not None and past > RETRY_WINDOW:
                 return left, False
     finally:
-        kept.close()
+        await kept.aclose()
         site.listing = None
     return left, kept.ran_out
 
 
-def _lost(
+async def _lost(
     work: _Work, run: SourceRun, target: Target, rows: Sequence[home.FailureRow], *,
     ran_out: bool,
 ) -> None:
@@ -2758,15 +2347,16 @@ def _lost(
             error = SiteError(f"post {row.post} wasn't found near where it was listed",
                               hint="flnd retry tries again", retryable=True)
         if db is not None:
-            db.fail(run=run.settings.run, item=row.key, target=row.target, error=error,
-                    post=row.post, category=row.category, file=row.file, cursor=row.cursor)
+            await run.off(functools.partial(
+                db.fail, run=run.settings.run, item=row.key, target=row.target, error=error,
+                post=row.post, category=row.category, file=row.file, cursor=row.cursor))
         work.ledger.tally.count(target, row.category, found=1, failed=1)
-        run.settings.emit(Failed(target, error, post=row.post, path=Path(row.file)))
+        await run.settings.emit(Failed(target, error, post=row.post, path=Path(row.file)))
 
 
-def _listed(
+async def _listed(
     work: _Work, run: SourceRun, site: TargetSite, name: str, newest_first: bool,
-    items: Callable[[], Any], listing: Listing, stops: _Stops, options: Options,
+    items: Callable[[], Awaitable[Any]], listing: Listing, stops: _Stops, options: Options,
     remaining: int | None,
 ) -> tuple[Ended, int, _Kept]:
     """Run one listing with `listing` set on the site, queueing what it yields into `work`.
@@ -2778,7 +2368,7 @@ def _listed(
         site: the target's site, whose `listing` is set for the listing, then cleared.
         name: the category's name; "" for a route's own posts.
         newest_first: whether the listing comes newest first.
-        items: calls the category (or route) method, returning what it yields.
+        items: calls the category (or route) method, giving what it yields.
         listing: the `Listing` the first `pages` call resumes and reports to.
         stops: when a sync has caught up.
         options: the target's options, for `--when`.
@@ -2790,73 +2380,76 @@ def _listed(
     """
     site.listing = listing
     try:
-        kept = _Kept(items(), name, newest_first=newest_first,
-                     span=Range(options.since, options.until), run_async=run.run_async)
-        ended, taken = _queue_all(work, kept, stops=stops, limit=remaining)
+        kept = _Kept(await items(), name, newest_first=newest_first,
+                     span=Range(options.since, options.until), call=run.call, close=run.off)
+        ended, taken = await _queue_all(work, kept, stops=stops, limit=remaining)
     finally:
         site.listing = None
     work.linked.extend(kept.linked)
     return ended, taken, kept
 
 
-def _run_discovered(
-    run: SourceRun, tally: Tally, options: Options, items: Generator[Any, None, None]
-) -> None:
-    """Download each target a discovering route yields, in turn, within its parent's run.
+async def _run_discovered(run: SourceRun, options: Options, yielded: Any) -> None:
+    """Run each target a discovering route yields, in turn, as a target of its own.
 
     Such a route (an author's page listing their works) has no posts of its own; each target
-    it yields is downloaded at once with the parent's options, on the same tally. `--limit`
-    counts targets. The engine runs most of these as searches (`Engine._run_query`); this is
-    the path for one reached by `download` directly, as a found target can be.
+    it yields runs with the parent's options, through the run's `follow`, on its own plugin's
+    instance, so a link to another site runs on that site's plugin. `--limit` counts targets.
+    The engine runs most of these as searches; this is the path for one reached by `download`
+    directly, as a found target can be.
 
     Args:
-        run: the source's run.
-        tally: the run's live counts.
+        run: the parent's source run.
         options: the parent's options.
-        items: what the route yields; closed when done.
+        yielded: what the route gave.
     """
     seen: set[Target] = set()
     child_options = replace(options, limit=None)
-    try:
-        for item in items:
+    follow = run.settings.follow
+    async with contextlib.aclosing(_steps(yielded, run.call, run.off)) as items:
+        async for item in items:
             if run.settings.stop.soon.is_set():
                 return
-            child = resolved(run, item)
+            child = await resolved(run, item)
             if child is None or child in seen:
                 continue
             seen.add(child)
-            download(run, child, tally, child_options)
+            if follow is not None:
+                await follow(child, child_options)
+            elif child.source == run.source.code:
+                await download(run, child, run.settings.tally or Tally(), child_options)
             if options.limit is not None and len(seen) >= options.limit:
                 return
-    finally:
-        items.close()
 
 
-def _steps(yielded: Any, run_async: RunAsync) -> Generator[Any, None, None]:
+async def _steps(yielded: Any, call: Call, close: Call) -> AsyncIterator[Any]:
     """Iterate what a route or category yields, plain or async, closing it however it ends.
 
-    An async generator is stepped on the run's loop, one `__anext__` at a time, from the
-    listing thread; each step is timed, and one that holds the loop past `HELD` seconds
-    without awaiting is warned about, since it stalls every download. None yields nothing.
+    A plain iterator is stepped through `call` (a thread of the source in a run), one item at a
+    time, and closed through `close`. An async generator is stepped on the loop; each stretch it
+    runs without awaiting is timed, and one past `HELD` seconds is warned about, since it stalls
+    every download. None yields nothing; a coroutine is awaited for what it gives.
 
     Args:
-        yielded: a generator, an iterable, an async generator, or None.
-        run_async: runs a coroutine on the run's loop.
+        yielded: a generator, an iterable, an async generator, a coroutine, or None.
+        call: runs the source's plain code.
+        close: runs a plain generator's `close`, even while the run stops.
 
     Yields:
         Each item, as the source yielded it.
     """
+    if inspect.iscoroutine(yielded):
+        yielded = await yielded
     if not hasattr(yielded, "__anext__"):
         iterator = iter(yielded if yielded is not None else ())
         try:
-            yield from iterator
+            while (item := await call(next, iterator, _DONE)) is not _DONE:
+                yield item
         finally:
-            close = getattr(iterator, "close", None)
-            if close is not None:
-                close()
+            stop = getattr(iterator, "close", None)
+            if stop is not None:
+                await close(stop)
         return
-    # Async code runs on the run's loop, so a blocking call in it stalls every download: each
-    # stretch it runs without awaiting is timed, and one past `HELD` seconds warns.
     name = getattr(yielded, "__qualname__", "an async listing")
 
     def slow(seconds: float) -> None:
@@ -2865,11 +2458,58 @@ def _steps(yielded: Any, run_async: RunAsync) -> Generator[Any, None, None]:
     try:
         while True:
             try:
-                yield run_async(loop.held(yielded.__anext__(), limit=HELD, slow=slow))
+                item = await _Held(yielded.__anext__(), HELD, slow)
             except StopAsyncIteration:
                 return
+            yield item
     finally:
-        run_async(yielded.aclose())
+        await yielded.aclose()
+
+
+class _Held:
+    """An awaitable that times each stretch the one it wraps runs without awaiting.
+
+    A coroutine runs in stretches, from one `await` that suspends it to the next, and nothing
+    else on the loop runs meanwhile. Each stretch is measured on the real monotonic clock (a
+    fake clock can't see a blocking call), and `slow(seconds)` is told of one over `limit`.
+
+    Args:
+        awaitable: the awaitable to run.
+        limit: the seconds a stretch may take.
+        slow: told the seconds of each stretch over `limit`; it must not raise.
+    """
+
+    def __init__(self, awaitable: Awaitable[Any], limit: float,
+                 slow: Callable[[float], None]) -> None:
+        self._awaitable, self._limit, self._slow = awaitable, limit, slow
+
+    def __await__(self) -> Generator[Any, Any, Any]:
+        # What `yield from` does, one step at a time: each `send` or `throw` runs the inner
+        # coroutine until it suspends (giving the future it waits on) or ends.
+        inner = self._awaitable.__await__()
+        sent: Any = None
+        thrown: BaseException | None = None
+        while True:
+            start = time.monotonic()
+            try:
+                waits = inner.send(sent) if thrown is None else inner.throw(thrown)
+            except StopIteration as done:
+                self._check(start)
+                return done.value
+            except BaseException:
+                self._check(start)
+                raise
+            self._check(start)
+            try:
+                sent, thrown = (yield waits), None
+            except BaseException as error:
+                # A cancel or a close reaches the inner coroutine, as `yield from` passes it.
+                sent, thrown = None, error
+
+    def _check(self, start: float) -> None:
+        took = time.monotonic() - start
+        if took >= self._limit:
+            self._slow(took)
 
 
 def _extension(file: File) -> tuple[str, str | None]:
@@ -2941,11 +2581,12 @@ def _format(source: Source, category: Category | None, name: str) -> str:
     return own if own is not None else getattr(source, name)
 
 
-def resolved(run: SourceRun, item: Target | str) -> Target | None:
+async def resolved(run: SourceRun, item: Target | str) -> Target | None:
     """A target a source yielded, resolved: by the run's resolver, which knows every source.
 
-    A target already resolved (its `kind` set) is taken as it is. One the run can't read is a
-    warning, and None, so one bad link never ends the listing that yielded it.
+    A target already resolved (its `kind` set) is taken as it is. Any other is resolved on a
+    thread, since a short link is followed with a request of its own. One the run can't read
+    is a warning, and None, so one bad link never ends the listing that yielded it.
 
     Args:
         run: the source's run; `settings.resolve` resolves any source's target text, and,
@@ -2960,11 +2601,11 @@ def resolved(run: SourceRun, item: Target | str) -> Target | None:
     text = str(item)
     try:
         if run.settings.resolve is not None:
-            return run.settings.resolve(text)
+            return await run.off(run.settings.resolve, text)
         own = Target(text)
         if own.source == run.source.code:
             text = f"?{own.value}" if own.query else own.value
-        return run.source.resolve(text)
+        return await run.off(run.source.resolve, text)
     except Error as error:
         ui.warn("{source}: can't follow {text}: {error}", source=run.source.code, text=text,
                 error=error)

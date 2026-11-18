@@ -209,8 +209,8 @@ line counts them. It exits 0 when history and disk agree, and 1 when they don't.
 
 - a **missing** file's row is removed, so `flnd download <target> --again` can fetch it again;
 - a file of the **wrong size** gets its row's size and hash from the disk;
-- an **unknown** file under `media/` is only reported: it stays out of the history, and a later
-  run skips it because it is on disk.
+- an **unknown** file under `media/` is only reported: a later run that lists its post finds
+  it on disk, skips it, and records its row.
 
 [storage.md](storage.md#checking-a-home) says what check passes over.
 With `--json`, it prints one `{"type": "Checked", ...}` object.

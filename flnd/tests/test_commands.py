@@ -19,14 +19,14 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
+from fakes import CDN, make_source, noise
 from prompt_lines import select_from_lines
-from test_engine import CDN, make_source, noise
 from test_library import example_source
 
 from flnd import Blocked, Target, sources
 from flnd import cli as flnd_cli
 from flnd.engine import home as _home
-from flnd.engine.core import Engine, TargetReport
+from flnd.engine.core import Engine, TargetReport, _Runner
 from flnd.engine.events import Saved
 from flnd.engine.options import Options
 from flnd.source import Login, Source
@@ -110,12 +110,12 @@ class RunsCase(FlndCase):
         super().setUp()
         self.runs = []
 
-        def run(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
+        async def run(runner, chosen, *, depth=0):
             targets = [target for target, _ in chosen]
-            self.runs.append((engine, targets, replace(chosen[0][1], stop_at_saved=False)))
+            self.runs.append((runner.engine, targets, replace(chosen[0][1], stop_at_saved=False)))
             return [TargetReport(target, (), 0) for target in targets]
 
-        self.enterContext(mock.patch.object(Engine, "_run", run))
+        self.enterContext(mock.patch.object(_Runner, "run", run))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -226,12 +226,12 @@ class DownloadTest(RunsCase):
         self.assertIn("done in", out)
 
     def test_download_v_logs_events_and_debug_in_realtime(self):
-        def run_with_events(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
+        async def run_with_events(runner, chosen, *, depth=0):
             ui.debug("fetching post list for {target}", target="ins:a")
-            engine.emit(Saved(Target("ins:a"), "posts", "1", Path("media/ins/a/posts/1.jpg"), None, 100))
+            await runner.engine.emit(Saved(Target("ins:a"), "posts", "1", Path("media/ins/a/posts/1.jpg"), None, 100))
             return [TargetReport(Target("ins:a"), (), 1)]
 
-        with mock.patch.object(Engine, "_run", run_with_events):
+        with mock.patch.object(_Runner, "run", run_with_events):
             code, out, err = self.run_app("download", "ins:a", "-v")
             self.assertEqual(code, 0)
             log_dir = Path(".flnd") / _home.LOGS
