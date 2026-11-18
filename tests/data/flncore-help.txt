@@ -1,6 +1,0 @@
-flnd 0.2.0 · download what you follow, and keep it up to date
-
-  get                         Download what the targets have now.
-  status                      Last run, failures, logins, and disk.
-  sync                        Download what is new for the followed targets.
-  target                      the targets this home knows

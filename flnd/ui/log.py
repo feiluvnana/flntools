@@ -11,7 +11,7 @@ import os
 import re
 import string
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -27,6 +27,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from flnd.kit import clock
+from flnd.kit.text import size
 
 Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
@@ -202,11 +203,6 @@ class Item:
         self._ended: float | None = None
         self._outcome: Level | None = None
 
-    @property
-    def raw(self) -> Any:
-        """Raw item identifier for compatibility."""
-        return self.key
-
     def advance(self, n: float = 1) -> None:
         """Increment progress by `n`."""
         self.count += n
@@ -255,16 +251,6 @@ class Item:
     def finish(self) -> None:
         """Alias for `ok()`."""
         self.ok()
-
-    def part(self) -> Callable[[int, int | None], None]:
-        """A callback feeding `(fed, total)` chunks from a stream."""
-        def callback(fed: int, total: int | None = None) -> None:
-            self.count = float(fed)
-            if total is not None:
-                self.total = float(total)
-            if self.drawn and self.owner._live:
-                self.owner._item_updated(self)
-        return callback
 
     def __enter__(self) -> Item:
         return self
@@ -393,8 +379,6 @@ class UI:
         self._pending_lines: list[Text | str] = []
         self._last_draw = 0.0
         self._journal: Journal | None = None
-        self._live_tasks: dict[Any, Item] = {}
-        self._live_count = 0
         self._hold_depth = 0
         self._wake = threading.Event()
         self._ticker: threading.Thread | None = None
@@ -414,10 +398,6 @@ class UI:
 
     def _progress_enabled(self) -> bool:
         return self.live
-
-    @property
-    def _live_progress(self) -> Any:
-        return self if self.live and self._live_count > 0 else None
 
     @property
     def level(self) -> Level:
@@ -668,8 +648,6 @@ class UI:
         with self._lock:
             it = Item(key, label or key, total=total, unit=unit, drawn=drawn, owner=self)
             self._items[key] = it
-            self._live_count += 1
-            self._live_tasks[it.raw] = it
             if drawn and self.live:
                 if key not in self._active_keys:
                     self._active_keys.append(key)
@@ -689,9 +667,6 @@ class UI:
         with self._lock:
             if item.key in self._active_keys:
                 self._active_keys.remove(item.key)
-            if item.raw in self._live_tasks:
-                del self._live_tasks[item.raw]
-            self._live_count = max(0, self._live_count - 1)
 
             if item.drawn:
                 rendered = self._render_item(item, self._get_width(), self._use_unicode())
@@ -825,64 +800,11 @@ class TTY(io.StringIO):
         return True
 
 
-BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
-
-
-def size(n: float) -> str:
-    amount = float(n)
-    for u in BYTE_UNITS[:-1]:
-        if abs(round(amount, 1)) < 1024:
-            return f"{amount:.1f} {u}"
-        amount /= 1024
-    return f"{amount:.1f} {BYTE_UNITS[-1]}"
-
-
-def duration(seconds: float) -> str:
-    if round(seconds * 1000) < 1000:
-        return f"{round(seconds * 1000)}ms"
-    if round(seconds, 1) < 60:
-        return f"{seconds:.1f}s"
-    whole = round(seconds)
-    units = ((whole // 3600, "h"), (whole % 3600 // 60, "m"), (whole % 60, "s"))
-    nonzero = [f"{amount}{u}" for amount, u in units if amount]
-    return " ".join(nonzero[:2])
-
-
-def count(n: float, unit: str, *, plural: str | None = None) -> str:
-    if n == 1:
-        return f"{n:,} {unit}"
-    return f"{n:,} {plural if plural is not None else unit + 's'}"
-
-
-def redact(url: str) -> str:
-    from urllib.parse import urlsplit, urlunsplit
-    try:
-        parts = urlsplit(url)
-        if not parts.netloc:
-            return urlunsplit((parts.scheme, "", parts.path, "", ""))
-        host = parts.hostname or ""
-        if ":" in host:
-            host = f"[{host}]"
-        netloc = f"{host}:{parts.port}" if parts.port is not None else host
-        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
-    except ValueError:
-        head = re.split(r"[?#]", url, maxsplit=1)[0]
-        scheme, sep, rest = head.partition("://")
-        if not sep:
-            return head
-        authority, slash, path = rest.partition("/")
-        return f"{scheme}{sep}{authority.rpartition('@')[2]}{slash}{path}"
-
-
 __all__ = [
     "Item",
     "Journal",
     "State",
     "UI",
-    "count",
-    "duration",
     "log",
-    "redact",
-    "size",
     "ui",
 ]

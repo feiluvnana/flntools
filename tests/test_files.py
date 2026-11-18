@@ -9,7 +9,6 @@ from pathlib import Path
 from flnd.engine import transfer as _transfer
 from flnd.errors import SiteError
 from flnd.kit import files as _files
-from flnd.kit import files as core_files
 from flnd.ui.log import ui
 
 
@@ -25,11 +24,6 @@ class FilesCase(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.tmp = Path(folder.name)
-
-
-class CoreFilenameTest(unittest.TestCase):
-    def test_a_backslash_is_replaced(self):
-        self.assertEqual(core_files.filename("a\\b"), "a_b")
 
 
 class PartNameTest(FilesCase):

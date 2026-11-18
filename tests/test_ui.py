@@ -85,7 +85,6 @@ class ProgressTest(UICase):
     def test_progress_ok_and_error(self) -> None:
         with ui.progress("photos/a.jpg", total=10) as row:
             self.assertIsInstance(row, Row)
-            self.assertIsNotNone(row.raw)
             row.advance(4)
             self.assertEqual(row.count, 4)
             row.finish()
@@ -98,13 +97,6 @@ class ProgressTest(UICase):
                 raise RuntimeError("boom")
         assert bad is not None
         self.assertIn("photos/b.jpg", self.output())
-
-    def test_part_callback(self) -> None:
-        with ui.progress("clip.mp4") as row:
-            cb = row.part()
-            cb(50, 100)
-            self.assertEqual(row.count, 50)
-            self.assertEqual(row.total, 100)
 
     def test_group_rows(self) -> None:
         with ui.group("batch") as grp:
@@ -119,26 +111,14 @@ class ProgressTest(UICase):
         self.assertIn("Metadata", out)
         self.assertIn("Media", out)
 
-    def test_concurrent_groups_share_single_live_progress(self) -> None:
+    def test_concurrent_progress_rows_both_draw(self) -> None:
         buf = io.StringIO()
         with ui.scope(color=True, dest=buf, width=80, level="info"):
             self.assertTrue(ui._progress_enabled())
             with ui.progress("item1.jpg", total=10) as row1:
-                self.assertIsNotNone(ui._live_progress)
-                self.assertEqual(ui._live_count, 1)
-                live_prog = ui._live_progress
                 with ui.progress("item2.jpg", total=20) as row2:
-                    self.assertIs(ui._live_progress, live_prog)
-                    self.assertEqual(ui._live_count, 2)
-                    self.assertIn(row1.raw, ui._live_tasks)
-                    self.assertIn(row2.raw, ui._live_tasks)
                     row1.advance(5)
                     row2.advance(10)
-                self.assertEqual(ui._live_count, 1)
-                self.assertIs(ui._live_progress, live_prog)
-                self.assertNotIn(row2.raw, ui._live_tasks)
-            self.assertEqual(ui._live_count, 0)
-            self.assertIsNone(ui._live_progress)
         out = buf.getvalue()
         self.assertIn("item1.jpg", out)
         self.assertIn("item2.jpg", out)

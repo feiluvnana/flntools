@@ -889,48 +889,7 @@ class ValveTest(unittest.TestCase):
             self.assertEqual(calls, [1, 0])
 
 
-class SegmentTest(NetCase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.enterContext(mock.patch.object(_net, "SEGMENTED", 1000))
-
-    def test_segments_are_off_by_default(self):
-        with _net.fake({FILE: self.logged(BODY)}):
-            download(FILE, self.dest)
-        self.assertEqual(self.ranges(), ["bytes=0-"])
-
-    def test_a_big_file_comes_in_4_ranges_into_one_file(self):
-        sink = Sink()
-        with _net.fake({FILE: self.logged(BODY)}):
-            download(FILE, self.dest, progress=sink, segments=True)
-        self.assertEqual(self.dest.read_bytes(), BODY)
-        quarter = -(-len(BODY) // 4)
-        spans = [f"bytes={start}-{min(start + quarter, len(BODY)) - 1}" for start in range(0, len(BODY), quarter)]
-        self.assertEqual(self.ranges()[0], "bytes=0-")
-        self.assertEqual(sorted(self.ranges()[1:]), sorted(spans))
-        self.assertEqual((sink.total, sink.count), (len(BODY), len(BODY)))
-        self.assertEqual(sorted(path.name for path in self.dest.parent.iterdir()), ["file.bin"])
-
-    def test_a_server_without_ranges_comes_in_one_stream(self):
-        with _net.fake({FILE: self.logged(lambda request: _net.reply(200, content=BODY))}):
-            download(FILE, self.dest, segments=True)
-        self.assertEqual(self.dest.read_bytes(), BODY)
-        self.assertEqual(len(self.sent), 1)
-
-    def test_a_failed_segment_keeps_the_first_one_and_the_next_try_streams_the_rest(self):
-        quarter = -(-len(BODY) // 4)
-        failures = iter([True])
-
-        def flaky(request):
-            if request.headers["range"].startswith(f"bytes={quarter * 2}-") and next(failures, False):
-                return 500
-            return BODY
-
-        with _net.fake({FILE: self.logged(flaky)}):
-            download(FILE, self.dest, segments=True)
-        self.assertEqual(self.dest.read_bytes(), BODY)
-        self.assertEqual(self.ranges()[-1], f"bytes={quarter}-")
-
+class HolesTest(NetCase):
     def test_a_part_a_crash_left_with_holes_starts_over(self):
         self.stage.write_bytes(bytes(len(BODY)))
         self.stage.with_name("file.bin.part.json").write_text('{"holes": true}')

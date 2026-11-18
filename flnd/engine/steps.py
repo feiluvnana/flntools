@@ -126,18 +126,6 @@ class Chain:
         self._lanes.clear()
         self._summary()
 
-    @property
-    def jobs(self) -> dict[str, tuple[int, int]]:
-        """A snapshot of each lane started so far: its files running now, and waiting.
-
-        Returns:
-            `(running, waiting)` by lane name (`archive`, `photo`, `video`). Any thread may
-            read it.
-        """
-        with self._lock:
-            lanes = list(self._lanes.items())
-        return {name: (lane.running, lane.waiting) for name, lane in lanes}
-
     def __enter__(self) -> Chain:
         return self
 
@@ -354,18 +342,10 @@ class _Lane:
     def __init__(self, name: str, threads: int, run: Any, drop: Any, stopping: Any) -> None:
         self._items: queue.Queue[Any] = queue.Queue(maxsize=QUEUE)
         self._run, self._drop, self._stopping = run, drop, stopping
-        # Items a thread is running now, for `Chain.jobs`; changed by the lane's own threads.
-        self.running = 0
-        self._counting = threading.Lock()
         self._threads = [threading.Thread(target=self._serve, name=f"flnd-{name}-{n}",
                                           daemon=True) for n in range(threads)]
         for thread in self._threads:
             thread.start()
-
-    @property
-    def waiting(self) -> int:
-        """Items queued and not started yet (an estimate while threads take them)."""
-        return self._items.qsize()
 
     def put(self, item: Landed) -> None:
         """Queue `item`, waiting while the lane is full.
@@ -396,13 +376,7 @@ class _Lane:
                 if self._stopping():
                     self._drop(item)
                 else:
-                    with self._counting:
-                        self.running += 1
-                    try:
-                        self._run(item)
-                    finally:
-                        with self._counting:
-                            self.running -= 1
+                    self._run(item)
             except KeyboardInterrupt:
                 continue
             except Exception as error:  # a bug in a step: the file fails, the lane goes on

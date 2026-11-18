@@ -8,7 +8,7 @@ This is flnd's own module (not a library): it knows sources, targets and the hom
 - `Config`, `SourceConfig` and `config`: every setting of the home's `config.toml`, read and
   checked in one place (flnd/docs/storage, "config.toml");
 - `categories_by_source`, `validate` and `unknown`, which check `--only` against the targets'
-  sources before anything is fetched, and `selected`, which applies it to one source.
+  sources before anything is fetched.
 
 Who calls it: the engine (`flnd.engine.core`) builds the `Options` and `RunShared` of a run and
 checks `--only`; the job reads them; the library (`flnd._library`) and the steps after a download
@@ -120,14 +120,6 @@ class RunShared:
     resolve: Callable[[str], Target] | None = field(default=None, repr=False)
     # Each file's lifecycle for this target (`flnd.engine.track.Tracks`); None outside a download.
     tracks: Any = field(default=None, repr=False)
-
-
-def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
-    """The categories `--only` takes from one source, in the source's order."""
-    names = options.categories
-    if names is None or ALL in names:
-        return source.categories
-    return tuple(name for name in source.categories if name in names)
 
 
 def categories_by_source(
@@ -253,8 +245,7 @@ def _names(
         scoped: the names given as `<code>:<names>`, by code; only `source`'s are read.
 
     Returns:
-        The names, plain first, each once; it may hold `all`, or names of other sources' categories,
-        which `selected` drops.
+        The names, plain first, each once; it may hold `all`, or names of other sources' categories.
 
     Raises:
         UsageError: a scoped name isn't one of the source's, or none of the names is.

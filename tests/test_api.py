@@ -21,15 +21,6 @@ class SnapshotTest(unittest.TestCase):
             self.fail("the public API differs from tests/data/api.txt; if the change is meant, run "
                       f"`make api` and commit the file with it:\n{diff}")
 
-    def test_flncore_snapshot_matches_the_code(self):
-        written = (ROOT / "tests" / "data" / "flncore-api.txt").read_text(encoding="utf-8")
-        current = snapshot.api_text(snapshot.CORE_API_MODULES)
-        if current != written:
-            diff = "".join(difflib.unified_diff(written.splitlines(keepends=True), current.splitlines(keepends=True),
-                                                "tests/data/flncore-api.txt", "the code"))
-            self.fail("the flncore API differs from tests/data/flncore-api.txt; if the change is meant, run "
-                      f"`make api` and commit the file with it:\n{diff}")
-
     def test_one_sorted_line_per_name(self):
         names = [name.name for name in snapshot.api_names()]
         self.assertEqual(names, sorted(set(names)))

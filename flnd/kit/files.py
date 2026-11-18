@@ -15,7 +15,6 @@ import shutil
 import subprocess
 import tarfile
 import threading
-import unicodedata
 import zipfile
 import zlib
 from collections.abc import Callable, Iterator, Mapping
@@ -24,13 +23,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import IO, Any, Literal
 
-from flnd.errors import DiskError, SiteError, ToolError
+from flnd.errors import DiskError, SiteError, ToolError, disk
 from flnd.kit import clock
-
-
-def disk(error: OSError, path: object = None) -> DiskError:
-    return DiskError.of(error, path=path)
-
 
 PART = ".part"
 SIDE = ".json"
@@ -980,31 +974,6 @@ def sniff(path: Path | bytes) -> str | None:
     if stripped.startswith((b"{", b"[")):
         return ".json"
     return None
-
-
-UNSAFE_CHARACTERS = re.compile(r'[\\/*?:"<>|\x00--]')
-SEPARATOR_RUNS = re.compile(r"[\s_]+")
-RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
-    f"{kind}{suffix}"
-    for kind in ("COM", "LPT")
-    for suffix in (*range(1, 10), "¹", "²", "³")
-}
-
-def filename(name: str, *, fallback: str = "untitled", max_bytes: int = 200) -> str:
-    cleaned = "".join(ch for ch in name if unicodedata.category(ch) != "Cf")
-    cleaned = UNSAFE_CHARACTERS.sub("_", cleaned)
-    cleaned = SEPARATOR_RUNS.sub("_", cleaned).strip("._ ")
-    cleaned = cleaned.encode("utf-8")[:max_bytes].decode("utf-8", "ignore").strip("._ ")
-    if not cleaned:
-        return fallback
-    base, dot, rest = cleaned.partition(".")
-    if base.upper() in RESERVED_NAMES:
-        cleaned = f"{base}_{dot}{rest}"
-        if dot and len(cleaned.encode("utf-8")) > max_bytes:
-            cleaned = (
-                cleaned.encode("utf-8")[:max_bytes].decode("utf-8", "ignore").strip("._ ")
-            )
-    return cleaned
 
 
 SINGLE_DASH = frozenset({"ffmpeg", "ffprobe"})

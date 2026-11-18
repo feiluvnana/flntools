@@ -430,8 +430,8 @@ loop:
     transfers before it probes again.
 
   The session's curl handles (`Limits.total`) leave room for 8 hosts at 32, plus every host in
-  `limits`; curl makes a handle only when a transfer needs one. `SourceRun.load` (from
-  `Limits.load`) is a snapshot of each host's cap, transfers in flight and waiting.
+  `limits`; curl makes a handle only when a transfer needs one. `Limits.load` is a
+  snapshot of each host's cap, transfers in flight and waiting.
 - **Two clients** share the session and the pools: `web` lists and stops at the first Ctrl-C;
   `files` downloads and stops at the second.
 - **The retry policy** is the library's ([errors.md](errors.md)): 4 more tries after waits of
@@ -439,8 +439,7 @@ loop:
   third in a row.
 - **A file** (`_transfer.save`) goes into its part: resumed with `Range` and `If-Range` from
   what a failed run kept, tried mirror by mirror, a DASH pair fetched at once and joined by
-  ffmpeg. A file of 64 MiB or more may be fetched in 4 parallel ranges
-  (`Client(segments=True)`), off by default until a real-CDN benchmark shows it pays.
+  ffmpeg in one join (`flnd/kit/media.py`).
 - **The fake** (`_net.fake`) answers every request from routes or a handler in tests and
   benchmarks; nothing in `make check` reaches the network.
 

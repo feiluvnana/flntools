@@ -38,10 +38,9 @@ from contextlib import ExitStack, asynccontextmanager
 from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
-from urllib.parse import urlsplit
 
 from flnd.errors import Error, SiteError
-from flnd.kit import clock, files, net, text
+from flnd.kit import clock, files, media, net, text
 from flnd.source import Fetch, File
 from flnd.ui.log import ui
 
@@ -261,8 +260,7 @@ async def _save_url(client: net.Client, url: str, held: files.Part, label: str,
         stop: set to stop the transfer.
         track: the file's lifecycle bar; None uses a transient bar.
     """
-    row: _Row | Any = track.bar() if track is not None else _Row(
-        label, host=urlsplit(url).hostname or "", resumed=held.size)
+    row: _Row | Any = track.bar() if track is not None else _Row(label)
     with row:
         seen = await client.fill(url, held, headers=headers, progress=row.follow(stop))
     if received is not None:
@@ -292,7 +290,7 @@ async def _save_dash(client: net.Client, video: str, audio: str, held: files.Par
         track: the file's lifecycle row; None uses a transient bar.
     """
     row: _Row | Any = (
-        track.bar() if track is not None else _Row(label, host=urlsplit(video).hostname or "")
+        track.bar() if track is not None else _Row(label)
     )
     with row:
         await _again(
@@ -344,52 +342,8 @@ async def _dash_merge(client: net.Client, video: str, audio: str, held: files.Pa
         if stop is not None and stop.is_set():
             raise KeyboardInterrupt
         row.caption("merging")
-        ffmpeg = files.ffmpeg()
-        fmt = "webm" if dest.suffix.lower() == ".webm" else "mp4"
-        flags = ["-movflags", "+faststart"] if fmt == "mp4" else []
         try:
-            # When the audio stream is empty (0 bytes) or invalid, merge only the video stream
-            # so the video is saved instead of failing the download. If the video stream is
-            # empty, raise so another mirror or retry can handle it.
-            video_size = streams[0].size
-            if video_size == 0:
-                raise files.RunError(
-                    f"video stream is empty (0 bytes): {streams[0].path}"
-                )
-            audio_path = streams[1].path
-            audio_size = streams[1].size
-            if audio_size == 0:
-                raise files.RunError(f"audio stream is empty (0 bytes): {audio_path}")
-            else:
-                try:
-                    await asyncio.to_thread(
-                        ffmpeg.run,
-                        "-y", "-i", str(streams[0].path), "-i", str(audio_path),
-                        "-c", "copy", *flags, "-f", fmt, str(held.path),
-                    )
-                except files.RunError as error:
-                    err_text = str(error)
-                    is_video_err = (
-                        "in#0" in err_text
-                        or str(streams[0].path) in err_text
-                    )
-                    is_audio_err = not is_video_err and (
-                        "in#1" in err_text
-                        or str(audio_path) in err_text
-                        or ("Invalid data found" in err_text and "in#0" not in err_text)
-                    )
-                    if is_audio_err:
-                        ui.debug(
-                            "audio stream invalid for {dest}; saving video only",
-                            dest=dest.name,
-                        )
-                        await asyncio.to_thread(
-                            ffmpeg.run,
-                            "-y", "-i", str(streams[0].path),
-                            "-c", "copy", *flags, "-f", fmt, str(held.path),
-                        )
-                    else:
-                        raise
+            await media.join(streams[0], streams[1], held)
         finally:
             # Merged or not, the streams go: a failed merge (a short stream, a container that
             # can't hold them) is tried again from new downloads.
@@ -552,26 +506,21 @@ def _sniffed(head: bytes, dest: Path, known: bool) -> Path:
 class _Row:
     """One file's progress (or DASH video and audio's), opened on its first response.
 
-    The row only counts (`drawn=False`): a run's progress is shown from its events, and from
-    the live stats, which read each row in flight (`label`, `host`, `resumed`, `bar`) on the loop.
+    The row only counts (`drawn=False`): a run's progress is shown from its events.
 
     Its streams report from the loop, and a blocking `fetch` function from its worker thread,
     so a lock guards the bar.
 
     Args:
         label: the bar's label, the file's path under its target.
-        host: where the file comes from, for the live stats; "" for a source's `fetch`.
-        resumed: the bytes its part already held from an earlier run (a resume); 0 for none.
     """
 
-    def __init__(self, label: str, *, host: str = "", resumed: int = 0):
+    def __init__(self, label: str):
         self.label, self.stack, self.base = label, ExitStack(), 0.0
-        self.host, self.resumed = host, resumed
         self.bar: Any = None
         self._lock = threading.Lock()
 
     def __enter__(self) -> _Row:
-        # Entered and left on the loop, where the live stats read it.
         return self
 
     def __exit__(self, *error: Any) -> None:

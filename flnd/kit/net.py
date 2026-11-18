@@ -9,8 +9,7 @@ What it offers, for any caller:
 - `Limits`: how hard the session may press each host. A *paced* host gets a token bucket at a
   rate in requests per second; any other host gets a `Cap` on its transfers at once, which
   adapts to what the host can take (AIMD, below). `Limits.load` is a read-only snapshot of
-  each host's cap and transfers in flight, and `Limits.pauses` of each wait before a host's
-  next request, with its reason. `Limits.suspended`, when set, holds every new request.
+  each host's cap and transfers in flight. `Limits.suspended`, when set, holds every new request.
 - `Client`: a session with limits, a retry policy and a stop event. `fetch` sends one request;
   `call` paces and retries any coroutine (a page loaded in a browser, a request sent by a page);
   `fill` streams a file, or the first of its mirrors that works, into a `flnd.kit.files.Part`.
@@ -113,40 +112,19 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import msgspec
 
-from flnd.errors import Blocked, Changed, Error, NetworkError, NotFound, SiteError, Stopped
+from flnd.errors import (
+    Blocked,
+    Changed,
+    Error,
+    NetworkError,
+    NotFound,
+    SiteError,
+    Stopped,
+    disk,
+)
 from flnd.kit import clock, files, html
-from flnd.ui.log import duration, redact, ui
-
-disk = files.disk
-
-
-class Element:
-    def __init__(self, node: Any):
-        self._node = node
-
-    @property
-    def text(self) -> str:
-        return self._node.text() if self._node else ""
-
-    def css(self, query: str) -> list[Element]:
-        return [Element(n) for n in self._node.css(query)] if self._node else []
-
-    def first(self, query: str) -> Element | None:
-        node = self._node.css_first(query) if self._node else None
-        return Element(node) if node is not None else None
-
-
-class Document(Element):
-    def __init__(self, text: str):
-        from selectolax.lexbor import LexborHTMLParser
-        self._tree = LexborHTMLParser(text)
-        super().__init__(self._tree.root)
-
-class _Text:
-    redact = staticmethod(redact)
-    duration = staticmethod(duration)
-
-_text = _Text()
+from flnd.kit.text import duration, redact
+from flnd.ui.log import ui
 
 __all__ = [
     "Cap", "Client", "Headers", "Limits", "Load", "Place", "Reply", "Request",
@@ -181,10 +159,6 @@ STEP = 10
 RISE = 0.5
 # After a step that was taken back, clean transfers before the cap probes again.
 HOLD = 100
-# The reasons a host wait gives: the site said when to come back; a refusal
-# halved the pace, or a failure is waited out before it is tried again; the host's own pace.
-RETRY_AFTER = "Retry-After"
-BACK_OFF = "back-off"
 # How often, in seconds, a request held by `Limits.suspended` looks again.
 SUSPENDED_POLL = 0.1
 # Statuses that say a host is overloaded, so its cap halves (with a reset and a timeout).
@@ -202,9 +176,6 @@ TIMEOUT = 30.0
 BUFFER = 4 << 20
 # The most bytes of one transfer that wait in memory for the disk before curl pauses it.
 HELD = 8 << 20
-# A file this big, on a server that serves ranges, may come in SEGMENTS parallel ranges.
-SEGMENTED = 64 << 20
-SEGMENTS = 4
 # Redirects followed for one request, as curl_cffi's default allows.
 REDIRECTS = 30
 # The statuses that mean the item is gone for good: never retried, recorded as gone.
@@ -384,7 +355,7 @@ class Response:
         try:
             return msgspec.json.decode(self.content)
         except msgspec.DecodeError as error:
-            msg = f"expected JSON from {_text.redact(self.url)}, got {self.text[:80]!r}: {error}"
+            msg = f"expected JSON from {redact(self.url)}, got {self.text[:80]!r}: {error}"
             raise Changed(msg, status=self.status, response=self) from None
 
 
@@ -657,9 +628,6 @@ class Limits:
         self.cap = cap
         self.most = max(cap, most)
         self._caps: dict[str, Cap] = {}
-        # Waits a client is sitting out before trying a host again, by a key of their own:
-        # (host, until, reason). `holding` adds and removes them.
-        self._held: dict[object, tuple[str, float, str]] = {}
         # When set (a `threading.Event`), no new request starts until it is cleared: each
         # `slot` waits first. The transfers in flight go on. None never holds.
         self.suspended: Any = None
@@ -677,25 +645,6 @@ class Limits:
             host: Load(cap.value, cap.busy, cap.waiting, cap.most)
             for host, cap in self._caps.items()
         })
-
-    @contextmanager
-    def holding(self, host: str, seconds: float, reason: str) -> Iterator[None]:
-        """Record a wait before trying `host` again, for the block.
-
-        Args:
-            host: the host waited for.
-            seconds: how long the wait is, from now.
-            reason: why: `RETRY_AFTER` or `BACK_OFF`.
-
-        Yields:
-            Nothing; the wait shows until the block ends.
-        """
-        key = object()
-        self._held[key] = (host, clock.now() + seconds, reason)
-        try:
-            yield
-        finally:
-            del self._held[key]
 
     @asynccontextmanager
     async def slot(self, host: str, stop: Any = None, *,
@@ -1130,14 +1079,12 @@ class Client:
         limits: the pace and caps per host; None limits nothing.
         retries: more tries after the first, for a failure worth one (the module's policy).
         stop: a `threading.Event` that stops waits and transfers with `Stopped`.
-        segments: fetch a file of `SEGMENTED` bytes or more, on a server that serves ranges, in
-            `SEGMENTS` parallel ranges. Off by default: whether it pays depends on the server.
         pace: hold requests to the paced hosts to their bucket; False caps them instead, as
             any other host (a downloading client).
     """
 
     def __init__(self, session: Session, *, limits: Limits | None = None,
-                 retries: int = RETRIES, stop: Any = None, segments: bool = False,
+                 retries: int = RETRIES, stop: Any = None,
                  pace: bool = True) -> None:
         if retries < 0:
             raise ValueError(f"retries must be 0 or more, not {retries}")
@@ -1145,7 +1092,6 @@ class Client:
         self.limits = limits if limits is not None else Limits()
         self.retries = retries
         self.stop = stop
-        self.segments = segments
         self.pace = pace
 
     async def fetch(self, url: str, *, method: str = "GET",
@@ -1224,21 +1170,18 @@ class Client:
                     self.limits.blocked(host, wait)
                 if rounds >= ROUNDS:
                     return _given_up(failure, check)
-                reason = BACK_OFF if wait is None else RETRY_AFTER
                 wait = _backoff(rounds) if wait is None else wait
                 ui.warn("{host}: rate limited; waiting {time}",
-                        host=host, time=_text.duration(round(wait)))
+                        host=host, time=duration(round(wait)))
             else:
                 tries += 1
                 if tries > self.retries or not _worth(method, failure):
                     return _given_up(failure, check)
-                reason = BACK_OFF
                 wait = _backoff(tries)
                 ui.debug("retry {n}/{total} in {seconds:.1f}s: {reason}",
                          n=tries, total=self.retries, seconds=wait, reason=failure)
-            with self.limits.holding(host, wait, reason):
-                if not await clock.pause(wait, stop=self.stop):
-                    raise Stopped(f"{host}: stopped")
+            if not await clock.pause(wait, stop=self.stop):
+                raise Stopped(f"{host}: stopped")
 
     async def fill(self, url: str | Sequence[str], held: files.Part, *,
                    headers: Mapping[str, str] | None = None, resume: bool = True,
@@ -1273,7 +1216,7 @@ class Client:
                     moved=meter.moved)
             except Error as error:
                 ui.debug("{url} failed: {reason}; trying the next mirror",
-                         url=_text.redact(mirror), reason=error)
+                         url=redact(mirror), reason=error)
                 # The next mirror may serve other bytes: a Range on this part would splice.
                 held.reset()
         last = mirrors[-1]
@@ -1297,13 +1240,13 @@ class Client:
 
     async def _file(self, url: str, held: files.Part, headers: Mapping[str, str] | None,
                     resume: bool, meter: _Meter) -> Mapping[str, str]:
-        """One try at a file: resume the part, or start over, or fetch it in segments.
+        """One try at a file: resume the part, or start over.
 
-        1. Start from 0 when not resuming, or when a crash left a segmented part with holes.
+        1. Start from 0 when not resuming, or when an older flnd's crash left a part with holes.
         2. Ask for `bytes=<size>-`, with `If-Range` on the validator the part kept, so a file
            that changed comes whole (a 200) instead of spliced.
         3. A 206 goes on from the part's end; a 200 starts it over; a 416 is a whole part or a
-           restart; a big whole file on a server with ranges comes in segments, when on.
+           restart.
 
         Args:
             url: the file.
@@ -1328,7 +1271,7 @@ class Client:
             start = _range_start(answer.headers) if status == 206 else 0
             if status == 206 and start != offset:
                 raise NetworkError(
-                    f"GET {_text.redact(url)}: Content-Range starts at {start}, not {offset}",
+                    f"GET {redact(url)}: Content-Range starts at {start}, not {offset}",
                     retryable=True,
                 )
             total = _total_bytes(answer.headers, start)
@@ -1336,18 +1279,12 @@ class Client:
                 if not start and held.size:
                     held.reset()
                 held.note(etag=_validator(answer.headers))
-            whole = (self.segments and status == 206 and start == 0 and total is not None
-                     and total >= SEGMENTED)
-            if status != 416 and not whole:
+            if status != 416:
                 await self._write(url, answer, held, start, total, meter)
                 return answer.headers
         finally:
             await answer.close()
-        if status == 416:
-            await self._unsatisfied(url, held, headers, offset, total, meter)
-            return answer.headers
-        assert total is not None
-        await _Segments(self, url, held, headers, meter).fetch(total)
+        await self._unsatisfied(url, held, headers, offset, total, meter)
         return answer.headers
 
     async def _unsatisfied(self, url: str, held: files.Part,
@@ -1370,7 +1307,7 @@ class Client:
             meter.start(offset, offset)
             return
         if not offset:
-            raise SiteError(f"GET {_text.redact(url)}: HTTP 416", status=416)
+            raise SiteError(f"GET {redact(url)}: HTTP 416", status=416)
         await self._file(url, held, headers, False, meter)
 
     async def _range(self, url: str, headers: Mapping[str, str] | None, span: str,
@@ -1420,12 +1357,12 @@ class Client:
         finally:
             await sink.flush(last=True)
         if total is not None and held.size < total:
-            raise NetworkError(f"GET {_text.redact(url)}: truncated at {held.size} of {total} "
+            raise NetworkError(f"GET {redact(url)}: truncated at {held.size} of {total} "
                                "bytes", retryable=True)
 
     def _check(self, url: str) -> None:
         if self.stop is not None and self.stop.is_set():
-            raise Stopped(f"{_text.redact(url)}: stopped")
+            raise Stopped(f"{redact(url)}: stopped")
 
 
 class _Meter:
@@ -1590,94 +1527,6 @@ async def _settle(work: asyncio.Future[Any]) -> None:
         raise disk(error) from error
 
 
-class _Segments:
-    """One file fetched as SEGMENTS ranges at once, each written at its own offset.
-
-    The ranges land in the part itself. Until they all arrive the part has holes, so its
-    sidecar says so first (`holes`): a crash then makes the next run start over instead of
-    taking a part of the right size for a whole one.
-
-    Args:
-        client: the client whose `_range` sends each range.
-        url: the file.
-        held: the part the ranges land in.
-        headers: extra request headers.
-        meter: where the bytes are counted.
-    """
-
-    def __init__(self, client: Client, url: str, held: files.Part,
-                 headers: Mapping[str, str] | None, meter: _Meter):
-        self.client, self.url, self.headers, self.meter = client, url, headers, meter
-        self.held = held
-        self.written: list[int] = []
-        # Set when a segment fails: the others but the first stop at their next chunk.
-        self.failed = False
-
-    async def fetch(self, total: int) -> None:
-        """Fetch every segment; on a failure keep the first one's bytes, which run from 0.
-
-        Args:
-            total: the file's size.
-
-        Raises:
-            Error: the first segment's failure, once every segment has stopped.
-        """
-        self.meter.start(total, 0)
-        self.held.note(holes=True)
-        self.held.flush_note()
-        size = -(-total // SEGMENTS)
-        spans = [(start, min(start + size, total) - 1) for start in range(0, total, size)]
-        self.written = [0] * len(spans)
-        ran = await asyncio.gather(*(self.one(index, span) for index, span in enumerate(spans)),
-                                   return_exceptions=True)
-        errors = [error for error in ran if isinstance(error, BaseException)]
-        if errors:
-            # Only the first segment runs on from byte 0, so a resume streams the rest from there.
-            self.held.cut(self.written[0])
-            self.held.note(holes=None)
-            raise errors[0]
-        self.held.size = total
-
-    async def one(self, index: int, span: tuple[int, int]) -> None:
-        """Fetch one segment, and fail it when it came short.
-
-        Args:
-            index: which segment, from 0.
-            span: its first and last byte, inclusive.
-
-        Raises:
-            NetworkError: the server sent no range, or a short one (retryable).
-        """
-        start, end = span
-        try:
-            answer = await self.client._range(self.url, self.headers, f"bytes={start}-{end}")
-            sink = _Sink(self.held, start)
-            try:
-                if answer.status != 206:
-                    raise NetworkError(f"GET {_text.redact(self.url)}: no range {start}-{end}",
-                                       retryable=True)
-                async for chunk in answer.chunks:
-                    self.client._check(self.url)
-                    # The first segment's bytes are kept for a resume, so it alone runs on.
-                    if index and self.failed:
-                        return
-                    await sink.add(chunk)
-                    self.meter.add(len(chunk))
-            finally:
-                try:
-                    await sink.flush()
-                finally:
-                    self.written[index] = sink.written
-                    await answer.close()
-        except BaseException:
-            self.failed = True
-            raise
-        if self.written[index] != end - start + 1:
-            self.failed = True
-            raise NetworkError(f"GET {_text.redact(self.url)}: range {start}-{end} "
-                               f"ended at {self.written[index]} bytes", retryable=True)
-
-
 # ---------------------------------------------------------------------------------------------
 # A short link, and the fake
 # ---------------------------------------------------------------------------------------------
@@ -1836,7 +1685,7 @@ class _Router:
             method = "GET" if answer.status == 303 and request.method != "HEAD" else request.method
             request = Request(method, URL(urljoin(url, location)), request.headers,
                               None if method == "GET" else request.content)
-        raise NetworkError(f"{request.method} {_text.redact(str(request.url))}: too many "
+        raise NetworkError(f"{request.method} {redact(str(request.url))}: too many "
                            "redirects")
 
     async def _one(self, request: Request, url: str) -> Reply:
@@ -1854,7 +1703,7 @@ class _Router:
         """
         route = self.handler if self.handler is not None else self._route(url)
         if route is None:
-            raise NetworkError(f"{request.method} {_text.redact(url)}: no route in net.fake")
+            raise NetworkError(f"{request.method} {redact(url)}: no route in net.fake")
         try:
             while callable(route) and not isinstance(route, (Reply, Response)):
                 route = route(request)
@@ -1962,7 +1811,7 @@ def with_query(url: str, params: Mapping[str, Any] | Sequence[tuple[str, Any]] |
     try:
         parts = urlsplit(url)
     except ValueError as error:
-        raise NetworkError(f"{_text.redact(url)}: invalid URL: {error}") from None
+        raise NetworkError(f"{redact(url)}: invalid URL: {error}") from None
     if isinstance(params, Mapping):
         pairs = list(params.items())
         new_names = set(params)
@@ -2059,9 +1908,9 @@ def _host(url: str) -> str:
         parts = urlsplit(url)
         host = parts.hostname
     except ValueError as error:
-        raise NetworkError(f"{_text.redact(url)}: invalid URL: {error}") from None
+        raise NetworkError(f"{redact(url)}: invalid URL: {error}") from None
     if parts.scheme not in ("http", "https") or not host:
-        raise NetworkError(f"{_text.redact(url)}: not an http or https URL")
+        raise NetworkError(f"{redact(url)}: not an http or https URL")
     return host.lower()
 
 
@@ -2145,7 +1994,7 @@ def _checked(response: Response, method: str) -> Response:
         SiteError: any other 4xx, or a 5xx (retryable).
     """
     status = response.status
-    where = f"{method} {_text.redact(response.url)}"
+    where = f"{method} {redact(response.url)}"
     if status < 400:
         return response
     if status == 429:
@@ -2230,7 +2079,7 @@ def _network(request: Request, error: BaseException) -> NetworkError:
     retryable = code not in FINAL_CURL_CODES if isinstance(code, int) else True
     # curl_cffi appends a pointer to curl's error list, which says nothing about this failure.
     reason = str(error).split(" See https://curl.se/", 1)[0].strip() or type(error).__name__
-    message = f"{request.method} {_text.redact(str(request.url))}: {reason}"
+    message = f"{request.method} {redact(str(request.url))}: {reason}"
     return NetworkError(_scrub(_without_userinfo(message, str(request.url)), request),
                         retryable=retryable)
 

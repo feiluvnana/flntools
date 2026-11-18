@@ -156,11 +156,6 @@ class SourceRun:
         before its listing waits."""
         return max([MEDIA_MOST, *_limits(self.source, self.config).values()])
 
-    @property
-    def load(self) -> Mapping[str, net.Load]:
-        """Each media host's cap now, and its transfers in flight and waiting: a snapshot."""
-        return self.files.limits.load
-
     def gate(self) -> Any:
         """A place under the cap of the source's first domain, for a file the source fetches
         itself (a `fetch` function, such as Telegram's): `async with run.gate(): ...`."""
@@ -249,7 +244,6 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
         configured,
     )
     try:
-        # The run's live stats read the source's hosts and waits (`Limits.load`, `.pauses`).
         yield run
     finally:
         run.close()

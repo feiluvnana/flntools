@@ -23,19 +23,17 @@ class Phase(StrEnum):
     """Where a file stands in the run; only moves forward."""
 
     QUEUED = "queued"
-    HELD = "held"
     ACTIVE = "active"
     MERGING = "merging"
     UNPACKING = "unpacking"
     SAVED = "saved"
-    LINKED = "linked"
     SKIPPED = "skipped"
     FAILED = "failed"
     DROPPED = "dropped"
 
 
 TERMINAL = frozenset({
-    Phase.SAVED, Phase.LINKED, Phase.SKIPPED, Phase.FAILED, Phase.DROPPED,
+    Phase.SAVED, Phase.SKIPPED, Phase.FAILED, Phase.DROPPED,
 })
 
 _ORDER = {phase: index for index, phase in enumerate(Phase)}
@@ -93,7 +91,7 @@ class FileTrack:
             ValueError: the file already ended or can't start.
         """
         with self._lock:
-            if self.phase not in (Phase.QUEUED, Phase.HELD, Phase.ACTIVE):
+            if self.phase not in (Phase.QUEUED, Phase.ACTIVE):
                 raise ValueError(f"file in {self.phase!s} can't start")
             _forward(self.phase, Phase.ACTIVE)
             self.phase = Phase.ACTIVE

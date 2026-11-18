@@ -45,11 +45,9 @@ ROOT = Path(__file__).resolve().parent.parent
 # against, the library a script imports, and the kit a source is tested with.
 API_MODULES = ("flnd.source", "flnd", "flnd.testing")
 API_FILE = ROOT / "tests" / "data" / "api.txt"
-CORE_API_MODULES = ("flncore",)
-CORE_API_FILE = ROOT / "tests" / "data" / "flncore-api.txt"
 # Classes whose members are listed: the project's own. A base from the stdlib (MutableMapping,
 # NamedTuple, Exception) adds its own methods, which aren't this project's API.
-PROJECT_PACKAGES = ("flnd", "flncore")
+PROJECT_PACKAGES = ("flnd",)
 
 
 class ApiName(NamedTuple):
@@ -78,7 +76,6 @@ class ApiName(NamedTuple):
 def write_api() -> None:
     """Write `api_text()` to `tests/data/api.txt`, with Unix line ends on every OS, so the file never differs by OS."""
     API_FILE.write_text(api_text(), encoding="utf-8", newline="\n")
-    CORE_API_FILE.write_text(api_text(CORE_API_MODULES), encoding="utf-8", newline="\n")
 
 
 def api_text(modules: tuple[str, ...] = API_MODULES) -> str:

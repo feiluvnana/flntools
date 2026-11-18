@@ -67,17 +67,18 @@ import sys
 import tempfile
 import threading
 from collections import Counter, deque
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Union
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from flnd.errors import Changed, NetworkError, Stopped, ToolError, UsageError
 from flnd.kit import clock, net
+from flnd.kit.text import redact
 from flnd.ui import forms
-from flnd.ui.log import redact, ui
+from flnd.ui.log import ui
 
 NO_PROFILES = "FLND_TEST_NO_PROFILES"
 
@@ -1073,7 +1074,7 @@ class Page:
         method = method.upper()
         sent = dict(headers or {})
         if isinstance(body, Mapping) and method in net.QUERY_METHODS:
-            url, body = _with_query(url, body), None
+            url, body = net.with_query(url, body), None
         elif isinstance(body, (Mapping, list)):
             body = json.dumps(body).encode("utf-8")
             if not any(name.lower() == "content-type" for name in sent):
@@ -2196,14 +2197,6 @@ async def _local_storage(url: str, profile: str) -> dict[str, str] | None:
 # ---------------------------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------------------------
-
-def _with_query(url: str, params: Mapping[str, Any] | Sequence[tuple[str, Any]]) -> str:
-    parts = urlsplit(url)
-    pairs = parse_qsl(parts.query, keep_blank_values=True)
-    items = params.items() if isinstance(params, Mapping) else params
-    pairs.extend((str(key), str(value)) for key, value in items if value is not None)
-    return urlunsplit(parts._replace(query=urlencode(pairs)))
-
 
 def _without_values(text: str, headers: Mapping[str, str]) -> str:
     """`text` with every header value in `headers` replaced by `***`, hiding tokens."""

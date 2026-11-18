@@ -112,7 +112,7 @@ def fetch(url: str, *, retries: int = _net.RETRIES, stop: Any = None, limits: An
 
 
 def download(url: Any, dest: Any, *, retries: int = _net.RETRIES, stop: Any = None,
-             resume: bool = True, progress: Any = None, segments: bool = False,
+             resume: bool = True, progress: Any = None,
              headers: Mapping[str, str] | None = None) -> Any:
     """`Client.fill` into `dest`'s part on a loop of its own; returns where it landed."""
     from flnd.kit import files as _files
@@ -122,17 +122,15 @@ def download(url: Any, dest: Any, *, retries: int = _net.RETRIES, stop: Any = No
             await client.fill(url, held, resume=resume, progress=progress, headers=headers)
         return held.dest
 
-    return asyncio.run(_with_client(fill, retries=retries, stop=stop, segments=segments))
+    return asyncio.run(_with_client(fill, retries=retries, stop=stop))
 
 
 async def _with_client(call: Callable[[_net.Client], Any], *, retries: int, stop: Any,
-                       limits: Any = None, session: _net.Session | None = None,
-                       segments: bool = False) -> Any:
+                       limits: Any = None, session: _net.Session | None = None) -> Any:
     own = session is None
     session = session if session is not None else _net.Session()
     try:
-        client = _net.Client(session, retries=retries, stop=stop, limits=limits,
-                             segments=segments)
+        client = _net.Client(session, retries=retries, stop=stop, limits=limits)
         return await call(client)
     finally:
         if own:

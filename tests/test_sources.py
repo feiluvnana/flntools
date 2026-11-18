@@ -9,7 +9,6 @@ from pathlib import Path
 
 from fakes import FakeSite
 
-from flnd.engine.options import Options, selected
 from flnd.source import Source, Target, target
 from flnd.sources import SOURCES
 from flnd.sources.fbk import Facebook
@@ -83,15 +82,6 @@ class RegistryTest(unittest.TestCase):
             with self.subTest(source=source.code):
                 self.assertEqual((source.categories, source.single_kinds),
                                  (tuple(categories.split()), tuple(single.split())))
-
-    def test_without_from_every_category_is_taken(self):
-        for source in SOURCES.values():
-            with self.subTest(source=source.code):
-                self.assertEqual(selected(Options(), source), source.categories)
-                self.assertEqual(selected(Options(categories=("all",)), source), source.categories)
-        self.assertEqual(selected(Options(categories=("reels", "media")), Instagram), ("reels",))
-        # None of the names is this source's: nothing is selected.
-        self.assertEqual(selected(Options(categories=("media",)), Instagram), ())
 
 
 class GuardTest(unittest.TestCase):
