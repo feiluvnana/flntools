@@ -67,7 +67,7 @@ from urllib.parse import urlsplit
 
 import flnd.plugin
 from flnd.engine import jobs
-from flnd.errors import Blocked, LoginError, NetworkError
+from flnd.errors import Blocked, Changed, LoginError, NetworkError
 from flnd.plugin import Document, Landed, Plugin, Request, Response
 from flnd.source import (
     File,
@@ -106,8 +106,8 @@ EXAMPLE = re.compile(r"`([^`\s]+)`")
 class Seen:
     """What a plugin did through a `FakeCtx` (or a source through a `FakeSite`).
 
-    A `FakeCtx` fills `requests`, `visited`, `scrolls`, `logs` and `holds`; a `FakeSite` fills
-    the rest in place of the last two.
+    A `FakeCtx` fills `requests`, `visited`, `scrolls`, `logs` and `holds`, and `collect` its
+    `failed`; a `FakeSite` fills `messages`, `back_offs` and `warmed` instead.
 
     Example:
         >>> site = FakeSite(json={"https://api.example.com/me": {"id": 1}})
@@ -135,6 +135,8 @@ class Seen:
     logs: list[tuple[str, str]] = field(default_factory=list)
     # Each hold a `FakeCtx` took, as (reason, seconds, bucket): a block, a 429, a wall's wait.
     holds: list[tuple[str, float, str | None]] = field(default_factory=list)
+    # Each post `collect` gave up on, as (post id, error): its lazy files were gone or unreadable.
+    failed: list[tuple[str, Exception]] = field(default_factory=list)
 
 
 class FakeSite:
@@ -654,6 +656,9 @@ def _answer(answers: Mapping[str, Answer], url: str, request: dict[str, Any]) ->
 LEVELS = ("debug", "info", "warn")
 # Set while a plugin's `Login.start` runs, the one time `ctx.secrets` may be written.
 LOGGING_IN: ContextVar[bool] = ContextVar("flnd.testing.logging_in", default=False)
+# What a lazy post's files may raise that fails only that post, never its listing.
+LAZY_FAILURES: tuple[type[Exception], ...] = (
+    NotFound, Changed, *filter(None, [getattr(flnd.errors, "Hidden", None)]))
 # A `File.name`'s own extension, which it keeps: `.png` in `cover_12.png`, not `.2` in `v1.2`.
 EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,4}")
 T = TypeVar("T")
@@ -1639,7 +1644,12 @@ class _Listing:
             if clock.day(post.date) is None:
                 found = await self.plugin.date(self.ctx, post)
                 post = post.replace(date=found) if found is not None else post
-            files = tuple(await post.files()) if post.lazy else post.files
+            try:
+                files = tuple(await post.files()) if post.lazy else post.files
+            except LAZY_FAILURES as error:
+                # The post's own failure, as the engine records it: the listing goes on.
+                self.ctx.seen.failed.append((post.id, error))
+                return
         stray = next((file for file in files if not isinstance(file, flnd.plugin.File)), None)
         if stray is not None:
             raise SourceError(f"{self.plugin.code}: post {post.id}'s files hold {stray!r}; "

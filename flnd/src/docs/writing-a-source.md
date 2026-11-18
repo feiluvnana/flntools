@@ -252,7 +252,8 @@ pass at once. Every hold is recorded in `ctx.seen.holds`.
 template names. A pinned post (`Post(..., pinned=True)`) is outside the date order, so the
 check skips it. A `File.name` with its own extension keeps it, and a stem takes its extension
 from the content type (the `Content-Type` of the file URL's route, when it has one), then from
-the URL's extension, then none.
+the URL's extension, then none. When a lazy post's files raise `NotFound` or `Changed`, that
+post fails alone: `collect` records it in `ctx.seen.failed` and goes on with the listing.
 
 ```python
 from flnd import plugin    # API 2's names, kept apart from this page's API-1 ones

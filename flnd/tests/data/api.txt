@@ -462,8 +462,9 @@ flnd.testing.Reply.body: field -> Any
 flnd.testing.Reply.headers: field -> Mapping[str, str] | None
 flnd.testing.Reply.status: field -> int
 flnd.testing.Reply.url: field -> str
-flnd.testing.Seen(requests: list[tuple[str, str, dict[str, Any]]] = <factory>, visited: list[str] = <factory>, scrolls: int = 0, messages: list[str] = <factory>, back_offs: list[str] = <factory>, warmed: list[str] = <factory>, logs: list[tuple[str, str]] = <factory>, holds: list[tuple[str, float, str | None]] = <factory>)
+flnd.testing.Seen(requests: list[tuple[str, str, dict[str, Any]]] = <factory>, visited: list[str] = <factory>, scrolls: int = 0, messages: list[str] = <factory>, back_offs: list[str] = <factory>, warmed: list[str] = <factory>, logs: list[tuple[str, str]] = <factory>, holds: list[tuple[str, float, str | None]] = <factory>, failed: list[tuple[str, Exception]] = <factory>)
 flnd.testing.Seen.back_offs: field -> list[str]
+flnd.testing.Seen.failed: field -> list[tuple[str, Exception]]
 flnd.testing.Seen.holds: field -> list[tuple[str, float, str | None]]
 flnd.testing.Seen.logs: field -> list[tuple[str, str]]
 flnd.testing.Seen.messages: field -> list[str]

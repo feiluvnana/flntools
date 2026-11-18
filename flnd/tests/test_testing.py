@@ -442,6 +442,28 @@ class PluginCollectTest(unittest.TestCase):
         self.assertEqual([found.url for found in saved], ["https://cdn.example.com/l1.jpg"])
         self.assertEqual(ctx.seen.visited, [f"{PAGE}/liked", "https://www.example.com/p/l1"])
 
+    def test_a_lazy_posts_gone_files_fail_only_that_post(self):
+        listed = []
+
+        async def gone():
+            raise NotFound("HTTP 404 for https://www.example.com/p/p2")
+
+        async def posts(plugin, ctx, profile):
+            for post in (v2.Post("p2", gone, album=None),
+                         v2.Post("p1", [v2.File("https://cdn.example.com/p1.jpg")], album=None)):
+                listed.append(post.id)
+                yield post
+
+        ctx = self.ctx()
+        original, Gallery.posts = Gallery.posts, posts
+        try:
+            saved = collect(Gallery, "gal:example_user", ctx=ctx)
+        finally:
+            Gallery.posts = original
+        self.assertEqual((listed, [found.post.id for found in saved]), (["p2", "p1"], ["p1"]))
+        self.assertEqual([(post, type(error)) for post, error in ctx.seen.failed],
+                         [("p2", NotFound)])
+
     def test_a_pinned_post_is_saved_out_of_order_and_never_ends_the_listing(self):
         def post(day, **more):
             return {"id": f"p{day}", "time": f"2026-01-{day:02d}", "album": None, **more}
