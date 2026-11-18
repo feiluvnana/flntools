@@ -1,4 +1,4 @@
-"""`flnkit.html`: `parse`, CSS queries, text and attributes, embedded JSON, the size limit, `dig`."""
+"""`flnkit.html`: `parse`, CSS queries, text and attributes, embedded JSON, size limit, `dig`."""
 
 import unittest
 from unittest import mock

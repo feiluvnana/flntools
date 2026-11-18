@@ -260,6 +260,19 @@ class WalkSweepTest(FsCase):
         self.assertEqual(self.names(), ["new.jpg.part", "new.jpg.part.json", "real.mp4",
                                         "young.jpg.part.json"])
 
+    def test_sweep_keeps_a_six_day_part_and_a_young_orphan_sidecar(self):
+        now = 1_000_000.0
+        ages = {"new.jpg.part": 518_400, "new.jpg.part.json": 518_400,  # six days: kept
+                "young.jpg.part.json": 3_000}                          # orphan, 50 min: kept
+        for name, seconds in ages.items():
+            (self.folder / name).write_text("x")
+            os.utime(self.folder / name, (now - seconds, now - seconds))
+        fake = _time.Fake()
+        fake.advance(now - fake.wall)
+        with _time.use(fake):
+            self.assertEqual(_files.sweep(self.folder), 0)
+        self.assertEqual(self.names(), sorted(ages))
+
     def test_sweep_skips_a_held_part_and_a_missing_folder(self):
         with self.part(self.folder / "a") as held:
             held.write(b"x")

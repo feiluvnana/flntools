@@ -204,13 +204,14 @@ class SafetyTest(ArchiveCase):
         self.assert_nothing_extracted(archive)
 
     def test_traversal_reserved_names_and_links_are_refused(self) -> None:
-        for name in ("../evil", "a/../../evil", "/abs/evil", "C:/evil", "..\\evil",
+        for name in ("../evil", "a/../../evil", "sub/../evil", "/abs/evil", "C:/evil", "..\\evil",
                      "CON/data.txt"):
             with self.subTest(name=name):
                 self.assert_refused(self.zip_with({"ok.txt": b"ok", name: b"x"}))
         with self.assertRaisesRegex(SiteError, "unsafe archive path"):
             _unpack.extract(self.zip_with({"CON/data.txt": b"x"}))
         self.assert_refused(self.tar_with({"a.txt": b"a"}, symlink=True))
+        self.assert_refused(self.tar_with({"a.txt": b""}, symlink=True, name="made2.tar"))
 
     def test_bombs_are_refused_before_anything_is_written(self) -> None:
         archive = self.zip_with({"a.txt": b"aaaa", "b.txt": b"bbbb"})

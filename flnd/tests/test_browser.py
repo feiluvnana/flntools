@@ -181,7 +181,8 @@ def starts(playwright):
 
 
 class ProfileCopyTest(BrowserCase):
-    """`launch(profile=<name>)`: the copy, which holds the logins, never stays in the temp folder."""
+    """`launch(profile=<name>)`: the copy, which holds the logins, never stays in the
+    temp folder."""
 
     def setUp(self):
         super().setUp()
