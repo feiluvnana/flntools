@@ -155,6 +155,7 @@ relative to the project folder; `src/engine/jobs.py` is the module `flnd.engine.
 ```text
 flnd/                the project folder
   pyproject.toml     setuptools maps src/ to the package flnd, and ships flnkit/
+  setup.py           only moves setuptools' egg-info into build/
   Makefile  PLAN.md  AGENTS.md  README.md
   src/               the package flnd
     __init__.py      public names, each loaded on first use
@@ -213,7 +214,10 @@ subpackage; a test in `tests/test_packaging.py` compares it with the folders tha
 both editable; `python -c "import flnd, flnkit"` run from outside the project folder must
 work, which the same file checks with a subprocess. `make dist` stages a copy of both
 packages in `build/stage/` and runs PyInstaller on it. The distribution is still named
-`flntools`.
+`flntools`. A ten-line `setup.py` writes setuptools' egg-info to `build/`, so no build leaves
+a `flntools.egg-info/` in the project folder: pyproject's `[tool.distutils.egg_info] egg-base`
+needs the folder to exist already, and hatchling, scikit-build-core, pdm-backend and flit
+can't map `src/` to `flnd`.
 
 ### 4.2 Where every module of today goes
 
