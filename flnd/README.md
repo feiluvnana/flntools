@@ -123,8 +123,9 @@ A sync is smart about what it has:
   `flnd status` shows each failure with its message, how many runs failed it and what to do.
 - **Logins:** a login that is missing or expired stops that site only, with the command that
   fixes it. A site whose login is optional downloads what's public, and says so.
-- **Mistakes** you can fix (usage, login, disk, a tool) print `error: …` and what to do, never a
-  traceback. A bug writes its traceback to `<home>/log/crash-<time>.txt` (`-v` prints it).
+- **Mistakes** you can fix (usage, login, disk, a tool) print `✗ …`, then `hint  …` with what
+  to do, never a traceback. A bug prints `✗ flnd hit a bug: …`, and writes its traceback to
+  `<home>/log/crash-<time>.txt`, which its hint names (`-v` prints it).
 - **Ctrl-C** works in three stages:
   1. the first stops listing and lets the files in progress finish;
   2. the second stops at once. Unfinished files stay as `<name>.part` and resume on the next

@@ -8,13 +8,13 @@
 Who calls it: `flnd` (the console script) and `python -m flnd`, through `main`. What it calls:
 the library alone (`flnd.open`, its `Run` and events), so anything the command line does, a
 script can do too; `flnd.sources._manifest` for the built-in sources `--help` lists;
-and the library modules `flnd.ui.forms` (`flnd login`'s questions) and `flnd.ui.log` (the level of
-flnd's own log lines and progress bars).
+`flnd.ui.out` for every line it prints; `flnd.ui.forms` (`flnd login`'s questions) and
+`flnd.ui.log` (the level of flnd's own log lines and progress bars).
 
 How a command runs (`main`):
-1. argparse reads the flags. A mistake prints the usage and exits 2; `--help` prints the help
-   made from each command's docstring, with the target forms and categories of every source,
-   rendered with Charm Huh / Cyclopts panels.
+1. argparse reads the flags. A mistake prints an error and exits 2; `--help` prints the help
+   made from each command's docstring, drawn in the theme by `flnd.ui.out.help`: `flnd -h`
+   fits in 24 lines, and `flnd download -h` and `flnd follow -h` add a row per source.
 2. The command function opens the home (`--home`, else `$FLND_HOME`, else `./.flnd`) and makes
    one library call with the flags.
 3. A run's own display is the summary table the library draws on a terminal: one row per
@@ -80,6 +80,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns:
         The exit code: the command's own exit code, or the exit code mapped from an error.
     """
+    from flnd.ui import out
+
+    try:
+        return _main(argv)
+    finally:
+        out.close()
+
+
+def _main(argv: Sequence[str] | None) -> int:
+    from flnd.ui import out
+
     try:
         args = parser().parse_args(argv)
     except SystemExit as stop:
@@ -93,9 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return args.command(args)
     except KeyboardInterrupt:
         # `flnd.Stopped` is one: Ctrl-C during a run, which the run already stopped cleanly.
-        from rich.text import Text
-
-        _console(sys.stderr).print(Text("stopped", style="yellow"))
+        out.line(("stopped", "warn"), err=True)
         return STOPPED
     except Exception as error:
         import flnd
@@ -147,34 +156,6 @@ def _settle(args: argparse.Namespace) -> None:
         args.command = None
 
 
-def _console(file: Any = None) -> Any:
-    """Return a Rich Console targeting `file` (default sys.stdout) with CLI theme.
-
-    Args:
-        file: text stream to write to; defaults to sys.stdout.
-
-    Returns:
-        A configured Rich Console instance.
-    """
-    from rich.console import Console
-    from rich.theme import Theme
-
-    from flnd.ui.log import PALETTE
-
-    class _Console(Console):
-        def print(self, *args: Any, **kwargs: Any) -> None:
-            super().print(*args, **kwargs)
-            if hasattr(self.file, "flush"):
-                self.file.flush()
-
-    return _Console(
-        file=file or sys.stdout,
-        theme=Theme(PALETTE),
-        highlight=False,
-        soft_wrap=True,
-    )
-
-
 def _report(error: Any, *, as_json: bool = False) -> None:
     """Print an error a person can act on: its message, then its hint; never a traceback.
 
@@ -182,22 +163,18 @@ def _report(error: Any, *, as_json: bool = False) -> None:
         error: the `flnd.Error` that ended the command.
         as_json: also print it on standard output as `{"type": "Error", ...}`, for `--json`.
     """
+    from flnd.ui import out
+
     if as_json:
         from flnd.engine.events import encode
 
-        sys.stdout.write('{"type":"Error","error":' + encode(error).decode() + "}\n")
-        sys.stdout.flush()
-    from rich.text import Text
-
-    c = _console(sys.stderr)
-    c.print(Text.assemble(("error: ", "bold #ED567A"), (str(error), "#ED567A")))
-    if error.hint:
-        c.print(Text.assemble(("  ", ""), (str(error.hint), "color(243)")))
+        out.plain('{"type":"Error","error":' + encode(error).decode() + "}")
+    out.error(error)
 
 
 def _crashed(error: Exception, args: argparse.Namespace) -> int:
-    """Report a bug: one line naming a crash file that holds the traceback, or with `-v` the
-    traceback itself.
+    """Report a bug: "flnd hit a bug" and its one line, then the crash file that holds the
+    traceback; with `-v`, the traceback itself.
 
     The crash file is `<home>/log/crash-<time>.txt`. When it can't be written (a read-only
     disk), the traceback prints instead, so it is never lost.
@@ -213,15 +190,15 @@ def _crashed(error: Exception, args: argparse.Namespace) -> int:
     import traceback
     from pathlib import Path
 
-    from rich.text import Text
-
+    import flnd
     from flnd.engine.home import LOGS
+    from flnd.ui import out
 
     trace = "".join(traceback.format_exception(error))
-    line = f"unexpected {type(error).__name__}: {error}"
+    first = (str(error).strip().splitlines() or [""])[0]
+    line = f"flnd hit a bug: {type(error).__name__}" + (f": {first}" if first else "")
     home = Path(args.home or os.environ.get("FLND_HOME") or ".flnd").expanduser()
     path = home / LOGS / f"crash-{datetime.datetime.now():%Y%m%d-%H%M%S}.txt"
-    c = _console(sys.stderr)
     if not args.verbose:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,13 +206,10 @@ def _crashed(error: Exception, args: argparse.Namespace) -> int:
         except OSError:
             pass
         else:
-            c.print(Text.assemble(
-                ("error: ", "bold #ED567A"),
-                (f"{line}; the details are in {path}", "#ED567A"),
-            ))
+            out.error(flnd.Error(line, hint=f"details in {path}"))
             return BROKE
-    sys.stderr.write(trace)
-    c.print(Text.assemble(("error: ", "bold #ED567A"), (line, "#ED567A")))
+    out.plain(trace, err=True)
+    out.error(flnd.Error(line))
     return BROKE
 
 
@@ -340,9 +314,9 @@ def ls(args: argparse.Namespace) -> int:
             _json(row)
         return OK
     if not rows:
-        from rich.text import Text
+        from flnd.ui import out
 
-        _console().print(Text("no targets yet", style="color(243)"))
+        out.line(("no targets yet", "dim"))
         return OK
     table = []
     for row in rows:
@@ -369,45 +343,31 @@ def status(args: argparse.Namespace) -> int:
         0.
     """
     from flnd.engine.events import encode
+    from flnd.ui import out
 
     with _open(args) as fl:
         found = fl.status
     if args.json:
         body = encode(found).decode() if found is not None else "{}"
-        sys.stdout.write('{"type":"Status"' + ("," + body[1:] if body != "{}" else "}") + "\n")
+        out.plain('{"type":"Status"' + ("," + body[1:] if body != "{}" else "}"))
         return OK
     if found is None:
-        from rich.text import Text
-
-        _console().print(Text("no run yet", style="color(243)"))
+        out.line(("no run yet", "dim"))
         return OK
-    from rich.text import Text
-
     ended = f", ended {found.ended[11:19]}" if found.ended else ", never ended"
-    hdr = Text()
-    hdr.append("last run: ", style="bold #7D84D6")
-    hdr.append(found.command, style="bold")
-    hdr.append(f", {found.started[:10]} {found.started[11:19]}{ended}: ", style="color(245)")
-    hdr.append(f"{found.saved} saved", style="bold #02BF87")
-    hdr.append(", ", style="color(243)")
-    fail_style = "bold #ED567A" if found.failures else "color(243)"
-    hdr.append(f"{len(found.failures)} failed", style=fail_style)
-    _console().print(hdr)
+    out.line(("last run: ", "bold focus"), (found.command, "bold"),
+             (f", {found.started[:10]} {found.started[11:19]}{ended}: ", "dim"),
+             (f"{found.saved} saved", "bold good"), (", ", "dim"),
+             (f"{len(found.failures)} failed", "bold bad" if found.failures else "dim"))
     for failure in found.failures:
         where = f"{failure.target} {failure.post}" if failure.post else str(failure.target)
         runs = f", {failure.attempts} runs" if failure.attempts > 1 else ""
-        fail_line = Text()
-        fail_line.append("  ")
-        fail_line.append(where, style="bold #7D84D6")
-        fail_line.append(f" ({_word(failure.error)}{runs})", style="color(243)")
-        fail_line.append(": ", style="color(243)")
-        fail_line.append(str(failure.error), style="#ED567A")
-        _console().print(fail_line)
+        out.line("  ", (where, "bold focus"), (f" ({_word(failure.error)}{runs}): ", "dim"),
+                 (str(failure.error), "bad"))
         if failure.error.hint:
-            _console().print(Text.assemble(("    ", ""), (str(failure.error.hint), "color(243)")))
+            out.line("    ", (str(failure.error.hint), "dim"))
     if found.failures:
-        _console().print(_summary([(failure.error, bool(failure.post))
-                                   for failure in found.failures]))
+        _summary([(failure.error, bool(failure.post)) for failure in found.failures])
     return OK
 
 
@@ -442,33 +402,21 @@ def check(args: argparse.Namespace) -> int:
         0 when history and disk agree (or --fix made them), else 1.
     """
     from flnd.kit import text
+    from flnd.ui import out
 
     with _open(args) as fl:
         found = fl.check(fix=args.fix)
     if args.json:
         from flnd.engine.events import encode
 
-        sys.stdout.write('{"type":"Checked",' + encode(found).decode()[1:] + "\n")
-        sys.stdout.flush()
+        out.plain('{"type":"Checked",' + encode(found).decode()[1:])
         return OK if found.ok else FAILED
-    from rich.text import Text
-
-    c = _console()
     for record in found.missing:
-        c.print(Text.assemble(
-            ("missing     ", "bold #ED567A"),
-            (_shown(record.path), "#ED567A"),
-        ))
+        out.line(("missing     ", "bold bad"), (_shown(record.path), "bad"))
     for path in found.unknown:
-        c.print(Text.assemble(
-            ("unknown     ", "bold yellow"),
-            (_shown(path), "yellow"),
-        ))
+        out.line(("unknown     ", "bold warn"), (_shown(path), "warn"))
     for record in found.resized:
-        c.print(Text.assemble(
-            ("wrong size  ", "bold yellow"),
-            (_shown(record.path), "yellow"),
-        ))
+        out.line(("wrong size  ", "bold warn"), (_shown(record.path), "warn"))
     problems = [f"{len(found.missing)} missing"] if found.missing else []
     if found.unknown:
         problems.append(f"{len(found.unknown)} unknown")
@@ -476,19 +424,13 @@ def check(args: argparse.Namespace) -> int:
         problems.append(f"{len(found.resized)} of the wrong size")
     line = f"checked {text.count(found.files, 'file')}: "
     if not problems:
-        c.print(Text.assemble((line, "color(245)"), ("history and disk agree", "bold #02BF87")))
+        out.line((line, "dim"), ("history and disk agree", "bold good"))
     elif found.fixed:
-        c.print(Text.assemble(
-            (line, "color(245)"),
-            (", ".join(problems), "bold #ED567A"),
-            ("; the history now matches the disk", "color(243)"),
-        ))
+        out.line((line, "dim"), (", ".join(problems), "bold bad"),
+                 ("; the history now matches the disk", "dim"))
     else:
-        _console(sys.stderr).print(Text.assemble(
-            (line, "color(245)"),
-            (", ".join(problems), "bold #ED567A"),
-            ("; flnd check --fix makes the history match", "color(243)"),
-        ))
+        out.line((line, "dim"), (", ".join(problems), "bold bad"),
+                 ("; flnd check --fix makes the history match", "dim"), err=True)
     return OK if found.ok else FAILED
 
 
@@ -551,168 +493,79 @@ def sources(args: argparse.Namespace) -> int:
         0.
     """
     from flnd.engine.events import encode
+    from flnd.ui import out, theme
 
     with _open(args) as fl:
         found = fl.sources
     for row in found:
         if args.json:
-            sys.stdout.write('{"type":"Source",' + encode(row).decode()[1:] + "\n")
+            out.plain('{"type":"Source",' + encode(row).decode()[1:])
             continue
-        from rich.text import Text
-
-        c = _console()
         version = f" {row.version}" if row.version else ""
-        hdr = Text()
-        hdr.append(row.code, style="bold #02BF87")
-        hdr.append("  ")
-        hdr.append(row.name, style="bold")
-        hdr.append("  ")
-        hdr.append(f"({row.origin}{version})", style="color(243)")
-        c.print(hdr)
+        out.line((row.code, "bold good"), "  ", (row.name, "bold"), "  ",
+                 (f"({row.origin}{version})", "dim"))
         if row.disabled:
-            c.print(Text.assemble(
-                ("  disabled:   ", "bold #ED567A"),
-                (str(row.disabled), "#ED567A"),
-            ))
+            out.line(("  disabled:   ", "bold bad"), (str(row.disabled), "bad"))
             continue
         if row.origin != "built-in":
-            c.print(Text.assemble(
-                ("  from:       ", "bold #7D84D6"),
-                (str(row.where), "color(243)"),
-            ))
-        more = ", …" if len(row.forms) > 3 else ""
+            out.line(("  from:       ", "bold focus"), (str(row.where), "dim"))
+        more = f", {theme.glyph('more', theme.unicode(sys.stdout))}" if len(row.forms) > 3 else ""
         ways = f" ({', '.join(row.logins)})" if row.logins else ""
-        c.print(Text.assemble(
-            ("  targets:    ", "bold #7D84D6"),
-            (f"{', '.join(row.forms[:3])}{more}", "color(252)"),
-        ))
-        c.print(Text.assemble(
-            ("  categories: ", "bold #7D84D6"),
-            (", ".join(row.categories), "color(252)"),
-        ))
-        login_style = "bold #02BF87" if row.login == "logged in" else "color(243)"
-        c.print(Text.assemble(
-            ("  login:      ", "bold #7D84D6"),
-            (row.login, login_style),
-            (ways, "color(243)"),
-        ))
+        out.line(("  targets:    ", "bold focus"), f"{', '.join(row.forms[:3])}{more}")
+        out.line(("  categories: ", "bold focus"), ", ".join(row.categories))
+        out.line(("  login:      ", "bold focus"),
+                 (row.login, "bold good" if row.login == "logged in" else "dim"), (ways, "dim"))
     return OK
-
-
-# ---------------------------------------------------------------------------------------------
-# Rich Help Formatter
-# ---------------------------------------------------------------------------------------------
-
-class RichArgumentParser(argparse.ArgumentParser):
-    """ArgumentParser that renders help using Charm / Cyclopts theme in Rich panels."""
-
-    def print_help(self, file: Any = None) -> None:
-        """Render help in Rich panels using the CLI_PALETTE theme.
-
-        Args:
-            file: where to write the help output; None writes to sys.stdout.
-        """
-        dest = file if file is not None else sys.stdout
-        is_term = getattr(dest, "isatty", lambda: False)()
-        if not is_term and dest is not sys.stdout:
-            super().print_help(file=dest)
-            return
-
-        from rich import box
-        from rich.console import Console
-        from rich.panel import Panel
-        from rich.table import Table
-        from rich.text import Text
-
-        console = Console(file=dest, highlight=False, soft_wrap=True)
-        border_color = "#7D84D6"
-        name_color = "#02BF87"
-        usage_style = "#7D84D6 bold"
-
-        subparsers_action = None
-        positionals = []
-        options = []
-        global_flags = []
-
-        for action in self._actions:
-            if isinstance(action, argparse._SubParsersAction):
-                subparsers_action = action
-            elif any(opt in ("--home", "-v", "--verbose", "--json")
-                     for opt in action.option_strings):
-                global_flags.append(action)
-            elif action.option_strings:
-                if action.dest not in ("help", "version"):
-                    options.append(action)
-            elif action.dest not in ("help", "version"):
-                positionals.append(action)
-
-        is_root = subparsers_action is not None
-        if is_root:
-            console.print(Text.assemble(
-                ("Usage: ", usage_style), (self.prog + " COMMAND", "bold"),
-            ))
-        else:
-            prog_name = self.prog
-            pos_names = " ".join(f"[{a.metavar or a.dest}]" for a in positionals)
-            usage_str = f"{prog_name} [OPTIONS] {pos_names}".strip()
-            console.print(Text.assemble(("Usage: ", usage_style), (usage_str, "bold")))
-
-        if self.description:
-            console.print(f"\n{self.description}\n")
-
-        if subparsers_action is not None:
-            table = Table.grid(padding=(0, 4))
-            table.add_column(style=f"bold {name_color}")
-            table.add_column()
-            for name, choice in subparsers_action.choices.items():
-                desc = (choice.description or "").split("\n\n")[0].strip()
-                summary = desc.split("\n")[0].strip()
-                table.add_row(name, summary)
-            table.add_row("--help (-h)", "Display this message and exit.")
-            table.add_row("--version (-V)", "Display application version.")
-            console.print(Panel(table, title="Commands", title_align="left",
-                                border_style=border_color, box=box.SQUARE))
-
-        if not is_root and (positionals or options):
-            table = Table.grid(padding=(0, 4))
-            table.add_column(style=f"bold {name_color}")
-            table.add_column()
-            for action in positionals:
-                metavar = action.metavar or action.dest.upper()
-                table.add_row(metavar, action.help or "")
-            for action in options:
-                opts = ", ".join(action.option_strings)
-                if action.metavar:
-                    opts += f" {action.metavar}"
-                table.add_row(opts, action.help or "")
-            table.add_row("--help (-h)", "Display this message and exit.")
-            console.print(Panel(table, title="Parameters", title_align="left",
-                                border_style=border_color, box=box.SQUARE))
-
-        if global_flags:
-            table = Table.grid(padding=(0, 4))
-            table.add_column(style=f"bold {name_color}")
-            table.add_column()
-            for action in global_flags:
-                opts = ", ".join(action.option_strings)
-                if action.metavar:
-                    opts += f" {action.metavar}"
-                table.add_row(opts, action.help or "")
-            console.print(Panel(table, title="Global Flags", title_align="left",
-                                border_style=border_color, box=box.SQUARE))
-
-        if self.epilog:
-            console.print(f"\n{self.epilog}")
 
 
 # ---------------------------------------------------------------------------------------------
 # The parser
 # ---------------------------------------------------------------------------------------------
 
+class _Parser(argparse.ArgumentParser):
+    """argparse, with its help and its errors printed by `flnd.ui.out`.
+
+    `tail` holds the rows the help ends with: the sources, for a command that takes targets.
+    """
+
+    tail: Sequence[tuple[str, Sequence[Any]]] = ()
+
+    def print_help(self, file: Any = None) -> None:
+        """Print the help in the theme; `file` is ignored, as the help goes to standard output."""
+        from flnd.ui import out
+
+        out.help(self, tail=self.tail)
+
+    def error(self, message: str) -> Any:
+        """A mistake in the flags: print it as any usage error is, with the help to read, and
+        exit 2."""
+        import flnd
+        from flnd.ui import out
+
+        out.error(flnd.UsageError(f"{self.prog}: {message}",
+                                  hint=f"{self.prog} -h lists what it takes"))
+        self.exit(USAGE)
+
+
+class _Version(argparse.Action):
+    """`-V`: print flnd's version on standard output, and exit 0."""
+
+    def __init__(self, option_strings: Sequence[str], version: str, dest: str = "version",
+                 help: str = "print flnd's version") -> None:
+        super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, help=help)
+        self.version = version
+
+    def __call__(self, parser: argparse.ArgumentParser, *args: Any) -> None:
+        from flnd.ui import out
+
+        out.plain(self.version)
+        parser.exit()
+
+
 def parser() -> argparse.ArgumentParser:
     """The whole command line: the global flags, then one sub-parser per command.
 
-    Each command's help is its function's docstring: the first line in the list of commands,
+    Each command's help is its function's docstring: its first clause in the list of commands,
     the paragraphs before `Args:` on its own `--help`.
 
     Returns:
@@ -720,18 +573,16 @@ def parser() -> argparse.ArgumentParser:
     """
     import flnd
 
-    top = RichArgumentParser(
-        prog="flnd", description=_about(), epilog=_epilog(),
-        formatter_class=argparse.RawDescriptionHelpFormatter, parents=[_globals()],
-    )
-    top.add_argument("-V", "--version", action="version", version=f"flnd {flnd.__version__}")
+    top = _Parser(prog="flnd", description="download whole accounts from the web",
+                  parents=[_globals()])
+    top.add_argument("-V", "--version", action=_Version, version=f"flnd {flnd.__version__}")
+    top.tail = [("sources", [" ".join(_sources())]),
+                ("", [("their targets: flnd download -h", "dim")])]
     verbs = top.add_subparsers(title="commands", metavar="<command>")
 
-    def command(function: Callable[[argparse.Namespace], int]) -> argparse.ArgumentParser:
-        summary, _, body = _help(function).partition("\n")
-        sub = verbs.add_parser(function.__name__, help=summary, description=_help(function),
-                               formatter_class=argparse.RawDescriptionHelpFormatter,
-                               parents=[_globals()])
+    def command(function: Callable[[argparse.Namespace], int]) -> _Parser:
+        sub = verbs.add_parser(function.__name__, help=_short(_help(function)),
+                               description=_help(function), parents=[_globals()])
         sub.set_defaults(command=function)
         return sub
 
@@ -746,6 +597,7 @@ def parser() -> argparse.ArgumentParser:
                      help="list what would be downloaded, and download and write nothing")
     _again(sub)
     _exec(sub)
+    sub.tail = _forms()
 
     sub = command(follow)
     sub.add_argument("targets", nargs="*", metavar="target",
@@ -753,6 +605,7 @@ def parser() -> argparse.ArgumentParser:
     _only(sub)
     _when(sub)
     _again(sub)
+    sub.tail = _forms()
 
     sub = command(sync)
     sub.add_argument("targets", nargs="*", metavar="target",
@@ -792,7 +645,7 @@ def _globals() -> argparse.ArgumentParser:
     Returns:
         A parser to use as a parent; it adds no `--help` of its own.
     """
-    shared = RichArgumentParser(add_help=False)
+    shared = _Parser(add_help=False)
     group = shared.add_argument_group("global flags")
     group.add_argument("--home", metavar="DIR", default=argparse.SUPPRESS,
                        help="where downloads, history and logins live "
@@ -827,8 +680,6 @@ def _again(sub: argparse.ArgumentParser) -> None:
                           "gone (404 or 410)")
 
 
-
-
 def _exec(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--exec", metavar="CMD",
                      help="run CMD for each saved file, without a shell; {path}, {target} and "
@@ -843,37 +694,38 @@ def _help(function: Callable[..., Any]) -> str:
     return text.split("\n\nArgs:")[0].strip()
 
 
-def _about() -> str:
-    """The first line of `flnd --help`, naming every built-in source."""
+def _short(text: str) -> str:
+    """A command's row in `flnd -h`: its help up to the first comma, colon or full stop."""
+    import re
+
+    return re.split(r"[,:.](?:\s|$)", text, maxsplit=1)[0]
+
+
+def _sources() -> list[str]:
+    """The code of every built-in source, read from the manifest, so no source is imported."""
     from flnd.sources import _manifest
 
-    names = [str(entry["name"]) for entry in _manifest.SOURCES.values()]
-    return f"Download media from {', '.join(names[:-1])} and {names[-1]}."
+    return list(_manifest.SOURCES)
 
 
-def _epilog() -> str:
-    """The end of `flnd --help`: every target form and category of every source.
-
-    It is read from the manifest, so no source is imported.
+def _forms() -> list[tuple[str, list[Any]]]:
+    """A row per built-in source for a command's help: the targets it reads, its categories.
 
     Returns:
-        The text, one form per line.
+        The rows: the source's code, then its forms and categories as styled parts.
     """
     from flnd.sources import _manifest
 
-    lines = ["targets: <source>:<name, id or link>, <source>?<words> for a search, or a link",
-             ""]
+    rows: list[tuple[str, list[Any]]] = [("sources", [("the targets each reads, then its "
+                                                      "categories", "dim")])]
     for code, entry in _manifest.SOURCES.items():
-        lines.append(f"  {code} ({entry['name']})")
-        lines.extend(f"    {form}" for form in entry["forms"])  # type: ignore[attr-defined]
-        lines.append(f"    --only: {', '.join(entry['categories'])}")  # type: ignore[arg-type]
-    lines += ["", "examples:",
-              "  flnd download ins:example_user --only reels --when 2026",
-              "  flnd follow https://www.tiktok.com/@example_user",
-              "  flnd sync",
-              "  flnd login ins chrome",
-              "", "Run `flnd <command> --help` for a command's flags."]
-    return "\n".join(lines)
+        forms: Any = entry["forms"]
+        domains: Any = entry["domains"]
+        categories: Any = entry["categories"]
+        own = [form for form in forms if not form.startswith("http")]
+        rows.append((code, [", ".join([*own, f"a link on {', '.join(domains)}"]),
+                            ("\n--only ", "dim"), " ".join(categories)]))
+    return rows
 
 
 # ---------------------------------------------------------------------------------------------
@@ -999,83 +851,64 @@ def _line(args: argparse.Namespace, value: Any, text: str) -> None:
         value: the result object for JSON encoding.
         text: plain text representation to show.
     """
+    from flnd.ui import out
+
     if args.json:
         _json(value)
         return
-    if ": " in text:
-        head, colon, tail = text.partition(": ")
-        from rich.text import Text
-
-        line = Text()
-        line.append(head, style="bold #7D84D6")
-        line.append(colon, style="color(243)")
-        if tail.startswith("logged in"):
-            login_part, _, origin_part = tail.partition(" (")
-            line.append(login_part, style="bold #02BF87")
-            if origin_part:
-                line.append(" (" + origin_part, style="color(243)")
-        elif tail in ("logged out", "unfollowed"):
-            line.append(tail, style="bold #02BF87")
-        else:
-            line.append(tail, style="color(252)")
-        _console().print(line)
+    head, colon, tail = text.partition(": ")
+    if not colon:
+        out.line(text)
+        return
+    parts: list[Any] = [(head, "bold focus"), (colon, "dim")]
+    if tail.startswith("logged in"):
+        login_part, paren, origin_part = tail.partition(" (")
+        parts += [(login_part, "bold good"), (paren + origin_part, "dim")]
+    elif tail in ("logged out", "unfollowed"):
+        parts.append((tail, "bold good"))
     else:
-        _console().print(text)
+        parts.append(tail)
+    out.line(*parts)
 
 
-def _json(value: Any, *, stream: Any = None) -> None:
-    """Print one value (an event, a row, or a plain dict) as one line of JSON.
+def _json(value: Any) -> None:
+    """Print one value (an event, a row, or a plain dict) as one line of JSON on standard output.
 
     Args:
         value: an event, record, or dict to encode.
-        stream: destination stream; defaults to sys.stdout.
     """
     from flnd.engine.events import encode
+    from flnd.ui import out
 
-    out = stream if stream is not None else sys.stdout
-    out.write(encode(value).decode() + "\n")
-    if hasattr(out, "flush"):
-        out.flush()
+    out.plain(encode(value).decode())
 
 
 def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
-    """Print rows as a styled Rich table on a terminal, or plain columns elsewhere.
+    """Print rows as a table: the first column in focus, and each state in its colour.
 
     Args:
         header: column titles.
         rows: table rows.
     """
-    if not sys.stdout.isatty():
-        widths = [max(len(str(cell)) for cell in column) for column in zip(header, *rows)]
-        for row in (header, *rows):
-            print("  ".join(str(cell).ljust(width) for cell, width in zip(row, widths)).rstrip())
-        return
+    from flnd.ui import out
 
-    from rich import box
-    from rich.table import Table
-    from rich.text import Text
+    out.table([[_cell(index, str(cell)) for index, cell in enumerate(row)] for row in rows],
+              header)
 
-    table = Table(box=box.ROUNDED, border_style="#7D84D6", header_style="bold #02BF87")
-    for title in header:
-        table.add_column(title)
-    for row in rows:
-        styled_row = []
-        for i, cell in enumerate(row):
-            text_val = str(cell)
-            if i == 0:
-                styled_row.append(Text(text_val, style="bold #7D84D6"))
-            elif text_val in ("followed", "logged in", "on"):
-                styled_row.append(Text(text_val, style="bold #02BF87"))
-            elif text_val in ("-", "never", "off"):
-                styled_row.append(Text(text_val, style="color(243)"))
-            elif "expired" in text_val:
-                styled_row.append(Text(text_val, style="bold #ED567A"))
-            elif " in " in text_val:
-                styled_row.append(Text(text_val, style="yellow"))
-            else:
-                styled_row.append(Text(text_val, style="color(252)"))
-        table.add_row(*styled_row)
-    _console().print(table)
+
+def _cell(index: int, text: str) -> tuple[str, str]:
+    """A table cell with its style: the first column in focus, then by what the text says."""
+    if index == 0:
+        return text, "bold focus"
+    if text in ("followed", "logged in", "on"):
+        return text, "bold good"
+    if text in ("-", "never", "off"):
+        return text, "dim"
+    if "expired" in text:
+        return text, "bold bad"
+    if " in " in text:
+        return text, "warn"
+    return text, "text"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1146,6 +979,8 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
             if runner is not None and type(event).__name__ == "Saved":
                 runner.run(event)
         report = run.report
+        # The warnings still folded print before the end, never after "done:".
+        ui.drain()
         view.end(report)
         if journal is not None:
             journal.write(report)
@@ -1226,6 +1061,8 @@ class _Exec:
         """
         import subprocess
 
+        from flnd.ui import out
+
         values = self._values(event)
         env = {**os.environ, "FLND_PATH": values["path"], "FLND_TARGET": values["target"],
                "FLND_POST": values["post"]}
@@ -1234,20 +1071,10 @@ class _Exec:
             done = subprocess.run(argv, env=env, shell=False, stdin=subprocess.DEVNULL,
                                   stdout=sys.stderr if self.quiet else None, check=False)
         except OSError as error:
-            from rich.text import Text
-
-            _console(sys.stderr).print(Text.assemble(
-                ("--exec: ", "bold #ED567A"),
-                (f"{argv[0]}: {error.strerror or error}", "#ED567A"),
-            ))
+            out.warn(f"--exec: {argv[0]}: {error.strerror or error}")
             return 127
         if done.returncode:
-            from rich.text import Text
-
-            _console(sys.stderr).print(Text.assemble(
-                ("--exec: ", "bold #ED567A"),
-                (f"{argv[0]} exited {done.returncode} for {_shown(event.path)}", "#ED567A"),
-            ))
+            out.warn(f"--exec: {argv[0]} exited {done.returncode} for {_shown(event.path)}")
         return done.returncode
 
     @staticmethod
@@ -1280,27 +1107,7 @@ class _View:
     """How a run shows: `show` each event as it comes, then `end` with the report.
 
     A view is a context manager, so a live display stops even when the run raises.
-
-    Args:
-        log_stream: stream where flnd's own log lines go; None leaves them on standard error.
-        out_stream: stream where terminal output goes; None leaves it on standard output.
     """
-
-    # Where flnd's own log lines go while the view shows: None leaves them on standard error.
-    log: Any = None
-
-    def __init__(
-        self,
-        *,
-        log_stream: Any = None,
-        out_stream: Any = None,
-    ) -> None:
-        self.log = log_stream
-        self.out = out_stream
-        self._con = _console(out_stream) if out_stream is not None else _console()
-        self._err_con = (
-            _console(log_stream) if log_stream is not None else _console(sys.stderr)
-        )
 
     def __enter__(self) -> _View:
         return self
@@ -1317,38 +1124,30 @@ class _View:
         Args:
             report: the run's `flnd.Report`.
         """
-        from rich.text import Text
-
         from flnd.kit import text
+        from flnd.ui import out
 
         if report.planned:
-            self._con.print(Text.assemble(
-                ("planned ", "bold #7D84D6"),
-                (text.count(report.planned, "file"), "bold #7D84D6"),
-                ("; nothing was downloaded", "color(243)"),
-            ))
+            out.line(("planned ", "bold focus"), (text.count(report.planned, "file"), "bold focus"),
+                     ("; nothing was downloaded", "dim"))
             return
-        line = Text()
-        line.append("done: ", style="bold #02BF87")
-        line.append(f"{text.count(report.saved, 'file')} saved", style="bold #02BF87")
+        parts: list[Any] = [("done: ", "bold good"),
+                            (f"{text.count(report.saved, 'file')} saved", "bold good")]
         if report.bytes:
-            line.append(f" ({text.size(report.bytes)})", style="color(245)")
+            parts.append((f" ({text.size(report.bytes)})", "dim"))
         if report.skipped:
-            line.append(", ", style="color(243)")
-            line.append(f"{report.skipped} already saved", style="color(243)")
+            parts += [(", ", "dim"), (f"{report.skipped} already saved", "dim")]
         if report.retried:
-            line.append(", ", style="color(243)")
-            line.append(f"{report.retried} brought back by a retry", style="bold #02BF87")
+            parts += [(", ", "dim"), (f"{report.retried} brought back by a retry", "bold good")]
         if report.unchanged:
-            line.append(", ", style="color(243)")
-            line.append(f"nothing new in {text.count(report.unchanged, 'listing')}",
-                        style="color(243)")
-        self._con.print(line)
+            parts += [(", ", "dim"),
+                      (f"nothing new in {text.count(report.unchanged, 'listing')}", "dim")]
+        out.line(*parts)
         if report.failed:
             failed = [(event.error, bool(event.post)) for event in report.failed]
-            self._err_con.print(_summary(failed, details=True))
+            _summary(failed, details=True, err=True)
             for hint in _hints(failed):
-                self._err_con.print(Text.assemble(("  ", ""), (hint, "color(243)")))
+                out.line("  ", (hint, "dim"), err=True)
 
 
 class _JournalView(_View):
@@ -1374,36 +1173,28 @@ class _JournalView(_View):
         Args:
             event: the event to record and potentially display.
         """
+        from flnd.ui import out
+
         name = type(event).__name__
         if name == "Progress":
             return
         if self.journal is not None:
             self.journal.write(event)
-        if name == "Planned":
-            from rich.text import Text
-
-            if event.path is None:
-                self._con.print(Text.assemble(
-                    ("found ", "color(243)"),
-                    (str(event.target), "bold #7D84D6"),
-                ))
-            else:
-                path_str = _shown(event.path)
-                folder, filename = os.path.split(path_str)
-                folder_part = (folder + os.sep) if folder else ""
-                state_style = "bold #7D84D6" if event.state == "new" else "color(243)"
-                self._con.print(Text.assemble(
-                    (f"{event.state} ", state_style),
-                    (folder_part, "color(243)"),
-                    (filename, "color(252)"),
-                ))
+        if name != "Planned":
+            return
+        if event.path is None:
+            out.line(("found ", "dim"), (str(event.target), "bold focus"))
+            return
+        folder, filename = os.path.split(_shown(event.path))
+        out.line((f"{event.state} ", "bold focus" if event.state == "new" else "dim"),
+                 ((folder + os.sep) if folder else "", "dim"), filename)
 
 
 class _Json(_View):
     """Each event as one JSON object per line, then the report as `{"type": "Report", ...}`."""
 
     def show(self, event: Any) -> None:
-        _json(event, stream=self.out)
+        _json(event)
 
     def end(self, report: Any) -> None:
         """Write the finished run's report as a JSON object on its own line.
@@ -1412,12 +1203,9 @@ class _Json(_View):
             report: the run's report to encode.
         """
         from flnd.engine.events import encode
+        from flnd.ui import out
 
-        body = encode(report).decode()
-        stream = self.out or sys.stdout
-        stream.write('{"type":"Report",' + body[1:] + "\n")
-        if hasattr(stream, "flush"):
-            stream.flush()
+        out.plain('{"type":"Report",' + encode(report).decode()[1:])
 
 
 # Each error class's word in a failure summary, by class name; the first class in an error's MRO
@@ -1460,21 +1248,20 @@ def _hints(failed: Sequence[tuple[BaseException, bool]]) -> list[str]:
     return seen
 
 
-def _summary(failed: Sequence[tuple[BaseException, bool]], *, details: bool = False) -> Any:
-    """The one line that sums a run's failures up, by kind, saying which a retry may bring back.
+def _summary(failed: Sequence[tuple[BaseException, bool]], *, details: bool = False,
+             err: bool = False) -> None:
+    """Print the one line that sums a run's failures up, by kind, saying which a retry may bring
+    back.
 
         ✗ 3 files failed: 2 network (retry: flnd retry), 1 gone. Details: flnd status
 
     Args:
         failed: each failure's error, with whether it was a file's (else a whole target's).
         details: whether to end with where the details are (`flnd status`).
-
-    Returns:
-        Rich Text instance with styled failure counts and hints.
+        err: print it on standard error instead of standard output.
     """
-    from rich.text import Text
-
     from flnd.kit import text
+    from flnd.ui import out
 
     files = sum(is_file for _, is_file in failed)
     nouns = [text.count(count, noun) for count, noun in
@@ -1485,38 +1272,18 @@ def _summary(failed: Sequence[tuple[BaseException, bool]], *, details: bool = Fa
         kinds[word] = kinds.get(word, 0) + 1
     retried = [f"{count} {word}" for word, count in kinds.items() if word not in FINAL]
     final = [f"{count} {word}" for word, count in kinds.items() if word in FINAL]
-    parts = [f"{', '.join(retried)} (retry: flnd retry)"] if retried else []
 
-    line = Text()
-    line.append(f"{_mark()} ", style="bold #ED567A")
-    line.append(f"{' and '.join(nouns)} failed", style="bold #ED567A")
-    line.append(": ", style="color(243)")
-    if parts:
-        line.append(", ".join(retried), style="#ED567A")
-        line.append(" (retry: ", style="color(243)")
-        line.append("flnd retry", style="bold #7D84D6")
-        line.append(")", style="color(243)")
+    parts: list[Any] = [(f"{' and '.join(nouns)} failed", "bold bad"), (": ", "dim")]
+    if retried:
+        parts += [(", ".join(retried), "bad"), (" (retry: ", "dim"), ("flnd retry", "bold focus"),
+                  (")", "dim")]
         if final:
-            line.append(", ", style="color(243)")
+            parts.append((", ", "dim"))
     if final:
-        line.append(", ".join(final), style="#ED567A")
+        parts.append((", ".join(final), "bad"))
     if details:
-        line.append(". Details: ", style="color(243)")
-        line.append("flnd status", style="bold #7D84D6")
-    return line
-
-
-def _mark() -> str:
-    """The mark a failure summary starts with.
-
-    Returns:
-        "✗"; "x" when standard error's encoding has no "✗" (a pipe on Windows, in cp1252).
-    """
-    try:
-        "✗".encode(getattr(sys.stderr, "encoding", None) or "utf-8")
-    except (LookupError, UnicodeEncodeError):
-        return "x"
-    return "✗"
+        parts += [(". Details: ", "dim"), ("flnd status", "bold focus")]
+    out.line(*parts, mark="error", err=err)
 
 
 def _shown(path: Any) -> str:

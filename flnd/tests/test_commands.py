@@ -158,7 +158,7 @@ class DownloadTest(RunsCase):
     def test_no_targets_is_a_usage_error(self):
         code, _, out = self.run_app("download")
         self.assertEqual(code, 2)
-        self.assertIn("error: give at least one target, or pipe targets on stdin", out)
+        self.assertIn("x give at least one target, or pipe targets on stdin", out)
 
     def test_bad_targets_are_usage_errors_before_anything_starts(self):
         for target, message in (("ytb:nasa", "unknown source 'ytb'. Sources: tik, fbk, ins, twt"),
@@ -430,7 +430,7 @@ class OutputTest(FlndCase):
         code, out, err = self.run_app("download", "exs:example_user")
         self.assertEqual(code, 1, err)
         self.assertNotIn("failed", out)
-        self.assertIn("✗ 1 file failed: 1 site (retry: flnd retry). Details: flnd status", err)
+        self.assertIn("x 1 file failed: 1 site (retry: flnd retry). Details: flnd status", err)
 
     def test_status_shows_the_failure_and_retry_brings_it_back(self):
         self.listing[("example_user", "posts")] = ["p1", "bad"]
@@ -440,7 +440,7 @@ class OutputTest(FlndCase):
         lines = out.splitlines()
         self.assertRegex(lines[0], r"^last run: download exs:example_user, .+: 2 saved, 1 failed$")
         self.assertIn("  exs:example_user bad (site): ", lines[1])
-        self.assertEqual(lines[-1], "✗ 1 file failed: 1 site (retry: flnd retry)")
+        self.assertEqual(lines[-1], "x 1 file failed: 1 site (retry: flnd retry)")
         code, out, _ = self.run_app("--json", "status")
         status = json.loads(out)
         self.assertEqual((status["type"], status["saved"]), ("Status", 2))
@@ -497,7 +497,7 @@ class ExitStatusTest(FlndCase):
         code, out, err = self.run_app("download", "aaa:bad", "aaa:good")
         self.assertEqual(code, 1, err)
         self.assertNotIn("failed", out)
-        self.assertIn("✗ 1 target failed: 1 blocked (retry: flnd retry)", err)
+        self.assertIn("x 1 target failed: 1 blocked (retry: flnd retry)", err)
         self.assertEqual(self.run_app("download", "aaa:good")[0], 0)
 
     def test_download_exits_1_when_a_source_cant_start(self):
@@ -512,7 +512,7 @@ class ExitStatusTest(FlndCase):
         code, out, err = self.run_app("download", "ccc:example_user")
         self.assertEqual(code, 3)
         self.assertNotIn("failed", out)
-        self.assertIn("✗ 1 target failed: 1 login (retry: flnd retry)", err)
+        self.assertIn("x 1 target failed: 1 login (retry: flnd retry)", err)
         self.assertIn("run flnd login ccc", err)
 
 
@@ -524,15 +524,19 @@ class HelpTest(FlndCase):
     def test_help_lists_the_commands_and_every_source_from_the_manifest(self):
         code, out, _ = self.run_app("--help")
         self.assertEqual(code, 0)
-        self.assertIn("Download media from TikTok, Facebook, Instagram, Twitter/X, LOIBUS, "
-                      "Telegram and mimihentai.", out)
+        self.assertIn("flnd 0.1.0 - download whole accounts from the web", out)
         for verb in ("download", "follow", "sync", "unfollow", "ls", "status", "retry", "check",
                      "login", "logout", "sources"):
-            self.assertIn(verb, out)
-        # Placeholders show as written.
-        self.assertIn("https://www.facebook.com/profile.php?id=<user>", out)
-        self.assertIn("tlg:<@username, chat title or id>", out)
-        self.assertIn("--only: posts, reels, tagged", out)
+            self.assertIn(f"  {verb} ", out)
+        self.assertIn("tik fbk ins twt loi tlg mht", out)
+
+    def test_download_help_has_a_row_per_source(self):
+        code, out, _ = self.run_app("download", "--help")
+        self.assertEqual(code, 0)
+        # Placeholders show as written, then the categories.
+        self.assertIn("tlg:<@username, chat title or id>, a link on t.me", out)
+        self.assertIn("fbk:<user>, a link on facebook.com, fb.com, fb.watch", out)
+        self.assertIn("--only posts reels tagged", " ".join(out.split()))
 
     def test_command_help_is_its_docstring_with_its_flags(self):
         code, out, _ = self.run_app("download", "--help")

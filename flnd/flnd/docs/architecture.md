@@ -103,7 +103,9 @@ The rules between them:
 | `flnd/engine/transfer.py` | one post's file into its part: mirrors, DASH pairs (joined by `flnd/kit/media.py`), a source's `fetch` function, the content check | the job |
 | `flnd/engine/steps.py` | the step chain and its archive lane: dedupe, unpack, the sidecar, `Saved` ([storage.md](storage.md)) | the job and the engine |
 | `flnd/engine/check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
-| `flnd/ui/log.py` | log lines, progress rows and the run's summary table, safe for site text; the journal; the route of the kit's `logging` records | every layer above the kit |
+| `flnd/ui/theme.py` | every colour and glyph flnd draws with, and when to drop colour or Unicode | `flnd/ui/*` |
+| `flnd/ui/out.py` | every line flnd prints: lines, folded warnings, errors and their hints, tables, the help; text from a site cleaned of escape codes | the CLI, `flnd/ui/log.py`, the run's hard exit |
+| `flnd/ui/log.py` | the levels of log lines, the progress rows and the run's summary table; the journal; the route of the kit's `logging` records | every layer above the kit |
 | `flnd/ui/forms.py` | questions on the terminal | the CLI, the site, the engine's browser screen |
 | `flnd/errors.py` | the one error hierarchy, `Stopped`, and `classify` and `disk`, which turn any exception into one of them | every module |
 

@@ -44,7 +44,6 @@ import contextvars
 import os
 import queue
 import signal
-import sys
 import threading
 import warnings
 from collections.abc import AsyncIterator, Callable, Generator, Iterator
@@ -528,8 +527,8 @@ def stopping(state: Stop | None = None) -> Iterator[Stop]:
             quit_now()
         elif state.soon.is_set():
             state.now.set()
-            # `ui`'s lock is reentrant, so this line can't deadlock on code this handler
-            # interrupted while it was logging.
+            # `ui`'s lock is reentrant, and its fold never waits on the thread holding it, so
+            # this line can't deadlock on code this handler interrupted while it was logging.
             from flnd.ui.log import ui
 
             ui.warn(AGAIN)
@@ -573,22 +572,19 @@ def quit_now() -> None:
 
     1. Run each registered undo step (`restoring`), newest first; one that fails is skipped,
        so the rest still run.
-    2. Show the cursor again on a terminal, which an inline live view may have hidden.
-    3. Flush standard output and error, then `os._exit(QUIT_STATUS)`. No `finally`, `atexit`
-       or thread join runs, so nothing can hold the exit up; parts already on disk stay, and
-       the next run resumes them, as after a second Ctrl-C.
+    2. Show the cursor again on a terminal, which an inline live view may have hidden, and
+       flush standard output and error (`out.close`); folded warnings are dropped, as draining
+       them would take a lock another thread may hold.
+    3. `os._exit(QUIT_STATUS)`. No `finally`, `atexit` or thread join runs, so nothing can
+       hold the exit up; parts already on disk stay, and the next run resumes them, as after a
+       second Ctrl-C.
     """
+    from flnd.ui import out
+
     for undo in reversed(list(_RESTORERS)):
         try:
             undo()
         except BaseException:  # noqa: BLE001 - one failed undo must not keep the others back
             pass
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            if stream is not None and stream.isatty():
-                stream.write("\x1b[?25h")
-            if stream is not None:
-                stream.flush()
-        except (OSError, ValueError):
-            pass
+    out.close(cursor=True, drain=False)
     os._exit(QUIT_STATUS)

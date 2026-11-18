@@ -17,8 +17,42 @@ uv run flnd --help
 uv run flnd download ins:example_user --only posts
 ```
 
-`flnd --help` lists the commands, then every form of target each source reads and its
-categories. It imports no source, so it answers in a few tens of milliseconds.
+`flnd --help` fits in 24 lines: a row per command, the flags, and the code of every source.
+`flnd download --help` and `flnd follow --help` add a row per source: the targets it reads, then
+its categories. The help imports no source, so it answers in a few tens of milliseconds.
+
+```text
+  flnd 0.1.0 · download whole accounts from the web
+
+  download [target…]     Download what the targets have now
+  follow [target…]       Follow targets
+  …
+  sources                tik fbk ins twt loi tlg mht
+                         their targets: flnd download -h
+```
+
+## How it looks
+
+Every line flnd prints is drawn from one theme (`flnd/ui/theme.py`), through `flnd/ui/out.py`:
+
+- **Colours.** Body text is light grey; hints, borders and zeros are dim grey; titles and
+  commands are blue (`focus`); what worked is green, what failed is red, and warnings are
+  yellow.
+- **No colour** when `NO_COLOR` is set, when `TERM` is `dumb`, or when the output goes to a
+  pipe or a file: the text is the same, without escape codes.
+- **No Unicode** on a terminal that isn't UTF-8: `✓ ✗ • · ❯` become `v x * - >`, and the spinner
+  is `|/-\`.
+- **Warnings fold.** A warning is shown at once, and opens a window of 10 seconds. Its repeats
+  inside the window are held. When the window has passed (at the next warning), before a run's
+  end summary, or when the command ends, a warning that repeated shows once more as
+  `text (×n)`, n counting every time it came in the window, the first included: one repeat
+  shows `text (×2)`.
+- **Errors** print their message, then what to do on the next line (see
+  [Exit codes](#exit-codes)).
+- **Tables** (`flnd ls`, `flnd login`) have a rounded border on a terminal, and are plain columns
+  two spaces apart on a pipe.
+- Text from a site (a file name, a caption) never drives the terminal: its escape and control
+  codes are dropped before it is printed.
 
 ## Global flags
 
@@ -47,8 +81,9 @@ flnd download "mht?example words" --only chapters
 flnd download https://www.tiktok.com/@example_user/video/1234567890
 ```
 
-`flnd --help` and `flnd sources` list every form each source accepts. The pages under
-[sources/](README.md#sites) explain them site by site.
+`flnd download --help` shows the forms each source accepts in one row, and `flnd sources` lists
+each source with its first forms. The pages under [sources/](README.md#sites) explain them site
+by site.
 
 ## `flnd download`
 
@@ -296,7 +331,8 @@ standard error how many failed and of which kind:
 ✗ 3 files failed: 2 network (retry: flnd retry), 1 gone. Details: flnd status
 ```
 
-flnd's own warnings (a wait a site asked for, a login about to expire) go to standard error too.
+flnd's own warnings (a wait a site asked for, a login about to expire) go to standard error too,
+and the repeats of a warning within 10 seconds fold into one line ([How it looks](#how-it-looks)).
 
 ## Exit codes
 
@@ -312,10 +348,24 @@ flnd's own warnings (a wait a site asked for, a login about to expire) go to sta
 A cron job can tell "some files failed" (1) from "flnd broke" (4). Each error class has its
 code; [errors.md](errors.md) lists them.
 
-A mistake you can fix (usage, login, disk, a tool) prints `error: <what went wrong>`, then what
-to do on the next line, and never a traceback. A bug prints one line naming a crash file,
-`<home>/log/crash-<time>.txt`, which holds the traceback; with `-v` the traceback prints
-instead.
+A mistake you can fix (usage, login, disk, a tool) prints `✗ <what went wrong>`, then
+`hint  <what to do>` on the next line, and never a traceback (`x` instead of `✗` off UTF-8):
+
+```
+✗ ins:example_user needs a login
+  hint  flnd login ins
+```
+
+A mistake in the flags is one too:
+
+```
+✗ flnd: unrecognized arguments: --nope
+  hint  flnd -h lists what it takes
+```
+
+A bug prints `✗ flnd hit a bug: <the error>`, then
+`hint  details in <home>/log/crash-<time>.txt`, the file that holds the traceback; with `-v`
+the traceback prints instead.
 
 ## Ctrl-C
 
@@ -328,7 +378,8 @@ instead.
 - The **third** quits at once, exit code 130: it first runs the undo steps anything registered
   for the terminal, then exits without waiting for anything. The parts on disk stay and resume
   as after a second Ctrl-C; the rows of the posts in progress are lost, and the next run finds
-  their files on disk and skips them.
+  their files on disk and skips them. Warnings still folded are dropped, without their
+  `(×n)` line.
 
 ## For contributors
 

@@ -627,7 +627,7 @@ class LoginCommandTest(FlndCase):
         with mock.patch.object(TelegramLogin, "start", refuse):
             code, _, out = self.run_app("login", "tlg", "qr")
         self.assertEqual(code, 3)
-        self.assertIn("error: tlg: no QR code was scanned; run flnd login tlg qr again", out)
+        self.assertIn("x tlg: no QR code was scanned; run flnd login tlg qr again", out)
 
     def test_a_stored_session_is_listed_as_logged_in(self):
         with _home.secrets(Path(".flnd"), "tlg") as secrets:

@@ -361,7 +361,7 @@ class CliTest(FlndCase):
                     code, _, out = self.run_app(*argv)
                     self.assertEqual(code, 2)
                     self.assertNotIn("Traceback", out)
-                    errors = [line for line in out.splitlines() if "error: " in line]
+                    errors = [line for line in out.splitlines() if line.startswith("x ")]
                     self.assertEqual(len(errors), 1)
 
     def test_a_login_the_source_needs_exits_3(self):

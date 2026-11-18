@@ -1,33 +1,31 @@
-"""Terminal output: log lines, progress items and the run journal, safe for site text.
+"""The live block of progress items, the log lines' levels, and the run journal.
 
 flnd/docs/cli explains it.
 """
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
 import re
-import string
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
-from functools import lru_cache
 from pathlib import Path
 from typing import IO, Any, Literal
 from urllib.parse import urlsplit
 
 import msgspec
 from rich.console import Console as RichConsole
-from rich.control import strip_control_codes
 from rich.text import Text
-from rich.theme import Theme
 
 from flnd.kit import clock
 from flnd.kit.text import size
+from flnd.ui import out, theme
 
 Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
@@ -35,80 +33,10 @@ LEVEL_RANKS: dict[str, int] = {
     "debug": 0, "info": 1, "ok": 2, "warn": 3, "error": 4, "quiet": 4,
 }
 
-PALETTE: dict[str, str] = {
-    "info": "color(243)",
-    "ok": "#02BF87",
-    "warn": "yellow",
-    "error": "#ED567A",
-    "debug": "color(242)",
-    "text": "color(252)",
-    "faint": "color(238)",
-    "accent": "#7D84D6",
-    "size": "color(245)",
-}
-
-GLYPHS: dict[str, tuple[str, str]] = {
-    "info": ("•", "*"),
-    "ok": ("✓", "+"),
-    "warn": ("!", "!"),
-    "error": ("✗", "x"),
-    "debug": ("·", "."),
-    "bar_full": ("━", "="),
-    "bar_empty": ("─", "-"),
-}
-
-LOG_GLYPHS: dict[str, str] = {
-    "info": "info", "ok": "ok", "warn": "warn", "error": "error", "debug": "debug",
-}
-
-SPIN_FRAMES: tuple[tuple[str, ...], tuple[str, ...]] = (
-    ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
-    ("|", "/", "-", "\\"),
-)
 # Seconds between redraws of the live block: the pace of the update throttle, and of the
 # ticker thread that redraws rows which only move with the clock (the spinner, and counts
 # that wait on events). 60 a second is the most a terminal shows.
 REDRAW = 1 / 60
-
-_ESCAPE = re.compile(
-    r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]"
-)
-
-
-class _SafeFormatter(string.Formatter):
-    """`str.format` that strips terminal escape and control codes from each field it formats."""
-
-    def format_field(self, value: Any, format_spec: str) -> str:
-        if isinstance(value, str):
-            value = _sanitize(value)
-        return _sanitize(super().format_field(value, format_spec))
-
-
-_FORMATTER = _SafeFormatter()
-
-
-def _sanitize(value: str) -> str:
-    return strip_control_codes(_ESCAPE.sub("", value))
-
-
-@lru_cache(maxsize=256)
-def _field_names(message: str) -> frozenset[str]:
-    """The names of the `{fields}` in a message template, nested format specs included.
-
-    Args:
-        message: a message template in `str.format` syntax.
-
-    Returns:
-        The top-level names, so `{user.name}` gives `user`.
-    """
-    names: set[str] = set()
-    for _, field_name, format_spec, _ in string.Formatter().parse(message):
-        if field_name:
-            names.add(field_name.split(".")[0].split("[")[0])
-        if format_spec and "{" in format_spec:
-            names.update(_field_names(format_spec))
-    return frozenset(names)
-
 
 def _color_settings(
     color: str | bool | None, base: RichConsole | None,
@@ -145,30 +73,6 @@ def _color_settings(
     return table[color]
 
 
-def _detect_unicode(stream: Any) -> bool:
-    """Whether `stream` can show the Unicode glyphs, from its encoding and the locale.
-
-    Args:
-        stream: the file the output goes to.
-
-    Returns:
-        True for a UTF-8 stream, except under a Japanese, Korean or Chinese locale. On Windows
-        it is True only in a terminal that sets one of its known variables, or under ConEmu.
-    """
-    encoding =getattr(stream, "encoding", None) or ""
-    if not encoding and getattr(stream, "isatty", lambda: False)():
-        encoding = "utf-8"
-    if encoding.lower().replace("-", "").replace("_", "") != "utf8":
-        return False
-    locale = os.environ.get("LC_ALL") or os.environ.get("LANG") or ""
-    if locale.lower().startswith(("ja", "ko", "zh")):
-        return False
-    modern = ("WT_SESSION", "TERM", "ANSICON", "TERM_PROGRAM")
-    if os.name == "nt" and not any(os.environ.get(k) for k in modern):
-        return os.environ.get("ConEmuANSI") == "ON"
-    return True
-
-
 def _elide_middle(text: str, max_len: int) -> str:
     """Shorten `text` to `max_len` characters by cutting its middle, with a `…` in the gap.
 
@@ -181,12 +85,13 @@ def _elide_middle(text: str, max_len: int) -> str:
     """
     if len(text) <= max_len:
         return text
+    cut = theme.glyph("more", True)
     if max_len <= 1:
-        return "…"[:max_len]
+        return cut[:max_len]
     keep = max_len - 1
     left = keep // 2
     right = keep - left
-    return f"{text[:left]}…{text[-right:]}"
+    return f"{text[:left]}{cut}{text[-right:]}"
 
 
 _URL = re.compile(r"https?://[^\s:]+(?::\d+)?[^\s]*")
@@ -197,7 +102,7 @@ def _brief(error: BaseException, *, limit: int = 100) -> str:
     first = (str(error).strip().splitlines() or [""])[0]
     first = _URL.sub(lambda match: urlsplit(match.group()).hostname or match.group(), first)
     message = f"{type(error).__name__}: {first}" if first else type(error).__name__
-    return message if len(message) <= limit else message[: limit - 1] + "…"
+    return message if len(message) <= limit else message[: limit - 1] + theme.glyph("more", True)
 
 
 class State(StrEnum):
@@ -462,6 +367,7 @@ class UI:
         self._hold_depth = 0
         self._wake = threading.Event()
         self._ticker: threading.Thread | None = None
+        self._folds = out.Folds()
         self._live = self._compute_live()
 
     def _compute_live(self) -> bool:
@@ -500,15 +406,13 @@ class UI:
         return LEVEL_RANKS[kind] >= LEVEL_RANKS[self._level]
 
     def _use_unicode(self) -> bool:
-        return _detect_unicode(self._console.file)
+        return theme.unicode(self._console.file)
 
     def _glyph(self, name: str) -> str:
-        unicode, ascii_ = GLYPHS[name]
-        return unicode if self._use_unicode() else ascii_
+        return theme.glyph(name, self._use_unicode())
 
     def _spinner(self) -> str:
-        frames = SPIN_FRAMES[0] if self._use_unicode() else SPIN_FRAMES[1]
-        return frames[int(clock.now() * 10) % len(frames)]
+        return theme.spinner(clock.now(), self._use_unicode())
 
     def _get_width(self) -> int:
         """The width in columns: the console's, else the terminal's, else 80.
@@ -571,7 +475,6 @@ class UI:
             color_system=color_system,
             no_color=no_color,
             force_terminal=force_terminal,
-            theme=Theme(PALETTE),
             highlight=False,
             soft_wrap=True,
         )
@@ -589,19 +492,21 @@ class UI:
         """
         if it.state == State.ACTIVE:
             spinner = self._spinner()
-            glyph_style = "accent"
+            glyph_style = "focus"
         elif it.state in (State.MERGING, State.UNPACKING):
             spinner = self._spinner()
             glyph_style = "warn"
         elif it.state == State.DONE:
-            spinner = self._glyph("ok")
-            glyph_style = "ok"
+            spinner = self._glyph("done")
+            glyph_style = "good"
         elif it.state == State.SKIPPED:
             spinner = self._glyph("warn")
             glyph_style = "warn"
         else:
-            spinner = self._glyph("error")
-            glyph_style = "error"
+            spinner = self._glyph("failed")
+            glyph_style = "bad"
+        glyph_style = theme.style(glyph_style)
+        body, dim = theme.style("text"), theme.style("dim")
 
         note_str = f"  ({it._note})" if it._note else ""
 
@@ -610,9 +515,9 @@ class UI:
             line = Text()
             line.append(spinner, style=glyph_style)
             line.append(" ")
-            line.append(_elide_middle(it.label, max(8, width - len(spinner) - 1)), style="text")
+            line.append(_elide_middle(it.label, max(8, width - len(spinner) - 1)), style=body)
             if note_str:
-                line.append(note_str, style="faint")
+                line.append(note_str, style=dim)
             line.truncate(width)
             return line
 
@@ -628,8 +533,8 @@ class UI:
                 stats = f"{it.count:g}"
 
         bar_len = 16
-        full_c = GLYPHS["bar_full"][0 if unicode else 1]
-        empty_c = GLYPHS["bar_empty"][0 if unicode else 1]
+        full_c = theme.glyph("full", unicode)
+        empty_c = theme.glyph("empty", unicode)
 
         if it.total is not None and it.total > 0:
             pct = max(0.0, min(1.0, it.count / it.total))
@@ -647,16 +552,16 @@ class UI:
         line = Text()
         line.append(spinner, style=glyph_style)
         line.append(" ")
-        line.append(label, style="text")
+        line.append(label, style=body)
         line.append("  ")
         if bar_full:
-            line.append(bar_full, style="accent")
+            line.append(bar_full, style=theme.style("focus"))
         if bar_empty:
-            line.append(bar_empty, style="faint")
+            line.append(bar_empty, style=dim)
         line.append("  ")
-        line.append(stats, style="size")
+        line.append(stats, style=dim)
         if note_str:
-            line.append(note_str, style="faint")
+            line.append(note_str, style=dim)
 
         line.truncate(width)
         return line
@@ -752,9 +657,8 @@ class UI:
             drawn_count += 1
 
         if folded > 0:
-            fold_glyph = "…" if unicode else "..."
-            fold_line = f"  {fold_glyph} and {folded} more"
-            self._console.print(Text(fold_line[:w], style="faint"))
+            fold_line = f"  {theme.glyph('more', unicode)} and {folded} more"
+            self._console.print(Text(fold_line[:w], style=theme.style("dim")))
             drawn_count += 1
 
         self._live_lines = drawn_count
@@ -827,6 +731,8 @@ class UI:
     def _log(self, _kind: Level, message: str, *args: Any, **fields: Any) -> None:
         """Write one log line of `_kind` if its level is on, and journal it when a journal is open.
 
+        A warning that repeats within `out.FOLD` seconds folds into one line (`out.Folds`).
+
         Args:
             _kind: the level: debug, info, ok, warn or error.
             message: the message template; `{name}` marks a field.
@@ -836,17 +742,14 @@ class UI:
         Raises:
             TypeError: `fields` holds a name the message does not use.
         """
-        unused =set(fields) - _field_names(message) if fields else set()
+        unused = set(fields) - out.names(message) if fields else set()
         if unused:
             raise TypeError(
                 f"ui message {message!r} has no field {', '.join(sorted(unused))}"
             )
         if not self._allows(_kind):
             return
-        text = (
-            _FORMATTER.format(message, *args, **fields)
-            if (args or fields) else _sanitize(message)
-        )
+        text = out.fill(message, *args, **fields)
         if self._journal is not None:
             if _kind != "debug" or self._allows("debug"):
                 self._journal.write({
@@ -855,29 +758,25 @@ class UI:
                     "message": text,
                     "fields": fields,
                 })
-
-        mark = self._glyph(LOG_GLYPHS.get(_kind, "info"))
         with self._lock:
-            if not text or _kind == "debug":
-                line = Text(f"{mark} {text}" if text else mark, style=_kind)
-            elif _kind == "info":
-                head, colon, detail = text.partition(": ")
-                line = Text.assemble(
-                    (mark, "info"), " ", (head, "text"), (colon + detail, "info"),
-                )
-            else:
-                head, colon, detail = text.partition(": ")
-                line = Text.assemble(
-                    (f"{mark} {head}", _kind),
-                    (colon + detail, f"dim {_kind}") if colon else ("", ""),
-                )
+            shown = self._folds.see(text) if _kind == "warn" else [(text, 1)]
+            for line, times in shown:
+                self._show(out.styled(_kind, line, fancy=self._use_unicode(), times=times))
 
-            if self.live and self._active_keys:
-                self._pending_lines.append(line)
-                self._redraw(force=True)
-            else:
-                self._console.print(line)
-                self._flush()
+    def drain(self) -> None:
+        """Print the warnings still folded, each as "text (×n)", where this `UI` prints now."""
+        with self._lock:
+            for text, times in self._folds.drain():
+                self._show(out.styled("warn", text, fancy=self._use_unicode(), times=times))
+
+    def _show(self, line: Text) -> None:
+        """Print a line above the live block, or at once when no row is live."""
+        if self.live and self._active_keys:
+            self._pending_lines.append(line)
+            self._redraw(force=True)
+        else:
+            self._console.print(line)
+            self._flush()
 
     def debug(self, message: str = "", /, *args: Any, **fields: Any) -> None:
         """Log a debug message."""
@@ -924,6 +823,7 @@ class UI:
             This `UI`, with the new settings in place.
         """
         old_console, old_level, old_live = self._console, self._level, self._live
+        old_folds = self._folds
         try:
             self._console = self._make_console(
                 color=color, dest=dest, width=width, base=self._console,
@@ -931,9 +831,13 @@ class UI:
             if level is not None:
                 self._level = level
             self._live = self._compute_live()
+            self._folds = out.Folds()
             yield self
         finally:
+            # The warnings still folded are printed where the block printed them.
+            self.drain()
             self._console, self._level, self._live = old_console, old_level, old_live
+            self._folds = old_folds
 
     @contextmanager
     def group(self, title: str = "", *, drawn: bool = True) -> Iterator[Group]:
@@ -959,6 +863,8 @@ class UI:
 
 ui = UI()
 log = ui
+# A script that warns outside any scope still sees each warning's count, when Python exits.
+atexit.register(ui.drain)
 
 
 class _KitLines(logging.Handler):

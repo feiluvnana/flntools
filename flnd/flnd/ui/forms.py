@@ -13,23 +13,25 @@ from typing import Any
 import questionary
 
 from flnd.errors import UsageError
+from flnd.ui import theme
 from flnd.ui.log import log
 
 __all__ = ["ask", "choose", "confirm", "interactive"]
 
+_COLOR = theme.TOKENS
 CHARM_STYLE = questionary.Style([
-    ("qmark", "fg:#7D84D6 bold"),
-    ("question", "fg:#D0D0D0 bold"),
-    ("answer", "fg:#02BF87 bold"),
-    ("pointer", "fg:#7D84D6 bold"),
-    ("highlighted", "fg:#7D84D6 bold"),
-    ("selected", "fg:#02BF87"),
-    ("separator", "fg:#767676"),
-    ("instruction", "fg:#767676"),
-    ("text", "fg:#D0D0D0"),
+    ("qmark", f"fg:{_COLOR['focus']} bold"),
+    ("question", f"fg:{_COLOR['text']} bold"),
+    ("answer", f"fg:{_COLOR['good']} bold"),
+    ("pointer", f"fg:{_COLOR['focus']} bold"),
+    ("highlighted", f"fg:{_COLOR['focus']} bold"),
+    ("selected", f"fg:{_COLOR['good']}"),
+    ("separator", f"fg:{_COLOR['dim']}"),
+    ("instruction", f"fg:{_COLOR['dim']}"),
+    ("text", f"fg:{_COLOR['text']}"),
 ])
-QMARK = "•"
-POINTER = "❯"
+QMARK = theme.glyph("bullet", True)
+POINTER = theme.glyph("cursor", True)
 
 
 def interactive() -> bool:

@@ -99,14 +99,14 @@ traceback. Its class gives the exit code: 2 for a `UsageError`, 3 for a `LoginEr
 `SiteError` or `NetworkError`, and 4 for a `DiskError`, `ToolError` or `SourceError`:
 
 ```
-x ins:example_user: not logged in
-• ins:example_user: run flnd login ins
+✗ ins:example_user needs a login
+  hint  flnd login ins
 ```
 
-An unexpected exception is a bug. The CLI prints one line naming a crash file,
-`.flnd/log/crash-<time>.txt`, which holds the traceback, and exits 4; with `-v` the traceback
-prints instead. A bug inside one target's listing doesn't stop the run: it becomes that target's
-`SourceError`, and its cause is printed with `-v`.
+An unexpected exception is a bug. The CLI prints `✗ flnd hit a bug: <the error>`, then
+`hint  details in .flnd/log/crash-<time>.txt`, the crash file that holds the traceback, and
+exits 4; with `-v` the traceback prints instead. A bug inside one target's listing doesn't
+stop the run: it becomes that target's `SourceError`, and its cause is printed with `-v`.
 
 ## Secrets never reach a message
 

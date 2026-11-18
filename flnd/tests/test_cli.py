@@ -35,6 +35,7 @@ from flnd.errors import (
     UsageError,
 )
 from flnd.ui import forms as _prompt
+from flnd.ui import out
 
 
 class TerminalCase(unittest.TestCase):
@@ -80,15 +81,16 @@ class ExitCodeTest(TerminalCase):
             with self.subTest(type(error).__name__):
                 _, out, err = self.fail_with(error)
                 self.assertEqual(out, "")
-                self.assertEqual(err.splitlines(), [f"error: {error}", f"  {error.hint}"])
+                self.assertEqual(err.splitlines(), [f"x {error}", f"  hint  {error.hint}"])
                 self.assertFalse((Path(".flnd") / _home.LOGS).exists())
 
-    def test_a_flag_mistake_exits_2_with_the_usage(self) -> None:
+    def test_a_flag_mistake_exits_2_as_a_usage_error(self) -> None:
         err = io.StringIO()
         with redirect_stderr(err), redirect_stdout(io.StringIO()):
             self.assertEqual(cli.main(["download", "--nope"]), 2)
-        self.assertIn("flnd: error: unrecognized arguments: --nope", err.getvalue())
-        self.assertNotIn("Traceback", err.getvalue())
+        self.assertEqual(err.getvalue().splitlines(),
+                         ["x flnd: unrecognized arguments: --nope",
+                          "  hint  flnd -h lists what it takes"])
 
     def test_a_bug_writes_a_crash_file_and_exits_4(self) -> None:
         code, _, err = self.fail_with(RuntimeError("an example bug"))
@@ -96,8 +98,8 @@ class ExitCodeTest(TerminalCase):
         crashes = list((Path(".flnd") / _home.LOGS).glob("crash-*.txt"))
         self.assertEqual(len(crashes), 1)
         self.assertIn("Traceback", crashes[0].read_text(encoding="utf-8"))
-        self.assertEqual(err.splitlines(), ["error: unexpected RuntimeError: an example bug; "
-                                            f"the details are in {crashes[0]}"])
+        self.assertEqual(err.splitlines(), ["x flnd hit a bug: RuntimeError: an example bug",
+                                            f"  hint  details in {crashes[0]}"])
 
     def test_with_verbose_a_bug_prints_its_traceback_instead(self) -> None:
         code, _, err = self.fail_with(RuntimeError("an example bug"), "-v")
@@ -109,6 +111,31 @@ class ExitCodeTest(TerminalCase):
     def test_the_crash_file_goes_in_the_home_given(self) -> None:
         self.fail_with(RuntimeError("an example bug"), "--home", "elsewhere")
         self.assertEqual(len(list((Path("elsewhere") / _home.LOGS).glob("crash-*.txt"))), 1)
+
+
+class HelpLengthTest(unittest.TestCase):
+    """`flnd -h` fits in 24 lines of 80 columns (PLAN.md 8.1), on a pipe, a terminal, in ASCII."""
+
+    class Pipe(io.StringIO):
+        encoding = "utf-8"
+
+    class Terminal(Pipe):
+        def isatty(self) -> bool:
+            return True
+
+    class Ascii(Terminal):
+        encoding = "cp1252"
+
+    def test_flnd_h_fits_in_24_lines(self) -> None:
+        self.enterContext(mock.patch.dict(os.environ, {"COLUMNS": "80"}))
+        for kind in (self.Pipe, self.Terminal, self.Ascii):
+            with self.subTest(kind.__name__):
+                stdout = kind()
+                with mock.patch("sys.stdout", stdout), redirect_stderr(io.StringIO()):
+                    self.assertEqual(cli.main(["-h"]), 0)
+                lines = out.clean(stdout.getvalue()).splitlines()
+                self.assertLessEqual(len(lines), 24, "\n".join(lines))
+                self.assertTrue(all(len(line) <= 80 for line in lines), "\n".join(lines))
 
 
 class StoppingTest(unittest.TestCase):
