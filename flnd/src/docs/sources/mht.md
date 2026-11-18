@@ -15,15 +15,18 @@ A *target* is what you give `flnd download`; a *category* is one part of a targe
 | `mht:1234567890` | `manga` | one manga, by category |
 | `https://mimihentai.moe/manga/1234567890` | `manga` | the same |
 | `https://mimihentai.moe/manga/1234567890/chapter/1234567891` | `chapter` | one chapter, whole |
+| `mht:author/example_creator` | `author` | every manga of an author |
 | `https://mimihentai.moe/author/example_creator` | `author` | every manga of an author |
 | `https://mimihentai.moe/authors/1234567890` | `author` | the same, by id |
+| `mht:genre/example` | `genre` | every manga of a genre |
 | `https://mimihentai.moe/genre/example` | `genre` | every manga of a genre |
 | `https://mimihentai.moe/genres/1234567890` | `genre` | the same, by id |
 | `mht?example words` | `query` | every manga a search finds |
 
-A chapter has no short form: give its link. An author or genre in a link may be a name or a
-numeric id. A name is looked up with the site's search and matched with case and accents
-ignored; a name with hyphens is also tried with spaces.
+A chapter has no short form: give its link. An author or genre, in a link or after `mht:author/`
+or `mht:genre/`, may be a name or a numeric id. A genre name is matched against the site's whole
+genre list, and an author name is looked up with the site's author search. Either match ignores
+case and accents, and a name with hyphens is also tried with spaces.
 
 `author`, `genre` and `query` don't download anything themselves. They find manga, and each
 manga found is downloaded as its own `mht:<id>` target.
@@ -50,7 +53,8 @@ words typed, split at spaces.
 
 ## Categories
 
-These belong to the `manga` route, and through it to `author`, `genre` and `query`.
+These belong to the `manga` route, and through it to `author`, `genre` and `query`. Both are
+the plugin's own categories, so both are taken when `--only` isn't given.
 
 | Category | What it holds |
 | --- | --- |
@@ -66,7 +70,7 @@ These belong to the `manga` route, and through it to `author`, `genre` and `quer
 
 ## Logging in
 
-The source has no login (`login = None`): everything it reads is public, so flnd never warns
+The plugin has no login (`login = None`): everything it reads is public, so flnd never warns
 about a login, and `flnd login mht` is refused as "mht needs no login".
 
 ## How it fetches
@@ -88,12 +92,13 @@ Every request goes to `https://mimihentai.moe/api/`:
    a title and cover.
 2. `chapters` lists every chapter in the order the API gives. A chapter's pages
    are fetched only when the chapter is downloaded, so a chapter already saved costs no request.
-3. Pages are named by their place in the chapter (`001`, `002`, ...).
-4. Searches are paged with `site.pages`: the first request sends the search's terms and
-   `cursor_res=true` alone, and each next one adds the last page's `next_cursor` as `cursor`,
-   until it is empty or repeats.
+3. Pages are numbered by their place in the chapter (`001`, `002`, ...). A page with no image
+   keeps its number, so the pages after it keep theirs.
+4. Searches page through `ctx.pages`: the first request sends the search's terms and
+   `cursor_res=true` alone, and each next one sends the last page's `next_cursor` as `cursor`,
+   until the cursor is missing, empty or repeated.
 5. The early stops are the engine's: a sync of a manga ends once it meets saved chapters, and
-   `--when` drops chapters outside its days. The source lists every chapter in the API's
+   `--when` drops chapters outside its days. The plugin lists every chapter in the API's
    order; a search ends only where the site's cursor does.
 
 **Pacing:** `pace` is 0.5, so requests to `mimihentai.moe` are at least half a second apart.
@@ -105,9 +110,11 @@ The class declares:
 
 - `folder = "chapters/{order} {title}"`: `order` is the chapter's number, zero-padded to 3 digits
   when whole (`007`) and kept as text otherwise (`7.5`); `title` is the chapter's title.
-- `filename = "{post}"`, which is not used for pages or covers, since each file is named by the
-  source: pages as `001.webp` and so on, the cover as `cover.webp`. Each keeps its URL's extension
-  when it has one.
+- `filename = "{post}"`, which is not used: the plugin names every page and the cover itself, as
+  a stem with no extension, pages `001`, `002` and so on, and the cover `cover`. The engine adds
+  the extension its answer's `Content-Type` names, else its URL's own when that is a media
+  extension, and renames a file whose bytes are another known format. So a page served as WebP
+  is saved as `001.webp`.
 - `key = "{post}_{num}"`: the history key, stored as `mht:<chapter id>_<n>`, where `n` is the
   page's place from 0.
 - The `cover` category has its own `folder = "cover"` and `key = "{post}_cover"`, stored as
@@ -147,4 +154,4 @@ manga it finds has its own folder.
 - `chapters:<n>` matches an exact chapter count only, and is checked by flnd on each result, not
   by the site.
 - Negation works for genres only.
-- The source declares no `unsupported` links; any other link is refused with the forms above.
+- The plugin declares no `unsupported` links; any other link is refused with the forms above.

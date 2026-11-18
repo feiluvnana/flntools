@@ -178,6 +178,12 @@ class MangaTest(unittest.TestCase):
                 self.assertEqual(dict(saved[0].post.fields),
                                  {"title": "Example Manga", **fields})
 
+    def test_a_cover_url_without_an_extension_is_named_from_its_content(self):
+        ctx = fake(**{"manga/70982": {**MANGA, "cover_url": f"{CDN}/covers/70982"}})
+        [saved] = collect(Mimi, "mht:70982", ctx=ctx, categories=["cover"])
+        self.assertEqual((saved.path, saved.key), ("cover/cover", "70982_cover"))
+        self.assertEqual(saved.path + sniff(b"RIFF\0\0\0\0WEBPVP8 "), "cover/cover.webp")
+
     def test_a_missing_manga_or_chapter_is_not_found(self):
         for target, path in [("mht:70982", "manga/70982"),
                              ("https://mimihentai.moe/manga/1/chapter/1001", "chapters/1001")]:
