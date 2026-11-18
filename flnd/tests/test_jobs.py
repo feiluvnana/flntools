@@ -15,7 +15,6 @@ from unittest import mock
 from flnd import errors
 from flnd.engine import jobs
 from flnd.engine.jobs import (
-    Backlog,
     Cap,
     Job,
     Kind,
@@ -283,24 +282,6 @@ class PoolTest(unittest.TestCase):
         self.assertEqual(names[0], names[3])
         self.assertNotEqual(names[0], names[2])
         self.assertEqual(stat_calls.call_count, 3)
-
-    def test_a_transfer_pauses_at_8_mib_unwritten_and_resumes_at_4(self):
-        async def main():
-            backlog, pieces, paused = Backlog(), [], []
-            for _ in range(9):
-                piece = backlog.add(b"x" * MIB)
-                if piece:
-                    pieces.append(len(piece))
-                paused.append(backlog.paused)
-            backlog.drain(4 * MIB)
-            paused.append(backlog.paused)
-            backlog.drain(1 * MIB)
-            paused.append(backlog.paused)
-            return pieces, paused
-
-        pieces, paused = asyncio.run(main())
-        self.assertEqual(pieces, [4 * MIB, 4 * MIB])
-        self.assertEqual(paused, [False] * 7 + [True, True, True, False])
 
     def test_a_page_waits_for_its_buckets_pace(self):
         async def main(scheduler, fake):

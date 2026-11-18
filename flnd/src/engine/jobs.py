@@ -28,7 +28,7 @@ from flnd import errors
 from flnd.ui.log import ui
 from flnkit import clock, files, text
 
-__all__ = ["Backlog", "Bucket", "Budget", "Busy", "Cap", "Hold", "Job", "Kind", "Limits", "Pool",
+__all__ = ["Bucket", "Budget", "Busy", "Cap", "Hold", "Job", "Kind", "Limits", "Pool",
            "Rate", "Scheduler", "Segment", "Segments", "Speed"]
 
 T = TypeVar("T")
@@ -48,11 +48,6 @@ WARM_FREE = 2
 # Places per target at least, and FILE jobs a target may queue per place.
 PLACES = 32
 QUEUED = 4
-# A write goes to its device's thread in pieces of this size; a transfer pauses while PAUSE
-# bytes wait for the disk, and resumes once they are down to RESUME.
-PIECE = 4 << 20
-PAUSE = 8 << 20
-RESUME = 4 << 20
 # Free space kept on a device beyond the files in flight, and how long a reading of it is kept.
 SPARE = 64 << 20
 FREE_FOR = 1.0
@@ -493,51 +488,6 @@ class Rate:
         self._at = now
         if self._bytes < 0:
             await clock.pause(-self._bytes / self.rate)
-
-
-class Backlog:
-    """One transfer's bytes on their way to its device's writer, in `PIECE`-byte pieces.
-
-    The transfer pauses while `PAUSE` bytes are unwritten (gathered, or handed to the writer
-    and not yet on disk), and goes on once they are down to `RESUME`.
-    """
-
-    def __init__(self) -> None:
-        self.unwritten = 0
-        self._chunks: list[bytes] = []
-        self._size = 0
-        self._open = asyncio.Event()
-        self._open.set()
-
-    @property
-    def paused(self) -> bool:
-        """Whether the transfer should wait for its writes."""
-        return not self._open.is_set()
-
-    def add(self, chunk: bytes) -> bytes | None:
-        """Gather `chunk`; returns a full piece for the writer, or None while one gathers."""
-        self._chunks.append(chunk)
-        self._size += len(chunk)
-        self.unwritten += len(chunk)
-        if self.unwritten >= PAUSE:
-            self._open.clear()
-        return self.flush() if self._size >= PIECE else None
-
-    def flush(self) -> bytes:
-        """What is gathered, as one piece: a full one, or the body's last."""
-        piece = b"".join(self._chunks)
-        self._chunks, self._size = [], 0
-        return piece
-
-    def drain(self, size: int) -> None:
-        """`size` bytes reached the disk."""
-        self.unwritten -= size
-        if self.unwritten <= RESUME:
-            self._open.set()
-
-    async def wait(self) -> None:
-        """Wait while paused."""
-        await self._open.wait()
 
 
 class Speed:

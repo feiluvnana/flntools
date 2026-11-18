@@ -34,9 +34,10 @@ Every message names the URL redacted (`flnkit.text.redact`), and any secret the 
 
 Rules a change must keep:
 - A session belongs to one asyncio loop: every coroutine here runs on it, and nothing here
-  blocks it. File writes go to one writer thread, `BUFFER` bytes at a time, and each piece of an
-  appended body is hashed on one hasher thread beside its write, so a slow disk never stalls
-  the loop (and the browser and every other transfer on it); see src/docs/performance.
+  blocks it. File writes go to a writer thread, `BUFFER` bytes at a time: the caller's (`Meter`'s
+  `write`), else this module's one; a part that hashes has each piece hashed on one hasher
+  thread beside its write. So a slow disk never stalls the loop (and the browser and every other
+  transfer on it); see src/docs/performance.
 - A write or hash in flight on those threads always finishes before its transfer gives the part
   back, even when the transfer is cancelled: the part's descriptor is closed only after it.
 """
@@ -973,7 +974,7 @@ class Client:
                 sidecar kept; False empties it first.
             progress: a sink for the bytes as they come: anything with a settable `total` and
                 an `advance(n)`, or a `Meter` of one, which keeps where the tries before
-                this one left it; None reports nothing.
+                this one left it (and its `write`); None reports nothing.
             until: where the part's bytes stop, asked at each chunk: the file's end moves
                 there while the transfer goes (a segment of it split off); None is its end.
 
@@ -1157,7 +1158,7 @@ class Client:
             Stopped: the client's `stop` was set.
         """
         meter.start(total, start)
-        sink = _Sink(held, offset, wrote=meter.wrote, until=meter.until)
+        sink = _Sink(held, offset, write=meter.write, wrote=meter.wrote, until=meter.until)
         at, end = start, None
         try:
             async for chunk in answer.chunks:
@@ -1191,6 +1192,10 @@ class Client:
             raise Stopped(f"{redact(url)}: stopped")
 
 
+# What runs one blocking write of a part for a transfer: `await write(call, *args)`.
+Write = Callable[..., Awaitable[Any]]
+
+
 class Meter:
     """Where a download stands on its sink: a `total` it sets and an `advance(n)` it calls.
 
@@ -1200,10 +1205,12 @@ class Meter:
 
     Args:
         sink: where the bytes are counted, or None.
+        write: runs one blocking write of the part, as `await write(call, *args)`; None uses
+            this module's one writer thread.
         at: where in the file its transfer starts: a segment's start.
     """
 
-    def __init__(self, sink: Any, *, at: int = 0):
+    def __init__(self, sink: Any, *, write: Write | None = None, at: int = 0):
         self._sink = sink
         self._at = at
         # Asked at each chunk for where the bytes stop (`Client.fill`'s `until`).
@@ -1214,6 +1221,9 @@ class Meter:
         # Awaited after each piece is written, with its size: where a caller keeps its
         # progress (a segment's sidecar). None waits for nothing.
         self.wrote: Callable[[int], Awaitable[None]] | None = None
+        # Runs one blocking write of the part, `await write(call, *args)`, on the caller's
+        # thread for the part's disk; None uses this module's one writer thread.
+        self.write = write
 
     def start(self, total: int | None, at: int) -> None:
         """A try begins: set the sink's total, and move it to where the try starts.
@@ -1280,10 +1290,12 @@ class _Sink:
     """
 
     def __init__(self, held: files.Part, offset: int | None = None, *,
+                 write: Write | None = None,
                  wrote: Callable[[int], Awaitable[None]] | None = None,
                  until: Callable[[], int | None] | None = None) -> None:
         self._held = held
         self._offset = offset
+        self._run = write
         self._until = until
         self._wrote = wrote
         self._chunks: list[bytes] = []
@@ -1318,6 +1330,16 @@ class _Sink:
         if last and self._offset is None and len(data) < files.BUFFER and (
                 self._until is None or self._until() is None):
             self._held.write(data)
+            self.written += len(data)
+            if self._wrote is not None:
+                await self._wrote(len(data))
+            return
+        if self._run is not None and not self._held.hashing:
+            # The caller's writer, which waits for its write to end even through a cancel.
+            if self._offset is None:
+                await self._run(self._append, data)
+            else:
+                await self._run(self._held.write_at, self._offset + self.written, data)
             self.written += len(data)
             if self._wrote is not None:
                 await self._wrote(len(data))

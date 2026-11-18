@@ -140,10 +140,13 @@ on the M5 above while other work ran (load about 8), the median of 3 alternating
 
 How a file is written, and why:
 
-- **Bytes go to one writer thread, 4 MiB at a time, and are hashed beside it.** curl hands
-  the loop 16 KiB chunks; they are gathered, and each full 4 MiB piece is written on the
-  `flnd-writer` thread while the `flnd-hasher` thread adds it to the file's SHA-256 (for
-  dedupe and `check`), both while the loop goes on. Measured with the writes on the loop, four
+- **Bytes go to their disk's writer thread, 4 MiB at a time.** curl hands the loop 16 KiB
+  chunks; they are gathered, and each full 4 MiB piece is written on the `WRITE` thread of the
+  device the file's folder is on (`os.stat(folder).st_dev`, one thread per device, the
+  scheduler's), while the loop goes on, so a slow disk holds up only its own files:
+  `net.two_disks` went from about 5,800 % to 19 to 25 % (P6). (A part that hashes as it is
+  written, which a download no longer does, hands each piece to the `flnd-hasher` thread
+  beside the write.) Measured with the writes on the loop, four
   files onto a disk throttled to 20 MB/s held the loop up for 1.2 s at a time; on the writer
   thread, 15 ms. The last piece of a file, when it fits the part's 1 MiB buffer, is copied
   there on the loop and reaches the disk when the part lands, so a small file costs no hop to

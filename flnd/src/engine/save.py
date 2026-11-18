@@ -261,7 +261,7 @@ class _Split:
         async def work() -> None:
             sink = _Bytes(job)
             sink.flight = saver._fly(self.item)
-            meter = net.Meter(sink, at=part.at)
+            meter = net.Meter(sink, write=saver._writer(self.item.dest), at=part.at)
             meter.opened, meter.wrote = opened, wrote
             await self.client.span(url, self.held, part.at, headers=self.item.headers,
                                    validator=plan.etag or None, progress=meter,
@@ -687,8 +687,9 @@ class Saver:
         web page there moves on to the next."""
         job = self._file_job(item, plugin, mirrors[0], _nothing)
         sink = _Bytes(job)
-        # One meter for every try, so a try that resumes counts only what it adds.
-        meter = net.Meter(sink)
+        # One meter for every try, so a try that resumes counts only what it adds; its writes go
+        # to the thread of the device the file is on.
+        meter = net.Meter(sink, write=self._writer(item.dest))
 
         async def work() -> None:
             self._start(item, flow)
@@ -878,7 +879,7 @@ class Saver:
                       client: net.Client) -> None:
         """One stream of a DASH pair into its part, as a `FILE` job of its host."""
         job = self._file_job(item, plugin, url, _nothing)
-        meter = net.Meter(_Bytes(job))
+        meter = net.Meter(_Bytes(job), write=self._writer(item.dest))
 
         async def work() -> None:
             await client.fill(url, part, headers=item.headers, progress=meter)
@@ -894,6 +895,12 @@ class Saver:
         return Job(kind=Kind.FILE, work=work, plugin=plugin, account=item.account,
                    host=host or plugin, target=str(item.target), size=item.file.size,
                    path=item.dest, priority=0 if item.retried else None)
+
+    def _writer(self, dest: Path) -> net.Write:
+        """What writes a transfer's pieces: the `WRITE` thread of `dest`'s device."""
+        async def write(call: Callable[..., Any], *args: Any) -> Any:
+            return await self.scheduler.on(Kind.WRITE, call, *args, path=dest)
+        return write
 
     def _fly(self, item: Item) -> Any:
         """The file's `Flight` on the run's screen; None without a tally."""
