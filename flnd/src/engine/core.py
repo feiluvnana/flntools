@@ -1411,10 +1411,15 @@ class _Runner:
         try:
             report = self._reports[target] = await self._run(target, options, parent, inside,
                                                              began)
-            return report
+        except BaseException as error:
+            # What stops the run (a full disk) keeps the later targets' routes from running.
+            if not jobs.stops(error):
+                began.release()
+            raise
         finally:
-            began.release()
             self._once[target].set()
+        began.release()
+        return report
 
     def _turn(self) -> crawl.Turn:
         """The next target's turn at its first step, after every turn given out so far."""

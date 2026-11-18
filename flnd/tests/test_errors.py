@@ -318,6 +318,23 @@ class PolicyEngineTest(EngineCase):
         asked = [str(request.url) for request in self.requests if "aaa.example" in str(request.url)]
         self.assertEqual(asked, ["https://api.aaa.example/me"])
 
+    def test_disk_full_stops_the_run(self):
+        def full(ctx):
+            raise disk(OSError(errno.ENOSPC, "No space left on device"), "media/aaa")
+
+        ran = []
+        with self.assertRaises(DiskError):
+            self.report(make_plugin("aaa", full), make_plugin("bbb", ran.append),
+                        targets=["aaa:example_user", "bbb:example_user"])
+        self.assertEqual(ran, [])
+        # Targets list at once, but each starts once the one before it has called its route.
+        with self.assertRaises(DiskError):
+            self.report(make_plugin("ccc", lambda ctx: ctx.target.value == "0" and full(ctx)
+                                    or ran.append(ctx)),
+                        targets=[f"ccc:{n}" for n in range(30)])
+        self.assertEqual(ran, [])
+
+
 # ---------------------------------------------------------------------------------------------
 # 3. Exit codes, and no traceback for a person's mistake
 # ---------------------------------------------------------------------------------------------

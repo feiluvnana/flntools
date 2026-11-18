@@ -2233,7 +2233,7 @@ async def _read(
         categories = wanted(route, options)
         if not categories:
             return
-        context = await _taking(turn, run, _context(run.source, route, site, target,
+        context = await _taking(turn, run, lambda: _context(run.source, route, site, target,
                                                     run.call))
         listings = [_Listed(category.name, category.newest_first,
                             _caller(run, getattr(run.source, category.name), site, context))
@@ -2291,20 +2291,28 @@ class Turn:
             self._loop.call_soon_threadsafe(self.passed.set)
 
 
-async def _taking(turn: Turn | None, run: SourceRun, route: Awaitable[T]) -> T:
+async def _taking(turn: Turn | None, run: SourceRun,
+                 route: Callable[[], Awaitable[T]]) -> T:
     """Call a target's route in its turn; the turn passes once the route returned, or meets
-    the site, or the route's plugin is held."""
+    the site, or the route's plugin is held. The route is called only in its turn, so a target
+    cancelled while it waits leaves no coroutine unawaited."""
     if turn is None:
-        return await route
+        return await route()
     await turn.wait()
     if any(hold.plugin == run.source.code for hold in run.scheduler.holds):
         turn.release()
     token = met_turn.set(turn.release_soon)
     try:
-        return await route
-    finally:
+        found = await route()
+    except BaseException as error:
         met_turn.reset(token)
-        turn.release()
+        # What stops the run (a full disk) keeps the later targets' routes from running.
+        if not jobs.stops(error):
+            turn.release()
+        raise
+    met_turn.reset(token)
+    turn.release()
+    return found
 
 
 def _caller(run: SourceRun, method: Callable[..., Any], *args: Any) -> Callable[[], Awaitable[Any]]:
