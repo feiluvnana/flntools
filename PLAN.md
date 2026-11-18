@@ -1428,8 +1428,9 @@ test passes on today's code.
 ## 12. Speed-ups and benchmarks
 
 Each speed-up is measured before and after with `make bench`. Both sets of numbers go in the
-commit, and `--gate` stays green. Step 0 adds every new benchmark, so each "before" is
-today's code.
+commit, and `--gate` stays green. Step 0 adds every new benchmark and re-records every
+baseline on a quiet machine. That `tests/bench/gates.json` record is the "before" of every
+row: a number quoted below was recorded at 1e01feb, and only shows the scale.
 
 | id | change | measured by | before | goal | step |
 | --- | --- | --- | ---: | ---: | --- |
@@ -1437,13 +1438,13 @@ today's code.
 | P2 | hash only on a size match | `net.big_rate`, `e2e.*` | 2.40 GiB/s | ≥ 4 GiB/s | 5 |
 | P3 | no listing thread | `cpu.loop_bridge`, `e2e.latency_500_posts` | 40 µs, 4.85 s | removed, ≤ 4.0 s | 6 |
 | P4 | targets at once | `e2e.sync_100_targets` | step 0 | ≤ 1/4 | 6 |
-| P5 | warm tabs opened together, cookies in one call, no unread bodies | `browser.open_tab`, `browser.warm_5` | 73.7 ms, step 0 | warm_5 ≤ 1/3 | 6 |
+| P5 | warm tabs opened together, cookies in one call, no unread bodies | `browser.open_tab`, `browser.warm_4` | step 0 | warm_4 ≤ 1/3 | 6 |
 | P6 | one writer per device | `net.two_disks` | step 0 | the fast disk within 10 % of alone | 5 |
 | P7 | the screen from a snapshot | `ui.overhead`, `ui.frame`, `ui.idle_bytes` | step 0 | ≤ 3 %, ≤ 1 ms, 0 | 4 |
 | P8 | one `stat` per check that a file is on disk | `test_fs` counts | 2–3 | 1 | 6 |
 | P9 | a commit never blocks the loop | `e2e.db_contended` | step 0 | stall ≤ 100 ms | 5 |
-| P10 | progress as a snapshot | `cpu.advance_*`, `e2e.per_file` | `cpu.advance_live` 0.50 µs, `cpu.advance_plain` 0.07 µs, `e2e.per_file` 0.50 ms | lower | 4 |
-| P11 | styled help stays fast | `startup.help`, `startup.import_flnd_plugin` | 23.4, 33.9 ms | ≤ 60, ≤ 34 ms | 7 |
+| P10 | progress as a snapshot | `cpu.advance_*`, `e2e.per_file` | step 0 | lower | 4 |
+| P11 | styled help stays fast | `startup.help`, `startup.import_flnd_plugin` | step 0 (`startup.import_flnd_source` for the second) | ≤ 60 ms, no worse than step 0's `import_flnd_source` | 7 |
 | P12 | slower since the last rebuild | `db.insert`, `db.prefix_scan_10k` | 2.3 µs, 15.6 ms | ≤ 2.0 µs, ≤ 12 ms | 10 |
 | P13 | dynamic segments | `net.per_conn_limit` | step 0 | ≥ 4× | 5 |
 | P14 | a hasher pool | `net.big_4_at_once` | step 0 | ≥ 2.5× | 5 |
@@ -1475,8 +1476,8 @@ size). Step 0 adds `"ui"` to `GROUPS` in `tests/bench/run.py` and makes `--gate`
   hashing forced vs one (`1.0x` at step 0; goal ≥ `2.5x` in step 5).
 - `net.hls_200` (`x`, higher): speed-up ratio for a 200-segment playlist at 40 ms latency
   each vs fetching serially (`1.0x` at step 0; goal ≥ `6.0x` in step 14).
-- `browser.warm_5` (`s`, lower): opening 5 warm tabs (serial at step 0; goal ≤ 1/3 of step 0
-  in step 6).
+- `browser.warm_4` (`s`, lower): opening 4 warm tabs beside one target's own tab, the most
+  §6.2's budget allows (serial at step 0; goal ≤ 1/3 of step 0 in step 6).
 
 ## 13. Conventions (the new AGENTS.md)
 
