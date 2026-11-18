@@ -185,7 +185,7 @@ flnd/                the project folder
   flnkit/            the package flnkit: standalone, imports nothing of flnd
     errors.py        the error classes flnkit raises, the root of the one hierarchy (5.1)
     net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py
-    media.py loop.py
+    media.py loop.py stream.py
   tests/
 ```
 
@@ -1817,9 +1817,11 @@ is built on the earlier layout.
   `tests/test_jobs.py` and `tests/test_save.py`, under 13's rules; the old file shrinks by at
   least as many lines as the new ones hold, and the commit quotes both counts.
 - **Commits:**
-  - `feat:schedule every request as a job`;
+  - early, as standalone modules (15): `feat:add the scheduler's pools and retry policy`
+    (`src/engine/jobs.py`) and `feat:add the save pipeline` (`src/engine/save.py`);
+  - `feat:schedule every request as a job`, which wires `jobs.py` in;
   - `refactor:retry in one policy`;
-  - `feat:save files as jobs`;
+  - `feat:save files as jobs`, which wires `save.py` in;
   - `perf:hash only files whose size matches a saved one`;
   - `perf:split big files into segments while the host has room`;
   - `perf:write each device on its own thread`;
@@ -1884,7 +1886,11 @@ is built on the earlier layout.
   and passes through the real engine.
 - **Test budget:** `tests/test_source.py` is rewritten as `tests/test_plugin.py` on API 2,
   and deleted with API 1 in step 8; the API-1 tests that only test the bridge go with it.
-- **Commits:** `feat:add plugin api 2`, then `feat:make the test kit behave like the engine`.
+- **Commits:**
+  - early (15): `feat:declare plugin api 2` (`src/plugin.py`, not yet public);
+  - `feat:add plugin api 2`, which wires it in: the engine runs `api = 2` plugins and the
+    names become public;
+  - `feat:make the test kit behave like the engine`.
 
 ### Step 8. The plugins on API 2
 - **What to build.** Each port takes its plugin's safe and fast path from section 16, the
@@ -2013,9 +2019,12 @@ is built on the earlier layout.
   home) and `tests/test_config.py`. E2, E4, E14, E19.
 - **Bench:** `db.*` (P12).
 - **Commits:**
-  - `feat:read categories from the target`;
-  - `feat:move flnd.db to schema 2`;
-  - `feat:let config override a plugin's templates`.
+  - early (15): `feat:add flnd.db schema 2 and its migration` (`src/engine/store.py`),
+    `feat:add config.toml structs, reading and editing` (`src/engine/config.py`) and
+    `feat:resolve targets from the manifest` (`src/engine/resolve.py`);
+  - `feat:read categories from the target`, which wires `resolve.py` in;
+  - `feat:move flnd.db to schema 2`, which wires `store.py` in and runs the migration;
+  - `feat:let config override a plugin's templates`, which wires `config.py` in.
 
 ### Step 11. The auth manager
 - **Changes:**
@@ -2035,10 +2044,12 @@ is built on the earlier layout.
 
   S14, S16.
 - **Commits:**
+  - early (15): `feat:seal values with a key kept outside the home` (`flnkit/vault.py`);
   - `feat:keep several accounts per plugin`;
   - `feat:log in through a browser window`;
   - `feat:switch accounts when one is blocked or can't see a target`;
-  - `feat:seal secrets with a key kept outside the home`.
+  - `feat:seal secrets with a key kept outside the home`, which wires the vault into
+    `src/engine/auth.py` and the schema-2 secrets.
 
 ### Step 12. The extension
 - **Changes:**
@@ -2050,8 +2061,8 @@ is built on the earlier layout.
 - **Tests:** `tests/test_extension.py`, the protocol against a fake extension: every op,
   chunked answers, a second run sharing the host, a refused origin.
 - **Commits:**
-  - `feat:add the chrome extension and its host`;
-  - `feat:log in and browse through the extension`;
+  - early (15): `feat:add the chrome extension and its host`;
+  - `feat:log in and browse through the extension`, which wires it in;
   - `refactor:remove the keychain readers of chromium cookie stores`.
 
 ### Step 13. The commands
@@ -2075,20 +2086,27 @@ is built on the earlier layout.
     terminal input if Rich fallback was chosen).
 - **Bench:** `startup.help`, `ui.open` (P17).
 - **Commits:**
+  - early (15): `feat:add the interactive lists and forms` (`src/ui/lists.py`,
+    `src/ui/forms.py`);
   - `feat:group the commands into get, target, auth, plugin, extension, status and config`;
-  - `feat:work in the target, auth and plugin lists`;
-  - `feat:ask with forms in the style of huh`.
+  - `feat:work in the target, auth and plugin lists`, which wires `lists.py` in;
+  - `feat:ask with forms in the style of huh`, which wires `forms.py` in.
 
 ### Step 14. The web plugin and HLS
 - **Changes:**
+  - `flnkit/stream.py`: reading HLS (`.m3u8`) and segmented DASH (`.mpd`) playlists into
+    segments;
   - `src/plugins/web.py`: direct file links; HLS (`.m3u8`) and DASH (`.mpd`) through
     `File.stream`; a page's `og:video`, `og:image` and `<video src>`; the popup's media;
   - add `src/docs/plugins/web.md` and link it in `src/docs/README.md`;
   - `make live` (section 10).
 - **Tests:** `tests/test_web.py`.
 - **Bench:** `net.hls_200` (P16).
-- **Commits:** `feat:download any link with the web plugin`, then `test:add the hand live
-  check`.
+- **Commits:**
+  - early (15): `feat:read hls and dash playlists` (`flnkit/stream.py`);
+  - `feat:download any link with the web plugin`, which wires `stream.py` in through
+    `File.stream`;
+  - `test:add the hand live check`.
 
 ### Step 15. Transfer lanes (only if P1 left the loop CPU-bound)
 - **When:** after step 3, compare `net.small_8_at_once` against its goal. If it is ≤ 300 ms,
@@ -2141,6 +2159,13 @@ order:
 
    A finding goes back to the same builder (`SendMessage`), until the step passes.
 3. **Commit** the step's commits as section 14 names them, with only that step's paths.
+   **Early parts.** A later step's standalone part (a new module that nothing imports yet,
+   with its own tests) may be built and committed early, in parallel with the running
+   step, when it touches no file a running step changes. Section 14 marks these commits
+   "early"; the step's own commits then wire the part in. The user asked for this on
+   2026-11-18 ("Can you speed it up?", "Now should parallel all things"). An early part
+   follows the contracts as written; if its step later changes a contract, the wiring
+   commit changes the part too.
 4. **Before the first push,** ask the user whether to push after each step (D26).
 5. **Keep a progress note** in memory: the step number, the last commit, and anything open.
 6. **Stop and ask the user** after step 6 before starting step 7 (plugin API 2), and
