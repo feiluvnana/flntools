@@ -1,15 +1,19 @@
-# PLAN: flni, an incremental game
+# PLAN: flni, an incremental game of light, the universe and time
 
 Written 2026-11-18. flni is a desktop incremental ("idle") game in Python, for Windows, macOS
-and Linux. It aims at the depth of the deepest games of the genre: five prestige layers, each
-with its own currencies, producer chains, challenges, trees and automation, a late game of
-seven themed realms, and an endless mode. The first click to the finale takes about 260 hours
-of game time.
+and Linux. You are the first light of a young universe, and you play its whole history: the
+first photons, the first stars and the elements they forge, the galaxies and the cosmic web,
+the mastery of time itself, and the long fight against entropy at the end of time. The first
+click to the finale takes about 260 hours of game time, and an endless mode follows.
 
-The user asked for "everything that Antimatter Dimensions has". So flni has a system of every
-*kind* that game has (section 2.1 lists them side by side), and each one is designed afresh:
-the theme, the names, the numbers, the rules, the text and the look are flni's own. No name,
-text, art, layout or exact rule is taken from that game or any other.
+The user asked for a game as deep as Antimatter Dimensions, without copying it. So flni
+matches that depth (five prestige layers, each with its own currencies, resets, challenges,
+a structure to grow, and automation, then seven themed late-game eras), but its mechanics are
+its own, drawn from the theme: the spectrum redshifting down, stars living and dying, a
+periodic table filled by nucleosynthesis, a map of galaxies, constellations drawn on a random
+night sky, parallel timelines, recorded loops, borrowed futures, Maxwell's demons and black
+holes. Section 2.1 says, for each kind of depth the genre has, what flni does instead. No
+name, text, art, layout or rule is taken from that game or any other.
 
 Paths are relative to this folder, `flni/`, a project of its own in the monorepo beside
 `flnd/`. Run every command here.
@@ -23,323 +27,308 @@ through the simulator, and writes the new values back into this page.
 
 | id | decision | why |
 | --- | --- | --- |
-| G1 | **GUI: PySide6 (Qt 6) Widgets**, through the `PySide6-Essentials` wheel | native windows on all three systems, mature, fast text and painting, a canvas (`QGraphicsView`) for the trees and the grid; Essentials leaves out the Qt add-ons we don't use. pygame needs a UI toolkit written by hand; Kivy and Dear PyGui look foreign; Flet downloads a Flutter runtime; Textual is a terminal |
+| G1 | **GUI: PySide6 (Qt 6) Widgets**, through the `PySide6-Essentials` wheel | native windows on all three systems, mature, fast text and painting, a canvas (`QGraphicsView`) for the web, the sky and the periodic table; Essentials leaves out the Qt add-ons we don't use. pygame needs a UI toolkit written by hand; Kivy and Dear PyGui look foreign; Flet downloads a Flutter runtime; Textual is a terminal |
 | G2 | **Numbers: our own `Big`**, a float mantissa in [1, 10) and a Python `int` exponent | floats stop at 1.8e308, and the game goes to 1e(1e9). Python ints get slow past a few thousand digits. A pair stays O(1) per operation. No tetration: the finale sits at e1e9, well inside a float `log10` |
-| G3 | **The model is pure Python with no Qt**, and deterministic: no clock, no I/O, and randomness only from a seeded generator kept in the save | it can be tested, simulated at 1,000× speed, balanced by a bot, and a crystal drop can't be re-rolled by reloading |
+| G3 | **The model is pure Python with no Qt**, and deterministic: no clock, no I/O, and randomness only from a seeded generator kept in the save | it can be tested, simulated at 1,000× speed, balanced by a bot, and a night sky can't be re-rolled by reloading |
 | G4 | **One fixed tick of 50 ms** (20 per second) for the model; the screen refreshes at 20 Hz and only redraws text that changed | the genre's usual feel; ≤ 1 ms of model time per tick leaves the CPU idle |
 | G5 | **Balance through a simulator.** `flni sim` plays the game with a scripted policy and prints the time to each milestone. The pacing table (section 5) is a test | the only honest way to tune 260 hours of content |
-| G6 | **Content is data.** Every producer, upgrade, node, trial, study, crystal effect, reagent, perk, law, realm stage and achievement is a row in `content/`. The rules read the rows | adding content is adding a row; the UI lists come from the same rows |
+| G6 | **Content is data.** Every band, upgrade, star class, element, galaxy, sky rule, study, anomaly, paradox, constant, era stage and achievement is a row in `content/`. The rules read the rows | adding content is adding a row; the UI lists come from the same rows |
 | G7 | **Every multiplier is named.** Each source of a multiplier is one entry in `model/effects.py`, and the breakdown panel lists them | players want to see where every × comes from, and it makes balance bugs visible |
 | G8 | **Saves are JSON**, versioned, with migrations; written atomically every 30 s and on quit, with 3 rolling backups; export and import as a text string | a player never loses a save, and can move one between machines |
-| G9 | **Offline progress** is simulated on load: the time away, in at most 10,000 steps, with the automation running; or, by a setting, stored in the Reservoir (2.6) | the game keeps going when closed |
-| G10 | **The automator is a small language of our own**, parsed and run by the model, one instruction per tick; never Python, never `eval` | a player's script can't do anything but play the game, and it runs the same in the simulator |
+| G9 | **Offline progress** is simulated on load: the time away, in at most 10,000 steps, with the automation running; or, by a setting, banked as Moments (2.7) | the game keeps going when closed |
+| G10 | **The automator is a small language of our own**, parsed and run by the model, one statement per tick; never Python, never `eval` | a player's script can't do anything but play the game, and it runs the same in the simulator |
 | G11 | **Packaging: PyInstaller `--onedir --windowed`**, built on each OS (a `.app` on macOS, a zipped folder on Windows and Linux) | the same tool `flnd` uses; a one-file Qt binary unpacks 80 MB on every start |
 | G12 | **Python ≥ 3.11, ruff as the one checker, `make check` green at every commit** | the repository's rules (`../AGENTS.md`) |
-| G13 | **No sign, no negatives:** `Big` is ≥ 0, and a subtraction below 0 raises | currencies never go negative; a negative is always a bug |
+| G13 | **No sign, no negatives:** `Big` is ≥ 0, and a subtraction below 0 raises | currencies never go negative; a negative is always a bug. A Paradox's debt (2.7) is its own field, not a negative amount |
 | G14 | **Docs for whoever takes the project over**, in `docs/`, kept in step with the code by `tests/test_docs.py` (section 8), as `flnd/docs` is for flnd | a new owner, person or agent, can read why each part exists and how to change it without reading every module |
 
 ## 2. The game
 
-### 2.1 Every kind of system, and flni's own version of it
+### 2.1 The genre's kinds of depth, and what flni does instead
 
-| kind of system (as the genre knows it) | flni's version | layer |
+| the genre's kind of depth | flni's own mechanic | what makes it different |
 | --- | --- | --- |
-| a chain of 8 producers, each making the one below | the Lights | Glow |
-| a global speed you buy | Tempo | Glow |
-| a small reset that unlocks the next producer | Kindle | Glow |
-| a larger reset that makes the global speed stronger | Flare | Glow |
-| spending lower producers to boost the top one | Offering | Glow |
-| the first prestige, with a forced cap before it is broken | Nova, and the Ceiling | Nova |
-| a prestige shop of one-time and repeatable upgrades | the Stardust grid | Nova |
-| challenges with restrictions | 12 Trials | Nova |
-| breaking the cap, with its own upgrades | Breach | Nova |
-| harder challenges after the cap is broken | 8 Breach Trials | Nova |
-| a second producer chain fed by the prestige currency | the Forges, making Radiance | Nova |
-| a resource that copies itself | Bloom (Petals and Seeds) | Nova |
-| autobuyers for every purchase and reset | autobuyers, with intervals and modes | Nova on |
-| milestones that keep things through resets | milestones on every layer | all |
-| the second prestige | Rift | Rift |
-| a big tree with exclusive paths, bought with a currency of its own | the Chart, bought with Theorems | Rift |
-| a third producer chain giving free speed | the Rift Engines, making Drift | Rift |
-| challenges with several completion tiers | 12 Rift Trials, 5 tiers each | Rift |
-| a weakened run that earns a special currency | Haze, earning Mist and Silt | Rift |
-| formula mini-games, each with its own currency | the Observatory's 6 Studies | Rift |
-| the third prestige, with random equipment | Collapse, dropping Crystals | Lattice |
-| equipment slots with interactions | the 7 × 7 Lattice, with neighbour rules | Lattice |
-| breaking equipment down, and crafting from the parts | Essence and Distilling (12 reagents) | Lattice |
-| a perk tree of quality-of-life | 40 Lattice perks | Lattice |
-| periodic bursts of game speed | the Pulsar | Lattice |
-| storing time to spend later | the Reservoir | Lattice |
-| a scripting automator with a text and a block editor | scripts | Lattice |
-| the fourth prestige | Ascend | Zenith |
-| rule-changing modifiers | 12 Laws | Zenith |
-| themed late-game realms, each with its own mechanic | 7 Wardens | Zenith |
-| a final, hardest realm that ends the game | the Hollow and its 5 Anchors | Zenith |
-| achievements with small rewards, some secret | 160 achievements | all |
-| statistics and the last runs of each reset | Statistics and Records | all |
-| a line of jokes and lore | the news line, 300 lines | all |
-| an in-game help for every mechanic | the Codex | all |
-| number notations, themes, hotkeys, confirmations | Settings | all |
-| an endless mode after the end | Afterglow | — |
+| a chain of producers | the **Spectrum**: 8 bands of light, each redshifting into the band below | the chain is physical: bands also *resonate* with their neighbours when their amounts are close, so you balance the chain, not only buy its top |
+| a global speed you buy | **Expansion**: a dial you set, not a purchase | faster light, but every band drains into the one below: a trade-off you tune per run |
+| small resets that unlock tiers | **Recombination** | — (the genre's common shape, kept plain) |
+| the first prestige | **Ignite**, earning Stellar Mass | no forced cap: you ignite when the gain is worth it |
+| a second producer system | **Stars**: you form stars of five classes; each lives, shines and dies | timing and portfolio: long-lived dwarfs or short, bright giants whose deaths give elements and remnants |
+| permanent upgrades from a big set | **the Periodic Table**: 92 elements, made by fusion, supernovae and mergers | the "upgrade list" is the table itself; families (columns) share effects; 12 keystone elements open systems |
+| challenges | **Strange Skies** (10): runs under changed laws of physics | each changes one physical constant |
+| automation | **Probes**, made from silicon, then scripts and recorded **Loops** | automation is an element you make; later you record yourself and replay it |
+| a skill tree | **the Cosmic Web**: a fixed map of 84 galaxies, linked by filaments that cost by distance | a spatial tree: which way you grow on the map is the build; clusters give set bonuses |
+| random equipment | **Constellations**: each Coalesce shows a new random night sky; you draw a constellation by linking its stars | its effects come from its *shape* (lines, loops, branches, brightness, colour), so you design your own gear |
+| formula mini-games | **the Observatory**: 6 Studies of orbits, accretion, decay, tides, pulsar timing, expansion | each asks a different choice of order and timing |
+| harder, tiered challenges | **Anomalies** (8, 3 tiers each) | each bends a rule of the earlier layers, such as the Spectrum running upward |
+| a time-based prestige | **Rewind**, earning Chronons | time is the layer's whole theme |
+| playing several runs at once | **Timelines**: up to 4 parallel copies of the universe below, each with its own choices | no other kind fits: you compare strategies live and keep the best |
+| challenges of another kind | **Paradoxes** (8, 3 tiers): start rich with resources borrowed from your future, and repay them | a debt you must clear before the run may end |
+| a per-run strategic choice | **the Epoch dial**: the universe's age, favouring early or late layers | — |
+| stored and spent time | **Moments**: banked time, spent as warps | — (common in idle games) |
+| a pressure that grows | **Entropy**: rises through every late run and weakens everything | you fight it with Demons and Black holes, not with a bigger number |
+| an active mini-game | **Maxwell's Demons** sort hot from cold particles to make Negentropy | an animated box, idle once upgraded |
+| bursts of speed | **Black holes**: their Hawking radiation speeds time near them | small ones burst bright and vanish, large ones glow faintly for long |
+| rule-changing modifiers | **Constants**: 12 sliders (light's speed, gravity, …) on a shared budget | trade-offs on sliders, not toggles |
+| themed late-game realms | **the Seven Eras** of the far future, each a run under that era's physics, each opening a mechanic | drawn from cosmology: Inflation, the Dark Age, Reionization, the Degenerate era, the Black-hole era, the Dark era, the Last Light |
+| an endless mode | **the Big Bounce**: a new universe with rolled constants, scored | each bounce is a different universe |
+| achievements, stats, help, news | 160 achievements, statistics, records, the Codex, the news line, the **cosmic clock** | the top bar shows the universe's age, from its first second to trillions of years |
 
-### 2.2 The theme
-
-A dark, empty sky. You make the first mote of light, and light makes more light. Each layer is
-a larger scale of light: from motes to stars, from stars to the rifts between them, from rifts
-to the lattice that holds the sky, and at last to the zenith, where you write the laws light
-obeys and face the wardens who keep the dark. The finale is the moment the whole sky is lit.
-
-### 2.3 The layers at a glance
+### 2.2 The layers at a glance
 
 | # | layer | main currency | reset that earns it | opens at |
 | --- | --- | --- | --- | --- |
-| 1 | Glow | Lumen (L) | — | the start |
-| 2 | Nova | Stardust (SD) | Nova | 1e50 L (the Ceiling) |
-| 3 | Rift | Void (V) | Rift | 1e1000 L in one run |
-| 4 | Lattice | Shards (Sh) | Collapse | 1e15 V |
-| 5 | Zenith | Aether (Ae) | Ascend | 1e30 Sh |
-| — | Afterglow | Glimmer | Glimmer | the finale |
+| 1 | Dawn | Light (ℓ) | — | the start |
+| 2 | Stars | Stellar Mass (M☉) | Ignite | 1e60 ℓ |
+| 3 | Galaxies | Dark Matter (DM) | Coalesce | 1e600 ℓ in one run, and iron made |
+| 4 | Chrono | Chronons (⧗) | Rewind | 1e15 DM, and uranium made |
+| 5 | Entropy | Negentropy (N) | Crunch | 1e25 ⧗ |
+| — | the Eras | — | — | each opened with Negentropy |
+| — | the Big Bounce | Echoes | Bounce | the finale |
 
-A reset of layer n resets every layer below it, except what that layer's milestones, perks or
-laws keep. Each layer's tab has sub-tabs; the sidebar shows only what is unlocked.
+A reset of layer n resets every layer below it, except what that layer's milestones keep.
+Each layer's tab has sub-tabs; the sidebar shows only what is unlocked.
 
-### 2.4 Layer 1: Glow
+**The cosmic clock.** The top bar shows the universe's age, mapped from total game time: the
+first minute is the first second after the beginning; the first Ignite falls near 380,000
+years; the first Coalesce near a billion; the first Rewind near 13.8 billion ("now"); the
+Entropy layer runs into trillions of years and the Eras far beyond. The map is a fixed,
+increasing table in `content/clock.py`. It is flavour only and changes no number.
 
-**The Lights.** Light 1 makes Lumen; Light k makes Light k−1. Each Light has `bought` (drives
-cost and Facets) and `amount` (drives production; it grows from the tier above).
+### 2.3 Layer 1: Dawn
 
-| k | name | base cost | cost growth per purchase | unlocked |
+**The Spectrum.** Eight bands. Band 1 (Radio) makes Light; band k makes band k−1 as its
+photons redshift. Each band has `bought` (drives cost and Harmonics) and `amount` (drives
+production).
+
+| k | band | base cost | cost growth per purchase | unlocked |
 | ---: | --- | ---: | ---: | --- |
-| 1 | Mote | 10 | ×1.15 | start |
-| 2 | Wisp | 100 | ×1.20 | start |
-| 3 | Candle | 1e4 | ×1.25 | start |
-| 4 | Lamp | 1e6 | ×1.30 | start |
-| 5 | Lantern | 1e9 | ×1.35 | Kindle 1 |
-| 6 | Beacon | 1e13 | ×1.40 | Kindle 2 |
-| 7 | Pharos | 1e18 | ×1.45 | Kindle 3 |
-| 8 | Halo | 1e24 | ×1.50 | Kindle 4 |
+| 1 | Radio | 10 | ×1.15 | start |
+| 2 | Microwave | 100 | ×1.20 | start |
+| 3 | Infrared | 1e4 | ×1.25 | start |
+| 4 | Visible | 1e6 | ×1.30 | start |
+| 5 | Ultraviolet | 1e9 | ×1.35 | Recombination 1 |
+| 6 | X-ray | 1e13 | ×1.40 | Recombination 2 |
+| 7 | Gamma | 1e18 | ×1.45 | Recombination 3 |
+| 8 | Planck | 1e24 | ×1.50 | Recombination 4 |
 
 - **Cost:** `base · growth^bought`; past 150 bought, a further `growth^((bought−150)²/50)`
-  (*tuned*); past 1e308 the growth itself rises ×1.01 per purchase (the Strain). "Buy max"
-  solves the cost in closed form, with no loop.
-- **Production:** each unit of Light k makes `mult_k · tempo` per second of the tier below.
-- **Facets:** every 25 bought of a Light multiplies that Light by ×3.
-- **Tempo:** costs 1e3 L, ×10 per purchase (*tuned*). Each purchase multiplies Tempo by the
-  Tempo step, 1.125 at the start. Tempo multiplies every Light's production.
-- **Focus:** points `F = floor(log10(best Lumen this Nova) / 4)`. Each point on a Light
-  multiplies it by ×1.4. Points can be moved at most once every 30 s. 3 presets.
-- **Kindle:** needs 10 bought of the highest unlocked Light (from Kindle 5 on,
-  `10 + 15·(K−4)` Halos). Resets Lumen to 10, the Lights and Tempo; keeps Focus, Flares and
-  the shop; unlocks the next Light; every Light ×2 per Kindle.
-- **Flare:** needs `80 + 60·Fl` Halos bought (Fl = Flares; past 50 Flares the step grows
-  ×1.02 per Flare, *tuned*). Resets Kindles too. Each Flare adds +0.02 to the Tempo step
-  (with diminishing returns past 20 Flares: `+0.02 / (1 + (Fl−20)/40)`).
-- **Offering:** opens with the Halo. It sets the Lights 1–7 `amount` to 0 (`bought` stays) and
-  raises the Halo's Offering multiplier to `(1 + log10(Mote amount) / 12)^2.5` if that is
-  higher than the current one. Reset by Kindle and Flare.
-- **The Lumen shop:** 12 one-time upgrades.
+  (*tuned*). "Buy max" solves the cost in closed form, with no loop.
+- **Production:** each unit of band k makes `mult_k` per second of the band below (band 1
+  makes Light).
+- **Harmonics:** every 25 bought of a band raises its harmonic number h by 1; the band's
+  multiplier is ×(1 + h)^1.5. Growth by addition, then a power: the curve is softer early
+  and keeps paying late.
+- **Resonance:** two neighbouring bands whose amounts are within a factor of 10 of each other
+  resonate: both ×2 (*tuned*; upgrades raise it). The Spectrum tab draws a resonance line
+  between them. Buying only the top band breaks resonance; balancing keeps it.
+- **Expansion:** a dial from 0 to 10 notches; a notch is unlocked by buying it (1e3 ℓ, ×100
+  each, *tuned*). At notch e, Light is ×(1.5)^e, and every band loses `2e %` of its amount
+  per second to the band below (on top of production). The dial can be turned at any time;
+  the best notch depends on the run.
+- **Recombination:** needs 10 bought of the highest unlocked band (from the 5th on,
+  `10 + 15·(R−4)` Planck, R the Recombination count). Resets Light and the bands; keeps the
+  dial's notches and the shop; unlocks the next band; every band ×2 per Recombination.
+- **The Dawn shop:** 12 one-time upgrades.
 
-| id | name | cost (L) | effect |
+| id | name | cost (ℓ) | effect |
 | --- | --- | ---: | --- |
-| U1 | Steady Hands | 1e3 | Motes ×(1 + log10(Lumen)) |
-| U2 | Cut Glass | 1e8 | Facets ×3.5 instead of ×3 |
-| U3 | Dry Tinder | 1e12 | Kindle needs 2 fewer |
-| U4 | Clear Mind | 1e16 | a Focus point every 3.5 orders of magnitude, not 4 |
-| U5 | Warm Air | 1e20 | every Light ×(1 + bought/100) |
-| U6 | Long Wick | 1e24 | Kindle ×2.2 instead of ×2 |
-| U7 | Bright Edge | 1e28 | Focus ×1.5 per point instead of ×1.4 |
-| U8 | Kinship | 1e32 | each Light ×1.05 per Light bought of the tier above |
-| U9 | Afterimage | 1e36 | Lights 1–4 ×(Kindle count + 1) |
-| U10 | Lens Array | 1e40 | Facets every 20 bought instead of 25 |
-| U11 | Gravity | 1e44 | Lumen ×(1 + log10(Lumen))^0.5 |
-| U12 | Spark of Nova | 1e48 | +50% Stardust |
+| D1 | First Photon | 1e3 | Radio ×(1 + log10(Light)) |
+| D2 | Overtone | 1e8 | Harmonics' power 1.5 → 1.7 |
+| D3 | Clear Sky | 1e12 | Recombination needs 2 fewer |
+| D4 | Standing Wave | 1e16 | Resonance needs a factor of 30, not 10 |
+| D5 | Warm Background | 1e20 | every band ×(1 + bought/100) |
+| D6 | Decoupling | 1e24 | Recombination ×2.2 instead of ×2 |
+| D7 | Hubble Flow | 1e28 | Expansion drains 1.5% per notch, not 2% |
+| D8 | Cascade | 1e32 | each band ×1.05 per band bought of the one above |
+| D9 | Afterglow | 1e36 | bands 1–4 ×(Recombinations + 1) |
+| D10 | Fine Structure | 1e40 | Harmonics every 20 bought, not 25 |
+| D11 | Brightness | 1e44 | Light ×(1 + log10(Light))^0.5 |
+| D12 | Protostar | 1e48 | +50% Stellar Mass |
 
-- **The Ceiling:** before Breach, Lumen stops at 1e50, and the only way on is a Nova. Target:
-  the first Nova after 60–90 minutes.
+- **The goal:** at 1e60 Light, Ignite opens. Target: the first Ignite after 60–90 minutes.
 
-### 2.5 Layer 2: Nova
+### 2.4 Layer 2: Stars
 
-- **Nova** resets Glow (Lumen, Lights, Tempo, Kindles, Flares, Focus, the Offering, the shop)
-  and gives Stardust: 1 per Nova before Breach (×multipliers); after Breach,
-  `floor(10^((log10 L − 50) / 25))` (*tuned*).
-- **Starlight:** unspent Stardust multiplies every Light by ×(1 + SD)^0.4.
-- **The Stardust grid:** 16 one-time upgrades in a 4 × 4 grid, each costing 1 to 1e9 SD; a full
-  row gives a bonus (row 1: Tempo step +0.01; row 2: Kindles cost 5 fewer; row 3: Stardust ×2;
-  row 4: start each Nova with 1e10 Lumen). Then 5 repeatables: Stardust ×2 (cost ×10 each),
-  Starlight exponent +0.05 (5 times), autobuyer speed ×2 (8 times), Offering exponent +0.1
-  (10 times), Focus points +1 (10 times).
-- **The Constellation:** a tree of 36 nodes bought with Stardust (costs 1 to 1e40, *tuned*), in
-  three branches of 10 and 6 capstones: **Flow** (production), **Forge** (costs and resets),
-  **Fate** (Stardust, offline speed, autobuyers). Of each branch's fourth row only one node in
-  all three branches can be owned (two after Rift milestone 6, three after a Lattice perk).
-  Respec on the next Nova, for free. 3 presets.
-- **Milestones** by Nova count: 1 Mote and Wisp autobuyers; 2 Candle and Lamp; 3 Lights 5–8;
-  4 Tempo autobuyer; 5 Kindle autobuyer; 7 Flare autobuyer; 8 the shop is kept; 10 Offering
-  autobuyer; 12 start with 4 Kindles; 15 the Nova autobuyer; 25 Kindles are kept; 40 Flares
-  are kept.
-- **Autobuyers:** each starts at one action every 3 s; each upgrade halves it, down to one tick.
-  Each can be off, buy one, or buy max. The Kindle and Flare autobuyers take a limit ("only up
-  to N"); the Nova autobuyer takes an amount, a time, or "×N of the last Nova's gain".
-- **Trials** (12): a Nova run with a restriction, ending at 1e50 Lumen. Rewards are permanent.
+- **Ignite** resets Dawn (Light, bands, Recombinations, the dial's setting; the shop only
+  until Stars milestone 6) and gives Stellar Mass `floor(10^((log10 ℓ − 60) / 30))` (*tuned*).
+  Unspent Mass multiplies every band by ×(1 + M)^0.3.
+- **Stars.** Mass is spent to form stars in star slots (3 at first, up to 12 by upgrades).
+  Stars live through Ignites: an Ignite resets Dawn, not the sky. Each class:
 
-| id | name | restriction | reward |
+| class | mass cost | lifetime (game time) | while it shines | when it dies |
+| --- | ---: | ---: | --- | --- |
+| Red dwarf | 1 | 6 h | Light ×2, fuses H → He | a white dwarf |
+| Sunlike | 10 | 1 h | Light ×10, fuses up to O (8) | a white dwarf, and C, N, O |
+| Blue giant | 1e3 | 10 min | Light ×1e3, fuses up to Si (14) | a neutron star, and Na to Si |
+| Supergiant | 1e6 | 2 min | Light ×1e6, fuses up to Fe (26) | a supernova: Co to Sr (27–38), and a neutron star |
+| Hypergiant | 1e10 | 30 s | Light ×1e10 | a black hole, and a burst of every element up to Fe |
+
+  (*tuned*.) The class multipliers of the stars shining multiply together. A star's yield of
+  each element grows with its mass cost paid (a later upgrade lets you overpay a star for
+  more yield, at a shorter life). Stars can be set to re-form on death (from Probe 3).
+- **Remnants** stay after their star dies, and no reset below Galaxies clears them:
+  white dwarfs (each Light ×1.1, capped by slots ×10); neutron stars (each +1% game speed;
+  two can be **merged**, which spends them and makes elements 39–92 by the r-process);
+  black holes (kept for the Entropy layer; until then each band ×1.5).
+- **The Periodic Table:** 92 elements, each with an amount. An element's effect grows with
+  `log10(1 + amount)`. Elements of one family (a column of the table) share a kind of effect:
+
+| family | effect kind |
+| --- | --- |
+| alkali metals (H counts here) | Light × |
+| alkaline earths | band costs grow slower |
+| transition metals | star slots, lifetimes, yields |
+| post-transition and metalloids | Probe speed |
+| nonmetals | Resonance strength |
+| halogens | Expansion's drain lowered |
+| noble gases | Stellar Mass × |
+| lanthanides | the Observatory's speed |
+| actinides | Chronons × |
+
+  Twelve **keystones** also open a system the first time one is made: He (the Stars shop),
+  C (star re-forming), O (the 4th star slot), Si (**Probes**, the autobuyers), Fe (the way to
+  Galaxies), Ni (neutron-star merging), Ag (Strange Skies 6–10), Au (the Galaxies shop),
+  Pt (Probe scripts become scripts), Pb (white dwarfs uncapped), U (the way to Chrono),
+  Pu (the last Paradox). The table is drawn as a periodic table; an element not yet made is
+  dark, with its source in the tooltip.
+- **Probes** (autobuyers): one per band, plus Recombination, the dial, star forming and
+  Ignite. Each starts at one action every 3 s, halved by silicon thresholds and Mass
+  upgrades, down to one tick. Each can be off, buy one, or buy max; the Ignite Probe takes an
+  amount, a time, or "×N of the last Ignite's gain".
+- **Stars milestones** by Ignite count: 1 band Probes 1–2; 2 bands 3–4; 3 bands 5–8;
+  4 the dial Probe; 5 the Recombination Probe; 6 the Dawn shop is kept; 8 start with 4
+  Recombinations; 12 the Ignite Probe; 20 Recombinations are kept.
+- **The Stars shop** (opened by He): 16 one-time upgrades and 4 repeatables, bought with Mass
+  (*tuned*).
+- **Strange Skies** (10 challenges): an Ignite run under a changed constant, ending at 1e60
+  Light; the reward is permanent.
+
+| id | name | the change | reward |
 | --- | --- | --- | --- |
-| T1 | Dim | no Facets | Facets every 20 bought (with U10, every 16) |
-| T2 | Short Wick | only Lights 1–4 | Lights 1–4 ×10 |
-| T3 | Drift | production ×1/(1 + run time / 60 s) | Lights ×(1 + log10(run time in s)) |
-| T4 | Tithe | each purchase raises every other Light's cost ×1.1 | cost growth −0.02 for every Light |
-| T5 | Silence | no Focus | Focus points ×1.5 |
-| T6 | Still Air | no Kindle | Kindle ×3 instead of ×2 |
-| T7 | Eclipse | Motes make nothing for 10 s after any purchase | Motes ×(Halo bought + 1) |
-| T8 | Mirror | Lumen production ^0.75 | Stardust ^1.05 |
-| T9 | Ballast | Tempo does nothing | Tempo step +0.015 |
-| T10 | Alternate | the even Lights make nothing | the even Lights ×(odd Lights bought)^0.5 |
-| T11 | Brittle | buying a Light empties the Lights below it | Offering exponent ×1.3 |
-| T12 | Ration | at most 600 purchases in the run | the Nova autobuyer acts every tick |
+| K1 | Opaque | no Resonance | Resonance ×3 instead of ×2 |
+| K2 | Frozen | the dial is stuck at 0 | Expansion's Light ×1.6 per notch |
+| K3 | Young | only bands 1–4 | bands 1–4 ×10 |
+| K4 | Heavy | band k costs ×1e3^k more | cost growth −0.02 for every band |
+| K5 | Dim | Light production ^0.75 | Stellar Mass ^1.05 |
+| K6 | Lonely | stars give no Light while shining | each shining star also ×(slots used) |
+| K7 | Fast | game speed ×5, and every band loses 10%/s | lifetimes ×2 |
+| K8 | Silent | no Harmonics | Harmonics every 15 bought |
+| K9 | Uphill | Recombination resets the dial's notches too | notches cost ×10 instead of ×100 |
+| K10 | Inverse | band 8 makes Light and band 1 makes nothing | each band ×(the band above's harmonic + 1) |
 
-- **Breach:** opens when all 12 Trials are done. It lifts the Ceiling: Lumen grows past 1e50 and
-  Stardust follows the formula above. **Breach upgrades:** 8 repeatables bought with Stardust
-  (Stardust gain ×2, Tempo cost growth −1 down to ×4, Forge multiplier ×2, and so on, *tuned*).
-- **Breach Trials** (8): harder runs with goals from 1e300 to 1e1000 Lumen, opened one at a time
-  by Lumen thresholds. Rewards are new effects, such as "Kindle multiplier ^1.1" or "Tempo
-  step is raised by Forge 8's amount^0.01".
-- **The Forges:** 8 tiers bought with Stardust. Forge 1 makes Radiance; Forge k makes Forge k−1.
-  Tier k unlocks at Lumen 1e60, 1e120, 1e200, 1e300, 1e450, 1e650, 1e900, 1e1250. Radiance
-  multiplies every Light by Radiance^6 (*tuned*; Chart nodes raise the exponent). A Nova
-  resets Radiance and the Forges' amounts, not their bought counts.
-- **Bloom:** bought for 1e140 SD. Petals start at 1 and grow by
-  `petals ← petals · (1 + chance)^(dt / interval)` up to the cap of 1e308 (deterministic: the
-  expected value, not a dice roll). Upgrades, with Stardust: chance (1% → 100%), interval
-  (1 s → 0.05 s), cap (raised by Chart nodes past 1e308). Petals multiply Radiance by
-  `(1 + log10 petals)^2`. At the cap a **Seed** can be made: Petals go back to 1 and each Seed
-  counts as a free Flare.
-- **The goal:** 1e1000 Lumen in one run opens the Rift. Target: 18 h.
+- **The goal:** 1e600 Light in one run, with iron made, opens Galaxies. Target: 18 h.
 
-### 2.6 Layer 3: Rift
+### 2.5 Layer 3: Galaxies
 
-- **Rift** resets Glow and Nova (except what milestones keep) and gives Void
-  `floor(10^((log10 L − 1000) / 400))` (*tuned*). Void unspent multiplies Radiance by
-  `(1 + V)^0.3`.
-- **Rift milestones** by Rift count: 1 keep Nova milestones; 2 keep the Trials; 3 keep the
-  Stardust grid; 4 keep Breach; 5 start with 1e10 SD; 6 the second capstone slot; 8 the rule
-  automator (below); 10 keep the Breach Trials; 15 keep the Constellation; 20 Stardust is
-  gained each second as if a Nova happened (at 1%); 30 keep the Forges' bought counts;
-  50 Bloom is kept.
-- **Void upgrades:** 20 (12 one-time, 8 repeatable, *tuned*).
-- **The Chart:** a tree of 60 nodes bought with Theorems (θ), drawn on the canvas.
-  - **Theorems** are bought with Lumen (1e1000, ×1e500 each), Stardust (1e20, ×1e10 each) or
-    Void (1, ×2 each); a Chart node makes them over time.
-  - **The shape:** row 1, 4 common nodes. Row 2, a three-way split (**Light**, **Forge**,
-    **Drift**): one path, two after Rift Trial 11. Row 3, a three-way split (**Active**:
-    rewards clicking and short runs; **Passive**: rewards long runs; **Idle**: rewards time
-    away): one path only. Rows 4–8: 30 nodes in paths that join. Row 9: 12 key nodes, one per
-    Rift Trial; one key at a time. Row 10: 4 capstones.
-  - Respec on the next Rift, refunding every Theorem. 6 presets, named; a preset exports as
-    `chart1:` and the node ids, and imports from that string.
-- **The Rift Engines:** 8 tiers bought with Void. Engine 1 makes Drift; Engine k makes Engine
-  k−1. Drift gives free Tempo purchases: `floor(log(Drift) / log(1.33))` (the 1.33 lowered by
-  Chart nodes to 1.25). A Rift resets Drift, not the Engines' bought counts.
-- **Rift Trials** (12, each with 5 tiers): entered through its key node. Each tier raises the
-  goal (for example 1e1500, 1e2500, 1e4000, 1e6000, 1e9000 Lumen) and the reward's strength.
-  Each restriction is new: Rift Trial 1 "Every Light costs Lumen and Stardust"; 4 "Tempo is
-  replaced by Drift alone"; 7 "Lights 1–4 produce Light 8"; 12 "the Chart's paths are all
-  forbidden". The full list of 12 restrictions and rewards is written in step 10 into
-  `content/rift.py`, following one rule: a restriction removes or bends exactly one earlier
-  system.
-- **Haze:** opened for 5,000 θ. A Haze run is a Rift run in which every multiplier m becomes
-  `10^(log10(m)^0.75)` and Tempo's effect is halved. A Rift from a Haze run gives Mist:
-  `(log10(best Lumen) / 400)^1.5`, if higher than the Mist owned (Mist only rises).
-  - Mist makes Silt every second, `Silt += Mist · dt`; each Silt threshold (×1.35 each) is a
-    free Flare.
-  - **Mist upgrades:** 12, bought with Silt; 4 repeatable (Mist ×3, Silt threshold ×0.99,
-    Theorems ×2, Haze penalty from 0.75 to 0.8), 8 one-time (for example "Lumen ^1.01",
-    "Theorems are made from Mist").
-- **The Observatory** (opened at Rift 3): six Studies, formula mini-games each with its own
-  currency ρ and a few variables bought with ρ. Studies run all the time, offline too, and no
-  reset touches them. A study's best ρ (its record r) boosts the main game. One study is
-  active at a time and runs at full speed; the others run at 10%. Each is opened with Void.
+- **Coalesce** resets Dawn and Stars (bands, stars, remnants except black holes, elements
+  except what milestones keep) and gives Dark Matter `floor(10^((log10 ℓ − 600) / 250))`
+  (*tuned*). Unspent Dark Matter multiplies Stellar Mass by ×(1 + DM)^0.25.
+- **Galaxies milestones** by Coalesce count: 1 keep the Stars milestones; 2 keep the Strange
+  Skies; 3 keep the Stars shop; 5 keep H to Fe; 8 the Coalesce Probe; 12 keep remnants;
+  20 keep every element at 1%; 30 Stellar Mass is gained each second at 1% of an Ignite.
+- **The Cosmic Web:** a map of 84 galaxies in 12 named clusters, laid out once from a fixed
+  seed in `content/web.py`, the same for every player. Filaments join near neighbours.
+  - You start at the Home galaxy. Linking a galaxy costs Dark Matter by the filament's length
+    and the galaxy's distance in hops from Home (*tuned*).
+  - Each galaxy's type gives its effect: **spiral** (Light ×), **elliptical** (Stellar Mass
+    ×), **lenticular** (star lifetimes ×), **irregular** (a strong effect and a cost, such as
+    "Light ×1e20, but Resonance off"), **dwarf** (cheap, small, and a cheaper next link),
+    **starburst** (stars form at half cost), **quasar** (×2 to every linked neighbour's
+    effect), **void edge** (nothing, but it opens a far cluster).
+  - Owning every galaxy of a cluster gives the cluster's bonus.
+  - Unlinking is free on the next Coalesce. 5 presets, named; a preset exports as `web1:` and
+    the galaxy ids.
+- **Constellations.** Each Coalesce shows a new night sky, rolled from the save's generator
+  (G3): 12 to 20 stars, each with a brightness and a colour (red, white, blue). You draw a
+  constellation by linking up to 7 of its stars with lines. Its effects come from its shape:
+
+| what is read | from | gives |
+| --- | --- | --- |
+| size | the number of stars (2–7) | the strength of every effect |
+| brightness | the sum of the stars' brightness | a Light multiplier |
+| line | how straight its longest path is | a Stellar Mass multiplier |
+| loop | whether it closes, and the loop's area | a Dark Matter multiplier |
+| branch | the number of stars with 3 or more lines | star slots |
+| colour | the mix of red, white and blue | which of three secondary effects (lifetimes, Resonance, Probe speed) |
+
+  The rules are exact formulas in `model/skies.py`, written out in `docs/layers/galaxies.md`.
+  A drawn constellation is named by you and kept in the **Sky Book** (30 entries). Three are
+  set in the sky at once (up to 6 from the Galaxies shop); a newly set one takes a full
+  Coalesce to shine. A constellation can be released for **Stardust** (a material of the
+  Galaxies shop), by its size and brightness.
+- **The Observatory** (opened at Coalesce 3): six Studies, formula mini-games each with its
+  own currency ρ and a few variables bought with ρ. Studies run all the time, offline too,
+  and no reset touches them. A study's best ρ (its record r) boosts the main game. One study
+  is active at a time and runs at full speed; the others run at 10%. Each is opened with Dark
+  Matter.
 
 | id | name | ρ grows by | the choice it asks for | its record boosts |
 | --- | --- | --- | --- | --- |
-| S1 | Pendulum | `ρ̇ = a1 · a2 · (1 + b·|sin t|)` | a "push" at the swing's peak doubles b for one swing, by hand until a Void upgrade does it | Lights ×(1 + log10 r)² |
-| S2 | Spiral | `ρ̇ = c1 · r_s²`, `ṙ_s = c2 / (1 + r_s)` | c2 grows r_s fast early; c1 pays only once r_s is large | Stardust ×(1 + log10 r) |
-| S3 | Cascade | a 3-tier chain `x3 → x2 → x1 → ρ`, each tier losing 1%/s | the top tier is slow to pay and the decay punishes waiting | Kindle ×+log10(r)/10 |
-| S4 | Tide | `ρ̇ = d1 · (1 + cos(2π t / T))` | T is a variable: short tides are steady, long ones high | Void ×(1 + log10 r)^0.5 |
-| S5 | Sieve | `ρ̇ = e1 · p(n)`, p(n) the n-th prime, n a variable | n's cost grows like p(n): a step function to climb | Facets ×+log10(r)/20 |
-| S6 | Fold | `ρ ← ρ · (1 + q·dt)`, plus `ρ̇ = f1` | a budget split between f1 (now) and q (later), changed once a minute | every study ×(1 + log10 r)^0.25 |
+| S1 | Orbit | `ρ̇ = a1 · a2 · (1 + b·|sin t|)` | a "kick" at the orbit's far point doubles b for one orbit, by hand until an upgrade does it | bands ×(1 + log10 r)² |
+| S2 | Accretion | `ρ̇ = c1 · R²`, `Ṙ = c2 / (1 + R)` | c2 grows the disc R fast early; c1 pays only once R is large | Stellar Mass ×(1 + log10 r) |
+| S3 | Decay chain | a 3-step chain `x3 → x2 → x1 → ρ`, each step losing 1%/s | the top step is slow to pay, and the decay punishes waiting | Recombination ×+log10(r)/10 |
+| S4 | Tides | `ρ̇ = d1 · (1 + cos(2π t / T))` | T is a variable: short tides are steady, long ones high | Dark Matter ×(1 + log10 r)^0.5 |
+| S5 | Pulsar timing | `ρ̇ = e1 · p(n)`, p(n) the n-th prime, n a variable | n's cost grows like p(n): a step function to climb | Harmonics ×+log10(r)/20 |
+| S6 | Expansion | `ρ ← ρ · (1 + q·dt)`, plus `ρ̇ = f1` | a budget split between f1 (now) and q (later), changed once a minute | every study ×(1 + log10 r)^0.25 |
 
   A study's variables are *linear* (value = level), *doubling* (2^level) or *step* (a fixed
   amount more every 10 levels), with geometric costs in ρ (*tuned*). Each study has 5
   milestones that add a variable or a term.
-- **The rule automator** (Rift milestone 8): up to 24 rules, `WHEN <condition> [AND
-  <condition>] DO <action>`, edited as a table of drop-downs. It is replaced by scripts (2.7),
-  and its rules convert into a script on that day.
-- **The goal:** 1e15 Void opens the Lattice. Target: 80 h.
+- **Anomalies** (8, 3 tiers each): Coalesce runs where a rule of the layers below is bent.
+  Each tier raises the goal (1e800, 1e1500, 1e3000 Light, *tuned*) and the reward.
 
-### 2.7 Layer 4: Lattice
+| id | name | the bent rule | reward (per tier) |
+| --- | --- | --- | --- |
+| A1 | Blueshift | the Spectrum runs upward: band k makes band k+1, band 8 makes Light | each band ×(tier + 1) per harmonic |
+| A2 | Missing Mass | Dark Matter and Stellar Mass give no multipliers | Dark Matter ×10^tier |
+| A3 | Great Attractor | the dial is stuck at 10 | Expansion drains 0.5% less per notch per tier |
+| A4 | Starless | no stars can form | remnants ×(1 + tier) |
+| A5 | Lightless Web | the Web's galaxies give nothing | a link costs ×0.8^tier |
+| A6 | Noise | every 30 s, a random band (from the generator) makes nothing for 30 s | Resonance ×(1 + tier/2) |
+| A7 | Cold Dark | elements give nothing | element effects ×(1 + tier/4) |
+| A8 | Short Night | the run must end within 10 minutes of game time | the Coalesce Probe acts every tick, and +1 Sky Book set slot per tier |
 
-- **Collapse** resets Glow, Nova and Rift (not the Studies, not Mist) and gives Shards
-  `floor(10^((log10 V − 15) / 5))` (*tuned*), one perk point, and a Crystal drop.
-- **Crystals.** A drop is rolled from the save's seeded generator (G3):
-  - its **kind**: Amber, Cobalt, Verdant, Rose, Onyx or Pearl; later Ghost (perk 30) and
-    Prism (Warden of Glass);
-  - its **rarity**, 0–100%, biased low (a square of a uniform roll, raised by perks);
-  - its **level**, from the Collapse's Void: `floor(log10(V)^0.6)` (*tuned*);
-  - **1 to 4 effects**, drawn from its kind's pool of 5 or 6 (for example Amber: Lights ×,
-    Tempo step +, Facets every −1, Offering ^; Cobalt: Stardust ×, Forges ×, Breach upgrades
-    cheaper). An effect's strength grows with level and rarity.
-  - With perk 12, a Collapse offers 3 drops and you keep one; with perk 25, a filter keeps or
-    dissolves drops on its own (rules per kind: minimum rarity, wanted effects, a score).
-  - Each crystal is drawn by `QPainter` from its kind (shape and colour) and rarity (facets
-    and glow): no image files.
-- **The Lattice:** a 7 × 7 grid. It opens as the 3 × 3 centre; perks open rings. Placed
-  crystals give their effects; the four beside a crystal change them:
+- **The Galaxies shop** (opened by gold): 20 upgrades, bought with Dark Matter and Stardust
+  (*tuned*).
+- **The goal:** 1e15 Dark Matter, with uranium made, opens Chrono. Target: 80 h.
 
-| crystal | on its neighbours |
-| --- | --- |
-| Amber | a Cobalt beside it: both ×1.5 |
-| Cobalt | a Verdant beside it: +1 level to the Verdant |
-| Verdant | each Verdant beside it: ×1.2 |
-| Rose | an Amber beside it: the Amber's strongest effect ^1.25 |
-| Onyx | its own effects ×3; the crystals beside it give nothing |
-| Pearl | copies its best neighbour's effects at half strength |
-| Ghost | counts as every kind for its neighbours' rules, gives nothing itself |
-| Prism | its neighbours' effects ×(1 + 0.1 · distinct kinds around it) |
+### 2.6 Layer 4: Chrono
 
-  A crystal moves freely between Collapses; during a run, a move costs 10% of the run's
-  Shards. 3 layout presets. Inventory: 120 crystals.
-- **Essence:** dissolving a crystal gives Essence of its kind, `level · (1 + rarity)²`.
-- **Distilling:** 12 reagents, made from Essences or from other reagents, each with a cap
-  raised by Shards; a reagent's amount gives an effect. Reactions run once per Collapse, each
-  using up its inputs.
-
-| reagent | made from | effect |
-| --- | --- | --- |
-| Ashwater | Amber + Rose | Lights ×(1 + amount)^2 |
-| Coldfire | Cobalt + Amber | Tempo step +amount/1e4 |
-| Greenglass | Verdant + Pearl | study speed ×(1 + amount/100) |
-| Nightsalt | Onyx + Cobalt | Void ×(1 + amount/50) |
-| Moonmilk | Pearl + Rose | Essence ×(1 + amount/100) |
-| Thornsap | Verdant + Onyx | Rift Trial goals ^0.99 per 100 |
-| Embersilk | Ashwater + Coldfire | Flares ×(1 + amount/1000) |
-| Stillwater | Greenglass + Nightsalt | the Haze penalty eases by amount/1e5 |
-| Starmortar | Moonmilk + Ashwater | Theorems ×(1 + amount/100) |
-| Duskwine | Thornsap + Nightsalt | Shards ×(1 + amount/200) |
-| Quickmercury | Embersilk + Starmortar | the Pulsar's strength ×(1 + amount/500) |
-| Lucent | every other reagent | every Crystal effect ×(1 + amount/1e4) |
-
-- **Lattice perks:** 40 nodes bought with perk points: grid rings, the 3-drop choice, the drop
-  filter, starting Theorems, keeping Rift Trials, Ghost crystals, auto-buying the Chart from a
-  preset on each Rift, and the like.
-- **The Pulsar:** opened with Shards. Every P seconds (start 100 s), it runs D seconds (start
-  10 s) at game speed ×S (start ×10). Shard upgrades raise S, lengthen D and shorten P. It can
-  be paused; a second Pulsar (perk 35) multiplies with the first.
-- **The Reservoir:** while *charging*, the game runs at 1% speed and the other 99% is stored as
-  time. *Releasing* runs the stored time at once, in offline-style steps (at most 10,000). A
-  setting sends offline time into the Reservoir instead of playing it. Cap: 1 hour of stored
-  time, raised by perks and the Warden of Tide.
-- **Scripts:** replace the rule automator. Up to 10 scripts of up to 10,000 characters, each
-  with a text editor and a block editor that round-trip exactly.
+- **Rewind** resets Dawn, Stars and Galaxies (except milestones, the Observatory and the Sky
+  Book) and gives Chronons `floor(10^((log10 DM − 15) / 6))` (*tuned*).
+- **Chrono milestones** (12) by Rewind count: keep the Web's links, keep the Anomalies, keep
+  every element at 10%, start with 1e10 Dark Matter, and so on (*tuned*, in
+  `content/chrono.py`).
+- **Timelines.** Branch the current run into up to 4 parallel timelines (2 at first, more from
+  the Chrono shop). Each is a full copy of the layers below, ticking side by side, with its
+  own choices: its dial, its Web, its constellations, its Probes or script, its Anomaly.
+  - The timeline shown is the *focused* one and runs at full speed; the others run at 50%
+    (*tuned*).
+  - A Rewind gives Chronons from the best timeline, plus 25% of what the others would give.
+  - A timeline can be **pruned** (it ends and gives nothing) or **merged** into another: the
+    receiver takes the larger of each element's amount, and the pruned one is gone.
+  - Cost: each timeline is ticked by the model, so `model.tick` with 4 timelines is measured
+    by its own bench (section 6).
+- **Loops.** Record a run: every action you take, with its run time and the state's key
+  numbers, is kept as a **Loop**. A Loop replays itself in later runs, acting when the run
+  time or the numbers it recorded are reached (whichever the Loop's setting says). A Loop
+  converts to a script (2.6, below) for editing. 6 Loop slots.
+- **Paradoxes** (8, 3 tiers each): enter with resources borrowed from your future: you start
+  the run with a share of your best Light, Mass and Dark Matter (10%, 1%, 0.1% by tier), and
+  owe twice it back. The debt is repaid from what the run earns; the run can't end (no Rewind,
+  no Coalesce) until it is paid, and an unpaid run can only be abandoned, which costs a tenth
+  of your Chronons. Each Paradox adds a rule (for example "your borrowed Light shrinks 1% a
+  second", "every band you buy is bought in all timelines"). Rewards: Chrono shop upgrades and
+  Loop slots.
+- **The Epoch dial.** Set once per run, from 1 (early universe) to 9 (late): early epochs
+  multiply Dawn and Stars and divide Galaxies and Chrono, late ones the reverse, by
+  `×10^(±(5 − epoch)·k)` per layer (*tuned*). Changing it in a run costs a Rewind.
+- **Moments.** One Moment is banked for each real minute, online or offline (offline by the
+  setting of G9), up to a cap (1,000, raised by the shop). A **warp** spends Moments to run
+  that many minutes of game time at once, in offline-style steps.
+- **Scripts.** The automation's last form. Up to 10 scripts of up to 10,000 characters, each
+  with a text editor and a block editor that round-trip exactly. Probes and Loops keep
+  working beside them.
 
 ```text
 script  := stmt*
@@ -348,104 +337,127 @@ stmt    := command NEWLINE
          | "while" cond "{" stmt* "}"     | "until" cond "{" stmt* "}"
          | "wait" (cond | duration)        | "repeat" "{" stmt* "}"
          | "#" any-text NEWLINE
-command := "kindle" | "flare" | "offer" | "nova" | "rift" | "collapse" | "ascend"
-         | "trial" ("nova" | "breach" | "rift") INT | "trial" "leave"
-         | "chart" ("buy" ID+ | "preset" INT | "respec") | "haze"
-         | "study" INT | "focus" INT | "layout" INT | "pulsar" ("on" | "off")
-         | "auto" NAME ("on" | "off") | "theorems" "max" | "notify" STRING
+command := "recombine" | "ignite" | "coalesce" | "rewind" | "crunch"
+         | "dial" INT | "epoch" INT | "form" CLASS ["x" INT] | "merge"
+         | "sky" ("set" INT+ | "clear") | "web" ("link" ID+ | "preset" INT)
+         | "skies" INT | "anomaly" INT INT | "paradox" INT INT | "leave"
+         | "study" INT | "timeline" ("branch" | "focus" INT | "prune" INT | "merge" INT INT)
+         | "loop" ("play" | "stop") INT | "warp" INT | "probe" NAME ("on" | "off")
+         | "notify" STRING
 cond    := value OP value ("and" cond | "or" cond)?
-value   := NUMBER | duration | currency | "pending" "(" reset ")" | "runtime"
-         | "trial" | "tier" "(" INT ")"
+value   := NUMBER | duration | currency | element | "pending" "(" reset ")" | "runtime"
+         | "debt" | "entropy" | "epoch"
 OP      := "<" | "<=" | ">" | ">=" | "==" | "!="
 NUMBER  := 12 | 1.5e300 | 1e1e6          duration := 5s | 2m | 1h
 ```
 
   A script is parsed when saved; an error names its line and column and the script won't
-  run. Running: one statement per tick (10 with perk 38); `wait` holds; a statement that is
-  refused (`Refused`) is skipped with a note in the script's log. A loop with no `wait` runs
-  at most 100 statements per tick. The model runs scripts, so the simulator runs them too.
-- **The goal:** 1e30 Shards opens the Zenith. Target: 130 h.
+  run. Running: one statement per tick (10 with a Chrono shop upgrade); `wait` holds; a
+  statement that is refused (`Refused`) is skipped with a note in the script's log. A loop
+  with no `wait` runs at most 100 statements per tick. The model runs scripts, so the
+  simulator runs them too.
+- **The Chrono shop:** 24 upgrades, bought with Chronons (*tuned*).
+- **The goal:** 1e25 Chronons opens Entropy. Target: 130 h.
 
-### 2.8 Layer 5: Zenith
+### 2.7 Layer 5: Entropy
 
-- **Ascend** resets everything up to the Lattice (the layout, the inventory and the reagents
-  are kept) and gives Aether `floor(log10(Sh) − 29)` (*tuned*): a slow, countable currency.
-- **Zenith milestones** (6) and **Zenith upgrades** (20, bought with Aether).
-- **Laws:** 12 rules that rewrite earlier ones, in 1 to 4 slots (from Zenith milestones).
-  Changing laws needs an Ascend.
+- **Crunch** resets everything up to Chrono (the Sky Book, the Observatory, Loops and scripts
+  are kept) and gives Negentropy `floor(log10(⧗) − 24)` (*tuned*): a slow, countable currency.
+- **Entropy.** From now on, every run has an Entropy S, rising by `dS/dt = 1 + log10(1 + run
+  time)` (*tuned*), and every currency's gain is ×1/(1 + S/100). Two things lower it:
+- **Maxwell's Demons.** A box of particles, hot and cold, drawn moving; a demon at the gate
+  lets hot ones one way and cold ones the other. The sorted fraction lowers S and makes
+  Negentropy over time. By hand, you click the gate open; upgrades give demons a speed and an
+  accuracy, and from the third upgrade a demon plays alone. The model keeps only the numbers
+  (sorted fraction, demon speed and accuracy); the moving particles are the UI's drawing of
+  them.
+- **Black holes.** The black holes from Hypergiants, plus ones you make by feeding Stellar
+  Mass. A black hole of mass m radiates with power ∝ 1/m² and lives ∝ m³ (*tuned* units):
+  its radiation speeds game time by `×(1 + power)` while it lives. A small one is a bright,
+  short burst; a large one a faint, long glow. Feeding a black hole grows it, slowing its
+  burst and lengthening its life. Up to 6.
+- **Constants.** 12 sliders on a shared budget of points (points from Negentropy milestones);
+  each slider runs from −5 to +5 and changes an earlier rule. Changing them needs a Crunch.
 
-| law | it rewrites |
-| --- | --- |
-| Plenty | Facets every 10 bought |
-| Haste | a Kindle and a Flare reset nothing |
-| Echo | a Nova gives Stardust as if Lumen were ×1e10 |
-| Stillness | offline and Reservoir time count double |
-| Gravity | Light k also makes Light k−2, at 1% |
-| Tides | every study is active |
-| Lens | Focus points ×3 |
-| Hunger | Void ^1.1, and Lights ^0.9 |
-| Order | the Lattice counts diagonal neighbours |
-| Fervor | autobuyers act 10 times per tick |
-| Memory | a Rift keeps Lumen at ^0.5 |
-| Unity | every crystal counts as every kind for its neighbours' rules |
-
-- **The Wardens:** seven realms, opened one by one with Aether. Entering a Warden's realm is
-  an Ascend-run under the realm's rule. Each realm has 6 to 8 stages, each a goal reached
-  inside it. Every stage gives a reward, and the realm opens one new mechanic for the whole
-  game.
-
-| warden | the realm's rule | the mechanic it opens |
+| constant | turned up | turned down |
 | --- | --- | --- |
-| Cinder | Tempo is frozen at ×1 | **the Kiln:** pour Shards in to heat it; heat multiplies Shards on Collapse, and cools 1%/min |
-| Glass | only crystals of one kind (chosen on entry) count | **Prism crystals**, and **cutting:** once per Ascend, make a crystal with effects you pick, from Essences |
-| Tide | game speed swings between ×0.01 and ×1 every 60 s | **the Surge:** Reservoir time released during a Pulsar burst counts ×the burst's speed; a higher Reservoir cap |
-| Thorn | the 12 Trials' restrictions rotate, one every 5 minutes | **Grafts:** 10 permanent bonuses levelled by the realm's best Lumen |
-| Hush | autobuyers and scripts are off; Light costs grow 10× faster | **Echoes:** each placed crystal also counts once more, at 25%, for every Hush stage done |
-| Lode | only Void counts: Lumen and Stardust give no multipliers | **the Aether Engines:** a fourth chain of 8, bought with Aether, making Quintessence, which multiplies every other chain's output |
-| Hollow | the final realm (below) | the finale |
+| c, light's speed | bands produce faster | Expansion drains less |
+| G, gravity | stars form cheaper | stars live longer |
+| ħ, the quantum | Harmonics come sooner | Resonance is wider |
+| α, fine structure | element effects stronger | elements made faster |
+| Λ, dark energy | Dark Matter × | Web links cheaper |
+| k, Boltzmann | Demons faster | Entropy rises slower |
+| e, the charge | Probes faster | scripts run more per tick |
+| m_p, the proton | Stellar Mass × | Ignite needs less |
+| H₀, Hubble | the dial's Light per notch × | the dial's drain per notch less |
+| t_P, Planck time | game speed × | Moments' cap × |
+| θ, the weak angle | Paradox debt lower | Paradox borrowing larger |
+| Ω, the curvature | Chronons × | timelines run faster |
 
-- **The Hollow:** opened when the other six Wardens are fully done. Inside it, every currency
-  loses 1% of its logarithm each second (so 1e100 decays toward 1e99 in a second), and every
-  exponent bonus counts at ^0.5. Five **Anchors** stop the decay, one currency each (Lumen,
-  Stardust, Void, Shards, Aether), in order; an Anchor is filled by pouring Aether into it,
-  and each filled one also opens a final law slot holding one of 5 Hollow laws. With the
-  five Anchors filled, the decay is gone, and the goal is 1e(1e9) Lumen inside the Hollow.
-- **Zenith Trials** (4): runs with every Trial at once and one law forced, rewarding Aether
-  multipliers.
-- **The finale:** 1e(1e9) Lumen in the Hollow. The sky fills (an animation of the sidebar's
-  layers lighting one by one), the run's statistics are shown, and the Afterglow opens.
-  Target: 260 h.
+  Each step is a factor (`×2^steps` or its inverse, *tuned*). A preset of sliders can be saved
+  (3).
+- **The Entropy shop:** 20 upgrades, bought with Negentropy.
+- **Entropy milestones** (6): budget points, and the Eras' opening.
 
-### 2.9 Afterglow
+### 2.8 The Seven Eras
 
-The endless mode after the finale. A Glimmer resets everything but the Laws, the Wardens'
-mechanics and the records, and gives Glimmer from how fast the run reached e1e9 Lumen. Glimmer
-upgrades only speed up the next run. A local board keeps the player's 20 best runs.
+The late game. Each Era is a run of the whole universe under that era's physics, opened in
+order with Negentropy. Each has 6 to 8 stages, each a goal reached inside it. Every stage
+gives a reward, and finishing an Era opens one new mechanic for the whole game.
+
+| era | its physics | the mechanic it opens |
+| --- | --- | --- |
+| Inflation | everything ×1e10, but a run lasts 60 s of game time | **the Inflaton:** every run's first minute is ×(stages done) |
+| the Dark Age | stars give no Light | **primordial black holes:** each run starts with black holes |
+| Reionization | bands 1–4 are locked | **quasar beacons:** a quasar's ×2 reaches two hops |
+| the Degenerate era | no new stars; only remnants | **cooling:** white dwarfs grow stronger with their age |
+| the Black-hole era | only black holes make anything | **evaporation:** a black hole's last burst gives Moments |
+| the Dark era | Entropy rises ×10 | **the third gate:** demons sort three kinds, and lower Entropy faster |
+| the Last Light | every currency loses 1% of its logarithm a second | the finale |
+
+- **The Last Light:** opened when the other six Eras are done. Its decay is stopped one
+  currency at a time by five **Lamps** (Light, Stellar Mass, Dark Matter, Chronons,
+  Negentropy), lit in order by pouring Negentropy in; each lit Lamp also adds a constant's
+  slider range by ±2. With the five Lamps lit, the decay is gone, and the goal is 1e(1e9)
+  Light inside the Last Light.
+- **The finale:** 1e(1e9) Light in the Last Light. The universe relights: an animation of the
+  sidebar's layers lighting one by one, the cosmic clock running back to the first second,
+  then the run's statistics. Target: 260 h.
+
+### 2.9 The Big Bounce
+
+The endless mode after the finale. A Bounce starts a new universe with everything reset but
+the Eras' mechanics, the Sky Book and the records, and with 3 constants rolled from the
+generator (each ±1 to ±3, shown before the Bounce, accepted or rerolled once). Echoes are
+given by how fast the run reached e1e9 Light; Echo upgrades only speed up the next run. A
+local board keeps the 20 best runs with their rolled constants.
 
 ### 2.10 What every layer shares
 
-- **Achievements:** 160, in rows of 8 (20 rows), each ×1.02 to every Light; a full row gives a
+- **Achievements:** 160, in rows of 8 (20 rows), each ×1.02 to every band; a full row gives a
   named reward. 20 are secret (hidden until done). Shown as a grid of tiles with tooltips.
 - **Statistics:** play time in total and per layer; fastest of each reset; every currency's
-  best; resets counted; offline and Reservoir time.
-- **Records:** the last 10 of each reset (Nova, Rift, Collapse, Ascend): its time, its gain, and
-  its gain per minute.
+  best; resets counted; Moments banked and spent; the universe's age.
+- **Records:** the last 10 of each reset (Ignite, Coalesce, Rewind, Crunch): its time, its gain
+  and its gain per minute.
 - **The breakdown:** for each currency, the list of multipliers that make its rate (G7).
-- **The Codex:** a help page per mechanic (about 40), opened when the mechanic is; a `?` beside
-  each panel opens its page.
+- **The Codex:** a help page per mechanic (about 45), opened when the mechanic is; a `?`
+  beside each panel opens its page. Each page has one line of real cosmology behind the
+  mechanic.
 - **Hints:** the first 30 minutes show short hints at the next useful action, one at a time,
   off by a setting.
 - **The news line:** one line of original flavour text at the bottom, every 20 s, from 300
   lines that grow with the layers reached. UI-only randomness.
 - **Notations:** scientific (`1.23e456`), engineering (`123e454`), standard (`1.23 Qa`, up to
-  1e303, then scientific), letters (`1.23 ab`), logarithm (`e456.09`), and starlit (`✦4.56`,
-  the log written with flni's glyphs); past 1e1e6 every notation shows `e1.23e6`.
-- **Hotkeys:** `1`–`8` buy max of a Light, `M` buy max of all, `T` Tempo max, `K` Kindle,
-  `F` Flare, `O` Offering, `N` Nova, `R` Rift, `C` Collapse, `A` all autobuyers on or off,
+  1e303, then scientific), letters (`1.23 ab`), logarithm (`e456.09`), and stellar
+  (magnitudes: `m −1140.2`, the astronomers' scale, brighter is lower); past 1e1e6 every
+  notation shows `e1.23e6`.
+- **Hotkeys:** `1`–`8` buy max of a band, `M` buy max of all, `R` Recombine, `I` Ignite,
+  `G` Coalesce, `W` Rewind, `X` Crunch, `[` `]` turn the dial, `P` all Probes on or off,
   `Esc` close a dialog. Remappable.
-- **Settings:** notation and decimals, theme (Night, Dawn, Ink, Ember, Mono, High contrast),
-  autosave interval, a confirmation per reset, offline progress (play, store, off), refresh
-  rate (10, 20, 30 Hz), hotkeys, hints, saves.
+- **Settings:** notation and decimals, theme (Night, Dawn, Nebula, Redshift, Mono, High
+  contrast), autosave interval, a confirmation per reset, offline progress (play, bank as
+  Moments, off), refresh rate (10, 20, 30 Hz), hotkeys, hints, saves.
 - **Saves:** 3 slots, export to the clipboard or a file, import, backups.
 
 ## 3. The architecture
@@ -464,39 +476,49 @@ flni/
     num.py         Big, and its maths
     notation.py    Big -> text, per notation
     model/         pure: no Qt, no clock, no I/O; randomness only from state.rng
-      state.py     the save's structs (msgspec): every layer's state, and the rng
+      state.py     the save's structs (msgspec): every layer's state, timelines, the rng
       game.py      Game: tick(dt), the actions, Refused
       effects.py   every named multiplier, and the breakdown
-      glow.py nova.py rift.py lattice.py zenith.py wardens.py afterglow.py
-      chains.py    one producer-chain engine for Lights, Forges, Engines and Aether Engines
+      universe.py  one universe's layers 1–3: the unit a timeline copies
+      dawn.py      the Spectrum, Harmonics, Resonance, the dial, Recombination
+      stars.py     star classes, lives, deaths, remnants, merging
+      elements.py  the Periodic Table: amounts, families, keystones
+      galaxies.py  Coalesce, the Web, Anomalies
+      skies.py     night skies, drawing, reading a constellation's shape, the Sky Book
       studies.py   the study engine and the six Studies
-      crystals.py  drops, effects, neighbour rules, Essence, Distilling
-      time.py      game speed: Pulsar, Reservoir, Haze, realm speeds
+      chrono.py    Rewind, timelines, Paradoxes and debt, the Epoch dial, Moments
+      loops.py     recording, replaying, converting to a script
+      entropy.py   Crunch, Entropy, Demons, black holes, Constants
+      eras.py      the Seven Eras, the Lamps, the finale
+      bounce.py    the Big Bounce
+      time.py      game speed: neutron stars, black holes, Eras, warps
       script/      lexer.py parser.py run.py blocks.py (the block form <-> the text)
       offline.py   the offline steps
       save.py      encode, decode, versions, migrations, export strings
       rng.py       a PCG32 generator: seed, next, kept in the state
     content/       data rows only
-      glow.py nova.py rift.py lattice.py zenith.py wardens.py achievements.py
-      codex.py news.py
+      dawn.py stars.py elements.py web.py skies.py studies.py galaxies.py chrono.py
+      entropy.py eras.py bounce.py clock.py achievements.py codex.py news.py
     sim/
       policy.py    the scripted players (greedy, steady)
       run.py       the simulator and the pacing report
+      scripts/     the flni scripts `steady` loads in the late game
     app/           Qt: imports model/, content/, num.py, notation.py
       main.py      QApplication, the window, the timers
       theme.py     colours, fonts and spacing as tokens; the QSS made from them
       store.py     save files on disk: slots, atomic writes, backups
-      window.py    the sidebar, the top bar, the news line, the tab stack
-      widgets.py   BigLabel, BuyButton, Meter, Tile, Tooltip, CrystalIcon
-      canvas.py    QGraphicsView scenes: the Constellation, the Chart, the Lattice
+      window.py    the sidebar, the top bar with the cosmic clock, the news line, the tabs
+      widgets.py   BigLabel, BuyButton, Meter, Tile, Tooltip, Dial
+      canvas.py    QGraphicsView scenes: the Spectrum's resonance lines, the Web, the night
+                   sky, the Periodic Table, the Demons' box, the black holes
       editor.py    the script editors: text (with highlighting and errors) and blocks
       tabs/        one module per tab
   tests/
     test_num.py test_notation.py test_rng.py test_save.py test_rules_*.py test_offline.py
-    test_script_*.py test_content.py test_pacing.py test_layers.py test_app_smoke.py
-    test_docs.py
+    test_skies.py test_timelines.py test_loops.py test_script_*.py test_content.py
+    test_pacing.py test_layers.py test_app_smoke.py test_docs.py
     data/saves/    a saved example of every save version
-    bench/         tick, buy max, offline, script, frame
+    bench/         tick, tick with 4 timelines, buy max, offline, script, frame
 ```
 
 **The rules between parts**, checked by `tests/test_layers.py` reading every file's imports:
@@ -520,32 +542,36 @@ flni/
 
 ### 3.2 The model
 
-- `Game(state)` holds the state and offers the actions, one method each: buying (Lights,
-  Tempo, Forges, Engines, Aether Engines, Theorems, upgrades, nodes, perks, Bloom upgrades,
-  Study variables), resets (`kindle`, `flare`, `offer`, `nova`, `rift`, `collapse`,
-  `ascend`, `glimmer`, `seed`), entering and leaving (Trials, Haze, realms), and setting
-  (Focus, presets, layouts, crystal moves, the drop filter, laws, autobuyers, scripts, the
-  active Study, Pulsar and Reservoir).
+- `Game(state)` holds the state and offers the actions, one method each: buying (bands, dial
+  notches, shop upgrades, stars, Web links, Study variables, black-hole feeding, Demon
+  upgrades), resets (`recombine`, `ignite`, `coalesce`, `rewind`, `crunch`, `bounce`),
+  entering and leaving (Strange Skies, Anomalies, Paradoxes, Eras), and setting (the dial,
+  the Epoch, presets, constellations drawn and set, timelines branched, focused, pruned and
+  merged, Loops, scripts, Probes, the active Study, Constants, warps).
   - An action that can't be done raises `Refused(reason)` and changes nothing.
-  - The UI, the autobuyers, scripts and the simulator use only these actions.
-- `game.tick(dt)`: `dt` is scaled by the game speed (Pulsar, realm rules, Reservoir), then, in
-  order: the chains from the top tier down (each fed by the tier above's amount before this
-  tick), Bloom, Silt, the Studies, autobuyers, scripts, achievements, the unlock checks.
+  - The UI, Probes, Loops, scripts and the simulator use only these actions.
+- **A universe** (`universe.py`) is the state of layers 1–3; `state.timelines` holds 1 to 4 of
+  them, and Chrono and Entropy sit above them. Every rule of layers 1–3 takes the universe it
+  acts on.
+- `game.tick(dt)`: `dt` is scaled by the game speed (`time.py`), then, in order: each
+  timeline's universe (the Spectrum from the top band down, each band fed by the band
+  above's amount before this tick; stars; the Web's effects), the Studies, Entropy and the
+  Demons, black holes, Probes, Loops, scripts, achievements, the unlock checks.
 - `game.rate(currency) -> Big`, `game.breakdown(currency) -> list[(name, factor)]`,
   `game.pending(reset) -> Big`.
-- **One chain engine** (`chains.py`) serves the Lights, the Forges, the Rift Engines and the
-  Aether Engines: tiers, costs in closed form, buy max, production.
 - Effects are recomputed only when something they depend on changes; each module marks its
   effects dirty, and `effects.py` caches the products.
-- Speed goal (bench `model.tick`): a tick of a late-game state ≤ 1 ms.
+- Speed goals: `model.tick` (a late-game state, one timeline) ≤ 1 ms; `model.tick4` (four
+  timelines) ≤ 3 ms.
 
-### 3.3 Offline progress and stored time
+### 3.3 Offline progress and Moments
 
 - The app stores the wall-clock time with every save. On load, `elapsed = now − saved`
   (ignored if negative; capped at 30 days).
 - By the setting: *play* runs `offline.run(game, elapsed)`: `n = min(10_000,
   ceil(elapsed / 0.05))` ticks of `elapsed / n`, with the automation running, and shows what
-  changed; *store* adds it to the Reservoir (up to its cap, the rest played); *off* drops it.
+  changed; *bank* turns it into Moments (one per minute, up to the cap; the rest is played);
+  *off* drops it. Before Chrono opens, *bank* acts as *play*.
 - It runs on a `QThread` behind a progress dialog; the window takes input after it ends.
   Goal: ≤ 0.5 s for 10,000 steps.
 
@@ -570,106 +596,109 @@ flni/
   refresh (20 Hz by default).
 - **The refresh** asks each visible widget to update; a widget sets its text only when the
   string changed. A hidden tab updates nothing. A minimised window stops the refresh, not the
-  tick.
-- Speed goals: bench `ui.frame` ≤ 4 ms for the busiest tab; idle on the Glow tab, ≤ 3% of one
+  tick. Animations (the Demons' box, black holes, the night sky's twinkle) run only while
+  their tab is visible, at the refresh rate.
+- Speed goals: bench `ui.frame` ≤ 4 ms for the busiest tab; idle on the Dawn tab, ≤ 3% of one
   core.
-- **The theme** (`app/theme.py`): colour tokens per theme (Night: a deep blue sky, warm light
-  for currencies, one accent per layer: amber, violet, teal, rose, gold); spacing on a 4 px
-  grid; corners of 6 px; tabular figures for numbers. The QSS is built from the tokens; no
-  colour is written anywhere else.
+- **The theme** (`app/theme.py`): colour tokens per theme (Night: a deep indigo sky; each
+  layer has its accent from the theme: Dawn the spectrum's colours, Stars gold, Galaxies
+  violet, Chrono cyan, Entropy ember red); spacing on a 4 px grid; corners of 6 px; tabular
+  figures for numbers. The QSS is built from the tokens; no colour is written anywhere else.
 - **The layout:**
 
 ```text
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ ✦ 1.23e48 Lumen (+4.56e46/s)  ✧ 3.2e4 SD  ◈ 12 V    Tempo ×4.1e9  Nova +12│
+│ ℓ 1.23e48 Light (+4.56e46/s)   M☉ 3.2e4   ◉ age 212,000 yr   Ignite +12 M☉│
 ├────────────┬──────────────────────────────────────────────────────────────┤
-│ Glow     ● │  Lights     Focus 11 (3 free)   [Tempo max T] [Buy max all M]│
-│  Lights    │  ┌──────────────────────────────────────────────────────────┐│
-│  Shop      │  │ 1 Mote     ×1.2e9    1.4e40   [ 25 → ×3   cost 1.1e45 ] ││
-│ Nova       │  │ 2 Wisp     ×3.4e8    2.0e35   [ 11/25     cost 3.0e44 ] ││
-│  Grid      │  │ …                                                         ││
-│  Tree      │  │ 8 Halo     ×12.0     19       [  3/25     cost 2.2e47 ] ││
-│  Trials    │  └──────────────────────────────────────────────────────────┘│
-│  Forges    │  Kindle 6: needs 40 Halo (19)   [Kindle K]  [Flare F] [Offer]│
-│  Auto      │                                                              │
-│ Rift    🔒 │                                                              │
-│ Codex  Ach │                                                              │
+│ Dawn     ● │  Spectrum          Expansion ◀ 4 ▶ (Light ×5.1, drain 8%/s) │
+│  Spectrum  │  ┌──────────────────────────────────────────────────────────┐│
+│  Shop      │  │ 8 Planck   ×12.0    19       h 0  [  3/25   cost 2.2e47 ]││
+│ Stars      │  │ 7 Gamma    ×40.1    3.1e3    h 1 ≈ resonating with 6     ││
+│  Sky       │  │ …                                                         ││
+│  Table     │  │ 1 Radio    ×1.2e9   1.4e40   h 9  [ 25 → h10 cost 1.1e45]││
+│  Probes    │  └──────────────────────────────────────────────────────────┘│
+│ Galaxies🔒 │  Recombination 6: needs 40 Planck (19)   [Recombine R]       │
+│ Codex  Ach │                                                [Buy max M]   │
 │ Stats  Set │                                                              │
 ├────────────┴──────────────────────────────────────────────────────────────┤
-│  “A lamp is just a mote with ambition.”                                   │
+│  “Every photon you see is older than the stars that sent it.”             │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
   A locked layer shows a lock and, in its tooltip, what opens it. A new unlock shows a dot on
-  its sidebar entry until visited. The window is resizable down to 1024 × 640.
+  its sidebar entry until visited. With several timelines, a row of timeline tabs sits under
+  the top bar. The window is resizable down to 1024 × 640.
 - **Accessibility:** every action has a keyboard path; contrast ≥ 4.5:1 in every theme (the
-  High contrast theme ≥ 7:1); no meaning carried by colour alone.
+  High contrast theme ≥ 7:1); no meaning carried by colour alone (a constellation's star
+  colours also show as letters on request).
 
 ## 4. Content counts
 
 | kind | count |
 | --- | ---: |
-| producer chains (Lights, Forges, Rift Engines, Aether Engines) | 4 × 8 tiers |
-| Lumen shop | 12 |
-| Stardust grid and repeatables | 16 + 5 |
-| Constellation nodes | 36 |
-| Trials (Nova, Breach, Rift ×5 tiers, Zenith) | 12 + 8 + 12 + 4 |
-| Breach upgrades | 8 |
-| Void upgrades | 20 |
-| Chart nodes | 60 |
-| Mist upgrades | 12 |
+| Spectrum bands | 8 |
+| Dawn shop | 12 |
+| star classes, remnant kinds | 5, 3 |
+| elements (families, keystones) | 92 (9, 12) |
+| Stars shop | 16 + 4 |
+| Strange Skies | 10 |
+| galaxies, clusters, galaxy types | 84, 12, 8 |
+| constellation shape rules | 6 |
 | Studies (each 4–6 variables, 5 milestones) | 6 |
-| crystal kinds, with effect pools of 5–6 | 8 |
-| reagents | 12 |
-| Lattice perks | 40 |
-| Zenith upgrades | 20 |
-| Laws (and Hollow laws) | 12 + 5 |
-| Warden stages | 7 realms, 48 stages |
-| milestones (Nova, Rift, Zenith) | 12 + 12 + 6 |
+| Anomalies (× 3 tiers) | 8 |
+| Galaxies shop | 20 |
+| Paradoxes (× 3 tiers) | 8 |
+| Chrono shop | 24 |
+| Constants | 12 |
+| Entropy shop | 20 |
+| Eras (stages) | 7 (48) |
+| milestones (Stars, Galaxies, Chrono, Entropy) | 9 + 8 + 12 + 6 |
 | achievements | 160 |
-| Codex pages | ~40 |
+| Codex pages | ~45 |
 | news lines | 300 |
 
 Every row of `content/` has an id, a name, a one-line description (≤ 90 characters), and its
 numbers. `test_content.py` checks unique ids, unique names within a kind, that every reference
-(a node's parents, an achievement's condition, a reagent's inputs) exists, and that every
-mechanic has a Codex page.
+(a cluster's galaxies, an achievement's condition, a keystone's system) exists, that the Web
+is connected from Home, that all 92 elements have a source, and that every mechanic has a
+Codex page.
 
 ## 5. The simulator and pacing
 
 - `python -m flni sim --policy steady --until finale` plays a new game with the model alone and
-  prints each milestone's game time. It steps at `dt = 1 s` up to the Rift and `dt = 10 s`
-  after (*tuned* so layer 1's timings stay within 5% of `dt = 0.05`).
+  prints each milestone's game time. It steps at `dt = 1 s` up to Galaxies and `dt = 10 s`
+  after (*tuned* so Dawn's timings stay within 5% of `dt = 0.05`).
 - **Policies** (`sim/policy.py`) are functions `(game) -> None` called every simulated step,
   using only the actions of 3.2. Late in the game, `steady` drives the game by loading flni
   scripts from `sim/scripts/`, the same language players use.
   - `greedy`: buys the best ratio of gain to cost, resets when the pending gain doubles the
     currency.
-  - `steady`: a careful player: Focus on the best Light, Kindles and Flares at once, Nova at 2×
-    pending, Trials in order, studies switched every 10 minutes, a fixed good Lattice layout,
-    the obvious laws, Wardens in order.
+  - `steady`: a careful player: keeps neighbouring bands resonating, turns the dial to the
+    best notch every minute, forms stars by a fixed rota, Ignites at 2× pending, does the
+    Strange Skies in order, links the Web by a fixed route, draws its constellation by a fixed
+    rule (the brightest 7 stars as a loop), switches Studies every 10 minutes, runs 2
+    timelines, sets the obvious Constants, and takes the Eras in order.
 - **The pacing table** (game time, `steady`):
 
 | milestone | target | band |
 | --- | ---: | ---: |
-| first Kindle | 3 min | ±50% |
-| first Nova | 75 min | ±30% |
-| all 12 Trials, Breach | 6 h | ±30% |
-| all 8 Breach Trials | 14 h | ±30% |
-| first Rift | 18 h | ±30% |
-| Haze opened | 35 h | ±30% |
+| first Recombination | 3 min | ±50% |
+| first Ignite | 75 min | ±30% |
+| silicon (Probes) | 3 h | ±30% |
+| all 10 Strange Skies | 10 h | ±30% |
+| first Coalesce | 18 h | ±30% |
 | all 6 Studies | 45 h | ±30% |
-| all Rift Trials at tier 5 | 70 h | ±30% |
-| first Collapse | 80 h | ±30% |
+| all Anomalies at tier 3 | 70 h | ±30% |
+| first Rewind | 80 h | ±30% |
 | scripts | 85 h | ±30% |
-| first Ascend | 130 h | ±30% |
-| six Wardens done | 220 h | ±25% |
+| first Crunch | 130 h | ±30% |
+| six Eras done | 220 h | ±25% |
 | the finale | 260 h | ±25% |
 
-- `tests/test_pacing.py` runs up to the first Nova (in `make check`, ≤ 10 s of wall time).
+- `tests/test_pacing.py` runs up to the first Ignite (in `make check`, ≤ 10 s of wall time).
   `make pace` runs the whole table (≤ 10 minutes) and fails outside a band; run it in every
   step that adds or changes content, from the layer that step touches.
-- A *wall* (more than 2 h of game time before the Rift, or 6 h after, with no new purchase or
+- A *wall* (more than 2 h of game time before Galaxies, or 6 h after, with no new purchase or
   reset under `steady`) fails `make pace` too.
 
 ## 6. Speed
@@ -677,8 +706,10 @@ mechanic has a Codex page.
 | bench | what | goal |
 | --- | --- | --- |
 | `num.ops` | 1M adds and 1M multiplies of `Big` | ≤ 1.5 µs each |
-| `model.tick` | one tick of a saved late-game state | ≤ 1 ms |
-| `model.buy_max` | buy max on all 8 Lights, 10,000 times | ≤ 20 µs each |
+| `model.tick` | one tick of a saved late-game state, one timeline | ≤ 1 ms |
+| `model.tick4` | the same with four timelines | ≤ 3 ms |
+| `model.buy_max` | buy max on all 8 bands, 10,000 times | ≤ 20 µs each |
+| `skies.read` | reading the shape of a 7-star constellation | ≤ 50 µs |
 | `script.run` | a 200-line script, 10,000 ticks | ≤ 50 µs per tick |
 | `offline.10k` | 10,000 offline steps of a late-game state | ≤ 0.5 s |
 | `ui.frame` | one refresh of the busiest tab, offscreen | ≤ 4 ms |
@@ -691,8 +722,8 @@ mechanic has a Codex page.
 
 - `make dist` runs PyInstaller with `--onedir --windowed --name flni` on the OS it runs on:
   `dist/flni.app` on macOS, `dist/flni/` on Windows and Linux, then zips it.
-- An icon: a single star, drawn as SVG in `flni/app/icons/`, exported to `.icns` and `.ico`
-  by a script in `tools/`.
+- An icon: a star with eight rays, one per band's colour, drawn as SVG in `flni/app/icons/`
+  and exported to `.icns` and `.ico` by a script in `tools/`.
 - Size goal: ≤ 90 MB unzipped; the unused Qt modules are excluded in the spec.
 - The macOS build is unsigned; the README says how to open it the first time. Signing and
   notarising are out of scope.
@@ -710,14 +741,14 @@ docs/
   README.md        the index: where to start, one line per page
   architecture.md  the parts (section 3), one tick traced from the timer to the screen, the
                    import rules and why, what runs on which thread
-  model.md         Game, its actions and Refused, the tick order, effects and their cache,
-                   the chain engine, game speed, the rng
-  layers/          one page per layer: glow.md nova.md rift.md lattice.md zenith.md
-                   wardens.md afterglow.md. Each gives every mechanic of the layer, its
-                   formulas (written out, with the content ids they read), what each reset
-                   keeps, and the unlock conditions
+  model.md         Game, its actions and Refused, universes and timelines, the tick order,
+                   effects and their cache, game speed, the rng
+  layers/          one page per layer: dawn.md stars.md galaxies.md chrono.md entropy.md
+                   eras.md bounce.md. Each gives every mechanic of the layer, its formulas
+                   (written out, with the content ids they read), what each reset keeps,
+                   and the unlock conditions
   content.md       how to add or change a row of each kind in content/: the fields, the
-                   checks test_content.py makes, and a worked example (a new Trial)
+                   checks test_content.py makes, and a worked example (a new Anomaly)
   balance.md       the simulator, the two policies, the pacing table, how to read
                    `make pace`, how to tune a number and record it, what a wall is
   numbers.md       Big: its form, its limits, where precision is lost; the notations
@@ -725,13 +756,13 @@ docs/
                    example, backups, the export string
   scripts.md       the script language: the grammar, every command and value, the limits per
                    tick, the errors, examples; for players and developers both
-  ui.md            the window, the theme tokens, the widgets, the refresh rule, how to add a
-                   tab, accessibility
+  ui.md            the window, the theme tokens, the widgets, the canvases, the refresh rule,
+                   how to add a tab, accessibility
   performance.md   the benches, their goals and last numbers, `make bench ARGS=--gate`, how a
                    speed-up is proven
   packaging.md     `make dist` on each OS, what is excluded, how to test a build by hand
-  glossary.md      every word the game and these pages use, one meaning each (Light, tier,
-                   bought, amount, reset, layer, run, realm, stage, effect, …)
+  glossary.md      every word the game and these pages use, one meaning each (band, bought,
+                   amount, harmonic, reset, layer, run, universe, timeline, era, stage, …)
 ```
 
 ### 8.2 The rules
@@ -778,7 +809,8 @@ line length). flni adds:
 - **Scripts are data:** never Python, never `eval`; the parser rejects anything outside the
   grammar.
 - **The app runs no subprocess**, and no text from content or a script goes to a shell.
-- **Original only:** no name, text, art or exact rule taken from another game.
+- **Original only:** no name, text, art or exact rule taken from another game. A new mechanic
+  is drawn from the theme (light, the universe, time) first.
 - **Docs move with the code** (section 8): a behaviour change updates its `docs/` page in the
   same commit, and `test_docs.py` stays green.
 - No `print` outside `__main__.py`'s `sim` output.
@@ -796,37 +828,39 @@ from step 5 on. Each step that adds a mechanic also writes its section of its la
 1. **Numbers and chance.** `num.py`, `notation.py` (with property tests against `int` and
    `fractions` below 1e300, fixed cases above), `rng.py`; the `num.ops` bench;
    `docs/numbers.md`.
-2. **The model's core.** `state.py`, `game.py` with ticks and `Refused`, `effects.py` and the
-   breakdown, `chains.py`, `time.py` (speed only), `save.py` with version 1 and the export
-   string, `offline.py`; `docs/architecture.md`, `docs/model.md`, `docs/saves.md`.
-3. **The app's shell.** The window, the themes, the sidebar and tab stack, the top bar, the
-   news line, settings, save slots, autosave, backups, import and export, the offline dialog,
-   hotkeys, the Codex viewer, hints; `docs/ui.md`.
-4. **Glow.** Lights, Facets, Tempo, Focus, Kindle, Flare, Offering, the shop; its tab;
-   `docs/layers/glow.md`, `docs/content.md`.
-5. **The simulator.** `sim/`, both policies, `test_pacing.py` to the first Nova, `make pace`;
-   tune layer 1 into its band; `docs/balance.md`.
-6. **Nova.** Stardust, Starlight, the grid, the Constellation (canvas), milestones,
-   autobuyers, the 12 Trials; pace to "all 12 Trials".
-7. **Breach.** Breach and its upgrades, Breach Trials, the Forges, Bloom and Seeds; pace to
-   "first Rift".
+2. **The model's core.** `state.py`, `game.py` with ticks and `Refused`, `universe.py` (one
+   timeline), `effects.py` and the breakdown, `time.py` (speed only), `save.py` with version 1
+   and the export string, `offline.py`; `docs/architecture.md`, `docs/model.md`,
+   `docs/saves.md`.
+3. **The app's shell.** The window, the themes, the sidebar and tabs, the top bar with the
+   cosmic clock, the news line, settings, save slots, autosave, backups, import and export,
+   the offline dialog, hotkeys, the Codex viewer, hints; `docs/ui.md`.
+4. **Dawn.** The Spectrum, Harmonics, Resonance, the Expansion dial, Recombination, the shop;
+   its tab with the resonance lines; `docs/layers/dawn.md`, `docs/content.md`.
+5. **The simulator.** `sim/`, both policies, `test_pacing.py` to the first Ignite,
+   `make pace`; tune Dawn into its band; `docs/balance.md`.
+6. **Stars.** Ignite, star classes and slots, lives and deaths, remnants and merging, the
+   Periodic Table (its canvas, families, keystones), Probes, milestones, the Stars shop;
+   pace to "silicon".
+7. **Strange Skies.** The 10 challenges; pace to "first Coalesce".
 8. **Around the game.** Achievements (the first 60), statistics, records, the breakdown panel,
    notations, the Codex pages and news lines so far.
-9. **Rift.** Void, milestones, Void upgrades, Theorems and the Chart (canvas, presets, strings),
-   the Rift Engines, the rule automator; pace to "Haze opened".
-10. **Rift's depth.** The 12 Rift Trials with 5 tiers, Haze with Mist, Silt and its upgrades,
-    the Observatory's six Studies; pace to "first Collapse".
-11. **Lattice.** Collapse, crystals (drops, effects, drawing, the filter), the grid and its
-    rules, Essence, Distilling, the perks; pace to "scripts".
-12. **Time and scripts.** The Pulsar, the Reservoir, the script language (lexer, parser,
-    runner), both editors, the rules' conversion; the `sim/scripts/`; `docs/scripts.md`; pace
-    to "first Ascend".
-13. **Zenith.** Ascend, milestones, upgrades, Laws, Zenith Trials, the Wardens Cinder, Glass
-    and Tide.
-14. **The other Wardens.** Thorn, Hush, Lode (with the Aether Engines); pace to "six Wardens
-    done".
-15. **The Hollow and after.** The Hollow, the Anchors and Hollow laws, the finale, the
-    Afterglow; the rest of the achievements, Codex pages and news; pace to "the finale".
+9. **Galaxies.** Coalesce, milestones, the Cosmic Web (its map in `content/web.py`, the
+   canvas, presets, strings), the night sky and constellations (drawing, reading, the Sky
+   Book), the Galaxies shop.
+10. **Galaxies' depth.** The Observatory's six Studies, the 8 Anomalies with 3 tiers; pace to
+    "first Rewind".
+11. **Chrono.** Rewind, milestones, timelines (branch, focus, prune, merge; the `model.tick4`
+    bench), the Epoch dial, Moments and warps, the Chrono shop.
+12. **Loops and scripts.** Recording and replaying Loops, the script language (lexer, parser,
+    runner), both editors, Loop-to-script conversion, `sim/scripts/`, the 8 Paradoxes;
+    `docs/scripts.md`; pace to "first Crunch".
+13. **Entropy.** Crunch, Entropy, the Demons (model and the box's animation), black holes,
+    Constants, the Entropy shop and milestones.
+14. **The Eras.** Inflation, the Dark Age, Reionization, the Degenerate, Black-hole and Dark
+    eras, with their stages and mechanics; pace to "six Eras done".
+15. **The Last Light and after.** The Last Light and its Lamps, the finale, the Big Bounce; the
+    rest of the achievements, Codex pages and news; pace to "the finale".
 16. **Balance.** `make pace` over the whole table, both policies, no wall; write the tuned
     numbers back into this page and into the layers' pages.
 17. **Speed.** Every bench of section 6 at its goal, or the reason written down;
@@ -840,11 +874,11 @@ from step 5 on. Each step that adds a mechanic also writes its section of its la
 
 Each has a recommendation, which the plan follows until the user says otherwise.
 
-- **F1. One active study, the others at 10%.** Recommended, so switching studies is a choice;
-  the Tides law then has a point.
-- **F2. Offline capped at 30 days.** Recommended; a longer absence gives the same as 30 days.
-- **F3. No cloud saves.** Recommended for now: export strings move a save between machines.
-- **F4. No sound.** Recommended for now; a later step can add a few soft cues behind a setting.
-- **F5. English only.** All text is in `content/`, so a translation can come later.
-- **F6. 260 hours to the finale.** Recommended: the depth asked for. The pacing table is the one
+- **F1. One active Study, the others at 10%.** Recommended, so switching Studies is a choice.
+- **F2. Unfocused timelines at 50%.** Recommended: several timelines pay, but not 4× for free.
+- **F3. Offline capped at 30 days.** Recommended; a longer absence gives the same as 30 days.
+- **F4. No cloud saves.** Recommended for now: export strings move a save between machines.
+- **F5. No sound.** Recommended for now; a later step can add a few soft cues behind a setting.
+- **F6. English only.** All text is in `content/`, so a translation can come later.
+- **F7. 260 hours to the finale.** Recommended: the depth asked for. The pacing table is the one
   place to make it shorter, and the simulator shows the effect.
