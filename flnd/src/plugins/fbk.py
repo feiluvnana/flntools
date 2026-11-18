@@ -229,7 +229,14 @@ class Facebook(Plugin):
         async for post in read_single(ctx, f"{SITE}/photo/?fbid={photo}", wanted=photo):
             yield post
 
-    @route(shown=f"{SITE}/permalink.php?story_fbid=<post>&id=<user>", single=True)
+    @route(
+        (r"facebook.com/permalink.php?story_fbid={post:\w+}&id={user:\d+}", "{user}_{post}"),
+        (r"fb.com/permalink.php?story_fbid={post:\w+}&id={user:\d+}", "{user}_{post}"),
+        (r"facebook.com/story.php?story_fbid={post:\w+}&id={user:\d+}", "{user}_{post}"),
+        (r"fb.com/story.php?story_fbid={post:\w+}&id={user:\d+}", "{user}_{post}"),
+        shown=f"{SITE}/permalink.php?story_fbid=<post>&id=<user>",
+        single=True,
+    )
     async def post(self, ctx: Ctx, post: str) -> AsyncIterator[Post]:
         """One post's photos and videos its owner owns, by its permalink (`resolve`).
 

@@ -3,7 +3,7 @@
 src/docs/library explains it.
 
     with flnd.open("~/Media/flnd") as fl:
-        for event in fl.download("ins:example_user", only=["reels"]):
+        for event in fl.download("ins:example_user/reels"):
             ...
 
 Who calls it: scripts and the CLI (`src/cli.py`), both through `flnd.open`, so the command
@@ -12,8 +12,9 @@ line can do nothing a script can't. What it calls: `flnd.engine.core.Engine` for
 past the five options a call takes.
 
 How a call flows:
-1. The method checks its arguments at once: targets are resolved, `only`, `when` and `limit`
-   are read, and a mistake raises `flnd.UsageError` before anything is fetched.
+1. The method checks its arguments at once: targets are resolved with the categories they
+   name, `when` and `limit` are read, and a mistake raises `flnd.UsageError` before anything
+   is fetched.
 2. A command that downloads (`download`, `follow`, `sync`, `retry`) returns a `flnd.Run` that
    hasn't started. Its work is a closure that makes an `Engine` with the run's event sink and
    stop state, and calls the engine's command; the run starts it on its own thread when read.
@@ -44,7 +45,7 @@ from flnd.engine.run import Run
 from flnd.errors import UsageError
 
 if TYPE_CHECKING:
-    from flnd.engine.core import Engine
+    from flnd.engine.core import Chosen, Engine
     from flnd.engine.home import FailureRow
     from flnd.engine.options import Config
     from flnd.plugin import Plugin, Target
@@ -148,15 +149,15 @@ class Flnd:
 
     def download(
         self, targets: str | Target | Sequence[str | Target], *,
-        only: str | Sequence[str] | None = None, when: str | None = None,
-        limit: int | None = None, dry: bool = False,
+        when: str | None = None, limit: int | None = None, dry: bool = False,
     ) -> Run:
         """Download what the targets have now, once: nothing is followed for later syncs.
 
         Args:
-            targets: one target or several: `"ins:example_user"`, a link, or a `Target`.
-            only: the categories to take (`["reels"]`, or `"reels,posts"`); None takes every
-                category. A single post has none, so `only` with one is a usage error.
+            targets: one target or several: `"ins:example_user"`, a link, or a `Target`. The
+                categories go in the target (`"ins:example_user/reels,posts"`, `/all`);
+                without them, a known target takes its stored ones, else the plugin's own.
+                A single post has none, so naming one is a usage error.
             when: the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`,
                 `"2026-01..2026-03"` or `"30d"`; `""` for every day; None for the home's
                 `[defaults] when` in config.toml, which is every day unless it says otherwise.
@@ -184,23 +185,22 @@ class Flnd:
         span = _when(found.when if when is None else when)
         if limit is not None and limit < 1:
             raise UsageError("limit must be at least 1")
-        resolved = self._checked(targets, only)
+        resolved = self._checked(targets)
         again = found.again if self._again is None else self._again
         return self._run(f"download {_names(resolved)}", lambda engine: engine.run_download(
-            resolved, categories=only, time=span, limit=limit, dry=dry, again=again))
+            resolved, time=span, limit=limit, dry=dry, again=again))
 
     def follow(
-        self, targets: str | Target | Sequence[str | Target], *,
-        only: str | Sequence[str] | None = None, when: str | None = None,
+        self, targets: str | Target | Sequence[str | Target], *, when: str | None = None,
     ) -> Run:
         """Follow the targets, so `sync` keeps them up to date, then download what they have.
 
-        `only` is kept with each target, and later syncs take those categories alone;
-        following again replaces it. `when` bounds this first download only.
+        The categories a target names (`"ins:example_user/reels"`) are kept with it, and
+        later syncs take those alone; following again with others replaces them. `when`
+        bounds this first download only.
 
         Args:
             targets: one target or several, as `download` takes them.
-            only: the categories to follow; None follows every category.
             when: the days this first download takes posts from, as `download` reads it;
                 None for the home's `[defaults] when`.
 
@@ -216,16 +216,16 @@ class Flnd:
             ...     fl.follow("zzz:example_user")
             Traceback (most recent call last):
             ...
-            flnkit.errors.UsageError: unknown source 'zzz'. Sources: ...
+            flnkit.errors.UsageError: no plugin named zzz
         """
         from flnd.engine.options import _when
 
         found = _config(self.home)
         span = _when(found.when if when is None else when)
-        resolved = self._checked(targets, only)
+        resolved = self._checked(targets)
         again = found.again if self._again is None else self._again
         return self._run(f"follow {_names(resolved)}", lambda engine: engine.run_download(
-            resolved, categories=only, time=span, sync=True, keep=True, again=again))
+            resolved, time=span, sync=True, keep=True, again=again))
 
     def sync(self, targets: str | Target | Sequence[str | Target] = (),) -> Run:
         """Download what is new for every followed target, or for the ones named.
@@ -252,7 +252,7 @@ class Flnd:
 
         found = _config(self.home)
         span = _when(found.when)
-        resolved = self._resolve(targets)
+        resolved = self._engine().chosen(_listed(targets))
         named = f"sync {_names(resolved)}" if resolved else "sync"
         return self._run(named, lambda engine: engine.run_sync(resolved, time=span))
 
@@ -634,25 +634,21 @@ class Flnd:
         return [item if isinstance(item, Target) else engine.resolve([item])[0]
                 for item in given]
 
-    def _checked(self, targets: Any, only: str | Sequence[str] | None) -> list[Target]:
-        """Targets resolved and `only` checked against them, before a run is made.
+    def _checked(self, targets: Any) -> list[Chosen]:
+        """Targets resolved with their categories, before a run is made.
 
         Args:
             targets: one target or several, as text or resolved.
-            only: the categories asked for; None for every category.
 
         Returns:
             The targets, resolved, in order.
 
         Raises:
-            UsageError: no target, a target no source reads, or a category none of them has.
+            UsageError: no target, a target no plugin reads, or a category its route lacks.
         """
-        from flnd.engine.options import categories_by_source
-
-        resolved = self._resolve(targets)
+        resolved = self._engine().chosen(_listed(targets))
         if not resolved:
             raise UsageError("give at least one target")
-        categories_by_source(only, resolved, self._sources())
         return resolved
 
     def _run(self, name: str, command: Any) -> Run:
@@ -713,9 +709,16 @@ def _installed(cls: type[Plugin], plugin: Any, logins: Mapping[str, str], *,
 # Reading options
 # ---------------------------------------------------------------------------------------------
 
-def _names(targets: Sequence[Target]) -> str:
+def _listed(targets: str | Target | Sequence[str | Target]) -> list[str | Target]:
+    """One target or several, as a list."""
+    from flnd.plugin import Target
+
+    return [targets] if isinstance(targets, (str, Target)) else list(targets)
+
+
+def _names(targets: Sequence[Chosen]) -> str:
     """The targets as a run's name shows them: the first two, then how many more."""
-    shown = " ".join(map(str, targets[:2]))
+    shown = " ".join(str(found.target) for found in targets[:2])
     return shown if len(targets) <= 2 else f"{shown} and {len(targets) - 2} more"
 
 

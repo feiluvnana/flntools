@@ -5,8 +5,8 @@ images, and its cover. It also downloads one chapter by its link, and finds mang
 genre or a search query, downloading each one found. It reads the site's public JSON API over
 plain HTTP. It needs no login and no browser.
 
-A *target* is what you give `flnd download`; a *category* is one part of a target, chosen with
-`--only`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
+A *target* is what you give `flnd download`; a *category* is one part of a target, named after
+its last `/`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
 
@@ -54,19 +54,18 @@ words typed, split at spaces.
 ## Categories
 
 These belong to the `manga` route, and through it to `author`, `genre` and `query`. Both are
-the plugin's own categories, so both are taken when `--only` isn't given.
+the plugin's own categories, so both are taken when none are named.
 
 | Category | What it holds |
 | --- | --- |
 | `chapters` | every chapter's pages |
 | `cover` | the manga's cover image |
 
-- `mht:<id>` and manga links: without `--only` each gets both categories. `--only` names
-  one or both.
-- `mht?<query>`, author and genre links: `--only` applies to each manga found; without it
-  each gets both categories. (Before 2026-11-16 the author and genre routes weren't marked as
-  discovering, so `--only` with them was refused as if they were one post; fixed.)
-- A chapter link is one post, downloaded whole: `--only` with it is a usage error.
+- `mht:<id>` and manga links: without categories each gets both; `mht:<id>/cover` names
+  one.
+- `mht?<query>`, author and genre links: the categories a search names
+  (`mht?<query>/cover`) apply to each manga found; without them each gets both.
+- A chapter link is one post, downloaded whole: it takes no categories.
 
 ## Logging in
 

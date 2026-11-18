@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
+from collections import ChainMap
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -19,22 +21,23 @@ from collections.abc import (
 )
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 from urllib.parse import urlsplit
 
+import flnd.engine.resolve
 from flnd.engine import crawl, ctx, home, jobs, save
 from flnd.engine.crawl import TargetReport
 from flnd.engine.ctx import Ctx, PluginRun, plugin_run, shared_browser, start
 from flnd.engine.events import Failed, Planned
-from flnd.engine.options import Options, Retry, RunShared, categories_by_source, validate
+from flnd.engine.options import Options, Retry, RunShared
 from flnd.engine.run import Stop, Tally, _shut_down, sink, stopping
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.plugin import Browser, Cookies, Plugin, Range, Target
-from flnd.plugins import PLUGINS
+from flnd.plugins import PLUGINS, Registry, _manifest
 from flnd.ui.log import ui
 from flnkit import net, text
 
-__all__ = ["AuthInfo", "Engine", "Report", "TargetInfo", "TargetReport"]
+__all__ = ["AuthInfo", "Chosen", "Engine", "Report", "TargetInfo", "TargetReport"]
 
 
 class _Unmatched(UsageError):
@@ -60,6 +63,18 @@ MAX_SYNC_NEW = 25
 # whose site sees one person, and `HTTP_AT_ONCE` for one that only sends requests.
 ACTIVE = jobs.LISTINGS
 HTTP_AT_ONCE = 4
+
+
+class Chosen(NamedTuple):
+    """A target as a run takes it: resolved, with the categories it runs."""
+
+    target: Target
+    # The categories named in its text (`/reels`), else the stored ones; None takes the
+    # route's own.
+    categories: tuple[str, ...] | None = None
+    # The value as typed, with a link's `user:pw@`, which the target leaves out (`Options.link`);
+    # "" when they are the same.
+    link: str = ""
 
 
 @dataclass(frozen=True)
@@ -139,21 +154,108 @@ class Engine:
         self.run: int | None = None
         # The live counts of the command going on, which `run.state` is made from.
         self.tally = Tally(self._shown)
+        # What resolving reads of each plugin known so far, by code (`manifest`).
+        self._entries: dict[str, Mapping[str, Any]] | None = None
+        self._manifest: flnd.engine.resolve.Manifest | None = None
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
-        """Resolve every target string through its owning source (see `resolve`).
-
-        Args:
-            texts: the targets as typed: `<code>:<value>`, `<code>?<query>` or a link.
-
-        Returns:
-            One `Target` per text, in order.
+        """Resolve every target's text (`chosen`), leaving out the categories it names.
 
         Raises:
-            UsageError: a text names no known source, or its source can't read it.
+            UsageError: a text names no known plugin, or no route reads it.
             NetworkError: a short link couldn't be followed.
         """
-        return [resolve(text_item, self.sources, follow=_follow) for text_item in texts]
+        return [found.target for found in self.chosen(texts)]
+
+    def chosen(self, targets: Sequence[Target | str | Chosen]) -> list[Chosen]:
+        """Each target resolved, with its categories: those its text names (`/reels,posts`,
+        `/all`), else the stored ones of a known target, else None for the route's own.
+
+        A `Target` takes its stored categories, and a `Chosen` is taken as it is.
+
+        Raises:
+            UsageError: a text names no known plugin, no route reads it, or it names a
+                category its route lacks.
+            NetworkError: a short link couldn't be followed.
+        """
+        # Only the rows that keep categories: each imports its plugin, to write its key.
+        rows = {item: row for item, row in self._rows().items() if row.only}
+        stored = {str(target): rows[home.key(target)].only for target in self._recorded(rows)}
+        found: list[Chosen] = []
+        for given in targets:
+            if isinstance(given, Chosen):
+                found.append(given)
+            elif isinstance(given, Target):
+                found.append(Chosen(given, stored.get(str(given))))
+            else:
+                chosen = self._read(given, stored)
+                # The target alone: the text as typed may hold a link's `user:pw@`.
+                ui.debug("resolved {target} ({kind}), categories {categories}",
+                         target=chosen.target, kind=chosen.target.kind,
+                         categories=chosen.categories)
+                found.append(chosen)
+        return found
+
+    @property
+    def manifest(self) -> flnd.engine.resolve.Manifest:
+        """What resolving reads of the plugins known so far: each built-in's manifest entry,
+        which imports none of them, then each other plugin's, made from its class."""
+        if self._entries is None:
+            self._entries = {}
+            maps = self.sources.maps if isinstance(self.sources, ChainMap) else [self.sources]
+            for found in reversed(maps):
+                if isinstance(found, Registry):
+                    self._entries |= {code: entry for code, entry in _manifest.PLUGINS.items()
+                                      if code in found}
+                else:
+                    self._entries |= {code: flnd.engine.resolve.entry(cls)
+                                      for code, cls in found.items()}
+        if self._manifest is None:
+            self._manifest = flnd.engine.resolve.Manifest(self._entries)
+        return self._manifest
+
+    def _widen(self, code: str | None = None) -> bool:
+        """Add one plugin, or every plugin, to `manifest`, importing it; whether any was new.
+
+        Args:
+            code: the plugin's code; None for every plugin (`flnd.plugins.Registry` imports
+                each).
+        """
+        known = self.manifest.plugins
+        codes = [code] if code is not None else list(self.sources)
+        new = {name: flnd.engine.resolve.entry(self.sources[name]) for name in codes
+               if name not in known and name in self.sources}
+        if new:
+            self._entries = {**(self._entries or {}), **new}
+            self._manifest = None
+        return bool(new)
+
+    def _read(self, text: str, stored: Mapping[str, Sequence[str]]) -> Chosen:
+        """One target's text, resolved (`flnd.engine.resolve`), with its categories.
+
+        A code looks for its plugin alone; a link only the plugins not built in read looks
+        for every plugin, as today.
+        """
+        code = re.match(r"\s*([A-Za-z][A-Za-z0-9]*)\s*[:?]", text)
+        linked = text.strip().lower().startswith(("http://", "https://"))
+        if code is not None and not linked:
+            self._widen(code[1].lower())
+        try:
+            found = flnd.engine.resolve.resolve(text, manifest=self.manifest, known=stored,
+                                                follow=_follow)
+        except UsageError:
+            if (code is not None and not linked) or not self._widen():
+                raise
+            found = flnd.engine.resolve.resolve(text, manifest=self.manifest, known=stored,
+                                                follow=_follow)
+        if found.code == flnd.engine.resolve.WEB and not text.strip().lower().startswith("web:"):
+            if self._widen():
+                found = flnd.engine.resolve.resolve(text, manifest=self.manifest, known=stored,
+                                                    follow=_follow)
+
+        kept = found.named or found.key in stored
+        return Chosen(Target(found.key, kind=found.kind),
+                      found.categories if kept else None, found.link)
 
     def download(self, targets: Sequence[Target | str], **options: Any) -> Report:
         """`run_download`, on a loop of its own on this thread, for a caller outside a run."""
@@ -169,9 +271,8 @@ class Engine:
 
     async def run_download(
         self,
-        targets: Sequence[Target | str],
+        targets: Sequence[Target | str | Chosen],
         *,
-        categories: str | Sequence[str] | None = None,
         time: Range | None = None,
         limit: int | None = None,
         dry: bool = False,
@@ -182,14 +283,13 @@ class Engine:
         """Download each target with its saved or given options and return a `Report`.
 
         Args:
-            targets: the targets, as text or resolved.
-            categories: `--only`: the categories to take; None for none named.
+            targets: the targets, as text (`ins:example_user/reels`) or resolved.
             time: `--when`, as a `Range`; None for no limit.
             limit: at most this many posts per target, or targets per search; None for all.
             dry: plan what would be saved (`Planned` events), and write nothing.
             sync: follow the targets, so `sync` takes them later.
             again: ignore saved cursors and the stop at saved posts.
-            keep: whether to save `categories` with each target, for later syncs (`follow`).
+            keep: whether to save each target's categories, for later syncs (`follow`).
 
         Returns:
             One `TargetReport` per target, in order.
@@ -203,9 +303,7 @@ class Engine:
             raise UsageError("--limit must be at least 1")
         span = time or Range()
         # On a thread: a short link is followed with a request of its own.
-        resolved = await asyncio.to_thread(self._resolved, targets)
-        cats_map = categories_by_source(categories, resolved, self.sources)
-        _validate_targets(self.sources, categories, resolved)
+        resolved = await asyncio.to_thread(self.chosen, targets)
         base = Options(
             since=span.since,
             until=span.until,
@@ -213,26 +311,18 @@ class Engine:
             again=again,
             stop_at_saved=sync and not again,
         )
-        by_source = {
-            code: replace(base, categories=cats_map.get(code))
-            for code in {t.plugin for t in resolved}
-        }
+        chosen = [(found.target, replace(base, categories=found.categories,
+                                         link=found.link or None))
+                  for found in resolved]
         with stopping(self.stop) as stop:
             async with self._live():
                 if dry:
-                    return self._finish_report(
-                        await self._dry_run(resolved, by_source, span, stop), stop)
+                    return self._finish_report(await self._dry_run(chosen, span, stop), stop)
                 ui.info("Storage: {path}", path=await _off((self.home / home.MEDIA).resolve))
-                async with self._recording("download", resolved) as ended:
+                async with self._recording("download", [t for t, _ in chosen]) as ended:
                     async with self._running(stop) as runner:
-                        if any(self._is_query(t) for t in resolved):
-                            reports = await self._download_mixed(
-                                runner, resolved, by_source, span=span, sync=sync, stop=stop)
-                            report = await self._complete_download(resolved, reports,
-                                                                   sync=sync, stop=stop)
-                        else:
-                            report = await self._download_normal(
-                                runner, resolved, by_source, sync=sync, stop=stop, keep=keep)
+                        report = await self._download(runner, chosen, span=span, sync=sync,
+                                                      stop=stop, keep=keep)
                     ended.append(report)
                     return report
 
@@ -249,14 +339,13 @@ class Engine:
             One `TargetReport` per target.
         """
         # On a thread: a short link is followed with a request of its own.
-        resolved = await asyncio.to_thread(self._resolved, targets)
+        resolved = await asyncio.to_thread(self.chosen, targets)
         span = time or Range()
         chosen = [(target, replace(options, since=span.since, until=span.until))
                   for target, options in await _off(self._plan, resolved)]
         if not chosen:
             ui.info("nothing to sync")
             return Report(())
-        _validate_targets(self.sources, None, [t for t, _ in chosen])
         with stopping(self.stop) as stop:
             async with self._recording("sync", [t for t, _ in chosen]) as ended, \
                     self._live(), self._running(stop) as runner:
@@ -343,7 +432,7 @@ class Engine:
         Raises:
             UsageError: a target isn't known; download it first.
         """
-        resolved = self._resolved(targets)
+        resolved = self.resolve(targets)
         rows = self._rows()
         recorded = self._recorded(rows)
         unrecorded = set(self._unrecorded(recorded, rows))
@@ -502,44 +591,57 @@ class Engine:
                 home.record_origin(self.home, code, method)
         return ""
 
-    async def _download_normal(
+    async def _download(
         self,
         runner: _Runner,
-        resolved: Sequence[Target],
-        by_source: Mapping[str, Options],
+        chosen: Sequence[tuple[Target, Options]],
         *,
+        span: Range,
         sync: bool,
         stop: Stop,
         keep: bool = False,
     ) -> Report:
-        """Download non-query targets in order, recording each in flnd.db first.
+        """Download the targets, recording each in flnd.db first.
+
+        Plain targets run at once; with a search among them, each runs in the order given,
+        and a search downloads each target it finds (`_run_query`).
 
         Args:
             runner: the command's run.
-            resolved: the targets, in order.
-            by_source: each source's options, by code.
-            sync: whether to follow the targets.
+            chosen: the targets, in order, with their options.
+            span: `--when`, which a search filters what it finds by.
+            sync: whether to follow the targets (a search is followed, not what it finds).
             stop: the run's stop state.
             keep: whether to save each target's categories for later syncs.
 
         Returns:
-            One `TargetReport` per target, in order.
+            One `TargetReport` per plain target, in order, and for a search one per target it
+            found (and one for the search itself when it failed or was stopped).
 
         Raises:
             KeyboardInterrupt: the run was stopped.
         """
         rows = await _off(self._rows)
-        chosen = []
-        for target in resolved:
-            options = by_source[target.plugin]
+        kept = []
+        for target, options in chosen:
             # A followed target stops at its saved posts, unless told to list them again.
             row = rows.get(home.key(target))
             followed = row is not None and row.follow and not options.again
-            chosen.append((target, replace(
+            kept.append((target, replace(
                 options, stop_at_saved=options.stop_at_saved or followed)))
-        await _off(self._record, chosen, follow=sync, keep=keep)
-        reports = await runner.run(chosen)
-        return await self._complete_download(resolved, reports, sync=sync, stop=stop, rows=rows)
+        await _off(self._record, kept, follow=sync, keep=keep)
+        if not any(self._is_query(target) for target, _ in kept):
+            reports = await runner.run(kept)
+        else:
+            reports = []
+            for target, options in kept:
+                if self._is_query(target):
+                    reports.extend(await self._run_query(runner, target, options, span=span,
+                                                         stop=stop))
+                else:
+                    reports.extend(await runner.run([(target, options)]))
+        return await self._complete_download([target for target, _ in kept], reports,
+                                             sync=sync, stop=stop, rows=rows)
 
     async def _complete_download(
         self,
@@ -707,16 +809,14 @@ class Engine:
 
     async def _dry_run(
         self,
-        resolved: Sequence[Target],
-        by_source: Mapping[str, Options],
+        chosen: Sequence[tuple[Target, Options]],
         span: Range,
         stop: Stop,
     ) -> Report:
         """Plan every target without saving anything (`--dry`), one `Planned` event per file.
 
         Args:
-            resolved: the targets, in order.
-            by_source: each source's options, by code.
+            chosen: the targets, in order, with their options.
             span: `--when`, which a search filters what it finds by.
             stop: the run's stop state.
 
@@ -726,9 +826,8 @@ class Engine:
         # A dry run reads `flnd.db` to tell "saved" from "new", but never writes it: a home
         # without one stays untouched.
         async with self._running(stop, dry=True) as runner:
-            return Report(tuple([await self._dry_one(runner, target, by_source[target.plugin],
-                                                     span, stop)
-                                 for target in resolved]))
+            return Report(tuple([await self._dry_one(runner, target, options, span, stop)
+                                 for target, options in chosen]))
 
     async def _dry_one(
         self,
@@ -772,44 +871,6 @@ class Engine:
             return TargetReport(target, (), 0, error=failure)
         return TargetReport(target, (), 0)
 
-    async def _download_mixed(
-        self,
-        runner: _Runner,
-        resolved: Sequence[Target],
-        by_source: Mapping[str, Options],
-        *,
-        span: Range,
-        sync: bool,
-        stop: Stop,
-    ) -> list[TargetReport]:
-        """Download targets of which some are searches, in the order given.
-
-        A plain target runs alone through the run's `run`; a search runs through `_run_query`,
-        which downloads each target it finds.
-
-        Args:
-            runner: the command's run.
-            resolved: the targets, in order.
-            by_source: each source's options, by code.
-            span: `--when`, which a search filters what it finds by.
-            sync: whether to follow the targets (a search is followed, not what it finds).
-            stop: the run's stop state.
-
-        Returns:
-            The reports: one per plain target, and for a search one per target it found (and
-            one for the search itself when it failed or was stopped).
-        """
-        reports: list[TargetReport] = []
-        for target in resolved:
-            options = by_source[target.plugin]
-            if self._is_query(target):
-                reports.extend(await self._run_query(runner, target, options, span=span,
-                                                     sync=sync, stop=stop))
-                continue
-            await _off(self._record, [(target, options)], follow=sync)
-            reports.extend(await runner.run([(target, options)]))
-        return reports
-
     async def _run_query(
         self,
         runner: _Runner,
@@ -817,12 +878,11 @@ class Engine:
         options: Options,
         *,
         span: Range,
-        sync: bool,
         stop: Stop,
     ) -> list[TargetReport]:
-        """Download a search: list the targets it finds, then download each one.
+        """Download a search, its row recorded already: list the targets it finds, then
+        download each one.
 
-        The search's row is recorded first (followed when `sync`), so a later sync finds it.
         Its found targets count on the search's row of the run's snapshot (`Tally.adopt`).
 
         Args:
@@ -830,13 +890,11 @@ class Engine:
             target: the search.
             options: its options; `limit` bounds how many targets it takes.
             span: `--when`, which the search filters what it finds by.
-            sync: whether to follow the search.
             stop: the run's stop state.
 
         Returns:
             One report per target found; only the search's own when it needs a login it lacks.
         """
-        await _off(self._record, [(target, options)], follow=sync)
         self.tally.add(target, _planned(options))
         entry, failed = await runner.ready(target)
         if entry is None or failed is not None:
@@ -885,7 +943,7 @@ class Engine:
                 async for child in found:
                     if stop.soon.is_set():
                         break
-                    child_opts = replace(options, limit=None, query=target.value)
+                    child_opts = replace(options, limit=None, query=target.value, link=None)
                     rep = await runner.target(child, child_opts, parent=target)
                     if rep.error is None:
                         seen_keys.append(home.key(child))
@@ -1035,7 +1093,7 @@ class Engine:
                 if new_count >= MAX_SYNC_NEW:
                     break
                 new_count += 1
-                child_opts = replace(options, limit=None, query=target.value)
+                child_opts = replace(options, limit=None, query=target.value, link=None)
                 rep = await runner.target(child, child_opts, parent=target)
                 written.extend(rep.written)
                 skipped += rep.skipped
@@ -1154,48 +1212,29 @@ class Engine:
         route = next((r for r in self.sources[code].routes if r.kind == kind), None)
         return route is not None and route.is_query
 
-    def _resolved(self, targets: Sequence[Target | str]) -> list[Target]:
-        """Each target resolved: a `Target` as it is, text through `resolve` (logged at -vv).
-
-        Args:
-            targets: the targets, as text or resolved.
-
-        Returns:
-            The resolved targets, in order.
-
-        Raises:
-            UsageError: a text can't be resolved.
-        """
-        resolved: list[Target] = []
-        for given in targets:
-            target = given if isinstance(given, Target) else self.resolve([given])[0]
-            ui.debug(
-                "resolve {given}: {target} ({kind})", given=given, target=target, kind=target.kind
-            )
-            resolved.append(target)
-        return resolved
-
-    def _plan(self, targets: Sequence[Target]) -> list[tuple[Target, Options]]:
+    def _plan(self, targets: Sequence[Chosen]) -> list[tuple[Target, Options]]:
         """Which targets a sync takes, each with the options its row keeps.
 
         With no targets named, a sync takes every followed row, then every folder under
         `media/` no row names (a target downloaded before following existed, which syncs).
 
         Args:
-            targets: the targets named; empty for every synced target.
+            targets: the targets named, with their categories; empty for every synced target.
 
         Returns:
-            Each target with its saved categories and search text.
+            Each target with its categories and search text.
         """
         rows = self._rows()
         if not targets:
             followed = {item: row for item, row in rows.items() if row.follow}
             recorded = self._recorded(rows)
-            targets = self._recorded(followed) + list(self._unrecorded(recorded, rows))
+            targets = [Chosen(target, rows[home.key(target)].only)
+                       for target in self._recorded(followed)]
+            targets += [Chosen(target) for target in self._unrecorded(recorded, rows)]
         planned = []
-        for target in targets:
+        for target, categories, link in targets:
             row = rows.get(home.key(target))
-            planned.append((target, Options(categories=row.only if row else None,
+            planned.append((target, Options(categories=categories, link=link or None,
                                             query=row.query if row else None)))
         return planned
 
@@ -1228,7 +1267,7 @@ class Engine:
             for folder in sorted((media / code).iterdir()) if (media / code).is_dir() else ():
                 if folder.is_dir() and folder not in seen:
                     try:
-                        yield self.resolve([f"{code}:{folder.name}"])[0]
+                        yield self._one(f"{code}:{folder.name}")
                     except UsageError as error:
                         ui.debug(
                             "{folder}: not synced: {error}",
@@ -1237,8 +1276,9 @@ class Engine:
                         )
 
     def _one(self, text: str) -> Target:
-        """Resolve one target's text on any source, following a short link once."""
-        return resolve(text, self.sources, follow=_follow)
+        """Resolve one target's text on any plugin, following a short link once; the
+        categories it names are left out."""
+        return self._read(text, {}).target
 
 
 @dataclass(eq=False)
@@ -1667,18 +1707,9 @@ async def _carried_call(call: Callable[..., Awaitable[T]], *args: Any) -> tuple[
 
 
 def _planned(options: Options) -> tuple[str, ...]:
-    """The categories a target's row shows before its listings start: those `--only` names."""
+    """The categories a target's row shows before its listings start: those it names."""
     names = options.categories or ()
     return () if crawl.ALL in names else tuple(names)
-
-
-def _validate_targets(
-    sources: Mapping[str, type[Plugin]],
-    categories: str | Sequence[str] | None,
-    resolved: Sequence[Target],
-) -> None:
-    """Check `--only` and every folder template against the targets (`options.validate`)."""
-    validate(sources, categories, resolved)
 
 
 def _account(run: PluginRun) -> Ctx:
@@ -1758,7 +1789,9 @@ def resolve(
     *,
     follow: Callable[[str], str] | None = None,
 ) -> Target:
-    """Read one target's text and return it resolved by its source.
+    """Read one target's text and return it resolved by its source: API 1's way, until it
+    goes (`Engine._read`).
+
 
     1. Find the source (`_split_target`): by the code before `:` or `?`, or by a link's host.
     2. Let it resolve the rest (`Plugin.resolve`): the first route whose pattern matches.

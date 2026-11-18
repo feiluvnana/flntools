@@ -30,7 +30,7 @@ class CheckCase(ChainCase):
 
     def saved_two(self):
         self.config('[defaults]\ndedupe = "off"\n')
-        self.engine().download(["aaa:a", "aaa:b"], categories="all")
+        self.engine().download(["aaa:a/all", "aaa:b/all"])
 
     def orphan(self, name="lost.jpg", body=b"orphan", folder="a"):
         """A whole file with no row, as a crash between its rename and its row leaves it."""
@@ -64,7 +64,7 @@ class FindTest(CheckCase):
 
     def test_what_flnd_keeps_beside_its_files_is_never_unknown(self):
         self.config("[defaults]\nsidecars = true\n")
-        self.engine().download(["aaa:a"], categories="all")
+        self.engine().download(["aaa:a/all"])
         folder = self.target_dir("aaa", "a")
         (folder / ".DS_Store").write_bytes(b"finder")
         (folder / "x.jpg.part").write_bytes(b"half")
@@ -79,7 +79,7 @@ class FindTest(CheckCase):
         self.assertEqual(self.check().unknown, ())
 
     def test_an_archive_removed_once_extracted_is_not_missing_nor_its_contents_unknown(self):
-        self.engine().download(["aaa:a"], categories="all")
+        self.engine().download(["aaa:a/all"])
         folder = self.target_dir("aaa", "a")
         (folder / "set").mkdir()
         (folder / "set" / "in.txt").write_text("alpha")

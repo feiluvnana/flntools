@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from flnd.errors import PluginError, UsageError
 
-__all__ = ["Manifest", "Resolved", "resolve"]
+__all__ = ["Manifest", "Resolved", "entry", "resolve"]
 
 # Host prefixes that are the same site: `m.example.com` is `example.com`.
 PREFIXES = ("www.", "m.", "mobile.", "web.", "mbasic.", "touch.")
@@ -21,6 +21,8 @@ PREFIXES = ("www.", "m.", "mobile.", "web.", "mbasic.", "touch.")
 NAME = r"@?(?P<{}>[\w.]+)"
 # Where a link no plugin claims goes.
 WEB = "web"
+# A link's `user:pw@`: never part of a key, a message or a log line.
+USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]*@")
 
 
 class Resolved(NamedTuple):
@@ -33,6 +35,10 @@ class Resolved(NamedTuple):
         categories: the categories to take; empty for a route without any, and for a search
             or a `discovers` route with none named, whose found targets take their own.
         query: a search (`code?query`).
+        named: whether the text named its categories (`/reels`, `/all`), which a run keeps
+            for the target; False when they are the stored or the route's own.
+        link: the value as typed, when it holds a link's `user:pw@`, which `value` (so the
+            key) leaves out: what the route reads; "" when they are the same.
     """
 
     code: str
@@ -40,6 +46,8 @@ class Resolved(NamedTuple):
     kind: str
     categories: tuple[str, ...]
     query: bool = False
+    named: bool = False
+    link: str = ""
 
     @property
     def key(self) -> str:
@@ -308,6 +316,22 @@ def _compiled(code: str, entry: Mapping[str, Any]) -> _Plugin:
     return _Plugin(code, tuple(entry.get("domains", ())), routes, unsupported)
 
 
+def entry(cls: type) -> dict[str, Any]:
+    """What resolving reads of a plugin class, as the manifest and `plugins.json` hold it."""
+    return {
+        "domains": list(cls.domains),  # type: ignore[attr-defined]
+        "unsupported": dict(cls.unsupported),  # type: ignore[attr-defined]
+        "routes": [
+            {"name": known.kind, "single": known.single, "discovers": known.discovers,
+             "shown": known.shown,
+             "patterns": [list(item) if isinstance(item, tuple) else item
+                          for item in known.patterns],
+             "categories": [{"name": category.name, "own": category.own}
+                            for category in known.categories]}
+            for known in cls.routes],  # type: ignore[attr-defined]
+    }
+
+
 def _route(route: Mapping[str, Any]) -> _Route:
     if not route.get("name"):
         patterns = list(route.get("patterns", ()))
@@ -354,8 +378,24 @@ def resolve(
         The target.
 
     Raises:
-        UsageError: no plugin has the code, a category isn't the route's, or nothing reads it.
+        UsageError: no plugin has the code, a category isn't the route's, or nothing reads it;
+            its message and hint leave out any link's `user:pw@`.
     """
+    try:
+        return _resolve(text, manifest, known, follow)
+    except UsageError as error:
+        if not USERINFO.search(f"{error}\0{error.hint}"):
+            raise
+        raise UsageError(_bare_link(str(error)), hint=_bare_link(error.hint)) from None
+
+
+def _bare_link(text: str) -> str:
+    """`text` with every link's `user:pw@` left out."""
+    return USERINFO.sub(r"\1", text)
+
+
+def _resolve(text: str, manifest: Manifest, known: Mapping[str, Sequence[str]],
+             follow: Callable[[str], str] | None) -> Resolved:
     text = text.strip()
     if not text:
         raise UsageError("a target can't be empty")
@@ -458,6 +498,7 @@ def _link(text: str, manifest: Manifest, known: Mapping[str, Sequence[str]],
             raise UsageError(f"no plugin reads links to {host}", hint=manifest.codes)
         return _made(web, hit[0], hit[1], None, known)
     query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
+
     parts = tuple(unquote(part) for part in parsed.path.split("/") if part)
     hit = _find(plugin, text, _Url(_bare(host), parts, query))
     if isinstance(hit, tuple):
@@ -498,8 +539,11 @@ def _find(plugin: _Plugin, text: str, url: _Url | None) -> tuple[_Route, str] | 
 
 def _made(plugin: _Plugin, route: _Route, value: str, tokens: list[str] | None,
           known: Mapping[str, Sequence[str]], *, query: bool = False) -> Resolved:
-    """The target, its categories chosen: named, `all`, stored, or the route's own."""
-    found = Resolved(plugin.code, value, route.name, (), query)
+    """The target, its categories chosen: named, `all`, stored, or the route's own; a link's
+    `user:pw@` is left out of its value, and kept in `link` for the route."""
+    bare = _bare_link(value)
+    found = Resolved(plugin.code, bare, route.name, (), query, link=value if bare != value else "")
+
     names = plugin.categories if route.discovers else route.names
     if tokens is None:
         if found.key in known:
@@ -513,4 +557,4 @@ def _made(plugin: _Plugin, route: _Route, value: str, tokens: list[str] | None,
             raise UsageError(f"{plugin.code} has no category {token or '(empty)'}",
                              hint=f"Categories: {', '.join(names) or 'none'}")
     chosen = names if "all" in tokens else tuple(name for name in names if name in tokens)
-    return found._replace(categories=chosen)
+    return found._replace(categories=chosen, named=True)

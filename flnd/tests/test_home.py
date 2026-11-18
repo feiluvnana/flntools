@@ -280,20 +280,20 @@ class GoneTest(EngineCase):
 
     def test_a_404_is_gone_and_asked_again_only_when_told(self):
         engine = Engine(home=self.home, sources={"aaa": self.source})
-        engine.download(["aaa:example_user"], categories="all")
+        engine.download(["aaa:example_user/all"])
         self.assertEqual(self.asked(), 1)
         with _home.open(self.home) as db:
             self.assertEqual(db.held("aaa:b.jpg")[1], "gone")
             self.assertEqual(db._store.connection().execute("SELECT key, class FROM failures").fetchall(),
                              [("aaa:b.jpg", "NotFound")])
-        engine.download(["aaa:example_user"], categories="all")
+        engine.download(["aaa:example_user/all"])
         self.assertEqual(self.asked(), 1)
-        engine.download(["aaa:example_user"], categories="all", again=True)
+        engine.download(["aaa:example_user/all"], again=True)
         self.assertEqual(self.asked(), 2)
 
     def test_ls_sizes_come_from_the_database_never_a_walk(self):
         engine = Engine(home=self.home, sources={"aaa": self.source})
-        engine.download(["aaa:example_user"], categories="all", sync=True)
+        engine.download(["aaa:example_user/all"], sync=True)
         with mock.patch.object(Path, "rglob", side_effect=AssertionError("a walk")), \
                 mock.patch.object(os, "walk", side_effect=AssertionError("a walk")):
             [info] = engine.target_ls()

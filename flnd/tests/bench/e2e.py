@@ -190,7 +190,7 @@ def many_targets(home: Path) -> float:
     """Follow `FOLLOWED` targets, then time a sync of them with nothing new, in seconds."""
     engine = Engine(home=home, sources={"bnc": Bench})
     texts = [f"bnc:example_user_{n}" for n in range(FOLLOWED)]
-    engine.download(texts, categories=("posts",), sync=True)
+    engine.download([f"{text}/posts" for text in texts], sync=True)
     files = sum(1 for path in (home / "media").rglob("*") if path.is_file())
     if files != 2 * FOLLOWED * FOLLOWED_POSTS:
         raise SystemExit(f"e2e: expected {2 * FOLLOWED * FOLLOWED_POSTS} files, found {files}")

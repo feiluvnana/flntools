@@ -61,8 +61,8 @@ class ChainCase(EngineCase):
 class DedupeTest(ChainCase):
     def test_the_same_bytes_under_another_target_become_a_hard_link(self):
         engine = self.engine()
-        engine.download(["aaa:a"], categories="all")
-        engine.download(["aaa:b"], categories="all")
+        engine.download(["aaa:a/all"])
+        engine.download(["aaa:b/all"])
         a, b = self.path("a").stat(), self.path("b").stat()
         self.assertTrue(os.path.samestat(a, b))
         self.assertEqual(a.st_nlink, 2)
@@ -74,17 +74,17 @@ class DedupeTest(ChainCase):
     def test_dedupe_off_keeps_both_copies(self):
         self.config('[defaults]\ndedupe = "off"\n')
         engine = self.engine()
-        engine.download(["aaa:a"], categories="all")
-        engine.download(["aaa:b"], categories="all")
+        engine.download(["aaa:a/all"])
+        engine.download(["aaa:b/all"])
         self.assertFalse(os.path.samestat(self.path("a").stat(), self.path("b").stat()))
         self.assertEqual(self.path("b").read_bytes(), self.body)
 
     def test_a_file_system_without_hard_links_keeps_both_with_one_warning(self):
         engine = self.engine()
-        engine.download(["aaa:a"], categories="all")
+        engine.download(["aaa:a/all"])
         refused = OSError(errno.EXDEV, "Cross-device link")
         with mock.patch("os.link", side_effect=refused):
-            engine.download(["aaa:b", "aaa:c"], categories="all")
+            engine.download(["aaa:b/all", "aaa:c/all"])
         for name in ("b", "c"):
             self.assertEqual(self.path(name).read_bytes(), self.body)
             self.assertEqual(self.path(name).stat().st_nlink, 1)
@@ -92,9 +92,9 @@ class DedupeTest(ChainCase):
 
     def test_a_changed_holder_is_not_linked_to(self):
         engine = self.engine()
-        engine.download(["aaa:a"], categories="all")
+        engine.download(["aaa:a/all"])
         self.path("a").write_bytes(b"edited by hand")
-        engine.download(["aaa:b"], categories="all")
+        engine.download(["aaa:b/all"])
         self.assertEqual(self.path("b").read_bytes(), self.body)
 
 class LinkRowTest(ChainCase):
@@ -142,13 +142,13 @@ class SidecarTest(ChainCase):
         return Captioned
 
     def test_sidecars_are_off_by_default(self):
-        self.engine(self.source_with_fields()).download(["cap:example_user"], categories="all")
+        self.engine(self.source_with_fields()).download(["cap:example_user/all"])
         folder = self.target_dir("cap", "example_user")
         self.assertEqual([path.name for path in folder.rglob("*.json")], [])
 
     def test_a_sidecar_holds_the_post_beside_its_file(self):
         self.config("[defaults]\nsidecars = true\n")
-        self.engine(self.source_with_fields()).download(["cap:example_user"], categories="all")
+        self.engine(self.source_with_fields()).download(["cap:example_user/all"])
         [side] = list(self.target_dir("cap", "example_user").rglob("*.json"))
         data = json.loads(side.read_text(encoding="utf-8"))
         self.assertEqual(side.name, "2026-01-02_P1.jpg.json")
@@ -167,12 +167,12 @@ class SidecarTest(ChainCase):
             with self.subTest(text=text):
                 self.config(text)
                 with self.assertRaises(UsageError):
-                    self.engine().download(["aaa:a"], categories="all")
+                    self.engine().download(["aaa:a/all"])
 
 
 class SavedTest(ChainCase):
     def test_a_file_with_no_slow_step_is_saved_at_once(self):
-        self.engine().download(["aaa:a"], categories="all")
+        self.engine().download(["aaa:a/all"])
         [event] = self.saved()
         self.assertEqual((event.path, event.size), (self.path("a"), len(self.body)))
 

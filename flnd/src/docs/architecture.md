@@ -96,10 +96,11 @@ The rules between them:
 | `src/engine/core.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
 | `src/engine/crawl.py` | one target, as a coroutine on the run's loop: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads (`Downloads`), history rows | the engine |
 | `src/engine/ctx.py` | `PluginRun`, a plugin's resources for a run: its cookies, HTTP session, clients, stores, loop and scheduler; `call` runs a blocking function as a step on a `CALL` thread, `off` runs the engine's own blocking step on one. `plugin_run` and `opened` make one (outside a run, or on the run's loop), and `shared_browser` gives the run its scheduler and its one browser. `TargetTabs` is a target's share of that browser, which `Ctx`'s verbs drive on a thread. `Listing` holds a category's saved cursor, and `first_page` reads the first page from it. `Ctx`, the plugin API 2 context for one target of a run: `fetch` and `pages` as page jobs (signed, `blocked` read, a 429 or a wall held, a refusal raised or, with `check=False`, read; a page body capped at 32 MiB), the browser verbs (`open` gives `Landed`, a 404 is `NotFound`; `feed`, `load`, `document`, `warm`, `click`, `handoff`) on the target's `TargetTabs`, a thread each, `hold`, `pause`, `call`, `ask` and `log`; the account's `state` (JSON values) and `secrets` (written only while `Login.start` runs, `LOGGING_IN`); the answer rules `refused`, `walled` and `checked`, which `flnd.testing.FakeCtx` shares | the crawl, the engine's login and `connect` |
-| `src/engine/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, `when`'s reading, and `config`: every setting of config.toml, read and checked in one place | the engine, the crawl, the library, `ctx` |
+| `src/engine/resolve.py` | resolving target text (`code:value[/categories]`, `code?query`, links) from the manifest's plain data without importing any plugin | `Engine` |
+| `src/engine/options.py` | `Options` and `RunShared`, `when`'s reading, and `config`: every setting of config.toml, read and checked in one place | the engine, the crawl, the library, `ctx` |
 | `src/plugin.py` | plugin API 2 (public, `flnd.plugin`): `Plugin` and its checks, `@route`, `Post`, `File`, `Target`, `Ctx` (its protocol), `Login` and `cookies`, `Request`, `Response`, `dig`, the errors | every plugin |
 | `src/plugins/` | the eight built-in plugins, one module each, and `PLUGINS` (`src/plugins/__init__.py`), the registry of every plugin, installed ones included, each imported on first use | the engine and the library |
-| `src/plugins/_manifest.py` | each built-in plugin as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `PLUGINS` (which imports a plugin only when used), link resolution |
+| `src/plugins/_manifest.py` | each built-in plugin as plain data (code, domains, forms, categories, routes), made by `make manifest` | `--help`, `PLUGINS` (which imports a plugin only when used), link resolution |
 | `src/engine/plugins.py` | finding installed plugins (installed packages' `flnd.sources` entry points, then the user's plugin folder), importing one when its code is first used, and disabling one that breaks, with its file and line | `PLUGINS` |
 | `src/engine/extension.py` | the Chrome extension's native-messaging host (`flnd host`), the relay a run reaches it by, the run's client, and `install` ([extension.md](extension.md)); the extension's own files are in `src/extension/` | Chrome, the CLI's `flnd extension` |
 | `src/testing.py` | the public test kit: `FakeCtx` (with `Reply`, `FakePage` and `Seen`) for a plugin, `collect`, `check`, `fake_clock` | a plugin's tests, flnd's own (`tests/fakes.py`) |
@@ -149,18 +150,18 @@ yours.
 
 ## One download, start to finish
 
-`flnd follow ins:example_user --only posts`:
+`flnd follow ins:example_user/posts`:
 
 1. **The CLI** (`src/cli.py`) parses the flags with argparse, opens the home (`flnd.open`), and
-   calls `fl.follow("ins:example_user", only=["posts"])`.
-2. **Resolving.** The library resolves the target at once (`engine.resolve`): it splits the text
-   at `:` (or `?` for a search), finds the plugin by its code (or a bare link by its `domains`),
-   and the plugin's routes resolve it (`Plugin.resolve`). The first route whose pattern
-   matches gives `Target("ins:example_user", kind="user")`. A short link no route reads is
-   followed once with a HEAD request, and the link it leads to is resolved instead.
-3. **Checking.** Before any request, `options.categories_by_source` and `options.validate` check
-   `--only` against the target's route, and every folder template against its fields. `--when`
-   and `--limit` are read too. A mistake is a `UsageError` (exit code 2).
+   calls `fl.follow("ins:example_user/posts")`.
+2. **Resolving.** The library resolves the target at once (`Engine.chosen`, through
+   `src/engine/resolve.py`): it reads the manifest alone, finds the plugin by its code (or a
+   bare link by its `domains`), and the first route whose pattern matches gives
+   `Target("ins:example_user", kind="user")`. The categories after the last `/` are checked
+   against the route's; without them, a known target takes its stored ones, and a new one the
+   route's own. A short link no route reads is followed once with a HEAD request.
+3. **Checking.** `--when` and `--limit` are read too, before any request. A mistake is a
+   `UsageError` (exit code 2).
 4. **A run that hasn't started.** `follow` returns a `flnd.Run`. Nothing happens until the CLI
    reads it: the first read starts the run's loop on its thread, `flnd-loop`, which makes an
    `Engine` with the run's event sink and stop state, and awaits
@@ -168,7 +169,7 @@ yours.
    that loop, except a plugin's own blocking code, which runs on a thread of the scheduler's
    (see "Threads and queues").
 5. **Recording.** The engine opens the command's row in `runs` (each failure names it), then
-   `Home.record` writes the target's row in `flnd.db`, followed, with `--only posts` kept for
+   `Home.record` writes the target's row in `flnd.db`, followed, with `posts` kept for
    later syncs, keeping its cursors, heads and gaps from earlier runs.
 6. **One `PluginRun` per plugin.** The engine makes one `PluginRun` per plugin per run, the
    first time one of its targets runs, discovered and linked targets included: the plugin's
@@ -558,7 +559,7 @@ in November 2026: gallery-dl and yt-dlp (many sites each), instaloader (Instagra
 | --- | --- | --- | --- | --- |
 | How is a site written? | an `Extractor` class per kind of URL, each with a `pattern` regex | an `InfoExtractor` per site, with `_VALID_URL` and `_TESTS` | one package for one site | **one `Plugin` class per site**; each kind of target is a decorated method, a *route* |
 | What does a site produce? | message tuples: `Directory`, `Url`, and `Queue` (hand a URL to another extractor) | info dicts with standard fields | Python objects (`Post`, `Profile`, `Tweet`) | **typed objects**: `Post`, `File`, and `Target` to hand a link to another plugin |
-| The parts of a profile | a "user" extractor dispatching to sub-extractors, picked with `include` | — | — | **categories** under a route, picked with `--only` |
+| The parts of a profile | a "user" extractor dispatching to sub-extractors, picked with `include` | — | — | **categories** under a route, named in the target (`/reels`) |
 | Stopping at old posts | `skip = "abort:N"` | `--break-on-existing` | `--fast-update` | **the engine** stops a sync after 5 saved posts in a row, and after the newest post it had |
 | What was downloaded | a SQLite archive of keys | a text file of ids | a timestamps file | **`flnd.db`**: files, targets, runs and failures, with real columns |
 | After a file lands | post-processor modules on events | a post-processor chain (ffmpeg merge, metadata, exec) | — | **a fixed step chain**: dedupe, unpack, sidecar, then `--exec` |
@@ -618,8 +619,8 @@ The choices that explain how flnd behaves, made with its user in November 2026:
 
 1. **Flat verbs**: `flnd ls`, `flnd login`, `flnd follow`, not groups such as
    `flnd auth login`. Every verb is unique; `login` with no source lists the logins.
-2. **`--only`, and every category without it.** There is no `--all`; a target takes every
-   category, other people's content (tagged posts, reposts, likes) included.
+2. **Categories in the target** (`ins:example_user/reels`, `/all`); without them, the plugin's
+   own content (`own=True`), and never other people's (tagged posts, reposts, likes) unless named.
 3. **Following is a verb.** `flnd follow` opts a target in; a one-off `download` never grows
    every later sync.
 4. **Scrolling is human-like by default** (`scroll = "human"`), with `"fast"` in a plugin's

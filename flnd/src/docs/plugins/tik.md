@@ -6,8 +6,8 @@ its id or link. A profile is read in a browser, which flnd drives itself; a sing
 from TikTok's public embed page over plain HTTP, without a browser. No login is required: without
 one, flnd warns and uses public access.
 
-A *target* is what you give `flnd download`; a *category* is one part of a target, chosen with
-`--only`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
+A *target* is what you give `flnd download`; a *category* is one part of a target, named after
+its last `/`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
 
@@ -28,7 +28,7 @@ matches no route; the engine follows its redirect once and reads the link it lan
 ## Categories
 
 These belong to the `user` route. A single post (`video`) has no categories and is downloaded
-whole; `--only` with one is a usage error.
+whole; naming one for it is a usage error.
 
 | Category | What it holds |
 | --- | --- |
@@ -40,9 +40,9 @@ whole; `--only` with one is a usage error.
 | `favorites` | the Favorites tab, when the account made it public |
 | `profile` | the profile picture |
 
-Without `--only` a profile gets its own categories, in the order above: every one except
+Without categories a profile gets its own categories, in the order above: every one except
 `reposts`, `liked` and `favorites`. Those three are marked `own=False`, so they are taken only
-when named in `--only`, or with `--only all`.
+when named (`tik:<user>/liked`), or with `/all`.
 
 ## Logging in
 

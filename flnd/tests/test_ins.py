@@ -550,7 +550,6 @@ class InPage:
         reply = self.case.serve(_net.Request("GET", _net.URL(url), {}, None))
         return _net.Response(reply.status, url, {}, reply.body)
 
-
 class MeEngineTest(fakes.EngineCase):
     """`ins:me` through the real engine: a target that finds the follows, recorded once."""
 
@@ -582,10 +581,10 @@ class MeEngineTest(fakes.EngineCase):
 
     def test_a_dry_run_keeps_nothing_and_a_sync_finds_new_follows(self):
         engine = Engine(home=self.home, sources={"ins": Instagram})
-        dry = engine.download(["ins:me"], categories="posts", dry=True)
+        dry = engine.download(["ins:me/posts"], dry=True)
         self.assertTrue(dry.ok, (dry, self.lines()))
         self.assertEqual(fakes.targets(self.home), {})
-        report = engine.download(["ins:me"], categories="posts", sync=True)
+        report = engine.download(["ins:me/posts"], sync=True)
         self.assertTrue(report.ok, report)
         rows = fakes.targets(self.home)
         self.assertEqual((list(rows), rows["ins:me"].seen), (["ins:me"], ["ins:example_user"]))

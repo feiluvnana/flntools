@@ -99,7 +99,7 @@ class FeedCase(EngineCase):
                 if str(request.url).split("?")[0] == f"{CDN}/{post}.jpg"]
 
     def download(self):
-        return self.engine.download(["fed:example_user"], categories="all", sync=True)
+        return self.engine.download(["fed:example_user/all"], sync=True)
 
     def sync(self):
         self.requests.clear()
@@ -149,7 +149,7 @@ class GapTest(FeedCase):
         # Four pages of new posts; the sync is cut after six of them (`--limit`, so the six are
         # whole when it ends).
         self.posts = [f"n{number}" for number in range(1, 13)] + self.posts
-        self.engine.download(["fed:example_user"], categories="all", limit=6)
+        self.engine.download(["fed:example_user/all"], limit=6)
         self.assertEqual(self.saved(), sorted([*self.posts[:6], *self.posts[12:]]))
         self.assertEqual(self.row().gaps, {"posts": ["n6"]})
         # The head stays the old one while a gap is open: the gap lies above it.
@@ -221,7 +221,7 @@ class GapTest(FeedCase):
                                           "domains": ("example.com",), "api": 2, "key": "{post}",
                                           "filename": "{post}", "user": read, "posts": posts})
         engine = Engine(home=self.home, sources={"lst": source})
-        engine.download(["lst:example_user"], categories="all", sync=True)
+        engine.download(["lst:example_user/all"], sync=True)
         self.posts = [f"n{number}" for number in range(1, 13)] + self.posts
         cut["at"] = "n8"
         self.assertFalse(engine.sync(["lst:example_user"]).ok)
@@ -350,7 +350,7 @@ class SampleTest(EngineCase):
         self.routes[f"{API}{path}"] = _net.reply(200, json=body)
         engine = Engine(home=self.home, sources={"chg": self.changed_source(path)},
                         emit=self.events.append)
-        return engine.download(["chg:example_user"], categories="all")
+        return engine.download(["chg:example_user/all"])
 
     def samples(self):
         return sorted((self.home / _home.LOGS).glob("*/samples/*"))

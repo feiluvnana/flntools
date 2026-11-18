@@ -32,9 +32,9 @@ reads the target.
 
 ## Category
 One part of a target, such as a profile's `posts`, `reels` or `stories`. It is a method made
-with `@<route>.category`, and it receives what its route returned. The CLI picks
-categories with `--only` (the library with `only=`); leaving it out takes every one. A single
-post has no categories, and takes no `--only`.
+with `@<route>.category`, and it receives what its route returned. A target names
+its categories after its last `/` (`ins:example_user/reels,posts`, `/all`); without them, a
+known target takes its stored ones, and a new one its plugin's own. A single post has none.
 
 ## Query
 A route whose pattern is `<code>?{words}`, such as `mht?{words}`, typed as `mht?example`. It

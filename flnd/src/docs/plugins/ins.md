@@ -28,9 +28,10 @@ A post's *code* is the short text in its link. The `post` patterns are tried bef
 ## Categories
 
 A *category* is one part of a profile that can be downloaded on its own. Without
-[`--only`](../cli.md) a profile gets its own content: every category except `tagged` and
-`reposts`. `--only` names some of them. `--only` is refused for a `post` target, which is always
-downloaded whole. For `ins:me`, `--only` applies to each followed account it finds.
+categories ([the CLI guide](../cli.md)) a profile gets its own content: every category except
+`tagged` and `reposts`; `ins:<user>/reels` names some, and `/all` takes all of them. A `post`
+target takes none: it is always downloaded whole. For `ins:me`, the categories it names
+(`ins:me/reels`) apply to each followed account it finds.
 
 | Category | What it holds |
 | --- | --- |

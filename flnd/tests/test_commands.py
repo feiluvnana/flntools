@@ -123,28 +123,27 @@ class RunsCase(FlndCase):
 
 class DownloadTest(RunsCase):
     def test_targets_and_flags_reach_the_engine(self):
-        code, _, out = self.run_app("download", "ins:example_user", "https://x.com/example_handle",
-                                    "--only", "reels,media", "--only", "tagged",
+        code, _, out = self.run_app("download", "ins:example_user/tagged,reels",
+                                    "https://x.com/example_handle",
                                     "--when", "2026-01..2026-06", "--limit", "5")
         self.assertEqual(code, 0, out)
         engine, targets, options = self.runs[0]
         self.assertEqual(targets, [Target("ins:example_user", kind="user"),
                                    Target("twt:example_handle", kind="user")])
-        self.assertEqual(options, Options(categories=("reels", "media", "tagged"), limit=5,
+        self.assertEqual(options, Options(categories=("reels", "tagged"), limit=5,
                                           since=date(2026, 1, 1), until=date(2026, 6, 30)))
         self.assertEqual(engine.home, Path(".flnd"))
 
-    def test_no_only_takes_every_category(self):
+    def test_no_categories_take_the_routes_own(self):
         self.assertEqual(self.run_app("download", "tik:a", "ins:b")[0], 0)
         self.assertIsNone(self.runs[0][2].categories)
 
-    def test_only_with_a_single_post_is_a_usage_error(self):
-        message = ("--only applies to profiles and chats; ins:C1abcDEFghi is one post, "
-                   "downloaded whole: give it without --only")
-        for targets in (("https://www.instagram.com/p/C1abcDEFghi/",),
-                        ("ins:example_user", "https://www.instagram.com/p/C1abcDEFghi/")):
+    def test_categories_on_a_single_post_are_a_usage_error(self):
+        message = "tik:7312345678901234567 is one post, with no categories"
+        for targets in (("tik:7312345678901234567/videos",),
+                        ("ins:example_user", "tik:7312345678901234567/all")):
             with self.subTest(targets=targets):
-                code, _, out = self.run_app("download", *targets, "--only", "tagged")
+                code, _, out = self.run_app("download", *targets)
                 self.assertEqual(code, 2)
                 self.assertIn(message, out)
         self.assertEqual(self.runs, [])
@@ -161,9 +160,9 @@ class DownloadTest(RunsCase):
         self.assertIn("x give at least one target, or pipe targets on stdin", out)
 
     def test_bad_targets_are_usage_errors_before_anything_starts(self):
-        for target, message in (("ytb:nasa", "unknown source 'ytb'. Sources: tik, fbk, ins, twt"),
+        for target, message in (("ytb:nasa", "no plugin named ytb\n  hint  Plugins: tik, fbk, ins"),
                                 ("example_user",
-                                 'which source is "example_user"? Write it as tik:example_user'),
+                                 'which plugin is "example_user"? Write it as tik:example_user'),
                                 ("https://www.facebook.com/example.page/posts/1",
                                  "fbk: this kind of link isn't supported yet")):
             code, _, out = self.run_app("download", "ins:a", target)
@@ -174,12 +173,11 @@ class DownloadTest(RunsCase):
         self.assertFalse((Path(".flnd") / _home.MEDIA).exists())
 
     def test_bad_flags(self):
-        message = ("no source here has 'reels': use all, or tik: videos, stories, playlists, "
-                   "reposts, liked, favorites, profile; twt: posts, media, highlights, reposts, "
-                   "replies, profile")
-        self.assertIn(message, self.run_app("download", "tik:a", "twt:b", "--only", "videos,reels")[2])
+        message = "ins has no category videos"
+        self.assertIn(message, self.run_app("download", "tik:a", "ins:me/videos")[2])
         for argv in (("--limit", "0"), ("--limit", "five"), ("--when", "yesterday"),
-                     ("--from", "posts"), ("--time", "2026-01-01,"), ("--sync",)):
+                     ("--from", "posts"), ("--only", "posts"), ("--time", "2026-01-01,"),
+                     ("--sync",)):
             with self.subTest(argv=argv):
                 code, _, out = self.run_app("download", "ins:a", *argv)
                 self.assertEqual(code, 2)
@@ -284,8 +282,8 @@ class FollowTest(RunsCase):
 
         self.enterContext(mock.patch.object(Engine, "_plan", plan))
 
-    def test_sync_takes_the_followed_targets_with_their_only(self):
-        self.run_app("follow", "ins:example_user", "--only", "reels")
+    def test_sync_takes_the_followed_targets_with_their_categories(self):
+        self.run_app("follow", "ins:example_user/reels")
         self.run_app("follow", "twt:example_handle")
         self.run_app("download", "tik:example_creator")
         code, _, out = self.run_app("sync")
@@ -392,7 +390,7 @@ class OutputTest(FlndCase):
         self.assertRegex(out.splitlines()[-1], r" - 0 saved - 3 already saved - 0 failed$")
 
     def test_json_lines(self):
-        code, out, _ = self.run_app("--json", "download", "exs:example_user", "--only", "reels")
+        code, out, _ = self.run_app("--json", "download", "exs:example_user/reels")
         self.assertEqual(code, 0)
         rows = [json.loads(line) for line in out.splitlines()]
         self.assertEqual({row["type"] for row in rows[:-1]}, {"Saved"})
@@ -518,16 +516,15 @@ class HelpTest(FlndCase):
         self.assertIn("tlg:<@username, chat title or id>, tlg:@<chat>, a link on t.me",
                       " ".join(out.split()))
         self.assertIn("fbk:<user>, a link on facebook.com, fb.com, fb.watch", out)
-        self.assertIn("--only posts reels tagged", " ".join(out.split()))
+        self.assertIn("/posts,reels,tagged", " ".join(out.split()))
 
     def test_command_help_is_its_docstring_with_its_flags(self):
         code, out, _ = self.run_app("download", "--help")
         self.assertEqual(code, 0)
         self.assertIn("Download what the targets have now, once.", out)
-        for flag in ("--only", "--when", "--limit", "--dry", "--again", "--exec",
-                     "--home", "--json"):
+        for flag in ("--when", "--limit", "--dry", "--again", "--exec", "--home", "--json"):
             self.assertIn(flag, out)
-        for gone in ("--from", "--time", "--sync", "Args:"):
+        for gone in ("--only", "--from", "--time", "--sync", "Args:"):
             self.assertNotIn(gone, out)
 
     def test_help_imports_no_source_engine_or_network(self):

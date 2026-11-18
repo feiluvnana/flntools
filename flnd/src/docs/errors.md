@@ -217,7 +217,7 @@ A file a retry brought back is a `Saved` event with `retried=True`; the end of t
 
 | message | meaning | fix |
 | --- | --- | --- |
-| `--only applies to profiles and chats; <target> is one post` | a single post has no categories | leave `--only` out |
+| `<target> is one post, with no categories` | a single post has no categories | leave the `/categories` out |
 | `<target>: not logged in` | the plugin requires a login | `flnd login <code>` |
 | `<code>: not logged in, using public access` | a warning: only public posts are listed | log in to get more |
 | `<code>: the site refused the login (HTTP 403)` | the saved login expired or was revoked | `flnd login <code>` |

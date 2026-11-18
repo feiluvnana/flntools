@@ -510,7 +510,8 @@ assert Post("a1", album_files).lazy                  # files listed only if the 
   audio with an https URL.
 - **`Target(text)`** takes any target, of any plugin. A query route yields its results this way,
   and so may a post that links to another site: flnd resolves it, and runs it as its own target.
-  A route that yields targets without being a query says `discovers=True`.
+  A route that yields targets without being a query says `discovers=True`, so the categories its
+  target names apply to what it finds.
 
 ```python
 manifest = """<MPD><Period>

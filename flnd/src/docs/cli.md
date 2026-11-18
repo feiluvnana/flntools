@@ -14,7 +14,7 @@ From a checkout, `make setup` creates the environment, then:
 
 ```sh
 uv run flnd --help
-uv run flnd download ins:example_user --only posts
+uv run flnd download ins:example_user/posts
 ```
 
 `flnd --help` fits in 24 lines: a row per command, the flags, and the code of every built-in
@@ -73,12 +73,16 @@ A flag given on the command line wins; then the environment (`FLND_HOME`); then 
 
 ## Targets
 
-A target is `<plugin>:<name, id or link>`, `<plugin>?<words>` for a search, or a bare link:
+A target is `<plugin>:<name, id or link>`, `<plugin>?<words>` for a search, or a bare link.
+Its categories go after its last `/`: `ins:example_user/posts,reels`, or `/all` for every one.
+Without them, a target the home knows takes the categories it was followed with, and a new one
+its site's own content; a search passes its categories on to each target it finds. A link
+takes the defaults, and a single post has no categories, so naming one for it is a usage error:
 
 ```sh
 flnd download ins:example_user
-flnd download https://www.instagram.com/example_user/ --only posts,reels
-flnd download "mht?example words" --only chapters
+flnd download ins:example_user/posts,reels
+flnd download "mht?example words/chapters"
 flnd download https://www.tiktok.com/@example_user/video/1234567890
 ```
 
@@ -92,13 +96,12 @@ Download what the targets have now, once. Nothing is followed: a later `flnd syn
 these targets (`flnd follow` does).
 
 ```sh
-flnd download <targets…> [--only CATS] [--when WHEN] [--limit N] [--dry] [--again] [--exec CMD]
+flnd download <targets…> [--when WHEN] [--limit N] [--dry] [--again] [--exec CMD]
 ```
 
 | flag | default | what it does |
 | --- | --- | --- |
 | `<targets…>` | standard input | the targets; with none, flnd reads them from standard input, one per line, skipping blank lines and lines starting with `#` |
-| `--only CATS` | every category | only these categories, such as `reels,posts`; may be given more than once. With targets from several plugins, `ins:reels` names one plugin's. A single post has no categories, so `--only` with one is a usage error |
 | `--when WHEN` | `when` under `[defaults]` in `config.toml`, else every day | only posts from these days: a year `2026`, a month `2026-06`, a day `2026-06-15`, a range `2026-01..2026-03` (either end may be left out), or a span back from today `30d`, `8w`, `1y`; `--when ""` takes every day, whatever the config says |
 | `--limit N` | no limit | at most N posts per target, or N targets found by a search; at least 1 |
 | `--dry` | off | list what would be downloaded (each file `new` or `saved`, or the targets a search finds), and download and write nothing |
@@ -112,9 +115,9 @@ Examples:
 
 ```sh
 flnd download ins:example_user
-flnd download ins:example_user --only reels --when 2026-01..2026-06
-flnd download tik:example_user twt:example_user --only tik:videos --only twt:media
-flnd download "mht?example" --only chapters --limit 5 --dry
+flnd download ins:example_user/reels --when 2026-01..2026-06
+flnd download tik:example_user/videos twt:example_user/media
+flnd download "mht?example/chapters" --limit 5 --dry
 cat targets.txt | flnd download
 ```
 
@@ -155,11 +158,11 @@ Windows, backslashes in CMD are kept as they are, for paths, and only double quo
 Follow targets, so `flnd sync` keeps them up to date, and download what they have now.
 
 ```sh
-flnd follow <targets…> [--only CATS] [--when WHEN] [--again]
+flnd follow <targets…> [--when WHEN] [--again]
 ```
 
-`--only` is kept with each target for later syncs; following again replaces it. `--when` bounds this first download only. The flags read
-as `download`'s do.
+The categories a target names are kept with it for later syncs; following it again with others
+replaces them. `--when` bounds this first download only. The flags read as `download`'s do.
 
 ## `flnd sync`
 
@@ -169,7 +172,8 @@ Download what is new for every followed target, or for the ones named.
 flnd sync [targets…] [--exec CMD]
 ```
 
-Each target keeps the `--only` it was followed with. A sync lists each category newest first and
+Each target keeps the categories it was followed with. A sync lists each category newest first and
+
 stops it after a few saved posts in a row, so a sync with nothing new costs a few requests per
 target. A followed search downloads only the targets it hadn't found before.
 
@@ -393,7 +397,7 @@ and the repeats of a warning within 10 seconds fold into one line ([How it looks
 | --- | --- |
 | 0 | everything worked |
 | 1 | some files or targets failed (each is named above the exit); flnd went on with the rest |
-| 2 | a usage error: an unknown command or flag, a target no plugin reads, a bad `--only`, `--when` or `--limit` |
+| 2 | a usage error: an unknown command or flag, a target no plugin reads, a category its route lacks, a bad `--when` or `--limit` |
 | 3 | a login is needed: a plugin isn't logged in, its login was refused, or `flnd login` failed |
 | 4 | flnd itself stopped: a full or refused disk, a missing tool, a broken plugin, or a bug |
 | 130 | stopped with Ctrl-C |
@@ -436,7 +440,7 @@ the traceback prints instead.
 
 ## For contributors
 
-`make try ARGS="<target> [--only …] [--when …]"` runs `flnd --home .try download --dry` on the
+`make try ARGS="<target>[/categories] [--when …]"` runs `flnd --home .try download --dry` on the
 target: it lists, live, the files a download would save, and downloads and records nothing. The
 scratch home `.try` holds no login at first; log in there for a site that needs one
 (`uv run flnd --home .try login ins chrome`). `make clean` removes it.

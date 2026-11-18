@@ -5,8 +5,8 @@ account can see. It talks to Telegram as a client of its own, through the Teleth
 SDK for Telegram's MTProto protocol), not through a web page. A login is required; no browser is
 used to download, only, if you choose it, to read an existing Telegram Web login.
 
-A *target* is what you give `flnd download`; a *category* is one part of a target, chosen with
-`--only`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
+A *target* is what you give `flnd download`; a *category* is one part of a target, named after
+its last `/`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
 
@@ -50,8 +50,8 @@ listing your chats. If the chat no longer has that name, the lookup runs again.
 | `video` | the chat's videos |
 | `file` | the chat's other files (documents, archives, audio) |
 
-Each is newest first. Without `--only` a chat gets every category; `--only` names one or more
-of these.
+Each is newest first. Without categories a chat gets every one; `tlg:<chat>/photo,video` names one or
+more of these.
 
 ## Logging in
 

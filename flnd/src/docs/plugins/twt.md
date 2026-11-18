@@ -38,9 +38,9 @@ A search needs a login: X sends a logged-out browser to its login page, which st
 ## Categories
 
 A *category* is one part of a profile that can be downloaded on its own. Without
-[`--only`](../cli.md) a profile gets every category but `reposts`; `--only` names some of them,
-and `--only all` takes `reposts` too. `--only` is refused for a `post` target, which is always
-downloaded whole.
+categories ([the CLI guide](../cli.md)) a profile gets every category but `reposts`;
+`twt:<user>/media` names some of them, and `/all` takes `reposts` too. A `post` target takes
+none: it is always downloaded whole.
 
 | Category | What it holds |
 | --- | --- |

@@ -124,7 +124,18 @@ PLUGINS: dict[str, dict[str, object]] = {
                 'single': True,
                 'discovers': False,
                 'shown': 'https://www.facebook.com/permalink.php?story_fbid=<post>&id=<user>',
-                'patterns': [],
+                'patterns': [
+                    [
+                        'facebook.com/permalink.php?story_fbid={post:\\w+}&id={user:\\d+}',
+                        '{user}_{post}',
+                    ],
+                    ['fb.com/permalink.php?story_fbid={post:\\w+}&id={user:\\d+}', '{user}_{post}'],
+                    [
+                        'facebook.com/story.php?story_fbid={post:\\w+}&id={user:\\d+}',
+                        '{user}_{post}',
+                    ],
+                    ['fb.com/story.php?story_fbid={post:\\w+}&id={user:\\d+}', '{user}_{post}'],
+                ],
                 'categories': [],
             },
             {
@@ -210,6 +221,9 @@ PLUGINS: dict[str, dict[str, object]] = {
             'https://www.facebook.com/photo?fbid=<photo>',
             'https://www.fb.com/photo?fbid=<photo>',
             'https://www.facebook.com/permalink.php?story_fbid=<post>&id=<user>',
+            'https://www.fb.com/permalink.php?story_fbid=<post>&id=<user>',
+            'https://www.facebook.com/story.php?story_fbid=<post>&id=<user>',
+            'https://www.fb.com/story.php?story_fbid=<post>&id=<user>',
             'https://www.facebook.com/profile.php?id=<user>',
             'https://www.fb.com/profile.php?id=<user>',
             'https://www.facebook.com/people/…/<user>/',
@@ -473,7 +487,10 @@ PLUGINS: dict[str, dict[str, object]] = {
                 'single': True,
                 'discovers': False,
                 'shown': None,
-                'patterns': ['mimihentai.moe/manga/*/chapter/{id:\\d+}'],
+                'patterns': [
+                    ['mht:chapter/{id:\\d+}', 'chapter/{id}'],
+                    ['mimihentai.moe/manga/*/chapter/{id:\\d+}', 'chapter/{id}'],
+                ],
                 'categories': [],
             },
             {
@@ -519,6 +536,7 @@ PLUGINS: dict[str, dict[str, object]] = {
         ],
         'unsupported': {},
         'forms': [
+            'mht:chapter/<id>',
             'mht:<id>',
             'mht:author/<author>',
             'mht:genre/<genre>',

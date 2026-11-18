@@ -55,13 +55,19 @@ class Mimi(Plugin):
         self._cached: dict[str, dict[str, Any]] = {}
 
     # The chapter route comes first: the manga link pattern would also read a chapter's link.
-    @route(r"mimihentai.moe/manga/*/chapter/{id:\d+}", single=True, newest_first=False)
+    # Its value keeps its `chapter/`, so its key, `mht:chapter/<id>`, reads back as a chapter,
+    # never as manga `<id>`; API 1's row of one (`mht:<id>`, of kind chapter) still runs.
+    @route((r"mht:chapter/{id:\d+}", "chapter/{id}"),
+           (r"mimihentai.moe/manga/*/chapter/{id:\d+}", "chapter/{id}"),
+           single=True, newest_first=False)
     async def chapter(self, ctx: Ctx, id: str) -> AsyncIterator[Post]:
-        """One chapter, by its link: `https://mimihentai.moe/manga/70982/chapter/1001`.
+        """One chapter: `mht:chapter/1001`, or its link,
+        `https://mimihentai.moe/manga/70982/chapter/1001`.
 
         Raises:
             NotFound: the API has no such chapter.
         """
+        id = id.removeprefix("chapter/")
         body = (await ctx.fetch(f"{API}chapters/{id}")).json
         info = body.get("info") if isinstance(body, dict) else None
         if not isinstance(info, dict) or "id" not in info:

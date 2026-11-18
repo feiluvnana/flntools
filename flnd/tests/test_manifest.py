@@ -66,11 +66,11 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(loaded_after("from flnd.plugins import PLUGINS\nPLUGINS['ins']"),
                          ["flnd.plugins.ins"])
 
-    def test_resolving_a_target_imports_only_its_plugin(self):
+    def test_resolving_a_built_in_target_imports_no_plugin(self):
         code = ("import flnd\n"
                 "with flnd.open('example-home') as fl:\n"
                 "    fl._resolve(['ins:example_user', 'https://www.tiktok.com/@example_user'])")
-        self.assertEqual(loaded_after(code), ["flnd.plugins.ins", "flnd.plugins.tik"])
+        self.assertEqual(loaded_after(code), [])
 
     def test_a_registry_can_be_patched_like_a_dict(self):
         with unittest.mock.patch.dict(plugins.PLUGINS, {"exm": object}):

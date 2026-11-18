@@ -40,8 +40,8 @@ that needs joining fails (and is retried on later runs), an archive is kept but 
 ## Quick start
 ```bash
 flnd login ins chrome                        # use your Chrome login for Instagram
-flnd download ins:example_user               # every category of example_user, once
-flnd download ins:example_user --only reels --when 2026
+flnd download ins:example_user               # its own content: posts, reels, stories, …
+flnd download ins:example_user/reels --when 2026
 flnd follow ins:example_user                 # follow it, and download what's there now
 flnd sync                                    # what's new for every followed target
 flnd ls                                      # what this home knows: files, size, last sync
@@ -49,8 +49,8 @@ flnd ls                                      # what this home knows: files, size
 
 ## Commands
 ```text
-flnd download [targets…] [--only CATS] [--when WHEN] [--limit N] [--dry] [--again] [--exec CMD]
-flnd follow [targets…] [--only CATS] [--when WHEN] [--again]
+flnd download [targets…] [--when WHEN] [--limit N] [--dry] [--again] [--exec CMD]
+flnd follow [targets…] [--when WHEN] [--again]
 flnd sync [targets…] [--exec CMD]
 flnd unfollow <targets…>      stop following; files and history stay
 flnd ls [targets…]            the targets this home knows: followed or not, files, size, last run
@@ -71,10 +71,11 @@ global flags: --home DIR · -v/--verbose · --json · -V/--version
   link: `ins:example_user` and `https://www.instagram.com/example_user/` are the same target,
   and `mht?romance` is a search. With no targets, `download` and `follow` read them from
   standard input, one per line.
-- **`--only`** picks categories, such as `posts`, `reels`, `stories`, `highlights`, `tagged` or
-  `reposts` (`flnd --help` lists each site's). Without it, flnd takes every category. With
-  targets of several sites, `--only tik:videos --only twt:media` names each site's. A single
-  post has no categories, so `--only` with a post's link is a usage error.
+- **Categories** go in the target, after its last `/`: `ins:example_user/reels,posts`, or
+  `/all` for every one (`flnd download --help` lists each site's). Without them, a target flnd
+  knows takes the ones it was followed with, and a new one the site's own content. A search
+  passes them on to each target it finds (`mht?romance/cover`). A link takes the defaults, and
+  a single post has no categories, so naming one for it is a usage error.
 - **`--when`** takes `2026`, `2026-06`, `2026-06-15`, a range `2026-01..2026-03` (either end may
   be left out), or a span back from today: `30d`, `8w`, `1y`.
 - **`--limit N`** takes at most N posts per target, or N targets from a search.
@@ -93,7 +94,7 @@ global flags: --home DIR · -v/--verbose · --json · -V/--version
   130 stopped with Ctrl-C.
 
 ### Following and syncing
-`download` takes what's there, once. `flnd follow` remembers a target, with its `--only`, and
+`download` takes what's there, once. `flnd follow` remembers a target, with its categories, and
 downloads it. `flnd sync` then fetches what's new for every followed target (or just the ones
 named). `flnd unfollow` stops following a target; its files and history stay. A sync asks no
 questions, and its exit code says how it went, so it suits cron, launchd or Task Scheduler:
@@ -218,7 +219,8 @@ yields events as it goes: `Saved`, `Skipped`, `Failed`, and `Planned` for a dry 
 import flnd
 
 with flnd.open("~/Media/flnd") as fl:
-    for event in fl.download("ins:example_user", only=["reels"], when="2026"):
+    for event in fl.download("ins:example_user/reels", when="2026"):
+
         if isinstance(event, flnd.Saved):
             print(event.path, event.date, event.post)     # event.post is the post's id
         elif isinstance(event, flnd.Failed):

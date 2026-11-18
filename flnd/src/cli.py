@@ -1,6 +1,6 @@
 """The flnd command line: flags in, one library call, events out as lines on the terminal.
 
-    flnd download ins:example_user --only reels --when 2026
+    flnd download ins:example_user/reels --when 2026
     flnd follow tik:example_user
     flnd sync
     flnd login ins chrome
@@ -240,16 +240,15 @@ def download(args: argparse.Namespace) -> int:
     runner = _runner(args)
     targets = _targets(args.targets)
     with _open(args) as fl:
-        run = fl.download(targets, only=args.only, when=args.when, limit=args.limit,
-                          dry=args.dry)
+        run = fl.download(targets, when=args.when, limit=args.limit, dry=args.dry)
         return _watch(fl, run, args, runner=runner)
 
 
 def follow(args: argparse.Namespace) -> int:
     """Follow targets, so `flnd sync` keeps them up to date, and download what they have now.
 
-    --only is kept with each target for later syncs; following again replaces it. --when
-    bounds this first download only.
+    The categories a target names (ins:example_user/reels) are kept with it for later syncs;
+    following again with others replaces them. --when bounds this first download only.
 
     Args:
         args: the parsed flags.
@@ -259,14 +258,14 @@ def follow(args: argparse.Namespace) -> int:
     """
     targets = _targets(args.targets)
     with _open(args) as fl:
-        run = fl.follow(targets, only=args.only, when=args.when)
+        run = fl.follow(targets, when=args.when)
         return _watch(fl, run, args)
 
 
 def sync(args: argparse.Namespace) -> int:
     """Download what is new for every followed target, or for the ones named.
 
-    Each target keeps the --only it was followed with. A category stops after a few saved
+    Each target keeps the categories it was followed with. A category stops after a few saved
     posts in a row, so a sync with nothing new costs a few requests per target.
 
     Args:
@@ -627,8 +626,8 @@ def parser() -> argparse.ArgumentParser:
 
     sub = command(download)
     sub.add_argument("targets", nargs="*", metavar="target",
-                     help="ins:example_user, a link, or mht?words; read from stdin when none")
-    _only(sub)
+                     help="ins:example_user, ins:example_user/reels,posts, a link, or "
+                          "mht?words; read from stdin when none")
     _when(sub)
     sub.add_argument("--limit", type=int, metavar="N",
                      help="at most N posts per target, or N targets per search")
@@ -641,7 +640,6 @@ def parser() -> argparse.ArgumentParser:
     sub = command(follow)
     sub.add_argument("targets", nargs="*", metavar="target",
                      help="the targets to follow; read from stdin when none")
-    _only(sub)
     _when(sub)
     _again(sub)
     sub.tail = _forms()
@@ -707,11 +705,6 @@ def _globals() -> argparse.ArgumentParser:
     return shared
 
 
-def _only(sub: argparse.ArgumentParser) -> None:
-    sub.add_argument("--only", action="append", metavar="CATS",
-                     help="only these categories (reels,posts); every category when left out")
-
-
 def _when(sub: argparse.ArgumentParser) -> None:
     # Left out, it is None, and the library reads `[defaults] when` from config.toml.
     sub.add_argument("--when", metavar="WHEN",
@@ -774,8 +767,8 @@ def _forms() -> list[tuple[str, list[Any]]]:
         categories: Any = entry["categories"]
         own = [form for form in forms if not form.startswith("http")]
         on = [f"a link on {', '.join(domains)}"] if domains else []
-        only: list[Any] = [("\n--only ", "dim"), " ".join(categories)] if categories else []
-        rows.append((code, [", ".join([*own, *on]), *only]))
+        cats: list[Any] = [("\n/", "dim"), ",".join(categories)] if categories else []
+        rows.append((code, [", ".join([*own, *on]), *cats]))
     return rows
 
 

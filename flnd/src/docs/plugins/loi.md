@@ -5,8 +5,8 @@ images, and, for a VIP account, its archives. The site is `loix.cc`, and its API
 `api.moegoat.com`. The info and previews need no login; archives need a logged-in VIP account and
 count against its daily quota. The plugin never opens a browser: the site blocks one.
 
-A *target* is what you give `flnd download`; a *category* is one part of a target, chosen with
-`--only`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
+A *target* is what you give `flnd download`; a *category* is one part of a target, named after
+its last `/`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
 
@@ -27,10 +27,10 @@ A post that the API doesn't return, or that has no title, fails with "post <id> 
 | `photo` | `info.md` without download links, and the preview images |
 | `archive` | `info.md` with the download links, and the archives (VIP quota applies) |
 
-Without `--only` a post gets both categories; `--only` names one or both. The categories run in
-the order `archive`, then `photo`. `archive` writes `info.md` with the links, and the archives.
-`photo` writes `info.md` without links only when `archive` isn't wanted in the run, so a run
-never replaces an `info.md` that has links with one that hasn't.
+Without categories a post gets both; `loi:<id>/photo` names one. The categories run in the order
+`archive`, then `photo`. `archive` writes `info.md` with the links, and the archives. `photo`
+writes `info.md` without links only when `archive` isn't wanted in the run, so a run never
+replaces an `info.md` that has links with one that hasn't.
 
 `info.md` is a table of the post's fields (id, author, date, link, file size, VIP level needed,
 media counts, likes, views and downloads), its unzip password and tags when it has them, its

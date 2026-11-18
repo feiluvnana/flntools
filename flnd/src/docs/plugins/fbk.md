@@ -53,7 +53,7 @@ A page that shows none of the media asked for (private, deleted, or needing a lo
 ## Categories
 
 A *category* is one part of a profile that can be downloaded on its own. Without
-[`--only`](../cli.md) a profile gets every category; `--only` names some of them.
+categories ([the CLI guide](../cli.md)) a profile gets every one; `fbk:<user>/reels` names some.
 
 | Category | What it holds |
 | --- | --- |

@@ -150,11 +150,13 @@ with flnd.open(home) as fl:
 
 ### Options
 
-Every option is keyword-only:
+Every option is keyword-only. The categories go in the target, after its last `/`
+(`"nts:example_user/reels,posts"`, or `/all` for every one); without them, a target the home
+knows takes the ones it was followed with, and a new one its plugin's own. A single post has
+none, so naming one for it is a usage error.
 
 | option | what it does |
 | --- | --- |
-| `only` | the categories to take: `["reels"]`, or `"reels,posts"`. None (the default) takes every category. A single post has none, so `only` with one is a usage error |
 | `when` | the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"` (either end may be left out), or a span back from today: `"30d"`, `"8w"`, `"1y"`; `""` for every day. None (the default) takes `when` under `[defaults]` in the home's `config.toml`, which bounds `sync` too |
 | `limit` | at most this many posts per target, or targets per search |
 | `dry` | plan instead: `Planned` events, and nothing is written |
@@ -162,7 +164,7 @@ Every option is keyword-only:
 ```python
 with flnd.open(home) as fl:
     fl.add(Notes)
-    planned = list(fl.download("nts:example_user", only=["reels"], when="2026-04", dry=True))
+    planned = list(fl.download("nts:example_user/reels", when="2026-04", dry=True))
     assert [(event.post, event.state) for event in planned] == [("r1", "saved")]
 ```
 
@@ -172,9 +174,9 @@ A mistake in a target or an option raises `flnd.UsageError` at the call, before 
 with flnd.open(home) as fl:
     fl.add(Notes)
     try:
-        fl.download("nts:example_user", only=["stories"])
+        fl.download("nts:example_user/stories")
     except flnd.UsageError as error:
-        print(error)        # no source here has 'stories': use all, or nts: posts, reels
+        print(error)        # nts has no category stories
 ```
 
 ### Reading a run
@@ -218,14 +220,14 @@ assert asyncio.run(main()).skipped == 3
 ```python
 with flnd.open(home) as fl:
     fl.add(Notes)
-    fl.follow("nts:example_user", only=["posts"]).wait()   # later syncs take posts alone
+    fl.follow("nts:example_user/posts").wait()             # later syncs take posts alone
     print(fl.sync().wait())                                # nothing new since
     fl.unfollow("nts:example_user")
 ```
 
 | method | returns | what it does |
 | --- | --- | --- |
-| `follow(targets, only=, when=)` | `Run` | follow, then download; `only` is kept for later syncs, `when` bounds this download alone |
+| `follow(targets, when=)` | `Run` | follow, then download; the categories each target names are kept for later syncs, `when` bounds this download alone |
 | `sync(targets=())` | `Run` | download what is new for followed targets |
 | `unfollow(targets)` | `list[Target]` | stop following; files and history stay |
 | `retry()` | `Run` | download again every file that failed, however many runs failed it ([errors.md](errors.md#retrying)) |
@@ -294,7 +296,8 @@ no site. `fl.login("ins", "chrome")` reads a browser's cookies the same way.
 
 | CLI | library |
 | --- | --- |
-| `flnd download T --only C --when W --limit N --dry` | `fl.download(T, only=C, when=W, limit=N, dry=True)` |
+| `flnd download T/C --when W --limit N --dry` | `fl.download("T/C", when=W, limit=N, dry=True)` |
+
 | `flnd follow T` | `fl.follow(T)` |
 | `flnd sync [T]` | `fl.sync(T)` |
 | `flnd ls` | `fl.targets()` |

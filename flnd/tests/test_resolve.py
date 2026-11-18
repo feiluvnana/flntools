@@ -3,14 +3,19 @@
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
+from fakes import EngineCase, noise
 from test_library import LibraryCase, example_source
 
-from flnd.engine import home
+from flnd.engine import crawl, home
+from flnd.engine.core import Engine
 from flnd.engine.resolve import Manifest, Resolved, resolve
 from flnd.errors import PluginError, UsageError
 from flnd.plugin import Target, route
 from flnd.plugins import _manifest
+from flnd.plugins.web import Web
+from flnkit import net
 
 BUILT_IN = {
     "exm": {
@@ -65,38 +70,47 @@ SHORT = {"https://s.example/abc": "https://www.example.com/p/Abc",
 LINK = "https://example.com/permalink.php?story_fbid=abc&id=4"
 
 R = Resolved
+
+
+def N(*args, **kwargs):
+    """A target whose text names its categories."""
+    return Resolved(*args, **kwargs, named=True)
+
+
 TABLE = [
     # The plugin form, and its categories.
     ("exm:example_user", R("exm", "example_user", "user", ("posts", "reels"))),
     ("  EXM :@example_user ", R("exm", "example_user", "user", ("posts", "reels"))),
-    ("exm:example_user/tagged", R("exm", "example_user", "user", ("tagged",))),
-    ("exm:example_user/reels, posts", R("exm", "example_user", "user", ("posts", "reels"))),
-    ("exm:example_user/all", R("exm", "example_user", "user", ("posts", "reels", "tagged"))),
+    ("exm:example_user/tagged", N("exm", "example_user", "user", ("tagged",))),
+    ("exm:example_user/reels, posts", N("exm", "example_user", "user", ("posts", "reels"))),
+    ("exm:example_user/all", N("exm", "example_user", "user", ("posts", "reels", "tagged"))),
     ("exm:example_creator", R("exm", "example_creator", "user", ("reels",))),
-    ("exm:example_creator/posts", R("exm", "example_creator", "user", ("posts",))),
+    ("exm:example_creator/posts", N("exm", "example_creator", "user", ("posts",))),
     ("exm:p/Abc-1", R("exm", "Abc-1", "post", ())),
     ("exm:a/12", R("exm", "12", "album", ("photo", "archive"))),
-    ("exm:a/12/archive", R("exm", "12", "album", ("archive",))),
-    ("exm:list/example_handle/tagged", R("exm", "example_handle", "list", ("tagged",))),
+    ("exm:a/12/archive", N("exm", "12", "album", ("archive",))),
+    ("exm:list/example_handle/tagged", N("exm", "example_handle", "list", ("tagged",))),
     ("exm:list/example_handle", R("exm", "example_handle", "list", ())),
     # Another route reads the whole text: no split for user `list`.
     ("exm:list/posts", R("exm", "posts", "list", ())),
+    # A discovering route reads the whole text before a split: `mht:author/7` is author `7`.
+    ("exm:list/7", R("exm", "7", "list", ())),
     ("exm:b{12}", R("exm", "12", "braced", ())),
     # A trailing `/` or `,` names nothing: the defaults.
     ("exm:example_user/", R("exm", "example_user", "user", ("posts", "reels"))),
-    ("exm:example_user/reels,", R("exm", "example_user", "user", ("reels",))),
+    ("exm:example_user/reels,", N("exm", "example_user", "user", ("reels",))),
     ("exm:example_creator/ , ", R("exm", "example_creator", "user", ("reels",))),
     ("exm:p/Abc-1/", R("exm", "Abc-1", "post", ())),
     ("exc:News/", R("exc", "News", "chat", ("photo", "video"))),
     # A catch-all splits only when every token is a category.
     ("exc:News / Updates", R("exc", "News / Updates", "chat", ("photo", "video"))),
-    ("exc:News/video", R("exc", "News", "chat", ("video",))),
+    ("exc:News/video", N("exc", "News", "chat", ("video",))),
     ("exc:News/video, Updates", R("exc", "News/video, Updates", "chat", ("photo", "video"))),
     # Searches.
     ("exm?cats", R("exm", "cats", "search", (), query=True)),
-    ("exm?cats and dogs/reels", R("exm", "cats and dogs", "search", ("reels",), query=True)),
+    ("exm?cats and dogs/reels", N("exm", "cats and dogs", "search", ("reels",), query=True)),
     ("exm?dogs", R("exm", "dogs", "search", ("posts",), query=True)),
-    ("exm?cats/all", R("exm", "cats", "search", ("photo", "archive", "posts", "reels", "tagged"),
+    ("exm?cats/all", N("exm", "cats", "search", ("photo", "archive", "posts", "reels", "tagged"),
                        query=True)),
     ("exm?cats/", R("exm", "cats", "search", (), query=True)),
     # A query is free text: it splits only before a list of categories.
@@ -126,6 +140,13 @@ TABLE = [
      R("web", "https://notexample.com/example_user", "page", ())),
     ("https://example.com.evil.example/x", R("web", "https://example.com.evil.example/x", "page",
                                              ())),
+    # A link's `user:pw@` is never part of the value (so the key): the route reads `link`.
+    ("https://example_user:pw@cdn.other.example/a.mp4?x=1",
+     R("web", "https://cdn.other.example/a.mp4?x=1", "page", (),
+       link="https://example_user:pw@cdn.other.example/a.mp4?x=1")),
+    ("web:https://:pw@cdn.other.example/a", R("web", "https://cdn.other.example/a", "page", (),
+                                             link="https://:pw@cdn.other.example/a")),
+    ("https://example_user:pw@m.example.com/p/Abc-1", R("exm", "Abc-1", "post", ())),
     # Errors: the message, then the hint.
     ("", ("a target can't be empty", "")),
     ("example_user", ('which plugin is "example_user"? Write it as exm:example_user, '
@@ -146,6 +167,9 @@ TABLE = [
     ("exm?  ", ("exm: the query is empty", "")),
     ("exs?cats", ("exs has no search", "Write it like exs:<user>")),
     ("exm:", ("exm: write a value after exm:", None)),
+    # Nor part of a message.
+    ("exs:https://example_user:pw@s.example/x",
+     ("exs: can't read 'https://s.example/x'", "Write it like exs:<user>")),
     ("https://example.com/explore", ("exm: explore pages aren't targets", "")),
     # A tie with a route (`example.com/{user}`) goes to the refusal; the first rule speaks.
     ("https://example.com/stories", ("exm: stories aren't targets", "")),
@@ -214,9 +238,12 @@ class ResolveTest(unittest.TestCase):
     def test_the_built_ins_resolve_from_their_manifest(self):
         manifest = Manifest(_manifest.PLUGINS)
         for text, expected in [
-            ("ins:example_user/tagged", R("ins", "example_user", "user", ("tagged",))),
+            ("ins:example_user/tagged", N("ins", "example_user", "user", ("tagged",))),
             ("loi:12", R("loi", "12", "post", ("archive", "photo"))),
-            ("mht?cats/cover", R("mht", "cats", "query", ("cover",), query=True)),
+            ("mht?cats/cover", N("mht", "cats", "query", ("cover",), query=True)),
+            ("https://www.instagram.com/example_user/",
+             R("ins", "example_user", "user",
+               ("posts", "reels", "stories", "highlights", "profile"))),
         ]:
             with self.subTest(text=text):
                 self.assertEqual(resolve(text, manifest=manifest, known={}), expected)
@@ -227,7 +254,7 @@ class ResolveTest(unittest.TestCase):
                 "from flnd.plugins import _manifest\n"
                 "manifest = Manifest(_manifest.PLUGINS)\n"
                 "for text in ('ins:example_user/reels', 'twt?cats', "
-                "'https://www.instagram.com/example_user'):\n"
+                "'https://www.instagram.com/example_user', 'https://nowhere.example/x'):\n"
                 "    try:\n"
                 "        resolve(text, manifest=manifest, known={})\n"
                 "    except Exception as error:\n"
@@ -239,19 +266,56 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(found.stdout.split(), ["['flnd.plugins._manifest']"])
 
 
-@unittest.skip("E4 is the wiring's: `feat:read categories from the target` stores both")
 class MixedRunTest(LibraryCase):
-    def test_a_search_and_a_user_with_categories_are_both_stored(self):
+    """E4: a run of a search and a user keeps the categories each names, and the followed
+    user's stop at saved posts."""
+
+    def setUp(self):
+        super().setUp()
+
         async def search(self, ctx, words):
             yield Target("exq:example_creator")
 
-        searches = route("exq?{words}")(search)
-        self.fl.add(example_source(self.listing, code="exq", search=searches))
+        self.fl.add(example_source(self.listing, code="exq", search=route("exq?{words}")(search)))
+
+    def test_a_search_and_a_user_with_categories_are_both_stored(self):
         self.fl.follow(["exq?words/reels", "exq:example_user/posts"]).wait()
         with home.open(self.home) as db:
             rows = db.targets()
-        self.assertEqual(rows["exq?words"].only, ("reels",))
-        self.assertEqual(rows["exq:example_user"].only, ("posts",))
+        self.assertEqual((rows["exq:words"].only, rows["exq:example_user"].only),
+                         (("reels",), ("posts",)))
+
+    def test_a_followed_user_stops_at_saved_posts_in_a_mixed_run(self):
+        self.fl.follow("exq:example_user").wait()
+        seen = []
+        real = crawl.download
+
+        async def download(run, target, tally, options, **kwargs):
+            seen.append((str(target), options.stop_at_saved))
+            return await real(run, target, tally, options, **kwargs)
+
+        with mock.patch.object(crawl, "download", download):
+            self.fl.download(["exq?words", "exq:example_user"]).wait()
+        self.assertIn(("exq:example_user", True), seen)
+
+
+class LinkCredentialTest(EngineCase):
+    """PRIVACY: a typed link's `user:pw@` is never stored, logged or shown; the fetch has it."""
+
+    def test_the_fetch_uses_the_link_as_typed_and_nothing_keeps_it(self):
+        self.routes["https://cdn.example/a.jpg"] = net.reply(200, content=noise("JPEG"))
+        events = []
+        engine = Engine(home=self.home, sources={"web": Web}, emit=events.append)
+        with self.assertRaises(UsageError) as caught:
+            engine.download(["web:https://example_user:SECRET-PW@cdn.example/a b.jpg"])
+        report = engine.download(["https://example_user:SECRET-PW@cdn.example/a.jpg"])
+        self.assertEqual(str(report.targets[0].target), "web:https://cdn.example/a.jpg")
+        self.assertEqual([str(request.url) for request in self.requests],
+                         ["https://example_user:SECRET-PW@cdn.example/a.jpg"])
+        kept = [str(caught.exception), caught.exception.hint, *self.lines(), *map(str, events),
+                *(path.read_bytes().decode("latin-1") for path in self.home.rglob("*")
+                  if path.is_file())]
+        self.assertFalse([line for line in kept if "SECRET-PW" in line])
 
 
 if __name__ == "__main__":

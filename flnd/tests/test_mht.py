@@ -77,7 +77,8 @@ class RoutesTest(unittest.TestCase):
             ("mht:70982", ("manga", "mht:70982")),
             ("MHT:70982", ("manga", "mht:70982")),
             ("https://www.mimihentai.moe/manga/70982/", ("manga", "mht:70982")),
-            ("mimihentai.moe/manga/70982/chapter/1001/", ("chapter", "mht:1001")),
+            ("mimihentai.moe/manga/70982/chapter/1001/", ("chapter", "mht:chapter/1001")),
+            ("mht:chapter/1001", ("chapter", "mht:chapter/1001")),
             ("mht:author/example_creator", ("author", "mht:author/example_creator")),
             ("https://mimihentai.moe/author/7", ("author", "mht:author/7")),
             ("https://mimihentai.moe/authors/example-creator", ("author",
@@ -106,7 +107,7 @@ class RoutesTest(unittest.TestCase):
                 self.assertEqual(Mimi.resolve(found.text), found)
 
     def test_the_declarations(self):
-        self.assertEqual(len(check(Mimi)), 7)
+        self.assertEqual(len(check(Mimi)), 8)
         self.assertEqual([route.kind for route in Mimi.routes if route.discovers],
                          ["author", "genre", "query"])
         self.assertTrue(all(category.own for route in Mimi.routes
@@ -285,7 +286,7 @@ class EngineTest(EngineCase):
         return [str(request.url).split("?")[0] for request in self.requests]
 
     def test_a_query_downloads_its_manga_and_a_second_run_skips_a_saved_chapter(self):
-        report = self.engine.download(["mht?genre:vanilla"], categories="all", limit=1)
+        report = self.engine.download(["mht?genre:vanilla/all"], limit=1)
         self.assertTrue(report.ok, report)
         self.assertEqual(self.genre_calls, 1)
         self.assertTrue((self.folder / "chapters" / "001_First_Chapter" / "001.webp").exists())
@@ -293,7 +294,7 @@ class EngineTest(EngineCase):
         # The saved chapter's pages are not asked for again.
         del self.routes[f"{API}chapters/1001"]
         self.requests.clear()
-        report = self.engine.download(["mht?genre:vanilla"], categories="all", limit=1)
+        report = self.engine.download(["mht?genre:vanilla/all"], limit=1)
         self.assertTrue(report.ok, report)
         self.assertEqual(self.genre_calls, 2)
         self.assertNotIn(f"{API}chapters/1001", self.asked())
@@ -301,21 +302,18 @@ class EngineTest(EngineCase):
     def test_a_cover_query_reuses_the_searchs_manga_without_asking_for_it(self):
         self.routes[f"{API}manga/advanced-search"] = _net.reply(
             200, json={"items": [MANGA], "next_cursor": None})
-        report = self.engine.download(["mht?genre:vanilla"], categories="cover", limit=1)
+        report = self.engine.download(["mht?genre:vanilla/cover"], limit=1)
         self.assertTrue(report.ok, report)
         self.assertTrue((self.folder / "cover" / "cover.webp").exists())
         self.assertNotIn(f"{API}manga/70982", self.asked())
 
-    def test_an_author_link_downloads_only_the_named_category(self):
-        """`--only chapters` on an author link reaches each manga it finds (a fixed bug)."""
+    def test_an_author_target_downloads_only_the_named_category(self):
         self.routes[f"{API}manga/advanced-search"] = _net.reply(
             200, json={"items": [MANGA], "next_cursor": None})
-        report = self.engine.download(["https://mimihentai.moe/author/7"],
-                                      categories="chapters")
+        report = self.engine.download(["mht:author/7/chapters"])
         self.assertTrue(report.ok, report)
         self.assertTrue((self.folder / "chapters" / "001_First_Chapter" / "001.webp").exists())
         self.assertFalse((self.folder / "cover").exists())
-
 
 if __name__ == "__main__":
     unittest.main()

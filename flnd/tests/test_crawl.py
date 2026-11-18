@@ -23,7 +23,6 @@ from unittest import mock
 import fakes
 from example_plugin import API, CDN, FIXTURES, Example
 from fakes import EngineCase, make_plugin
-from test_commands import FlndCase
 
 from flnd.engine import core as engine_module
 from flnd.engine import crawl as job
@@ -169,26 +168,6 @@ class CategoriesTest(JobCase):
     def test_a_route_without_categories_files_its_posts_in_the_targets_folder(self):
         self.assertEqual(self.run_engine(Example, targets=["https://www.example.com/p/C1abc/"]), 1)
         self.assertEqual(self.files(name="C1abc"), ["2026-01-02_C1abc.jpg"])
-
-    def test_from_with_a_single_post_is_still_the_usage_error(self):
-        with self.assertRaises(UsageError) as ctx:
-            Engine(home=self.home, sources={"exm": Example}).download(
-                ["https://www.example.com/p/C1abc/"], categories="posts"
-            )
-        self.assertEqual(str(ctx.exception), "--only applies to profiles and chats; exm:C1abc is one post, downloaded whole: "
-                                               "give it without --only")
-
-
-class FromCommandTest(FlndCase):
-    def test_from_with_a_post_link_exits_2_through_the_command(self):
-        # A built-in plugin's post link, so no plugin needs registering.
-        with mock.patch.object(engine_module._Runner, "run") as run:
-            code, _, out = self.run_app("download", "--only", "posts",
-                                        "https://www.instagram.com/p/C1abc/")
-        self.assertEqual(code, 2)
-        self.assertIn("--only applies to profiles and chats; ins:C1abc is one post", out)
-        run.assert_not_called()
-
 
 class SavedTest(JobCase):
     def test_a_second_run_lists_no_saved_lazy_post_and_downloads_nothing(self):
@@ -463,7 +442,7 @@ class SyncStopTest(JobCase):
         self.sql("UPDATE targets SET heads = '{}' WHERE key = ?", "fed:example_user")
 
     def test_sync_stops_after_5_saved_posts_in_a_row_with_a_record_and_closes_the_listing(self):
-        self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
+        self.assertTrue(self.engine.download(["fed:example_user/all"]).ok)
         self.assertEqual(self.record(), {"posts": "2026-01-01"})
         self.ids = ["n1", "n2", *self.ids]
         self.listed.clear()
@@ -478,7 +457,7 @@ class SyncStopTest(JobCase):
 
     def test_sync_keeps_complete_record_and_fast_completes_on_subsequent_runs(self):
         """A caught-up sync stays complete and stops after 5 saved posts on subsequent runs."""
-        self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
+        self.assertTrue(self.engine.download(["fed:example_user/all"]).ok)
         self.assertEqual(self.record(), {"posts": "2026-01-01"})
         self.listed.clear()
         self.forget_head()
@@ -508,7 +487,7 @@ class SyncStopTest(JobCase):
         self.deeper = []
         engine = Engine(home=self.home,
                         sources={"two": feed("two", posts, media, newest_first=True, key="{post}")})
-        self.assertTrue(engine.download(["two:example_user"], categories="all").ok)
+        self.assertTrue(engine.download(["two:example_user/all"]).ok)
         self.ids = [f"n{number}" for number in range(6)] + self.ids
         self.deeper = ["m1"]
         self.listed.clear()
@@ -518,7 +497,7 @@ class SyncStopTest(JobCase):
 
     def test_posts_with_no_files_or_only_text_neither_count_nor_break_the_saved_run(self):
         """A reply with nothing to save, between saved posts, must not reset the run of 5 (twt replies)."""
-        self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
+        self.assertTrue(self.engine.download(["fed:example_user/all"]).ok)
         text = File.text("note.txt", "a note")
         # Saved posts with a no-file post and a text-only post between them: 5 saved still end it.
         self.ids = ["p0", "none1", "p1", "text1", "p2", "none2", "p3", "p4", "p5", "p6", "p7"]
@@ -530,7 +509,7 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.finished[-1], True)
 
     def test_a_saved_run_shorter_than_5_does_not_stop_it(self):
-        self.engine.download(["fed:example_user"], categories="all")
+        self.engine.download(["fed:example_user/all"])
         # Remove two saved files in the middle: the 4 saved ones before it never reach 5, then a new one resets.
         for name in ("p2", "p3"):
             next(self.target_dir("fed", "example_user").rglob(f"*{name}.jpg")).unlink()
@@ -544,7 +523,7 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.listed, self.ids)
 
     def test_without_a_record_sync_lists_to_the_end(self):
-        self.engine.download(["fed:example_user"], categories="all")
+        self.engine.download(["fed:example_user/all"])
         self.forget_record()
         self.listed.clear()
         self.engine.sync(["fed:example_user"])
@@ -558,7 +537,7 @@ class SyncStopTest(JobCase):
 
     def test_an_interrupted_listing_records_none_so_sync_lists_everything(self):
         self.fail_at = ["p6"]
-        report = self.engine.download(["fed:example_user"], categories="all")
+        report = self.engine.download(["fed:example_user/all"])
         self.assertFalse(report.ok)
         self.assertIsNone(self.record())
         self.fail_at, self.listed = [], []
@@ -568,19 +547,19 @@ class SyncStopTest(JobCase):
         self.assertIsNotNone(self.record())
 
     def test_download_stops_at_saved_posts_by_default_and_again_lists_all(self):
-        self.engine.download(["fed:example_user"], categories="all")
+        self.engine.download(["fed:example_user/all"])
         self.listed.clear()
         self.forget_head()
-        report = self.engine.download(["fed:example_user"], categories="all")
+        report = self.engine.download(["fed:example_user/all"])
         self.assertEqual(self.listed, self.ids[:5])
         self.assertEqual((report.files, report.targets[0].skipped), (0, 5))
         self.listed.clear()
-        report_again = self.engine.download(["fed:example_user"], categories="all", again=True)
+        report_again = self.engine.download(["fed:example_user/all"], again=True)
         self.assertEqual(self.listed, self.ids)
         self.assertEqual((report_again.files, report_again.targets[0].skipped), (0, 8))
 
     def test_stop_after_in_the_config_changes_the_run_of_5(self):
-        self.engine.download(["fed:example_user"], categories="all")
+        self.engine.download(["fed:example_user/all"])
         self.home.joinpath("config.toml").write_text("[sources.fed]\nstop_after = 3\n")
         self.listed.clear()
         self.forget_head()
@@ -601,7 +580,7 @@ class SyncStopTest(JobCase):
                 yield Post(f"q{number}", [File(f"{CDN}/q{number}.jpg")])
 
         engine = Engine(home=self.home, sources={"pln": feed("pln", posts)})
-        engine.download(["pln:example_user"], categories="all")
+        engine.download(["pln:example_user/all"])
         listed.clear()
         engine.sync(["pln:example_user"])
         self.assertEqual(len(listed), 8)
@@ -938,7 +917,7 @@ class HeadTest(JobCase):
         return fakes.targets(self.home)["hed:example_user"].heads
 
     def test_a_full_listing_keeps_its_newest_post_and_a_sync_stops_after_it(self):
-        self.assertTrue(self.engine.download(["hed:example_user"], categories="all").ok)
+        self.assertTrue(self.engine.download(["hed:example_user/all"]).ok)
         self.assertEqual(self.heads(), {"posts": "p3"})
         self.listed.clear()
         report = self.engine.sync(["hed:example_user"])
@@ -948,7 +927,7 @@ class HeadTest(JobCase):
         self.assertIn("* posts: nothing new", self.lines())
 
     def test_new_posts_above_the_head_are_saved_and_become_the_head(self):
-        self.engine.download(["hed:example_user"], categories="all")
+        self.engine.download(["hed:example_user/all"])
         self.posts = [("n1", 5), ("n0", 4), *self.posts]
         self.listed.clear()
         report = self.engine.sync(["hed:example_user"])
@@ -957,7 +936,7 @@ class HeadTest(JobCase):
         self.assertEqual(self.heads(), {"posts": "n1"})
 
     def test_a_head_pinned_above_new_posts_does_not_end_the_sync(self):
-        self.engine.download(["hed:example_user"], categories="all")
+        self.engine.download(["hed:example_user/all"])
         # The site pinned the old head above two new posts.
         self.posts = [("p3", 3), ("n1", 5), ("n0", 4), ("p2", 2), ("p1", 1), ("p0", 1)]
         self.listed.clear()
@@ -967,7 +946,7 @@ class HeadTest(JobCase):
         self.assertEqual(self.heads(), {"posts": "n1"})
 
     def test_posts_pinned_above_new_ones_never_end_the_sync_nor_become_the_head(self):
-        self.engine.download(["hed:example_user"], categories="all")
+        self.engine.download(["hed:example_user/all"])
         # The site pinned the old head and the post after it above two new posts.
         self.posts, self.pinned = [("p3", 3), ("p2", 2), ("n1", 5), ("n0", 4), ("p1", 1)], {"p3", "p2"}
         report = self.engine.sync(["hed:example_user"])
@@ -977,14 +956,14 @@ class HeadTest(JobCase):
     def test_parts_of_one_post_count_once(self):
         # A plugin yielding a photo post as one post per photo, all of one id (TikTok's).
         self.posts = [("c1", 5), ("c1", 5), ("c1", 5), ("p3", 3)]
-        report = self.engine.download(["hed:example_user"], categories="all", limit=1)
+        report = self.engine.download(["hed:example_user/all"], limit=1)
         self.assertEqual(self.listed, ["c1", "c1", "c1", "p3"])
         self.assertEqual(len(report.targets[0].written), 1)
 
     def test_a_listing_cut_short_keeps_the_head_it_had(self):
-        self.engine.download(["hed:example_user"], categories="all")
+        self.engine.download(["hed:example_user/all"])
         self.posts = [("n1", 5), *self.posts]
-        self.engine.download(["hed:example_user"], categories="all", limit=1)
+        self.engine.download(["hed:example_user/all"], limit=1)
         self.assertEqual(self.heads(), {"posts": "p3"})
 
 
@@ -1084,11 +1063,11 @@ class UnkeyedLazyPostTest(JobCase):
             yield Post("5930", lazy([File(f"{CDN}/a.7z", name="a.7z")], calls, user))
 
         engine = Engine(home=self.home, sources={"pth": feed("pth", archive, key="{path}")})
-        engine.download(["pth:example_user"], categories="all")
-        engine.download(["pth:example_user"], categories="all")
+        engine.download(["pth:example_user/all"])
+        engine.download(["pth:example_user/all"])
         self.assertEqual(calls, ["example_user"])
         # `--again` asks again.
-        engine.download(["pth:example_user"], categories="all", again=True)
+        engine.download(["pth:example_user/all"], again=True)
         self.assertEqual(len(calls), 2)
 
 
@@ -1133,7 +1112,7 @@ class ResumeTest(JobCase):
 
     def interrupted(self):
         self.fail_on = "c2"
-        self.assertFalse(self.engine.download(["pgd:example_user"], categories="all").ok)
+        self.assertFalse(self.engine.download(["pgd:example_user/all"]).ok)
         self.assertEqual(self.row().cursors, {"posts": "c2"})
         self.assertEqual(self.row().complete, {})
         self.fail_on, self.cursors_fetched = None, []
@@ -1143,7 +1122,7 @@ class ResumeTest(JobCase):
         # Two new posts arrived meanwhile, above the ones the first run saved.
         self.feed[None] = (["n1", "n2"], "c0")
         self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
-        report = self.engine.download(["pgd:example_user"], categories="all")
+        report = self.engine.download(["pgd:example_user/all"])
         self.assertTrue(report.ok)
         # c2 to the end first, then the newest. Which of p1..p7 the failed run saved depends on
         # which downloads had started, so only the posts this run must save are checked.
@@ -1158,13 +1137,13 @@ class ResumeTest(JobCase):
         self.interrupted()
         # Every post the failed run listed is saved meanwhile, as a later run would have.
         self.fail_on = "c2-unused"
-        self.engine.download(["pgd:example_user"], categories="all")
+        self.engine.download(["pgd:example_user/all"])
         self.feed[None] = (["n1", "n2"], "c0")
         self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
         # An earlier flnd kept a cut-short sync's cursor as the listing's cursor.
         self.sql("UPDATE targets SET cursors = ? WHERE key = ?", '{"posts":"c2"}', "pgd:example_user")
         self.cursors_fetched = []
-        self.engine.download(["pgd:example_user"], categories="all")
+        self.engine.download(["pgd:example_user/all"])
         # The newest down to 5 saved posts in a row, then the gap.
         self.assertEqual(self.cursors_fetched, [None, "c0", "c2"])
         self.assertEqual((self.row().cursors, self.row().gaps), ({}, {}))
@@ -1173,7 +1152,7 @@ class ResumeTest(JobCase):
         self.interrupted()
         self.refuse = True
         self.feed = {None: (["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"], None)}
-        report = self.engine.download(["pgd:example_user"], categories="all")
+        report = self.engine.download(["pgd:example_user/all"])
         self.assertTrue(report.ok)
         self.assertEqual(self.cursors_fetched, ["c2", None])
         self.assertIn("* pgd:example_user: posts: the cursor an interrupted run saved was refused; "
@@ -1182,13 +1161,13 @@ class ResumeTest(JobCase):
 
     def test_again_ignores_saved_cursors_and_complete_listing_from_newest(self):
         self.interrupted()
-        report = self.engine.download(["pgd:example_user"], categories="all", again=True)
+        report = self.engine.download(["pgd:example_user/all"], again=True)
         self.assertTrue(report.ok)
         self.assertEqual(self.cursors_fetched, [None, "c1", "c2"])
         self.assertEqual(self.row().cursors, {})
         self.assertIn("posts", self.row().complete)
         self.cursors_fetched.clear()
-        self.engine.download(["pgd:example_user"], categories="all", again=True)
+        self.engine.download(["pgd:example_user/all"], again=True)
         self.assertEqual(self.cursors_fetched, [None, "c1", "c2"])
 
 
@@ -1538,7 +1517,7 @@ class QueryAndLimitDryTest(EngineCase):
         self.routes[f"{CDN}/4.jpg"] = _net.reply(200, content=b"4")
         engine = Engine(home=self.home, sources={"srch": src})
 
-        report = engine.download(["srch?action comedy"], categories="photo", limit=4)
+        report = engine.download(["srch?action comedy/photo"], limit=4)
         self.assertTrue(report.ok)
         self.assertEqual([r.target.value for r in report.targets], ["1", "2", "3", "4"])
         self.assertEqual(len(closed), 1)
@@ -1551,7 +1530,7 @@ class QueryAndLimitDryTest(EngineCase):
         engine = Engine(home=self.home, sources={"srch": src})
 
         # --limit 1 on query route stops after 1 target and closes the generator.
-        report = engine.download(["srch?action"], categories="photo", limit=1)
+        report = engine.download(["srch?action/photo"], limit=1)
         self.assertEqual(len(report.targets), 1)
         self.assertEqual(closed, [True])
 
@@ -1567,7 +1546,7 @@ class QueryAndLimitDryTest(EngineCase):
             return await orig_download(run, target, board, options, **listed)
 
         with mock.patch("flnd.engine.crawl.download", spy):
-            engine.download(["srch:1", "srch?action"], categories="photo", limit=1, again=True)
+            engine.download(["srch:1/photo", "srch?action/photo"], limit=1, again=True)
         self.assertTrue(seen_options)
         self.assertTrue(all(opt.again for opt in seen_options))
 
@@ -1576,7 +1555,7 @@ class QueryAndLimitDryTest(EngineCase):
         src = self._query_source(closed=closed)
         engine = Engine(home=self.home, sources={"srch": src})
 
-        report = engine.download(["srch?action"], categories="photo", limit=2, dry=True)
+        report = engine.download(["srch?action/photo"], limit=2, dry=True)
         self.assertTrue(report.ok)
         output = "\n".join(self.lines())
         self.assertIn("srch:1", output)
@@ -1585,7 +1564,7 @@ class QueryAndLimitDryTest(EngineCase):
         self.assertFalse((self.home / _home.DB).exists())
         self.assertFalse((self.home / _home.MEDIA).exists())
 
-        report_normal = engine.download(["srch:1"], categories="photo", dry=True)
+        report_normal = engine.download(["srch:1/photo"], dry=True)
         self.assertTrue(report_normal.ok)
         self.assertIn("1.jpg", "\n".join(self.lines()))
         self.assertFalse((self.home / _home.MEDIA).exists())
@@ -1606,14 +1585,14 @@ class QueryAndLimitDryTest(EngineCase):
         for n in range(1, 5):
             self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
         engine = Engine(home=self.home, sources={"mlt": Multi})
-        report = engine.download(["mlt:example_user"], categories="all", limit=2)
+        report = engine.download(["mlt:example_user/all"], limit=2)
         self.assertTrue(report.ok)
         self.assertEqual(len(report.targets[0].written), 2)
 
         closed = []
         src = self._query_source(closed=closed)
         engine2 = Engine(home=self.home, sources={"srch": src})
-        report2 = engine2.download(["srch:list/all"], categories="all", limit=1)
+        report2 = engine2.download(["srch:list/all/all"], limit=1)
         self.assertTrue(report2.ok)
         self.assertTrue((self.target_dir("srch", "1") / "photo" / "1.jpg").is_file())
         self.assertFalse((self.target_dir("srch", "2") / "photo" / "2.jpg").exists())
@@ -1656,7 +1635,7 @@ class SyncedQueryTest(EngineCase):
             self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
         empty_src = self._paged_source([], closed=[], seen_pages=[])
         Engine(home=self.home, sources={"pgd": empty_src}).download(
-            ["pgd?cats"], categories="photo", sync=True)
+            ["pgd?cats/photo"], sync=True)
         engine = Engine(home=self.home, sources={"pgd": src})
         written = [len(engine.sync().targets[0].written) for _ in range(3)]
         self.assertEqual(written, [25, 25, 10])
@@ -1670,10 +1649,10 @@ class SyncedQueryTest(EngineCase):
         self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
         engine = Engine(home=self.home, sources={"pgd": src})
         # User already downloaded pgd:1 (not synced).
-        engine.download(["pgd:1"], categories="photo")
+        engine.download(["pgd:1/photo"])
         empty_src = self._paged_source([], closed=[], seen_pages=[])
         Engine(home=self.home, sources={"pgd": empty_src}).download(
-            ["pgd?cats"], categories="photo", sync=True
+            ["pgd?cats/photo"], sync=True
         )
 
         self.requests.clear()
@@ -1688,7 +1667,7 @@ class SyncedQueryTest(EngineCase):
         closed, seen_pages = [], []
         src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
         engine = Engine(home=self.home, sources={"pgd": src})
-        report = engine.download(["pgd?cats"], categories="photo", dry=True, sync=True)
+        report = engine.download(["pgd?cats/photo"], dry=True, sync=True)
         self.assertTrue(report.ok)
         self.assertFalse((self.home / _home.DB).exists())
 
@@ -1700,7 +1679,7 @@ class SyncedQueryTest(EngineCase):
         self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
         engine = Engine(home=self.home, sources={"pgd": src})
         # --limit 1 stops after page 0 and closes the generator without asking for page 1.
-        report = engine.download(["pgd?cats"], categories="photo", limit=1, sync=True)
+        report = engine.download(["pgd?cats/photo"], limit=1, sync=True)
         self.assertTrue(report.ok)
         self.assertEqual(seen_pages, [0])
         self.assertEqual(closed, [True])
@@ -1727,7 +1706,7 @@ class SyncedQueryTest(EngineCase):
         with mock.patch("flnd.engine.crawl.download", stop_on_second), \
                 mock.patch("flnd.engine.core.stopping", capture_stopping), \
                 self.assertRaises(KeyboardInterrupt):
-            engine.download(["pgd?dogs"], categories="photo", sync=True)
+            engine.download(["pgd?dogs/photo"], sync=True)
         self.assertEqual(seen_pages, [0, 1])
         self.assertEqual(closed, [True])
         self.assertEqual(fakes.targets(self.home)["pgd:dogs"].seen, ["pgd:1"])
@@ -1739,7 +1718,7 @@ class SyncedQueryTest(EngineCase):
         self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
         empty_src = self._paged_source([], closed=[], seen_pages=[])
         Engine(home=self.home, sources={"pgd": empty_src}).download(
-            ["pgd?bad", "pgd?good"], categories="photo", sync=True
+            ["pgd?bad/photo", "pgd?good/photo"], sync=True
         )
 
         engine = Engine(home=self.home, sources={"pgd": src})

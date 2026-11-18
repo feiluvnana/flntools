@@ -354,7 +354,7 @@ class HttpTest(EngineCase):
         engine = Engine(home=self.home, sources={"aaa": make_plugin("aaa", run)})
         with mock.patch("flnd.engine.core.stopping", capture_stopping), self.assertRaises(KeyboardInterrupt), \
                 ui.scope(level="debug"):
-            engine.download(["aaa:a"], categories="all")
+            engine.download(["aaa:a/all"])
         self.assertTrue(any(line.endswith("aaa:a: stopped") for line in self.lines()), self.lines())
 
 
@@ -682,14 +682,14 @@ class ApiTest(EngineCase):
                     File(f"{CDN}/{value}/b.jpg", name="b.jpg")]
 
         engine = self.engine(make_plugin("aaa", files=files))
-        report = engine.download(["aaa:one", "aaa:bad"], categories="all")
+        report = engine.download(["aaa:one/all", "aaa:bad/all"])
         one, bad = report.targets
         self.assertEqual((one.target, bad.target), (Target("aaa:one", kind="user"), Target("aaa:bad", kind="user")))
         self.assertEqual(sorted(path.name for path in one.written), ["a.jpg", "b.jpg"])
         self.assertTrue(all(path.is_file() for path in one.written))
         self.assertEqual((one.skipped, one.error, str(bad.error)), (0, None, "blocked"))
         self.assertEqual((report.files, report.failed, report.ok), (2, (Target("aaa:bad", kind="user"),), False))
-        again = engine.download([Target("aaa:one", kind="user")], categories="all")
+        again = engine.download([Target("aaa:one", kind="user")])
         self.assertEqual((again.files, again.targets[0].skipped, again.ok), (0, 2, True))
 
     def test_a_category_that_lists_to_its_end_is_recorded_complete(self):
@@ -698,46 +698,42 @@ class ApiTest(EngineCase):
                 raise RuntimeError("cut short")
             return []
 
-        self.engine(make_plugin("aaa", files=files)).download(["aaa:whole", "aaa:cut"],
-                                                              categories="all")
+        self.engine(make_plugin("aaa", files=files)).download(["aaa:whole/all", "aaa:cut/all"])
         rows = self.saved()
         self.assertEqual(rows["aaa:whole"].complete, {"posts": "2026-01-01"})
         self.assertEqual(rows["aaa:cut"].complete, {})
         # Re-running keeps the record.
-        self.engine(make_plugin("aaa")).download(["aaa:whole"], categories="all")
+        self.engine(make_plugin("aaa")).download(["aaa:whole/all"])
         self.assertIn("posts", self.saved()["aaa:whole"].complete)
 
     def test_bad_values_are_value_errors_before_anything_starts(self):
         engine = self.engine(make_plugin("aaa"))
         cases: tuple[tuple[dict[str, Any], str], ...] = (
-            ({"categories": "reels"}, "no source here has 'reels'"),
+            ({"targets": ["aaa:a/reels"]}, "aaa has no category reels"),
             ({"limit": 0}, "--limit must be at least 1"),
         )
         for options, message in cases:
             with self.subTest(options=options), self.assertRaises(UsageError) as caught:
-                engine.download(["aaa:a"], **options)
+                engine.download(**{"targets": ["aaa:a"], **options})
             self.assertTrue(str(caught.exception).startswith(message), caught.exception)
-        with self.assertRaisesRegex(UsageError, "unknown source 'zzz'"):
+        with self.assertRaisesRegex(UsageError, "no plugin named zzz"):
             engine.download(["zzz:a"])
         self.assertFalse((self.home / _home.MEDIA).exists())
         self.assertFalse((self.home / _home.DB).exists())
 
-    def test_from_with_a_post_link_is_refused_before_any_request(self):
-        from flnd.plugins.ins import Instagram
-        from flnd.plugins.tik import TikTok
+    def test_categories_on_a_single_post_are_refused_before_any_request(self):
+        from flnd.plugins import PLUGINS
 
-        message = ("--only applies to profiles and chats; ins:C1abcDEFghi is one post, downloaded whole: "
-                   "give it without --only")
-        engine = Engine(home=self.home, sources={"ins": Instagram, "tik": TikTok})
-        for targets in (["https://www.instagram.com/p/C1abcDEFghi/"],
-                        ["ins:example_user", "https://www.instagram.com/p/C1abcDEFghi/"],
-                        ["tik:example_creator", "https://www.instagram.com/p/C1abcDEFghi/"]):
+        message = "tik:7312345678901234567 is one post, with no categories"
+        engine = Engine(home=self.home, sources=PLUGINS)
+        for targets in (["tik:7312345678901234567/videos"],
+                        ["ins:example_user", "tik:7312345678901234567/all"]):
             with self.subTest(targets=targets), self.assertRaisesRegex(UsageError, f"^{message}$"):
-                engine.download(targets, categories="all")
+                engine.download(targets)
         self.assertEqual(self.requests, [])
         self.assertFalse((self.home / _home.MEDIA).exists())
         self.assertFalse((self.home / _home.DB).exists())
-        # Without --from the same link downloads whole.
+        # A link to a post downloads it whole.
         runs = []
         async def run(runner, chosen, *, depth=0):
             runs.extend(options for _, options in chosen)
@@ -754,7 +750,7 @@ class ApiTest(EngineCase):
             return [File(f"{CDN}/{name}", name=name) for name in sorted(listed)]
 
         engine = self.engine(make_plugin("aaa", files=files))
-        engine.download(["aaa:a"], categories="all", sync=True)
+        engine.download(["aaa:a/all"], sync=True)
         folder = self.target_dir("aaa", "a")
         (folder / "a.jpg").unlink()
         (folder / "c.jpg").unlink()
@@ -822,7 +818,7 @@ class ApiLoginTest(EngineCase):
         source = make_plugin("aaa", lambda ctx: seen.append(dict(ctx.cookies)),
                              login=login_cookies("sid"))
         self.engine = Engine(home=self.home, sources={"aaa": source})
-        self.assertTrue(self.engine.download(["aaa:a"], categories="all").ok)
+        self.assertTrue(self.engine.download(["aaa:a/all"]).ok)
         self.assertEqual(seen, [{"sid": "s"}])
         self.assertFalse(any("not logged in" in line for line in self.lines()))
 
@@ -857,7 +853,7 @@ class LoginStaysAtHomeTest(EngineCase):
     def test_media_servers_never_see_the_login_and_the_api_sees_the_refreshed_token(self):
         from flnd.plugins.twt import TWITTER_BEARER, Twitter
 
-        self.run_engine(Twitter, targets=["twt:example_handle", "twt:https://x.com/example_handle/status/100"],
+        self.run_engine(Twitter, targets=["twt:example_handle", "https://x.com/example_handle/status/100"],
                         options=Options(categories=("profile",)))
         api = [request for request in self.requests if request.url.host == "x.com"]
         media = [request for request in self.requests if request.url.host.endswith("twimg.com")]

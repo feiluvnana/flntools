@@ -284,7 +284,8 @@ class PopupTest(Case):
         with Fake(popup=extension.Popup(home)) as fake:
             found = fake.ask(1, "resolve", url="https://www.instagram.com/example_user/")
             unknown = fake.ask(2, "rename", url="https://example.com/")
-            large = fake.ask(3, "resolve", url="https://example.com/" + "x" * (2 * 1024 * 1024))
+            # Text no plugin reads: its error names it once per plugin, past Chrome's 1 MiB.
+            large = fake.ask(3, "resolve", url="x" * (2 * 1024 * 1024))
         self.assertEqual(found["value"], {"target": "ins:example_user", "followed": False})
         self.assertEqual(unknown["error"]["class"], "UsageError")
         self.assertFalse(large["ok"])

@@ -52,9 +52,9 @@ flnd.Flnd(home: str | os.PathLike[str] | None = None, *, again: bool | None = No
 flnd.Flnd.add(source: type[Plugin]) -> None
 flnd.Flnd.check(*, fix: bool = False) -> Checked
 flnd.Flnd.close() -> None
-flnd.Flnd.download(targets: str | Target | Sequence[str | Target], *, only: str | Sequence[str] | None = None, when: str | None = None, limit: int | None = None, dry: bool = False) -> Run
+flnd.Flnd.download(targets: str | Target | Sequence[str | Target], *, when: str | None = None, limit: int | None = None, dry: bool = False) -> Run
 flnd.Flnd.files(*, target: str | Target | None = None, kind: str | None = None, since: str | None = None) -> list[Record]
-flnd.Flnd.follow(targets: str | Target | Sequence[str | Target], *, only: str | Sequence[str] | None = None, when: str | None = None) -> Run
+flnd.Flnd.follow(targets: str | Target | Sequence[str | Target], *, when: str | None = None) -> Run
 flnd.Flnd.home: attribute
 flnd.Flnd.login(source: str, how: str) -> Login
 flnd.Flnd.logins: property -> list[Login]

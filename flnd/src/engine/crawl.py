@@ -268,7 +268,7 @@ async def posts(source: Plugin, site: Ctx, target: Target,
     categories = wanted(route, options)
     if route.categories and not categories:
         return
-    context = await _context(source, route, site, target)
+    context = await _context(source, route, site, target, options.link)
     if not route.categories:
         async with contextlib.aclosing(_Kept(context, "", newest_first=route.newest_first,
                                              span=span)) as kept:
@@ -284,13 +284,14 @@ async def posts(source: Plugin, site: Ctx, target: Target,
                 yield post
 
 
-async def _context(source: Plugin, route: Route, site: Ctx, target: Target) -> Any:
+async def _context(source: Plugin, route: Route, site: Ctx, target: Target,
+                   link: str | None = None) -> Any:
     """Call `target`'s route method on the loop.
 
     A route without categories gives its listing, an async generator `_steps` iterates; a
     route with categories returns its context, the value every category gets.
     """
-    return await _called(getattr(source, route.kind), site, target.value)
+    return await _called(getattr(source, route.kind), site, link or target.value)
 
 
 async def _called(method: Callable[..., Any], *args: Any) -> Any:
@@ -2133,18 +2134,20 @@ async def _read(
     if route.discovers:
         if turn is not None:
             turn.release()
-        context = await _context(run.source, route, site, target)
+        context = await _context(run.source, route, site, target, options.link)
         await _run_discovered(run, options, _discovered(run, route, site, context, options))
         return
     listings: list[_Listed]
     if not route.categories:
         method = getattr(run.source, route.kind)
-        listings = [_Listed("", route.newest_first, _caller(run, method, site, target.value))]
+        listings = [_Listed("", route.newest_first,
+                            _caller(run, method, site, options.link or target.value))]
     else:
         categories = wanted(route, options)
         if not categories:
             return
-        context = await _taking(turn, run, lambda: _context(run.source, route, site, target))
+        context = await _taking(turn, run,
+                                lambda: _context(run.source, route, site, target, options.link))
         listings = [_Listed(category.name, category.newest_first,
                             _caller(run, getattr(run.source, category.name), site, context))
                     for category in categories]
@@ -2601,7 +2604,7 @@ async def _run_discovered(run: PluginRun, options: Options, yielded: Any) -> Non
         yielded: what the route gave.
     """
     seen: set[Target] = set()
-    child_options = replace(options, limit=None)
+    child_options = replace(options, limit=None, link=None)
     follow = run.settings.follow
     async with contextlib.aclosing(_steps(yielded)) as items:
         async for item in items:

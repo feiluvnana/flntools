@@ -56,9 +56,10 @@ class SyncCase(EngineCase):
 
     def download(self, options=Options(), source=None, texts=("aaa:a",), sync=True):
         """`Engine.download` with `options`' --from and --time."""
+        named = ",".join(options.categories or ("all",))
         report = self.engine(source).download(
-            list(texts), categories=options.categories or "all",
-            time=Range(options.since, options.until), sync=sync,
+            [f"{text}/{named}" for text in texts], time=Range(options.since, options.until),
+            sync=sync,
         )
         return report.files
 
@@ -67,7 +68,8 @@ class SyncCase(EngineCase):
         return list(self.engine(source).sync(list(texts)).targets)
 
     def plan(self, targets=()):
-        return self.engine()._plan(list(targets))
+        engine = self.engine()
+        return engine._plan(engine.chosen(list(targets)))
 
     def saved(self):
         return fakes.targets(self.home)
@@ -172,7 +174,7 @@ class SavedRunStopTest(SyncCase):
 
     def test_a_target_with_nothing_lost_still_stops_at_saved_posts(self):
         source = self.feed()
-        self.engine(source).download(["aaa:a"], categories="all", sync=True)
+        self.engine(source).download(["aaa:a/all"], sync=True)
         self.requests.clear()
         self.sync(source=source)
         self.assertEqual(self.requests, [])
