@@ -467,6 +467,12 @@ class TabTest(unittest.TestCase):
             None, ("https://cdn.example/1080.mp4", "https://cdn.example/r.mp4"),
             "https://cdn.example/a95.mp4"))
 
+    def test_a_webm_dash_video_is_saved_as_webm(self):
+        webm = MPD.replace("video/mp4", "video/webm").replace("1080.mp4", "1080.webm")
+        found = best_file({"video_dash_manifest": webm})
+        self.assertEqual(found, (("https://cdn.example/1080.webm",), "webm",
+                                 "https://cdn.example/a95.mp4"))
+
 
 class PostTest(unittest.TestCase):
     def test_one_post_from_its_page_or_its_calls(self):

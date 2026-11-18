@@ -476,8 +476,9 @@ def files_of(media: dict, *, named: bool = False) -> list[File]:
     """Each file of a post, named here only where the templates would name it otherwise.
 
     Args:
-        named: name every file here from the post's `taken_at`, as `<date>_<code>[_<n>]`: a
-            lazy post is dated by its pk, which may be another day.
+        named: name every file here from the post's `taken_at`, as
+            `<date>_<code>[_<n>].<extension>`: a lazy post is dated by its pk, which may be
+            another day.
     """
     found = post_files(media)
     code, taken = post_name(media), utc_day(media.get("taken_at"))
