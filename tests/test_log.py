@@ -8,9 +8,13 @@ import re
 import tempfile
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 
+import flnd
 from flncore.log import REDRAW, UI, Journal, State
+from flnd._events import Failed, Saved
+from flnd.source import Target
 
 
 class _TTY(io.StringIO):
@@ -116,6 +120,22 @@ class JournalTest(unittest.TestCase):
         self.assertEqual(log_rec["level"], "warn")
         self.assertIn("rate limit warning", log_rec["message"])
         self.assertEqual(log_rec["fields"], {"source": "ins"})
+
+    def test_writes_paths_and_errors_as_data(self) -> None:
+        target = Target("ins:example_user", kind="user")
+        error = flnd.LoginError("not logged in", hint="run flnd login ins chrome")
+        with UI().file(self.journal_path) as j:
+            j.write(Saved(target, "posts", "9001", Path("media/9001.jpg"), date(2026, 1, 2), 5))
+            j.write(Failed(target, error))
+
+        saved, failed = map(json.loads, self.journal_path.read_text("utf-8").splitlines())
+        self.assertEqual(saved["type"], "Saved")
+        self.assertEqual(saved["path"], "media/9001.jpg")
+        self.assertEqual(saved["target"]["value"], "example_user")
+        self.assertEqual(failed["error"], {
+            "class": "LoginError", "message": "not logged in",
+            "hint": "run flnd login ins chrome",
+        })
 
 
 class RendererTest(unittest.TestCase):

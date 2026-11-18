@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import IO, Any, Literal
 from urllib.parse import urlsplit
 
+import msgspec
 from rich.console import Console as RichConsole
 from rich.control import strip_control_codes
 from rich.text import Text
@@ -309,19 +310,15 @@ class Journal:
         """Write one JSON record object, adding `at` and `type` if omitted."""
         if self._file is None:
             return
+
+        event_type = type(record).__name__
         if isinstance(record, dict):
-            data = dict(record)
-            event_type = str(data.get("type", "Event"))
+            event_type = str(record.get("type", "Event"))
         elif hasattr(record, "__dict__"):
-            data = dict(record.__dict__)
-            event_type = type(record).__name__
-        else:
-            try:
-                import msgspec
-                data = msgspec.to_builtins(record)
-            except Exception:
-                data = {"value": str(record)}
-            event_type = type(record).__name__
+            record = record.__dict__
+        data = msgspec.to_builtins(record, enc_hook=_encode)
+        if not isinstance(data, dict):
+            data = {"value": data}
 
         if event_type == "Progress" or data.get("type") == "Progress":
             return
@@ -332,9 +329,19 @@ class Journal:
             now = _time.now()
             data["at"] = datetime.fromtimestamp(now, tz=UTC).isoformat()
 
-        line = json.dumps(data, ensure_ascii=False, default=str)
+        line = json.dumps(data, ensure_ascii=False)
         self._file.write(line + "\n")
         self._file.flush()
+
+
+def _encode(value: Any) -> Any:
+    """Write a value msgspec has no form for: a path as a string, an error as its parts."""
+    if isinstance(value, os.PathLike):
+        return os.fspath(value)
+    if isinstance(value, BaseException):
+        hint = getattr(value, "hint", None)
+        return {"class": type(value).__name__, "message": str(value), "hint": hint}
+    return str(value)
 
 
 class Group:
