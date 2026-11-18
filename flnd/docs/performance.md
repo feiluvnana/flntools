@@ -34,15 +34,40 @@ Each group is one script in `tests/bench/`, run in a fresh interpreter.
 | group | what it measures |
 | --- | --- |
 | `startup` | process start to exit: `python -c pass`, the imports, `flnd --help` (median of 15) |
-| `net` | flnd's HTTP client on the run's loop from a loopback server: 1 GiB to disk, 2,000 × 100 KiB one and 8 at once, and the loop's longest stall on a disk throttled to 20 MB/s |
+| `ui` | the run's screen: its share of a run's cost, one frame, the bytes a still screen writes; and how fast textual imports |
+| `net` | flnd's HTTP client on the run's loop from a loopback server: 1 GiB to disk, 2,000 × 100 KiB one and 8 at once, the loop's longest stall on a disk throttled to 20 MB/s, a slow second disk, a per-connection cap, four big files at once, a playlist |
 | `disk` | writing 5,000 files of 100 KiB: a plain write, a temp file and rename, a download's part |
 | `db` | the history store over 100k rows; SQLite commits per file, per post and per 500 rows |
 | `walk` | listing 100,000 files, and `stat` on known paths |
 | `cpu` | JSON, a JSON path, HTML parsing, hashing, the loop bridge, path planning, a task handed to the loop |
-| `e2e` | a whole run of the real engine on a faked site, with and without latency |
-| `browser` | headless Chromium on a synthetic infinite-scroll feed; skipped without Chromium |
+| `e2e` | a whole run of the real engine on a faked site, with and without latency; a sync of 100 targets; a run while another process holds `flnd.db` |
+| `browser` | headless Chromium on a synthetic infinite-scroll feed, and warm tabs; skipped without Chromium |
 
 Each script's docstring says exactly what it builds and times.
+
+### The plan's benchmarks
+
+These measure what a step of `PLAN.md` (section 12) is meant to speed up. Each first measured
+today's code, so its baseline is the "before" of its step:
+
+| metric | what it measures | goal |
+| --- | --- | ---: |
+| `ui.overhead` (%) | 100,000 file events through a `Run`, the screen on versus off: the percentage the screen adds | ≤ 3 |
+| `ui.frame` (ms) | one draw of a screen of 20 targets and 6 files in flight, 120 × 60 | ≤ 1 |
+| `ui.idle_bytes` (B) | what that screen writes in 5 s while nothing changes | 0 |
+| `ui.open` (ms) | a fresh interpreter importing textual; later, a list's first frame | ≤ 250 |
+| `net.two_disks` (%) | what a second client writing to a disk throttled to 20 MB/s adds to sixteen 16 MiB downloads | ≤ 10 |
+| `net.per_conn_limit` (x) | 1 GiB from a server sending each connection at 20 MB/s, over one plain connection's rate | ≥ 4 |
+| `net.big_4_at_once` (x) | four 256 MiB downloads at once, each hashed, over one alone | ≥ 2.5 |
+| `net.hls_200` (x) | 200 segments answered 40 ms late, fetched serially over one connection, divided by flnd's time | ≥ 6 |
+| `e2e.sync_100_targets` (s) | a sync of 100 followed targets with nothing new, 150 ms a page | ≤ 1/4 of before |
+| `e2e.db_contended` (ms) | the run's loop's longest stall over 500 files while another process holds `flnd.db`'s write lock for 2 s | ≤ 100 |
+| `browser.warm_4` (s) | starting 4 warm tabs beside a target's own, on pages answered 50 ms late | ≤ 1/3 of before |
+
+The disk "throttled to 20 MB/s" is a patched `Part.write` that sleeps for each piece's size at
+that rate, for parts in the slow folder only. The held lock is a child process that runs
+`BEGIN IMMEDIATE` on `flnd.db` once the run has answered 50 files. A baseline of 0
+(`ui.idle_bytes`, once the screen draws only on change) fails the gate on any number above 0.
 
 ## Reading the numbers
 
@@ -97,7 +122,7 @@ and the `(target, post_id)` index alone costs 0.5 µs), `db.prefix_scan_10k` (4.
 each of the 10,000 rows comes back as 20 columns, which is 10 of those ms; the index walk and
 row lookups are under 2) and `db.commit_per_post` (above, still within its target).
 
-`gates.json` has the rest: 77 numbers in all.
+`gates.json` has the rest: 71 numbers in all, each with a baseline recorded on 2026-11-18.
 
 ## Network
 

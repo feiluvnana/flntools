@@ -14,6 +14,10 @@ target's `Tabs` in a `RunBrowser`, with the cursor reader below, once with `scro
 (the default, `scroll_default`) and once with `"fast"` (`scroll_fast`). A whole read ends on
 the 30th batch's word, with no idle wait.
 
+`warm_4` times `Tabs.warm` starting 4 warm tabs beside the target's own (the most PLAN.md
+section 6.2 allows), each on a page the server answers 50 ms late, until each had its first
+answer; today they open one after the other. Best of 3, each with fresh tabs.
+
 The browser runs on a loop thread of its own (`flnd._loop.Loop`), and every step is handed to it
 from this thread with `Loop.run`, as a source's listing thread does through `Site`'s verbs, so
 each time includes that hop.
@@ -34,6 +38,7 @@ from flnd import _browser, _cookies, _html, _net
 from flnd._loop import Loop
 
 BATCHES = kit.size(30, 3)
+WARM = 4
 # The feed: each batch appends 10 tall rows, and nearing the bottom asks for the next batch.
 FEED = """<html><body><div id=list></div><script>
 let n = 0, busy = false;
@@ -72,6 +77,27 @@ def read_feed(tabs: _browser.Tabs, url: str) -> int:
         return sum(1 for _ in batches)
 
 
+def warm_4(shared: _browser.RunBrowser, base: str) -> float:
+    """The best of 3 times `Tabs.warm` took to start `WARM` warm tabs, in seconds."""
+    fastest = float("inf")
+    for attempt in range(1 if kit.SMOKE else 3):
+        tabs = _browser.Tabs(shared, _cookies.Jar([]))
+        try:
+            # The target's own tab is opened before the clock starts.
+            _ = tabs.page
+            urls = [f"{base}/slow/warm{n}.html?{attempt}" for n in range(WARM)]
+            start = time.perf_counter()
+            tabs.warm(urls)
+            took = time.perf_counter() - start
+            # A tab that failed to start would look fast; only all of them count.
+            if len(tabs._warmed) != WARM:
+                raise SystemExit(f"browser: warm_4 started {len(tabs._warmed)} of {WARM} tabs")
+        finally:
+            tabs.close()
+        fastest = min(fastest, took)
+    return fastest
+
+
 def main() -> None:
     """Serve the feed, drive it in headless Chromium, and emit the report."""
     report = kit.Report("browser")
@@ -82,6 +108,8 @@ def main() -> None:
                      "next": f"c{n + 1}" if n < BATCHES - 1 else None}
             (folder / f"items{n}.json").write_text(json.dumps(batch))
         (folder / "feed.html").write_text(FEED)
+        for n in range(WARM):
+            (folder / f"warm{n}.html").write_text(f"<html><body>page {n}</body></html>")
         with kit.serve(folder) as base:
             try:
                 chrome, took = timed(lambda: loop.run(_browser.launch(headless=True)))
@@ -134,6 +162,7 @@ def main() -> None:
                         raise SystemExit(f"browser: {name} stopped at {batches} batches, "
                                          f"{rows} of {BATCHES * 10} rows")
                     report.add(name, took, "s")
+                report.add("warm_4", warm_4(shared, base), "s")
             finally:
                 shared.close()
     report.emit()

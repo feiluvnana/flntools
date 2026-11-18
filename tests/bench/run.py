@@ -21,7 +21,8 @@ How a run goes:
    commit, the Python version and the machine.
 3. A table compares each number with its baseline and its target in `tests/bench/gates.json`.
 4. `--gate` exits 1 when any number is worse than its baseline by more than the tolerance
-   (15% by default): run it by hand before a performance commit.
+   (15% by default): run it by hand before a performance commit. A baseline of 0 that is
+   lower-is-better (`ui.idle_bytes` once nothing redraws) fails on any number above 0.
 5. `--record` writes this run's numbers into `gates.json` as the new baselines, keeping every
    target. Record after a performance commit lands, so the next gate compares against it.
 
@@ -55,7 +56,7 @@ ROOT = HERE.parent.parent
 GATES = HERE / "gates.json"
 LAST = HERE / "last.json"
 # Every group, in the order a full run takes them: quick ones first, the browser late.
-GROUPS = ("startup", "net", "disk", "db", "walk", "cpu", "e2e", "browser")
+GROUPS = ("startup", "ui", "net", "disk", "db", "walk", "cpu", "e2e", "browser")
 TOLERANCE = 15.0
 
 
@@ -145,13 +146,19 @@ def commit() -> str:
 def worse_by(value: float, baseline: float, better: str) -> float:
     """How much worse `value` is than `baseline`, in percent; negative when it is better.
 
+    A zero on the wrong side has no ratio: a baseline of 0 that is lower-is-better (such as
+    `ui.idle_bytes`) is infinitely worse for any value above 0, and so is a higher-is-better
+    value of 0 against a baseline above it.
+
     Args:
         value: this run's number.
-        baseline: the recorded number, above zero.
+        baseline: the recorded number, 0 or more.
         better: "lower" for a time, "higher" for a throughput.
     """
-    ratio = value / baseline if better == "lower" else baseline / value
-    return (ratio - 1) * 100
+    low, high = (baseline, value) if better == "lower" else (value, baseline)
+    if low <= 0:
+        return 0.0 if high <= low else float("inf")
+    return (high / low - 1) * 100
 
 
 def meets(value: float, target: float, better: str) -> bool:
@@ -181,7 +188,7 @@ def table(metrics: dict[str, dict[str, Any]], gates: dict[str, dict[str, Any]],
         value, unit, better = measured["value"], measured["unit"], measured["better"]
         baseline, target = gate.get("baseline"), gate.get("target")
         change = "-"
-        if baseline:
+        if baseline is not None:
             worse = worse_by(value, baseline, better)
             change = f"{abs(worse):.0f}% {'worse' if worse > 0 else 'better'}"
             if worse > tolerance:

@@ -9,9 +9,11 @@ How it answers:
 1. it reads requests on each connection until the client closes it (keep-alive);
 2. a path under `/slow/` waits 50 ms first, then answers the same file without the prefix: the
    browser group's synthetic feed uses it to make each batch arrive late, as a real feed does;
+   one under `/late/` waits 40 ms, the latency of each segment of `net.hls_200`;
 3. a `Range: bytes=a-b` header gets a 206 with that slice, so segmented downloads work;
 4. the body is sent with `loop.sendfile`, so the server costs little CPU and the numbers measure
-   the client, not this file.
+   the client, not this file; under `/capped/` it is sent at 20 MB/s per connection instead,
+   as a CDN that caps each connection does (`net.per_conn_limit`).
 
 It is deliberately small: no chunked encoding, no HEAD, no error pages beyond a bare 404.
 """
@@ -21,11 +23,14 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from typing import Any
 
 # Content types by suffix: the browser needs text/html for the feed page and JSON for its batches.
 TYPES = {".html": "text/html", ".json": "application/json"}
-# How long a `/slow/` request waits before answering, in seconds.
-SLOW = 0.05
+# How long a `/slow/` and a `/late/` request wait before answering, in seconds.
+SLOW, LATE = 0.05, 0.04
+# The rate of one `/capped/` connection, in bytes a second, and the piece it is sent in.
+CAP, CAP_PIECE = 20e6, 256 * 1024
 
 
 async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, root: str) -> None:
@@ -48,6 +53,11 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, roo
             if path.startswith("/slow/"):
                 await asyncio.sleep(SLOW)
                 path = path.removeprefix("/slow")
+            elif path.startswith("/late/"):
+                await asyncio.sleep(LATE)
+                path = path.removeprefix("/late")
+            capped = path.startswith("/capped/")
+            path = path.removeprefix("/capped")
             full = os.path.join(root, path.lstrip("/"))
             if not os.path.isfile(full):
                 writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
@@ -66,12 +76,30 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, roo
             writer.write(f"HTTP/1.1 {status}\r\nContent-Length: {length}\r\n"
                          f'Content-Type: {kind}\r\nETag: "x"\r\n{extra}\r\n'.encode())
             with open(full, "rb") as body:
-                await loop.sendfile(writer.transport, body, start, length)
+                if capped:
+                    await capped_send(writer, body, start, length)
+                else:
+                    await loop.sendfile(writer.transport, body, start, length)
             await writer.drain()
     except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError):
         pass  # the client closed the connection: the normal end of a keep-alive session
     finally:
         writer.close()
+
+
+async def capped_send(writer: asyncio.StreamWriter, body: Any, start: int, length: int) -> None:
+    """Send `length` bytes of `body` from `start`, no faster than `CAP` on this connection."""
+    loop = asyncio.get_running_loop()
+    began, sent = loop.time(), 0
+    body.seek(start)
+    while sent < length:
+        piece = body.read(min(CAP_PIECE, length - sent))
+        writer.write(piece)
+        await writer.drain()
+        sent += len(piece)
+        ahead = began + sent / CAP - loop.time()
+        if ahead > 0:
+            await asyncio.sleep(ahead)
 
 
 async def main(root: str) -> None:

@@ -37,6 +37,15 @@ class BenchTest(unittest.TestCase):
             with self.subTest(module=path.stem):
                 importlib.import_module(path.stem)
 
+    def test_a_zero_baseline_fails_any_number_above_it(self):
+        worse_by = _runner().worse_by
+        self.assertEqual(worse_by(0, 0, "lower"), 0)
+        self.assertEqual(worse_by(5, 0, "lower"), float("inf"))
+        self.assertEqual(worse_by(0, 2, "higher"), float("inf"))
+        self.assertLess(worse_by(3, 0, "higher"), 0)
+        self.assertAlmostEqual(worse_by(12, 10, "lower"), 20)
+        self.assertAlmostEqual(worse_by(5, 10, "higher"), 100)
+
     def test_every_group_runs_its_smallest_case(self):
         run = _runner()
         with ThreadPoolExecutor(4) as pool:

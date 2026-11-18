@@ -22,6 +22,8 @@ dependencies = [
     "msgspec",
     "questionary>=2.1",
     "cyclopts>=5.5.2",
+    # The full-screen lists and forms of step 13; kept only if `ui.open` stays at most 250 ms.
+    "textual>=8.2",
 ]
 
 [project.scripts]

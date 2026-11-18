@@ -12,7 +12,13 @@ The runs:
    downloaded are written straight into the database (`grow`), so the case stays quick. Their
    files aren't on disk, which a sync never looks at: it stops at the first saved posts;
 4. 500 posts with 150 ms per API page and 40 ms per file, at the source defaults for pace and
-   concurrency: what a real run is bound by.
+   concurrency: what a real run is bound by;
+5. `sync_100_targets`: 100 followed targets of 10 posts each, downloaded once, then synced with
+   nothing new at 150 ms per API page and no pace (`Engine.sync`): what a sync of many small
+   targets waits for;
+6. `db_contended`: 500 files (250 posts, 40 ms per file, no pace) while another process holds
+   `flnd.db`'s write lock for 2 s, taken once 50 files were answered; a probe on the run's loop
+   wakes every 5 ms, and the number is the longest the loop was held up.
 
 Each run is timed once: they are long enough that noise is small.
 """
@@ -21,10 +27,13 @@ from __future__ import annotations
 
 import asyncio
 import io
+import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import kit
 
@@ -39,6 +48,24 @@ API, CDN, PER_PAGE = "https://api.bench.example", "https://cdn.bench.example", 5
 LARGE = kit.size(100_000, 1000)
 # The posts of the runs without latency (1 to 3), and of the run with it (4).
 POSTS, SLOW_POSTS = kit.size(2000, 20), kit.size(500, 10)
+# Run 5: the followed targets, and the posts of each.
+FOLLOWED, FOLLOWED_POSTS = kit.size(100, 3), 10
+# Run 6: its posts, the files answered before the lock is taken, and how long it is held.
+HELD_POSTS, HELD_AFTER, HOLD = kit.size(250, 20), kit.size(50, 5), kit.size(2000, 300) / 1e3
+PROBE = 0.005
+# The other process of run 6: told to, it waits for the run's first commit to make the
+# database, takes the write lock, says so, holds it for the seconds it is given, and lets go.
+HOLDER = """
+import os, sqlite3, sys, time
+sys.stdin.readline()
+while not os.path.exists(sys.argv[1]):
+    time.sleep(0.005)
+db = sqlite3.connect(sys.argv[1], isolation_level=None, timeout=30)
+db.execute("BEGIN IMMEDIATE")
+print("held", flush=True)
+time.sleep(float(sys.argv[2]))
+db.execute("COMMIT")
+"""
 BODY = b"\0" * (100 * 1024)
 # The first bytes of a JPEG and of an MP4, so the engine's type sniffing sees real media.
 HEADS = {".jpg": (b"\xff\xd8\xff\xe0", "image/jpeg"), ".mp4": (b"\0\0\0\x18ftypmp42", "video/mp4")}
@@ -54,6 +81,9 @@ class Fake:
     # Seconds slept before answering an API page, and before answering a file.
     page_latency = 0.0
     file_latency = 0.0
+    # Run 6: files answered so far, and what each answered file calls (None for nothing).
+    answered = 0
+    on_file: Any = None
 
 
 class Bench(Source):
@@ -71,7 +101,7 @@ class Bench(Source):
     @user.category(newest_first=True)
     def posts(self, site: Site, profile: dict) -> Iterator[Post]:
         """Every post, newest first, page by page until the API sends no cursor."""
-        for page in site.pages(f"{API}/posts", cursor="next"):
+        for page in site.pages(f"{API}/posts", cursor="next", params={"user": profile["id"]}):
             for item in page["items"]:
                 yield Post(item["id"], [File(url) for url in item["urls"]], date=item["taken_at"])
 
@@ -86,11 +116,18 @@ async def answer(request: _net.Request) -> _net.Reply:
         await asyncio.sleep(Fake.page_latency)
         start = int(request.url.params.get("cursor", "0"))
         end = min(start + PER_PAGE, Fake.posts)
-        items = [{"id": f"p{n}", "taken_at": 1767312000 - n,
-                  "urls": [f"{CDN}/{n}.jpg", f"{CDN}/{n}.mp4"]} for n in range(start, end)]
+        # Each target's posts are its own: `example_user`'s are p0, p1…, another's `<user>.p0`.
+        user = request.url.params.get("user", "example_user")
+        prefix = "" if user == "example_user" else f"{user}."
+        items = [{"id": f"{prefix}p{n}", "taken_at": 1767312000 - n,
+                  "urls": [f"{CDN}/{prefix}{n}.jpg", f"{CDN}/{prefix}{n}.mp4"]}
+                 for n in range(start, end)]
         cursor = str(end) if end < Fake.posts else None
         return _net.reply(200, json={"items": items, "next": cursor})
     await asyncio.sleep(Fake.file_latency)
+    Fake.answered += 1
+    if Fake.on_file is not None:
+        Fake.on_file()
     head, kind = HEADS[request.url.path[-4:]]
     return _net.reply(200, content=head + BODY,
                       headers={"content-type": kind, "content-length": str(len(head + BODY))})
@@ -141,8 +178,66 @@ def grow(home: Path, files: int) -> None:
             raise SystemExit(f"e2e: the grown home holds {held} files, not {files}")
 
 
+def many_targets(home: Path) -> float:
+    """Follow `FOLLOWED` targets, then time a sync of them with nothing new, in seconds."""
+    engine = Engine(home=home, sources={"bnc": Bench})
+    texts = [f"bnc:example_user_{n}" for n in range(FOLLOWED)]
+    engine.download(texts, categories=("posts",), sync=True)
+    files = sum(1 for path in (home / "media").rglob("*") if path.is_file())
+    if files != 2 * FOLLOWED * FOLLOWED_POSTS:
+        raise SystemExit(f"e2e: expected {2 * FOLLOWED * FOLLOWED_POSTS} files, found {files}")
+    Fake.page_latency = 0.150
+    start = time.perf_counter()
+    engine.sync()
+    return time.perf_counter() - start
+
+
+def contended(home: Path) -> float:
+    """Run `HELD_POSTS` posts while another process holds `flnd.db`'s write lock for `HOLD`.
+
+    Returns:
+        The longest the run's loop was held up, in seconds.
+    """
+    holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(home / _home.DB), str(HOLD)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    lags: list[float] = []
+
+    async def probe() -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            while holder.poll() is None:
+                at = loop.time()
+                await asyncio.sleep(PROBE)
+                lags.append(loop.time() - at - PROBE)
+        except asyncio.CancelledError:
+            pass  # the run ended and its loop closed: the probe has what it needs
+
+    def on_file() -> None:
+        # Called on the run's loop: the first file starts the probe, the HELD_AFTER-th the hold.
+        if Fake.answered == 1:
+            asyncio.ensure_future(probe())
+        if Fake.answered == HELD_AFTER:
+            # Its answer is read after the run: waiting for it here would stall the loop.
+            assert holder.stdin is not None
+            holder.stdin.write("go\n")
+            holder.stdin.flush()
+
+    Fake.answered, Fake.on_file = 0, on_file
+    try:
+        run(home)
+    finally:
+        Fake.on_file = None
+        said, _ = holder.communicate()
+    if said.strip() != "held":
+        raise SystemExit("e2e: the other process didn't take flnd.db's write lock")
+    files = sum(1 for path in (home / "media").rglob("*") if path.is_file())
+    if files != 2 * HELD_POSTS:
+        raise SystemExit(f"e2e: expected {2 * HELD_POSTS} files, found {files}")
+    return max(lags)
+
+
 def main() -> None:
-    """Run the three scenarios and emit the report."""
+    """Run the six scenarios and emit the report."""
     report = kit.Report("e2e")
     default_pace = Bench.pace
     with _net.fake(answer), ui.scope(dest=io.StringIO(), color=False), \
@@ -163,6 +258,13 @@ def main() -> None:
         Fake.posts, Bench.pace = SLOW_POSTS, default_pace
         Fake.page_latency, Fake.file_latency = 0.150, 0.040
         report.add("latency_500_posts", run(Path(scratch, "slow", ".flnd")), "s")
+        # 5: many small followed targets, nothing new.
+        Fake.posts, Bench.pace = FOLLOWED_POSTS, 0.0
+        Fake.page_latency, Fake.file_latency = 0.0, 0.0
+        report.add("sync_100_targets", many_targets(Path(scratch, "many", ".flnd")), "s")
+        # 6: a held database.
+        Fake.posts, Fake.page_latency, Fake.file_latency = HELD_POSTS, 0.0, 0.040
+        report.add("db_contended", contended(Path(scratch, "held", ".flnd")) * 1e3, "ms")
     report.emit()
 
 
