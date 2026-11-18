@@ -959,7 +959,8 @@ class Client:
 
     async def fill(self, url: str, held: files.Part, *,
                    headers: Mapping[str, str] | None = None, resume: bool = True,
-                   progress: Any = None) -> Mapping[str, str]:
+                   progress: Any = None,
+                   until: Callable[[], int | None] | None = None) -> Mapping[str, str]:
         """Stream `url` into the open part `held`: one try, going on from the bytes it holds.
 
         The caller owns the part: it decides where it lands and what happens on failure.
@@ -973,6 +974,8 @@ class Client:
             progress: a sink for the bytes as they come: anything with a settable `total` and
                 an `advance(n)`, or a `Meter` of one, which keeps where the tries before
                 this one left it; None reports nothing.
+            until: where the part's bytes stop, asked at each chunk: the file's end moves
+                there while the transfer goes (a segment of it split off); None is its end.
 
         Returns:
             The headers of the answer that filled the part, lower case.
@@ -981,7 +984,49 @@ class Client:
             Error: the try failed (see the module's policy).
         """
         meter = progress if isinstance(progress, Meter) else Meter(progress)
+        meter.until = until
         return await self._file(url, held, headers, resume, meter)
+
+    async def span(self, url: str, held: files.Part, start: int, *,
+                   headers: Mapping[str, str] | None = None, validator: str | None = None,
+                   progress: Any = None,
+                   until: Callable[[], int | None]) -> Mapping[str, str]:
+        """Stream the bytes of `url` from `start` to `until()` into the part at their offset:
+        one try at one segment of a file, beside the others.
+
+        Args:
+            url: the file's URL.
+            held: the locked part, written at `start` onwards (`Part.write_at`).
+            start: the first byte.
+            headers: extra request headers.
+            validator: an ETag or date for `If-Range`, so a file that changed comes whole (a
+                200), which `progress`'s `opened` refuses.
+            progress: a sink, or a `Meter` (made at `start`), as `fill` takes.
+            until: where the segment ends, asked at each chunk; it may move nearer.
+
+        Returns:
+            The answer's headers, lower case.
+
+        Raises:
+            Error: the try failed (see the module's policy).
+        """
+        meter = progress if isinstance(progress, Meter) else Meter(progress, at=start)
+        meter.until = until
+        end = until()
+        span = f"bytes={start}-{end - 1}" if end is not None else f"bytes={start}-"
+        answer = await self._range(url, headers, span, validator)
+        try:
+            begin = _range_start(answer.headers) if answer.status == 206 else 0
+            total = _total_bytes(answer.headers, begin)
+            if meter.opened is not None:
+                meter.opened(answer.status, answer.headers, begin, total)
+            if answer.status != 206 or begin != start:
+                raise NetworkError(f"GET {redact(url)}: HTTP {answer.status} for bytes from "
+                                   f"{start}, not a range from there")
+            await self._write(url, answer, held, start, total, meter, offset=start)
+            return answer.headers
+        finally:
+            await answer.close()
 
     async def _open(self, request: Request) -> _Answer:
         """Prepare `request` with the session's hook, send it, and raise for its stop.
@@ -1002,7 +1047,7 @@ class Client:
                     resume: bool, meter: Meter) -> Mapping[str, str]:
         """One try at a file: resume the part, or start over.
 
-        1. Start from 0 when not resuming, or when an older flnd's crash left a part with holes.
+        1. Start from 0 when not resuming, or when the part was written in segments.
         2. Ask for `bytes=<size>-`, with `If-Range` on the validator the part kept, so a file
            that changed comes whole (a 200) instead of spliced.
         3. A 206 goes on from the part's end; a 200 starts it over; a 416 is a whole part or a
@@ -1021,7 +1066,8 @@ class Client:
         Raises:
             NetworkError: a 206's `Content-Range` does not match the part's resume offset.
         """
-        if not resume or (held.size and held.meta.get("holes")):
+        if not resume or (held.size and "segments" in held.meta):
+            # A part written in segments (or an older flnd's with holes) isn't one run of bytes.
             held.reset()
         offset = held.size
         validator = held.meta.get("etag") if offset else None
@@ -1039,6 +1085,8 @@ class Client:
                 if not start and held.size:
                     held.reset()
                 held.note(etag=_validator(answer.headers))
+                if meter.opened is not None:
+                    meter.opened(status, answer.headers, start, total)
             if status != 416:
                 await self._write(url, answer, held, start, total, meter)
                 return answer.headers
@@ -1091,7 +1139,7 @@ class Client:
         return answer
 
     async def _write(self, url: str, answer: _Answer, held: files.Part, start: int,
-                     total: int | None, meter: Meter) -> None:
+                     total: int | None, meter: Meter, *, offset: int | None = None) -> None:
         """Append the answer's body to the part, and fail a transfer that came short.
 
         Args:
@@ -1100,22 +1148,40 @@ class Client:
             held: the part.
             start: where the answer's bytes begin in the file.
             total: the file's size, or None when the server didn't say.
-            meter: where the bytes are counted.
+            meter: where the bytes are counted, and where they stop (`until`).
+            offset: where to write, for a segment; None appends.
 
         Raises:
             DiskError: the part can't be written.
-            NetworkError: the body ended before `total` (retryable).
+            NetworkError: the body ended before `total`, or the segment's end (retryable).
             Stopped: the client's `stop` was set.
         """
         meter.start(total, start)
-        sink = _Sink(held)
+        sink = _Sink(held, offset, wrote=meter.wrote, until=meter.until)
+        at, end = start, None
         try:
             async for chunk in answer.chunks:
                 self._check(url)
+                end = meter.until() if meter.until is not None else None
+                if end is not None and at + len(chunk) >= end:
+                    chunk = chunk[:max(0, end - at)]
                 await sink.add(chunk)
                 meter.add(len(chunk))
+                at += len(chunk)
+                if end is not None and at >= end:
+                    break
         finally:
             await sink.flush(last=True)
+        if end is not None:
+            if at < end:
+                raise NetworkError(f"GET {redact(url)}: truncated at {at} of {end} bytes",
+                                   retryable=True)
+            return
+        if offset is not None:
+            if total is not None and at < total:
+                raise NetworkError(f"GET {redact(url)}: truncated at {at} of {total} bytes",
+                                   retryable=True)
+            return
         if total is not None and held.size < total:
             raise NetworkError(f"GET {redact(url)}: truncated at {held.size} of {total} "
                                "bytes", retryable=True)
@@ -1134,11 +1200,20 @@ class Meter:
 
     Args:
         sink: where the bytes are counted, or None.
+        at: where in the file its transfer starts: a segment's start.
     """
 
-    def __init__(self, sink: Any):
+    def __init__(self, sink: Any, *, at: int = 0):
         self._sink = sink
-        self._at = 0
+        self._at = at
+        # Asked at each chunk for where the bytes stop (`Client.fill`'s `until`).
+        self.until: Callable[[], int | None] | None = None
+        # Told of each answer before its body is written, `opened(status, headers, start,
+        # total)`; it may raise to refuse it. None takes any.
+        self.opened: Callable[[int, Mapping[str, str], int, int | None], None] | None = None
+        # Awaited after each piece is written, with its size: where a caller keeps its
+        # progress (a segment's sidecar). None waits for nothing.
+        self.wrote: Callable[[int], Awaitable[None]] | None = None
 
     def start(self, total: int | None, at: int) -> None:
         """A try begins: set the sink's total, and move it to where the try starts.
@@ -1199,11 +1274,18 @@ class _Sink:
     Args:
         held: the part.
         offset: where to write, for a segment (`Part.write_at`); None appends (`Part.write`).
+        wrote: awaited with each piece's size once it is on disk, as `Meter.wrote`.
+        until: where the bytes stop, as `Meter.until`: while it gives an end (the part is in
+            segments), the last piece too goes to the disk before `wrote` counts it.
     """
 
-    def __init__(self, held: files.Part, offset: int | None = None) -> None:
+    def __init__(self, held: files.Part, offset: int | None = None, *,
+                 wrote: Callable[[int], Awaitable[None]] | None = None,
+                 until: Callable[[], int | None] | None = None) -> None:
         self._held = held
         self._offset = offset
+        self._until = until
+        self._wrote = wrote
         self._chunks: list[bytes] = []
         self._size = 0
         self.written = 0
@@ -1221,6 +1303,7 @@ class _Sink:
         (`flnkit.files.BUFFER`), goes there on the loop instead: a copy in memory, no system
         call, since the full pieces before it went to the disk. The part's landing (or its
         `head`) writes it, off the loop. A small file then costs no hop to the writer at all.
+        A part in segments never does: its sidecar counts only what is on disk, for a crash.
 
         Args:
             last: the body ended (or failed): this is its last piece.
@@ -1232,28 +1315,32 @@ class _Sink:
             return
         data = self._chunks[0] if len(self._chunks) == 1 else b"".join(self._chunks)
         self._chunks, self._size = [], 0
-        if last and self._offset is None and len(data) < files.BUFFER:
+        if last and self._offset is None and len(data) < files.BUFFER and (
+                self._until is None or self._until() is None):
             self._held.write(data)
             self.written += len(data)
+            if self._wrote is not None:
+                await self._wrote(len(data))
             return
         loop = asyncio.get_running_loop()
         if self._offset is None:
             work = loop.run_in_executor(_writer_thread(), self._append, data)
             if not self._held.hashing:
                 await _settle(work)
-                self.written += len(data)
-                return
-            fed = loop.run_in_executor(_hasher_thread(), self._held.feed, data)
-            # Both are waited for, whatever the other did: a thread still holding the part
-            # when its transfer ends would write or hash after the part is gone.
-            try:
-                await _settle(work)
-            finally:
-                await _settle(fed)
+            else:
+                fed = loop.run_in_executor(_hasher_thread(), self._held.feed, data)
+                # Both are waited for, whatever the other did: a thread still holding the part
+                # when its transfer ends would write or hash after the part is gone.
+                try:
+                    await _settle(work)
+                finally:
+                    await _settle(fed)
         else:
             at = self._offset + self.written
             await _settle(loop.run_in_executor(_writer_thread(), self._held.write_at, at, data))
         self.written += len(data)
+        if self._wrote is not None:
+            await self._wrote(len(data))
 
     def _append(self, data: bytes) -> None:
         self._held.write(data, fed=True)

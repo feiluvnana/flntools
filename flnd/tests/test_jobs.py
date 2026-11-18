@@ -4,6 +4,7 @@ segments, `rate`, `slowest`, the free-space stop and the hasher pool, on the fak
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import threading
 import unittest
@@ -782,34 +783,24 @@ class SegmentTest(unittest.TestCase):
         self.assertFalse(Segments.same({"Content-Length": "100"}, {"Content-Length": "100"}))
         self.assertFalse(Segments.same({"ETag": '"v1"'}, {"ETag": '"v1"'}))
 
-    def test_the_sidecar_resumes_each_segment_of_the_same_file(self):
-        with tempfile.TemporaryDirectory() as folder:
-            part = Path(folder) / "clip.mp4.part"
-            plan = Segments(32 * MIB, '"v1"', "Tue", [Segment(0, 16 * MIB, 4 * MIB),
-                                                      Segment(16 * MIB, 32 * MIB, 8 * MIB)])
-            plan.save(part)
-            self.assertTrue((Path(folder) / "clip.mp4.part.json").exists())
-            back = Segments.load(part, size=32 * MIB, etag='"v1"', last_modified="Tue")
-            self.assertEqual([p.at for p in back.parts], [4 * MIB, 24 * MIB])
-            # Segments kept out of order are read in order.
-            (Path(folder) / "clip.mp4.part.json").write_text(
-                '{"size": 10, "etag": "", "last_modified": "", "segments": [[5, 10, 1], [0, 5, 2]]}')
-            self.assertEqual([p.at for p in Segments.load(part, size=10).parts], [2, 6])
-            for name, size, etag in [("another etag", 32 * MIB, '"v2"'),
-                                     ("another size", 31 * MIB, '"v1"')]:
-                with self.subTest(name):
-                    self.assertIsNone(Segments.load(part, size=size, etag=etag,
-                                                    last_modified="Tue"))
-            head = '{"size": 10, "etag": "", "last_modified": "", "segments": '
-            for name, body in [("broken", "{"), ("out of the file", head + "[[0, 20, 0]]}"),
-                               ("a gap", head + "[[0, 4, 4], [6, 10, 0]]}"),
-                               ("an overlap", head + "[[0, 6, 6], [4, 10, 0]]}"),
-                               ("short of the end", head + "[[0, 8, 8]]}"),
-                               ("written past its end", head + "[[0, 5, 6], [5, 10, 0]]}")]:
-                with self.subTest(name):
-                    (Path(folder) / "clip.mp4.part.json").write_text(body)
-                    self.assertIsNone(Segments.load(part, size=10))
-            self.assertIsNone(Segments.load(Path(folder) / "none.part", size=10))
+    def test_the_sidecar_resumes_each_segment(self):
+        plan = Segments(32 * MIB, '"v1"', "Tue", [Segment(0, 16 * MIB, 4 * MIB),
+                                                  Segment(16 * MIB, 32 * MIB, 8 * MIB)])
+        back = Segments.of(json.loads(json.dumps(plan.meta)))
+        self.assertEqual([p.at for p in back.parts], [4 * MIB, 24 * MIB])
+        self.assertEqual((back.etag, back.last_modified), ('"v1"', "Tue"))
+        # Segments kept out of order are read in order.
+        self.assertEqual([p.at for p in Segments.of(
+            {"size": 10, "segments": [[5, 10, 1], [0, 5, 2]]}).parts], [2, 6])
+        for name, segments in [("none", []), ("out of the file", [[0, 20, 0]]),
+                               ("a gap", [[0, 4, 4], [6, 10, 0]]),
+                               ("an overlap", [[0, 6, 6], [4, 10, 0]]),
+                               ("short of the end", [[0, 8, 8]]),
+                               ("written past its end", [[0, 5, 6], [5, 10, 0]]),
+                               ("broken", [[0, "x", 0]])]:
+            with self.subTest(name):
+                self.assertIsNone(Segments.of({"size": 10, "segments": segments}))
+        self.assertIsNone(Segments.of({"etag": '"v1"'}))
 
 
 class RateTest(unittest.TestCase):

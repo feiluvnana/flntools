@@ -447,6 +447,16 @@ loop:
 - **A file** (`save.Saver`) goes into its part: resumed with `Range` and `If-Range` from
   what a failed run kept, tried mirror by mirror, a DASH pair fetched at once and joined by
   ffmpeg in one join (`flnkit/media.py`).
+- **Segments** (6.2, `jobs.Segments`): a file of 16 MiB or more from a host that answered
+  `Accept-Ranges: bytes` or a 206 may take more places. From 2 s into its transfer, at each
+  piece written (at most once a second) and at once when a segment ends, while its host's cap
+  has a free place and no other file waits for it, the largest range left of 8 MiB or more is
+  halved, up to 8 segments (4 for a ranged `fetch`, once plugin API 2 brings those). The first
+  transfer stops where its range now ends (`Client.fill`'s `until`); each new segment is a
+  `FILE` job of its own (`Client.span`), written at its offset into the one part, from a
+  mirror whose length and
+  `ETag` match the first URL's, else from the first URL. The part's sidecar keeps each
+  segment after every piece ([storage.md](storage.md)).
 - **The fake** (`flnkit.net.fake`) answers every request from routes or a handler in tests and
   benchmarks; nothing in `make check` reaches the network.
 

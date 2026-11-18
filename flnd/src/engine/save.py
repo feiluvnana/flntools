@@ -34,7 +34,7 @@ from flnd.engine.jobs import Job, Kind
 from flnd.errors import DiskError, Error, NotFound, SiteError, Stopped, UsageError, classify
 from flnd.source import Fetch, File, Target
 from flnd.ui.log import ui
-from flnkit import files, media, net, text
+from flnkit import clock, files, media, net, text
 
 __all__ = ["Item", "Saver", "Store"]
 
@@ -127,6 +127,148 @@ class _Failure:
 
     item: Item
     error: Error
+
+
+class _Mismatch(Exception):
+    """A segment's answer isn't of the file the first URL served: another length or `ETag`."""
+
+
+class _Split:
+    """One file's segments while it transfers: the plan, and a task per segment.
+
+    Args:
+        saver: the run's save.
+        item: the file.
+        urls: its mirrors; the first is the one that answered first.
+        held: its part.
+        client: the plugin's downloading client.
+        job: the first transfer's `FILE` job, whose host and target the segments take.
+    """
+
+    def __init__(self, saver: Saver, item: Item, urls: Sequence[str], held: files.Part,
+                 client: net.Client, job: Job[Any]) -> None:
+        self.saver, self.item, self.urls, self.held, self.client = saver, item, urls, held, client
+        self.job = job
+        self.plan: jobs.Segments | None = None
+        self.began = clock.now()
+        self._tasks: list[asyncio.Task[Any]] = []
+        # The part's one sidecar writer, while it runs, and whether `meta` changed since it
+        # took its last snapshot.
+        self._keeper: asyncio.Task[None] | None = None
+        self._dirty = False
+        # Whether a sidecar of the part's segments is on disk.
+        self._kept = False
+
+    def end(self) -> int | None:
+        """Where the first transfer stops: its segment's end; None while it is one transfer."""
+        return self.plan.parts[0].end if self.plan is not None else None
+
+    async def check(self, *, ended: bool = False) -> None:
+        """Split when the rule says so, and keep where each segment is in the sidecar.
+
+        The first segment starts only once a sidecar says the part is in segments: a crash
+        before it would leave a part a plain fill appends to past the new segment's bytes.
+        Later ones start at once, since the sidecar before them already covers their range.
+        """
+        plan = self.plan
+        if plan is None:
+            return
+        made = plan.split(elapsed=clock.now() - self.began, room=self.saver.scheduler.room(
+            self.job.host), ended=ended)
+        if made is not None and self._kept:
+            self.start(made)
+            made = None
+        if len(plan.parts) > 1:
+            self.held.note(**plan.meta)
+            await self._keep()
+        if made is not None:
+            self.start(made)
+
+    async def _keep(self) -> None:
+        """Wait until the sidecar holds `meta` as it is now. One task writes it, a snapshot at
+        a time, taken on the loop: a check that comes while it writes is in its next one."""
+        self._dirty = True
+        if self._keeper is None or self._keeper.done():
+            self._keeper = asyncio.ensure_future(self._keeping())
+        await asyncio.shield(self._keeper)
+
+    async def _keeping(self) -> None:
+        while self._dirty:
+            self._dirty = False
+            await self.saver._call(self.held.keep, dict(self.held.meta))
+            self._kept = True
+
+    def start(self, part: jobs.Segment) -> None:
+        """A segment's transfer, as a task."""
+        number = len(self._tasks) + 1
+        self._tasks.append(asyncio.ensure_future(_kept(self._segment(part, number))))
+
+    async def finish(self) -> None:
+        """Wait for every segment, those that start meanwhile too; the first failure is raised.
+
+        Raises:
+            Error: a segment failed after its job's tries.
+        """
+        done = 0
+        while done < len(self._tasks):
+            result = await self._tasks[done]
+            done += 1
+            if isinstance(result, BaseException):
+                raise result
+
+    async def cancel(self) -> None:
+        """Stop the segments still going; their bytes stay, as the sidecar says."""
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        if self._keeper is not None:
+            # The part's own write of its sidecar, as it closes, comes after this one.
+            await asyncio.gather(self._keeper, return_exceptions=True)
+        if self.plan is not None and len(self.plan.parts) > 1:
+            self.held.note(**self.plan.meta)
+
+    async def _segment(self, part: jobs.Segment, number: int) -> None:
+        """One segment: from a mirror that serves the same file (by its length and `ETag`), or
+        from the first URL, which a mismatch falls back to."""
+        urls = self.urls
+        url = urls[number % len(urls)] if len(urls) > 1 else urls[0]
+        try:
+            await self._fetch(part, url)
+        except _Mismatch:
+            if url == urls[0]:
+                raise
+            ui.debug("{name}: a mirror serves another file; its segment comes from the first",
+                     name=self.item.dest.name)
+            await self._fetch(part, urls[0])
+        await self.check(ended=True)
+
+    async def _fetch(self, part: jobs.Segment, url: str) -> None:
+        saver, plan = self.saver, self.plan
+        assert plan is not None
+        job = saver._file_job(self.item, self.job.plugin, url, _nothing)
+        job.host, job.bucket = self.job.host, self.job.host
+
+        def opened(status: int, headers: Mapping[str, str], start: int,
+                   total: int | None) -> None:
+            etag = headers.get("etag", "")
+            if total != plan.size or (plan.etag and etag and etag != plan.etag):
+                raise _Mismatch(f"{url}: {total} bytes, ETag {etag}")
+
+        async def wrote(size: int) -> None:
+            part.written += size
+            await self.check()
+
+        async def work() -> None:
+            sink = _Bytes(job)
+            sink.flight = saver._fly(self.item)
+            meter = net.Meter(sink, at=part.at)
+            meter.opened, meter.wrote = opened, wrote
+            await self.client.span(url, self.held, part.at, headers=self.item.headers,
+                                   validator=plan.etag or None, progress=meter,
+                                   until=lambda: part.end)
+
+        job.work = work
+        await saver.scheduler.run(job)
 
 
 class _Dropped(Stopped):
@@ -554,7 +696,13 @@ class Saver:
             try:
                 for number, mirror in enumerate(mirrors, start=1):
                     try:
-                        received.update(await self._mirror(item, mirror, held, client, meter))
+                        if number == 1 and isinstance(mirror, str):
+                            urls = [one for one in mirrors if isinstance(one, str)]
+                            answered = await self._segmented(item, urls, held, client, meter,
+                                                             job)
+                        else:
+                            answered = await self._mirror(item, mirror, held, client, meter)
+                        received.update(answered)
                         if item.kind is not None and number < len(mirrors):
                             await self._call(_place, held, item.kind)
                         return
@@ -586,6 +734,79 @@ class Saver:
             await running
         finally:
             mine.set()
+
+    async def _segmented(self, item: Item, urls: Sequence[str], held: files.Part,
+                         client: net.Client, meter: net.Meter,
+                         job: Job[Any]) -> Mapping[str, str]:
+        """The first URL into the part, split into segments while its host has room (6.2).
+
+        A file of `SPLIT_FILE` bytes or more, from a host that takes ranges, may take more
+        places: from `SPLIT_AFTER` s into its transfer, at each piece written (at most each
+        `TICK` s) and at once when a segment ends, the largest range left of `SPLIT_RANGE`
+        bytes or more is halved while the host's cap has a free place and no other file waits
+        for it, up to `SEGMENTS`. The first transfer stops where its range now ends (`until`);
+        each new segment is a `FILE` job of its own, written at its offset into the one part.
+        Where each stands goes into the part's sidecar after every piece, so a later try or run
+        resumes each segment (`_resume`).
+
+        Returns:
+            The first answer's headers.
+        """
+        plan = jobs.Segments.of(held.meta) if held.size and held.meta.get("segments") else None
+        if plan is not None:
+            try:
+                return await self._resume(item, urls, held, client, plan, job)
+            except _Mismatch:
+                # Another file under the same name now: it comes whole.
+                await self._call(held.reset)
+        split = _Split(self, item, urls, held, client, job)
+
+        def opened(status: int, headers: Mapping[str, str], start: int,
+                   total: int | None) -> None:
+            if start == 0 and jobs.Segments.splittable(total, headers, status):
+                assert total is not None
+                split.plan = jobs.Segments(total, headers.get("etag", ""),
+                                           headers.get("last-modified", ""))
+
+        async def wrote(size: int) -> None:
+            if split.plan is not None:
+                split.plan.parts[0].written += size
+                await split.check()
+
+        meter.opened, meter.wrote = opened, wrote
+        try:
+            answered = await client.fill(urls[0], held, headers=item.headers, progress=meter,
+                                         until=split.end)
+            await split.finish()
+        except BaseException:
+            await split.cancel()
+            raise
+        finally:
+            meter.opened = meter.wrote = None
+        if split.plan is not None and len(split.plan.parts) > 1:
+            held.note(segments=None, size=None, last_modified=None)
+        return answered
+
+    async def _resume(self, item: Item, urls: Sequence[str], held: files.Part,
+                      client: net.Client, plan: jobs.Segments, job: Job[Any]) -> Mapping[str, str]:
+        """Go on with each segment a part's sidecar kept, every one a `FILE` job of its own.
+
+        Raises:
+            _Mismatch: the first URL now serves another file (its length or `ETag`).
+        """
+        split = _Split(self, item, urls, held, client, job)
+        split.plan = plan
+        try:
+            for part in plan.parts:
+                if part.left:
+                    split.start(part)
+            await split.finish()
+        except BaseException:
+            await split.cancel()
+            raise
+        held.note(segments=None, size=None, last_modified=None)
+        return {"etag": plan.etag, "last-modified": plan.last_modified} if plan.last_modified \
+            else {"etag": plan.etag}
 
     async def _mirror(self, item: Item, mirror: str | Fetch, held: files.Part,
                       client: net.Client, meter: net.Meter) -> Mapping[str, str]:

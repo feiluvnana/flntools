@@ -688,14 +688,53 @@ class ValveTest(unittest.TestCase):
 
 
 class HolesTest(NetCase):
-    def test_a_part_a_crash_left_with_holes_starts_over(self):
-        self.stage.write_bytes(bytes(len(BODY)))
-        self.stage.with_name("file.bin.part.json").write_text('{"holes": true}')
-        with _net.fake({FILE: self.logged(BODY)}):
-            download(FILE, self.dest)
-        self.assertEqual(self.dest.read_bytes(), BODY)
-        self.assertEqual(self.ranges()[0], "bytes=0-")
-        self.assertEqual(sorted(path.name for path in self.dest.parent.iterdir()), ["file.bin"])
+    def test_a_part_written_in_segments_starts_a_plain_fill_over(self):
+        # An older flnd's sidecar (`holes`) and today's (`segments`) alike.
+        for side in ('{"holes": true}', '{"size": 4100, "segments": [[0, 4100, 9]]}'):
+            with self.subTest(side):
+                self.sent.clear()
+                self.stage.write_bytes(bytes(len(BODY)))
+                self.stage.with_name("file.bin.part.json").write_text(side)
+                with _net.fake({FILE: self.logged(BODY)}):
+                    download(FILE, self.dest)
+                self.assertEqual(self.dest.read_bytes(), BODY)
+                self.assertEqual(self.ranges()[0], "bytes=0-")
+                self.assertEqual(sorted(path.name for path in self.dest.parent.iterdir()),
+                                 ["file.bin"])
+                self.dest.unlink()
+
+
+    def test_a_segment_counts_its_bytes_only_once_they_are_on_disk(self):
+        # A segmented fill's tail (under the part's 1 MiB buffer) is written through, so what
+        # `wrote` counts, and the sidecar keeps, is on disk when a crash comes.
+        body = bytes(range(256)) * ((2 * _net.BUFFER) // 256)
+        end = _net.BUFFER + 100_000
+        counted: list[tuple[int, int]] = []
+
+        async def fill():
+            session = _net.Session()
+            try:
+                with _files.part(self.dest, resume=True) as held:
+                    meter = _net.Meter(None)
+                    done = [0]
+
+                    async def wrote(size):
+                        done[0] += size
+                        counted.append((done[0], len(self.stage.read_bytes())))
+
+                    meter.wrote = wrote
+                    await _net.Client(session).fill(FILE, held, progress=meter,
+                                                    until=lambda: end)
+                    held.drop()
+            finally:
+                await session.close()
+
+        route = lambda request: _net.reply(200, headers={"content-length": str(len(body))},
+                                           chunks=(body[at:at + 65536]
+                                                   for at in range(0, len(body), 65536)))
+        with _net.fake({FILE: route}):
+            asyncio.run(fill())
+        self.assertEqual(counted, [(_net.BUFFER, _net.BUFFER), (end, end)])
 
 
 class FollowTest(NetCase):

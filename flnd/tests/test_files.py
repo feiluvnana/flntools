@@ -5,7 +5,9 @@ import fnmatch
 import hashlib
 import io
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -61,6 +63,31 @@ class FilesTest(FilesCase):
         with self.part("c.bin") as held:
             held.path.write_bytes(b"from ffmpeg")
         self.assertEqual(held.saved.hash, sha(b"from ffmpeg"))
+
+    def test_a_sidecar_is_never_torn_by_two_threads_or_a_failed_write(self):
+        # A part written in segments keeps its sidecar from several threads at once.
+        metas = [{"size": n, "segments": [[0, n, n]] * (n % 9 + 1)} for n in range(1, 300)]
+        with self.assertRaises(RuntimeError), self.part("a.bin") as held:
+            held.write(b"x")
+            held.keep(metas[0])
+            seen, done = [], threading.Event()
+
+            def read():
+                while not done.is_set():
+                    seen.append(_files._read_side(held.side_path))
+
+            reader = threading.Thread(target=read)
+            reader.start()
+            with ThreadPoolExecutor(4) as pool:
+                list(pool.map(held.keep, metas))
+            done.set()
+            reader.join()
+            self.assertEqual([one for one in seen if one not in metas][:3], [])
+            # A write that fails part-way leaves the sidecar before it.
+            with self.assertRaises(TypeError):
+                held.keep({"size": 1, "segments": [[0, 1, object()]]})
+            self.assertIn(_files._read_side(held.side_path), metas)
+            raise RuntimeError("the transfer failed")
 
     def test_without_digest_there_is_no_hash(self):
         with _files.part(self.tmp / "a.bin") as held:

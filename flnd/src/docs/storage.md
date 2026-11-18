@@ -84,10 +84,15 @@ A download that fails or is stopped keeps its part, and the next run goes on fro
   `If-Range`. A file that changed on the server comes whole, and the part starts over from 0,
   so old and new bytes are never spliced;
 - a `416` for the part's size means the part is already whole, and any other `416` starts over;
-- a big file fetched in parallel ranges (built, off by default) writes them into the part at
-  their offsets. Until they all arrive, the part's `.part.json` says it has holes
-  (`"holes": true`), so a part a crash left that way starts over instead of passing for a whole
-  file;
+- a big file (16 MiB or more, from a host that takes ranges) may be split into segments while
+  its host has room, each written into the part at its offset. The part's `.part.json` then
+  keeps the file's `etag`, `last_modified`, `size` and each segment as `[start, end,
+  written]`, after every 4 MiB piece is on disk, so the next try or run goes on with each
+  segment where it was; a file that changed comes whole instead. It counts only bytes on disk
+  (a segment's last piece goes to the disk, never the part's buffer), it is written whole (to
+  `<part>.json.part`, then renamed over), one write at a time, and the first new segment starts
+  only once it is written, so a crash leaves one a resume can trust. A part an older flnd left
+  with `"holes": true` starts over;
 - a Telegram document keeps the offsets of its parts in the same `.part.json`, written only
   after the bytes they count are flushed, so a resume never skips bytes the file doesn't hold.
 

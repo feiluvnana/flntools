@@ -12,6 +12,7 @@ import errno
 import io
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -224,6 +225,120 @@ class DashTest(SaveCase):
                 self.assertEqual(on_loop, [], "no part opens on the loop's thread")
                 self.assertEqual(sorted(os.listdir(self.tmp / "media"))[-1], name)
         self.assertEqual([type(event) for event in self.events], [Saved] * 3)
+
+
+class SegmentTest(SaveCase):
+    """6.2's segments: a big file from a host that takes ranges, on the fake clock, which each
+    256 KiB chunk the server sends moves on by `pace` s."""
+
+    def serve_ranges(self, body: bytes, *, ranges=True, etag='"v1"', pace=0.25,
+                     log=None, stop=None):
+        def answer(request):
+            span = request.headers.get("range")
+            if log is not None:
+                log.append(span)
+            start, end = 0, len(body)
+            if ranges and span and request.headers.get("if-range") in (None, etag):
+                first, _, last = span.removeprefix("bytes=").partition("-")
+                start, end = int(first), int(last) + 1 if last else len(body)
+            piece = body[start:end]
+
+            def chunks():
+                for at in range(0, len(piece), 256 << 10):
+                    if stop is not None and stop():
+                        raise ConnectionResetError("reset")
+                    self.clock.advance(pace)
+                    yield piece[at:at + (256 << 10)]
+
+            headers = {"etag": etag, **({"accept-ranges": "bytes"} if ranges else {})}
+            if start or end < len(body):
+                headers["content-range"] = f"bytes {start}-{end - 1}/{len(body)}"
+                return net.reply(206, headers=headers, chunks=chunks())
+            return net.reply(200, headers={**headers, "content-length": str(len(body))},
+                             chunks=chunks())
+        return answer
+
+    def test_when_a_file_splits_and_how_far(self) -> None:
+        mib = 1 << 20
+        # (file, its size, ranges, the most segments, at least)
+        cases = [("small.bin", 8 * mib, True, 1, 1), ("plain.bin", 24 * mib, False, 1, 1),
+                 ("big.bin", 24 * mib, True, 8, 2), ("huge.bin", 96 * mib, True, 8, 8)]
+        for name, size, ranges, most, least in cases:
+            with self.subTest(name):
+                body = os.urandom(size)
+                log: list = []
+                self.routes[f"{CDN}/{name}"] = self.serve_ranges(body, ranges=ranges, log=log)
+                self.save(self.item(name, kind=None))
+                self.assertEqual((self.tmp / "media" / name).read_bytes(), body)
+                starts = {span.removeprefix("bytes=").partition("-")[0] for span in log}
+                self.assertTrue(least <= len(starts) <= most, log)
+                self.assertFalse((self.tmp / "media" / f"{name}.part.json").exists())
+
+    def test_a_mirror_serving_another_file_falls_back_to_the_first(self) -> None:
+        body, log, other = os.urandom(24 << 20), [], []
+        self.routes[f"{CDN}/one.bin"] = self.serve_ranges(body, log=log)
+        self.routes[f"{CDN}/two.bin"] = self.serve_ranges(body, etag='"v2"', log=other)
+        self.save(self.item("m.bin", file=File((f"{CDN}/one.bin", f"{CDN}/two.bin")),
+                            kind=None))
+        self.assertEqual((self.tmp / "media" / "m.bin").read_bytes(), body)
+        self.assertTrue(other, "the second mirror was asked for a segment")
+        self.assertGreater(len(log), 1, "its segment came from the first URL")
+
+    def test_a_stopped_file_resumes_each_segment_from_its_sidecar(self) -> None:
+        body, log, sent = os.urandom(32 << 20), [], []
+
+        def stop():
+            sent.append(1)
+            return len(sent) > 70
+
+        self.routes[f"{CDN}/r.bin"] = self.serve_ranges(body, log=log, stop=stop)
+        with mock.patch.object(jobs, "NETWORK_WAITS", ()):
+            self.save(self.item("r.bin", kind=None))
+        kept = json.loads((self.tmp / "media" / "r.bin.part.json").read_text())
+        self.assertGreater(len(kept["segments"]), 1)
+        self.assertEqual((kept["size"], kept["etag"]), (len(body), '"v1"'))
+        log.clear()
+        sent.clear()
+        self.routes[f"{CDN}/r.bin"] = self.serve_ranges(body, log=log)
+        self.save(self.item("r.bin", kind=None))
+        self.assertEqual((self.tmp / "media" / "r.bin").read_bytes(), body)
+        # Each segment goes on from what it had written, never from 0.
+        resumed = sorted(int(span.removeprefix("bytes=").partition("-")[0]) for span in log)
+        self.assertEqual(resumed[:len(kept["segments"])],
+                         sorted(start + written for start, _, written in kept["segments"]
+                                if start + written < _)[:len(kept["segments"])])
+        self.assertNotIn("bytes=0-", log)
+
+
+    def test_a_crash_after_a_segment_ends_resumes_to_the_same_bytes(self) -> None:
+        # Each sidecar counts only bytes on disk: a segment's last piece, under 1 MiB, never
+        # waits in the part's buffer. A crash is what the disk holds as a sidecar is written.
+        body = os.urandom((28 << 20) + 200_000)
+        crash, claimed = self.tmp / "crash", []
+        real_keep = files.Part.keep
+
+        def keep(held, *args):
+            real_keep(held, *args)
+            segments = json.loads(held.side_path.read_bytes())["segments"]
+            disk = Path(held.path).read_bytes()
+            claimed.extend((start, written) for start, _, written in segments
+                           if disk[start:start + written] != body[start:start + written])
+            ended = [written == end - start for start, end, written in segments]
+            if not crash.exists() and any(ended) and not all(ended):
+                crash.mkdir()
+                shutil.copy(held.path, crash / "c.bin.part")
+                shutil.copy(held.side_path, crash / "c.bin.part.json")
+
+        self.routes[f"{CDN}/c.bin"] = self.serve_ranges(body)
+        with mock.patch.object(files.Part, "keep", keep):
+            self.save(self.item("c.bin", kind=None))
+        self.assertEqual(claimed, [], "a sidecar counted bytes that weren't on disk")
+        self.assertTrue(crash.exists(), "no segment ended while another went on")
+        (self.tmp / "media" / "c.bin").unlink()
+        for name in ("c.bin.part", "c.bin.part.json"):
+            shutil.copy(crash / name, self.tmp / "media" / name)
+        self.save(self.item("c.bin", kind=None))
+        self.assertEqual((self.tmp / "media" / "c.bin").read_bytes(), body)
 
 
 class DedupeTest(SaveCase):

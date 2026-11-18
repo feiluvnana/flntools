@@ -9,7 +9,6 @@ import asyncio
 import contextvars
 import heapq
 import itertools
-import json
 import os
 import random
 import shutil
@@ -1236,8 +1235,9 @@ class Segment:
 class Segments:
     """How one file is split: its segments, and what its first URL said of it.
 
-    A pure planner: the save asks it when to split, fetches each segment, and keeps it in the
-    part's sidecar (`<name>.part.json`) so a later run resumes each segment.
+    A pure planner: the save asks it when to split, fetches each segment, and keeps `meta` in
+    the part's sidecar (`<name>.part.json`, `flnkit.files.Part`'s) so a later run resumes each
+    segment.
     """
 
     size: int
@@ -1303,56 +1303,39 @@ class Segments:
         self.parts.append(made)
         return made
 
-    def save(self, part: Path) -> None:
-        """Write the sidecar of `part`, after a piece is on disk.
-
-        Raises:
-            DiskError: it can't be written.
-        """
-        path = sidecar(part)
-        data = {"etag": self.etag, "last_modified": self.last_modified, "size": self.size,
-                "segments": [[s.start, s.end, s.written] for s in self.parts]}
-        temporary = path.with_name(path.name + ".tmp")
-        try:
-            temporary.write_text(json.dumps(data), encoding="utf-8")
-            os.replace(temporary, path)
-        except OSError as error:
-            raise errors.disk(error, path) from error
+    @property
+    def meta(self) -> dict[str, Any]:
+        """What the part's sidecar keeps of it (`flnkit.files.Part.note`), so a later try or run
+        resumes each segment: `{etag, last_modified, size, segments: [[start, end, written]]}`."""
+        return {"etag": self.etag, "last_modified": self.last_modified, "size": self.size,
+                "segments": [[part.start, part.end, part.written] for part in self.parts]}
 
     @classmethod
-    def load(cls, part: Path, *, size: int, etag: str = "", last_modified: str = "",
-             fetch: bool = False) -> Segments | None:
-        """The segments a sidecar kept for the same file, or None to start over.
+    def of(cls, meta: Mapping[str, Any], *, fetch: bool = False) -> Segments | None:
+        """The segments a part's sidecar kept (`meta`), or None to start over.
 
-        A sidecar's segments must cover the file from 0 to `size`, each starting where the
-        one before ends; one with a gap or an overlap is refused.
+        A sidecar's segments must cover the file from 0 to its `size`, each starting where the
+        one before ends; one with a gap or an overlap is refused. Whether it is still the same
+        file is the first answer's to say (its length and `ETag`).
 
         Args:
-            part: the part the sidecar is beside.
-            size: the file's size the first URL gives now; a sidecar that says otherwise (or
-                another `etag` or `last_modified`) is of another file.
+            meta: the part's sidecar (`Part.meta`).
             fetch: the file comes from a plugin's `fetch`, as `Segments.fetch`.
         """
         try:
-            data = json.loads(sidecar(part).read_text(encoding="utf-8"))
-            same = (data["size"], data["etag"], data["last_modified"]) == \
-                (size, etag, last_modified)
+            size = int(meta["size"])
+            etag, last_modified = str(meta.get("etag") or ""), str(meta.get("last_modified") or "")
             parts = [Segment(int(start), int(end), int(written))
-                     for start, end, written in data["segments"]]
-        except (OSError, ValueError, TypeError, KeyError):
+                     for start, end, written in meta["segments"]]
+        except (ValueError, TypeError, KeyError):
             return None
         parts.sort(key=lambda part: part.start)
         ends = [0, *(part.end for part in parts)]
-        if not same or not parts or ends[-1] != size or not all(
+        if not parts or ends[-1] != size or not all(
                 part.start == end and part.start <= part.at <= part.end
                 for part, end in zip(parts, ends, strict=False)):
             return None
         return cls(size, etag, last_modified, parts, fetch)
-
-
-def sidecar(part: Path) -> Path:
-    """The sidecar of a part: `<name>.part.json` beside `<name>.part`."""
-    return part.with_name(part.name + ".json")
 
 
 def _lower(headers: Mapping[str, str]) -> dict[str, str]:

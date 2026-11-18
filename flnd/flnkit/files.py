@@ -128,16 +128,22 @@ class Part:
         self._noted = False
         self._dropped = False
         self._at = threading.Lock()
+        # Held while the sidecar is written, so its writes go one at a time.
+        self._side = threading.Lock()
 
     @property
     def meta(self) -> dict[str, Any]:
-        """What the sidecar `<part>.json` says about the bytes kept: `etag`, `holes`.
+        """What the sidecar `<part>.json` says about the bytes kept: `etag`, and for a part
+        written in segments `last_modified`, `size` and `segments` (`[[start, end, written]]`).
+        An older flnd's `holes` reads as segments it didn't keep (`[]`): start over.
 
         Read once, and only for a part that holds bytes; a fresh part has none, so this costs a
         new download nothing.
         """
         if self._meta is None:
             self._meta = _read_side(self.side_path) if self.size else {}
+            if "holes" in self._meta:
+                self._meta = {"segments": []}
             self.side = self.side or bool(self._meta)
         return self._meta
 
@@ -160,6 +166,28 @@ class Part:
                 else:
                     meta[name] = value
                 self._noted = True
+
+    def keep(self, meta: Mapping[str, Any]) -> None:
+        """Write `meta` as the sidecar now, not only when the block fails: a part written in
+        segments keeps where each is after every piece, for a crash too. It goes when the part
+        lands.
+
+        One write at a time per part, each whole (`_write_side`), so two threads or a crash
+        never leave a torn sidecar.
+
+        Args:
+            meta: a snapshot of what `note` recorded, taken by the caller, so nothing changes
+                it while it is written.
+
+        Raises:
+            DiskError: it can't be written.
+        """
+        with self._side:
+            try:
+                _write_side(self.side_path, meta)
+            except OSError as error:
+                raise disk(error, self.side_path) from error
+            self.side = True
 
     def write(self, data: bytes, *, fed: bool = False) -> None:
         """Append `data` after the part's bytes, through a 1 MiB buffer.
@@ -206,10 +234,20 @@ class Part:
         """
         with self._at:
             self._sha = None
-            os.lseek(self.fd, offset, os.SEEK_SET)
             view = memoryview(data)
-            while view:
-                view = view[os.write(self.fd, view):]
+            if hasattr(os, "pwrite"):
+                # The descriptor's own position stays where `write` appends.
+                while view:
+                    written = os.pwrite(self.fd, view, offset)
+                    view, offset = view[written:], offset + written
+                return
+            back = os.lseek(self.fd, 0, os.SEEK_CUR)
+            os.lseek(self.fd, offset, os.SEEK_SET)
+            try:
+                while view:
+                    view = view[os.write(self.fd, view):]
+            finally:
+                os.lseek(self.fd, back, os.SEEK_SET)
 
     def flush(self) -> None:
         """Push what `write` buffered to the file."""
@@ -686,7 +724,7 @@ def _leave(held: Part) -> None:
                 keep = os.fstat(held.fd).st_size > 0
         if keep:
             if held._noted:
-                with suppress(OSError):
+                with suppress(OSError), held._side:
                     _write_side(held.side_path, held.meta)
             return
         # POSIX removes the part while it is still locked, so no run takes it in between;
@@ -744,10 +782,13 @@ def _read_side(path: Path) -> dict[str, Any]:
     return found if isinstance(found, dict) else {}
 
 
-def _write_side(path: Path, meta: dict[str, Any]) -> None:
-    """Write a sidecar. It is written in place: a torn one reads as {} and costs a restart."""
-    with open(path, "wb") as handle:
+def _write_side(path: Path, meta: Mapping[str, Any]) -> None:
+    """Write a sidecar whole: to `<sidecar>.part` beside it, then over it (`os.replace`), so a
+    crash leaves the old one or the new one, never a torn one. The caller holds `Part._side`."""
+    temporary = path.with_name(path.name + PART)
+    with open(temporary, "wb") as handle:
         handle.write(json.dumps(meta).encode("utf-8"))
+    os.replace(temporary, path)
 
 
 # ---------------------------------------------------------------------------------------------
