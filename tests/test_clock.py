@@ -3,7 +3,7 @@ import datetime
 import threading
 import unittest
 
-from flnd import _time
+from flnd.kit import clock as _time
 
 
 class RealClockTest(unittest.TestCase):

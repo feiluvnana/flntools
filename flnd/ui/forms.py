@@ -9,8 +9,8 @@ from typing import Any
 
 import questionary
 
-from flncore.errors import UsageError
-from flncore.log import log
+from flnd.errors import UsageError
+from flnd.ui.log import log
 
 __all__ = ["ask", "choose", "confirm", "interactive"]
 

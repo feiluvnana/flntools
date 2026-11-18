@@ -13,8 +13,11 @@ from cryptography.hazmat.primitives.padding import PKCS7
 from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
-from flnd import _cookies, _home, _net, _vault
+from flnd import _home
 from flnd.engine import resolve
+from flnd.kit import cookies as _cookies
+from flnd.kit import net as _net
+from flnd.kit import vault as _vault
 from flnd.options import Options
 from flnd.source import Blocked, Request, SiteError, Target, UsageError
 from flnd.sources.loi import (
@@ -451,7 +454,7 @@ SEVEN_ZIP = b"7z\xbc\xaf\x27\x1c" + b"\0" * 26
 
 
 class EngineTest(EngineCase):
-    """The source through the real engine, on `flnd._net.fake`."""
+    """The source through the real engine, on `flnd.kit.net.fake`."""
 
     def setUp(self):
         super().setUp()
@@ -532,7 +535,7 @@ class LoginTest(unittest.TestCase):
         def load(browser="chrome", *, profile=None):
             return _cookies.Jar(cookie for jar in store.values() for cookie in jar)
 
-        with mock.patch("flnd._cookies.load", load):
+        with mock.patch("flnd.kit.cookies.load", load):
             jar = _home.from_browser(Loibus(), browser="chrome")
             self.assertEqual(_home.store(Loibus(), jar, home=self.home, origin="Chrome"),
                              "loi: logged in from Chrome (1 cookie)")

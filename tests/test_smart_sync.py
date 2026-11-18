@@ -19,13 +19,14 @@ import fakes
 from test_engine import CDN, EngineCase
 
 import flnd
-from flnd import _home, _net
+from flnd import _home
 from flnd import cli as flnd_cli
 from flnd._events import NOTHING_NEW, RESUMING, Progress, Saved, Skipped, encode
-from flnd._ui import ui
 from flnd.engine import Engine
 from flnd.errors import Changed
+from flnd.kit import net as _net
 from flnd.source import File, Post, Source, cookies, target
+from flnd.ui.log import ui
 
 API = "https://api.example.com"
 # Posts a page of the feed holds.
@@ -407,7 +408,7 @@ class SecretsTest(FeedCase):
 
 
 def _redacted(url):
-    from flnd._text import redact
+    from flnd.kit.text import redact
 
     return redact(url)
 

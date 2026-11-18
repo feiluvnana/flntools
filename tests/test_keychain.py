@@ -1,8 +1,8 @@
-"""The vault's key in the OS keychain (`flnd._vault.Keychain`), and `[vault] key` in a home.
+"""The vault's key in the OS keychain (`flnd.kit.vault.Keychain`), and `[vault] key` in a home.
 
 The keychain tools are stand-ins: small Python programs named `security` and `secret-tool`,
 written in a temporary folder, that keep their items in a JSON file beside them and log every
-argument list they get. `flnd._vault.SECURITY` is pointed at the stand-in (macOS), or the folder
+argument list they get. `flnd.kit.vault.SECURITY` is pointed at the stand-in (macOS), or the folder
 put first on PATH (Linux), so the real keychain is never read or changed; under the test suite,
 flnd refuses the real tools anyway (`test_the_real_tool_is_refused_under_the_tests`).
 """
@@ -19,8 +19,8 @@ from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles and the real keychain)
 
-from flnd import _vault
 from flnd.errors import ToolError, UsageError
+from flnd.kit import vault as _vault
 
 # The stand-ins share one body: `security` reads `-i` commands on standard input, and
 # `secret-tool` reads the secret to store there, as the real ones do.

@@ -13,7 +13,7 @@ What it offers, for any caller:
   next request, with its reason. `Limits.suspended`, when set, holds every new request.
 - `Client`: a session with limits, a retry policy and a stop event. `fetch` sends one request;
   `call` paces and retries any coroutine (a page loaded in a browser, a request sent by a page);
-  `fill` streams a file, or the first of its mirrors that works, into a `flnd._files.Part`.
+  `fill` streams a file, or the first of its mirrors that works, into a `flnd.kit.files.Part`.
 - `follow(url)`: where a short link leads, from one HEAD request (blocking, for any thread).
 - `fake(routes)`: answers every request in the block from routes or a handler, never the
   network; `reply(...)` builds an answer for a handler.
@@ -24,14 +24,15 @@ What it offers, for any caller:
                       handles=limits.total)
     client = Client(session, limits=limits, stop=event)
     page = await client.fetch("https://example.com/api", body={"q": "x"})   # page.json
-    with _files.part(dest, resume=True) as held:
+    with files.part(dest, resume=True) as held:
         headers = await client.fill([mirror1, mirror2], held, progress=row)
     await session.close()
 
 Who calls it: flnd's site (`flnd.site`) builds one session per source and two clients over it,
-and flnd's transfers (`flnd._transfer`) fill a post's files; the browser (`flnd._browser`) shapes
-a request its page sent as a `Response`. It calls curl_cffi, `flnd._files` (parts), `flnd._time`
-(the clock, so tests wait on a fake one), `flnd._cookies`, `flnd._text` (redaction) and
+and flnd's transfers (`flnd._transfer`) fill a post's files; the browser (`flnd.kit.browser`) shapes
+a request its page sent as a `Response`. It calls curl_cffi, `flnd.kit.files` (parts),
+`flnd.kit.clock`
+(the clock, so tests wait on a fake one), `flnd.kit.cookies`, `flnd.kit.text` (redaction) and
 `flnd.errors`. curl_cffi is imported on the first request, so importing this module is cheap.
 
 The main flow of one request (`Client.call`):
@@ -65,7 +66,7 @@ A host under a cap also tells its `Cap` how each try went:
 The session's handles (`Limits.total`) leave room for `SPREAD` hosts at their most at once, and
 every host with a cap of its own, so curl doesn't hold transfers below the caps.
 
-Every message names the URL redacted (`flnd._text.redact`), and any secret the request carried
+Every message names the URL redacted (`flnd.kit.text.redact`), and any secret the request carried
 (a cookie, a token, a query value) is scrubbed from a library's error text.
 
 Rules a change must keep:
@@ -105,18 +106,16 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, ClassVar, TypeVar
+from typing import Any, TypeVar
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import msgspec
 
-from flncore import clock as _time
-from flncore import files as _files
-from flncore.errors import Blocked, Changed, Error, NetworkError, NotFound, SiteError, Stopped
-from flncore.log import duration, redact
-from flncore.log import log as ui
+from flnd.errors import Blocked, Changed, Error, NetworkError, NotFound, SiteError, Stopped
+from flnd.kit import clock, files, html
+from flnd.ui.log import duration, redact, ui
 
-disk = _files.disk
+disk = files.disk
 
 
 class Element:
@@ -346,6 +345,8 @@ class Response:
     url: str
     headers: Mapping[str, str]
     content: bytes = field(default=b"", repr=False)
+    # How `html` parses the body; the kit's HTML parser unless a caller gives its own.
+    html_parser: Callable[[str], Any] = field(default=html.parse, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "headers", _Read(self.headers))
@@ -366,12 +367,10 @@ class Response:
         """The body parsed as JSON. Raises `flnd.errors.Changed` when it isn't JSON."""
         return self._cached("json", self._json)
 
-    _html_parser: ClassVar[Callable[[str], Any]] = Document
-
     @property
     def html(self) -> Any:
-        """The body parsed as HTML: a `flnd._html.Document`."""
-        return self._cached("html", lambda: Response._html_parser(self.text))
+        """The body parsed as HTML: a `flnd.kit.html.Document`."""
+        return self._cached("html", lambda: self.html_parser(self.text))
 
     def _cached(self, name: str, compute: Callable[[], Any]) -> Any:
         key = f"_cached_{name}"
@@ -424,17 +423,17 @@ class Bucket:
             Stopped: `stop` was set while waiting.
         """
         rate = self.rate / 2 if self._slow else self.rate
-        now = _time.now()
+        now = clock.now()
         at = now if self._at is None else self._at
         self._tokens = min(BURST, self._tokens + (now - at) * rate) - 1.0
         self._at = now
         wait = max(-self._tokens / rate, self._until - now)
-        if wait > 0 and not await _time.pause(wait, stop=stop):
+        if wait > 0 and not await clock.pause(wait, stop=stop):
             raise Stopped("stopped while pacing")
 
     def hold(self, seconds: float) -> None:
         """Give no token for `seconds` from now: the site said when to come back."""
-        self._until = max(self._until, _time.now() + seconds)
+        self._until = max(self._until, clock.now() + seconds)
 
     def slow(self) -> None:
         """Halve the rate until `CLEAN` clean requests have passed: the site refused one."""
@@ -690,7 +689,7 @@ class Limits:
             Nothing; the wait shows until the block ends.
         """
         key = object()
-        self._held[key] = (host, _time.now() + seconds, reason)
+        self._held[key] = (host, clock.now() + seconds, reason)
         try:
             yield
         finally:
@@ -730,7 +729,7 @@ class Limits:
             cap = self._caps[host] = Cap(self.cap, most=self._most(host))
         round = await cap.take()
         try:
-            yield Place(cap, round, _time.now())
+            yield Place(cap, round, clock.now())
         finally:
             cap.give()
 
@@ -784,7 +783,7 @@ class Place:
     Attributes:
         cap: the host's cap; None for a paced host, whose bucket learns from `Limits` instead.
         round: the cap's round the place was taken in.
-        began: when the place was taken, on `flnd._time`'s clock.
+        began: when the place was taken, on `flnd.kit.clock`'s clock.
     """
 
     cap: Cap | None
@@ -794,7 +793,7 @@ class Place:
     def done(self, size: int) -> None:
         """The try went through, moving `size` bytes."""
         if self.cap is not None:
-            self.cap.done(size, _time.now() - self.began)
+            self.cap.done(size, clock.now() - self.began)
 
     def failed(self, error: BaseException) -> None:
         """The try failed: halve the cap when `error` says the host is overloaded.
@@ -864,7 +863,7 @@ class Session:
 
     Args:
         headers: sent with every request, under the request's own.
-        cookies: the cookies to start with (`flnd._cookies.Jar`, or cookie dicts in its shape).
+        cookies: the cookies to start with (`flnd.kit.cookies.Jar`, or cookie dicts in its shape).
         prepare: called with each `Request` before each try, to add headers; it may return
             another `Request`, or None to keep its argument.
         timeout: seconds to connect, and seconds with no byte received, before a transfer
@@ -893,7 +892,7 @@ class Session:
 
     @property
     def cookies(self) -> list[dict[str, Any]]:
-        """The session's cookies now, as a `flnd._cookies.Jar`."""
+        """The session's cookies now, as a `flnd.kit.cookies.Jar`."""
         return [_cookie_dict(cookie) for cookie in self.jar]
 
     @property
@@ -907,7 +906,7 @@ class Session:
         return MappingProxyType({cookie.name: cookie.value or "" for cookie in self.jar})
 
     def add(self, cookies: Iterable[Mapping[str, Any]]) -> None:
-        """Keep `cookies` (dicts in `flnd._cookies.Jar`'s shape), each replacing its namesake."""
+        """Keep `cookies` (dicts in `flnd.kit.cookies.Jar`'s shape), each replacing its namesake."""
         for cookie in cookies:
             self.jar.set_cookie(_cookie_from_dict(cookie))
 
@@ -976,7 +975,7 @@ class Session:
             try:
                 from curl_cffi.requests import AsyncSession
             except ImportError:
-                raise ImportError("flnd._net needs curl_cffi: pip install curl_cffi") from None
+                raise ImportError("flnd.kit.net needs curl_cffi: pip install curl_cffi") from None
 
             # `proxy` (None for none) is curl's CURLOPT_PROXY for every transfer of the session.
             self._raw = AsyncSession(max_clients=self.handles, impersonate=IMPERSONATE,
@@ -1236,10 +1235,10 @@ class Client:
                 ui.debug("retry {n}/{total} in {seconds:.1f}s: {reason}",
                          n=tries, total=self.retries, seconds=wait, reason=failure)
             with self.limits.holding(host, wait, reason):
-                if not await _time.pause(wait, stop=self.stop):
+                if not await clock.pause(wait, stop=self.stop):
                     raise Stopped(f"{host}: stopped")
 
-    async def fill(self, url: str | Sequence[str], held: _files.Part, *,
+    async def fill(self, url: str | Sequence[str], held: files.Part, *,
                    headers: Mapping[str, str] | None = None, resume: bool = True,
                    progress: Any = None) -> Mapping[str, str]:
         """Stream `url`, or the first of several mirrors that works, into the open part `held`.
@@ -1248,7 +1247,7 @@ class Client:
 
         Args:
             url: the file's URL, or mirrors of it tried in order.
-            held: the locked part, from `flnd._files.part`.
+            held: the locked part, from `flnd.kit.files.part`.
             headers: extra request headers.
             resume: go on from the bytes the part holds, with `If-Range` on the validator its
                 sidecar kept; False empties it first.
@@ -1294,7 +1293,7 @@ class Client:
             request = prepare(request) or request
         return await self.session.send(request)
 
-    async def _file(self, url: str, held: _files.Part, headers: Mapping[str, str] | None,
+    async def _file(self, url: str, held: files.Part, headers: Mapping[str, str] | None,
                     resume: bool, meter: _Meter) -> Mapping[str, str]:
         """One try at a file: resume the part, or start over, or fetch it in segments.
 
@@ -1349,7 +1348,7 @@ class Client:
         await _Segments(self, url, held, headers, meter).fetch(total)
         return answer.headers
 
-    async def _unsatisfied(self, url: str, held: _files.Part,
+    async def _unsatisfied(self, url: str, held: files.Part,
                            headers: Mapping[str, str] | None, offset: int, total: int | None,
                            meter: _Meter) -> None:
         """A 416 on `Range: bytes=offset-`: the part is whole, or it starts over from 0.
@@ -1392,7 +1391,7 @@ class Client:
             _checked(await answer.read(), "GET")
         return answer
 
-    async def _write(self, url: str, answer: _Answer, held: _files.Part, start: int,
+    async def _write(self, url: str, answer: _Answer, held: files.Part, start: int,
                      total: int | None, meter: _Meter) -> None:
         """Append the answer's body to the part, and fail a transfer that came short.
 
@@ -1509,7 +1508,7 @@ class _Sink:
         offset: where to write, for a segment (`Part.write_at`); None appends (`Part.write`).
     """
 
-    def __init__(self, held: _files.Part, offset: int | None = None) -> None:
+    def __init__(self, held: files.Part, offset: int | None = None) -> None:
         self._held = held
         self._offset = offset
         self._chunks: list[bytes] = []
@@ -1526,7 +1525,7 @@ class _Sink:
         """Write what is gathered, and wait for it, even through a cancel.
 
         The last piece of an appended body, when it fits the part's own buffer
-        (`flnd._files.BUFFER`), goes there on the loop instead: a copy in memory, no system
+        (`flnd.kit.files.BUFFER`), goes there on the loop instead: a copy in memory, no system
         call, since the full pieces before it went to the disk. The part's landing (or its
         `head`) writes it, off the loop. A small file then costs no hop to the writer at all.
 
@@ -1540,7 +1539,7 @@ class _Sink:
             return
         data = self._chunks[0] if len(self._chunks) == 1 else b"".join(self._chunks)
         self._chunks, self._size = [], 0
-        if last and self._offset is None and len(data) < _files.BUFFER:
+        if last and self._offset is None and len(data) < files.BUFFER:
             self._held.write(data)
             self.written += len(data)
             return
@@ -1604,7 +1603,7 @@ class _Segments:
         meter: where the bytes are counted.
     """
 
-    def __init__(self, client: Client, url: str, held: _files.Part,
+    def __init__(self, client: Client, url: str, held: files.Part,
                  headers: Mapping[str, str] | None, meter: _Meter):
         self.client, self.url, self.headers, self.meter = client, url, headers, meter
         self.held = held
@@ -2179,7 +2178,7 @@ def _retry_after(value: str | None) -> float | None:
             when = email.utils.parsedate_to_datetime(value)
         except (TypeError, ValueError):
             return None
-        seconds = when.timestamp() - _time.wall()
+        seconds = when.timestamp() - clock.wall()
     if not math.isfinite(seconds):
         return None
     # Retry-After: 0 still needs a pause, or the same host is hit in a tight loop.
@@ -2207,7 +2206,7 @@ def _reset(headers: Mapping[str, str]) -> float | None:
             continue
         if not math.isfinite(reset):
             continue
-        seconds = reset - _time.wall() if reset > EPOCH else reset
+        seconds = reset - clock.wall() if reset > EPOCH else reset
         return min(max(0.0, seconds) + 1.0, MAX_BACKOFF)
     return None
 
@@ -2333,7 +2332,7 @@ def _charset(content_type: str) -> str:
 
 
 def _cookie_dict(cookie: http.cookiejar.Cookie) -> dict[str, Any]:
-    """A cookie of the jar as a dict in `flnd._cookies.Jar`'s shape (Playwright's).
+    """A cookie of the jar as a dict in `flnd.kit.cookies.Jar`'s shape (Playwright's).
 
     Args:
         cookie: the jar's cookie.
@@ -2354,7 +2353,7 @@ def _cookie_dict(cookie: http.cookiejar.Cookie) -> dict[str, Any]:
 
 
 def _cookie_from_dict(cookie: Mapping[str, Any]) -> http.cookiejar.Cookie:
-    """A cookie dict in `flnd._cookies.Jar`'s shape as a cookie for the jar.
+    """A cookie dict in `flnd.kit.cookies.Jar`'s shape as a cookie for the jar.
 
     Args:
         cookie: the dict; an `expires` below 0, or none, makes a session cookie.

@@ -35,7 +35,7 @@ def select_from_lines(*lines: str) -> mock._patch:
         return mock.Mock(unsafe_ask=lambda: take() or "")
 
     return mock.patch.multiple(
-        "flncore.prompt.questionary",
+        "flnd.ui.forms.questionary",
         select=mock.Mock(side_effect=select),
         text=mock.Mock(side_effect=text),
         password=mock.Mock(side_effect=password),

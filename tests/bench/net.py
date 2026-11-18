@@ -1,7 +1,7 @@
 """Benchmark group `net`: flnd's HTTP client downloading from a loopback server to disk.
 
-The client is the one flnd builds for a source's downloads (`flnd._net.Client` over a
-`Session`, with the per-host cap of `flnd.site`), on a `flnd._loop.Loop` as in a run, so these
+The client is the one flnd builds for a source's downloads (`flnd.kit.net.Client` over a
+`Session`, with the per-host cap of `flnd.site`), on a `flnd.kit.loop.Loop` as in a run, so these
 numbers are what a real download pays, minus the network. Loopback shows CPU and per-request
 overhead and hides latency and bandwidth; the `e2e` group adds simulated latency.
 
@@ -49,9 +49,11 @@ from unittest import mock
 
 import kit
 
-from flnd import _files, _net, _transfer
-from flnd._loop import Loop
-from flnd._ui import ui
+from flnd import _transfer
+from flnd.kit import files as _files
+from flnd.kit import net as _net
+from flnd.kit.loop import Loop
+from flnd.ui.log import ui
 
 BIG = kit.size(1 << 30, 1 << 20)
 # The big file is written in pieces of this size, so making it never holds 1 GiB in memory.

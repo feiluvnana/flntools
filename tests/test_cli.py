@@ -1,5 +1,5 @@
 """The CLI's frame: exit codes per error class, no traceback for a person's mistake, the crash
-file, two-stage Ctrl-C (`flnd._run.stopping`), and the prompts of `flnd._prompt`.
+file, two-stage Ctrl-C (`flnd._run.stopping`), and the prompts of `flnd.ui.forms`.
 
 Each error is raised from a library call (`Flnd.check`, which `flnd check` makes), so the test
 goes through the CLI's real path from flags to exit code. Nothing touches a site.
@@ -17,7 +17,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from flnd import _home, _prompt, _run, cli
+from flnd import _home, _run, cli
 from flnd.errors import (
     Blocked,
     Changed,
@@ -32,6 +32,7 @@ from flnd.errors import (
     ToolError,
     UsageError,
 )
+from flnd.ui import forms as _prompt
 
 
 class TerminalCase(unittest.TestCase):
@@ -148,15 +149,15 @@ class PromptTest(unittest.TestCase):
         self.terminal()
         answers = iter([2, "b"])
         ask = mock.Mock(side_effect=lambda *_, **__: mock.Mock(unsafe_ask=lambda: next(answers)))
-        with mock.patch("flncore.prompt.questionary.select", ask):
+        with mock.patch("flnd.ui.forms.questionary.select", ask):
             self.assertEqual(_prompt.choose("Pick", {"a": 1, "b": 2}), 2)
             self.assertEqual(_prompt.choose("Pick", ["a", "b"]), "b")
 
     def test_an_empty_line_takes_the_default(self) -> None:
         self.terminal()
-        with mock.patch("flncore.prompt.questionary.select", return_value=mock.Mock(unsafe_ask=lambda: 2)), \
-                mock.patch("flncore.prompt.questionary.text", return_value=mock.Mock(unsafe_ask=lambda: "")), \
-                mock.patch("flncore.prompt.questionary.confirm", return_value=mock.Mock(unsafe_ask=lambda: False)):
+        with mock.patch("flnd.ui.forms.questionary.select", return_value=mock.Mock(unsafe_ask=lambda: 2)), \
+                mock.patch("flnd.ui.forms.questionary.text", return_value=mock.Mock(unsafe_ask=lambda: "")), \
+                mock.patch("flnd.ui.forms.questionary.confirm", return_value=mock.Mock(unsafe_ask=lambda: False)):
             self.assertEqual(_prompt.choose("Pick", {"a": 1, "b": 2}, default=2), 2)
             self.assertEqual(_prompt.ask("Name", default="example_user"), "example_user")
             self.assertFalse(_prompt.confirm("Go on", default=False))
@@ -165,7 +166,7 @@ class PromptTest(unittest.TestCase):
         self.terminal()
         values = iter([True, False])
         with mock.patch(
-            "flncore.prompt.questionary.confirm",
+            "flnd.ui.forms.questionary.confirm",
             return_value=mock.Mock(unsafe_ask=lambda: next(values)),
         ):
             self.assertTrue(_prompt.confirm("Go on"))
@@ -174,7 +175,7 @@ class PromptTest(unittest.TestCase):
     def test_a_secret_uses_questionary_password(self) -> None:
         self.terminal()
         with mock.patch(
-            "flncore.prompt.questionary.password",
+            "flnd.ui.forms.questionary.password",
             return_value=mock.Mock(unsafe_ask=lambda: "hunter2-example"),
         ) as password:
             self.assertEqual(_prompt.ask("Password", secret=True), "hunter2-example")
@@ -192,7 +193,7 @@ class PromptTest(unittest.TestCase):
 
     def test_ended_input_and_bad_choices_are_usage_errors(self) -> None:
         self.terminal()
-        with mock.patch("flncore.prompt.questionary.text", return_value=mock.Mock(unsafe_ask=lambda: None)):
+        with mock.patch("flnd.ui.forms.questionary.text", return_value=mock.Mock(unsafe_ask=lambda: None)):
             with self.assertRaises(UsageError):
                 _prompt.ask("Name")
         with self.assertRaises(UsageError):
@@ -205,7 +206,7 @@ class PromptTest(unittest.TestCase):
         events: list[str] = []
         from contextlib import contextmanager
 
-        from flncore import log
+        from flnd.ui import log
 
         @contextmanager
         def track():
@@ -214,7 +215,7 @@ class PromptTest(unittest.TestCase):
             events.append("release")
 
         with mock.patch.object(log.log, "hold", track), \
-                mock.patch("flncore.prompt.questionary.text", return_value=mock.Mock(unsafe_ask=lambda: "typed")):
+                mock.patch("flnd.ui.forms.questionary.text", return_value=mock.Mock(unsafe_ask=lambda: "typed")):
             self.assertEqual(_prompt.ask("Name"), "typed")
         self.assertEqual(events, ["hold", "release"])
 

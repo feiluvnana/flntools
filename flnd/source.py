@@ -30,8 +30,8 @@ What it holds:
 - `dig`, a JSON path reader; `Range`, `--when`'s days; and the errors a source raises.
 
 Who calls it: the sources, the engine (`flnd.engine`, `flnd.job`, `flnd.site`), the test kit
-(`flnd.testing`), and the library, which re-exports `Target`. What it calls: the `flnd._html`
-library (the HTML reader and `dig`), `flnd._text` (template fields), `flnd._time` (reading a
+(`flnd.testing`), and the library, which re-exports `Target`. What it calls: the `flnd.kit.html`
+library (the HTML reader and `dig`), `flnd.kit.text` (template fields), `flnd.kit.clock` (reading a
 date) and `flnd.errors`.
 
 How a source is used, from its class to its files:
@@ -86,7 +86,6 @@ from typing import (
 )
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from flnd import _html, _text, _time
 from flnd.errors import (
     Blocked,
     Changed,
@@ -98,11 +97,12 @@ from flnd.errors import (
     SourceError,
     UsageError,
 )
+from flnd.kit import clock, html, text
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from flnd import _net
+    from flnd.kit import net
 
 __all__ = [
     "API", "Blocked", "Category", "Changed", "Cookies", "DateLike", "Error", "Feed", "Fetch",
@@ -148,7 +148,7 @@ SCROLLS = ("human", "fast")
 # A file without a URL: `fetch(dest, progress)` writes to `dest`, reporting `progress(done, total)`
 # in bytes. It may return a coroutine (tlg's SDK), which the engine runs on the run's loop.
 Fetch = Callable[["Path", Callable[..., None]], Any]
-# What `Post(date=)` takes: the engine reads every one of these once (`flnd._time.day`).
+# What `Post(date=)` takes: the engine reads every one of these once (`flnd.kit.clock.day`).
 DateLike = datetime.date | int | float | str | None
 
 
@@ -807,7 +807,7 @@ class Range:
 
     def __contains__(self, value: object) -> bool:
         """Whether a date is in range; an undated post (None, or text that isn't a date) is."""
-        found = _time.day(value)
+        found = clock.day(value)
         if found is None:
             return True
         return not ((self.since and found < self.since) or (self.until and found > self.until))
@@ -963,7 +963,7 @@ class Cookies(Login):
         Example:
             >>> cookies("sid").start(None, "phone")
             Traceback (most recent call last):
-            flncore.errors.UsageError: phone: cookies are read from a browser or a cookies.txt file
+            flnd.errors.UsageError: phone: cookies are read from a browser or a cookies.txt file
         """
         raise UsageError(f"{how}: cookies are read from a browser or a cookies.txt file")
 
@@ -1098,7 +1098,7 @@ class Site(Protocol):
         ...
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              check: bool = True, in_page: bool = False, **request: Any) -> _net.Response:
+              check: bool = True, in_page: bool = False, **request: Any) -> net.Response:
         """Make one request, paced and retried, and return its response.
 
             items = site.fetch(API, params={"cursor": cursor}).json
@@ -1507,9 +1507,9 @@ class Site(Protocol):
 # JSON paths
 # ---------------------------------------------------------------------------------------------
 
-# `dig` lives in the `flnd._html` library, beside the HTML reader; this is its public name.
-# Importing `_html` loads neither selectolax nor msgspec.
-dig = _html.dig
+# `dig` lives in the `flnd.kit.html` library, beside the HTML reader; this is its public name.
+# Importing `html` loads neither selectolax nor msgspec.
+dig = html.dig
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1934,7 +1934,7 @@ def _check_templates(cls: type[Source], label: str) -> None:
             raise SourceError(f"{label}.{attribute}: {template!r} leaves the target's folder; "
                               "write a relative path with '/' and no '..'")
         try:
-            used = _text.fields(template)
+            used = text.fields(template)
         except ValueError as error:
             raise SourceError(f"{label}.{attribute}: {template!r}: {error}") from None
         for name in sorted(used - set(known)):

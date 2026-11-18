@@ -13,7 +13,7 @@ This is flnd's own module (not a library): it knows sources, targets and the hom
 Who calls it: the engine (`flnd.engine`) builds the `Options` and `RunShared` of a run and
 checks `--only`; the job reads them; the library (`flnd._library`) and the steps after a download
 (`flnd._steps`), a source's run (`flnd.site`) and the job read `config`. What it calls:
-`flnd._home` (the database type), `flnd.source` (`Source`, `Target`), `flnd._ui` (a warning for
+`flnd._home` (the database type), `flnd.source` (`Source`, `Target`), `flnd.ui.log` (a warning for
 a key the config file has that flnd doesn't take) and `flnd.errors`.
 
 How a setting resolves: a flag (or a library argument) given for one run, then the environment
@@ -48,9 +48,9 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from flnd import _home
-from flnd._ui import ui
 from flnd.errors import UsageError
 from flnd.source import SCROLLS, Source, Target
+from flnd.ui.log import ui
 
 if TYPE_CHECKING:
     from flnd._run import Stop
@@ -105,7 +105,7 @@ class RunShared:
     interactive: bool = False
     # List what would be downloaded without writing or downloading anything.
     dry: bool = False
-    # The run's browser and loop (`flnd._browser.RunBrowser`), set by `site.shared_browser`;
+    # The run's browser and loop (`flnd.kit.browser.RunBrowser`), set by `site.shared_browser`;
     # None outside a run.
     browser_pool: Any = field(default=None, repr=False)
     # Where the run's events go (`flnd._run.Run._emit`). It may wait while a script handles the

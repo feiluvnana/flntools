@@ -52,16 +52,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from flnd import _home, _net, _steps, _text, job
+from flnd import _home, _steps, job
 from flnd._events import Failed, Planned
 from flnd._run import Stop, stopping
-from flnd._ui import ui
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.job import TargetReport
+from flnd.kit import net, text
 from flnd.options import Options, Retry, RunShared, categories_by_source, validate
 from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.source import Cookies, Range, Source, Target, _Unmatched
 from flnd.sources import SOURCES
+from flnd.ui.log import ui
 
 __all__ = ["AuthInfo", "Engine", "Report", "TargetInfo", "TargetReport"]
 
@@ -1346,7 +1347,7 @@ class Engine:
                 found[child] = Options(since=options.since, until=options.until)
         if not found:
             return []
-        ui.info("{targets} linked from the listings", targets=_text.count(len(found), "target"))
+        ui.info("{targets} linked from the listings", targets=text.count(len(found), "target"))
         self._record(list(found.items()), follow=False)
         return self._run(list(found.items()), stop=stop, browser_pool=browser_pool,
                          depth=depth + 1)
@@ -1617,7 +1618,7 @@ def _is_url(target_text: str) -> bool:
 
 
 def _follow(url: str) -> str:
-    """Where a short link leads, from one HEAD request (`_net.follow`).
+    """Where a short link leads, from one HEAD request (`net.follow`).
 
     Args:
         url: the short link.
@@ -1630,9 +1631,9 @@ def _follow(url: str) -> str:
             query may carry a signature.
     """
     try:
-        return _net.follow(url)
+        return net.follow(url)
     except NetworkError as error:
-        raise NetworkError(f"can't follow {_text.redact(url)}: {error}",
+        raise NetworkError(f"can't follow {text.redact(url)}: {error}",
                            retryable=error.retryable) from None
 
 

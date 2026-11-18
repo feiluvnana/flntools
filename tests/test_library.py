@@ -21,10 +21,10 @@ from unittest import mock
 from test_engine import CDN, EngineCase, make_source, noise
 
 import flnd
-from flnd import _net
 from flnd import site as site_module
 from flnd._events import encode
 from flnd._library import _when
+from flnd.kit import net as _net
 from flnd.source import File, Post, Source, target
 from flnd.source import cookies as login_cookies
 
@@ -234,7 +234,7 @@ class RunTest(LibraryCase):
         import signal
 
         from flnd import _run
-        from flnd._ui import ui
+        from flnd.ui.log import ui
 
         class Quit(BaseException):
             """What the patched `os._exit` raises, so the test sees the exit instead of dying."""
@@ -299,7 +299,7 @@ class RunTest(LibraryCase):
             later.wait()
 
     def test_the_run_works_on_its_own_thread_with_the_callers_clock(self):
-        from flnd import _time
+        from flnd.kit import clock as _time
 
         seen = []
         self.fl.add(make_source("ewk", lambda site: seen.append(
@@ -437,7 +437,7 @@ class WhenTest(unittest.TestCase):
         self.assertEqual(_when("..2026-03"), flnd.source.Range(None, day(2026, 3, 31)))
 
     def test_a_span_counts_back_from_today_on_the_clock(self):
-        from flnd import _time
+        from flnd.kit import clock as _time
 
         with _time.use(_time.Fake()):
             today = datetime.date.fromtimestamp(_time.wall())

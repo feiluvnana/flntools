@@ -5,8 +5,8 @@ import threading
 import unittest
 from pathlib import Path
 
-from flnd import _db
 from flnd.errors import DiskError
+from flnd.kit import db as _db
 
 SCHEMA = "CREATE TABLE IF NOT EXISTS t (k TEXT PRIMARY KEY, v INTEGER)"
 

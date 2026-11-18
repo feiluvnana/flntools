@@ -1,6 +1,6 @@
-"""`flnd._browser`: `launch` and its profile copy, the Chromium offer, `Browser`, `Page`, `Capture`, scrolling.
+"""`flnd.kit.browser`: `launch` and its profile copy, the Chromium offer, `Browser`, `Page`, `Capture`, scrolling.
 
-Every coroutine runs on one `flnd._loop.Loop` for the module (`run`), as the run's loop runs them.
+Every coroutine runs on one `flnd.kit.loop.Loop` for the module (`run`), as the run's loop runs them.
 The profile and Chromium tests fake Playwright, the home folder and the temp folder, so no real
 profile or browser is touched. The page tests run Playwright's own Chromium, headless, on pages
 served from memory (`fulfill`), and skip without it. `Page.fetch`'s tests serve their page from a
@@ -31,10 +31,13 @@ from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
-from flnd import _browser, _cookies, _net, _time
-from flnd._loop import Loop
-from flnd._ui import ui
 from flnd.errors import Blocked, Changed, Error, NetworkError, SiteError, ToolError
+from flnd.kit import browser as _browser
+from flnd.kit import clock as _time
+from flnd.kit import cookies as _cookies
+from flnd.kit import net as _net
+from flnd.kit.loop import Loop
+from flnd.ui.log import ui
 
 # The real lookup, before BrowserCase patches it out.
 CHROME_INSTALLED = _browser._chrome_installed
@@ -156,13 +159,13 @@ class ImportTest(BrowserCase):
     def test_without_playwright(self):
         blocked = {"playwright": None, "playwright.async_api": None}
         with mock.patch.dict(sys.modules, blocked):
-            sys.modules.pop("flnd._browser", None)
+            sys.modules.pop("flnd.kit.browser", None)
             try:
-                fresh = importlib.import_module("flnd._browser")
+                fresh = importlib.import_module("flnd.kit.browser")
                 with self.assertRaisesRegex(ImportError, re.escape("pip install playwright")):
                     run(fresh.launch())
             finally:
-                sys.modules["flnd._browser"] = _browser
+                sys.modules["flnd.kit.browser"] = _browser
 
 
 class FakePlaywright:
@@ -353,7 +356,7 @@ class ChromeOnlyTest(BrowserCase):
 
     def terminal(self, *keys):
         answers = iter(keys)
-        p = mock.patch.object(_browser._prompt, "confirm", side_effect=lambda *a, **kw: next(answers) == "y")
+        p = mock.patch.object(_browser.forms, "confirm", side_effect=lambda *a, **kw: next(answers) == "y")
         p.start()
         self.addCleanup(p.stop)
 
@@ -418,7 +421,7 @@ class ChromeOnlyTest(BrowserCase):
     def test_a_failed_download_is_raised_again_without_asking(self):
         asked = []
         failure = ToolError("Chromium was not downloaded: Playwright's installer exited with 1: Error: ENOSPC")
-        with mock.patch.object(_browser._prompt, "confirm", lambda *args, **options: asked.append(args) or True), \
+        with mock.patch.object(_browser.forms, "confirm", lambda *args, **options: asked.append(args) or True), \
                 mock.patch.object(_browser, "_install_chromium", side_effect=failure) as install:
             for _ in range(2):
                 with self.assertRaises(ToolError) as caught:
@@ -446,7 +449,7 @@ class ChromeOnlyTest(BrowserCase):
             start.wait()
             channels.append(_browser._channel(self.playwright))
 
-        with mock.patch.object(_browser._prompt, "confirm", confirm), \
+        with mock.patch.object(_browser.forms, "confirm", confirm), \
                 mock.patch.object(_browser, "_install_chromium", install):
             threads = [threading.Thread(target=open_one) for _ in range(2)]
             for thread in threads:

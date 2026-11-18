@@ -1,7 +1,7 @@
 """`Engine.sync` and the saved targets (`flnd.db`'s `targets`): the plan, the records,
 `Engine.download`'s use of them, the fetch and the summary.
 
-Each test runs on a temporary `.flnd` with test sources on `flnd._net.fake` (see `EngineCase`),
+Each test runs on a temporary `.flnd` with test sources on `flnd.kit.net.fake` (see `EngineCase`),
 and the fake screen. `sync=True` marks the target for `flnd sync`; the default keeps it off.
 """
 
@@ -12,8 +12,9 @@ from unittest import mock
 import fakes
 from test_engine import CDN, EngineCase, make_source, noise
 
-from flnd import _home, _net
+from flnd import _home
 from flnd.engine import Engine, TargetReport
+from flnd.kit import net as _net
 from flnd.options import Options
 from flnd.source import File, Post, Range, Source, Target, target
 

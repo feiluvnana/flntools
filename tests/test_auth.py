@@ -18,10 +18,13 @@ from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
-from flnd import _cookies, _home, _net, _vault
-from flnd._ui import ui
+from flnd import _home
 from flnd.errors import DiskError
+from flnd.kit import cookies as _cookies
+from flnd.kit import net as _net
+from flnd.kit import vault as _vault
 from flnd.sources.ins import Instagram
+from flnd.ui.log import ui
 
 NETSCAPE = ("# Netscape HTTP Cookie File\n"
             ".instagram.com\tTRUE\t/\tTRUE\t1825861327\tsessionid\tins-session\n")

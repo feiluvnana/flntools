@@ -1,4 +1,4 @@
-"""Tests for `flnd._unpack`: an archive extracts beside itself, safely, or not at all."""
+"""Tests for `flnd.kit.files`: an archive extracts beside itself, safely, or not at all."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from flnd import _tools, _unpack
 from flnd.errors import SiteError
+from flnd.kit import files as _tools
+from flnd.kit import files as _unpack
 
 HAS_7Z = bool(shutil.which("7zz") or shutil.which("7z"))
 SEVEN_ZIP = b"7z\xbc\xaf\x27\x1c\x00\x04"

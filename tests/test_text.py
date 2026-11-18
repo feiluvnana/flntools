@@ -1,6 +1,6 @@
 import unittest
 
-from flnd import _text
+from flnd.kit import text as _text
 
 
 class ScrubUrlTest(unittest.TestCase):

@@ -20,7 +20,7 @@ How a value is kept:
 1. `Vault[name] = value` reads (or makes) the key file, then seals the value with `encrypt`,
    binding it to `<slot>\\0<name>` as associated data;
 2. the blob (version byte, nonce, ciphertext and tag) is written to the `secrets` table, one
-   row per `(slot, name)`, in its own transaction (`flnd._db.Db.write`);
+   row per `(slot, name)`, in its own transaction (`flnd.kit.db.Db.write`);
 3. `Vault[name]` reads the row and opens it with `decrypt`; a wrong key, a moved row or a
    changed byte all fail the same way, as `LoginError` with the vault's `hint`.
 
@@ -32,7 +32,7 @@ Rules a change must keep:
   that finds a short key waits `KEY_WAIT` for the other to finish writing it.
 - A key never goes on a command line or into a message: a keychain tool reads it on standard
   input, and prints it only to a pipe this module reads.
-- It imports only the stdlib, `cryptography` (on first use), `flnd._db` and `flnd.errors`.
+- It imports only the stdlib, `cryptography` (on first use), `flnd.kit.db` and `flnd.errors`.
 """
 
 from __future__ import annotations
@@ -49,8 +49,8 @@ from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
-from flnd import _db
 from flnd.errors import DiskError, LoginError, ToolError, UsageError
+from flnd.kit import db
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -233,7 +233,7 @@ class Vault(MutableMapping[str, str]):
 
     def __init__(self, path: Path, slot: str, *, hint: str = DAMAGED_KEY):
         self._slot, self._hint = slot, hint
-        self._db = _db.Db(path, schema=SCHEMA.format(""), secure=True)
+        self._db = db.Db(path, schema=SCHEMA.format(""), secure=True)
 
     def __getitem__(self, name: str) -> str:
         found = self._db.one("SELECT value FROM secrets WHERE slot = ? AND name = ?",
@@ -375,7 +375,7 @@ NOT_FOUND = 44
 TOOL_TIMEOUT = 30.0
 # What a missing keychain says, unless the caller gives its own advice.
 NO_KEYCHAIN = "keep the key in a file instead"
-# The variable flnd's test suite sets (as `flnd._cookies.NO_PROFILES` reads it): while it is
+# The variable flnd's test suite sets (as `flnd.kit.cookies.NO_PROFILES` reads it): while it is
 # set, the real keychain tools are refused, so no test can read or change a person's keychain.
 NO_REAL_KEYCHAIN = "FLND_TEST_NO_PROFILES"
 

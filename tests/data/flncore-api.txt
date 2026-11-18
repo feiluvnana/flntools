@@ -171,39 +171,5 @@ flncore.now() -> float
 flncore.part(dest: str | os.PathLike[str], *, resume: bool = False, digest: bool = False) -> Iterator[Part]
 flncore.pause(seconds: float, *, stop: threading.Event | None = None) -> bool
 flncore.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
-flncore.testing: module
-flncore.testing.FakeClock(start: float = 0.0)
-flncore.testing.FakeClock.advance(seconds: float) -> None
-flncore.testing.FakeClock.now: property -> float
-flncore.testing.FakeClock.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
-flncore.testing.FakeClock.slept: attribute -> list[float]
-flncore.testing.FakeClock.wall: property -> float
-flncore.testing.Reply(status: int = 200, headers: list[tuple[str, str]] = <factory>, body: bytes = b'', chunks: Iterable[bytes] | None = None)
-flncore.testing.Reply.body: field -> bytes
-flncore.testing.Reply.chunks: field -> Iterable[bytes] | None
-flncore.testing.Reply.headers: field -> list[tuple[str, str]]
-flncore.testing.Reply.status: field -> int
-flncore.testing.Response(status: int, url: str, headers: Mapping[str, str], content: bytes = b'')
-flncore.testing.Response.content: field -> bytes
-flncore.testing.Response.headers: field -> Mapping[str, str]
-flncore.testing.Response.html: property -> Any
-flncore.testing.Response.json: property -> Any
-flncore.testing.Response.ok: property -> bool
-flncore.testing.Response.status: field -> int
-flncore.testing.Response.text: property -> str
-flncore.testing.Response.url: field -> str
-flncore.testing.TTY(initial_value='', newline='\n')
-flncore.testing.TTY.isatty() -> bool
-flncore.testing.Tool(path: Path, name: str)
-flncore.testing.Tool.name: field -> str
-flncore.testing.Tool.path: field -> Path
-flncore.testing.Tool.run(*args: str | os.PathLike[str], check: bool = True, timeout: float | None = 21600.0, input: str | bytes | None = None) -> Result
-flncore.testing.ToolResult(code: int, out: str, err: str, args: tuple[str, ...] = ())
-flncore.testing.ToolResult.args: field -> tuple[str, ...]
-flncore.testing.ToolResult.code: field -> int
-flncore.testing.ToolResult.err: field -> str
-flncore.testing.ToolResult.out: field -> str
-flncore.testing.fake_net(routes: Mapping[str, Any] | Callable[[Request], Any]) -> Iterator[None]
-flncore.testing.fake_tools(handlers: Mapping[str, Handler]) -> Iterator[None]
 flncore.use(replacement: C) -> Iterator[C]
 flncore.wall() -> float

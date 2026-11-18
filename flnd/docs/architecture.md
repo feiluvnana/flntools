@@ -271,7 +271,7 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
   events off the run's queue (256 events): when the queue is full, the worker waits, so a slow
   reader slows the listing rather than piling events up in memory. `run.wait()` stops queueing
   (events are still counted into the report) and waits for the worker.
-- **The run's loop** (`flnd._loop.Loop`, made by `site.shared_browser`) is one asyncio event
+- **The run's loop** (`flnd.kit.loop.Loop`, made by `site.shared_browser`) is one asyncio event
   loop on a thread of its own. Everything that waits on the network or the browser runs there:
   - **every HTTP transfer**: the listing's requests (`Site.fetch` hands each one over and
     waits) and every file's download;
@@ -281,7 +281,7 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
     its post's rows commit when the post's last file settles. The job's `_writing` lock guards
     the target's lists of written and landed files, the board's lock its counts, and `Home`'s
     one connection is shared behind a lock of its own;
-  - **async Playwright**: one browser per run (`flncore.browser.RunBrowser`), launched the
+  - **async Playwright**: one browser per run (`flnd.kit.browser.RunBrowser`), launched the
     first time a target needs a tab and shared by every source, so one Chrome window serves
     them all. Each target gets its own tab, and up to six in all with the warm tabs that
     pre-load the pages it will open next (`Tabs`, `MAX_TABS = 6`). A source never holds a
@@ -316,7 +316,7 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
   of its files (`job.Board`, on a `ui.Group`). The engine opens that group drawn only when the
   terminal is live (`ui.group(drawn=ui._progress_enabled())`), so a script that reads the run's
   events on a pipe draws nothing. Each count that moves redraws its row, under the renderer's
-  lock, throttled to `flncore.log.REDRAW` (60 a second); a ticker thread redraws the rows at
+  lock, throttled to `flnd.ui.log.REDRAW` (60 a second); a ticker thread redraws the rows at
   that pace while they are active, so the spinner and the counts move even when nothing emits
   an event. A row that listed everything and has nothing pending ends with a check, or a cross
   when it left failures.
@@ -363,7 +363,7 @@ script never sees it. There are no callbacks and no hooks: a script iterates the
 
 ## The browser
 
-`flncore.browser` is a library of its own: it knows Playwright, tabs and scrolling, and nothing
+`flnd.kit.browser` is a library of its own: it knows Playwright, tabs and scrolling, and nothing
 of sources. A source reads a site that only shows its data to a logged-in page by watching the
 page's own API calls: `site.feed(match, scroll=True, cursor=reader)` keeps the JSON of every
 response whose URL `match` takes, and scrolls the tab only when no body is waiting.
@@ -399,7 +399,7 @@ mouse events. An element that scrolls on its own (`scroll(within=…)`) gets rea
 
 ## Network
 
-One HTTP library (`flncore.net`, as `flnd._net`) does every request and download, on the run's
+One HTTP library (`flnd.kit.net`, as `flnd.kit.net`) does every request and download, on the run's
 loop:
 
 - **A session per source** (`_net.Session`, made by `site.source_run`): one curl_cffi

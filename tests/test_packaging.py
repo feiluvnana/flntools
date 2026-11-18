@@ -88,12 +88,12 @@ class LazyImportTest(unittest.TestCase):
 class MissingDependencyTest(unittest.TestCase):
 
     def test_missing_curl_cffi_names_the_package_to_install(self):
-        # `flnd._net` imports curl_cffi on its first request, so that is where it is missed.
+        # `flnd.kit.net` imports curl_cffi on its first request, so that is where it is missed.
         code = ("import sys, asyncio; sys.modules['curl_cffi'] = None\n"
-                "from flnd import _net\n"
-                "try:\n    _net.Session()._session()\nexcept ImportError as error:\n    print(error)")
+                "from flnd.kit import net\n"
+                "try:\n    net.Session()._session()\nexcept ImportError as error:\n    print(error)")
         self.assertEqual(run_python(code).stdout.strip(),
-                         "flnd._net needs curl_cffi: pip install curl_cffi")
+                         "flnd.kit.net needs curl_cffi: pip install curl_cffi")
 
     def test_a_name_loads_its_module_on_first_use(self):
         code = ("import sys, flnd\nbefore = 'flnd._library' in sys.modules\n"
@@ -101,16 +101,16 @@ class MissingDependencyTest(unittest.TestCase):
         self.assertEqual(run_python(code).stdout.strip(), "False flnd._library True")
 
     def test_missing_selectolax_names_the_package_to_install(self):
-        # `flnd._html` imports selectolax on its first parse, so that is where it is missed.
+        # `flnd.kit.html` imports selectolax on its first parse, so that is where it is missed.
         code = ("import sys; sys.modules['selectolax'] = None\n"
-                "from flnd import _html\n"
-                "try:\n    _html.parse('<p>a</p>')\nexcept ImportError as error:\n    print(error)")
+                "from flnd.kit import html\n"
+                "try:\n    html.parse('<p>a</p>')\nexcept ImportError as error:\n    print(error)")
         self.assertEqual(run_python(code).stdout.strip(),
-                         "flnd._html needs selectolax: pip install selectolax")
+                         "flnd.kit.html needs selectolax: pip install selectolax")
 
     def test_importing_the_html_library_loads_no_parser(self):
-        # `flnd.source` imports `flnd._html` for `dig`, so the import must stay free.
-        self.assertEqual(loaded_after("from flnd import _html") & {"selectolax", "msgspec"}, set())
+        # `flnd.source` imports `flnd.kit.html` for `dig`, so the import must stay free.
+        self.assertEqual(loaded_after("from flnd.kit import html") & {"selectolax", "msgspec"}, set())
 
 
 

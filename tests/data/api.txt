@@ -33,12 +33,12 @@ flnd.Error.of(error: BaseException, *, target: str | None = None) -> Error | Bas
 flnd.Error.retryable: attribute
 flnd.Error.target: attribute
 flnd.Event: Union
-flnd.Failed(target: flnd.source.Target, error: flncore.errors.Error, post: str = '', path: pathlib.Path | None = None)
+flnd.Failed(target: flnd.source.Target, error: flnd.errors.Error, post: str = '', path: pathlib.Path | None = None)
 flnd.Failed.error: attribute -> Error
 flnd.Failed.path: attribute -> Path | None
 flnd.Failed.post: attribute -> str
 flnd.Failed.target: attribute -> Target
-flnd.Failure(target: str, error: flncore.errors.Error, post: str = '', path: pathlib.Path | None = None, attempts: int = 1, url: str = '', at: str = '')
+flnd.Failure(target: str, error: flnd.errors.Error, post: str = '', path: pathlib.Path | None = None, attempts: int = 1, url: str = '', at: str = '')
 flnd.Failure.at: attribute -> str
 flnd.Failure.attempts: attribute -> int
 flnd.Failure.error: attribute -> Error
@@ -313,7 +313,7 @@ flnd.source.Site.cookies: property -> Mapping[str, str]
 flnd.source.Site.document() -> Any
 flnd.source.Site.evaluate(js: str, *, arg: Any = None) -> Any
 flnd.source.Site.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = False, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> Feed
-flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, check: bool = True, in_page: bool = False, **request: Any) -> _net.Response
+flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, check: bool = True, in_page: bool = False, **request: Any) -> net.Response
 flnd.source.Site.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
 flnd.source.Site.html(text: str | bytes) -> Any
 flnd.source.Site.info(message: str, **fields: Any) -> None
@@ -394,7 +394,7 @@ flnd.testing.FakeSite.cookies: property -> Mapping[str, str]
 flnd.testing.FakeSite.document() -> Any
 flnd.testing.FakeSite.evaluate(js: str, *, arg: Any = None) -> Any
 flnd.testing.FakeSite.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = False, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> Any
-flnd.testing.FakeSite.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, check: bool = True, in_page: bool = False, **request: Any) -> _net.Response
+flnd.testing.FakeSite.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, check: bool = True, in_page: bool = False, **request: Any) -> net.Response
 flnd.testing.FakeSite.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
 flnd.testing.FakeSite.html(text: str | bytes) -> Any
 flnd.testing.FakeSite.info(message: str, **fields: Any) -> None
@@ -423,4 +423,4 @@ flnd.testing.Seen.visited: field -> list[str]
 flnd.testing.Seen.warmed: field -> list[str]
 flnd.testing.check(source: type[Source]) -> list[Target]
 flnd.testing.collect(source: type[Source], target: str, *, site: FakeSite | None = None, json: Mapping[str, Answer] | None = None, html: Mapping[str, Answer] | None = None, only: Sequence[str] | None = None) -> list[Collected]
-flnd.testing.fake_clock(start: float = 0.0) -> Iterator[_time.Fake]
+flnd.testing.fake_clock(start: float = 0.0) -> Iterator[clock.Fake]

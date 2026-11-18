@@ -9,7 +9,7 @@ import unittest
 
 import no_profiles  # noqa: F401
 
-from flnd import _time
+from flnd.kit import clock as _time
 from flnd.source import File, Post, Source, SourceError, UsageError, target
 from flnd.sources import SOURCES
 from flnd.testing import FakeSite, check, collect, fake_clock

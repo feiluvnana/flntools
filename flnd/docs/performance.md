@@ -126,7 +126,7 @@ row lookups are under 2) and `db.commit_per_post` (above, still within its targe
 
 ## Network
 
-Every transfer runs on the run's asyncio loop through curl_cffi (`flnd._net`): libcurl's multi
+Every transfer runs on the run's asyncio loop through curl_cffi (`flnd.kit.net`): libcurl's multi
 interface, HTTP/2, Chrome's TLS fingerprint. Measured A/B against the httpx client it replaced,
 on the M5 above while other work ran (load about 8), the median of 3 alternating runs of
 `make bench ARGS=net`:
@@ -208,7 +208,7 @@ stay as they were; the numbers are from the recorded baseline.
 
 ## Concurrency per host
 
-Each media host's cap adapts (`flnd._net.Cap`, flnd/docs/architecture "Network"): it starts at 8
+Each media host's cap adapts (`flnd.kit.net.Cap`, flnd/docs/architecture "Network"): it starts at 8
 transfers at once, halves on a 429, a 503, a reset or a timeout, and grows by one every 10
 clean transfers, up to 32, while the host's throughput still rises. The `net` group holds its
 caps fixed (`Limits(cap=8, most=8)`), so its numbers don't move with the adaptation.
@@ -288,7 +288,7 @@ a median of 0.4 s each. `fast` is the 30 answers of 50 ms each, plus the scrolli
 ## HTML and JSON paths
 
 Pages are parsed by selectolax (lexbor, a C parser with its own CSS engine) through
-`flnd._html`, and JSON paths walked by `dig`, which replaced parsel (lxml), jmespath and
+`flnd.kit.html`, and JSON paths walked by `dig`, which replaced parsel (lxml), jmespath and
 python-jsonpath. Measured A/B against the old reads on the M5 above while other work ran (load
 about 5), the median of 9 alternating rounds, each the best of 3:
 
@@ -303,5 +303,5 @@ about 5), the median of 9 alternating rounds, each the best of 3:
 - **`dig` compiles a path once** and caches it, and walks the commonest shape (`a[].b`) in one
   comprehension. The old 682 µs baseline went through parsel's JSON selectors; jmespath alone
   is the 238 µs above.
-- **Neither parser loads at startup**: `flnd._html` imports selectolax on the first parse and
+- **Neither parser loads at startup**: `flnd.kit.html` imports selectolax on the first parse and
   msgspec on the first decode, so `flnd --help` and `import flnd.source` load neither.

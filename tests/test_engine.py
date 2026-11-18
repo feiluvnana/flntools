@@ -1,4 +1,4 @@
-"""The engine end to end on `flnd._net.fake`, with test sources. No network, no browser.
+"""The engine end to end on `flnd.kit.net.fake`, with test sources. No network, no browser.
 
 Its runs, groups, HTTP, clients and logins through `Engine._run` (what `download` and `sync` call
 once per run), then the API itself (redesign B1): `download`, `sync`, `login`, `logout` and
@@ -21,15 +21,18 @@ from unittest import mock
 
 import fakes
 
-from flnd import Blocked, LoginError, Target, UsageError, _cookies, _home, _net, _run, _time, job
+from flnd import Blocked, LoginError, Target, UsageError, _home, _run, job
 from flnd._events import Failed, Progress
-from flnd._ui import ui
 from flnd.engine import Engine, Report, TargetReport
 from flnd.errors import Error
+from flnd.kit import clock as _time
+from flnd.kit import cookies as _cookies
+from flnd.kit import net as _net
 from flnd.options import Options
 from flnd.site import LoginSite
 from flnd.source import File, Login, Post, SiteError, Source, target
 from flnd.source import cookies as login_cookies
+from flnd.ui.log import ui
 
 CDN = "https://cdn.example"
 
@@ -508,7 +511,7 @@ class EngineLoginTest(EngineCase):
 
         source = make_source("aaa", login=own_login(start))
         with mock.patch.object(sys.stdin, "isatty", return_value=True), \
-                mock.patch("flnd._prompt.ask", return_value="1") as asked:
+                mock.patch("flnd.ui.forms.ask", return_value="1") as asked:
             Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr")
         self.assertEqual(answers, ["1"])
         asked.assert_called_once_with("Phone number", secret=False)
@@ -646,7 +649,7 @@ class ApiLoginTest(EngineCase):
         self.engine = Engine(home=self.home, sources={"aaa": self.source, "bbb": make_source("bbb")})
         jar = _cookies.Jar([{"name": "sid", "value": "s", "domain": ".aaa.example", "path": "/"},
                            {"name": "other", "value": "o", "domain": ".example.com", "path": "/"}])
-        patcher = mock.patch("flnd._cookies.load", lambda browser="chrome", *, profile=None: jar)
+        patcher = mock.patch("flnd.kit.cookies.load", lambda browser="chrome", *, profile=None: jar)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -666,7 +669,7 @@ class ApiLoginTest(EngineCase):
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.db"])
 
     def test_a_failed_login_and_bad_answers(self):
-        with mock.patch("flnd._cookies.load",
+        with mock.patch("flnd.kit.cookies.load",
                         lambda browser="chrome", *, profile=None: _cookies.Jar()):
             with self.assertRaisesRegex(LoginError, "no sid for aaa.example in Chrome"):
                 self.engine.login("aaa", "browser", browser="chrome")

@@ -30,7 +30,7 @@ Rules a change must keep:
   nobody awaited does: it is almost always a missing `.wait()`.
 - `suspend()` holds new requests and files (`Stop.suspended`, which each source's limits
   watch); a stop always wins over it, so a suspended run still stops.
-- The module imports only the stdlib, `flnd._events` and `flnd._ui` on a second Ctrl-C, never
+- The module imports only the stdlib, `flnd._events` and `flnd.ui.log` on a second Ctrl-C, never
   the engine, so `flnd.Run` is cheap to reach.
 """
 
@@ -519,7 +519,7 @@ def stopping(state: Stop | None = None) -> Iterator[Stop]:
             state.now.set()
             # `ui`'s lock is reentrant, so this line can't deadlock on code this handler
             # interrupted while it was logging.
-            from flnd._ui import ui
+            from flnd.ui.log import ui
 
             ui.warn(AGAIN)
         else:

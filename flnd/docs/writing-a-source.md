@@ -331,10 +331,10 @@ A missing key gives None, and a path with `[]` or `..[]` gives a list, empty whe
 matched. A malformed path raises `SourceError`.
 
 ```python
-from flnd import _html
+from flnd.kit import html
 from flnd.source import dig
 
-page = _html.parse('''<a href="/video/1">one</a><a href="/about">about</a>
+page = html.parse('''<a href="/video/1">one</a><a href="/about">about</a>
 <script id="__NEXT_DATA__" type="application/json">
 {"props": {"items": [{"__typename": "Video", "id": "1"}, {"__typename": "Ad"}]}}
 </script>''')
@@ -346,7 +346,7 @@ assert dig(data, "..[__typename=Video].id") == ["1"]
 assert dig(data, "props.next || props.items[0].id") == "1"
 ```
 
-A source parses through `site.html`, not `flnd._html`; the example imports it only to run
+A source parses through `site.html`, not `flnd.kit.html`; the example imports it only to run
 without a site.
 
 ### A feed in the browser: name its responses and its cursor

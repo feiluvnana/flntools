@@ -17,12 +17,12 @@ from example_source import FIXTURES
 from example_source import Example as RoutedExample
 from fakes import FakeSite, collect
 
-from flnd import _text, _time
 from flnd.engine import resolve
+from flnd.kit import clock as _time
+from flnd.kit import text as _text
 from flnd.site import Listing
 from flnd.source import (
     API,
-    Changed,
     Cookies,
     File,
     Login,
@@ -483,7 +483,7 @@ class FormatsTest(unittest.TestCase):
 
 
 class DayTest(unittest.TestCase):
-    """The one date rule, the engine's (`flnd._time.day`): any form a site gives, in UTC, 2004 to next year."""
+    """The one date rule, the engine's (`flnd.kit.clock.day`): any form a site gives, in UTC, 2004 to next year."""
 
     def test_seconds_milliseconds_and_digit_strings(self):
         for value in (1767312000, 1767312000.5, 1767312000000, "1767312000", "1767312000000", " 1767312000 "):
@@ -579,7 +579,7 @@ class DigTest(unittest.TestCase):
         self.assertEqual(dig(self.PAGE, "data.user.edges[].node.id || alt"), [1, 2])
 
     def test_a_bad_bracket_is_a_source_error(self):
-        with self.assertRaisesRegex(Changed, r"can't read '\[x\]'"):
+        with self.assertRaisesRegex(SourceError, r"can't read '\[x\]'"):
             dig(self.PAGE, "data[x]")
 
 

@@ -80,13 +80,10 @@ from typing import (
 )
 from urllib.parse import urlsplit
 
-from flnd import _files, _home, _loop, _text, _transfer
+from flnd import _home, _transfer
 from flnd._events import NOTHING_NEW, RESUMING, Failed, Progress, Saved, Skipped
 from flnd._steps import Landed, dedupe, holder, landed, sidecars
-from flnd._text import fill
-from flnd._time import day
 from flnd._track import Tracks
-from flnd._ui import ui
 from flnd.errors import (
     Blocked,
     Error,
@@ -97,10 +94,14 @@ from flnd.errors import (
     Stopped,
     classify,
 )
+from flnd.kit import files, loop, text
+from flnd.kit.clock import day
+from flnd.kit.text import fill
 from flnd.options import Options, Retry
 from flnd.site import Listing, SourceRun, TargetSite
 from flnd.source import Category, File, NotFound, Post, Range, Route, Site, Source, Target
 from flnd.sources import SOURCES
+from flnd.ui.log import ui
 
 if TYPE_CHECKING:
     from flnd._run import Stop
@@ -578,7 +579,7 @@ class Board:
         if c.failed:
             parts.append(f"{c.failed} failed")
         if c.bytes:
-            parts.append(_text.size(c.bytes))
+            parts.append(text.size(c.bytes))
         if line.note:
             parts.append(line.note)
         return " | ".join(parts)
@@ -795,12 +796,12 @@ def _resolve_name(
     Returns:
         The file's name, with no folder.
     """
-    formatted = fill(filename, values) or _text.filename(post.id)
+    formatted = fill(filename, values) or text.filename(post.id)
     if file.name is None:
         return formatted + extension
     if file.content is None and PurePosixPath(file.name).stem in _stems(filename, values):
         return formatted + PurePosixPath(file.name).suffix
-    return _text.filename(file.name)
+    return text.filename(file.name)
 
 
 def _stems(filename: str, values: Mapping[str, Any]) -> set[str]:
@@ -918,7 +919,7 @@ class Ledger:
             dest = self.folder.joinpath(*placed.path.split("/"))
             if placed.file.content is not None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                _files.write(dest, placed.file.content)
+                files.write(dest, placed.file.content)
                 continue
             item_key = f"{self.source.code}:{placed.key}"
             held = self._held(dest, item_key)
@@ -935,7 +936,7 @@ class Ledger:
                                 cursor=listing.cursor if listing is not None else None,
                                 retried=self.retrying))
         if todo:
-            todo.sort(key=lambda queued: queued.placed.kind != _files.VIDEO)
+            todo.sort(key=lambda queued: queued.placed.kind != files.VIDEO)
             return Outcome.QUEUED, todo
         return (Outcome.SAVED if found else Outcome.EMPTY), []
 
@@ -1066,7 +1067,7 @@ class Ledger:
             dated += 1
         self._save_asked()
         if dated:
-            self.site.info("{files} dated", files=_text.count(dated, "saved file"))
+            self.site.info("{files} dated", files=text.count(dated, "saved file"))
         return dated
 
     def _load_asked(self) -> dict[str, float]:
@@ -1454,7 +1455,7 @@ class Downloads:
                 if not self._pending:
                     return
                 note_text = (
-                    FINISHING.format(files=_text.count(self._running, "file"))
+                    FINISHING.format(files=text.count(self._running, "file"))
                     if self.settings.stop.soon.is_set()
                     else None
                 )
@@ -1682,7 +1683,7 @@ class Downloads:
                          if refreshed is not None else None)
         # Another run holds this file's part: it saves the file and writes its row, so this run
         # skips it (flnd/docs/storage, "Sharing a home").
-        except _files.BusyError:
+        except files.BusyError:
             self._count(queued, downloading=-1, skipped=1)
             track = self.tracks.get(queued.key)
             if track is not None:
@@ -1730,7 +1731,7 @@ class Downloads:
         return True
 
     def _downloaded(
-        self, queued: _Queued, saved: _files.Saved, received: Mapping[str, str],
+        self, queued: _Queued, saved: files.Saved, received: Mapping[str, str],
         row: _home.FileRow,
     ) -> None:
         """Hold a landed file's row until its post's last file settles, which commits it.
@@ -1750,7 +1751,7 @@ class Downloads:
             self._written[queued.key] = saved.path
             self._landed.setdefault(post.id, []).append(_Landed(queued, saved.path, dated, row))
 
-    def _row(self, queued: _Queued, saved: _files.Saved) -> _home.FileRow:
+    def _row(self, queued: _Queued, saved: files.Saved) -> _home.FileRow:
         """The `files` row of a landed file.
 
         Args:
@@ -1767,14 +1768,14 @@ class Downloads:
             queued.key, _home.key(self.target), str(saved.path), saved.size, saved.mtime,
             post_id=placed.post.id, category=placed.post.category,
             date=posted.isoformat() if posted is not None else None,
-            estimated=queued.estimated, kind=_files.kind_of(saved.path.name), at=_home.now(),
+            estimated=queued.estimated, kind=files.kind_of(saved.path.name), at=_home.now(),
             files=count if placed.num == 0 and isinstance(count, int) and count > 1 else None,
             hash=saved.hash,
         )
 
     async def _fetch(
         self, queued: _Queued, file: File, received: dict[str, str]
-    ) -> _files.Saved | None:
+    ) -> files.Saved | None:
         """Save `file` into its part and onto its name (`flnd._transfer.save`).
 
         A file the source fetches itself (a callable `url`) takes a place under the source's
@@ -1937,7 +1938,7 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
         return TargetReport(target, (), 0, error=Stopped(STOPPED))
     # No lock on the target: each file's part locks itself, so two runs may share a target and
     # the sweep passes over the parts another run holds.
-    _files.sweep(_home.target_folder(run.settings.home, target))
+    files.sweep(_home.target_folder(run.settings.home, target))
     return _run_download(run, target, board, options)
 
 
@@ -2143,9 +2144,9 @@ def _summary(totals: Counts, target: Target, seconds: float) -> None:
         target: the target.
         seconds: how long it took.
     """
-    parts = [_text.count(totals.saved, "file") + " saved"] if totals.saved else []
+    parts = [text.count(totals.saved, "file") + " saved"] if totals.saved else []
     if totals.bytes:
-        parts.append(_text.size(totals.bytes))
+        parts.append(text.size(totals.bytes))
     if totals.linked:
         parts.append(f"{totals.linked} linked")
     if totals.skipped:
@@ -2153,7 +2154,7 @@ def _summary(totals: Counts, target: Target, seconds: float) -> None:
     if totals.failed:
         parts.append(f"{totals.failed} failed (retried on the next runs)")
     body = ", ".join(parts) or "nothing new"
-    line = f"{body} in {_text.duration(seconds)}"
+    line = f"{body} in {text.duration(seconds)}"
     ui.debug("{target}: {line}", target=str(target), line=line)
 
 
@@ -2242,7 +2243,7 @@ def _metadata(source: Source, target: Target, placed: Placed) -> dict[str, Any]:
         "source": source.code, "target": str(target), "post": post.id,
         "category": post.category, "date": posted.isoformat() if posted else None,
         "url": first("url", "link", "permalink"),
-        "file": _text.redact(url) if url else None,
+        "file": text.redact(url) if url else None,
         "caption": first("caption", "text", "description", "title"),
         "author": first("author", "user", "username", "owner", "channel"),
         "tags": first("tags", "hashtags"),
@@ -2924,7 +2925,7 @@ def _retry_failed(
         return
     files = sum(len(rows) for posts in groups.values() for rows in posts.values())
     ui.info("{target}: retrying {files} earlier runs failed on", target=str(target),
-            files=_text.count(files, "file"))
+            files=text.count(files, "file"))
     work.ledger.retrying = True
     try:
         for (name, cursor), posts in groups.items():
@@ -3117,7 +3118,7 @@ def _steps(yielded: Any, run_async: RunAsync) -> Generator[Any, None, None]:
     try:
         while True:
             try:
-                yield run_async(_loop.held(yielded.__anext__(), limit=HELD, slow=slow))
+                yield run_async(loop.held(yielded.__anext__(), limit=HELD, slow=slow))
             except StopAsyncIteration:
                 return
     finally:
@@ -3125,11 +3126,11 @@ def _steps(yielded: Any, run_async: RunAsync) -> Generator[Any, None, None]:
 
 
 def _extension(file: File) -> tuple[str, str | None]:
-    """A file's extension and kind (`_files.VIDEO`, …), guessed before it is downloaded.
+    """A file's extension and kind (`files.VIDEO`, …), guessed before it is downloaded.
 
     From its name, else its URL's path. A video with a separate audio track (DASH) is joined
     into `.webm` when both are WebM, else `.mp4`. A file whose kind can't be told yet is
-    sniffed from its first bytes when it lands (`_files.SNIFF`).
+    sniffed from its first bytes when it lands (`files.SNIFF`).
 
     Args:
         file: the file.
@@ -3140,22 +3141,22 @@ def _extension(file: File) -> tuple[str, str | None]:
     if file.content is not None:
         return PurePosixPath(file.name or "").suffix, None
     if file.name is not None:
-        return PurePosixPath(file.name).suffix, _files.kind_of(file.name)
+        return PurePosixPath(file.name).suffix, files.kind_of(file.name)
     url = (
         file.url if isinstance(file.url, str)
         else file.url[0] if isinstance(file.url, tuple)
         else ""
     )
     extension = PurePosixPath(urlsplit(url).path).suffix.lower() if url else ""
-    kind = _files.kind_of(f"file{extension}") if extension else None
+    kind = files.kind_of(f"file{extension}") if extension else None
     if file.audio is not None:
         # A video and its audio track are joined without re-encoding: a WebM pair into WebM,
         # anything else into MP4, which takes every codec the sites send.
         audio = PurePosixPath(urlsplit(file.audio).path).suffix.lower()
         both = extension == ".webm" and audio == ".webm"
-        return (".webm" if both else DASH_EXTENSION), _files.VIDEO
+        return (".webm" if both else DASH_EXTENSION), files.VIDEO
     if kind is None:
-        return "", _files.SNIFF
+        return "", files.SNIFF
     return extension, kind
 
 

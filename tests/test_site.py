@@ -1,7 +1,7 @@
-"""flnd/site.py's `TargetSite`, with the browser part it drives (`flnd._browser`'s `Tabs` and `Feed`).
+"""flnd/site.py's `TargetSite`, with the browser part it drives (`flnd.kit.browser`'s `Tabs` and `Feed`).
 
-`TargetSite` runs on a real `source_run` over `flnd._net.fake`, and on a real loop, with a fake
-browser (`FakeBrowser`, patched in for `flnd._browser.launch`) whose tabs answer `goto` from a script;
+`TargetSite` runs on a real `source_run` over `flnd.kit.net.fake`, and on a real loop, with a fake
+browser (`FakeBrowser`, patched in for `flnd.kit.browser.launch`) whose tabs answer `goto` from a script;
 the clock is `clock.Fake`, so no wait is slept. Also checks `FakeSite` has exactly the members of
 `Site`. No network, no browser.
 """
@@ -19,19 +19,23 @@ from unittest import mock
 from example_source import API, CDN, Example
 from fakes import FakeSite
 
-from flnd import _browser, _cookies, _home, _net, _run, _time, _transfer
-from flnd._browser import Page
-from flnd._ui import ui
+from flnd import _home, _run, _transfer
 from flnd.errors import Blocked, SourceError, UsageError
+from flnd.kit import browser as _browser
+from flnd.kit import clock as _time
+from flnd.kit import cookies as _cookies
+from flnd.kit import net as _net
+from flnd.kit.browser import Page
 from flnd.options import RunShared
 from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import File, LoginError, Site, SiteError, Target
+from flnd.ui.log import ui
 
 PAGE = "https://www.example.com/example_user/"
 
 
 class FakeRaw:
-    """Playwright's page, as far as `flnd._browser.Page` and `Tabs` use it: `goto` answers from `statuses`.
+    """Playwright's page, as far as `flnd.kit.browser.Page` and `Tabs` use it: `goto` answers from `statuses`.
 
     Its coroutines run on the run's loop, as Playwright's would. `emit` sends a response to the tab's
     listeners; `waits` and `wait_untils` record what was waited for.
@@ -84,7 +88,7 @@ class FakeRaw:
 
 
 class FakeBrowser:
-    """The browser `flnd._browser.launch` gives, opening a real `Page` over `make_raw()` for each tab."""
+    """The browser `flnd.kit.browser.launch` gives, opening a real `Page` over `make_raw()` for each tab."""
 
     def __init__(self, make_raw, options):
         self.make_raw, self.options = make_raw, options
@@ -128,7 +132,7 @@ class SiteCase(unittest.TestCase):
 
         # A lambda, so a test that replaces `self.serve` is answered by its own.
         self.enterContext(_net.fake(lambda request: self.serve(request)))
-        for patcher in (mock.patch("flnd._browser.launch", launch),):
+        for patcher in (mock.patch("flnd.kit.browser.launch", launch),):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.fake = self.enterContext(_time.use(_time.Fake()))

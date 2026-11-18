@@ -13,8 +13,8 @@ numbers, so its output can be pasted into flnd/docs/performance.md as it is.
 
 How it goes:
 1. Each round runs every cap in turn (rounds alternate, so a change in the link's load spreads
-   over every cap). A cap downloads every URL through flnd's own client (`flnd._net`, curl_cffi
-   on a `flnd._loop.Loop`, the part and rename of `flnd._transfer`) with a fixed cap: `Limits`
+   over every cap). A cap downloads every URL through flnd's own client (`flnd.kit.net`, curl_cffi
+   on a `flnd.kit.loop.Loop`, the part and rename of `flnd._transfer`) with a fixed cap: `Limits`
    with `most` equal to `cap`, so it never grows, though an overload still halves it.
 2. Then, once per round, the default adaptive cap (8, growing to 32) runs the same list.
 3. Every file goes into a scratch folder, removed at the end; each run starts empty.
@@ -36,9 +36,10 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from flnd import _net, _transfer
-from flnd._loop import Loop
-from flnd._ui import ui
+from flnd import _transfer
+from flnd.kit import net as _net
+from flnd.kit.loop import Loop
+from flnd.ui.log import ui
 
 
 def arguments() -> argparse.Namespace:

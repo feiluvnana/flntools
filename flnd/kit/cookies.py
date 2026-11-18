@@ -12,7 +12,7 @@ What it offers any caller:
 
 Who calls it: in flnd, the login code (`flnd/site.py`, `flnd/_home.py`) loads a jar at
 `flnd login` and saves it in the vault; the HTTP client (`flnd/_net.py`) and the browser
-(`flnd/_browser.py`) send it. It calls only the stdlib, `cryptography` (lazily, for a Chromium
+(`flnd/kit/browser.py`) send it. It calls only the stdlib, `cryptography` (lazily, for a Chromium
 value), and the `_files` (atomic writes) and `_ui` (a debug line) libraries. Its errors are
 `flnd.errors.LoginError` and `UsageError`, so a caller can show them as they are.
 
@@ -50,9 +50,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-import flncore.browser as _browser
-from flnd._ui import ui
 from flnd.errors import LoginError, UsageError
+from flnd.kit import browser
+from flnd.ui.log import ui
 
 __all__ = ["BROWSERS", "Jar", "load", "parse_binarycookies"]
 
@@ -160,8 +160,7 @@ def _real_home() -> Path:
 # or the browser, never a cookie's value. An unknown browser name is a `UsageError`.
 
 
-Jar = _browser.Jar
-Jar._error_type = LoginError
+Jar = browser.Jar
 
 
 def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
@@ -195,10 +194,10 @@ def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
         lower = source.lower()
         if lower in BROWSERS:
             if lower == "firefox":
-                return Jar(_load_firefox(profile))
+                return Jar(_load_firefox(profile), error=LoginError)
             if lower == "safari":
-                return Jar(_load_safari())
-            return Jar(_load_chromium(lower, profile or "Default"))
+                return Jar(_load_safari(), error=LoginError)
+            return Jar(_load_chromium(lower, profile or "Default"), error=LoginError)
         if profile is not None:
             raise UsageError(f"unknown browser {source!r}: use one of {', '.join(BROWSERS)}")
         if "\n" in source or "\r" in source or "\t" in source or source.lstrip()[:1] in ("[", "{"):
@@ -238,7 +237,7 @@ def _load_text(text: str, label: str) -> Jar:
         parsed = _parse_json(text) if text.lstrip()[:1] in ("[", "{") else _parse_netscape(text)
     except ValueError as err:
         raise LoginError(f"{label}: {err}") from None
-    return Jar(parsed)
+    return Jar(parsed, error=LoginError)
 
 
 def _load_firefox(profile: str | None) -> list[Cookie]:
@@ -841,7 +840,7 @@ def _decrypt_aes_gcm(key: bytes, ciphertext: bytes) -> bytes:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError:
         raise ImportError(
-            "flnd._cookies needs cryptography: pip install cryptography"
+            "flnd.kit.cookies needs cryptography: pip install cryptography"
         ) from None
     if len(ciphertext) < 12 + 16:
         raise ValueError("ciphertext too short")
@@ -870,7 +869,7 @@ def _decrypt_aes_cbc(key: bytes, ciphertext: bytes) -> bytes:
         from cryptography.hazmat.primitives.padding import PKCS7
     except ImportError:
         raise ImportError(
-            "flnd._cookies needs cryptography: pip install cryptography"
+            "flnd.kit.cookies needs cryptography: pip install cryptography"
         ) from None
     decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
     unpadder = PKCS7(128).unpadder()

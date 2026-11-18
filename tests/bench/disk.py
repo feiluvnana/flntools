@@ -5,7 +5,7 @@
 - `temp_replace`: a temp file plus `os.replace`, the least an atomic write costs;
 - `part_write`: what a download does: open and lock `<name>.part`, write it, set its modified
   time on the descriptor, `fstat` it for the history row, and rename it into place;
-- `fs_write`: `flnd._files.write`, a small file of flnd's own, through the same part.
+- `fs_write`: `flnd.kit.files.write`, a small file of flnd's own, through the same part.
 The gap between the floor and `part_write` is the disk bookkeeping per file.
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import kit
 
-from flnd import _files
+from flnd.kit import files as _files
 
 COUNT = kit.size(5000, 50)
 DATA = os.urandom(100 * 1024)
@@ -52,7 +52,7 @@ def part_write(folder: Path) -> None:
 
 
 def fs_write(folder: Path) -> None:
-    """Write every file with `flnd._files.write`."""
+    """Write every file with `flnd.kit.files.write`."""
     for n in range(COUNT):
         _files.write(folder / str(n), DATA)
 

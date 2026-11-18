@@ -1,6 +1,6 @@
 """flnd/_transfer.py: one post's file through the source's client, mirrors, DASH and its checks.
 
-Every transfer runs through a real `flnd._net.Client` on `_net.fake`, on a loop of its own
+Every transfer runs through a real `flnd.kit.net.Client` on `_net.fake`, on a loop of its own
 (`asyncio.run`), with `clock.Fake`, so nothing opens a socket or sleeps.
 """
 
@@ -16,10 +16,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import _net, _time, _tools, _transfer
-from flnd._ui import ui
+from flnd import _transfer
 from flnd.errors import Error, NetworkError
+from flnd.kit import clock as _time
+from flnd.kit import files as _tools
+from flnd.kit import net as _net
 from flnd.source import File, SiteError
+from flnd.ui.log import ui
 
 
 def broken():
@@ -39,7 +42,7 @@ class NetCase(unittest.TestCase):
         self.tmp = Path(folder.name)
         self.fake = self.enterContext(_time.use(_time.Fake()))
         # The backoff's jitter at its top, so a wait reads 1, 2, 4 s.
-        self.enterContext(mock.patch("flnd._net.random.uniform", lambda low, high: high))
+        self.enterContext(mock.patch("flnd.kit.net.random.uniform", lambda low, high: high))
         self.enterContext(_net.fake(lambda request: self.serve(request)))
         self.stop = threading.Event()
         self.requests = []
@@ -136,7 +139,7 @@ class DownloadTest(NetCase):
         with self.client(ConnectionRefusedError("refused")) as client, self.assertRaises(Error) as caught:
             self.download(client, "https://cdn.example/a.jpg")
         self.assertIsInstance(caught.exception, NetworkError)
-        # The first try and 4 more (`flnd._net`'s policy).
+        # The first try and 4 more (`flnd.kit.net`'s policy).
         self.assertEqual(len(self.requests), 5)
         self.assertEqual(list((self.tmp / "posts").iterdir()), [])
 
@@ -349,7 +352,7 @@ class DashDownloadTest(NetCase):
         self.assertEqual([path.name for path in saved.path.parent.iterdir()], ["r.mp4"])
 
     def test_merge_temp_files_are_named_part(self):
-        """Every file a DASH download writes before its rename matches the part names `flnd._files.sweep` removes."""
+        """Every file a DASH download writes before its rename matches the part names `flnd.kit.files.sweep` removes."""
         real_replace, moved = os.replace, []
 
         def spy(src, dst):

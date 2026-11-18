@@ -6,7 +6,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, TypeVar
 
-from flncore.errors import UsageError
+from flnd.errors import UsageError
 
 __all__ = ["load", "read"]
 

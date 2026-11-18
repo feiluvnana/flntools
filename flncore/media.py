@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from flncore.errors import ToolError
+from flnd.errors import ToolError
 
 __all__ = ["merge"]
 
@@ -22,7 +22,7 @@ async def merge(
 ) -> None:
     """Merge video and optional audio streams into `dest` using ffmpeg."""
     if ffmpeg is None:
-        from flncore.files import Tool, which
+        from flnd.kit.files import Tool, which
 
         ff = which("ffmpeg")
         if not ff:

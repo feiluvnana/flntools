@@ -23,7 +23,7 @@ from flnd.sources.twt import CHROME, Twitter
 
 SOURCES_DIR = Path(__file__).resolve().parent.parent / "flnd" / "sources"
 # A source may not reach the loop (threads) or ask the user (prompts) itself: the engine does that.
-FORBIDDEN = ("httpx", "curl_cffi", "playwright", "flnd._loop", "flnd._prompt")
+FORBIDDEN = ("httpx", "curl_cffi", "playwright", "flnd.kit.loop", "flnd.ui.forms")
 FORBIDDEN_NAMES = {"_loop", "_prompt"}
 
 

@@ -3,13 +3,13 @@
 This is flnd's side of the source API: it implements `flnd.source.Site` on the libraries. It
 holds:
 - `source_run` opens one source's resources for a run (`SourceRun`): its cookies, its HTTP
-  session and clients (`flnd._net`), its store, and the run's loop that its async code and every
+  session and clients (`flnd.kit.net`), its store, and the run's loop that its async code and every
   transfer run on.
 - `TargetSite` is the `Site` a route or category gets for one target. `fetch` hands one request
   to the run's loop, through the source's listing client. The browser verbs (`open`, `wait`,
   `scroll`, `feed`, `document`, `evaluate`, `click`) each hand one call to the run's loop,
-  where `flnd._browser` drives the tab.
-- `shared_browser` gives a run its loop and its one browser (`flnd._browser.RunBrowser`), shared
+  where `flnd.kit.browser` drives the tab.
+- `shared_browser` gives a run its loop and its one browser (`flnd.kit.browser.RunBrowser`), shared
   by every source and target, and closes both when the run ends.
 - `LoginSite` is the `Site` a source's `Login.start` gets during `flnd login`: it can ask in the
   terminal, and has no target.
@@ -20,19 +20,21 @@ Who calls it: the engine (`flnd.engine` opens `shared_browser` and one `source_r
 and hands `flnd login` a `LoginSite`), the job (`flnd.job` makes a `TargetSite` per target and
 sets its `listing`), the library (`flnd._library` opens a `TargetSite` on a source's account),
 and the test kit (`flnd.testing` reuses `paged`). What it
-calls: the libraries `flnd._net` (HTTP), `flnd._browser` (tabs), `flnd._loop` (the run's event
-loop), `flnd._vault` and `flnd._home` (secrets, state, cookies), `flnd._prompt` and `flnd._ui`.
+calls: the libraries `flnd.kit.net` (HTTP), `flnd.kit.browser` (tabs), `flnd.kit.loop` (the run's
+event
+loop), `flnd.kit.vault` and `flnd._home` (secrets, state, cookies), `flnd.ui.forms` and
+`flnd.ui.log`.
 
 A run, step by step:
 1. `shared_browser` makes the run's one event loop and its `RunBrowser`, which launches nothing
    until a target asks for a tab.
 2. `source_run` reads the source's `[sources.<code>]` settings from the home's config.toml
    (`flnd.options.config`), loads its login cookies from the home, warns of any about to
-   expire, and builds its `_net.Session` and two clients over one `_net.Limits` (below).
+   expire, and builds its `net.Session` and two clients over one `net.Limits` (below).
 3. Each target gets a `TargetSite`. Its `fetch` and browser verbs run on the target's listing
    thread, and each hands one coroutine to the run's loop and waits for it.
 4. A refusal from the source's own domains with 401 or 403 becomes a `LoginError`; every other
-   error from `flnd._net` passes through as it is.
+   error from `flnd.kit.net` passes through as it is.
 5. When the source's last target is done, the `SourceRun` closes its session, its stores and any
    loop of its own; when the run ends, `shared_browser` closes the browser, then the loop.
 
@@ -41,13 +43,14 @@ on the loop, where only `site.tab` (awaited) reaches the browser. A `Listing` be
 listing thread too: the job sets it before a category is listed and reads it after. A blocking
 call (`fetch`, `open`, …) made from code on the loop is refused, since it would wait for itself.
 
-The network side of a source (flnd/docs/architecture, "Network"): one `flnd._net.Session` with the
+The network side of a source (flnd/docs/architecture, "Network"): one `flnd.kit.net.Session` with
+the
 login's cookies, the source's user agent and its `sign` hook (for requests to its own
-domains), and one `flnd._net.Limits` with two pools:
+domains), and one `flnd.kit.net.Limits` with two pools:
 - *pages*, the listing's requests to the source's own `domains`: a token bucket at the
   source's `pace` (or the config's `pace` for it), which a 429's wait holds and halves;
 - *media*, every file download, and the listing's requests to other hosts: a cap per host
-  that starts at `MEDIA_CAP` transfers at once and adapts (`flnd._net.Cap`): it halves when
+  that starts at `MEDIA_CAP` transfers at once and adapts (`flnd.kit.net.Cap`): it halves when
   the host is overloaded, and grows up to `MEDIA_MOST`, or the `limits` for that host (the
   source's, with the config's over them), while the host's throughput still rises. A site's
   files often come from its own domain (TikTok's CDN hosts), and holding them to the
@@ -69,16 +72,18 @@ from typing import (
     TypeVar,
 )
 
-from flnd import _browser, _home, _loop, _net, _prompt, _text, _time, _vault
-from flnd._ui import ui
+from flnd import _home
 from flnd.errors import Blocked, LoginError, SiteError, SourceError, Stopped, UsageError
+from flnd.kit import browser, clock, loop, net, text, vault
 from flnd.options import SourceConfig, config
 from flnd.source import Range, Request, Source, Target, dig
+from flnd.ui import forms
+from flnd.ui.log import ui
 
 if TYPE_CHECKING:
-    from flnd import _cookies
-    from flnd._html import Document
     from flnd._run import Stop
+    from flnd.kit import cookies
+    from flnd.kit.html import Document
     from flnd.options import RunShared
 
 __all__ = ["Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "paged",
@@ -113,34 +118,34 @@ class SourceRun:
     # What the run shares across sources: the home, its database, the stop flag.
     settings: RunShared
     # The login's cookies.
-    jar: _cookies.Jar
+    jar: cookies.Jar
     # What sends: curl on the run's loop, with the cookies the site sets kept beside the login's.
-    session: _net.Session
+    session: net.Session
     # The listing's requests: stopped by the first Ctrl-C.
-    web: _net.Client
+    web: net.Client
     # The files' downloads, over the same session and limits: stopped by the second Ctrl-C.
-    files: _net.Client
+    files: net.Client
     # The source's `[sources.<code>]` settings in the home's config.toml: pace, scroll, limits,
     # proxy and stop_after, each over what the source's class says.
     config: SourceConfig = field(default_factory=SourceConfig)
     # What the source's `connect` gave, entered once for the run.
     client: Any = None
     _state: _home.Home | None = field(default=None, repr=False)
-    _secrets: _vault.Vault | None = field(default=None, repr=False)
+    _secrets: vault.Vault | None = field(default=None, repr=False)
     # A loop of the source's own, made only outside a run (`shared_browser` gives the run's).
-    _own_loop: _loop.Loop | None = field(default=None, repr=False)
+    _own_loop: loop.Loop | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
     # Whether a target already said that the browser doesn't use the config's proxy.
     _told_proxy: bool = field(default=False, repr=False)
 
     @property
-    def loop(self) -> _loop.Loop:
+    def loop(self) -> loop.Loop:
         """The run's loop, where the browser and async code run; the source's own outside a run."""
         shared = self.settings.browser_pool
         if shared is not None:
             return shared.loop
         if self._own_loop is None:
-            self._own_loop = _loop.Loop()
+            self._own_loop = loop.Loop()
         return self._own_loop
 
     @property
@@ -152,7 +157,7 @@ class SourceRun:
         return max([MEDIA_MOST, *_limits(self.source, self.config).values()])
 
     @property
-    def load(self) -> Mapping[str, _net.Load]:
+    def load(self) -> Mapping[str, net.Load]:
         """Each media host's cap now, and its transfers in flight and waiting: a snapshot."""
         return self.files.limits.load
 
@@ -171,7 +176,7 @@ class SourceRun:
         return self._state.state(self.source.code)
 
     @property
-    def secrets(self) -> _vault.Vault:
+    def secrets(self) -> vault.Vault:
         """The source's encrypted secrets in the home's `secrets.db`, opened on first use."""
         if self._secrets is None:
             self._secrets = _home.secrets(self.settings.home, self.source.code)
@@ -239,8 +244,8 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     limits.suspended = stop.suspended if stop else None
     run = SourceRun(
         source, settings, jar, session,
-        _net.Client(session, limits=limits, stop=stop.soon if stop else None),
-        _net.Client(session, limits=limits, stop=stop.now if stop else None, pace=False),
+        net.Client(session, limits=limits, stop=stop.soon if stop else None),
+        net.Client(session, limits=limits, stop=stop.now if stop else None, pace=False),
         configured,
     )
     try:
@@ -251,7 +256,7 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
 
 
 def _network(source: Source, jar: Iterable[Mapping[str, Any]],
-             settings: SourceConfig) -> tuple[_net.Session, _net.Limits]:
+             settings: SourceConfig) -> tuple[net.Session, net.Limits]:
     """A source's session and limits: its pace on its own domains, caps on every other host.
 
     Args:
@@ -266,10 +271,10 @@ def _network(source: Source, jar: Iterable[Mapping[str, Any]],
     """
     pace = source.pace if settings.pace is None else settings.pace
     rate = 1.0 / pace if pace > 0 else None
-    limits = _net.Limits(paced=lambda host: _matches_domain(source, host), rate=rate,
+    limits = net.Limits(paced=lambda host: _matches_domain(source, host), rate=rate,
                          caps=_limits(source, settings), cap=MEDIA_CAP, most=MEDIA_MOST)
 
-    def prepare(request: _net.Request) -> _net.Request | None:
+    def prepare(request: net.Request) -> net.Request | None:
         # Runs on the loop before each try; the hook only adds headers, so it costs little. The
         # source sees a `flnd.source.Request`, never the HTTP client's own type, so the client
         # may change without breaking a source; what it sets in `headers` is copied back.
@@ -283,7 +288,7 @@ def _network(source: Source, jar: Iterable[Mapping[str, Any]],
         return None
 
     headers = {"User-Agent": source.user_agent} if source.user_agent else None
-    session = _net.Session(headers=headers, cookies=jar, prepare=prepare, handles=limits.total,
+    session = net.Session(headers=headers, cookies=jar, prepare=prepare, handles=limits.total,
                            proxy=settings.proxy)
     return session, limits
 
@@ -306,7 +311,7 @@ class TargetSite:
         time: the target's `--when`, as days.
 
     Used on the target's listing thread. Each browser verb makes one call to the run's loop; the
-    tabs are the target's share of the run's browser (`flnd._browser.Tabs`), opened on first use.
+    tabs are the target's share of the run's browser (`flnd.kit.browser.Tabs`), opened on first use.
     `close()` gives them back, and closes a browser the site launched for itself outside a run.
     """
 
@@ -315,9 +320,9 @@ class TargetSite:
         self._run = run
         self._source = run.source
         # The run's browser; outside a run, one of the site's own, made on first use.
-        self._shared: _browser.RunBrowser | None = run.settings.browser_pool
+        self._shared: browser.RunBrowser | None = run.settings.browser_pool
         self._own = False
-        self._tabs: _browser.Tabs | None = None
+        self._tabs: browser.Tabs | None = None
         # The category being listed, which `pages` resumes and reports its cursor to; set by the
         # job for each category, None between them.
         self.listing: Listing | None = None
@@ -336,7 +341,7 @@ class TargetSite:
         return MappingProxyType(merged)
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              check: bool = True, in_page: bool = False, **request: Any) -> _net.Response:
+              check: bool = True, in_page: bool = False, **request: Any) -> net.Response:
         """Make one request, paced and retried, on the run's loop; see `flnd.source.Site.fetch`.
 
         The request goes through the run's `web` client, so it waits its turn under the
@@ -364,7 +369,7 @@ class TargetSite:
             Stopped: the run was stopped while it waited.
         """
         options = dict(request)
-        url = _net.with_query(url, options.pop("params", None))
+        url = net.with_query(url, options.pop("params", None))
         body = options.pop("body", None)
         if options:
             raise SourceError(f"fetch takes params and body, not {', '.join(sorted(options))}")
@@ -385,7 +390,7 @@ class TargetSite:
             if cookies := self._browser_cookies():
                 self._run.session.add(cookies)
             sending = web.fetch(url, method=method, headers=headers, body=body, check=check)
-        # The client raises flnd's errors as they are (`flnd._net`): a refusal is a `SiteError`
+        # The client raises flnd's errors as they are (`flnd.kit.net`): a refusal is a `SiteError`
         # with its status and response, no answer a `NetworkError`, and a stop `Stopped`.
         try:
             return self._run.loop.run(sending)
@@ -393,7 +398,7 @@ class TargetSite:
             # A login wall: the site's own domains refuse the login. A 401 or 403 from another
             # host (a CDN's expired link) stays the `SiteError` it is.
             if (error.status in LOGIN_WALLS and type(error) is SiteError
-                    and _matches_domain(self._source, _net.URL(url).host)):
+                    and _matches_domain(self._source, net.URL(url).host)):
                 raise LoginError(f"{self._source.code}: the site refused the login "
                                  f"(HTTP {error.status})",
                                  hint=f"run flnd login {self._source.code}",
@@ -409,7 +414,7 @@ class TargetSite:
 
     def html(self, text: str | bytes) -> Document:
         """Parse HTML text; see `flnd.source.Site.html`."""
-        from flnd._html import parse
+        from flnd.kit.html import parse
 
         return parse(text)
 
@@ -418,7 +423,7 @@ class TargetSite:
     def open(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
         """Load `url` in the target's tab; see `flnd.source.Site.open`.
 
-        A warm tab already loading `url` (`flnd._browser.Tabs.warm`) becomes the target's tab,
+        A warm tab already loading `url` (`flnd.kit.browser.Tabs.warm`) becomes the target's tab,
         and only its load is waited for: its request went out when it was warmed, so it isn't
         paced again. Any other load waits its turn under the source's pace, through the source's
         client, which waits out a 429 and tries again.
@@ -437,10 +442,10 @@ class TargetSite:
             # A warm tab already had its first answer, so it isn't paced again: wait for its load.
             try:
                 tabs.run(tabs.page.wait(idle=idle, timeout=timeout))
-            except _browser.WaitError as error:
+            except browser.WaitError as error:
                 self.warn("could not open {url}: {error}", url=url, error=error)
                 return False
-            visit: _browser.Visit | None = first
+            visit: browser.Visit | None = first
         else:
             page = tabs.page
             visit = self._run.loop.run(
@@ -452,8 +457,8 @@ class TargetSite:
             return False
         return True
 
-    async def _visit(self, page: _browser.Page, url: str, idle: bool,
-                     timeout: float) -> _browser.Visit | None:
+    async def _visit(self, page: browser.Page, url: str, idle: bool,
+                     timeout: float) -> browser.Visit | None:
         """Load `url` in the target's tab: one try, which the source's client paces and repeats.
 
         Runs on the loop.
@@ -474,7 +479,7 @@ class TargetSite:
         if visit is not None and visit.status == 429:
             raw_wait = visit.headers.get("retry-after")
             wait = float(raw_wait) if raw_wait and raw_wait.isdigit() else None
-            raise Blocked(f"GET {_text.redact(url)}: HTTP 429", wait=wait, status=429)
+            raise Blocked(f"GET {text.redact(url)}: HTTP 429", wait=wait, status=429)
         return visit
 
     @property
@@ -484,14 +489,14 @@ class TargetSite:
             return "about:blank"
         return self._tabs.page.url
 
-    def wait(self, css: str | None = None, *, url: _browser.Match | None = None,
+    def wait(self, css: str | None = None, *, url: browser.Match | None = None,
              idle: bool = False, timeout: float = 30.0) -> None:
         """See `flnd.source.Site.wait`."""
         tabs = self._verbs()
         tabs.run(tabs.page.wait(css, url=url, idle=idle, timeout=timeout))
 
     def scroll(self, *, until: Callable[[], bool] | None = None,
-               idle: float = _browser.IDLE) -> int:
+               idle: float = browser.IDLE) -> int:
         """Scroll the target's tab until its feed ends or `until()`; see `flnd.source.Site.scroll`.
 
         It scrolls in the source's `scroll` style, as its feeds do.
@@ -511,18 +516,18 @@ class TargetSite:
             pass
         return scroller.scrolls
 
-    def feed(self, match: _browser.Match, *, scroll: bool = False, lines: bool = False,
-             cursor: _browser.Reader | None = None) -> _browser.Feed:
+    def feed(self, match: browser.Match, *, scroll: bool = False, lines: bool = False,
+             cursor: browser.Reader | None = None) -> browser.Feed:
         """See `flnd.source.Site.feed`; it scrolls in the source's `scroll` style."""
-        return _browser.Feed(self._verbs(), match, scroll=scroll, lines=lines, cursor=cursor)
+        return browser.Feed(self._verbs(), match, scroll=scroll, lines=lines, cursor=cursor)
 
     def document(self) -> Document:
         """The tab's page now, parsed; see `flnd.source.Site.document`.
 
         Returns:
-            The page as a `flnd._html.Document`, parsed on the listing thread, not on the loop.
+            The page as a `flnd.kit.html.Document`, parsed on the listing thread, not on the loop.
         """
-        from flnd._html import parse
+        from flnd.kit.html import parse
 
         tabs = self._verbs()
         return parse(tabs.run(tabs.page.content()))
@@ -553,8 +558,8 @@ class TargetSite:
         """Start loading `urls` in background tabs; see `flnd.source.Site.warm`."""
         self._verbs().warm(urls)
 
-    def _verbs(self) -> _browser.Tabs:
-        """`_browser()`, for a browser verb, which only plain `def` code may call.
+    def _verbs(self) -> browser.Tabs:
+        """`browser()`, for a browser verb, which only plain `def` code may call.
 
         Returns:
             The target's tabs.
@@ -568,7 +573,7 @@ class TargetSite:
                               "category; an `async def` one awaits `site.tab` instead")
         return self._browser()
 
-    def _browser(self) -> _browser.Tabs:
+    def _browser(self) -> browser.Tabs:
         """The target's tabs, made on first use.
 
         Returns:
@@ -578,7 +583,7 @@ class TargetSite:
         """
         if self._tabs is None:
             if self._shared is None:
-                self._shared = _browser.RunBrowser(self._run.loop, stealth=self._source.stealth)
+                self._shared = browser.RunBrowser(self._run.loop, stealth=self._source.stealth)
                 self._own = True
             settings = self._run.config
             if settings.proxy is not None and not self._run._told_proxy:
@@ -589,7 +594,7 @@ class TargetSite:
                 ui.warn("{code}: the browser doesn't use the proxy in config.toml; only the "
                         "source's HTTP requests do", code=self._source.code)
             style = settings.scroll or self._source.scroll
-            self._tabs = _browser.Tabs(self._shared, self._run.jar, scroll=style)
+            self._tabs = browser.Tabs(self._shared, self._run.jar, scroll=style)
         return self._tabs
 
     def _browser_cookies(self) -> list[Mapping[str, Any]]:
@@ -654,7 +659,7 @@ class TargetSite:
         Raises:
             Blocked: a fourth round in a row (`QUIET` seconds without a block start again).
         """
-        if _time.now() - self._last_block > QUIET:
+        if clock.now() - self._last_block > QUIET:
             self._rounds = 0
         self._rounds += 1
         if self._rounds > len(BACK_OFF):
@@ -665,12 +670,12 @@ class TargetSite:
         rounds = BACK_OFF[self._rounds - 1]
         seconds = min(retry_after, LONGEST_WAIT) if retry_after is not None else rounds
         ui.warn("{target}: {reason}; waiting {time}", target=str(self.target),
-                reason=reason, time=_text.duration(round(seconds)))
+                reason=reason, time=text.duration(round(seconds)))
         try:
             self.pause(seconds, reason)
         finally:
             # The wait itself isn't quiet time: the next block counts from its end.
-            self._last_block = _time.now()
+            self._last_block = clock.now()
 
     def pause(self, seconds: float, reason: str) -> None:
         """Wait `seconds`, shown with `reason` as the source's wait in the live stats.
@@ -686,7 +691,7 @@ class TargetSite:
         """
         if seconds <= 0:
             return
-        if not _time.sleep(seconds, stop=self._run.web.stop):
+        if not clock.sleep(seconds, stop=self._run.web.stop):
             raise Stopped(f"{self.target}: stopped while waiting: {reason}")
 
     def close(self) -> None:
@@ -736,10 +741,10 @@ class LoginSite:
     @property
     def interactive(self) -> bool:
         """Whether `ask` can ask: `flnd login` in a terminal."""
-        return self._run.settings.interactive and _prompt.interactive()
+        return self._run.settings.interactive and forms.interactive()
 
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
-        """Ask a question in the terminal (`flnd._prompt.ask`), and return what was typed.
+        """Ask a question in the terminal (`flnd.ui.forms.ask`), and return what was typed.
 
         Args:
             message: the question, shown before the cursor.
@@ -757,7 +762,7 @@ class LoginSite:
                              hint=f"run flnd login {self._run.source.code} in a terminal")
         if description:
             ui.info(description)
-        return _prompt.ask(message, secret=secret)
+        return forms.ask(message, secret=secret)
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
@@ -789,11 +794,11 @@ class LoginSite:
             ToolError: Chrome isn't installed.
             FileNotFoundError: Chrome has no default profile.
         """
-        return _browser.local_storage(url, profile="Default")
+        return browser.local_storage(url, profile="Default")
 
     def pause(self, seconds: float, reason: str) -> None:
         """Wait `seconds` during the login (a QR code's refresh); a stop ends it."""
-        if seconds > 0 and not _time.sleep(seconds, stop=self._run.web.stop):
+        if seconds > 0 and not clock.sleep(seconds, stop=self._run.web.stop):
             raise Stopped(f"{self._run.source.code}: stopped while waiting: {reason}")
 
 
@@ -809,7 +814,7 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
     closed before the loop it runs on, even when closing it fails.
 
     Args:
-        settings: the run's; `browser_pool` holds the `flnd._browser.RunBrowser` while it runs.
+        settings: the run's; `browser_pool` holds the `flnd.kit.browser.RunBrowser` while it runs.
 
     Yields:
         Nothing: the browser is reached through `settings.browser_pool`.
@@ -817,8 +822,8 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
     if settings.browser_pool is not None:
         yield
         return
-    loop = _loop.Loop()
-    shared = _browser.RunBrowser(loop)
+    run_loop = loop.Loop()
+    shared = browser.RunBrowser(run_loop)
     settings.browser_pool = shared
     try:
         yield
@@ -827,7 +832,7 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
         try:
             shared.close()
         finally:
-            loop.close()
+            run_loop.close()
 
 
 def login_names(source: Source) -> tuple[str, ...]:
@@ -846,7 +851,7 @@ def _warn_expiring(source: Source, jar: Any) -> None:
         jar: the login's cookies, in Playwright's shape (`name`, `value`, `expires` in Unix
             seconds).
     """
-    now = _time.wall()
+    now = clock.wall()
     names = login_names(source)
     for cookie in jar:
         expires = cookie.get("expires", -1)
@@ -866,7 +871,7 @@ def _warn_expiring(source: Source, jar: Any) -> None:
             ui.warn(
                 "{code}: the login cookie {name} expires in {time}; "
                 "run flnd login {code} again soon",
-                code=source.code, name=cookie["name"], time=_text.duration(expires - now),
+                code=source.code, name=cookie["name"], time=text.duration(expires - now),
             )
 
 

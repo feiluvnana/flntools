@@ -186,7 +186,7 @@ class Flnd:
             ...     fl.download("ins:example_user", when="tomorrow")
             Traceback (most recent call last):
             ...
-            flncore.errors.UsageError: when takes a year (2026), a month (2026-06), ...
+            flnd.errors.UsageError: when takes a year (2026), a month (2026-06), ...
         """
         found = _config(self.home)
         span = _when(found.when if when is None else when)
@@ -224,7 +224,7 @@ class Flnd:
             ...     fl.follow("zzz:example_user")
             Traceback (most recent call last):
             ...
-            flncore.errors.UsageError: unknown source 'zzz'. Sources: ...
+            flnd.errors.UsageError: unknown source 'zzz'. Sources: ...
         """
         found = _config(self.home)
         span = _when(found.when if when is None else when)
@@ -329,7 +329,7 @@ class Flnd:
             ...     fl.unfollow("ins:example_user")
             Traceback (most recent call last):
             ...
-            flncore.errors.UsageError: ins:example_user: not a known target; download it first
+            flnd.errors.UsageError: ins:example_user: not a known target; download it first
         """
         return self._engine().target_sync(self._resolve(targets), enabled=False)
 
@@ -463,7 +463,7 @@ class Flnd:
             ...     fl.login("ins", "netscape")
             Traceback (most recent call last):
             ...
-            flncore.errors.UsageError: ins logs in by a browser (chrome, ...) or a cookie file's ...
+            flnd.errors.UsageError: ins logs in by a browser (chrome, ...) or a cookie file's ...
         """
         from flnd._home import BROWSERS
 
@@ -798,9 +798,9 @@ def _when(text: str | None) -> Range:
     if not text:
         return Range()
     if span := SPAN.fullmatch(text):
-        from flnd import _time
+        from flnd.kit import clock
 
-        today = datetime.date.fromtimestamp(_time.wall())
+        today = datetime.date.fromtimestamp(clock.wall())
         return Range(since=today - datetime.timedelta(days=int(span[1]) * SPAN_DAYS[span[2]]))
     first, dots, last = text.partition("..")
     if not dots:

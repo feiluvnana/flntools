@@ -14,7 +14,7 @@ error hints, JSON error lines, and exit codes.
 
 ```python
 from flncore import App
-from flncore.log import log
+from flnd.ui.log import log
 
 app = App("example", version="1.0.0", help="a demo program")
 

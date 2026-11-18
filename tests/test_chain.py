@@ -1,6 +1,6 @@
 """The chain's own steps (`flnd._steps`): hashing, dedupe, the sidecar, and `Saved` at the end.
 
-Every run fakes the network (`flnd._net.reply` routes, from `test_engine`) and uses synthetic
+Every run fakes the network (`flnd.kit.net.reply` routes, from `test_engine`) and uses synthetic
 photos.
 """
 
@@ -17,9 +17,9 @@ from test_engine import CDN, EngineCase, make_source, noise
 
 JPEG = noise("JPEG")
 
-from flnd import _net
 from flnd._events import Saved
 from flnd.engine import Engine
+from flnd.kit import net as _net
 from flnd.source import File, Post, Source, target
 
 

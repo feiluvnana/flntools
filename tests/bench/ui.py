@@ -24,11 +24,10 @@ from typing import Any
 
 import kit
 
-from flncore.log import UI, Group
 from flnd import job
 from flnd._run import Run
-from flnd._ui import ui
 from flnd.source import Target
+from flnd.ui.log import UI, Group, ui
 
 EVENTS = kit.size(100_000, 2_000)
 TARGETS, FILES = 20, 6

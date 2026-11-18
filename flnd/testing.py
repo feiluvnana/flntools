@@ -43,7 +43,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from flnd import _time
+from flnd.kit import clock
 from flnd.source import (
     File,
     NotFound,
@@ -59,7 +59,7 @@ from flnd.source import (
 if TYPE_CHECKING:
     import datetime
 
-    from flnd import _net
+    from flnd.kit import net
     from flnd.options import Options
 
 __all__ = ["Collected", "FakeSite", "Seen", "check", "collect", "fake_clock"]
@@ -176,7 +176,7 @@ class FakeSite:
         return self._time
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              check: bool = True, in_page: bool = False, **request: Any) -> _net.Response:
+              check: bool = True, in_page: bool = False, **request: Any) -> net.Response:
         """Answer one request from the fixtures, and record it in `seen.requests`.
 
         Args:
@@ -199,22 +199,22 @@ class FakeSite:
             >>> site.fetch("https://www.example.com/?ref=1").text
             '<h1>Hi</h1>'
         """
-        from flnd import _net
+        from flnd.kit import net
 
         self._seen.requests.append(
             (method, url, {"headers": dict(headers or {}), "in_page": in_page, **request}))
         if url.split("?")[0] in self._json:
             answer = _answer(self._json, url, request)
             if not isinstance(answer, SiteError):
-                return _net.Response(200, url, {"content-type": "application/json"},
+                return net.Response(200, url, {"content-type": "application/json"},
                                      jsonlib.dumps(answer).encode())
         else:
             answer = _answer(self._html, url, request)
             if not isinstance(answer, SiteError):
-                return _net.Response(200, url, {"content-type": "text/html"},
+                return net.Response(200, url, {"content-type": "text/html"},
                                      str(answer).encode())
         if not check and answer.status is not None:
-            return answer.response or _net.Response(answer.status, url, {})
+            return answer.response or net.Response(answer.status, url, {})
         raise answer
 
     def pages(self, url: str, *, cursor: str | Callable[[Any], Any],
@@ -351,11 +351,11 @@ class FakeSite:
             >>> site.document().first("h1").text
             'Hi'
         """
-        from flnd import _html
+        from flnd.kit import html
 
         # The fixture of the URL last opened, even where a subclass reports a redirect as `url`.
         last = self._seen.visited[-1] if self._seen.visited else ""
-        return _html.parse(self._pages.get(last, ""))
+        return html.parse(self._pages.get(last, ""))
 
     def evaluate(self, js: str, *, arg: Any = None) -> Any:
         """Run nothing: a fake page has no script.
@@ -420,9 +420,9 @@ class FakeSite:
             >>> FakeSite().html("<p>one</p>").first("p").text
             'one'
         """
-        from flnd import _html
+        from flnd.kit import html
 
-        return _html.parse(text)
+        return html.parse(text)
 
     def pause(self, seconds: float, reason: str) -> None:
         """Return at once.
@@ -464,7 +464,7 @@ class FakeSite:
         Example:
             >>> FakeSite(Target("exm:example_user")).ask("Code")
             Traceback (most recent call last):
-            flncore.errors.UsageError: exm: a run can't ask 'Code'
+            flnd.errors.UsageError: exm: a run can't ask 'Code'
         """
         raise UsageError(f"{self.target.source}: a run can't ask {message!r}")
 
@@ -516,7 +516,7 @@ class _FakeFeed:
 
     Iterating yields what is waiting. Then, with `scroll`, it asks the site to deliver once
     more, and ends when nothing new came, or when `cursor` read the end (as the engine's feed
-    reads it, `flnd._browser._Cursors`); without `scroll` it asks once and ends, as the engine's
+    reads it, `flnd.kit.browser._Cursors`); without `scroll` it asks once and ends, as the engine's
     feed waits once for quiet.
 
     Args:
@@ -528,12 +528,12 @@ class _FakeFeed:
 
     def __init__(self, site: FakeSite, match: Any, *, scroll: bool = False,
                  cursor: Any = None) -> None:
-        from flnd import _browser
+        from flnd.kit import browser
 
         self._site = site
-        self._matches = _browser._matcher(match)
+        self._matches = browser._matcher(match)
         self._scroll = scroll
-        self._cursors = _browser._Cursors(cursor)
+        self._cursors = browser._Cursors(cursor)
         self._waiting: deque[Any] = deque()
         self._closed = False
         site._feeds.append(self)
@@ -643,7 +643,7 @@ class Collected:
     @property
     def date(self) -> datetime.date | None:
         """The post's day, read as the engine reads it; None for an undated post."""
-        return _time.day(self.post.date)
+        return clock.day(self.post.date)
 
 
 def collect(source: type[Source], target: str, *, site: FakeSite | None = None,
@@ -753,12 +753,13 @@ def _first_key(source: Source, post: Post, category: Any) -> str | None:
     Returns:
         The key; None when the template needs the files' paths to be filled.
     """
-    from flnd import _text, job
+    from flnd import job
+    from flnd.kit import text
 
     template = job._format(source, category, "key")
     if not template or job._fields(template) & job.LISTED_FIELDS:
         return None
-    return _text.fill(template, {**post.fields, "post": post.id, "category": post.category,
+    return text.fill(template, {**post.fields, "post": post.id, "category": post.category,
                                  "num": 0}, safe=False) or None
 
 
@@ -846,7 +847,7 @@ def _examples(source: type[Source], doc: str) -> list[str]:
 # ---------------------------------------------------------------------------------------------
 
 @contextmanager
-def fake_clock(start: float = 0.0) -> Iterator[_time.Fake]:
+def fake_clock(start: float = 0.0) -> Iterator[clock.Fake]:
     """A clock that moves only when something sleeps on it, for the `with` block.
 
     flnd's waits (a source's `pace`, a back-off, a retry's delay) sleep on the active clock, so
@@ -860,12 +861,12 @@ def fake_clock(start: float = 0.0) -> Iterator[_time.Fake]:
         wait's seconds), `sleep(seconds)` and `advance(seconds)`.
 
     Example:
-        >>> from flnd import _time
+        >>> from flnd.kit import clock
         >>> with fake_clock() as clock:
-        ...     _time.sleep(30)
+        ...     clock.sleep(30)
         ...     clock.now, clock.slept
         True
         (30.0, [30])
     """
-    with _time.use(_time.Fake(start)) as clock:
-        yield clock
+    with clock.use(clock.Fake(start)) as fake:
+        yield fake

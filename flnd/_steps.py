@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from flnd import _files, _text
-from flnd._ui import ui
 from flnd.errors import DiskError, Error
+from flnd.kit import files, text
+from flnd.ui.log import ui
 
 if TYPE_CHECKING:
     from flnd._events import Saved
@@ -109,12 +109,12 @@ class Chain:
         Args:
             item: the landed file to process.
         """
-        from flnd import _unpack
+        from flnd.kit import files
 
         if self._stopping():
             self._finish(item, moved=False)
             return
-        if item.password is not None or _unpack.is_archive(item.path):
+        if item.password is not None or files.is_archive(item.path):
             self._lane("archive").put(item)
             return
         self._finish(item, moved=False)
@@ -174,12 +174,12 @@ class Chain:
         Args:
             item: the landed file.
         """
-        from flnd import _unpack
+        from flnd.kit import files
 
         try:
             if not item.path.exists():
                 ui.debug("{name}: gone before its steps ran", name=item.path.name)
-            elif item.password is not None or _unpack.is_archive(item.path):
+            elif item.password is not None or files.is_archive(item.path):
                 self._unpack(item)
         finally:
             self._finish(item, moved=True)
@@ -197,10 +197,10 @@ class Chain:
         Args:
             item: the landed archive.
         """
-        from flnd import _unpack
+        from flnd.kit import files
 
         try:
-            folder = _unpack.extract(item.path, password=item.password)
+            folder = files.extract(item.path, password=item.password)
         except Error as error:
             self.tally.unpack_failed += 1
             ui.warn("{name}: not extracted: {error}", name=item.path.name, error=error)
@@ -228,7 +228,7 @@ class Chain:
             return
         path = Path(row.path)
         try:
-            linked = _files.link(held, path)
+            linked = files.link(held, path)
         except DiskError as error:
             ui.debug("{name}: not linked: {error}", name=path.name, error=error)
             return
@@ -317,7 +317,7 @@ class Chain:
         side = path.with_name(path.name + SIDECAR)
         body = msgspec.json.format(msgspec.json.encode(item.meta, enc_hook=str), indent=2)
         try:
-            _files.write(side, body + b"\n")
+            files.write(side, body + b"\n")
             record(self.db, item.key, sidecar=str(side))
         except DiskError as error:
             ui.warn("{name}: no sidecar: {error}", name=path.name, error=error)
@@ -329,11 +329,11 @@ class Chain:
         tally = self.tally
         parts = []
         if tally.unpacked:
-            parts.append(f"{_text.count(tally.unpacked, 'archive')} extracted")
+            parts.append(f"{text.count(tally.unpacked, 'archive')} extracted")
         if tally.unpack_failed:
             parts.append(f"{tally.unpack_failed} not extracted")
         if tally.linked:
-            parts.append(f"{_text.count(tally.linked, 'file')} already saved elsewhere, linked")
+            parts.append(f"{text.count(tally.linked, 'file')} already saved elsewhere, linked")
         if parts:
             (ui.warn if tally.unpack_failed else ui.ok)("Media: {line}", line="; ".join(parts))
 

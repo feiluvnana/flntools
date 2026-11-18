@@ -28,9 +28,10 @@ from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswo
 from test_commands import FlndCase, Stdin
 from test_engine import EngineCase, make_source
 
-from flnd import _home, _text, _transfer
+from flnd import _home, _transfer
 from flnd._events import Progress
 from flnd.engine import Engine
+from flnd.kit import text as _text
 from flnd.options import Options
 from flnd.site import LoginSite
 from flnd.source import LoginError, Target, UsageError
@@ -399,7 +400,7 @@ def decode_session(string):
 
 
 class FakeTab:
-    """The tab `flnd._browser.local_storage` opens: it lands on `url`, and `evaluate` answers its script."""
+    """The tab `flnd.kit.browser.local_storage` opens: it lands on `url`, and `evaluate` answers its script."""
 
     def __init__(self, url, evaluate):
         async def evaluated(script):
@@ -433,7 +434,7 @@ class ReadTelegramWebTest(unittest.TestCase):
         # The login site's own `storage`, which reads nothing of the site it's on.
         site = SimpleNamespace(storage=lambda url: LoginSite.storage(cast(Any, None), url))
         # Never the real browser: a real launch would copy the user's own Chrome profile.
-        with mock.patch("flnd._browser.launch", launch):
+        with mock.patch("flnd.kit.browser.launch", launch):
             return read_telegram_web(site)
 
     def test_the_storage_of_a_tab_that_reached_telegram_web(self):
@@ -484,7 +485,7 @@ class LoginCase(EngineCase):
 
     def answer(self, *answers):
         tty = mock.patch("sys.stdin.isatty", return_value=True)
-        ask = mock.patch("flnd._prompt.ask", side_effect=list(answers))
+        ask = mock.patch("flnd.ui.forms.ask", side_effect=list(answers))
         tty.start()
         ask.start()
         self.addCleanup(ask.stop)

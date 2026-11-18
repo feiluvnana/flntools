@@ -30,8 +30,9 @@ import no_profiles  # noqa: F401  (also points $FLND_SOURCES away from the real 
 from test_engine import EngineCase, noise
 
 import flnd
-from flnd import _net, _plugins, job
+from flnd import _plugins, job
 from flnd import cli as flnd_cli
+from flnd.kit import net as _net
 from flnd.sources import SOURCES, _find
 
 ROOT = Path(__file__).resolve().parent.parent

@@ -1,9 +1,9 @@
 """A browser library: async Playwright on an asyncio loop, shared tabs, response capture, scrolling.
 
 A standalone library: it imports the standard library, Playwright and flnd's other library
-modules (`_loop`, `_net`, `_cookies`, `_prompt`, `_ui`, `_text`, `_time`, `errors`), and nothing
+modules (`_loop`, `net`, `_cookies`, `forms`, `_ui`, `_text`, `clock`, `errors`), and nothing
 of flnd's engine. In flnd, `flnd.site.TargetSite` builds the `Site` browser verbs a source calls
-on it, each one call across to the run's loop (`flnd._loop.Loop.run`, about 40 µs).
+on it, each one call across to the run's loop (`flnd.kit.loop.Loop.run`, about 40 µs).
 
 What it offers, from the bottom up:
 - `launch` starts Chrome (or Playwright's Chromium, offering to download it) and gives a
@@ -73,12 +73,10 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from flncore import clock as _time
-from flncore import net as _net
-from flncore import prompt as _prompt
-from flncore.errors import Changed, NetworkError, Stopped, ToolError, UsageError
-from flncore.log import log as ui
-from flncore.log import redact as _redact
+from flnd.errors import Changed, NetworkError, Stopped, ToolError, UsageError
+from flnd.kit import clock, net
+from flnd.ui import forms
+from flnd.ui.log import redact, ui
 
 NO_PROFILES = "FLND_TEST_NO_PROFILES"
 
@@ -118,14 +116,17 @@ def _belongs(domain: str, to: str) -> bool:
 class Jar:
     """An immutable collection of cookies: filter it, read it by name, send or save it."""
 
-    _error_type: type[Exception] = UsageError
-    __slots__ = ("_cookies",)
+    __slots__ = ("_cookies", "_error")
 
-    def __init__(self, cookies: Iterable[Mapping[str, Any]] = ()):
+    def __init__(
+        self, cookies: Iterable[Mapping[str, Any]] = (), *, error: type[Exception] = UsageError
+    ):
+        # The class a bad cookie raises: a caller that reads cookies from a file passes its own.
+        self._error = error
         kept = []
         for index, cookie in enumerate(cookies):
             if not isinstance(cookie, dict) or "name" not in cookie or "value" not in cookie:
-                raise self._error_type(f"cookie {index} needs a name and a value")
+                raise self._error(f"cookie {index} needs a name and a value")
             kept.append(dict(cookie))
         self._cookies: tuple[Mapping[str, Any], ...] = tuple(kept)
 
@@ -145,10 +146,13 @@ class Jar:
         else:
             wanted = set(names)
         return self.__class__(
-            cookie for cookie in self._cookies
-            if (wanted_domains is None
-                or any(_belongs(str(cookie.get("domain", "")), dom) for dom in wanted_domains))
-            and (wanted is None or cookie["name"] in wanted)
+            (
+                cookie for cookie in self._cookies
+                if (wanted_domains is None
+                    or any(_belongs(str(cookie.get("domain", "")), dom) for dom in wanted_domains))
+                and (wanted is None or cookie["name"] in wanted)
+            ),
+            error=self._error,
         )
 
     @property
@@ -177,14 +181,14 @@ class Jar:
             has_newline = any(m in "".join(fields) for m in "\r\n")
             if has_tab or has_newline:
                 name = cookie["name"]
-                raise self._error_type(
+                raise self._error(
                     f"cookie {name!r} for {domain} has a tab or newline Netscape cannot hold"
                 )
             lines.append("\t".join(fields))
         text = "\n".join(lines) + "\n"
         path.parent.mkdir(parents=True, exist_ok=True)
-        from flncore import files as _files
-        with _files.part(path) as held:
+        from flnd.kit import files
+        with files.part(path) as held:
             if os.name != "nt":
                 os.chmod(held.fd, 0o600)
             held.write(text.encode("utf-8"))
@@ -220,7 +224,7 @@ if TYPE_CHECKING:
     from playwright.async_api import BrowserContext, Locator, Playwright, Response
     from playwright.async_api import Page as RawPage
 
-    from flncore.loop import Loop
+    from flnd.kit.loop import Loop
 
 __all__ = [
     "FAST", "HUMAN", "Browser", "Capture", "Feed", "Jar", "Match", "Page", "Reader",
@@ -519,7 +523,7 @@ async def _start_playwright() -> Playwright:
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        raise ImportError("flnd._browser needs playwright: pip install playwright") from None
+        raise ImportError("flnd.kit.browser needs playwright: pip install playwright") from None
     return await async_playwright().start()
 
 
@@ -647,7 +651,7 @@ def _channel(playwright: Playwright) -> str:
             raise _chromium_failed
         # Without a terminal `confirm` answers its default, no, at once. A no is kept for the
         # process, so it is asked only once.
-        if _chromium_declined or not _prompt.confirm(CHROMIUM_QUESTION, default=False):
+        if _chromium_declined or not forms.confirm(CHROMIUM_QUESTION, default=False):
             _chromium_declined = True
             raise ToolError(NEEDS_CHROME, hint=INSTALL_CHROME)
         try:
@@ -935,7 +939,7 @@ class Page:
             )
         # Playwright's Error covers DNS failures, aborted requests and timeouts ("not loaded").
         except _raw_error() as error:
-            clean = _redact(url)
+            clean = redact(url)
             ui.warn("could not open {url}: {error}", url=clean,
                     error=_first_line(error).replace(url, clean))
             return None
@@ -977,11 +981,11 @@ class Page:
 
         The conditions are waited for in the order above.
         """
-        deadline = _time.now() + timeout
+        deadline = clock.now() + timeout
 
         def left() -> float:
             # Playwright reads a timeout of 0 as "no timeout", so the last moment is 1 ms, not 0.
-            return max(1.0, (deadline - _time.now()) * 1000)
+            return max(1.0, (deadline - clock.now()) * 1000)
 
         what = "the page to load"
         try:
@@ -1048,7 +1052,7 @@ class Page:
 
     async def fetch(self, url: str, *, method: str = "GET",
                     headers: Mapping[str, str] | None = None, body: Any = None,
-                    check: bool = True) -> _net.Response:
+                    check: bool = True) -> net.Response:
         """Send one request from the page, with its cookies, origin and TLS.
 
         Args:
@@ -1056,10 +1060,10 @@ class Page:
             method: the HTTP method.
             headers: extra headers.
             body: a dict (the query for a GET, JSON otherwise), a list (JSON), text or bytes.
-            check: raise for a status of 400 or more, as `flnd._net` does.
+            check: raise for a status of 400 or more, as `flnd.kit.net` does.
 
         Returns:
-            The answer, as `flnd._net` gives one.
+            The answer, as `flnd.kit.net` gives one.
 
         Raises:
             NetworkError: the page couldn't send it or got no answer within `FETCH_TIMEOUT`.
@@ -1067,7 +1071,7 @@ class Page:
         """
         method = method.upper()
         sent = dict(headers or {})
-        if isinstance(body, Mapping) and method in _net.QUERY_METHODS:
+        if isinstance(body, Mapping) and method in net.QUERY_METHODS:
             url, body = _with_query(url, body), None
         elif isinstance(body, (Mapping, list)):
             body = json.dumps(body).encode("utf-8")
@@ -1078,7 +1082,7 @@ class Page:
         encoded = None if body is None else base64.b64encode(bytes(body)).decode("ascii")
         request = {"url": url, "method": method, "headers": sent, "body": encoded,
                    "ms": FETCH_TIMEOUT * 1000}
-        where = f"{method} {_redact(url)}"
+        where = f"{method} {redact(url)}"
         try:
             result = await self.raw.evaluate(IN_PAGE_FETCH, request)
         # A tab that navigated, closed or crashed meanwhile: the page is gone, not refused.
@@ -1086,17 +1090,17 @@ class Page:
             raise NetworkError(_without_values(f"{where}: the page couldn't send it: "
                                                f"{_first_line(error)}", sent),
                                retryable=True) from None
-        where = f"{method} {_redact(result['resolved'])}"
+        where = f"{method} {redact(result['resolved'])}"
         if "error" in result:
             if result["error"] == "timeout":
                 raise NetworkError(f"{where}: no answer within {FETCH_TIMEOUT:g} s",
                                    retryable=True)
             raise NetworkError(_without_values(f"{where}: {result['error']}", sent))
-        response = _net.Response(
+        response = net.Response(
             status=result["status"], url=result["url"], headers=dict(result["headers"]),
             content=base64.b64decode(result["body"]),
         )
-        return _net._checked(response, method) if check else response
+        return net._checked(response, method) if check else response
 
     async def scroll(self, *, until: Callable[[], bool] | None = None,
                      within: str | None = None, idle: float = IDLE, style: str = HUMAN) -> int:
@@ -1345,7 +1349,7 @@ class _Scroller:
         # 2. Scroll.
         await self._move()
         self.scrolls += 1
-        moved = _time.now()
+        moved = clock.now()
         # 3. Watch, pausing meanwhile. One draw sets both pauses, so a step takes as many numbers
         # from the random source whatever the page does, and a seeded run repeats.
         scale = min(math.exp(page.random.gauss(0.0, SPREAD)), LONGEST) if human else 0.0
@@ -1360,7 +1364,7 @@ class _Scroller:
                 deadline = min(deadline, self._quiet_since + self._idle)
             progressed = await self._progress(heard, before, deadline)
         if human:
-            left = moved + (look if progressed else glance) - _time.now()
+            left = moved + (look if progressed else glance) - clock.now()
             if left > 0:
                 await page._nap(left)
         # 4. Go on, or count the quiet.
@@ -1368,10 +1372,10 @@ class _Scroller:
             self._quiet_since = None
             return True
         if self._quiet_since is None:
-            self._quiet_since = _time.now()
+            self._quiet_since = clock.now()
             return True
         # The same sum as the deadline above, so a wait that reached it is always the end.
-        return _time.now() < self._quiet_since + self._idle
+        return clock.now() < self._quiet_since + self._idle
 
     async def _move(self) -> None:
         """Scroll once, as the style says: a jump to the bottom, or a human glide."""
@@ -1391,7 +1395,7 @@ class _Scroller:
         await page._roll(distance, target, area, steps=rng.randint(*WHEEL_STEPS))
 
     async def _progress(self, heard: int, before: int, deadline: float) -> bool:
-        """Watch for progress until `deadline`, a time on `flnd._time`'s clock.
+        """Watch for progress until `deadline`, a time on `flnd.kit.clock`'s clock.
 
         Args:
             heard: the capture's `count` before the scroll; a count past it is progress.
@@ -1414,7 +1418,7 @@ class _Scroller:
             self._height = max(self._height, height)
             if height > before:
                 return True
-            left = deadline - _time.now()
+            left = deadline - clock.now()
             if left <= 0:
                 return False
             await page._nap(min(POLL, left), news)
@@ -1496,7 +1500,7 @@ class Capture:
             # unreadable body is still worth a debug line.
             if not _gone(error):
                 ui.debug("responses: no body for {url}: {error}",
-                         url=_redact(response.url), error=_first_line(error))
+                         url=redact(response.url), error=_first_line(error))
         finally:
             self._ready[number] = entry
             while self._flushed in self._ready:
@@ -1756,13 +1760,13 @@ class Tabs:
             raise UsageError(f"cannot hand off to a person in a headless browser: {message}",
                              hint="run it again with a visible browser")
         ui.warn(message)
-        deadline = None if timeout is None else _time.now() + timeout
+        deadline = None if timeout is None else clock.now() + timeout
         with ui.progress(message) as bar:
             while not until():
-                if deadline is not None and _time.now() >= deadline:
+                if deadline is not None and clock.now() >= deadline:
                     bar.fail()
                     return False
-                if not _time.sleep(HANDOFF_POLL, stop=stop):
+                if not clock.sleep(HANDOFF_POLL, stop=stop):
                     raise Stopped("stopped while waiting for a person")
         return True
 
@@ -2085,7 +2089,7 @@ class Feed:
             # A piece that isn't JSON (an HTML error page, say) is skipped; the others still count.
             except ValueError:
                 ui.debug("responses: skipped a body that is not JSON from {url}",
-                         url=_redact(url))
+                         url=redact(url))
                 continue
             self._waiting.append(value)
             self._cursors.read(value)
@@ -2157,7 +2161,7 @@ def local_storage(url: str, *, profile: str = "Default") -> dict[str, str] | Non
         FileNotFoundError: Chrome has no such profile.
         ToolError: Chrome isn't installed.
     """
-    from flncore.loop import Loop
+    from flnd.kit.loop import Loop
 
     with Loop() as loop:
         return loop.run(_local_storage(url, profile))
@@ -2184,7 +2188,7 @@ async def _local_storage(url: str, profile: str) -> dict[str, str] | None:
         try:
             return await page.raw.evaluate("Object.assign({}, localStorage)")
         except _raw_error() as error:
-            where = _redact(url)
+            where = redact(url)
             raise NetworkError(f"could not read {where}: {_first_line(error)}") from None
 
 

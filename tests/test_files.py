@@ -1,4 +1,4 @@
-"""Part names (`flnd._files`) and media validation (`flnd._transfer.checked`), on a temp folder."""
+"""Part names (`flnd.kit.files`) and media validation (`flnd._transfer.checked`), on a temp folder."""
 
 import fnmatch
 import io
@@ -6,10 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from flncore import files as core_files
-from flnd import _files, _transfer
-from flnd._ui import ui
+from flnd import _transfer
 from flnd.errors import SiteError
+from flnd.kit import files as _files
+from flnd.kit import files as core_files
+from flnd.ui.log import ui
 
 
 def jpeg(size=(64, 48)):
@@ -65,7 +66,7 @@ class DigestTest(FilesCase):
     def test_a_straight_write_is_hashed_as_it_goes_without_reading_back(self):
         from unittest import mock
 
-        with mock.patch("flnd._files._digest_fd", side_effect=AssertionError("read back")), \
+        with mock.patch("flnd.kit.files._digest_fd", side_effect=AssertionError("read back")), \
                 _files.part(self.tmp / "a.bin", resume=True, digest=True) as held:
             held.write(b"one ")
             held.write(b"two")

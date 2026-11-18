@@ -89,7 +89,7 @@ class Fake(Clock):
 
 
 _DEFAULT: Clock = _RealClock()
-_current: ContextVar[Clock] = ContextVar("flncore.clock", default=_DEFAULT)
+_current: ContextVar[Clock] = ContextVar("flnd.kit.clock", default=_DEFAULT)
 
 
 def now() -> float:

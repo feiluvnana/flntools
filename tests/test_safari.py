@@ -1,4 +1,4 @@
-"""Safari's cookies (`flnd._cookies.parse_binarycookies`, `load("safari")`), from synthetic files.
+"""Safari's cookies (`flnd.kit.cookies.parse_binarycookies`, `load("safari")`), from synthetic files.
 
 Every binarycookies file here is built by `binarycookies` below, in a temporary home folder
 (`Path.home` is patched), so Safari's real file is never read; `tests/no_profiles.py` makes a read
@@ -15,8 +15,9 @@ from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
-from flnd import _cookies, _home
+from flnd import _home
 from flnd.errors import LoginError, UsageError
+from flnd.kit import cookies as _cookies
 from flnd.sources.ins import Instagram
 
 # 2030-01-01 00:00:00 UTC, in Unix seconds, and in seconds from 2001-01-01 as Safari keeps it.

@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from flncore.cli import OK, USAGE, App, exit_code, report
-from flncore.errors import DiskError, Error, NetworkError, UsageError
+from flnd.errors import DiskError, Error, NetworkError, UsageError
 
 
 def _demo_app() -> App:

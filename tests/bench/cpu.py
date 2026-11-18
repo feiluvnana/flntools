@@ -5,7 +5,7 @@ What it times, in order:
    stdlib and with msgspec (untyped, and typed to the few fields a source reads);
 2. a JSON path: `dig` against plain dict access for the same nodes;
 3. HTML: parsing a 2 MiB Meta-style page (40 scripts, 6 of them JSON, and 20,000 posts) with
-   `flnd._html` (selectolax), then decoding its JSON script blocks (`html_meta`, the number a
+   `flnd.kit.html` (selectolax), then decoding its JSON script blocks (`html_meta`, the number a
    Facebook or Instagram page costs) or reading its 20,000 `img[src]` (`html_images`);
 4. hashing 256 MiB in memory, per MiB;
 5. the loop bridge: a thread calling a coroutine on an event loop thread and waiting for it;
@@ -37,15 +37,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from example_source import CDN, Example  # noqa: E402
 
-from flnd import (  # noqa: E402
-    _html,
-    _text,
-    job,  # noqa: E402
-)
-from flnd._loop import Loop  # noqa: E402
-from flnd._time import day  # noqa: E402
-from flnd._ui import ui
+from flnd import job  # noqa: E402
+from flnd.kit import html as _html  # noqa: E402
+from flnd.kit import text as _text  # noqa: E402
+from flnd.kit.clock import day  # noqa: E402
+from flnd.kit.loop import Loop  # noqa: E402
 from flnd.source import File, Post  # noqa: E402
+from flnd.ui.log import ui
 
 EDGES = "data.user.edge_owner_to_timeline_media.edges[].node"
 

@@ -1,4 +1,4 @@
-"""`flnd._cookies`: `load` and the `Jar`, over fixture files, browsers, and text.
+"""`flnd.kit.cookies`: `load` and the `Jar`, over fixture files, browsers, and text.
 
 Browser profiles are fixture databases under a temporary home folder (`Path.home` is patched),
 the Keychain and keyring passwords are faked, and any real program `subprocess` would run fails
@@ -19,8 +19,8 @@ from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
-from flnd import _cookies
 from flnd.errors import DiskError, LoginError, UsageError
+from flnd.kit import cookies as _cookies
 
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -38,6 +38,16 @@ EXPIRES_UTC = (EXPIRES + 11_644_473_600) * 1_000_000
 DOMAINS = ["instagram.com", ".instagram.com", "www.instagram.com", "WWW.Instagram.COM",
            "notinstagram.com", "instagram.com.evil.net"]
 MATCHING = {"instagram.com", ".instagram.com", "www.instagram.com", "WWW.Instagram.COM"}
+
+
+class JarErrorTest(unittest.TestCase):
+    def test_importing_the_cookies_leaves_the_browser_jar_alone(self):
+        # Importing `_cookies` used to make the browser's Jar raise LoginError for the whole
+        # process; a Jar made anywhere else must keep raising UsageError.
+        from flnd.kit import browser
+
+        with self.assertRaises(UsageError):
+            browser.Jar([{"name": "a"}])
 
 
 def encrypt_chromium(plain, password, iterations, host=None, prefix=b"v10"):
@@ -497,7 +507,7 @@ class JarTest(unittest.TestCase):
         for entry in ({"name": "a"}, {"value": "secret-1"}, "a=1"):
             with self.subTest(entry=entry):
                 with self.assertRaises(LoginError) as caught:
-                    _cookies.Jar([entry])  # type: ignore[list-item]
+                    _cookies.Jar([entry], error=LoginError)  # type: ignore[list-item]
                 self.assertNotIn("secret-1", str(caught.exception))
 
     def test_filter_by_domain_and_names(self):
@@ -559,7 +569,8 @@ class SaveTest(FileTestCase):
 
     def test_line_break_refused(self):
         with self.assertRaises(LoginError):
-            _cookies.Jar([{**self.jar.list[0], "value": "a\nb"}]).save(self.folder / "ins.txt")
+            _cookies.Jar([{**self.jar.list[0], "value": "a\nb"}], error=LoginError).save(
+                self.folder / "ins.txt")
         self.assertEqual(list(self.folder.iterdir()), [])
 
 
@@ -593,7 +604,7 @@ class SecretsTest(FileTestCase):
         messages.append(str(caught.exception))
         for value in (f"{self.SECRET}\n", f"{self.SECRET}\r"):
             with self.assertRaises(LoginError) as caught:
-                _cookies.Jar([cookie("sid", value)]).save(self.folder / "out.txt")
+                _cookies.Jar([cookie("sid", value)], error=LoginError).save(self.folder / "out.txt")
             messages.append(str(caught.exception))
         with self.assertRaises(KeyError) as caught:
             _cookies.Jar([cookie("sid", self.SECRET)])["other"]
@@ -605,7 +616,7 @@ class SecretsTest(FileTestCase):
 
 class ImportTest(unittest.TestCase):
     def test_import_loads_neither_cryptography_nor_playwright(self):
-        code = ("import sys; from flnd import _cookies; "
+        code = ("import sys; from flnd.kit import cookies; "
                 "print(sorted({n.split('.')[0] for n in sys.modules} & {'cryptography', 'playwright'}))")
         result = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), "[]")

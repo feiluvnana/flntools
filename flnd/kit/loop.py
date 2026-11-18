@@ -11,7 +11,7 @@ A library module: it imports only the stdlib, and any threaded program that need
   `async def`): every other task on the loop waits while it does.
 
 Inside flnd a run makes one `Loop` (`flnd.site.shared_browser`), and everything async of that run
-happens on it: the browser (`flnd._browser`), every HTTP transfer (`flnd._net`), a target's
+happens on it: the browser (`flnd.kit.browser`), every HTTP transfer (`flnd.kit.net`), a target's
 downloads, and an async source's coroutines (Telegram's Telethon).
 
     with Loop() as loop:
@@ -31,7 +31,7 @@ Rules a change must keep:
 - `Loop.run` is never called on the loop's own thread: it would wait for itself forever, so it
   raises instead. Code already on the loop awaits.
 - A coroutine handed over runs in a copy of its caller's context (`contextvars`), so the clock a
-  test installed (`flnd._time.use`) and any other context variable reach it.
+  test installed (`flnd.kit.clock.use`) and any other context variable reach it.
 - Closing cancels whatever still runs on the loop, then stops its thread. `_lock` guards the
   start and the close, which two threads may reach at once; it is never held while waiting on
   the loop, so the loop's own callbacks can't deadlock on it.

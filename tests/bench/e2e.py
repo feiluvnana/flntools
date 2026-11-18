@@ -1,7 +1,7 @@
 """Benchmark group `e2e`: a whole flnd run on a faked site, through the real engine and clock.
 
 The site is a source written here, `Bench` (code `bnc`), whose API answers pages of 50 posts;
-each post has a photo and a video of 100 KiB. `flnd._net.fake` answers every request
+each post has a photo and a video of 100 KiB. `flnd.kit.net.fake` answers every request
 in-process on the run's loop, after an optional `asyncio.sleep` that stands in for network
 latency. Nothing leaves the process, and the pace between API requests is the real one.
 
@@ -37,11 +37,12 @@ from typing import Any
 
 import kit
 
-from flnd import _home, _net, _run
-from flnd._ui import ui
+from flnd import _home, _run
 from flnd.engine import Engine
+from flnd.kit import net as _net
 from flnd.options import Options
 from flnd.source import File, Post, Site, Source, Target, target
+from flnd.ui.log import ui
 
 API, CDN, PER_PAGE = "https://api.bench.example", "https://cdn.bench.example", 50
 # The files the home of run 3 holds: the size of a large followed account.

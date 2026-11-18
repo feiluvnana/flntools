@@ -3,14 +3,14 @@
 A small library over selectolax's lexbor parser (a C HTML parser with its own CSS engine) and
 msgspec's JSON decoder. It knows nothing of flnd: any program can use it.
 
-    from flnd import _html
+    from flnd.kit import html
 
-    page = _html.parse(text)
+    page = html.parse(text)
     page.first("h1").text                                      # "Example User"
     [link.attr("href") for link in page.css("a[href*='/video/']")]
     page.script("__NEXT_DATA__")                               # the JSON in <script id=...>
     page.blocks("__bbox")                                      # every JSON block that names it
-    _html.dig(data, "data.user.edges[].node")
+    html.dig(data, "data.user.edges[].node")
 
 What it offers:
 1. `parse(text)` reads HTML text or bytes into a `Document`. HTML never fails to parse: lexbor
@@ -23,7 +23,7 @@ What it offers:
 4. `dig(data, path)` walks parsed JSON by a short path; see its docstring for the four forms.
 
 Who calls it: in flnd, `flnd.source` re-exports `dig`; `flnd.site` parses the page a source's
-browser loads, `flnd._net.Response.html` a response body, and `flnd.testing` the pages of its
+browser loads, `flnd.kit.net.Response.html` a response body, and `flnd.testing` the pages of its
 fakes. What it calls: selectolax, msgspec and `flnd.errors`, nothing else.
 
 The main flow of a read:
@@ -264,7 +264,7 @@ def _parser() -> type[LexborHTMLParser]:
     try:
         from selectolax.lexbor import LexborHTMLParser
     except ImportError:
-        raise ImportError("flnd._html needs selectolax: pip install selectolax") from None
+        raise ImportError("flnd.kit.html needs selectolax: pip install selectolax") from None
     return LexborHTMLParser
 
 
@@ -304,7 +304,7 @@ def _decoder() -> Any:
     try:
         import msgspec.json
     except ImportError:
-        raise ImportError("flnd._html needs msgspec: pip install msgspec") from None
+        raise ImportError("flnd.kit.html needs msgspec: pip install msgspec") from None
     return msgspec.json.decode
 
 
@@ -318,4 +318,4 @@ def _check_size(size: int, unit: str) -> None:
 # JSON paths
 # ---------------------------------------------------------------------------------------------
 
-from flncore.dig import dig
+from flnd.kit.dig import dig

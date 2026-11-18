@@ -1,12 +1,12 @@
-"""Tests for `flnd._ui`: Rich-backed logging, progress, groups, and scoping."""
+"""Tests for `flnd.ui.log`: Rich-backed logging, progress, groups, and scoping."""
 
 import io
 import unittest
 
 from rich.console import Console as RichConsole
 
-from flnd import _time
-from flnd._ui import Group, Row, ui
+from flnd.kit import clock as _time
+from flnd.ui.log import Group, Row, ui
 
 
 class UICase(unittest.TestCase):

@@ -12,7 +12,7 @@ A later one with a code already taken is refused with a warning, never shadowing
 Who calls it: the source registry (`flnd.sources.Registry`), which runs `discover` the first
 time a code it doesn't know is asked for, and `load` the first time a plugin's class is needed.
 What it calls: `importlib` and `importlib.metadata`, `flnd.source` to check what a plugin
-defines, and `flnd._ui` for the warnings.
+defines, and `flnd.ui.log` for the warnings.
 
 How loading stays lazy:
 1. `discover` reads names only: an entry point's name and a file's name are the plugin's code,
@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from flnd._ui import ui
+from flnd.ui.log import ui
 
 if TYPE_CHECKING:
     from flnd.source import Source

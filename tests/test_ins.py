@@ -20,9 +20,10 @@ import fakes
 from fakes import FakeSite, Seen, collect
 from test_source import INSTAGRAM
 
-from flnd import _html, _net
-from flnd._time import day
 from flnd.engine import Engine
+from flnd.kit import html as _html
+from flnd.kit import net as _net
+from flnd.kit.clock import day
 from flnd.options import Options
 from flnd.source import Changed, LoginError, Request, SiteError, Target, UsageError
 from flnd.sources.ins import (
@@ -935,7 +936,8 @@ class MeTest(unittest.TestCase):
             list(Instagram().me(site, "me"))
 
     def test_engine_treats_ins_me_as_query_target(self):
-        from flnd import _cookies, _home
+        from flnd import _home
+        from flnd.kit import cookies as _cookies
         from flnd.source import File, Post
 
         with tempfile.TemporaryDirectory() as tmp:

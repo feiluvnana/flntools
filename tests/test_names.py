@@ -298,7 +298,6 @@ WORD = re.compile(r"[A-Za-z_]\w*")
 CALLED_FROM_OUTSIDE: dict[str, str] = {
     "flnd/_run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
-    "flnd/_vault.py:Keychain": "tests/test_keychain.py exercises the OS keychain path",
 }
 
 
@@ -477,10 +476,10 @@ class PrivateImportTest(unittest.TestCase):
         self.assertEqual(private_imports(path.read_text(encoding="utf-8")), [])
 
     def test_every_spelling_of_a_private_import_is_found(self):
-        source = ("import flnd._net\nfrom flnd._browser import Page\n"
-                  "from flnd import _loop, ui\n")
-        self.assertEqual(private_imports(source), ["flnd._net", "flnd._browser", "flnd._loop"])
-        self.assertEqual(private_imports("from flnd import browser\nimport flnd\n"), [])
+        source = ("import flnd._home\nfrom flnd._run import Run\n"
+                  "from flnd import _job, ui\n")
+        self.assertEqual(private_imports(source), ["flnd._home", "flnd._run", "flnd._job"])
+        self.assertEqual(private_imports("from flnd.kit import net\nimport flnd\n"), [])
 
 
 def _source_files() -> list[str]:

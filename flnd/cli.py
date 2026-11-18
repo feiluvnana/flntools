@@ -8,7 +8,7 @@
 Who calls it: `flnd` (the console script) and `python -m flnd`, through `main`. What it calls:
 the library alone (`flnd.open`, its `Run` and events), so anything the command line does, a
 script can do too; `flnd.sources._manifest` for the built-in sources `--help` lists;
-and the library modules `flnd._prompt` (`flnd login`'s questions) and `flnd._ui` (the level of
+and the library modules `flnd.ui.forms` (`flnd login`'s questions) and `flnd.ui.log` (the level of
 flnd's own log lines and progress bars).
 
 How a command runs (`main`):
@@ -126,7 +126,7 @@ def exit_code(error: BaseException | None) -> int:
     if isinstance(error, KeyboardInterrupt):
         return STOPPED
     for kind in type(error).__mro__:
-        if kind.__module__ in ("flnd.errors", "flncore.errors") and kind.__name__ in CODES:
+        if kind.__module__ == "flnd.errors" and kind.__name__ in CODES:
             return CODES[kind.__name__]
     return BROKE
 
@@ -159,7 +159,7 @@ def _console(file: Any = None) -> Any:
     from rich.console import Console
     from rich.theme import Theme
 
-    from flnd._ui import PALETTE
+    from flnd.ui.log import PALETTE
 
     class _Console(Console):
         def print(self, *args: Any, **kwargs: Any) -> None:
@@ -328,7 +328,7 @@ def ls(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd import _text
+    from flnd.kit import text
 
     with _open(args) as fl:
         rows = fl.targets()
@@ -346,8 +346,8 @@ def ls(args: argparse.Namespace) -> int:
         return OK
     table = []
     for row in rows:
-        held = (_text.count(row.seen, "target") + " found" if row.query
-                else f"{_text.count(row.files, 'file')}, {_text.size(row.size)}")
+        held = (text.count(row.seen, "target") + " found" if row.query
+                else f"{text.count(row.files, 'file')}, {text.size(row.size)}")
         states = ", ".join(f"{name}: {state}" for name, state in row.categories.items())
         table.append((str(row.target), "followed" if row.follow else "-", held,
                       row.at[:10] or "never", states))
@@ -441,7 +441,7 @@ def check(args: argparse.Namespace) -> int:
     Returns:
         0 when history and disk agree (or --fix made them), else 1.
     """
-    from flnd import _text
+    from flnd.kit import text
 
     with _open(args) as fl:
         found = fl.check(fix=args.fix)
@@ -474,7 +474,7 @@ def check(args: argparse.Namespace) -> int:
         problems.append(f"{len(found.unknown)} unknown")
     if found.resized:
         problems.append(f"{len(found.resized)} of the wrong size")
-    line = f"checked {_text.count(found.files, 'file')}: "
+    line = f"checked {text.count(found.files, 'file')}: "
     if not problems:
         c.print(Text.assemble((line, "color(245)"), ("history and disk agree", "bold #02BF87")))
     elif found.fixed:
@@ -927,8 +927,8 @@ def _ask_how(args: argparse.Namespace) -> str:
         UsageError: an unknown source, `--json`, or no terminal to ask in.
     """
     import flnd
-    from flnd import _prompt
     from flnd.sources import _manifest
+    from flnd.ui import forms
 
     entry: Any = _manifest.SOURCES.get(args.source)
     if entry is None:
@@ -942,19 +942,19 @@ def _ask_how(args: argparse.Namespace) -> str:
         entry = {"name": found.name, "logins": found.logins}
     ways: tuple[str, ...] = tuple(entry["logins"])
     hint = f"name it: flnd login {args.source} <how>, with how one of {_ways(ways)}"
-    if args.json or not _prompt.interactive():
+    if args.json or not forms.interactive():
         raise flnd.UsageError(f"{args.source}: how to log in?", hint=hint)
     if "file" not in ways:
-        return _prompt.choose(f"Log in to {entry['name']} with", list(ways))
-    from flnd._cookies import BROWSERS
+        return forms.choose(f"Log in to {entry['name']} with", list(ways))
+    from flnd.kit.cookies import BROWSERS
 
     # Safari is read on macOS only, so it is offered only there.
     choices = {f"cookies from {browser}": browser for browser in BROWSERS
                if browser != "safari" or sys.platform == "darwin"}
     choices["a cookie file (cookies.txt or JSON)"] = "file"
-    picked = _prompt.choose(f"Log in to {entry['name']} with", choices)
+    picked = forms.choose(f"Log in to {entry['name']} with", choices)
     if picked == "file":
-        return _prompt.ask("Path of the cookie file").strip()
+        return forms.ask("Path of the cookie file").strip()
     return picked
 
 
@@ -974,7 +974,7 @@ def _logins(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd import _text
+    from flnd.kit import text
 
     with _open(args) as fl:
         found = fl.logins
@@ -984,7 +984,7 @@ def _logins(args: argparse.Namespace) -> int:
         return OK
     table = []
     for row in found:
-        soon = ", ".join(f"{name} expired" if left <= 0 else f"{name} in {_text.duration(left)}"
+        soon = ", ".join(f"{name} expired" if left <= 0 else f"{name} in {text.duration(left)}"
                          for name, left in row.expiring)
         table.append((row.source, row.name, row.state, row.origin, soon))
     _table(("source", "site", "login", "from", "expiring"), table)
@@ -1108,7 +1108,7 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
     from pathlib import Path
 
     from flnd import _home
-    from flnd._ui import ui
+    from flnd.ui.log import ui
 
     journal_path: Path | None = None
     try:
@@ -1319,20 +1319,20 @@ class _View:
         """
         from rich.text import Text
 
-        from flnd import _text
+        from flnd.kit import text
 
         if report.planned:
             self._con.print(Text.assemble(
                 ("planned ", "bold #7D84D6"),
-                (_text.count(report.planned, "file"), "bold #7D84D6"),
+                (text.count(report.planned, "file"), "bold #7D84D6"),
                 ("; nothing was downloaded", "color(243)"),
             ))
             return
         line = Text()
         line.append("done: ", style="bold #02BF87")
-        line.append(f"{_text.count(report.saved, 'file')} saved", style="bold #02BF87")
+        line.append(f"{text.count(report.saved, 'file')} saved", style="bold #02BF87")
         if report.bytes:
-            line.append(f" ({_text.size(report.bytes)})", style="color(245)")
+            line.append(f" ({text.size(report.bytes)})", style="color(245)")
         if report.skipped:
             line.append(", ", style="color(243)")
             line.append(f"{report.skipped} already saved", style="color(243)")
@@ -1341,7 +1341,7 @@ class _View:
             line.append(f"{report.retried} brought back by a retry", style="bold #02BF87")
         if report.unchanged:
             line.append(", ", style="color(243)")
-            line.append(f"nothing new in {_text.count(report.unchanged, 'listing')}",
+            line.append(f"nothing new in {text.count(report.unchanged, 'listing')}",
                         style="color(243)")
         self._con.print(line)
         if report.failed:
@@ -1474,10 +1474,10 @@ def _summary(failed: Sequence[tuple[BaseException, bool]], *, details: bool = Fa
     """
     from rich.text import Text
 
-    from flnd import _text
+    from flnd.kit import text
 
     files = sum(is_file for _, is_file in failed)
-    nouns = [_text.count(count, noun) for count, noun in
+    nouns = [text.count(count, noun) for count, noun in
              ((files, "file"), (len(failed) - files, "target")) if count]
     kinds: dict[str, int] = {}
     for error, _ in failed:

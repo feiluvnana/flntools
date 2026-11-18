@@ -18,8 +18,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from flncore.errors import Error, UsageError
-from flncore.log import PALETTE
+from flnd.errors import Error, UsageError
+from flnd.ui.log import PALETTE
 
 __all__ = ["App", "OK", "FAILED", "USAGE", "BROKE", "STOPPED", "exit_code", "report"]
 
@@ -51,7 +51,7 @@ def exit_code(
     table = {**_BASE_CODES, **(_class_codes(codes) if codes else {})}
     for kind in type(error).__mro__:
         name = kind.__name__
-        if kind.__module__.startswith("flncore.") and name in table:
+        if kind.__module__ == "flnd.errors" and name in table:
             return table[name]
     return BROKE
 
@@ -273,7 +273,7 @@ class App:
         json_out: bool = False,
     ) -> int:
         """Parse and run one command; print errors and return an exit code."""
-        from flncore import log
+        from flnd.ui import log
 
         argv = list(tokens) if tokens is not None else sys.argv[1:]
         verbose = "-v" in argv or "--verbose" in argv

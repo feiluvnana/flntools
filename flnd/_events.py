@@ -315,7 +315,7 @@ class Record(msgspec.Struct, frozen=True):
         """What the file is by its name: "image", "video" or "audio"; None for anything else."""
         # Imported here: the table of extensions lives with the other path rules, and reading
         # a `Record` shouldn't import them until a script asks.
-        from flnd._files import kind_of
+        from flnd.kit.files import kind_of
 
         return kind_of(self.path.name)
 

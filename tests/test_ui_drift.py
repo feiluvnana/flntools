@@ -1,4 +1,4 @@
-"""Live progress drift on `flnd._ui`, reproduced through a pyte terminal (PLAN step 0).
+"""Live progress drift on `flnd.ui.log`, reproduced through a pyte terminal (PLAN step 0).
 
 Rich redraws transient bars when one of several concurrent rows finishes; the screen can
 keep a stale or duplicate line. Step 4 replaces this UI; until then this test must fail.
@@ -13,8 +13,8 @@ import unittest
 
 import pyte
 
-from flnd import _time
-from flnd._ui import ui
+from flnd.kit import clock as _time
+from flnd.ui.log import ui
 
 
 class _TTY(io.StringIO):

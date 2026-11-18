@@ -6,7 +6,7 @@ import functools
 import re
 from typing import Any, NamedTuple
 
-from flncore.errors import Changed
+from flnd.errors import SourceError
 
 __all__ = ["dig"]
 
@@ -48,7 +48,7 @@ def _compile(path: str) -> tuple[tuple[Any, ...], ...]:
         while at < len(text):
             step = STEP.match(text, at)
             if step is None or step.end() == at:
-                raise Changed(
+                raise SourceError(
                     f"dig: can't read {text[at:]!r} in {path!r}: use a.b, a[0], "
                     "a[], ..[field=value] or a || b"
                 )

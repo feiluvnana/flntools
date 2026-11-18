@@ -98,7 +98,11 @@ def public_names() -> dict[tuple[str, str], str]:
 
 def modules() -> list[Path]:
     """Every module of `PACKAGES`, sorted, so the gaps are reported in one order on every OS."""
-    return sorted(path for package in PACKAGES for path in (ROOT / package).rglob("*.py"))
+    # The kit, the screen and the error classes were flncore, which this check never covered.
+    # They stay out until the whole-package check of PLAN.md step 2 (commit 4) brings them in.
+    outside = (ROOT / "flnd" / "kit", ROOT / "flnd" / "ui", ROOT / "flnd" / "errors.py")
+    return sorted(path for package in PACKAGES for path in (ROOT / package).rglob("*.py")
+                  if not any(path.is_relative_to(folder) for folder in outside))
 
 
 def sections(doc: str) -> dict[str, list[str]]:

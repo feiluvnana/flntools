@@ -4,7 +4,7 @@
   tests need (`options=Options(categories=…, stop_at_saved=…)`), where the public kit takes
   `only` and `time`. `Seen` is the kit's own.
 - `history` and `targets` read what a run saved in a home's `flnd.db`.
-- `fetch` and `download` drive the HTTP library (`flnd._net`) from a test's own thread.
+- `fetch` and `download` drive the HTTP library (`flnd.kit.net`) from a test's own thread.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ from typing import Any
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
-from flnd import _net, testing
+from flnd import testing
+from flnd.kit import net as _net
 from flnd.options import Options
 from flnd.source import Range, Source, Target
 from flnd.testing import Collected, Seen
@@ -88,7 +89,7 @@ def history(home) -> dict[str, dict[str, Any]]:
 
 
 def targets(home) -> dict[str, Any]:
-    """Every target row in a home's `flnd.db`, by key (`flnd._db.TargetRow`)."""
+    """Every target row in a home's `flnd.db`, by key (`flnd.kit.db.TargetRow`)."""
     from pathlib import Path
 
     from flnd import _home
@@ -98,7 +99,7 @@ def targets(home) -> dict[str, Any]:
 # ---------------------------------------------------------------------------------------------
 # The HTTP library, driven from a test's own thread
 # ---------------------------------------------------------------------------------------------
-# `flnd._net` runs on an asyncio loop. These run one call on a loop of its own (`asyncio.run`,
+# `flnd.kit.net` runs on an asyncio loop. These run one call on a loop of its own (`asyncio.run`,
 # which carries the test's context, so a fake clock applies), over a fresh session, inside
 # whatever `_net.fake` the test opened. Each is a blocking call, as a script would make.
 
@@ -114,7 +115,7 @@ def download(url: Any, dest: Any, *, retries: int = _net.RETRIES, stop: Any = No
              resume: bool = True, progress: Any = None, segments: bool = False,
              headers: Mapping[str, str] | None = None) -> Any:
     """`Client.fill` into `dest`'s part on a loop of its own; returns where it landed."""
-    from flnd import _files
+    from flnd.kit import files as _files
 
     async def fill(client: _net.Client) -> Any:
         with _files.part(dest, resume=resume) as held:

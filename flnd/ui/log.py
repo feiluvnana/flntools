@@ -5,6 +5,7 @@ The single renderer, stable keys, and the run journal.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -25,7 +26,7 @@ from rich.control import strip_control_codes
 from rich.text import Text
 from rich.theme import Theme
 
-from flncore import clock as _time
+from flnd.kit import clock
 
 Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
@@ -197,7 +198,7 @@ class Item:
         self.owner = owner
         self.state = State.ACTIVE
         self._note = ""
-        self._started = _time.now()
+        self._started = clock.now()
         self._ended: float | None = None
         self._outcome: Level | None = None
 
@@ -225,7 +226,7 @@ class Item:
         self.state = State.DONE
         if note:
             self._note = note
-        self._ended = _time.now()
+        self._ended = clock.now()
         self._outcome = "ok"
         self.owner._item_finished(self)
 
@@ -236,7 +237,7 @@ class Item:
         self.state = State.SKIPPED
         if note:
             self._note = note
-        self._ended = _time.now()
+        self._ended = clock.now()
         self._outcome = "warn"
         self.owner._item_finished(self)
 
@@ -247,7 +248,7 @@ class Item:
         self.state = State.FAILED
         if note:
             self._note = note
-        self._ended = _time.now()
+        self._ended = clock.now()
         self._outcome = "error"
         self.owner._item_finished(self)
 
@@ -330,7 +331,7 @@ class Journal:
         if "type" not in data:
             data["type"] = event_type
         if "at" not in data:
-            data["at"] = datetime.fromtimestamp(_time.wall(), tz=UTC).isoformat()
+            data["at"] = datetime.fromtimestamp(clock.wall(), tz=UTC).isoformat()
 
         line = json.dumps(data, ensure_ascii=False) + "\n"
         with self._lock:
@@ -447,7 +448,7 @@ class UI:
 
     def _spinner(self) -> str:
         frames = SPIN_FRAMES[0] if self._use_unicode() else SPIN_FRAMES[1]
-        return frames[int(_time.now() * 10) % len(frames)]
+        return frames[int(clock.now() * 10) % len(frames)]
 
     def _get_width(self) -> int:
         if self._console.width is not None:
@@ -607,7 +608,7 @@ class UI:
     def _redraw(self, force: bool = False) -> None:
         if self._hold_depth > 0:
             return
-        now = _time.now()
+        now = clock.now()
         if not force and (now - self._last_draw < REDRAW):
             return
         self._last_draw = now
@@ -679,7 +680,7 @@ class UI:
     def _item_updated(self, item: Item) -> None:
         if not item.drawn or not self.live:
             return
-        now = _time.now()
+        now = clock.now()
         if now - self._last_draw >= REDRAW:
             with self._lock:
                 self._redraw()
@@ -815,6 +816,14 @@ class UI:
 
 ui = UI()
 log = ui
+
+
+class TTY(io.StringIO):
+    """A text buffer treated as a terminal (`isatty` is True), for tests of the screen."""
+
+    def isatty(self) -> bool:
+        return True
+
 
 BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
 

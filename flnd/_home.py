@@ -3,8 +3,9 @@
 The home folder holds `media/` (the downloads), `metadata/` (`flnd.db` and `secret.db`), and
 `log/` (crash files and each run's samples), and an optional `config.toml`; `cache/` is
 reserved. This module is flnd's own storage, not a library: it knows flnd's tables, targets and
-sources. It is built on three library modules: `flnd._db` (a SQLite store), `flnd._vault`
-(source secrets in `secret.db`) and `flnd._cookies` (cookie jars). `flnd/docs/storage` is the guide
+sources. It is built on three library modules: `flnd.kit.db` (a SQLite store), `flnd.kit.vault`
+(source secrets in `secret.db`) and `flnd.kit.cookies` (cookie jars). `flnd/docs/storage` is the
+guide
 to it.
 
 What `flnd.db` holds (the storage guide in `flnd/docs/` shows every column):
@@ -56,7 +57,7 @@ Rules a change must keep:
 - A row is written only after its file: a crash in between leaves a whole file without a row,
   which the next run finds on disk and skips.
 - One connection per `Home`, shared by the lister and the download threads behind one lock.
-  SQLite serializes writers across processes; a writer waits for another run (`flnd._db`).
+  SQLite serializes writers across processes; a writer waits for another run (`flnd.kit.db`).
 - A secret's value never reaches a message, a log line or `flnd.db`.
 """
 
@@ -76,9 +77,9 @@ from typing import TYPE_CHECKING, Any
 
 import msgspec
 
-from flnd import _cookies, _db, _text, _time, _vault
-from flnd._ui import ui
 from flnd.errors import DiskError, Error, LoginError, UsageError
+from flnd.kit import clock, cookies, db, text, vault
+from flnd.ui.log import ui
 
 if TYPE_CHECKING:
     from flnd.options import Options
@@ -377,7 +378,7 @@ def target_folder(home: Path, target: Target) -> Path:
         >>> target_folder(Path("home"), Target("ins:example_user", kind="user")).as_posix()
         'home/media/ins/example_user'
     """
-    return home / MEDIA / target.source / _text.filename(target.value)
+    return home / MEDIA / target.source / text.filename(target.value)
 
 
 def now() -> str:
@@ -435,7 +436,7 @@ class Home:
         self.home = home
         self.path = home / DB
         # The store: one connection, its tables made on first use.
-        self._store = _db.Db(self.path, schema=SCHEMA, setup=self._setup)
+        self._store = db.Db(self.path, schema=SCHEMA, setup=self._setup)
 
     def __enter__(self) -> Home:
         return self
@@ -746,7 +747,7 @@ class Home:
                 " cursor = excluded.cursor, attempts = CASE WHEN EXISTS (SELECT 1 FROM files"
                 " WHERE files.key = excluded.key AND files.state = 'saved') THEN 1"
                 " ELSE failures.attempts + 1 END",
-                (run, item, target, post, category, file, _text.redact(url) if url else "",
+                (run, item, target, post, category, file, text.redact(url) if url else "",
                  type(error).__name__, str(error), getattr(error, "hint", "") or "",
                  int(getattr(error, "retryable", False)), at, cursor))
             if isinstance(error, NotFound) and file:
@@ -894,7 +895,7 @@ class Home:
         """
         if not cursors and not complete and not heads and not gaps:
             return
-        today = datetime.datetime.fromtimestamp(_time.wall(), datetime.UTC).date().isoformat()
+        today = datetime.datetime.fromtimestamp(clock.wall(), datetime.UTC).date().isoformat()
         with self._store.transaction():
             # A target nothing recorded (a run of the engine's own, a test) follows, as a row of
             # an old home without a `sync` field did.
@@ -1097,7 +1098,7 @@ def sample(home: Path, run: int | None, error: BaseException) -> Path | None:
     A parse failure is a site that changed or a source's bug, and the answer is what shows
     which. It is kept only when it is safe to:
     - values under keys that look like secrets (`token`, `csrf`, `session`, `cookie`, `auth`,
-      `password`, `key`, …) become "…" (`flnd._text.scrub`);
+      `password`, `key`, …) become "…" (`flnd.kit.text.scrub`);
     - a login's answer is never kept: one whose URL looks like a login (`LOGIN_URL`), or that
       sets a cookie, may hold the session it made;
     - the file is named by a count, never by anything the site sent.
@@ -1117,7 +1118,7 @@ def sample(home: Path, run: int | None, error: BaseException) -> Path | None:
         return None
     url = str(getattr(response, "url", "") or "")
     headers = getattr(response, "headers", None) or {}
-    if LOGIN_URL.search(_text.redact(url)) or "set-cookie" in {str(k).lower() for k in headers}:
+    if LOGIN_URL.search(text.redact(url)) or "set-cookie" in {str(k).lower() for k in headers}:
         return None
     content = getattr(response, "content", b"")
     body = content.decode("utf-8", "replace") if isinstance(content, bytes) else str(content)
@@ -1131,7 +1132,7 @@ def sample(home: Path, run: int | None, error: BaseException) -> Path | None:
             try:
                 # An exclusive create, so two samples kept at once never take the same name.
                 with path.open("x", encoding="utf-8") as out:
-                    out.write(f"{_text.redact(url)}\n\n{_text.scrub(body)}")
+                    out.write(f"{text.redact(url)}\n\n{text.scrub(body)}")
                 break
             except FileExistsError:
                 continue
@@ -1259,7 +1260,7 @@ def _date(text: Any) -> datetime.date | None:
 # Logins, in the vault
 # ---------------------------------------------------------------------------------------------
 
-# Browsers `from_browser` reads cookies from, by `flnd._cookies` name with display name.
+# Browsers `from_browser` reads cookies from, by `flnd.kit.cookies` name with display name.
 BROWSERS = {
     "chrome": "Chrome", "firefox": "Firefox", "edge": "Edge",
     "brave": "Brave", "chromium": "Chromium", "safari": "Safari",
@@ -1281,7 +1282,7 @@ LOGIN_SECRETS = frozenset({COOKIES, LOGIN_SECRET})
 LOGIN_HINT = "log in again: flnd login <source> (a damaged secret.key: delete it first)"
 
 
-def from_browser(source: Source, *, browser: str, profile: str | None = None) -> _cookies.Jar:
+def from_browser(source: Source, *, browser: str, profile: str | None = None) -> cookies.Jar:
     """The source's cookies from an installed browser, for each of its domains.
 
     Args:
@@ -1296,7 +1297,7 @@ def from_browser(source: Source, *, browser: str, profile: str | None = None) ->
         LoginError: the browser's cookies can't be read; the message suggests a cookie file.
     """
     try:
-        return _own(source, _cookies.load(browser, profile=profile))
+        return _own(source, cookies.load(browser, profile=profile))
     # Safari off macOS: a usage error as it is.
     except UsageError:
         raise
@@ -1309,7 +1310,7 @@ def from_browser(source: Source, *, browser: str, profile: str | None = None) ->
             hint=hint) from None
 
 
-def from_file(source: Source, path: Path) -> _cookies.Jar:
+def from_file(source: Source, path: Path) -> cookies.Jar:
     """The source's cookies from a Netscape or JSON cookie file; a whole browser export works.
 
     Args:
@@ -1323,12 +1324,12 @@ def from_file(source: Source, path: Path) -> _cookies.Jar:
         LoginError: the file can't be read, or isn't a cookie file.
     """
     try:
-        return _own(source, _cookies.load(path))
+        return _own(source, cookies.load(path))
     except (OSError, ValueError, Error) as error:
         raise LoginError(f"{source.code}: can't read {path}: {error}") from None
 
 
-def store(source: Source, jar: _cookies.Jar, *, home: Path, origin: str) -> str:
+def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
     """Check that the jar proves a login, seal it in the source's vault, and return a summary.
 
     A plain cookie file a much older version left for the source is deleted once the new login
@@ -1357,10 +1358,10 @@ def store(source: Source, jar: _cookies.Jar, *, home: Path, origin: str) -> str:
     for path in _cookie_files(home, source.code):
         path.unlink(missing_ok=True)
     _remove_if_empty(home / COOKIE_FOLDER)
-    return f"{source.code}: logged in from {origin} ({_text.count(len(jar), 'cookie')})"
+    return f"{source.code}: logged in from {origin} ({text.count(len(jar), 'cookie')})"
 
 
-def save(home: Path, code: str, jar: _cookies.Jar, *, origin: str | None = None) -> None:
+def save(home: Path, code: str, jar: cookies.Jar, *, origin: str | None = None) -> None:
     """Seal a source's cookie jar in its vault as `cookies`, replacing the one there.
 
     Args:
@@ -1455,7 +1456,7 @@ def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
             name for cookie in saved if (name := _refresh_cookie(cookie, fresh)) is not None
         ]
         if changed:
-            save(home, code, _cookies.Jar(saved))
+            save(home, code, cookies.Jar(saved, error=LoginError))
             ui.debug("{code}: refreshed {names}", code=code, names=", ".join(changed))
         return changed
     except (OSError, ValueError, Error) as error:
@@ -1497,7 +1498,7 @@ def _refresh_cookie(cookie: dict, fresh: list[Cookie]) -> str | None:
     return str(cookie["name"])
 
 
-def load(home: Path, code: str) -> _cookies.Jar:
+def load(home: Path, code: str) -> cookies.Jar:
     """The source's saved cookies, or an empty jar when it never logged in.
 
     A plain cookie file of a much older version is moved into the vault first.
@@ -1516,10 +1517,10 @@ def load(home: Path, code: str) -> _cookies.Jar:
     """
     _move(home, code)
     if not _has_vault(home):
-        return _cookies.Jar()
+        return cookies.Jar()
     with secrets(home, code) as vault:
         text = vault.get(COOKIES)
-    return fix_domains(_cookies.Jar(json.loads(text))) if text else _cookies.Jar()
+    return fix_domains(cookies.Jar(json.loads(text), error=LoginError)) if text else cookies.Jar()
 
 
 def logged_in(home: Path, code: str) -> bool:
@@ -1597,7 +1598,7 @@ def _move(home: Path, code: str) -> None:
         if not path.is_file():
             continue
         try:
-            jar = _cookies.load(path)
+            jar = cookies.load(path)
             with secrets(home, code) as vault:
                 if COOKIES not in vault:
                     vault[COOKIES] = json.dumps(fix_domains(jar).list)
@@ -1628,7 +1629,7 @@ def _remove_if_empty(folder: Path) -> None:
         pass
 
 
-def fix_domains(jar: _cookies.Jar) -> _cookies.Jar:
+def fix_domains(jar: cookies.Jar) -> cookies.Jar:
     """Give every domain a leading dot, and every path `/` when it has none.
 
     Args:
@@ -1638,24 +1639,25 @@ def fix_domains(jar: _cookies.Jar) -> _cookies.Jar:
         A new jar; the one given is unchanged.
     """
     # Exported files often hold host-only domains; the dot lets every subdomain see the cookie.
-    return _cookies.Jar(
-        {
+    return cookies.Jar(
+        ({
             **cookie,
             "domain": "." + cookie.get("domain", "").lstrip("."),
             "path": cookie.get("path") or "/",
         }
-        for cookie in jar
+        for cookie in jar),
+        error=LoginError,
     )
 
 
-def _own(source: Source, jar: _cookies.Jar) -> _cookies.Jar:
+def _own(source: Source, jar: cookies.Jar) -> cookies.Jar:
     """The cookies of `jar` for the source's domains and their subdomains, domain by domain."""
     return jar.filter(domains=source.domains)
 
 
 
 
-def secrets(home: Path, code: str) -> _vault.Vault:
+def secrets(home: Path, code: str) -> vault.Vault:
     """The secrets of one source, as a mapping of `str` to `str`, for a `with` block.
 
     Args:
@@ -1663,7 +1665,7 @@ def secrets(home: Path, code: str) -> _vault.Vault:
         code: the source's code; another source's secrets aren't visible.
 
     Returns:
-        The `flnd._vault.Vault`; leaving the `with` closes it.
+        The `flnd.kit.vault.Vault`; leaving the `with` closes it.
 
     Example:
         >>> import tempfile
@@ -1671,7 +1673,7 @@ def secrets(home: Path, code: str) -> _vault.Vault:
         ...     dict(saved)
         {}
     """
-    return _vault.Vault(home / SECRETS, code, hint=LOGIN_HINT)
+    return vault.Vault(home / SECRETS, code, hint=LOGIN_HINT)
 
 
 def _login_names(source: Source) -> tuple[str, ...]:

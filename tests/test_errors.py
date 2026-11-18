@@ -25,8 +25,7 @@ from test_commands import FlndCase
 from test_engine import EngineCase, make_source
 
 import flnd
-from flnd import _files, _net, _time, _tools, job, sources
-from flnd._ui import ui
+from flnd import job, sources
 from flnd.errors import (
     Blocked,
     Changed,
@@ -43,8 +42,13 @@ from flnd.errors import (
     classify,
     disk,
 )
+from flnd.kit import clock as _time
+from flnd.kit import files as _files
+from flnd.kit import files as _tools
+from flnd.kit import net as _net
 from flnd.source import File, Source, Target, target
 from flnd.source import cookies as login_cookies
+from flnd.ui.log import ui
 
 SITE = "https://example.com"
 # The secrets the redaction test plants: none may reach a message.

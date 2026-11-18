@@ -24,8 +24,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import IO, Any, Literal
 
-from flncore import clock as _time
-from flncore.errors import DiskError, SiteError, ToolError
+from flnd.errors import DiskError, SiteError, ToolError
+from flnd.kit import clock
 
 
 def disk(error: OSError, path: object = None) -> DiskError:
@@ -427,7 +427,7 @@ def sweep(folder: str | os.PathLike[str]) -> int:
     """
     if not os.path.isdir(folder):
         return 0
-    now = _time.wall()
+    now = clock.wall()
     parts: list[os.DirEntry[str]] = []
     sides: dict[str, os.DirEntry[str]] = {}
     for entry in _scan(folder):
@@ -723,7 +723,7 @@ def _replace(source: Path, dest: Path) -> None:
         except PermissionError:
             if not WINDOWS or attempt == REPLACE_TRIES:
                 raise
-            _time.sleep(REPLACE_PAUSE)
+            clock.sleep(REPLACE_PAUSE)
         except FileNotFoundError:
             if WINDOWS and dest.exists():
                 return

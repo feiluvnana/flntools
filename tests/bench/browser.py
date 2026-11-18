@@ -18,7 +18,7 @@ the 30th batch's word, with no idle wait.
 section 6.2 allows), each on a page the server answers 50 ms late, until each had its first
 answer; today they open one after the other. Best of 3, each with fresh tabs.
 
-The browser runs on a loop thread of its own (`flnd._loop.Loop`), and every step is handed to it
+The browser runs on a loop thread of its own (`flnd.kit.loop.Loop`), and every step is handed to it
 from this thread with `Loop.run`, as a source's listing thread does through `Site`'s verbs, so
 each time includes that hop.
 
@@ -34,8 +34,11 @@ from pathlib import Path
 
 import kit
 
-from flnd import _browser, _cookies, _html, _net
-from flnd._loop import Loop
+from flnd.kit import browser as _browser
+from flnd.kit import cookies as _cookies
+from flnd.kit import html as _html
+from flnd.kit import net as _net
+from flnd.kit.loop import Loop
 
 BATCHES = kit.size(30, 3)
 WARM = 4

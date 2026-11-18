@@ -1,10 +1,10 @@
-"""`flnd._html`: `parse`, CSS queries, text and attributes, embedded JSON, the size limit, and `dig`."""
+"""`flnd.kit.html`: `parse`, CSS queries, text and attributes, embedded JSON, the size limit, and `dig`."""
 
 import unittest
 from unittest import mock
 
-from flnd import _html
 from flnd.errors import Changed, SiteError, SourceError
+from flnd.kit import html as _html
 
 HTML = """<html><head><title>t</title>
 <script id="__NEXT_DATA__" type="application/json">{"props": {"user": "example_user"}}</script>
@@ -154,8 +154,9 @@ class DigTest(unittest.TestCase):
         self.assertEqual(_html.dig(deep, "..[t=x]"), [{"t": "x"}])
 
     def test_a_bad_path_raises_a_source_error(self):
-        for path in ("data[x]", "a..b", "a.", "a[1", "..[novalue]"):
-            with self.subTest(path), self.assertRaises(Changed):
+        # A path is written by a source, so a broken one is a SourceError, not a site change.
+        for path in ("data[x]", "a..b", "a.", "a[1", "..[novalue]", "a["):
+            with self.subTest(path), self.assertRaises(SourceError):
                 _html.dig(self.PAGE, path)
 
     def test_flnd_source_dig_is_this_one(self):

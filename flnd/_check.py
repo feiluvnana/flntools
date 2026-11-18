@@ -12,9 +12,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from flnd import _files, _home
+from flnd import _home
 from flnd._events import Checked, Record
 from flnd.errors import DiskError
+from flnd.kit import files
 
 if TYPE_CHECKING:
     from flnd._home import FileRow, Home
@@ -112,7 +113,7 @@ def _unknown(media: Path, seen: _Seen) -> list[Path]:
         return []
     now = time.time()
     found = []
-    for entry in _files.walk(media):
+    for entry in files.walk(media):
         if entry.name.startswith(".") or entry.is_symlink():
             continue
         name = _norm(entry.path)
@@ -166,7 +167,7 @@ def _fix(db: Home, missing: list[FileRow],
         db.drop([row.key for row in missing])
     if resized:
         db.change([(row.key, {"size": found.st_size, "mtime": found.st_mtime_ns,
-                              "hash": _files.digest(row.path)}) for row, found in resized])
+                              "hash": files.digest(row.path)}) for row, found in resized])
 
 
 def _record(row: FileRow) -> Record:

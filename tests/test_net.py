@@ -1,4 +1,4 @@
-"""`flnd._net`, the HTTP library: requests, the retry policy, secrets, the fake, pace and caps,
+"""`flnd.kit.net`, the HTTP library: requests, the retry policy, secrets, the fake, pace and caps,
 and downloads into a part (resumed, mirrored, segmented, written off the loop).
 
 The network is `_net.fake`, the waits a fake clock whose jitter is pinned at its top (so a wait
@@ -19,9 +19,12 @@ from unittest import mock
 
 from fakes import download, fetch
 
-from flnd import _files, _html, _net, _time
-from flnd._ui import _brief, ui
 from flnd.errors import Blocked, Error, NetworkError, NotFound, SiteError, Stopped
+from flnd.kit import clock as _time
+from flnd.kit import files as _files
+from flnd.kit import html as _html
+from flnd.kit import net as _net
+from flnd.ui.log import _brief, ui
 
 SITE = "https://www.example.com"
 FILE = f"{SITE}/file.bin"
@@ -709,7 +712,7 @@ class DownloadTest(NetCase):
                                            chunks=(body[at:at + 65536]
                                                    for at in range(0, len(body), 65536)))
         with _net.fake({FILE: route}), mock.patch.object(_files.Part, "feed", feed), \
-                mock.patch("flnd._files._digest_fd", side_effect=AssertionError("read back")):
+                mock.patch("flnd.kit.files._digest_fd", side_effect=AssertionError("read back")):
             saved = asyncio.run(fill())
         self.assertEqual(saved.hash, hashlib.sha256(body).digest())
         self.assertIn("flnd-hasher", " ".join(threads))

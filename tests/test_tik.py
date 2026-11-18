@@ -15,7 +15,7 @@ from unittest import mock
 
 from fakes import FakeSite, Seen, collect
 
-from flnd import _html
+from flnd.kit import html as _html
 from flnd.options import Options
 from flnd.source import SiteError, Target, UsageError
 from flnd.sources.tik import TIKTOK_UA, TikTok, best_video

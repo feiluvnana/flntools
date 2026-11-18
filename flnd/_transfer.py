@@ -1,14 +1,15 @@
 """flnd's transfers: one post's `File` into its part, by URL, mirrors, DASH pair or `fetch`.
 
 Who calls it: a target's downloads (`flnd.job.Downloads`), one coroutine per file on the run's
-loop. What it calls: the source's `flnd._net.Client` for URLs, `flnd._files.part` for the part,
-`flnd._tools` for ffmpeg, and `flnd._files` to tell that a file is the media it should be.
+loop. What it calls: the source's `flnd.kit.net.Client` for URLs, `flnd.kit.files.part` for the
+part,
+`flnd.kit.files` for ffmpeg, and `flnd.kit.files` to tell that a file is the media it should be.
 It is flnd's side, not a library: it knows a source's `File` and `Fetch` (`flnd.source`), and
-reports each transfer to its progress row (`flnd._ui`).
+reports each transfer to its progress row (`flnd.ui.log`).
 
 The flow of one file (`save`):
 1. open and lock `<dest>.part` once, before any request, so a file another run is saving raises
-   `BusyError` at once (`flnd._files`);
+   `BusyError` at once (`flnd.kit.files`);
 2. try each mirror in order, each into that same part (emptied between two mirrors, since they
    may serve other bytes): a URL is streamed by the client, a DASH pair is two streams joined by
    ffmpeg, and a `fetch` function writes the part itself;
@@ -38,10 +39,10 @@ from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
-from flnd import _files, _net, _text, _time, _tools
-from flnd._ui import ui
 from flnd.errors import Error, SiteError
+from flnd.kit import clock, files, net, text
 from flnd.source import Fetch, File
+from flnd.ui.log import ui
 
 __all__ = ["noon", "same_extension", "save", "served_day"]
 
@@ -55,12 +56,12 @@ SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}
 T = TypeVar("T")
 
 
-async def save(client: _net.Client, file: File, dest: Path, *, label: str,
+async def save(client: net.Client, file: File, dest: Path, *, label: str,
                headers: Mapping[str, str] | None = None, kind: str | None = None,
                received: MutableMapping[str, str] | None = None,
                stop: threading.Event | None = None,
                day: datetime.date | None = None,
-               track: Any | None = None) -> _files.Saved:
+               track: Any | None = None) -> files.Saved:
     """Save one `File` under a progress bar, trying mirrors in order.
 
     Args:
@@ -111,8 +112,8 @@ async def save(client: _net.Client, file: File, dest: Path, *, label: str,
 
 
 @asynccontextmanager
-async def _held(dest: Path) -> AsyncIterator[_files.Part]:
-    """`flnd._files.part(dest, resume=True, digest=True)`, opened and landed on a worker thread.
+async def _held(dest: Path) -> AsyncIterator[files.Part]:
+    """`flnd.kit.files.part(dest, resume=True, digest=True)`, opened and landed on a worker thread.
 
     The part hashes what it is written (SHA-256), for dedupe and `check`.
 
@@ -130,7 +131,7 @@ async def _held(dest: Path) -> AsyncIterator[_files.Part]:
         BusyError: another run is saving this file.
         DiskError: the part can't be opened, locked or renamed.
     """
-    manager = _files.part(dest, resume=True, digest=True)
+    manager = files.part(dest, resume=True, digest=True)
     held = await _through(manager.__enter__)
     try:
         yield held
@@ -203,7 +204,7 @@ def same_extension(one: str, other: str) -> bool:
 
 
 async def _mirror(
-    client: _net.Client, mirror: str | Fetch, file: File, held: _files.Part, label: str,
+    client: net.Client, mirror: str | Fetch, file: File, held: files.Part, label: str,
     headers: Mapping[str, str] | None, kind: str | None,
     received: MutableMapping[str, str] | None, stop: threading.Event | None,
     *, audio: str | None = None, track: Any | None = None,
@@ -241,7 +242,7 @@ async def _mirror(
                            stop, track=track)
 
 
-async def _save_url(client: _net.Client, url: str, held: _files.Part, label: str,
+async def _save_url(client: net.Client, url: str, held: files.Part, label: str,
                     headers: Mapping[str, str] | None, size: int | None, kind: str | None,
                     received: MutableMapping[str, str] | None,
                     stop: threading.Event | None, *, track: Any | None = None) -> None:
@@ -274,7 +275,7 @@ async def _save_url(client: _net.Client, url: str, held: _files.Part, label: str
         await _through(_place, held, kind, "content-length" in seen or size is not None)
 
 
-async def _save_dash(client: _net.Client, video: str, audio: str, held: _files.Part,
+async def _save_dash(client: net.Client, video: str, audio: str, held: files.Part,
                      label: str, headers: Mapping[str, str] | None,
                      stop: threading.Event | None, *, track: Any | None = None) -> None:
     """Download a DASH video and its audio stream, merged into `held`.
@@ -299,7 +300,7 @@ async def _save_dash(client: _net.Client, video: str, audio: str, held: _files.P
         )
 
 
-async def _dash_merge(client: _net.Client, video: str, audio: str, held: _files.Part,
+async def _dash_merge(client: net.Client, video: str, audio: str, held: files.Part,
                       headers: Mapping[str, str] | None, stop: threading.Event | None,
                       row: _Row) -> None:
     """Fetch DASH video and audio streams at once and merge them into `held`.
@@ -322,7 +323,7 @@ async def _dash_merge(client: _net.Client, video: str, audio: str, held: _files.
     """
     dest = held.dest
     with ExitStack() as parts:
-        streams = [parts.enter_context(_files.part(dest.with_name(f"{dest.name}.{name}"),
+        streams = [parts.enter_context(files.part(dest.with_name(f"{dest.name}.{name}"),
                                                    resume=True))
                    for name in ("video", "audio")]
         # Both streams at once, on the loop; the first failure cancels the other, whose part
@@ -342,7 +343,7 @@ async def _dash_merge(client: _net.Client, video: str, audio: str, held: _files.
         if stop is not None and stop.is_set():
             raise KeyboardInterrupt
         row.caption("merging")
-        ffmpeg = _tools.ffmpeg()
+        ffmpeg = files.ffmpeg()
         fmt = "webm" if dest.suffix.lower() == ".webm" else "mp4"
         flags = ["-movflags", "+faststart"] if fmt == "mp4" else []
         try:
@@ -351,13 +352,13 @@ async def _dash_merge(client: _net.Client, video: str, audio: str, held: _files.
             # empty, raise so another mirror or retry can handle it.
             video_size = streams[0].size
             if video_size == 0:
-                raise _tools.RunError(
+                raise files.RunError(
                     f"video stream is empty (0 bytes): {streams[0].path}"
                 )
             audio_path = streams[1].path
             audio_size = streams[1].size
             if audio_size == 0:
-                raise _tools.RunError(f"audio stream is empty (0 bytes): {audio_path}")
+                raise files.RunError(f"audio stream is empty (0 bytes): {audio_path}")
             else:
                 try:
                     await asyncio.to_thread(
@@ -365,7 +366,7 @@ async def _dash_merge(client: _net.Client, video: str, audio: str, held: _files.
                         "-y", "-i", str(streams[0].path), "-i", str(audio_path),
                         "-c", "copy", *flags, "-f", fmt, str(held.path),
                     )
-                except _tools.RunError as error:
+                except files.RunError as error:
                     err_text = str(error)
                     is_video_err = (
                         "in#0" in err_text
@@ -427,7 +428,7 @@ def _merge_again(error: Exception) -> bool:
     Returns:
         True to try again.
     """
-    return isinstance(error, _tools.RunError) or (isinstance(error, Error) and error.retryable)
+    return isinstance(error, files.RunError) or (isinstance(error, Error) and error.retryable)
 
 
 async def _again(attempt: Callable[[], Awaitable[T]], *,
@@ -453,12 +454,12 @@ async def _again(attempt: Callable[[], Awaitable[T]], *,
                 raise
             seconds = 2.0 ** (number - 1)
             ui.debug("retry {n} in {time}: {error}", n=number,
-                     time=_text.duration(seconds), error=error)
-            await _time.pause(seconds)
+                     time=text.duration(seconds), error=error)
+            await clock.pause(seconds)
             number += 1
 
 
-async def _save_fetch(fetch: Fetch, held: _files.Part, label: str, size: int | None,
+async def _save_fetch(fetch: Fetch, held: files.Part, label: str, size: int | None,
                       kind: str | None, stop: threading.Event | None) -> None:
     """Have `fetch(path, progress)` write into the part `held`, then check it as `kind`.
 
@@ -489,14 +490,14 @@ async def _save_fetch(fetch: Fetch, held: _files.Part, label: str, size: int | N
         await _through(_place, held, kind, size is not None)
 
 
-def _place(held: _files.Part, kind: str, known: bool) -> None:
+def _place(held: files.Part, kind: str, known: bool) -> None:
     """Point `held` at the name its content calls for, or drop it when it isn't `kind`.
 
     A whole file that fails its check would fail again on resume, so its part is removed.
 
     Args:
         held: the finished part; its first bytes are read through its descriptor.
-        kind: `_files.SNIFF`, or what the file must be (`_files.IMAGE`, …).
+        kind: `files.SNIFF`, or what the file must be (`files.IMAGE`, …).
         known: whether the server or the source gave the size.
 
     Raises:
@@ -504,7 +505,7 @@ def _place(held: _files.Part, kind: str, known: bool) -> None:
     """
     try:
         head = held.head()
-        if kind == _files.SNIFF:
+        if kind == files.SNIFF:
             held.dest = _sniffed(head, held.dest, known)
         else:
             held.dest = _as_media(head, held.dest, kind, known)
@@ -535,11 +536,11 @@ def _sniffed(head: bytes, dest: Path, known: bool) -> Path:
     Raises:
         SiteError: the content is a web page.
     """
-    extension = _files.sniff(head)
-    if extension in _files.PAGES:
+    extension = files.sniff(head)
+    if extension in files.PAGES:
         raise not_media("a file")
     # `kind_of` reads a name's extension, and ".mp4" alone is a name without one.
-    kind = _files.kind_of(f"file{extension}") if extension else None
+    kind = files.kind_of(f"file{extension}") if extension else None
     if extension is None or kind is None:
         # An archive, a document, or nothing `sniff` knows: kept as it came.
         return dest
@@ -705,7 +706,7 @@ def checked(path: Path | bytes, kind: str) -> str | None:
     Raises:
         SiteError: the content is a web page or JSON.
     """
-    extension = _files.sniff(path)
-    if extension in _files.PAGES:
-        raise not_media(_files.NOUNS.get(kind, kind))
+    extension = files.sniff(path)
+    if extension in files.PAGES:
+        raise not_media(files.NOUNS.get(kind, kind))
     return extension

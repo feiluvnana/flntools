@@ -8,8 +8,8 @@ from pathlib import Path
 
 from flnd._events import Saved
 from flnd._track import TERMINAL, FileTrack, Phase, Tracks
-from flnd._ui import ui
 from flnd.source import Target
+from flnd.ui.log import ui
 
 
 class _TTY(io.StringIO):

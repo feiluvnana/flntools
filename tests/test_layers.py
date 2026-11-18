@@ -11,7 +11,7 @@ The rules:
    the SDK a site needs, which tests/test_sources.py guards);
 2. `flnd.source` imports nothing from flnd but the toolkit: it is what sources see, not the engine;
 3. `flnd/cli.py` imports from flnd only `flnd` (the library), `flnd.sources._manifest` (the
-   sources as data, for help) and the toolkit (`flnd._prompt`, `flnd._ui`, `flnd._events` for
+   sources as data, for help) and the toolkit (`flnd.ui.forms`, `flnd.ui.log`, `flnd._events` for
    JSON): every decision is the library's, so the CLI only parses, asks and prints;
 4. nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it;
 5. a library module (`LIBRARIES` below: HTTP, browser, files, archives, tools, cookies, vault,
@@ -29,7 +29,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FLND = ROOT / "flnd"
-CORE = ROOT / "flncore"
 
 # Rule 3: everything cli.py may import from flnd, besides the toolkit.
 CLI_ALLOWED = {"flnd", "flnd.sources._manifest"}
@@ -43,26 +42,36 @@ def toolkit(name: str) -> bool:
     `flnd.errors`, the error hierarchy, counts too: it imports nothing of flnd, and every layer
     raises its classes.
     """
-    return name.startswith("flnd._") or name == "flnd.errors"
+    return name.startswith("flnd._") or name == "flnd.errors" or name in TOOLKIT_NEW
+
+
+# The toolkit's new homes: the kit (`flnd/kit/`) and the two screen modules that were the private
+# `_ui` and `_prompt`. A module of the toolkit is found under its new name here.
+TOOLKIT_NEW = {"flnd.ui.log", "flnd.ui.forms"} | {
+    f"flnd.kit.{name}" for name in ("net", "browser", "files", "loop", "clock", "dig", "html", "text",
+                                     "db", "cookies", "vault")
+}
 
 
 # Rule 5: the library modules. Each does a general job (HTTP, the browser, files, archives, the
 # outside tools, cookies, the vault, the SQLite store, HTML, text, time, prompts, progress, media),
 # so it stays its own module that another program could use, and could later leave flnd as a
 # package of its own. A name may be listed before its row creates the file.
-LIBRARIES = {
-    "_net", "_browser", "_loop", "_files", "_unpack", "_tools", "_cookies", "_vault",
-    "_db", "_html", "_text", "_time", "_prompt", "_ui",
-}
+LIBRARIES = TOOLKIT_NEW
+
+
+def module_path(name: str) -> Path:
+    """The file of a dotted module name, such as `flnd.kit.net` as `flnd/kit/net.py`."""
+    return ROOT / (name.replace(".", "/") + ".py")
 
 
 def library(name: str) -> bool:
     """Whether a module is a library module (rule 5), or `flnd.errors`, which every layer raises.
 
-    `from flnd import _files` is found as `flnd._files`; the package `flnd` itself is not a library,
-    since importing from it reaches the public API and so the engine side.
+    `from flnd.kit import files` is found as `flnd.kit.files`; the package `flnd` itself is not a
+    library, since importing from it reaches the public API and so the engine side.
     """
-    return name == "flnd.errors" or (name.startswith("flnd.") and name[len("flnd."):] in LIBRARIES)
+    return name == "flnd.errors" or name in LIBRARIES
 
 
 def flnd_imports(path: Path) -> set[str]:
@@ -96,16 +105,6 @@ def source_allowed(name: str) -> bool:
 
 
 class LayersTest(unittest.TestCase):
-    def test_flncore_imports_nothing_from_flnd(self):
-        # Rule 0: flncore is a standalone package and imports nothing from flnd.
-        if not CORE.exists():
-            return
-        files = sorted(CORE.rglob("*.py"))
-        self.assertTrue(files)
-        for path in files:
-            with self.subTest(file=path.name):
-                self.assertEqual(sorted(flnd_imports(path)), [])
-
     def test_a_source_imports_only_flnd_source(self):
         files = sorted((FLND / "sources").rglob("*.py"))
         self.assertTrue(files)
@@ -133,11 +132,11 @@ class LayersTest(unittest.TestCase):
 
     def test_a_library_module_imports_only_libraries_and_the_errors(self):
         # Rule 5: a library module could be split out of flnd, so it never reaches flnd's own code.
-        present = sorted(name for name in LIBRARIES if (FLND / f"{name}.py").exists())
-        self.assertIn("_files", present)
+        present = sorted(name for name in LIBRARIES if module_path(name).exists())
+        self.assertIn("flnd.kit.files", present)
         for name in present:
-            with self.subTest(module=f"flnd.{name}"):
-                self.assertEqual(sorted(found for found in flnd_imports(FLND / f"{name}.py")
+            with self.subTest(module=name):
+                self.assertEqual(sorted(found for found in flnd_imports(module_path(name))
                                         if not library(found)), [])
 
     def test_the_rules_see_imports_of_names_and_of_modules(self):

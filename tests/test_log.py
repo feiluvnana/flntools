@@ -1,4 +1,4 @@
-"""Tests for `flncore.log`: stable keys, single renderer, and the JSONL journal."""
+"""Tests for `flnd.ui.log`: stable keys, single renderer, and the JSONL journal."""
 
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any
 
 import flnd
-from flncore import clock as _time
-from flncore.log import REDRAW, UI, Journal, State
 from flnd._events import Failed, Saved
+from flnd.kit import clock as _time
 from flnd.source import Target
 from flnd.testing import fake_clock
+from flnd.ui.log import REDRAW, UI, Journal, State
 
 
 class _TTY(io.StringIO):
@@ -69,7 +69,7 @@ class _GateClock:
 # Raises SIGINT inside the handle's write; the handler logs, which writes to the journal.
 _SIGNAL_PROBE = """
 import io, signal, sys
-from flncore.log import UI
+from flnd.ui.log import UI
 ui = UI()
 with ui.scope(dest=io.StringIO(), color=False, level="info"), ui.file(sys.argv[1]) as j:
     signal.signal(signal.SIGINT, lambda *_: ui.warn("press Ctrl-C again to quit now"))

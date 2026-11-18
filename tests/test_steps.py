@@ -1,6 +1,6 @@
 """The steps after a file lands (`flnd._steps`): unpack, end to end through the engine.
 
-Every run here fakes the network (`flnd._net.fake`, from `test_engine`) and uses synthetic
+Every run here fakes the network (`flnd.kit.net.fake`, from `test_engine`) and uses synthetic
 archives. The chain's own threads are real.
 """
 
@@ -15,8 +15,10 @@ from unittest import mock
 from test_archive import CRYPTO_ZIP
 from test_engine import CDN, EngineCase, make_source
 
-from flnd import _net, _steps, _tools
+from flnd import _steps
 from flnd.engine import Engine
+from flnd.kit import files as _tools
+from flnd.kit import net as _net
 from flnd.source import File
 
 
