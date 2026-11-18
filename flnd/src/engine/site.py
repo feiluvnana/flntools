@@ -103,13 +103,8 @@ EXPIRY_WARNING = 24 * 3600
 LOGIN_WALLS = frozenset({401, 403})
 # Methods a server may receive twice without harm: only their failures are tried again.
 SAFE = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
-# `back_off`'s waits for a block a page showed, in seconds, for the first, second and third round
-# in a row; a fourth round raises `Blocked` (src/docs/errors). A site's own wait is capped at an
-# hour, as a 429's `Retry-After` is.
-BACK_OFF = (30.0, 120.0, 480.0)
-LONGEST_WAIT = 3600.0
-# Seconds without a block after which the next one counts as the first round again.
-QUIET = 600.0
+# A site's own wait in `back_off` is capped at an hour, as a 429's `Retry-After` is.
+LONGEST_WAIT = jobs.MAX_WAIT
 
 
 class _Screen(browser.Screen):
@@ -344,9 +339,6 @@ class TargetSite:
         # The category being listed, which `pages` resumes and reports its cursor to; set by the
         # job for each category, None between them.
         self.listing: Listing | None = None
-        # `back_off`'s rounds in a row, and when the last one ended.
-        self._rounds = 0
-        self._last_block = 0.0
 
     # -- requests -------------------------------------------------------------------------------
 
@@ -703,31 +695,37 @@ class TargetSite:
     def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
         """Wait out a block a page showed, by rounds; see `flnd.source.Site.back_off`.
 
+        It is a block round of the run's scheduler (`jobs.Scheduler.hold`): the source's
+        account is held for the larger of the site's wait and the round's (30, 120, 480 s),
+        which holds its other listings too, and this call waits it out.
+
         Args:
             reason: what the site did, shown with the wait.
-            retry_after: the seconds the site asked for, capped at `LONGEST_WAIT`; None waits
-                `BACK_OFF`'s seconds for this round.
+            retry_after: the seconds the site asked for, capped at `LONGEST_WAIT`.
 
         Raises:
-            Blocked: a fourth round in a row (`QUIET` seconds without a block start again).
+            Blocked: a fourth round in a row (`jobs.RESET` seconds without one start again).
+            Stopped: the run's first Ctrl-C came while waiting.
         """
-        if clock.now() - self._last_block > QUIET:
-            self._rounds = 0
-        self._rounds += 1
-        if self._rounds > len(BACK_OFF):
-            self._rounds = 0
-            raise Blocked(f"{self._source.code}: {reason}, after {len(BACK_OFF)} waits",
+        code, scheduler = self._source.code, self._run.scheduler
+        asked = min(retry_after, LONGEST_WAIT) if retry_after is not None else 0.0
+        try:
+            seconds = scheduler.hold(code, None, seconds=asked, reason=reason)
+        except Blocked as error:
+            raise Blocked(f"{code}: {reason}, after {len(jobs.ROUND_WAITS)} waits",
                           hint="try again later, or raise the source's pace in config.toml",
-                          target=str(self.target))
-        rounds = BACK_OFF[self._rounds - 1]
-        seconds = min(retry_after, LONGEST_WAIT) if retry_after is not None else rounds
+                          target=str(self.target)) from error
         ui.warn("{target}: {reason}; waiting {time}", target=str(self.target),
                 reason=reason, time=text.duration(round(seconds)))
-        try:
-            self._wait(seconds, reason, count=self._rounds)
-        finally:
-            # The wait itself isn't quiet time: the next block counts from its end.
-            self._last_block = clock.now()
+        tally = self._run.settings.tally
+        count = scheduler._holds[(code, None, None)].rounds
+        held = (tally.hold(code, None, "pages", seconds, reason, count=count)
+                if tally is not None else nullcontext())
+        with held:
+            try:
+                self._run.loop.run(scheduler.wait(code, None))
+            except Stopped:
+                raise Stopped(f"{self.target}: stopped while waiting: {reason}") from None
 
     def pause(self, seconds: float, reason: str) -> None:
         """Wait `seconds`, shown with `reason` as the source's wait in the live stats.
@@ -741,23 +739,10 @@ class TargetSite:
         Raises:
             Stopped: the run's first Ctrl-C came while waiting.
         """
-        self._wait(seconds, reason, count=1)
-
-    def _wait(self, seconds: float, reason: str, *, count: int) -> None:
-        """Wait `seconds`, shown as a hold of the source's listing in the run's snapshot.
-
-        Args:
-            seconds: how long; 0 or less doesn't wait.
-            reason: why, in the site's or the source's words.
-            count: the round of waits in a row this one is, from 1.
-
-        Raises:
-            Stopped: the run's first Ctrl-C came while waiting.
-        """
         if seconds <= 0:
             return
         tally = self._run.settings.tally
-        held = (tally.hold(self._source.code, None, "pages", seconds, reason, count=count)
+        held = (tally.hold(self._source.code, None, "pages", seconds, reason)
                 if tally is not None else nullcontext())
         with held:
             if not clock.sleep(seconds, stop=self._run.web.stop):

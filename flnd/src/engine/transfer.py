@@ -33,21 +33,19 @@ import datetime
 import email.utils
 import inspect
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, MutableMapping
+from collections.abc import AsyncIterator, Callable, Mapping, MutableMapping
 from contextlib import ExitStack, asynccontextmanager
 from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
-from flnd.errors import Error, SiteError
+from flnd.errors import SiteError
 from flnd.source import Fetch, File
 from flnd.ui.log import ui
-from flnkit import clock, files, media, net, text
+from flnkit import files, media, net
 
 __all__ = ["noon", "same_extension", "save", "served_day"]
 
-# Tries for one `fetch` function of a file, or one DASH merge, before its error is raised.
-ATTEMPTS = 3
 # A saved file's modified time is noon UTC of its post's day.
 NOON = 12
 # Extensions that name one format, so a `.jpeg` holding a JPEG keeps its name.
@@ -229,8 +227,7 @@ async def _mirror(
         None, once the part holds the file.
     """
     if callable(mirror):
-        attempt = partial(_save_fetch, mirror, held, label, file.size, kind, stop, track=track)
-        return await _again(attempt, worth=_fetch_again)
+        return await _save_fetch(mirror, held, label, file.size, kind, stop, track=track)
     dash_audio = (
         audio
         if audio is not None
@@ -294,10 +291,7 @@ async def _save_dash(client: net.Client, video: str, audio: str, held: files.Par
         track.bar() if track is not None else _Row(label)
     )
     with row:
-        await _again(
-            partial(_dash_merge, client, video, audio, held, headers, stop, row),
-            worth=_merge_again,
-        )
+        await _dash_merge(client, video, audio, held, headers, stop, row)
 
 
 async def _dash_merge(client: net.Client, video: str, audio: str, held: files.Part,
@@ -347,74 +341,16 @@ async def _dash_merge(client: net.Client, video: str, audio: str, held: files.Pa
         ffmpeg = files.ffmpeg()
         try:
             await media.join(streams[0], streams[1], held, ffmpeg)
+        except files.RunError as error:
+            # A merge that failed may have read a short stream: the scheduler tries the file
+            # again, from new downloads.
+            error.retryable = True
+            raise
         finally:
-            # Merged or not, the streams go: a failed merge (a short stream, a container that
-            # can't hold them) is tried again from new downloads.
+            # Merged or not, the streams go.
             for stream in streams:
                 stream.drop()
         row.caption("merged")
-
-
-def _fetch_again(error: Exception) -> bool:
-    """Whether a source's `fetch` function is worth another try after `error`.
-
-    Disk errors and site answers are not retried here; the client's own policy covers network
-    failures.
-
-    Args:
-        error: what the try raised.
-
-    Returns:
-        True to try again.
-    """
-    from flnd.errors import DiskError
-
-    if isinstance(error, (SiteError, DiskError)):
-        return False
-    return True
-
-
-def _merge_again(error: Exception) -> bool:
-    """Whether a DASH download and merge is worth another try after `error`.
-
-    A stream that came short, or a merge ffmpeg failed (it may have read a short stream), is;
-    a refusal or a missing ffmpeg isn't.
-
-    Args:
-        error: what the try raised.
-
-    Returns:
-        True to try again.
-    """
-    return isinstance(error, files.RunError) or (isinstance(error, Error) and error.retryable)
-
-
-async def _again(attempt: Callable[[], Awaitable[T]], *,
-                 worth: Callable[[Exception], bool]) -> T:
-    """Await `attempt()` up to `ATTEMPTS` times while what it raises is `worth` another try.
-
-    The tries wait 1, then 2 s between them. A `KeyboardInterrupt` (`Stopped`) is never caught.
-
-    Args:
-        attempt: makes one try; what it returns is returned.
-        worth: whether an exception the try raised is worth another; when it isn't, or the
-            tries are used up, the exception is raised.
-
-    Returns:
-        What the try that went through returned.
-    """
-    number = 1
-    while True:
-        try:
-            return await attempt()
-        except Exception as error:
-            if number >= ATTEMPTS or not worth(error):
-                raise
-            seconds = 2.0 ** (number - 1)
-            ui.debug("retry {n} in {time}: {error}", n=number,
-                     time=text.duration(seconds), error=error)
-            await clock.pause(seconds)
-            number += 1
 
 
 async def _save_fetch(fetch: Fetch, held: files.Part, label: str, size: int | None,

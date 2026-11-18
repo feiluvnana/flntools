@@ -637,6 +637,10 @@ class _Tries:
 # ---------------------------------------------------------------------------------------------
 
 
+async def _nothing() -> None:
+    """The work of a job made only to wait for what it would wait for."""
+
+
 def _no_switch(job: Job[Any], error: BaseException) -> Job[Any] | None:
     """No other account: switching is the auth manager's, which isn't wired in yet."""
     return None
@@ -716,7 +720,7 @@ class Scheduler:
         return self.tabs.free >= WARM_FREE and not self.tabs.waiting
 
     def hold(self, plugin: str, account: str | None, *, seconds: float, reason: str,
-             bucket: str | None = None) -> None:
+             bucket: str | None = None) -> float:
         """Hold an account, or one of its buckets, as a block round: the plugin's `ctx.hold`.
 
         The hold lasts the larger of `seconds` and the round's wait (30, 120, 480 s), and
@@ -727,6 +731,9 @@ class Scheduler:
             reason: why, for the screen.
             bucket: the bucket held; None holds the whole account.
 
+        Returns:
+            The seconds the hold lasts from now.
+
         Raises:
             Blocked: a fourth round; it fails its job without another try.
         """
@@ -734,6 +741,16 @@ class Scheduler:
         if not self._rounded(hold, seconds, reason):
             raise errors.Blocked(f"{reason}: still blocked after {len(ROUND_WAITS)} holds",
                                  wait=seconds or None, retryable=False)
+        return hold.until - clock.now()
+
+    async def wait(self, plugin: str, account: str | None) -> None:
+        """Wait out the hold of an account, as its `PAGE` jobs do.
+
+        Raises:
+            Stopped: the run's first Ctrl-C came meanwhile.
+        """
+        await self._held(Job(kind=Kind.PAGE, work=_nothing, plugin=plugin, account=account),
+                         bucket=False)
 
     def room(self, host: str) -> bool:
         """Whether `host`'s cap has a free place and no `FILE` job waits for it."""

@@ -1413,13 +1413,14 @@ class Site(Protocol):
         """Wait out a block the site showed in its content, such as a "please wait" answer.
 
         A rate limit by status (429) is waited out by `fetch` itself. This is for a block a
-        source reads from the page: it waits `retry_after` (up to an hour), or, without one,
-        30 s, then 2 min, then 8 min for the rounds in a row, and a fourth round in a row
-        raises `Blocked`. A request that then succeeds starts the count again.
+        source reads from the page: it holds the source's account, every target of it, for
+        the larger of `retry_after` (up to an hour) and the round's wait (30 s, then 2 min,
+        then 8 min for the rounds in a row), and a fourth round in a row raises `Blocked`.
+        Ten minutes without a block start the rounds again.
 
         Args:
             reason: what the site did, shown with the wait.
-            retry_after: the seconds the site asked for; None waits by the rounds above.
+            retry_after: the seconds the site asked for; None waits the round's.
 
         Raises:
             Blocked: the site kept blocking after three waits in a row.

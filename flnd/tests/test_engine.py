@@ -371,12 +371,14 @@ class HttpTest(EngineCase):
         self.assertIn("rate limited; waiting", " ".join(self.lines()))
         self.assertIn(("aaa:c", "posts"), self.listed())
 
-    def test_challenges_are_waited_out(self):
+    def test_challenges_are_waited_out_by_rounds_of_the_account(self):
         self.run_engine(make_source("aaa", lambda site: site.back_off("challenged")),
                         targets=["aaa:a", "aaa:b", "aaa:c", "aaa:d"])
         waits = [line for line in self.lines() if "challenged; waiting" in line]
-        self.assertEqual(len(waits), 4)
-        self.assertIn(("aaa:d", "posts"), self.listed())
+        # The rounds are the account's, across its targets: 30, 120 and 480 s, then the
+        # fourth in a row fails its target (`Blocked`).
+        self.assertEqual([wait.rsplit(" ", 1)[1] for wait in waits], ["30.0s", "2m", "8m"])
+        self.assertEqual(self.listed(), {("aaa:a", "posts"), ("aaa:b", "posts"), ("aaa:c", "posts")})
 
     def test_ctrl_c_during_a_wait_stops_the_run(self):
         """The first Ctrl-C ends a rate-limit wait at once; the target ends as stopped and the command as Ctrl-C."""

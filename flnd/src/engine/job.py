@@ -1862,7 +1862,14 @@ class Downloads:
                         raise _Dropped(f"{queued}: dropped")
                     queued.flowing = True
                     self._running += 1
-            saved = await work()
+            try:
+                saved = await work()
+            except Exception as error:
+                if isinstance(error, Error):
+                    raise
+                # A plugin's `fetch` function raises what it meets (a dropped connection): the
+                # scheduler's policy reads it as flnd's error for it.
+                raise classify(error) from error
             # The bytes it moved, for the host's cap to measure its throughput.
             job.done = saved.size
             return saved

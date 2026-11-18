@@ -29,7 +29,7 @@ from test_commands import FlndCase, Stdin
 from test_engine import EngineCase, make_source
 
 from flnd.engine import home as _home
-from flnd.engine import transfer as _transfer
+from flnd.engine import jobs
 from flnd.engine.core import Engine
 from flnd.engine.options import Options
 from flnd.engine.site import LoginSite
@@ -721,8 +721,10 @@ class DownloadTest(DownloadCase):
         self.telegram.drops = set(range(1, 100))
         with mock.patch.object(tlg, "REQUEST", 8):
             self.assertEqual(self.download(categories=("video",)), 0)
-        # Each of the engine's tries of the file gives the part its own resumes.
-        self.assertEqual(len(self.telegram.reads), _transfer.ATTEMPTS * (tlg.RESUMES + 1))
+        # Each of the scheduler's tries of the file (the first and 4 more) gives the part its own
+        # resumes.
+        self.assertEqual(len(self.telegram.reads),
+                         (1 + len(jobs.NETWORK_WAITS)) * (tlg.RESUMES + 1))
 
     def test_a_big_document_comes_in_parts_at_once(self):
         body = bytes(range(64)) * 2
