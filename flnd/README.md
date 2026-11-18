@@ -15,7 +15,8 @@ flnd needs [uv](https://docs.astral.sh/uv/) and Python 3.11 or newer.
 ```bash
 git clone https://github.com/feiluvnana/flntools
 cd flntools
-uv tool install -e ./flnd           # from the repository root; puts `flnd` on your PATH, Telegram support included
+# From the repository root: puts `flnd` on your PATH, Telegram support included.
+uv tool install -e ./flnd
 ```
 
 From a checkout, `make setup` creates `.venv`, and then `uv run flnd …` runs it. On Windows,
@@ -27,7 +28,7 @@ Outside programs, each needed only for some files:
 - **Google Chrome**, for the sites that open a browser. When it is missing and flnd runs in a
   terminal, it asks once whether to download Chromium for itself (about 200 MB, kept in
   Playwright's cache). Declined, or off a terminal (cron, `--json`), the run stops with
-  "flnd needs Google Chrome" and a link to install it.
+  "Google Chrome is needed" and a link to install it.
 - **ffmpeg**, for videos: joining a video with its separate sound track.
 - **7-Zip** (`7zz`, or the older `7z`), for 7z, RAR and encrypted zip archives. zip and tar are
   read by Python.

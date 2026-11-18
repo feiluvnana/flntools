@@ -1,7 +1,8 @@
-"""The job (flnd/job.py): one target of a ported source, from its route to its history rows.
+"""The job (src/engine/job.py): one target of a ported source, from its route to its history
+rows.
 
 Run through the engine with tests/example_source.py on `flnkit.net.fake`, the clocks of
-`flnkit.net` and site.py faked, and through `job.posts` on a `FakeSite` for the listing rules. Also the
+`flnkit.net` and src/engine/site.py faked, and through `job.posts` on a `FakeSite` for the listing rules. Also the
 "download Chromium?" question asked up front, an expired link's refresh, and both Ctrl-Cs (with
 a CDN that blocks on events, and the run on a thread of its own). No network, no browser.
 """

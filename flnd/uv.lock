@@ -326,7 +326,7 @@ dist = [
 requires-dist = [
     { name = "cryptg", specifier = ">=0.5" },
     { name = "cryptography", specifier = ">=42" },
-    { name = "curl-cffi", specifier = ">=0.13" },
+    { name = "curl-cffi", specifier = ">=0.17,<0.18" },
     { name = "msgspec" },
     { name = "playwright", specifier = "==1.65.*" },
     { name = "qrcode", specifier = ">=7.4" },

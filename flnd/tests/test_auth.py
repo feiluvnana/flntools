@@ -1,4 +1,4 @@
-"""src/_vault.py: cookie jars in the vault, the one-time move of plain cookie files, whether a
+"""flnkit/vault.py: cookie jars in the vault, the one-time move of plain cookie files, whether a
 source is logged in, logout, secrets sealed per source and name, and the key file.
 
 No browser, no network: cookie files are written by the tests, and the vault's key is a real one

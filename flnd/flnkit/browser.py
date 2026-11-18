@@ -463,8 +463,8 @@ CHROME_PATHS = {
 }
 # The environment variables whose folders Chrome may be installed under on Windows; each is tried.
 WINDOWS_ROOTS = ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)")
-CHROMIUM_QUESTION = "Google Chrome isn't installed. Download Chromium for flnd (about 200 MB)?"
-NEEDS_CHROME = "flnd needs Google Chrome: install it from https://www.google.com/chrome/"
+CHROMIUM_QUESTION = "Google Chrome isn't installed. Download Chromium instead (about 200 MB)?"
+NEEDS_CHROME = "Google Chrome is needed: install it from https://www.google.com/chrome/"
 # What a missing browser's `ToolError` says to do.
 INSTALL_CHROME = "install Google Chrome, or run in a terminal and accept Chromium's download"
 # Playwright's installer prints a line such as "|■■■■      |  20% of 167.3 MiB" every few

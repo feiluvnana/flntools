@@ -1,5 +1,5 @@
-"""src/_home.py: the home's `flnd.db`, one transaction per post, gone files, failures, targets, and
-the migration of an old home, which must never change the old files.
+"""src/engine/home.py: the home's `flnd.db`, one transaction per post, gone files, failures,
+targets, and the migration of an old home, which must never change the old files.
 
 Every test runs on a temporary home. An old home is written here the way flnd wrote it before
 `flnd.db`: SQLite stores of `t_<table>` rows of JSON values, in `metadata/`.

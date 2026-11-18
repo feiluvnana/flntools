@@ -20,6 +20,7 @@ def main() -> None:
     shutil.copytree(ROOT / "flnkit", STAGE / "flnkit", ignore=ignore)
     run(["--onefile", "--noconfirm", "--name", "flnd",
          "--collect-submodules", "flnd", "--collect-submodules", "flnkit",
+         "--distpath", str(ROOT / "dist"),
          "--specpath", str(ROOT / "build"), "--workpath", str(ROOT / "build" / "pyinstaller"),
          "--paths", str(STAGE), str(STAGE / "flnd" / "__main__.py")])
 

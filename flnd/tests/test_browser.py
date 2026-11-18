@@ -406,14 +406,15 @@ class ChromeOnlyTest(BrowserCase):
         for _ in range(2):
             with self.assertRaises(ToolError) as caught:
                 run(_browser.launch())
-            self.assertEqual(str(caught.exception), "flnd needs Google Chrome: install it from https://www.google.com/chrome/")
+            self.assertEqual(str(caught.exception),
+                             "Google Chrome is needed: install it from https://www.google.com/chrome/")
             self.assertEqual(caught.exception.hint, _browser.INSTALL_CHROME)
         self.assertEqual((self.launched, self.installs), ([], []))
         self.assertEqual(self.playwright.stops, 2)
 
     def test_without_a_terminal_it_raises_naming_chrome(self):
         with mock.patch.object(sys.stdin, "isatty", return_value=False), \
-                self.assertRaisesRegex(ToolError, "^flnd needs Google Chrome: install it"):
+                self.assertRaisesRegex(ToolError, "^Google Chrome is needed: install it"):
             run(_browser.launch())
         self.assertEqual((self.launched, self.installs), ([], []))
         self.assertNotIn(_browser.CHROMIUM_QUESTION, self.dest.getvalue())

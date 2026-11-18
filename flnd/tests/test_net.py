@@ -1149,6 +1149,17 @@ class CurlTest(unittest.TestCase):
 
         self.assertEqual(asyncio.run(run()), b"body")
 
+    def test_an_https_url_tunnels_through_the_proxy_in_any_case(self):
+        from curl_cffi import CurlOpt
+
+        curl = mock.Mock()
+        curls = _net._Curls(handles=1, timeout=1.0, proxy="http://127.0.0.1:9")
+        for url, tunnel in [("HTTPS://example.com/", 1), ("https://example.com/", 1),
+                            ("http://example.com/", 0)]:
+            curls._ask(curl, _net.Request("GET", url), mock.Mock())
+            curl.setopt.assert_any_call(CurlOpt.HTTPPROXYTUNNEL, tunnel)
+            curl.reset_mock()
+
 
 if __name__ == "__main__":
     unittest.main()

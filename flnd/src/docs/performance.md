@@ -13,10 +13,10 @@ make bench ARGS=--record                # store this run as the new baseline
 make bench ARGS=--smoke                 # each group's smallest case once: does it still run?
 ```
 
-`make bench` runs `tests/bench/run.py` inside the project environment
-(`uv run python tests/bench/run.py`). It is never part of `make check`: it takes minutes, and timings are
-noisy. Everything is offline: a loopback HTTP server, synthetic data, and scratch folders that
-are removed afterwards.
+`make bench` runs `tests/bench/run.py` inside the project environment (`uv run python
+tests/bench/run.py`). It is never part of `make check`: it takes minutes, and timings are noisy.
+Everything is offline: a loopback HTTP server, synthetic data, and scratch folders that are removed
+afterwards.
 
 `make check` does run every group in **smoke mode** (`tests/test_bench.py`): each at its
 smallest size (a few files, a few rows), each timed once, in a few seconds. Its numbers are
@@ -154,13 +154,12 @@ How a file is written, and why:
   (5 ms) while the loop runs Python: a thread hashing 1 MiB pieces beside a busy Python thread
   managed 0.13 GiB/s. Hashing beside the write, and handing off 4 MiB instead of 1 MiB, took
   `net.big_rate` from 1.91 to 2.35 GiB/s (median of 3 alternating runs).
-- **A transfer waits for the disk with at most 8 MiB in memory.** Every chunk curl receives
-  waits in the transfer's queue, which has no bound; on a disk slower than the network a
-  whole file would wait there. Once 8 MiB of a transfer wait (4 MiB before the pieces grew), flnd pauses it
-  (`curl_easy_pause`) until the writer has taken them down to half, and TCP holds the server
-  back meanwhile. Measured at 4 MiB with two 64 MiB files onto a disk throttled to 20 MB/s: at
-  most 4.0 MiB waited per transfer, against 62.9 MiB unpaused, in the same time (7.3 s against
-  7.2 s).
+- **A transfer waits for the disk with at most 8 MiB in memory.** Every chunk curl receives waits in
+  the transfer's queue, which has no bound; on a disk slower than the network a whole file would
+  wait there. Once 8 MiB of a transfer wait (4 MiB before the pieces grew), flnd pauses it
+  (`curl_easy_pause`) until the writer has taken them down to half, and TCP holds the server back
+  meanwhile. Measured at 4 MiB with two 64 MiB files onto a disk throttled to 20 MB/s: at most 4.0
+  MiB waited per transfer, against 62.9 MiB unpaused, in the same time (7.3 s against 7.2 s).
 - **A part's open and rename run on worker threads.** Each is a file-system call of 50 to 150
   µs, more on a busy disk; on the loop they would run one at a time.
 - **Small files are bound by the loop's own work.** At the baseline the loop thread was busy

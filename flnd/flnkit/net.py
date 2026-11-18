@@ -1104,7 +1104,8 @@ class _Curls:
         curl.setopt(CurlOpt.HTTPHEADER, [line.encode() for line in lines])
         curl.setopt(CurlOpt.COOKIELIST, "ALL")
         if self._proxy:
-            tunnel = url.startswith("https:") and not self._proxy.startswith("socks")
+            # A scheme is case-insensitive, as curl_cffi's `urlparse` treats it.
+            tunnel = url[:6].lower() == "https:" and not self._proxy.startswith("socks")
             curl.setopt(CurlOpt.HTTPPROXYTUNNEL, int(tunnel))
         curl.setopt(CurlOpt.WRITEFUNCTION, transfer.write)
         curl.setopt(CurlOpt.HEADERFUNCTION, transfer.line)

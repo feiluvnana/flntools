@@ -1,6 +1,7 @@
 """No module but `src/ui/` writes to standard output or error (PLAN.md section 8.2).
 
-Every file under `flnd/` outside `src/ui/` is read with `ast`, and nothing is imported or run.
+Every file under `src/` and `flnkit/` outside `src/ui/` is read with `ast`, and nothing is
+imported or run.
 A write is a call of `print`, a call on `sys.stdout` or `sys.stderr` or their `buffer`
 (`write`, `flush`, `writelines`), `os.write` to descriptor 1 or 2 (or a stream's `fileno()`),
 or a Rich `Console`, which writes to standard output by default. Reading the
