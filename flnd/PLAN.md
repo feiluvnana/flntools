@@ -446,8 +446,11 @@ dependency and `import flnd.plugin` stays cheap (P11).
   - `audio` is a DASH audio stream to merge with the video (when `mirrors` holds a DASH video
     followed by a progressive fallback, `audio` merges only with `mirrors[0]`, fixing S9);
   - `name` replaces the name `filename` makes. A `name` with an extension keeps it. A stem
-    takes its extension from the content type, else from the URL's extension, else none.
-    The content check (6.4) still renames a file whose bytes are a different known format.
+    takes its extension, in order, from the `Content-Type` if it names a known media kind,
+    else from the URL's extension only if that names a known media kind (so `01` from
+    `d.php` stays `01`), else none. The content check (6.4) then renames a file whose bytes
+    are another known format. The engine and the kit share one function for this, so `--dry`
+    shows the same path that is saved.
     Ports pin today's names (`avatar_<id>.jpg`, `cover_12.png`), and the old wording doubled
     them (`02.png.png`). Decided by the orchestrator on 2026-11-19 (15, item 6);
   - `password` is an archive's;
@@ -472,11 +475,14 @@ dependency and `import flnd.plugin` stays cheap (P11).
   - With `check=False`, a refusal of any status returns its `Response` to read, a 401 or 403
     from the plugin's own domains and a 404 or 410 included (as API 1 did, and as loi's
     quota and VIP 403 and tik's embed-page 401 and 403 need).
-  - Walls, `blocked()` and 429 holds still act first, and a 5xx is still tried again with
-    6.2's back-off. Only the last response goes back to the plugin, so a plugin reads 4xx
-    refusals and never handles a transient server error itself. Decided by the orchestrator
-    on 2026-11-19 (15, item 6): tik's embed fetch moved to `check=False` and lost today's
-    5xx retries.
+  - Walls, `blocked()` and 429 holds still act first, and a 5xx of a method that is safe to
+    send twice (`GET`, `HEAD`) is still tried again with 6.2's back-off. Only the last
+    response goes back to the plugin, so a plugin reads 4xx refusals and never handles a
+    transient server error itself. Decided by the orchestrator on 2026-11-19 (15, item 6):
+    tik's embed fetch moved to `check=False` and lost today's 5xx retries.
+  - A `POST` is never tried again, with `check` on or off, since the server may have acted
+    (a 2FA submit). Under `check=False` its 5xx goes straight back to the plugin, as
+    `src/docs/errors.md` says.
   - Such a 401 or 403 never marks the account `expired` (step 7's wiring).
 - **`Response`:** a Protocol: `status`, `url`, `headers`, `text`, `json`, `content`, `ok`,
   `html` (a `flnkit/html.py` document).
@@ -532,7 +538,7 @@ Removed from today's `Site`:
 | hook | signature | when |
 | --- | --- | --- |
 | `resolve` | `@classmethod resolve(cls, text: str) -> Target \| None` | matches `text` against the class's compiled patterns and `unsupported` rules when called on `cls` |
-| `sign` | `sign(self, request: Request, cookies: Mapping[str, str]) -> Request` | before each try of a request to its domains; returns the request with headers added |
+| `sign` | `sign(self, request: Request, cookies: Mapping[str, str]) -> Request` | before each try of a request to its domains, and on each redirect hop back to them (6.2); returns the request with headers added |
 | `connect` | `connect(self, ctx) -> AbstractAsyncContextManager[None]` | once per run, around the plugin's targets (tlg's client) |
 | `date` | `async date(self, ctx, post: Post) -> date \| None` | a post with no date, before its files are named |
 | `blocked` | `blocked(self, response: Response) -> float \| None` | each HTTP answer from its domains: `fetch`, `pages`, and the main document of `open`. Never a `feed` item, which the plugin checks itself and answers with `ctx.hold`. Seconds to hold, or `None` when it isn't a block |
@@ -707,7 +713,7 @@ first out.
 
 | what happened | what the scheduler does |
 | --- | --- |
-| `NetworkError`, or a 5xx | try again after 1, 2, 4, 8 s, each × a random 0.5–1.5; then fail the job. Under `Request(check=False)` a 5xx is tried again the same way, and only the last response goes back to the plugin, instead of failing the job (5.3) |
+| `NetworkError`, or a 5xx | for a method safe to send twice (`GET`, `HEAD`): try again after 1, 2, 4, 8 s, each × a random 0.5–1.5; then fail the job. Under `Request(check=False)` a 5xx is tried again the same way, and only the last response goes back to the plugin, instead of failing the job (5.3). A `POST` is never tried again, with `check` on or off, since the server may have acted (a 2FA submit); under `check=False` its 5xx goes straight back to the plugin |
 | any other `Error` with `retryable=True`, for any job kind (`MERGE` included): a transient ffmpeg failure, a `ToolError` or flnkit's `RunError(ToolError)` flagged retryable | the same back-off: 1, 2, 4, 8 s, then fail the job. This is how E6's merge is retried. A missing tool is never retryable, and stops the run as its own row says. Decided by the orchestrator on 2026-11-18 (15, item 6) |
 | 429 | hold the bucket for `Retry-After` or `x-rate-limit-reset` (at most 3600 s; else 30 s), and halve its rate for 20 clean requests; a third 429 in a row on a bucket counts as a block round |
 | `blocked()` returned seconds, `ctx.hold(...)`, or a block round | with switching on and another account free: move the job to it. Else hold (plugin, account, bucket) for the larger of the seconds and the round's wait (30, 120, 480 s); a fourth round fails the job with `Blocked`. Rounds reset after 600 s with no block |
@@ -718,6 +724,10 @@ first out.
 | `DiskError`, a missing tool, or `PluginError` from a broken class | stop the run (exit 4) |
 | a file failed for any reason above | a `failures` row; the next runs retry it, up to 3 runs (`RETRIES = 3`) |
 | `NotFound`, `Hidden` or `Changed` from a lazy post's `files()` | that post's failure, never the target's: a `failures` row under the post's id, and the listing goes on to the next post; a `NotFound` marks the post gone, never asked again. `Blocked` and `LoginError` there act as on any request (a hold, a switch or a stop). Decided by the orchestrator on 2026-11-19 (15, item 6): ins and tik list most posts lazily, so one gone post would otherwise fail a whole profile; API 1 warned and skipped |
+
+**Redirects of signed requests.** The engine follows them itself, not curl. On a hop to the
+plugin's own domains it runs `sign` again and adds the user agent and cookies; an off-domain
+hop carries no header that `sign` added. Decided by the orchestrator on 2026-11-19.
 
 **Segments**, for a `FILE` job:
 - A file whose size is at least 16 MiB, from a host that answered `Accept-Ranges: bytes` or a
