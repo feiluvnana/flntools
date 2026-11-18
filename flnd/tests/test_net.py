@@ -466,7 +466,7 @@ class DownloadTest(NetCase):
         self.assertEqual(len(threads), 3)
         self.assertTrue(all(name.startswith("flnd-writer") for name in threads), threads)
 
-    def test_a_large_body_is_hashed_beside_its_writes_without_reading_back(self):
+    def test_a_large_body_is_hashed_as_it_is_written_without_reading_back(self):
         import hashlib
 
         body = bytes(range(256)) * (10 * _net.BUFFER // 256 // 4)
@@ -493,7 +493,7 @@ class DownloadTest(NetCase):
                 mock.patch("flnkit.files._digest_fd", side_effect=AssertionError("read back")):
             saved = asyncio.run(fill())
         self.assertEqual(saved.hash, hashlib.sha256(body).digest())
-        self.assertIn("flnd-hasher", " ".join(threads))
+        self.assertIn("flnd-writer", " ".join(threads))
 
     def test_resumes_a_partial_part_with_a_range(self):
         self.stage.write_bytes(BODY[:6])

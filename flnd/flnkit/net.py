@@ -35,10 +35,9 @@ Every message names the URL redacted (`flnkit.text.redact`), and any secret the 
 Rules a change must keep:
 - A session belongs to one asyncio loop: every coroutine here runs on it, and nothing here
   blocks it. File writes go to a writer thread, `BUFFER` bytes at a time: the caller's (`Meter`'s
-  `write`), else this module's one; a part that hashes has each piece hashed on one hasher
-  thread beside its write. So a slow disk never stalls the loop (and the browser and every other
-  transfer on it); see src/docs/performance.
-- A write or hash in flight on those threads always finishes before its transfer gives the part
+  `write`), else this module's one. So a slow disk never stalls the loop (and the browser and
+  every other transfer on it); see src/docs/performance.
+- A write in flight on those threads always finishes before its transfer gives the part
   back, even when the transfer is cancelled: the part's descriptor is closed only after it.
 """
 
@@ -1256,34 +1255,22 @@ def _writer_thread() -> ThreadPoolExecutor:
     return _writer
 
 
-# The one thread every appended part is hashed on, beside the writer: SHA-256 is the slowest
-# step of a fast transfer, so it runs at the same time as the write instead of after it.
-_hasher: ThreadPoolExecutor | None = None
-
-
-def _hasher_thread() -> ThreadPoolExecutor:
-    global _hasher
-    if _hasher is None:
-        _hasher = ThreadPoolExecutor(1, thread_name_prefix="flnd-hasher")
-    return _hasher
-
-
 class _Sink:
-    """A transfer's bytes on their way to its part: gathered on the loop, written on the writer.
+    """A transfer's bytes on their way to its part: gathered on the loop, written on a writer.
 
-    Chunks (16 KiB from curl) are gathered until `BUFFER` bytes, then handed to two threads
-    while the loop goes on: the writer thread writes the piece, and for an appended body the
-    hasher thread adds it to the part's SHA-256 at the same time (`Part.feed`). The transfer
-    waits only for its own piece. A slow disk (a USB drive, a network share) then slows that
-    transfer, not the loop; and the hash, the slowest step of a fast transfer (about 3 GiB/s on
-    one core), runs beside the write instead of after it.
+    Chunks (16 KiB from curl) are gathered until `BUFFER` bytes, then handed to the writer while
+    the loop goes on: the caller's (`Meter.write`), else this module's one thread. The transfer
+    waits only for its own piece, so a slow disk (a USB drive, a network share) slows that
+    transfer, not the loop. A part that hashes as it is written hashes each piece on the writer,
+    after its write: the caller's hasher pool (flnd's dedupe) hashes a file only when it must.
 
-    Each of the two is one thread, and a transfer hands off a piece only after the last one is
-    done, so a part's pieces reach the disk and its hash in order.
+    A transfer hands off a piece only after the last one is done, so a part's pieces reach the
+    disk in order.
 
     Args:
         held: the part.
         offset: where to write, for a segment (`Part.write_at`); None appends (`Part.write`).
+        write: runs one blocking write, as `Meter.write`; None uses this module's thread.
         wrote: awaited with each piece's size once it is on disk, as `Meter.wrote`.
         until: where the bytes stop, as `Meter.until`: while it gives an end (the part is in
             segments), the last piece too goes to the disk before `wrote` counts it.
@@ -1334,38 +1321,22 @@ class _Sink:
             if self._wrote is not None:
                 await self._wrote(len(data))
             return
-        if self._run is not None and not self._held.hashing:
-            # The caller's writer, which waits for its write to end even through a cancel.
-            if self._offset is None:
-                await self._run(self._append, data)
-            else:
-                await self._run(self._held.write_at, self._offset + self.written, data)
-            self.written += len(data)
-            if self._wrote is not None:
-                await self._wrote(len(data))
-            return
-        loop = asyncio.get_running_loop()
         if self._offset is None:
-            work = loop.run_in_executor(_writer_thread(), self._append, data)
-            if not self._held.hashing:
-                await _settle(work)
-            else:
-                fed = loop.run_in_executor(_hasher_thread(), self._held.feed, data)
-                # Both are waited for, whatever the other did: a thread still holding the part
-                # when its transfer ends would write or hash after the part is gone.
-                try:
-                    await _settle(work)
-                finally:
-                    await _settle(fed)
+            call, args = self._append, (data,)
         else:
-            at = self._offset + self.written
-            await _settle(loop.run_in_executor(_writer_thread(), self._held.write_at, at, data))
+            call, args = self._held.write_at, (self._offset + self.written, data)
+        if self._run is not None:
+            # The caller's writer, which waits for its write to end even through a cancel.
+            await self._run(call, *args)
+        else:
+            loop = asyncio.get_running_loop()
+            await _settle(loop.run_in_executor(_writer_thread(), call, *args))
         self.written += len(data)
         if self._wrote is not None:
             await self._wrote(len(data))
 
     def _append(self, data: bytes) -> None:
-        self._held.write(data, fed=True)
+        self._held.write(data)
         self._held.flush()
 
 

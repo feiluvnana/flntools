@@ -9,6 +9,7 @@ import asyncio
 import builtins
 import contextlib
 import errno
+import hashlib
 import io
 import json
 import os
@@ -598,6 +599,39 @@ class EngineTest(EngineCase):
             File(f"{CDN}/{site.target.value}.zip", name=f"{site.target.value}.zip")])
         self.report(source, targets=["aaa:example_user", "aaa:example_creator"])
         self.assertEqual(self.saved(), ["example_creator.zip", "example_user.zip"])
+
+    def test_four_files_are_hashed_at_once_on_four_threads(self) -> None:
+        # K9: four new files meet four saved ones of their size; each thread's first hash waits
+        # for three others, which one hasher thread for the whole process never gives.
+        for n in range(8):
+            self.routes[f"{CDN}/{n}.bin"] = bytes([n]) * 64
+        self.run_files(*(File(f"{CDN}/{n}.bin", name=f"{n}.bin") for n in range(4)))
+        threads: set[str] = set()
+        met = threading.Barrier(4, timeout=5)
+        real = hashlib.sha256
+
+        def sha256(*args):
+            made = real(*args)
+            if args:
+                return made
+
+            class Waits:
+                def update(self, data):
+                    name = threading.current_thread().name
+                    if name not in threads:
+                        threads.add(name)
+                        met.wait()
+                    made.update(data)
+
+                def digest(self):
+                    return made.digest()
+
+            return Waits()
+
+        with mock.patch.object(files.hashlib, "sha256", sha256), \
+                mock.patch.object(jobs.os, "cpu_count", return_value=8):
+            self.run_files(*(File(f"{CDN}/{n}.bin", name=f"{n}.bin") for n in range(4, 8)))
+        self.assertGreaterEqual(len(threads), 4, threads)
 
     def test_a_write_lock_held_elsewhere_never_stalls_the_loop(self) -> None:
         # E18: another process holds flnd.db's write lock for half a second while a post

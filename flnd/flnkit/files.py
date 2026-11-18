@@ -189,34 +189,26 @@ class Part:
                 raise disk(error, self.side_path) from error
             self.side = True
 
-    def write(self, data: bytes, *, fed: bool = False) -> None:
-        """Append `data` after the part's bytes, through a 1 MiB buffer.
+    def write(self, data: bytes) -> None:
+        """Append `data` after the part's bytes, through a 1 MiB buffer, hashing it when the
+        part hashes (`digest`).
 
         Args:
             data: the bytes, which reach the file through the buffer, or at once for a piece
                 larger than it.
-            fed: the caller hashes `data` itself, with `feed`, so the hash and the write can
-                run on two threads at once. Every appended byte must reach `feed` in order.
         """
         if self._buffer is None:
             self._buffer = open(self.fd, "r+b", buffering=BUFFER, closefd=False)  # noqa: SIM115
             self._buffer.seek(self.size)
         self._buffer.write(data)
         self.size += len(data)
-        if not fed:
-            self.feed(data)
-
-    @property
-    def hashing(self) -> bool:
-        """Whether the part hashes what is appended (`digest`, from byte 0): a writer that hands
-        its pieces to `feed` itself needn't when it doesn't."""
-        return self._sha is not None
+        self.feed(data)
 
     def feed(self, data: bytes) -> None:
-        """Add appended bytes to the part's running SHA-256 (see `write`'s `fed`).
+        """Add appended bytes to the part's running SHA-256.
 
         Args:
-            data: the bytes just appended, or about to be, in the order they are appended.
+            data: the bytes just appended, in the order they are appended.
         """
         sha = self._sha
         if sha is not None:
