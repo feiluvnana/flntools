@@ -50,6 +50,8 @@ class FakeRaw:
         self.events = {}
         self.url = "about:blank"
         self.closed = False
+        # The bodies read off this tab's responses.
+        self.reads = 0
 
     def on(self, event, listener):
         self.events.setdefault(event, []).append(listener)
@@ -80,6 +82,7 @@ class FakeRaw:
     async def emit(self, url, body):
         """Deliver one response to the tab's listeners, and let their body reads finish."""
         async def text():
+            self.reads += 1
             return body
 
         response = SimpleNamespace(url=url, request=SimpleNamespace(resource_type="xhr"), text=text)
@@ -574,6 +577,23 @@ class TabTest(SiteCase):
         self.assertEqual(len(browser.opened), jobs.TABS - jobs.WARM_FREE + 1)
         self.assertTrue(site.open(urls[1]))
         self.assertEqual(len(self.browsers), 1)
+
+    def test_warm_tabs_open_in_one_hop_and_read_only_what_an_open_feed_wants(self):
+        run, site = self.open()
+        self.assertTrue(site.open(PAGE))
+        tabs = site._browser()
+        with mock.patch.object(tabs._shared, "run", wraps=tabs._shared.run) as hops:
+            site.warm([f"{API}/a", f"{API}/b"])
+        self.assertEqual(hops.call_count, 1)
+        [browser] = self.browsers
+        first, second = browser.opened[1:]
+        run.loop.run(first.emit(f"{API}/graphql", '{"n": 1}'))
+        run.loop.run(second.emit(f"{API}/other", '{"n": 2}'))
+        # No feed is open as the first is taken, and the open one wants no `other`.
+        self.assertTrue(site.open(f"{API}/a"))
+        with site.feed("graphql"):
+            self.assertTrue(site.open(f"{API}/b"))
+        self.assertEqual((first.reads, second.reads), (0, 0))
 
     def test_a_lazy_posts_open_takes_a_tab_of_its_own_and_an_empty_url_opens_none(self):
         run, site = self.open()

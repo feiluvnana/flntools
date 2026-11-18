@@ -171,10 +171,12 @@ class FakeContext:
         pass
 
     async def add_cookies(self, cookies):
+        # Playwright checks every cookie of a call before it sets any.
         for cookie in cookies:
             if "domain" not in cookie:
                 raise _browser._raw_error()(f"Invalid cookie {cookie}")
-            self.stored.append(cookie)
+        self.stored.extend(cookies)
+        self.calls = getattr(self, "calls", 0) + 1
 
     async def cookies(self):
         return [dict(cookie) for cookie in self.stored]
@@ -684,6 +686,11 @@ class FakeBrowserTest(BrowserCase):
         self.assertEqual(run(live.cookies()), _cookies.Jar([
             {"name": "sid", "value": "1", "domain": ".example.com", "path": "/"}]))
         self.assertEqual(run(live.cookies()).header, "sid=1")
+        good = _browser.Browser(cast(Any, FakeContext()), close_steps=[], headless=True)
+        run(good.add_cookies(_cookies.Jar([{"name": n, "value": "1", "domain": ".example.com"}
+                                           for n in ("a", "b", "c")])))
+        # A jar Playwright takes whole goes in with one call.
+        self.assertEqual(good.raw.calls, 1)
         line, = self.lines()
         self.assertTrue(line.startswith("! cookie bad was rejected: Invalid cookie"))
         self.assertNotIn("s3cr3t-value", line)

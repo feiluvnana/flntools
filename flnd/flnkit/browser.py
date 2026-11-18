@@ -948,12 +948,19 @@ class Browser:
         Args:
             jar: the cookies, as a login's `Jar` holds them.
 
-        A cookie Playwright refuses (no domain, a bad expiry) is logged without its value, and
-        the others still go in.
+        They go in with one call; when Playwright refuses that, each goes in alone, so a cookie
+        it refuses (no domain, a bad expiry) is logged without its value, and the others still
+        go in.
         """
-        for cookie in jar:
+        cookies = [{**cookie, "path": cookie.get("path") or "/"} for cookie in jar]
+        try:
+            await self.raw.add_cookies(cookies)
+            return
+        except _raw_error():
+            pass
+        for cookie in cookies:
             try:
-                await self.raw.add_cookies([{**cookie, "path": cookie.get("path") or "/"}])
+                await self.raw.add_cookies([cookie])
             # Playwright's Error is what a cookie it won't take raises; anything else goes up.
             except _raw_error() as error:
                 value = str(cookie.get("value", ""))
@@ -1149,16 +1156,19 @@ class Page:
         except _raw_error() as error:
             raise NetworkError(f"could not click {css!r}: {_first_line(error)}") from None
 
-    async def capture(self, accept: Callable[[Response], bool]) -> Capture:
+    async def capture(self, accept: Callable[[Response], bool], *,
+                      lazy: bool = False) -> Capture:
         """Start keeping the bodies of the responses this tab receives that `accept` takes.
 
         Args:
             accept: says, on the loop, whether a response is kept; it must not block.
+            lazy: keep the responses and read no body until `Capture.close` is told which
+                ones it wants (a warm tab's, which a feed may never take).
 
         Returns:
             The `Capture`, which `Capture.close` stops.
         """
-        capture = Capture(self, accept)
+        capture = Capture(self, accept, lazy=lazy)
         self.raw.on("response", capture.listener)
         return capture
 
@@ -1563,15 +1573,22 @@ class Capture:
     watches: how many responses have had their turn so far, and an event set each time more
     have.
 
+    A lazy capture keeps the responses only, and reads no body until `close` is told which
+    URLs it wants.
+
     Args:
         page: the tab it listens on.
         accept: whether a response is kept; called on the loop.
+        lazy: keep the responses, and read their bodies only at `close`.
     """
 
-    def __init__(self, page: Page, accept: Callable[[Response], bool]):
+    def __init__(self, page: Page, accept: Callable[[Response], bool], *, lazy: bool = False):
         self.items: deque[tuple[str, str]] = deque()
         self._page = page
         self._accept = accept
+        # A lazy capture's responses, in the order they came.
+        self._lazy = lazy
+        self._kept: list[Response] = []
         # Each accepted response gets the next number; `_ready` holds the reads done out of turn.
         self._numbered = 0
         self._flushed = 0
@@ -1595,6 +1612,9 @@ class Capture:
             response: Playwright's response; one `accept` refuses is left alone.
         """
         if self._stopped or not self._accept(response):
+            return
+        if self._lazy:
+            self._kept.append(response)
             return
         number, self._numbered = self._numbered, self._numbered + 1
         task = asyncio.ensure_future(self._read(number, response))
@@ -1637,8 +1657,12 @@ class Capture:
         if self._reads:
             await asyncio.gather(*list(self._reads), return_exceptions=True)
 
-    async def close(self) -> list[tuple[str, str]]:
+    async def close(self, wanted: Callable[[str], bool] | None = None) -> list[tuple[str, str]]:
         """Stop listening, wait for the reads under way, and empty `items`.
+
+        Args:
+            wanted: for a lazy capture, which responses' bodies to read, by URL; None reads
+                none of them.
 
         Returns:
             The `(url, body)` pairs `items` still held, oldest first.
@@ -1646,6 +1670,12 @@ class Capture:
         if not self._stopped:
             self._stopped = True
             self._page.raw.remove_listener("response", self.listener)
+        kept, self._kept = self._kept, []
+        if wanted is not None:
+            for response in kept:
+                if wanted(response.url):
+                    number, self._numbered = self._numbered, self._numbered + 1
+                    self._reads.add(asyncio.ensure_future(self._read(number, response)))
         await self.settle()
         left = list(self.items)
         self.items.clear()
@@ -1954,10 +1984,15 @@ class Tabs:
 
     async def _take(self) -> Page:
         """A tab from the run's browser, once the budget has a place for it."""
-        budget = self._budget
-        if budget is not None:
-            await budget.take()
+        if self._budget is not None:
+            await self._budget.take()
             self._held += 1
+        return await self._opened()
+
+    async def _opened(self) -> Page:
+        """A tab from the run's browser, its budget's place taken already; given back when the
+        tab doesn't open."""
+        budget = self._budget
         try:
             page = await self._shared.tab(self._jar)
         except BaseException:
@@ -2032,42 +2067,78 @@ class Tabs:
     def _fill(self) -> None:
         """Start loading queued URLs in idle or new tabs, while the budget says one may open."""
         _ = self.page
+        if self._pending:
+            self.run(self._filling())
+
+    async def _filling(self) -> None:
+        """`_fill` on the loop: the budget's places are taken in turn, then every tab opens and
+        starts its load at once.
+
+        Raises:
+            Exception: a tab couldn't be opened (the browser didn't launch); the others opened.
+        """
+        starts: list[tuple[str, Page | None]] = []
         while self._pending:
             if not self._idle and (self._budget is None or not self._budget.warm):
-                return
+                break
             url = self._pending.popleft()
-            if url in self._warmed:
+            if url in self._warmed or any(url == started for started, _ in starts):
                 continue
-            tab = self._new()
-            started, visit = self._start_warm(tab, url)
-            if not started:
+            if self._idle:
+                starts.append((url, self._idle.popleft()))
+                continue
+            if self._budget is not None:
+                await self._budget.take()
+                self._held += 1
+            starts.append((url, None))
+        opened = await asyncio.gather(*(self._start_warm(url, tab) for url, tab in starts),
+                                      return_exceptions=True)
+        failed: BaseException | None = None
+        for (url, _), result in zip(starts, opened):
+            if isinstance(result, BaseException):
+                failed = failed or result
+                continue
+            tab, visit = result
+            if visit is _NOT_STARTED:
                 self._recycle(tab)
-                continue
-            self._warmed[url] = (tab, visit)
+            else:
+                self._warmed[url] = (tab, visit)
+        if failed is not None:
+            raise failed
 
-    def _start_warm(self, tab: Page, url: str) -> tuple[bool, Visit | None]:
-        """Start loading `url` in `tab`, keeping its responses.
-
-        Args:
-            tab: an idle or new tab.
-            url: the page to warm.
+    async def _start_warm(self, url: str, tab: Page | None) -> tuple[Page, Any]:
+        """Start loading `url` in `tab` (a new one when None), keeping its responses unread.
 
         Returns:
-            `(started, first answer)`; not started when the load failed at once.
+            The tab and its first answer, or `_NOT_STARTED` when the load failed at once.
         """
-        self.take_buffer(tab)
-        self._buffers[tab] = self.run(tab.capture(_not_an_asset))
+        if tab is None:
+            tab = await self._opened()
+        await self._closed_buffer(tab)
+        self._buffers[tab] = await tab.capture(_not_an_asset, lazy=True)
         try:
-            return True, self.run(tab.commit(url))
+            return tab, await tab.commit(url)
         # Any failure only means no warm tab: `Site.open` loads the page as usual.
         except Exception:
-            self.take_buffer(tab)
-            return False, None
+            await self._closed_buffer(tab)
+            return tab, _NOT_STARTED
 
-    def take_buffer(self, tab: Page) -> list[tuple[str, str]]:
-        """Stop keeping `tab`'s responses, and return the `(url, body)` it kept."""
+    async def _closed_buffer(self, tab: Page) -> None:
         capture = self._buffers.pop(tab, None)
-        return [] if capture is None else self.run(capture.close())
+        if capture is not None:
+            await capture.close()
+
+    def take_buffer(self, tab: Page,
+                    wanted: Callable[[str], bool] | None = None) -> list[tuple[str, str]]:
+        """Stop keeping `tab`'s responses, and return the `(url, body)` it kept.
+
+        Args:
+            tab: the tab.
+            wanted: which kept responses' bodies a warm tab reads now, by URL: an open feed's;
+                None reads none.
+        """
+        capture = self._buffers.pop(tab, None)
+        return [] if capture is None else self.run(capture.close(wanted))
 
     def take_warm(self, url: str) -> tuple[bool, Visit | None]:
         """Switch to the warm tab loading `url`, if there is one, and warm the next queued URL.
@@ -2111,6 +2182,10 @@ class Tabs:
             self._pending.clear()
             self._feeds.clear()
             self._buffers.clear()
+
+
+# What `Tabs._start_warm` gives for a warm tab whose load failed at once.
+_NOT_STARTED = object()
 
 
 def _not_an_asset(response: Response) -> bool:
@@ -2208,9 +2283,8 @@ class Feed:
         for url, body in self._tabs.run(self._capture.close()):
             self._parse(url, body)
         self._page = page
-        for url, body in self._tabs.take_buffer(page):
-            if self._matches(url):
-                self._parse(url, body)
+        for url, body in self._tabs.take_buffer(page, self._matches):
+            self._parse(url, body)
         self._capture = self._tabs.run(page.capture(self._accepts))
         self._scroller = None
 

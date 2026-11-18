@@ -303,7 +303,10 @@ A run has one loop, and every rule below protects it:
   - **async Playwright**: one browser per run (`flnkit.browser.RunBrowser`), launched the
     first time a target needs a tab and shared by every source, so one Chrome window serves
     them all. Each target gets its own tab, and the warm tabs that pre-load the pages it will
-    open next while two of the run's six tabs stay free (`jobs.Budget`). A source never holds a
+    open next while two of the run's six tabs stay free (`jobs.Budget`), opened together in one
+    call to the loop. A warm tab keeps its load's responses unread: a body is read only when an
+    open feed takes the tab and wants that response. A login's cookies go into the browser in
+    one call. A source never holds a
     Playwright object: each browser verb of `Site` (`open`, `wait`, `scroll`, `feed`, `warm`,
     `document`, `evaluate`, `click`) is one call handed to the loop (`RunBrowser.run`), which
     waits for the answer. A response feed reads the matching bodies on the loop as they
