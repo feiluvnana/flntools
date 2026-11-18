@@ -202,7 +202,7 @@ flnd/                the project folder
    `src/testing.py` imports `flnd`, `src/plugin.py`, `src/engine/*` and `flnkit`.
    `src/_library.py` imports `src/engine/*`, `flnkit`, `src/errors.py` and `src/plugin.py`.
 5. `src/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
-   (`telethon`, `qrcode`), imported inside a function.
+   (`telethon` and `qrcode` for tlg, `cryptography` for loi), imported inside a function.
 6. `src/cli.py` imports only `flnd`, `src/ui/*` and `src/plugins/_manifest.py`.
 7. `src/__init__.py` imports nothing at import time beyond the standard library.
 
@@ -508,13 +508,13 @@ on the loop when its job kind is `none`.
 | `extension` | `async extension(op: str, **args) -> Any` | `tab`; an op of 6.8; `UsageError` with the hint `flnd extension install` when it isn't connected |
 | `storage` | `async storage(origin: str) -> Mapping[str, str]` | `tab`; reads `origin`'s `localStorage` via extension `storage`, or Chrome profile before step 12 |
 | `pause` | `async pause(seconds: float, reason: str) -> None` | none; sleeps on the run's clock so a page settles and `fake_clock` advances |
-| `hold` | `async hold(reason: str, *, seconds: float \| None = None, bucket: str \| None = None) -> None` | none; calls `Scheduler.hold(plugin, account, *, seconds, reason, bucket=None)` (6.2), which sets a block hold or switches accounts for feed, DOM or SDK blocks (`FloodWaitError`) |
+| `hold` | `async hold(reason: str, *, seconds: float \| None = None, bucket: str \| None = None) -> None` | none; calls `Scheduler.hold(plugin, account, *, seconds, reason, bucket=None)` (6.2), which sets a block hold or switches accounts for feed, DOM or SDK blocks (`FloodWaitError`); it waits the hold out on the run's clock before returning, as API 1's `back_off` did, and the rounds come from 6.2's block rule. Decided by the orchestrator on 2026-11-19: step 8 found `ctx.hold` returning at once, so a Telegram flood wait over 60 s was never waited out |
 | `call` | `async call(fn: Callable[..., T], *args) -> T` | `call`, in the thread pool |
 | `ask` | `async ask(message: str, *, secret: bool = False, description: str = "", choices: Sequence[str] = ()) -> str` | `UsageError` when nobody can answer (no terminal) |
 | `log` | `log(level: str, message: str, **fields) -> None` | none; `level` is `"debug"`, `"info"` or `"warn"` |
 | `target`, `when`, `time`, `settings`, `account` | properties | `Target`; `Range`; `Clock` (`.now()`, `.wall()`, `.day()`); `Settings`; `Account` or `None` |
 | `cookies` | `Mapping[str, str]` | the account's cookies on the plugin's domains, read-only |
-| `state` | `MutableMapping[str, Any]` | the plugin's own table in `flnd.db`; JSON values, each set one statement |
+| `state` | `MutableMapping[str, Any]` | the plugin's own table in `flnd.db`; JSON values, read and written in memory; loaded and flushed off the loop (6.3) |
 | `secrets` | `MutableMapping[str, str]` | the account's sealed secrets; writable only during a login |
 
 **Buckets add rate.** Each bucket has its own pace, so an account with three buckets may send
@@ -845,6 +845,9 @@ What it does:
      discovered ones included, runs on the same instance, so an in-run cache (mht's
      `_cached`, twt's search tweets) serves them all. A job moved to another account runs on
      that account's instance.
+   - **`ctx.state`** is loaded off the loop once per (plugin, account) per run, and flushed
+     off the loop at the end of each target and at the end of the run. The plugin reads and
+     writes it in memory. Decided by the orchestrator on 2026-11-19.
    - A search sync takes at most `MAX_SYNC_NEW` new targets.
    - It walks past seen ones, and doesn't stop at the first, so a later sync reaches the
      rest (fixes E3).
