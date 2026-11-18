@@ -638,6 +638,21 @@ class EngineTest(EngineCase):
                 self.assertRaisesRegex(DiskError, "not enough free space"):
             self.run_files(File(f"{CDN}/c.jpg", name="c.jpg", size=1 << 30))
 
+    def test_exec_comes_from_the_user_file_alone(self) -> None:
+        record = self.home.parent / "ran.txt"
+        script = f"import sys; open({str(record)!r}, 'a').write(sys.argv[1] + '\\n')"
+        user = self.home.parent / "user.toml"
+        user.write_text(f'[defaults]\nexec = {json.dumps([sys.executable, "-c", script, "{path}"])}\n')
+        self.routes.update({f"{CDN}/a.jpg": JPEG, f"{CDN}/b.jpg": JPEG + b"b"})
+        # A home's own `exec` is ignored, with a warning: only the user's file runs programs.
+        self.configure('[defaults]\nexec = ["false"]\n')
+        with mock.patch("flnd.engine.config.user_file", return_value=user):
+            self.run_files(File(f"{CDN}/a.jpg", name="a.jpg"))
+        self.configure("")
+        self.run_files(File(f"{CDN}/b.jpg", name="b.jpg"))
+        folder = self.target_dir("aaa", "example_user")
+        self.assertEqual(record.read_text().splitlines(), [str(folder / "a.jpg")])
+
     def test_four_files_are_hashed_at_once_on_four_threads(self) -> None:
         # K9: four new files meet four saved ones of their size; each thread's first hash waits
         # for three others, which one hasher thread for the whole process never gives.

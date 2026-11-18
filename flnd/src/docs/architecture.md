@@ -340,7 +340,11 @@ download → dedupe → sidecar → commit → unpack → Saved → --exec
   beside the file before the commit, so its row names it; **Saved** is sent once the file is
   unpacked, with its final path and size.
 - **`--exec`** is the CLI's: it runs a command for each `Saved` event it reads, never through a
-  shell ([cli.md](cli.md#running-a-command-per-file)).
+  shell ([cli.md](cli.md#running-a-command-per-file)). **`[defaults] exec`**, read only from the
+  user's own `~/.config/flnd/config.toml` (a home's is ignored), runs its program after each
+  `Saved` as an `EXEC` job, one at a time in the order the files were saved, with `{path}`,
+  `{target}` and `{post}` filled in and `$FLND_PATH`, `$FLND_TARGET`, `$FLND_POST` set, never
+  through a shell; a failure is a warning, and the file stays saved.
 
 Each step is on or off by its flag or setting; the order never changes. A step's failure is the
 file's, never the run's: it is logged, and the file is still finished.

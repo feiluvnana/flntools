@@ -309,7 +309,6 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     # An early part (PLAN.md 15): step 10's `feat:let config override a plugin's templates`
     # wires config.py in and removes these two (`speed` is a word the run's snapshot uses).
     "src/engine/config.py:unset": "early part; `flnd config` and `Flnd.config` call it",
-    "src/engine/config.py:user_file": "early part; the engine passes it to read and write",
     "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
     "src/plugins/web.py:Web": "the built-in web plugin; the registry loads it from step 7",

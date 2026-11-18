@@ -1097,7 +1097,8 @@ class Saver:
 def attached(settings: Any) -> Iterator[Saver | None]:
     """Give a run's settings their save for the block (`settings.saver`), then close it.
 
-    The save reads `dedupe` and `sidecars` from the home's `config.toml`, writes through a
+    The save reads `dedupe` and `sidecars` from the home's `config.toml`, and `exec` from the
+    user's (`config.program`, the one file it is read from); it writes through a
     store of its own on the home's `flnd.db`, and runs its jobs on the run's scheduler. It is
     closed on the run's loop before the loop and the database close. A run with no database,
     or a dry one, saves nothing.
@@ -1112,6 +1113,7 @@ def attached(settings: Any) -> Iterator[Saver | None]:
         UsageError: the home's `config.toml` is broken.
     """
     from flnd.engine import site
+    from flnd.engine.config import program, user_file
     from flnd.engine.options import config
 
     scheduler = site.scheduler(settings)
@@ -1119,10 +1121,11 @@ def attached(settings: Any) -> Iterator[Saver | None]:
         yield None
         return
     found = config(settings.home)
+    argv = program(user_file())
     store = Store(settings.db.ready())
     saver = Saver(store, scheduler, settings.emit, run=settings.run, dedupe=found.dedupe,
-                  sidecars=found.sidecars, stop=settings.stop.now, tally=settings.tally,
-                  sample=lambda error: sampled(settings, error))
+                  sidecars=found.sidecars, exec=argv or None, stop=settings.stop.now,
+                  tally=settings.tally, sample=lambda error: sampled(settings, error))
     settings.saver = saver
     try:
         yield saver

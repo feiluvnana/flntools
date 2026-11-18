@@ -320,6 +320,25 @@ def _guard(path: Path) -> None:
         raise RuntimeError(f"{NO_PROFILES} is set: refusing the real user config {path}")
 
 
+def program(user: Path) -> tuple[str, ...]:
+    """`[defaults] exec` of the user file, the one place it is read from: the program and its
+    arguments to run after each saved file; () when unset.
+
+    Under `FLND_TEST_NO_PROFILES` the account's real user file is never read, so it sets none.
+
+    Raises:
+        UsageError: the file isn't TOML, or `exec` isn't a list of text.
+    """
+    try:
+        data = _load(user, Where.USER)
+    except RuntimeError:
+        return ()
+    defaults = data.get("defaults", {})
+    if not isinstance(defaults, dict) or "exec" not in defaults:
+        return ()
+    return _checked(str(user), "defaults.exec", DEFAULTS["exec"], defaults["exec"])
+
+
 def read(home: Path, *, user: Path, plugins: Mapping[str, type] | None = None,
          given: Mapping[str, Any] | None = None) -> Config:
     """Read and resolve every setting: `given`, then the home's file, the user file, the default.
