@@ -161,6 +161,8 @@ class Engine:
         self.stop = stop
         # The `runs` row of the command going on, which its failures name; None between them.
         self.run: int | None = None
+        # The live counts of the command going on, which `run.state` is made from.
+        self.tally = job.Tally(self.emit)
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
         """Resolve every target string through its owning source (see `resolve`).
@@ -226,7 +228,7 @@ class Engine:
             code: replace(base, categories=cats_map.get(code))
             for code in {t.source for t in resolved}
         }
-        with stopping(self.stop) as stop:
+        with stopping(self.stop) as stop, self._live():
             if dry:
                 return self._finish_report(self._dry_run(resolved, by_source, span, stop), stop)
             ui.info("Storage: {path}", path=(self.home / home.MEDIA).resolve())
@@ -261,7 +263,7 @@ class Engine:
             ui.info("nothing to sync")
             return Report(())
         _validate_targets(self.sources, None, [t for t, _ in chosen])
-        with stopping(self.stop) as stop, \
+        with stopping(self.stop) as stop, self._live(), \
                 self._recording("sync", [t for t, _ in chosen]) as ended:
             results: dict[int, TargetReport] = {}
             pool_settings = RunShared(home=self.home, stop=stop, emit=self.emit)
@@ -309,7 +311,7 @@ class Engine:
         if not chosen:
             ui.info("nothing to retry")
             return Report(())
-        with stopping(self.stop) as stop, \
+        with stopping(self.stop) as stop, self._live(), \
                 self._recording("retry", [target for target, _ in chosen]) as ended:
             report = Report(tuple(self._run(chosen, stop=stop)))
             ended.append(report)
@@ -849,16 +851,18 @@ class Engine:
         """
         source = self.sources[target.source]()
         self._record([(target, options)], follow=sync)
+        self.tally.add(target, _planned(options))
         reports: list[TargetReport] = []
-        with home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as group:
+        with home.open(self.home) as db, ui.group(drawn=False) as group:
             settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
+                tally=self.tally,
             )
             board = job.Board(
                 group, subject_width=len(str(target)),
                 label_width=self._label_width([(target, options)]), parent=target,
-                emit=self.emit,
+                emit=self.emit, tally=self.tally,
             )
             with (steps.attached(settings), shared_browser(settings),
                   source_run(settings, source) as run):
@@ -987,15 +991,17 @@ class Engine:
         row = rows.get(home.key(target))
         seen_keys = set(row.seen if row is not None else ())
         known_keys = set(rows)
-        with home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as group:
+        self.tally.add(target, _planned(options))
+        with home.open(self.home) as db, ui.group(drawn=False) as group:
             settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
+                tally=self.tally,
             )
             board = job.Board(
                 group, subject_width=len(str(target)),
                 label_width=self._label_width([(target, options)]), parent=target,
-                emit=self.emit,
+                emit=self.emit, tally=self.tally,
             )
             with (steps.attached(settings), shared_browser(settings),
                   source_run(settings, source) as run):
@@ -1111,6 +1117,13 @@ class Engine:
                     else:
                         child_failed = rep.error
         return skipped, child_failed
+
+    @contextmanager
+    def _live(self) -> Iterator[None]:
+        """Count one command afresh, publishing its snapshots while it runs (`run.state`)."""
+        self.tally = job.Tally(self.emit)
+        with self.tally.publishing():
+            yield
 
     def _warn_unsynced(
         self, resolved: Sequence[Target], *, rows: Mapping[str, home.TargetRow] | None = None,
@@ -1281,18 +1294,20 @@ class Engine:
             One report per target of `chosen`, in order, then one per target found (`_found`).
         """
         groups: dict[str, list[int]] = {}
-        for number, (target, _) in enumerate(chosen):
+        for number, (target, options) in enumerate(chosen):
             groups.setdefault(target.source, []).append(number)
+            self.tally.add(target, _planned(options))
         reports: dict[int, TargetReport] = {}
-        with home.open(self.home) as db, ui.group(drawn=ui._progress_enabled()) as rows:
+        with home.open(self.home) as db, ui.group(drawn=False) as rows:
             run_settings = RunShared(
                 home=self.home, db=db, run=self.run,
                 stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
+                tally=self.tally,
             )
             board = job.Board(
                 rows,
                 subject_width=max((len(str(target)) for target, _ in chosen), default=0),
-                label_width=self._label_width(chosen), emit=self.emit,
+                label_width=self._label_width(chosen), emit=self.emit, tally=self.tally,
             )
             work = [
                 (
@@ -1376,6 +1391,12 @@ class Engine:
                 for category in route.categories
             ]
         return max(map(len, labels), default=0)
+
+def _planned(options: Options) -> tuple[str, ...]:
+    """The categories a target's row shows before its listings start: those `--only` names."""
+    names = options.categories or ()
+    return () if job.ALL in names else tuple(names)
+
 
 def _validate_targets(
     sources: Mapping[str, type[Source]],

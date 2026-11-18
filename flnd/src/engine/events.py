@@ -1,5 +1,5 @@
-"""What a run reports, and the rows the library reads: events, `Report`, `Login`,
-`Record`, `Tracked`, `Checked`, `Status`, `Failure` and `Installed`.
+"""What a run reports, and the rows the library reads: events, `Report`, the `State` snapshot,
+`Login`, `Record`, `Tracked`, `Checked`, `Status`, `Failure` and `Installed`.
 
 src/docs/library explains it.
 
@@ -25,6 +25,7 @@ script can read its `hint`; `encode` writes its class, message and hint.
 from __future__ import annotations
 
 import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +37,9 @@ from flnd.errors import Error
 from flnd.source import Target
 
 __all__ = [
-    "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure", "Installed", "Login",
-    "Planned", "Progress", "Record", "Report", "Saved", "Skipped", "Status", "Tracked", "encode",
+    "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure", "FileState", "HoldState",
+    "Installed", "Login", "Phase", "Planned", "Progress", "Record", "Report", "Saved",
+    "Skipped", "State", "Status", "TargetState", "Tracked", "encode",
 ]
 
 # `Skipped.reason` for a listing a sync found nothing new in.
@@ -185,6 +187,121 @@ class Planned(msgspec.Struct, frozen=True, tag=True):
 
 # Any event a run yields, for a `match` or an annotation.
 Event = Saved | Skipped | Failed | Progress | Planned
+
+
+# ---------------------------------------------------------------------------------------------
+# The snapshot: what the screen and a script read while a run goes (`run.state`)
+# ---------------------------------------------------------------------------------------------
+
+class Phase(StrEnum):
+    """Where a target stands in a run."""
+
+    WAITING = "waiting"
+    LISTING = "listing"
+    DOWNLOADING = "downloading"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class TargetState(msgspec.Struct, frozen=True):
+    """One target of a run, as `State.targets` shows it.
+
+    Example:
+        >>> row = TargetState("ins:example_user", ("posts",), Phase.LISTING, found=3, saved=1)
+        >>> row.phase, row.found - row.saved
+        (<Phase.LISTING: 'listing'>, 2)
+    """
+
+    # The target, as written (`ins:example_user`).
+    text: str
+    # Its categories: the ones listed so far, else the ones it will take; empty when unknown.
+    categories: tuple[str, ...]
+    phase: Phase
+    # Files found so far, then how each ended.
+    found: int = 0
+    saved: int = 0
+    skipped: int = 0
+    failed: int = 0
+    # Bytes saved.
+    bytes: int = 0
+    # Bytes a second over the last 3 s.
+    speed: float = 0.0
+
+
+class FileState(msgspec.Struct, frozen=True):
+    """One file in flight, as `State.files` shows it.
+
+    Example:
+        >>> row = FileState("ins:example_user", "posts/9001.mp4", 512, 2048)
+        >>> row.done / row.total
+        0.25
+    """
+
+    # The target, as written.
+    target: str
+    # Where it goes, under the target's folder.
+    path: str
+    # Bytes received, and its size; `total` is None when the size isn't known.
+    done: int
+    total: int | None
+    # Bytes a second over the last 3 s.
+    speed: float = 0.0
+
+
+class HoldState(msgspec.Struct, frozen=True):
+    """A wait the run is in: a site asked it to come back later, or a source waits.
+
+    Example:
+        >>> hold = HoldState("twt", None, "pages", 42.0, "429 from api.example.com", 3)
+        >>> hold.until, hold.count
+        (42.0, 3)
+    """
+
+    # The source's code, and its account's name (None when it has none).
+    plugin: str
+    account: str | None
+    # What waits: "pages" for the listing.
+    bucket: str
+    # When the wait ends, in seconds since the run started (`State.elapsed`'s clock).
+    until: float
+    # Why, in the site's or the source's words.
+    reason: str
+    # The round of waits in a row this one is, from 1.
+    count: int = 1
+
+
+class State(msgspec.Struct, frozen=True):
+    """What a run is doing now: `run.state`, readable from any thread.
+
+    The run swaps in a new one every 100 ms while something changed, so a reader keeps the one
+    it holds as long as it likes; `version` says whether it is newer than the last one read.
+
+    Example:
+        >>> state = State()
+        >>> state.version, state.targets, state.saved
+        (0, (), 0)
+    """
+
+    # One more at each new snapshot; 0 before the run starts.
+    version: int = 0
+    # Seconds since the run started.
+    elapsed: float = 0.0
+    # Every target of the run, in the order they were given.
+    targets: tuple[TargetState, ...] = ()
+    # The files in flight, oldest first, at most 6; `more` counts the rest.
+    files: tuple[FileState, ...] = ()
+    more: int = 0
+    # The waits going on.
+    holds: tuple[HoldState, ...] = ()
+    # What is happening, in one line: the newest hold if one is going on, else the newest
+    # listing step (`"ins:example_user · posts, page 4"`).
+    now: str = ""
+    # The whole run's counts, bytes saved, and bytes a second over the last 3 s.
+    saved: int = 0
+    skipped: int = 0
+    failed: int = 0
+    bytes: int = 0
+    speed: float = 0.0
 
 # ---------------------------------------------------------------------------------------------
 # The report and the reads

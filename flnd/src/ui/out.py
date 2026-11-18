@@ -10,14 +10,14 @@ import re
 import string
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from functools import lru_cache
 from typing import Any
 
 from flnd.ui import theme
 
-__all__ = ["FOLD", "Folds", "clean", "close", "error", "fill", "help", "line", "names", "plain",
-           "spin", "styled", "table", "warn"]
+__all__ = ["FOLD", "Folds", "above", "clean", "close", "error", "fill", "help", "line", "names",
+           "plain", "spin", "styled", "table", "warn"]
 
 # A part of a line: text in the body colour, or (text, style), the style made of theme tokens
 # and Rich attributes ("bold bad").
@@ -110,8 +110,27 @@ def _text(parts: Sequence[Part], *, mark: str = "", fancy: bool = True) -> Any:
     return text
 
 
+# Where the lines for standard error go while the run's screen is drawn there (`above`).
+_above: Callable[[Any], None] | None = None
+
+
+def above(sink: Callable[[Any], None] | None) -> None:
+    """Send the lines for standard error to `sink` (the run's screen), or back (None).
+
+    The screen prints them above its live block, from its own thread. `sink` must take no lock
+    another thread may hold: a Ctrl-C handler prints through it.
+    """
+    global _above
+    _above = sink
+
+
 def _print(*renderables: Any, stream: Any, wrap: bool = False) -> None:
     """Print `renderables` on `stream`; with `wrap`, laid out to the width, its padding cut."""
+    sink = _above
+    if sink is not None and stream is sys.stderr and not wrap:
+        for renderable in renderables:
+            sink(renderable)
+        return
     console = _console(stream)
     if not wrap:
         console.print(*renderables, soft_wrap=True)

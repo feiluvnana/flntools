@@ -970,8 +970,9 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
     """Read a run's events into the chosen view, print its end, and return its exit code.
 
     flnd's own log lines are held to warnings for the run, or opened to debug lines with `-v`.
-    The run's events go to `<home>/log/<stamp>_<command>.jsonl` (see src/docs/storage), and
-    the library draws the run's summary table from the rows it keeps (`ui.group(drawn=…)`).
+    The run's events go to `<home>/log/<stamp>_<command>.jsonl` (see src/docs/storage). On a
+    terminal the screen draws the run from its snapshot (`run.state`, `flnd.ui.screen`); the
+    end summary follows.
 
     Args:
         fl: the open home.
@@ -987,11 +988,12 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
         Stopped: Ctrl-C ended it.
     """
     import datetime
-    from contextlib import ExitStack
+    from contextlib import ExitStack, nullcontext
     from pathlib import Path
 
     from flnd.engine.home import LOGS
     from flnd.ui.log import ui
+    from flnd.ui.screen import Screen
 
     journal_path: Path | None = None
     try:
@@ -1006,6 +1008,8 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
     except (OSError, TypeError):
         pass
 
+    cmd = getattr(args, "command", None)
+    name = cmd.__name__ if cmd and hasattr(cmd, "__name__") else "run"
     view: _View = (
         _Json()
         if args.json
@@ -1018,20 +1022,20 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
         view.journal = journal
         stack.enter_context(view)
         stack.enter_context(ui.scope(level="debug" if args.verbose else "warn"))
-        cmd = getattr(args, "command", None)
-        name = cmd.__name__ if cmd and hasattr(cmd, "__name__") else "run"
         if journal is not None:
             import flnd
 
             journal.write({"type": "Start", "command": name, "version": flnd.__version__})
-        for event in run:
-            view.show(event)
-            if runner is not None and type(event).__name__ == "Saved":
-                runner.run(event)
-        report = run.report
-        # The warnings still folded print before the end, never after "done:".
-        ui.drain()
-        view.end(report)
+        # The screen ends before the summary: its last frame stays above it.
+        with nullcontext() if args.json else Screen(lambda: run.state, command=name):
+            for event in run:
+                view.show(event)
+                if runner is not None and type(event).__name__ == "Saved":
+                    runner.run(event)
+            report = run.report
+            # The warnings still folded print above the screen, never after the summary.
+            ui.drain()
+        view.end(report, run.state)
         if journal is not None:
             journal.write(report)
     if any(_login(failed.error) for failed in report.failed):
@@ -1170,44 +1174,28 @@ class _View:
     def show(self, event: Any) -> None:
         """Show one event."""
 
-    def end(self, report: Any) -> None:
-        """Show the run's end: what it saved, and what failed.
+    def end(self, report: Any, state: Any) -> None:
+        """Show the run's end summary (`flnd.ui.screen.summary`); a dry run's planned files.
 
         Args:
             report: the run's `flnd.Report`.
+            state: its last snapshot (`run.state`).
         """
-        from flnd.ui import out
+        from flnd.ui import out, screen
         from flnkit import text
 
         if report.planned:
             out.line(("planned ", "bold focus"), (text.count(report.planned, "file"), "bold focus"),
                      ("; nothing was downloaded", "dim"))
             return
-        parts: list[Any] = [("done: ", "bold good"),
-                            (f"{text.count(report.saved, 'file')} saved", "bold good")]
-        if report.bytes:
-            parts.append((f" ({text.size(report.bytes)})", "dim"))
-        if report.skipped:
-            parts += [(", ", "dim"), (f"{report.skipped} already saved", "dim")]
-        if report.retried:
-            parts += [(", ", "dim"), (f"{report.retried} brought back by a retry", "bold good")]
-        if report.unchanged:
-            parts += [(", ", "dim"),
-                      (f"nothing new in {text.count(report.unchanged, 'listing')}", "dim")]
-        out.line(*parts)
-        if report.failed:
-            failed = [(event.error, bool(event.post)) for event in report.failed]
-            _summary(failed, details=True, err=True)
-            for hint in _hints(failed):
-                out.line("  ", (hint, "dim"), err=True)
+        screen.summary(report, state)
 
 
 class _JournalView(_View):
     """Terminal output from run events; the machine record goes to the `.jsonl` journal.
 
-    The run's own display is the summary table the library draws (one row per target and
-    category, `flnd.engine.job.Board`), so a view prints no line per file or failure: the table
-    counts them, and `end` sums them up.
+    The run's own display is the screen (`flnd.ui.screen`), drawn from the run's snapshot, so
+    a view prints no line per file or failure: the screen counts them, and `end` sums them up.
     """
 
     journal: Any = None
@@ -1248,11 +1236,12 @@ class _Json(_View):
     def show(self, event: Any) -> None:
         _json(event)
 
-    def end(self, report: Any) -> None:
+    def end(self, report: Any, state: Any) -> None:
         """Write the finished run's report as a JSON object on its own line.
 
         Args:
             report: the run's report to encode.
+            state: its last snapshot, which the JSON lines leave out.
         """
         from flnd.engine.events import encode
         from flnd.ui import out
@@ -1275,29 +1264,6 @@ def _word(error: BaseException) -> str:
     """The word a failure summary counts an error under: "network", "gone", …; else "error"."""
     return next((WORDS[kind.__name__] for kind in type(error).__mro__ if kind.__name__ in WORDS),
                 "error")
-
-
-def _hints(failed: Sequence[tuple[BaseException, bool]]) -> list[str]:
-    """The hints of a run's failures a person must act on now, each once, in order.
-
-    A login a target needs is one: `flnd retry` can't fetch it, so the hint's command is the
-    way on, and the run ends with exit code 3. The rest wait in `flnd status`, which shows
-    every failure with its hint.
-
-    Args:
-        failed: each failure's error, with whether it was a file's (else a whole target's).
-
-    Returns:
-        The hint texts, deduplicated.
-    """
-    seen: list[str] = []
-    for error, _ in failed:
-        if not _login(error):
-            continue
-        hint = str(getattr(error, "hint", "") or "")
-        if hint and hint not in seen:
-            seen.append(hint)
-    return seen
 
 
 def _summary(failed: Sequence[tuple[BaseException, bool]], *, details: bool = False,

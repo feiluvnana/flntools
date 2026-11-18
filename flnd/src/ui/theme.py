@@ -39,6 +39,12 @@ GLYPHS: dict[str, tuple[str, str]] = {
     # A progress bar's filled and empty cells, a cut in the middle, and a fold's count.
     "full": ("━", "="),
     "empty": ("─", "-"),
+    # The run screen's bar: its head and the rest of it; a cell with no value yet, and the
+    # separator of a line's parts.
+    "head": ("╺", ">"),
+    "rest": ("━", "-"),
+    "none": ("–", "-"),
+    "sep": ("·", "-"),
     "more": ("…", "..."),
     "times": ("×", "x"),
     # The arrow keys, as the bottom line of a list or a form names them.

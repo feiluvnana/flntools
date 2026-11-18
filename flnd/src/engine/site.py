@@ -60,7 +60,7 @@ session; the browser, shared by every source, isn't proxied.
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, MutableMapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import (
@@ -674,7 +674,7 @@ class TargetSite:
         ui.warn("{target}: {reason}; waiting {time}", target=str(self.target),
                 reason=reason, time=text.duration(round(seconds)))
         try:
-            self.pause(seconds, reason)
+            self._wait(seconds, reason, count=self._rounds)
         finally:
             # The wait itself isn't quiet time: the next block counts from its end.
             self._last_block = clock.now()
@@ -691,10 +691,27 @@ class TargetSite:
         Raises:
             Stopped: the run's first Ctrl-C came while waiting.
         """
+        self._wait(seconds, reason, count=1)
+
+    def _wait(self, seconds: float, reason: str, *, count: int) -> None:
+        """Wait `seconds`, shown as a hold of the source's listing in the run's snapshot.
+
+        Args:
+            seconds: how long; 0 or less doesn't wait.
+            reason: why, in the site's or the source's words.
+            count: the round of waits in a row this one is, from 1.
+
+        Raises:
+            Stopped: the run's first Ctrl-C came while waiting.
+        """
         if seconds <= 0:
             return
-        if not clock.sleep(seconds, stop=self._run.web.stop):
-            raise Stopped(f"{self.target}: stopped while waiting: {reason}")
+        tally = self._run.settings.tally
+        held = (tally.hold(self._source.code, None, "pages", seconds, reason, count=count)
+                if tally is not None else nullcontext())
+        with held:
+            if not clock.sleep(seconds, stop=self._run.web.stop):
+                raise Stopped(f"{self.target}: stopped while waiting: {reason}")
 
     def close(self) -> None:
         """Give back the target's tabs, handing the client the cookies set in them."""

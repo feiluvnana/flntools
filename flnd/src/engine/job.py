@@ -62,6 +62,7 @@ Rules a change must keep:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import datetime
 import filecmp
 import functools
@@ -73,6 +74,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Collection, Coroutine, Generator, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -82,8 +84,22 @@ from typing import (
 )
 from urllib.parse import urlsplit
 
+import msgspec
+
 from flnd.engine import home, transfer
-from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Progress, Saved, Skipped
+from flnd.engine.events import (
+    NOTHING_NEW,
+    RESUMING,
+    Failed,
+    FileState,
+    HoldState,
+    Phase,
+    Progress,
+    Saved,
+    Skipped,
+    State,
+    TargetState,
+)
 from flnd.engine.options import Options, Retry
 from flnd.engine.site import Listing, SourceRun, TargetSite
 from flnd.engine.steps import Landed, dedupe, holder, landed, sidecars
@@ -101,7 +117,7 @@ from flnd.errors import (
 from flnd.source import Category, File, NotFound, Post, Range, Route, Site, Source, Target
 from flnd.sources import SOURCES
 from flnd.ui.log import ui
-from flnkit import files, loop, text
+from flnkit import clock, files, loop, text
 from flnkit.clock import day
 from flnkit.text import fill
 
@@ -109,9 +125,9 @@ if TYPE_CHECKING:
     from flnd.engine.run import Stop
 
 __all__ = [
-    "STOPPED", "Board", "Counts", "Downloads", "Ledger", "Placed", "TargetReport",
-    "causes", "discover", "download", "failure", "logged_out", "place", "plan", "posts", "tell",
-    "wanted",
+    "STOPPED", "Board", "Counts", "Downloads", "Flight", "Ledger", "Placed", "Tally",
+    "TargetReport", "causes", "discover", "download", "failure", "logged_out", "place", "plan",
+    "posts", "tell", "wanted",
 ]
 
 # The statuses that end a listing as a login problem when the site's own domain answers them.
@@ -341,20 +357,25 @@ class Board:
     def __init__(
         self, rows: Any, *, subject_width: int = 0, label_width: int = 0,
         parent: Target | None = None, emit: Callable[[Any], None] | None = None,
+        tally: Tally | None = None,
     ) -> None:
         self.rows, self.widths, self.parent = rows, (subject_width, label_width), parent
         self.emit = emit or _ignore
+        self.tally = tally or Tally()
         self._lock = threading.Lock()
         self._lines: dict[tuple[Target, str], _Line] = {}
         self._child_skipped: dict[Target, int] = {}
 
-    def start(self, target: Target, category: str) -> None:
+    def start(self, target: Target, category: str, listing: Listing | None = None) -> None:
         """Open the category's line as its listing starts, unless already open.
 
         Args:
             target: the target listed.
             category: its category; "" for a target without categories.
+            listing: the category's `Listing`, for the pages the snapshot shows.
         """
+        self._adopt(target)
+        self.tally.start(target, category, listing)
         owner = self.parent or target
         with self._lock:
             line = self._lines.get((owner, category))
@@ -374,6 +395,8 @@ class Board:
             category: its category; "" for a target without categories.
             steps: how much each count of `Counts` moves, such as `saved=1, downloading=-1`.
         """
+        self._adopt(target)
+        self.tally.count(target, category, **steps)
         owner = self.parent or target
         with self._lock:
             line = self._lines.get((owner, category)) or self._open(owner, category)
@@ -435,6 +458,7 @@ class Board:
         """
         if self.parent is not None and target != self.parent:
             return
+        self.tally.end(target, failed=failed)
         for line in self._of(target):
             if line.ended or line.row is None:
                 continue
@@ -460,6 +484,15 @@ class Board:
                     for name in vars(total):
                         setattr(total, name, getattr(total, name) + getattr(line.counts, name))
         return total
+
+    def downloading(self, target: Target) -> None:
+        """`target`'s listings ended; its files in flight finish."""
+        self.tally.downloading(target)
+
+    def _adopt(self, target: Target) -> None:
+        """Count a search's found target on the search's row of the snapshot."""
+        if self.parent is not None and target != self.parent:
+            self.tally.adopt(target, self.parent)
 
     @staticmethod
     def _progress(target: Target, category: str, line: _Line) -> Progress:
@@ -549,6 +582,341 @@ class Board:
         if line.note:
             parts.append(line.note)
         return " | ".join(parts)
+
+
+# ---------------------------------------------------------------------------------------------
+# The tally: the run's live counts, and the `State` snapshots made from them
+# ---------------------------------------------------------------------------------------------
+
+# Seconds between two snapshots, and the window a speed is measured over.
+TICK = 0.1
+SPEED_WINDOW = 3.0
+# The files in flight a snapshot names; `State.more` counts the rest.
+FILES_SHOWN = 6
+
+
+class _Rate:
+    """Bytes a second over the last `SPEED_WINDOW` seconds, from samples taken at each tick."""
+
+    def __init__(self) -> None:
+        self._samples: deque[tuple[float, float]] = deque()
+
+    def at(self, now: float, value: float) -> float:
+        samples = self._samples
+        samples.append((now, value))
+        while len(samples) > 1 and now - samples[0][0] > SPEED_WINDOW:
+            samples.popleft()
+        then, before = samples[0]
+        return (value - before) / (now - then) if now > then else 0.0
+
+
+@dataclass
+class _Row:
+    """One target's row of the snapshot; changed under the tally's lock."""
+
+    text: str
+    planned: tuple[str, ...]
+    phase: Phase = Phase.WAITING
+    categories: list[str] = field(default_factory=list)
+    counts: Counts = field(default_factory=Counts)
+    received: int = 0
+    rate: _Rate = field(default_factory=_Rate)
+
+
+class Flight:
+    """One file in flight: the bytes it received so far, and its size.
+
+    Made by `Tally.fly`; the transfer counts on it from the loop, the snapshot reads it under
+    the tally's lock.
+    """
+
+    def __init__(self, tally: Tally, key: str, row: _Row, path: str) -> None:
+        self._tally, self.key, self._row, self.path = tally, key, row, path
+        self.done = 0
+        self.total: int | None = None
+        self.rate = _Rate()
+
+    def size(self, total: float | None) -> None:
+        """Set the file's size; None when it isn't known."""
+        self.total = int(total) if total is not None else None
+
+    def advance(self, n: float) -> None:
+        """Count `n` more bytes received."""
+        # No lock: only the file's transfer writes it, and a snapshot reading it a chunk late
+        # is still right at the next tick.
+        self.done += int(n)
+
+    def land(self) -> None:
+        """Take the file off the snapshot: its transfer ended, however it ended."""
+        tally = self._tally
+        with tally._lock:
+            if tally._flights.pop(self.key, None) is not None:
+                self._row.received += self.done
+                tally._received += self.done
+
+
+@dataclass
+class _Hold:
+    """A wait going on, as the snapshot's `HoldState` shows it."""
+
+    plugin: str
+    account: str | None
+    bucket: str
+    until: float
+    reason: str
+    count: int
+
+
+class Tally:
+    """The run's live counts, and the `State` snapshots made from them (`run.state`).
+
+    Every part of a run counts here: each target's listings (`start`, `downloading`, `end`),
+    each file's steps (`count`), the files in flight (`fly`) and the waits (`hold`). Every
+    `TICK` seconds, while something changed, `publish` makes a new `State` and sends it to the
+    run's sink, which swaps it in as `run.state`; the screen reads only that.
+
+    A target a search found counts on the search's row (`adopt`). Everything changes under one
+    lock, which is never held while calling out.
+
+    Args:
+        emit: the run's event sink; None drops the snapshots.
+    """
+
+    def __init__(self, emit: Callable[[Any], None] | None = None) -> None:
+        self.emit = emit or _ignore
+        self._lock = threading.Lock()
+        self._rows: dict[Target, _Row] = {}
+        self._owners: dict[Target, Target] = {}
+        # Counts by the target and category they belong to, a found target's on its own.
+        self._lines: dict[tuple[Target, str], Counts] = {}
+        self._flights: dict[str, Flight] = {}
+        self._holds: list[_Hold] = []
+        # The newest listing step: its row, its category, and its `Listing` (pages read).
+        self._step: tuple[_Row, str, Listing | None] | None = None
+        self._received = 0
+        self._rate = _Rate()
+        self._started = clock.now()
+        self._version = 0
+        self._last: State | None = None
+
+    # -- what the run counts ------------------------------------------------------------------
+
+    def add(self, target: Target, categories: Sequence[str] = ()) -> None:
+        """Give `target` a row, waiting, unless it has one.
+
+        Args:
+            target: the target.
+            categories: the categories it will take, shown until its listings start.
+        """
+        with self._lock:
+            if target not in self._rows and target not in self._owners:
+                self._rows[target] = _Row(str(target), tuple(categories))
+
+    def adopt(self, child: Target, parent: Target) -> None:
+        """Count a target a search found on the search's row."""
+        with self._lock:
+            self._owners[child] = parent
+
+    def start(self, target: Target, category: str, listing: Listing | None = None) -> None:
+        """A listing of `target` starts: its row is listing, and it is the newest step.
+
+        Args:
+            target: the target listed.
+            category: its category; "" for a target without categories.
+            listing: the category's `Listing`, whose pages read show on the `now` line.
+        """
+        with self._lock:
+            row = self._row(target)
+            row.phase = Phase.LISTING
+            name = category or target.kind
+            if name not in row.categories:
+                row.categories.append(name)
+            self._step = (row, name, listing)
+
+    def downloading(self, target: Target) -> None:
+        """`target`'s listings ended; what is left is its files in flight."""
+        with self._lock:
+            row = self._row(target)
+            if row.phase is Phase.LISTING:
+                row.phase = Phase.DOWNLOADING
+
+    def end(self, target: Target, *, failed: bool) -> None:
+        """`target` is over: done, or failed (a stop included). A found target ends nothing."""
+        with self._lock:
+            if target in self._owners:
+                return
+            self._row(target).phase = Phase.FAILED if failed else Phase.DONE
+
+    def count(self, target: Target, category: str, **steps: int) -> None:
+        """Move the counts of `Counts` for one file or post of `target`'s category.
+
+        Args:
+            target: the target the files belong to.
+            category: their category; "" for a target without categories.
+            steps: how much each count moves, such as `saved=1, downloading=-1`.
+        """
+        with self._lock:
+            line = self._lines.setdefault((target, category), Counts())
+            row = self._row(target)
+            for name, step in steps.items():
+                setattr(line, name, getattr(line, name) + step)
+                setattr(row.counts, name, getattr(row.counts, name) + step)
+
+    def totals(self, target: Target) -> Counts:
+        """The counts of every category of `target` itself, summed, as a new `Counts`."""
+        total = Counts()
+        with self._lock:
+            for (owner, _), line in self._lines.items():
+                if owner == target:
+                    for name in vars(total):
+                        setattr(total, name, getattr(total, name) + getattr(line, name))
+        return total
+
+    def fly(self, key: str, target: Target, path: str) -> Flight:
+        """A file of `target` starts its transfer: it shows until it `land`s.
+
+        Args:
+            key: the file's key in the run.
+            target: the target it belongs to.
+            path: where it goes, under the target's folder.
+
+        Returns:
+            The file's `Flight`, which the transfer counts its bytes on.
+        """
+        with self._lock:
+            flight = self._flights.get(key)
+            if flight is None:
+                flight = self._flights[key] = Flight(self, key, self._row(target), path)
+            return flight
+
+    @contextmanager
+    def hold(self, plugin: str, account: str | None, bucket: str, seconds: float, reason: str,
+             *, count: int = 1) -> Iterator[None]:
+        """Show a wait for the block: a site asked the run to come back later, or a source waits.
+
+        Args:
+            plugin: the source's code.
+            account: its account's name; None when it has none.
+            bucket: what waits: "pages" for a listing.
+            seconds: how long the wait is.
+            reason: why, in the site's or the source's words.
+            count: the round of waits in a row this one is, from 1.
+        """
+        with self._lock:
+            hold = _Hold(plugin, account, bucket, clock.now() - self._started + seconds, reason,
+                         count)
+            self._holds.append(hold)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._holds.remove(hold)
+
+    def _row(self, target: Target) -> _Row:
+        """The row `target` counts on, made when it has none; the caller holds the lock."""
+        owner = self._owners.get(target, target)
+        row = self._rows.get(owner)
+        if row is None:
+            row = self._rows[owner] = _Row(str(owner), ())
+        return row
+
+    # -- the snapshots ------------------------------------------------------------------------
+
+    def publish(self, *, force: bool = False) -> State | None:
+        """Make a new `State` and send it to the sink, when it differs from the last one.
+
+        The speeds move with the clock alone, so they are sampled at each call even when no
+        count changed; the time the run has taken never makes a snapshot new by itself.
+
+        Args:
+            force: send one even when nothing changed (the run's last).
+
+        Returns:
+            The new snapshot; None when nothing changed.
+        """
+        with self._lock:
+            state = self._state(clock.now())
+            last = self._last
+            same = last is not None and msgspec.structs.replace(
+                last, version=state.version, elapsed=state.elapsed) == state
+            if same and not force:
+                return None
+            self._version += 1
+            state = msgspec.structs.replace(state, version=self._version)
+            self._last = state
+        self.emit(state)
+        return state
+
+    @contextmanager
+    def publishing(self) -> Iterator[Tally]:
+        """Publish a snapshot every `TICK` seconds on a thread of its own, then a last one.
+
+        Yields:
+            This tally.
+        """
+        done = threading.Event()
+
+        def tick() -> None:
+            while not done.wait(TICK):
+                self.publish()
+
+        context = contextvars.copy_context()
+        thread = threading.Thread(target=context.run, args=(tick,), name="flnd-state",
+                                  daemon=True)
+        thread.start()
+        try:
+            yield self
+        finally:
+            done.set()
+            thread.join()
+            self.publish(force=True)
+
+    def _state(self, now: float) -> State:
+        """The snapshot of the counts as they are; the caller holds the lock."""
+        elapsed = now - self._started
+        flights = list(self._flights.values())
+        flying: dict[int, int] = {}
+        for flight in flights:
+            flying[id(flight._row)] = flying.get(id(flight._row), 0) + flight.done
+        targets = tuple(
+            self._target(row, now, row.received + flying.get(id(row), 0))
+            for row in self._rows.values()
+        )
+        files = tuple(
+            FileState(f._row.text, f.path, f.done, f.total, f.rate.at(now, f.done))
+            for f in flights[:FILES_SHOWN]
+        )
+        holds = tuple(HoldState(h.plugin, h.account, h.bucket, h.until, h.reason, h.count)
+                      for h in self._holds)
+        return State(
+            version=self._version, elapsed=elapsed, targets=targets, files=files,
+            more=max(0, len(flights) - FILES_SHOWN), holds=holds, now=self._now(elapsed),
+            saved=sum(t.saved for t in targets), skipped=sum(t.skipped for t in targets),
+            failed=sum(t.failed for t in targets), bytes=sum(t.bytes for t in targets),
+            speed=self._rate.at(now, self._received + sum(flying.values())),
+        )
+
+    @staticmethod
+    def _target(row: _Row, now: float, received: int) -> TargetState:
+        c = row.counts
+        return TargetState(
+            row.text, tuple(row.categories) or row.planned, row.phase, found=c.found,
+            saved=c.saved + c.linked, skipped=c.skipped, failed=c.failed, bytes=c.bytes,
+            speed=row.rate.at(now, received),
+        )
+
+    def _now(self, elapsed: float) -> str:
+        """The `now` line: the newest listing step, then the newest wait going on."""
+        step = ""
+        if self._step is not None:
+            row, name, listing = self._step
+            pages = listing.read if listing is not None else 0
+            step = f"{row.text} · {name}" + (f", page {pages}" if pages else "")
+        if not self._holds:
+            return step
+        hold = self._holds[-1]
+        held = f"held {max(0, round(hold.until - elapsed))} s: {hold.reason}"
+        return f"{step} · {held}" if step else held
 
 
 def wanted(route: Route, options: Options) -> tuple[Category, ...]:
@@ -1341,7 +1709,7 @@ class Downloads:
     def __init__(self, run: SourceRun, target: Target, board: Board) -> None:
         self.run, self.target, self.board = run, target, board
         self.source, self.settings = run.source, run.settings
-        self.tracks = Tracks(target, run.settings.emit)
+        self.tracks = Tracks(target, run.settings.emit, board.tally)
         run.settings.tracks = self.tracks
         # Set once the listing failed, so a file that hasn't started ends at once.
         self._halted = False
@@ -2042,6 +2410,7 @@ def _execute_listing(
             if options.stop_at_saved:
                 work.ledger.redate()
             _read(work, run, site, target, options, progress)
+            work.ledger.board.downloading(target)
         except KeyboardInterrupt:
             if not run.settings.stop.soon.is_set() or run.settings.stop.now.is_set():
                 raise
@@ -2710,7 +3079,7 @@ def _list_one(
         return ended, taken
     start = progress.started.get(name) if newest_first else None
     listing = progress.listings[name] = Listing(start, label=f"{target}: {name or target.kind}")
-    work.ledger.board.start(target, name)
+    work.ledger.board.start(target, name, listing)
     if start:
         ui.info("{target}: {name}: going on where an interrupted run stopped",
                 target=str(target), name=name or target.kind)
@@ -2784,7 +3153,7 @@ def _sync_one(
         stops = replace(stops, streak=None) if stops.head is not None else replace(stops,
                                                                                     sync=False)
     listing = progress.listings[name] = Listing(None, label=label)
-    work.ledger.board.start(target, name)
+    work.ledger.board.start(target, name, listing)
     # 1. The newest posts. A listing that raises (the site failed it) is cut short like any:
     # where it was is kept as a gap before the error goes on to fail the target.
     try:
@@ -2808,7 +3177,7 @@ def _sync_one(
             ui.info("{target}: resuming from the last run", target=label)
             work.ledger.board.say(target, name, RESUMING)
             jump = progress.listings[name] = Listing(left[0], label=label)
-            work.ledger.board.start(target, name)
+            work.ledger.board.start(target, name, jump)
             try:
                 ended, extra, filled = _listed(work, run, site, name, True, items, jump, stops,
                                                options, rest)

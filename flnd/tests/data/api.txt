@@ -42,6 +42,12 @@ flnd.Failure.path: attribute -> Path | None
 flnd.Failure.post: attribute -> str
 flnd.Failure.target: attribute -> str
 flnd.Failure.url: attribute -> str
+flnd.FileState(target: str, path: str, done: int, total: int | None, speed: float = 0.0)
+flnd.FileState.done: attribute -> int
+flnd.FileState.path: attribute -> str
+flnd.FileState.speed: attribute -> float
+flnd.FileState.target: attribute -> str
+flnd.FileState.total: attribute -> int | None
 flnd.Flnd(home: str | os.PathLike[str] | None = None, *, again: bool | None = None)
 flnd.Flnd.add(source: type[Source]) -> None
 flnd.Flnd.check(*, fix: bool = False) -> Checked
@@ -60,6 +66,13 @@ flnd.Flnd.status: property -> Status | None
 flnd.Flnd.sync(targets: str | Target | Sequence[str | Target] = ()) -> Run
 flnd.Flnd.targets(*, source: str | None = None) -> list[Tracked]
 flnd.Flnd.unfollow(targets: str | Target | Sequence[str | Target]) -> list[Target]
+flnd.HoldState(plugin: str, account: str | None, bucket: str, until: float, reason: str, count: int = 1)
+flnd.HoldState.account: attribute -> str | None
+flnd.HoldState.bucket: attribute -> str
+flnd.HoldState.count: attribute -> int
+flnd.HoldState.plugin: attribute -> str
+flnd.HoldState.reason: attribute -> str
+flnd.HoldState.until: attribute -> float
 flnd.Installed(code: str, name: str, origin: str, where: str = '', version: str = '', api: int = 0, login: str = '', domains: tuple[str, ...] = (), forms: tuple[str, ...] = (), categories: tuple[str, ...] = (), logins: tuple[str, ...] = (), disabled: str = '')
 flnd.Installed.api: attribute -> int
 flnd.Installed.categories: attribute -> tuple[str, ...]
@@ -93,6 +106,12 @@ flnd.NotFound.response: attribute
 flnd.NotFound.retryable: attribute
 flnd.NotFound.status: attribute
 flnd.NotFound.target: attribute
+flnd.Phase(*values)
+flnd.Phase.DONE: attribute -> Phase
+flnd.Phase.DOWNLOADING: attribute -> Phase
+flnd.Phase.FAILED: attribute -> Phase
+flnd.Phase.LISTING: attribute -> Phase
+flnd.Phase.WAITING: attribute -> Phase
 flnd.Planned(target: flnd.source.Target, post: str, path: pathlib.Path | None, state: str)
 flnd.Planned.path: attribute -> Path | None
 flnd.Planned.post: attribute -> str
@@ -132,6 +151,7 @@ flnd.Run(work: Callable[[Callable[[Any], None], Stop], Any], *, name: str, close
 flnd.Run.name: attribute
 flnd.Run.report: property -> Report
 flnd.Run.resume() -> None
+flnd.Run.state: property -> State
 flnd.Run.stop() -> None
 flnd.Run.suspend() -> None
 flnd.Run.wait() -> Report
@@ -159,6 +179,19 @@ flnd.SourceError(flnd.Error)
 flnd.SourceError.hint: attribute
 flnd.SourceError.retryable: attribute
 flnd.SourceError.target: attribute
+flnd.State(version: int = 0, elapsed: float = 0.0, targets: tuple[flnd.engine.events.TargetState, ...] = (), files: tuple[flnd.engine.events.FileState, ...] = (), more: int = 0, holds: tuple[flnd.engine.events.HoldState, ...] = (), now: str = '', saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, speed: float = 0.0)
+flnd.State.bytes: attribute -> int
+flnd.State.elapsed: attribute -> float
+flnd.State.failed: attribute -> int
+flnd.State.files: attribute -> tuple[FileState, ...]
+flnd.State.holds: attribute -> tuple[HoldState, ...]
+flnd.State.more: attribute -> int
+flnd.State.now: attribute -> str
+flnd.State.saved: attribute -> int
+flnd.State.skipped: attribute -> int
+flnd.State.speed: attribute -> float
+flnd.State.targets: attribute -> tuple[TargetState, ...]
+flnd.State.version: attribute -> int
 flnd.Status(command: str, started: str, ended: str = '', saved: int = 0, failures: tuple[flnd.engine.events.Failure, ...] = ())
 flnd.Status.command: attribute -> str
 flnd.Status.ended: attribute -> str
@@ -171,6 +204,16 @@ flnd.Target.kind: field -> str
 flnd.Target.query: field -> bool
 flnd.Target.source: field -> str
 flnd.Target.value: field -> str
+flnd.TargetState(text: str, categories: tuple[str, ...], phase: flnd.engine.events.Phase, found: int = 0, saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, speed: float = 0.0)
+flnd.TargetState.bytes: attribute -> int
+flnd.TargetState.categories: attribute -> tuple[str, ...]
+flnd.TargetState.failed: attribute -> int
+flnd.TargetState.found: attribute -> int
+flnd.TargetState.phase: attribute -> Phase
+flnd.TargetState.saved: attribute -> int
+flnd.TargetState.skipped: attribute -> int
+flnd.TargetState.speed: attribute -> float
+flnd.TargetState.text: attribute -> str
 flnd.ToolError(flnd.Error)
 flnd.ToolError.command: attribute
 flnd.ToolError.hint: attribute

@@ -1,16 +1,14 @@
 """Benchmark group `ui`: what the run's screen costs, and how fast a full-screen view opens.
 
-The screen is today's renderer, `src/ui/log.py`'s `UI` drawing a `job.Board` (one text row per
-target and category) and a byte bar per file in flight. Its output goes to a counting sink that
-says it is a UTF-8 terminal, so the live block draws as it would on a real one.
+The screen is `src/ui/screen.py`'s `Screen`, drawing the run's snapshot (`run.state`, made by
+`job.Tally`) of 20 targets and 6 files in flight. Its output goes to a counting sink that says
+it is a UTF-8 terminal, so the block draws as it would on a real one.
 
 What it times:
-1. `overhead`: 100,000 file events through a `flnd.engine.run.Run`, each a `Board.count` that moves
-   a row and sends a `Progress` event to the reader, with the screen on versus off, as the
-   percentage the screen adds;
-2. `idle_bytes`: the bytes the screen writes in 5 s while nothing changes, with 20 targets and
-   6 files on it;
-3. `frame`: one draw of that same screen, 120 columns by 60 lines;
+1. `overhead`: 100,000 file events through a `flnd.engine.run.Run`, each a `Tally.count` and
+   an event to the reader, with the screen on versus off, as the percentage the screen adds;
+2. `idle_bytes`: the bytes the screen writes in 5 s while nothing changes;
+3. `frame`: one draw of that screen, 120 columns by 60 lines, from a new snapshot;
 4. `open`: from a fresh interpreter's start to the first frame of `target list`'s list
    (`src/ui/lists.py`, Textual inline) in a pseudo-terminal; P17's goal is 250 ms.
 """
@@ -24,14 +22,16 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from typing import Any
 
 import kit
 
 from flnd.engine import job
+from flnd.engine.events import Skipped, State
 from flnd.engine.run import Run
 from flnd.source import Target
-from flnd.ui.log import UI, Group, ui
+from flnd.ui.screen import Screen
 
 EVENTS = kit.size(100_000, 2_000)
 TARGETS, FILES = 20, 6
@@ -72,39 +72,35 @@ def targets() -> list[Target]:
     return [Target(f"bnc:example_user_{n}", kind="user") for n in range(TARGETS)]
 
 
-def board(rows: Any, emit: Any = None) -> tuple[job.Board, list[Target]]:
-    """A board with one open `posts` row per target, as a run's listings start them."""
+def tally(emit: Any = None) -> tuple[job.Tally, list[Target]]:
+    """A tally with one listing per target and `FILES` files in flight, as a run makes it."""
+    counted = job.Tally(emit)
     chosen = targets()
-    drawn = job.Board(rows, subject_width=max(len(str(t)) for t in chosen), label_width=5,
-                      emit=emit)
     for target in chosen:
-        drawn.start(target, "posts")
-        drawn.count(target, "posts", found=40, queued=30, saved=10)
-    return drawn, chosen
-
-
-def screen(owner: UI) -> None:
-    """Fill `owner` with the 20-target, 6-file screen: a board and six byte bars in flight."""
-    board(Group(owner))
+        counted.start(target, "posts")
+        counted.count(target, "posts", found=40, queued=30, saved=10)
     for n in range(FILES):
-        bar = owner.item(f"file{n}", f"example_user_{n}/posts/2026-01-02_p{n}.mp4",
-                         total=64 << 20, unit="bytes")
-        bar.count = (n + 1) * (8 << 20)
+        flight = counted.fly(f"file{n}", chosen[n], f"posts/2026-01-02_p{n}.mp4")
+        flight.size(64 << 20)
+        flight.advance((n + 1) * (8 << 20))
+    return counted, chosen
 
 
 def run_events(*, on: bool) -> float:
     """Time `EVENTS` file events through a `Run`, the screen on or off, in seconds."""
     def work(emit: Any, stop: Any) -> None:
-        with ui.group(drawn=ui._progress_enabled()) as rows:
-            drawn, chosen = board(rows, emit)
+        counted, chosen = tally(emit)
+        with counted.publishing():
             for n in range(EVENTS):
-                drawn.count(chosen[n % TARGETS], "posts", saved=1)
-            for target in chosen:
-                drawn.listed(target, "posts")
+                target = chosen[n % TARGETS]
+                counted.count(target, "posts", skipped=1)
+                emit(Skipped(target, "posts", str(n)))
 
     def read() -> None:
-        with ui.scope(dest=Sink(tty=on), color=on, width=WIDTH):
-            for _ in Run(work, name="bench"):
+        run = Run(work, name="bench")
+        with Screen(lambda: run.state, command="bench", stream=Sink(tty=on), width=WIDTH,
+                    height=HEIGHT):
+            for _ in run:
                 pass
 
     return kit.best(read)
@@ -120,37 +116,44 @@ def overhead(report: kit.Report) -> None:
 def idle_bytes(report: kit.Report) -> None:
     """Time step 2: what a still screen writes in `IDLE` seconds."""
     sink = Sink()
-    owner = UI()
-    with owner.scope(dest=sink, color=True, width=WIDTH):
-        owner.raw.height = HEIGHT
-        screen(owner)
-        # The screen's own first draws are not idle.
-        time.sleep(0.1)
+    newest = [State()]
+    counted, _ = tally(lambda state: newest.__setitem__(0, state))
+    counted.publish()
+    with ExitStack() as stack:
+        stack.enter_context(Screen(lambda: newest[0], command="bench", stream=sink,
+                                   width=WIDTH, height=HEIGHT))
+        # The screen's own first draw is not idle.
+        time.sleep(0.3)
         sink.bytes = 0
         time.sleep(IDLE)
         written = sink.bytes
-        owner._wake.set()
     report.add("idle_bytes", written, "B")
 
 
 def frame(report: kit.Report) -> None:
-    """Time step 3: one draw of the whole screen, with the ticker stopped."""
-    owner = UI()
-    with owner.scope(dest=Sink(), color=True, width=WIDTH):
-        owner.raw.height = HEIGHT
-        screen(owner)
-        owner._wake.set()
-        owner._ticker.join()
+    """Time step 3: one draw of the whole screen, each from a newer snapshot."""
+    counted, _ = tally()
+    states = [counted.publish(force=True) for _ in range(FRAMES)]
+    at = iter(states)
+    screen = Screen(lambda: next(at), command="bench", stream=Sink(), width=WIDTH,
+                    height=HEIGHT)
+    screen.__enter__()
+    # The thread would draw too; the draws timed here are the bench's own.
+    screen._done.set()
+    screen._thread.join()
 
-        def draw() -> None:
-            with owner._lock:
-                for _ in range(FRAMES):
-                    owner._redraw(force=True)
+    def draw() -> None:
+        nonlocal at
+        at = iter(states)
+        screen._drawn = -1
+        for _ in range(FRAMES):
+            screen.tick()
 
-        report.add("frame", kit.best(draw, runs=5) / FRAMES * 1e3, "ms")
+    report.add("frame", kit.best(draw, runs=5) / FRAMES * 1e3, "ms")
+    screen._read = lambda: states[-1]
+    screen.__exit__(None, None, None)
 
 
-# The child of `open`: three targets in the list, drawn in the pseudo-terminal it is given.
 LIST = """
 from flnd.ui import lists
 rows = [lists.TargetRow(f"ins:example_user_{n}", True, ("posts",), n, n << 20, 60.0)

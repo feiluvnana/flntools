@@ -9,6 +9,7 @@ no browser, no real site.
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -222,7 +223,7 @@ class DownloadTest(RunsCase):
         self.assertIn("Start", types)
         self.assertIn("Report", types)
         self.assertFalse((log_dir / "run.log").exists())
-        self.assertIn("done:", out)
+        self.assertIn("done in", out)
 
     def test_download_v_logs_events_and_debug_in_realtime(self):
         def run_with_events(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
@@ -240,24 +241,7 @@ class DownloadTest(RunsCase):
             lines = [json.loads(line) for line in run_log.read_text(encoding="utf-8").splitlines()]
             texts = json.dumps(lines)
             self.assertIn("Saved", texts)
-            self.assertIn("1 file saved", out)
-
-    def test_download_progress_enabled_keeps_saved_off_stdout(self):
-        def run_with_events(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
-            engine.emit(Saved(Target("ins:a"), "posts", "1", Path("media/ins/a/posts/1.jpg"), None, 100))
-            return [TargetReport(Target("ins:a"), (), 1)]
-
-        with mock.patch.object(Engine, "_run", run_with_events):
-            with mock.patch.object(ui, "_progress_enabled", return_value=True):
-                code, out, err = self.run_app("download", "ins:a")
-                self.assertEqual(code, 0)
-                self.assertNotIn("saved media", out)
-                log_dir = Path(".flnd") / _home.LOGS
-                [run_log] = list(log_dir.glob("*_download.jsonl"))
-                import json
-
-                lines = [json.loads(line) for line in run_log.read_text(encoding="utf-8").splitlines()]
-                self.assertTrue(any(line.get("type") == "Saved" for line in lines))
+            self.assertIn("1 saved (100.0 B)", out)
 
 
 class WhenTest(RunsCase):
@@ -393,7 +377,8 @@ class OutputTest(FlndCase):
         lines = out.splitlines()
         saved = [line for line in lines if line.startswith("saved ")]
         self.assertEqual(saved, [])
-        self.assertRegex(lines[-1], r"^done: 3 files saved \(.+\)$")
+        self.assertRegex(lines[-1], r"^  v done in .+ - 1 target - 3 saved \(.+\) - 0 already saved"
+                                    r" - 0 failed$")
         log_dir = Path(".flnd") / _home.LOGS
         import json
 
@@ -405,7 +390,7 @@ class OutputTest(FlndCase):
         self.assertEqual(len(saved_rows), 3)
         self.assertNotIn("Storage:", err)
         code, out, _ = self.run_app("download", "exs:example_user")
-        self.assertEqual(out.splitlines()[-1], "done: 0 files saved, 3 already saved")
+        self.assertRegex(out.splitlines()[-1], r" - 0 saved - 3 already saved - 0 failed$")
 
     def test_json_lines(self):
         code, out, _ = self.run_app("--json", "download", "exs:example_user", "--only", "reels")
@@ -429,8 +414,10 @@ class OutputTest(FlndCase):
         self.listing[("example_user", "posts")] = ["p1", "bad"]
         code, out, err = self.run_app("download", "exs:example_user")
         self.assertEqual(code, 1, err)
-        self.assertNotIn("failed", out)
-        self.assertIn("x 1 file failed: 1 site (retry: flnd retry). Details: flnd status", err)
+        self.assertRegex(out, r"^  x done in .+ - 2 saved \(.+\) - 0 already saved - 1 failed\n$")
+        failure = err[err.index("  x exs:example_user - "):].splitlines()
+        self.assertTrue(failure[0].endswith("/bad.jpg") or "bad" in failure[0], failure)
+        self.assertEqual(failure[-1], "  details  flnd status")
 
     def test_status_shows_the_failure_and_retry_brings_it_back(self):
         self.listing[("example_user", "posts")] = ["p1", "bad"]
@@ -451,29 +438,24 @@ class OutputTest(FlndCase):
         self.serve = lambda request: _net.reply(200, content=noise("JPEG"))
         code, out, err = self.run_app("retry")
         self.assertEqual(code, 0, err)
-        last = out.splitlines()[-1]
-        self.assertEqual(last, "done: 1 file saved ({}), 1 brought back by a retry".format(
-            last.split("(")[1].split(")")[0]))
+        self.assertRegex(out.splitlines()[-1],
+                         r" - 1 saved \(52.0 B\) - 0 already saved - 0 failed$")
         self.assertRegex(self.run_app("status")[1], r"^last run: retry exs:example_user, .+: 1 saved, 0 failed\n$")
 
     def test_the_download_view_draws_and_ends_with_the_summary(self):
         code, out, err = self.run_app("download", "exs:example_user")
         self.assertEqual(code, 0, err)
-        self.assertRegex(out.splitlines()[-1], r"^done: 3 files saved")
+        self.assertRegex(out.splitlines()[-1], r" - 3 saved \(.+\) - ")
 
-    def test_the_run_draws_summary_rows_on_a_terminal(self):
-        tty = _TTY()
-        with ui.scope(dest=tty, color=False, width=400):
-            code, _, _ = self.run_app("download", "exs:example_user")
+    def test_the_run_draws_its_screen_on_a_terminal(self):
+        self.dest = _TTY()
+        code, out, err = self.run_app("download", "exs:example_user")
         self.assertEqual(code, 0)
-        rows = tty.getvalue()
-        self.assertIn("exs:example_user posts", rows)
-        self.assertIn("exs:example_user reels", rows)
-        self.assertIn("2 saved", rows)
-        self.assertIn("1 saved", rows)
-        self.assertIn("queued", rows)
-        self.assertIn("downloading", rows)
-        self.assertNotIn("media/", rows)
+        err = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", err)
+        self.assertIn("flnd download · 1 target · ", err)
+        self.assertRegex(err, r"✓ exs:example_user +posts reels +3 +0 +0 ")
+        self.assertIn("ctrl+c stop · twice: stop now", err)
+        self.assertRegex(out, r"^  v done in ")
 
 
 class ExitStatusTest(FlndCase):
@@ -496,8 +478,8 @@ class ExitStatusTest(FlndCase):
     def test_download_exits_1_when_a_target_failed(self):
         code, out, err = self.run_app("download", "aaa:bad", "aaa:good")
         self.assertEqual(code, 1, err)
-        self.assertNotIn("failed", out)
-        self.assertIn("x 1 target failed: 1 blocked (retry: flnd retry)", err)
+        self.assertRegex(out, r" - 2 targets - 0 saved - 0 already saved - 1 failed\n$")
+        self.assertIn("  x aaa:bad\n    blocked\n", err)
         self.assertEqual(self.run_app("download", "aaa:good")[0], 0)
 
     def test_download_exits_1_when_a_source_cant_start(self):
@@ -511,9 +493,9 @@ class ExitStatusTest(FlndCase):
     def test_a_login_the_source_needs_exits_3_with_the_command_to_run(self):
         code, out, err = self.run_app("download", "ccc:example_user")
         self.assertEqual(code, 3)
-        self.assertNotIn("failed", out)
-        self.assertIn("x 1 target failed: 1 login (retry: flnd retry)", err)
-        self.assertIn("run flnd login ccc", err)
+        self.assertRegex(out, r" - 1 failed\n$")
+        self.assertIn("  x ccc:example_user\n", err)
+        self.assertIn("  hint  run flnd login ccc", err)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -585,7 +567,9 @@ class HelpTest(FlndCase):
         code, out, _ = self.run_app("--json", "status")
         self.assertEqual((code, json.loads(out)), (0, {"type": "Status"}))
         code, out, _ = self.run_app("retry")
-        self.assertEqual((code, out), (0, "done: 0 files saved\n"))
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"^  v done in .+ - 0 targets - 0 saved - 0 already saved - 0 failed"
+                              r"\n$")
 
 
 # ---------------------------------------------------------------------------------------------

@@ -228,7 +228,7 @@ async def _mirror(
         None, once the part holds the file.
     """
     if callable(mirror):
-        attempt = partial(_save_fetch, mirror, held, label, file.size, kind, stop)
+        attempt = partial(_save_fetch, mirror, held, label, file.size, kind, stop, track=track)
         return await _again(attempt, worth=_fetch_again)
     dash_audio = (
         audio
@@ -417,7 +417,8 @@ async def _again(attempt: Callable[[], Awaitable[T]], *,
 
 
 async def _save_fetch(fetch: Fetch, held: files.Part, label: str, size: int | None,
-                      kind: str | None, stop: threading.Event | None) -> None:
+                      kind: str | None, stop: threading.Event | None, *,
+                      track: Any | None = None) -> None:
     """Have `fetch(path, progress)` write into the part `held`, then check it as `kind`.
 
     An `async def` fetch (Telegram's) runs on the loop, where its SDK lives; a plain one runs on
@@ -430,11 +431,13 @@ async def _save_fetch(fetch: Fetch, held: files.Part, label: str, size: int | No
         size: the size the source gave, or None.
         kind: what the file must be, or None to check nothing.
         stop: set to stop at the fetch's next progress report.
+        track: the file's lifecycle bar; None uses a transient bar.
     """
     # A fetch that resumes (Telegram's) keeps its offsets in `<part>.json`, which goes when the
     # part lands.
     held.side = True
-    with _Row(label) as row:
+    row: _Row | Any = track.bar() if track is not None else _Row(label)
+    with row:
         row.start(size)
         progress = partial(row.stoppable, stop=stop)
         if inspect.iscoroutinefunction(fetch):
@@ -536,7 +539,7 @@ class _Row:
         """
         with self._lock:
             if self.bar is None:
-                drawn = ui._progress_enabled()
+                drawn = False
                 self.bar = self.stack.enter_context(
                     ui.progress(self.label, total=total, unit="bytes", drawn=drawn),
                 )
@@ -580,7 +583,7 @@ class _Row:
         """
         with self._lock:
             if self.bar is None:
-                drawn = ui._progress_enabled()
+                drawn = False
                 self.bar = self.stack.enter_context(
                     ui.progress(self.label, total=new, unit="bytes", drawn=drawn),
                 )

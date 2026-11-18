@@ -1,6 +1,6 @@
 """One file's download lifecycle: its phase, and the only place its events come from.
 
-src/docs/architecture explains it; the board's rows (`flnd.engine.job.Board`) draw the run.
+src/docs/architecture explains it; the file shows in the run's snapshot while in flight.
 """
 
 from __future__ import annotations
@@ -81,6 +81,8 @@ class FileTrack:
     emit: Callable[[Any], None]
     retried: bool = False
     phase: Phase = Phase.QUEUED
+    # The run's `flnd.engine.job.Tally`, which shows the file while it is in flight.
+    tally: Any = None
     _lock: threading.Lock = threading.Lock()
 
     def active(self) -> None:
@@ -157,9 +159,10 @@ class FileTrack:
 class _Bar(AbstractContextManager["_Bar"]):
     """Progress sink for `flnd.engine.transfer`, backed by the file track.
 
-    The run's display is the board's summary rows, so the bar carries only what a download
-    needs to answer for: the stop checks (a second Ctrl-C) and the phase captions. It keeps
-    the same surface as `flnd.engine.transfer._Row`, which `_transfer` uses when there is no track.
+    It moves the file's phase, makes the stop checks (a second Ctrl-C), and counts the bytes
+    on the file's `Flight`, which the run's snapshot shows while the transfer goes. It keeps
+    the same surface as `flnd.engine.transfer._Row`, which `_transfer` uses when there is no
+    track.
 
     Args:
         track: the file whose lifecycle the sink moves.
@@ -169,36 +172,67 @@ class _Bar(AbstractContextManager["_Bar"]):
         self._track = track
         self.label = track.label
         self.stack: Any = None  # kept for the same shape as `_Row`
+        self._flight: Any = None
+        # The bytes of the tries before this one, for a `fetch` function's `update`.
+        self._base = 0
 
     def __enter__(self) -> _Bar:
         return self
 
     def __exit__(self, *exc: object) -> None:
-        return None
+        if self._flight is not None:
+            self._flight.land()
 
     def start(self, total: float | None) -> None:
         self._track.active()
+        flight = self._fly()
+        if flight is not None:
+            self._base = flight.done
+            flight.size(None if total is None else self._base + total)
 
     def update(self, done: float, total: float | None = None) -> None:
-        """Set how much of this try is done; nothing draws, so this counts for nothing."""
+        """Set how much of this try is done, and the file's size when the try learned it."""
+        flight = self._flight
+        if flight is not None:
+            if total:
+                flight.size(self._base + total)
+            flight.advance(self._base + done - flight.done)
 
     def stoppable(self, done: float, total: float | None = None, *,
                   stop: threading.Event | None = None) -> None:
         if stop is not None and stop.is_set():
             raise KeyboardInterrupt
+        self.update(done, total)
 
     def follow(self, stop: threading.Event | None = None) -> _TrackStream:
         return _TrackStream(self, stop)
 
     def grow(self, old: float | None, new: float | None) -> None:
-        self.start(new)
+        """Swap a stream's `old` total for its `new` one; None makes the size unknown."""
+        self._track.active()
+        flight = self._fly()
+        if flight is None:
+            return
+        if new is None or (old is not None and flight.total is None):
+            flight.size(None)
+        else:
+            flight.size((flight.total or 0) - (old or 0) + new)
 
     def advance(self, n: float) -> None:
-        """Count `n` more bytes; nothing draws, so this counts for nothing."""
+        """Count `n` more bytes."""
+        if self._flight is not None:
+            self._flight.advance(n)
 
     def caption(self, text: str) -> None:
         if "merg" in text.lower():
             self._track.merging()
+
+    def _fly(self) -> Any:
+        """The file's `Flight`, made on its first response; None without a tally."""
+        track = self._track
+        if self._flight is None and track.tally is not None:
+            self._flight = track.tally.fly(track.key, track.target, track.label)
+        return self._flight
 
 
 class _TrackStream:
@@ -237,16 +271,17 @@ class Tracks:
         emit: where run events go.
     """
 
-    def __init__(self, target: Any, emit: Callable[[Any], None]) -> None:
+    def __init__(self, target: Any, emit: Callable[[Any], None], tally: Any = None) -> None:
         self.target = target
         self._emit = emit
+        self._tally = tally
         self._tracks: dict[str, FileTrack] = {}
         self._lock = threading.Lock()
 
     def add(self, key: str, label: str, post_id: str, category: str, dest: Path,
             *, retried: bool = False) -> FileTrack:
         track = FileTrack(key, label, self.target, post_id, category, dest, self._emit,
-                          retried=retried)
+                          retried=retried, tally=self._tally)
         with self._lock:
             self._tracks[key] = track
         return track

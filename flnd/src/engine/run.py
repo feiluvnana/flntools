@@ -58,6 +58,7 @@ from flnd.engine.events import (
     Report,
     Saved,
     Skipped,
+    State,
 )
 
 if TYPE_CHECKING:
@@ -169,8 +170,9 @@ class Run:
         self._saved = self._skipped = self._bytes = self._planned = 0
         self._retried = self._resumed = self._unchanged = 0
         self._failed: list[Failed] = []
-        # The live stats: what the run's parts track themselves in (through the context, as
-        # the clock reaches them), and the latest sample.
+        # The newest snapshot the engine published: swapped whole, never changed, so any
+        # thread reads it without a lock.
+        self._state = State()
 
     # -----------------------------------------------------------------------------------------
     # Reading the run
@@ -273,6 +275,15 @@ class Run:
         return self.report
 
     @property
+    def state(self) -> State:
+        """What the run is doing now: its targets, the files in flight, the waits.
+
+        A new `State` is swapped in every 100 ms while something changed (its `version` goes
+        up); before the run starts it is an empty one, at version 0. Any thread may read it.
+        """
+        return self._state
+
+    @property
     def report(self) -> Report:
         """The counts so far: at the end, the whole run's; also after a loop broke early."""
         with self._lock:
@@ -350,9 +361,14 @@ class Run:
         Called by the engine on its listing thread and from download tasks on the run's loop.
         It returns at once when nobody will read the event (`wait()` is draining the run).
 
+        A `State` isn't an event: it replaces `run.state` at once, and is never queued.
+
         Args:
-            event: a `Saved`, `Skipped`, `Failed`, `Progress` or `Planned` event.
+            event: a `Saved`, `Skipped`, `Failed`, `Progress` or `Planned` event, or a `State`.
         """
+        if isinstance(event, State):
+            self._state = event
+            return
         with self._lock:
             if isinstance(event, Saved):
                 self._saved += 1

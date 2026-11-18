@@ -11,9 +11,10 @@ src/docs/library explains it.
 
 What it holds: the public names a script uses, and nothing else. `flnd.open(home)` gives a
 `Flnd`, whose methods are the CLI's commands; a download returns a `Run`, whose events
-(`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`) are
-the only output; `Report`, `Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked` and
-`Installed` are what the reads return; the errors are the one hierarchy of `flnd.errors`. A
+(`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`) are the only output, and whose `state`
+(a `State`) says what it is doing now; `Report`, `Login`, `Record`, `Tracked`, `Status`,
+`Failure`, `Checked` and `Installed` are what the reads return; the errors are the one
+hierarchy of `flnd.errors`. A
 source is written against `flnd.source` instead (see the docs' guide to writing a source), and
 tested with `flnd.testing`.
 
@@ -40,15 +41,20 @@ _HOMES = {
     "Event": "flnd.engine.events",
     "Failed": "flnd.engine.events",
     "Failure": "flnd.engine.events",
+    "FileState": "flnd.engine.events",
+    "HoldState": "flnd.engine.events",
     "Installed": "flnd.engine.events",
     "Login": "flnd.engine.events",
+    "Phase": "flnd.engine.events",
     "Planned": "flnd.engine.events",
     "Progress": "flnd.engine.events",
     "Record": "flnd.engine.events",
     "Report": "flnd.engine.events",
     "Saved": "flnd.engine.events",
     "Skipped": "flnd.engine.events",
+    "State": "flnd.engine.events",
     "Status": "flnd.engine.events",
+    "TargetState": "flnd.engine.events",
     "Tracked": "flnd.engine.events",
     "Target": "flnd.source",
     "Blocked": "flnd.errors",
@@ -68,10 +74,11 @@ _HOMES = {
 # Written out, not built from `_HOMES`, so linters and editors can read it; a test checks that
 # the two agree.
 __all__ = [
-    "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure", "Flnd",
-    "Installed", "Login", "LoginError", "NetworkError", "NotFound", "Planned", "Progress",
-    "Record", "Report", "Run", "Saved", "SiteError", "Skipped", "SourceError", "Status",
-    "Stopped", "Target", "ToolError", "Tracked", "UsageError", "__version__", "open",
+    "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure",
+    "FileState", "Flnd", "HoldState", "Installed", "Login", "LoginError", "NetworkError",
+    "NotFound", "Phase", "Planned", "Progress", "Record", "Report", "Run", "Saved", "SiteError",
+    "Skipped", "SourceError", "State", "Status", "Stopped", "Target", "TargetState",
+    "ToolError", "Tracked", "UsageError", "__version__", "open",
 ]
 
 if TYPE_CHECKING:
@@ -81,15 +88,20 @@ if TYPE_CHECKING:
         Event,
         Failed,
         Failure,
+        FileState,
+        HoldState,
         Installed,
         Login,
+        Phase,
         Planned,
         Progress,
         Record,
         Report,
         Saved,
         Skipped,
+        State,
         Status,
+        TargetState,
         Tracked,
     )
     from flnd.engine.run import Run

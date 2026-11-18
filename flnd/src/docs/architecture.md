@@ -87,12 +87,12 @@ The rules between them:
 
 | part | what it holds | who calls it |
 | --- | --- | --- |
-| `src/cli.py` | the commands: `download`, `follow`, `sync`, `retry`, `ls`, `status`, `check`, `login`, `logout` and the rest; a run's summary table or `--json` lines; `--exec`; the exit codes | the `flnd` script, `python -m flnd` |
+| `src/cli.py` | the commands: `download`, `follow`, `sync`, `retry`, `ls`, `status`, `check`, `login`, `logout` and the rest; a run's screen and summary, or `--json` lines; `--exec`; the exit codes | the `flnd` script, `python -m flnd` |
 | `src/_library.py` | `open` and `Flnd`: each command as a method, over the engine; the reads (`targets`, `files`, `logins`, `status`), as rows | scripts and the CLI |
 | `src/engine/run.py` | `Run`: a command on its own worker thread, read as a stream of events; `Stop` (the Ctrl-C stages) and `suspend` | `Flnd`, the engine |
 | `src/engine/events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), the public `Report`, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the job, `Run`, `Flnd` |
 | `src/engine/core.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
-| `src/engine/job.py` | one target's run: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads on the loop (`Downloads`), the progress rows (`Board`), history rows | the engine |
+| `src/engine/job.py` | one target's run: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads on the loop (`Downloads`), the progress rows (`Board`), the run's live counts and its snapshots (`Tally`), history rows | the engine |
 | `src/engine/track.py` | each file's lifecycle (`FileTrack`): phases, and the only path that emits `Saved` / `Skipped` / `Failed` for a file | the job, `transfer`, `steps` |
 | `src/engine/site.py` | `SourceRun` (a source's cookies, HTTP session, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`), `LoginSite`, and `shared_browser`, the run's loop and browser | the engine, the job |
 | `src/engine/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, `when`'s reading, and `config`: every setting of config.toml, read and checked in one place | the engine, the job, the library, `site`, `steps` |
@@ -109,6 +109,7 @@ The rules between them:
 | `src/ui/theme.py` | every colour and glyph flnd draws with, and when to drop colour or Unicode | `src/ui/*` |
 | `src/ui/out.py` | every line flnd prints: lines, folded warnings, errors and their hints, tables, the help; text from a site cleaned of escape codes | the CLI, `src/ui/log.py`, the run's hard exit |
 | `src/ui/log.py` | the levels of log lines, the progress rows and the run's summary table; the journal; the route of the kit's `logging` records | every layer above the kit |
+| `src/ui/screen.py` | the run's screen, drawn from `run.state` on its `flnd-screen` thread, and the end summary | the CLI |
 | `src/ui/forms.py` | questions on the terminal in Huh's look (Textual, inline): `select`, `text`, `confirm`; without a terminal, `select` and `text` raise `UsageError` and `confirm` gives its default | the CLI, the site, the engine's browser screen, `src/ui/lists.py` |
 | `src/ui/lists.py` | the interactive lists (Textual, inline) of targets, accounts and plugins: ↑↓, `/` filter, enter details, `d` delete after a confirmation, `q` quit, each list's own keys; a plain table on a pipe | step 13's `target list`, `auth list` and `plugin list` |
 | `src/errors.py` | flnd's face of the one error hierarchy: the kit's classes re-exported, `SourceError`, and `classify`, which turns any exception into one of them and gives flnd's hint to an error that has none | every module |
@@ -310,14 +311,15 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
   `flnd.engine.run.restoring` (whatever changed the terminal registers its undo there), then
   `os._exit(130)`, which runs no `finally` and joins no thread. `run.suspend()` sets
   `stop.suspended`, which each source's limits wait on before a new request; a stop clears it.
-- **The run's display** is its summary table: one row per target and category, with the counts
-  of its files (`job.Board`, on a `ui.Group`). The engine opens that group drawn only when the
-  terminal is live (`ui.group(drawn=ui._progress_enabled())`), so a script that reads the run's
-  events on a pipe draws nothing. Each count that moves redraws its row, under the renderer's
-  lock, throttled to `flnd.ui.log.REDRAW` (60 a second); a ticker thread redraws the rows at
-  that pace while they are active, so the spinner and the counts move even when nothing emits
-  an event. A row that listed everything and has nothing pending ends with a check, or a cross
-  when it left failures.
+- **The run's display** is drawn from a snapshot. Every part of a run counts on the run's
+  `job.Tally`: a target's listings, each file's steps, the files in flight (their bytes, from
+  the transfer's bar), the waits a site asked for. A `flnd-state` thread makes a frozen
+  `State` from it every 100 ms, only when something changed, and the run swaps it in as
+  `run.state`. On a terminal the CLI's screen (`flnd.ui.screen`) runs a `flnd-screen` thread
+  that reads `run.state` every 100 ms and redraws (Rich `Live`, never refreshed on its own)
+  only when its `version` moved; it never touches the engine's counts, so it takes none of
+  their locks. Lines printed on standard error meanwhile (warnings) go through the screen's
+  queue and print above the block; a Ctrl-C handler that warns only puts a line on that queue.
 
 ## The step chain
 

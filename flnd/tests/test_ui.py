@@ -126,7 +126,7 @@ class ProgressTest(UICase):
     def test_concurrent_progress_rows_both_draw(self) -> None:
         buf = io.StringIO()
         with ui.scope(color=True, dest=buf, width=80, level="info"):
-            self.assertTrue(ui._progress_enabled())
+            self.assertTrue(ui.live)
             with ui.progress("item1.jpg", total=10) as row1:
                 with ui.progress("item2.jpg", total=20) as row2:
                     row1.advance(5)
@@ -366,11 +366,13 @@ class FoldTest(OutCase):
         run = mock.MagicMock()
         run.__iter__.return_value = events()
         run.report = flnd.Report(skipped=2)
+        run.state = flnd.State()
         args = mock.Mock(json=False, verbose=False, command=None)
         self.assertEqual(cli._watch(mock.Mock(home=None), run, args), 0)
         self.assertEqual(both.getvalue().splitlines(),
                          ["! 429 from api.example.com", "! 429 from api.example.com (×2)",
-                          "done: 0 files saved, 2 already saved"])
+                          "  ✓ done in 0ms · 0 targets · 0 saved · 2 already saved"
+                          " · 0 failed"])
 
     def test_a_signal_handler_never_waits_on_the_fold(self) -> None:
         for path in ("warn", "drain"):

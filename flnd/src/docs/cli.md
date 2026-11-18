@@ -329,12 +329,34 @@ Windows, `--parent-window`), and it refuses any other origin.
 
 ## What a run prints
 
-- **Standard terminal run** draws a live summary table on standard error while the run goes:
-  one row per target and category, with the counts of its files — `queued`, `downloading`,
-  `saved`, `failed`, plus `linked` (a file linked from another category's folder) and the row's
-  size — where the spinning rows are the target downloading now. No line per file: a finished
-  file only moves its row's counts, and its name is in the home and in `flnd status`. A target
-  that needs a login prints the command to run under the summary.
+- **On a terminal**, a run draws its screen on standard error, from the run's snapshot
+  (`run.state`, [library.md](library.md#what-a-run-is-doing-now)). It is redrawn only when the
+  snapshot changed, at most 10 times a second, so a run with nothing going on writes nothing:
+
+  ```text
+    flnd download · 3 targets · 01:42
+
+    target               categories        saved  skipped  failed      size     speed
+    ✓ ins:example_user   posts reels         412    1,208       0    2.1 GB         –
+    ⠹ twt:example_creator media               37       12       1  180.0 MB 31.0 MB/s
+    · tik:example_handle videos                –        –       –         –         –
+
+    ⠹ media/1290_2.mp4          ━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━  63%   38.0 MB 12.0 MB/s
+      + 4 more
+
+    now  twt:example_creator · media, page 4 · held 30 s: 429 from api.example.com (×3)
+
+    42.0 MB/s · 449 saved · 1 failed                       ctrl+c stop · twice: stop now
+  ```
+
+  One row per target: its glyph (`·` waiting, the spinner while it lists or downloads, `✓`
+  done, `✗` failed), the target and its categories (cut in the middle to 28 and 14 cells), its
+  counts (`–` before it counted anything), its size and speed. Then up to 6 files in flight,
+  their paths cut at the start to 24 cells, with `+ <n> more` for the rest; queued files never
+  show. The `now` line says what the run does, in yellow while a site makes it wait. On a
+  terminal too short for every row, the last targets fold into `+ <n> targets`. A warning
+  prints above the block.
+- **On a pipe**, nothing is drawn while the run goes; the summary comes at the end.
 - **With `--dry`**, standard output lists what the run would save: `found <target>` per target
   a search finds, then `new <path>` or `saved <path>` per file, and a last line counts them.
 - **`--json`** writes each event as one JSON object per line, its class in `"type"` (`Saved`,
@@ -344,12 +366,20 @@ Windows, `--parent-window`), and it refuses any other origin.
   "hint"}}`, besides its text on standard error. So every line on standard output is one JSON
   object with a `type`.
 
-The end of a run prints a summary: `done: 3 files saved (1.2 MB), 2 already saved`, and on
-standard error how many failed and of which kind:
+The end of a run prints a summary on standard output, then each failure on standard error,
+at most 10, with its message and its hint:
 
+```text
+✗ done in 4m 12s · 3 targets · 1,021 saved (3.3 GB) · 1,220 already saved · 1 failed
+
+✗ twt:example_creator · media/1290_2.mp4
+  the site answered 404: the file is gone
+  hint  nothing to do; flnd won't ask for it again
+
+details  flnd status
 ```
-✗ 3 files failed: 2 network (retry: flnd retry), 1 gone. Details: flnd status
-```
+
+It starts with `✓` when nothing failed. Nothing prints after it.
 
 flnd's own warnings (a wait a site asked for, a login about to expire) go to standard error too,
 and the repeats of a warning within 10 seconds fold into one line ([How it looks](#how-it-looks)).

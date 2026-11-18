@@ -10,7 +10,8 @@ What it times, in order:
 4. hashing 256 MiB in memory, per MiB;
 5. the loop bridge: a thread calling a coroutine on an event loop thread and waiting for it;
 6. flnd's per-file work: `job.place` (paths and names), `text.filename` and `day()`;
-7. a no-op task handed to the run's loop, and a progress row's `advance`.
+7. a no-op task handed to the run's loop, and a file's bytes counted on its `Flight` (with
+   the snapshots made and drawn meanwhile, or not).
 
 Every number is the best of 3 runs (5 for the short per-call ones). The pages are synthetic and
 use only example handles and example.com-style hosts.
@@ -27,6 +28,7 @@ import sys
 import threading
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 
 import kit
@@ -38,8 +40,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from example_source import CDN, Example  # noqa: E402
 
 from flnd.engine.core import job  # noqa: E402
-from flnd.source import File, Post  # noqa: E402
-from flnd.ui.log import ui
+from flnd.engine.events import State  # noqa: E402
+from flnd.source import File, Post, Target  # noqa: E402
+from flnd.ui.screen import Screen  # noqa: E402
 from flnkit import html as _html  # noqa: E402
 from flnkit import text as _text  # noqa: E402
 from flnkit.clock import day  # noqa: E402
@@ -182,7 +185,7 @@ def per_file(report: kit.Report) -> None:
 
 
 def pool_and_ui(report: kit.Report) -> None:
-    """Time step 7: a no-op task handed to the run's loop, and a progress row's `advance`.
+    """Time step 7: a no-op task handed to the run's loop, and a flight's `advance`.
 
     The downloads are tasks on the run's loop, each handed over from the listing thread
     (`Loop.submit`); `loop_task` is that hop's cost, end to end.
@@ -205,14 +208,34 @@ def pool_and_ui(report: kit.Report) -> None:
 
     report.add("executor_task", kit.best(executor) / tasks * 1e6, "us")
     advances = 100_000
-    for color, name in ((False, "advance_plain"), (True, "advance_live")):
-        def advance(color: bool = color) -> None:
-            with ui.scope(dest=io.StringIO(), color=color), \
-                    ui.progress("file.mp4", total=advances) as row:
+    target = Target("bnc:example_user", kind="user")
+    for live, name in ((False, "advance_plain"), (True, "advance_live")):
+        def advance(live: bool = live) -> None:
+            newest = [State()]
+            tally = job.Tally(lambda state: newest.__setitem__(0, state))
+            flight = tally.fly("file", target, "posts/file.mp4")
+            with ExitStack() as stack:
+                if live:
+                    # The snapshots are made, and drawn on a terminal, while the bytes come.
+                    stack.enter_context(tally.publishing())
+                    stack.enter_context(Screen(lambda: newest[0], command="bench",
+                                               stream=_Terminal()))
                 for _ in range(advances):
-                    row.advance(1)
+                    flight.advance(1)
 
         report.add(name, kit.best(advance) / advances * 1e6, "us")
+
+
+class _Terminal(io.StringIO):
+    """A terminal that keeps nothing, for the screen to draw on."""
+
+    encoding = "utf-8"
+
+    def isatty(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        return len(text)
 
 
 def main() -> None:

@@ -385,7 +385,7 @@ class CliTest(FlndCase):
             code, out, err = self.run_app("download", "aaa:example_user")
         self.assertEqual(code, 3)
         # The end of the run names the command; flnkit's error had no hint at all.
-        self.assertIn("1 login", err)
+        self.assertIn("  hint  run flnd login aaa", err)
         self.assertIn("  run flnd login aaa", err)
         self.assertNotIn("Traceback", out + err)
 

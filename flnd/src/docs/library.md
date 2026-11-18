@@ -119,6 +119,32 @@ with flnd.open(home) as fl:
 | `failed` | each `Failed` event, in order: a strict script checks it, or `report.ok` |
 | `stopped` | whether `run.stop()` ended the run early |
 
+### What a run is doing now
+
+`run.state` is the run's snapshot: a frozen `flnd.State`, swapped in every 100 ms while
+something changed, so a script reads it from any thread, and keeps one as long as it likes.
+`version` goes up with each new one; before the run starts it is an empty one, at 0. The CLI's
+screen is drawn from it alone.
+
+| `State` field | what it is |
+| --- | --- |
+| `version`, `elapsed` | the snapshot's number, and the seconds since the run started |
+| `targets` | one `flnd.TargetState` per target: `text`, `categories`, `phase` (a `flnd.Phase`: `WAITING`, `LISTING`, `DOWNLOADING`, `DONE`, `FAILED`), `found`, `saved`, `skipped`, `failed`, `bytes`, `speed` |
+| `files`, `more` | the files in flight, oldest first, at most 6 (`flnd.FileState`: `target`, `path`, `done`, `total`, `speed`), and how many more there are |
+| `holds` | the waits going on (`flnd.HoldState`: `plugin`, `account`, `bucket`, `until`, `reason`, `count`) |
+| `now` | what the run does, in one line: the newest listing step, and the wait going on |
+| `saved`, `skipped`, `failed`, `bytes`, `speed` | the whole run's counts; speeds are bytes a second over the last 3 s |
+
+```python
+with flnd.open(home) as fl:
+    fl.add(Notes)
+    run = fl.download("nts:example_user")
+    assert run.state.version == 0
+    run.wait()
+    assert [(row.text, row.phase) for row in run.state.targets] == [
+        ("nts:example_user", flnd.Phase.DONE)]
+```
+
 ### Options
 
 Every option is keyword-only:

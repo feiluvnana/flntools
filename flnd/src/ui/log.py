@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -381,9 +382,6 @@ class UI:
     def live(self) -> bool:
         """Whether the screen is interactive and live bars should be drawn."""
         return self._live
-
-    def _progress_enabled(self) -> bool:
-        return self.live
 
     @property
     def level(self) -> Level:
@@ -763,6 +761,16 @@ class UI:
             for line, times in shown:
                 self._show(out.styled(_kind, line, fancy=self._use_unicode(), times=times))
 
+    def record(self, kind: Level, message: str) -> None:
+        """Write a line to the journal only, never to the terminal: the screen's own failures.
+
+        Args:
+            kind: the line's level.
+            message: the line, as it is.
+        """
+        if self._journal is not None:
+            self._journal.write({"type": "Log", "level": kind, "message": message, "fields": {}})
+
     def drain(self) -> None:
         """Print the warnings still folded, each as "text (×n)", where this `UI` prints now."""
         with self._lock:
@@ -771,6 +779,11 @@ class UI:
 
     def _show(self, line: Text) -> None:
         """Print a line above the live block, or at once when no row is live."""
+        sink = out._above
+        if sink is not None and self._console.file is sys.stderr:
+            # The run's screen prints it above its block (`out.above`).
+            sink(line)
+            return
         if self.live and self._active_keys:
             self._pending_lines.append(line)
             self._redraw(force=True)

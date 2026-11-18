@@ -121,6 +121,9 @@ class RunShared:
     resolve: Callable[[str], Target] | None = field(default=None, repr=False)
     # Each file's lifecycle for this target (`flnd.engine.track.Tracks`); None outside a download.
     tracks: Any = field(default=None, repr=False)
+    # The run's live counts (`flnd.engine.job.Tally`), which `run.state` is made from; None
+    # outside a run.
+    tally: Any = field(default=None, repr=False)
 
 
 def categories_by_source(

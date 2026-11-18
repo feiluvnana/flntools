@@ -307,8 +307,7 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     "flnkit/vault.py:keyfile": "the sealed vault, built early; step 11 wires it in",
     "flnkit/vault.py:unseal": "the sealed vault, built early; step 11 wires it in",
     # An early part (PLAN.md 15): step 10's `feat:let config override a plugin's templates`
-    # wires config.py in and removes these three.
-    "src/engine/config.py:speed": "early part; the transfer reads rate and slowest from step 10",
+    # wires config.py in and removes these two (`speed` is a word the run's snapshot uses).
     "src/engine/config.py:unset": "early part; `flnd config` and `Flnd.config` call it",
     "src/engine/config.py:user_file": "early part; the engine passes it to read and write",
     "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
@@ -320,7 +319,6 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     # The scheduler is built ahead of the code that calls it: the save (a transfer's backlog,
     # `slowest`, a segment's start) and the screen (the holds) take these when they are wired.
     "src/engine/jobs.py:Backlog": "the save's transfers, once wired; tests/test_jobs.py",
-    "src/engine/jobs.py:Scheduler.holds": "the screen's State, once wired; tests/test_jobs.py",
     "src/engine/jobs.py:Segments.splittable": "the save, once wired; tests/test_jobs.py",
     "src/engine/jobs.py:Speed": "the save's `slowest`, once wired; tests/test_jobs.py",
     "src/engine/jobs.py:Speed.below": "the save's `slowest`, once wired; tests/test_jobs.py",
