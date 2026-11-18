@@ -341,8 +341,8 @@ Removed from `flnd`: `Progress`, `Login` (the row is now `Account`), `SourceErro
 `Target` and `Account` are defined in `src/plugin.py` and re-exported by `engine/events.py`
 and `flnd`.
 
-`flnd.testing`: `FakeCtx`, `FakePage`, `Reply`, `Collected`, `Seen`, `collect`, `check`,
-`fake_clock`.
+`flnd.testing`: `FakeCtx`, `FakePage`, `Reply`, `Sent`, `Collected`, `Seen`, `collect`,
+`check`, `fake_clock`.
 
 `tests/data/api.txt` (`make api`) pins all three. Its diff is reviewed in every step that
 changes a public name.
@@ -444,7 +444,11 @@ dependency and `import flnd.plugin` stays cheap (P11).
   - exactly one of `url`, `mirrors` and `fetch` is given;
   - `audio` is a DASH audio stream to merge with the video (when `mirrors` holds a DASH video
     followed by a progressive fallback, `audio` merges only with `mirrors[0]`, fixing S9);
-  - `name` overrides the stem `filename` makes;
+  - `name` replaces the name `filename` makes. A `name` with an extension keeps it. A stem
+    takes its extension from the content type, else from the URL's extension, else none.
+    The content check (6.4) still renames a file whose bytes are a different known format.
+    Ports pin today's names (`avatar_<id>.jpg`, `cover_12.png`), and the old wording doubled
+    them (`02.png.png`). Decided by the orchestrator on 2026-11-19 (15, item 6);
   - `password` is an archive's;
   - `ranged=True` says `fetch` can start and stop anywhere, so 6.2's segments may split the
     file (with `size` known), at most 4 segments for a `Fetch` file.
@@ -573,6 +577,10 @@ that isn't lazy.
     headers: Mapping[str, str] | None = None, url: str = "")` answers `fetch` and `pages`;
   - `FakePage(html: str = "", *, status: int = 200, url: str = "",
     feeds: Sequence[tuple[str, Any]] = ())` answers `open`, `document` and `feed`;
+  - `Sent(url: str, body: Any, *, click: str | None = None, scroll: int | None = None)` is one
+    feed answer. It is delivered when `open` loads the page, on a `ctx.click(css)` whose
+    `css` is `click`, or on the `scroll`-th scroll. A scroll that brings nothing ends the
+    feed. A click that matches nothing raises `NetworkError` after 10 s on the fake clock;
   - `Seen` (`ctx.seen`) records `requests`, `visited`, `scrolls`, `logs` and `holds`.
 
   `FakeCtx` behaves like the engine:
@@ -588,7 +596,8 @@ that isn't lazy.
   - an `open` from a lazy post's files, `refresh` or `date` runs in its own tab, as in the
     engine;
   - a `feed` hears only the responses after `feed()` is called; earlier ones are dropped;
-  - `secrets` is writable only during `Login.start`, `state` takes only JSON values, and
+  - `secrets` is writable only during `Login.start` (6.7's flag), `state` takes only JSON
+    values, and
     `ask` with `choices` takes only an answer among them;
   - `ask` pops `answers`, and raises `UsageError` when they run out;
   - `settings` fills the plugin's `Settings`;
@@ -950,6 +959,12 @@ form asks for it (`example_user`). Without a terminal it is `account<n>`.
 - **No method given:** a terminal shows the login form, and no terminal is a `UsageError`
   listing the methods.
 - **After a login,** `Login.check` must pass, else `LoginError`.
+- **Writing secrets.** `Login.start` runs with a `ContextVar` flag set, and only then can
+  `ctx.secrets` be written. Tasks inherit the flag, so a Telethon task started inside `start`
+  can write. `FakeCtx` checks the same flag, in place of its stack-frame check.
+- **Refusals.** `flnkit.net` makes its status-to-error mapping (today's private
+  `_retry_after`, `_reset` and `_checked`) one public function. The engine's `Ctx` and
+  `FakeCtx` both call it, so a status means the same error in both.
 - **The engine stores every account,** warns at a run's start about cookies that expire
   within 3 days, writes the cookies a site refreshed back to the vault at the run's end, and
   logs out (deleting the account's secrets and its row).
@@ -2120,6 +2135,8 @@ is built on the earlier layout.
     write-back, logout, switching;
   - the sealed vault with `~/.config/flnd/key` (deleting the OS keychain code from
     `flnkit/vault.py`), and the migration of `secret.db`;
+  - the `ContextVar` flag that lets `Login.start` write `secrets`, which `FakeCtx` checks too,
+    and `flnkit.net`'s one public status-to-error function, used by `Ctx` and `FakeCtx` (6.7);
   - delete `engine/home.py` and `engine/core.py`.
 - **Tests:** `tests/test_auth.py`:
   - each method;
