@@ -8,11 +8,13 @@ lazy posts, an expired link's refresh, both Ctrl-Cs, and searches. No network, n
 import asyncio
 import datetime
 import errno
+import gc
 import os
 import sqlite3
 import threading
 import time
 import unittest
+import warnings
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -1689,6 +1691,27 @@ class DiscoveredTest(EngineCase):
             self.report(Author, handed, full, targets=["aut:example_user", "ccc:full"])
         # The one listing when the disk filled may have begun; the nine waiting never do.
         self.assertLessEqual(len(ran), 1)
+
+
+class HandedTest(unittest.TestCase):
+    def test_a_handed_target_cancelled_before_its_task_starts_leaves_no_coroutine(self):
+        """A full disk may cancel a handed target's task before it ran a step: no coroutine
+        of it is left never awaited."""
+        runner = engine_module._Runner(mock.Mock(), mock.Mock())
+
+        async def handed():
+            await runner.follow(Target("bbb:example_user", kind="user"), Options(), inside="aut")
+            [task] = runner._handed
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            runner._handed.clear()
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            asyncio.run(handed())
+            gc.collect()
+        self.assertEqual([str(warning.message) for warning in caught
+                          if "never awaited" in str(warning.message)], [])
 
 
 class QueryAndLimitDryTest(EngineCase):

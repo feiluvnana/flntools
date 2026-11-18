@@ -1359,7 +1359,9 @@ class _Runner:
             await self.target(target, options, inside=inside)
             return
         self.settings.tally.add(target, _planned(options))
-        self._handed.append(asyncio.ensure_future(_carried(self.target(target, options))))
+        # The target's coroutine is made once its task starts: one cancelled before (a full
+        # disk) leaves no coroutine never awaited.
+        self._handed.append(asyncio.ensure_future(_carried_call(self.target, target, options)))
 
     async def target(self, target: Target, options: Options, *,
                      parent: Target | None = None, inside: str | None = None,
@@ -1635,6 +1637,11 @@ async def _carried(awaitable: Awaitable[T]) -> tuple[bool, Any]:
         return True, await awaitable
     except BaseException as error:
         return False, error
+
+
+async def _carried_call(call: Callable[..., Awaitable[T]], *args: Any) -> tuple[bool, Any]:
+    """`_carried(call(*args))`, the coroutine made only as this one runs."""
+    return await _carried(call(*args))
 
 
 def _planned(options: Options) -> tuple[str, ...]:
