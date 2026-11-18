@@ -4,12 +4,12 @@ flnd downloads the photos and videos of a Facebook profile or page: its posts, p
 photos, albums, reels, videos, stories, and its profile and cover pictures, and a single video,
 reel, photo or post by its link. It reads everything in a browser, by loading the pages and
 scrolling them. A login is not required by the code, but Facebook shows little to a logged-out
-browser. The source is `src/sources/fbk.py`.
+browser. The plugin is `src/plugins/fbk.py`, on plugin API 2.
 
 ## Targets
 
 A *target* is what you ask flnd to download (see the [glossary](../glossary.md)). A *route* is
-the part of the source that reads one kind of target.
+the part of the plugin that reads one kind of target.
 
 | You type | Route | What it downloads |
 | --- | --- | --- |
@@ -36,10 +36,11 @@ A single link's files go in its own target folder, without a category:
   suggestions beside it.
 - **`watch`** opens the `fb.watch` link in the logged-in browser (a private video's redirect needs
   the login), reads the video's id from the page it lands on (`/watch/?v=<id>`, `/reel/<id>` or
-  `/<page>/videos/<id>`), then reads that video as `video` does. A link that lands on the login
-  page stops with "run flnd login fbk"; one that lands anywhere else stops with "didn't lead to
-  a video". The target's folder is named after the short code, but the file's history key is the
-  video's id, so the same video by another link is not saved twice.
+  `/<page>/videos/<id>`), then reads that video as `video` does. A link that lands on a login
+  wall is waited out as any wall is (see [Logging in](#logging-in)). One that lands anywhere
+  else, or on a page with no video id, stops with "didn't lead to a video". The target's folder
+  is named after the short code, but the file's history key is the video's id, so the same video
+  by another link is not saved twice.
 - **`photo`** opens `https://www.facebook.com/photo/?fbid=<id>` and keeps only that photo. A
   `photo.php` link without a numeric `fbid=` is refused with what it lacks.
 - **`post`** opens the permalink and keeps every photo and video the post's owner owns, leaving a
@@ -58,16 +59,18 @@ A *category* is one part of a profile that can be downloaded on its own. Without
 | --- | --- |
 | `posts` | Photos and videos of the profile's own posts (the profile page itself) |
 | `photos` | The photos tab |
-| `tagged` | Photos the profile is tagged in |
+| `tagged` | Photos the profile is tagged in (other people's media, so `own=False`) |
 | `albums` | Every album on the albums tab, each in its own folder |
 | `reels` | The reels tab |
 | `videos` | The videos tab |
 | `stories` | The stories active now |
 | `profile` | The profile picture and the cover photo |
 
-No category is newest first: each tab is scrolled to its end every run. The early stops (a
-sync that has caught up, `--when`) are the engine's and apply only to a newest-first listing; the
-source itself only ends a scroll where the site does.
+No category is newest first (`newest_first=False` on the `user` route, which its categories
+take): each tab is scrolled to its end every run. The early stops (a sync that has caught up,
+`--when`) are the engine's and apply only to a newest-first listing; the plugin itself only ends
+a scroll where the site does. Whether the tabs list newest first waits for a live check (see
+[Limits](#limits)).
 
 Media another account owns is left out of a tab, when the profile header gives the profile's id.
 A video found in the `posts`, `photos` or `tagged` tab is filed under `videos/`, and a photo that
@@ -89,8 +92,10 @@ written back at the end.
 Without a login, flnd opens the same pages and gets what Facebook shows a logged-out visitor.
 
 When a run starts, flnd warns if `c_user` or `xs` has expired or will expire within a day. When a
-page lands on `/login` or `/login.php` (a *login wall*), flnd waits and loads it again, at most
-twice, then stops with "Facebook kept asking for a login; run flnd login fbk, then try again".
+page lands on `/login` or `/login.php` (a *login wall*, declared as the plugin's `walls`), the
+account's requests wait 30 seconds, then 120 seconds, and the page is loaded again. After the
+second wait the job moves to another account if there is one, or fails with a login error and the
+account is marked expired.
 
 ## How it fetches
 
@@ -101,7 +106,9 @@ it asks its GraphQL endpoint for more, answered as one JSON result per line.
 1. The `user` route loads the profile page once (`https://www.facebook.com/<user>`). It keeps
    the embedded results and the responses that came while the page loaded, and reads the
    profile header from them: the profile's id, its pictures, its story buckets, and the paths of
-   its tabs.
+   its tabs. Each tab's URL goes to its category as its `url=`, so the engine can open it ahead
+   in a warm tab. A URL is empty when the header lacks that tab; without a header, each tab is
+   tried at its first path. If the profile page doesn't load, the route raises an error.
 2. **`posts`** reads that page's results first, without loading it again, then scrolls it and
    reads every captured response whose URL contains `graphql`. The scroll ends when the tab's
    `page_info` says there is no next page (`tab_cursor`), but only after an earlier page said
@@ -109,42 +116,45 @@ it asks its GraphQL endpoint for more, answered as one JSON result per line.
    "no next page", which is not the tab's end (seen 2026-11).
 3. **`photos`, `tagged`, `reels`, `videos`** each open their tab's page (the path the header
    names, such as `photos_by` or `photos`) and do the same. A tab the header does not list is
-   skipped with "this profile has no such tab". The tabs not yet read are opened in background
-   tabs meanwhile.
+   skipped with "this profile has no such tab".
 4. **`albums`** scrolls the albums tab, collects each album's link and title, then scrolls each
-   album's page.
+   album's page. The album pages are started in warm tabs (`ctx.warm`) before the first is read.
 5. **`stories`** opens `https://www.facebook.com/stories/<bucket>/` for each story bucket the
-   header lists.
+   header lists, one page each. The bucket pages are started in warm tabs (`ctx.warm`) before
+   the first is read. A bucket that doesn't load fails the `stories` category.
 6. **`profile`** takes the header's large profile picture and cover photo.
 
 A video is saved from its DASH manifest when it has one (the best video and audio streams,
-merged), else from its progressive files, HD first. Every other address the video has is kept
-as a *mirror*, an address tried in turn when one refuses. A photo is its largest image URL.
+merged). Otherwise its progressive files are kept in turn as mirrors, an address tried in turn
+when one refuses, HD first, and so are its other video addresses. A photo is its largest image
+URL.
 
 A photo or video that the results leave undated is dated afterwards: flnd requests
 `https://www.facebook.com/photo/?fbid=<id>` from inside the open page, so it carries the page's
 session, and reads the first `created_time` in the answer. The engine asks this once per undated
-post as its category ends, and again on `flnd sync` for files saved undated.
+post as its category ends, and again on `flnd sync` for files saved undated. The block rules
+apply to these requests too (`blocked()`).
 
 **Pace and concurrency.** `pace` is 0.2: at least 0.2 seconds between requests to Facebook's
 domains, page loads included. Each CDN host's files download 8 at once, adapting up to 32
-(no `limits` of its own). The CDN gets a `Referer: https://www.facebook.com/` header, which it requires.
+(no `limits` of its own). The CDN gets a `Referer: https://www.facebook.com/` header, which it
+requires.
 
 ## Where files go
 
 A target's files go under `.flnd/media/fbk/<target>/`, where `<target>` is the user name or id as
-given. Inside it, the source declares:
+given. Inside it, the plugin declares:
 
 - `folder = "{part}/{album}"`: `part` is where the file was found (its tab, or `videos`,
   `albums` or `stories`), and `album` the album's title when it has one. The `profile` category
   uses `profile`.
 - `filename = "{date}_{post}"`: a file is `<date>_<photo or video id>.<ext>`, or `<id>.<ext>`
   without a date. The profile pictures are `profile_<photo id>.<ext>` and
-  `cover_<photo id>.<ext>`. A DASH video gets no name from the source: the engine names it from
+  `cover_<photo id>.<ext>`. A DASH video gets no name from the plugin: the engine names it from
   `filename`, and gives the joined file `.webm` when both its streams are WebM, else `.mp4`.
 - `key = "{post}"`: the history remembers `fbk:<photo or video id>`, so a photo found in two tabs
-  is saved once. The `profile` category sets an empty key, so its history key is the file's path
-  under the target's folder.
+  is saved once. The `profile` category sets `key = "{path}"`, so its history key is the file's
+  path under the target's folder, and a new picture is a new file.
 
 Example:
 
@@ -168,16 +178,18 @@ Example:
   profile's is left out. Handled since 2026-11-11.
 - **Image format from the URL.** The CDN converts an image to the format named in its
   `stp=dst-<format>` parameter, which gives the extension. Handled since 2026-11-11.
-- **Temporary blocks.** Facebook rate-limits a session with a page saying "temporarily blocked",
-  or a GraphQL answer that is the Comet error page (`CometErrorRoot.react`). flnd waits and
-  tries again, at most 3 times, then stops with "Facebook says you've been temporarily blocked".
+- **Temporary blocks.** Facebook rate-limits a session with a page that says "temporarily
+  blocked" and embeds no results, or with a GraphQL line that is the Comet error page
+  (`CometErrorRoot.react`). Each one is held with the reason "Facebook says you've been
+  temporarily blocked", by the engine's block rules: 30 seconds, then 120, then 480. A fourth
+  block in a row fails the target with a block error. The plugin keeps no back-off loop.
   Handled since 2026-11-12.
 - **The next page's cursor** is looked for at most 3 objects deep under a result's `data`, so a
   comment list's `page_info` is not taken for the tab's. Handled since 2026-11-12.
 - **A photo's own day** is taken to be the first `created_time` on its page. The code comment
   says this is unverified until a hand check on a live page. Handled since 2026-11-13.
-- **Login wall paths** are matched on the first path segment, so a profile like `login.example`
-  is not a wall. Handled since 2026-11-16.
+- **Login wall paths** are matched as whole path segments, so a profile like `login.example` is
+  not a wall. Handled since 2026-11-16.
 - **`fb.watch` short links** used to match no route; they are now followed in the browser to the
   video they point to. Handled since 2026-11-16.
 - **`photo.php` and `permalink.php`** used to be readable as the user names "photo.php" and
@@ -186,13 +198,15 @@ Example:
 
 ## Limits
 
-- **Some links are refused**: links under `/<profile>/posts`, `/photos`, `/groups`, `/events`
-  and `/stories` say "this kind of link isn't supported yet; give the profile, or a video,
-  photo.php or permalink.php link".
+- **Some links are refused**: `/<profile>/posts` (and `/posts/<id>`), and the site's own
+  `/photos`, `/groups`, `/events` and `/stories` pages, say "this kind of link isn't supported
+  yet; give the profile, or a video, photo.php or permalink.php link". A profile's `/photos` or
+  `/reels` tab link reads the profile instead.
 - **Stories** are only those active at run time.
 - **Private content** is readable only when the login can see it.
 - **No early stop.** No tab is newest first, so the engine's early stops never end one: every
   tab is scrolled to its end on every run. Files already saved are skipped, but the scroll still
-  happens.
+  happens. Once a live check confirms that `posts`, `photos`, `reels` and `videos` list newest
+  first, those become newest first.
 - **Without a profile header**, the `stories` and `profile` categories are skipped with a
-  warning, and no media is left out as another account's.
+  warning, and no media is left out as another account's. Every tab is tried at its first path.
