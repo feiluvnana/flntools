@@ -4,6 +4,9 @@
 `PROMPT.md` wins where the two differ. The user's follow-ups of the same day are folded in,
 and every decision is settled: section 2 lists them.
 
+Paths are relative to the project folder `flnd/`, the repository's subfolder for this project
+in the monorepo; run every command there.
+
 This page is the specification. A builder makes no design choice that isn't written here.
 
 **When something is missing:**
