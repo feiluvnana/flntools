@@ -1,4 +1,5 @@
 import contextvars
+import datetime
 import threading
 import unittest
 
@@ -109,6 +110,16 @@ class UseIsolationTest(unittest.TestCase):
             self.assertEqual(ctx.run(in_copied_context), 999.0)
             self.assertEqual(_time.now(), 50.0)
 
+
+class DayTest(unittest.TestCase):
+    def test_day_reads_today_from_the_fake_clock(self):
+        # Far past any real today, so the old `date.today()` bound refuses it.
+        with _time.use(_time.Fake()) as clock:
+            clock.advance(datetime.datetime(2150, 1, 1, tzinfo=datetime.UTC).timestamp()
+                          - _time.FAKE_WALL)
+            self.assertEqual(_time.day(_time.wall()), datetime.date(2150, 1, 1))
+            self.assertEqual(_time.day("2151-06-01"), datetime.date(2151, 6, 1))
+            self.assertIsNone(_time.day("2152-01-01"))
 
 if __name__ == "__main__":
     unittest.main()

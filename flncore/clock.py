@@ -133,7 +133,10 @@ def use(replacement: C) -> Iterator[C]:
 
 
 def day(value: object) -> datetime.date | None:
-    """The UTC day of any date a site gives, or None when it isn't one or can't be right."""
+    """The UTC day of any date a site gives, or None when it isn't one or can't be right.
+
+    "Right" means from 2004 to next year, on the active clock's wall time.
+    """
     if isinstance(value, bool) or value is None:
         return None
     found: datetime.date | None = None
@@ -156,6 +159,7 @@ def day(value: object) -> datetime.date | None:
             found = datetime.datetime.fromtimestamp(seconds, datetime.UTC).date()
         except (OverflowError, OSError, ValueError):
             return None
-    if found is None or not FIRST_YEAR <= found.year <= datetime.date.today().year + 1:
+    today = datetime.datetime.fromtimestamp(wall(), datetime.UTC).date()
+    if found is None or not FIRST_YEAR <= found.year <= today.year + 1:
         return None
     return found
