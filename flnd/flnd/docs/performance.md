@@ -201,6 +201,13 @@ stay as they were; the numbers are from the recorded baseline.
   hash (about 30 µs), and the transfer's own steps (the range request, the meter, the sink).
   The file-system calls themselves (open, lock, write, rename, close: about 110 µs a file, a
   rename into one folder serialized by APFS) run on the worker threads, beside the loop;
+- the `Cookie` header is no longer worked out per request. The session caches, per origin
+  (scheme, host and port), the cookies it may get, and the header itself when they are all for
+  `Path=/`; any change to the jar (a `Set-Cookie`, `Session.add`, a cookie set or cleared on
+  `session.jar`) or a cookie expiring drops the cache. With 20 cookies for the host, the header
+  went from 52 µs a request (a `urllib.request.Request` and `add_cookie_header`) to 0.3 µs. The
+  `net` group sends no cookie, so it moved within noise (`small_8_at_once` 622 and 644 ms
+  before, 638 and 605 ms after, alternating);
 - moving the last piece's write and hash to the landing thread, or the part's calls onto the
   loop, made it no faster (the second, 5% slower). Meeting the target needs a lighter request
   path than curl_cffi's `AsyncSession`: driving libcurl's handles directly with only the

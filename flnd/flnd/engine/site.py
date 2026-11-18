@@ -282,7 +282,7 @@ def _network(source: Source, jar: Iterable[Mapping[str, Any]],
         if not _matches_domain(source, request.url.host):
             return None
         seen = Request(request.method, str(request.url), dict(request.headers),
-                       request.content, MappingProxyType(dict(session.names)))
+                       request.content, session.names)
         source.sign(seen)
         for name, value in seen.headers.items():
             request.headers[name] = value

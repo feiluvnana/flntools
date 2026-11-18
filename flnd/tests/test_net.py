@@ -313,6 +313,91 @@ class SessionTest(NetCase):
         self.assertEqual(session.names["ct0"], "new")
         self.assertIn("ct0", [cookie["name"] for cookie in session.cookies])
 
+    def test_the_cached_cookie_header_is_what_the_jar_itself_gives(self):
+        # Every cookie scope the cache must keep: a host-only cookie, a domain one, a path one,
+        # a secure one, and an expired one, against urllib's own `add_cookie_header`.
+        jar = [{"name": "a", "value": "1", "domain": ".example.com", "path": "/"},
+               {"name": "h", "value": "2", "domain": "www.example.com", "path": "/"},
+               {"name": "p", "value": "3", "domain": ".example.com", "path": "/media"},
+               {"name": "s", "value": "4", "domain": ".example.com", "path": "/", "secure": True},
+               {"name": "old", "value": "5", "domain": ".example.com", "path": "/", "expires": 1}]
+        session = _net.Session(cookies=jar)
+        urls = ["https://www.example.com/", "http://www.example.com/a", "https://cdn.example.com/x",
+                "https://cdn.example.com/media", "https://cdn.example.com/media/1.jpg?q=1",
+                "https://cdn.example.com/mediaX", "https://example_user:pw@www.example.com/a",
+                "https://example.org/", "https://www.example.com:8443/a"]
+        for url in urls:
+            for _ in range(2):  # built, then from the cache
+                probe = _net.urllib.request.Request(_net._bare(url))
+                session.jar.add_cookie_header(probe)
+                with self.subTest(url=url):
+                    self.assertEqual(session._cookie_header(url), probe.get_header("Cookie") or "")
+
+    def test_a_path_or_secure_cookie_goes_only_where_it_did(self):
+        jar = [{"name": "a", "value": "1", "domain": ".example.com", "path": "/"},
+               {"name": "p", "value": "2", "domain": ".example.com", "path": "/media"},
+               {"name": "s", "value": "3", "domain": ".example.com", "path": "/", "secure": True}]
+        session = _net.Session(cookies=jar)
+        with _net.fake(self.serve(_net.reply(200))):
+            for url in ("https://cdn.example.com/media/1", "https://cdn.example.com/page",
+                        "http://cdn.example.com/media/1", "http://cdn.example.com/page"):
+                fetch(url, session=session)
+        self.assertEqual([request.headers.get("cookie") for request in self.seen],
+                         ["p=2; a=1; s=3", "a=1; s=3", "p=2; a=1", "a=1"])
+
+    def test_two_domains_never_share_a_cookie_header(self):
+        jar = [{"name": "a", "value": "1", "domain": ".example.com", "path": "/"},
+               {"name": "b", "value": "2", "domain": "cdn.example.org", "path": "/"}]
+        session = _net.Session(cookies=jar)
+        with _net.fake(self.serve(_net.reply(200))):
+            for url in ("https://www.example.com/", "https://cdn.example.org/",
+                        "https://www.example.com/", "https://other.example.net/"):
+                fetch(url, session=session)
+        self.assertEqual([request.headers.get("cookie") for request in self.seen],
+                         ["a=1", "b=2", "a=1", None])
+
+    def test_a_set_cookie_drops_the_cached_header(self):
+        session = _net.Session(cookies=[{"name": "a", "value": "1", "domain": ".example.com",
+                                         "path": "/"}])
+        renewed = {"Set-Cookie": "a=2; Domain=.example.com; Path=/"}
+        route = self.serve(_net.reply(200), _net.reply(200, headers=renewed), _net.reply(200))
+        with _net.fake(route):
+            for _ in range(3):
+                fetch("https://www.example.com/", session=session)
+        self.assertEqual([request.headers["cookie"] for request in self.seen],
+                         ["a=1", "a=1", "a=2"])
+        self.assertEqual(session.names["a"], "2")
+
+    def test_a_cookie_added_through_the_jar_drops_the_cached_header(self):
+        session = _net.Session(cookies=[{"name": "a", "value": "1", "domain": ".example.com",
+                                         "path": "/"}])
+        with _net.fake(self.serve(_net.reply(200))):
+            fetch("https://www.example.com/", session=session)
+            session.add([{"name": "b", "value": "2", "domain": ".example.com", "path": "/"}])
+            fetch("https://www.example.com/", session=session)
+            session.jar.set_cookie(_net._cookie_from_dict(
+                {"name": "c", "value": "3", "domain": ".example.com", "path": "/"}))
+            fetch("https://www.example.com/", session=session)
+            session.jar.clear(".example.com", "/", "a")
+            fetch("https://www.example.com/", session=session)
+        self.assertEqual([request.headers["cookie"] for request in self.seen],
+                         ["a=1", "a=1; b=2", "a=1; b=2; c=3", "b=2; c=3"])
+        self.assertEqual(dict(session.names), {"b": "2", "c": "3"})
+
+    def test_a_cookie_that_expires_is_no_longer_sent(self):
+        now = int(time.time())
+        session = _net.Session(cookies=[
+            {"name": "a", "value": "1", "domain": ".example.com", "path": "/"},
+            {"name": "soon", "value": "2", "domain": ".example.com", "path": "/",
+             "expires": now + 60}])
+        with _net.fake(self.serve(_net.reply(200))):
+            fetch("https://www.example.com/", session=session)
+            with mock.patch("time.time", lambda: now + 60):
+                fetch("https://www.example.com/", session=session)
+        self.assertEqual([request.headers["cookie"] for request in self.seen],
+                         ["a=1; soon=2", "a=1"])
+        self.assertEqual([cookie["name"] for cookie in session.cookies], ["a"])
+
     def test_prepare_runs_before_every_try(self):
         stamps = iter(range(100))
 

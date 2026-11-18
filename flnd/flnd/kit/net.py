@@ -88,6 +88,7 @@ import logging
 import math
 import random
 import re
+import time
 import urllib.request
 from collections import deque
 from collections.abc import (
@@ -808,7 +809,8 @@ class Session:
 
     Cookies are kept here, not in curl: each request carries the ones its URL matches, and a
     `Set-Cookie` the answer brings is kept for the next. So a fake and the network keep them the
-    same way.
+    same way. The cookies an origin may get are worked out once and cached, until the jar
+    changes or one of its cookies expires (`_Sent`).
 
     Args:
         headers: sent with every request, under the request's own.
@@ -835,9 +837,15 @@ class Session:
         self.timeout = timeout
         self.handles = handles
         self.proxy = proxy
-        self.jar = http.cookiejar.CookieJar()
+        self.jar = _Jar()
         self.add(cookies)
         self._raw: Any = None
+        # What was worked out from the jar at version `_seen`: each origin's `_Sent`, the
+        # soonest expiry in it, and `names`.
+        self._seen = -1
+        self._sent: dict[str, _Sent] = {}
+        self._soonest: float = math.inf
+        self._names: Mapping[str, str] = MappingProxyType({})
 
     @property
     def cookies(self) -> list[dict[str, Any]]:
@@ -852,7 +860,9 @@ class Session:
     @property
     def names(self) -> Mapping[str, str]:
         """The cookies as `{name: value}`; the last wins for a name on two domains."""
-        return MappingProxyType({cookie.name: cookie.value or "" for cookie in self.jar})
+        if self._seen != self.jar.version:
+            self._forget()
+        return self._names
 
     def add(self, cookies: Iterable[Mapping[str, Any]]) -> None:
         """Keep `cookies` (dicts in `flnd.kit.cookies.Jar`'s shape), each replacing its namesake."""
@@ -892,10 +902,32 @@ class Session:
         return answer
 
     def _cookie_header(self, url: str) -> str:
-        """The `Cookie` header the jar gives `url`, or ""."""
-        probe = urllib.request.Request(_bare(url))
-        self.jar.add_cookie_header(probe)
-        return probe.get_header("Cookie") or ""
+        """The `Cookie` header the jar gives `url`, or "": what `add_cookie_header` would add."""
+        jar = self.jar
+        if int(time.time()) >= self._soonest:
+            # As `add_cookie_header` does after each request; a cookie gone moves the version.
+            jar.clear_expired_cookies()
+        if self._seen != jar.version:
+            self._forget()
+        if not self._names:
+            return ""
+        found = _ORIGIN.match(url)
+        origin = found.group() if found else url
+        sent = self._sent.get(origin)
+        if sent is None:
+            sent = self._sent[origin] = _Sent.of(jar, origin)
+        return sent.header if sent.header is not None else sent.on(jar, url)
+
+    def _forget(self) -> None:
+        """Drop what was worked out from the jar, and read it again: it changed."""
+        jar = self.jar
+        with jar.lock:
+            self._seen = jar.version
+            cookies = list(jar)
+        self._sent.clear()
+        self._soonest = min((cookie.expires for cookie in cookies if cookie.expires is not None),
+                            default=math.inf)
+        self._names = MappingProxyType({cookie.name: cookie.value or "" for cookie in cookies})
 
     def _keep(self, answer: _Answer, url: str) -> None:
         """Keep the cookies an answer set, for the requests after it.
@@ -1041,6 +1073,82 @@ def _curl_pause(handle: Any, how: int) -> None:
     from curl_cffi._wrapper import lib
 
     lib.curl_easy_pause(handle, how)
+
+
+class _Jar(http.cookiejar.CookieJar):
+    """A cookie jar whose `version` moves on with every cookie set or cleared, by any caller.
+
+    Every change goes through `set_cookie` or `clear` (`extract_cookies`, `set_cookie_if_ok`,
+    `clear_expired_cookies` and `clear_session_cookies` call them), so a cache knows when it is
+    stale.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.version = 0
+
+    @property
+    def lock(self) -> Any:
+        """The jar's own lock, held while it is read or changed."""
+        return self._cookies_lock
+
+    def set_cookie(self, cookie: http.cookiejar.Cookie) -> None:
+        super().set_cookie(cookie)
+        self.version += 1
+
+    def clear(self, domain: str | None = None, path: str | None = None,
+              name: str | None = None) -> None:
+        try:
+            super().clear(domain, path, name)
+        finally:
+            self.version += 1
+
+
+# A URL's scheme and netloc (user info and port too): all but the path that decides its cookies.
+_ORIGIN = re.compile(r"[^:/?#]+://[^/?#]*")
+
+
+@dataclass
+class _Sent:
+    """The cookies one origin may be sent, in the jar's order, at one version of the jar.
+
+    Which of them a request gets then depends only on its path. So when every one is for
+    `Path=/`, every request gets the same header, built once.
+
+    Attributes:
+        cookies: the cookies for the origin's scheme, host and port, whatever their path.
+        header: the `Cookie` header when every cookie is for `/`; None when the path decides.
+    """
+
+    cookies: list[http.cookiejar.Cookie]
+    header: str | None
+
+    @classmethod
+    def of(cls, jar: _Jar, origin: str) -> _Sent:
+        """The cookies `jar` gives `origin`, picked by the jar's policy as `add_cookie_header`
+        picks them, but for the path."""
+        probe = urllib.request.Request(_bare(origin))
+        policy = jar._policy
+        with jar.lock:
+            policy._now = jar._now = int(time.time())
+            cookies = [cookie for domain, paths in jar._cookies.items()
+                       if policy.domain_return_ok(domain, probe)
+                       for named in paths.values() for cookie in named.values()
+                       if policy.return_ok(cookie, probe)]
+        if any(cookie.path != "/" for cookie in cookies):
+            return cls(cookies, None)
+        return cls(cookies, "; ".join(jar._cookie_attrs(list(cookies))))
+
+    def on(self, jar: _Jar, url: str) -> str:
+        """The `Cookie` header for `url`: the cookies whose path holds its path, longest first."""
+        # The path as `http.cookiejar.request_path` reads it, matched as the jar's policy
+        # (`DefaultCookiePolicy.path_return_ok`) matches it.
+        path = http.cookiejar.escape_path(urlsplit(url).path)
+        path = path if path.startswith("/") else "/" + path
+        kept = [cookie for cookie in self.cookies
+                if path == cookie.path or (path.startswith(cookie.path) and (
+                    cookie.path.endswith("/") or path[len(cookie.path):][:1] == "/"))]
+        return "; ".join(jar._cookie_attrs(kept))
 
 
 class _Info:
