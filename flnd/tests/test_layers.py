@@ -246,7 +246,7 @@ class LayersTest(unittest.TestCase):
                                         if third_party(name)), [])
 
     def test_a_plugin_imports_its_sdk_only_inside_a_function(self):
-        for path in sorted((FLND / "sources").glob("*.py")):
+        for path in sorted([*(FLND / "sources").glob("*.py"), *(FLND / "plugins").glob("*.py")]):
             with self.subTest(module=module_name(path)):
                 self.assertEqual(sorted(name for name in import_time_packages(path)
                                         if third_party(name)), [])
