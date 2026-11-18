@@ -364,13 +364,13 @@ class is made, naming the attribute and the fix.
 | `browser` | `Browser` | `Browser.NONE` | `NONE` (HTTP only), `ANY` (flnd's Chromium or the user's Chrome; defaults to Chromium), `CHROME` (needs the extension) |
 | `stealth` | `bool` | `True` | hide automation in its tabs, applied per tab by an init script |
 | `user_agent` | `str \| None` | `None` | User-Agent sent to its domains (HTTP only); `None` keeps the client's Chrome UA |
-| `walls` | `tuple[str, ...]` | `()` | URL paths meaning "log in", or an account the site stopped (`/accounts/suspended`). A wall matches whole path segments: a path `p` lands on the wall `w` when `p == w` or `p.startswith(w + "/")`, so `/challengers/` and `/login_example` are no walls. Landing on one is 6.2's wall row |
+| `walls` | `tuple[str, ...]` | `()` | URL paths meaning "log in", or an account the site stopped (`/accounts/suspended`). A wall matches whole path segments: a path `p` lands on the wall `w` when `p == w` or `p.startswith(w + "/")`, so `/challengers/` and `/login_example` are no walls. Landing on one is 6.2's wall row. The rule lives in `src/plugin.py` (`_wall` while it is built early); the engine and `FakeCtx` call it from step 7's wiring, which settles its name |
 | `folder` | `str` | `"{category}"` | a template under `media/<code>/<target>/` |
 | `filename` | `str` | `"{post}_{num}"` | a template; the extension is added from the content |
 | `key` | `str` | `"{post}_{num}"` | the history key under `<code>:` |
 | `fields` | `tuple[str, ...]` | `()` | the post fields templates may use, besides the engine's |
 | `unsupported` | `Mapping[str, str]` | `{}` | link or code patterns it refuses, mapped to the reason in `resolve`'s `UsageError` |
-| `Settings` | a `Settings` subclass | `Settings` | its own config keys: a frozen msgspec struct; each field has a default and an `Attributes:` line in the docstring |
+| `Settings` | a `Settings` subclass | `Settings` | its own config keys: a frozen, keyword-only dataclass (a subclass becomes one by itself); each field has a default and an `Attributes:` line in the docstring |
 
 The engine's template fields stay as today: `plugin` (renamed from `source`), `target`,
 `category`, `post`, `num`, `count`, `index`, `extension`, `path`, `date`, `query`.
@@ -410,6 +410,20 @@ async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Pos
   route returns `""` for a tab its page lacks (fbk's `photos_url`).
 
 **Types.**
+
+The rule of 4.1 (rule 4) wins over any wording below: `src/plugin.py` imports only
+`flnkit`, `src/errors.py` and the standard library, so the plugin API has no outside
+dependency and `import flnd.plugin` stays cheap (P11).
+- Every type this section or 8.3 called a msgspec struct (`Settings`, `Target`, `Account`,
+  `Request`) is a frozen dataclass, keyword-only past the positional parameters its
+  signature shows; a `Settings` subclass becomes one by itself. msgspec encodes and converts
+  dataclasses, so the events (msgspec structs, 8.3) hold them as fields.
+- `Response` and `Clock` are `typing.Protocol`s in `src/plugin.py`. The engine's own classes
+  (`flnkit.net`'s response, `flnkit.clock`) satisfy them; importing `flnkit.net` there would
+  cost about 50 ms.
+- Decided by the orchestrator on 2026-11-18 (15, item 6), where 5.3 and 8.3 said "msgspec
+  struct".
+
 - **`Post(id: str | int, files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]] = (),
   *, date: DateLike = None, listed: DateLike = None,
   headers: Mapping[str, str] | None = None, **fields)`:**
@@ -443,9 +457,9 @@ async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Pos
   `.value: str`, `.query: bool`; yielded by a route or category to run as its own target.
 - **`Request(url: str, *, method: str = "GET", params: Mapping[str, Any] | None = None,
   body: bytes | str | Any = None, headers: Mapping[str, str] | None = None,
-  check: bool = True)`:** a frozen struct with `.replace(**changes) -> Request`.
-- **`Response`:** `status`, `url`, `headers`, `text`, `json`, `content`, `ok`, `html` (a
-  `flnkit/html.py` document).
+  check: bool = True)`:** a frozen dataclass with `.replace(**changes) -> Request`.
+- **`Response`:** a Protocol: `status`, `url`, `headers`, `text`, `json`, `content`, `ok`,
+  `html` (a `flnkit/html.py` document).
 - **`Landed(url: str, status: int)`:** where `open` ended up.
 - **`Stream`:** `url: str`, `height: int = 0`, `width: int = 0`, `bitrate: int = 0`,
   `audio: str | None = None`.
@@ -1369,8 +1383,9 @@ Run: iterate (events) · async for · await · .state · .report · .wait() -> R
      .stop() · .suspend() · .resume()
 ```
 
-The events and rows are frozen msgspec structs (`Target` and `Account` are defined in
-`src/plugin.py` and re-exported by `engine/events.py` and `flnd`):
+The events and rows are frozen msgspec structs. `Target` and `Account` are frozen dataclasses
+defined in `src/plugin.py` (5.3, Types), held as fields, and re-exported by `engine/events.py`
+and `flnd`:
 - `Saved(target: Target, category: str, post: str, path: Path, date: date | None, size: int,
   retried: bool = False)`;
 - `Skipped(target: Target, category: str, post: str, path: Path | None = None,
