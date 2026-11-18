@@ -190,7 +190,7 @@ flnd/
 | `flncore/browser.py` | `kit/browser.py`; the tab budget and scroll gate move to `engine/jobs.py` | 2, 5 |
 | `flncore/files.py` | `kit/files.py` (parts, atomic writes, tools, archives) | 2 |
 | `flncore/loop.py` | `kit/loop.py`, then deleted (`engine/run.py` owns the loop) | 2, 6 |
-| `flncore/log.py` | `ui/out.py` (lines, styles), `ui/screen.py` (drawing), `engine/run.py` (the journal) | 2, 3, 4 |
+| `flncore/log.py` | `ui/log.py` (temporary), then `ui/out.py` (lines, styles), `ui/screen.py` (drawing), `engine/run.py` (the journal) | 2, 3, 4 |
 | `flncore/prompt.py` | `ui/forms.py` | 2, 13 |
 | `flncore/clock.py`, `flncore/dig.py` | `kit/clock.py`, `kit/dig.py` | 2 |
 | `flncore/errors.py` | merged into `flnd/errors.py` | 2 |
