@@ -427,7 +427,8 @@ dependency and `import flnd.plugin` stays cheap (P11).
 - **`Post(id: str | int, files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]] = (),
   *, date: DateLike = None, listed: DateLike = None,
   headers: Mapping[str, str] | None = None, **fields)`:**
-  - converts `id` to `str`; has `.replace(**changes) -> Post` and `.lazy: bool`;
+  - frozen, as API 1's was; converts `id` to `str`; has `.replace(**changes) -> Post`, the
+    one way to change a post, and `.lazy: bool`;
   - `files` as a coroutine function is a *lazy* post, whose files are listed only once the
     post is known to be new;
   - `date` names the files;
@@ -435,6 +436,7 @@ dependency and `import flnd.plugin` stays cheap (P11).
 - **`File(url: str | None = None, *, mirrors: Sequence[str] = (), fetch: Fetch | None = None,
   audio: str | None = None, name: str | None = None, size: int | None = None,
   password: str | None = None, ranged: bool = False)`:**
+  - frozen, as API 1's was;
   - exactly one of `url`, `mirrors` and `fetch` is given;
   - `audio` is a DASH audio stream to merge with the video (when `mirrors` holds a DASH video
     followed by a progressive fallback, `audio` merges only with `mirrors[0]`, fixing S9);
@@ -544,7 +546,8 @@ that isn't lazy.
   stream with the most pixels, then the most bits, at or under `height`; `None` means no cap.
 - `numbered(n: int, *, suffix: str = "", width: int = 2) -> str`: `"07"` or `"07_cover"`. It
   replaces loi's and mht's copies.
-- `dig(data, path)`: today's. A malformed path raises `PluginError`.
+- `dig(data, path)`: today's. A malformed path raises `ValueError`, which `classify` turns
+  into a `PluginError` when a plugin lets it escape (5.1).
 
 ### 5.4 The test kit (`src/testing.py`)
 
@@ -1908,6 +1911,8 @@ is built on the earlier layout.
     and run against the engine's rule;
   - `blocked()` sees only HTTP answers, never `feed` items (5.3);
   - a `single` route may have categories (5.3); `Part.end` and `File(ranged=)`;
+  - `flnkit.clock`'s real and fake clocks get `day()`, the UTC day of `wall()`, so
+    `ctx.time` satisfies 5.3's `Clock` Protocol;
   - update `pyproject.toml` (`extend-immutable-calls` adds `flnd.plugin.Range`),
     `tests/test_names.py` (`registered` recognizes `@route`), `tests/api_snapshot.py`
     (`API_MODULES` includes `flnd.plugin`), and `tests/bench/startup.py`
