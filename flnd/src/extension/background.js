@@ -145,6 +145,7 @@ async function inPage(tab, func, ...args) {
 
 // Fail with the hint to allow a site when Chrome hasn't granted the extension its origin.
 async function granted(url) {
+  if (!URL.canParse(url)) return;
   const { protocol, hostname } = new URL(url);
   if (protocol !== "http:" && protocol !== "https:") return;
   if (await chrome.permissions.contains({ origins: [`${protocol}//${hostname}/*`] })) return;
@@ -181,6 +182,8 @@ function loaded(tab) {
 // ------------------------------------------------------------------------------------------
 
 async function attach(tab, reason) {
+  // chrome.debugger ignores host permissions, so the grant is checked here.
+  await granted((await chrome.tabs.get(tab)).url ?? "");
   let held = attached.get(tab);
   if (!held) {
     const after = leaving.get(tab) ?? Promise.resolve();

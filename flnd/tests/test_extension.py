@@ -404,6 +404,10 @@ class PluginDomainsTest(Case):
         self.assertEqual(manifest["host_permissions"], [f"*://*.{each}/*" for each in built_in])
         background = (extension.SOURCE / "background.js").read_text(encoding="utf-8")
         self.assertIn("open the flnd popup to allow", background)
+        # Every op that attaches the debugger goes through `attach`, which checks the grant first.
+        attach = background[background.index("async function attach("):]
+        self.assertLess(attach.index("await granted("), attach.index("chrome.debugger.attach"))
+        self.assertEqual(background.count("chrome.debugger.attach("), 1)
         popup = (extension.SOURCE / "popup.js").read_text(encoding="utf-8")
         self.assertNotIn("<all_urls>", popup)
         self.assertNotIn("*://*/*", popup + background)
