@@ -251,7 +251,7 @@ class HoldState(msgspec.Struct, frozen=True):
 class State(msgspec.Struct, frozen=True):
     """What a run is doing now: `run.state`, readable from any thread.
 
-    The run swaps in a new one every 100 ms while something changed, so a reader keeps the one
+    The run swaps in a new one 30 times a second while something changed, so a reader keeps the one
     it holds as long as it likes; `version` says whether it is newer than the last one read.
 
     Example:

@@ -348,9 +348,9 @@ A run has one loop, and every rule below protects it:
 - **The run's display** is drawn from a snapshot. Every part of a run counts on the run's
   `run.Tally`: a target's listings, each file's steps, the files in flight (their bytes, from
   the transfer's bar), the waits a site asked for. A task on the run's loop makes a frozen
-  `State` from it every 100 ms, only when something changed, and the run swaps it in as
+  `State` from it 30 times a second, only when something changed, and the run swaps it in as
   `run.state`. On a terminal the CLI's screen (`flnd.ui.screen`) runs a `flnd-screen` thread
-  that reads `run.state` every 100 ms and redraws (Rich `Live`, never refreshed on its own)
+  that reads `run.state` 30 times a second and redraws (Rich `Live`, never refreshed on its own)
   only when its `version` moved; it never touches the engine's counts, so it takes none of
   their locks. Lines printed on standard error meanwhile (warnings) go through the screen's
   queue and print above the block; a Ctrl-C handler that warns only puts a line on that queue.

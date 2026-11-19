@@ -94,7 +94,22 @@ class FrameTest(unittest.TestCase):
         rows = draw(State(targets=(going,), files=(file,)))
         for row in (rows[2], rows[3]):
             with self.subTest(row):
-                self.assertRegex(row, r"3\.9 MB +513\.9 KB/s$")
+                self.assertRegex(row, r"3\.9 MB {2,}513\.9 KB/s$")
+
+    def test_columns_keep_spacing_at_maximum_widths_and_30_fps(self) -> None:
+        self.assertLessEqual(screen.TICK, 1 / 25)
+        self.assertLessEqual(job.TICK, 1 / 25)
+        going = TargetState("ins:" + "x" * 24, ("posts", "reels"), Phase.DOWNLOADING,
+                            found=999999, saved=999999, skipped=999999, failed=999999,
+                            bytes=int(1023.9 * MB), speed=1023.9 * 1024)
+        file = FileState(going.text, "posts/" + "y" * 20 + ".mp4",
+                         int(1023.9 * MB), int(1023.9 * MB), 1023.9 * 1024)
+        rows = draw(State(targets=(going,), files=(file,)), width=100)
+        self.assertRegex(rows[1], r"target {2,}categories {2,}saved {2,}skipped {2,}failed {2,}size"
+                                  r" {2,}speed$")
+        self.assertRegex(rows[2], r"x{24} {2,}posts reels {2,}999,999 {2,}999,999 {2,}999,999"
+                                  r" {2,}1023\.9 MB {2,}1023\.9 KB/s$")
+        self.assertRegex(rows[3], r"100% {2,}1023\.9 MB {2,}1023\.9 KB/s$")
 
     def test_no_speed_once_a_target_ended_or_nothing_is_in_flight(self) -> None:
         done = TargetState("ins:example_user", ("posts",), Phase.DONE, found=1, saved=1,

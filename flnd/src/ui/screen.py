@@ -23,8 +23,8 @@ from flnkit.text import count, duration, size
 
 __all__ = ["Screen", "frame", "paused", "summary"]
 
-# Seconds between two looks at the snapshot.
-TICK = 0.1
+# Seconds between two looks at the snapshot (30 fps).
+TICK = 1 / 30
 # The most cells a target, its categories and a file's path take, and a file's bar.
 TARGET_CELLS, CATEGORY_CELLS, PATH_CELLS, BAR_CELLS = 28, 14, 24, 30
 # The lines the block has beside its target and file rows: the header, the column titles, the
@@ -33,9 +33,9 @@ FRAME_LINES = 8
 # The failures the end summary names; `flnd status` has them all.
 FAILURES_SHOWN = 10
 # The count columns: title and width, right-aligned.
-# The speed column is 2 cells wider than its longest value (`999.9 KB/s`), so it never
-# touches the size.
-COLUMNS = (("saved", 7), ("skipped", 9), ("failed", 8), ("size", 10), ("speed", 12))
+# Each column leaves at least 2 cells before its widest value (`999,999`, `1023.9 MB`,
+# `1023.9 KB/s`), so columns never touch.
+COLUMNS = (("saved", 8), ("skipped", 9), ("failed", 9), ("size", 11), ("speed", 13))
 KEYS = "ctrl+c stop · twice: stop now"
 INDENT = "  "
 
@@ -44,8 +44,15 @@ INDENT = "  "
 # Cells: every width here is counted in terminal cells, not characters (a CJK character is two)
 # ---------------------------------------------------------------------------------------------
 
+def _cells(text: str) -> int:
+    """Terminal cell width of `text`, fast-pathed for printable ASCII."""
+    return len(text) if text.isascii() and text.isprintable() else cell_len(text)
+
+
 def _head(text: str, cells: int) -> str:
     """The longest start of `text` that fits in `cells`."""
+    if text.isascii() and text.isprintable():
+        return text[:cells]
     taken, used = [], 0
     for char in text:
         width = cell_len(char)
@@ -58,6 +65,8 @@ def _head(text: str, cells: int) -> str:
 
 def _tail(text: str, cells: int) -> str:
     """The longest end of `text` that fits in `cells`."""
+    if text.isascii() and text.isprintable():
+        return text[-cells:] if cells > 0 else ""
     return _head(text[::-1], cells)[::-1]
 
 
@@ -68,12 +77,12 @@ def middle(text: str, cells: int, *, fancy: bool = True) -> str:
         >>> middle("ins:example_user", 10)
         'ins:…_user'
     """
-    if cell_len(text) <= cells:
+    if _cells(text) <= cells:
         return text
     cut = theme.glyph("more", fancy)
-    room = max(0, cells - cell_len(cut))
+    room = max(0, cells - _cells(cut))
     left = _head(text, room // 2)
-    return left + cut + _tail(text, room - cell_len(left))
+    return left + cut + _tail(text, room - _cells(left))
 
 
 def left(text: str, cells: int, *, fancy: bool = True) -> str:
@@ -83,18 +92,18 @@ def left(text: str, cells: int, *, fancy: bool = True) -> str:
         >>> left("media/2026/1290_2.mp4", 12)
         '…/1290_2.mp4'
     """
-    if cell_len(text) <= cells:
+    if _cells(text) <= cells:
         return text
     cut = theme.glyph("more", fancy)
-    return cut + _tail(text, max(0, cells - cell_len(cut)))
+    return cut + _tail(text, max(0, cells - _cells(cut)))
 
 
 def _pad(text: str, cells: int) -> str:
-    return text + " " * max(0, cells - cell_len(text))
+    return text + " " * max(0, cells - _cells(text))
 
 
 def _right(text: str, cells: int) -> str:
-    return " " * max(0, cells - cell_len(text)) + text
+    return " " * max(0, cells - _cells(text)) + text
 
 
 # ---------------------------------------------------------------------------------------------
@@ -122,11 +131,11 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
     lines += [_line((title, "focus")), Text()]
     # Each column as wide as its widest cell, up to its most.
     widths = (
-        min(TARGET_CELLS, max([4, *(cell_len(t.text) for t in state.targets)])),
-        min(CATEGORY_CELLS, max([10, *(cell_len(" ".join(t.categories)) for t in state.targets)])),
+        min(TARGET_CELLS, max([4, *(_cells(t.text) for t in state.targets)])),
+        min(CATEGORY_CELLS, max([10, *(_cells(" ".join(t.categories)) for t in state.targets)])),
     )
-    lines.append(_line((_pad("target", 2 + widths[0]) + " " + _pad("categories", widths[1])
-                        + "".join(_right(name, cells) for name, cells in COLUMNS), "dim")))
+    lines.append(_line((_pad("target", 2 + widths[0]) + "  " + _pad("categories", widths[1])
+                        + "  " + "".join(_right(name, cells) for name, cells in COLUMNS), "dim")))
     files = _files(state, at, fancy)
     room = height - FRAME_LINES - len(files)
     shown = state.targets
@@ -174,8 +183,8 @@ def _target(row: TargetState, widths: tuple[int, int], at: float, fancy: bool) -
     cells.append(f"{size(row.speed)}/s" if going and row.speed else none)
     return _line(
         (glyph + " ", token),
-        (_pad(middle(row.text, widths[0], fancy=fancy), widths[0]) + " ", "text"),
-        (_pad(middle(" ".join(row.categories), widths[1], fancy=fancy), widths[1]), "dim"),
+        (_pad(middle(row.text, widths[0], fancy=fancy), widths[0]) + "  ", "text"),
+        (_pad(middle(" ".join(row.categories), widths[1], fancy=fancy), widths[1]) + "  ", "dim"),
         ("".join(_right(cell, cells) for cell, (_, cells) in zip(cells, COLUMNS)), "text"),
     )
 
@@ -194,13 +203,13 @@ def _files(state: State, at: float, fancy: bool) -> list[Text]:
                 rest = theme.glyph("head", fancy) + theme.glyph("rest", fancy) * (
                     BAR_CELLS - filled - 1)
                 line.append(rest, style=theme.style("dim"))
-            line.append(_right(f"{int(share * 100)}%", 5), style=theme.style("text"))
+            line.append(_right(f"{int(share * 100)}%", 6), style=theme.style("text"))
             shown = size(file.total)
         else:
-            line.append(" " * (BAR_CELLS + 5))
+            line.append(" " * (BAR_CELLS + 6))
             shown = size(file.done)
         speed = f"{size(file.speed)}/s" if file.speed else theme.glyph("none", fancy)
-        line.append(_right(shown, 9) + _right(speed, 12), style=theme.style("text"))
+        line.append(_right(shown, 11) + _right(speed, 13), style=theme.style("text"))
         rows.append(line)
     if state.more:
         rows.append(_line((f"  + {state.more} more", "dim")))
@@ -223,7 +232,7 @@ def _foot(state: State, width: int, fancy: bool) -> Text:
     speed = f"{size(state.speed)}/s" if flying and state.speed else theme.glyph("none", fancy)
     counts = f"{speed}{sep}{state.saved:,} saved{sep}{state.failed:,} failed"
     keys = KEYS.replace(" · ", sep)
-    gap = max(2, width - cell_len(INDENT + counts + keys) - 2)
+    gap = max(2, width - _cells(INDENT + counts + keys) - 2)
     return _line((counts, "text"), (" " * gap + keys, "dim"))
 
 

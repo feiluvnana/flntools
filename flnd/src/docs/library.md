@@ -124,7 +124,7 @@ with flnd.open(home) as fl:
 
 ### What a run is doing now
 
-`run.state` is the run's snapshot: a frozen `flnd.State`, swapped in every 100 ms while
+`run.state` is the run's snapshot: a frozen `flnd.State`, swapped in 30 times a second while
 something changed, so a script reads it from any thread, and keeps one as long as it likes.
 `version` goes up with each new one; before the run starts it is an empty one, at 0. The CLI's
 screen is drawn from it alone.
