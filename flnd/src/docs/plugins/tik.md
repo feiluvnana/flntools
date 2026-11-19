@@ -92,8 +92,9 @@ scrolling the page to its end. Each category listens for its own API paths:
    `hasMore: false` (the feed's cursor reader, `page_state`).
 4. `stories` has a feed of its own, listening from the page load, and is read with no scroll.
 5. `reposts`, `liked` and `favorites` each click their tab (`data-e2e="repost-tab"`,
-   `"liked-tab"`, `"favorites-tab"`) and scroll its list to the end. A tab the account doesn't
-   show is logged as not public on the account, and gives nothing.
+   `"liked-tab"`, `"favorites-tab"`) and scroll its list to the end. A tab the page
+   lacks or hides (`display: none`, checked with `ctx.shown`) is logged as "this profile has no
+   such tab", and gives nothing.
 6. `profile` takes the `avatarLarger` picture from the profile's data.
 
 A list ends when a response says `hasMore` is false, or when the page stops answering. Those are
@@ -191,8 +192,8 @@ The engine owns them; the plugin only yields the posts in the order the list giv
 
 - The plugin declares no `unsupported` links. Other TikTok links are refused with the list of
   forms above.
-- Liked and Favorites are read only when the account made them public. A missing tab is reported
-  as "not public on this account", and an empty one as "nothing public".
+- Liked and Favorites are read only when the account made them public. A missing or hidden tab is
+  reported as "this profile has no such tab", and an empty one as "nothing public".
 - A tab that is there but doesn't take the click within 10 seconds fails its category with
   `Changed`.
 - Stories are the ones the page shows on load; older stories are not listed.

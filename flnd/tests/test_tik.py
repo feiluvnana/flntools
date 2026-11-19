@@ -9,6 +9,7 @@ import asyncio
 import datetime
 import json
 import os
+import re
 import time
 import unittest
 from unittest import mock
@@ -128,10 +129,14 @@ EMBEDS = {
 }
 
 
-def fake(html_page=TABS, feeds=(), *, ctx=FakeCtx, **given):
-    """A `FakeCtx` (or subclass) for the profile, its page showing `html_page` and `feeds`."""
-    return ctx(TikTok, "tik:example_creator", pages={PROFILE: FakePage(html_page, feeds=feeds)},
-               **given)
+def fake(html_page=TABS, feeds=(), *, ctx=FakeCtx, shown=None, **given):
+    """A `FakeCtx` (or subclass) for the profile, its page showing `html_page` and `feeds`.
+
+    Every tab in the HTML is shown, unless `shown` lists the selectors that are."""
+    if shown is None:
+        shown = [f'[data-e2e="{name}"]' for name in re.findall(r'data-e2e="([^"]+)"', html_page)]
+    return ctx(TikTok, "tik:example_creator",
+               pages={PROFILE: FakePage(html_page, feeds=feeds, shown=shown)}, **given)
 
 
 def embedded(item, **given):
@@ -385,7 +390,9 @@ class ProfileTest(unittest.TestCase):
         for ctx, category, ids, line in (
                 (fake(page, FEEDS[3:4]), "reposts", 4, None),
                 (fake(page), "liked", 0, "liked: nothing public on this account"),
-                (fake(page), "favorites", 0, "favorites: not public on this account")):
+                (fake(page), "favorites", 0, "favorites: this profile has no such tab"),
+                # In the markup but hidden by the page's CSS (live, 2026-11-19).
+                (fake(page, shown=[]), "reposts", 0, "reposts: this profile has no such tab")):
             with self.subTest(category=category):
                 posts, raised = listed(ctx, category)
                 self.assertEqual((len(posts), raised), (ids, None))

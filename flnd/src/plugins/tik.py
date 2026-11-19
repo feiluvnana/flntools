@@ -173,15 +173,16 @@ class Profile:
 
     async def tab(self, ctx: Ctx, category: str) -> AsyncIterator[dict[str, Any]]:
         """Each item of a clicked tab's list (`reposts`, `liked`, `favorites`), scrolled to its
-        end; nothing, with a line saying so, when the account shows no such tab.
+        end; nothing, with a line saying so, when the page has no such tab or hides it.
 
         Raises:
             Changed: the tab is there but didn't take the click in `CLICK_TIMEOUT`.
         """
         await self.page(ctx)
         css = f'[data-e2e="{TABS[category]}"]'
-        if (await ctx.document()).first(css) is None:
-            ctx.log("info", "{tab}: not public on this account", tab=category)
+        # A hidden tab is in the markup with `display: none`, so the page's HTML can't tell.
+        if not await ctx.shown(css):
+            ctx.log("info", "{tab}: this profile has no such tab", tab=category)
             return
         found = 0
         async with _watch(ctx, category) as feed:
