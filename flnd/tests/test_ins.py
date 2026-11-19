@@ -540,6 +540,8 @@ class MeTest(unittest.TestCase):
 class InPage:
     """The target's tab, as `ins:me`'s in-page calls reach it: answered by the case's `serve`."""
 
+    url = SITE
+
     def __init__(self, case):
         self.case = case
 

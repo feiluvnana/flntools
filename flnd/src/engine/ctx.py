@@ -475,6 +475,11 @@ class Ctx:
                 headers["Content-Type"] = "application/json"
         if in_page:
             page = await self._run.off(self._page)
+            if page.url in ("", "about:blank") and "://" in url:
+                # A fresh tab (`aside`) has a null origin, which a site refuses to answer: the
+                # page loads the site's own robots.txt first, so the fetch is same-origin.
+                parts = urlsplit(url)
+                await page.goto(f"{parts.scheme}://{parts.netloc}/robots.txt")
             return capped(await page.fetch(url, method=asked.method, headers=headers,
                                            body=body, check=False))
         if self._tabs.opened:

@@ -254,6 +254,18 @@ class FetchTest(CtxCase):
                          (400, {"status": "fail"}))
 
 
+    def test_in_page_from_a_blank_tab_first_loads_the_site_so_the_fetch_has_an_origin(self):
+        # A tab of `aside` (a lazy post's files, the `date` hook) starts on about:blank, whose
+        # null origin the site refuses: live, "TypeError: Failed to fetch".
+        run, ctx = self.ctx()
+        answer = _net.Response(200, f"{API}/feed", {}, b"{}")
+        with mock.patch.object(Page, "fetch", new=mock.AsyncMock(return_value=answer)):
+            self.call(run, ctx.fetch(f"{API}/feed", in_page=True))
+            self.call(run, ctx.fetch(f"{API}/feed", in_page=True))
+        raws = [raw for browser in self.browsers for raw in browser.opened]
+        self.assertEqual([raw.loaded for raw in raws], [[f"{API}/robots.txt"]])
+
+
 class BrowserTest(CtxCase):
     def test_it_opens_on_the_first_page_with_its_stealth_and_cookies_and_closes_with_it(self):
         class Wide(Example):
