@@ -1354,6 +1354,7 @@ class Capture:
 
     def __init__(self, page: Page, accept: Callable[[Response], bool], *, lazy: bool = False):
         self.items: deque[tuple[str, str]] = deque()
+        self.requests: deque[tuple[str, str, dict[str, str], str | None] | None] = deque()
         self._page = page
         self._accept = accept
         # A lazy capture's responses, in the order they came.
@@ -1362,7 +1363,8 @@ class Capture:
         # Each accepted response gets the next number; `_ready` holds the reads done out of turn.
         self._numbered = 0
         self._flushed = 0
-        self._ready: dict[int, tuple[str, str] | None] = {}
+        self._ready: dict[int, tuple[tuple[str, str],
+                          tuple[str, str, dict[str, str], str | None] | None] | None] = {}
         self._reads: set[asyncio.Task[None]] = set()
         self._stopped = False
         # Set on the loop each time responses have their turn; a scroll step clears it and waits.
@@ -1390,6 +1392,12 @@ class Capture:
     async def _read(self, number: int, response: Response) -> None:
         """Read one body, then move every body now in turn into `items`."""
         entry: tuple[str, str] | None = None
+        req = getattr(response, "request", None)
+        sent = (
+            (response.url, req.method, dict(getattr(req, "headers", None) or {}),
+             getattr(req, "post_data", None))
+            if req is not None and isinstance(getattr(req, "method", None), str) else None
+        )
         try:
             entry = (response.url, await response.text())
         except _raw_error() as error:
@@ -1405,12 +1413,13 @@ class Capture:
                     }},
                 )
         finally:
-            self._ready[number] = entry
+            self._ready[number] = (entry, sent) if entry is not None else None
             while self._flushed in self._ready:
                 done = self._ready.pop(self._flushed)
                 self._flushed += 1
                 if done is not None:
-                    self.items.append(done)
+                    self.items.append(done[0])
+                    self.requests.append(done[1])
                 self.news.set()
 
     async def settle(self) -> None:
@@ -1440,6 +1449,7 @@ class Capture:
         await self.settle()
         left = list(self.items)
         self.items.clear()
+        self.requests.clear()
         return left
 
 
@@ -2006,7 +2016,10 @@ class Feed:
         self._lines = lines
         self._cursors = Cursors(cursor)
         self._closed = False
-        self._waiting: deque[Any] = deque()
+        self._waiting: deque[tuple[Any, tuple[str, str, dict[str, str], str | None] | None]] = (
+            deque()
+        )
+        self.request: tuple[str, str, dict[str, str], str | None] | None = None
         tabs.push(self, scroll=scroll)
         self._page = tabs.page
         self._capture: Capture = tabs.run(self._page.capture(self._accepts))
@@ -2097,16 +2110,19 @@ class Feed:
     def _arrived(self) -> Iterator[Any]:
         self._fill()
         while self._waiting:
-            yield self._waiting.popleft()
+            value, self.request = self._waiting.popleft()
+            yield value
 
     def _fill(self) -> bool:
         """Parse the bodies the capture holds into `_waiting`; whether any is waiting."""
-        items = self._capture.items
+        items, requests = self._capture.items, self._capture.requests
         while items:
-            self._parse(*items.popleft())
+            req = requests.popleft() if requests else None
+            self._parse(*items.popleft(), req)
         return bool(self._waiting)
 
-    def _parse(self, url: str, body: str) -> None:
+    def _parse(self, url: str, body: str,
+               request: tuple[str, str, dict[str, str], str | None] | None = None) -> None:
         """Parse `body`, or each line of it with `lines`, into `_waiting`, reading its cursor."""
         pieces = [line for line in body.splitlines() if line.strip()] if self._lines else [body]
         for piece in pieces:
@@ -2121,7 +2137,7 @@ class Feed:
                     }},
                 )
                 continue
-            self._waiting.append(value)
+            self._waiting.append((value, request))
             self._cursors.read(value)
 
 

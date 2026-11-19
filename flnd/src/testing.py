@@ -158,6 +158,7 @@ class Sent:
     body: Any
     click: str | None = field(default=None, kw_only=True)
     scroll: int | None = field(default=None, kw_only=True)
+    request: Request | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.click is not None and self.scroll is not None:
@@ -248,6 +249,7 @@ class FakeCtx:
         self._tabs = [_Tab()]
         # The last answer each URL (without its query) got, which naming a file may read.
         self._answered: dict[str, Any] = {}
+        self._request: Request | None = None
 
     # -- HTTP --------------------------------------------------------------------------------
 
@@ -394,6 +396,7 @@ class FakeCtx:
     async def _load(self, url: str, feed: Any) -> AsyncIterator[Any]:
         async with feed:
             await self.open(url)
+            self._request = None
             yield flnd.plugin.meta(await self.document())
             async for item in feed:
                 yield item
@@ -558,6 +561,11 @@ class FakeCtx:
         """The account's secrets: empty at first, written only during `Login.start`."""
         return self._secrets
 
+    @property
+    def request(self) -> Request | None:
+        """The request of the last item `feed` or `load` yielded; None for none."""
+        return self._request
+
     # -- How it answers ----------------------------------------------------------------------
 
     @contextmanager
@@ -642,7 +650,7 @@ class _Tab:
         """Hand each response to the feeds listening now; one nobody hears is lost."""
         for entry in sent:
             for listening in list(self.feeds):
-                listening._push(entry.url, entry.body)
+                listening._push(entry.url, entry.body, entry.request)
 
 
 class _CtxFeed:
@@ -656,14 +664,14 @@ class _CtxFeed:
         self._matches = browser.matcher(match)
         self._scroll = scroll
         self._cursors = browser.Cursors(cursor)
-        self._waiting: deque[Any] = deque()
+        self._waiting: deque[tuple[Any, Request | None]] = deque()
         self._done = False
         tab.feeds.append(self)
 
-    def _push(self, url: str, data: Any) -> None:
+    def _push(self, url: str, data: Any, request: Request | None = None) -> None:
         """Take one response if it matches and the feed is open."""
         if not self._done and self._matches(url):
-            self._waiting.append(data)
+            self._waiting.append((data, request))
             self._cursors.read(data)
 
     async def __aenter__(self) -> _CtxFeed:
@@ -683,7 +691,8 @@ class _CtxFeed:
         if not self._waiting:
             self.close()
             raise StopAsyncIteration
-        return self._waiting.popleft()
+        data, self._ctx._request = self._waiting.popleft()
+        return data
 
     def close(self) -> None:
         """Stop listening; a second call does nothing."""

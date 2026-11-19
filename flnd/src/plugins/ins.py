@@ -4,14 +4,16 @@ link, and the accounts the login follows, read from the pages; the ins page in s
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import aclosing
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any
-from urllib.parse import unquote, urlsplit
+from typing import Any, NamedTuple
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
 
 from flnd.plugin import (
+    Blocked,
     Browser,
     Changed,
     Ctx,
@@ -34,7 +36,7 @@ from flnd.plugin import (
 )
 
 SITE = "https://www.instagram.com"
-# The web client's REST API; only `ins:me`'s friendships list is read from it.
+# The web client's REST API, called from inside the logged-in tab.
 API = f"{SITE}/api/v1"
 # The profile's tabs, in the order they are read, and their paths under the profile.
 TABS = {"posts": "", "reels": "reels/", "tagged": "tagged/", "reposts": "reposts/"}
@@ -42,7 +44,10 @@ TABS = {"posts": "", "reels": "reels/", "tagged": "tagged/", "reposts": "reposts
 CDN_HEADERS = {"Referer": f"{SITE}/"}
 # Where each profile tab's result lists its posts; the name Instagram uses now comes first.
 TAB_CONNECTIONS = {
-    "posts": ("xdt_api__v1__feed__user_timeline_graphql_connection",),
+    "posts": (
+        "xdt_api__v1__feed__user_timeline_graphql_connection",
+        "xig_user_by_username.polaris_ordered_timeline_connection",
+    ),
     "reels": ("fetch__XDTUserDict.clips_connection", "xdt_api__v1__clips__user__connection_v2"),
     "tagged": ("xdt_api__v1__usertags__user_id__feed_connection",),
     "reposts": (
@@ -57,8 +62,11 @@ IMAGE_EXTENSIONS = {"jpg", "webp", "png", "heic"}
 # Where a grid item lists whom it is pinned for: on the posts grid, and on the reels tab, as
 # the web client's media JSON names them.
 PINNED = ("timeline_pinned_user_ids", "clips_tab_pinned_user_ids")
-# One post's page: a reel's, or any other post's.
-POST = "data.xig_fetch_media || data.xdt_api__v1__media__shortcode__web_info.items[0]"
+# One post's page: a reel's, or any other post's (including 2026-11 SSR `xig_polaris_media`).
+POST = ("data.xig_fetch_media"
+        " || data.xdt_api__v1__media__shortcode__web_info.items[0]"
+        " || data.xig_polaris_media.if_not_gated_logged_out"
+        " || data.xig_polaris_media")
 # A story page lists one user's active stories; a highlight's page lists the highlight's.
 STORIES = ("data.xdt_api__v1__feed__reels_media__connection.edges[].node.items[]"
            " || data.xdt_api__v1__feed__reels_media.reels_media[].items[]")
@@ -73,12 +81,20 @@ ASBD_ID = "129477"
 API_PATHS = ("/api/", "/graphql")
 # Accounts asked for in one page of the friendships API, as the web client asks.
 FOLLOWING_COUNT = 100
+# Posts asked for in one page of the user feed API.
+FEED_COUNT = 33
+# Response keys that carry a single post in GraphQL answers.
+POST_KEYS = ("xig_fetch_media", "xdt_api__v1__media__shortcode__web_info")
+# Captured GraphQL request headers safe to replay via in-page `fetch`; `sign` sets the rest.
+QUERY_HEADERS = ("content-type", "x-fb-", "x-bloks-")
 # A grid image within this share of the post's `original_width` is its full size, not a thumbnail.
 FULL_SIZE = 0.9
 # Instagram ids carry creation time: milliseconds since this moment (2011-08-24 21:07:01.721
 # UTC), above the lowest 23 bits (the shard and a sequence number).
 EPOCH_MS = 1314220021721
 ID_SHIFT = 23
+# Base64url alphabet Instagram encodes numeric media pks with in post shortcodes.
+SHORTCODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 # What a GraphQL call's URL holds: the responses that carry a profile tab's or a post's data.
 GRAPHQL = "graphql"
 # Where a story's music is, in the two shapes Instagram sends it (as gallery-dl reads it): a music
@@ -121,6 +137,16 @@ class Instagram(Plugin):
     def __init__(self) -> None:
         # The `X-IG-WWW-Claim` Instagram gave last, echoed on the next API calls (2026-11-12).
         self.claim = "0"
+        # Whether `/p/<code>/` HTML embeds its post; False skips redundant fetches for the run.
+        self.embeds_post: bool | None = None
+        # Whether `/api/v1/feed/user/` was refused this run, falling back to tab scrolling.
+        self.feed_refused = False
+        # Whether `/api/v1/media/<pk>/info/` was refused this run.
+        self.media_info_refused = False
+        # Captured GraphQL post query (`POST /graphql/query`) replayed instead of opening `/p/`.
+        self.post_query: PostQuery | None = None
+        # `username -> user_id` cached from `ins:me` or `web_profile_info` for `api_posts`.
+        self.user_ids: dict[str, str] = {}
 
     def sign(self, request: Request, cookies: Mapping[str, str]) -> Request:
         """Add the web client's headers to an API call; a page's request is left as it is."""
@@ -151,7 +177,12 @@ class Instagram(Plugin):
         Raises:
             NotFound: the page holds no post of that code, or one without files.
         """
-        media = await opened_post(ctx, code)
+        if account_id(ctx.cookies) is not None:
+            media = await logged_in_post(ctx, code, self)
+        elif self.post_query is not None:
+            media = await post_by_query(ctx, code, self)
+        else:
+            media = await opened_post(ctx, code, self)
         if not post_files(media):
             raise NotFound(f"ins: post {code} has no files")
         yield post_of(media)
@@ -179,8 +210,13 @@ class Instagram(Plugin):
             if not isinstance(users, list):
                 raise Changed("ins:me: Instagram's following list has no users")
             for user in users:
-                username = user.get("username") if isinstance(user, dict) else None
+                if not isinstance(user, dict):
+                    continue
+                username = user.get("username")
                 if isinstance(username, str) and username:
+                    uid = user.get("pk") or user.get("id")
+                    if uid and str(uid).isdigit():
+                        self.user_ids[username] = str(uid)
                     yield Target(f"ins:{username}")
 
     @route("ins:{user}", "instagram.com/{user}")
@@ -190,11 +226,15 @@ class Instagram(Plugin):
         Nothing is loaded yet: a tab, or the first category that needs the profile's page,
         loads it.
         """
-        return Profile(user)
+        return Profile(user, plugin=self)
 
     @user.category
     async def posts(self, ctx: Ctx, profile: Profile) -> AsyncIterator[Post]:
         """The posts grid, newest first (up to 3 pinned ones above), to its end."""
+        if account_id(ctx.cookies) is not None and not self.feed_refused:
+            async for post in api_posts(ctx, profile, self):
+                yield post
+            return
         async for post in read_tab(ctx, profile, "posts"):
             yield post
 
@@ -279,8 +319,10 @@ class Profile(Mapping[str, Any]):
         user: the user name, as the target gives it.
     """
 
-    def __init__(self, user: str) -> None:
+    def __init__(self, user: str, *, plugin: Instagram | None = None) -> None:
         self.user = user
+        self.plugin = plugin
+        self.id: str | None = None
         # The largest profile picture, once a result describing the user came.
         self.picture: str | None = None
         # Whether a result described the user, so the profile page isn't loaded for it.
@@ -316,19 +358,120 @@ class Profile(Mapping[str, Any]):
         self.loaded = True
 
     def note(self, result: Any) -> None:
-        """Note the profile's picture and highlights from one result of its pages."""
+        """Note the profile's id, picture and highlights from one result of its pages."""
         if not isinstance(result, dict):
             return
-        # Only the profile's first result describes its user; later pages may describe others.
-        if not self.described and isinstance(dig(result, "data.user"), dict):
-            self.described = True
-            picture = dig(result, "data.user.hd_profile_pic_url_info.url")
-            self.picture = picture if isinstance(picture, str) else self.picture
+        user = dig(result, "data.user || data.xig_user_by_username")
+        if isinstance(user, dict):
+            user_id = user.get("pk") or user.get("id")
+            if user_id and str(user_id).isdigit() and self.id is None:
+                self.id = str(user_id)
+                if self.plugin is not None:
+                    self.plugin.user_ids[self.user] = self.id
+            picture = (dig(user, "hd_profile_pic_url_info.url")
+                       or user.get("profile_pic_url_hd")
+                       or user.get("profile_pic_url"))
+            if isinstance(picture, str) and (not self.described or self.picture is None):
+                self.picture = picture
+            if not self.described and (picture or "hd_profile_pic_url_info" in user):
+                self.described = True
         self.highlights += [h for h in listed_highlights(result) if h not in self.highlights]
 
 
-async def page_results(ctx: Ctx, url: str, *,
-                       enough: Callable[[list[Any]], bool] | None = None) -> list[Any]:
+class PostQuery(NamedTuple):
+    """A captured GraphQL post query (`POST /graphql/query`), replayed with a new shortcode."""
+
+    url: str
+    headers: dict[str, str]
+    pairs: tuple[tuple[str, str], ...]
+    var_index: int
+    variables: dict[str, Any]
+
+
+def parse_post_query(request: Request) -> PostQuery | None:
+    """Extract a replayable `PostQuery` from a captured `/graphql` POST; None for others."""
+    if request.method != "POST" or not isinstance(request.body, str):
+        return None
+    if GRAPHQL not in urlsplit(request.url).path:
+        return None
+    pairs = parse_qsl(request.body, keep_blank_values=True)
+    for idx, (key, raw) in enumerate(pairs):
+        if key != "variables":
+            continue
+        try:
+            variables = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(variables, dict) or "shortcode" not in variables:
+            return None
+        headers = {k: v for k, v in (request.headers or {}).items()
+                   if k.lower().startswith(QUERY_HEADERS)}
+        headers.setdefault("content-type", "application/x-www-form-urlencoded")
+        return PostQuery(request.url, headers, tuple(pairs), idx, variables)
+    return None
+
+
+async def api_posts(ctx: Ctx, profile: Profile, plugin: Instagram) -> AsyncIterator[Post]:
+    """Read `posts` via `/api/v1/feed/user/<id>/`, falling back to `read_tab` if refused."""
+    user_id = profile.id or plugin.user_ids.get(profile.user)
+    if user_id is not None:
+        profile.id = user_id
+    yielded = False
+    try:
+        if user_id is None:
+            info = await ctx.fetch(
+                Request(f"{API}/users/web_profile_info/", params={"username": profile.user}),
+                in_page=True,
+            )
+            plugin.claim = info.headers.get("x-ig-set-www-claim") or plugin.claim
+            user = dig(info.json, "data.user")
+            user_id = str(user["id"]) if isinstance(user, dict) and user.get("id") else None
+            if user_id is None:
+                raise Changed("ins: web_profile_info has no user id")
+            profile.id = user_id
+            plugin.user_ids[profile.user] = user_id
+            if profile.picture is None:
+                pic = (dig(user, "hd_profile_pic_url_info.url")
+                       or user.get("profile_pic_url_hd"))
+                if isinstance(pic, str):
+                    profile.picture = pic
+        first = Request(f"{API}/feed/user/{user_id}/", params={"count": FEED_COUNT})
+        async for response in ctx.pages(first, cursor="next_max_id", send="max_id",
+                                        in_page=True):
+            plugin.claim = response.headers.get("x-ig-set-www-claim") or plugin.claim
+            data = response.json
+            items = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                raise Changed("ins: user feed has no items")
+            yielded = True
+            for media in items:
+                if not isinstance(media, dict):
+                    continue
+                code = post_name(media)
+                if not code or code in profile.listed["posts"]:
+                    continue
+                profile.listed["posts"].add(code)
+                pinned = is_pinned(media)
+                if media.get("taken_at") and post_files(media):
+                    yield post_of(media).replace(pinned=pinned)
+                elif _placeholder_post(media):
+                    continue
+                else:
+                    yield lazy_post(ctx, code, media_pk(media), plugin).replace(pinned=pinned)
+            if data.get("more_available") is False:
+                return
+    except (Changed, SiteError) as error:
+        if yielded or isinstance(error, (Blocked, LoginError)):
+            raise
+        plugin.feed_refused = True
+        async for post in read_tab(ctx, profile, "posts"):
+            yield post
+
+
+async def page_results(
+    ctx: Ctx, url: str, *, enough: Callable[[list[Any]], bool] | None = None,
+    on_item: Callable[[Any, Request | None], None] | None = None,
+) -> list[Any]:
     """Every result of a page opened without a scroll: the ones it embeds, then its calls'.
 
     A "please wait" answer among them holds, and the page is opened again, so a throttle is
@@ -337,11 +480,20 @@ async def page_results(ctx: Ctx, url: str, *,
     Args:
         enough: whether the results hold what the caller wants, a throttle beside them or
             not; None wants every answer unthrottled.
+        on_item: called with `(result, request)` for each captured feed response.
     """
     while True:
+        found: list[Any] = []
         async with aclosing(ctx.load(url, GRAPHQL, scroll=False)) as listing:
-            items = [item async for item in listing]
-        found = [*items[0], *items[1:]] if items else []
+            embedded = True
+            async for item in listing:
+                if embedded:
+                    found.extend(item)
+                    embedded = False
+                else:
+                    found.append(item)
+                    if on_item is not None:
+                        on_item(item, ctx.request)
         if (enough is not None and enough(found)) or not any(map(throttled, found)):
             return found
         await ctx.hold(THROTTLE_REASON)
@@ -388,12 +540,14 @@ def new_posts(ctx: Ctx, profile: Profile, result: Any, tab: str) -> Iterator[Pos
         # A pinned post sits above newer ones (2026-11-14): the sync's stops skip it.
         pinned = is_pinned(media)
         if not is_complete(media):
-            yield lazy_post(ctx, code, media_pk(media)).replace(pinned=pinned)
+            if _placeholder_post(media):
+                continue
+            yield lazy_post(ctx, code, media_pk(media), profile.plugin).replace(pinned=pinned)
         elif post_files(media):
             yield post_of(media).replace(pinned=pinned)
 
 
-def lazy_post(ctx: Ctx, code: str, pk: str | None) -> Post:
+def lazy_post(ctx: Ctx, code: str, pk: str | None, plugin: Instagram | None = None) -> Post:
     """A grid post dated by its pk, whose files are read from its page if the engine wants it.
 
     The pk's date lets the engine skip it by `--when` before any request; its files are named
@@ -401,7 +555,7 @@ def lazy_post(ctx: Ctx, code: str, pk: str | None) -> Post:
     """
 
     async def files() -> list[File]:
-        media = await post_page(ctx, code)
+        media = await post_page(ctx, code, plugin, pk=pk)
         if media.get("taken_at") not in ctx.when:
             return []
         return files_of(media, named=True)
@@ -413,21 +567,97 @@ def lazy_post(ctx: Ctx, code: str, pk: str | None) -> Post:
 # Pages
 # ---------------------------------------------------------------------------------------------
 
-async def post_page(ctx: Ctx, code: str) -> dict:
-    """A post, from its page's HTML fetched in the logged-in tab, else from its own tab.
+async def post_page(ctx: Ctx, code: str, plugin: Instagram | None = None, *,
+                    pk: str | None = None) -> dict:
+    """A post, from `/api/v1/media/<pk>/info/`, a replayed query, its HTML, or its own tab.
 
-    The fetch never navigates a tab, so a tab being scrolled keeps its place.
+    Never sends a raw HTTP `GET /p/<code>/` when logged in. Once logged-out `/p/<code>/` HTML
+    proves not to embed its post, later lazy posts skip the HTML fetch.
 
     Raises:
-        NotFound: neither holds a post of that code.
+        NotFound: none of the sources holds a post of that code.
     """
-    response = await ctx.fetch(f"{SITE}/p/{code}/", in_page=True)
+    if account_id(ctx.cookies) is not None:
+        if plugin is not None:
+            return await logged_in_post(ctx, code, plugin, pk)
+        return await opened_post(ctx, code, None)
+    if plugin is not None and plugin.post_query is not None:
+        return await post_by_query(ctx, code, plugin)
+    if plugin is not None and plugin.embeds_post is False:
+        return await opened_post(ctx, code, plugin)
+    response = await ctx.fetch(f"{SITE}/p/{code}/")
     found = next((media for result in meta(response.html)
                   if (media := post_media(result, code)) is not None), None)
-    return found if found is not None else await opened_post(ctx, code)
+    if found is not None:
+        if plugin is not None:
+            plugin.embeds_post = True
+        return found
+    media = await opened_post(ctx, code, plugin)
+    if plugin is not None and response.status < 400:
+        plugin.embeds_post = False
+    return media
 
 
-async def opened_post(ctx: Ctx, code: str) -> dict:
+async def logged_in_post(ctx: Ctx, code: str, plugin: Instagram,
+                         pk: str | None = None) -> dict:
+    """Resolve one post while logged in: media info API, replayed GraphQL, then its tab."""
+    if not plugin.media_info_refused and (resolved := pk or code_pk(code)) is not None:
+        media = await media_info(ctx, code, resolved, plugin)
+        if media is not None:
+            return media
+    if plugin.post_query is not None:
+        return await post_by_query(ctx, code, plugin)
+    return await opened_post(ctx, code, plugin)
+
+
+async def media_info(ctx: Ctx, code: str, pk: str, plugin: Instagram) -> dict | None:
+    """Fetch one post via `/api/v1/media/{pk}/info/`, returning None if refused."""
+    try:
+        response = await ctx.fetch(f"{API}/media/{pk}/info/", in_page=True)
+        plugin.claim = response.headers.get("x-ig-set-www-claim") or plugin.claim
+        data = response.json
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            raise Changed("ins: media info has no items")
+        if not items:
+            raise NotFound(f"ins: post {code}: its page holds no post")
+        item = items[0]
+        if not isinstance(item, dict):
+            raise Changed("ins: media info item is not an object")
+        if item.get("code") and item["code"] != code and media_pk(item) != code:
+            raise NotFound(f"ins: post {code}: its page holds no post")
+        return item
+    except (Blocked, LoginError, NotFound):
+        raise
+    except (Changed, SiteError):
+        plugin.media_info_refused = True
+        return None
+
+
+async def post_by_query(ctx: Ctx, code: str, plugin: Instagram) -> dict:
+    """Fetch one post via a captured `POST /graphql/query`, falling back to `opened_post`."""
+    query = plugin.post_query
+    assert query is not None
+    pairs = list(query.pairs)
+    pairs[query.var_index] = ("variables", json.dumps({**query.variables, "shortcode": code},
+                                                      separators=(",", ":")))
+    request = Request(query.url, method="POST", headers=query.headers,
+                      body=urlencode(pairs), check=False)
+    response = await ctx.fetch(request, in_page=True)
+    plugin.claim = response.headers.get("x-ig-set-www-claim") or plugin.claim
+    data = _json(response) if response.status < 400 else None
+    if isinstance(data, dict) and not data.get("errors"):
+        media = post_media(data, code)
+        if media is not None:
+            return media
+        inner = data.get("data")
+        if isinstance(inner, dict) and any(key in inner for key in POST_KEYS):
+            raise NotFound(f"ins: post {code}: its page holds no post")
+    plugin.post_query = None
+    return await opened_post(ctx, code, plugin)
+
+
+async def opened_post(ctx: Ctx, code: str, plugin: Instagram | None = None) -> dict:
     """A post, from its page opened with its GraphQL calls listened to, never scrolled.
 
     Raises:
@@ -437,8 +667,15 @@ async def opened_post(ctx: Ctx, code: str) -> dict:
         return next((media for result in found
                      if (media := post_media(result, code)) is not None), None)
 
+    def capture(result: Any, request: Request | None) -> None:
+        if plugin is None or plugin.post_query is not None or request is None:
+            return
+        if post_media(result, code) is not None:
+            plugin.post_query = parse_post_query(request)
+
     media = post(await page_results(ctx, f"{SITE}/p/{code}/",
-                                    enough=lambda found: post(found) is not None))
+                                    enough=lambda found: post(found) is not None,
+                                    on_item=capture))
     if media is None:
         raise NotFound(f"ins: post {code}: its page holds no post")
     return media
@@ -544,6 +781,19 @@ def media_pk(media: dict) -> str | None:
     return found if found.isdigit() else None
 
 
+def code_pk(code: str) -> str | None:
+    """Decode an Instagram base64url shortcode into its 64-bit media pk; None if invalid."""
+    if not code or len(code) > 11:
+        return None
+    pk = 0
+    for char in code:
+        digit = SHORTCODE_ALPHABET.find(char)
+        if digit < 0:
+            return None
+        pk = (pk << 6) | digit
+    return str(pk) if 0 < pk < (1 << 64) else None
+
+
 def pk_stamp(pk: str | None) -> float | None:
     """The Unix time an Instagram id was made at, read from the id itself; None without one.
 
@@ -580,12 +830,23 @@ def is_complete(media: dict) -> bool:
     kind = media.get("product_type")
     if kind == "carousel_container":
         children = media.get("carousel_media")
-        return bool(children) and all(full_size(child) for child in children)
+        return isinstance(children, list) and _complete_carousel(children)
     if kind == "clips":
         return bool(media.get("video_versions") or media.get("video_dash_manifest"))
     if kind == "feed":
-        return all(full_size(child) for child in media.get("carousel_media") or [media])
+        children = media.get("carousel_media")
+        if isinstance(children, list) and children:
+            return _complete_carousel(children)
+        return full_size(media)
     return False
+
+
+def _complete_carousel(children: list[Any]) -> bool:
+    """Whether a carousel has at least one full-size slide and no incomplete non-null slides."""
+    return (bool(children)
+            and all(isinstance(c, dict) for c in children)
+            and any(full_size(c) for c in children)
+            and all(full_size(c) or _placeholder_only(c) for c in children))
 
 
 def full_size(item: dict) -> bool:
@@ -606,6 +867,8 @@ def post_media(result: Any, code: str) -> dict | None:
     """The post a post's page shows, or None when this result isn't it or names another code."""
     media = dig(result, POST)
     if not isinstance(media, dict) or (media.get("code") and media.get("code") != code):
+        return None
+    if "if_not_gated_logged_out" in media and not post_files(media):
         return None
     return media
 
@@ -670,6 +933,36 @@ def as_file(urls: tuple[str, ...], audio: str | None, *, name: str | None = None
 def _placeholder(url: str) -> bool:
     """Whether `url` is Instagram's `rsrc.php/null.*` placeholder for a missing image."""
     return urlsplit(url).path.startswith("/rsrc.php/null")
+
+
+def _urls_of(item: dict) -> list[str]:
+    """Every image or video candidate URL on one media item."""
+    found: list[str] = []
+    if isinstance(versions := item.get("video_versions"), list):
+        found.extend(v["url"] for v in versions if isinstance(v, dict) and v.get("url"))
+    if isinstance(candidates := dig(item, "image_versions2.candidates"), list):
+        found.extend(c["url"] for c in candidates if isinstance(c, dict) and c.get("url"))
+    return found
+
+
+def _placeholder_only(item: dict) -> bool:
+    """Whether an item has candidate URLs and every one is a `rsrc.php/null.*` placeholder."""
+    if item.get("video_dash_manifest"):
+        return False
+    urls = _urls_of(item)
+    return bool(urls) and all(_placeholder(url) for url in urls)
+
+
+def _placeholder_post(media: dict) -> bool:
+    """Whether a full feed item carries only `rsrc.php/null.*` placeholder media."""
+    if not media.get("taken_at"):
+        return False
+    children = media.get("carousel_media")
+    if isinstance(children, list) and children:
+        return all(isinstance(c, dict) and _placeholder_only(c) for c in children)
+    if "image_versions2" in media:
+        return _placeholder_only(media)
+    return False
 
 
 def _streams(versions: Any) -> list[Stream]:

@@ -384,6 +384,7 @@ class Ctx:
         self.listing: Listing | None = None
         # Whether a page of the plugin's own was asked for yet: the first is the target's.
         self._paged = False
+        self._request: Request | None = None
 
     @property
     def _who(self) -> str | None:
@@ -474,7 +475,7 @@ class Ctx:
             if not any(name.lower() == "content-type" for name in headers):
                 headers["Content-Type"] = "application/json"
         if in_page:
-            page = await self._run.off(self._page)
+            page = await self._run.off(self._fetch_page, url)
             if page.url in ("", "about:blank") and "://" in url:
                 # A fresh tab (`aside`) has a null origin, which a site refuses to answer: the
                 # page loads the site's own robots.txt first, so the fetch is same-origin.
@@ -561,6 +562,15 @@ class Ctx:
         """The tab the target works in now (a lazy post's own one in `aside`), on a thread."""
         return self._tabs.verbs().page
 
+    def _fetch_page(self, url: str) -> browser.Page:
+        """An open same-origin tab of the target for an in-page fetch, else `self._page()`."""
+        tabs = self._tabs._tabs
+        if tabs is not None and tabs.opened and "://" in url:
+            page = tabs.page
+            if urlsplit(page.url)[:2] == urlsplit(url)[:2]:
+                return page
+        return self._page()
+
     async def open(self, url: str) -> Landed:
         """See `flnd.plugin.Ctx.open`: a warm tab loading `url` becomes the target's."""
         plugin = self._plugin
@@ -620,6 +630,7 @@ class Ctx:
     async def _load(self, url: str, feed: _Feed) -> AsyncIterator[Any]:
         async with feed:
             await self.open(url)
+            self._request = None
             yield flnd.plugin.meta(await self.document())
             async for item in feed:
                 yield item
@@ -802,6 +813,11 @@ class Ctx:
     def secrets(self) -> MutableMapping[str, str]:
         return self._secrets
 
+    @property
+    def request(self) -> Request | None:
+        """See `flnd.plugin.Ctx.request`."""
+        return self._request
+
 
 def _reads_blocks(plugin: Plugin) -> bool:
     """Whether the plugin has a `blocked` hook of its own, which reads a page's HTML."""
@@ -853,6 +869,9 @@ class _Feed:
         if item is _DONE:
             await self.aclose()
             raise StopAsyncIteration
+        raw = getattr(feed, "request", None)
+        self._ctx._request = (Request(raw[0], method=raw[1], headers=raw[2], body=raw[3])
+                              if raw is not None else None)
         return item
 
     async def aclose(self) -> None:

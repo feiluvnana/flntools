@@ -663,9 +663,9 @@ class HooksTest(unittest.TestCase):
     def test_ctx_has_exactly_the_contracts_members(self):
         members = {name for name in vars(Ctx) if not name.startswith("_")}
         self.assertEqual(members, {
-            "fetch", "pages", "open", "feed", "load", "document", "warm", "click", "shown", "handoff",
-            "extension", "storage", "pause", "hold", "call", "ask", "log", "target", "when",
-            "time", "settings", "account", "cookies", "state", "secrets"})
+            "fetch", "pages", "open", "feed", "load", "document", "warm", "click", "shown",
+            "handoff", "extension", "storage", "pause", "hold", "call", "ask", "log", "target",
+            "when", "time", "settings", "account", "cookies", "state", "secrets", "request"})
         self.assertEqual(str(inspect.signature(Ctx.pages)),
                          "(self, request: 'str | Request', *, cursor: 'str | Callable[[Response], "
                          "str | None]', send: 'str | Callable[[str], Mapping[str, Any]]' = "

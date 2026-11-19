@@ -2,10 +2,10 @@
 
 flnd downloads a profile's posts, reels, tagged posts, reposts, active stories, highlights and
 profile picture from Instagram, or one post or reel by its link. It can also list every account
-the logged-in user follows. It reads the pages in a browser: profile tabs are read by scrolling a
-real page, and a lazy post's files come from its own page. Only the list of followed accounts
-calls Instagram's API. The login is optional, but Instagram shows a logged-out session little,
-and the `ins:me` target needs one. The plugin is `src/plugins/ins.py`, on plugin API 2.
+the logged-in user follows. When logged in, `posts`, single posts, lazy posts and `ins:me` use
+Instagram's web API from inside the tab before falling back to opening pages; other tabs and
+logged-out runs read the pages. The login is optional, but Instagram shows a logged-out session
+little, and the `ins:me` target needs one. The plugin is `src/plugins/ins.py`, on plugin API 2.
 
 ## Targets
 
@@ -94,8 +94,9 @@ The plugin reads three ways, all from the logged-in browser:
    whose URL contains `graphql`, and reads the posts from them. It scrolls until the tab's
    `page_info` says there is no next page.
 3. **Requests from the page.** `ins:me` reads `friendships/<id>/following/` page by page, from
-   inside the logged-in tab, the way the page's own script would ask. A lazy post's page is
-   fetched the same way (see below).
+   inside the logged-in tab, and caches each followed account's user id so `posts` skips
+   `web_profile_info`. Logged-in `posts`, `/api/v1/media/<pk>/info/` and replayed GraphQL post
+   queries run from inside the tab (`in_page=True`) the same way.
 
 Requests to `/api/` and `/graphql` carry the web client's headers: `X-IG-App-ID` and `X-ASBD-ID`
 (the `APP_ID` and `ASBD_ID` constants), `X-IG-WWW-Claim`, `X-Requested-With`, a `Referer`, and
@@ -103,24 +104,32 @@ Requests to `/api/` and `/graphql` carry the web client's headers: `X-IG-App-ID`
 
 How each category is read:
 
-- **`posts`, `reels`, `tagged`, `reposts`**: open the tab's page (`/<user>/`, `/<user>/reels/`,
-  `/<user>/tagged/`, `/<user>/reposts/`) and scroll it. A grid item that is the whole post is
-  saved as listed: it has a date, and its files are at full size. Any other item is listed as a
-  *lazy* post. It is dated by its id, and its files are read only when the engine wants them,
-  from its page. That page is fetched from inside the logged-in tab
-  (`ctx.fetch(..., in_page=True)`), so the fetch never navigates the scrolling tab. When the
-  fetched page holds no such post, the post's own page is opened with a feed that doesn't
-  scroll, and its results are read instead. Whether the fetched page embeds the post has not been
-  confirmed on a live page. When it does not, the second step reads it.
+- **`posts`, `reels`, `tagged`, `reposts`**: when logged in, `posts` first tries
+  `/api/v1/users/web_profile_info/` (skipped when `ins:me` already cached the user's id) and
+  `/api/v1/feed/user/<id>/` from inside the tab (`in_page=True`), which return full posts without
+  scrolling or opening `/p/<code>/`; feed items that carry only `rsrc.php/null.*` placeholder URLs
+  are skipped, and if the feed API is refused on the first call, it falls back to scrolling the tab
+  for the rest of the run. `reels`, `tagged`, `reposts`, and logged-out `posts` open the tab's page
+  (`/<user>/`, `/<user>/reels/`, `/<user>/tagged/`, `/<user>/reposts/`) and scroll it. A grid item
+  that is the whole post is saved as listed: it has a date, and its files are at full size. Any
+  other item is listed as a *lazy* post, dated by its id, and read only when the engine wants it:
+  - **When logged in**, flnd never sends a raw HTTP `GET /p/<code>/`: it first tries
+    `GET /api/v1/media/<pk>/info/` (`in_page=True`, using the post's `pk` or decoding it from its
+    base64url shortcode), then a captured `POST /graphql/query` replay, then opens `/p/<code>/`
+    (which captures the GraphQL query for later posts).
+  - **When logged out**, it tries a captured `POST /graphql/query`, else fetches `/p/<code>/`
+    (`ctx.fetch` so SSR `xig_polaris_media` / `__bbox` embeds work without navigating the tab),
+    falling back to opening `/p/<code>/` when the HTML lacks the post.
 - **`stories`**: open `/stories/<user>/` and read its page: each story is a post with its media.
   A page that fails to load (an HTTP error) raises an error.
 - **`highlights`**: the profile page's results list them. Each highlight's page
   (`/stories/highlights/<id>/`) is opened and read, in a folder named by its title. A page that
   fails to load raises an error.
 - **`profile`**: the HD profile picture the profile's results name.
-- **`post` target**: the post's page is opened with no scroll, and its results are read. The
-  post must have the code the link names. A page with no such post is `NotFound`, and so is a
-  post with no files.
+- **`post` target**: when logged in, tries `GET /api/v1/media/<pk>/info/` (decoding the shortcode
+  to `pk`) and any captured `POST /graphql/query` before opening the post's page with no scroll.
+  When logged out, opens the post's page (or replays a captured query). The post must have the
+  code the link names; missing or empty-file posts raise `NotFound`.
 
 A video is saved from its DASH manifest when it has one (the best video and audio streams,
 merged), else from its largest MP4. When a post has both, the MP4 is kept after the DASH pair as
@@ -174,7 +183,8 @@ Example:
   reads the page's own GraphQL calls too, which bring them.
 - **Thumbnail-only grid items.** A grid item may carry only a small image. An image counts as
   full size when it is at least 90% of the post's `original_width`. Anything else is listed as a
-  lazy post and read from its page.
+  lazy post and read from its page. Carousel slides whose only URLs are `rsrc.php/null.*`
+  placeholders are ignored so they do not force a lazy fetch when other slides are valid.
 - **Dates from ids.** An Instagram id holds its creation time: milliseconds since
   2011-08-24 21:07:01.721 UTC, above its lowest 23 bits. flnd dates a grid item this way, so
   `--when` can skip it without a request. File names still use the post's own `taken_at`.

@@ -1196,6 +1196,11 @@ class Ctx(Protocol):
         """The account's sealed secrets; writable only during a login."""
         ...
 
+    @property
+    def request(self) -> Request | None:
+        """The browser request of the last item `feed` or `load` yielded; None for none."""
+        ...
+
 
 # ---------------------------------------------------------------------------------------------
 # The plugin

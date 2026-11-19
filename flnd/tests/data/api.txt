@@ -300,6 +300,7 @@ flnd.plugin.Ctx.log(level: str, message: str, **fields: Any) -> None
 flnd.plugin.Ctx.open(url: str) -> Landed
 flnd.plugin.Ctx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any]] = 'cursor', bucket: str | None = None, in_page: bool = False) -> AsyncIterator[Response]
 flnd.plugin.Ctx.pause(seconds: float, reason: str) -> None
+flnd.plugin.Ctx.request: property -> Request | None
 flnd.plugin.Ctx.secrets: property -> MutableMapping[str, str]
 flnd.plugin.Ctx.settings: property -> Settings
 flnd.plugin.Ctx.shown(css: str) -> bool
@@ -507,6 +508,7 @@ flnd.testing.FakeCtx.log(level: str, message: str, **fields: Any) -> None
 flnd.testing.FakeCtx.open(url: str) -> Landed
 flnd.testing.FakeCtx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any]] = 'cursor', bucket: str | None = None, in_page: bool = False) -> AsyncIterator[Response]
 flnd.testing.FakeCtx.pause(seconds: float, reason: str) -> None
+flnd.testing.FakeCtx.request: property -> Request | None
 flnd.testing.FakeCtx.secrets: property -> MutableMapping[str, str]
 flnd.testing.FakeCtx.seen: attribute -> Seen
 flnd.testing.FakeCtx.settings: property -> flnd.plugin.Settings
@@ -536,9 +538,10 @@ flnd.testing.Seen.requests: field -> list[tuple[str, str, dict[str, Any]]]
 flnd.testing.Seen.scrolls: field -> int
 flnd.testing.Seen.visited: field -> list[str]
 flnd.testing.Seen.warmed: field -> list[str]
-flnd.testing.Sent(url: str, body: Any, *, click: str | None = None, scroll: int | None = None)
+flnd.testing.Sent(url: str, body: Any, *, click: str | None = None, scroll: int | None = None, request: Request | None = None)
 flnd.testing.Sent.body: field -> Any
 flnd.testing.Sent.click: field -> str | None
+flnd.testing.Sent.request: field -> Request | None
 flnd.testing.Sent.scroll: field -> int | None
 flnd.testing.Sent.url: field -> str
 flnd.testing.check(plugin: type[Plugin]) -> list[flnd.plugin.Target]

@@ -265,6 +265,22 @@ class FetchTest(CtxCase):
         raws = [raw for browser in self.browsers for raw in browser.opened]
         self.assertEqual([raw.loaded for raw in raws], [[f"{API}/robots.txt"]])
 
+    def test_in_page_inside_aside_reuses_the_open_same_origin_tab(self):
+        self.make_raw = lambda: FakeRaw([200, 200])
+        run, ctx = self.ctx()
+        answer = _net.Response(200, f"{API}/feed", {}, b"{}")
+
+        async def work():
+            await ctx.open(f"{API}/profile")
+            async with ctx.aside():
+                await ctx.fetch(f"{API}/feed", in_page=True)
+                await ctx.fetch(f"{API}/feed", in_page=True)
+
+        with mock.patch.object(Page, "fetch", new=mock.AsyncMock(return_value=answer)):
+            self.call(run, work())
+        raws = [raw for browser in self.browsers for raw in browser.opened]
+        self.assertEqual([raw.loaded for raw in raws], [[f"{API}/profile"]])
+
     def test_in_page_signs_requests_to_own_domains_with_cookies(self):
         class Signed(Example):
             def sign(self, request, cookies):

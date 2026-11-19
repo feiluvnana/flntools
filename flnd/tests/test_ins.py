@@ -11,12 +11,13 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any
 from unittest import mock
+from urllib.parse import parse_qsl, urlencode
 
 import fakes
 
 from flnd.errors import Blocked, Changed, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import File, Post, Range, Request, Target
-from flnd.plugins.ins import APP_ID, Instagram, best_file, pk_stamp
+from flnd.plugins.ins import APP_ID, Instagram, best_file, code_pk, pk_stamp
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
 from flnkit import net as _net
 from flnkit.clock import day
@@ -251,10 +252,10 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(by_path["posts/2023-11-15_CAR_1.mp4"].file.audio,
                          "https://cdn.example/a95.mp4")
         self.assertEqual(by_path["posts/2023-11-15_P1.jpg"].post.headers, {"Referer": f"{SITE}/"})
-        # S22: no media-API call; each lazy post is one in-page fetch of its page, R1 once a tab.
+        # S22: no media-API call; each lazy post fetches its page HTML directly, R1 once a tab.
         self.assertEqual(fetched(ctx), [f"{SITE}/p/{code}/" for code in (
             "CAR", "R1", "NOFILE", "R1", "R2", "T1", "RP2")])
-        self.assertTrue(all(options["in_page"] for _, _, options in ctx.seen.requests))
+        self.assertFalse(any(options["in_page"] for _, _, options in ctx.seen.requests))
         # The profile page is the posts tab, so highlights and the picture load nothing more.
         self.assertEqual(ctx.seen.visited, [
             f"{SITE}/example_creator/", f"{SITE}/example_creator/reels/",
@@ -373,6 +374,24 @@ class TabTest(unittest.TestCase):
                          [f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_P2.jpg"])
         self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/RP2/"])
 
+    def test_when_post_page_does_not_embed_later_lazy_posts_open_directly(self):
+        """Once `/p/<code>/` HTML proves not to embed the post, later lazy posts skip the fetch."""
+        own = {code: FakePage("<html></html>", feeds=[Sent(GRAPHQL, {"data": {
+            "xig_fetch_media": {"code": code, "taken_at": STAMP,
+                                **image(f"https://cdn.example/{code.lower()}.jpg")}}})])
+            for code in ("RP2", "RP3")}
+        ctx = self.tab(
+            embeds=[grid({"code": "RP2", "product_type": "feed"},
+                         {"code": "RP3", "product_type": "feed"}, more="")],
+            routes={f"{SITE}/p/RP2/": Reply("<html></html>"),
+                    f"{SITE}/p/RP3/": Reply("<html></html>")},
+            pages={f"{SITE}/p/RP2/": own["RP2"], f"{SITE}/p/RP3/": own["RP3"]})
+        self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
+                         [f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_RP3.jpg"])
+        self.assertEqual(fetched(ctx), [f"{SITE}/p/RP2/"])
+        self.assertEqual(ctx.seen.visited,
+                         [f"{SITE}/example_creator/", f"{SITE}/p/RP2/", f"{SITE}/p/RP3/"])
+
     def test_a_pinned_post_keeps_its_date_and_is_marked_pinned(self):
         """Pinned posts above newer ones don't break newest-first; `--when` still drops them."""
         pinned = {"timeline_pinned_user_ids": [42], "taken_at": STAMP - 30 * 86400}
@@ -406,10 +425,40 @@ class TabTest(unittest.TestCase):
             image("https://static.cdninstagram.com/rsrc.php/null.jpg", width=1080),
             image("https://cdn.example/real.jpg", width=1080),
         ])
-        ctx = self.tab(grid(broken, more=""), embeds=[grid(broken, more="c1")],
-                       routes={f"{SITE}/p/P1/": post_page(**broken)})
+        ctx = self.tab(grid(broken, more=""), embeds=[grid(broken, more="c1")], routes={})
         self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
                          [f"posts/{DAY}_P1.jpg"])
+        self.assertEqual(fetched(ctx), [])
+
+        # An all-placeholder grid item with taken_at is also skipped in read_tab.
+        all_null = feed("NULL0", **image("https://static.cdninstagram.com/rsrc.php/null.jpg",
+                                         width=1080))
+        ctx = self.tab(embeds=[grid(all_null, feed("P1", **image("https://cdn.example/p1.jpg")),
+                                    more="")], routes={})
+        self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
+                         [f"posts/{DAY}_P1.jpg"])
+        self.assertEqual(fetched(ctx), [])
+
+    def test_placeholder_only_feed_item_is_skipped_without_lazy_fetch(self):
+        """Full feed items carrying only rsrc.php/null.* URLs are skipped with no lazy fetch."""
+        null_img = image("https://static.cdninstagram.com/rsrc.php/null.jpg", width=1080)
+        items = [
+            feed("NULL1", **null_img),
+            feed("NULL2", product_type="carousel_container", carousel_media=[null_img, null_img]),
+            feed("P1", **image("https://cdn.example/p1.jpg")),
+        ]
+        ctx = fake(
+            cookies={"sessionid": "99%3As%3A1"},
+            routes={
+                f"{SITE}/api/v1/users/web_profile_info/": Reply(
+                    {"data": {"user": {"id": "42"}}}),
+                f"{SITE}/api/v1/feed/user/42/": Reply({"items": items, "more_available": False}),
+            },
+        )
+        saved = run(categories=["posts"], ctx=ctx)
+        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"])
+        self.assertEqual(fetched(ctx), [
+            f"{SITE}/api/v1/users/web_profile_info/", f"{SITE}/api/v1/feed/user/42/"])
 
     def test_a_tab_whose_embedded_page_is_its_last_is_not_scrolled(self):
         """Every embedded result is read, the highlights after the last grid page too; then
@@ -488,6 +537,127 @@ class TabTest(unittest.TestCase):
         self.assertEqual(found, (("https://cdn.example/1080.webm",), "webm",
                                  "https://cdn.example/a95.mp4"))
 
+    def test_logged_in_posts_reads_user_feed_api_without_opening_post_pages(self):
+        """When logged in, `posts` reads `/api/v1/feed/user/<id>/` with no `/p/*` loads."""
+        car = {"code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container",
+               "taken_at": STAMP, "carousel_media": [
+                   image("https://cdn.example/c0.jpg"),
+                   {**video("https://cdn.example/c1.mp4"), "video_dash_manifest": MPD}]}
+        feed_pages = {
+            None: Reply({"items": [feed("P1", **image("https://cdn.example/p1.jpg"))],
+                         "more_available": True, "next_max_id": "m1"},
+                        headers={"x-ig-set-www-claim": "c1"}),
+            "m1": Reply({"items": [car], "more_available": False}),
+        }
+        ctx = fake(
+            cookies={"sessionid": "99%3As%3A1"},
+            routes={
+                f"{SITE}/api/v1/users/web_profile_info/": Reply(
+                    {"data": {"user": {"id": "42"}}}),
+                f"{SITE}/api/v1/feed/user/42/": lambda req: feed_pages[
+                    (req.params or {}).get("max_id")],
+            },
+        )
+        saved = run(categories=["posts"], ctx=ctx)
+        self.assertEqual([item.path for item in saved], [
+            f"posts/{DAY}_P1.jpg", f"posts/{DAY}_CAR_0.jpg", f"posts/{DAY}_CAR_1.mp4"])
+        self.assertEqual(ctx.seen.visited, [])
+        self.assertFalse(any("/p/" in url for url in fetched(ctx)))
+
+    def test_refused_user_feed_api_falls_back_to_tab_once(self):
+        """A non-JSON/refused user feed API falls back to scrolling the tab for the run."""
+        info_routes = {
+            f"{SITE}/api/v1/media/{PK['CAR']}/info/": Reply({"items": [{
+                "code": "CAR", "taken_at": STAMP, "carousel_media": [
+                    image("https://cdn.example/c0.jpg"),
+                    {**video("https://cdn.example/c1.mp4"), "video_dash_manifest": MPD}]}]}),
+            f"{SITE}/api/v1/media/{PK['R1']}/info/": Reply({"items": [{
+                "code": "R1", "taken_at": STAMP, **video("https://cdn.example/r1.mp4")}]}),
+            f"{SITE}/api/v1/media/{PK['NOFILE']}/info/": Reply({"items": [{
+                "code": "NOFILE", "taken_at": STAMP}]}),
+        }
+        ctx = fake(
+            cookies={"sessionid": "99%3As%3A1"},
+            routes={**info_routes,
+                    f"{SITE}/api/v1/users/web_profile_info/": Reply("<html></html>")},
+            pages=PAGES,
+        )
+        saved = collect(Instagram, "ins:example_creator", ctx=ctx, categories=["posts"])
+        self.assertTrue(any(item.path == f"posts/{DAY}_P1.jpg" for item in saved))
+        self.assertTrue(ctx._plugin.feed_refused)
+        self.assertIn(f"{SITE}/example_creator/", ctx.seen.visited)
+        self.assertFalse(any("/p/" in url for url in fetched(ctx)))
+
+    def test_captured_graphql_post_query_replays_for_later_posts(self):
+        """Once `opened_post` captures a `POST /graphql/query`, later posts replay it."""
+        def gql_request(code):
+            return Request(GRAPHQL, method="POST", headers={
+                "content-type": "application/x-www-form-urlencoded",
+                "x-fb-friendly-name": "PolarisPostRootQuery",
+                "x-fb-lsd": "lsd-tok",
+            }, body=urlencode({
+                "fb_dtsg": "dtsg-tok", "lsd": "lsd-tok", "doc_id": "123456",
+                "variables": json.dumps({"shortcode": code}),
+            }))
+
+        def gql_reply(req):
+            form = dict(parse_qsl(req.body or ""))
+            code = json.loads(form["variables"])["shortcode"]
+            if code == "STALE":
+                return Reply({"errors": [{"message": "stale doc_id"}]})
+            return Reply({"data": {"xdt_api__v1__media__shortcode__web_info": {"items": [{
+                "code": code, "taken_at": STAMP,
+                **image(f"https://cdn.example/{code.lower()}.jpg")}]}}})
+
+        pages = {
+            f"{SITE}/example_creator/": FakePage(embedded(grid(
+                {"code": "RP2", "product_type": "feed"},
+                {"code": "RP3", "product_type": "feed"},
+                {"code": "STALE", "product_type": "feed"}, more=""))),
+            f"{SITE}/p/RP2/": FakePage("<html></html>", feeds=[Sent(
+                GRAPHQL, {"data": {"xig_fetch_media": {
+                    "code": "RP2", "taken_at": STAMP, **image("https://cdn.example/rp2.jpg")}}},
+                request=gql_request("RP2"))]),
+            f"{SITE}/p/STALE/": FakePage("<html></html>", feeds=[Sent(
+                GRAPHQL, {"data": {"xig_fetch_media": {
+                    "code": "STALE", "taken_at": STAMP, **image("https://cdn.example/s.jpg")}}},
+                request=gql_request("STALE"))]),
+        }
+        ctx = fake(routes={f"{SITE}/p/RP2/": Reply("<html></html>"), GRAPHQL: gql_reply},
+                   pages=pages)
+        saved = run(categories=["posts"], ctx=ctx)
+        self.assertEqual([item.path for item in saved], [
+            f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_RP3.jpg", f"posts/{DAY}_STALE.jpg"])
+        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/RP2/",
+                                            f"{SITE}/p/STALE/"])
+        self.assertEqual(fetched(ctx), [f"{SITE}/p/RP2/", GRAPHQL, GRAPHQL])
+
+    def test_polaris_timeline_and_xig_polaris_media_embeds_are_read(self):
+        """2026-11 public pages embed `xig_user_by_username` and `xig_polaris_media`."""
+        profile_embed = {"data": {"xig_user_by_username": {
+            "pk": "6074", "profile_pic_url": "https://cdn.example/pic.jpg"}}}
+        grid_embed = {"data": {"xig_user_by_username": {
+            "pk": "6074",
+            "polaris_ordered_timeline_connection": {
+                "edges": [{"node": {"code": "POL1", "pk": PK["T1"], "product_type": "feed"}}],
+                "page_info": {"has_next_page": False, "end_cursor": None},
+            },
+        }}}
+        pol1 = embedded({"data": {"xig_polaris_media": {
+            "code": "POL1",
+            "if_not_gated_logged_out": {"code": "POL1", "taken_at": STAMP,
+                                        **image("https://cdn.example/pol1.jpg")},
+        }}})
+        ctx = fake(
+            pages={f"{SITE}/example_creator/": FakePage(embedded(profile_embed, grid_embed))},
+            routes={f"{SITE}/p/POL1/": Reply(pol1)},
+        )
+        saved = run(categories=["posts", "profile"], ctx=ctx)
+        self.assertEqual(sorted(item.path for item in saved),
+                         [f"posts/{DAY}_POL1.jpg", "profile/pic.jpg"])
+        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/"])
+        self.assertEqual(fetched(ctx), [f"{SITE}/p/POL1/"])
+
 
 class PostTest(unittest.TestCase):
     def test_one_post_from_its_page_or_its_calls(self):
@@ -513,6 +683,82 @@ class PostTest(unittest.TestCase):
                 ctx = fake(routes={}, pages={f"{SITE}/p/SINGLE/": html})
                 with self.assertRaises(NotFound):
                     run("https://www.instagram.com/p/SINGLE/", ctx=ctx)
+
+    def test_logged_in_post_uses_media_info_and_never_fetches_html(self):
+        """Logged-in `post` decodes shortcode -> pk and calls `/api/v1/media/{pk}/info/`."""
+        self.assertEqual(code_pk("B"), "1")
+        self.assertEqual(code_pk("B-_"), str((1 << 12) | (62 << 6) | 63))
+        self.assertIsNone(code_pk("bad/code"))
+        self.assertIsNone(code_pk("B" * 38))
+        self.assertIsNone(code_pk("Q" + "A" * 10))
+        pk = code_pk("C1abc-DEF_0")
+        ctx = fake(
+            cookies={"sessionid": "99%3As%3A1"},
+            routes={f"{SITE}/api/v1/media/{pk}/info/": Reply(
+                {"items": [{"code": "C1abc-DEF_0", "taken_at": STAMP,
+                            **image("https://cdn.example/c1.jpg")}]},
+                headers={"x-ig-set-www-claim": "hmac.next"})},
+        )
+        saved = run("https://www.instagram.com/p/C1abc-DEF_0/", ctx=ctx)
+        self.assertEqual([item.path for item in saved], [f"{DAY}_C1abc-DEF_0.jpg"])
+        self.assertEqual(ctx.seen.visited, [])
+        self.assertEqual(fetched(ctx), [f"{SITE}/api/v1/media/{pk}/info/"])
+        self.assertTrue(ctx.seen.requests[0][2]["in_page"])
+        self.assertEqual(ctx._plugin.claim, "hmac.next")
+
+    def test_logged_in_media_info_not_found_and_refusal_fallback(self):
+        """Empty items/404 raise `NotFound`; non-JSON refusal falls back to tab and GraphQL."""
+        pk_single = code_pk("SINGLE")
+        for reply in (Reply(status=404), Reply({"items": []}),
+                      Reply({"items": [{"code": "OTHER", "taken_at": STAMP,
+                                        **image("https://cdn.example/o.jpg")}]})):
+            with self.subTest(status=reply.status):
+                ctx = fake(cookies={"sessionid": "99%3As%3A1"},
+                           routes={f"{SITE}/api/v1/media/{pk_single}/info/": reply})
+                with self.assertRaises(NotFound):
+                    run("https://www.instagram.com/p/SINGLE/", ctx=ctx)
+                self.assertFalse(ctx._plugin.media_info_refused)
+                self.assertEqual(ctx.seen.visited, [])
+
+        # When media info is refused, logged-in fallback skips raw GET /p/ and goes to
+        # opened_post -> captured GraphQL replay for the next post.
+        def gql_request(code):
+            return Request(GRAPHQL, method="POST", headers={
+                "content-type": "application/x-www-form-urlencoded",
+                "x-fb-friendly-name": "PolarisPostRootQuery",
+            }, body=urlencode({"doc_id": "123", "variables": json.dumps({"shortcode": code})}))
+
+        def gql_reply(req):
+            code = json.loads(dict(parse_qsl(req.body or ""))["variables"])["shortcode"]
+            return Reply({"data": {"xdt_api__v1__media__shortcode__web_info": {"items": [{
+                "code": code, "taken_at": STAMP,
+                **image(f"https://cdn.example/{code.lower()}.jpg")}]}}})
+
+        pages = {
+            f"{SITE}/example_creator/reels/": FakePage(embedded({"data": {"fetch__XDTUserDict": {
+                "clips_connection": {"edges": [
+                    {"node": {"media": {"code": "RP2", "pk": PK["R1"],
+                                        "product_type": "clips"}}},
+                    {"node": {"media": {"code": "RP3", "pk": PK["R2"],
+                                        "product_type": "clips"}}},
+                ]}}}})),
+            f"{SITE}/p/RP2/": FakePage("<html></html>", feeds=[Sent(
+                GRAPHQL, {"data": {"xig_fetch_media": {
+                    "code": "RP2", "taken_at": STAMP, **image("https://cdn.example/rp2.jpg")}}},
+                request=gql_request("RP2"))]),
+        }
+        ctx = fake(
+            cookies={"sessionid": "99%3As%3A1"},
+            routes={f"{SITE}/api/v1/media/{PK['R1']}/info/": Reply("<html></html>"),
+                    GRAPHQL: gql_reply},
+            pages=pages,
+        )
+        saved = run(categories=["reels"], ctx=ctx)
+        self.assertEqual([item.path for item in saved],
+                         [f"reels/{DAY}_RP2.jpg", f"reels/{DAY}_RP3.jpg"])
+        self.assertTrue(ctx._plugin.media_info_refused)
+        self.assertEqual(fetched(ctx), [f"{SITE}/api/v1/media/{PK['R1']}/info/", GRAPHQL])
+        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/reels/", f"{SITE}/p/RP2/"])
 
 
 class MeTest(unittest.TestCase):
@@ -546,6 +792,29 @@ class MeTest(unittest.TestCase):
             self.follows({"sessionid": "opaque"})
         with self.assertRaises(Changed):
             self.follows({"ds_user_id": "99"}, {self.URL.format("99"): Reply({"status": "ok"})})
+
+    def test_me_caches_user_ids_so_api_posts_skips_web_profile_info(self):
+        """`me()` caches `username -> user_id`, so `api_posts()` skips `web_profile_info`."""
+        plugin = Instagram()
+        routes = {
+            self.URL.format("99"): Reply({"users": [
+                {"username": "example_user", "pk": 4242},
+                {"username": "example_creator", "id": "6074"},
+            ]}),
+            f"{SITE}/api/v1/feed/user/4242/": Reply({
+                "items": [feed("P1", **image("https://cdn.example/p1.jpg"))],
+                "more_available": False,
+            }),
+        }
+        cookies = {"sessionid": "99%3As%3A1"}
+        me_ctx = FakeCtx(plugin, "ins:me", cookies=cookies, routes=routes)
+        self.assertEqual(listed(plugin.me(me_ctx, "me")),
+                         [Target("ins:example_user"), Target("ins:example_creator")])
+        self.assertEqual(plugin.user_ids, {"example_user": "4242", "example_creator": "6074"})
+        user_ctx = FakeCtx(plugin, "ins:example_user", cookies=cookies, routes=routes)
+        saved = collect(Instagram, "ins:example_user", ctx=user_ctx, categories=["posts"])
+        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"])
+        self.assertEqual(fetched(user_ctx), [f"{SITE}/api/v1/feed/user/4242/"])
 
 
 class InPage:
