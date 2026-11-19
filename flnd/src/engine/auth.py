@@ -5,12 +5,14 @@ src/docs/storage explains it.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import datetime
 import itertools
 import json
 import os
 import sqlite3
+import threading
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from http.cookiejar import Cookie
 from pathlib import Path
@@ -18,11 +20,11 @@ from typing import Any
 
 from flnd.engine import store
 from flnd.engine.events import Login
-from flnd.errors import DiskError, Error, LoginError, UsageError
+from flnd.errors import DiskError, Error, LoginError, Stopped, ToolError, UsageError
 from flnd.plugin import Account, Cookies, Plugin, Target
 from flnd.ui import forms
 from flnd.ui.log import ui
-from flnkit import clock, cookies, db, vault
+from flnkit import browser, clock, cookies, db, text, vault
 
 __all__ = ["Vault", "account", "expiring", "fix_domains", "load", "logged_in", "login",
            "logins", "logout", "pick", "seal_plaintext", "secrets", "write_back"]
@@ -35,6 +37,9 @@ COOKIES = "cookies"
 LOGINS = frozenset({COOKIES, "session"})
 # The kind of the pseudo-target a plugin's account `Ctx` acts for.
 ACCOUNT = "account"
+# How long the `browser` method waits for a login in its window, and how often it looks.
+WINDOW_WAIT = 600.0
+WINDOW_POLL = 1.0
 # The browsers whose cookie stores a login reads, by method, with the names people know.
 BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "Brave",
             "chromium": "Chromium", "safari": "Safari"}
@@ -386,7 +391,13 @@ def _read_jar(plugin: Plugin, own: Cookies, method: str, *, path: Path | str | N
         UsageError: `file` without a path.
         LoginError: they can't be read, or none of `own.names` is among them.
     """
-    if method == "file":
+    if method == "browser":
+        from flnd.engine import run
+
+        origin = "the browser window"
+        with run.stopping() as stop:
+            jar = asyncio.run(_window(plugin, own, stop.soon))
+    elif method == "file":
         if path is None:
             raise UsageError(f"{plugin.code}: a file login needs the cookie file's path")
         where = Path(path).expanduser()
@@ -411,6 +422,37 @@ def _read_jar(plugin: Plugin, own: Cookies, method: str, *, path: Path | str | N
         raise LoginError(f"{plugin.code}: no {' or '.join(own.names)} for {plugin.domains[0]} "
                          f"in {origin}; log in there first")
     return jar
+
+
+async def _window(plugin: Plugin, own: Cookies, stop: threading.Event) -> cookies.Jar:
+    """Open flnd's Chromium, visible, at the login page; then read its cookies every
+    `WINDOW_POLL` seconds until one of `own.names` is set on the plugin's domains, and close it.
+
+    Raises:
+        LoginError: the window was closed first, or `WINDOW_WAIT` passed.
+        ToolError: Playwright isn't installed.
+        Stopped: Ctrl-C.
+    """
+    try:
+        window = await browser.launch(headless=False)
+    except ImportError as error:
+        raise ToolError(str(error), hint="pip install playwright") from None
+    try:
+        await (await window.tab()).goto(own.url)
+        ends = clock.now() + WINDOW_WAIT
+        while True:
+            jar = (await window.cookies()).filter(domains=plugin.domains)
+            if any(name in jar for name in own.names):
+                return jar
+            if not window.raw.pages:
+                raise LoginError(f"{plugin.code}: the window was closed before the login")
+            if clock.now() >= ends:
+                raise LoginError(f"{plugin.code}: no login in the window in "
+                                 f"{text.duration(WINDOW_WAIT)}")
+            if not await clock.pause(WINDOW_POLL, stop=stop):
+                raise Stopped(f"{plugin.code}: the login was stopped")
+    finally:
+        await window.close()
 
 
 def _next_name(db: store.Store, plugin: str) -> str:

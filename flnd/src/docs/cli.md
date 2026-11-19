@@ -256,14 +256,17 @@ flnd login [source] [how]
   (which needs Full Disk Access for the terminal, in System Settings › Privacy & Security; the
   error says so when it is missing). flnd reads the site's
   cookies from it and keeps only those of the site's domains;
+- **`browser`**: flnd's Chromium opens, visible, at the site's login page; log in there, and
+  the window closes once the login cookie is set (it waits up to 10 minutes);
 - **a cookie file's path**: a Netscape `cookies.txt` or a JSON export;
 - **the plugin's own way**: Telegram (`tlg`) logs in by `browser` (Telegram Web's session),
   `qr` or `phone`, which ask their questions in the terminal.
 
 Left out in a terminal, `how` is asked with numbered choices. Off a terminal, or with `--json`,
 leaving it out is a usage error. A login is checked before it is saved: the cookies must hold
-one of the plugin's login cookies. It is stored in the home's vault, `metadata/secret.db`, a
-file only your account can read ([storage.md](storage.md)).
+one of the plugin's login cookies. It is sealed in the home's vault, `metadata/secret.db`,
+under a key kept outside the home ([storage.md](storage.md#the-vault)). Each account the site
+names is kept apart; logging in again as one replaces its login.
 
 ```sh
 flnd login
@@ -274,7 +277,7 @@ flnd login tlg qr
 
 ## `flnd logout`
 
-Remove a plugin's saved login.
+Remove a plugin's saved logins, every account's.
 
 ```sh
 flnd logout ins

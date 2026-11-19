@@ -16,6 +16,7 @@ import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from fakes import login_cookies, make_plugin, own_login, sign_in, vaulted
@@ -23,6 +24,7 @@ from fakes import login_cookies, make_plugin, own_login, sign_in, vaulted
 import flnd
 from flnd.engine import auth, store
 from flnd.errors import LoginError, PluginError, UsageError
+from flnd.testing import fake_clock
 from flnd.ui.log import ui
 from flnkit import cookies, net
 
@@ -230,6 +232,58 @@ class LoginTest(AuthCase):
         self.assertEqual(answers, [None, None, "1"])
         self.assertEqual(asked.mock_calls[0], mock.call("Phone number", secret=False))
         self.assertIn("With the country code", self.dest.getvalue())
+
+
+class WindowTest(AuthCase):
+    """The `browser` method: flnd's Chromium, visible, at the login page, until the login is set."""
+
+    def window(self, *jars, pages=(1,)):
+        """A faked `flnkit.browser.launch`, whose window gives one of `jars` per look."""
+        opened, looks = [], []
+
+        class Window:
+            raw = SimpleNamespace(pages=list(pages))
+            closed, url = False, None
+
+            async def tab(self):
+                return SimpleNamespace(goto=self.goto)
+
+            async def goto(self, url):
+                self.url = url
+
+            async def cookies(self):
+                looks.append(1)
+                return cookies.Jar(jars[min(len(looks), len(jars)) - 1])
+
+            async def close(self):
+                self.closed = True
+
+        async def launch(**options):
+            opened.append((options, Window(), looks))
+            return opened[-1][1]
+
+        self.enterContext(mock.patch("flnkit.browser.launch", launch))
+        self.enterContext(fake_clock())
+        return opened
+
+    def test_the_login_is_kept_once_its_cookie_is_set(self):
+        login = [{"name": "sid", "value": "s", "domain": "aaa.example"},
+                 {"name": "sid", "value": "elsewhere", "domain": "example.com"}]
+        opened = self.window([], [{"name": "other", "value": "o", "domain": "aaa.example"}], login)
+        self.assertEqual(auth.login(self.home, self.plugin(), "browser").origin, "browser")
+        [(options, window, looks)] = opened
+        self.assertEqual((options, window.url, window.closed, len(looks)),
+                         ({"headless": False}, "https://example.com/login", True, 3))
+        self.assertEqual([cookie["value"] for cookie in vaulted(self.home, "aaa")[0]], ["s"])
+
+    def test_a_closed_window_or_no_login_in_time_keeps_nothing(self):
+        for pages, said in (((), "the window was closed before the login"),
+                            ((1,), "no login in the window in 10m")):
+            with self.subTest(said), self.assertRaisesRegex(LoginError, said):
+                opened = self.window([], pages=pages)
+                auth.login(self.home, self.plugin(), "browser")
+            self.assertTrue(opened[0][1].closed)
+        self.assertEqual(self.accounts(), [])
 
 
 class AccountsTest(AuthCase):

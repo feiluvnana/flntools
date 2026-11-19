@@ -428,14 +428,15 @@ class Flnd:
     # -----------------------------------------------------------------------------------------
 
     def login(self, source: str, how: str) -> Login:
-        """Log in to a source, and save the login, encrypted, in the home.
+        """Log in to a source, and seal the login in the home's vault.
 
         Args:
             source: the source's code (`"ins"`).
             how: a browser to read its cookies from (`"chrome"`, `"firefox"`, `"edge"`,
-                `"brave"`, `"chromium"`, `"safari"` on macOS), the path of a cookies.txt or
-                JSON export, or the source's own way (`"qr"`, `"phone"` for tlg), which asks
-                its questions in the terminal.
+                `"brave"`, `"chromium"`, `"safari"` on macOS), `"browser"` for a window of
+                flnd's Chromium at the site's login page, the path of a cookies.txt or JSON
+                export, or the source's own way (`"qr"`, `"phone"` for tlg), which asks its
+                questions in the terminal.
 
         Returns:
             The source's `Login` after it.
@@ -462,13 +463,13 @@ class Flnd:
                 raise UsageError(f"{source} logs in by {', '.join(methods) or 'nothing'}, "
                                  f"not {how!r}")
             auth.login(self.home, cls(), how, interactive=True)
-        elif how in auth.BROWSERS:
+        elif how in auth.BROWSERS or how == "browser":
             auth.login(self.home, cls(), how)
         elif Path(how).expanduser().is_file():
             auth.login(self.home, cls(), "file", path=how)
         else:
-            raise UsageError(f"{source} logs in by a browser ({', '.join(auth.BROWSERS)}) or a "
-                             f"cookie file's path, not {how!r}")
+            raise UsageError(f"{source} logs in by a browser ({', '.join(auth.BROWSERS)}), "
+                             f"a browser window (browser) or a cookie file's path, not {how!r}")
         return next(login for login in self.logins if login.source == source)
 
     def logout(self, source: str) -> bool:
