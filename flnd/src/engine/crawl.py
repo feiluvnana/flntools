@@ -60,8 +60,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "STOPPED", "Claims", "Downloads", "Ledger", "Options", "Placed", "Retry", "RunShared",
-    "TargetReport", "Turn", "asked", "causes",
-    "discover", "download", "failure", "logged_out", "place", "plan", "posts", "tell", "wanted",
+    "TargetReport", "Turn", "asked", "causes", "checked_dest",
+    "discover", "download", "failure", "logged_out", "place", "plan", "posts", "target_root",
+    "tell", "wanted",
 ]
 
 class Retry(Enum):
@@ -97,6 +98,9 @@ class Options:
     # The value as typed, with a link's `user:pw@` the target's value leaves out: what its
     # route reads. None reads the target's value. A target it finds never takes it.
     link: str | None = None
+    # Custom folder template under `media/<plugin>/`, overriding plugin, route, category and
+    # config folder templates; None uses each target's own folder.
+    folder: str | None = None
 
 
 @dataclass
@@ -451,7 +455,7 @@ def place(
     Returns:
         One `Placed` per file, in order.
     """
-    folder = _folder_format(source, route, category)
+    folder = _folder_format(source, route, category, options)
     filename, key = (_format(source, category, name) for name in ("filename", "key"))
     posted = day(post.date)
     placed: list[Placed] = []
@@ -540,7 +544,8 @@ class Ledger:
         """Initialize a target ledger with its stores, dates, and category state."""
         self.run, self.source, self.settings, self.site = run, run.source, run.settings, site
         self.target, self.tally, self._options = target, tally, options
-        self.folder = store.target_folder(self.settings.home, target)
+        self._custom_folder = options is not None and options.folder is not None
+        self.folder = target_root(self.settings.home, target, options)
         # The home's database; None for a plan with nothing to read (`flnd.dry`).
         self._db = self.settings.db
         # Told to ask again for everything: files recorded gone are asked for once more.
@@ -642,7 +647,7 @@ class Ledger:
             self.source, post, listed, category=category, route=self._route,
             target=self.target, options=self._options,
         ):
-            dest = self.folder.joinpath(*placed.path.split("/"))
+            dest = checked_dest(self.folder, placed.path, check=self._custom_folder)
             if placed.file.content is not None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 files.write(dest, placed.file.content)
@@ -1305,8 +1310,9 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
     # No lock on the target: each file's part locks itself, so two runs may share a target and
     # the sweep passes over the parts another run holds. It runs while the listing starts, and
     # ends before the first file is handed over.
-    sweeping = asyncio.ensure_future(
-        run.off(files.sweep, store.target_folder(run.settings.home, target)))
+    sweep_dir = _sweep_folder(run.settings.home, target, options)
+    sweeping = (asyncio.ensure_future(run.off(files.sweep, sweep_dir))
+                if sweep_dir is not None else None)
     site = _site(run, target, options.since, options.until)
     ledger = Ledger(run, site, target, tally, options=options)
     downloads = Downloads(run, target, tally, swept=sweeping, site=site)
@@ -1315,10 +1321,11 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
     row = await run.off(_opened, ledger, db, target)
     progress = _Progress(row, again=options.again)
     error = await _execute_listing(work, run, site, target, options, progress, listed, turn)
-    try:
-        await sweeping
-    except Exception as failed:
-        error = error or failed
+    if sweeping is not None:
+        try:
+            await sweeping
+        except Exception as failed:
+            error = error or failed
     written = await downloads.finish(error)
     if error is None and downloads.fatal is not None:
         error = downloads.fatal
@@ -2382,18 +2389,63 @@ def _fields(template: str) -> set[str]:
     }
 
 
-def _folder_format(source: Plugin, route: Route | None, category: Category | None) -> str:
-    """The folder template a file is placed by: its category's, else its route's, else its
-    source's.
+def target_root(home: Path, target: Target, options: Options | None = None) -> Path:
+    """Base media folder for `target`: `media/<plugin>` when `options.folder` is set, else
+    `media/<plugin>/<target>`."""
+    if options is not None and options.folder is not None:
+        return home / store.MEDIA / target.plugin
+    return store.target_folder(home, target)
+
+
+def checked_dest(root: Path, relative: str, *, check: bool = False) -> Path:
+    """Join slash-separated `relative` under `root`, ensuring containment when `check` is set."""
+    parts = [part for part in relative.split("/") if part]
+    if check and any(
+        part in (".", "..") or "\\" in part or "\x00" in part or re.match(r"[A-Za-z]:", part)
+        for part in parts
+    ):
+        raise UsageError("folder template escapes the plugin media folder")
+    dest = root.joinpath(*parts)
+    if check and not dest.resolve().is_relative_to(root.resolve()):
+        raise UsageError("folder template escapes the plugin media folder")
+    return dest
+
+
+def _sweep_folder(home: Path, target: Target, options: Options) -> Path | None:
+    """The folder whose stale parts `download` sweeps; None skips sweeping the plugin root."""
+    if options.folder is None:
+        return store.target_folder(home, target)
+    prefix: list[str] = []
+    for segment in options.folder.split("/"):
+        if not segment or "{" in segment or "}" in segment:
+            break
+        cleaned = text.filename(segment)
+        if cleaned:
+            prefix.append(cleaned)
+    if not prefix:
+        return None
+    root = home / store.MEDIA / target.plugin
+    return checked_dest(root, "/".join(prefix), check=True)
+
+
+def _folder_format(
+    source: Plugin, route: Route | None, category: Category | None,
+    options: Options | None = None,
+) -> str:
+    """The folder template a file is placed by: `options.folder` if set, else its category's,
+    else its route's, else its source's.
 
     Args:
         source: the file's source.
         route: the target's route; None to skip it.
         category: the post's category; None to skip it.
+        options: the target's options, whose `folder` overrides every other folder template.
 
     Returns:
         The template, such as `{category}`.
     """
+    if options is not None and options.folder is not None:
+        return options.folder
     if category is not None and category.folder is not None:
         return category.folder
     if route is not None:

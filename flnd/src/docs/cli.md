@@ -108,7 +108,7 @@ each plugin. The pages under [plugins/](README.md#sites) explain them site by si
 Get what the targets have, and follow them, so `flnd get` alone keeps them up to date.
 
 ```sh
-flnd get [targets…] [--when WHEN] [--limit N] [--dry] [--again] [--exec CMD]
+flnd get [targets…] [--when WHEN] [--limit N] [--dry] [--folder TEMPLATE] [--again] [--exec CMD]
 ```
 
 A target that isn't a single post is added to the followed ones, with the categories it names.
@@ -127,6 +127,11 @@ space ([storage.md](storage.md#dedupe)).
   search; at least 1)
 - `--dry` (default: off; what it does: list what would be saved (each file `new` or `saved`, or the
   targets a search finds), and save and write nothing)
+- `--folder TEMPLATE` (default: each target's own folder; what it does: save files under
+  `media/<plugin>/<TEMPLATE>/`, overriding plugin, route, category and config folder templates;
+  collapses every target a search finds into one folder. Supports the standard template fields such
+  as `{target}`, `{date}`, `{query}` and the plugin's own fields, and refuses paths that escape
+  `media/<plugin>/` ([storage.md](storage.md#folder-template-syntax)))
 - `--again` (default: off; what it does: list every post again, past the stop at saved posts and the
   saved cursors, and ask again for files the site answered 404 or 410 for, which are otherwise
   recorded gone and skipped ([storage.md](storage.md)))
@@ -142,6 +147,7 @@ flnd get ins:example_user
 flnd get ins:example_user/reels --when 2026-01..2026-06
 flnd get tik:example_user/videos twt:example_user/media
 flnd get "mht?example/chapters" --limit 5 --dry
+flnd get "twt?@example_handle -from:example_handle filter:media" --folder=example_handle/tagged
 cat targets.txt | flnd get
 flnd get
 ```
@@ -398,7 +404,7 @@ and the repeats of a warning within 10 seconds fold into one line ([How it looks
 - 1: some files or targets failed (each is named above the exit); flnd went on with the rest. `flnd
   status` exits 1 when something needs care
 - 2: a usage error: an unknown command or flag, a target no plugin reads, a category its route
-  lacks, a bad `--when` or `--limit`
+  lacks, a bad `--when`, `--limit` or `--folder`
 - 3: a login is needed: a plugin isn't logged in, its login was refused, or `flnd auth login` failed
 - 4: flnd itself stopped: a full or refused disk, a missing tool, a broken plugin, or a bug
 - 130: stopped with Ctrl-C

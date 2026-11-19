@@ -6,7 +6,7 @@ Every file is in a temporary folder; the user file is passed in, never the real 
 
 import datetime
 import os
-import pwd
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -240,6 +240,13 @@ class ReadTest(Case):
 
     def test_the_real_user_file_is_refused_in_tests(self):
         self.assertEqual(os.environ.get(config.NO_PROFILES), "1")
+        if sys.platform == "win32":
+            real = Path(os.environ.get("APPDATA") or Path.home()) / "flnd" / "config.toml"
+            with self.assertRaises(RuntimeError):
+                config.read(self.home, user=real)
+            return
+        import pwd
+
         with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
             real = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config/flnd/config.toml"
             with self.assertRaises(RuntimeError):
@@ -411,8 +418,9 @@ class TemplatesTest(LibraryCase):
         self.configure('[plugins.exs]\nfolder = "kept/{category}"\nfilename = "{post}"\n')
         self.assertEqual(self.fl.get("exs:example_user").wait().saved, 3)
         folder = self.home / "media" / "exs" / "example_user" / "kept"
-        self.assertEqual(sorted(str(path.relative_to(folder)) for path in folder.rglob("*.jpg")),
-                         ["posts/p1.jpg", "posts/p2.jpg", "reels/r1.jpg"])
+        self.assertEqual(
+            sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*.jpg")),
+            ["posts/p1.jpg", "posts/p2.jpg", "reels/r1.jpg"])
 
     def test_a_template_that_leaves_the_folder_or_names_no_field_is_refused_first(self):
         for text in ('folder = "../out"', 'filename = "{nothing}"'):
@@ -463,6 +471,24 @@ class PrecedenceTest(LibraryCase):
         self.assertEqual(self.fl.get("exs:example_user").wait().saved, 0)
         self.assertEqual(self.fl.get("exs:example_user", when="2026-03").wait().saved, 3)
         self.assertEqual(self.fl.get("exs:example_user", when="").wait().saved, 0)
+
+
+    def test_template_and_check_folder_validation(self):
+        bad_templates = (
+            "..", ".", "a/../b", "a/./b", "/abs", "a/", "a//b", "\\back", "a\\b",
+            "C:drive", "a/C:drive", "a\x00b", "a\nb", "{bad", "bad}", "{}", "{.x}",
+            "{nope}", "{target:{nope}}",
+        )
+        targets = [Target("exm:example_user", kind="user")]
+        for value in bad_templates:
+            with self.subTest(value=value):
+                with self.assertRaises(UsageError):
+                    config.template("the call", "folder", value, Example.fields)
+                with self.assertRaises(UsageError):
+                    config.check_folder(value, PLUGINS, targets)
+        for valid in ("example_handle/tagged", "{target}/{date}", "{query}", "{title}"):
+            with self.subTest(valid=valid):
+                config.check_folder(valid, PLUGINS, targets)
 
 
 if __name__ == "__main__":

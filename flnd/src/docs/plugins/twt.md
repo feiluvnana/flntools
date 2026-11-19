@@ -28,13 +28,18 @@ Every `x.com` form also works on `twitter.com`. The `post` patterns are tried be
 **Search.** `twt?<words>` opens `https://x.com/search?q=<words>&src=typed_query&f=live` (the
 Latest tab) and scrolls it, reading the `SearchTimeline` responses. X's own operators (`from:`,
 `filter:images`, `filter:media`, …) work in the words; for example,
-`twt?@example_handle -from:example_handle filter:media` fetches media from other people's tweets
+`twt?@example_handle -from:example_handle` fetches media from other people's tweets
 mentioning `example_handle` ([cookbook](../cookbook.md#twitterx-tagged-and-mentioned-media)).
+X's `filter:media` and `filter:images` index drops many tweets, while flnd already skips text-only
+tweets locally, so leaving `filter:media` out is more complete.
 `--when` is also sent to X as `since:` and `until:`
 operators (`until:` is the day after `--when`'s last, since X's is exclusive), so a short range
-doesn't scroll through years. A search is a query target: it yields a tweet link
-(`https://x.com/i/web/status/<id>`) for each tweet with a file. The engine downloads each as a
-`post` target, into its own folder `twt/<tweet id>/`, named and keyed as a tweet link is. The
+doesn't scroll through years and older history can be sliced year by year. A search is a query
+target: it yields a tweet link (`https://x.com/i/web/status/<id>`) for each tweet with a file.
+The engine downloads each as a
+`post` target, into its own folder `twt/<tweet id>/`, named and keyed as a tweet link is. Pass
+`--folder=example_handle` or `--folder=example_handle/tagged` (or `--folder="{query}"`) to
+collapse every discovered tweet into one folder under `.flnd/media/twt/<folder>/` instead. The
 tweets a search lists are kept for the run, so the `post` target for each one costs no request.
 A search needs a login: a logged-out browser lands on X's login page, which is waited out and then
 fails the job.
@@ -163,6 +168,10 @@ Example:
 .flnd/media/twt/example_handle/posts/2026-01-02_1234567890_0.jpg
 .flnd/media/twt/example_handle/videos/2026-01-02_1234567891_0.mp4
 ```
+
+With `--folder=example_handle/tagged`, every file from the run (including every tweet a search
+discovers) saves directly under `.flnd/media/twt/example_handle/tagged/<filename>` instead of
+separate `twt/<target>/` folders.
 
 ## Quirks
 

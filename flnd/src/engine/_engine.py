@@ -249,6 +249,7 @@ class Engine:
         sync: bool = False,
         again: bool = False,
         keep: bool = False,
+        folder: str | None = None,
     ) -> Results:
         """Download each target with its saved or given options and return a `Results`.
 
@@ -260,27 +261,33 @@ class Engine:
             sync: follow the targets, so `sync` takes them later.
             again: ignore saved cursors and the stop at saved posts.
             keep: whether to save each target's categories, for later syncs (`follow`).
+            folder: custom folder template under `media/<plugin>/`; None for each target's folder.
 
         Returns:
             One `TargetReport` per target, in order.
 
         Raises:
-            UsageError: a bad target, category or limit, before anything is fetched.
+            UsageError: a bad target, category, limit or folder, before anything is fetched.
             DiskError: the home can't be written; the run stopped.
             KeyboardInterrupt: Ctrl-C (or the run's stop) ended it.
         """
 
         if limit is not None and limit < 1:
             raise UsageError("--limit must be at least 1")
+        if folder is not None:
+            config.check_folder(folder, self.sources)
         span = time or Range()
         # On a thread: a short link is followed with a request of its own.
         resolved = await asyncio.to_thread(self.chosen, targets)
+        if folder is not None:
+            await asyncio.to_thread(config.check_folder, folder, self.sources, resolved)
         base = Options(
             since=span.since,
             until=span.until,
             limit=limit,
             again=again,
             stop_at_saved=sync and not again,
+            folder=folder,
         )
         chosen = [(found.target, replace(base, categories=found.categories,
                                          link=found.link or None))
@@ -1306,7 +1313,8 @@ class _Runner:
                     continue
                 if child in ran or child in found:
                     continue
-                found[child] = Options(since=options.since, until=options.until)
+                found[child] = Options(since=options.since, until=options.until,
+                                       folder=options.folder)
         if not found:
             return []
         ui.info("{targets} linked from the listings", targets=text.count(len(found), "target"))
@@ -1413,12 +1421,12 @@ async def _log_dry(
                 ui.info("{target}", target=str(item))
                 await emit(Planned(item, "", None, "new"))
         return
-    folder = store.target_folder(run.settings.home, target)
+    folder = crawl.target_root(run.settings.home, target, options)
     db = run.settings.db
     async with contextlib.aclosing(crawl.plan(run, target, options)) as planned:
         async for placed in planned:
             ui.info("{target}: {path}", target=str(target), path=placed.path)
-            dest = folder.joinpath(*placed.path.split("/"))
+            dest = crawl.checked_dest(folder, placed.path, check=options.folder is not None)
             saved = await run.off(_planned_saved, db, f"{run.source.code}:{placed.key}", dest)
             await emit(Planned(target, placed.post.id, dest, "saved" if saved else "new"))
 

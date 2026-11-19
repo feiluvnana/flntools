@@ -196,6 +196,33 @@ class GetTest(RunsCase):
                 self.assertEqual(self.run_app("get", "tik:a", "--when", value)[0], 0)
                 self.assertEqual((self.runs[0][2].since, self.runs[0][2].until), (since, until))
 
+    def test_folder_flag_and_validation(self):
+        code, _, err = self.run_app("get", "ins:example_user", "--folder=example_handle/tagged")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.runs[0][2].folder, "example_handle/tagged")
+
+        self.runs.clear()
+        code, _, err = self.run_app("get", "twt:example_handle", "--folder", "{target}/{date}")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.runs[0][2].folder, "{target}/{date}")
+
+        # With no targets and --folder, followed targets run with that folder.
+        self.runs.clear()
+        self.pipe("")
+        code, _, err = self.run_app("get", "--folder=synced")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.runs[0][2].folder, "synced")
+
+        # Invalid folder templates fail with exit code 2 before starting any run.
+        self.runs.clear()
+        for bad in ("..", "a/../b", "/abs", "\\back", "C:drive", "a\x00b", "{nope}",
+                    "{bad", "bad}", "{}"):
+            with self.subTest(bad=bad):
+                code, _, err = self.run_app("get", "ins:example_user", f"--folder={bad}")
+                self.assertEqual(code, 2, err)
+                self.assertNotIn("Traceback", err)
+        self.assertEqual(self.runs, [])
+
     def test_a_mistake_is_a_usage_error_before_anything_starts(self):
         for argv in (("ytb:nasa",), ("tik:7312345678901234567/videos",), ("ins:a/videos",),
                      ("ins:a", "--limit", "0"), ("ins:a", "--limit", "five"),

@@ -7,27 +7,74 @@ in `tests/test_docs.py`.
 ## Twitter/X: tagged and mentioned media
 
 X has no dedicated "tagged" tab, so a profile target (`twt:example_handle`) gets only that
-account's own posts and replies. To capture photos and videos from other people's tweets that
-mention the account, use a search target with X's search operators
-([plugins/twt.md](plugins/twt.md)):
+account's own posts and replies. To capture photos and videos from tweets that mention the
+account, use a search target on the Latest tab ([plugins/twt.md](plugins/twt.md)):
 
 ```sh
-flnd get "twt?@example_handle -from:example_handle filter:media"
+flnd get "twt?@example_handle" --folder=example_handle
+flnd get "twt?@example_handle -from:example_handle" --folder=example_handle/tagged
 ```
 
 - `@example_handle` matches tweets mentioning the handle;
 - `-from:example_handle` leaves out the account's own tweets;
-- `filter:media` keeps only tweets with photos or videos.
-
-Add `--when` so a busy handle does not scroll back through years of results (flnd translates
-`--when` into X's `since:` and `until:` operators):
+- **Drop `filter:media` for completeness:** X's `filter:media` and `filter:images` search index
+  drops many tweets. `flnd` already skips text-only tweets locally as it reads the Latest tab, so
+  leaving `filter:media` out captures more media. You can still add `filter:media` when you want
+  a narrower, faster search:
 
 ```sh
-flnd get "twt?@example_handle -from:example_handle filter:media" --when 30d
+flnd get "twt?@example_handle -from:example_handle filter:media" --folder=example_handle/tagged
+```
+
+**Combine a profile and its mentions into one folder.** Pass the same `--folder` to both commands
+so the account's own posts and other people's mentions land in `.flnd/media/twt/example_handle/`:
+
+```sh
+flnd get twt:example_handle --folder=example_handle
+flnd get "twt?@example_handle -from:example_handle" --folder=example_handle
+```
+
+**Slice older search history by year.** X search slows down or stops scrolling deep histories.
+Split older years with `--when` (flnd translates `--when` into X's `since:` and `until:`
+operators) into the same `--folder`:
+
+```sh
+flnd get "twt?@example_handle -from:example_handle" --when 30d --folder=example_handle/tagged
+flnd get "twt?@example_handle -from:example_handle" --when 2025 --folder=example_handle/tagged
+flnd get "twt?@example_handle -from:example_handle" --when 2024 --folder=example_handle/tagged
 ```
 
 Quote the target so the shell keeps the spaces and `-from:` inside one argument. A search target
 requires a Twitter/X login (`flnd auth login twt`).
+
+## Custom output folders (`--folder`)
+
+Pass `--folder TEMPLATE` to save files under `.flnd/media/<plugin>/<TEMPLATE>/` instead of each
+target's default folder. It overrides plugin, route, category and `config.toml` folder templates,
+and every target a search discovers inherits it:
+
+```sh
+flnd get twt:example_handle --folder=example_handle
+flnd get twt:example_handle --folder="example_handle/{date}"
+flnd get "twt?@example_handle -from:example_handle" --folder="{query}"
+flnd get ins:example_user --folder="{target}/{date}"
+```
+
+To customize filenames alongside `--folder`, set `[plugins.<code>] filename` in `config.toml`
+(for example, dropping the leading date on Twitter/X):
+
+```toml
+[plugins.twt]
+filename = "{post}_{n}"
+```
+
+Files always stay under `.flnd/media/<code>/`. Every built-in field (`plugin`, `target`,
+`category`, `post`, `num`, `count`, `index`, `extension`, `date`, `query`) and the plugin's own
+fields (such as `album` on `ins` or `part` and `n` on `twt`) work inside `--folder`. Empty fields
+drop their adjacent separators and empty segments are omitted. Unsafe paths (`..`, `.`, leading or
+trailing `/`, `\`, drive letters, control characters, bad braces, unknown fields) are refused
+before any request, and dynamic values are sanitized at render time
+([storage.md](storage.md#folder-template-syntax)).
 
 ## Picking categories and opt-in tabs
 
@@ -287,6 +334,27 @@ with flnd.open(home, again=True) as fl:
     fl.add(Demo)
     refetched = fl.get("dmo:example_user").wait()
     assert refetched.saved == 1
+```
+
+### Custom output folder (`folder=`)
+
+Pass `folder=` to `fl.get()` to place files under `media/<plugin>/<rendered>/`, overriding the
+plugin's default folders (and collapsing a search's discovered targets into one folder):
+
+```python
+custom_home = tempfile.mkdtemp()
+with flnd.open(custom_home) as fl:
+    fl.add(Demo)
+    events = list(fl.get("dmo:example_user/all", folder="{target}/{date}"))
+    paths = sorted(
+        e.path.relative_to(pathlib.Path(custom_home, "media", "dmo")).as_posix()
+        for e in events if isinstance(e, flnd.Saved)
+    )
+    assert paths == [
+        "example_user/2026-02-01/p1.txt",
+        "example_user/2026-03-02/p2.txt",
+        "example_user/2026-03-05/t1.txt",
+    ]
 ```
 
 ### Multi-account login, default selection, and switching

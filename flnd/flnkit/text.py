@@ -267,16 +267,23 @@ def fields(template: str) -> set[str]:
         The names, without their attribute or index parts.
 
     Raises:
-        ValueError: the template's braces don't match.
+        ValueError: the template's braces don't match, or hold an empty field name.
 
     Example:
         >>> sorted(fields("{date}_{post}/{album.title}"))
         ['album', 'date', 'post']
     """
-    return {
-        name.split(".")[0].split("[")[0]
-        for _, name, _, _ in _FORMATTER.parse(template) if name
-    }
+    names: set[str] = set()
+    for _, name, spec, _ in _FORMATTER.parse(template):
+        if name is None:
+            continue
+        root = name.split(".")[0].split("[")[0]
+        if not root:
+            raise ValueError("empty field name")
+        names.add(root)
+        if spec and ("{" in spec or "}" in spec):
+            names.update(fields(spec))
+    return names
 
 
 def _split_segments(template: str) -> list[str]:

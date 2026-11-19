@@ -50,6 +50,37 @@ media/ins/example_user/reels/2026-01-03_C2def.mp4
 Each site's page under [plugins/](README.md#sites) shows its own layout. A file's modified time
 is its post's date, at noon UTC, so a file browser sorts by when it was posted.
 
+Passing `--folder TEMPLATE` (or `folder=TEMPLATE` in the library) places files under
+`media/<code>/<rendered>/` instead of `media/<code>/<value>/<folder>/`, overriding plugin, route,
+category and `config.toml` folder templates. For a search target, every discovered target inherits
+`--folder`, so all hits land in one folder under `media/<code>/`.
+
+### Folder template syntax
+
+Folder templates (`--folder`, `folder=`, and `[plugins.<code>] folder` in `config.toml`) use
+Python `str.format` placeholders rendered segment by segment by `flnkit.text.fill`:
+
+- **Placeholders:** write `{field}` (with optional format specs such as `{date:%Y-%m}`, or
+  attribute/index lookups `{a.b}`, `{a[0]}`). Double braces `{{` and `}}` produce literal braces.
+- **Empty and missing fields:** each `/`-separated segment is filled on its own. Adjacent
+  separators (`_`, `-`, space, `.`, `:`, `,`) next to an empty or missing field are dropped (so
+  `{date}_{target}` without a date becomes `<target>`), and any segment that renders empty is
+  omitted rather than producing a blank folder.
+- **Built-in fields:** `plugin`, `target`, `category`, `post`, `num`, `count`, `index`,
+  `extension`, `date`, `query` (plus `path` in `key` templates).
+- **Plugin-specific fields:** each plugin's declared `fields` work too (for example `album` on
+  `ins`, or `part` and `n` on `twt`).
+- **Validation (before any request):** `--folder` / `folder=` is always rooted under
+  `media/<plugin>/`. Templates containing `\`, a leading or trailing `/`, empty segments (`//`),
+  Windows drive letters (`C:`), `.` or `..` segments, null bytes (`\x00`) or control characters,
+  malformed or empty `{}` braces, or unknown field names raise `UsageError` before any network
+  request runs.
+- **Render-time safety:** every rendered segment is passed through `flnkit.text.filename`
+  (replacing `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|` and control characters with `_`, and
+  trimming leading/trailing dots, spaces and underscores), and the final destination is checked to
+  stay inside `media/<plugin>/`, so dynamic values such as `{query}` or `{target}` can never
+  escape it.
+
 ## Parts
 
 Every file flnd writes, a download or a small file of its own, is first written as a **part**:

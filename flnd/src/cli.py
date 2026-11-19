@@ -188,11 +188,15 @@ def get(args: argparse.Namespace) -> int:
     targets = _targets(args.targets)
     with _open(args) as fl:
         if not targets and not any(row.follow for row in fl.targets):
+            if args.folder is not None:
+                fl.get(when=args.when, limit=args.limit, dry=args.dry,
+                       folder=args.folder).wait()
             from flnd.ui import out
 
             out.line(("nothing to sync", "dim"))
             return OK
-        run = fl.get(*targets, when=args.when, limit=args.limit, dry=args.dry)
+        run = fl.get(*targets, when=args.when, limit=args.limit, dry=args.dry,
+                     folder=args.folder)
         return _watch(fl, run, args, runner=runner)
 
 
@@ -724,6 +728,8 @@ def parser() -> argparse.ArgumentParser:
                      help="at most N posts per target, or N targets per search")
     sub.add_argument("--dry", action="store_true",
                      help="list what would be saved, and save and write nothing")
+    sub.add_argument("--folder", metavar="TEMPLATE",
+                     help="save under media/<plugin>/<TEMPLATE>/ instead of each target's folder")
     _again(sub)
     _exec(sub)
     sub.tail = _forms()

@@ -1739,5 +1739,130 @@ class SyncedQueryTest(EngineCase):
         self.assertEqual([p.name for p in report.targets[1].written], ["1.jpg"])
 
 
+class FolderOptionTest(JobCase):
+    """`Options.folder` places files under `media/<plugin>/<rendered>/`, collapsing searches."""
+
+    def media_files(self, code):
+        root = self.home / _store.MEDIA / code
+        return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+
+    def test_normal_target_with_static_and_templated_folder(self):
+        # Overrides plugin, route, category and config.toml folder templates.
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.toml").write_text('[plugins.exm]\nfolder = "ignored/{category}"\n',
+                                               encoding="utf-8")
+        engine = Engine(home=self.home, sources={"exm": Example})
+        report = engine.download(["exm:example_user"], folder="custom/sub")
+        self.assertTrue(report.ok)
+        self.assertEqual(self.media_files("exm"), [
+            "custom/sub/2026-01-01_B2def.jpg",
+            "custom/sub/2026-01-02_C1abc_0.jpg",
+            "custom/sub/2026-01-02_C1abc_1.mp4",
+            "custom/sub/A1.jpg",
+            "custom/sub/avatar_42.jpg",
+        ])
+
+        other = self.home.parent / "home2"
+        other.mkdir()
+        report2 = Engine(home=other, sources={"exm": Example}).download(
+            ["exm:example_user/posts"], folder="{target}/{date}")
+        self.assertTrue(report2.ok)
+        root2 = other / _store.MEDIA / "exm"
+        self.assertEqual(
+            sorted(p.relative_to(root2).as_posix() for p in root2.rglob("*") if p.is_file()),
+            ["example_user/2026-01-01/2026-01-01_B2def.jpg",
+             "example_user/2026-01-02/2026-01-02_C1abc_0.jpg",
+             "example_user/2026-01-02/2026-01-02_C1abc_1.mp4"])
+
+    def test_search_collapses_discovered_targets_and_sweeps_safely(self):
+        class Finder(Plugin):
+            code, name, domains, api = "fnd", "Finder", ("fnd.example",), 2
+            folder = "{category}"
+            filename = "{post}"
+            key = "{post}"
+
+            @route("fnd?{query}", discovers=True)
+            async def search(self, ctx, query):
+                yield Target("fnd:p/1")
+                yield Target("fnd:p/2")
+
+            @route("fnd:p/{pid}", single=True)
+            async def post(self, ctx, pid):
+                yield Post(pid, [File(f"{CDN}/{pid}.jpg")], date=date(2026, 3, 1))
+
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"one")
+        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"two")
+        swept: list[Path] = []
+        with mock.patch.object(files_module, "sweep", side_effect=swept.append):
+            report = Engine(home=self.home, sources={"fnd": Finder}).download(
+                ["fnd?@example_handle -from:example_handle"], folder="example_handle/tagged")
+        self.assertTrue(report.ok)
+        self.assertEqual(self.media_files("fnd"), [
+            "example_handle/tagged/1.jpg", "example_handle/tagged/2.jpg"])
+        self.assertTrue(swept)
+        self.assertTrue(all(
+            p == self.home / _store.MEDIA / "fnd" / "example_handle" / "tagged" for p in swept))
+
+        # Dynamic leading segment skips sweeping the whole plugin root.
+        other = self.home.parent / "home_dyn"
+        other.mkdir()
+        swept.clear()
+        with mock.patch.object(files_module, "sweep", side_effect=swept.append):
+            report2 = Engine(home=other, sources={"fnd": Finder}).download(
+                ["fnd?@example_handle filter:media"], folder="{query}")
+        self.assertTrue(report2.ok)
+        self.assertEqual(swept, [])
+        root2 = other / _store.MEDIA / "fnd"
+        self.assertEqual(
+            sorted(p.relative_to(root2).as_posix() for p in root2.rglob("*") if p.is_file()),
+            ["@example_handle_filter_media/1.jpg", "@example_handle_filter_media/2.jpg"])
+
+    def test_render_time_injection_cannot_escape_plugin_media(self):
+        class Sneaky(Plugin):
+            code, name, domains, api = "snk", "Sneaky", ("snk.example",), 2
+            fields = ("label",)
+            filename = "{post}"
+            key = "{post}"
+
+            @route("snk?{query}", discovers=True)
+            async def search(self, ctx, query):
+                yield Target("snk:p/1")
+
+            @route("snk:p/{pid}", single=True)
+            async def post(self, ctx, pid):
+                yield Post(pid, [File(f"{CDN}/1.jpg")], label="../../evil\\x/C:drive")
+
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"safe")
+        engine = Engine(home=self.home, sources={"snk": Sneaky})
+        report = engine.download(["snk?../escape/a/b"], folder="{query}/{label}")
+        self.assertTrue(report.ok)
+        plugin_root = (self.home / _store.MEDIA / "snk").resolve()
+        written = [p for rep in report.targets for p in rep.written]
+        self.assertEqual(len(written), 1)
+        self.assertTrue(written[0].resolve().is_relative_to(plugin_root))
+        self.assertEqual(self.media_files("snk"), ["escape_a_b/evil_x_C_drive/1.jpg"])
+
+        # Direct containment check refuses traversal components even if injected manually.
+        for bad in ("../escape/a.jpg", "a/../../b.jpg", "C:evil/a.jpg", "a\\b/c.jpg", "a\x00b"):
+            with self.subTest(bad=bad), self.assertRaises(UsageError):
+                job.checked_dest(plugin_root, bad, check=True)
+
+    def test_dry_plan_uses_custom_folder(self):
+        events = []
+        engine = Engine(home=self.home, sources={"exm": Example}, emit=events.append)
+        report = engine.download(["exm:example_user/posts"], dry=True, folder="{target}/{date}")
+        self.assertTrue(report.ok)
+        planned = sorted(
+            e.path.relative_to(self.home / _store.MEDIA / "exm").as_posix()
+            for e in events if getattr(e, "path", None) is not None
+        )
+        self.assertEqual(planned, [
+            "example_user/2026-01-01/2026-01-01_B2def.jpg",
+            "example_user/2026-01-02/2026-01-02_C1abc_0.jpg",
+            "example_user/2026-01-02/2026-01-02_C1abc_1.mp4",
+        ])
+        self.assertFalse((self.home / _store.MEDIA).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

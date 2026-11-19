@@ -343,6 +343,53 @@ class SearchTest(unittest.TestCase):
         # X's `until:` is exclusive, so it is the day after the last.
         self.assertEqual(ctx.seen.visited, [asked_for])
 
+    def test_search_with_folder_collapses_discovered_tweets_into_one_folder(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        from fakes import Engine, EngineCase, noise
+
+        from flnd.engine import store as _store
+        from flnkit import net as _net
+
+        class SearchTwitter(Twitter):
+            login = None
+
+            async def search(self, ctx, query):
+                for item_tweet in (tweet("1", [photo("a")]), tweet("3", [photo("b")])):
+                    self.found[item_tweet["rest_id"]] = item_tweet
+                    yield Target(f"https://x.com/i/web/status/{item_tweet['rest_id']}")
+
+        case = EngineCase()
+        case.setUp()
+        try:
+            case.routes["https://pbs.example/media/a.jpg?name=orig"] = _net.reply(
+                200, content=noise("JPEG"))
+            case.routes["https://pbs.example/media/b.jpg?name=orig"] = _net.reply(
+                200, content=noise("JPEG"))
+            query = "twt?@example_handle -from:example_handle filter:media"
+            report = Engine(home=case.home, sources={"twt": SearchTwitter}).download(
+                [query], folder="example_handle/tagged")
+            self.assertTrue(report.ok)
+            root = case.home / _store.MEDIA / "twt"
+            self.assertEqual(
+                sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()),
+                [f"example_handle/tagged/{DAY}_1_0.jpg", f"example_handle/tagged/{DAY}_3_0.jpg"])
+
+            with TemporaryDirectory() as tmp:
+                other = Path(tmp) / "home"
+                report2 = Engine(home=other, sources={"twt": SearchTwitter}).download(
+                    [query], folder="{query}")
+                self.assertTrue(report2.ok)
+                root2 = other / _store.MEDIA / "twt"
+                expected_dir = "@example_handle_-from_example_handle_filter_media"
+                self.assertEqual(
+                    sorted(p.relative_to(root2).as_posix()
+                           for p in root2.rglob("*") if p.is_file()),
+                    [f"{expected_dir}/{DAY}_1_0.jpg", f"{expected_dir}/{DAY}_3_0.jpg"])
+        finally:
+            case.doCleanups()
+
 
 class TimelineTest(unittest.TestCase):
     def test_grid_items_and_the_pinned_tweet_are_read_the_pinned_one_unordered(self):

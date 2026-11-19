@@ -175,6 +175,9 @@ none, so naming one for it is a usage error.
   a sync too
 - `limit`: at most this many posts per target, or targets per search
 - `dry`: plan instead: `Planned` events, and nothing is written
+- `folder`: a relative folder template under `media/<plugin>/` (`"example_handle/tagged"`,
+  `"{target}/{date}"`, `"{query}"`), overriding plugin, route, category and config folder
+  templates; None (the default) uses each target's own folder
 
 
 ```python
@@ -182,6 +185,8 @@ with flnd.open(home) as fl:
     fl.add(Notes)
     planned = list(fl.get("nts:example_user/reels", when="2026-04", dry=True))
     assert [(event.post, event.state) for event in planned] == [("r1", "saved")]
+    custom = list(fl.get("nts:example_user/reels", folder="custom/{target}", dry=True))
+    assert custom[0].path.as_posix().endswith("media/nts/custom/example_user/r1.txt")
 ```
 
 A mistake in a target or an option raises `flnd.UsageError` at the call, before the run exists:
@@ -241,8 +246,8 @@ with flnd.open(home) as fl:
     fl.targets.unfollow("nts:example_user")
 ```
 
-- `get(*targets, when=, limit=, dry=)` (returns: `Run`; what it does: get the targets and follow
-  them; with none, get every followed target)
+- `get(*targets, when=, limit=, dry=, folder=)` (returns: `Run`; what it does: get the targets and
+  follow them; with none, get every followed target)
 - `targets.list(plugin=None)` (returns: `list[Tracked]`; what it does: the targets the home knows;
   iterating `fl.targets` does the same)
 - `targets.follow(*targets)` (returns: `list[Tracked]`; what it does: follow targets without getting
@@ -354,7 +359,8 @@ no site. `fl.auth.login("ins", method="chrome")` reads a browser's cookies the s
 
 ## The CLI's commands, through the library
 
-- `flnd get T/C --when W --limit N --dry`: `fl.get("T/C", when=W, limit=N, dry=True)`
+- `flnd get T/C --when W --limit N --dry --folder F`:
+  `fl.get("T/C", when=W, limit=N, dry=True, folder=F)`
 - `flnd get`: `fl.get()`
 - `flnd target list`: `fl.targets.list()`
 - `flnd target clean T --media`: `fl.targets.clean(T, media=True)`

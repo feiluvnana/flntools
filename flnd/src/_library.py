@@ -132,7 +132,7 @@ class Flnd:
 
     def get(
         self, *targets: str | Target, limit: int | None = None, when: str | None = None,
-        dry: bool = False,
+        dry: bool = False, folder: str | None = None,
     ) -> Run:
         """Run the targets: get what they have that isn't saved, and follow them.
 
@@ -148,12 +148,15 @@ class Flnd:
                 `"2026-01..2026-03"` or `"30d"`; `""` for every day; None for the home's
                 `[defaults] when` in config.toml, which is every day unless it says otherwise.
             dry: plan instead: the run yields a `Planned` event per file and writes nothing.
+            folder: a relative folder template under `media/<plugin>/` (`"example_handle/tagged"`,
+                `"{target}/{date}"`, `"{query}"`), overriding plugin, route, category and config
+                folder templates; None uses each target's own folder.
 
         Returns:
             The `Run`, not started yet: iterate it, or call `wait()`.
 
         Raises:
-            UsageError: a target, category, `when` or `limit` is wrong, or the home's
+            UsageError: a target, category, `when`, `limit` or `folder` is wrong, or the home's
                 config.toml is.
 
         Example:
@@ -164,18 +167,25 @@ class Flnd:
             ...
             flnkit.errors.UsageError: when takes a year (2026), a month (2026-06), ...
         """
+        from flnd.engine import config
+
         span = self._when(when)
         if limit is not None and limit < 1:
             raise UsageError("limit must be at least 1")
+        if folder is not None:
+            config.check_folder(folder, self._sources())
         again = bool(self._again)
-        if not targets and not (limit or dry or again):
+        if not targets and not (limit or dry or again or folder is not None):
             return self._run("get", lambda engine: engine.run_sync((), time=span))
         named = list(targets) or [row.target for row in self.targets if row.follow]
         if not named:
             return self._run("get", lambda engine: engine.run_sync((), time=span))
         resolved = self._checked(named)
+        if folder is not None:
+            config.check_folder(folder, self._sources(), resolved)
         return self._run(f"get {_names(resolved)}", lambda engine: engine.run_download(
-            resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again))
+            resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again,
+            folder=folder))
 
     @property
     def status(self) -> Status | None:

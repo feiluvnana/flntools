@@ -116,6 +116,36 @@ class GetTest(LibraryCase):
         self.assertEqual(self.saved(self.fl.get()), ["p0"])
         self.assertEqual(self.fl.get("exs:example_user").wait().saved, 0)
 
+    def test_get_with_folder_template_and_validation(self):
+        saved = list(self.fl.get("exs:example_user/posts", folder="custom/{target}/{date}"))
+        root = self.home / "media" / "exs"
+        self.assertEqual(
+            sorted(e.path.relative_to(root).as_posix() for e in saved if isinstance(e, flnd.Saved)),
+            ["custom/example_user/2026-03-01/2026-03-01_p1.jpg",
+             "custom/example_user/2026-03-01/2026-03-01_p2.jpg"])
+
+        # Dry run reflects the custom folder path and writes nothing.
+        planned = list(self.fl.get("exs:example_user/reels", folder="preview/{target}", dry=True))
+        self.assertEqual(
+            [e.path.relative_to(root).as_posix() for e in planned],
+            ["preview/example_user/2026-03-01_r1.jpg"])
+        self.assertFalse((root / "preview").exists())
+
+        # No targets with folder= runs followed targets into the custom folder.
+        self.listing["example_user", "posts"].insert(0, "p0")
+        synced = list(self.fl.get(folder="synced"))
+        self.assertEqual(
+            [e.path.relative_to(root).as_posix() for e in synced if isinstance(e, flnd.Saved)],
+            ["synced/2026-03-01_p0.jpg"])
+
+        # Invalid folder templates raise UsageError before any request is made.
+        self.requests.clear()
+        for bad in ("..", "a/../b", "/abs", "\\back", "C:drive", "a\x00b", "{nope}",
+                    "{bad", "bad}", "{}"):
+            with self.subTest(bad=bad), self.assertRaises(flnd.UsageError):
+                self.fl.get("exs:example_user", folder=bad)
+        self.assertEqual(self.requests, [])
+
     def test_a_single_post_is_never_followed(self):
         self.fl.get("exs:p/9").wait()
         [tracked] = self.fl.targets

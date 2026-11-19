@@ -14,7 +14,7 @@ import sys
 import tomllib
 import typing
 import urllib.parse
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -274,8 +274,14 @@ def template(label: str, key: str, value: str, fields: tuple[str, ...] | None) -
     Raises:
         UsageError: it leaves the target's folder, can't be parsed, or names an unknown field.
     """
-    if ("\\" in value or value.startswith("/") or re.match(r"[A-Za-z]:", value)
-            or any(part in (".", "..") for part in value.split("/"))):
+    if (not isinstance(value, str)
+            or "\\" in value
+            or value.startswith("/")
+            or value.endswith("/")
+            or re.search(r"[\x00-\x1f\x7f-\x9f]", value)
+            or any(re.match(r"[A-Za-z]:", part) or part.strip() in (".", "..")
+                   or (value and not part.strip())
+                   for part in value.split("/"))):
         raise bad(label, key, "a template inside the target's folder", value)
     try:
         used = text.fields(value)
@@ -285,6 +291,31 @@ def template(label: str, key: str, value: str, fields: tuple[str, ...] | None) -
     if unknown:
         known = ", ".join(sorted({*FIELDS, *fields}))
         raise bad(label, key, f"a template of the fields {known}", value)
+
+
+def check_folder(value: str, sources: Mapping[str, type],
+                 targets: Sequence[Any] = ()) -> None:
+    """Validate a `--folder` / `folder=` template against path safety and each target's plugin.
+
+    Args:
+        value: the folder template.
+        sources: plugin classes by code, consulted only when plugin-specific fields are named.
+        targets: resolved targets (`Chosen` or `Target`); empty checks syntax and path safety.
+
+    Raises:
+        UsageError: `value` escapes `media/<plugin>/`, has bad braces, or names an unknown field.
+    """
+    template("the call", "folder", value, None)
+    used = text.fields(value)
+    if not (used - set(FIELDS)):
+        return
+    codes = dict.fromkeys(
+        item.target.plugin if hasattr(item, "target") else item.plugin for item in targets
+    )
+    for code in codes:
+        cls = sources.get(code)
+        fields = tuple(getattr(cls, "fields", ())) if cls is not None else None
+        template("the call", "folder", value, fields)
 
 
 def cut(name: str, limit: int = NAME_MAX) -> str:
