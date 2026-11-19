@@ -1,8 +1,7 @@
 """The crawl (src/engine/crawl.py): one target, from its route to its history rows; searches.
 
 Run through the engine with tests/example_plugin.py and small plugins (API 2) on
-`flnkit.net.fake` and a fake clock: smart sync, early stops, gaps, lazy posts, an expired
-link's refresh, both Ctrl-Cs, and searches. No network, no browser.
+`flnkit.net.fake` and a fake clock. No network, no browser.
 """
 
 import asyncio
@@ -37,10 +36,13 @@ from flnd.ui.log import ui
 from flnkit import files as files_module
 from flnkit import net as _net
 
+# The keys of a history row, as a run writes it today.
+ROW_KEYS = ["at", "category", "date", "estimated", "files", "folder", "hash", "key", "kind",
+            "mtime", "path", "post_id", "sidecar", "size", "state", "target", "unpacked"]
+
 
 def feed(code, *listings, newest_first=False, **declared):
-    """A plugin whose `<code>:<user>` route returns the user, and whose categories are
-    `listings`: async generators taking `(plugin, ctx, user)`, each named as its function."""
+    """A plugin whose `<code>:<user>` route returns the user; `listings` are its categories."""
     @route(f"{code}:{{user}}", newest_first=newest_first)
     async def user(self, ctx, user):
         return user
@@ -63,7 +65,7 @@ def lazy(files, calls, name):
 
 
 def author(*found):
-    """A plugin whose `aut:<name>` route discovers the targets `found`, as people write them."""
+    """A plugin whose `aut:<name>` route discovers the targets `found`."""
     class Author(Plugin):
         code, name, domains, api = "aut", "Author", ("aut.example",), 2
 
@@ -76,23 +78,24 @@ def author(*found):
 
 
 class JobCase(EngineCase):
-    """The engine with `Example`'s API answering from `FIXTURES`; every other URL answers its
-    own path."""
+    """The engine with `Example`'s API answering from `FIXTURES`."""
 
     def setUp(self):
         super().setUp()
         for url, answer in FIXTURES.items():
-            self.routes[url] = self.json_answer(url, answer)
+            self.routes[url] = self.json_answer(answer)
 
-    def json_answer(self, url, answer):
+    def json_answer(self, answer):
         def respond(request):
             data = answer(dict(request.url.params)) if callable(answer) else answer
             return _net.reply(200, json=data)
 
         return respond
 
-    def history(self):
-        return fakes.history(self.home)
+    def history(self, code=None):
+        """The history rows, or only those of the plugin `code`."""
+        rows = fakes.history(self.home)
+        return rows if code is None else {k: v for k, v in rows.items() if k.startswith(f"{code}:")}
 
     def sql(self, statement, *args):
         """Run one statement on the home's `flnd.db`, as another tool might."""
@@ -105,6 +108,9 @@ class JobCase(EngineCase):
     def fetched(self, url):
         return [request for request in self.requests if str(request.url).split("?")[0] == url]
 
+    def cdn_requests(self):
+        return [request for request in self.requests if request.url.host == "cdn.example"]
+
     def files(self, code="exm", name="example_user"):
         folder = self.target_dir(code, name)
         return sorted(
@@ -113,7 +119,7 @@ class JobCase(EngineCase):
 
 
 class CategoriesTest(JobCase):
-    def test_without_from_every_category_and_todays_names_and_keys(self):
+    def test_every_category_todays_names_keys_and_row_format(self):
         self.assertEqual(self.run_engine(Example, targets=["exm:example_user"]), 5)
         self.assertEqual(self.files(), ["albums/Summer_2026/A1.jpg", "posts/2026-01-01_B2def.jpg",
                                         "posts/2026-01-02_C1abc_0.jpg",
@@ -122,28 +128,19 @@ class CategoriesTest(JobCase):
         rows = self.history()
         self.assertEqual(sorted(rows), ["exm:A1_0", "exm:B2def_0", "exm:C1abc_0", "exm:C1abc_1",
                                         "exm:profile/avatar_42.jpg"])
-        # Today's row format: where it is, its size and modified time, and when.
         # The first file of a post of several holds their count (fixes #2).
-        self.assertEqual(sorted(rows["exm:C1abc_0"]),
-                         ["at", "category", "date", "estimated", "files", "folder", "hash", "key",
-                          "kind", "mtime", "path",
-                          "post_id", "sidecar", "size", "state", "target", "unpacked"])
+        for key in ("exm:C1abc_0", "exm:C1abc_1", "exm:B2def_0"):
+            self.assertEqual(sorted(rows[key]), ROW_KEYS)
         self.assertEqual(rows["exm:C1abc_0"]["files"], 2)
-        self.assertEqual(sorted(rows["exm:C1abc_1"]),
-                         ["at", "category", "date", "estimated", "files", "folder", "hash", "key",
-                          "kind", "mtime", "path",
-                          "post_id", "sidecar", "size", "state", "target", "unpacked"])
         # The route is called once for its three categories.
         self.assertEqual(len(self.fetched(f"{API}/users/example_user")), 1)
 
-    def test_only_the_wanted_categories_are_called(self):
+    def test_only_wanted_categories_are_called_and_a_route_none_wanted_is_never_called(self):
         self.run_engine(Example, targets=["exm:example_user"],
                         options=Options(categories=("profile",)))
         self.assertEqual(self.files(), ["profile/avatar_42.jpg"])
         self.assertEqual(self.fetched(f"{API}/users/42/posts") + self.fetched(f"{API}/albums/A1"),
                          [])
-
-    def test_a_route_none_of_whose_categories_is_wanted_is_never_called(self):
         called = []
 
         class Tagged(Plugin):
@@ -167,15 +164,17 @@ class CategoriesTest(JobCase):
             async def tagged(self, ctx, tag):
                 yield Post(tag, [File(f"{CDN}/{tag}.jpg")])
 
-        self.run_engine(Tagged, targets=["https://example.com/tags/example_tag"],
-                        options=Options(categories=("posts",)))
+        tag_url = ["https://example.com/tags/example_tag"]
+        self.requests.clear()
+        self.run_engine(Tagged, targets=tag_url, options=Options(categories=("posts",)))
         self.assertEqual((called, self.requests), ([], []))
-        self.run_engine(Tagged, targets=["https://example.com/tags/example_tag"])
+        self.run_engine(Tagged, targets=tag_url)
         self.assertEqual(called, ["example_tag"])
 
     def test_a_route_without_categories_files_its_posts_in_the_targets_folder(self):
         self.assertEqual(self.run_engine(Example, targets=["https://www.example.com/p/C1abc/"]), 1)
         self.assertEqual(self.files(name="C1abc"), ["2026-01-02_C1abc.jpg"])
+
 
 class SavedTest(JobCase):
     def test_a_second_run_lists_no_saved_lazy_post_and_downloads_nothing(self):
@@ -183,12 +182,9 @@ class SavedTest(JobCase):
         self.requests.clear()
         self.assertEqual(self.run_engine(Example, targets=["exm:example_user"]), 0)
         # The album's photos are a lazy post: saved, so its request isn't made again.
-        self.assertEqual(self.fetched(f"{API}/albums/A1"), [])
-        self.assertEqual(
-            [request for request in self.requests if request.url.host == "cdn.example"], []
-        )
+        self.assertEqual((self.fetched(f"{API}/albums/A1"), self.cdn_requests()), ([], []))
 
-    def test_a_lazy_post_is_listed_only_when_needed(self):
+    def test_a_lazy_post_is_listed_only_when_needed_and_again_when_a_file_failed(self):
         listed = []
 
         async def posts(plugin, ctx, user):
@@ -202,17 +198,14 @@ class SavedTest(JobCase):
         self.run_engine(feed("lzy", posts), targets=["lzy:example_user"], options=options)
         self.assertEqual(listed, ["new"])
 
-    def test_a_lazy_post_whose_later_file_failed_is_listed_again(self):
-        listed = []
-
-        async def posts(plugin, ctx, user):
+        async def carousel_posts(plugin, ctx, user):
             yield Post("C1abc", lazy([File(f"{CDN}/c{num}.jpg") for num in range(3)], listed,
                                      "C1abc"))
 
-        carousel = feed("crs", posts, key="{post}_{num}")
+        carousel = feed("crs", carousel_posts, key="{post}_{num}")
         self.routes[f"{CDN}/c1.jpg"] = _net.reply(403)
         self.run_engine(carousel, targets=["crs:example_user"])
-        self.assertEqual(sorted(self.history()), ["crs:C1abc_0", "crs:C1abc_2"])
+        self.assertEqual(sorted(self.history("crs")), ["crs:C1abc_0", "crs:C1abc_2"])
         del self.routes[f"{CDN}/c1.jpg"]
         # The 403 asked for the post's files once more (B6), so the first run listed it twice.
         before = len(listed)
@@ -225,7 +218,7 @@ class SavedTest(JobCase):
         self.run_engine(carousel, targets=["crs:example_user"])
         self.assertEqual((len(listed), self.requests), (before + 1, []))
 
-    def test_failed_file_is_retried_directly_under_sync(self):
+    def test_a_failed_file_is_retried_directly_under_sync(self):
         async def posts(plugin, ctx, user):
             yield Post("new1", [File(f"{CDN}/new1.jpg")], date="2026-02-01")
             yield Post("old1", [File(f"{CDN}/old1.jpg")], date="2026-01-01")
@@ -242,15 +235,14 @@ class SavedTest(JobCase):
         self.assertIn("fed:old1_0", self.history())
         self.assertEqual([str(r.url) for r in self.requests], [f"{CDN}/old1.jpg"])
 
-    def test_a_file_queued_twice_is_downloaded_once(self):
-        async def posts(plugin, ctx, user):
+    def test_a_file_queued_again_is_downloaded_once(self):
+        async def twice(plugin, ctx, user):
             yield Post("1", [File(f"{CDN}/1.jpg")])
             yield Post("1", [File(f"{CDN}/1.jpg")])
 
-        self.assertEqual(self.run_engine(feed("twc", posts), targets=["twc:example_user"]), 1)
+        self.assertEqual(self.run_engine(feed("twc", twice), targets=["twc:example_user"]), 1)
         self.assertFalse(any(line.startswith(". skip ") for line in self.lines()), self.lines())
 
-    def test_a_file_in_two_categories_is_downloaded_once(self):
         async def posts(plugin, ctx, user):
             yield Post("1", [File(f"{CDN}/1.jpg")])
 
@@ -259,28 +251,26 @@ class SavedTest(JobCase):
             yield Post("2", [File(f"{CDN}/2.jpg")])
 
         both = feed("bth", posts, reels)
+        self.requests.clear()
         self.assertEqual(self.run_engine(both, targets=["bth:example_user"]), 2)
         # Both categories name it `1_0` (their folders differ), so the second is skipped as queued.
         self.assertEqual(len(self.fetched(f"{CDN}/1.jpg")), 1)
-        self.assertEqual(sorted(self.history()), ["bth:1_0", "bth:2_0"])
+        self.assertEqual(sorted(self.history("bth")), ["bth:1_0", "bth:2_0"])
         # The second category's folder holds a link to the first one's file.
         self.assertEqual(self.files("bth"), ["posts/1.jpg", "reels/1.jpg", "reels/2.jpg"])
         self.assertTrue((self.target_dir("bth", "example_user") / "reels" / "1.jpg").is_symlink())
         # A later run finds both saved, whichever category lists them.
         self.requests.clear()
         self.assertEqual(self.run_engine(both, targets=["bth:example_user"]), 0)
-        self.assertEqual(
-            [request for request in self.requests if request.url.host == "cdn.example"], []
-        )
+        self.assertEqual(self.cdn_requests(), [])
 
-    def test_two_files_with_one_path_are_downloaded_once(self):
-        async def posts(plugin, ctx, user):
+        async def same_path(plugin, ctx, user):
             yield Post("1", [File(f"{CDN}/1.jpg")])
 
-        async def reels(plugin, ctx, user):
+        async def other(plugin, ctx, user):
             yield Post("2", [File(f"{CDN}/2.jpg")])
 
-        same = feed("sme", posts, reels, folder="", filename="photo")
+        same = feed("sme", same_path, other, folder="", filename="photo")
         # Two keys, one path: the second file would overwrite the first, so it is skipped as queued.
         self.assertEqual(self.run_engine(same, targets=["sme:example_user"]), 1)
         self.assertEqual(self.files("sme"), ["photo.jpg"])
@@ -346,38 +336,28 @@ class FilesTest(JobCase):
         self.assertEqual(modified("albums/Summer_2026/A1.jpg").date(),
                          datetime.datetime.now(datetime.UTC).date())
 
-    def test_the_history_row_has_its_path_size_and_time_and_a_first_file_its_posts_count(self):
-        self.run_engine(
-            Example, targets=["exm:example_user"], options=Options(categories=("posts",))
-        )
+    def test_the_history_row_has_its_path_size_and_time(self):
+        self.run_engine(Example, targets=["exm:example_user"],
+                        options=Options(categories=("posts",)))
         row = self.history()["exm:C1abc_0"]
         saved = self.target_dir("exm", "example_user") / "posts" / "2026-01-02_C1abc_0.jpg"
-        self.assertEqual(sorted(row), ["at", "category", "date", "estimated", "files", "folder",
-                                       "hash", "key", "kind", "mtime", "path",
-                          "post_id", "sidecar", "size", "state", "target", "unpacked"])
-        self.assertEqual(sorted(self.history()["exm:B2def_0"]),
-                         ["at", "category", "date", "estimated", "files", "folder", "hash", "key",
-                          "kind", "mtime", "path",
-                          "post_id", "sidecar", "size", "state", "target", "unpacked"])
         self.assertEqual((row["path"], row["size"]), (str(saved), len(b"/C1abc_0.jpg")))
         written = datetime.datetime.fromisoformat(row["at"])
         self.assertEqual(written.utcoffset(), datetime.timedelta(0))
         self.assertEqual(written.microsecond, 0)
         self.assertLess(abs(datetime.datetime.now(datetime.UTC) - written),
                         datetime.timedelta(minutes=1))
-        # Keys are `<code>:<key>`, one per file, a text file none.
-        self.assertEqual(sorted(self.history()), ["exm:B2def_0", "exm:C1abc_0", "exm:C1abc_1"])
 
 
 class TimeTest(JobCase):
-    """`--time` and the `newest_first` early stop."""
+    """`--time`, `--until` and the `newest_first` early stop."""
 
     def saved(self, plugin, options):
         """The ids of the posts a download of `<code>:example_user` saved."""
         self.run_engine(plugin, targets=[f"{plugin.code}:example_user"], options=options)
-        return sorted(key.split(":", 1)[1] for key in self.history())
+        return sorted(key.split(":", 1)[1] for key in self.history(plugin.code))
 
-    def feed(self, newest_first, finished):
+    def dated_feed(self, code, newest_first, finished):
         # Three old pinned posts on top, then the feed newest first.
         days = [2020, 2021, 2022, 2026, 2026, 2025, 2025, 2025, 2025, 2025, 2025, 2024]
 
@@ -389,19 +369,18 @@ class TimeTest(JobCase):
             finally:
                 finished.append(True)
 
-        return feed("fed", posts, newest_first=newest_first, key="{post}")
+        return feed(code, posts, newest_first=newest_first, key="{post}")
 
-    def test_a_newest_first_feed_stops_after_5_older_posts_in_a_row_and_its_finally_runs(self):
+    def test_a_newest_first_feed_stops_after_5_older_posts_and_any_other_is_read_to_its_end(self):
+        since = Options(since=date(2026, 1, 1))
         finished = []
         # The pinned posts don't stop it; five older in a row do, before the 2024 one.
-        self.assertEqual(self.saved(self.feed(True, finished), Options(since=date(2026, 1, 1))),
+        self.assertEqual(self.saved(self.dated_feed("fed", True, finished), since),
                          ["3_2026", "4_2026"])
         self.assertEqual(finished, [True])
         self.assertEqual(self.fetched(f"{CDN}/11.jpg"), [])
-
-    def test_any_other_feed_is_read_to_its_end(self):
-        finished = []
-        self.assertEqual(self.saved(self.feed(False, finished), Options(since=date(2026, 1, 1))),
+        finished.clear()
+        self.assertEqual(self.saved(self.dated_feed("fe2", False, finished), since),
                          ["3_2026", "4_2026"])
         self.assertEqual(finished, [True])
 
@@ -421,12 +400,8 @@ class TimeTest(JobCase):
 
 class SyncStopTest(JobCase):
     """`sync` stops a `newest_first` category after 5 saved posts in a row, only once its
-    listing has reached its end.
-
-    The engine's sooner stop, at the head an earlier run saw, is `HeadTest`'s; these tests forget
-    the head first
-    (`forget_head`), so the run of 5 is what stops them.
-    """
+    listing has reached its end. `HeadTest` covers the sooner stop at the head; these tests
+    forget the head first, so the run of 5 is what stops them."""
 
     def setUp(self):
         super().setUp()
@@ -459,14 +434,17 @@ class SyncStopTest(JobCase):
     def forget_head(self):
         self.sql("UPDATE targets SET heads = '{}' WHERE key = ?", "fed:example_user")
 
+    def sync(self):
+        self.listed.clear()
+        self.forget_head()
+        return self.engine.sync(["fed:example_user"])
+
     def test_sync_stops_after_5_saved_posts_in_a_row_with_a_record_and_closes_the_listing(self):
         self.assertTrue(self.engine.download(["fed:example_user/all"]).ok)
         self.assertEqual(self.record(), {"posts": "2026-01-01"})
         self.ids = ["n1", "n2", *self.ids]
-        self.listed.clear()
         self.finished.clear()
-        self.forget_head()
-        report = self.engine.sync(["fed:example_user"])
+        report = self.sync()
         self.assertEqual(self.listed, ["n1", "n2", "p0", "p1", "p2", "p3", "p4"])
         self.assertEqual(self.finished, [True])
         self.assertEqual(sorted(path.name for path in report.targets[0].written),
@@ -474,22 +452,14 @@ class SyncStopTest(JobCase):
         # It stopped early, so the record is the earlier one, still there.
         self.assertIn("posts", self.record())
 
-    def test_sync_keeps_complete_record_and_fast_completes_on_subsequent_runs(self):
-        """A caught-up sync stays complete and stops after 5 saved posts on subsequent runs."""
+    def test_a_caught_up_sync_stays_complete_and_stops_after_5_saved_posts(self):
         self.assertTrue(self.engine.download(["fed:example_user/all"]).ok)
-        self.assertEqual(self.record(), {"posts": "2026-01-01"})
-        self.listed.clear()
-        self.forget_head()
-        report = self.engine.sync(["fed:example_user"])
-        self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
-        self.assertEqual(report.files, 0)
-        self.assertIn("posts", self.record())
+        for _ in range(2):
+            report = self.sync()
+            self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
+            self.assertEqual(report.files, 0)
+            self.assertIn("posts", self.record())
         self.assertEqual(fakes.targets(self.home)["fed:example_user"].cursors, {})
-        self.listed.clear()
-        self.forget_head()
-        report2 = self.engine.sync(["fed:example_user"])
-        self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
-        self.assertEqual(report2.files, 0)
 
     def test_files_queued_by_an_earlier_category_are_not_caught_up(self):
         """fixes #4: a second feed listing the first one's 6 new posts goes on past them."""
@@ -519,12 +489,9 @@ class SyncStopTest(JobCase):
         (twt replies)."""
         self.assertTrue(self.engine.download(["fed:example_user/all"]).ok)
         text = File.text("note.txt", "a note")
-        # Saved posts with a no-file post and a text-only post between them: 5 saved still end it.
         self.ids = ["p0", "none1", "p1", "text1", "p2", "none2", "p3", "p4", "p5", "p6", "p7"]
         self.post_files = {"none1": [], "none2": [], "text1": [text]}
-        self.listed.clear()
-        self.forget_head()
-        self.engine.sync(["fed:example_user"])
+        self.sync()
         self.assertEqual(self.listed, ["p0", "none1", "p1", "text1", "p2", "none2", "p3", "p4"])
         self.assertEqual(self.finished[-1], True)
 
@@ -534,16 +501,13 @@ class SyncStopTest(JobCase):
         # then a new one resets.
         for name in ("p2", "p3"):
             next(self.target_dir("fed", "example_user").rglob(f"*{name}.jpg")).unlink()
-        for name in ("p2", "p3"):
             self.sql("DELETE FROM files WHERE key = ?", f"fed:{name}")
-        self.listed.clear()
-        self.forget_head()
-        report = self.engine.sync(["fed:example_user"])
+        report = self.sync()
         self.assertEqual(len(report.targets[0].written), 2)
         # p0, p1 saved, p2 and p3 fetched again, then p4..p7: 4 saved in a row never stop it.
         self.assertEqual(self.listed, self.ids)
 
-    def test_without_a_record_sync_lists_to_the_end(self):
+    def test_without_a_record_or_after_an_interrupted_listing_sync_lists_everything(self):
         self.engine.download(["fed:example_user/all"])
         self.forget_record()
         self.listed.clear()
@@ -551,15 +515,12 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.listed, self.ids)
         # The listing reached its end, so it is recorded now, and the next sync stops.
         self.assertIsNotNone(self.record())
-        self.listed.clear()
-        self.forget_head()
-        self.engine.sync(["fed:example_user"])
+        self.sync()
         self.assertEqual(self.listed, self.ids[:5])
 
-    def test_an_interrupted_listing_records_none_so_sync_lists_everything(self):
+        self.forget_record()
         self.fail_at = ["p6"]
-        report = self.engine.download(["fed:example_user/all"])
-        self.assertFalse(report.ok)
+        self.assertFalse(self.engine.download(["fed:example_user/all"]).ok)
         self.assertIsNone(self.record())
         self.fail_at, self.listed = [], []
         self.engine.sync(["fed:example_user"])
@@ -569,8 +530,8 @@ class SyncStopTest(JobCase):
 
     def test_download_stops_at_saved_posts_by_default_and_again_lists_all(self):
         self.engine.download(["fed:example_user/all"])
-        self.listed.clear()
         self.forget_head()
+        self.listed.clear()
         report = self.engine.download(["fed:example_user/all"])
         self.assertEqual(self.listed, self.ids[:5])
         self.assertEqual((report.files, report.targets[0].skipped), (0, 5))
@@ -579,14 +540,13 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.listed, self.ids)
         self.assertEqual((report_again.files, report_again.targets[0].skipped), (0, 8))
 
-    def test_stop_after_in_the_config_changes_the_run_of_5(self):
+    def test_stop_after_in_the_config_changes_the_run_of_5_and_a_bad_value_is_a_usage_error(self):
         self.engine.download(["fed:example_user/all"])
-        self.home.joinpath("config.toml").write_text("[plugins.fed]\nstop_after = 3\n")
-        self.listed.clear()
-        self.forget_head()
-        self.engine.sync(["fed:example_user"])
+        config = self.home.joinpath("config.toml")
+        config.write_text("[plugins.fed]\nstop_after = 3\n")
+        self.sync()
         self.assertEqual(self.listed, self.ids[:3])
-        self.home.joinpath("config.toml").write_text("[plugins.fed]\nstop_after = 0\n")
+        config.write_text("[plugins.fed]\nstop_after = 0\n")
         # A bad setting stops the whole run as a usage error, before the source sends anything.
         with self.assertRaises(UsageError) as caught:
             self.engine.sync(["fed:example_user"])
@@ -638,7 +598,7 @@ class AsyncTest(JobCase):
 
 
 class FailureTest(JobCase):
-    def test_a_category_that_raises_fails_the_target(self):
+    def test_a_category_that_raises_fails_the_target_as_a_plugin_error(self):
         async def posts(plugin, ctx, user):
             yield Post("1", [File(f"{CDN}/1.jpg")])
             raise RuntimeError("the feed broke")
@@ -679,8 +639,8 @@ class FailureTest(JobCase):
         names = ["gone", "cut", "good", "locked", "last"]
         report = self.report(Errors, targets=[f"err:{name}" for name in names])
         self.assertEqual(report.files, 1)
-        self.assertEqual([target.value for target in report.failed], ["gone", "cut", "locked",
-                                                                      "last"])
+        self.assertEqual([target.value for target in report.failed],
+                         ["gone", "cut", "locked", "last"])
         self.assertEqual(self.failures(), ["err:gone: HTTP 404 for https://example.com/gone",
                                            "err:cut: HTTP 500 for https://example.com/cut",
                                            "err:locked: err: the saved login expired",
@@ -697,10 +657,7 @@ class FailureTest(JobCase):
 
 class Cut:
     """A body that sends `data`, then drops the connection; or, given `gate`, waits on it after the
-    first chunk.
-
-    An async iterable, so its wait on `gate` holds up only this transfer, not the run's loop.
-    """
+    first chunk. An async iterable, so its wait holds up only this transfer, not the loop."""
 
     def __init__(self, data, *, gate=None, sent=None):
         self.data, self.gate, self.sent = data, gate, sent
@@ -722,6 +679,7 @@ class RefreshTest(JobCase):
 
     BODY = b"0123456789"
     PHOTO = f"{CDN}/A1/1.jpg"
+    ALBUMS = Options(categories=("albums",))
 
     def setUp(self):
         super().setUp()
@@ -738,27 +696,25 @@ class RefreshTest(JobCase):
         """The photo's CDN: the first link sends half the file, then the connection drops and the
         link expires."""
         def photo(request):
-            sig = request.url.params["sig"]
-            headers = {"ETag": '"p1"', "Accept-Ranges": "bytes"}
-            if sig == "1":
+            if request.url.params["sig"] == "1":
                 range_header = request.headers.get("range", "")
                 if range_header and not range_header.startswith("bytes=0-"):
                     return _net.reply(403)
-                return _net.reply(200, headers={**headers, "Content-Length": "10"},
-                                  chunks=Cut(self.BODY))
-            return fresh(request, headers)
+                headers = {"ETag": '"p1"', "Accept-Ranges": "bytes", "Content-Length": "10"}
+                return _net.reply(200, headers=headers, chunks=Cut(self.BODY))
+            return fresh(request)
 
         self.routes[self.PHOTO] = photo
 
     def test_an_expired_link_calls_lazy_files_once_more_and_resumes(self):
-        def fresh(request, headers):
+        def fresh(request):
             start = int(request.headers["range"].removeprefix("bytes=").split("-")[0])
-            return _net.reply(206, content=self.BODY[start:],
-                                  headers={**headers, "Content-Range": f"bytes {start}-9/10"})
+            return _net.reply(206, content=self.BODY[start:], headers={
+                "ETag": '"p1"', "Accept-Ranges": "bytes",
+                "Content-Range": f"bytes {start}-9/10"})
 
         self.cdn(fresh)
-        self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("albums",
-                                                                                           )))
+        self.run_engine(Example, targets=["exm:example_user"], options=self.ALBUMS)
         photo = self.target_dir("exm", "example_user") / "albums/Summer_2026/A1.jpg"
         self.assertEqual(photo.read_bytes(), self.BODY)
         self.assertEqual(self.listings, 2)
@@ -771,9 +727,8 @@ class RefreshTest(JobCase):
         self.assertEqual([path.name for path in album_dir.iterdir()], ["A1.jpg"])
 
     def test_once_per_file_never_in_a_loop(self):
-        self.cdn(lambda request, headers: _net.reply(410))
-        self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("albums",
-                                                                                           )))
+        self.cdn(lambda request: _net.reply(410))
+        self.run_engine(Example, targets=["exm:example_user"], options=self.ALBUMS)
         self.assertEqual(self.listings, 2)
         self.assertIn("A1.jpg: GET https://cdn.example/A1/1.jpg: HTTP 410", self.failures())
         self.assertNotIn("exm:A1_0", self.history())
@@ -782,7 +737,7 @@ class RefreshTest(JobCase):
         """A rate-limit wait inside `files` that the first Ctrl-C cuts short is the graceful
         stop, not a failure."""
         stop = _run.Stop()
-        self.cdn(lambda request, headers: _net.reply(500))
+        self.cdn(lambda request: _net.reply(500))
 
         def album(request):
             self.listings += 1
@@ -792,16 +747,14 @@ class RefreshTest(JobCase):
             return _net.reply(200, json={"urls": [f"{self.PHOTO}?sig=1"]})
 
         self.routes[f"{API}/albums/A1"] = album
-        report = self.report(Example, targets=["exm:example_user"],
-                             options=Options(categories=("albums",)), stop=stop)
+        report = self.report(Example, targets=["exm:example_user"], options=self.ALBUMS, stop=stop)
         self.assertEqual(str(report.targets[0].error), job.STOPPED)
         self.assertEqual(self.listings, 2)
 
     def test_a_post_with_its_files_listed_is_not_refreshed(self):
         self.routes[f"{CDN}/C1abc_0.jpg"] = _net.reply(403)
-        self.run_engine(
-            Example, targets=["exm:example_user"], options=Options(categories=("posts",))
-        )
+        self.run_engine(Example, targets=["exm:example_user"],
+                        options=Options(categories=("posts",)))
         self.assertEqual(len(self.fetched(f"{CDN}/C1abc_0.jpg")), 1)
         self.assertEqual(len(self.fetched(f"{API}/users/42/posts")), 2)
         self.assertIn("2026-01-02_C1abc_0.jpg: GET https://cdn.example/C1abc_0.jpg: HTTP 403",
@@ -809,12 +762,11 @@ class RefreshTest(JobCase):
 
 
 class CtrlCTest(JobCase):
-    """D8: the first Ctrl-C stops listing and lets running downloads finish; the
-    second stops them now.
+    """D8: the first Ctrl-C stops listing and lets running downloads finish; the second stops
+    them now.
 
     The run goes on a thread of its own, as the engine's groups do, and the test thread plays the
-    person, setting `net.stopping` and `net.stopping_now` as the SIGINT handler does; the CDN blocks
-    on events, so the test decides when each download moves.
+    person, setting the stop events as the SIGINT handler does.
     """
 
     def setUp(self):
@@ -902,11 +854,10 @@ class CtrlCTest(JobCase):
             range_header = request.headers.get("range", "")
             if range_header and not range_header.startswith("bytes=0-"):
                 start = int(range_header.removeprefix("bytes=").split("-")[0])
-                return _net.reply(206, content=body[start:],
-                                      headers={"ETag": '"b1"',
-                                               "Content-Range": f"bytes {start}-9/10"})
+                return _net.reply(206, content=body[start:], headers={
+                    "ETag": '"b1"', "Content-Range": f"bytes {start}-9/10"})
             return _net.reply(200, headers={"ETag": '"b1"', "Content-Length": "10"},
-                                  chunks=Cut(body, gate=gate, sent=sent))
+                              chunks=Cut(body, gate=gate, sent=sent))
 
         self.routes[f"{CDN}/big.7z"] = big
         self.addCleanup(gate.set)
@@ -919,9 +870,9 @@ class CtrlCTest(JobCase):
         thread.join(10)
         self.assertIsInstance(outcome.get("error"), KeyboardInterrupt)
         folder = self.target_dir("big", "example_user")
-        names = sorted(path.name for path in folder.iterdir())
         # The part, and beside it the ETag its bytes came under.
-        self.assertEqual(names, ["big.7z.part", "big.7z.part.json"])
+        self.assertEqual(sorted(path.name for path in folder.iterdir()),
+                         ["big.7z.part", "big.7z.part.json"])
 
         # The next run resumes the part, sending the ETag so a changed file comes whole.
         self.stop.soon.clear()
@@ -935,14 +886,16 @@ class CtrlCTest(JobCase):
 
 
 class HeadTest(JobCase):
-    """Smart sync, the head: a sync stops at the newest post an earlier run saw,
-    and the post after it."""
+    """Smart sync, the head: a sync stops at the newest post an earlier run saw, and the post
+    after it."""
 
     def setUp(self):
         super().setUp()
         # Each post's day: a later one is newer; a pinned post sits on top with an older day.
         self.posts = [("p3", 3), ("p2", 2), ("p1", 1), ("p0", 1)]
         self.listed = []
+        # The posts the site shows above its date order.
+        self.pinned = set()
 
         async def posts(plugin, ctx, user):
             for post_id, day in list(self.posts):
@@ -950,8 +903,6 @@ class HeadTest(JobCase):
                 yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")],
                            date=datetime.date(2026, 1, day), pinned=post_id in self.pinned)
 
-        # The posts the site shows above its date order.
-        self.pinned = set()
         heads = feed("hed", posts, newest_first=True, key="{post}", filename="{post}_{num}")
         self.engine = Engine(home=self.home, sources={"hed": heads})
 
@@ -977,21 +928,19 @@ class HeadTest(JobCase):
         self.assertEqual(sorted(path.stem for path in report.targets[0].written), ["n0_0", "n1_0"])
         self.assertEqual(self.heads(), {"posts": "n1"})
 
-    def test_a_head_pinned_above_new_posts_does_not_end_the_sync(self):
+    def test_a_pinned_head_above_new_posts_neither_ends_the_sync_nor_becomes_the_head(self):
         self.engine.download(["hed:example_user/all"])
-        # The site pinned the old head above two new posts.
+        # The site pinned the old head above two new posts, and the post after it too.
         self.posts = [("p3", 3), ("n1", 5), ("n0", 4), ("p2", 2), ("p1", 1), ("p0", 1)]
-        self.listed.clear()
         report = self.engine.sync(["hed:example_user"])
         self.assertEqual(sorted(path.stem for path in report.targets[0].written), ["n0_0", "n1_0"])
         # The newest post by its day is the head now, not the pinned one listed first.
         self.assertEqual(self.heads(), {"posts": "n1"})
 
-    def test_posts_pinned_above_new_ones_never_end_the_sync_nor_become_the_head(self):
+    def test_a_pinned_post_above_the_head_is_skipped_as_pinned(self):
         self.engine.download(["hed:example_user/all"])
-        # The site pinned the old head and the post after it above two new posts.
-        self.posts, self.pinned = [("p3", 3), ("p2", 2), ("n1", 5), ("n0", 4), ("p1", 1)], {"p3",
-                                                                                            "p2"}
+        self.posts = [("p3", 3), ("p2", 2), ("n1", 5), ("n0", 4), ("p1", 1)]
+        self.pinned = {"p3", "p2"}
         report = self.engine.sync(["hed:example_user"])
         self.assertEqual(sorted(path.stem for path in report.targets[0].written), ["n0_0", "n1_0"])
         self.assertEqual(self.heads(), {"posts": "n1"})
@@ -1119,7 +1068,7 @@ class ResumeTest(JobCase):
 
     def setUp(self):
         super().setUp()
-        # Pages by cursor: None is the newest; each page holds its posts and the next page's cursor.
+        # Pages by cursor: None is the newest; each page holds its posts and the next cursor.
         self.feed: dict[str | None, tuple[list[str], str | None]] = {
             None: (["p1", "p2", "p3", "p4", "p5"], "c1"),
             "c1": (["p6", "p7"], "c2"),
@@ -1254,7 +1203,7 @@ class MemoryTest(JobCase):
         # B2's day is known from an earlier run's row for its key.
         with _store.open(self.home) as db:
             db.save([_store.FileRow("mem:B2_0", "mem:example_user", "/gone.jpg", 1, post_id="B2",
-                                 at="2026-01-03T00:00:00+00:00", date="2026-01-03")])
+                                    at="2026-01-03T00:00:00+00:00", date="2026-01-03")])
         self.assertIn("2026-01-03_B2.jpg", self.run_feed([undated]))
 
     def test_the_sites_date_hook_dates_an_undated_post(self):
@@ -1352,6 +1301,7 @@ class LinkTest(JobCase):
         Engine(home=self.home, sources={"lnk": feed}).sync()
         link = folder / "reels" / "2026-01-02_V1.mp4"
         self.assertTrue(link.is_symlink() and link.exists())
+
 
 class VerboseTest(EngineCase):
     """The engine logs no rows (the CLI draws a run from its events); -v adds its debug lines."""
@@ -1554,12 +1504,9 @@ class QueryAndLimitDryTest(EngineCase):
 
     def test_query_route_dedupes_and_respects_from(self):
         closed = []
-        src = self._query_source(closed=closed)
-        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
-        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
-        self.routes[f"{CDN}/3.jpg"] = _net.reply(200, content=b"3")
-        self.routes[f"{CDN}/4.jpg"] = _net.reply(200, content=b"4")
-        engine = Engine(home=self.home, sources={"srch": src})
+        for number in range(1, 5):
+            self.routes[f"{CDN}/{number}.jpg"] = _net.reply(200, content=str(number).encode())
+        engine = Engine(home=self.home, sources={"srch": self._query_source(closed=closed)})
 
         report = engine.download(["srch?action comedy/photo"], limit=4)
         self.assertTrue(report.ok)
@@ -1567,22 +1514,15 @@ class QueryAndLimitDryTest(EngineCase):
         self.assertEqual(len(closed), 1)
         self.assertFalse((self.target_dir("srch", "1") / "extra").exists())
 
-    def test_limit_and_stop_close_generator_early(self):
-        closed = []
-        src = self._query_source(closed=closed)
+    def test_limit_closes_the_query_generator_early_and_again_reaches_every_target(self):
+        closed, seen_options = [], []
         self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
-        engine = Engine(home=self.home, sources={"srch": src})
-
+        engine = Engine(home=self.home, sources={"srch": self._query_source(closed=closed)})
         # --limit 1 on query route stops after 1 target and closes the generator.
         report = engine.download(["srch?action/photo"], limit=1)
         self.assertEqual(len(report.targets), 1)
         self.assertEqual(closed, [True])
 
-    def test_again_preserves_flag_for_normal_and_query_targets(self):
-        seen_options: list[Options] = []
-        src = self._query_source(closed=[])
-        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
-        engine = Engine(home=self.home, sources={"srch": src})
         orig_download = job.download
 
         async def spy(run, target, board, options, **listed):
@@ -1595,16 +1535,13 @@ class QueryAndLimitDryTest(EngineCase):
         self.assertTrue(all(opt.again for opt in seen_options))
 
     def test_dry_run_on_query_and_normal_target_writes_nothing(self):
-        closed = []
-        src = self._query_source(closed=closed)
-        engine = Engine(home=self.home, sources={"srch": src})
+        engine = Engine(home=self.home, sources={"srch": self._query_source(closed=[])})
 
         report = engine.download(["srch?action/photo"], limit=2, dry=True)
         self.assertTrue(report.ok)
         output = "\n".join(self.lines())
         self.assertIn("srch:1", output)
         self.assertIn("srch:2", output)
-        self.assertFalse((self.home / _store.DB).exists())
         self.assertFalse((self.home / _store.DB).exists())
         self.assertFalse((self.home / _store.MEDIA).exists())
 
@@ -1633,9 +1570,7 @@ class QueryAndLimitDryTest(EngineCase):
         self.assertTrue(report.ok)
         self.assertEqual(len(report.targets[0].written), 2)
 
-        closed = []
-        src = self._query_source(closed=closed)
-        engine2 = Engine(home=self.home, sources={"srch": src})
+        engine2 = Engine(home=self.home, sources={"srch": self._query_source(closed=[])})
         report2 = engine2.download(["srch:list/all/all"], limit=1)
         self.assertTrue(report2.ok)
         self.assertTrue((self.target_dir("srch", "1") / "photo" / "1.jpg").is_file())
@@ -1672,33 +1607,31 @@ class SyncedQueryTest(EngineCase):
 
         return Paged
 
+    def _empty_source(self):
+        return self._paged_source([], closed=[], seen_pages=[])
+
     def test_three_syncs_of_a_search_of_60_reach_all_60(self):
         # E3: a sync walks past the targets earlier syncs saw, so each takes the next 25 new ones.
         pages = [list(range(1, 31)), list(range(31, 61))]
         src = self._paged_source(pages, closed=[], seen_pages=[])
         for n in range(1, 61):
             self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
-        empty_src = self._paged_source([], closed=[], seen_pages=[])
-        Engine(home=self.home, sources={"pgd": empty_src}).download(
+        Engine(home=self.home, sources={"pgd": self._empty_source()}).download(
             ["pgd?cats/photo"], sync=True)
         engine = Engine(home=self.home, sources={"pgd": src})
         written = [len(engine.sync().targets[0].written) for _ in range(3)]
         self.assertEqual(written, [25, 25, 10])
         self.assertEqual(len(fakes.targets(self.home)["pgd:cats"].seen), 60)
 
-    def test_already_known_target_is_marked_seen_and_not_touched(self):
-        pages = [[1, 2]]
-        closed, seen_pages = [], []
-        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
+    def test_a_known_target_is_marked_seen_and_not_touched_and_dry_marks_nothing(self):
+        src = self._paged_source([[1, 2]], closed=[], seen_pages=[])
         self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
         self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
         engine = Engine(home=self.home, sources={"pgd": src})
         # User already downloaded pgd:1 (not synced).
         engine.download(["pgd:1/photo"])
-        empty_src = self._paged_source([], closed=[], seen_pages=[])
-        Engine(home=self.home, sources={"pgd": empty_src}).download(
-            ["pgd?cats/photo"], sync=True
-        )
+        Engine(home=self.home, sources={"pgd": self._empty_source()}).download(
+            ["pgd?cats/photo"], sync=True)
 
         self.requests.clear()
         report = engine.sync()
@@ -1708,9 +1641,7 @@ class SyncedQueryTest(EngineCase):
         self.assertEqual(fakes.targets(self.home)["pgd:cats"].seen, ["pgd:1", "pgd:2"])
 
     def test_dry_lists_targets_and_marks_no_result_seen(self):
-        pages = [[1, 2]]
-        closed, seen_pages = [], []
-        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
+        src = self._paged_source([[1, 2]], closed=[], seen_pages=[])
         engine = Engine(home=self.home, sources={"pgd": src})
         report = engine.download(["pgd?cats/photo"], dry=True, sync=True)
         self.assertTrue(report.ok)
@@ -1757,17 +1688,12 @@ class SyncedQueryTest(EngineCase):
         self.assertEqual(fakes.targets(self.home)["pgd:dogs"].seen, ["pgd:1"])
 
     def test_failing_route_fails_target_and_next_target_still_runs(self):
-        pages = [[1]]
-        closed, seen_pages = [], []
-        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages, fail_on="bad")
+        src = self._paged_source([[1]], closed=[], seen_pages=[], fail_on="bad")
         self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
-        empty_src = self._paged_source([], closed=[], seen_pages=[])
-        Engine(home=self.home, sources={"pgd": empty_src}).download(
-            ["pgd?bad/photo", "pgd?good/photo"], sync=True
-        )
+        Engine(home=self.home, sources={"pgd": self._empty_source()}).download(
+            ["pgd?bad/photo", "pgd?good/photo"], sync=True)
 
-        engine = Engine(home=self.home, sources={"pgd": src})
-        report = engine.sync()
+        report = Engine(home=self.home, sources={"pgd": src}).sync()
         self.assertFalse(report.ok)
         self.assertEqual([str(t) for t in report.failed], ["pgd?bad"])
         self.assertEqual([p.name for p in report.targets[1].written], ["1.jpg"])
