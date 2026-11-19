@@ -193,7 +193,9 @@ _FORMATTER = string.Formatter()
 
 T = TypeVar("T")
 # What a lazy post's files may raise that fails the post alone, never its target.
-_POST_ERRORS: tuple[type[BaseException], ...] = (NotFound, Changed, Hidden)
+# Errors a lazy post's files may raise that fail only that post (`Blocked` and `LoginError`
+# still stop/switch the account).
+_POST_ERRORS: tuple[type[BaseException], ...] = (NotFound, Changed, Hidden, NetworkError, SiteError)
 
 
 @dataclass(frozen=True)
@@ -1722,7 +1724,7 @@ class _Work:
         try:
             outcome, todo = await self.ledger.take(post, hold=hold)
         except _POST_ERRORS as error:
-            if not post.lazy:
+            if not post.lazy or isinstance(error, Blocked):
                 raise
             await self.ledger.lost(post, error)
             return Outcome.FAILED

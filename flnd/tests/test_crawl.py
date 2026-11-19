@@ -30,7 +30,17 @@ from flnd.engine import run as _run
 from flnd.engine import store as _store
 from flnd.engine.crawl import Options
 from flnd.engine.events import Skipped
-from flnd.errors import DiskError, LoginError, NotFound, PluginError, SiteError, UsageError, disk
+from flnd.errors import (
+    Blocked,
+    DiskError,
+    LoginError,
+    NetworkError,
+    NotFound,
+    PluginError,
+    SiteError,
+    UsageError,
+    disk,
+)
 from flnd.plugin import Browser, File, Plugin, Post, Target, route
 from flnd.ui.log import ui
 from flnkit import files as files_module
@@ -1026,6 +1036,36 @@ class LazyPostTest(JobCase):
         asked.clear()
         engine.download(["lzy:example_user"])
         self.assertEqual(asked, [])
+
+    def test_a_lazy_post_network_error_fails_alone_and_blocked_still_stops(self):
+        def files_of(post_id):
+            async def listed():
+                if post_id == "net":
+                    raise NetworkError("could not open")
+                if post_id == "blk":
+                    raise Blocked("rate limited", wait=30)
+                return [File(f"{CDN}/{post_id}.jpg")]
+            return listed
+
+        async def posts(plugin, ctx, user):
+            yield Post("net", files_of("net"), date=datetime.date(2026, 1, 2))
+            yield Post("here", files_of("here"), date=datetime.date(2026, 1, 2))
+
+        source = feed("lzn", posts, newest_first=True, key="{post}", filename="{post}_{num}")
+        engine = Engine(home=self.home, sources={"lzn": source}, emit=self.events.append)
+        report = engine.download(["lzn:example_user"])
+        self.assertIsNone(report.targets[0].error)
+        self.assertEqual([path.name for path in report.targets[0].written], ["here_0.jpg"])
+        self.assertEqual(self.failures(), ["lzn:example_user: could not open"])
+
+        async def blocked_posts(plugin, ctx, user):
+            yield Post("blk", files_of("blk"), date=datetime.date(2026, 1, 2))
+
+        blocked_src = feed("lzb", blocked_posts, newest_first=True, key="{post}",
+                           filename="{post}_{num}")
+        blocked_report = Engine(home=self.home, sources={"lzb": blocked_src}).download(
+            ["lzb:example_user"])
+        self.assertIsInstance(blocked_report.targets[0].error, Blocked)
 
 
 class AskedTest(JobCase):
