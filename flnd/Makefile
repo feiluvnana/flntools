@@ -37,7 +37,11 @@ try:      ; $(RUN) python -c "import flnd, sys; [print(e) for e in flnd.open('.t
 # The real Chrome extension in Playwright's Chromium, every op against a local page, in a
 # temporary home (tests/ext.py; src/docs/extension.md). Never part of `check`.
 ext:      ; $(RUN) python tests/ext.py $(ARGS)
+# The hand live check on the test accounts (`~/.config/flnd/live.toml`), never part of `check`:
+# `make live ARGS=ins`. Runs each route with `dry=True`, downloading nothing (PLAN.md section 10).
+live:     ; $(RUN) python tests/live.py $(ARGS)
 # The one-file binary, from a staged copy of the two packages (tests/dist.py).
 dist:     ; $(RUN) --group dist python tests/dist.py
-clean:    ; $(RUN) python -c "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
-.PHONY: setup test lint check api manifest cdn-real docs try ext dist clean
+clean:    ; $(RUN) python -c \
+	    "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
+.PHONY: setup test lint check api manifest cdn-real docs try ext live dist clean
