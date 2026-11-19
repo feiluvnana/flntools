@@ -67,11 +67,12 @@ What each part does:
   plugin. A request to one is a page job: paced, signed by `sign`, and sent with the account's
   cookies. A 401 or 403 from one is a `LoginError`.
 - **`login`** says how it logs in. `cookies("token", url=…)` is logged in when one of those
-  cookies is set; `url` is the site's login page. Its methods are `browser` (flnd's own window
-  on that page), `chrome` (the extension), `firefox`, `safari` (a browser's cookie
-  store) and `file` (a cookies.txt). `cookies(..., required=True)` means nothing can be listed
-  without a login. A site with its own flow assigns an instance of a `Login` subclass
-  (section 8). No `login` means the plugin needs none.
+  cookies is set; `url` is the site's login page. Its methods are `browser` (a window of flnd's
+  own Chromium on that page), `chrome` (the user's Chrome cookies, read through the extension),
+  `firefox` and `safari` (that browser's cookie store) and `file` (a cookies.txt).
+  `cookies(..., required=True)` means nothing can be listed without a login. A site with its own
+  flow assigns an instance of a `Login` subclass (section 8). No `login` means the plugin needs
+  none.
 - **`pace`** (0.5 by default) is the least time, in seconds, between two page requests of one
   bucket of one account. A bucket is a host by default; `ctx.fetch(..., bucket="search")` puts
   a request in a bucket of its own.
@@ -373,6 +374,12 @@ block: `now`, `wall` (Unix seconds from 2026-01-01 UTC), `slept` (each wait's se
 `sleep(seconds)` and `advance(seconds)`. A `FakeCtx` uses the active one, or a fake clock of
 its own.
 
+The kit's public names are `FakeCtx`, `Reply`, `FakePage`, `Sent`, `Seen` and `Collected`, with
+`collect`, `check` and `fake_clock`; `tests/data/api.txt` has each one's signature. Nothing here
+touches the network, a browser, a home folder or the real clock. A `FakeCtx` has exactly the
+members a `Ctx` has, plus `seen` and its constructor's arguments, so a plugin that passes its
+tests here uses nothing a real context lacks.
+
 `collect` runs the target to its end, and checks the listing as it goes: a newest-first
 listing's dated posts must not get newer, and a post must give every field a template names. A
 pinned post (`Post(..., pinned=True)`) is outside the date order, so the check skips it. A
@@ -572,8 +579,8 @@ held for it.
 HTTP:
 
 - **`await ctx.fetch(request, bucket=…, in_page=…)`**: one request, a URL or a
-  `Request(url, method=…, params=…, body=…, headers=…, check=…)`. A `body` of bytes or text goes
-  as it is, anything else as JSON. On the plugin's domains it is a page job, paced in its
+  `Request(url, method=…, params=…, body=…, headers=…, check=…)`. A `body` of bytes or text
+  goes as it is, anything else as JSON. On the plugin's domains it is a page job, paced in its
   bucket; elsewhere a file job, under its host's cap. `in_page=True` sends it from the
   account's logged-in tab, as the page's own script would. It returns a `Response`: `.status`,
   `.url` (after redirects), `.headers`, `.content`, `.text`, `.json`, `.ok` and `.html`. A 404
@@ -602,9 +609,9 @@ The tab:
   once the step is done. It returns True when `until` came true, False when `timeout` passed
   first.
 - **`await ctx.extension(op, **args)`**: one operation of flnd's browser extension in the
-  user's Chrome ([extension.md](extension.md)). `UsageError` when the extension isn't
-  connected. Not built yet in a run: the engine's relay to the extension isn't wired in, so a
-  run always raises the `UsageError` for now.
+  user's Chrome ([extension.md](extension.md)). The first call connects the run to the
+  extension through the relay. With no extension connected it raises `UsageError`, with the
+  hint `flnd extension install`.
 - **`await ctx.storage(origin)`**: `origin`'s `localStorage` in the user's browser, such as a
   web app's session.
 
@@ -632,8 +639,8 @@ What it reads:
 - **`ctx.time`**: the run's clock, `now()`, `wall()` and `day()` (UTC). A plugin never reads
   `time` or `datetime.now` itself, so a test's fake clock holds.
 - **`ctx.settings`**: the plugin's `Settings` (section 8).
-- **`ctx.account`**: the `Account` the target runs as, None without a login. Not built yet in a
-  run: accounts aren't rows of their own yet, so it is None for now.
+- **`ctx.account`**: the `Account` the target runs as (its `name`, `origin` and `status`), or
+  None for a plugin with no login.
 - **`ctx.cookies`**: the account's cookies on the plugin's domains, read-only.
 - **`ctx.state`**: the plugin's own table in `flnd.db`, kept between runs. It takes JSON values
   only (lists, dicts with text keys, text, numbers, booleans, None); anything else is a
@@ -664,7 +671,9 @@ assert "2026-01-02" in ctx.when
 
 `response.html` parses an answer's body as HTML, and `await ctx.document()` parses the tab's
 page now; both give a `Document`, with CSS queries and the JSON the page embeds. There is no
-XPath, and no `::text` or `::attr()`.
+XPath, and no `::text` or `::attr()`. The reader is the standalone `flnkit.html` library, which
+imports nothing of flnd: `html.parse(text)` gives a `Document`, and `html.dig(data, path)` walks
+parsed JSON.
 
 | on the page | gives |
 | --- | --- |
@@ -897,9 +906,8 @@ A login with a `browser` method sets `url`, the https page that method uses. Dur
 - **`Settings`** are the plugin's own config keys, under `[plugins.<code>]` in the home's
   `config.toml`. A plugin declares a nested `class Settings(Settings)`, with a default for each
   field and an `Attributes:` line for each in its docstring; it is made a frozen, keyword-only
-  dataclass. `ctx.settings` gives it, and `FakeCtx(settings={"height": 720})` sets fields for a
-  test. Not built yet in a run: the engine gives the defaults, and doesn't read `config.toml`'s
-  values into `ctx.settings` yet.
+  dataclass. `ctx.settings` gives the values the config file sets, over those defaults, and
+  `FakeCtx(settings={"height": 720})` sets fields for a test.
 
   ```
   from flnd.plugin import Settings
@@ -969,16 +977,32 @@ library; an SDK its site needs (`telethon`, `qrcode`) is imported inside a funct
 5. try it by hand on a test account: `make try ARGS=exm:example_user`, which lists what a
    download would save without saving anything.
 
+The built-in plugins are listed in `BUILT_IN` in `src/plugins/__init__.py`, in the order help
+lists them and links are matched (`web` reads any link, so it comes last). Each is also an entry
+of `src/plugins/_manifest.py`, which `make manifest` generates from the plugins; never edit it by
+hand. Help and target resolution read the manifest, so `--help` imports no plugin. An entry holds
+the plugin's `module` and `cls`, its `name`, `domains`, `routes`, `unsupported`, `forms` (each way
+to write a target, as help lists them), `categories` (what `--only` may name), and `logins`: the
+ways `flnd auth login <code>` accepts. `logins` comes from the plugin's `login`: a `Login`'s
+`methods`, or the cookie methods of a `cookies(...)` login. `Plugin` has no `logins` attribute of
+its own. `tests/test_manifest.py` fails until the manifest matches the code.
+
 ## 10. Shipping it as a plugin
 
-A plugin that isn't built in comes from outside flnd's own code. Today one way is built:
+A plugin that isn't built in comes from outside flnd's own code. Two ways are built:
 
+- **An installed plugin.** `flnd plugin install <path>` takes a plugin's `.py` file or its package
+  folder, and installs it in the plugin folder: `$FLND_PLUGINS` when that is set, else
+  `~/.config/flnd/plugins` on macOS and Linux, or `%APPDATA%\flnd\plugins` on Windows. The install
+  copies the plugin first and checks the copy, so the bytes checked are the bytes kept. It
+  refuses a link, a special file, a home folder or a cookie file, a code a built-in has, and a
+  plugin API this flnd doesn't have ([API versions](#plugin-api-versions) below). An installed
+  code replaces the one installed before it. `flnd plugin list` shows what is installed, and why
+  one is disabled; `flnd plugin uninstall <code>` removes one. A run loads each installed plugin
+  the first time it uses it, so no run needs the plugin installed again.
 - **A script.** `fl.add(Example)` adds the class to one `Flnd` ([library.md](library.md)). Its
-  targets resolve and download like a built-in's. A code a built-in or another plugin has
-  already is refused, never replaced.
-
-Installing a plugin for every run isn't built yet for plugin API 2: `flnd plugin install` and
-its plugin folder come in step 9 of [PLAN.md](../../PLAN.md) (section 6.6 there).
+  targets resolve and download like a built-in's. A code a built-in or another plugin already has
+  is refused, never replaced.
 
 **Never from a home.** flnd never loads code from a home folder. A home is often `./.flnd` in
 the folder you are in, which may be a cloned repository or an unpacked archive: loading code
@@ -994,12 +1018,27 @@ logins, and can do anything you can. Install only plugins you trust.
 
 ### Plugin API versions
 
-A plugin says which major version of the plugin API it was written for: `api = 2`. This flnd
-has `flnd.plugin.API = 2`. A plugin for a newer version is refused ("exm needs plugin API 3;
-this flnd has 2", with the hint "update flnd"). A plugin written for API 1 is refused with a
-hint to port it. A class that still declares a name this API dropped
-(`needs`, `requires_login`, `login_methods`, `logged_in`, `concurrency`, `prepare`, `scroll`,
-`single_kinds`) is refused with how this API spells it:
+A plugin says which major version of the plugin API it was written for, with `api = 2`. This
+flnd has `flnd.plugin.API = 2`, so a plugin with `api = 2` loads. The other versions are refused:
+
+- **A higher one**, such as `api = 3`: `exm needs plugin API 3; this flnd has 2`, with the hint
+  `update flnd`.
+- **A lower one**, such as `api = 1`: `exm was written for plugin API 1; this flnd has 2`, with a
+  hint to read this section. For an installed plugin, the hint names each old name its files
+  still use, and what it becomes.
+- **A name this API dropped.** A class that still declares one is refused with how this API
+  spells it. The names are in `OLD_NAMES` in `src/plugin.py`:
+
+| dropped name | API 2 spelling |
+| --- | --- |
+| `needs` | `login = cookies("<name>", url=...)` |
+| `requires_login` | `login = cookies("<name>", url=..., required=True)` |
+| `login_methods` | a `Login` subclass's `methods` |
+| `logged_in` | a `Login` subclass's `async def check(ctx)` |
+| `concurrency` | `limits = {"<host>": <files at once>}` |
+| `prepare` | `sign(self, request, cookies)` |
+| `scroll` | nothing: the engine scrolls every feed like a person |
+| `single_kinds` | `@route(..., single=True)` on each one-post route |
 
 ```python
 try:
@@ -1015,123 +1054,4 @@ except PluginError as error:
 assert message == "drp.prepare: plugin API 2 spells it sign(self, request, cookies)"
 ```
 
-When the version changes, this section lists what to change, version by version.
-
-## Module `flnd.testing`
-
-The test kit for plugins: run one on fakes, with no network, no browser and no clock.
-
-src/docs/writing-a-plugin explains it.
-
-    from flnd.testing import FakeCtx, Reply, check, collect
-
-    check(Example)                                      # the class, and its routes' examples
-    ctx = FakeCtx(Example, routes={API: Reply({"items": []})})
-    saved = collect(Example, "exm:example_user", ctx=ctx)
-
-It is one of flnd's three public modules, next to `flnd` (the library) and `flnd.plugin` (the
-plugin API), and it is how a plugin's own tests are written.
-
-What it holds:
-- `FakeCtx`, a `flnd.plugin.Ctx` that answers from `Reply`s and `FakePage`s the way the engine
-  would: it signs, holds on blocks and walls, and raises the engine's errors, recording what
-  the plugin did in a `Seen`;
-- `collect`, which resolves a target, runs its route and categories on a `FakeCtx` as the
-  engine does, lists each lazy post's files, and names and keys every file the way a download
-  would: a `Collected` per file, nothing saved;
-- `check`, which checks a plugin class and resolves every example target its routes'
-  docstrings give;
-- `fake_clock`, a clock that only moves when something sleeps on it.
-
-Who calls it: a plugin's tests and flnd's own tests. What it calls: the engine's own naming
-and answer rules (`flnd.engine.crawl.place`, `flnd.engine.ctx`'s `refused`, `walled`,
-`checked`), so a plugin's test runs the same code a download does.
-
-Rules a change must keep:
-- Nothing here touches the network, a browser, a home folder or the real clock.
-- A `FakeCtx` has exactly the members a `Ctx` has, plus `seen` and what its constructor takes,
-  so a plugin that passes its tests here uses nothing a real context lacks.
-
-## Module `flnd.plugins`
-
-The built-in plugins on plugin API 2, one module per site, and their lazy registry.
-
-src/docs/writing-a-plugin explains it.
-
-`PLUGINS` maps each built-in code to its class, imported on first use from `_manifest.PLUGINS`;
-`flnd.engine.plugins` owns the full plugin registry (built-ins and installed plugins together).
-The CLI's help reads `flnd.plugins._manifest` directly, so `--help` imports no plugin.
-
-Adding a built-in plugin means writing its module, adding its class to `BUILT_IN` below, and
-running `make manifest`; `tests/test_manifest.py` fails until the manifest matches.
-
-## Module `flnd.plugins._manifest`
-
-Every built-in plugin, as plain data: read by `flnd --help` and target resolution.
-
-src/docs/writing-a-plugin explains it.
-
-Generated by `make manifest` (tests/plugin_manifest.py) from the plugins themselves; never edit
-it by hand. `tests/test_manifest.py` fails when it no longer matches the code.
-
-Each entry, by the plugin's code:
-- `module` and `cls`: where the plugin's class is, so `flnd.plugins.PLUGINS` imports one
-  plugin only when it is used;
-- `name`, `domains`, `routes` and `unsupported`: `flnd.plugins.facts`, what resolving reads;
-- `forms`: each way to write one of its targets, as `--help` lists them;
-- `categories`: what `--only` may name for it;
-- `logins`: the ways `flnd login <code>` can log in to it.
-
-## Module `flnkit.html`
-
-Getting data out of HTML and JSON: `parse` an HTML page, and `dig` a path in parsed JSON.
-
-src/docs/writing-a-plugin explains it.
-
-A small library over selectolax's lexbor parser (a C HTML parser with its own CSS engine) and
-msgspec's JSON decoder. It knows nothing of flnd: any program can use it.
-
-    from flnkit import html
-
-    page = html.parse(text)
-    page.first("h1").text                                      # "Example User"
-    [link.attr("href") for link in page.css("a[href*='/video/']")]
-    page.script("__NEXT_DATA__")                               # the JSON in <script id=...>
-    page.blocks("__bbox")                                      # every JSON block that names it
-    html.dig(data, "data.user.edges[].node")
-
-What it offers:
-1. `parse(text)` reads HTML text or bytes into a `Document`. HTML never fails to parse: lexbor
-   repairs broken markup the way a browser does.
-2. A `Document` (and each `Element` in it) answers CSS queries: `css` gives every match, `first`
-   the first one. An element gives its `text` (whitespace collapsed) and its `attr(name)`.
-3. A `Document` also reads the JSON a page embeds: `script(id)` decodes one
-   `<script id=...>`, and `blocks(contains)` decodes every `<script type="application/json">`.
-   `visible` is the text a reader sees: the page without its scripts and styles.
-4. `dig(data, path)` walks parsed JSON by a short path; see its docstring for the four forms.
-
-Who calls it: in flnd, `flnd.plugin` re-exports `dig`; `flnd.engine.ctx` parses the page a plugin's
-browser loads, `flnkit.net.Response.html` a response body, and `flnd.testing` the pages of its
-fakes. What it calls: selectolax, msgspec and `flnkit.errors`, nothing else.
-
-The main flow of a read:
-1. `parse` checks the size, decodes bytes as UTF-8 (a BOM dropped, bad bytes replaced) and
-   builds the tree;
-2. `css` or `first` runs lexbor's CSS engine over it, and wraps each node as an `Element`;
-3. `script` or `blocks` takes a script's text and decodes it with msgspec, raising `Changed`
-   when that text isn't JSON;
-4. `dig` walks the decoded value one path step at a time.
-
-There is no XPath and no `::text` or `::attr()` pseudo-element: an element's `text` and `attr`
-say the same thing in plain Python.
-
-Rules a change must keep:
-- selectolax is imported on the first `parse`, and msgspec on the first decode, so importing
-  this module (which `flnd.plugin` does, for `dig`) costs nothing at startup: `flnd --help`
-  must not load either.
-- A `Document` is never changed once made, so `visible` works on a copy of the tree.
-- One document is read from one thread at a time; lexbor's trees aren't thread-safe.
-
-Errors (from `flnkit.errors`): text over 64 MiB, or a script that should hold JSON but doesn't, is
-`Changed` (the site changed what it sends); a bad CSS selector or a bad `dig` path is a
-`ValueError` (the caller's mistake).
+When a later version of the API comes, this section gets a part that lists what changed in it.

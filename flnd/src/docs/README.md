@@ -1,8 +1,8 @@
 # flnd's documentation
 
-flnd downloads photos, videos and files from the sites you follow, and keeps them up to date. It
-is a Python package with a command line on top. These pages describe flnd as the code on this
-branch is; a part that isn't built yet is named as such, never described as working.
+flnd downloads photos, videos and files from the sites you choose, and skips what it already
+has. It is a Python package with a command line on top. These pages describe flnd as the code
+is now. A part that isn't built yet is named as such, never described as working.
 
 ## Where to start
 
@@ -17,15 +17,15 @@ branch is; a part that isn't built yet is named as such, never described as work
 
 | page | what it covers |
 | --- | --- |
-| [architecture.md](architecture.md) | the parts of flnd, one download traced from the CLI to the disk, and the threads |
-| [cli.md](cli.md) | every command, flag, default and exit code |
-| [library.md](library.md) | the calls a script can make, their options and what they return |
-| [writing-a-plugin.md](writing-a-plugin.md) | a tutorial that builds and tests a small plugin |
-| [errors.md](errors.md) | each error, what causes it and what to do |
-| [storage.md](storage.md) | the home folder: every file, store, table and field |
-| [extension.md](extension.md) | the Chrome extension: what it may read, its host, the relay, its messages and ops, the popup, install |
-| [performance.md](performance.md) | the measured numbers, `make bench`, and how a speed-up is proven |
-| [glossary.md](glossary.md) | the words these pages use: target, plugin, route, category, post |
+| [architecture.md](architecture.md) | the layers and parts, one download end to end, threads |
+| [cli.md](cli.md) | every command and flag, its default, examples and the exit codes |
+| [library.md](library.md) | the calls a script can make, and what they return |
+| [writing-a-plugin.md](writing-a-plugin.md) | writing, testing and installing a plugin on API 2 |
+| [errors.md](errors.md) | each error class, what raises it, and what to do about it |
+| [storage.md](storage.md) | the home folder: its files, the database tables and their fields |
+| [extension.md](extension.md) | the Chrome extension: its parts, what it reads, install, relay |
+| [performance.md](performance.md) | the measured numbers, `make bench`, how a speed-up is shown |
+| [glossary.md](glossary.md) | the words these pages use, such as target, plugin, route and post |
 
 ## Sites
 
@@ -42,9 +42,16 @@ branch is; a part that isn't built yet is named as such, never described as work
 
 ## Keeping the docs true
 
-`tests/test_docs.py` runs in `make check`. It runs every `python` block on these pages, checks
-that every link resolves, that [cli.md](cli.md) names every command and flag, and that every
-built-in plugin has its page. It also checks the docstrings of the code against the rules in
-AGENTS.md: any gap fails, with a line naming it and the rule it breaks.
+`make check` runs `tests/test_docs.py`, which checks these pages against the code:
+
+- every `python` block on these pages runs, in a scratch folder;
+- every `python` block and every `flnd` command line in the README runs or parses, with the
+  CLI's own parser;
+- every relative link resolves, and every `#fragment` names a heading in its page;
+- this index links every page in `src/docs/`, and the glossary defines the core terms;
+- [cli.md](cli.md) names every command and flag the CLI parses;
+- every built-in plugin has its page in `plugins/`, and no page is left for a plugin that is gone;
+- every module docstring names its `src/docs` page, every public name has a summary line, and
+  the `>>>` examples in the code run.
 
 A change of behaviour updates its page here in the same commit.

@@ -19,7 +19,8 @@ cd flntools
 uv tool install -e ./flnd
 ```
 
-From a checkout, `make setup` creates `.venv`, and then `uv run flnd …` runs it. On Windows,
+From a checkout, `make setup` (run inside `flnd/`) creates `.venv`; then `uv run flnd …`, run
+inside `flnd/`, runs it. On Windows,
 install make with `winget install ezwinports.make`, or type the `uv` command each Makefile
 target runs (see [Development](#development)).
 
@@ -49,17 +50,19 @@ flnd status                                  # the last run, its failures, accou
 
 ## Commands
 ```text
-flnd get [targets…] [--when WHEN] [--limit N] [--dry] [--again] [--exec CMD]
-flnd target list                       the targets this home knows: followed or not, files, size
-flnd target clean <targets…> [--media] forget targets; --media also deletes their files
-flnd auth list                         every account: origin, default, status
+flnd get [target…] [--when WHEN] [--limit N] [--dry] [--again] [--exec CMD]
+flnd target list                          the targets this home knows: followed or not
+flnd target clean <target…> [--media]     forget targets; --media also deletes their files
+flnd auth list                            every account: origin, default, status
 flnd auth login <plugin> [method] [path]  log an account in
-flnd auth logout <plugin> [account]    log an account out
-flnd plugin list                       every plugin: built in or installed, and why one is disabled
-flnd plugin install <file|folder>      add a plugin; plugin uninstall <code> removes it
-flnd extension install                 connect Chrome (extension uninstall removes it)
-flnd status                            the last run, its failures, accounts that need care, the disk
-flnd config                            every setting: its value, default and where it comes from
+flnd auth logout <plugin> [account]       log an account out
+flnd plugin list                          the built-in and the installed plugins
+flnd plugin install <file|folder>         install a plugin from a .py file or a package folder
+flnd plugin uninstall <code>              uninstall an installed plugin
+flnd extension install                    connect Chrome to flnd
+flnd extension uninstall                  remove the Chrome extension
+flnd status                               the last run, its failures, accounts, the disk
+flnd config                               every setting: its value, default and where it comes from
 
 global flags: --home DIR · -v/--verbose · --json · -V/--version
 ```
@@ -87,8 +90,8 @@ global flags: --home DIR · -v/--verbose · --json · -V/--version
   `--exec 'notify-send {path}'`; `{target}` and `{post}` work too. It never goes through a
   shell, so a file name from a site can't inject a command.
 - **`--json`** prints one JSON object per line: every event, then the run's report; the
-  lists and `status` print their rows the same way. It never asks a
-  question, which suits scripts and cron.
+  lists and `status` print their rows the same way. It never asks a question, which suits
+  scripts and cron.
 - **Exit codes:** 0 everything worked, 1 some files or targets failed, 2 a usage error, 3 a login
   is needed, 4 flnd stopped on an error (a full disk, a missing browser, a broken plugin, a bug),
   130 stopped with Ctrl-C.
@@ -157,12 +160,19 @@ missing, unknown or of the wrong size. It fetches nothing, and exits 1 when they
 repair makes the history match the disk; it never deletes, moves or downloads a file.
 
 ## Logging in
-`flnd auth login <plugin> <method>` reads your login for that site from a browser (`chrome`, `firefox`,
-`edge`, `brave`, `chromium`, or `safari` on macOS), or from a `cookies.txt` or JSON cookie file
-you exported. Reading Safari needs Full Disk Access for your terminal (System Settings › Privacy
-& Security › Full Disk Access); without it, flnd says so and how to allow it. It keeps only the
-site's cookies, and refuses a login that lacks the site's login cookie. Telegram logs in its own
-way: `browser` (Telegram Web's session), `qr` or `phone`. Left out in a terminal, the method is asked.
+`flnd auth login <plugin> <method>` reads your login for that site from a browser (`chrome`,
+`firefox`,
+`flnd auth login <plugin> <method>` logs an account in with one of its methods:
+
+- `browser`: a Chromium window of flnd's opens at the site's login page; log in there;
+- `chrome`: your Chrome's cookies, read through the extension (`flnd extension install`);
+- `firefox`, or `safari` on macOS;
+- `file <path>`: a `cookies.txt` or JSON cookie file you exported.
+
+Reading Safari needs Full Disk Access for your terminal (System Settings › Privacy & Security ›
+Full Disk Access); without it, flnd says so and how to allow it. It keeps only the site's
+cookies, and refuses a login that lacks the site's login cookie. Telegram (`tlg`) also has `qr`
+and `phone`, which ask in the terminal. Left out in a terminal, the method is asked.
 
 ```bash
 flnd auth login ins chrome
@@ -209,7 +219,8 @@ what it takes; an unknown key is a warning.
 [src/docs/storage.md](src/docs/storage.md#settings-configtoml) lists every key.
 
 ## Use it from Python
-`flnd.open(home)` gives a `Flnd`, whose methods and groups are the commands. `get` returns a run that
+`flnd.open(home)` gives a `Flnd`, whose methods and groups are the commands. `get` returns a run
+that
 yields events as it goes: `Saved`, `Skipped`, `Failed`, and `Planned` for a dry run.
 
 <!-- docs-test: skip: it downloads from Instagram, which needs the network and a login -->
@@ -228,7 +239,8 @@ with flnd.open("~/Media/flnd") as fl:
     print(report.saved, report.skipped, report.ok)
     photos = fl.files(target="ins:example_user", kind="image")   # what's saved, from flnd.db
 ```
-[src/docs/library.md](src/docs/library.md) covers every call, its options and its events, with examples
+[src/docs/library.md](src/docs/library.md) covers every call, its options and its events, with
+examples
 that run offline.
 
 ## Add a site
@@ -279,10 +291,11 @@ assert [str(file.date) for file in saved] == ["2026-01-02"]
 
 To make flnd know it, either:
 
-- save it as `exm.py` in your plugin folder: `$FLND_PLUGINS`, else `~/.config/flnd/plugins/`
-  (`%APPDATA%\flnd\plugins\` on Windows);
-- publish it as a package with an entry point in the `flnd.sources` group, named by its code;
-- or, in a script, call `fl.add(Example)` on a `Flnd`.
+- install it: `flnd plugin install exm.py` (or a `exm/` package folder). flnd checks it, copies
+  it into the plugin folder (`$FLND_PLUGINS`, else `~/.config/flnd/plugins/`, else
+  `%APPDATA%\flnd\plugins\` on Windows) and records it in `plugins.json`. A file left in the
+  plugin folder without that record is not loaded: flnd warns and names the install command;
+- or, in a script, call `fl.add(Example)` on a `Flnd`. It lasts for that `Flnd` alone.
 
 `flnd plugin list` then lists it. A plugin runs with your logins, so install only code you trust;
 flnd never loads one from a home folder. A broken plugin disables itself alone, with a warning
@@ -292,24 +305,31 @@ through it all.
 ## Documentation
 [src/docs/](src/docs/README.md) is the guide: the CLI, the library, writing a plugin, errors,
 storage, performance, a glossary and a page per built-in plugin.
-[src/docs/architecture.md](src/docs/architecture.md) explains how flnd is built, how it compares with
+[src/docs/architecture.md](src/docs/architecture.md) explains how flnd is built, how it compares
+with
 similar tools, and the decisions behind it.
 
 ## Development
-| make | what it runs |
-| --- | --- |
-| `make setup` | `uv sync --all-extras`: the environment from `uv.lock`, with the dev tools |
-| `make check` | lint (ruff), then every test; green before every commit. `PY=3.11` runs it on the oldest Python flnd supports |
-| `make test ARGS=…` | the tests, or some of them (`ARGS="-k fetch"`) |
-| `make lint` | ruff alone |
-| `make api` | regenerates `tests/data/api.txt`, the public API snapshot |
-| `make manifest` | regenerates `src/plugins/_manifest.py`, what `--help` and target resolution read; run it after changing a built-in plugin's domains, routes or categories |
-| `make bench` | the offline benchmarks; `ARGS=--gate` compares them with the targets |
-| `make cdn-real ARGS=…` | a hand check: throughput from one real CDN host at several caps |
-| `make docs` | builds the API reference into `build/docs/` |
-| `make try ARGS=…` | lists, live, what one target would save, in a scratch home `.try`, downloading nothing |
-| `make dist` | a single-file `flnd` binary for this OS (PyInstaller) |
-| `make clean` | removes `build/`, `dist/` and `.try` |
+
+- `make setup`: `uv sync --all-extras`: the environment from `uv.lock`, with the dev tools
+- `make check`: lint (ruff), then every test; green before every commit. `PY=3.11` runs it on the
+  oldest Python flnd supports
+- `make test ARGS=…`: the tests, or some of them (`ARGS="-k fetch"`)
+- `make lint`: ruff alone
+- `make api`: regenerates `tests/data/api.txt`, the public API snapshot
+- `make manifest`: regenerates `src/plugins/_manifest.py`, what `--help` and target resolution read;
+  run it after changing a built-in plugin's domains, routes or categories
+- `make bench`: the offline benchmarks; `ARGS=--gate` compares them with the targets
+- `make cdn-real ARGS=…`: a hand check: throughput from one real CDN host at several caps
+- `make docs`: builds the API reference into `build/docs/`
+- `make try ARGS=…`: lists, live, what one target would save, in a scratch home `.try`, downloading
+  nothing
+- `make ext`: the real Chrome extension in Playwright's Chromium, against a local page, in a
+  temporary home; never part of `make check`
+- `make live ARGS=…`: a hand check on the test accounts (`~/.config/flnd/live.toml`), downloading
+  nothing; never part of `make check`
+- `make dist`: a single-file `flnd` binary for this OS (PyInstaller)
+- `make clean`: removes `build/`, `dist/` and `.try`
 
 Each target is one `uv` command, listed in the `Makefile`, so it can also be typed by hand on a
 machine without make. Contributors and coding agents: read [AGENTS.md](AGENTS.md) first.

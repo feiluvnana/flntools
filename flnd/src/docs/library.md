@@ -1,9 +1,9 @@
 # flnd from Python
 
 A script uses flnd through one object: `flnd.open(home)` gives a `Flnd` for a home folder, and
-its methods and groups are the CLI's commands. `get` returns a `Run`, which reports what it does as a
-stream of events. Every `python` block on this page runs offline in the docs test, against a
-small plugin defined below, so each one is a working example.
+its methods and groups are the CLI's commands. `get` returns a `Run`, which reports what it
+does as a stream of events. Every `python` block on this page runs offline in the docs test,
+against a small plugin defined below, so each one is a working example.
 
 ```python
 import tempfile
@@ -87,19 +87,25 @@ with flnd.open(home) as fl:
                 print("failed", error, error.hint)
 ```
 
-| event | when | fields |
-| --- | --- | --- |
-| `flnd.Saved` | a file is downloaded, and every step after it is done (dedupe, unpack, the sidecar) | `target`, `category`, `post`, `path` (its final path: on disk), `date`, `size` (as it is now) |
-| `flnd.Skipped` | a file (or a whole post) is already saved | `target`, `category`, `post`, `path` (None for a post) |
-| `flnd.Failed` | a file failed, or a whole target did | `target`, `error`, and for a file `post` and `path` |
-| `flnd.Planned` | a dry run planned a file | `target`, `post`, `path`, `state` (`"new"` or `"saved"`) |
+- `flnd.Saved` (when: a file is downloaded, and every step after it is done (dedupe, unpack, the
+  sidecar); fields: `target`, `category`, `post`, `path` (its final path: on disk), `date`, `size`
+  (as it is now), `retried` (true when an earlier failure of it came back))
+- `flnd.Skipped` (when: a file (or a whole post) is already saved, or a sync found nothing new in a
+  category; fields: `target`, `category`, `post`, `path` (None for a post), `reason` (`"saved"`, or
+  `"nothing new"`))
+- `flnd.Failed` (when: a file failed, or a whole target did; fields: `target`, `error`, and for a
+  file `post` and `path`)
+- `flnd.Planned` (when: a dry run planned a file; fields: `target`, `post`, `path`, `state` (`"new"`
+  or `"saved"`))
+
 
 Events are frozen msgspec structs. A failed file is an event, never an exception: the run goes
 on with the rest. `flnd.Failed.error` is a `flnd.Error`, whose `str()` is the message and `hint`
 what to do.
 
 There are no hooks: to act on each saved file, act on its `Saved` event, which comes once the
-file is final. The CLI's `--exec CMD` does exactly that ([cli.md](cli.md#running-a-command-per-file));
+file is final. The CLI's `--exec CMD` does exactly that
+([cli.md](cli.md#running-a-command-per-file));
 a script that runs a program per file should pass `event.path` as one item of an argument list
 (`subprocess.run(["tool", str(event.path)])`), never through a shell, since the name comes from
 a site.
@@ -121,6 +127,10 @@ with flnd.open(home) as fl:
 | `planned` | files a dry run planned |
 | `failed` | each `Failed` event, in order: a strict script checks it, or `report.ok` |
 | `stopped` | whether `run.stop()` ended the run early |
+| `retried` | files a get brought back from an earlier failure |
+| `resumed` | syncs that finished a cut-short one, from its saved point |
+| `unchanged` | listings with nothing new (not counted in `skipped`, which counts files) |
+| `ok` | a property: true when nothing failed |
 
 ### What a run is doing now
 
@@ -129,14 +139,18 @@ something changed, so a script reads it from any thread, and keeps one as long a
 `version` goes up with each new one; before the run starts it is an empty one, at 0. The CLI's
 screen is drawn from it alone.
 
-| `State` field | what it is |
-| --- | --- |
-| `version`, `elapsed` | the snapshot's number, and the seconds since the run started |
-| `targets` | one `flnd.TargetState` per target: `text`, `categories`, `phase` (a `flnd.Phase`: `WAITING`, `LISTING`, `DOWNLOADING`, `DONE`, `FAILED`), `found`, `saved`, `skipped`, `failed`, `bytes`, `speed` |
-| `files`, `more` | the files in flight, oldest first, at most 6 (`flnd.FileState`: `target`, `path`, `done`, `total`, `speed`), and how many more there are |
-| `holds` | the waits going on (`flnd.HoldState`: `plugin`, `account`, `bucket`, `until`, `reason`, `count`) |
-| `now` | what the run does, in one line: the newest listing step, and the wait going on |
-| `saved`, `skipped`, `failed`, `bytes`, `speed` | the whole run's counts; speeds are bytes a second over the last 3 s |
+- `version`, `elapsed`: the snapshot's number, and the seconds since the run started
+- `targets`: one `flnd.TargetState` per target: `text`, `categories`, `phase` (a `flnd.Phase`:
+  `WAITING`, `LISTING`, `DOWNLOADING`, `DONE`, `FAILED`), `found`, `saved`, `skipped`, `failed`,
+  `bytes`, `speed`
+- `files`, `more`: the files in flight, oldest first, at most 6 (`flnd.FileState`: `target`, `path`,
+  `done`, `total`, `speed`), and how many more there are
+- `holds`: the waits going on (`flnd.HoldState`: `plugin`, `account`, `bucket`, `until`, `reason`,
+  `count`)
+- `now`: what the run does, in one line: the newest listing step, and the wait going on
+- `saved`, `skipped`, `failed`, `bytes`, `speed`: the whole run's counts; speeds are bytes a second
+  over the last 3 s
+
 
 ```python
 with flnd.open(home) as fl:
@@ -155,11 +169,13 @@ Every option is keyword-only. The categories go in the target, after its last `/
 knows takes the ones it was followed with, and a new one its plugin's own. A single post has
 none, so naming one for it is a usage error.
 
-| option | what it does |
-| --- | --- |
-| `when` | the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"` (either end may be left out), or a span back from today: `"30d"`, `"8w"`, `"1y"`; `""` for every day. None (the default) takes `when` under `[defaults]` in the home's `config.toml`, which bounds a sync too |
-| `limit` | at most this many posts per target, or targets per search |
-| `dry` | plan instead: `Planned` events, and nothing is written |
+- `when`: the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"`
+  (either end may be left out), or a span back from today: `"30d"`, `"8w"`, `"1y"`; `""` for every
+  day. None (the default) takes `when` under `[defaults]` in the home's `config.toml`, which bounds
+  a sync too
+- `limit`: at most this many posts per target, or targets per search
+- `dry`: plan instead: `Planned` events, and nothing is written
+
 
 ```python
 with flnd.open(home) as fl:
@@ -225,14 +241,20 @@ with flnd.open(home) as fl:
     fl.targets.unfollow("nts:example_user")
 ```
 
-| call | returns | what it does |
-| --- | --- | --- |
-| `get(*targets, when=, limit=, dry=)` | `Run` | get the targets and follow them; with none, get every followed target |
-| `targets.list(plugin=None)` | `list[Tracked]` | the targets the home knows; iterating `fl.targets` does the same |
-| `targets.follow(*targets)` | `list[Tracked]` | follow targets without getting them; a single post is a usage error |
-| `targets.unfollow(*targets)` | `list[Tracked]` | stop following; files and history stay |
-| `targets.retry(*targets)` | `list[Tracked]` | make failed files retryable again, however many runs failed them ([errors.md](errors.md#retrying)) |
-| `targets.clean(*targets, media=False)` | `list[Tracked]` | forget targets: rows, files rows, failures, cursors, heads, gaps. `media=True` also deletes their recorded files, sidecars, links, extracted folders and the folders left empty |
+- `get(*targets, when=, limit=, dry=)` (returns: `Run`; what it does: get the targets and follow
+  them; with none, get every followed target)
+- `targets.list(plugin=None)` (returns: `list[Tracked]`; what it does: the targets the home knows;
+  iterating `fl.targets` does the same)
+- `targets.follow(*targets)` (returns: `list[Tracked]`; what it does: follow targets without getting
+  them; a single post is a usage error)
+- `targets.unfollow(*targets)` (returns: `list[Tracked]`; what it does: stop following; files and
+  history stay)
+- `targets.retry(*targets)` (returns: `list[Tracked]`; what it does: make failed files retryable
+  again, however many runs failed them ([errors.md](errors.md#retrying)))
+- `targets.clean(*targets, media=False)` (returns: `list[Tracked]`; what it does: forget targets:
+  rows, files rows, failures, cursors, heads, gaps. `media=True` also deletes their recorded files,
+  sidecars, links, extracted folders and the folders left empty)
+
 
 A get is smart about what it already has ([architecture.md](architecture.md#smart-sync)):
 
@@ -264,26 +286,48 @@ with flnd.open(home) as fl:
         print(record.path.name, record.size, record.date)
 ```
 
-| read | returns |
-| --- | --- |
-| `fl.targets` | a `flnd.Tracked` per target the home knows: `target`, `follow`, `at` (last run), `files`, `size`, `seen` (for a search), `categories`, `complete` (each listed category's day), `query`, `account` |
-| `fl.files(target=None, kind=None, since=None)` | read from the home's `flnd.db`: a `flnd.Record` per saved file: `key`, `path`, `size`, `post`, `category`, `date`, `at`, and `kind` (`"image"`, `"video"`, `"audio"`); `since` is a date or text such as `"2026-03"` |
-| `fl.auth` | a `flnd.Account` per account of every plugin: `plugin`, `name`, `origin`, `is_default`, `status` (`"ok"`, `"held"` or `"expired"`), `held_until`, `expires` |
-| `fl.plugins` | a `flnd.Installed` per plugin: the built-ins, the installed plugins (a disabled one too, with `disabled` saying why) and `add`'s. Each has `code`, `name`, `origin` (`"built-in"`, `"file"` or `"script"`), `where`, `version`, `api`, `domains`, `forms`, `categories` and `logins` (its ways to log in). Reading it imports every plugin |
-| `fl.status` | the last run that downloaded, as a `flnd.Status`: `command`, `started`, `ended`, `saved`, and `failures`, a `flnd.Failure` per file or target it left failed (`target`, `post`, `path`, `error`, `attempts`, `url`, `at`); `None` before the first run ([errors.md](errors.md#the-failure-report)) |
-| `fl.check(fix=False)` | a `flnd.Checked`: the history against the disk. `missing` and `resized` (each a `Record`, as the history has it), `unknown` (paths under `media/` no row names), `files` (rows checked), `fixed`, and `ok`. `fix=True` makes the history match the disk, and never deletes, moves or downloads a file ([storage.md](storage.md#checking-a-home)) |
-| `fl.config` | the settings as a mapping of dotted names (`"defaults.when"`, `"plugins.ins.pace"`; a bare `"when"` is one of `[defaults]`): `fl.config["when"]`, `fl.config.where("when")`, `fl.config.default("when")`, `fl.config.set(key, value)` and `fl.config.unset(key)` write `config.toml` and keep its comments |
+- `fl.targets`: a `flnd.Tracked` per target the home knows: `target`, `follow`, `at` (last run),
+  `files`, `size`, `seen` (for a search), `categories`, `complete` (each listed category's day),
+  `query`, `account`
+- `fl.files(target=None, kind=None, since=None)`: read from the home's `flnd.db`: a `flnd.Record`
+  per saved file: `key`, `path`, `size`, `post`, `category`, `date`, `at`, and `kind` (`"image"`,
+  `"video"`, `"audio"`); `since` is a date or text such as `"2026-03"`
+- `fl.auth`: a `flnd.Account` per account of every plugin: `plugin`, `name`, `origin`, `is_default`,
+  `status` (`"ok"`, `"held"` or `"expired"`), `held_until`, `expires`
+- `fl.plugins`: a `flnd.Installed` per plugin: the built-ins, the installed plugins (a disabled one
+  too, with `disabled` saying why) and `add`'s. Each has `code`, `name`, `origin` (`"built-in"`,
+  `"file"` or `"script"`), `where`, `version`, `api`, `domains`, `forms`, `categories` and `logins`
+  (its ways to log in). Reading it imports every plugin
+- `fl.status`: the last run that downloaded, as a `flnd.Status`: `command`, `started`, `ended`,
+  `saved`, and `failures`, a `flnd.Failure` per file or target it left failed (`target`, `post`,
+  `path`, `error`, `attempts`, `url`, `at`); `None` before the first run
+  ([errors.md](errors.md#the-failure-report))
+- `fl.check(fix=False)`: a `flnd.Checked`: the history against the disk. `missing` and `resized`
+  (each a `Record`, as the history has it), `unknown` (paths under `media/` no row names), `files`
+  (rows checked), `fixed`, and `ok`. `fix=True` makes the history match the disk, and never deletes,
+  moves or downloads a file ([storage.md](storage.md#checking-a-home))
+- `fl.config`: the settings as a mapping of dotted names (`"defaults.when"`, `"plugins.ins.pace"`; a
+  bare `"when"` is one of `[defaults]`): `fl.config["when"]`, `fl.config.where("when")`,
+  `fl.config.default("when")`, `fl.config.set(key, value)` and `fl.config.unset(key)` write
+  `config.toml` and keep its comments
+
 
 ## Accounts, plugins and the extension
 
-| call | what it does |
-| --- | --- |
-| `fl.auth.login(plugin, method=None, path=None, name=None)` | log an account in: `method` is `"chrome"` (extension), `"firefox"`, `"safari"` (macOS), `"browser"`, `"file"` with a cookies `path`, or the plugin's way (`"qr"`, `"phone"` for tlg); returns the `Account` |
-| `fl.auth.logout(plugin, name=None)` | log an account out, the default one when no `name`; returns the `Account` |
-| `fl.auth.default(plugin, name)` | make an account the plugin's default |
-| `fl.plugins.install(path)`, `fl.plugins.uninstall(code)` | install a `.py` file or package folder, or remove one; each returns an `Installed` |
-| `fl.extension.install()`, `.uninstall()`, `.connected`, `.version` | connect Chrome's extension, remove it, and ask whether it is connected |
-| `fl.add(plugin)` | a plugin class for this `Flnd` alone; a code another plugin has is a `UsageError` |
+- `fl.auth.login(plugin, *, method=None, path=None, name=None)`: log an account in: `method` is one
+  of the plugin's login methods: `"browser"`, `"chrome"` (through the extension), `"file"` with a
+  cookies `path`, `"firefox"`, `"safari"` (macOS), or a plugin's own (`"qr"` and `"phone"` for tlg);
+  returns the `Account`
+- `fl.auth.logout(plugin, name=None)`: log an account out, the default one when no `name`; returns
+  the `Account`
+- `fl.auth.default(plugin, name)`: make an account the plugin's default
+- `fl.plugins.install(path)`, `fl.plugins.uninstall(code)`: install a `.py` file or package folder,
+  or remove one; each returns an `Installed`
+- `fl.extension.install()`, `.uninstall()`, `.connected`, `.version`: connect Chrome's extension,
+  remove it, and ask whether it is connected
+- `fl.add(plugin)`: a plugin class for this `Flnd` alone; a code another plugin has is a
+  `UsageError`
+
 
 ```python
 import pathlib
@@ -302,21 +346,20 @@ no site. `fl.auth.login("ins", method="chrome")` reads a browser's cookies the s
 
 ## The CLI's commands, through the library
 
-| CLI | library |
-| --- | --- |
-| `flnd get T/C --when W --limit N --dry` | `fl.get("T/C", when=W, limit=N, dry=True)` |
-| `flnd get` | `fl.get()` |
-| `flnd target list` | `fl.targets.list()` |
-| `flnd target clean T --media` | `fl.targets.clean(T, media=True)` |
-| `flnd auth list` | `fl.auth` |
-| `flnd auth login P M PATH` | `fl.auth.login(P, method=M, path=PATH)` |
-| `flnd auth logout P A` | `fl.auth.logout(P, name=A)` |
-| `flnd plugin list` | `fl.plugins` |
-| `flnd plugin install PATH`, `uninstall C` | `fl.plugins.install(PATH)`, `fl.plugins.uninstall(C)` |
-| `flnd extension install`, `uninstall` | `fl.extension.install()`, `fl.extension.uninstall()` |
-| `flnd status` | `fl.status`, `fl.check()` |
-| `flnd config` | `fl.config` |
-| `--exec CMD` | `for event in run:` on each `flnd.Saved` |
+- `flnd get T/C --when W --limit N --dry`: `fl.get("T/C", when=W, limit=N, dry=True)`
+- `flnd get`: `fl.get()`
+- `flnd target list`: `fl.targets.list()`
+- `flnd target clean T --media`: `fl.targets.clean(T, media=True)`
+- `flnd auth list`: `fl.auth`
+- `flnd auth login P M PATH`: `fl.auth.login(P, method=M, path=PATH)`
+- `flnd auth logout P A`: `fl.auth.logout(P, name=A)`
+- `flnd plugin list`: `fl.plugins`
+- `flnd plugin install PATH`, `uninstall C`: `fl.plugins.install(PATH)`, `fl.plugins.uninstall(C)`
+- `flnd extension install`, `uninstall`: `fl.extension.install()`, `fl.extension.uninstall()`
+- `flnd status`: `fl.status`, `fl.check()`
+- `flnd config`: `fl.config`
+- `--exec CMD`: `for event in run:` on each `flnd.Saved`
+
 
 `--again` (the CLI's flag on `get`) is `flnd.open(home, again=True)`: every `get` then lists each
 post again and asks again for files the site answered 404 or 410 for (recorded as gone,
@@ -344,89 +387,28 @@ with flnd.open(home) as fl:
         print(type(error).__name__, error, "-", error.hint)    # UsageError unknown plugin 'zzz'…
 ```
 
-## Module `flnd`
+## Import cost and the public names
 
-flnd: a media downloader for Instagram, TikTok, X, Facebook, Telegram and more, as a library.
+`import flnd` imports nothing but the package's entry file. The first use of a name
+(`flnd.open`, `flnd.Saved`) imports the one module that defines it. The engine, curl_cffi,
+Playwright and Rich load only when a call needs them, so a script and `python -c "import flnd"`
+stay fast ([architecture.md](architecture.md) explains the layers).
 
-src/docs/library explains it.
+The public names are the ones listed in the API snapshot (`tests/data/api.txt`, from `make api`):
+`Flnd`, `open`, the events, the reads and the errors. A plugin is written against `flnd.plugin`
+instead ([writing-a-plugin.md](writing-a-plugin.md)), and tested with `flnd.testing`.
 
-    import flnd
+## For contributors
 
-    with flnd.open("~/Media/flnd") as fl:
-        for event in fl.get("ins:example_user/reels"):
-            if isinstance(event, flnd.Saved):
-                print(event.path)
+The code is `src/_library.py` (`Flnd`, `open`, and the groups `Targets`, `Auth`, `Plugins`,
+`Extension`, `Config`), over the engine every command runs on. The events and reads are
+`src/engine/events.py`. Rules a change must keep:
 
-What it holds: the public names a script uses, and nothing else. `flnd.open(home)` gives a
-`Flnd`, whose methods and groups are the CLI's commands; `get` returns a `Run`, whose events
-(`Saved`, `Skipped`, `Failed`, `Planned`) are the only output, and whose `state`
-(a `State`) says what it is doing now; `Report`, `Account`, `Record`, `Tracked`, `Status`,
-`Failure`, `Checked` and `Installed` are what the reads return; the errors are the one
-hierarchy of `flnd.errors`. A
-plugin is written against `flnd.plugin` instead (src/docs/writing-a-plugin explains
-it), and tested with `flnd.testing`.
-
-How it loads: every name is lazy. `import flnd` imports nothing but this file, and the first
-use of a name (`flnd.open`, `flnd.Saved`) imports the one module that defines it. The engine,
-curl_cffi, Playwright and Rich load only when a command needs them, so a script, the CLI's
-`--help` and `python -c "import flnd"` stay fast. `tests/test_packaging.py` guards this.
-
-## Module `flnd._library`
-
-`Flnd` and `open`: the library a script uses, over the engine every command runs on.
-
-src/docs/library explains it.
-
-    with flnd.open("~/Media/flnd") as fl:
-        for event in fl.get("ins:example_user/reels"):
-            ...
-
-Who calls it: scripts and the CLI (`src/cli.py`), both through `flnd.open`, so the command
-line can do nothing a script can't. What it calls: `flnd.engine._engine.Engine` for every command,
-`flnd.engine.store` (the home's `flnd.db`), `flnd.engine.auth`, `flnd.engine.plugins` and
-`flnd.engine.extension` for the reads, and the home's `config.toml` for settings past the five
-options a call takes.
-
-How a call flows:
-1. The method checks its arguments at once: targets are resolved with the categories they
-   name, `when` and `limit` are read, and a mistake raises `flnd.UsageError` before anything
-   is fetched.
-2. `get` returns a `flnd.Run` that hasn't started. Its work is a closure that makes an `Engine`
-   with the run's event sink and stop state, and calls the engine's command; the run starts it
-   on its own thread when read.
-3. A read (`targets`, `auth`, `plugins`, `files`, `status`) or a quick change (`targets.follow`,
-   `auth.login`, `config.set`) runs on the caller's thread and returns plain rows from
-   `flnd.engine.events`.
-
-Rules a change must keep:
-- Importing this module imports nothing heavy: the engine, curl_cffi, Playwright and Rich load on
-  the first call that needs them, so `import flnd` stays fast.
-- Options are keyword-only and at most five per call; a setting past that belongs in the
-  config file (`flnd.engine.config`). An option left as None takes the file's setting
-  (`[defaults] when`), so a value given for one call always wins.
+- Options are keyword-only and at most five per call. A setting past that belongs in the
+  config file. An option left as None takes the file's setting (`[defaults] when`), so a value
+  given for one call always wins.
 - No callbacks: a run reports through its events alone.
-
-## Module `flnd.engine.events`
-
-What a run reports, and the rows the library reads: events, `Report`, the `State` snapshot,
-`Account`, `Record`, `Tracked`, `Checked`, `Status`, `Failure` and `Installed`.
-
-src/docs/library explains it.
-
-Every type here is a frozen msgspec struct, so it is cheap to make, safe to share between the
-run's threads, and encodes to JSON (`encode`) for a script or a cron job. The module imports
-msgspec, the errors and `flnd.plugin` (for `Target`), never the engine, so `flnd.Saved` is
-cheap to reach.
-
-Who makes them:
-1. the job and the engine make `Saved`, `Skipped`, `Failed` and `Planned` as a run goes,
-   and hand them to the run's sink (`flnd.engine.run.Run._emit`);
-2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
-3. `Flnd` makes `Account`, `Record`, `Tracked`, `Status` and `Failure` from the home's
-   `flnd.db`, for its reads, `Checked` from `fl.check()`, and `Installed` from the plugins it
-   knows (`fl.plugins`).
-
-The one rule a change must keep: an event holds data, never a live object (a site, a file
-handle, a lock), because a script may keep it after the run ends, and `encode` must turn it
-into JSON. An error is the one exception: `Failed.error` is the `flnd.Error` itself, so a
-script can read its `hint`; `encode` writes its class, message and hint.
+- An event holds data, never a live object (a site, a file handle, a lock), because a script
+  may keep it after the run ends, and `encode` must turn it into JSON. The one exception is
+  `Failed.error`, the `flnd.Error` itself, so a script can read its `hint`.
+- The CLI and the library stay one code path: anything the command line does, a call here does.

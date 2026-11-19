@@ -30,7 +30,18 @@ its categories. The help imports no plugin, so it answers in a few tens of milli
   plugin list|install|uninstall   List the plugins, install or uninstall one
   extension install|uninstall     Connect Chrome to flnd, or remove it
   status                          Show the last run
-  config                          Show every setting of config.toml
+  config                          Work in every setting of config.toml
+
+  -h, --help                      show this help message and exit
+  -V, --version                   print flnd's version
+  --home DIR                      where downloads, history and logins live
+                                  (default: $FLND_HOME, else ./.flnd)
+  -v, --verbose                   show flnd's debug lines, and a bug's traceback
+  --json                          print events and rows as JSON lines and never
+                                  asks
+
+  plugins                         tik fbk ins twt loi tlg mht web
+                                  a plugin's targets: flnd get -h
 ```
 
 ## How it looks
@@ -61,13 +72,15 @@ Every line flnd prints is drawn from one theme (`src/ui/theme.py`), through `src
 These go before or after the command: `flnd --home ~/Media/flnd get` and
 `flnd get --home ~/Media/flnd` are the same.
 
-| flag | default | what it does |
-| --- | --- | --- |
-| `--home DIR` | `$FLND_HOME`, else `./.flnd` | the home: downloads, history and logins ([storage.md](storage.md)) |
-| `-v`, `--verbose` | off | show flnd's debug lines too, and a bug's traceback instead of a crash file |
-| `--json` | off | print events and rows as JSON lines, for scripts and cron, and never ask a question |
-| `--help`, `-h` | | print the help of flnd, or of the command it follows |
-| `--version`, `-V` | | print flnd's version |
+- `--home DIR` (default: `$FLND_HOME`, else `./.flnd`; what it does: the home: downloads, history
+  and logins ([storage.md](storage.md)))
+- `-v`, `--verbose` (default: off; what it does: show flnd's debug lines too, and a bug's traceback
+  instead of a crash file)
+- `--json` (default: off; what it does: print events and rows as JSON lines, for scripts and cron,
+  and never ask a question)
+- `--help`, `-h` (what it does: print the help of flnd, or of the command it follows)
+- `--version`, `-V` (what it does: print flnd's version)
+
 
 A flag given on the command line wins; then the environment (`FLND_HOME`); then the home's
 `config.toml` ([storage.md](storage.md#settings-configtoml)); then the default.
@@ -103,14 +116,23 @@ A file already saved is skipped, so getting a target again fetches only what is 
 whose bytes another target already saved becomes a hard link to that file, so it takes no more
 space ([storage.md](storage.md#dedupe)).
 
-| flag | default | what it does |
-| --- | --- | --- |
-| `<targets…>` | standard input | the targets; when standard input isn't a terminal, its lines are added, skipping blank lines and lines starting with `#`. With none from either, every followed target is synced, or `nothing to sync` is printed and flnd exits 0 |
-| `--when WHEN` | `when` under `[defaults]` in `config.toml`, else every day | only posts from these days: a year `2026`, a month `2026-06`, a day `2026-06-15`, a range `2026-01..2026-03` (either end may be left out), or a span back from today `30d`, `8w`, `1y`; `--when ""` takes every day, whatever the config says |
-| `--limit N` | no limit | at most N posts per target, or N targets found by a search; at least 1 |
-| `--dry` | off | list what would be saved (each file `new` or `saved`, or the targets a search finds), and save and write nothing |
-| `--again` | off | list every post again, past the stop at saved posts and the saved cursors, and ask again for files the site answered 404 or 410 for, which are otherwise recorded gone and skipped ([storage.md](storage.md)) |
-| `--exec CMD` | none | run a command once for each saved file, without a shell: see [Running a command per file](#running-a-command-per-file) |
+- `<targets…>` (default: standard input; what it does: the targets; when standard input isn't a
+  terminal, its lines are added, skipping blank lines and lines starting with `#`. With none from
+  either, every followed target is synced, or `nothing to sync` is printed and flnd exits 0)
+- `--when WHEN` (default: `when` under `[defaults]` in `config.toml`, else every day; what it does:
+  only posts from these days: a year `2026`, a month `2026-06`, a day `2026-06-15`, a range
+  `2026-01..2026-03` (either end may be left out), or a span back from today `30d`, `8w`, `1y`;
+  `--when ""` takes every day, whatever the config says)
+- `--limit N` (default: no limit; what it does: at most N posts per target, or N targets found by a
+  search; at least 1)
+- `--dry` (default: off; what it does: list what would be saved (each file `new` or `saved`, or the
+  targets a search finds), and save and write nothing)
+- `--again` (default: off; what it does: list every post again, past the stop at saved posts and the
+  saved cursors, and ask again for files the site answered 404 or 410 for, which are otherwise
+  recorded gone and skipped ([storage.md](storage.md)))
+- `--exec CMD` (default: none; what it does: run a command once for each saved file, without a
+  shell: see [Running a command per file](#running-a-command-per-file))
+
 
 Archives (`.zip`, `.7z`, `.rar`, `.tar*`) are always extracted beside themselves, into a folder
 of their name; the archive file is kept too. 7z and RAR need 7-Zip (`7zz`) on your PATH.
@@ -186,17 +208,19 @@ flnd auth logout <plugin> [account]
   where its login came from, and its status (`ok`, `held 4 min`, `expires in 2 days`,
   `expired`). On a terminal the list has the keys above, and `*` makes the account under the
   cursor its plugin's default, `a` logs one in, `d` logs it out. On a pipe it is a plain table.
-- `login` logs an account in. `method` is one of:
-  - **a browser**: `chrome` (through the extension), `firefox`, or `safari` on macOS (which
-    needs Full Disk Access for the terminal, in System Settings › Privacy & Security; the error
-    says so when it is missing). flnd reads the site's cookies from it and keeps only those of
-    the site's domains;
+- `login` logs an account in. `method` is one of the plugin's login methods:
   - **`browser`**: flnd's Chromium opens, visible, at the site's login page; log in there, and
     the window closes once the login cookie is set (it waits up to 10 minutes);
+  - **`chrome`**: the site's cookies from your Chrome, read through the extension;
   - **`file`**, with the path of a Netscape `cookies.txt` or a JSON export (a path given alone
     means `file`);
-  - **the plugin's own way**: Telegram (`tlg`) logs in by `browser` (Telegram Web's session),
-    `qr` or `phone`, which ask their questions in the terminal.
+  - **`firefox`**: the site's cookies from your Firefox;
+  - **`safari`**, on macOS only: the site's cookies from Safari. It needs Full Disk Access for
+    the terminal, in System Settings › Privacy & Security; the error says so when it is missing;
+  - **a plugin's own methods**: Telegram (`tlg`) also has `qr` and `phone`, which ask their
+    questions in the terminal. Its `browser` opens Telegram Web's session.
+
+  flnd keeps only the cookies of the site's domains from any of them.
 
   Left out in a terminal, `method` is asked. Off a terminal, or with `--json`, leaving it out is
   a usage error. A login is checked before it is saved: the cookies must hold one of the
@@ -249,7 +273,9 @@ flnd plugin uninstall <code>
 
 Plugins load from `$FLND_PLUGINS`, else `~/.config/flnd/plugins/` (`%APPDATA%\flnd\plugins\` on
 Windows); never from a home ([writing-a-plugin.md](writing-a-plugin.md#10-shipping-it-as-a-plugin)).
-`flnd plugin list` imports every one of them; `flnd --help` imports none.
+A file or folder in that folder that `install` didn't record is ignored, with a warning that
+names `flnd plugin install`. `flnd plugin list` imports every installed plugin; `flnd --help`
+imports none.
 
 ## `flnd extension`
 
@@ -283,7 +309,8 @@ flnd status --json
   (10 shown, then "and N more"), each with its message, how many runs failed it, and what to
   do. A file a later run saved is left out.
 - The **accounts** that are held, expired or expiring within a week.
-- The **disk**: files missing, unknown, or of the wrong size ([storage.md](storage.md#checking-a-home)).
+- The **disk**: files missing, unknown, or of the wrong size
+  ([storage.md](storage.md#checking-a-home)).
 
 On a terminal with rows to repair (files missing or of the wrong size) it asks "Repair 2
 rows? (y/N)", and a yes makes the history match the disk (`fl.check(fix=True)`); unknown files
@@ -362,14 +389,15 @@ and the repeats of a warning within 10 seconds fold into one line ([How it looks
 
 ## Exit codes
 
-| code | meaning |
-| --- | --- |
-| 0 | everything worked |
-| 1 | some files or targets failed (each is named above the exit); flnd went on with the rest. `flnd status` exits 1 when something needs care |
-| 2 | a usage error: an unknown command or flag, a target no plugin reads, a category its route lacks, a bad `--when` or `--limit` |
-| 3 | a login is needed: a plugin isn't logged in, its login was refused, or `flnd auth login` failed |
-| 4 | flnd itself stopped: a full or refused disk, a missing tool, a broken plugin, or a bug |
-| 130 | stopped with Ctrl-C |
+- 0: everything worked
+- 1: some files or targets failed (each is named above the exit); flnd went on with the rest. `flnd
+  status` exits 1 when something needs care
+- 2: a usage error: an unknown command or flag, a target no plugin reads, a category its route
+  lacks, a bad `--when` or `--limit`
+- 3: a login is needed: a plugin isn't logged in, its login was refused, or `flnd auth login` failed
+- 4: flnd itself stopped: a full or refused disk, a missing tool, a broken plugin, or a bug
+- 130: stopped with Ctrl-C
+
 
 A cron job can tell "some files failed" (1) from "flnd broke" (4). Each error class has its
 code; [errors.md](errors.md) lists them.
@@ -418,40 +446,13 @@ home holds no login at first; log in there for a site that needs one
 `--help` and target resolution read; run it after changing a plugin's domains, routes or
 categories (`tests/test_manifest.py` fails until then).
 
-## Module `flnd.cli`
+The code is `src/cli.py`: `parser()` holds every command and flag, and `main` returns the exit
+code. Rules a change must keep:
 
-The flnd command line: flags in, one library call, events out as lines on the terminal.
-
-    flnd get ins:example_user/reels --when 2026
-    flnd target list
-    flnd auth login ins chrome
-    flnd status
-
-Who calls it: `flnd` (the console script) and `python -m flnd`, through `main`. What it calls:
-the library alone (`flnd.open`, its `Run` and events), so anything the command line does, a
-script can do too; `flnd.plugins._manifest` for the built-in plugins `--help` lists; and
-`flnd.ui` for every line it prints and every question it asks.
-
-How a command runs (`main`):
-1. argparse reads the flags. A mistake prints an error and exits 2; `--help` prints the help
-   made from each command's docstring, drawn in the theme by `flnd.ui.out.help`: `flnd -h`
-   fits in 24 lines, and `flnd get -h` adds a row per plugin.
-2. The command function opens the home (`--home`, else `$FLND_HOME`, else `./.flnd`) and makes
-   one library call with the flags.
-3. A run's own display is the screen the library's events draw on a terminal (`flnd.ui.screen`);
-   a dry run prints its listing, `--json` prints one JSON object per line. With `--exec CMD`,
-   each `Saved` event also runs CMD, without a shell (`_Exec`). The end of a run prints a short
-   summary, and its failures decide the exit code.
-4. Whatever ends the command becomes an exit code (`exit_code`): 0 ok, 1 some files or targets
-   failed, 2 usage, 3 a login is needed, 4 flnd itself stopped (a full disk, a missing tool, a
-   broken plugin, a bug), 130 Ctrl-C. A `flnd.Error` prints its message and its hint, never a
-   traceback; a bug prints one line naming a crash file, or the traceback with `-v`.
-
-Rules a change must keep:
 - Import nothing heavy at the top: argparse, os and sys only. Everything else is imported by
   the command that needs it, so `flnd --help` pays for none of it.
-- One flag, one spelling: no aliases. The docs' CLI page (src/docs/cli) names every command and
-  flag, and `tests/test_docs.py` checks it against this parser.
+- One flag, one spelling: no aliases. This page names every command and flag, and
+  `tests/test_docs.py` checks it against the parser.
 - `--json` never asks a question: a command that would ask is a usage error instead. Every
   line it prints on standard output is one JSON object with a `type`, an error included.
 - `--exec` never starts a shell: CMD is split once with `shlex`, and a value from a site (a
