@@ -520,7 +520,10 @@ class Auth:
                 (`"qr"`, `"phone"` for tlg). None takes the only one the plugin has, or `"file"`
                 when `path` is given.
             path: the cookie file, for `"file"`.
-            name: the account's name; None takes the site's own name for it.
+            name: the account's name. None, on a terminal, asks for it (offering the site's own
+                name, else the next `accountN`, and asking before it replaces an account that
+                has the name); off a terminal it takes the site's own name, else the default
+                account's.
 
         Returns:
             The account after it.
@@ -539,7 +542,6 @@ class Auth:
             flnkit.errors.UsageError: ins logs in by ...
         """
         from flnd.engine import auth
-        from flnd.plugin import Cookies
 
         cls = self._owner._plugin(plugin)
         if cls.login is None:
@@ -557,7 +559,7 @@ class Auth:
             raise UsageError(f"{plugin}: a file login needs the path of a cookie file",
                              hint=f"flnd auth login {plugin} file <path>")
         return auth.login(self._owner.home, cls(), method, path=path, name=name,
-                          interactive=not isinstance(cls.login, Cookies))
+                          interactive=True)
 
     def logout(self, plugin: str, *, name: str | None = None) -> Account:
         """Log an account out: its secrets and its row. The default when no `name` is given.

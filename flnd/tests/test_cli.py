@@ -57,7 +57,7 @@ from flnd.errors import (
     UsageError,
 )
 from flnd.plugin import Plugin, Post, route
-from flnd.ui import out
+from flnd.ui import forms, out
 from flnd.ui.log import ui
 from flnkit import net as _net
 
@@ -115,6 +115,13 @@ class FlndCase(unittest.TestCase):
             return self.sure
 
         self.enterContext(mock.patch("flnd.ui.forms.confirm", confirm))
+        ask = forms.ask
+
+        def named(message, **options):
+            # A login's name is taken as offered, as enter takes it; other questions are asked.
+            return options["default"] if message == "Account name" else ask(message, **options)
+
+        self.enterContext(mock.patch("flnd.ui.forms.ask", named))
 
     def pipe(self, text):
         self.stdin.stop()
@@ -413,9 +420,10 @@ class WiringTest(ExampleCase):
             self.assertEqual(defaults(), {"one": False, "two": True})
             delete.run([each.key for each in load() if each.key.name == "two"][0])
             self.assertEqual(list(defaults()), ["one"])
-            # `a` on a row logs in to its plugin, asking the way; the same account is renewed.
+            # `a` on a row logs in to its plugin, asking the way and the name (taken as offered:
+            # the site gives none, so the next free `accountN`).
             keys["a"].run(load()[0].key)
-            self.assertEqual([each.key.name for each in load()], ["one"])
+            self.assertEqual([each.key.name for each in load()], ["one", "account1"])
 
         self.listed(script, "auth", "list")
 

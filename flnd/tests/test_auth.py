@@ -367,11 +367,11 @@ class WindowTest(AuthCase):
 
 
 class AccountsTest(AuthCase):
-    def login(self, name=None, session="s", **options):
+    def login(self, whoami=None, session="s", **options):
         def start(self, ctx, method):
             ctx.secrets["session"] = session
 
-        plugin = make_plugin("aaa", login=own_login(start, whoami=name))
+        plugin = make_plugin("aaa", login=own_login(start, whoami=whoami))
         return auth.login(self.home, plugin(), "qr", **options)
 
     def test_each_name_whoami_gives_is_an_account_and_the_first_is_the_default(self):
@@ -391,8 +391,39 @@ class AccountsTest(AuthCase):
         with mock.patch.object(sys.stdin, "isatty", return_value=True), \
                 mock.patch("flnd.ui.forms.ask", return_value="example_handle") as asked:
             self.login(interactive=True)
-        asked.assert_called_once_with("Account name", default="account1")
+        asked.assert_called_once_with("Account name", default="account2")
         self.assertEqual([name for name, _, _ in self.accounts()], ["account1", "example_handle"])
+
+    def test_the_form_offers_the_sites_name_and_asks_before_replacing_an_account(self):
+        self.login("example_user", "one")
+        with mock.patch.object(sys.stdin, "isatty", return_value=True), \
+                mock.patch("flnd.ui.forms.ask", side_effect=["", "example_creator"]) as asked, \
+                mock.patch("flnd.ui.forms.confirm", side_effect=[False]) as sure:
+            self.login("example_user", "two", interactive=True)
+        # A blank answer takes the offered name, which is taken: declining asks again.
+        self.assertEqual(asked.mock_calls, [mock.call("Account name", default="example_user"),
+                                            mock.call("Account name", default="account1")])
+        sure.assert_called_once_with("Replace the login of example_user?")
+        self.assertEqual([name for name, _, _ in self.accounts()],
+                         ["example_user", "example_creator"])
+        self.assertEqual(vaulted(self.home, "aaa", "example_user")[1], {"session": "one"})
+        with mock.patch.object(sys.stdin, "isatty", return_value=True), \
+                mock.patch("flnd.ui.forms.ask", return_value="example_user"), \
+                mock.patch("flnd.ui.forms.confirm", return_value=True):
+            self.login(None, "three", interactive=True)
+        self.assertEqual(vaulted(self.home, "aaa", "example_user")[1], {"session": "three"})
+
+    def test_a_given_name_and_a_pipe_ask_nothing(self):
+        with mock.patch.object(sys.stdin, "isatty", return_value=True), \
+                mock.patch("flnd.ui.forms.ask") as asked:
+            self.login("example_user", name="example_handle", interactive=True)
+        with mock.patch.object(sys.stdin, "isatty", return_value=False), \
+                mock.patch("flnd.ui.forms.ask") as piped:
+            self.login("example_user", interactive=True)
+        asked.assert_not_called()
+        piped.assert_not_called()
+        self.assertEqual([name for name, _, _ in self.accounts()],
+                         ["example_handle", "example_user"])
 
     def test_pick_prefers_the_account_that_worked_then_ok_ones(self):
         for name in ("one", "two", "three"):

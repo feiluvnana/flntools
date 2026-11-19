@@ -337,8 +337,10 @@ def login(home: Path, plugin: Plugin, method: str, *, path: Path | str | None = 
 
     A cookie login reads its jar by the method; any other runs the plugin's `Login.start`,
     which alone may write `ctx.secrets`. Then `Login.check` must pass, and the account is
-    named by `Login.whoami`, else asked for in a terminal, else the plugin's default account's
-    name, else `account<n>`: logging in again replaces that account's login.
+    named by `name`, else asked for in a terminal (offering `Login.whoami`, else the next
+    `account<n>`; a taken name asks before it replaces that account's login), else `Login.whoami`,
+    else the plugin's default account's name, else `account<n>`: logging in again replaces that
+    account's login.
 
     Args:
         home: the home folder.
@@ -346,8 +348,9 @@ def login(home: Path, plugin: Plugin, method: str, *, path: Path | str | None = 
         method: one of its login's `methods`.
         path: the cookie file, for `file`.
         profile: the browser's profile, for a browser's cookie store.
-        interactive: whether the plugin's own login may ask in the terminal.
-        name: the account's name, instead of the one `Login.whoami` gives.
+        interactive: whether the login may ask in the terminal: the plugin's own steps, and the
+            account's name.
+        name: the account's name, asked for and looked up nowhere else.
 
     Raises:
         UsageError: a plugin with no login, a method it doesn't take, or a missing `path`.
@@ -368,11 +371,11 @@ def login(home: Path, plugin: Plugin, method: str, *, path: Path | str | None = 
         with contextlib.suppress(LoginError), secrets(home, first.id) as saved:
             kept = dict(saved)
     found = _signed_in(home, plugin, method, jar, kept, interactive=interactive)
-    name = (name or "").strip() or found
+    name = (name or "").strip()
     with store.open(home) as db:
         if not name and interactive and forms.interactive():
-            name = forms.ask("Account name", default=first.name if first else None)
-        name = name or (first.name if first else _next_name(db, plugin.code))
+            name = _asked_name(db, plugin.code, found)
+        name = name or found or (first.name if first else _next_name(db, plugin.code))
         row = db.login(plugin.code, name, origin=method)
         with secrets(home, row.id, plugin=plugin.code) as saved:
             saved.clear()
@@ -491,6 +494,18 @@ async def _window(plugin: Plugin, own: Cookies, stop: threading.Event) -> cookie
                 raise Stopped(f"{plugin.code}: the login was stopped")
     finally:
         await window.close()
+
+
+def _asked_name(db: store.Store, code: str, found: str | None) -> str:
+    """Ask for the account's name in a terminal, offering the site's own (`found`) or the next
+    free `account<n>`. A name that is taken asks before it replaces that account's login."""
+    taken = {row.name for row in db.accounts(code)}
+    offer = found or _next_name(db, code)
+    while True:
+        name = forms.ask("Account name", default=offer).strip() or offer
+        if name not in taken or forms.confirm(f"Replace the login of {name}?"):
+            return name
+        offer = _next_name(db, code)
 
 
 def _next_name(db: store.Store, plugin: str) -> str:

@@ -668,8 +668,20 @@ class EngineLoginTest(TelegramCase):
     """`flnd auth login tlg <method>` through the engine: what it asks, and what the home keeps."""
 
     def log_in(self, method, *answers, tty=True):
+        from flnd.ui import forms
+
+        confirm, given = forms.confirm, iter(answers)
+
+        def ask(message, **options):
+            # A blank name takes Telegram's own; every other question takes the next answer.
+            return "" if message == "Account name" else next(given)
+
+        def sure(title, **options):
+            # Logging in again replaces the account of Telegram's own name.
+            return True if title.startswith("Replace the login") else confirm(title, **options)
+
         with mock.patch("sys.stdin.isatty", return_value=tty), \
-                mock.patch("flnd.ui.forms.ask", side_effect=list(answers)):
+                mock.patch("flnd.ui.forms.ask", ask), mock.patch("flnd.ui.forms.confirm", sure):
             auth.login(self.home, Telegram(), method, interactive=True)
 
     def assert_logged_in(self):

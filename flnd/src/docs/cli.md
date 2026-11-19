@@ -226,7 +226,10 @@ flnd auth logout <plugin> [account]
   a usage error. A login is checked before it is saved: the cookies must hold one of the
   plugin's login cookies. It is sealed in the home's vault, `metadata/secret.db`, under a key
   kept outside the home ([storage.md](storage.md#the-vault)). Each account the site names is
-  kept apart; logging in again as one replaces its login.
+  kept apart; logging in again as one replaces its login. On a terminal the login then asks an
+  optional "Account name", offering the site's own name or else the next free `account<n>`
+  (`enter` takes it); a name an account already has asks "Replace the login of ...?" first.
+  Off a terminal nothing is asked and the offered name is taken.
 - `logout` logs one account out, or the plugin's default when none is named; a terminal is asked
   first, a pipe isn't.
 

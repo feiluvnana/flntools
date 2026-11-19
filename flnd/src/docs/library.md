@@ -317,7 +317,8 @@ with flnd.open(home) as fl:
 - `fl.auth.login(plugin, *, method=None, path=None, name=None)`: log an account in: `method` is one
   of the plugin's login methods: `"browser"`, `"chrome"` (through the extension), `"file"` with a
   cookies `path`, `"firefox"`, `"safari"` (macOS), or a plugin's own (`"qr"` and `"phone"` for tlg);
-  returns the `Account`
+  returns the `Account`. `name` names the account; left out on a terminal, the login asks for it
+  (the form of `flnd auth login`), and off a terminal it takes the site's own name
 - `fl.auth.logout(plugin, name=None)`: log an account out, the default one when no `name`; returns
   the `Account`
 - `fl.auth.default(plugin, name)`: make an account the plugin's default
