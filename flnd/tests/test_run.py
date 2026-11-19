@@ -24,9 +24,9 @@ from flnd.engine import crawl as job
 from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine import store as _store
+from flnd.engine._engine import Engine, Results, _Runner
 from flnd.engine.crawl import Options, TargetReport
 from flnd.engine.events import Failed, Skipped
-from flnd.engine.run import Engine, Results, _Runner
 from flnd.errors import Error, SiteError
 from flnd.plugin import File, Plugin, Post, Request, route
 from flnd.ui.log import ui
@@ -353,7 +353,7 @@ class HttpTest(EngineCase):
 
         self.routes["https://api.aaa.example/feed"] = limited
         engine = Engine(home=self.home, sources={"aaa": make_plugin("aaa", run)})
-        with mock.patch("flnd.engine.run.stopping", capture_stopping), self.assertRaises(KeyboardInterrupt), \
+        with mock.patch("flnd.engine._engine.stopping", capture_stopping), self.assertRaises(KeyboardInterrupt), \
                 ui.scope(level="debug"):
             engine.download(["aaa:a/all"])
         self.assertTrue(any(line.endswith("aaa:a: stopped") for line in self.lines()), self.lines())

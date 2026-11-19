@@ -101,7 +101,7 @@ class EditableTest(unittest.TestCase):
 
 # What only a command may load: the engine, the network, the browser and the screen. `import
 # flnd` must load none of them, or every script and `flnd --help` pays.
-HEAVY = {"flnd.engine.crawl", "flnd.engine.ctx", "playwright", "rich", "curl_cffi",
+HEAVY = {"flnd.engine._engine", "flnd.engine.ctx", "playwright", "rich", "curl_cffi",
          "msgspec"}
 
 
@@ -127,6 +127,18 @@ class LazyImportTest(unittest.TestCase):
                 "flnd.open, flnd.Run, flnd.Saved, flnd.Report, flnd.Error, flnd.Target")
         loaded = loaded_after(code)
         self.assertEqual(loaded & (HEAVY - {"rich", "msgspec"}), set())
+
+    def test_run_loads_no_engine_but_its_own(self):
+        shown = ("import sys\nimport flnd\nflnd.Run\n"
+                 "print(' '.join(sorted(name for name in sys.modules\n"
+                 "                      if name.startswith(('flnd.engine.', 'flnkit.')))))")
+        result = run_python(shown)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        loaded = set(result.stdout.split())
+        self.assertEqual({name for name in loaded if name.startswith("flnd.engine.")},
+                         {"flnd.engine.events", "flnd.engine.run"})
+        self.assertEqual(loaded & {"flnkit.net", "flnkit.browser", "flnkit.cookies",
+                                   "flnkit.vault"}, set())
 
     def test_every_public_name_resolves_and_is_listed(self):
         import flnd

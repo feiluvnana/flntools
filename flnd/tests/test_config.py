@@ -20,8 +20,8 @@ from test_library import LibraryCase
 import flnd
 import flnd.plugin
 from flnd.engine import config
+from flnd.engine._engine import Engine
 from flnd.engine.config import Config, Where
-from flnd.engine.run import Engine
 from flnd.errors import UsageError
 from flnd.plugin import Range, Target
 from flnd.testing import fake_clock

@@ -26,10 +26,10 @@ from test_library import example_source
 from flnd import Blocked, Target
 from flnd import cli as flnd_cli
 from flnd.engine import store as _store
+from flnd.engine._engine import Engine, _Runner
 from flnd.engine.crawl import Options, TargetReport
 from flnd.engine.events import Saved
 from flnd.engine.plugins import PLUGINS
-from flnd.engine.run import Engine, _Runner
 from flnd.plugin import Plugin, Post, route
 from flnd.ui.log import ui
 from flnkit import cookies as _cookies
@@ -531,7 +531,7 @@ class HelpTest(FlndCase):
         import subprocess
 
         code = ("import sys\nfrom flnd.cli import main\nmain(['--help'])\n"
-                "print(sorted(m for m in sys.modules if m.startswith(('flnd.engine.crawl', 'flnd.plugins.ins', 'curl_cffi'))))")
+                "print(sorted(m for m in sys.modules if m.startswith(('flnd.engine._engine', 'flnd.plugins.ins', 'curl_cffi'))))")
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                              check=True).stdout.splitlines()[-1]
         self.assertEqual(out, "[]")

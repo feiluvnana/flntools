@@ -7,7 +7,7 @@ src/docs/library explains it.
             ...
 
 Who calls it: scripts and the CLI (`src/cli.py`), both through `flnd.open`, so the command
-line can do nothing a script can't. What it calls: `flnd.engine.run.Engine` for every command,
+line can do nothing a script can't. What it calls: `flnd.engine._engine.Engine` for every command,
 `flnd.engine.store` (the home's `flnd.db`) and `flnd.engine.auth` for the reads, and the home's
 `config.toml` for settings past the five options a call takes.
 
@@ -44,7 +44,8 @@ from flnd.engine.events import Checked, Failure, Installed, Login, Record, Statu
 from flnd.errors import PluginError, UsageError
 
 if TYPE_CHECKING:
-    from flnd.engine.run import Chosen, Engine, Run
+    from flnd.engine._engine import Chosen, Engine
+    from flnd.engine.run import Run
     from flnd.engine.store import FailureRow
     from flnd.plugin import Plugin, Target
 
@@ -625,7 +626,7 @@ class Flnd:
 
     def _engine(self, emit: Any = None, stop: Any = None) -> Engine:
         """An engine of this home and its sources, sending events to `emit`."""
-        from flnd.engine.run import Engine
+        from flnd.engine._engine import Engine
 
         return Engine(home=self.home, sources=self._sources(), emit=emit, stop=stop)
 

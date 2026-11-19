@@ -26,8 +26,8 @@ from flnd import cli as flnd_cli
 from flnd.engine import crawl as job
 from flnd.engine import save
 from flnd.engine import store as _store
+from flnd.engine._engine import Engine
 from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped, encode
-from flnd.engine.run import Engine
 from flnd.errors import Changed
 from flnd.plugin import File, Plugin, Post, route
 from flnd.ui.log import ui

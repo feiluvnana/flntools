@@ -17,8 +17,8 @@ from fakes import CDN, EngineCase, make_plugin, noise
 JPEG = noise("JPEG")
 
 from flnd.engine import store as _store
+from flnd.engine._engine import Engine
 from flnd.engine.events import Saved
-from flnd.engine.run import Engine
 from flnd.plugin import File, Plugin, Post, route
 from flnkit import net as _net
 

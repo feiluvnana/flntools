@@ -25,9 +25,9 @@ from flnd import plugin
 from flnd.engine import auth as _auth
 from flnd.engine import run as _run
 from flnd.engine import store as _store
+from flnd.engine._engine import Engine, Results, _drive
 from flnd.engine.crawl import Options
 from flnd.engine.events import Failed, Phase, State
-from flnd.engine.run import Engine, Results, _drive
 from flnd.plugin import Post, Target
 from flnd.ui.log import ui
 from flnkit import clock as _time
@@ -61,7 +61,8 @@ def vaulted(home, code: str, name: str | None = None) -> tuple[_cookies.Jar, dic
     if not (home / _store.DB).is_file():
         return _cookies.Jar(), {}
     with _store.open(home) as db:
-        found = [row for row in db.accounts(code) if row.name == name or (name is None and row.default)]
+        found = [row for row in db.accounts(code)
+                 if row.name == name or (name is None and row.default)]
     if not found:
         return _cookies.Jar(), {}
     kept = _auth.account(found[0])

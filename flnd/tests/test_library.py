@@ -22,8 +22,8 @@ from fakes import CDN, EngineCase, login_cookies, make_plugin, noise
 
 import flnd
 from flnd.engine import jobs as jobs_module
+from flnd.engine._engine import Engine
 from flnd.engine.events import encode
-from flnd.engine.run import Engine
 from flnd.plugin import File, Plugin, Post, Target, route
 from flnkit import net as _net
 

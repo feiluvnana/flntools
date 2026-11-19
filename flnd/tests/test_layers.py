@@ -262,7 +262,7 @@ class LayersTest(unittest.TestCase):
     def test_the_rules_see_imports_of_names_and_of_modules(self):
         # Guards the guard: `from flnd import Engine` is the package, `from flnd import errors`
         # a module, and `from flnkit import net` the module flnkit.net.
-        self.assertIn("flnd.engine.crawl", flnd_imports(FLND / "engine" / "run.py"))
+        self.assertIn("flnd.engine.crawl", flnd_imports(FLND / "engine" / "_engine.py"))
         self.assertIn("flnkit.net", flnd_imports(FLND / "engine" / "ctx.py"))
         self.assertIn("flnd", flnd_imports(FLND / "cli.py"))
         self.assertFalse(allowed("flnkit.net", "flnd.ui.log"))

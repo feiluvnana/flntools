@@ -46,7 +46,7 @@ SCROLLING = 2
 # last one an active target would wait for.
 WARM_FREE = 2
 # The threads of the plugins' blocking steps (`ctx.call`): one for each of the run's active
-# targets (`flnd.engine.run.ACTIVE`), whatever the number of cores, beside the `CALL` threads.
+# targets (`flnd.engine._engine.ACTIVE`), whatever the number of cores, beside the `CALL` threads.
 LISTINGS = 16
 # Places per target at least, and FILE jobs a target may queue per place.
 PLACES = 32

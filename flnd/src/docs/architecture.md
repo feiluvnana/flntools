@@ -73,7 +73,7 @@ The rules between them:
    src/engine/run.py        Run: one command on the run's loop, read as a stream of events
         │
         ▼
-   src/engine/run.py        Engine: resolves targets, checks options, runs each plugin's targets
+   src/engine/_engine.py    Engine: resolves targets, checks options, runs each plugin's targets
         │
         ├── src/engine/config.py    config.toml: every setting, read, checked and edited
         ├── src/engine/store.py     flnd.db: files, targets, runs, failures, accounts; check
@@ -94,7 +94,7 @@ The rules between them:
 | `src/_library.py` | `open` and `Flnd`: each command as a method, over the engine; the reads (`targets`, `files`, `logins`, `status`), as rows | scripts and the CLI |
 | `src/engine/run.py` | `Run`: a command on the run's loop, `flnd-loop`, read as a stream of events through a channel of 256; `Stop` (the Ctrl-C stages) and `suspend`; the run's live counts and their snapshots (`Tally`) | `Flnd`, the engine |
 | `src/engine/events.py` | the events (`Saved`, `Skipped`, `Failed`, `Planned`), the public `Report`, the `State` snapshot, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the crawl, `Run`, `Flnd` |
-| `src/engine/run.py` (`Engine`) | `Engine`: every command as a method, over `flnd.engine.resolve`; the run's instance of each plugin and account (`_Runner`), the targets' places, searches and the targets listings link to | `Flnd` |
+| `src/engine/_engine.py` | `Engine`: every command as a method, over `flnd.engine.resolve`; the run's instance of each plugin and account (`_Runner`), the targets' places, searches and the targets listings link to | `Flnd` |
 | `src/engine/crawl.py` | `Options` (what one target downloads) and `RunShared` (what a run shares); one target, as a coroutine on the run's loop: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads (`Downloads`), history rows | the engine |
 | `src/engine/ctx.py` | `PluginRun`, a plugin's resources for a run: its cookies, HTTP session, clients, stores, loop and scheduler; `call` runs a blocking function as a step on a `CALL` thread, `off` runs the engine's own blocking step on one. `plugin_run` and `opened` make one (outside a run, or on the run's loop), and `shared_browser` gives the run its scheduler and its one browser. `TargetTabs` is a target's share of that browser, which `Ctx`'s verbs drive on a thread. `Listing` holds a category's saved cursor, and `first_page` reads the first page from it. `Ctx`, the plugin API 2 context for one target of a run: `fetch` and `pages` as page jobs (signed, `blocked` read, a 429 or a wall held, a refusal raised or, with `check=False`, read; a page body capped at 32 MiB), the browser verbs (`open` gives `Landed`, a 404 is `NotFound`; `feed`, `load`, `document`, `warm`, `click`, `handoff`) on the target's `TargetTabs`, a thread each, `hold`, `pause`, `call`, `ask` and `log`; the account's `state` (JSON values) and `secrets` (written only while `Login.start` runs, `LOGGING_IN`); the answer rules `refused`, `walled` and `checked`, which `flnd.testing.FakeCtx` shares | the crawl, the engine's login and `connect` |
 | `src/engine/resolve.py` | resolving target text (`code:value[/categories]`, `code?query`, links) from the manifest's plain data without importing any plugin | `Engine` |
