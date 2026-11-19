@@ -28,7 +28,7 @@ from flnd.errors import Blocked, Hidden, LoginError, NotFound, PluginError, Usag
 from flnd.plugin import Account
 from flnd.testing import fake_clock
 from flnd.ui.log import ui
-from flnkit import cookies, net
+from flnkit import cookies, db, net
 
 NETSCAPE = ("# Netscape HTTP Cookie File\n"
             ".aaa.example\tTRUE\t/\tTRUE\t1825861327\tsid\taaa-session\n"
@@ -118,13 +118,41 @@ class VaultTest(AuthCase):
             self.assertEqual((len(saved), "x" in saved), (0, False))
         self.assertFalse(self.key.exists() or self.home.exists())
 
-    def test_plaintext_is_sealed_on_first_open(self):
+    def version_1(self, session="plain-session"):
         self.home.joinpath("metadata").mkdir(parents=True)
         with raw(self.home) as db:
             db.execute("CREATE TABLE secrets (slot TEXT NOT NULL, name TEXT NOT NULL,"
                        " value TEXT NOT NULL, PRIMARY KEY (slot, name)) WITHOUT ROWID")
             db.executemany("INSERT INTO secrets VALUES (?, ?, ?)",
-                           [("tlg", "session", "plain-session"), ("ins", "cookies", "[]")])
+                           [("tlg", "session", session), ("ins", "cookies", "[]")])
+
+    def test_a_crash_before_the_vacuum_leaves_no_plaintext(self):
+        self.version_1("plain-session-" * 40)
+        connect = db.connect
+
+        class Crashing:
+            def __init__(self, sql):
+                self.sql = sql
+
+            def execute(self, statement, *args):
+                if statement == "VACUUM":
+                    raise KeyboardInterrupt("crash")
+                return self.sql.execute(statement, *args)
+
+            def __getattr__(self, name):
+                return getattr(self.sql, name)
+
+        with mock.patch.object(db, "connect", lambda path: Crashing(connect(path))), \
+                self.assertRaises(KeyboardInterrupt):
+            auth.seal_plaintext(self.home)
+        self.assertFalse(b"plain-session-plain" in self.stored(), "plaintext in secret.db")
+        self.assertEqual(vaulted(self.home, "tlg")[1], {"session": "plain-session-" * 40})
+        self.assertFalse(b"plain-session-plain" in self.stored(), "plaintext in secret.db")
+        with raw(self.home) as sql:
+            self.assertEqual(sql.execute("PRAGMA freelist_count").fetchone(), (0,))
+
+    def test_plaintext_is_sealed_on_first_open(self):
+        self.version_1()
         plugins = {"tlg": make_plugin("tlg", login=own_login())}
         self.assertEqual([row.state for row in auth.logins(self.home, plugins)], ["logged in"])
         self.assertEqual(vaulted(self.home, "tlg")[1], {"session": "plain-session"})

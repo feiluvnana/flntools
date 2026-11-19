@@ -145,6 +145,10 @@ def seal_plaintext(home: Path) -> None:
     """Seal a version-1 `secret.db` in place, once: each plugin's plaintext values go under
     its default account, made when `flnd.db` has none, in one transaction (6.7).
 
+    The freed pages are zeroed (`secure_delete`), then the file is vacuumed and its WAL
+    emptied. A file with free pages left (a run that stopped before its vacuum) is vacuumed the
+    next time it is opened, so no plaintext stays on the disk.
+
     Raises:
         DiskError: `secret.db` can't be read or written.
     """
@@ -153,28 +157,21 @@ def seal_plaintext(home: Path) -> None:
         return
     sql = db.connect(path)
     try:
-        if "slot" not in {row[1] for row in sql.execute("PRAGMA table_info(secrets)")}:
-            return
-        rows = sql.execute("SELECT slot, name, value FROM secrets").fetchall()
-        with store.open(home) as home_db:
-            ids = {row.plugin: row.id for row in reversed(home_db.accounts()) if row.default}
-            for slot in sorted({slot for slot, _, _ in rows} - set(ids)):
-                ids[slot] = home_db.login(slot, DEFAULT, origin="").id
-        key = _key(home, create=True) if rows else b""
-        sql.execute("BEGIN IMMEDIATE")
-        try:
-            sql.execute("ALTER TABLE secrets RENAME TO v1_secrets")
-            sql.execute(TABLE)
-            sql.executemany("INSERT INTO secrets VALUES (?, ?, ?)", [
-                (ids[slot], name, vault.seal(key, ids[slot], name, _text(value)))
-                for slot, name, value in rows])
-            sql.execute("DROP TABLE v1_secrets")
-            sql.execute("COMMIT")
-        except BaseException:
-            if sql.in_transaction:
-                sql.execute("ROLLBACK")
-            raise
-        # No page or WAL frame keeps a plaintext value.
+        if not _plain(sql):
+            if not sql.execute("PRAGMA freelist_count").fetchone()[0]:
+                return
+        else:
+            sql.execute("PRAGMA secure_delete = ON")
+            sql.execute("BEGIN IMMEDIATE")
+            try:
+                # Asked again under the lock: another process may have sealed it meanwhile.
+                if _plain(sql):
+                    _seal(home, sql)
+                sql.execute("COMMIT")
+            except BaseException:
+                if sql.in_transaction:
+                    sql.execute("ROLLBACK")
+                raise
         sql.execute("VACUUM")
         sql.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     except sqlite3.Error as error:
@@ -184,6 +181,27 @@ def seal_plaintext(home: Path) -> None:
     if os.name != "nt":
         with contextlib.suppress(OSError):
             path.chmod(0o600)
+
+
+def _plain(sql: sqlite3.Connection) -> bool:
+    """Whether `secret.db`'s table is version 1's, of plaintext values."""
+    return "slot" in {row[1] for row in sql.execute("PRAGMA table_info(secrets)")}
+
+
+def _seal(home: Path, sql: sqlite3.Connection) -> None:
+    """Rebuild version 1's `secrets` table sealed, in the caller's transaction."""
+    rows = sql.execute("SELECT slot, name, value FROM secrets").fetchall()
+    with store.open(home) as home_db:
+        ids = {row.plugin: row.id for row in reversed(home_db.accounts()) if row.default}
+        for slot in sorted({slot for slot, _, _ in rows} - set(ids)):
+            ids[slot] = home_db.login(slot, DEFAULT, origin="").id
+    key = _key(home, create=True) if rows else b""
+    sql.execute("ALTER TABLE secrets RENAME TO v1_secrets")
+    sql.execute(TABLE)
+    sql.executemany("INSERT INTO secrets VALUES (?, ?, ?)", [
+        (ids[slot], name, vault.seal(key, ids[slot], name, _text(value)))
+        for slot, name, value in rows])
+    sql.execute("DROP TABLE v1_secrets")
 
 
 def _key(home: Path, *, create: bool) -> bytes:
