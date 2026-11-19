@@ -1,4 +1,4 @@
-"""No module but `src/ui/` writes to standard output or error (PLAN.md section 8.2).
+"""No module but `src/ui/` writes to standard output or error (AGENTS.md › Output).
 
 Every file under `src/` and `flnkit/` outside `src/ui/` is read with `ast`, and nothing is
 imported or run.

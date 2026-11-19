@@ -1,5 +1,5 @@
 """Writes setuptools' egg-info to build/, out of the project folder; pyproject.toml holds the
-rest of the project (PLAN.md 4.1, Packaging)."""
+rest of the project (AGENTS.md › Layout)."""
 
 import os
 

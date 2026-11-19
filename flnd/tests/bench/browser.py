@@ -14,8 +14,8 @@ target's `Tabs` in a `RunBrowser`, with the cursor reader below, once with `scro
 (the default, `scroll_default`) and once with `"fast"` (`scroll_fast`). A whole read ends on
 the 30th batch's word, with no idle wait.
 
-`warm_4` times `Tabs.warm` starting 4 warm tabs beside the target's own (the most PLAN.md
-section 6.2 allows), each on a page the server answers 50 ms late, until each had its first
+`warm_4` times `Tabs.warm` starting 4 warm tabs beside the target's own (the most the engine
+allows), each on a page the server answers 50 ms late, until each had its first
 answer; today they open one after the other. Best of 3, each with fresh tabs.
 
 The browser runs on a loop thread of its own (`kit.Loop`), and every step is handed to it

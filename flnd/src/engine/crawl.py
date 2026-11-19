@@ -192,7 +192,7 @@ RETRY_WINDOW = 100
 _FORMATTER = string.Formatter()
 
 T = TypeVar("T")
-# What a lazy post's files may raise that fails the post alone, never its target (PLAN 6.2).
+# What a lazy post's files may raise that fails the post alone, never its target.
 _POST_ERRORS: tuple[type[BaseException], ...] = (NotFound, Changed, Hidden)
 
 

@@ -32,8 +32,9 @@ dependencies = [
 flnd = "flnd.cli:main"
 
 [tool.setuptools]
-# src/ installs as the package flnd; flnkit/ ships beside it (PLAN.md 4.1). Setuptools maps the
-# folder src/ to the name flnd, which hatchling's dev mode cannot do (it rejects such a rewrite).
+# src/ installs as the package flnd; flnkit/ ships beside it (AGENTS.md › Layout). Setuptools
+# maps the folder src/ to the name flnd, which hatchling's dev mode cannot do (it rejects such
+# a rewrite).
 # setup.py only moves the egg-info into build/, as no pyproject setting can.
 packages = ["flnd", "flnd.engine", "flnd.ui", "flnd.plugins", "flnd.docs", "flnd.docs.plugins",
             "flnd.extension", "flnkit"]

@@ -143,7 +143,7 @@ class JournalTest(unittest.TestCase):
                 j.write({"type": "Log", "thread": n, "i": i, "message": "x" * 200})
 
         with UI().file(self.journal_path) as j:
-            # The journal promises whole lines whatever the handle does (PLAN.md 6.1), so this
+            # The journal promises whole lines whatever the handle does, so this
             # handle splits each write; a real one happens to write a short line in one go.
             j._file = _PiecewiseFile(j._file)
             threads = [threading.Thread(target=write, args=(j, n)) for n in range(4)]

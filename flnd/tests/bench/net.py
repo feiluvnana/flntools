@@ -20,8 +20,8 @@ Steps:
    client (a second target) writes the four 16 MiB files to a folder throttled to 20 MB/s, as
    the percentage the slow disk adds to the fast target's time. Both folders sit in one
    scratch folder, so `os.stat` is wrapped meanwhile (`own_device`): a path under the slow
-   folder reports a device of its own. A writer per device (step 5, PLAN.md section 6.2) sees
-   two disks only if it looks the device up through `os.stat`, as section 6.2 says;
+   folder reports a device of its own. A writer per device sees
+   two disks only if it looks the device up through `os.stat`;
 6. `per_conn_limit`: the 1 GiB file from `/capped/`, where the server sends each connection at
    20 MB/s, as flnd's throughput over that of one plain connection (`http.client`, 64 MiB);
 7. `big_4_at_once`: four downloads of a 256 MiB file at once, each then hashed (SHA-256) as

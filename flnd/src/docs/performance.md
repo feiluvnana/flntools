@@ -1,7 +1,7 @@
 # Performance
 
 How fast flnd is, how to measure it, what the numbers mean, and how a change proves it made
-things faster. The design of the speed-ups is in [PLAN.md](../../PLAN.md).
+things faster.
 
 ## Running the benchmarks
 

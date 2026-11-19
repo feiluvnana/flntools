@@ -49,7 +49,7 @@ API_FILE = ROOT / "tests" / "data" / "api.txt"
 # Classes whose members are listed: the project's own. A base from the stdlib (MutableMapping,
 # NamedTuple, Exception) adds its own methods, which aren't this project's API.
 PROJECT_PACKAGES = ("flnd", "flnkit")
-# Each package's folder: flnd is the folder src/, flnkit its own (PLAN.md 4.1).
+# Each package's folder: flnd is the folder src/, flnkit its own (AGENTS.md › Layout).
 PACKAGE_DIRS = {"flnd": ROOT / "src", "flnkit": ROOT / "flnkit"}
 
 

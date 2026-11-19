@@ -331,7 +331,7 @@ class HelpTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------------------------
-# The plugin manager (`flnd.engine.plugins.Manager`, PLAN.md 6.6)
+# The plugin manager (`flnd.engine.plugins.Manager`)
 # ---------------------------------------------------------------------------------------------
 
 # An API 2 plugin; it touches `{marker}` each time it is imported.

@@ -44,8 +44,9 @@ POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR
 # Every breach the code is allowed, by the module it is in: none. Nothing is exempt, so a new name
 # that breaks a convention fails.
 ALLOWED: dict[str, tuple[str, ...]] = {}
-# The one exception to "no aliases" (PLAN.md 5.1): `flnd.errors` re-exports the classes flnkit
-# defines and raises, and `disk`, as the same objects, since flnkit imports nothing of flnd.
+# The one exception to "no aliases" (AGENTS.md › Naming): `flnd.errors` re-exports the
+# classes flnkit defines and raises, and `disk`, as the same objects, since flnkit imports
+# nothing of flnd.
 REEXPORTS = ("Blocked", "Changed", "DiskError", "Error", "LoginError", "NetworkError", "NotFound",
              "SiteError", "Stopped", "ToolError", "UsageError", "disk")
 
@@ -333,7 +334,7 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
 # word search finds, until a module of src/ or flnkit/ calls it as `<module>.<name>`. Then
 # `test_built_early_is_not_called_yet` fails, so the entry goes when its caller lands.
 BUILT_EARLY: dict[str, str] = {
-    name: "built early; the engine's save calls it for File.stream from PLAN.md step 14"
+    name: "built early; the engine's save calls it for File.stream"
     for name in ("flnkit/stream.py:dash", "flnkit/stream.py:fetch_all", "flnkit/stream.py:hls",
                  "flnkit/stream.py:pick")
 }

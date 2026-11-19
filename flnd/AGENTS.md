@@ -6,8 +6,6 @@ this folder, `flnd/`.
 
 These rules are for anyone who changes flnd: how to check, lay out, name, write and measure. The
 `src/docs/architecture.md` page is the map of the code, and says why it is built the way it is.
-`PLAN.md` is the plan of the rebuild under way. The layout tree below leads the code until the
-plan's steps build it; `PLAN.md` section 14 says when each part lands.
 
 ## Checks
 - `make check` runs ruff, then the tests. It must be green at every commit, not only the last

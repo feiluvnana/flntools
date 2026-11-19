@@ -38,7 +38,7 @@ try:      ; $(RUN) python -c "import flnd, sys; [print(e) for e in flnd.open('.t
 # temporary home (tests/ext.py; src/docs/extension.md). Never part of `check`.
 ext:      ; $(RUN) python tests/ext.py $(ARGS)
 # The hand live check on the test accounts (`~/.config/flnd/live.toml`), never part of `check`:
-# `make live ARGS=ins`. Runs each route with `dry=True`, downloading nothing (PLAN.md section 10).
+# `make live ARGS=ins`. Runs each route with `dry=True`, downloading nothing.
 live:     ; $(RUN) python tests/live.py $(ARGS)
 # The one-file binary, from a staged copy of the two packages (tests/dist.py).
 dist:     ; $(RUN) --group dist python tests/dist.py

@@ -1,9 +1,9 @@
 """The public test kit, `flnd.testing`: what a plugin's own tests are written with.
 
 Its docstrings' examples run in tests/test_docs.py; these cover what they don't: `check` over
-every built-in plugin, and the fake clock. One test per behaviour of PLAN.md 5.4: `FakeCtx`
+every built-in plugin, and the fake clock. One test per behaviour the kit promises: `FakeCtx`
 has exactly `Ctx`'s members, signs, blocks, holds, fails to open, walls, keeps a cursor through
-a 429 (S6), and has a 401, an extension and storage (S12); `collect` and `check` on a plugin.
+a 429, and has a 401, an extension and storage; `collect` and `check` on a plugin.
 """
 
 import asyncio

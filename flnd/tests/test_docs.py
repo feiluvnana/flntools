@@ -1,6 +1,6 @@
 """Keeps the docs in step with the code: docstrings, `src/docs/` pages, links, CLI flags, plugins.
 
-PLAN.md section 13 › Writing sets the rules this file checks. Each check is a test class below:
+AGENTS.md › Writing sets the rules this file checks. Each check is a test class below:
 
 1. `DocstringTest` reads every module of `flnd` with `ast` (nothing is imported) and lists each
    docstring gap: a module without a docstring, one longer than `MODULE_LINES` lines (but the
@@ -111,7 +111,7 @@ def modules() -> list[Path]:
 def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
     """Every docstring gap of one module, one line each.
 
-    The rules (PLAN.md section 13): a module starts with a docstring of at most `MODULE_LINES`
+    The rules (AGENTS.md › Writing): a module starts with a docstring of at most `MODULE_LINES`
     lines that names its `src/docs` page; a public name (in the API snapshot) has a docstring
     whose first line sums it up. `Args:`, `Returns:` and `Raises:` are written only when they
     add something, so nothing asks for them, and an `Example:` is never required.
@@ -168,7 +168,7 @@ def gaps() -> list[str]:
 
 
 def rule(gap: str) -> str:
-    """The rule of PLAN.md section 13 › Writing that one gap breaks, for the failure message.
+    """The rule of AGENTS.md › Writing that one gap breaks, for the failure message.
 
     Args:
         gap: one line of `gaps()`.
@@ -189,7 +189,7 @@ def rule(gap: str) -> str:
 
 
 class DocstringTest(unittest.TestCase):
-    """The docstring rules of PLAN.md section 13: any gap fails, naming it and its rule."""
+    """The docstring rules of AGENTS.md › Writing: any gap fails, naming it and its rule."""
 
     def test_no_gap(self) -> None:
         found = gaps()

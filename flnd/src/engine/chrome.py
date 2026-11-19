@@ -1,4 +1,4 @@
-"""The Chrome extension backend for `Ctx`'s browser verbs (PLAN 6.8); src/docs/extension."""
+"""The Chrome extension backend for `Ctx`'s browser verbs; src/docs/extension."""
 
 from __future__ import annotations
 

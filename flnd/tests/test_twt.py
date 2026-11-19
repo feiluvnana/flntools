@@ -1,6 +1,6 @@
 """Twitter / X on plugin API 2 (src/plugins/twt.py), on `FakeCtx`: every target form, each
 category's names and keys, one tweet, a search reused by `post`, stale query ids, `sign`, the
-buckets, and PLAN.md's S2, S4 and S21. The engine's early stops are the engine's own tests.
+buckets. The engine's early stops are the engine's own tests.
 """
 
 import asyncio

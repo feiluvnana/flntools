@@ -986,7 +986,7 @@ class RetryOrderTest(JobCase):
 
 class OnDiskTest(JobCase):
     def test_a_file_on_disk_whose_key_has_no_row_gets_its_row_and_is_skipped(self):
-        # PLAN 6.3, as after `target clean` without `--media`: the file stays, its row goes.
+        # As after `target clean` without `--media`: the file stays, its row goes.
         source = make_plugin("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")])
         self.run_engine(source, targets=["aaa:example_user"])
         self.sql("DELETE FROM files")

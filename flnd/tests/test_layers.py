@@ -1,4 +1,4 @@
-"""The import rules of PLAN.md section 4.1: which of flnd's modules may import which.
+"""The import rules of AGENTS.md › Layout: which of flnd's modules may import which.
 
 Every file under `src/` (the package flnd) and `flnkit/` is read with `ast`, and every import
 counts: at the top, inside a function and under `if TYPE_CHECKING:` alike, since each is a
@@ -28,7 +28,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# The package flnd lives in src/; the standalone package flnkit beside it (PLAN.md 4.1).
+# The package flnd lives in src/; the standalone package flnkit beside it (AGENTS.md › Layout).
 FLND = ROOT / "src"
 FLNKIT = ROOT / "flnkit"
 
@@ -168,7 +168,7 @@ def allowed(importer: str, imported: str) -> bool:
         return imported in ("flnd", "flnd.plugins._manifest") or under(imported, "flnd.ui")
     if importer == "flnd.__main__":
         return imported == "flnd.cli"
-    raise AssertionError(f"{importer} is in no layer of PLAN.md 4.1")
+    raise AssertionError(f"{importer} is in no layer of AGENTS.md › Layout")
 
 
 def covers(pattern: str, name: str) -> bool:
