@@ -30,6 +30,7 @@ from typing import Any
 import flnd
 from flnd.engine import crawl
 from flnd.engine.events import Failed, Planned, Saved
+from flnd.plugin import Plugin
 from flnd.plugins._manifest import PLUGINS
 from flnkit import text
 
@@ -71,6 +72,9 @@ class _Recorded:
     filename: str
     key: str
     category: str
+    # What the source's `date` hook said for an undated post (the engine asks it when it saves,
+    # never in a dry run): "" not asked, "dated", "none", or "failed: <why>".
+    asked: str = ""
 
 
 def arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -138,10 +142,28 @@ def _route_specs(code: str, plugins: Sequence[type[Any]] = ()) -> dict[str, list
 
 
 @contextlib.contextmanager
-def _capture_placed() -> Iterator[list[_Recorded]]:
-    """Observe `crawl.place` calls during a `dry=True` run without altering outputs."""
+def _capture_placed(*, ask: bool = True) -> Iterator[list[_Recorded]]:
+    """Observe `crawl.place` calls during a `dry=True` run without altering outputs.
+
+    With `ask`, an undated post of a source with a `date` hook is also asked that hook, as the
+    engine does when it saves, so a live check tests the hook too.
+    """
     recorded: list[_Recorded] = []
     original = crawl.place
+    original_files = crawl._files
+    asked: dict[str, str] = {}
+
+    async def files(run: Any, site: Any, post: Any) -> Any:
+        listed = await original_files(run, site, post)
+        hooked = type(run.source).date is not Plugin.date
+        if ask and hooked and post.date is None and post.category not in UNDATED_CATEGORIES:
+            try:
+                async with site.aside():
+                    found = await run.source.date(site, post)
+                asked[post.id] = "dated" if found is not None else "none"
+            except Exception as error:
+                asked[post.id] = f"failed: {error}"
+        return listed
 
     def wrapped(
         source: Any, post: Any, files: Any, *, category: Any = None, route: Any = None,
@@ -155,14 +177,17 @@ def _capture_placed() -> Iterator[list[_Recorded]]:
         key = crawl._format(source, category, "key")
         cat_name = category.name if category is not None else post.category
         for item in result:
-            recorded.append(_Recorded(item, folder, filename, key, cat_name))
+            recorded.append(_Recorded(item, folder, filename, key, cat_name,
+                                      asked.get(post.id, "")))
         return result
 
     crawl.place = wrapped  # type: ignore[assignment]
+    crawl._files = files  # type: ignore[assignment]
     try:
         yield recorded
     finally:
         crawl.place = original  # type: ignore[assignment]
+        crawl._files = original_files  # type: ignore[assignment]
 
 
 def _validate_recorded(code: str, item: _Recorded, *, undated: bool) -> list[str]:
@@ -176,8 +201,13 @@ def _validate_recorded(code: str, item: _Recorded, *, undated: bool) -> list[str
         errors.append(f"post {post_id}: empty planned path")
     if placed.post.date is not None and placed.values.get("date") is None:
         errors.append(f"post {post_id}: unparsed date {placed.post.date!r}")
+    elif item.asked.startswith("failed"):
+        errors.append(f"post {post_id}: date hook {item.asked}")
+    elif item.asked == "none":
+        errors.append(f"post {post_id}: date hook found no day")
     elif (
         placed.values.get("date") is None
+        and item.asked != "dated"
         and not undated
         and item.category not in UNDATED_CATEGORIES
         and code != "web"
@@ -206,7 +236,7 @@ def _run_one(
     named = f"{target}/{category}" if category else target
     planned: list[Planned] = []
     errors: list[str] = []
-    with _capture_placed() as recorded:
+    with _capture_placed(ask=not undated) as recorded:
         run = fl.get(named, limit=limit, dry=True)
         for event in run:
             if isinstance(event, Planned):

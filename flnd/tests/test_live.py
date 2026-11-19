@@ -79,6 +79,26 @@ class _MissingDatePlugin(Plugin):
         yield Post("p1", [File("https://example.com/1.jpg")], date=None)
 
 
+class _HookedPlugin(Plugin):
+    """Fake plugin whose posts have no date, and a `date` hook that finds one (or not)."""
+
+    code = "hok"
+    name = "Hooked"
+    api = 2
+    answers: dict[str, Any] = {"p1": datetime.date(2026, 2, 3), "p2": None, "p3": OSError("down")}
+
+    @route("hok:{user}")
+    async def user(self, ctx: Any, user: str):
+        for post_id in self.answers:
+            yield Post(post_id, [File(f"https://example.com/{post_id}.jpg")])
+
+    async def date(self, ctx: Any, post: Post):
+        answer = self.answers[post.id]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
 class _EmptyCategoryPlugin(Plugin):
     """Fake plugin whose category yields no posts."""
 
@@ -151,6 +171,16 @@ class LiveTest(unittest.TestCase):
                 self.assertEqual(len(results), 1)
                 self.assertFalse(results[0].ok)
                 self.assertIn(expected, "; ".join(results[0].errors))
+
+    def test_date_hook_answers_stand_in_for_a_dry_run_that_never_asks(self) -> None:
+        results, _ = live.run_checks(
+            {"home": str(self.home), "hok": {"user": "hok:example_user"}}, plugins=[_HookedPlugin],
+        )
+        errors = "; ".join(results[0].errors)
+        self.assertNotIn("post p1", errors)
+        self.assertIn("post p2: date hook found no day", errors)
+        self.assertIn("post p3: date hook failed: down", errors)
+        self.assertNotIn("missing date", errors)
 
     def test_undated_option_allows_missing_date(self) -> None:
         results, _ = live.run_checks(
