@@ -803,6 +803,8 @@ each scroll waits for the next response or for the page to grow, not for a fixed
 as soon as the reader sees a page with no next one, or the same cursor three times; without a
 reader, it ends after about 5 s of quiet at the bottom. The engine scrolls every feed like a
 person: uneven steps, short pauses, and at most two scrolling tabs of one account at once.
+A plugin cannot choose another style: a `scroll` class attribute is refused when the class is
+made, and `scroll=` above is the only setting, per feed.
 `scroll=False` waits once for the network to go quiet (up to 10 s), gives what came, and ends.
 
 ## 8. Hooks and logins

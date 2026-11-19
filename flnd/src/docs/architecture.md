@@ -565,9 +565,9 @@ A target's tab scrolls by script (`window.scrollBy`, with a wheel event per step
 mouse input. The tabs of one shared window are background tabs to Chrome, which sends them no mouse
 events. An element that scrolls on its own (`scroll(within=...)`) gets real wheel events.
 
-**Where the style comes from.** A plugin class may set `scroll = "human"` or `"fast"`. The default
-is `"human"`. `TargetTabs` hands the style to the target's tabs, which every feed of that target
-uses. config.toml has no scroll key.
+**Where the style comes from.** It is `"human"` for every target: a plugin class's `scroll`
+attribute is refused when the class is made, and config.toml has no scroll key. `TargetTabs`
+hands the style to the target's tabs, which every feed of that target uses.
 
 Rules a change must keep:
 

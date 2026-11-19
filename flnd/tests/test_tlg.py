@@ -330,11 +330,11 @@ class NamesTest(Case):
         self.assertEqual(len(golden), len(NAMES_CHATS) * len(NAMES_OPTIONS))
         for chat_name, entity in NAMES_CHATS.items():
             for options_name, options in NAMES_OPTIONS.items():
-                self.telegram.chats = {"chatone": entity}
+                self.telegram.chats = {"example_user": entity}
                 self.telegram.messages = {entity.id: names_messages()}
                 when = options.get("when", Range())
                 with self.subTest(chat=chat_name, options=options_name):
-                    found = self.run_target("tlg:@chatone", ctx=self.ctx(when=when),
+                    found = self.run_target("tlg:@example_user", ctx=self.ctx(when=when),
                                             categories=options.get("categories", "all"))
                     self.assertEqual([[item.path, item.key] for item in found],
                                      golden[f"{chat_name}/{options_name}"])

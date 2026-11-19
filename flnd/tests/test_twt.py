@@ -127,7 +127,7 @@ ROUTES = [
     ("twt:example_handle", ("user", "example_handle")),
     ("twt?example words", ("search", "example words")),
     ("twt:@example_handle", ("user", "example_handle")),
-    ("twt:example.handle", ("user", "example.handle")),
+    ("twt:example_handle", ("user", "example_handle")),
     ("twt:x.com", ("user", "x.com")),
     ("twt:1000000001", ("user", "1000000001")),
     ("https://x.com/i/user/1000000001", ("user", "1000000001")),

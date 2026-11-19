@@ -175,7 +175,7 @@ def _release(waiting: Sequence[asyncio.Future[None]]) -> None:
 
 
 class Run:
-    """One download, follow or sync: iterate it for its events, or `wait()` for its `Report`.
+    """One `get`: iterate it for its events, or `wait()` for its `Report`.
 
     A run starts when it is first iterated or waited on: one thread, `flnd-loop`, runs one
     asyncio loop for the whole command, and the caller's thread reads. Iterating yields
@@ -183,7 +183,7 @@ class Run:
     says what it is doing now. Breaking out of the loop holds the run back: iterating again goes
     on where it was, `wait()` finishes it, and leaving the `Flnd`'s `with` stops it.
 
-    Make one with `Flnd.download`, `follow` or `sync`, not directly.
+    Make one with `Flnd.get`, not directly.
 
     The sink must be awaited: at most `QUEUE` events wait for the reader, and past that the
     producer waits for room, so a slow reader paces the run. A producer never awaits the sink

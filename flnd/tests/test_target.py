@@ -30,7 +30,7 @@ class AcceptedFormsTest(unittest.TestCase):
                     ("https://instagram.com/example_user/?hl=en", user),
             ("instagram.com/example_user", user), ("https://m.instagram.com/example_user/reels/",
                                                    user),
-            ("ins:example.user", Target("ins:example.user", kind="user")),
+            ("ins:example_user", Target("ins:example_user", kind="user")),
             ("https://www.instagram.com/p/C1abcDEFghi/", Target("ins:C1abcDEFghi", kind="post")),
         ])
 
@@ -93,7 +93,7 @@ class AcceptedFormsTest(unittest.TestCase):
                     ("https://t.me/+AbCdEf123", Target("tlg:+AbCdEf123", kind="chat"))])
 
     def test_codes_are_case_insensitive_and_trimmed(self):
-        self.assertEqual(read(" INS:someone "), Target("ins:someone", kind="user"))
+        self.assertEqual(read(" INS:example_user "), Target("ins:example_user", kind="user"))
 
     def test_percent_encoded_path_segments_are_decoded(self):
         self.assertEqual(

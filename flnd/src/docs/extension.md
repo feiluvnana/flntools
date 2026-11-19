@@ -43,8 +43,6 @@ The manifest asks for these permissions:
   screenshot. It is attached only for those, and detached right after. Chrome shows a bar on a
   tab while the debugger is attached to it.
 - `nativeMessaging`: to talk to `flnd host`.
-- `storage`: declared in the manifest, but no code reads or writes `chrome.storage`. The
-  `storage` op reads a page's local storage, which `scripting` allows.
 
 The sites it may read are the built-in plugins' domains. They are the manifest's
 `host_permissions`, which `make manifest` writes from the plugins. The domains of other plugins
