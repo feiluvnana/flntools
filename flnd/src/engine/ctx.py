@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.plugin
-from flnd.engine import auth, config, jobs, store
+from flnd.engine import auth, chrome, config, jobs, store
 from flnd.engine.config import PluginConfig
 from flnd.errors import (
     Blocked,
@@ -418,7 +418,7 @@ class Ctx:
     async def aside(self) -> AsyncIterator[None]:
         """Tabs of its own for the block: a lazy post's files, `refresh` and `date` open their
         own, never the listing's, and they close when it ends."""
-        opened: list[tuple[TargetTabs, browser.Tabs]] = []
+        opened: list[tuple[TargetTabs, Any]] = []
         token = _ASIDE.set(opened)
         try:
             yield
@@ -644,19 +644,24 @@ class Ctx:
         await self._run.off(self._tabs.warm, list(urls))
 
     async def extension(self, op: str, **args: Any) -> Any:
-        """See `flnd.plugin.Ctx.extension`: the relay to the extension isn't wired in yet.
+        """See `flnd.plugin.Ctx.extension`: one op through the run's extension client."""
+        async def work() -> Any:
+            return await chrome.client(self._run).call(op, **args)
 
-        Raises:
-            UsageError: always, for now: the extension isn't connected.
-        """
-        raise UsageError(f"{self._plugin.code}: the extension isn't connected",
-                         hint="flnd extension install")
+        return await self._job("", work)
 
     async def storage(self, origin: str) -> Mapping[str, str]:
-        """See `flnd.plugin.Ctx.storage`: read in a hidden copy of Chrome's default profile."""
-        found = await self._run.off(functools.partial(browser.local_storage, origin,
-                                                      profile="Default"))
-        return MappingProxyType(dict(found or {}))
+        """See `flnd.plugin.Ctx.storage`: the origin's local storage in the user's Chrome."""
+        if not chrome.uses_chrome(self._plugin, self._run.config):
+            found = await self._run.off(functools.partial(browser.local_storage, origin,
+                                                            profile="Default"))
+            return MappingProxyType(dict(found or {}))
+
+        async def work() -> Mapping[str, str]:
+            value = await chrome.client(self._run).call("storage", origin=origin)
+            return MappingProxyType(dict(value or {}))
+
+        return await self._job(origin, work)
 
     # -- waits, threads, people -----------------------------------------------------------
 
@@ -786,7 +791,7 @@ def _reads_blocks(plugin: Plugin) -> bool:
     return type(plugin).blocked is not Plugin.blocked
 
 
-def _close_tabs(opened: Sequence[tuple[TargetTabs, browser.Tabs]]) -> None:
+def _close_tabs(opened: Sequence[tuple[TargetTabs, Any]]) -> None:
     for _, tabs in opened:
         tabs.close()
 
@@ -801,9 +806,11 @@ class _Feed:
         self._feed: browser.Feed | None = None
         self._done = False
 
-    def _made(self, match: Any, scroll: bool, lines: bool, cursor: Any) -> browser.Feed:
-        return browser.Feed(self._ctx._tabs.verbs(), match, scroll=scroll, lines=lines,
-                            cursor=cursor)
+    def _made(self, match: Any, scroll: bool, lines: bool, cursor: Any) -> Any:
+        tabs = self._ctx._tabs.verbs()
+        if isinstance(tabs, chrome.ExtensionTabs):
+            return chrome.ExtensionFeed(tabs, match, scroll=scroll, lines=lines, cursor=cursor)
+        return browser.Feed(tabs, match, scroll=scroll, lines=lines, cursor=cursor)
 
     async def _open(self) -> browser.Feed:
         if self._feed is None:
@@ -824,7 +831,8 @@ class _Feed:
         if self._done:
             raise StopAsyncIteration
         feed = await self._open()
-        item = await self._ctx._run.off(next, feed, _DONE)
+        step = chrome.next_block if isinstance(feed, chrome.ExtensionFeed) else next
+        item = await self._ctx._run.off(step, feed, _DONE)
         if item is _DONE:
             await self.aclose()
             raise StopAsyncIteration
@@ -859,7 +867,7 @@ class _Screen(browser.Screen):
 
 # The side tabs of the block running in this context (`Ctx.aside`): a lazy post's files, a
 # refresh or a `date` opens its own tab, never the listing's. None outside such a block.
-_ASIDE: ContextVar[list[tuple[TargetTabs, browser.Tabs]] | None] = \
+_ASIDE: ContextVar[list[tuple[TargetTabs, Any]] | None] = \
     ContextVar("flnd_aside", default=None)
 # Releases the target's turn (`flnd.engine.crawl.Turn`) once its route meets the site; None
 # outside a route's call.
@@ -1367,8 +1375,10 @@ class TargetTabs:
         account = self._run.account
         budget = jobs.Budget(self._run.scheduler, self._source.code,
                              account.name if account is not None else None)
-        return browser.Tabs(self._shared, self._run.jar,
-                            scroll=getattr(self._source, "scroll", browser.HUMAN), budget=budget)
+        scroll = getattr(self._source, "scroll", browser.HUMAN)
+        if chrome.uses_chrome(self._source, settings):
+            return chrome.ExtensionTabs(self._run, scroll=scroll, budget=budget)
+        return browser.Tabs(self._shared, self._run.jar, scroll=scroll, budget=budget)
 
     @property
     def opened(self) -> bool:
@@ -1379,6 +1389,8 @@ class TargetTabs:
         """Its account's browser's cookies, or none when this target never opened a tab."""
         if self._tabs is None or self._shared is None or not self._shared.launched:
             return []
+        if isinstance(self._tabs, chrome.ExtensionTabs):
+            return list(self._tabs.run(chrome.session_cookies(self._run)))
         return list(self._tabs.run(self._shared.cookies(self._run.jar)))
 
     def document(self) -> Document:

@@ -436,8 +436,19 @@ def _read_jar(plugin: Plugin, own: Cookies, method: str, *, path: Path | str | N
         except (OSError, ValueError, Error) as error:
             raise LoginError(f"{plugin.code}: can't read {where}: {error}") from None
         origin = where.name
+    elif method == "chrome":
+        origin = BROWSERS.get(method, method)
+        from flnd.engine import chrome
+
+        try:
+            jar = asyncio.run(chrome.extension_cookies(plugin.domains))
+        except UsageError:
+            raise
+        except (OSError, RuntimeError, ValueError, ImportError, Error) as error:
+            raise LoginError(f"{plugin.code}: can't read {origin}'s cookies: {error}",
+                             hint=getattr(error, "hint", "") or "flnd extension install"
+                             ) from None
     else:
-        # `chrome` reads Chrome's cookie store, as a browser's store is read.
         origin = BROWSERS.get(method, method)
         try:
             jar = cookies.load(method, profile=profile)

@@ -499,9 +499,14 @@ class LoginTest(EngineCase):
             ("chrome", (), "no access-token for loix.cc in Chrome"),
         ]:
             # The browser's store is faked; the file is a real one.
-            browser = mock.patch("flnkit.cookies.load", return_value=jar(*names))
+            def chrome_patch(want):
+                async def from_chrome(_domains):
+                    return jar(*want)
+
+                return mock.patch("flnd.engine.chrome.extension_cookies", side_effect=from_chrome)
+
             with self.subTest(method=method, names=names), \
-                    browser if method == "chrome" else contextlib.nullcontext():
+                    chrome_patch(names) if method == "chrome" else contextlib.nullcontext():
                 jar(*names).save(path)
                 if said is not None:
                     with self.assertRaisesRegex(_vault.LoginError, said):

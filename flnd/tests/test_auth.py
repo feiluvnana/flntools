@@ -191,11 +191,32 @@ class LoginTest(AuthCase):
 
     def test_a_browser_store_is_read_by_its_method(self):
         jar = cookies.Jar([{"name": "sid", "value": "s", "domain": "aaa.example", "path": "/"}])
-        for method in ("chrome", "firefox", "edge"):
+        rows = [{"name": "sid", "value": "s", "domain": "aaa.example", "path": "/"}]
+
+        relay = SimpleNamespace(calls=[])
+
+        class Client:
+            async def call(self, op, **args):
+                relay.calls.append((op, args))
+                return rows if op == "cookies" else {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                pass
+
+        async def connect():
+            return Client()
+
+        for method in ("firefox", "edge"):
             with self.subTest(method), mock.patch("flnkit.cookies.load", return_value=jar) as read:
                 self.assertEqual(auth.login(self.home, self.plugin(), method).origin, method)
                 read.assert_called_once_with(method, profile=None)
-        self.assertEqual(self.accounts(), [("account1", "edge", True)])
+        with mock.patch("flnd.engine.extension.connect", connect):
+            self.assertEqual(auth.login(self.home, self.plugin(), "chrome").origin, "chrome")
+        self.assertEqual(relay.calls, [("cookies", {"domains": ["aaa.example"]})])
+        self.assertEqual(self.accounts()[-1][1], "chrome")
 
     def test_s14_a_host_cookie_keeps_its_host(self):
         self.export.write_text("# Netscape HTTP Cookie File\n"
@@ -206,15 +227,29 @@ class LoginTest(AuthCase):
                          {"__Host-sid": "aaa.example", "sid": ".aaa.example"})
 
     def test_a_refused_login_keeps_nothing(self):
-        empty = cookies.Jar([{"name": "other", "value": "o", "domain": "aaa.example"}])
+        wrong = [{"name": "other", "value": "o", "domain": "aaa.example"}]
+
+        class Relay:
+            async def call(self, op, **args):
+                return wrong if op == "cookies" else {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                pass
+
+        async def connect():
+            return Relay()
+
         table = [("chrome", {}, LoginError, "no sid for aaa.example in Chrome"),
                  ("file", {}, UsageError, "needs the cookie file's path"),
                  ("qr", {}, UsageError, "logs in by browser, chrome, file"),
                  ("file", {"path": self.home.parent / "none.txt"}, LoginError, "can't read")]
         for method, options, error, said in table:
-            store_read = mock.patch("flnkit.cookies.load", return_value=empty)
-            with self.subTest(method=method, options=options), \
-                    store_read if method == "chrome" else contextlib.nullcontext(), \
+            chrome_read = mock.patch("flnd.engine.extension.connect", connect)
+            use = chrome_read if method == "chrome" else contextlib.nullcontext()
+            with self.subTest(method=method, options=options), use, \
                     self.assertRaisesRegex(error, said):
                 auth.login(self.home, self.plugin(), method, **options)
         with self.assertRaisesRegex(UsageError, "needs no login"):

@@ -4,8 +4,9 @@ flnd's Chrome extension lets flnd use the browser you are logged in with: read a
 open tabs, read their pages and the answers they load. It works in Chrome, Chromium, Edge and
 Brave. This page says what the extension may do, how flnd talks to it, and how to install it.
 
-The extension and its host are built. Logging in through it (`flnd login <code> chrome`) and
-letting a plugin's browser verbs run in your Chrome are not wired in yet.
+The extension and its host are built. Logging in through it (`flnd auth login <code> chrome`)
+and letting a plugin's browser verbs run in your Chrome go through `src/engine/chrome.py`
+when the plugin or config chooses Chrome.
 
 ## The parts
 

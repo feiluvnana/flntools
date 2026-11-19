@@ -186,9 +186,17 @@ class HostTest(Case):
     async def test_a_run_that_says_nothing_is_closed(self):
         with mock.patch.object(extension, "HELLO", 0.05), Fake() as fake:
             reader, writer = await asyncio.open_unix_connection(extension.relay())
-            self.assertEqual(await reader.read(), b"")
+            self.assertEqual(await asyncio.wait_for(reader.read(), timeout=2.0), b"")
             writer.close()
         self.assertEqual(fake.seen, [])
+
+    async def test_forward_requires_a_numeric_capture_id(self):
+        with Fake() as fake:
+            async with await extension.connect() as client:
+                with self.assertRaises(flnd.UsageError) as caught:
+                    await client.call("capture.read", capture="3")
+                self.assertIn("capture.start", str(caught.exception))
+        self.assertEqual([op for op, _ in fake.seen if op != "hello"], [])
 
     async def test_a_malformed_message_from_the_extension_is_dropped(self):
         def part(**fields):

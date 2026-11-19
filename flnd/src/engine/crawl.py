@@ -119,6 +119,8 @@ class RunShared:
     # The run's browser (`flnkit.browser.RunBrowser`), on the run's loop, set by
     # `site.shared_browser`; None outside a run.
     browser_pool: Any = field(default=None, repr=False)
+    # The run's extension client (`flnd.engine.extension.Client`), when Chrome is used.
+    extension: Any = field(default=None, repr=False)
     # Where the run's events go, awaited on the loop (`flnd.engine.run.sink`): it waits while
     # the channel to the reader is full. By default, events are dropped.
     emit: Callable[[Any], Awaitable[None]] = field(default=sink(None), repr=False)
