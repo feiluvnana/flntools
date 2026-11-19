@@ -204,21 +204,7 @@ def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
 
 
 def _load_text(text: str, label: str) -> Jar:
-    """Parse raw Netscape or JSON cookie text into a `Jar`.
-
-    Text that starts with `[` or `{` (after spaces) is JSON; anything else is Netscape.
-
-    Args:
-        text: the whole cookie file's text.
-        label: what the text came from (a path, or `<text>`), the start of an error message.
-
-    Returns:
-        The jar of the parsed cookies.
-
-    Raises:
-        LoginError: the text isn't a valid cookie file; the message names the line or the
-            cookie's index, never a value.
-    """
+    """Parse raw Netscape or JSON cookie text into a `Jar`."""
     try:
         parsed = _parse_json(text) if text.lstrip()[:1] in ("[", "{") else _parse_netscape(text)
     except ValueError as err:
@@ -227,20 +213,7 @@ def _load_text(text: str, label: str) -> Jar:
 
 
 def _load_firefox(profile: str | None) -> list[Cookie]:
-    """Read cookies from a Firefox `cookies.sqlite` database.
-
-    Firefox stores values in plain text, so no key is needed.
-
-    Args:
-        profile: the profile folder's name, or `None` for the one Firefox opens first.
-
-    Returns:
-        The cookies, in the database's row order.
-
-    Raises:
-        LoginError: the database can't be opened or read.
-        FileNotFoundError: there is no Firefox profile, or it has no cookie database.
-    """
+    """Read cookies from a Firefox `cookies.sqlite` database."""
     folder = _firefox_profile(profile)
     refuse_profile(folder)
     with _open_copy(folder / "cookies.sqlite") as connection:
@@ -261,21 +234,7 @@ def _load_firefox(profile: str | None) -> list[Cookie]:
 
 
 def _load_safari() -> list[Cookie]:
-    """Read Safari's cookies from its `Cookies.binarycookies` file, on macOS.
-
-    1. Find the file: Safari's container first, then the older place (`SAFARI_FILES`).
-    2. Read it whole; macOS refuses a program without Full Disk Access, which is a
-       `LoginError` whose hint says how to allow it.
-    3. Parse it (`parse_binarycookies`). Safari keeps values in plain text: no key is needed.
-
-    Returns:
-        The cookies, in the file's order.
-
-    Raises:
-        UsageError: not on macOS.
-        LoginError: the file can't be read, or isn't a binarycookies file.
-        FileNotFoundError: Safari has no cookie file.
-    """
+    """Read Safari's cookies from its `Cookies.binarycookies` file, on macOS."""
     if _PLATFORM != "darwin":
         raise UsageError("Safari's cookies are read on macOS only",
                          hint="use another browser, or a cookie file")
@@ -345,18 +304,7 @@ def parse_binarycookies(data: bytes) -> list[Cookie]:
 
 
 def _safari_page(page: bytes, number: int) -> Iterator[Cookie]:
-    """The cookies of one page of a binarycookies file (see `parse_binarycookies`).
-
-    Args:
-        page: the page's bytes.
-        number: its number from 1, for messages.
-
-    Yields:
-        Each cookie.
-
-    Raises:
-        ValueError: the page or one of its cookies runs past its end.
-    """
+    """The cookies of one page of a binarycookies file (see `parse_binarycookies`)."""
     index = 0
     try:
         (count,) = struct.unpack_from("<I", page, 4)
@@ -379,18 +327,7 @@ def _safari_page(page: bytes, number: int) -> Iterator[Cookie]:
 
 
 def _safari_text(cookie: bytes, offset: int) -> str:
-    """The zero-ended text at `offset` in one cookie's bytes.
-
-    Args:
-        cookie: the cookie's bytes, from its size field on.
-        offset: where the text starts, from the cookie's start.
-
-    Returns:
-        The text; a byte that isn't UTF-8 becomes U+FFFD.
-
-    Raises:
-        IndexError: the offset is past the cookie, or the text has no end.
-    """
+    """The zero-ended text at `offset` in one cookie's bytes."""
     end = cookie.find(b"\0", offset)
     if offset >= len(cookie) or end < 0:
         raise IndexError(offset)
@@ -398,21 +335,7 @@ def _safari_text(cookie: bytes, offset: int) -> str:
 
 
 def _firefox_profile(profile: str | None) -> Path:
-    """The folder of a Firefox profile: the one named, or the one Firefox opens first.
-
-    A named profile is looked for at the top of Firefox's folder (Linux and Windows keep them
-    there) and then under `Profiles/` (macOS).
-
-    Args:
-        profile: the profile folder's name, or `None` for the default one.
-
-    Returns:
-        The profile's folder; for a named profile it may not exist.
-
-    Raises:
-        FileNotFoundError: there is no `profiles.ini`, or it lists no profile.
-        RuntimeError: the test suite forbids reading the real profile (`refuse_profile`).
-    """
+    """The folder of a Firefox profile: the one named, or the one Firefox opens first."""
     root = _firefox_root()
     refuse_profile(root)
     if profile is not None:
@@ -458,12 +381,7 @@ def _firefox_paths(root: Path) -> list[str]:
 
 
 def _firefox_root() -> Path:
-    """The folder that holds Firefox's `profiles.ini`, in the platform's per-user app folder.
-
-    Returns:
-        `~/Library/Application Support/Firefox` on macOS, `%APPDATA%/Mozilla/Firefox` on
-        Windows, `~/.mozilla/firefox` elsewhere. It may not exist.
-    """
+    """The folder that holds Firefox's `profiles.ini`, in the platform's per-user app folder."""
     if _PLATFORM == "darwin":
         return Path.home() / "Library" / "Application Support" / "Firefox"
     if _PLATFORM == "win32":
@@ -474,22 +392,7 @@ def _firefox_root() -> Path:
 
 @contextmanager
 def _open_copy(database: Path) -> Iterator[sqlite3.Connection]:
-    """A connection to an in-memory backup of `database`, closed afterwards.
-
-    A running browser holds its cookie database open, and may be writing to it. Opening the
-    file read-only (`mode=ro`) and copying it with SQLite's backup API reads a consistent
-    snapshot, write-ahead log included, without taking the browser's lock or changing the file.
-
-    Args:
-        database: the browser's SQLite cookie file.
-
-    Yields:
-        A connection to the in-memory copy; it is closed when the `with` block ends.
-
-    Raises:
-        FileNotFoundError: `database` isn't a file.
-        LoginError: SQLite can't open or copy it (locked, damaged, not a database).
-    """
+    """A connection to an in-memory backup of `database`, closed afterwards."""
     if not database.is_file():
         raise FileNotFoundError(f"no cookie database at {database}")
     uri = f"{database.resolve().as_uri()}?mode=ro"
@@ -519,22 +422,7 @@ def _cookie(name: str, value: str, domain: str, path: str, expires: int,
 
 
 def _parse_netscape(text: str) -> list[Cookie]:
-    """The cookies of a Netscape file; a ValueError names the line, never its value.
-
-    Each line is seven tab-separated fields: domain, include-subdomains flag, path, secure,
-    expiry (Unix seconds, 0 for a session cookie), name, value. Blank lines and `#` comments
-    are skipped, except the `#HttpOnly_` prefix, which marks an HttpOnly cookie. Netscape files
-    have no `sameSite`, so every cookie reads as "Lax".
-
-    Args:
-        text: the file's text.
-
-    Returns:
-        The cookies, in file order.
-
-    Raises:
-        ValueError: a line hasn't seven fields, or its expiry isn't a whole number.
-    """
+    """The cookies of a Netscape file; a ValueError names the line, never its value."""
     jar = []
     for number, line in enumerate(text.splitlines(), start=1):
         # curl and browser exports mark HttpOnly cookies by prefixing the domain like a comment.
@@ -566,19 +454,7 @@ def _parse_json(text: str) -> list[Cookie]:
 
 
 def _json_cookie(entry: Any, index: int) -> Cookie:
-    """One cookie of a JSON export, in Playwright's or a browser extension's shape.
-
-    Args:
-        entry: one item of the JSON list.
-        index: its place in the list, which an error names instead of the value.
-
-    Returns:
-        The cookie in this module's shape; a session cookie, or one without an expiry, gets -1.
-
-    Raises:
-        ValueError: the entry isn't an object with a name, a value and a domain, or its expiry
-            isn't a number.
-    """
+    """One cookie of a JSON export, in Playwright's or a browser extension's shape."""
     if not isinstance(entry, dict) or not all(key in entry for key in ("name", "value", "domain")):
         raise ValueError(f"cookie {index} needs a name, a value and a domain")
     # Playwright names it "expires"; browser extensions name it "expirationDate".

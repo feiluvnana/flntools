@@ -183,14 +183,7 @@ def count(n: float, unit: str, *, plural: str | None = None) -> str:
 
 
 def _rough_redact(url: str) -> str:
-    """`url` up to its query or fragment, without user info, for a URL `urlsplit` rejects.
-
-    Args:
-        url: the URL `redact` couldn't parse.
-
-    Returns:
-        The text before the first `?` or `#`, with anything up to an `@` in the host removed.
-    """
+    """`url` up to its query or fragment, without user info, for a URL `urlsplit` rejects."""
     head = re.split(r"[?#]", url, maxsplit=1)[0]
     scheme, sep, rest = head.partition("://")
     if not sep:
@@ -243,15 +236,7 @@ def scrub(text: str, *, secrets: re.Pattern[str] = SECRET_NAMES) -> str:
 
 
 def _scrubbed(data: Any, secrets: re.Pattern[str]) -> Any:
-    """A JSON value with the values under secret-looking keys replaced by "…", at any depth.
-
-    Args:
-        data: the parsed JSON: an object, a list, or a plain value.
-        secrets: what a secret's key matches.
-
-    Returns:
-        A scrubbed copy; `data` itself is left as it is.
-    """
+    """A JSON value with the values under secret-looking keys replaced by "…", at any depth."""
     if isinstance(data, dict):
         return {key: "…" if secrets.search(str(key)) else _scrubbed(value, secrets)
                 for key, value in data.items()}
@@ -325,14 +310,7 @@ def fields(template: str) -> set[str]:
 
 
 def _split_segments(template: str) -> list[str]:
-    """`template` split at `/` outside `{…}`, so a field's format spec may hold a slash.
-
-    Args:
-        template: a path template, such as `{user}/{date:%Y/%m}/{name}`.
-
-    Returns:
-        The segments, in order; a template without a top-level `/` gives one segment.
-    """
+    """`template` split at `/` outside `{…}`, so a field's format spec may hold a slash."""
     parts, depth, start = [], 0, 0
     for index, character in enumerate(template):
         depth += {"{": 1, "}": -1}.get(character, 0)
@@ -343,15 +321,7 @@ def _split_segments(template: str) -> list[str]:
 
 
 def _fill_segment(segment: str, values: Mapping[str, Any]) -> str:
-    """One segment of a template, filled in, with the separators of empty fields dropped.
-
-    Args:
-        segment: one piece of a template, as `_split_segments` returns it.
-        values: the fields the template may name, by name.
-
-    Returns:
-        The filled text; it may be empty when every field is empty.
-    """
+    """One segment of a template, filled in, with the separators of empty fields dropped."""
     # Each piece is [text, whether literal]; only literals lose separators.
     pieces: list[list[Any]] = []
     # Set by an empty field that starts the segment: the separators after it go too.
@@ -378,15 +348,7 @@ def _fill_segment(segment: str, values: Mapping[str, Any]) -> str:
 
 
 def _value(name: str, values: Mapping[str, Any]) -> Any:
-    """A field's value, `a.b` and `a[0]` included; None when it's missing.
-
-    Args:
-        name: the field's name as written in the template, with any `.attr` or `[index]`.
-        values: the fields to look the name up in.
-
-    Returns:
-        The value, or None when the field, attribute or index does not exist.
-    """
+    """A field's value, `a.b` and `a[0]` included; None when it's missing."""
     try:
         return _FORMATTER.get_field(name, (), values)[0]
     # A missing field is empty, whichever way it's missing.

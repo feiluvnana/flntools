@@ -417,12 +417,7 @@ def _signed_in(home: Path, plugin: Plugin, method: str, jar: cookies.Jar,
 
 def _read_jar(plugin: Plugin, own: Cookies, method: str, *, path: Path | str | None,
              profile: str | None) -> cookies.Jar:
-    """The plugin's cookies by a cookie method, on its domains only.
-
-    Raises:
-        UsageError: `file` without a path.
-        LoginError: they can't be read, or none of `own.names` is among them.
-    """
+    """The plugin's cookies by a cookie method, on its domains only."""
     if method == "browser":
         from flnd.engine import run
 

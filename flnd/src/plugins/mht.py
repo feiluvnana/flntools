@@ -224,11 +224,7 @@ def _chapter_pages(body: Mapping[str, Any]) -> list[File]:
 # ---------------------------------------------------------------------------------------------
 
 async def _search(ctx: Ctx, path: str, params: Mapping[str, str]) -> AsyncIterator[dict[str, Any]]:
-    """Each manga item of a search, its pages chained by `next_cursor`.
-
-    The site pages by number unless `cursor_res=true` is sent; with it, each answer names the
-    next page's `next_cursor`, sent back as `cursor`.
-    """
+    """Each manga item of a search, its pages chained by `next_cursor`."""
     first = Request(f"{API}{path}", params={**params, "cursor_res": "true"})
     async for page in ctx.pages(first, cursor="next_cursor", send="cursor"):
         body = page.json
@@ -267,14 +263,7 @@ def _fold(text: str) -> str:
 
 
 async def _resolve_id(ctx: Ctx, kind: str, raw: str, lookup: Lookup) -> str:
-    """The site's id of a genre, author or parody, from its id or its %-encoded name.
-
-    A name matches with case and accents ignored. Links spell spaces as hyphens, so a name
-    with hyphens is looked up with spaces first, then as written (seen 2026-11-14).
-
-    Raises:
-        UsageError: no item of that kind has the name.
-    """
+    """The site's id of a genre, author or parody, from its id or its %-encoded name."""
     value = unquote(raw).strip()
     if value.isdigit():
         return value
@@ -298,17 +287,7 @@ TERMS: dict[str, tuple[str, Lookup | None]] = {
 
 
 async def _parse_query(ctx: Ctx, raw: str) -> tuple[str | None, dict[str, str], list[set[int]]]:
-    """A query as a title search, or as an advanced search's params; see the docs' Queries.
-
-    Words are split as a shell splits them. A word without `:` is part of the title.
-
-    Returns:
-        `(words, {}, [])` for plain words, or `(None, params, chapter_filters)` for a query
-        with terms: each filter is the set of chapter counts a result may have.
-
-    Raises:
-        UsageError: the query is empty, a term has no value, or a term is unknown.
-    """
+    """A query as a title search, or as an advanced search's params; see the docs' Queries."""
     stripped = raw.strip()
     if not stripped:
         raise UsageError("mht: the query is empty")

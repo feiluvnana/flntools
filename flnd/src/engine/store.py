@@ -322,12 +322,7 @@ def open(home: Path, *, loop: bool = False) -> Store:
 
 
 def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
-    """Set the pragmas, then make schema 2 or migrate version 1, in one transaction.
-
-    A version-1 file is copied whole to `BACKUP` first, once: the migration never loses a
-    row, and the copy is there if it ever did. A crash inside the transaction leaves the file
-    at version 1, which the next open migrates.
-    """
+    """Set the pragmas, then make schema 2 or migrate version 1, in one transaction."""
     sql.execute(f"PRAGMA busy_timeout = {OTHER_BUSY_MS}")
     sql.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
     sql.execute(f"PRAGMA wal_autocheckpoint = {0 if loop else OTHER_CHECKPOINT_PAGES}")
@@ -355,14 +350,7 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
 
 
 def _backup(sql: sqlite3.Connection, path: Path) -> None:
-    """Copy a version-1 file to `path` with SQLite's online backup, unless a copy is there.
-
-    The copy is written beside it and renamed into place, so a crash never leaves half of
-    one.
-
-    Raises:
-        DiskError: the copy can't be written; the file is left as it was.
-    """
+    """Copy a version-1 file to `path` with SQLite's online backup, unless a copy is there."""
     if path.is_file():
         return
     part = path.with_name(f"{path.name}.part")
@@ -399,11 +387,7 @@ def _tables(sql: sqlite3.Connection) -> set[str]:
 
 
 def _migrate(sql: sqlite3.Connection, home: Path) -> None:
-    """Rebuild a version-1 file's tables as schema 2, in the caller's transaction.
-
-    Each table is renamed aside, made again from `SCHEMA` and filled from the old one, so the
-    file's schema reads exactly as a new home's.
-    """
+    """Rebuild a version-1 file's tables as schema 2, in the caller's transaction."""
     tables = _tables(sql)
     sql.execute("DROP VIEW IF EXISTS posts")
     for index in V1_INDEXES:

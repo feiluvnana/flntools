@@ -141,18 +141,7 @@ def _as_bytes(data: Data) -> bytes:
 
 
 def _aes_gcm(key: bytes) -> AESGCM:
-    """`cryptography`'s AESGCM for a 32-byte key, imported here so `digest` never needs it.
-
-    Args:
-        key: the AES-256 key; its length is checked, its bytes never shown.
-
-    Returns:
-        A cipher object that seals and opens with `key`.
-
-    Raises:
-        ValueError: the key isn't 32 bytes.
-        ToolError: `cryptography` isn't installed.
-    """
+    """`cryptography`'s AESGCM for a 32-byte key, imported here so `digest` never needs it."""
     # The message gives the key's length only, never its bytes.
     if len(key) != KEY_SIZE:
         raise ValueError(
@@ -242,11 +231,7 @@ def unseal(key: bytes, account: int, name: str, sealed: bytes) -> str:
 
 
 def _slot(account: int, name: str) -> bytes:
-    """The associated data that binds a sealed value to its slot.
-
-    Raises:
-        TypeError: `account` isn't an int, or `name` isn't text; the message names no value.
-    """
+    """The associated data that binds a sealed value to its slot."""
     try:
         # `True` is an int to Python, but never account 1.
         if isinstance(account, bool):
@@ -333,17 +318,7 @@ def key(path: Path, *, home: Path, create: bool = False) -> bytes:
 
 
 def _create(path: Path) -> bytes | None:
-    """Make the key file with a new key; None when another process made it first.
-
-    The key is written whole to a draft beside it, then hard-linked into place, which fails
-    when the file exists: a reader never sees part of a key, and the first creator wins.
-
-    Args:
-        path: the key file, which must not exist yet.
-
-    Returns:
-        The new key; None when the file was there already.
-    """
+    """Make the key file with a new key; None when another process made it first."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     secret = _secrets.token_bytes(KEY_SIZE)
     draft = path.with_name(f".{path.name}.{_secrets.token_hex(8)}")
@@ -363,10 +338,7 @@ def _create(path: Path) -> bytes | None:
 
 
 def _write_new(path: Path, secret: bytes) -> bool:
-    """Write `secret` to a new file with mode 0600, synced to disk; False when it exists.
-
-    A failed write removes the file, so no damaged key is left behind.
-    """
+    """Write `secret` to a new file with mode 0600, synced to disk; False when it exists."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     try:
         handle = os.open(path, flags, 0o600)
@@ -389,11 +361,7 @@ def _write_new(path: Path, secret: bytes) -> bool:
 
 
 def _inside(path: Path, folder: Path) -> bool:
-    """Whether `path` is in `folder`, through links and `..`, in any case or Unicode form.
-
-    Paths are compared casefolded and normalised whatever the file system, since macOS's and
-    Windows' ignore case and form: a refusal that is too wide is safe, one too narrow isn't.
-    """
+    """Whether `path` is in `folder`, through links and `..`, in any case or Unicode form."""
     resolved, folder = path.resolve(), folder.resolve()
     if _fold(resolved).is_relative_to(_fold(folder)):
         return True

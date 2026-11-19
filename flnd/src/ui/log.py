@@ -53,20 +53,7 @@ LEVEL_RANKS: dict[str, int] = {
 def _color_settings(
     color: str | bool | None, base: RichConsole | None,
 ) -> tuple[Any, bool | None, bool | None]:
-    """The Rich settings for a `color` choice: color system, no-color and force-terminal.
-
-    Args:
-        color: None copies `base`, or auto-detects when there is no base. False or "none"
-            turns color off. True, "16m" or "truecolor", "256", and "8" or "standard" pick the
-            color depth.
-        base: the console to copy from when `color` is None; None when there is none.
-
-    Returns:
-        The three values `RichConsole` takes for those settings.
-
-    Raises:
-        ValueError: `color` is not one of the choices above.
-    """
+    """The Rich settings for a `color` choice: color system, no-color and force-terminal."""
     if color is None and base is not None:
         return base.color_system, base.no_color, base._force_terminal
     table: dict[Any, tuple[Any, bool | None, bool | None]] = {
@@ -170,14 +157,7 @@ class Journal:
 
 
 def _encode(value: Any) -> Any:
-    """Write a value msgspec has no form for: a path as a string, an error as its parts.
-
-    Args:
-        value: the value msgspec could not encode.
-
-    Returns:
-        A string, or for an error a dict of its class name, message and hint.
-    """
+    """Write a value msgspec has no form for: a path as a string, an error as its parts."""
     if isinstance(value, os.PathLike):
         return os.fspath(value)
     if isinstance(value, BaseException):
@@ -233,17 +213,7 @@ class UI:
         width: int | None = None,
         base: RichConsole | None = None,
     ) -> RichConsole:
-        """A Rich console for the given settings; `base` supplies any setting left as None.
-
-        Args:
-            color: the color choice, as `_color_settings` takes it; None copies `base`.
-            dest: the file to write to; None writes to stderr, or to `base`'s file.
-            width: the width in columns; None copies `base`, or lets Rich decide.
-            base: the console to copy from; None when there is none.
-
-        Returns:
-            The new console. It has no highlighting and soft-wraps long lines.
-        """
+        """A Rich console for the given settings; `base` supplies any setting left as None."""
         color_system, no_color, force_terminal = _color_settings(color, base)
         file = dest if dest is not None else (base.file if base is not None else None)
         return RichConsole(
@@ -453,11 +423,7 @@ atexit.register(ui.drain)
 
 
 class _KitLines(logging.Handler):
-    """Routes the kit's `logging` records (`flnkit.*`) to `ui`'s lines and the journal.
-
-    A kit module logs `logger.warning(template, extra={"fields": {...}})`; the record becomes
-    `ui.warn(template, **fields)`, so it reads and is journalled as flnd's own lines are.
-    """
+    """Routes the kit's `logging` records (`flnkit.*`) to `ui`'s lines and the journal."""
 
     def handle(self, record: logging.LogRecord) -> bool:
         # No handler lock: `ui` has its own, and a record is passed on whole.

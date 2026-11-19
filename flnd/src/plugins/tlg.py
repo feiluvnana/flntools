@@ -210,11 +210,7 @@ class Telegram(Plugin):
     # -- Flood waits -----------------------------------------------------------------------
 
     async def _flood(self, ctx: Ctx, error: Any) -> None:
-        """Hold for a `FloodWaitError`, one hold per account however many calls met it.
-
-        Each `ctx.hold` is a block round, so four segments meeting one wait would otherwise
-        spend every round at once and fail as blocked.
-        """
+        """Hold for a `FloodWaitError`, one hold per account however many calls met it."""
         who = _who(ctx)
         waiting = self._waits.get(who)
         if waiting is None:
@@ -237,13 +233,7 @@ class Telegram(Plugin):
     # -- Finding a chat ----------------------------------------------------------------------
 
     async def _find(self, ctx: Ctx, client: Any, value: str) -> Any:
-        """The chat `value` names: an invite directly; else the cached peer, else a lookup.
-
-        Raises:
-            NotFound: an invite not joined, or no chat of that title.
-            Hidden: a private chat, one the account left, or an id it can't see.
-            UsageError: more than one chat has that title.
-        """
+        """The chat `value` names: an invite directly; else the cached peer, else a lookup."""
         from telethon.errors import ChannelPrivateError, RPCError
 
         if value.startswith("+"):
@@ -262,10 +252,7 @@ class Telegram(Plugin):
         return entity
 
     async def _cached(self, ctx: Ctx, client: Any, value: str) -> Any:
-        """The chat this account found for `value` before, if it still has that name.
-
-        An access hash is the account's own, so each account keeps its own entries.
-        """
+        """The chat this account found for `value` before, if it still has that name."""
         from telethon.errors import ChannelPrivateError, RPCError
         from telethon.tl import types
 
@@ -316,10 +303,7 @@ class Telegram(Plugin):
 
     async def _messages(self, ctx: Ctx, profile: Mapping[str, Any],
                         kind: str) -> AsyncIterator[Post]:
-        """A chat's messages of one category, newest first, each a post of its one file.
-
-        After a flood wait, the listing goes on after the last message it gave.
-        """
+        """A chat's messages of one category, newest first, each a post of its one file."""
         from telethon.errors import ChannelPrivateError, FloodWaitError
 
         client, chat = self._client(ctx), profile["entity"]
@@ -387,11 +371,7 @@ class Telegram(Plugin):
 
 
 async def _chunks(client: Any, document: Any, at: int, end: int) -> AsyncIterator[bytes]:
-    """The document's bytes from `at` up to `end`, as Telegram sends them.
-
-    A request starts on a multiple of `REQUEST`, so it asks from the one before `at` and drops
-    the bytes before it.
-    """
+    """The document's bytes from `at` up to `end`, as Telegram sends them."""
     offset = at - at % REQUEST
     skip = at - offset
     async for chunk in client.iter_download(

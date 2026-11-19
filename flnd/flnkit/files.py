@@ -481,14 +481,7 @@ def sweep(folder: str | os.PathLike[str]) -> int:
 
 
 def _part_path(dest: Path) -> Path:
-    """`<dest>.part`, or `<head>.<digest>.part` when the name with its sidecars passes 255 bytes.
-
-    Args:
-        dest: the file the part is for.
-
-    Returns:
-        The part's path, the same for the same `dest` every time, so a later run resumes it.
-    """
+    """`<dest>.part`, or `<head>.<digest>.part` when the name with its sidecars passes 255 bytes."""
     name = dest.name
     if len(name.encode()) + RESERVE <= NAME_MAX:
         return dest.with_name(name + PART)
@@ -498,24 +491,7 @@ def _part_path(dest: Path) -> Path:
 
 
 def _open(path: Path, *, wait: bool, resume: bool = False) -> tuple[int, int]:
-    """Open and lock the part at `path`, returning its descriptor and the bytes it holds.
-
-    1. Create it exclusively: a new part needs no check, since no one else had it.
-    2. Else open it as it is, lock it, and check the path still names it, as the module says.
-       When it doesn't, another run has just landed it: a download is busy, a write tries again.
-
-    Args:
-        path: the part.
-        wait: wait for another holder (a small write) instead of raising `BusyError`.
-        resume: True for a download; blocks a fresh part when the final file already landed.
-
-    Returns:
-        The locked descriptor, and the size of what the part already held (0 for a new one).
-
-    Raises:
-        BusyError: not `wait`, and another run holds or has just landed the part.
-        OSError: the file system refused.
-    """
+    """Open and lock the part at `path`, returning its descriptor and the bytes it holds."""
     while True:
         try:
             fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | BINARY, 0o666)
@@ -550,15 +526,7 @@ def _open(path: Path, *, wait: bool, resume: bool = False) -> tuple[int, int]:
 
 
 def _names(path: Path, found: os.stat_result) -> bool:
-    """Whether `path` still names the file `found` describes.
-
-    Args:
-        path: the part's path.
-        found: the `fstat` of the descriptor locked.
-
-    Returns:
-        False when the path is gone or names another file: another run landed this one.
-    """
+    """Whether `path` still names the file `found` describes."""
     try:
         here = os.stat(path)
     except FileNotFoundError:
@@ -567,20 +535,7 @@ def _names(path: Path, found: os.stat_result) -> bool:
 
 
 def _lock(fd: int, *, wait: bool) -> bool:
-    """Lock `fd` for this process; False when another holds it and `wait` is off.
-
-    On a file system without locks the write goes on unlocked, as it did before parts.
-
-    Args:
-        fd: the part's descriptor.
-        wait: block until the other holder lets go, instead of returning False.
-
-    Returns:
-        True once this process holds the lock (or the file system has none).
-
-    Raises:
-        OSError: locking failed for another reason.
-    """
+    """Lock `fd` for this process; False when another holds it and `wait` is off."""
     try:
         if WINDOWS:
             os.lseek(fd, LOCK_AT, os.SEEK_SET)
@@ -601,11 +556,7 @@ def _lock(fd: int, *, wait: bool) -> bool:
 
 
 def _close(fd: int) -> None:
-    """Unlock and close `fd`. Closing alone frees a POSIX lock; Windows asks for the unlock.
-
-    Args:
-        fd: the part's descriptor.
-    """
+    """Unlock and close `fd`."""
     if WINDOWS:
         with suppress(OSError):
             os.lseek(fd, LOCK_AT, os.SEEK_SET)
@@ -636,19 +587,7 @@ def _end(held: Part) -> None:
 
 
 def _land(held: Part) -> None:
-    """Rename a finished part onto its `dest` with its time set, and record what landed.
-
-    The time is set on the descriptor before close, and the rename keeps it. Windows can't set
-    a time by descriptor or rename an open file, so there the time goes by path, then the part
-    closes, then it is renamed: another run could take the part in that instant, and then the
-    rename retries until it lets go.
-
-    Args:
-        held: the finished part; its `saved` is set.
-
-    Raises:
-        OSError: the time, the rename or the close failed.
-    """
+    """Rename a finished part onto its `dest` with its time set, and record what landed."""
     held.flush()
     if held.mtime is not None:
         stamp = int(held.mtime * 1e9)
@@ -673,17 +612,7 @@ def _land(held: Part) -> None:
 
 
 def _digest_fd(fd: int) -> bytes:
-    """The SHA-256 of an open file's bytes from its start.
-
-    Args:
-        fd: the open descriptor; on Windows its offset moves, and nothing else uses it then.
-
-    Returns:
-        The 32-byte digest.
-
-    Raises:
-        OSError: the file can't be read.
-    """
+    """The SHA-256 of an open file's bytes from its start."""
     sha = hashlib.sha256()
     offset = 0
     while True:
@@ -700,13 +629,7 @@ def _digest_fd(fd: int) -> bytes:
 
 
 def _leave(held: Part) -> None:
-    """End a block that failed: keep a download's bytes for the next run, else remove them.
-
-    Nothing here raises, so the block's own error is the one the caller sees.
-
-    Args:
-        held: the part whose block failed, or was dropped.
-    """
+    """End a block that failed: keep a download's bytes for the next run, else remove them."""
     try:
         with suppress(OSError):
             held.flush()
@@ -735,15 +658,7 @@ def _leave(held: Part) -> None:
 
 
 def _replace(source: Path, dest: Path) -> None:
-    """`os.replace`, retried for about a second while Windows holds `dest` (an indexer).
-
-    Args:
-        source: the closed part.
-        dest: where it lands.
-
-    Raises:
-        PermissionError: Windows still held `dest` after the last try.
-    """
+    """`os.replace`, retried for about a second while Windows holds `dest` (an indexer)."""
     for attempt in range(1, REPLACE_TRIES + 1):
         try:
             os.replace(source, dest)
@@ -759,14 +674,7 @@ def _replace(source: Path, dest: Path) -> None:
 
 
 def _read_side(path: Path) -> dict[str, Any]:
-    """A sidecar's facts.
-
-    Args:
-        path: the sidecar.
-
-    Returns:
-        What it holds; {} when there is none or it is damaged, so the download starts over.
-    """
+    """A sidecar's facts."""
     try:
         found = json.loads(path.read_bytes())
     except (OSError, ValueError):
@@ -788,20 +696,7 @@ def _write_side(path: Path, meta: Mapping[str, Any]) -> None:
 
 
 def _scan(folder: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
-    """Every file under `folder`, depth first, from one `os.scandir` per folder.
-
-    Symlinks are neither followed nor yielded, so a link can't lead a walk or a sweep out of the
-    folder, or round in a loop.
-
-    Args:
-        folder: the folder to walk.
-
-    Yields:
-        Each regular file's `DirEntry`.
-
-    Raises:
-        DiskError: a folder can't be read, including `folder` itself when it is missing.
-    """
+    """Every file under `folder`, depth first, from one `os.scandir` per folder."""
     stack = [os.fspath(folder)]
     while stack:
         try:
@@ -821,14 +716,7 @@ def _is_part(name: str) -> bool:
 
 
 def _temporary(name: str) -> bool:
-    """Whether a file is a part, a part's sidecar, or an old stage's sidecar or lock.
-
-    Args:
-        name: the file's name.
-
-    Returns:
-        True for those, which a walk passes over and a sweep may remove.
-    """
+    """Whether a file is a part, a part's sidecar, or an old stage's sidecar or lock."""
     if _is_part(name):
         return True
     for suffix in SIDES:
@@ -838,19 +726,7 @@ def _temporary(name: str) -> bool:
 
 
 def _older(entry: os.DirEntry[str], now: float, age: float) -> bool:
-    """Whether a file was last modified at least `age` seconds ago.
-
-    Args:
-        entry: the file, from a scan.
-        now: the wall clock, in epoch seconds.
-        age: how old, in seconds.
-
-    Returns:
-        True when it is that old; False when it vanished meanwhile.
-
-    Raises:
-        DiskError: it can't be stat'ed.
-    """
+    """Whether a file was last modified at least `age` seconds ago."""
     try:
         return now - entry.stat(follow_symlinks=False).st_mtime >= age
     except FileNotFoundError:
@@ -860,18 +736,7 @@ def _older(entry: os.DirEntry[str], now: float, age: float) -> bool:
 
 
 def _remove_unheld(path: str, sides: list[str]) -> int:
-    """Remove a stale part and its sidecars, unless a run holds it.
-
-    Args:
-        path: the part.
-        sides: its sidecars and old lock files.
-
-    Returns:
-        How many files went: 0 when a run holds the part.
-
-    Raises:
-        DiskError: the part can't be opened or removed.
-    """
+    """Remove a stale part and its sidecars, unless a run holds it."""
     try:
         fd = os.open(path, os.O_RDWR | BINARY)
     except FileNotFoundError:
@@ -893,17 +758,7 @@ def _remove_unheld(path: str, sides: list[str]) -> int:
 
 
 def _unlink(path: str | os.PathLike[str]) -> int:
-    """Remove a file, counting it; a file already gone is no error, since that is the goal.
-
-    Args:
-        path: the file.
-
-    Returns:
-        1 when it was removed; 0 when it was already gone.
-
-    Raises:
-        DiskError: it exists, but the disk refused to remove it.
-    """
+    """Remove a file, counting it; a file already gone is no error, since that is the goal."""
     try:
         os.unlink(path)
         return 1
@@ -1187,17 +1042,7 @@ def _argv(*args: str | os.PathLike[str]) -> tuple[str, ...]:
 
 
 def _faked(argv: tuple[str, ...]) -> Result | None:
-    """The fake handler's `Result` for `argv`, or None outside a fake block.
-
-    Args:
-        argv: full command, program first.
-
-    Returns:
-        The handler's result with `argv` as `args`, or None.
-
-    Raises:
-        MissingError: a fake is active and does not name this program.
-    """
+    """The fake handler's `Result` for `argv`, or None outside a fake block."""
     if not _fakes:
         return None
     path = PurePosixPath(argv[0].replace("\\", "/"))
@@ -1212,18 +1057,7 @@ def _faked(argv: tuple[str, ...]) -> Result | None:
 
 
 def _checked(result: Result, *, check: bool) -> Result:
-    """Return `result`, or raise `RunError` when `check` and the exit is non-zero.
-
-    Args:
-        result: a finished run.
-        check: whether a non-zero exit is an error.
-
-    Returns:
-        `result` when the exit is zero or `check` is false.
-
-    Raises:
-        RunError: `check` and a non-zero exit.
-    """
+    """Return `result`, or raise `RunError` when `check` and the exit is non-zero."""
     if check and result.code != 0:
         detail = _last_lines(result.err or result.out) or f"exit status {result.code}"
         raise RunError(
@@ -1365,17 +1199,7 @@ def extract(path: Path, *, password: str | None = None, limits: Limits = Limits(
 
 
 def _detect(path: Path) -> str:
-    """The archive's format from its first bytes: "zip", "7z", "rar" or "tar".
-
-    Args:
-        path: the archive.
-
-    Returns:
-        Its format.
-
-    Raises:
-        SiteError: the file is missing, or no format this step knows.
-    """
+    """The archive's format from its first bytes: "zip", "7z", "rar" or "tar"."""
     if not path.is_file():
         raise SiteError(f"{path}: archive not found")
     with path.open("rb") as handle:
@@ -1392,19 +1216,7 @@ def _detect(path: Path) -> str:
 
 
 def _entries(path: Path, kind: str, *, password: str | None) -> list[Entry]:
-    """Every entry of the archive, refusing links (the first two parts of `extract`).
-
-    Args:
-        path: the archive.
-        kind: its format, from `_detect`.
-        password: its password, for a 7-Zip listing; None for none.
-
-    Returns:
-        Its entries, in the archive's order.
-
-    Raises:
-        SiteError: the archive can't be read, has a link, or needs a password it wasn't given.
-    """
+    """Every entry of the archive, refusing links (the first two parts of `extract`)."""
     if kind == "zip":
         if _sevenzip_zip(path, password):
             return _ls_7z(path, password=password)
@@ -1434,19 +1246,7 @@ def _entries(path: Path, kind: str, *, password: str | None) -> list[Entry]:
 
 
 def _safe_dest(dest: Path, member: str) -> Path:
-    """Where `member` lands under `dest`, refusing any name that would land outside it.
-
-    Args:
-        dest: the folder entries land in.
-        member: an entry's name as the archive spells it.
-
-    Returns:
-        The path it lands at.
-
-    Raises:
-        SiteError: an absolute path, a drive letter, an empty or `..` part, or a name that
-            resolves outside `dest`.
-    """
+    """Where `member` lands under `dest`, refusing any name that would land outside it."""
     norm = member.replace("\\", "/").rstrip("/")
     if not norm or norm.startswith("/") or DRIVE.match(norm):
         raise SiteError(f"unsafe archive path {member!r}")
@@ -1466,16 +1266,7 @@ def _safe_dest(dest: Path, member: str) -> Path:
 
 
 def _check_limits(entries: list[Entry], archive_size: int, limits: Limits) -> None:
-    """Refuse an archive whose entries pass `limits`.
-
-    Args:
-        entries: its entries.
-        archive_size: its own size in bytes, for the ratio.
-        limits: the bounds.
-
-    Raises:
-        SiteError: too many entries, too many bytes, or too high a compression ratio.
-    """
+    """Refuse an archive whose entries pass `limits`."""
     if len(entries) > limits.files:
         raise SiteError(f"too many entries ({len(entries)} > {limits.files})")
     total = sum(e.size or 0 for e in entries)
@@ -1490,18 +1281,7 @@ def _check_limits(entries: list[Entry], archive_size: int, limits: Limits) -> No
 
 
 def _sevenzip_zip(path: Path, password: str | None) -> bool:
-    """Whether a zip goes to 7-Zip: when it is encrypted and 7-Zip is installed.
-
-    Args:
-        path: the zip.
-        password: its password; a zip with none never needs 7-Zip.
-
-    Returns:
-        True to extract it with 7-Zip.
-
-    Python's zipfile reads only the old ZipCrypto, not AES, so an encrypted zip goes to 7-Zip
-    when there is one, and to zipfile (which may then refuse an AES entry) when there isn't.
-    """
+    """Whether a zip goes to 7-Zip: when it is encrypted and 7-Zip is installed."""
     if password is None:
         return False
     with zipfile.ZipFile(path) as zf:
@@ -1515,16 +1295,7 @@ def _sevenzip_zip(path: Path, password: str | None) -> bool:
 
 
 def _unpack_zip(path: Path, dest: Path, *, password: str | None) -> None:
-    """Extract a zip into `dest` with Python's zipfile, entry by entry.
-
-    Args:
-        path: the zip.
-        dest: the staging folder.
-        password: its password, for ZipCrypto entries; None for none.
-
-    Raises:
-        SiteError: a wrong or missing password, an AES entry, or a damaged entry.
-    """
+    """Extract a zip into `dest` with Python's zipfile, entry by entry."""
     pwd = password.encode("utf-8") if password is not None else None
     try:
         with zipfile.ZipFile(path) as zf:
@@ -1548,16 +1319,7 @@ def _unpack_zip(path: Path, dest: Path, *, password: str | None) -> None:
 
 
 def _unpack_tar(path: Path, dest: Path) -> None:
-    """Extract a tar (plain or compressed) into `dest` with the data filter.
-
-    Args:
-        path: the tar.
-        dest: the staging folder.
-
-    Raises:
-        SiteError: the tar is damaged.
-        DiskError: the disk refused a write.
-    """
+    """Extract a tar (plain or compressed) into `dest` with the data filter."""
     try:
         shutil.unpack_archive(path, dest, filter="data")
     except (tarfile.TarError, *DAMAGED, shutil.ReadError) as error:
@@ -1583,33 +1345,13 @@ def _7z_password_input(password: str | None) -> str | None:
 
 
 def _save(stream: IO[bytes], target: Path) -> None:
-    """Copy `stream` to the new file `target`, piece by piece.
-
-    The stage is this run's own folder, so the file is written in place: a failure removes
-    the whole stage.
-
-    Args:
-        stream: the entry's bytes.
-        target: where they go; it must not exist yet.
-    """
+    """Copy `stream` to the new file `target`, piece by piece."""
     with target.open("xb") as out:
         shutil.copyfileobj(stream, out, CHUNK)
 
 
 def _ls_7z(path: Path, *, password: str | None) -> list[Entry]:
-    """List a 7z, RAR or encrypted zip with `7zz l -slt`, refusing links.
-
-    Args:
-        path: the archive.
-        password: its password; None lists without one.
-
-    Returns:
-        Its entries.
-
-    Raises:
-        SiteError: a wrong or missing password, a damaged archive, or a link.
-        MissingError: 7-Zip is not installed.
-    """
+    """List a 7z, RAR or encrypted zip with `7zz l -slt`, refusing links."""
     tool = sevenzip()
     try:
         res = tool.run("l", "-slt", *_7z_password_args(password), "--", str(path),
@@ -1632,17 +1374,7 @@ def _ls_7z(path: Path, *, password: str | None) -> list[Entry]:
 
 
 def _7z_entry(cur: dict[str, str]) -> Entry:
-    """One `7zz l -slt` block as an `Entry`, refusing a link.
-
-    Args:
-        cur: the block's `Key = value` pairs.
-
-    Returns:
-        The entry.
-
-    Raises:
-        SiteError: the entry is a symbolic link, a hard link or a reparse point.
-    """
+    """One `7zz l -slt` block as an `Entry`, refusing a link."""
     # `Attributes` holds Windows flags, then a Unix mode when there is one: `A_ lrwxrwxrwx`.
     flags, _, mode = cur.get("Attributes", "").partition(" ")
     # `L` is a Windows reparse point (a link or junction), `l` a Unix symbolic link.
@@ -1655,17 +1387,7 @@ def _7z_entry(cur: dict[str, str]) -> Entry:
 
 
 def _unpack_7z(path: Path, dest: Path, *, password: str | None) -> None:
-    """Extract with `7zz x` into `dest` (a 7z, a RAR, or an encrypted zip).
-
-    Args:
-        path: the archive.
-        dest: the staging folder.
-        password: its password; None extracts without one.
-
-    Raises:
-        SiteError: a wrong or missing password, or a damaged archive.
-        MissingError: 7-Zip is not installed.
-    """
+    """Extract with `7zz x` into `dest` (a 7z, a RAR, or an encrypted zip)."""
     tool = sevenzip()
     try:
         tool.run("x", "-y", *_7z_password_args(password), f"-o{dest}", "--", str(path),
@@ -1687,16 +1409,7 @@ def _failed(path: Path, error: RunError) -> SiteError:
 
 
 def _verify(stage: Path, entries: list[Entry], name: str) -> None:
-    """Check every file entry is in the stage at its listed size.
-
-    Args:
-        stage: the staging folder.
-        entries: what the listing said the archive holds.
-        name: the archive's name, for the error.
-
-    Raises:
-        SiteError: a file is missing or the wrong size: the extract can't be trusted.
-    """
+    """Check every file entry is in the stage at its listed size."""
     for entry in entries:
         if entry.kind != "file":
             continue
@@ -1710,14 +1423,7 @@ def _verify(stage: Path, entries: list[Entry], name: str) -> None:
 
 
 def _place(stage: Path, dest: Path) -> None:
-    """Move the verified stage to `dest`: one rename when `dest` is new, else file by file.
-
-    A file already at `dest` from an earlier extract of the same archive is replaced.
-
-    Args:
-        stage: the verified staging folder.
-        dest: the folder named after the archive.
-    """
+    """Move the verified stage to `dest`: one rename when `dest` is new, else file by file."""
     if not dest.exists():
         os.replace(stage, dest)
         return

@@ -167,11 +167,7 @@ def guard(path: Path | str) -> None:
 
 
 def _mkdir(path: Path, *, private: bool = True) -> None:
-    """Make `path` and its parents; a private one is the user's own, mode 0700.
-
-    Its owner is checked before the mode is set, so a symlink there never changes another
-    folder's mode.
-    """
+    """Make `path` and its parents; a private one is the user's own, mode 0700."""
     guard(path)
     path.mkdir(parents=True, exist_ok=True)
     if private and not WINDOWS:
@@ -181,11 +177,7 @@ def _mkdir(path: Path, *, private: bool = True) -> None:
 
 
 def _put(path: Path, data: bytes, mode: int) -> None:
-    """Write `path` with `mode`, set before the first byte, never through a symlink.
-
-    Raises:
-        UsageError: `path` is a symlink.
-    """
+    """Write `path` with `mode`, set before the first byte, never through a symlink."""
     guard(path)
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -336,13 +328,7 @@ def _offline() -> UsageError:
 # ---------------------------------------------------------------------------------------------
 
 class _Conn:
-    """One run's connection to the host, as frames; `send` may be called from any thread.
-
-    Args:
-        stream: has `read(n)`, returning b"" at the end.
-        write: sends bytes, whole.
-        close: closes the connection, waking a `read` blocked in another thread.
-    """
+    """One run's connection to the host, as frames; `send` may be called from any thread."""
 
     def __init__(self, stream: Any, write: Callable[[bytes], Any],
                  close: Callable[[], None]) -> None:
@@ -666,10 +652,7 @@ class Host:
                 thread.join(5)
 
     def _read(self) -> dict[str, Any] | None:
-        """The extension's next whole message, its parts put together: a question or an answer.
-
-        A malformed one is dropped, with a line in the journal; None at the end of the pipe.
-        """
+        """The extension's next whole message, its parts put together: a question or an answer."""
         while True:
             try:
                 message = read(self._in)
@@ -1040,11 +1023,7 @@ async def connect() -> Client:
 
 
 async def _dial(path: str) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    """Connect to the relay at `path`, after checking that it is the user's own.
-
-    Raises:
-        UsageError: nothing listens there, or it isn't the user's.
-    """
+    """Connect to the relay at `path`, after checking that it is the user's own."""
     guard(path)
     if not WINDOWS:
         try:

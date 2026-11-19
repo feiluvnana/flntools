@@ -439,11 +439,7 @@ class Graph:
         return (await ctx.fetch(Request(endpoint, params=params), bucket=query)).json
 
     def _table(self, ctx: Ctx) -> dict[str, dict[str, Any]]:
-        """The query table: what `state` kept from an earlier refresh, read on first use.
-
-        An entry for an operation flnd no longer sends, or one that isn't an object, is left
-        out, so a damaged state can't break a query.
-        """
+        """The query table: what `state` kept from an earlier refresh, read on first use."""
         if self.queries is None:
             kept = ctx.state.get(STATE_KEY)
             self.queries = (

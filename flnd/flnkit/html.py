@@ -255,14 +255,7 @@ def _select(node: LexborNode, query: str) -> list[LexborNode]:
 
 @functools.cache
 def _parser() -> type[LexborHTMLParser]:
-    """selectolax's lexbor parser class, imported on the first `parse`.
-
-    Returns:
-        The class.
-
-    Raises:
-        ImportError: selectolax isn't installed, with the command that installs it.
-    """
+    """selectolax's lexbor parser class, imported on the first `parse`."""
     try:
         from selectolax.lexbor import LexborHTMLParser
     except ImportError:
@@ -275,17 +268,7 @@ def _parser() -> type[LexborHTMLParser]:
 # ---------------------------------------------------------------------------------------------
 
 def _loads(text: str) -> Any:
-    """Decode JSON text.
-
-    Args:
-        text: the JSON; a byte-order mark before it is dropped.
-
-    Returns:
-        The decoded value.
-
-    Raises:
-        Changed: the text is over 64 MiB, or isn't JSON.
-    """
+    """Decode JSON text."""
     _check_size(len(text), "characters")
     try:
         return _decoder()(text.removeprefix("﻿"))
@@ -295,14 +278,7 @@ def _loads(text: str) -> Any:
 
 @functools.cache
 def _decoder() -> Any:
-    """`msgspec.json.decode`, imported on first use.
-
-    Returns:
-        The function, which takes JSON text or bytes and raises a `ValueError` on bad JSON.
-
-    Raises:
-        ImportError: msgspec isn't installed, with the command that installs it.
-    """
+    """`msgspec.json.decode`, imported on first use."""
     try:
         import msgspec.json
     except ImportError:

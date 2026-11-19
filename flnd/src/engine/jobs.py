@@ -787,11 +787,7 @@ class Scheduler:
             return result
 
     async def _work(self, job: Job[T]) -> T:
-        """Run the work, once every pool is held, unless the run stopped while it waited.
-
-        Raises:
-            Stopped: the run's stop came while the run was suspended.
-        """
+        """Run the work, once every pool is held, unless the run stopped while it waited."""
         suspended = getattr(self.stop, "suspended", None)
         while suspended is not None and suspended.is_set():
             halt = self._halt(job)
@@ -809,11 +805,7 @@ class Scheduler:
         return self.stop.soon if job.kind in ACCOUNT_HELD else self.stop.now
 
     async def _pause(self, job: Job[Any], seconds: float) -> None:
-        """Wait `seconds` on the run's clock for `job`.
-
-        Raises:
-            Stopped: the run was stopped meanwhile.
-        """
+        """Wait `seconds` on the run's clock for `job`."""
         if not await clock.pause(seconds, stop=self._halt(job)):
             raise errors.Stopped("stopped while waiting")
 
@@ -943,12 +935,7 @@ class Scheduler:
 
     @contextmanager
     def _flying(self, job: Job[Any]) -> Iterator[None]:
-        """Count a `FILE` job of known size in flight on its device, once its free space holds.
-
-        Raises:
-            DiskError: the device lacks the file's size, the bytes still due from the files in
-                flight on it, and `SPARE`.
-        """
+        """Count a `FILE` job of known size in flight on its device, once its free space holds."""
         if job.size is None or job.path is None:
             yield
             return

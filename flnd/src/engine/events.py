@@ -524,17 +524,7 @@ def encode(value: Any) -> bytes:
 
 
 def _plain(value: Any) -> Any:
-    """What `encode` writes for a value msgspec can't: a path, an error.
-
-    Args:
-        value: the value msgspec met.
-
-    Returns:
-        Text for a path; `{"class", "message", "hint"}` for an exception.
-
-    Raises:
-        NotImplementedError: anything else, which msgspec reports as unsupported.
-    """
+    """What `encode` writes for a value msgspec can't: a path, an error."""
     if isinstance(value, Path):
         return value.as_posix()
     if isinstance(value, BaseException):

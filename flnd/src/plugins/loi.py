@@ -166,11 +166,7 @@ class Loibus(Plugin):
     # -- Archives and links ----------------------------------------------------------------
 
     async def _archive_files(self, ctx: Ctx, post: dict[str, Any]) -> list[File]:
-        """info.md with the links, then each archive with its mirrors; info.md alone without.
-
-        The post is counted against today's quota once its links are in hand, since the site
-        spent a slot giving them.
-        """
+        """info.md with the links, then each archive with its mirrors; info.md alone without."""
         links = await self._links(ctx, post)
         archives = group_mirrors(links) if links else []
         if archives:
@@ -182,11 +178,7 @@ class Loibus(Plugin):
         ]
 
     async def _links(self, ctx: Ctx, post: dict[str, Any]) -> dict[str, Any] | None:
-        """The post's decrypted links, or None with a warning when they can't be had.
-
-        Returns:
-            `{"servers": [(name, url), …], "pan": url, "pan_key": text}`, or None.
-        """
+        """The post's decrypted links, or None with a warning when they can't be had."""
         if not decode_token(ctx.cookies.get("access-token", "")):
             ctx.log("warn", "archives need a login; run flnd auth login loi")
             return None
@@ -220,11 +212,7 @@ class Loibus(Plugin):
                 "pan_key": decrypt_field(data.get("bdp_key"))}
 
     async def _quota(self, ctx: Ctx, post_id: int) -> tuple[int, int | None]:
-        """The archives taken today, and today's limit; None when the limit doesn't apply.
-
-        The limit is None when the account's info can't be read, or when this post was counted
-        today already, since taking it again costs nothing. It may be 0: no VIP level.
-        """
+        """The archives taken today, and today's limit; None when the limit doesn't apply."""
         record = ctx.state.get("quota") or {}
         taken = today_posts(ctx)
         if record.get("day") == _today(ctx) and record.get("exhausted"):
@@ -248,10 +236,7 @@ async def _daily_limit(ctx: Ctx) -> int | None:
 
 
 async def _answer(ctx: Ctx, url: str) -> tuple[int, Any]:
-    """A request's status and JSON (None when it isn't JSON): the site explains refusals in JSON.
-
-    `check=False` returns a refusal (a VIP post, a used-up quota) to read, not to raise.
-    """
+    """A request's status and JSON (None when it isn't JSON): the site explains refusals in JSON."""
     response = await ctx.fetch(Request(url, check=False))
     try:
         return response.status, response.json

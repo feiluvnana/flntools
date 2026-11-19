@@ -851,11 +851,7 @@ class _Feed:
 # ---------------------------------------------------------------------------------------------
 
 class _Screen(browser.Screen):
-    """The browser's questions, asked as flnd's others are; its rows are a line each.
-
-    A run's screen shows only what the run's snapshot holds, so a browser step that would draw
-    a bar (Chromium's download, a wait for a person) warns its label instead.
-    """
+    """The browser's questions, asked as flnd's others are; its rows are a line each."""
 
     def confirm(self, question: str) -> bool:
         return forms.confirm(question, default=False)
@@ -1102,8 +1098,7 @@ def _close(*kept: Any) -> None:
 
 
 class _Values(MutableMapping[str, Any]):
-    """A plugin's state in memory (`PluginRun.values`): each change is noted for
-    `save_state`. Read before `load_state` (outside a run), it loads first."""
+    """A plugin's state in memory (`PluginRun.values`): each change is noted for `save_state`."""
 
     def __init__(self, run: Any) -> None:
         self._run = run
@@ -1303,11 +1298,7 @@ def scheduler(settings: RunShared) -> jobs.Scheduler | None:
 
 
 def _warn_expiring(plugin: Plugin, jar: Any) -> None:
-    """Warn of login cookies (the login's `names`) that have expired or will expire soon.
-
-    Only the cookies that prove the login are read, and a session cookie (expiry 0 or -1) never
-    warns. The warning names the cookie, never its value.
-    """
+    """Warn of login cookies (the login's `names`) that have expired or will expire soon."""
     for name, left in auth.expiring(plugin, jar, within=EXPIRY_WARNING):
         if left <= 0:
             ui.warn("{code}: the login cookie {name} has expired; run flnd auth login {code} again",

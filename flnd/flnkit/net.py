@@ -225,11 +225,7 @@ class Request:
 
 
 class _Read(Mapping[str, str]):
-    """A response's headers: read-only, by name in any case.
-
-    Args:
-        headers: the headers, copied.
-    """
+    """A response's headers: read-only, by name in any case."""
 
     def __init__(self, headers: Mapping[str, str]) -> None:
         self._items = {name.lower(): value for name, value in headers.items()}
@@ -303,16 +299,7 @@ class Response:
 
 @dataclass
 class _Answer:
-    """An answer whose body is still coming: what `Session.send` gives back.
-
-    Attributes:
-        status: the HTTP status.
-        url: where it came from, after redirects.
-        headers: the response's headers, lower case, repeated ones joined by ", ".
-        chunks: the body, as it arrives; a cut connection raises a retryable `NetworkError`.
-        close: stops the transfer; call it when done, read whole or not.
-        set_cookies: each `Set-Cookie` header's value, for the session's jar.
-    """
+    """An answer whose body is still coming: what `Session.send` gives back."""
 
     status: int
     url: str
@@ -478,12 +465,7 @@ class Session:
         self._names = MappingProxyType({cookie.name: cookie.value or "" for cookie in cookies})
 
     def _keep(self, answer: _Answer, url: str) -> None:
-        """Keep the cookies an answer set, for the requests after it.
-
-        Args:
-            answer: the answer, with its `Set-Cookie` values.
-            url: the URL asked for, when the answer doesn't say where it came from.
-        """
+        """Keep the cookies an answer set, for the requests after it."""
         if not answer.set_cookies:
             return
         info = email.message.Message()
@@ -492,14 +474,7 @@ class Session:
         self.jar.extract_cookies(_Info(info), urllib.request.Request(_bare(answer.url or url)))
 
     def _session(self) -> _Curls:
-        """The session's curl handles, made on first use.
-
-        Returns:
-            The handles, `handles` at most, with Chrome's fingerprint and the proxy.
-
-        Raises:
-            ImportError: curl_cffi isn't installed, with the command that installs it.
-        """
+        """The session's curl handles, made on first use."""
         if self._raw is None:
             try:
                 import curl_cffi  # noqa: F401
@@ -510,19 +485,7 @@ class Session:
         return self._raw
 
     async def _curl(self, request: Request) -> _Answer:
-        """Send `request` through curl, streaming the answer.
-
-        Cookies are never left to curl: the session keeps them itself.
-
-        Args:
-            request: the request, with every header it goes out with.
-
-        Returns:
-            The answer, once its headers came; its body streams in `chunks`.
-
-        Raises:
-            NetworkError: no answer came (see `_network`).
-        """
+        """Send `request` through curl, streaming the answer."""
         from curl_cffi import CurlError
 
         try:
@@ -543,20 +506,7 @@ class Session:
 
 
 class _Curls:
-    """libcurl handles on one multi handle, set up once and kept from one transfer to the next.
-
-    curl_cffi's `AsyncSession` resets a handle after each transfer, sets some 15 options again
-    (Chrome's fingerprint among them) and reads as many back: about 50 µs of the loop's time a
-    request. A handle here keeps what every request shares: the fingerprint, the timeouts, the
-    redirects and the proxy. A GET sets only its URL, its headers and its callbacks; a request
-    with another method or a body sets those too, and its handle is set up afresh after it.
-    Every option is the one `AsyncSession.request(stream=True, discard_cookies=True)` set.
-
-    Args:
-        handles: transfers at once in all; more wait for a handle.
-        timeout: seconds to connect, and seconds with no byte received.
-        proxy: the proxy for every transfer, or None.
-    """
+    """libcurl handles on one multi handle, set up once and kept from one transfer to the next."""
 
     def __init__(self, handles: int, timeout: float, proxy: str | None) -> None:
         self._free = asyncio.Semaphore(handles)
@@ -631,11 +581,7 @@ class _Curls:
             raise ImpersonateError(f"Impersonating {target} is not supported")
 
     def _ask(self, curl: Any, request: Request, transfer: _Transfer) -> bool:
-        """Set `request`'s own options on `curl`.
-
-        Returns:
-            Whether it was a plain GET, which leaves the handle as it was set up.
-        """
+        """Set `request`'s own options on `curl`."""
         from curl_cffi import CurlOpt
         from curl_cffi.requests.headers import Headers as CurlHeaders
         from curl_cffi.requests.utils import requote_uri, update_header_line
@@ -707,30 +653,7 @@ WRITE_ERROR = 0xFFFFFFFF
 
 
 class _Transfer:
-    """One request on a kept handle: its answer's head, then its body as it streams in.
-
-    The body waits in a queue for the reader. Once `HELD` bytes wait, the transfer is paused
-    (`curl_easy_pause`, which libcurl allows from its write callback), and once the reader has
-    taken them down to `HELD / 2`, it goes on. libcurl keeps the socket open meanwhile, and
-    TCP's own window holds the server back. So on a disk slower than the network, no whole file
-    waits in memory.
-
-    All of it runs on the loop's thread: curl's callbacks are called from `socket_action` on the
-    loop, and the reader is a coroutine on it.
-
-    Args:
-        curl: the handle.
-        give: takes the handle back once the transfer ended.
-
-    Attributes:
-        head: done once the head of the answer is read: at the first byte of its body, or at
-            its end.
-        status: the HTTP status.
-        url: where the answer came from, after redirects.
-        headers: the answer's headers as `(name, value)` pairs, the names lower case.
-        error: what ended the transfer, when it failed.
-        wrote: whether any of the body came.
-    """
+    """One request on a kept handle: its answer's head, then its body as it streams in."""
 
     def __init__(self, curl: Any, give: Callable[[Any, bool], None]) -> None:
         self._curl = curl
@@ -848,12 +771,7 @@ def _curl_pause(handle: Any, how: int) -> None:
 
 
 class _Jar(http.cookiejar.CookieJar):
-    """A cookie jar whose `version` moves on with every cookie set or cleared, by any caller.
-
-    Every change goes through `set_cookie` or `clear` (`extract_cookies`, `set_cookie_if_ok`,
-    `clear_expired_cookies` and `clear_session_cookies` call them), so a cache knows when it is
-    stale.
-    """
+    """A cookie jar whose `version` moves on with every cookie set or cleared, by any caller."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -882,15 +800,7 @@ _ORIGIN = re.compile(r"[^:/?#]+://[^/?#]*")
 
 @dataclass
 class _Sent:
-    """The cookies one origin may be sent, in the jar's order, at one version of the jar.
-
-    Which of them a request gets then depends only on its path. So when every one is for
-    `Path=/`, every request gets the same header, built once.
-
-    Attributes:
-        cookies: the cookies for the origin's scheme, host and port, whatever their path.
-        header: the `Cookie` header when every cookie is for `/`; None when the path decides.
-    """
+    """The cookies one origin may be sent, in the jar's order, at one version of the jar."""
 
     cookies: list[http.cookiejar.Cookie]
     header: str | None
@@ -924,11 +834,7 @@ class _Sent:
 
 
 class _Info:
-    """What `http.cookiejar` reads from a response: its headers, by `info()`.
-
-    Args:
-        message: the response's headers.
-    """
+    """What `http.cookiejar` reads from a response: its headers, by `info()`."""
 
     def __init__(self, message: email.message.Message) -> None:
         self._message = message
@@ -1060,14 +966,7 @@ class Client:
             await answer.close()
 
     async def _open(self, request: Request) -> _Answer:
-        """Prepare `request` with the session's hook, send it, and raise for its stop.
-
-        Args:
-            request: the request, before the hook.
-
-        Returns:
-            The answer, streaming.
-        """
+        """Prepare `request` with the session's hook, send it, and raise for its stop."""
         self._check(request.url)
         prepare = self.session.prepare
         if prepare is None:
@@ -1095,27 +994,7 @@ class Client:
 
     async def _file(self, url: str, held: files.Part, headers: Mapping[str, str] | None,
                     resume: bool, meter: Meter) -> Mapping[str, str]:
-        """One try at a file: resume the part, or start over.
-
-        1. Start from 0 when not resuming, or when the part was written in segments.
-        2. Ask for `bytes=<size>-`, with `If-Range` on the validator the part kept, so a file
-           that changed comes whole (a 200) instead of spliced.
-        3. A 206 goes on from the part's end; a 200 starts it over; a 416 is a whole part or a
-           restart.
-
-        Args:
-            url: the file.
-            held: the locked part it goes into.
-            headers: extra request headers.
-            resume: go on from the part's bytes; False empties it first.
-            meter: where the bytes are counted.
-
-        Returns:
-            The answer's headers.
-
-        Raises:
-            NetworkError: a 206's `Content-Range` does not match the part's resume offset.
-        """
+        """One try at a file: resume the part, or start over."""
         if not resume or (held.size and "segments" in held.meta):
             # A part written in segments (or an older flnd's with holes) isn't one run of bytes.
             held.reset()
@@ -1148,19 +1027,7 @@ class Client:
     async def _unsatisfied(self, url: str, held: files.Part,
                            headers: Mapping[str, str] | None, offset: int, total: int | None,
                            meter: Meter) -> None:
-        """A 416 on `Range: bytes=offset-`: the part is whole, or it starts over from 0.
-
-        Args:
-            url: the file.
-            held: the part.
-            headers: extra request headers.
-            offset: the range's start, which was the part's size.
-            total: the file's size from `Content-Range: */<total>`, or None.
-            meter: where the bytes are counted.
-
-        Raises:
-            SiteError: a 416 for a range from 0, which no retry would mend.
-        """
+        """A 416 on `Range: bytes=offset-`: the part is whole, or it starts over from 0."""
         if total == offset:
             meter.start(offset, offset)
             return
@@ -1170,18 +1037,7 @@ class Client:
 
     async def _range(self, url: str, headers: Mapping[str, str] | None, span: str,
                      validator: str | None = None) -> _Answer:
-        """Open a GET for `span`, raising for a 4xx or 5xx other than 416.
-
-        Args:
-            url: the file.
-            headers: extra request headers.
-            span: the `Range` header's value.
-            validator: an ETag or date for `If-Range`: the server sends the range only while the
-                file still matches it, and the whole file otherwise.
-
-        Returns:
-            The open answer; the caller closes it.
-        """
+        """Open a GET for `span`, raising for a 4xx or 5xx other than 416."""
         extra = {"Range": span, **({"If-Range": validator} if validator else {})}
         answer = await self._open(_request("GET", url, {**(headers or {}), **extra}, None))
         if answer.status >= 400 and answer.status != 416:
@@ -1190,22 +1046,7 @@ class Client:
 
     async def _write(self, url: str, answer: _Answer, held: files.Part, start: int,
                      total: int | None, meter: Meter, *, offset: int | None = None) -> None:
-        """Append the answer's body to the part, and fail a transfer that came short.
-
-        Args:
-            url: the file, for messages.
-            answer: the open answer.
-            held: the part.
-            start: where the answer's bytes begin in the file.
-            total: the file's size, or None when the server didn't say.
-            meter: where the bytes are counted, and where they stop (`until`).
-            offset: where to write, for a segment; None appends.
-
-        Raises:
-            DiskError: the part can't be written.
-            NetworkError: the body ended before `total`, or the segment's end (retryable).
-            Stopped: the client's `stop` was set.
-        """
+        """Append the answer's body to the part, and fail a transfer that came short."""
         meter.start(total, start)
         sink = _Sink(held, offset, write=meter.write, wrote=meter.wrote, until=meter.until)
         at, end = start, None
@@ -1311,25 +1152,7 @@ def _writer_thread() -> ThreadPoolExecutor:
 
 
 class _Sink:
-    """A transfer's bytes on their way to its part: gathered on the loop, written on a writer.
-
-    Chunks (16 KiB from curl) are gathered until `BUFFER` bytes, then handed to the writer while
-    the loop goes on: the caller's (`Meter.write`), else this module's one thread. The transfer
-    waits only for its own piece, so a slow disk (a USB drive, a network share) slows that
-    transfer, not the loop. A part that hashes as it is written hashes each piece on the writer,
-    after its write: the caller's hasher pool (flnd's dedupe) hashes a file only when it must.
-
-    A transfer hands off a piece only after the last one is done, so a part's pieces reach the
-    disk in order.
-
-    Args:
-        held: the part.
-        offset: where to write, for a segment (`Part.write_at`); None appends (`Part.write`).
-        write: runs one blocking write, as `Meter.write`; None uses this module's thread.
-        wrote: awaited with each piece's size once it is on disk, as `Meter.wrote`.
-        until: where the bytes stop, as `Meter.until`: while it gives an end (the part is in
-            segments), the last piece too goes to the disk before `wrote` counts it.
-    """
+    """A transfer's bytes on their way to its part: gathered on the loop, written on a writer."""
 
     def __init__(self, held: files.Part, offset: int | None = None, *,
                  write: Write | None = None,
@@ -1396,17 +1219,7 @@ class _Sink:
 
 
 async def _settle(work: asyncio.Future[Any]) -> None:
-    """Wait for a write on the writer thread; on a cancel, still wait for it, then cancel.
-
-    The part's descriptor is closed when its transfer ends, and a write still in flight would
-    then land in whatever file reused the descriptor.
-
-    Args:
-        work: the write's future, from `run_in_executor`.
-
-    Raises:
-        DiskError: the write failed.
-    """
+    """Wait for a write on the writer thread; on a cancel, still wait for it, then cancel."""
     try:
         await asyncio.shield(work)
     except asyncio.CancelledError:
@@ -1541,11 +1354,7 @@ def fake(routes: Mapping[str, Any] | Callable[[Request], Any]) -> Iterator[None]
 
 
 class _Router:
-    """`fake`'s routes: the answer for a request's URL, as an `_Answer`.
-
-    Args:
-        routes: a handler, or routes by URL (see `fake`).
-    """
+    """`fake`'s routes: the answer for a request's URL, as an `_Answer`."""
 
     def __init__(self, routes: Mapping[str, Any] | Callable[[Request], Any]):
         self.handler = routes if callable(routes) else None
@@ -1582,18 +1391,7 @@ class _Router:
                            "redirects")
 
     async def _one(self, request: Request, url: str) -> Reply:
-        """One request's answer from its route, calling (and awaiting) a callable route.
-
-        Args:
-            request: the request.
-            url: its URL without user info, which the routes are keyed by.
-
-        Returns:
-            The route's answer.
-
-        Raises:
-            NetworkError: no route matches, or the route raised an `OSError`.
-        """
+        """One request's answer from its route, calling (and awaiting) a callable route."""
         route = self.handler if self.handler is not None else self._route(url)
         if route is None:
             raise NetworkError(f"{request.method} {redact(url)}: no route in net.fake")
@@ -1615,15 +1413,7 @@ class _Router:
 
 
 def _reply(route: Any, request: Request) -> Reply:
-    """A route's answer as a `Reply`; bytes or str serve `Range`, as a file server would.
-
-    Args:
-        route: what the route gave (see `fake`).
-        request: the request, whose `Range` header a body answers.
-
-    Returns:
-        The answer.
-    """
+    """A route's answer as a `Reply`; bytes or str serve `Range`, as a file server would."""
     if isinstance(route, Reply):
         return route
     if isinstance(route, Response):
@@ -1645,16 +1435,7 @@ def _reply(route: Any, request: Request) -> Reply:
 
 
 def _streamed(answer: Reply, url: str, request: Request) -> _Answer:
-    """A `Reply` as an `_Answer`, its body given in its chunks.
-
-    Args:
-        answer: the fake's answer.
-        url: where it came from.
-        request: the request, named in the error a cut connection raises.
-
-    Returns:
-        The answer, streaming.
-    """
+    """A `Reply` as an `_Answer`, its body given in its chunks."""
     pairs = [(name.lower(), value) for name, value in answer.headers]
 
     async def chunks() -> AsyncIterator[bytes]:
@@ -1728,20 +1509,7 @@ def _query_value(value: Any) -> str:
 
 
 def _request(method: str, url: str, headers: Mapping[str, str] | None, body: Any) -> Request:
-    """A `Request` for `body`: a query on a GET or HEAD, JSON for a dict or list, else as is.
-
-    Args:
-        method: the method, upper case.
-        url: where to.
-        headers: the request's own headers, or None.
-        body: what to send (see `Client.fetch`).
-
-    Returns:
-        The request.
-
-    Raises:
-        NetworkError: the URL isn't one this client can send to.
-    """
+    """A `Request` for `body`: a query on a GET or HEAD, JSON for a dict or list, else as is."""
     content: bytes | None = None
     extra = Headers(headers or {})
     if isinstance(body, Mapping) and method in QUERY_METHODS:
@@ -1758,12 +1526,7 @@ def _request(method: str, url: str, headers: Mapping[str, str] | None, body: Any
 
 
 def _redirected(request: Request, status: int, url: URL, host: str) -> Request:
-    """The next hop of `request` after a redirect of `status` to `url`, as a browser makes it.
-
-    A 303, and a 301 or 302 of a POST, turn it into a GET without its body or the headers
-    that described the body; a 307 or 308 keeps it whole. A hop to a host other than `host`
-    (the first one's) keeps only the caller's `CARRIED` headers.
-    """
+    """The next hop of `request` after a redirect of `status` to `url`, as a browser makes it."""
     method, content, headers = request.method, request.content, Headers(request.headers)
     if (status == 303 and method != "HEAD") or (status in (301, 302) and method == "POST"):
         method, content = "GET", None
@@ -1776,17 +1539,7 @@ def _redirected(request: Request, status: int, url: URL, host: str) -> Request:
 
 
 def _host(url: str) -> str:
-    """The URL's host, lower case.
-
-    Args:
-        url: the URL.
-
-    Returns:
-        Its host.
-
-    Raises:
-        NetworkError: the URL has no scheme or host this client can send to.
-    """
+    """The URL's host, lower case."""
     try:
         parts = urlsplit(url)
         host = parts.hostname
@@ -1798,16 +1551,7 @@ def _host(url: str) -> str:
 
 
 def _validator(headers: Mapping[str, str]) -> str | None:
-    """What `If-Range` can name a response's file by: a strong ETag, else its date, else None.
-
-    A weak ETag (`W/"..."`) may not be used in `If-Range` (RFC 9110, 13.1.5).
-
-    Args:
-        headers: the response's headers.
-
-    Returns:
-        The validator, or None when the response has neither.
-    """
+    """What `If-Range` can name a response's file by: a strong ETag, else its date, else None."""
     tag = headers.get("etag")
     if tag and not tag.startswith("W/"):
         return tag
@@ -1815,14 +1559,7 @@ def _validator(headers: Mapping[str, str]) -> str | None:
 
 
 def _range_start(headers: Mapping[str, str]) -> int:
-    """The byte a 206 answer's `Content-Range` says the body starts at, or 0 when missing.
-
-    Args:
-        headers: the answer's headers.
-
-    Returns:
-        The start offset from `Content-Range`, or 0 when the header is absent.
-    """
+    """The byte a 206 answer's `Content-Range` says the body starts at, or 0 when missing."""
     cr = headers.get("content-range", "")
     if cr.startswith("bytes "):
         span = cr[6:].split("/", 1)[0]
@@ -1862,11 +1599,7 @@ def _joined(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
 
 
 def _checked(response: Response, method: str) -> Response:
-    """`response`, or the error its status means under the module's policy (`refusal`).
-
-    Raises:
-        Error: the `refusal` of a status of 400 or more.
-    """
+    """`response`, or the error its status means under the module's policy (`refusal`)."""
     error = refusal(response, method=method)
     if error is not None:
         raise error
@@ -1904,14 +1637,7 @@ def refusal(response: Any, *, method: str = "GET") -> Error | None:
 
 
 def _retry_after(value: str | None) -> float | None:
-    """Seconds to wait from a `Retry-After` header: a number of seconds or an HTTP date.
-
-    Args:
-        value: the header's value, or None.
-
-    Returns:
-        The seconds, at most `MAX_BACKOFF`; None when it is missing or unreadable.
-    """
+    """Seconds to wait from a `Retry-After` header: a number of seconds or an HTTP date."""
     if not value:
         return None
     try:
@@ -1931,17 +1657,7 @@ def _retry_after(value: str | None) -> float | None:
 
 
 def _reset(headers: Mapping[str, str]) -> float | None:
-    """Seconds to wait from a rate-limit reset header (`x-rate-limit-reset`, X's and others').
-
-    A value past `EPOCH` is a Unix time; one below is a number of seconds. A second is added
-    for clocks a little apart.
-
-    Args:
-        headers: the answer's headers.
-
-    Returns:
-        The seconds, at most `MAX_BACKOFF`; None when no header says.
-    """
+    """Seconds to wait from a rate-limit reset header (`x-rate-limit-reset`, X's and others')."""
     for prefix in ("x-rate-limit-", "x-ratelimit-"):
         try:
             reset = float(headers[prefix + "reset"])
@@ -1955,18 +1671,7 @@ def _reset(headers: Mapping[str, str]) -> float | None:
 
 
 def _network(request: Request, error: BaseException) -> NetworkError:
-    """The `NetworkError` a failed transfer is: retryable unless no retry could mend it.
-
-    curl's errors carry their code (`FINAL_CURL_CODES` won't heal); a fake's `OSError` stands
-    for a dropped or timed-out connection, which may.
-
-    Args:
-        request: the request, named (redacted) in the message, and whose secrets are scrubbed.
-        error: what curl or the fake raised.
-
-    Returns:
-        The error to raise.
-    """
+    """The `NetworkError` a failed transfer is: retryable unless no retry could mend it."""
     code = getattr(error, "code", None)
     retryable = code not in FINAL_CURL_CODES if isinstance(code, int) else True
     # curl_cffi appends a pointer to curl's error list, which says nothing about this failure.
@@ -1977,14 +1682,7 @@ def _network(request: Request, error: BaseException) -> NetworkError:
 
 
 def _bare(url: str) -> str:
-    """`url` without its user info, as a fake's routes and a cookie jar name it.
-
-    Args:
-        url: the URL.
-
-    Returns:
-        The URL without `user:password@`; as it was when it has none or can't be read.
-    """
+    """`url` without its user info, as a fake's routes and a cookie jar name it."""
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -1995,15 +1693,7 @@ def _bare(url: str) -> str:
 
 
 def _without_userinfo(message: str, url: str | None = None) -> str:
-    """`message` with the user info of `url` replaced by `***`.
-
-    Args:
-        message: the text.
-        url: the URL whose user info to look for; None reads `message` itself as one.
-
-    Returns:
-        The text without the user info.
-    """
+    """`message` with the user info of `url` replaced by `***`."""
     try:
         netloc = urlsplit(url if url is not None else message).netloc
     except ValueError:
@@ -2013,23 +1703,7 @@ def _without_userinfo(message: str, url: str | None = None) -> str:
 
 
 def _scrub(text: str, request: Request) -> str:
-    """`text` without any secret `request` carries, each replaced by `***`.
-
-    A library's error text may quote what it sent, so every secret is looked for in it:
-    1. each secret header's whole value (`SECRET_HEADERS`);
-    2. its parts: a cookie's values, and the credentials after an `Authorization` scheme
-       (`Bearer <token>`);
-    3. the values of the URL's query, and the password in its user info.
-    A part shorter than `SHORT_SECRET` isn't replaced: "1" or "en" would garble the message,
-    and is no secret.
-
-    Args:
-        text: an error message about `request`.
-        request: the request, with the headers and URL it was sent with.
-
-    Returns:
-        The message with each secret replaced.
-    """
+    """`text` without any secret `request` carries, each replaced by `***`."""
     secrets: list[str] = []
     for name in SECRET_HEADERS:
         value = request.headers.get(name)
@@ -2054,14 +1728,7 @@ def _scrub(text: str, request: Request) -> str:
 
 
 def _charset(content_type: str) -> str:
-    """The charset a `Content-Type` names.
-
-    Args:
-        content_type: the header's value.
-
-    Returns:
-        The charset, or "utf-8" when it names none Python knows.
-    """
+    """The charset a `Content-Type` names."""
     for parameter in content_type.split(";")[1:]:
         name, _, value = parameter.partition("=")
         if name.strip().lower() == "charset":
@@ -2075,14 +1742,7 @@ def _charset(content_type: str) -> str:
 
 
 def _cookie_dict(cookie: http.cookiejar.Cookie) -> dict[str, Any]:
-    """A cookie of the jar as a dict in `flnkit.cookies.Jar`'s shape (Playwright's).
-
-    Args:
-        cookie: the jar's cookie.
-
-    Returns:
-        The dict.
-    """
+    """A cookie of the jar as a dict in `flnkit.cookies.Jar`'s shape (Playwright's)."""
     return {
         "name": cookie.name,
         "value": cookie.value or "",
@@ -2096,14 +1756,7 @@ def _cookie_dict(cookie: http.cookiejar.Cookie) -> dict[str, Any]:
 
 
 def _cookie_from_dict(cookie: Mapping[str, Any]) -> http.cookiejar.Cookie:
-    """A cookie dict in `flnkit.cookies.Jar`'s shape as a cookie for the jar.
-
-    Args:
-        cookie: the dict; an `expires` below 0, or none, makes a session cookie.
-
-    Returns:
-        The jar's cookie.
-    """
+    """A cookie dict in `flnkit.cookies.Jar`'s shape as a cookie for the jar."""
     domain = str(cookie.get("domain", ""))
     path = str(cookie.get("path") or "/")
     expires = cookie.get("expires")

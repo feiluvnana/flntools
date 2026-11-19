@@ -602,11 +602,7 @@ def _whole(value: Any) -> int:
 
 
 def _is_dash(entry: dict[str, Any]) -> bool:
-    """Whether a `bitrateInfo` entry is a DASH stream (video only, or a manifest).
-
-    2026-11, unconfirmed until a live check: "dash" in its `Format`, `GearName` or
-    `PlayAddr.UrlKey`, or a `.mpd` URL. No known downloader skips them, so all four count.
-    """
+    """Whether a `bitrateInfo` entry is a DASH stream (video only, or a manifest)."""
     play = entry.get("PlayAddr") or {}
     marks = (entry.get("Format"), entry.get("GearName"), play.get("UrlKey"))
     urls = play.get("UrlList") or []

@@ -145,14 +145,7 @@ def exit_code(error: BaseException | None) -> int:
 
 
 def _settle(args: argparse.Namespace) -> None:
-    """Give each global flag left out its default.
-
-    The global flags are accepted before and after the command, so both parsers leave them
-    out unless given (`argparse.SUPPRESS`), and this sets what is still missing.
-
-    Args:
-        args: the parsed flags, changed in place.
-    """
+    """Give each global flag left out its default."""
     for name, default in (("home", None), ("verbose", False), ("json", False)):
         if not hasattr(args, name):
             setattr(args, name, default)
@@ -161,12 +154,7 @@ def _settle(args: argparse.Namespace) -> None:
 
 
 def _report(error: Any, *, as_json: bool = False) -> None:
-    """Print an error a person can act on: its message, then its hint; never a traceback.
-
-    Args:
-        error: the `flnd.Error` that ended the command.
-        as_json: also print it on standard output as `{"type": "Error", ...}`, for `--json`.
-    """
+    """Print an error a person can act on: its message, then its hint; never a traceback."""
     from flnd.ui import out
 
     # `out.error` first: it gives the error flnd's hint when it has none, which the JSON shows.
@@ -695,10 +683,7 @@ def _state(account: Any) -> str:
 # ---------------------------------------------------------------------------------------------
 
 class _Parser(argparse.ArgumentParser):
-    """argparse, with its help and its errors printed by `flnd.ui.out`.
-
-    `tail` holds the rows the help ends with: the plugins, for a command that takes targets.
-    """
+    """argparse, with its help and its errors printed by `flnd.ui.out`."""
 
     tail: Sequence[tuple[str, Sequence[Any]]] = ()
 
@@ -819,14 +804,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _globals() -> argparse.ArgumentParser:
-    """The flags every command takes, before or after its name.
-
-    Their defaults are `SUPPRESS`, so a flag given before the command isn't overwritten by the
-    command's own parser; `_settle` fills in the real defaults after parsing.
-
-    Returns:
-        A parser to use as a parent; it adds no `--help` of its own.
-    """
+    """The flags every command takes, before or after its name."""
     shared = _Parser(add_help=False)
     group = shared.add_argument_group("global flags")
     group.add_argument("--home", metavar="DIR", default=argparse.SUPPRESS,
@@ -847,11 +825,7 @@ def _when(sub: argparse.ArgumentParser) -> None:
 
 
 def _again(sub: argparse.ArgumentParser) -> None:
-    """Add `--again` to a command that gets.
-
-    Args:
-        sub: the command's parser.
-    """
+    """Add `--again` to a command that gets."""
     sub.add_argument("--again", action="store_true",
                      help="list every post again, and ask again for files the site said are "
                           "gone (404 or 410)")
@@ -894,11 +868,7 @@ def _methods(code: str) -> tuple[str, ...]:
 
 
 def _forms() -> list[tuple[str, list[Any]]]:
-    """A row per built-in plugin for a command's help: the targets it reads, its categories.
-
-    Returns:
-        The rows: the plugin's code, then its forms and categories as styled parts.
-    """
+    """A row per built-in plugin for a command's help: the targets it reads, its categories."""
     from flnd.plugins import _manifest
 
     rows: list[tuple[str, list[Any]]] = [("plugins", [("the targets each reads, then its "
@@ -926,14 +896,7 @@ def _open(args: argparse.Namespace) -> flnd.Flnd:
 
 
 def _targets(given: Sequence[str]) -> list[str]:
-    """The targets on the command line, then the lines of a piped standard input.
-
-    Args:
-        given: the targets typed after the command.
-
-    Returns:
-        The targets, in order; none when neither holds one.
-    """
+    """The targets on the command line, then the lines of a piped standard input."""
     found = list(given)
     if not sys.stdin.isatty():
         lines = [line.strip() for line in sys.stdin]
@@ -943,19 +906,7 @@ def _targets(given: Sequence[str]) -> list[str]:
 
 def _ask_how(args: argparse.Namespace, code: str | None = None,
              fl: flnd.Flnd | None = None) -> tuple[str, str | None]:
-    """Ask how to log in to a plugin: one of its methods, and a path for a file.
-
-    Args:
-        args: the parsed flags.
-        code: the plugin's code; None takes `args.plugin`.
-        fl: the open home, when the caller has one.
-
-    Returns:
-        The method, and the cookie file's path when the method is `file`.
-
-    Raises:
-        UsageError: an unknown plugin, `--json`, or no terminal to ask in.
-    """
+    """Ask how to log in to a plugin: one of its methods, and a path for a file."""
     from contextlib import nullcontext
 
     import flnd
@@ -1029,8 +980,7 @@ def _ago(at: str) -> float | None:
 
 
 def _left(at: str | None, *, held: bool = False) -> float | None:
-    """Seconds until an ISO 8601 time (0 or less: it has passed); None for none. A hold that
-    has passed is none too."""
+    """Seconds until an ISO 8601 time (0 or less: it has passed); None for none."""
     ago = _ago(at or "")
     if ago is None or (held and ago >= 0):
         return None
@@ -1038,13 +988,7 @@ def _left(at: str | None, *, held: bool = False) -> float | None:
 
 
 def _line(args: argparse.Namespace, value: Any, text: str) -> None:
-    """Print one result: as JSON with `--json`, else as styled `text`.
-
-    Args:
-        args: the parsed flags.
-        value: the result object for JSON encoding.
-        text: plain text representation to show.
-    """
+    """Print one result: as JSON with `--json`, else as styled `text`."""
     from flnd.ui import out
 
     if args.json:
@@ -1058,23 +1002,14 @@ def _line(args: argparse.Namespace, value: Any, text: str) -> None:
 
 
 def _json(value: Any) -> None:
-    """Print one value (an event, a row, or a plain dict) as one line of JSON on standard output.
-
-    Args:
-        value: an event, record, or dict to encode.
-    """
+    """Print one value (an event, a row, or a plain dict) as one line of JSON on standard output."""
     from flnd.ui import out
 
     out.json(value)
 
 
 def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
-    """Print rows as a table: the first column in focus, and each state in its colour.
-
-    Args:
-        header: column titles.
-        rows: table rows.
-    """
+    """Print rows as a table: the first column in focus, and each state in its colour."""
     from flnd.ui import out
 
     out.table([[_cell(index, str(cell)) for index, cell in enumerate(row)] for row in rows],
@@ -1102,26 +1037,7 @@ def _cell(index: int, text: str) -> tuple[str, str]:
 
 def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
            runner: _Exec | None = None) -> int:
-    """Read a run's events into the chosen view, print its end, and return its exit code.
-
-    flnd's own log lines are held to warnings for the run, or opened to debug lines with `-v`.
-    The run's events go to `<home>/log/<stamp>_get.jsonl` (see src/docs/storage). On a
-    terminal the screen draws the run from its snapshot (`run.state`, `flnd.ui.screen`); the
-    end summary follows.
-
-    Args:
-        fl: the open home.
-        run: the run, not started yet.
-        args: the parsed flags: `--json`, `-v`.
-        runner: `--exec`'s command, run for each `Saved` event; None runs nothing.
-
-    Returns:
-        0 when nothing failed, 3 when a target needs a login, else 1.
-
-    Raises:
-        Error: what stopped the whole run (a full disk), from the run.
-        Stopped: Ctrl-C ended it.
-    """
+    """Read a run's events into the chosen view, print its end, and return its exit code."""
     from contextlib import ExitStack, nullcontext
 
     import flnd
@@ -1159,23 +1075,7 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
 
 
 class _Exec:
-    """`--exec CMD`: a command run once per saved file, never through a shell.
-
-    CMD is split into arguments once, here, with `shlex` (POSIX rules; on Windows, quotes are
-    kept by the split and then dropped, and backslashes stay as they are, for paths). For each
-    file, `{path}`, `{target}` and `{post}` inside each argument become its values in one pass,
-    so a value that itself holds `{post}` or `;` or `$(...)` stays literal text inside its one
-    argument. The same values are in the environment as `FLND_PATH`, `FLND_TARGET` and
-    `FLND_POST`.
-
-    Args:
-        command: CMD as given.
-        quiet: send the command's output to standard error, so `--json` keeps standard
-            output to JSON lines.
-
-    Raises:
-        UsageError: CMD is empty, its quotes don't close, or its program isn't found.
-    """
+    """`--exec CMD`: a command run once per saved file, never through a shell."""
 
     # The placeholders, matched in one pass so a substituted value is never read again.
     FIELDS = ("path", "target", "post")
@@ -1252,17 +1152,7 @@ class _Exec:
 
 
 def _runner(args: argparse.Namespace) -> _Exec | None:
-    """`--exec`'s command, read from the flags; None without `--exec`.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        The command, ready to run per file.
-
-    Raises:
-        UsageError: CMD is empty, its quotes don't close, or its program isn't found.
-    """
+    """`--exec`'s command, read from the flags; None without `--exec`."""
     command = getattr(args, "exec", None)
     return _Exec(command, quiet=args.json) if command is not None else None
 
@@ -1275,10 +1165,7 @@ def _login(error: BaseException) -> bool:
 
 
 class _View:
-    """How a run shows: `show` each event as it comes, then `end` with the report.
-
-    A view is a context manager, so a live display stops even when the run raises.
-    """
+    """How a run shows: `show` each event as it comes, then `end` with the report."""
 
     journal: Any = None
 
@@ -1308,11 +1195,7 @@ class _View:
 
 
 class _JournalView(_View):
-    """Terminal output from run events; the machine record goes to the `.jsonl` journal.
-
-    The run's own display is the screen (`flnd.ui.screen`), drawn from the run's snapshot, so
-    a view prints no line per file or failure: the screen counts them, and `end` sums them up.
-    """
+    """Terminal output from run events; the machine record goes to the `.jsonl` journal."""
 
     def show(self, event: Any) -> None:
         """Record one event, and print a dry run's planned files.
@@ -1367,14 +1250,7 @@ def _word(error: BaseException) -> str:
 
 
 def _shown(path: Any) -> str:
-    """A path as short as it can be shown: relative to the current folder.
-
-    Args:
-        path: the path of a saved or planned file.
-
-    Returns:
-        The relative path; the path as it is when it has no relative form.
-    """
+    """A path as short as it can be shown: relative to the current folder."""
     try:
         return os.path.relpath(path)
     except ValueError:

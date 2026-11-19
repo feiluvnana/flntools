@@ -161,11 +161,7 @@ async def _write(task: asyncio.Task[bytes], write: Write) -> int:
 # ---------------------------------------------------------------------------------------------
 
 def _guarded(read: Callable[[], Playlist], where: str) -> Playlist:
-    """`read()`, with any error but a `SiteError` turned into one: this is the one boundary.
-
-    A playlist is the site's text, so every slip in it (a bad number, a missing part, a value
-    too big for a float) is a `SiteError` that names no part of the input.
-    """
+    """`read()`, with any error but a `SiteError` turned into one: this is the one boundary."""
     try:
         return read()
     except errors.SiteError:
@@ -440,10 +436,7 @@ def _kind(adaptation: ElementTree.Element, representation: ElementTree.Element) 
 
 def _planned(levels: tuple[ElementTree.Element, ...], base: str, length: float | None,
              where: str) -> tuple[int, int]:
-    """A representation's media segments and about the bytes they'll take, before building.
-
-    The bytes are each segment's `SEGMENT_COST` and its URL's length, taken from the first.
-    """
+    """A representation's media segments and about the bytes they'll take, before building."""
     representation = levels[2]
     base = _base(base, representation)
     template = _template(levels)
@@ -530,11 +523,7 @@ def _templated(template: dict[str, object], representation: ElementTree.Element,
 
 def _timeline(template: dict[str, object], scale: int, length: float | None,
               where: str) -> list[tuple[int, int, int]]:
-    """The template's runs of segments: `(start, duration, count)`, in its ticks.
-
-    The period ends `length` after `presentationTimeOffset`, or after the first `S@t` when
-    there is no offset. An `S` with `r="-1"` repeats up to the next `S@t`, else to that end.
-    """
+    """The template's runs of segments: `(start, duration, count)`, in its ticks."""
     timeline = template.get("timeline")
     entries = _children(timeline, "S") if isinstance(timeline, ElementTree.Element) else []
     origin = _int(template.get("presentationTimeOffset"),

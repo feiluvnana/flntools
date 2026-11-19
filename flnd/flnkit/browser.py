@@ -127,14 +127,7 @@ class _Bar:
 
 
 def _real_home() -> Path:
-    """The home folder of the account running flnd, which a changed `$HOME` does not move.
-
-    On Windows it reads `%USERPROFILE%`. Elsewhere it reads the account's entry in the
-    password database.
-
-    Returns:
-        The home folder, or `Path.home()` when the password database is not there.
-    """
+    """The home folder of the account running flnd, which a changed `$HOME` does not move."""
     if sys.platform == "win32":
         return Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
     try:
@@ -492,14 +485,7 @@ class _NeverRaised(Exception):
 
 @functools.cache
 def _raw_error() -> type[Exception]:
-    """Playwright's `Error`, imported once; a class nothing raises without Playwright.
-
-    Code that catches Playwright's errors names this instead of importing Playwright, so the
-    module still imports (and its `except` clauses still work) without the `browser` extra.
-
-    Returns:
-        `playwright.async_api.Error`, or `_NeverRaised` when Playwright isn't installed.
-    """
+    """Playwright's `Error`, imported once; a class nothing raises without Playwright."""
     try:
         from playwright.async_api import Error
     except ImportError:  # no `browser` extra: no Playwright call can have raised
@@ -509,11 +495,7 @@ def _raw_error() -> type[Exception]:
 
 @functools.cache
 def _raw_timeout() -> type[Exception]:
-    """Playwright's `TimeoutError`, imported once, as `_raw_error`.
-
-    Returns:
-        `playwright.async_api.TimeoutError`, or `_NeverRaised` when Playwright isn't installed.
-    """
+    """Playwright's `TimeoutError`, imported once, as `_raw_error`."""
     try:
         from playwright.async_api import TimeoutError
     except ImportError:  # no `browser` extra: no Playwright call can have raised
@@ -597,18 +579,7 @@ async def launch(*, profile: str | None = None, headless: bool = False,
 
 
 async def _start_playwright() -> Playwright:
-    """Start Playwright's driver on the running loop.
-
-    Playwright is imported here, on first use, so importing this module stays cheap. The driver
-    is a Node process Playwright spawns; it lives until `playwright.stop()`, which the
-    `Browser`'s close steps run last.
-
-    Returns:
-        The started driver, bound to the running loop.
-
-    Raises:
-        ImportError: Playwright isn't installed (flnd's `browser` extra), with the install line.
-    """
+    """Start Playwright's driver on the running loop."""
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -668,19 +639,7 @@ def _copy_profile(name: str) -> Path:
 
 async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
                   stealth: bool, screen: Screen) -> Browser:
-    """Launch a browser for `launch`, with or without a copied profile.
-
-    Args:
-        playwright: the started driver.
-        copy: a copied profile's folder, or None for an incognito browser.
-        headless: hide the window.
-        stealth: hide `navigator.webdriver`.
-        screen: where the offer to download Chromium is asked.
-
-    Returns:
-        The browser. `launch` deletes the copy when this raises; on success, the Browser's
-        close deletes it.
-    """
+    """Launch a browser for `launch`, with or without a copied profile."""
     launch_options: dict[str, Any] = {"headless": headless, "args": list(LAUNCH_ARGS)}
     width, height = DEFAULT_VIEWPORT
     context_options: dict[str, Any] = {"viewport": {"width": width, "height": height}}
@@ -705,27 +664,7 @@ async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
 
 
 def _channel(playwright: Playwright, screen: Screen) -> str:
-    """The channel `launch` uses: `chrome` when Google Chrome is installed, `chromium` otherwise.
-
-    Without Chrome or a downloaded Chromium, it asks to download Chromium, and raises
-    `ToolError(NEEDS_CHROME)` on no or without a terminal. A failed download raises its
-    `ToolError`, and the same one again, without asking, for the rest of the process. It runs on
-    a worker thread, since the question waits for a person.
-
-    `_chromium_offer` serialises the question: two runs in one process that both find no
-    browser ask once, and the second one reads what the first one decided.
-
-    Args:
-        playwright: the started driver, which says where its downloaded Chromium would be.
-        screen: where the question is asked and the download's progress shown.
-
-    Returns:
-        `"chrome"` or `"chromium"`, Playwright's channel name.
-
-    Raises:
-        ToolError: no browser, and the download was declined, impossible without a terminal,
-            or failed.
-    """
+    """The channel `launch` uses: `chrome` when Google Chrome is installed, `chromium` otherwise."""
     global _chromium_declined, _chromium_failed
     if _chrome_installed():
         return "chrome"
@@ -755,15 +694,7 @@ def _channel(playwright: Playwright, screen: Screen) -> str:
 
 
 def _chrome_executable() -> Path | None:
-    """The installed Google Chrome executable path, or None if not found.
-
-    It looks only where Playwright's `chrome` channel looks: one fixed path on macOS and Linux,
-    and on Windows the same relative path under each of `WINDOWS_ROOTS` in order (the user's
-    local app data, Program Files, Program Files (x86)): Chrome installs per user or per machine.
-
-    Returns:
-        The executable's path, or None when Chrome isn't installed in a place Playwright finds.
-    """
+    """The installed Google Chrome executable path, or None if not found."""
     platform = sys.platform if sys.platform in CHROME_PATHS else "linux"
     if platform != "win32":
         candidate = Path(CHROME_PATHS[platform])
@@ -782,17 +713,7 @@ def _chrome_installed() -> bool:
 
 
 def _install_chromium(screen: Screen) -> None:
-    """Download Chromium with Playwright's installer under a progress row into the user cache.
-
-    `--no-shell` skips the separate headless shell: `launch` runs Chromium itself in Chrome's
-    new headless mode (the `chromium` channel), so the shell would never be used.
-
-    Args:
-        screen: where the progress row is shown.
-
-    Raises:
-        ToolError: the installer failed, with its last line of output.
-    """
+    """Download Chromium with Playwright's installer under a progress row into the user cache."""
     # A bundled flnd has no `python -m playwright`, so this runs the driver Playwright ships.
     from playwright._impl._driver import compute_driver_executable, get_driver_env
 
@@ -817,27 +738,7 @@ def _install_chromium(screen: Screen) -> None:
 async def _open_context(playwright: Playwright, profile: Path | None, channel: str,
                         launch_options: dict[str, Any],
                         context_options: dict[str, Any]) -> tuple[BrowserContext, list]:
-    """Launch the browser with or without a profile folder, returning `(context, close_steps)`.
-
-    With no `profile` the browser is an incognito context of its own; with one, Chrome's persistent
-    profile in that folder. The returned steps run in order when the `Browser` closes.
-
-    Headless, the browser sends the headed user agent (`_headful_ua`). A persistent context
-    can't set a user agent per context, so a short-lived headless launch reads it first, and
-    it goes in as a `--user-agent` launch argument.
-
-    Args:
-        playwright: the started driver.
-        profile: a profile folder to open as Chrome's persistent profile, or None for incognito.
-            A real (not copied) profile is refused under the test suite (`refuse_profile`).
-        channel: "chrome" or "chromium", from `_channel`.
-        launch_options: Playwright's launch options: `headless`, `args`, and the like.
-        context_options: Playwright's context options: the viewport, and the like.
-
-    Returns:
-        `(context, close_steps)`: the context tabs open in, and the steps that close it, the
-        browser and the driver, in that order.
-    """
+    """Launch the browser with or without a profile folder, returning `(context, close_steps)`."""
     headless = launch_options["headless"]
     if profile is not None:
         refuse_profile(profile)
@@ -862,19 +763,7 @@ async def _open_context(playwright: Playwright, profile: Path | None, channel: s
 
 
 async def _headful_ua(playwright: Playwright, channel: str, remote: Any) -> str:
-    """The user agent `remote` reports, with "HeadlessChrome" replaced by "Chrome", cached.
-
-    Headless Chrome names itself "HeadlessChrome", which any site can read, so a headless launch
-    sends the headed name instead. Reading it costs a context, so it is kept per executable.
-
-    Args:
-        playwright: the started driver, which says where its Chromium is.
-        channel: "chrome" or "chromium", which says which executable it is.
-        remote: a launched browser to read the name from, the first time.
-
-    Returns:
-        The user agent with the headed name.
-    """
+    """The user agent `remote` reports, with "HeadlessChrome" replaced by "Chrome", cached."""
     if channel == "chrome":
         path = _chrome_executable()
         key = str(path) if path is not None else None
@@ -1282,20 +1171,7 @@ class Page:
 
     async def _steady(self, read: Callable[[], Awaitable[Any]], fallback: Any, what: str, *,
                       tries: int = 3) -> Any:
-        """Run a page read; if the page navigates meanwhile, wait for its load and read again.
-
-        Args:
-            read: makes the read's coroutine, once per try.
-            fallback: what to return when the page kept navigating through every try.
-            what: the read, for the warning ("read the page").
-            tries: reads in all.
-
-        Returns:
-            What `read` gave, or `fallback`.
-
-        Playwright fails a read with "Execution context was destroyed" (or says the page is
-        navigating) when the page moves on under it. Other errors go up.
-        """
+        """Run a page read; if the page navigates meanwhile, wait for its load and read again."""
         for attempt in range(tries):
             try:
                 return await read()
@@ -1334,17 +1210,7 @@ class Page:
                                   False, "measure the page")
 
     async def _area(self, target: Locator | None) -> tuple[float, float, float, float]:
-        """The visible part of what scrolls, as (x, y, width, height) in the viewport's pixels.
-
-        Args:
-            target: the element that scrolls, or None for the page.
-
-        Returns:
-            The area; the whole viewport for the page.
-
-        Raises:
-            Changed: the element is gone or outside the viewport.
-        """
+        """The visible part of what scrolls, as (x, y, width, height) in the viewport's pixels."""
         width, height = await self._steady(
             lambda: self.raw.evaluate(VIEWPORT), (1280, 720), "measure the page"
         )
@@ -1367,18 +1233,7 @@ class Page:
 
     async def _roll(self, distance: float, target: Locator | None,
                     area: tuple[float, float, float, float], *, steps: int) -> None:
-        """Scroll by `distance` pixels in `steps` uneven wheel steps, about `GLIDE` apart.
-
-        The page of a target's tab (`by_script`) scrolls by script, each step with its wheel
-        event (see `SCROLL_BY`); anything else gets the mouse over `area`, somewhere near its
-        middle, and real wheel events (`page.mouse.wheel`).
-
-        Args:
-            distance: pixels down; negative goes up.
-            target: the element that scrolls, or None for the page.
-            area: the visible part of what scrolls, as `_area` gives it.
-            steps: wheel steps; 1 scrolls at once, with no wait.
-        """
+        """Scroll by `distance` pixels in `steps` uneven wheel steps, about `GLIDE` apart."""
         weights = [self.random.uniform(0.6, 1.4) for _ in range(steps)]
         total = sum(weights)
         by_script = target is None and self.by_script
@@ -1399,14 +1254,7 @@ class Page:
                 await self._nap(self.random.uniform(*GLIDE))
 
     async def _nap(self, seconds: float, news: asyncio.Event | None = None) -> None:
-        """Wait `seconds`, or less when `news` is set meanwhile.
-
-        Every wait of a scroll goes through here, so a test can make them take no time.
-
-        Args:
-            seconds: the longest to wait.
-            news: an event that ends the wait early when set; None waits the whole time.
-        """
+        """Wait `seconds`, or less when `news` is set meanwhile."""
         if news is None:
             await asyncio.sleep(seconds)
             return
@@ -1417,29 +1265,7 @@ class Page:
 
 
 class _Scroller:
-    """Scrolls a tab one step at a time, driven by what the page does, and says when it ended.
-
-    Args:
-        page: the tab.
-        target: the element that scrolls, or None for the page.
-        idle: seconds the bottom may stay quiet, after a whole `WAIT` brought nothing, before the
-            feed counts as ended.
-        style: `HUMAN` or `FAST`.
-        watch: a capture whose new bodies count as progress, or None.
-        height: the height measured before the first step.
-
-    A step (`step`):
-    1. with `HUMAN`, waits for its turn (`Page.turn`);
-    2. scrolls. `FAST` jumps past the bottom in one go. `HUMAN` glides down `SCREENS` screens in
-       `WHEEL_STEPS` uneven wheel steps, and now and then (`BACK_UP`) first goes up a little and
-       hesitates, as a reader going back to something does;
-    3. watches for progress: a body the capture read, or the page growing. With `HUMAN` it
-       pauses meanwhile, a lognormal time counted from the scroll: `GLANCE` at the median, or
-       `LOOK` once new media came. At the very bottom with nothing yet, it waits up to `WAIT`;
-    4. progress, or room left to scroll, means go on. A bottom where nothing came in a whole
-       `WAIT` starts the idle window: once the bottom stays quiet `idle` seconds more, the feed
-       has ended. A feed whose site says when it ends (`Feed`'s cursor) never gets that far.
-    """
+    """Scrolls a tab one step at a time, driven by what the page does, and says when it ended."""
 
     def __init__(self, page: Page, target: Locator | None, *, idle: float, style: str,
                  watch: Capture | None, height: int):
@@ -1464,11 +1290,7 @@ class _Scroller:
         return await self._step()
 
     async def _step(self) -> bool:
-        """`step`'s work, once it is this tab's turn: scroll, watch, and say whether to go on.
-
-        Returns:
-            As `step`'s.
-        """
+        """`step`'s work, once it is this tab's turn: scroll, watch, and say whether to go on."""
         page, target, human = self._page, self._target, self._style == HUMAN
         heard = self._watch.count if self._watch is not None else 0
         before = self._height
@@ -1521,16 +1343,7 @@ class _Scroller:
         await page._roll(distance, target, area, steps=rng.randint(*WHEEL_STEPS))
 
     async def _progress(self, heard: int, before: int, deadline: float) -> bool:
-        """Watch for progress until `deadline`, a time on `flnkit.clock`'s clock.
-
-        Args:
-            heard: the capture's `count` before the scroll; a count past it is progress.
-            before: the height before the scroll; a height past it is progress.
-            deadline: when to give up.
-
-        Returns:
-            Whether progress came. The height last measured is kept for the next step.
-        """
+        """Watch for progress until `deadline`, a time on `flnkit.clock`'s clock."""
         page, watch = self._page, self._watch
         news = watch.news if watch is not None else None
         while True:
@@ -1606,11 +1419,7 @@ class Capture:
         return self._flushed
 
     def _heard(self, response: Response) -> None:
-        """Playwright's call for each response the tab gets: number it and start reading it.
-
-        Args:
-            response: Playwright's response; one `accept` refuses is left alone.
-        """
+        """Playwright's call for each response the tab gets: number it and start reading it."""
         if self._stopped or not self._accept(response):
             return
         if self._lazy:
@@ -1622,12 +1431,7 @@ class Capture:
         task.add_done_callback(self._reads.discard)
 
     async def _read(self, number: int, response: Response) -> None:
-        """Read one body, then move every body now in turn into `items`.
-
-        Args:
-            number: the response's place in arrival order.
-            response: Playwright's response.
-        """
+        """Read one body, then move every body now in turn into `items`."""
         entry: tuple[str, str] | None = None
         try:
             entry = (response.url, await response.text())
@@ -1866,8 +1670,7 @@ class RunBrowser:
 
 
 def _overlap(one: Iterable[Mapping[str, Any]], other: Iterable[Mapping[str, Any]]) -> bool:
-    """Whether two logins have cookies on one site: a domain of one is, or is under, the
-    other's."""
+    """Whether two logins have cookies on one site: a domain of one is, or is under, the other's."""
     hosts = {str(cookie.get("domain", "")).lstrip(".").lower() for cookie in one}
     for cookie in other:
         host = str(cookie.get("domain", "")).lstrip(".").lower()
@@ -2030,12 +1833,7 @@ class Tabs:
             self._idle.append(tab)
 
     def _switch(self, tab: Page) -> None:
-        """Make `tab` the target's, recycle the old one, and move the innermost feed to it.
-
-        Args:
-            tab: a warm tab, now the one the target works in. With no feed open, the responses
-                its load brought are dropped.
-        """
+        """Make `tab` the target's, recycle the old one, and move the innermost feed to it."""
         if self._stack:
             old, self._stack[-1] = self._stack[-1], tab
         else:
@@ -2129,11 +1927,7 @@ class Tabs:
             raise failed
 
     async def _start_warm(self, url: str, tab: Page | None) -> tuple[Page, Any]:
-        """Start loading `url` in `tab` (a new one when None), keeping its responses unread.
-
-        Returns:
-            The tab and its first answer, or `_NOT_STARTED` when the load failed at once.
-        """
+        """Start loading `url` in `tab` (a new one when None), keeping its responses unread."""
         if tab is None:
             tab = await self._opened()
         await self._closed_buffer(tab)
@@ -2311,11 +2105,7 @@ class Feed:
         self._scroller = None
 
     def _iterate(self) -> Iterator[Any]:
-        """The bodies, scrolling or waiting once for more as the class's docstring says.
-
-        Yields:
-            Each parsed JSON value, oldest first.
-        """
+        """The bodies, scrolling or waiting once for more as the class's docstring says."""
         try:
             while True:
                 yield from self._arrived()
@@ -2333,11 +2123,7 @@ class Feed:
             self.close()
 
     def _scroll_until_one(self) -> bool:
-        """Scroll step by step, one call to the loop each, until a body is waiting.
-
-        Returns:
-            True when one is; False when the feed ended, the bodies still being read included.
-        """
+        """Scroll step by step, one call to the loop each, until a body is waiting."""
         while not self._fill():
             if not self._cursors.ended:
                 if self._scroller is None:
@@ -2364,12 +2150,7 @@ class Feed:
         return bool(self._waiting)
 
     def _parse(self, url: str, body: str) -> None:
-        """Parse `body`, or each line of it with `lines`, into `_waiting`, reading its cursor.
-
-        Args:
-            url: where it came from, named in the debug line for a piece that isn't JSON.
-            body: the response's text.
-        """
+        """Parse `body`, or each line of it with `lines`, into `_waiting`, reading its cursor."""
         pieces = [line for line in body.splitlines() if line.strip()] if self._lines else [body]
         for piece in pieces:
             try:
@@ -2457,18 +2238,7 @@ def local_storage(url: str, *, profile: str = "Default") -> dict[str, str] | Non
 
 
 async def _local_storage(url: str, profile: str) -> dict[str, str] | None:
-    """`local_storage`'s work, on its loop.
-
-    Args:
-        url: the page.
-        profile: the Chrome profile to copy.
-
-    Returns:
-        The storage, or None when the tab landed elsewhere.
-
-    Raises:
-        NetworkError: the read failed.
-    """
+    """`local_storage`'s work, on its loop."""
     async with await launch(profile=profile, headless=True) as chrome:
         page = await chrome.tab()
         await page.goto(url, idle=True)

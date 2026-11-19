@@ -298,11 +298,7 @@ class Manifest:
 
 
 def _entry(code: str, entry: Mapping[str, Any]) -> _Plugin:
-    """One plugin's entry, compiled.
-
-    Raises:
-        PluginError: a malformed pattern or route, naming the plugin.
-    """
+    """One plugin's entry, compiled."""
     try:
         return _compiled(code, entry)
     except PluginError as error:
@@ -484,10 +480,7 @@ def _named(tokens: list[str] | None, names: Sequence[str]) -> bool:
 
 def _link(text: str, manifest: Manifest, known: Mapping[str, Sequence[str]],
           follow: Callable[[str], str] | None, *, typed: str | None = None) -> Resolved:
-    """A link: the first plugin whose domains have its host, else `web`; default categories.
-
-    `typed` is the short link `text` was followed from; a followed link gets no `follow`.
-    """
+    """A link: the first plugin whose domains have its host, else `web`; default categories."""
     parsed = urlsplit(text)
     host = (parsed.hostname or "").lower().rstrip(".")
     plugin = _owner(manifest, host)
@@ -519,12 +512,7 @@ def _owner(manifest: Manifest, host: str) -> _Plugin | None:
 
 
 def _find(plugin: _Plugin, text: str, url: _Url | None) -> tuple[_Route, str] | str | None:
-    """The first route reading `text`, with its value; an `unsupported` reason; or None.
-
-    As today, the first declared refusal that matches is the one, and it wins over every route
-    pattern no more specific than it, a tie included: a catch-all route (`{user}`) never
-    reopens a refused path, while a longer readable link under it does.
-    """
+    """The first route reading `text`, with its value; an `unsupported` reason; or None."""
     refused = next(((pattern, reason) for pattern, reason in plugin.unsupported
                     if pattern.match(text, url) is not None), None)
     for route in plugin.routes:

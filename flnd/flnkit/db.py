@@ -58,11 +58,7 @@ WAL_POLL = 0.01
 
 
 def _harden(path: Path) -> None:
-    """Give a private database file mode 0600 and its folder 0700 (Unix only).
-
-    Args:
-        path: the database file; its parent is hardened when present.
-    """
+    """Give a private database file mode 0600 and its folder 0700 (Unix only)."""
     if os.name == "nt":
         return
     try:
@@ -113,19 +109,7 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def _wal(sql: sqlite3.Connection) -> None:
-    """Put a database in WAL mode, waiting while another process makes the same file.
-
-    Switching to WAL needs a moment alone with the file, and SQLite doesn't wait for that with
-    its busy timeout: a second process opening a new file at the same instant gets "database is
-    locked" at once. It tries again every `WAL_POLL` seconds, for up to `BUSY_MS`. Once a file is
-    in WAL mode the setting is kept in it, and the pragma returns at once.
-
-    Args:
-        sql: a new connection.
-
-    Raises:
-        sqlite3.Error: the file is still locked after `BUSY_MS`, or isn't a database.
-    """
+    """Put a database in WAL mode, waiting while another process makes the same file."""
     deadline = time.monotonic() + BUSY_MS / 1000
     while True:
         try:

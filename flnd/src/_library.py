@@ -352,14 +352,7 @@ class Flnd:
     # -----------------------------------------------------------------------------------------
 
     def _sources(self) -> Mapping[str, type[Plugin]]:
-        """The built-in plugins and the installed ones, then the ones `add` added.
-
-        A view, not a copy: a built-in plugin is imported only when its code is looked up, so
-        resolving `ins:example_user` imports Instagram's module and no other.
-
-        Returns:
-            The plugins by code; an added plugin comes first when looked up.
-        """
+        """The built-in plugins and the installed ones, then the ones `add` added."""
         from collections import ChainMap
 
         from flnd.engine.plugins import PLUGINS
@@ -367,11 +360,7 @@ class Flnd:
         return ChainMap(self._added, PLUGINS)
 
     def _plugin(self, code: str) -> type[Plugin]:
-        """The plugin of a code, built-in, installed or added.
-
-        Raises:
-            UsageError: no plugin has it.
-        """
+        """The plugin of a code, built-in, installed or added."""
         sources = self._sources()
         if code not in sources:
             raise UsageError(f"unknown plugin {code!r}. Plugins: {', '.join(sources)}")
@@ -396,13 +385,7 @@ class Flnd:
         return Engine(home=self.home, sources=self._sources(), emit=emit, stop=stop)
 
     def _resolve(self, targets: Sequence[str | Target]) -> list[Target]:
-        """Each target resolved through its plugin; a `Target` is taken as it is.
-
-        A short link is followed once (one request) to learn where it points.
-
-        Raises:
-            UsageError: a text no plugin reads.
-        """
+        """Each target resolved through its plugin; a `Target` is taken as it is."""
         from flnd.plugin import Target
 
         engine = self._engine()
@@ -410,30 +393,14 @@ class Flnd:
                 for item in targets]
 
     def _checked(self, targets: Sequence[str | Target]) -> list[Chosen]:
-        """Targets resolved with their categories, before a run is made.
-
-        Raises:
-            UsageError: no target, a target no plugin reads, or a category its route lacks.
-        """
+        """Targets resolved with their categories, before a run is made."""
         resolved = self._engine().chosen(list(targets))
         if not resolved:
             raise UsageError("give at least one target")
         return resolved
 
     def _run(self, name: str, command: Any) -> Run:
-        """A `Run` whose loop makes this home's engine and awaits `command` with it.
-
-        The engine is made on the run's loop, with the run's sink and stop state, so the run
-        alone decides when the work starts and how it stops.
-
-        Args:
-            name: what the run does, for its warning.
-            command: called with the engine, giving the command to await; what it returns is
-                dropped (the events tell it).
-
-        Returns:
-            The run, not started, and remembered so `close()` can stop it.
-        """
+        """A `Run` whose loop makes this home's engine and awaits `command` with it."""
         from flnd.engine.run import Run
 
         async def work(emit: Any, stop: Any) -> None:
@@ -850,17 +817,7 @@ def _tracked(info: TargetInfo) -> Tracked:
 
 def _installed(cls: type[Plugin], *, origin: str | None = None, where: str | None = None,
                version: str = "") -> Installed:
-    """A working plugin's row for `Flnd.plugins`.
-
-    Args:
-        cls: the plugin's class.
-        origin: where it came from; None for a built-in.
-        where: its file or folder when installed; None builds `module:cls`.
-        version: its `__version__` when installed; `""` for a script.
-
-    Returns:
-        The row.
-    """
+    """A working plugin's row for `Flnd.plugins`."""
     from flnd.engine import plugins
 
     where = where or f"{cls.__module__}:{cls.__qualname__}"
@@ -886,14 +843,7 @@ def _names(targets: Sequence[Chosen]) -> str:
 
 
 def _failure(row: FailureRow) -> Failure:
-    """A failure's row of `flnd.db` as a `Failure`, its error made again from its class.
-
-    Args:
-        row: the row.
-
-    Returns:
-        The `Failure`; an error class flnd no longer has comes back as a plain `flnd.Error`.
-    """
+    """A failure's row of `flnd.db` as a `Failure`, its error made again from its class."""
     from flnd import errors
 
     kind = getattr(errors, row.error, None)
@@ -906,14 +856,7 @@ def _failure(row: FailureRow) -> Failure:
 
 
 def _day(record: Record) -> datetime.date | None:
-    """The day a record counts by for `since`: its post's, else the day it was saved.
-
-    Args:
-        record: the saved file's record.
-
-    Returns:
-        The day; None when the record has neither (an old row), which `since` lets through.
-    """
+    """The day a record counts by for `since`: its post's, else the day it was saved."""
     if record.date is not None:
         return record.date
     try:

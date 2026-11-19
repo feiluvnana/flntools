@@ -470,14 +470,7 @@ PLUGINS: Registry = Registry()
 # ---------------------------------------------------------------------------------------------
 
 def _refused(source: Path, *, shown: Path | None = None) -> bool:
-    """Refuse what may never be installed, from its names and types alone; True for a package.
-
-    Names are compared casefolded, since the disk may ignore case.
-
-    Raises:
-        UsageError: anything but a `.py` file or a package folder; a link, a hard link, a
-            special file, a home or a cookie file, or a package holding one. It names `shown`.
-    """
+    """Refuse what may never be installed, from its names and types alone; True for a package."""
     shown = shown or source
     for path in (source, source.absolute(), source.resolve()):
         if _forbidden(path.name) or HOME in (part.casefold() for part in path.parts):
@@ -503,14 +496,7 @@ def _forbidden(name: str) -> bool:
 
 
 def _tree(root: Path, shown: Path) -> list[tuple[Path, int, int]]:
-    """The regular files of a plugin file or package, with their device and inode, by name.
-
-    Nothing is followed or opened: a link, a special file, a file with other hard links, a
-    home or a cookie file is refused. `__pycache__` folders are left out.
-
-    Raises:
-        UsageError: one of those, named under `shown`.
-    """
+    """The regular files of a plugin file or package, with their device and inode, by name."""
     found: list[tuple[Path, int, int]] = []
 
     def judge(path: Path, info: os.stat_result) -> None:
@@ -540,11 +526,7 @@ def _tree(root: Path, shown: Path) -> list[tuple[Path, int, int]]:
 
 
 def _read(path: Path, device: int, inode: int, shown: Path) -> bytes:
-    """A file's bytes, only if it is still the regular file `_tree` judged.
-
-    Raises:
-        UsageError: it was swapped for a link, a pipe or another file since.
-    """
+    """A file's bytes, only if it is still the regular file `_tree` judged."""
     try:
         fd = os.open(path, OPEN)
     except OSError as error:
@@ -571,11 +553,7 @@ def _copy(source: Path, dest: Path, shown: Path) -> None:
 
 
 def _digest(path: Path, shown: Path) -> str:
-    """The SHA-256 of a file, or of a package's files and their names, as hex.
-
-    Raises:
-        UsageError: it is, or holds, what `_tree` refuses.
-    """
+    """The SHA-256 of a file, or of a package's files and their names, as hex."""
     found = _tree(path, shown)
     if not path.is_dir():
         return hashlib.sha256(_read(*found[0], shown)).hexdigest()
@@ -606,11 +584,7 @@ def _sources(path: Path) -> list[Path]:
 
 
 def _trees(paths: list[Path], shown: Path, root: Path) -> list[ast.Module]:
-    """Each file parsed; a syntax error is refused here, so nothing of the plugin runs.
-
-    Raises:
-        PluginError: a file doesn't parse, named under `shown`.
-    """
+    """Each file parsed; a syntax error is refused here, so nothing of the plugin runs."""
     parsed = []
     for path in paths:
         try:
@@ -621,11 +595,7 @@ def _trees(paths: list[Path], shown: Path, root: Path) -> list[ast.Module]:
 
 
 def _plugin_classes(trees: list[ast.Module]) -> list[ast.ClassDef]:
-    """The classes that subclass `flnd.plugin.Plugin` where the files say so plainly.
-
-    A base counts when it is `Plugin` imported from `flnd.plugin` (under any name), the
-    module's `.Plugin`, or another such class, by its name or an imported alias of it.
-    """
+    """The classes that subclass `flnd.plugin.Plugin` where the files say so plainly."""
     names, modules = set(), {"flnd.plugin"}
     for tree in trees:
         for node in ast.walk(tree):
@@ -673,11 +643,7 @@ def _scope(cls: ast.ClassDef) -> Iterator[ast.AST]:
 
 
 def _literals(cls: ast.ClassDef, name: str) -> tuple[list[Any], bool]:
-    """What a class body sets `name` to, as literals; False when one setting isn't plain.
-
-    Plain is `name = <literal>`, `name: T = <literal>` or a tuple of names set from a tuple,
-    in the class body itself, outside any `if`, loop or `with`.
-    """
+    """What a class body sets `name` to, as literals; False when one setting isn't plain."""
     plain: dict[int, Any] = {}
     for node in cls.body:
         if isinstance(node, ast.AnnAssign) and isinstance(node.value, ast.Constant):
@@ -712,12 +678,7 @@ def _literal(paths: list[Path], name: str) -> Any:
 
 
 def _api(paths: list[Path], code: str, shown: Path, root: Path) -> None:
-    """Refuse a plugin unless every `api` its plugin classes set is the literal `API`.
-
-    Raises:
-        PluginError: an `api` set otherwise, or none; another API, naming what an older
-            plugin must change.
-    """
+    """Refuse a plugin unless every `api` its plugin classes set is the literal `API`."""
     classes = _plugin_classes(_trees(paths, shown, root))
     read = [_literals(cls, "api") for cls in classes]
     values = {value for found, _ in read for value in found}
@@ -750,16 +711,7 @@ def _sets(node: ast.AST, name: str) -> bool:
 # ---------------------------------------------------------------------------------------------
 
 def _checked(path: Path, code: str, *, shown: Path, keep: bool) -> type[Plugin]:
-    """Import a plugin from `path` as `_flnd_plugin_<code>`, and give its one plugin class.
-
-    Its API is read from the files first, so a plugin whose API can't be read, or isn't this
-    flnd's, is never imported. `keep` leaves its modules imported; otherwise `sys.modules` is
-    left as it was.
-
-    Raises:
-        PluginError: another API, an import error or a failed check, naming the file and line
-            as `shown`; no plugin class, or several; an `api` changed once its class was made.
-    """
+    """Import a plugin from `path` as `_flnd_plugin_<code>`, and give its one plugin class."""
     _api(_sources(path), code, shown, path)
     name = MODULE_PREFIX + code
     with _isolated(name, keep=keep):
@@ -790,10 +742,7 @@ def _checked(path: Path, code: str, *, shown: Path, keep: bool) -> type[Plugin]:
 
 
 def _is_code(code: object) -> bool:
-    """Whether `code` is a plugin's code: the only text that becomes a path in the folder.
-
-    Only a plain `str`: a subclass could read as one code and format as another path.
-    """
+    """Whether `code` is a plugin's code: the only text that becomes a path in the folder."""
     return type(code) is str and CODE.fullmatch(code) is not None
 
 
@@ -837,11 +786,7 @@ def _inside_module(module: str, package: str) -> bool:
 
 
 def _described(error: BaseException, path: Path, shown: Path) -> str:
-    """`<file>, line <n>: <what>`, at the deepest frame in the plugin's own files (S7).
-
-    A frame is the plugin's when its file is `path` or inside it, compared by whole path
-    parts, so `exm2.py` is never `exm`'s. It is named as `shown`, the file people know.
-    """
+    """`<file>, line <n>: <what>`, at the deepest frame in the plugin's own files (S7)."""
     what = f"{type(error).__name__}: {error}" if not isinstance(error, PluginError) else (
         str(error))
     places = [(error.filename, error.lineno)] if isinstance(error, SyntaxError) else []
@@ -859,10 +804,7 @@ def _described(error: BaseException, path: Path, shown: Path) -> str:
 
 
 def _entry(cls: type[Plugin], file: str, digest: str, *, installed: str) -> dict[str, Any]:
-    """A plugin's entry in `plugins.json`: what resolving and help read without importing it.
-
-    Its `api` is the literal its files declare, which `_api` has checked is `API`.
-    """
+    """A plugin's entry in `plugins.json`: what resolving and help read without importing it."""
     return {
         "name": cls.name, **resolve.entry(cls), "api": API, "file": file, "sha256": digest,
         "installed": installed,

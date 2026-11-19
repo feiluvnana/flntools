@@ -594,14 +594,7 @@ class _Link:
 
 
 class _Pattern:
-    """One compiled pattern: a link pattern matches a `_Link`, a code pattern the text after it.
-
-    Args:
-        written: the pattern, or a `(pattern, value template)` pair.
-
-    Raises:
-        PluginError: the pattern or its template is malformed.
-    """
+    """One compiled pattern: a link pattern matches a `_Link`, a code pattern the text after it."""
 
     def __init__(self, written: str | tuple[str, str]):
         if isinstance(written, tuple) and len(written) == 2 and all(
@@ -1376,11 +1369,7 @@ class Plugin:
 # ---------------------------------------------------------------------------------------------
 
 def _check(cls: type[Plugin]) -> None:
-    """Check a plugin's declarations; see `Plugin.__init_subclass__` for what fails.
-
-    Raises:
-        PluginError: the first mistake, worded `<code>.<attribute>: <what>; <the fix>`.
-    """
+    """Check a plugin's declarations; see `Plugin.__init_subclass__` for what fails."""
     code = getattr(cls, "code", None)
     if not isinstance(code, str) or not CODE.fullmatch(code):
         raise PluginError(f"{cls.__name__}.code: {'missing' if code is None else repr(code)}; "
@@ -1840,10 +1829,7 @@ def _is_url(written: str) -> bool:
 
 
 def _split(pattern: str, separator: str, *, once: bool = False) -> list[str]:
-    """`pattern` split at `separator` outside `{…}`; a backslash escapes the next character.
-
-    With `once`, `[before, separator, after]`, or `[pattern, "", ""]` when there is none.
-    """
+    """`pattern` split at `separator` outside `{…}`; a backslash escapes the next character."""
     parts, depth, start, escaped = [], 0, 0, False
     for index, character in enumerate(pattern):
         if escaped:
@@ -1910,11 +1896,7 @@ def _closing(segment: str, start: int, pattern: str) -> int:
 
 
 def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
-    """One segment as a regex for a whole URL part, each placeholder a group of its name.
-
-    Raises:
-        PluginError: a placeholder is named twice, or a regex is malformed.
-    """
+    """One segment as a regex for a whole URL part, each placeholder a group of its name."""
     regex = ""
     for kind, token, custom in _tokens(segment, pattern):
         if kind == "text":

@@ -614,11 +614,7 @@ class FakeCtx:
                    for domain in self._plugin.domains)
 
     def _answer(self, request: Request) -> Any:
-        """The `routes` answer to `request`, as the kit's HTTP response.
-
-        Raises:
-            AssertionError: no route answers its URL.
-        """
+        """The `routes` answer to `request`, as the kit's HTTP response."""
         given = _lookup(self._routes, request.url)
         if given is None:
             raise AssertionError(f"FakeCtx has no route for {request.url}")
@@ -720,12 +716,7 @@ class _CtxFeed:
 
 
 def _secrets(plugin: Plugin) -> flnd.engine.ctx.Secrets:
-    """The account's secrets: written only while the plugin's `Login.start` runs.
-
-    The plugin's login object gets a `start` that runs it as the engine does
-    (`flnd.engine.ctx.start`), with the engine's own flag set. What `start` begins inherits it:
-    an `asyncio` task, a `ctx.call`, an `asyncio.to_thread`; a plain thread doesn't.
-    """
+    """The account's secrets: written only while the plugin's `Login.start` runs."""
     login = type(plugin).login
     if login is not None and not getattr(login.start, "marked", False):
         login.start = _marked(login.start)
@@ -880,11 +871,7 @@ def _collect_plugin(plugin: type[Plugin], text: str, ctx: FakeCtx | None,
 
 def _wanted(plugin: type[Plugin], route: flnd.plugin.Route,
             categories: Sequence[str] | None) -> list[flnd.plugin.Category]:
-    """The route's categories `categories` names, in declaration order; None takes its own.
-
-    Raises:
-        UsageError: a name isn't one of the route's categories.
-    """
+    """The route's categories `categories` names, in declaration order; None takes its own."""
     from flnd.engine import crawl
 
     if categories is None:
@@ -900,14 +887,7 @@ def _wanted(plugin: type[Plugin], route: flnd.plugin.Route,
 
 
 class _Listing:
-    """One `collect` of a plugin on API 2: its route and categories listed, its files placed.
-
-    Args:
-        ctx: the fake it runs on, its target set.
-        route: the target's route.
-        wanted: the categories to list.
-        limit: the most posts (or discovered targets) to take; None for no limit.
-    """
+    """One `collect` of a plugin on API 2: its route and categories listed, its files placed."""
 
     def __init__(self, ctx: FakeCtx, route: flnd.plugin.Route, wanted: list[flnd.plugin.Category],
                  limit: int | None) -> None:
@@ -936,12 +916,7 @@ class _Listing:
 
     async def _list(self, listing: AsyncIterator[Any],
                     category: flnd.plugin.Category | None) -> None:
-        """Take a listing's posts as the crawl does, checking their order as they come.
-
-        Raises:
-            PluginError: a `newest_first` listing's post is newer than one before it, or the
-                listing yielded something not a `Post` or a `Target`.
-        """
+        """Take a listing's posts as the crawl does, checking their order as they come."""
         from flnd.engine import crawl
 
         label = f"{self.plugin.code}.{category.name if category else self.route.kind}"
@@ -1006,15 +981,7 @@ class _Listing:
 def _placed(ctx: FakeCtx, route: flnd.plugin.Route, category: flnd.plugin.Category | None,
             post: flnd.plugin.Post,
             files: Sequence[flnd.plugin.File]) -> list[tuple[str, str, flnd.plugin.File]]:
-    """Each file's path under the target's folder and its history key, by the templates.
-
-    A `File.name` with an extension keeps it. A stem (or no name) takes the engine's rule
-    (`flnd.engine.crawl.planned`): its routed answer's `Content-Type`, then its URL's media
-    extension, then none. The kit has no bytes, which a save checks too.
-
-    Raises:
-        PluginError: a template names a field of the plugin's that the post doesn't give.
-    """
+    """Each file's path under the target's folder and its history key, by the templates."""
     from flnd.engine import crawl
     from flnkit import text
 

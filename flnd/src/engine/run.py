@@ -104,15 +104,7 @@ _DONE = _Done()
 
 
 class _Channel:
-    """The run's events between the loop and the reader: at most `size` at once.
-
-    Producers are on the loop only, and `put` waits while the channel is full. The reader takes
-    events with a blocking `take`. `close` drops what is queued and lets every producer go on,
-    for a reader that stopped listening (`Run.wait`).
-
-    Args:
-        size: the most events queued.
-    """
+    """The run's events between the loop and the reader: at most `size` at once."""
 
     def __init__(self, size: int) -> None:
         self.size = size
@@ -246,12 +238,7 @@ class Run:
         return self._events_now()
 
     def _events_now(self) -> Generator[Event, None, None]:
-        """The generator behind `__iter__`.
-
-        Raises:
-            Error: what stopped the whole run (a usage mistake, a full disk).
-            Stopped: Ctrl-C ended it.
-        """
+        """The generator behind `__iter__`."""
         self._start()
         with self._interrupts():
             while not self._over:
@@ -399,19 +386,7 @@ class Run:
     # -----------------------------------------------------------------------------------------
 
     def _emit(self, event: Any) -> Awaitable[None]:
-        """Count an event, then hand it to the reader: await what it gives, on the loop.
-
-        Two things that aren't events come here too, and are never queued: a `State`, which
-        replaces `run.state` at once, and `RESUMING`, a listing that went on from an earlier
-        run's cursor, which `report.resumed` counts. For those it gives an awaitable that is
-        done at once, so a plain function may hand them over without awaiting.
-
-        Args:
-            event: a `Saved`, `Skipped`, `Failed` or `Planned` event, a `State`, or `RESUMING`.
-
-        Returns:
-            What puts the event on the channel, waiting while the channel is full.
-        """
+        """Count an event, then hand it to the reader: await what it gives, on the loop."""
         if isinstance(event, State):
             self._state = event
             return _DONE
@@ -436,11 +411,7 @@ class Run:
         return self._channel.put(event)
 
     def _start(self) -> None:
-        """Start the loop's thread, once.
-
-        Raises:
-            UsageError: the run's `Flnd` was closed before the run started.
-        """
+        """Start the loop's thread, once."""
         with self._lock:
             if self._thread is not None or self._over:
                 return
@@ -494,12 +465,7 @@ class Run:
         return item
 
     def _raise(self) -> None:
-        """Raise what ended the run, once the loop's thread is done; nothing for a normal end.
-
-        Raises:
-            Stopped: Ctrl-C ended the run (not `run.stop()`, which ends it normally).
-            BaseException: the error that stopped the whole run, as it was raised.
-        """
+        """Raise what ended the run, once the loop's thread is done; nothing for a normal end."""
         if self._thread is not None:
             self._thread.join()
         error = self._error
@@ -521,12 +487,7 @@ class Run:
 
 
 async def _shut_down() -> None:
-    """Cancel every other task on the running loop and wait for them, then shut it down.
-
-    Each task's error or cancel is dropped (`return_exceptions`), since nobody is left to read
-    it. Then the loop's async generators are closed and its default executor's threads joined,
-    so nothing outlives the run.
-    """
+    """Cancel every other task on the running loop and wait for them, then shut it down."""
     current = asyncio.current_task()
     pending = [task for task in asyncio.all_tasks() if task is not current]
     for task in pending:

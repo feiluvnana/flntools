@@ -217,11 +217,7 @@ class Engine:
         return bool(added_entries or added_installed)
 
     def _read(self, text: str, stored: Mapping[str, Sequence[str]]) -> Chosen:
-        """One target's text, resolved (`flnd.engine.resolve`), with its categories.
-
-        A code looks for its plugin alone; a link only the plugins not built in read looks
-        for every plugin, as today.
-        """
+        """One target's text, resolved (`flnd.engine.resolve`), with its categories."""
         code = re.match(r"\s*([A-Za-z][A-Za-z0-9]*)\s*[:?]", text)
         linked = text.strip().lower().startswith(("http://", "https://"))
         if code is not None and not linked:
@@ -419,26 +415,7 @@ class Engine:
         stop: Stop,
         keep: bool = False,
     ) -> Results:
-        """Download the targets, recording each in flnd.db first.
-
-        Plain targets run at once; with a search among them, each runs in the order given,
-        and a search downloads each target it finds (`_run_query`).
-
-        Args:
-            runner: the command's run.
-            chosen: the targets, in order, with their options.
-            span: `--when`, which a search filters what it finds by.
-            sync: whether to follow the targets (a search is followed, not what it finds).
-            stop: the run's stop state.
-            keep: whether to save each target's categories for later syncs.
-
-        Returns:
-            One `TargetReport` per plain target, in order, and for a search one per target it
-            found (and one for the search itself when it failed or was stopped).
-
-        Raises:
-            KeyboardInterrupt: the run was stopped.
-        """
+        """Download the targets, recording each in flnd.db first."""
         rows = await _off(self._rows)
         kept = []
         for target, options in chosen:
@@ -461,21 +438,7 @@ class Engine:
         return self._finish_report(Results(tuple(reports)), stop)
 
     def _finish_report(self, report: Results, stop: Stop) -> Results:
-        """Raise `KeyboardInterrupt` when the run was stopped, else log its totals and return it.
-
-        A stopped run raises only here, once every target has its report, so the `runs` row
-        still ends with the files saved before the stop.
-
-        Args:
-            report: the command's report.
-            stop: the run's stop state.
-
-        Returns:
-            `report`, unchanged.
-
-        Raises:
-            KeyboardInterrupt: Ctrl-C (or the run's stop) ended the run.
-        """
+        """Raise `KeyboardInterrupt` when the run was stopped, else log its totals and return it."""
         if stop.soon.is_set():
             raise KeyboardInterrupt
         _log_totals(report)
@@ -488,17 +451,7 @@ class Engine:
         results: dict[int, TargetReport],
         stop: Stop,
     ) -> None:
-        """Sync the plain targets of `chosen` (not searches), each stopping at saved posts.
-
-        Args:
-            runner: the sync's run, which every target shares.
-            chosen: every target of the sync, with its options; searches are left out here.
-            results: filled with each plain target's report, by its index in `chosen`.
-            stop: the run's stop state.
-
-        Raises:
-            KeyboardInterrupt: Ctrl-C stopped the run; the searches aren't synced then.
-        """
+        """Sync the plain targets of `chosen` (not searches), each stopping at saved posts."""
         indices = [i for i, (target, _) in enumerate(chosen) if not self._is_query(target)]
         if not indices:
             return
@@ -518,17 +471,7 @@ class Engine:
         results: dict[int, TargetReport],
         stop: Stop,
     ) -> None:
-        """Sync the searches of `chosen`, one after another, after the plain targets.
-
-        Args:
-            runner: the sync's run, which every target shares.
-            chosen: every target of the sync, with its options; plain targets are left out.
-            results: filled with each search's report, by its index in `chosen`.
-            stop: the run's stop state.
-
-        Raises:
-            KeyboardInterrupt: Ctrl-C stopped the run after a search's report was kept.
-        """
+        """Sync the searches of `chosen`, one after another, after the plain targets."""
         indices = [i for i, (target, _) in enumerate(chosen) if self._is_query(target)]
         if not indices:
             return
@@ -542,20 +485,7 @@ class Engine:
     def _target_info(
         self, target: Target, rows: Mapping[str, store.TargetRow], db: store.Store,
     ) -> TargetInfo:
-        """A target's state and its saved files' count and bytes, from `flnd.db` alone.
-
-        A target with a row has its counts there, kept by each run; a folder with no row (a
-        target downloaded before targets were recorded) is counted in one query, never by
-        walking its folder.
-
-        Args:
-            target: the target.
-            rows: every target row, by key.
-            db: the home's database, for a target with no row.
-
-        Returns:
-            What `flnd target list` shows of it.
-        """
+        """A target's state and its saved files' count and bytes, from `flnd.db` alone."""
         row = rows.get(store.key(target))
         is_query = self._is_query(target)
         if is_query:
@@ -608,16 +538,7 @@ class Engine:
         span: Range,
         stop: Stop,
     ) -> Results:
-        """Plan every target without saving anything (`--dry`), one `Planned` event per file.
-
-        Args:
-            chosen: the targets, in order, with their options.
-            span: `--when`, which a search filters what it finds by.
-            stop: the run's stop state.
-
-        Returns:
-            One report per target, with no files written; a failed plan carries its error.
-        """
+        """Plan every target without saving anything (`--dry`), one `Planned` event per file."""
         # A dry run reads `flnd.db` to tell "saved" from "new", but never writes it: a home
         # without one stays untouched.
         async with self._running(stop, dry=True) as runner:
@@ -632,24 +553,7 @@ class Engine:
         span: Range,
         stop: Stop,
     ) -> TargetReport:
-        """Plan one target of a dry run, on its plugin's instance.
-
-        A failure ends this target's plan alone, as a failed report and a `Failed` event; the
-        first Ctrl-C ends it as stopped, and the second goes on up.
-
-        Args:
-            runner: the dry run's run (`dry` on, the database read-only).
-            target: the target to plan.
-            options: its options.
-            span: `--when`, for a search.
-            stop: the run's stop state.
-
-        Returns:
-            Its report: no files, and the error that ended the plan, if any.
-
-        Raises:
-            KeyboardInterrupt: the second Ctrl-C, or a stop that isn't the run's.
-        """
+        """Plan one target of a dry run, on its plugin's instance."""
 
         entry, failed = await runner.ready(target)
         if entry is None or failed is not None:
@@ -712,26 +616,7 @@ class Engine:
         span: Range,
         stop: Stop,
     ) -> None:
-        """List a search's targets and download each as it comes, then keep what it saw.
-
-        Each found target that downloads without error is added to the search's `seen` keys
-        in `flnd.db`, so a later sync of the search skips it. A failure of the listing itself
-        is one more report, for the search; the first Ctrl-C stops it after the target going
-        on, and the second goes on up.
-
-        Args:
-            runner: the command's run, which runs each found target on its own plugin.
-            run: the search's source run.
-            target: the search.
-            options: its options; the found targets get them with no limit, and the search's
-                text as their `query` (for the `{query}` folder field).
-            reports: filled with a report per target downloaded, and one for a failure.
-            span: `--when`, which the search filters what it finds by.
-            stop: the run's stop state.
-
-        Raises:
-            KeyboardInterrupt: the second Ctrl-C, or a stop that isn't the run's.
-        """
+        """List a search's targets and download each as it comes, then keep what it saw."""
 
         seen_keys: list[str] = []
         try:
@@ -766,21 +651,7 @@ class Engine:
         *,
         stop: Stop,
     ) -> TargetReport:
-        """Sync one search: download the targets it finds that it hadn't seen before.
-
-        A found target is new when it is neither in the search's `seen` keys nor a target the
-        home knows already (followed or downloaded on its own).
-
-        Args:
-            runner: the sync's run.
-            target: the search.
-            options: its saved options.
-            stop: the run's stop state.
-
-        Returns:
-            The search's report: the files its new targets saved, the targets skipped, and the
-            first error, if any.
-        """
+        """Sync one search: download the targets it finds that it hadn't seen before."""
         rows = await _off(self._rows)
         row = rows.get(store.key(target))
         seen_keys = set(row.seen if row is not None else ())
@@ -803,24 +674,7 @@ class Engine:
         known_keys: set[str],
         stop: Stop,
     ) -> TargetReport:
-        """Run a search's sync, and keep the keys it saw, however it ends.
-
-        Args:
-            runner: the sync's run.
-            run: the search's source run.
-            target: the search.
-            options: its saved options.
-            seen_keys: the keys of the targets earlier syncs saw.
-            known_keys: the keys of every target the home has a row for.
-            stop: the run's stop state.
-
-        Returns:
-            The search's report; a failed listing or a stop is its `error`, and else the first
-            found target's error.
-
-        Raises:
-            KeyboardInterrupt: the second Ctrl-C, or a stop that isn't the run's.
-        """
+        """Run a search's sync, and keep the keys it saw, however it ends."""
 
         written: list[Path] = []
         skipped, child_failed, seen_to_mark, failed = 0, None, [], False
@@ -856,28 +710,7 @@ class Engine:
         written: list[Path],
         seen_to_mark: list[str],
     ) -> tuple[int, Error | Stopped | None]:
-        """List a search's targets and download the new ones, at most `MAX_SYNC_NEW` of them.
-
-        The listing walks past the targets seen before (or known to the home), which are
-        marked seen, so a sync that took its slice of new ones leaves the rest for the next. A
-        new one is downloaded, and marked seen only when it downloaded without
-        error, so a failed one is tried again on the next sync.
-
-        Args:
-            runner: the sync's run.
-            run: the search's source run.
-            target: the search.
-            options: its saved options.
-            seen_keys: the keys of the targets earlier syncs saw.
-            known_keys: the keys of every target the home has a row for.
-            stop: the run's stop state.
-            written: filled with the paths the new targets saved.
-            seen_to_mark: filled with the keys to add to the search's `seen`.
-
-        Returns:
-            The files skipped, and the first found target's error (None when
-            none failed).
-        """
+        """List a search's targets and download the new ones, at most `MAX_SYNC_NEW` of them."""
 
         skipped, new_count, child_failed = 0, 0, None
         async with contextlib.aclosing(crawl.discover(run, target, time_range=Range())) as found:
@@ -911,15 +744,7 @@ class Engine:
 
     @contextlib.asynccontextmanager
     async def _running(self, stop: Stop, *, dry: bool = False) -> AsyncIterator[_Runner]:
-        """A command's run: the home's database, the browser, the save and the plugin instances.
-
-        Args:
-            stop: the run's stop state.
-            dry: a dry run, which reads the database and writes nothing.
-
-        Yields:
-            The run, whose plugin instances are closed when the block ends.
-        """
+        """A command's run: the home's database, the browser, the save and the plugin instances."""
 
         # The home's settings are read once, off the loop: its browser, its save and each
         # plugin's run take theirs from them, and a file's warnings are said once.
@@ -948,18 +773,7 @@ class Engine:
             await _off(db.close)
 
     def _recorded(self, rows: Mapping[str, store.TargetRow]) -> list[Target]:
-        """The targets of `flnd.db`'s rows, rebuilt from each row's source, kind and value.
-
-        A row of a source that is gone (an uninstalled plugin), or with no kind (a row an old
-        home migrated without one), is left out. No source's `resolve` runs, so this costs no
-        import of a source and no request.
-
-        Args:
-            rows: target rows, by key.
-
-        Returns:
-            The targets, in the rows' order; a search is written `<code>?<query>`.
-        """
+        """The targets of `flnd.db`'s rows, rebuilt from each row's source, kind and value."""
         return [
             Target(f"{row.plugin}{'?' if self._is_query_kind(row.plugin, row.kind) else ':'}"
                    f"{row.value}", kind=row.kind)
@@ -974,14 +788,7 @@ class Engine:
 
     def _record(self, chosen: Sequence[tuple[Target, Options]], *, follow: bool | None = None,
                 keep: bool = False) -> None:
-        """Remember the targets of a run in `flnd.db`, in one transaction.
-
-        Args:
-            chosen: each target, with its options.
-            follow: as `store.Store.record` takes it; a single post is never followed.
-            keep: whether to keep each target's categories for later syncs; otherwise the
-                stored ones stay.
-        """
+        """Remember the targets of a run in `flnd.db`, in one transaction."""
         if not chosen:
             return
         with store.open(self.home) as db, db.transaction():
@@ -1025,16 +832,7 @@ class Engine:
         return route is not None and route.is_query
 
     def _plan(self, targets: Sequence[Chosen]) -> list[tuple[Target, Options]]:
-        """Which targets a sync takes, each with the options its row keeps.
-
-        With no targets named, a sync takes every followed row.
-
-        Args:
-            targets: the targets named, with their categories; empty for every synced target.
-
-        Returns:
-            Each target with its categories and search text.
-        """
+        """Which targets a sync takes, each with the options its row keeps."""
 
         rows = self._rows()
         if not targets:
@@ -1071,16 +869,7 @@ class _Entry:
 
 
 class _Runner:
-    """A command's run: what its targets share, one instance per plugin, and the targets.
-
-    Each plugin gets one instance for the whole run (`entry`), made the first time one of its
-    targets runs, discovered and linked ones included, so a cache it keeps serves them all.
-    Its login is checked and its `connect` hook entered then, once; `close` leaves them.
-
-    Args:
-        engine: the engine running the command.
-        settings: what every target of the run shares.
-    """
+    """A command's run: what its targets share, one instance per plugin, and the targets."""
 
     def __init__(self, engine: Engine, settings: RunShared) -> None:
         self.engine, self.settings = engine, settings
@@ -1552,18 +1341,7 @@ def _required(source: Plugin) -> bool:
 async def _log_dry(
     run: PluginRun, target: Target, options: Options, span: Range, *, is_query: bool,
 ) -> None:
-    """List what a download of `target` would save: a log line and a `Planned` event each.
-
-    A file is "saved" when its row or its file is already there, else "new". A
-    search plans each target it finds, with no post and no path.
-
-    Args:
-        run: the source's run, whose settings hold the database and the event sink.
-        target: the target to plan.
-        options: its options (categories, limit, time).
-        span: the time range a search filters by.
-        is_query: whether the target is a search.
-    """
+    """List what a download of `target` would save: a log line and a `Planned` event each."""
 
     emit = run.settings.emit
     if is_query:
@@ -1589,11 +1367,7 @@ def _planned_saved(db: store.Store | None, key: str, dest: Path) -> bool:
 
 
 def _log_totals(report: Results) -> None:
-    """Log a command's totals and its exit status at -v, for a log read after the run.
-
-    Args:
-        report: the command's report.
-    """
+    """Log a command's totals and its exit status at -v, for a log read after the run."""
     ui.debug(
         "totals: {files} written, {skipped} skipped, {failed} of {targets} failed; exit {status}",
         files=report.files,
@@ -1605,18 +1379,7 @@ def _log_totals(report: Results) -> None:
 
 
 def _follow(url: str) -> str:
-    """Where a short link leads, from one HEAD request (`net.follow`).
-
-    Args:
-        url: the short link.
-
-    Returns:
-        The URL its redirects end at.
-
-    Raises:
-        NetworkError: no answer came; the message names the link redacted, since a link's
-            query may carry a signature.
-    """
+    """Where a short link leads, from one HEAD request (`net.follow`)."""
     try:
         return net.follow(url)
     except NetworkError as error:
