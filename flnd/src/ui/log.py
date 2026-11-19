@@ -11,18 +11,36 @@ import logging
 import os
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import msgspec
 from rich.console import Console as RichConsole
 from rich.text import Text
 
 from flnd.ui import out, theme
-from flnkit import clock
+from flnkit import clock, text
+
+_SECRET_HEADERS = frozenset({"authorization", "cookie", "proxy-authorization", "set-cookie"})
+
+
+def _request_url(url: str) -> str:
+    """`url` with userinfo and fragment removed, keeping the query string for signed CDNs."""
+    try:
+        parts = urlsplit(url)
+        if not parts.netloc:
+            return urlunsplit((parts.scheme, "", parts.path, parts.query, ""))
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port is not None else host
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
+    except ValueError:
+        return url.split("#", 1)[0]
 
 Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
@@ -236,17 +254,18 @@ class UI:
             raise TypeError(
                 f"ui message {message!r} has no field {', '.join(sorted(unused))}"
             )
-        if not self._allows(_kind):
+        if self._journal is None and not self._allows(_kind):
             return
         text = out.fill(message, *args, **fields)
         if self._journal is not None:
-            if _kind != "debug" or self._allows("debug"):
-                self._journal.write({
-                    "type": "Log",
-                    "level": _kind,
-                    "message": text,
-                    "fields": fields,
-                })
+            self._journal.write({
+                "type": "Log",
+                "level": _kind,
+                "message": text,
+                "fields": fields,
+            })
+        if not self._allows(_kind):
+            return
         with self._lock:
             shown = self._folds.see(text) if _kind == "warn" else [(text, 1)]
             for line, times in shown:
@@ -270,6 +289,65 @@ class UI:
         """
         if self._journal is not None:
             self._journal.write({"type": "Log", "level": kind, "message": message, "fields": {}})
+
+    def request(
+        self,
+        client: Any,
+        url: str,
+        file: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        offset: int = 0,
+        etag: str | None = None,
+    ) -> None:
+        """Journal a file GET request with its query string and scrubbed request headers.
+
+        Args:
+            client: the `flnkit.net.Client` sending the request.
+            url: the file URL, kept with its query string so signed CDN links work.
+            file: the target file path label.
+            headers: per-post request headers (`Referer`, etc.).
+            offset: resume byte offset for `Range`.
+            etag: validator for `If-Range` when resuming.
+        """
+        clean_url = _request_url(url)
+        message = f"GET {clean_url} -> {file}"
+        if self._journal is not None:
+            session = getattr(client, "session", None)
+            merged: dict[str, Any] = dict(getattr(session, "headers", None) or {})
+            if headers:
+                merged.update(headers)
+            merged["Range"] = f"bytes={offset}-"
+            if offset and etag:
+                merged["If-Range"] = etag
+            safe_headers = {
+                str(k): (
+                    "…"
+                    if text.SECRET_NAMES.search(str(k)) or str(k).lower() in _SECRET_HEADERS
+                    else v
+                )
+                for k, v in merged.items()
+            }
+            fields: dict[str, Any] = {
+                "method": "GET",
+                "url": clean_url,
+                "headers": safe_headers,
+                "impersonate": "chrome",
+                "file": file,
+            }
+            proxy = getattr(session, "proxy", None)
+            if isinstance(proxy, str) and proxy:
+                fields["proxy"] = text.redact(proxy)
+            self._journal.write({
+                "type": "Log",
+                "level": "debug",
+                "message": message,
+                "fields": fields,
+            })
+        if self._allows("debug"):
+            with self._lock:
+                screen = f"GET {text.redact(clean_url)} -> {file}"
+                self._show(out.styled("debug", screen, fancy=self._use_unicode()))
 
     def drain(self) -> None:
         """Print the warnings still folded, each as "text (×n)", where this `UI` prints now."""

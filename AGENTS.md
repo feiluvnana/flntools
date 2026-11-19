@@ -23,6 +23,8 @@ These rules are for anyone, person or agent, who changes this repository. It hol
   with an argument list.
 - Never put a cookie value, key, token or password in a log, an error, a comment, a doc or a
   test.
+- The run journal is the one log that keeps a download's full URL, query included; headers that
+  carry secrets are still scrubbed.
 - Live checks are done by hand, on the test accounts, and never in unit tests.
 - Unit tests fake the network, the browser and the clock.
 

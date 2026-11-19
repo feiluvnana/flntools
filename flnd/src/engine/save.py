@@ -819,6 +819,8 @@ class Saver:
 
         meter.opened, meter.wrote = opened, wrote
         try:
+            ui.request(client, urls[0], str(item.dest), headers=item.headers, offset=held.size,
+                       etag=held.meta.get("etag") if held.size else None)
             answered = await client.fill(urls[0], held, headers=item.headers, progress=meter,
                                          until=split.end)
             await split.finish()
@@ -856,6 +858,8 @@ class Saver:
                       client: net.Client, meter: net.Meter, job: Job[Any]) -> Mapping[str, str]:
         """One mirror into the part: a URL by the client, or a plugin's `fetch` function."""
         if isinstance(mirror, str):
+            ui.request(client, mirror, str(item.dest), headers=item.headers, offset=held.size,
+                       etag=held.meta.get("etag") if held.size else None)
             return await client.fill(mirror, held, headers=item.headers, progress=meter)
         await self._fetched(item, mirror, held, meter, job)
         return {}
@@ -974,6 +978,8 @@ class Saver:
         job = self._file_job(item, plugin, url, _nothing)
         sink = _Bytes(job, self.scheduler.slowest)
         meter = self._meter(sink, item.dest)
+        ui.request(client, url, str(part.dest), headers=item.headers, offset=part.size,
+                   etag=part.meta.get("etag") if part.size else None)
 
         async def work() -> None:
             sink.speed = jobs.Speed()

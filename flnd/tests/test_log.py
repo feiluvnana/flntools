@@ -205,6 +205,53 @@ class JournalTest(unittest.TestCase):
         self.assertEqual(datetime.fromisoformat(fake["at"]),
                          datetime(2026, 1, 1, 0, 1, 30, tzinfo=UTC))
 
+    def test_debug_lines_are_journalled_when_level_hides_them(self) -> None:
+        ui = UI()
+        buf = io.StringIO()
+        with ui.scope(dest=buf, color=False, level="warn"), ui.file(self.journal_path):
+            ui.debug("GET {url} -> {file}", url="https://cdn.example.com/1.jpg", file="posts/1.jpg")
+        self.assertEqual(buf.getvalue(), "")
+        record = json.loads(self.journal_path.read_text("utf-8").splitlines()[0])
+        self.assertEqual(record["type"], "Log")
+        self.assertEqual(record["level"], "debug")
+        self.assertEqual(record["message"], "GET https://cdn.example.com/1.jpg -> posts/1.jpg")
+        self.assertEqual(record["fields"], {"url": "https://cdn.example.com/1.jpg",
+                                            "file": "posts/1.jpg"})
+
+    def test_request_keeps_query_and_headers_and_scrubs_secrets(self) -> None:
+        from types import SimpleNamespace
+
+        ui = UI()
+        buf = io.StringIO()
+        client = SimpleNamespace(session=SimpleNamespace(
+            headers={"User-Agent": "TestAgent/1.0"},
+            proxy="https://user:pw@proxy.example.com:8080?k=1",
+        ))
+        url = "https://user:pw@cdn.example.com/v/1.jpg?oh=abc&oe=def#frag"
+        with ui.scope(dest=buf, color=False, level="warn"), ui.file(self.journal_path):
+            ui.request(
+                client, url, "posts/1.jpg",
+                headers={"Referer": "https://www.example.com/", "Cookie": "sessionid=secret"},
+                offset=128, etag='"v1"',
+            )
+        self.assertEqual(buf.getvalue(), "")
+        record = json.loads(self.journal_path.read_text("utf-8").splitlines()[0])
+        fields = record["fields"]
+        self.assertEqual(fields["method"], "GET")
+        self.assertEqual(fields["url"], "https://cdn.example.com/v/1.jpg?oh=abc&oe=def")
+        self.assertEqual(fields["impersonate"], "chrome")
+        self.assertEqual(fields["proxy"], "https://proxy.example.com:8080")
+        self.assertEqual(fields["file"], "posts/1.jpg")
+        self.assertEqual(fields["headers"], {
+            "User-Agent": "TestAgent/1.0",
+            "Referer": "https://www.example.com/",
+            "Cookie": "…",
+            "Range": "bytes=128-",
+            "If-Range": '"v1"',
+        })
+        self.assertNotIn("secret", self.journal_path.read_text("utf-8"))
+        self.assertNotIn("pw@", self.journal_path.read_text("utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

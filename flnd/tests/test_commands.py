@@ -385,6 +385,19 @@ class OutputTest(FlndCase):
             if line.get("type") == "Saved"
         ]
         self.assertEqual(len(saved_rows), 3)
+        get_logs = [
+            line for path in log_dir.glob("*_download.jsonl")
+            for line in (json.loads(raw) for raw in path.read_text(encoding="utf-8").splitlines())
+            if line.get("type") == "Log" and str(line.get("message", "")).startswith("GET ")
+        ]
+        self.assertEqual(len(get_logs), 3)
+        self.assertTrue(all("-> " in line["message"] for line in get_logs))
+        self.assertTrue(all(
+            line["fields"].get("method") == "GET"
+            and "Range" in line["fields"].get("headers", {})
+            and line["fields"].get("impersonate") == "chrome"
+            for line in get_logs
+        ))
         self.assertNotIn("Storage:", err)
         code, out, _ = self.run_app("download", "exs:example_user")
         self.assertRegex(out.splitlines()[-1], r" - 0 saved - 3 already saved - 0 failed$")
