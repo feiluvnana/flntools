@@ -178,6 +178,12 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 - The planned set is curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode,
   rich, msgspec, tomlkit and textual. Textual stays only if `ui.open` is at most 250 ms.
 
+## Size
+- The limits live in `tests/test_size.py`: `CODE_LINES` for `src/` and `flnkit/`, and
+  `TEST_LINES` for `tests/`.
+- They only go down, except when a new feature needs room. Then raise the limit in the same
+  commit, and say why in the commit body.
+
 ## Writing
 - A module docstring is 1 to 3 lines. It names the `src/docs` page that explains the module.
 - A public name has a summary line. Then `Args:`, `Returns:` and `Raises:`, only when they add
