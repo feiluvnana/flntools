@@ -1,28 +1,49 @@
-"""The CLI's frame: exit codes per error class, no traceback for a person's mistake, the crash
-file, two-stage Ctrl-C (`flnd.engine.run.stopping`). The prompts are
-tests/test_forms.py's.
+"""The flnd command line, command by command: flags in, the library call it makes, lines out.
 
-Each error is raised from a library call (`Flnd.check`, which `flnd check` makes), so the test
-goes through the CLI's real path from flags to exit code. Nothing touches a site.
+Every command of PLAN.md 8.1 runs here, on a pipe and (for the screens) on a pyte terminal, with
+its exit code. `RunsCase` replaces the engine's `_Runner.run`, so a command's flags can be checked
+against what reaches the engine without a site; `RunTest` runs a whole `get` of an example plugin
+over a fake network. No network, no browser, no real site.
 """
 
 from __future__ import annotations
 
 import io
+import json
 import os
+import re
 import signal
+import sys
 import tempfile
 import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from flnd import cli
+import pyte
+from fakes import (
+    CDN,
+    login_cookies,
+    make_plugin,
+    noise,
+    own_login,
+    sign_in,
+    vaulted,
+)
+from prompt_lines import select_from_lines
+from test_library import example_source
+
+from flnd import Blocked, Target
+from flnd import cli as flnd_cli
 from flnd.engine import run as _run
 from flnd.engine import store as _store
+from flnd.engine._engine import _Runner
+from flnd.engine.crawl import Options, TargetReport
+from flnd.engine.plugins import PLUGINS
 from flnd.errors import (
-    Blocked,
     Changed,
     DiskError,
     Error,
@@ -35,32 +56,317 @@ from flnd.errors import (
     ToolError,
     UsageError,
 )
+from flnd.plugin import Plugin, Post, route
 from flnd.ui import out
+from flnd.ui.log import ui
+from flnkit import net as _net
+
+NETSCAPE = (
+    "# Netscape HTTP Cookie File\n"
+    ".instagram.com\tTRUE\t/\tTRUE\t1825861327\tsessionid\tins-session\n"
+    "www.instagram.com\tFALSE\t/\tTRUE\t1825861327\tds_user_id\t42\n"
+    ".x.com\tTRUE\t/\tTRUE\t1825861327\tauth_token\ttwt-token\n"
+)
 
 
-class TerminalCase(unittest.TestCase):
-    """In a temporary folder (the home is `./.flnd`), with `$FLND_HOME` unset."""
+class Stdin(io.StringIO):
+    """A standard input that is a terminal or a pipe, as a test needs."""
 
-    def setUp(self) -> None:
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
+    def __init__(self, text="", tty=False):
+        super().__init__(text)
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+
+class Terminal(io.StringIO):
+    """A stream that is a terminal, so a run draws its screen on it."""
+
+    encoding = "utf-8"
+
+    def isatty(self) -> bool:
+        return True
+
+
+class FlndCase(unittest.TestCase):
+    """Runs in a temporary working directory, so the home is `./.flnd`, with stdin a terminal."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         previous = os.getcwd()
-        os.chdir(folder.name)
+        os.chdir(self.tmp.name)
         self.addCleanup(os.chdir, previous)
         self.enterContext(mock.patch.dict(os.environ))
         os.environ.pop("FLND_HOME", None)
+        self.dest = io.StringIO()
+        self.enterContext(ui.scope(dest=self.dest, width=400, color=False))
+        self.stdin = mock.patch("sys.stdin", Stdin(tty=True))
+        self.stdin.start()
+        self.addCleanup(lambda: self.stdin.stop())
 
-    def fail_with(self, error: BaseException, *flags: str) -> tuple[int, str, str]:
-        """Run `flnd check` with `Flnd.check` raising `error`: the code, stdout and stderr."""
-        out, err = io.StringIO(), io.StringIO()
-        with mock.patch("flnd._library.Flnd.check", side_effect=error), \
-                redirect_stdout(out), redirect_stderr(err):
-            code = cli.main(["check", *flags])
-        return code, out.getvalue(), err.getvalue()
+    def pipe(self, text):
+        self.stdin.stop()
+        self.stdin = mock.patch("sys.stdin", Stdin(text))
+        self.stdin.start()
+
+    def answer(self, *lines):
+        """Answer the prompts with `lines`, on a terminal."""
+        self.stdin.stop()
+        self.stdin = mock.patch("sys.stdin", Stdin("".join(f"{line}\n" for line in lines),
+                                                    tty=True))
+        self.stdin.start()
+        patch = select_from_lines(*lines)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def run_app(self, *argv):
+        """Run `flnd <argv>`: the exit code, standard output, and standard error with flnd's log."""
+        stdout = io.StringIO()
+        if type(self.dest) is io.StringIO:
+            self.dest.seek(0)
+            self.dest.truncate()
+        with redirect_stdout(stdout), redirect_stderr(self.dest):
+            code = flnd_cli.main(list(argv))
+        return code, stdout.getvalue(), self.dest.getvalue()
+
+    def cookie_file(self, text, name="cookies.txt"):
+        path = Path(self.tmp.name) / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def fail_with(self, error, *flags):
+        """Run `flnd status` with `Flnd.check` raising `error`: the code, stdout and stderr."""
+        with mock.patch("flnd._library.Flnd.check", side_effect=error):
+            return self.run_app("status", *flags)
 
 
-class ExitCodeTest(TerminalCase):
-    def test_each_class_has_its_exit_code(self) -> None:
+class RunsCase(FlndCase):
+    """`_Runner.run` is replaced: each call goes in `runs`, with its first target's options."""
+
+    def setUp(self):
+        super().setUp()
+        self.runs = []
+
+        async def run(runner, chosen, *, depth=0):
+            targets = [target for target, _ in chosen]
+            self.runs.append((runner.engine, targets, replace(chosen[0][1], stop_at_saved=False)))
+            return [TargetReport(target, (), 0) for target in targets]
+
+        self.enterContext(mock.patch.object(_Runner, "run", run))
+
+
+class GetTest(RunsCase):
+    def test_targets_and_flags_reach_the_engine(self):
+        code, _, err = self.run_app("get", "ins:example_user/tagged,reels",
+                                    "https://x.com/example_handle", "--when", "2026-01..2026-06",
+                                    "--limit", "5")
+        self.assertEqual(code, 0, err)
+        engine, targets, options = self.runs[0]
+        self.assertEqual(targets, [Target("ins:example_user", kind="user"),
+                                   Target("twt:example_handle", kind="user")])
+        self.assertEqual(options, Options(categories=("reels", "tagged"), limit=5,
+                                          since=date(2026, 1, 1), until=date(2026, 6, 30)))
+        self.assertEqual(engine.home, Path(".flnd"))
+
+    def test_when_takes_periods_and_ranges(self):
+        for value, since, until in (("2026", date(2026, 1, 1), date(2026, 12, 31)),
+                                    ("2026-06-15", date(2026, 6, 15), date(2026, 6, 15)),
+                                    ("2026-01..", date(2026, 1, 1), None)):
+            with self.subTest(value=value):
+                self.runs.clear()
+                self.assertEqual(self.run_app("get", "tik:a", "--when", value)[0], 0)
+                self.assertEqual((self.runs[0][2].since, self.runs[0][2].until), (since, until))
+
+    def test_a_mistake_is_a_usage_error_before_anything_starts(self):
+        for argv in (("ytb:nasa",), ("tik:7312345678901234567/videos",), ("ins:a/videos",),
+                     ("ins:a", "--limit", "0"), ("ins:a", "--limit", "five"),
+                     ("ins:a", "--when", "yesterday"), ("ins:a", "--nope"),
+                     ("ins:a", "--exec", "no-such-program-here {path}"),
+                     ("ins:a", "--exec", "echo 'unclosed")):
+            with self.subTest(argv=argv):
+                code, _, err = self.run_app("get", *argv)
+                self.assertEqual(code, 2)
+                self.assertNotIn("Traceback", err)
+        self.assertEqual(self.runs, [])
+        self.assertFalse((Path(".flnd") / _store.MEDIA).exists())
+
+    def test_targets_from_stdin_join_the_arguments(self):
+        self.pipe("ins:a\n\n# a comment\ntwt:b\n")
+        self.assertEqual(self.run_app("get", "tik:c")[0], 0)
+        self.assertEqual([str(target) for target in self.runs[0][1]], ["tik:c", "ins:a", "twt:b"])
+
+    def test_no_target_syncs_the_followed_ones_or_says_there_are_none(self):
+        self.pipe("")
+        code, out, err = self.run_app("get")
+        self.assertEqual((code, self.runs, out), (0, [], "nothing to sync\n"), err)
+        self.run_app("get", "ins:example_user/reels")
+        self.run_app("get", "tik:example_creator")
+        self.runs.clear()
+        self.pipe("")
+        self.assertEqual(self.run_app("get")[0], 0)
+        self.assertEqual({str(t) for t in self.runs[0][1]},
+                         {"ins:example_user", "tik:example_creator"})
+
+    def test_global_flags_and_the_home(self):
+        self.assertEqual(self.run_app("--home", "one", "get", "ins:a")[0], 0)
+        self.assertEqual(self.run_app("get", "ins:a", "--home", "two")[0], 0)
+        os.environ["FLND_HOME"] = "from-env"
+        self.assertEqual(self.run_app("get", "ins:a")[0], 0)
+        self.assertEqual([run[0].home for run in self.runs],
+                         [Path("one"), Path("two"), Path("from-env")])
+
+    def test_the_run_leaves_a_journal(self):
+        code, out, _ = self.run_app("get", "ins:a")
+        self.assertEqual(code, 0)
+        [journal] = (Path(".flnd") / _store.LOGS).glob("*_get.jsonl")
+        types = {json.loads(line)["type"] for line in journal.read_text("utf-8").splitlines()}
+        self.assertLessEqual({"Start", "Report"}, types)
+        self.assertIn("done in", out)
+
+    def test_a_short_link_is_resolved_once(self):
+        followed = []
+
+        def follow(url):
+            followed.append(url)
+            return "https://www.tiktok.com/@example_creator/video/7301234567890123456"
+
+        with mock.patch("flnkit.net.follow", follow):
+            self.assertEqual(self.run_app("get", "https://vm.tiktok.com/ZMabc123/")[0], 0)
+        self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
+        self.assertEqual(self.runs[0][1], [Target("tik:7301234567890123456", kind="video")])
+
+
+class RunTest(FlndCase):
+    """A real `get` of an example plugin; the CDN answers from a fake transport."""
+
+    listing = {("example_user", "posts"): ["p1", "p2"], ("example_user", "reels"): ["r1"]}
+
+    def setUp(self):
+        super().setUp()
+        jpeg = noise("JPEG")
+
+        def serve(request):
+            if str(request.url).startswith(f"{CDN}/bad"):
+                return _net.reply(503)
+            return _net.reply(200, content=jpeg)
+
+        # A lambda, so a test that replaces `self.serve` is answered by its own.
+        self.serve = serve
+        self.enterContext(_net.fake(lambda request: self.serve(request)))
+        from flnkit import clock as _time
+
+        self.enterContext(_time.use(_time.Fake()))
+        self.listing = {key: list(ids) for key, ids in type(self).listing.items()}
+        self.enterContext(mock.patch.dict(PLUGINS, {"exs": example_source(self.listing)}))
+
+    def test_the_summary_and_a_second_get_that_skips(self):
+        code, out, err = self.run_app("get", "exs:example_user")
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out.splitlines()[-1], r"^  v done in .+ - 1 target - 3 saved \(.+\) - "
+                                               r"0 already saved - 0 failed$")
+        code, out, _ = self.run_app("get", "exs:example_user")
+        self.assertRegex(out.splitlines()[-1], r" - 0 saved - 3 already saved - 0 failed$")
+
+    def test_json_lines(self):
+        code, out, _ = self.run_app("--json", "get", "exs:example_user/reels")
+        self.assertEqual(code, 0)
+        rows = [json.loads(line) for line in out.splitlines()]
+        self.assertEqual([row["post"] for row in rows if row["type"] == "Saved"], ["r1"])
+        self.assertEqual((rows[-1]["type"], rows[-1]["saved"]), ("Report", 1))
+
+    def test_dry_plans_and_writes_nothing(self):
+        code, out, _ = self.run_app("get", "exs:example_user", "--dry")
+        self.assertEqual(code, 0)
+        self.assertEqual(len([line for line in out.splitlines() if line.startswith("new ")]), 3)
+        self.assertEqual(out.splitlines()[-1], "planned 3 files; nothing was saved")
+        self.assertFalse((Path(".flnd") / _store.MEDIA).exists())
+
+    def test_the_run_draws_its_screen_on_a_pyte_terminal(self):
+        self.dest = Terminal()
+        code, _, err = self.run_app("get", "exs:example_user")
+        self.assertEqual(code, 0)
+        term = pyte.Screen(120, 40)
+        pyte.Stream(term).feed(err.replace("\n", "\r\n"))
+        rows = [row.rstrip() for row in term.display]
+        self.assertTrue(any("flnd get · 1 target" in row for row in rows), rows)
+        self.assertTrue(any(re.search(r"✓ exs:example_user +posts reels +3 +0 +0 ", row)
+                            for row in rows), rows)
+
+    def test_a_failed_file_exits_1_and_status_lists_it(self):
+        self.listing[("example_user", "posts")] = ["p1", "bad"]
+        code, out, err = self.run_app("get", "exs:example_user")
+        self.assertEqual(code, 1, err)
+        self.assertRegex(out, r"^  x done in .+ - 2 saved \(.+\) - 0 already saved - 1 failed\n$")
+        self.assertEqual(err.splitlines()[-1], "  details  flnd status")
+        code, out, _ = self.run_app("status")
+        self.assertEqual(code, 1)
+        lines = out.splitlines()
+        self.assertRegex(lines[0], r"^last run: get exs:example_user, .+: 2 saved, 1 failed$")
+        self.assertIn("  exs:example_user  1 failure (site): ", lines[1])
+        self.assertEqual(lines[-1], "disk: 2 files: history and disk agree")
+        status = json.loads(self.run_app("--json", "status")[1])
+        self.assertEqual((status["type"], status["status"]["saved"]), ("Status", 2))
+        [failure] = status["status"]["failures"]
+        self.assertEqual((failure["post"], failure["error"]["class"]), ("bad", "SiteError"))
+
+    def test_the_target_commands(self):
+        self.run_app("get", "exs:example_user")
+        self.run_app("get", "exs:p/9")
+        code, out, _ = self.run_app("target", "list")
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        self.assertEqual(lines[0].split(), ["target", "follow", "files", "last", "categories"])
+        followed = {line.split()[0]: line.split()[1] for line in lines[1:]}
+        self.assertEqual(followed, {"exs:example_user": "followed", "exs:9": "-"})
+        rows = [json.loads(line) for line in self.run_app("--json", "target", "list")[1].splitlines()]
+        self.assertIn({"text": "exs:example_user", "kind": "user"}, [row["target"] for row in rows])
+        code, out, _ = self.run_app("target", "clean", "exs:example_user", "--media")
+        self.assertEqual((code, out), (0, "exs:example_user: forgotten with its files\n"))
+        self.assertFalse(any(Path(".flnd/media").rglob("p1*")))
+        code, _, err = self.run_app("target", "clean", "exs:nobody")
+        self.assertEqual(code, 2)
+        self.assertIn("not a known target", err)
+        self.assertEqual(self.run_app("target", "clean")[0], 2)
+
+
+class ExitStatusTest(FlndCase):
+    """A target that fails exits 1, so a script or cron job can tell; a login needed exits 3."""
+
+    def setUp(self):
+        super().setUp()
+
+        def connect(self, ctx):
+            raise RuntimeError("the saved login no longer works")
+
+        def run(ctx):
+            if ctx.target.value == "bad":
+                raise Blocked("blocked")
+
+        self.enterContext(mock.patch.dict(PLUGINS, {
+            "aaa": make_plugin("aaa", run), "bbb": make_plugin("bbb", run, connect=connect),
+            "ccc": make_plugin("ccc", login=login_cookies("sid", required=True))}))
+
+    def test_a_failed_target_exits_1_in_a_get_and_in_a_sync(self):
+        code, out, err = self.run_app("get", "aaa:bad", "aaa:good")
+        self.assertEqual(code, 1, err)
+        self.assertRegex(out, r" - 2 targets - 0 saved - 0 already saved - 1 failed\n$")
+        self.assertIn("  x aaa:bad\n    blocked\n", err)
+        self.assertEqual(self.run_app("get", "aaa:good")[0], 0)
+        self.pipe("")
+        self.assertEqual(self.run_app("get")[0], 1)
+        self.assertEqual(self.run_app("get", "bbb:good")[0], 1)
+
+    def test_a_login_the_plugin_needs_exits_3_with_the_command_to_run(self):
+        code, out, err = self.run_app("get", "ccc:example_user")
+        self.assertEqual(code, 3)
+        self.assertRegex(out, r" - 1 failed\n$")
+        self.assertIn("  hint  run flnd auth login ccc", err)
+
+
+class ErrorsTest(FlndCase):
+    def test_each_class_has_its_exit_code(self):
         cases = [(UsageError("bad flag"), 2), (LoginError("not logged in"), 3),
                  (SiteError("refused"), 1), (Blocked("wait"), 1), (NotFound("gone"), 1),
                  (Changed("new shape"), 1), (NetworkError("reset"), 1), (DiskError("full"), 4),
@@ -69,78 +375,237 @@ class ExitCodeTest(TerminalCase):
         for error, code in cases:
             with self.subTest(type(error).__name__):
                 self.assertEqual(self.fail_with(error)[0], code)
-                self.assertEqual(cli.exit_code(error), code)
-        self.assertEqual(cli.exit_code(None), 0)
+                self.assertEqual(flnd_cli.exit_code(error), code)
+        self.assertEqual(flnd_cli.exit_code(None), 0)
         # A bare Ctrl-C ends the command with 130 too, though only `Stopped` has that code.
         self.assertEqual(self.fail_with(KeyboardInterrupt())[0], 130)
 
-    def test_a_persons_mistake_is_one_line_and_a_hint_never_a_traceback(self) -> None:
-        for error in (UsageError("give at least one target", hint="flnd download ins:example_user"),
-                      LoginError("ins: not logged in", hint="run flnd login ins"),
+    def test_a_persons_mistake_is_one_line_and_a_hint_never_a_traceback(self):
+        for error in (UsageError("give a target", hint="flnd get ins:example_user"),
+                      LoginError("ins: not logged in", hint="run flnd auth login ins"),
                       DiskError("media: No space left on device", hint="free some space"),
                       ToolError("ffmpeg: executable not found", hint="install ffmpeg")):
             with self.subTest(type(error).__name__):
-                _, out, err = self.fail_with(error)
-                self.assertEqual(out, "")
+                _, stdout, err = self.fail_with(error)
+                self.assertEqual(stdout, "")
                 self.assertEqual(err.splitlines(), [f"x {error}", f"  hint  {error.hint}"])
                 self.assertFalse((Path(".flnd") / _store.LOGS).exists())
 
-    def test_a_flag_mistake_exits_2_as_a_usage_error(self) -> None:
-        err = io.StringIO()
-        with redirect_stderr(err), redirect_stdout(io.StringIO()):
-            self.assertEqual(cli.main(["download", "--nope"]), 2)
-        self.assertEqual(err.getvalue().splitlines(),
-                         ["x flnd: unrecognized arguments: --nope",
-                          "  hint  flnd -h lists what it takes"])
+    def test_a_flag_mistake_exits_2_as_a_usage_error(self):
+        code, _, err = self.run_app("get", "--nope")
+        self.assertEqual(code, 2)
+        self.assertEqual(err.splitlines(), ["x flnd: unrecognized arguments: --nope",
+                                            "  hint  flnd -h lists what it takes"])
+        for argv in (("download",), ("target", "ls"), ("auth", "login"), ("sync")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_app(*argv)[0], 2)
 
-    def test_a_bug_writes_a_crash_file_and_exits_4(self) -> None:
-        code, _, err = self.fail_with(RuntimeError("an example bug"))
+    def test_a_bug_writes_a_crash_file_and_exits_4(self):
+        code, _, err = self.fail_with(RuntimeError("an example bug"), "--home", "elsewhere")
         self.assertEqual(code, 4)
-        crashes = list((Path(".flnd") / _store.LOGS).glob("crash-*.txt"))
-        self.assertEqual(len(crashes), 1)
-        self.assertIn("Traceback", crashes[0].read_text(encoding="utf-8"))
+        [crash] = (Path("elsewhere") / _store.LOGS).glob("crash-*.txt")
+        self.assertIn("Traceback", crash.read_text(encoding="utf-8"))
         self.assertEqual(err.splitlines(), ["x flnd hit a bug: RuntimeError: an example bug",
-                                            f"  hint  details in {crashes[0]}"])
+                                            f"  hint  details in {crash}"])
 
-    def test_with_verbose_a_bug_prints_its_traceback_instead(self) -> None:
+    def test_with_verbose_a_bug_prints_its_traceback_instead(self):
         code, _, err = self.fail_with(RuntimeError("an example bug"), "-v")
         self.assertEqual(code, 4)
-        self.assertIn("Traceback", err)
         self.assertIn("RuntimeError: an example bug", err)
         self.assertFalse((Path(".flnd") / _store.LOGS).exists())
 
-    def test_the_crash_file_goes_in_the_home_given(self) -> None:
-        self.fail_with(RuntimeError("an example bug"), "--home", "elsewhere")
-        self.assertEqual(len(list((Path("elsewhere") / _store.LOGS).glob("crash-*.txt"))), 1)
 
-
-class HelpLengthTest(unittest.TestCase):
-    """`flnd -h` fits in 24 lines of 80 columns (PLAN.md 8.1), on a pipe, a terminal, in ASCII."""
-
+class HelpTest(FlndCase):
     class Pipe(io.StringIO):
         encoding = "utf-8"
-
-    class Terminal(Pipe):
-        def isatty(self) -> bool:
-            return True
 
     class Ascii(Terminal):
         encoding = "cp1252"
 
-    def test_flnd_h_fits_in_24_lines(self) -> None:
+    def test_flnd_h_fits_in_24_lines_of_80_columns(self):
         self.enterContext(mock.patch.dict(os.environ, {"COLUMNS": "80"}))
-        for kind in (self.Pipe, self.Terminal, self.Ascii):
+        for kind in (self.Pipe, Terminal, self.Ascii):
             with self.subTest(kind.__name__):
                 stdout = kind()
                 with mock.patch("sys.stdout", stdout), redirect_stderr(io.StringIO()):
-                    self.assertEqual(cli.main(["-h"]), 0)
+                    self.assertEqual(flnd_cli.main(["-h"]), 0)
                 lines = out.clean(stdout.getvalue()).splitlines()
                 self.assertLessEqual(len(lines), 24, "\n".join(lines))
                 self.assertTrue(all(len(line) <= 80 for line in lines), "\n".join(lines))
 
+    def test_help_lists_the_commands_and_every_plugin_from_the_manifest(self):
+        code, text, _ = self.run_app("--help")
+        self.assertEqual(code, 0)
+        self.assertIn("flnd 0.1.0 - download whole accounts from the web", text)
+        for verb in ("get ", "target list|clean", "auth list|login|logout",
+                     "plugin list|install|uninstall", "extension install|uninstall", "status",
+                     "config"):
+            self.assertIn(f"  {verb}", text)
+        self.assertIn("tik fbk ins twt loi tlg mht", text)
+        self.assertEqual(self.run_app()[1], text)
+
+    def test_get_help_has_a_row_per_plugin_and_its_flags(self):
+        code, text, _ = self.run_app("get", "--help")
+        self.assertEqual(code, 0)
+        flat = " ".join(text.split())
+        self.assertIn("tlg:<@username, chat title or id>, tlg:@<chat>, a link on t.me", flat)
+        self.assertIn("/posts,reels,tagged", flat)
+        for flag in ("--when", "--limit", "--dry", "--again", "--exec", "--home", "--json"):
+            self.assertIn(flag, text)
+        self.assertNotIn("Args:", text)
+
+    def test_a_group_lists_its_commands(self):
+        for group, names in (("target", ("list", "clean")), ("auth", ("list", "login", "logout")),
+                             ("plugin", ("list", "install", "uninstall")),
+                             ("extension", ("install", "uninstall"))):
+            with self.subTest(group):
+                code, text, _ = self.run_app(group)
+                self.assertEqual(code, 0)
+                for name in names:
+                    self.assertIn(f"  {name}", text)
+
+    def test_help_imports_no_plugin_engine_or_network(self):
+        import subprocess
+
+        code = ("import sys\nfrom flnd.cli import main\nmain(['--help'])\n"
+                "print(sorted(m for m in sys.modules if m.startswith(("
+                "'flnd.engine._engine', 'flnd.plugins.ins', 'curl_cffi'))))")
+        stdout = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                                check=True).stdout.splitlines()[-1]
+        self.assertEqual(stdout, "[]")
+
+    def test_the_version(self):
+        self.assertEqual(self.run_app("--version")[:2], (0, "flnd 0.1.0\n"))
+
+
+class ListsTest(FlndCase):
+    def test_status_config_and_the_lists_of_a_home_with_nothing_in_it(self):
+        self.assertEqual(self.run_app("status")[:2], (0, "no run yet\ndisk: 0 files: "
+                                                         "history and disk agree\n"))
+        self.assertEqual(self.run_app("target", "list")[1], "no targets yet\n")
+        self.assertEqual(self.run_app("auth", "list")[1], "no accounts yet\n")
+        code, text, _ = self.run_app("config")
+        self.assertEqual(code, 0)
+        self.assertEqual(text.splitlines()[0].split(), ["key", "value", "default", "from"])
+        self.assertRegex(text, r"defaults\.when +- +- +default")
+        rows = [json.loads(line) for line in self.run_app("--json", "config")[1].splitlines()]
+        self.assertEqual(rows[0]["key"], "defaults.dedupe")
+        self.assertFalse((Path(".flnd") / _store.DB).exists())
+
+    def test_plugin_list_shows_each_plugin_and_why_one_is_disabled(self):
+        code, text, _ = self.run_app("plugin", "list")
+        self.assertEqual(code, 0)
+        self.assertRegex(text, r"ins +Instagram +built-in +2 ")
+        rows = [json.loads(line) for line in self.run_app("--json", "plugin", "list")[1]
+                .splitlines()]
+        self.assertEqual([row["code"] for row in rows],
+                         ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht", "web"])
+
+    def test_plugin_install_and_uninstall(self):
+        source = Path(self.tmp.name) / "exa.py"
+        source.write_text(
+            "from flnd.plugin import Plugin, Post, route\n\n\nclass Example(Plugin):\n"
+            "    code, name, api, domains = 'exa', 'Example', 2, ('exa.example',)\n\n"
+            "    @route('exa:{user}')\n    async def user(self, ctx, user):\n"
+            "        yield Post(user)\n", encoding="utf-8")
+        folder = Path(self.tmp.name) / "plugins"
+        with mock.patch.dict(os.environ, {"FLND_PLUGINS": str(folder)}):
+            code, text, err = self.run_app("plugin", "install", str(source))
+            self.assertEqual((code, text), (0, "exa: installed (Example)\n"), err)
+            self.assertRegex(self.run_app("plugin", "list")[1], r"exa +Example +file +2 ")
+            self.assertEqual(self.run_app("plugin", "uninstall", "exa")[1], "exa: uninstalled\n")
+            self.assertEqual(self.run_app("plugin", "uninstall", "ins")[0], 2)
+            self.assertEqual(self.run_app("plugin", "install", "missing.py")[0], 2)
+
+
+class AuthTest(FlndCase):
+    def test_login_by_file_keeps_only_the_plugins_cookies(self):
+        code, text, err = self.run_app("auth", "login", "ins", "file",
+                                       str(self.cookie_file(NETSCAPE)))
+        self.assertEqual(code, 0, err)
+        self.assertRegex(text, r"^ins: logged in as \w+ \(file\)\n$")
+        self.assertEqual({cookie["name"]: cookie["domain"]
+                          for cookie in vaulted(Path(".flnd"), "ins")[0].list},
+                         {"sessionid": ".instagram.com", "ds_user_id": ".www.instagram.com"})
+        # A path alone means a file; nothing but the two stores is written.
+        self.assertEqual(self.run_app("auth", "login", "twt", str(self.cookie_file(NETSCAPE)))[0],
+                         0)
+        self.assertEqual(sorted(path.name for path in Path(".flnd").rglob("*") if path.is_file()
+                                and path.suffix == ".db"), ["flnd.db", "secret.db"])
+
+    def test_list_default_and_logout(self):
+        import time
+
+        sign_in(".flnd", "ins", [{"name": "sessionid", "value": "secret-val",
+                                  "domain": ".instagram.com", "expires": time.time() - 10}],
+                name="one")
+        sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="two")
+        code, text, _ = self.run_app("auth", "list")
+        self.assertEqual(code, 0)
+        self.assertRegex(text, r"ins +one +default +file +ok")
+        self.assertRegex(text, r"ins +two +- +file")
+        rows = [json.loads(line) for line in self.run_app("--json", "auth", "list")[1]
+                .splitlines()]
+        self.assertEqual([row["name"] for row in rows], ["one", "two"])
+        self.assertNotIn("secret-val", text)
+        self.assertEqual(self.run_app("auth", "logout", "ins", "two")[1],
+                         "ins: two logged out\n")
+        self.assertEqual(self.run_app("auth", "logout", "ins")[1], "ins: one logged out\n")
+        self.assertEqual(vaulted(".flnd", "ins")[0].list, [])
+        for argv in (("ins",), ("ytb",), ("ins", "nobody")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_app("auth", "logout", *argv)[0], 2)
+
+    def test_a_missing_cookie_exits_3_and_a_wrong_way_or_plugin_exits_2(self):
+        code, _, err = self.run_app("auth", "login", "fbk", "file",
+                                    str(self.cookie_file(NETSCAPE)))
+        self.assertEqual(code, 3)
+        self.assertIn("fbk: no c_user or xs for facebook.com in cookies.txt", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(self.run_app("auth", "login", "ins", "netscape", "x")[0], 2)
+        self.assertEqual(self.run_app("auth", "login", "ytb", "chrome")[0], 2)
+
+    def test_the_way_is_asked_on_a_terminal_and_never_on_a_pipe_or_with_json(self):
+        path = self.cookie_file(NETSCAPE)
+        ways = list(PLUGINS["twt"].login.methods)
+        self.answer(str(ways.index("file") + 1), str(path))
+        code, text, err = self.run_app("auth", "login", "twt")
+        self.assertEqual(code, 0, err)
+        self.assertRegex(text, r"^twt: logged in as \w+ \(file\)\n$")
+        self.pipe("")
+        code, _, err = self.run_app("auth", "login", "ins")
+        self.assertEqual(code, 2)
+        self.assertIn("flnd auth login ins <method>", err)
+        self.answer("1")
+        self.assertEqual(self.run_app("auth", "login", "ins", "--json")[0], 2)
+
+    def test_a_plugin_with_its_own_login_offers_its_own_ways(self):
+        calls = []
+
+        def start(self, ctx, method):
+            calls.append(method)
+            ctx.secrets["session"] = "s"
+
+        class Own(Plugin):
+            code, name, domains, api = "own", "Own", ("own.example",), 2
+            login = own_login(start, methods=("qr", "phone"))
+
+            @route("own:{user}", single=True)
+            async def user(self, ctx, user):
+                yield Post(user)
+
+        self.answer("2")
+        with mock.patch.dict(PLUGINS, {"own": Own}), \
+                mock.patch.dict("flnd.plugins._manifest.PLUGINS", {"own": {
+                    "name": "Own", "domains": ("own.example",), "forms": (), "categories": (),
+                    "logins": ("qr", "phone")}}):
+            code, _, err = self.run_app("auth", "login", "own")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls, ["phone"])
+
 
 class StoppingTest(unittest.TestCase):
-    def test_two_stage_ctrl_c_sets_soon_then_now(self) -> None:
+    def test_two_stage_ctrl_c_sets_soon_then_now(self):
         previous = signal.getsignal(signal.SIGINT)
         with _run.stopping() as stop:
             self.assertFalse(stop.soon.is_set())
@@ -151,10 +616,10 @@ class StoppingTest(unittest.TestCase):
             self.assertTrue(stop.now.is_set())
         self.assertIs(signal.getsignal(signal.SIGINT), previous)
 
-    def test_stopping_in_worker_thread_is_safe(self) -> None:
-        results: list[tuple[bool, bool]] = []
+    def test_stopping_in_worker_thread_is_safe(self):
+        results = []
 
-        def worker() -> None:
+        def worker():
             with _run.stopping() as stop:
                 results.append((stop.soon.is_set(), stop.now.is_set()))
 

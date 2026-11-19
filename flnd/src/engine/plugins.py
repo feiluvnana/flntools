@@ -48,7 +48,7 @@ __all__ = [
     "where",
 ]
 
-# Where a plugin came from, as `flnd sources` shows it.
+# Where a plugin came from, as `flnd plugin list` shows it.
 BUILT_IN, FILE, SCRIPT = "built-in", "file", "script"
 # The variable naming the plugin folder, which replaces the default one.
 VARIABLE = "FLND_PLUGINS"

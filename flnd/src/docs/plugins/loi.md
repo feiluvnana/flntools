@@ -5,7 +5,7 @@ images, and, for a VIP account, its archives. The site is `loix.cc`, and its API
 `api.moegoat.com`. The info and previews need no login; archives need a logged-in VIP account and
 count against its daily quota. The plugin never opens a browser: the site blocks one.
 
-A *target* is what you give `flnd download`; a *category* is one part of a target, named after
+A *target* is what you give `flnd get`; a *category* is one part of a target, named after
 its last `/`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
@@ -39,7 +39,7 @@ description, its download sources (in `archive` only) and links to its preview i
 ## Logging in
 
 The plugin declares a cookie login, `cookies("access-token")`, whose login page is the site:
-the `access-token` cookie proves a login, and it isn't required. `flnd login loi <how>` takes a
+the `access-token` cookie proves a login, and it isn't required. `flnd auth login loi <how>` takes a
 browser (read the cookies of an installed browser, such as `chrome`) or a cookie file's path (a
 Netscape `cookies.txt` or JSON cookie file). The plugin's `sign` hook sends the cookie's value as
 a Bearer token to the API.
@@ -48,7 +48,7 @@ Without a login, flnd warns once that it is using public access. `photo` works i
 warns "archives need a login" and writes `info.md` without links.
 
 When a run starts, flnd warns if the `access-token` cookie has expired or expires within 24
-hours, and `flnd login` shows the same. An expired or refused token is not detected as such:
+hours, and `flnd auth login` shows the same. An expired or refused token is not detected as such:
 the site gives no links, and flnd warns that the post's VIP level or a login is needed.
 
 ## How it fetches

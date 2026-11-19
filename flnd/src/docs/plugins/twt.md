@@ -63,7 +63,7 @@ it quotes and its card's image. `reposts` is marked `own=False`, so it is taken 
 
 ## Logging in
 
-`flnd login twt <how>` takes a browser or a cookie file's path. Left out in a terminal,
+`flnd auth login twt <how>` takes a browser or a cookie file's path. Left out in a terminal,
 the way is asked with numbered choices:
 
 - **From your browser**: reads X's cookies from Chrome, Firefox, Edge, Brave, Chromium, or
@@ -79,7 +79,7 @@ and checks as a CSRF token.
 Without a login, flnd still tries the API and the pages. When a run starts, flnd warns if
 `auth_token` has expired or will expire within a day. When a tab lands on `/i/flow/login`,
 `/login` or `/account/access`, the run stops at once with "X asked for a login or locked this
-account; check it in a browser or run flnd login twt".
+account; check it in a browser or run flnd auth login twt".
 
 ## How it fetches
 

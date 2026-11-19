@@ -85,7 +85,7 @@ GRAPHQL = "graphql"
 # sticker's asset, or the story's own music metadata.
 STORY_MUSIC = ("story_music_stickers[0].music_asset_info.progressive_download_url || "
                "music_metadata.music_info.music_asset_info.progressive_download_url")
-LOGIN_HINT = "run flnd login ins"
+LOGIN_HINT = "run flnd auth login ins"
 
 
 class Instagram(Plugin):

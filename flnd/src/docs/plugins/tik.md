@@ -6,7 +6,7 @@ its id or link. A profile is read in a browser, which flnd drives itself; a sing
 from TikTok's public embed page over plain HTTP, without a browser. No login is required: without
 one, flnd warns and uses public access.
 
-A *target* is what you give `flnd download`; a *category* is one part of a target, named after
+A *target* is what you give `flnd get`; a *category* is one part of a target, named after
 its last `/`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
@@ -46,7 +46,7 @@ when named (`tik:<user>/liked`), or with `/all`.
 
 ## Logging in
 
-The plugin declares `login = cookies("sessionid", "sid_tt")`: `flnd login tik <how>` takes a
+The plugin declares `login = cookies("sessionid", "sid_tt")`: `flnd auth login tik <how>` takes a
 browser (read the cookies of an installed browser, such as `chrome`) or a cookie file's path (a
 Netscape `cookies.txt` or JSON cookie file). Either cookie for `tiktok.com` proves a login.
 
@@ -57,7 +57,7 @@ saved cookies are loaded into the browser, and the CDN is sent the `tt_chain_tok
 `sid_tt` sends no `sessionid` at all; before 2026-11-16 it sent an empty `sessionid=`.
 
 When a run starts, flnd warns if a login cookie has expired or expires within 24 hours. After a
-run, cookies the site refreshed are written back into the saved login. `flnd login` shows which
+run, cookies the site refreshed are written back into the saved login. `flnd auth login` shows which
 login cookies are about to expire. An expired login is not detected otherwise: TikTok then serves
 what a logged-out visitor sees.
 
@@ -180,7 +180,7 @@ The engine owns them; the plugin only yields the posts in the order the list giv
 
 - With `--when`, a `newest_first` listing (`videos`, `playlists`) stops after 5 posts in a row
   older than its start, which closes the scroll.
-- A sync (`flnd sync` of a followed profile) stops a `newest_first` listing once it has caught up:
+- A sync (`flnd get` of a followed profile) stops a `newest_first` listing once it has caught up:
   5 saved posts in a row, or the newest post an earlier run saw and the one after it.
 - `stories`, `reposts`, `liked` and `favorites` are not `newest_first` (a repost is ordered by
   when it was reposted), so they are always read to their end.

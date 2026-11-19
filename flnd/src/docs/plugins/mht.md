@@ -5,7 +5,7 @@ images, and its cover. It also downloads one chapter by its link, and finds mang
 genre or a search query, downloading each one found. It reads the site's public JSON API over
 plain HTTP. It needs no login and no browser.
 
-A *target* is what you give `flnd download`; a *category* is one part of a target, named after
+A *target* is what you give `flnd get`; a *category* is one part of a target, named after
 its last `/`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
@@ -70,7 +70,7 @@ the plugin's own categories, so both are taken when none are named.
 ## Logging in
 
 The plugin has no login (`login = None`): everything it reads is public, so flnd never warns
-about a login, and `flnd login mht` is refused as "mht needs no login".
+about a login, and `flnd auth login mht` is refused as "mht needs no login".
 
 ## How it fetches
 

@@ -13,12 +13,11 @@ import threading
 import unittest
 from unittest import mock
 
-from fakes import EngineCase
+from fakes import Engine, EngineCase
 from test_ctx import CtxCase as RunCase
 from test_ctx import FakeRaw
 
 from flnd.engine import jobs
-from flnd.engine._engine import Engine
 from flnd.engine.crawl import Options
 from flnd.engine.events import Planned
 from flnd.errors import Blocked

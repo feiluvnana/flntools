@@ -18,11 +18,10 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
-from fakes import CDN, EngineCase, login_cookies, make_plugin, noise
+from fakes import CDN, Engine, EngineCase, login_cookies, make_plugin, noise
 
 import flnd
 from flnd.engine import jobs as jobs_module
-from flnd.engine._engine import Engine
 from flnd.engine.events import encode
 from flnd.plugin import File, Plugin, Post, Target, route
 from flnkit import net as _net
@@ -87,96 +86,111 @@ class LibraryCase(EngineCase):
         return sorted(event.post for event in events if isinstance(event, flnd.Saved))
 
 
-class CliCommandsTest(LibraryCase):
-    """Each command of today's CLI, done through the library alone."""
+class GetTest(LibraryCase):
+    """`get`, and each group of the library (PLAN.md 8.3), as the commands use them."""
 
-    def test_download(self):
-        # flnd download exs:example_user --from all
-        report = self.fl.download("exs:example_user").wait()
+    def test_get_runs_and_follows_the_target(self):
+        report = self.fl.get("exs:example_user").wait()
         self.assertEqual((report.saved, report.ok), (3, True))
         self.assertEqual(report.bytes, 3 * len(JPEG))
+        [tracked] = self.fl.targets
+        self.assertEqual(tracked.target, flnd.Target("exs:example_user", kind="user"))
+        self.assertEqual((tracked.files, tracked.follow), (3, True))
+        self.assertEqual(tracked.categories, ("posts", "reels"))
+        self.assertEqual(tracked.complete, {"posts": tracked.complete["posts"],
+                                            "reels": tracked.complete["reels"]})
 
-    def test_download_from(self):
-        # flnd download exs:example_user --from reels --time 2026-01-01,2026-12-31 --limit 5
-        run = self.fl.download("exs:example_user/reels", when="2026", limit=5)
+    def test_get_with_categories_when_and_limit(self):
+        run = self.fl.get("exs:example_user/reels", when="2026", limit=5)
         self.assertEqual(self.saved(run), ["r1"])
 
-    def test_download_dry(self):
-        # flnd download exs:example_user --dry
-        planned = list(self.fl.download("exs:example_user", dry=True))
+    def test_get_dry_plans_and_writes_nothing(self):
+        planned = list(self.fl.get("exs:example_user", dry=True))
         self.assertEqual(sorted((event.post, event.state) for event in planned),
                          [("p1", "new"), ("p2", "new"), ("r1", "new")])
         self.assertFalse((self.home / "media").exists())
 
-    def test_download_sync_is_follow(self):
-        # flnd download exs:example_user --sync
-        self.assertEqual(self.fl.follow("exs:example_user").wait().saved, 3)
-        [tracked] = self.fl.targets()
+    def test_get_with_no_target_syncs_the_followed_ones(self):
+        self.fl.get("exs:example_user").wait()
+        self.listing["example_user", "posts"].insert(0, "p0")
+        self.assertEqual(self.saved(self.fl.get()), ["p0"])
+        self.assertEqual(self.fl.get("exs:example_user").wait().saved, 0)
+
+    def test_a_single_post_is_never_followed(self):
+        self.fl.get("exs:p/9").wait()
+        [tracked] = self.fl.targets
+        self.assertFalse(tracked.follow)
+        with self.assertRaises(flnd.UsageError):
+            self.fl.targets.follow("exs:p/9")
+
+    def test_follow_unfollow_and_retry(self):
+        [tracked] = self.fl.targets.follow("exs:example_user")
         self.assertTrue(tracked.follow)
+        self.fl.targets.unfollow("exs:example_user")
+        self.assertFalse(list(self.fl.targets)[0].follow)
+        self.assertEqual(self.fl.get().wait().saved, 0)
+        self.fl.get("exs:example_user").wait()
+        self.assertEqual(len(self.fl.targets.retry("exs:example_user")), 1)
+        with self.assertRaises(flnd.UsageError):
+            self.fl.targets.unfollow("exs:example_creator")
 
-    def test_sync(self):
-        # flnd sync
-        self.fl.follow("exs:example_user").wait()
-        self.listing["example_user", "posts"].insert(0, "p0")
-        self.assertEqual(self.saved(self.fl.sync()), ["p0"])
+    def test_clean_forgets_the_target_and_with_media_its_files(self):
+        self.fl.get("exs:example_user").wait()
+        [forgotten] = self.fl.targets.clean("exs:example_user")
+        self.assertEqual(forgotten.files, 3)
+        self.assertEqual((list(self.fl.targets), self.fl.files()), ([], []))
+        self.assertTrue(any((self.home / "media").rglob("*.jpg")))
+        self.fl.get("exs:example_user").wait()
+        self.fl.targets.clean("exs:example_user", media=True)
+        self.assertFalse(any((self.home / "media").rglob("*.jpg")))
+        self.assertFalse((self.home / "media" / "exs").exists())
 
-    def test_sync_named(self):
-        # flnd sync exs:example_user
-        self.fl.follow("exs:example_user").wait()
-        self.assertEqual(self.fl.sync("exs:example_user").wait().saved, 0)
-
-    def test_target_ls(self):
-        # flnd target ls
-        self.fl.download("exs:example_user").wait()
-        [tracked] = self.fl.targets(source="exs")
-        self.assertEqual(tracked.target, flnd.Target("exs:example_user", kind="user"))
-        self.assertEqual((tracked.files, tracked.follow), (3, False))
-        self.assertEqual(tracked.categories, {"posts": "complete", "reels": "complete"})
-
-    def test_target_sync_on(self):
-        # flnd target sync-on exs:example_user
-        self.fl.download("exs:example_user").wait()
-        self.fl.follow("exs:example_user").wait()
-        self.assertTrue(self.fl.targets()[0].follow)
-
-    def test_target_sync_off_and_del(self):
-        # flnd target sync-off exs:example_user; flnd target del exs:example_user
-        self.fl.follow("exs:example_user").wait()
-        self.assertEqual(self.fl.unfollow("exs:example_user"),
-                         [flnd.Target("exs:example_user", kind="user")])
-        self.assertFalse(self.fl.targets()[0].follow)
-        self.listing["example_user", "posts"].insert(0, "p0")
-        self.assertEqual(self.fl.sync().wait().saved, 0)
-        # Its files and history stay.
-        self.assertEqual(len(self.fl.files(target="exs:example_user")), 3)
-
-    def test_auth_login_ls_and_logout(self):
-        # flnd auth login (from a cookie file); flnd auth ls; flnd auth logout exs
+    def test_auth_login_logout_and_default(self):
         self.fl.add(example_source({}, code="exc", login=login_cookies("sid")))
         cookies = Path(self.home.parent / "cookies.txt")
         cookies.write_text("# Netscape HTTP Cookie File\n"
                            ".exc.example\tTRUE\t/\tTRUE\t1825861327\tsid\texample-value\n",
                            encoding="utf-8")
-        login = self.fl.login("exc", str(cookies))
-        self.assertEqual((login.source, login.state, login.origin),
-                         ("exc", "logged in", "file"))
-        self.assertIn(login, self.fl.logins)
-        self.assertTrue(self.fl.logout("exc"))
-        self.assertFalse(self.fl.logout("exc"))
-        state = {item.source: item.state for item in self.fl.logins}
-        self.assertEqual(state["exc"], "not logged in")
+        first = self.fl.auth.login("exc", method="file", path=str(cookies), name="one")
+        second = self.fl.auth.login("exc", path=str(cookies), name="two")
+        self.assertEqual((first.origin, first.is_default, second.is_default), ("file", True, False))
+        self.assertEqual([item.name for item in self.fl.auth], ["one", "two"])
+        self.assertTrue(self.fl.auth.default("exc", "two").is_default)
+        self.assertEqual(self.fl.auth.logout("exc").name, "two")
+        self.assertEqual(self.fl.auth.logout("exc", name="one").name, "one")
+        for call in (lambda: self.fl.auth.logout("exc"),
+                     lambda: self.fl.auth.login("exc", method="nope"),
+                     lambda: self.fl.auth.login("exs")):
+            with self.subTest(), self.assertRaises(flnd.UsageError):
+                call()
+
+    def test_plugins_lists_built_in_and_added(self):
+        rows = {row.code: row for row in self.fl.plugins}
+        self.assertEqual((rows["ins"].origin, rows["exs"].origin), ("built-in", "script"))
+        with self.assertRaises(flnd.UsageError):
+            self.fl.plugins.uninstall("ins")
+
+    def test_config_reads_sets_and_unsets(self):
+        self.assertEqual((self.fl.config["when"], self.fl.config.where("when")), ("", "default"))
+        self.fl.config.set("defaults.when", "30d")
+        self.assertEqual((self.fl.config["defaults.when"], self.fl.config.where("when")),
+                         ("30d", "home"))
+        self.fl.config.unset("when")
+        self.assertEqual(self.fl.config["when"], "")
+        with self.assertRaises(flnd.UsageError):
+            self.fl.config.set("nope", 1)
 
 
 class RunTest(LibraryCase):
     def test_nothing_happens_until_the_run_is_read(self):
-        run = self.fl.download("exs:example_user")
+        run = self.fl.get("exs:example_user")
         self.assertEqual((self.requests, run.report), ([], flnd.Report()))
         self.assertIn("not started", repr(run))
         run.wait()
         self.assertEqual(len(self.requests), 3)
 
     def test_an_unstarted_run_warns_when_dropped(self):
-        run = self.fl.download("exs:example_user")
+        run = self.fl.get("exs:example_user")
         with self.assertWarns(ResourceWarning) as caught:
             del run
             gc.collect()
@@ -185,15 +199,15 @@ class RunTest(LibraryCase):
     def test_a_started_or_stopped_run_does_not_warn(self):
         with warnings.catch_warnings():
             warnings.simplefilter("error", ResourceWarning)
-            self.fl.download("exs:example_user").wait()
-            unstarted = self.fl.download("exs:example_user")
+            self.fl.get("exs:example_user").wait()
+            unstarted = self.fl.get("exs:example_user")
             unstarted.stop()
             self.assertTrue(unstarted.wait().stopped)
             del unstarted
             gc.collect()
 
     def test_breaking_out_pauses_and_the_report_holds_the_counts_so_far(self):
-        run = self.fl.download("exs:example_user")
+        run = self.fl.get("exs:example_user")
         for event in run:
             if isinstance(event, flnd.Saved):
                 break
@@ -208,7 +222,7 @@ class RunTest(LibraryCase):
 
         self.enterContext(mock.patch.object(_run, "QUEUE", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(6)]
-        run = self.fl.download("exs:example_user/posts")
+        run = self.fl.get("exs:example_user/posts")
         landed, real = threading.Event(), run._emit
 
         def emit(event):
@@ -228,7 +242,7 @@ class RunTest(LibraryCase):
         # finishes only what is downloading. At the default of 32 places all 30 would be in flight.
         self.enterContext(mock.patch.object(jobs_module, "PLACES", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
-        run = self.fl.download("exs:example_user/posts")
+        run = self.fl.get("exs:example_user/posts")
         for event in run:
             if isinstance(event, flnd.Saved):
                 run.stop()
@@ -242,7 +256,7 @@ class RunTest(LibraryCase):
         # One place, as above: at 32 places every file could be in flight before the first lands.
         self.enterContext(mock.patch.object(jobs_module, "PLACES", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
-        run = self.fl.download("exs:example_user/posts")
+        run = self.fl.get("exs:example_user/posts")
         with self.assertRaises(flnd.Stopped):
             for event in run:
                 if isinstance(event, flnd.Saved) and run.report.saved == 1:
@@ -265,7 +279,7 @@ class RunTest(LibraryCase):
         self.enterContext(mock.patch.object(jobs_module, "PLACES", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
         warn = self.enterContext(mock.patch.object(ui, "warn"))
-        run = self.fl.download("exs:example_user/posts")
+        run = self.fl.get("exs:example_user/posts")
         with mock.patch.object(_run.os, "_exit", side_effect=Quit) as exit_now, \
                 _run.restoring(lambda: undone.append("keys")), \
                 _run.restoring(lambda: undone.append("screen")):
@@ -291,8 +305,8 @@ class RunTest(LibraryCase):
 
     def test_async_for_and_await(self):
         async def main():
-            events = [event async for event in self.fl.download("exs:example_user/reels")]
-            report = await self.fl.download("exs:example_user/posts")
+            events = [event async for event in self.fl.get("exs:example_user/reels")]
+            report = await self.fl.get("exs:example_user/posts")
             return events, report
 
         events, report = asyncio.run(main())
@@ -300,12 +314,11 @@ class RunTest(LibraryCase):
         self.assertEqual(report.saved, 2)
 
     def test_a_usage_mistake_raises_before_anything_runs(self):
-        for call in (lambda: self.fl.download("zzz:example_user"),
-                     lambda: self.fl.download("exs:example_user/stories"),
-                     lambda: self.fl.download("exs:p/1/posts"),
-                     lambda: self.fl.download("exs:example_user", limit=0),
-                     lambda: self.fl.download("exs:example_user", when="yesterday"),
-                     lambda: self.fl.download([])):
+        for call in (lambda: self.fl.get("zzz:example_user"),
+                     lambda: self.fl.get("exs:example_user/stories"),
+                     lambda: self.fl.get("exs:p/1/posts"),
+                     lambda: self.fl.get("exs:example_user", limit=0),
+                     lambda: self.fl.get("exs:example_user", when="yesterday")):
             with self.subTest(), self.assertRaises(flnd.UsageError):
                 call()
         self.assertEqual(self.requests, [])
@@ -314,9 +327,9 @@ class RunTest(LibraryCase):
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
         with flnd.open(self.home) as fl:
             fl.add(self.source)
-            going = fl.download("exs:example_user/posts")
+            going = fl.get("exs:example_user/posts")
             next(iter(going))
-            later = fl.download("exs:example_user")
+            later = fl.get("exs:example_user")
         self.assertTrue(going.report.stopped)
         with self.assertRaises(flnd.UsageError):
             later.wait()
@@ -327,7 +340,7 @@ class RunTest(LibraryCase):
         seen = []
         self.fl.add(make_plugin("ewk", lambda ctx: seen.append(
             (threading.current_thread(), _time.wall()))))
-        self.fl.download("ewk:example_user").wait()
+        self.fl.get("ewk:example_user").wait()
         [(thread, wall)] = seen
         self.assertIsNot(thread, threading.current_thread())
         self.assertEqual(wall, self.fake.wall)
@@ -335,7 +348,7 @@ class RunTest(LibraryCase):
 
 class EventsTest(LibraryCase):
     def test_saved_skipped_and_the_snapshot(self):
-        run = self.fl.download("exs:example_user")
+        run = self.fl.get("exs:example_user")
         first = list(run)
         saved = [event for event in first if isinstance(event, flnd.Saved)]
         self.assertEqual(sorted(event.path.name for event in saved),
@@ -345,7 +358,7 @@ class EventsTest(LibraryCase):
         [row] = run.state.targets
         self.assertEqual((row.categories, row.phase, row.saved), (("posts", "reels"),
                                                                   flnd.Phase.DONE, 3))
-        second = list(self.fl.download("exs:example_user"))
+        second = list(self.fl.get("exs:example_user"))
         self.assertEqual(sum(isinstance(event, flnd.Skipped) for event in second), 3)
         self.assertFalse(any(isinstance(event, flnd.Saved) for event in second))
 
@@ -358,7 +371,7 @@ class EventsTest(LibraryCase):
 
         self.serve = lambda request: serve(request) if str(request.url).startswith(CDN) \
             else _net.reply(200)
-        events = list(self.fl.download("exs:example_user/posts"))
+        events = list(self.fl.get("exs:example_user/posts"))
         [failed] = [event for event in events if isinstance(event, flnd.Failed)]
         self.assertEqual((failed.post, failed.path.name), ("gone", "2026-03-01_gone.jpg"))
         self.assertIsInstance(failed.error, flnd.NotFound)
@@ -366,7 +379,7 @@ class EventsTest(LibraryCase):
     def test_a_target_without_its_login_fails_as_an_event(self):
         self.fl.add(example_source({("example_user", "posts"): ["p1"]}, code="exl",
                                    login=login_cookies("sid", required=True)))
-        report = self.fl.download("exl:example_user").wait()
+        report = self.fl.get("exl:example_user").wait()
         [failed] = report.failed
         self.assertIsInstance(failed.error, flnd.LoginError)
         self.assertEqual((failed.target.plugin, failed.post, failed.path),
@@ -374,7 +387,7 @@ class EventsTest(LibraryCase):
         self.assertFalse(report.ok)
 
     def test_events_encode_to_json(self):
-        events = list(self.fl.download("exs:example_user/reels"))
+        events = list(self.fl.get("exs:example_user/reels"))
         lines = [encode(event) for event in events]
         self.assertTrue(any(line.startswith(b'{"type":"Saved"') for line in lines))
         self.assertIn(b'"path":"', lines[-1])
@@ -384,7 +397,7 @@ class EventsTest(LibraryCase):
                       encode(login))
 
     def test_events_are_frozen(self):
-        [event, *_] = [event for event in self.fl.download("exs:example_user")
+        [event, *_] = [event for event in self.fl.get("exs:example_user")
                        if isinstance(event, flnd.Saved)]
         with self.assertRaises(AttributeError):
             event.size = 0
@@ -396,7 +409,7 @@ class StoppedRunTest(LibraryCase):
     listing = {("example_user", "posts"): ["p1", "p2", "p3", "p4", "p5", "p6"]}
 
     def test_a_stopped_runs_row_counts_what_it_saved(self):
-        run = self.fl.download("exs:example_user")
+        run = self.fl.get("exs:example_user")
         saved = 0
         for event in run:
             if isinstance(event, flnd.Saved):
@@ -431,25 +444,21 @@ class SearchSkipTest(LibraryCase):
 
 class FollowTest(LibraryCase):
     def test_categories_are_kept_for_later_syncs(self):
-        self.assertEqual(self.saved(self.fl.follow("exs:example_user/reels")), ["r1"])
+        self.assertEqual(self.saved(self.fl.get("exs:example_user/reels")), ["r1"])
         self.listing["example_user", "posts"].insert(0, "p0")
         self.listing["example_user", "reels"].insert(0, "r0")
-        self.assertEqual(self.saved(self.fl.sync()), ["r0"])
+        self.assertEqual(self.saved(self.fl.get()), ["r0"])
         # Following again without categories keeps them; `/all` follows every one.
-        self.assertEqual(self.saved(self.fl.follow("exs:example_user")), [])
-        self.assertEqual(self.saved(self.fl.follow("exs:example_user/all")), ["p0", "p1", "p2"])
-        self.assertEqual(self.saved(self.fl.sync()), [])
+        self.assertEqual(self.saved(self.fl.get("exs:example_user")), [])
+        self.assertEqual(self.saved(self.fl.get("exs:example_user/all")), ["p0", "p1", "p2"])
+        self.assertEqual(self.saved(self.fl.get()), [])
         self.assertEqual(len(self.fl.files(target="exs:example_user")), 5)
-
-    def test_download_never_follows(self):
-        self.fl.download("exs:example_user").wait()
-        self.assertFalse(self.fl.targets()[0].follow)
 
 
 class ReadsTest(LibraryCase):
     def test_files_by_target_kind_and_since(self):
-        self.fl.download("exs:example_user").wait()
-        self.fl.download("exs:p/9").wait()
+        self.fl.get("exs:example_user").wait()
+        self.fl.get("exs:p/9").wait()
         records = self.fl.files()
         self.assertEqual(sorted(record.post for record in records), ["9", "p1", "p2", "r1"])
         mine = self.fl.files(target="exs:example_user", kind="image", since="2026-03")
@@ -462,8 +471,8 @@ class ReadsTest(LibraryCase):
 
     def test_a_new_home_reads_empty_and_stays_unwritten(self):
         with flnd.open(self.home / "new") as fl:
-            self.assertEqual((fl.targets(), fl.files()), ([], []))
-            self.assertEqual(fl.sync().wait(), flnd.Report())
+            self.assertEqual((list(fl.targets), fl.files()), ([], []))
+            self.assertEqual(fl.get().wait(), flnd.Report())
         self.assertFalse((self.home / "new" / "media").exists())
 
     def test_add_refuses_a_taken_code_or_a_non_source(self):

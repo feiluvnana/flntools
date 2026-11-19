@@ -12,7 +12,7 @@ What it offers any caller:
 - `parse_binarycookies`, a stdlib reader of Safari's `Cookies.binarycookies` format.
 - `refuse_profile`, the guard that stops a test suite from reading a real browser profile.
 
-Who calls it: in flnd, the login code (`src/engine/auth.py`) loads a jar at `flnd login` and
+Who calls it: in flnd, the login code (`src/engine/auth.py`) loads a jar at `flnd auth login` and
 saves it in the vault; the HTTP client (`flnkit/net.py`) and the browser
 (`flnkit/browser.py`) send it. It calls only the stdlib and the `_files` (atomic writes) and
 `_ui` (a debug line) libraries. Its errors are
@@ -64,7 +64,7 @@ _PLATFORM = sys.platform
 # anything this size is a mistake or an attack, refused before it is parsed.
 MAX_SIZE = 16 * 1024 * 1024
 
-# Every browser `load` reads cookies from, by the name `flnd login <source> <browser>` takes.
+# Every browser `load` reads cookies from, by the name `flnd auth login <source> <browser>` takes.
 # Safari is read on macOS only.
 BROWSERS = ("firefox", "safari")
 # Safari's cookie file, under the home folder: in its sandbox container since Safari 14, and

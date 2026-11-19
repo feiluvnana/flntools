@@ -59,7 +59,7 @@ DISK_HINTS = {
     errno.EROFS: "that disk is read-only; use another --home",
     errno.ENAMETOOLONG: "use a shorter --home or folder template",
 }
-LOGIN_HINT = "run flnd login {code}"
+LOGIN_HINT = "run flnd auth login {code}"
 BUG_HINT = "this is a bug; run with -v and report it"
 
 

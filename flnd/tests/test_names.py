@@ -301,9 +301,9 @@ WORD = re.compile(r"[A-Za-z_]\w*")
 # when nothing in flnd/ could use it instead. The list may only shrink: a listed name that
 # becomes used, or goes, fails `test_no_stale_allowance`.
 CALLED_FROM_OUTSIDE: dict[str, str] = {
-    # An early part (PLAN.md 15): step 10's `feat:let config override a plugin's templates`
-    # wires config.py in and removes these two (`speed` is a word the run's snapshot uses).
-    "src/engine/config.py:unset": "early part; `flnd config` and `Flnd.config` call it",
+    # Public (PLAN.md 8.3); the target list's `f` key calls it (step 13, `feat:work in the
+    # target, auth and plugin lists`), which removes this entry.
+    "src/_library.py:Targets.unfollow": "public; the target list's `f` key calls it",
     "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
 }

@@ -308,7 +308,7 @@ class PopupTest(Case):
             done = extension.Popup(home)("get", link)
         argv = started.call_args.args[0]
         self.assertEqual(done, {"started": "ins:example_user"})
-        self.assertEqual(argv[-5:], ["--home", str(home), "download", "--", "ins:example_user"])
+        self.assertEqual(argv[-5:], ["--home", str(home), "get", "--", "ins:example_user"])
 
 
 class InstallTest(Case):

@@ -857,16 +857,17 @@ class Popup:
         return {"target": str(target), "followed": bool(row and row.follow)}
 
     def start(self, op: str, target: str) -> dict[str, Any]:
-        """Start `flnd download` or `flnd follow` on `target`, in a process of its own.
+        """Start `flnd get` on `target`, in a process of its own.
 
         The target is resolved first, so one no plugin reads fails here, in the popup.
         """
         if not target:
             raise UsageError("the popup sent no target")
         resolved = self.resolve(target)["target"]
-        # The popup's Get is `flnd download` on today's command line.
-        command = {"get": "download", "follow": "follow"}[op]
-        argv = [*_flnd(), "--home", str(self.home), command, "--", resolved]
+        # `get` follows the target, so the popup's Get and Follow start the same command.
+        if op not in ("get", "follow"):
+            raise UsageError(f"the popup sent an unknown op {op!r}")
+        argv = [*_flnd(), "--home", str(self.home), "get", "--", resolved]
         detach: dict[str, Any] = ({"creationflags": subprocess.DETACHED_PROCESS} if WINDOWS
                                   else {"start_new_session": True})
         subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -1130,6 +1131,18 @@ def install(*, home: Path | None = None, domains: Sequence[str] = (),
         _put(path, described, 0o644)
     _steps(unpacked())
     return Setup(unpacked(), tuple(manifests), _wait(wait))
+
+
+def probe() -> str | None:
+    """The connected extension's version, or None when it isn't connected."""
+    async def hello() -> str | None:
+        async with asyncio.timeout(10), await connect() as client:
+            return client.version
+
+    try:
+        return asyncio.run(hello()) or ""
+    except (errors.Error, TimeoutError):
+        return None
 
 
 def uninstall(*, profiles: Sequence[Path] | None = None) -> list[Path]:

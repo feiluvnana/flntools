@@ -22,14 +22,13 @@ from unittest import mock
 
 import fakes
 from example_plugin import API, CDN, FIXTURES, Example
-from fakes import EngineCase, make_plugin
+from fakes import Engine, EngineCase, make_plugin
 
 from flnd.engine import _engine as engine_module
 from flnd.engine import crawl as job
 from flnd.engine import jobs as jobs_module
 from flnd.engine import run as _run
 from flnd.engine import store as _store
-from flnd.engine._engine import Engine
 from flnd.engine.crawl import Options
 from flnd.engine.events import Skipped
 from flnd.errors import DiskError, LoginError, NotFound, PluginError, SiteError, UsageError, disk
@@ -641,7 +640,7 @@ class FailureTest(JobCase):
                 if user == "gone":
                     raise NotFound("HTTP 404 for https://example.com/gone", status=404)
                 if user == "locked":
-                    raise LoginError("err: the saved login expired", hint="run flnd login err")
+                    raise LoginError("err: the saved login expired", hint="run flnd auth login err")
                 return user
 
             @user.category(newest_first=False)
@@ -1243,7 +1242,7 @@ class MemoryTest(JobCase):
         self.assertEqual(self.run_feed(undated), ["A1.jpg"])
         feed = self.feed(undated, hook=lambda post: datetime.date(2026, 1, 4))
         engine = Engine(home=self.home, sources={"mem": feed})
-        engine.target_sync(["mem:example_user"], enabled=True)
+        engine.target_follow(["mem:example_user"], on=True)
         engine.sync()
         self.assertEqual(self.files("mem"), ["2026-01-04_A1.jpg"])
         row = self.history()["mem:A1_0"]

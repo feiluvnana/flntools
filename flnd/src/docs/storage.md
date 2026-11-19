@@ -242,7 +242,7 @@ One row per target the home knows, keyed `<code>:<value>` (`ins:example_user`).
 | `gaps` | JSON: each category's gaps, newest first: the cursor where a sync of it was cut short, which the next sync jumps to once it meets saved posts on top; `""` is a gap without a cursor (a feed that isn't paged by cursor), which makes the next sync read down to the head |
 | `seen` | JSON: for a search, the targets it found, so a sync downloads only new ones |
 | `last_sync` | when it was last downloaded or synced, in UTC |
-| `files`, `bytes` | its saved files and their bytes, counted at the end of each of its runs; `flnd ls` shows them |
+| `files`, `bytes` | its saved files and their bytes, counted at the end of each of its runs; `flnd target list` shows them |
 | `account` | the account that last worked for it |
 
 ### `runs` and `failures`
@@ -261,7 +261,7 @@ whole target has the target's key and no post; the target's next run to its end 
 No row holds a request to send again, nor a URL with its query: a retry lists the post again
 through its source, from `cursor`, for fresh links ([errors.md](errors.md#retrying)). The next
 download or sync of the target retries every failed file that has no row in `files` since and
-`attempts` of at most 3; `flnd retry` takes every one.
+`attempts` of at most 3; `r` in `flnd target list` makes every one retryable again.
 
 ### `state`, `accounts`, `meta`
 
@@ -276,7 +276,7 @@ download or sync of the target retries every failed file that has no row in `fil
   (`origin`: a browser such as `chrome`, `file` for a cookie file, or the plugin's own way,
   `qr`, `phone`), `at`, when its login cookie expires (`expires`), and its `status`: `ok`,
   `held` or `expired`. No secret is ever here. A target runs as the account that worked for it
-  last (`targets.account`), else the plugin's first `ok` one. `flnd logout` removes every
+  last (`targets.account`), else the plugin's first `ok` one. `flnd auth logout` removes every
   account of the plugin.
 - `meta`: the schema's `version`, `2`.
 
@@ -372,11 +372,11 @@ is 32 random bytes in `~/.config/flnd/key` (`%APPDATA%\flnd\key` on Windows), mo
 per user for every home, made by the first login. It is never inside a home, so a copy of a home
 carries no key. With the key missing or changed, a sealed value raises "the vault's key is gone",
 and the rows are kept: they open again once the key file is back, and a new login replaces them.
-`flnd login` lists such a login as `key gone`.
+`flnd auth list` shows its account as expired once a run finds the key gone.
 A `secret.db` of an older flnd, whose values were plaintext, is sealed in place the first time
 it is opened, each plugin's values under its default account.
 
-A cookie login (`flnd login <code> chrome`, or a cookie file) keeps only the cookies of the
+A cookie login (`flnd auth login <code> chrome`, or a cookie file) keeps only the cookies of the
 plugin's domains and their subdomains, and is refused unless one of the cookies the plugin's
 login names is there. Any login must pass the plugin's `Login.check` before it is kept; a
 plugin's own login (`qr`, `phone`) may write its secrets only while its `Login.start` runs.
@@ -386,24 +386,24 @@ the site refreshed are written back into its account's jar, for the names alread
 The code: `flnkit/cookies.py` reads cookies from a file or a browser, `flnkit/vault.py` seals
 them, and `src/engine/auth.py` keeps the accounts and their logins in `secret.db`.
 
-`flnd logout <code>` removes every account of the plugin, and its secrets.
+`flnd auth logout <code>` removes every account of the plugin, and its secrets.
 
 ## Checking a home
 
-`flnd check` (`fl.check()` in a script) compares the history with the disk, and `--fix`
+`flnd status` (`fl.check()` in a script) compares the history with the disk, and a repair
 (`fix=True`) makes the history match the disk. It reads every row once, with one `stat` each, and
 walks `media/` once. It never deletes, moves or downloads a file, and it never adds a row.
 
-| found | what it means | what `--fix` does |
+| found | what it means | what a repair does |
 | --- | --- | --- |
-| missing | a row's file isn't there (removed by hand, or a disk lost it) | removes the row, so `flnd download <target> --again` can fetch it again |
+| missing | a row's file isn't there (removed by hand, or a disk lost it) | removes the row, so `flnd get <target> --again` can fetch it again |
 | wrong size | a saved file's size isn't its row's (cut short, or changed by another program) | takes the size, time and hash from the disk |
 | unknown | a file under `media/` no row names | nothing: it is reported, and stays out of the history |
 
 An unknown file stays unknown: a later run that lists it finds it on disk and skips it, so
-nothing is downloaded twice, and `check` reports it each time until you remove it or give it a
-row yourself. A home with one isn't all right, fixed or not: `flnd check --fix` repairs the
-rows and still exits 1, saying the unknown files stay.
+nothing is downloaded twice, and `status` reports it each time until you remove it or give it a
+row yourself. A home with one isn't all right, fixed or not: a repair fixes the
+rows and `flnd status` still exits 1, saying the unknown files stay.
 
 
 These are never unknown: parts and what sits beside them, hidden files (`.DS_Store`), symlinks,

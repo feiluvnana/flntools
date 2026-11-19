@@ -14,7 +14,6 @@ from unittest import mock
 
 import fakes
 
-from flnd.engine._engine import Engine
 from flnd.errors import Blocked, Changed, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import File, Post, Range, Request, Target
 from flnd.plugins.ins import APP_ID, Instagram, best_file, pk_stamp
@@ -578,7 +577,7 @@ class MeEngineTest(fakes.EngineCase):
         return (self.target_dir("ins", user) / "posts" / f"{DAY}_{code}.jpg").exists()
 
     def test_a_dry_run_keeps_nothing_and_a_sync_finds_new_follows(self):
-        engine = Engine(home=self.home, sources={"ins": Instagram})
+        engine = fakes.Engine(home=self.home, sources={"ins": Instagram})
         dry = engine.download(["ins:me/posts"], dry=True)
         self.assertTrue(dry.ok, (dry, self.lines()))
         self.assertEqual(fakes.targets(self.home), {})

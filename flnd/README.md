@@ -39,27 +39,27 @@ that needs joining fails (and is retried on later runs), an archive is kept but 
 
 ## Quick start
 ```bash
-flnd login ins chrome                        # use your Chrome login for Instagram
-flnd download ins:example_user               # its own content: posts, reels, stories, …
-flnd download ins:example_user/reels --when 2026
-flnd follow ins:example_user                 # follow it, and download what's there now
-flnd sync                                    # what's new for every followed target
-flnd ls                                      # what this home knows: files, size, last sync
+flnd auth login ins chrome                   # use your Chrome login for Instagram
+flnd get ins:example_user                    # its own content: posts, reels, stories, …
+flnd get ins:example_user/reels --when 2026
+flnd get                                     # what's new for every target you have followed
+flnd target list                             # what this home knows: files, size, last run
+flnd status                                  # the last run, its failures, accounts, the disk
 ```
 
 ## Commands
 ```text
-flnd download [targets…] [--when WHEN] [--limit N] [--dry] [--again] [--exec CMD]
-flnd follow [targets…] [--when WHEN] [--again]
-flnd sync [targets…] [--exec CMD]
-flnd unfollow <targets…>      stop following; files and history stay
-flnd ls [targets…]            the targets this home knows: followed or not, files, size, last run
-flnd status                   the last run: what it saved, each failure, why, and what to do
-flnd retry                    download again every file that failed
-flnd check [--fix]            compare the history with the files on disk, and repair it
-flnd login [source] [how]     log in; alone, lists every plugin's login
-flnd logout <source>          remove a saved login
-flnd sources                  every plugin: built in, from a package or the plugin folder
+flnd get [targets…] [--when WHEN] [--limit N] [--dry] [--again] [--exec CMD]
+flnd target list                       the targets this home knows: followed or not, files, size
+flnd target clean <targets…> [--media] forget targets; --media also deletes their files
+flnd auth list                         every account: origin, default, status
+flnd auth login <plugin> [method] [path]  log an account in
+flnd auth logout <plugin> [account]    log an account out
+flnd plugin list                       every plugin: built in or installed, and why one is disabled
+flnd plugin install <file|folder>      add a plugin; plugin uninstall <code> removes it
+flnd extension install                 connect Chrome (extension uninstall removes it)
+flnd status                            the last run, its failures, accounts that need care, the disk
+flnd config                            every setting: its value, default and where it comes from
 
 global flags: --home DIR · -v/--verbose · --json · -V/--version
 ```
@@ -69,38 +69,38 @@ global flags: --home DIR · -v/--verbose · --json · -V/--version
 
 - **A target** is `<plugin>:<name, id or link>`, `<plugin>?<words>` for a search, or just the
   link: `ins:example_user` and `https://www.instagram.com/example_user/` are the same target,
-  and `mht?romance` is a search. With no targets, `download` and `follow` read them from
-  standard input, one per line.
+  and `mht?romance` is a search. Lines on standard input are added to the targets, one
+  per line; with none at all, `flnd get` syncs every followed target.
 - **Categories** go in the target, after its last `/`: `ins:example_user/reels,posts`, or
-  `/all` for every one (`flnd download --help` lists each site's). Without them, a target flnd
+  `/all` for every one (`flnd get --help` lists each site's). Without them, a target flnd
   knows takes the ones it was followed with, and a new one the site's own content. A search
   passes them on to each target it finds (`mht?romance/cover`). A link takes the defaults, and
   a single post has no categories, so naming one for it is a usage error.
 - **`--when`** takes `2026`, `2026-06`, `2026-06-15`, a range `2026-01..2026-03` (either end may
   be left out), or a span back from today: `30d`, `8w`, `1y`.
 - **`--limit N`** takes at most N posts per target, or N targets from a search.
-- **`--dry`** lists what would be downloaded (each file `new` or already `saved`), and
-  downloads and writes nothing.
+- **`--dry`** lists what would be saved (each file `new` or already `saved`), and
+  saves and writes nothing.
 - **`--again`** lists every post again, past the posts already saved, and asks again for files
   the site said were gone (404 or 410).
 - **`--exec CMD`** runs a command for each saved file once it is final, such as
   `--exec 'notify-send {path}'`; `{target}` and `{post}` work too. It never goes through a
   shell, so a file name from a site can't inject a command.
-- **`--json`** prints one JSON object per line: every event, then the run's report; `ls`,
-  `status`, `check`, `login` and `sources` print their rows the same way. It never asks a
+- **`--json`** prints one JSON object per line: every event, then the run's report; the
+  lists and `status` print their rows the same way. It never asks a
   question, which suits scripts and cron.
 - **Exit codes:** 0 everything worked, 1 some files or targets failed, 2 a usage error, 3 a login
   is needed, 4 flnd stopped on an error (a full disk, a missing browser, a broken plugin, a bug),
   130 stopped with Ctrl-C.
 
 ### Following and syncing
-`download` takes what's there, once. `flnd follow` remembers a target, with its categories, and
-downloads it. `flnd sync` then fetches what's new for every followed target (or just the ones
-named). `flnd unfollow` stops following a target; its files and history stay. A sync asks no
-questions, and its exit code says how it went, so it suits cron, launchd or Task Scheduler:
+`flnd get` takes what's there, and remembers a target (unless it is a single post) with its
+categories. `flnd get` alone then fetches what's new for every followed target. `flnd target
+clean` forgets a target; its files stay unless `--media` is given. A get asks no questions, and
+its exit code says how it went, so it suits cron, launchd or Task Scheduler:
 
 ```bash
-15 3 * * * /path/to/flnd --home /path/to/media sync
+15 3 * * * /path/to/flnd --home /path/to/media get
 ```
 
 A sync is smart about what it has:
@@ -111,16 +111,16 @@ A sync is smart about what it has:
 - **An interrupted sync leaves no gap.** A sync cut short (Ctrl-C, an error, `--limit`) keeps
   where it stopped. The next sync takes the new posts on top, then jumps to that point and goes
   on from there, so nothing between them is missed.
-- **Failed files come back by themselves.** Every download and sync of a target first retries
-  its files that failed on earlier runs, each up to 3 times, listing the post again for fresh
-  links. `flnd retry` retries every failed file at once, however many runs failed it. A file
-  the site said is gone (404 or 410) is left alone; `download --again` asks for it again.
+- **Failed files come back by themselves.** Every get of a target first retries its files that
+  failed on earlier runs, each up to 3 times, listing the post again for fresh links. After
+  that, `r` in `flnd target list` makes them retryable again. A file the site said is gone (404
+  or 410) is left alone; `get --again` asks for it again.
 
 ### When something fails
 - **Network errors and rate limits** are retried with backoff, and a wait a site asks for
   (`Retry-After`) is kept. A file that still fails is listed at the end of the run:
   ```text
-  ✗ 3 files failed: 2 network (retry: flnd retry), 1 gone. Details: flnd status
+  ✗ 3 files failed: 2 network (retry: flnd get), 1 gone. Details: flnd status
   ```
   `flnd status` shows each failure with its message, how many runs failed it and what to do.
 - **Logins:** a login that is missing or expired stops that site only, with the command that
@@ -152,26 +152,24 @@ on disk after extraction.
   beside it, with its post's date, link, caption, author and tags.
 
 ### Checking a home
-`flnd check` compares the history in `flnd.db` with the files on disk, and prints each file
-that is missing, unknown or of the wrong size. It fetches nothing, and exits 1 when they
-disagree. `flnd check --fix` makes the history match the disk; it never deletes, moves or
-downloads a file.
+`flnd status` compares the history in `flnd.db` with the files on disk, and says which are
+missing, unknown or of the wrong size. It fetches nothing, and exits 1 when they disagree. A
+repair makes the history match the disk; it never deletes, moves or downloads a file.
 
 ## Logging in
-`flnd login <source> <how>` reads your login for that site from a browser (`chrome`, `firefox`,
+`flnd auth login <plugin> <method>` reads your login for that site from a browser (`chrome`, `firefox`,
 `edge`, `brave`, `chromium`, or `safari` on macOS), or from a `cookies.txt` or JSON cookie file
 you exported. Reading Safari needs Full Disk Access for your terminal (System Settings › Privacy
 & Security › Full Disk Access); without it, flnd says so and how to allow it. It keeps only the
 site's cookies, and refuses a login that lacks the site's login cookie. Telegram logs in its own
-way: `browser` (Telegram Web's session), `qr` or `phone`. Left out in a terminal, `how` is asked
-with numbered choices.
+way: `browser` (Telegram Web's session), `qr` or `phone`. Left out in a terminal, the method is asked.
 
 ```bash
-flnd login ins chrome
-flnd login twt ~/Downloads/cookies.txt
-flnd login tlg qr
-flnd login                                   # each plugin's login, and what expires soon
-flnd logout ins
+flnd auth login ins chrome
+flnd auth login twt file ~/Downloads/cookies.txt
+flnd auth login tlg qr
+flnd auth list                               # each account, and what expires soon
+flnd auth logout ins
 ```
 
 Logins and cookies are stored in `<home>/metadata/secret.db`, a file only your account can
@@ -211,7 +209,7 @@ what it takes; an unknown key is a warning.
 [src/docs/storage.md](src/docs/storage.md#settings-configtoml) lists every key.
 
 ## Use it from Python
-`flnd.open(home)` gives a `Flnd`, whose methods are the commands. A download returns a run that
+`flnd.open(home)` gives a `Flnd`, whose methods and groups are the commands. `get` returns a run that
 yields events as it goes: `Saved`, `Skipped`, `Failed`, and `Planned` for a dry run.
 
 <!-- docs-test: skip: it downloads from Instagram, which needs the network and a login -->
@@ -219,14 +217,14 @@ yields events as it goes: `Saved`, `Skipped`, `Failed`, and `Planned` for a dry 
 import flnd
 
 with flnd.open("~/Media/flnd") as fl:
-    for event in fl.download("ins:example_user/reels", when="2026"):
+    for event in fl.get("ins:example_user/reels", when="2026"):
 
         if isinstance(event, flnd.Saved):
             print(event.path, event.date, event.post)     # event.post is the post's id
         elif isinstance(event, flnd.Failed):
             print("failed:", event.error, event.error.hint)
 
-    report = fl.sync().wait()                             # runs it to the end: the counts
+    report = fl.get().wait()                              # runs it to the end: the counts
     print(report.saved, report.skipped, report.ok)
     photos = fl.files(target="ins:example_user", kind="image")   # what's saved, from flnd.db
 ```
@@ -281,12 +279,12 @@ assert [str(file.date) for file in saved] == ["2026-01-02"]
 
 To make flnd know it, either:
 
-- save it as `exm.py` in your plugin folder: `$FLND_SOURCES`, else `~/.config/flnd/sources/`
-  (`%APPDATA%\flnd\sources\` on Windows);
+- save it as `exm.py` in your plugin folder: `$FLND_PLUGINS`, else `~/.config/flnd/plugins/`
+  (`%APPDATA%\flnd\plugins\` on Windows);
 - publish it as a package with an entry point in the `flnd.sources` group, named by its code;
 - or, in a script, call `fl.add(Example)` on a `Flnd`.
 
-`flnd sources` then lists it. A plugin runs with your logins, so install only code you trust;
+`flnd plugin list` then lists it. A plugin runs with your logins, so install only code you trust;
 flnd never loads one from a home folder. A broken plugin disables itself alone, with a warning
 naming its file and line. [src/docs/writing-a-plugin.md](src/docs/writing-a-plugin.md) walks
 through it all.

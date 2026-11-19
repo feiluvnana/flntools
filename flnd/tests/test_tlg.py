@@ -7,6 +7,7 @@ tests/data/tlg_names.json, so the port renames no saved file.
 
 import asyncio
 import base64
+import contextlib
 import datetime
 import io
 import json
@@ -27,7 +28,7 @@ from telethon.errors import (
     SessionPasswordNeededError,
 )
 from telethon.tl import types
-from test_commands import FlndCase
+from test_cli import FlndCase
 
 from flnd.engine import auth, jobs
 from flnd.engine.crawl import Options
@@ -633,7 +634,8 @@ class LoginTest(Case):
 # ---------------------------------------------------------------------------------------------
 
 def store(home, **values):
-    auth.logout(home, "tlg")
+    with contextlib.suppress(UsageError):
+        auth.logout(home, "tlg")
     if values:
         sign_in(home, "tlg", **values)
 
@@ -663,7 +665,7 @@ class TelegramCase(EngineCase):
 
 
 class EngineLoginTest(TelegramCase):
-    """`flnd login tlg <method>` through the engine: what it asks, and what the home keeps."""
+    """`flnd auth login tlg <method>` through the engine: what it asks, and what the home keeps."""
 
     def log_in(self, method, *answers, tty=True):
         with mock.patch("sys.stdin.isatty", return_value=tty), \
@@ -773,22 +775,21 @@ class LoginCommandTest(FlndCase):
         # On the login object: `FakeCtx` gives it a `start` of its own, over the class's.
         with mock.patch.object(Telegram.login, "start", start), \
                 mock.patch.object(Telegram.login, "whoami", whoami):
-            code, _, err = self.run_app("login", "tlg", "qr")
+            code, _, err = self.run_app("auth", "login", "tlg", "qr")
             self.assertEqual(code, 0, err)
             with select_from_lines("3"):
-                code, _, err = self.run_app("login", "tlg")
+                code, _, err = self.run_app("auth", "login", "tlg")
             self.assertEqual(code, 0, err)
-            code, _, err = self.run_app("login", "tlg", "browser")
+            code, _, err = self.run_app("auth", "login", "tlg", "browser")
         self.assertEqual(methods, ["qr", "phone", "browser"])
         self.assertEqual(code, 3)
         self.assertIn("x tlg: no QR code was scanned", err)
 
-    def test_a_stored_session_is_listed_as_logged_in(self):
-        store(Path(".flnd"), session=SESSION, **CREDENTIALS)
-        code, out, _ = self.run_app("login")
+    def test_a_stored_session_is_listed(self):
+        sign_in(Path(".flnd"), "tlg", name="example_user", origin="qr")
+        code, out, _ = self.run_app("auth", "list")
         self.assertEqual(code, 0)
-        row = next(line for line in out.splitlines() if line.startswith("tlg "))
-        self.assertIn("logged in", row)
+        self.assertRegex(out, r"tlg +example_user +default +qr +ok")
 
 
 def zipped(name, text):

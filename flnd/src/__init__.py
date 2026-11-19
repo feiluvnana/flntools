@@ -5,14 +5,14 @@ src/docs/library explains it.
     import flnd
 
     with flnd.open("~/Media/flnd") as fl:
-        for event in fl.download("ins:example_user", only=["reels"]):
+        for event in fl.get("ins:example_user/reels"):
             if isinstance(event, flnd.Saved):
                 print(event.path)
 
 What it holds: the public names a script uses, and nothing else. `flnd.open(home)` gives a
-`Flnd`, whose methods are the CLI's commands; a download returns a `Run`, whose events
+`Flnd`, whose methods and groups are the CLI's commands; `get` returns a `Run`, whose events
 (`Saved`, `Skipped`, `Failed`, `Planned`) are the only output, and whose `state`
-(a `State`) says what it is doing now; `Report`, `Login`, `Record`, `Tracked`, `Status`,
+(a `State`) says what it is doing now; `Report`, `Account`, `Record`, `Tracked`, `Status`,
 `Failure`, `Checked` and `Installed` are what the reads return; the errors are the one
 hierarchy of `flnd.errors`. A
 plugin is written against `flnd.plugin` instead (src/docs/writing-a-plugin explains
@@ -37,6 +37,7 @@ _HOMES = {
     "Flnd": "flnd._library",
     "open": "flnd._library",
     "Run": "flnd.engine.run",
+    "Account": "flnd.plugin",
     "Checked": "flnd.engine.events",
     "Event": "flnd.engine.events",
     "Failed": "flnd.engine.events",
@@ -44,7 +45,6 @@ _HOMES = {
     "FileState": "flnd.engine.events",
     "HoldState": "flnd.engine.events",
     "Installed": "flnd.engine.events",
-    "Login": "flnd.engine.events",
     "Phase": "flnd.engine.events",
     "Planned": "flnd.engine.events",
     "Record": "flnd.engine.events",
@@ -74,8 +74,8 @@ _HOMES = {
 # Written out, not built from `_HOMES`, so linters and editors can read it; a test checks that
 # the two agree.
 __all__ = [
-    "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure",
-    "FileState", "Flnd", "Hidden", "HoldState", "Installed", "Login", "LoginError",
+    "Account", "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed",
+    "Failure", "FileState", "Flnd", "Hidden", "HoldState", "Installed", "LoginError",
     "NetworkError", "NotFound", "Phase", "Planned", "PluginError", "Record", "Report", "Run",
     "Saved", "SiteError", "Skipped", "State", "Status", "Stopped", "Target", "TargetState",
     "ToolError", "Tracked", "UsageError", "__version__", "open",
@@ -91,7 +91,6 @@ if TYPE_CHECKING:
         FileState,
         HoldState,
         Installed,
-        Login,
         Phase,
         Planned,
         Record,
@@ -119,7 +118,7 @@ if TYPE_CHECKING:
         ToolError,
         UsageError,
     )
-    from flnd.plugin import Target
+    from flnd.plugin import Account, Target
 
 
 def __getattr__(name: str) -> Any:

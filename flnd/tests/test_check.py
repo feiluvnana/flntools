@@ -118,7 +118,7 @@ class LibraryAndCliTest(CheckCase):
     def run_cli(self, *argv):
         out = io.StringIO()
         with redirect_stdout(out), redirect_stderr(io.StringIO()), self.aged():
-            code = cli.main(["--home", str(self.home), "check", *argv])
+            code = cli.main(["--home", str(self.home), *argv, "status"])
         return code, out.getvalue()
 
     def test_the_library_returns_a_checked(self):
@@ -128,16 +128,18 @@ class LibraryAndCliTest(CheckCase):
         self.assertIsInstance(found, flnd.Checked)
         self.assertTrue(found.ok)
 
-    def test_the_cli_lists_each_problem_and_exits_1_until_fixed(self):
+    def test_status_says_how_the_disk_compares_and_exits_1_until_it_agrees(self):
         self.saved_two()
+        self.assertEqual(self.run_cli()[0], 0)
         self.path("a").unlink()
         code, out = self.run_cli()
         self.assertEqual(code, 1)
-        self.assertIn("missing", out)
-        self.assertEqual(self.run_cli("--fix")[0], 0)
-        self.assertEqual(self.run_cli(), (0, "checked 1 file: history and disk agree\n"))
+        self.assertIn("disk: 2 files: 1 missing", out)
+        with flnd.open(self.home) as fl, self.aged():
+            fl.check(fix=True)
+        self.assertEqual(self.run_cli()[0], 0)
 
-    def test_an_unknown_file_after_fix_is_not_ok_and_exits_1(self):
+    def test_an_unknown_file_after_fix_is_not_ok(self):
         """E14: a repair never adopts an unknown file, so the home isn't ok until it goes."""
         self.saved_two()
         self.path("a").unlink()
@@ -145,21 +147,20 @@ class LibraryAndCliTest(CheckCase):
         with self.aged():
             found = self.check(fix=True)
         self.assertEqual((found.fixed, found.ok, found.unknown), (False, False, (lost,)))
-        err = io.StringIO()
-        with redirect_stdout(io.StringIO()), redirect_stderr(err), self.aged():
-            self.assertEqual(cli.main(["--home", str(self.home), "check", "--fix"]), 1)
-        self.assertIn("never adopts an unknown file", err.getvalue())
+        code, out = self.run_cli()
+        self.assertEqual(code, 1)
+        self.assertIn("1 unknown", out)
         lost.unlink()
-        self.assertEqual(self.run_cli("--fix")[0], 0)
+        self.assertEqual(self.run_cli()[0], 0)
 
-    def test_json_prints_one_checked_object(self):
+    def test_json_prints_one_status_object_with_the_disk_in_it(self):
         self.saved_two()
         self.path("a").unlink()
         code, out = self.run_cli("--json")
         [line] = out.splitlines()
         found = json.loads(line)
-        self.assertEqual((code, found["type"], found["files"]), (1, "Checked", 2))
-        self.assertEqual([record["key"] for record in found["missing"]], ["aaa:a.jpg"])
+        self.assertEqual((code, found["type"], found["disk"]["files"]), (1, "Status", 2))
+        self.assertEqual([record["key"] for record in found["disk"]["missing"]], ["aaa:a.jpg"])
 
 
 if __name__ == "__main__":

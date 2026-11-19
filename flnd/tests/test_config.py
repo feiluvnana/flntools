@@ -14,13 +14,13 @@ from unittest import mock
 
 import msgspec
 from example_plugin import Example as CtxExample
+from fakes import Engine
 from test_ctx import CtxCase
 from test_library import LibraryCase
 
 import flnd
 import flnd.plugin
 from flnd.engine import config
-from flnd.engine._engine import Engine
 from flnd.engine.config import Config, Where
 from flnd.errors import UsageError
 from flnd.plugin import Range, Target
@@ -409,7 +409,7 @@ class TemplatesTest(LibraryCase):
 
     def test_the_configured_templates_name_the_files(self):
         self.configure('[plugins.exs]\nfolder = "kept/{category}"\nfilename = "{post}"\n')
-        self.assertEqual(self.fl.download("exs:example_user").wait().saved, 3)
+        self.assertEqual(self.fl.get("exs:example_user").wait().saved, 3)
         folder = self.home / "media" / "exs" / "example_user" / "kept"
         self.assertEqual(sorted(str(path.relative_to(folder)) for path in folder.rglob("*.jpg")),
                          ["posts/p1.jpg", "posts/p2.jpg", "reels/r1.jpg"])
@@ -419,7 +419,7 @@ class TemplatesTest(LibraryCase):
             with self.subTest(text):
                 self.configure(f"[plugins.exs]\n{text}\n")
                 with self.assertRaises(UsageError):
-                    self.fl.download("exs:example_user")
+                    self.fl.get("exs:example_user")
         self.assertEqual(self.requests, [])
 
     def test_a_plugins_own_keys_reach_ctx_settings(self):
@@ -460,9 +460,9 @@ class PrecedenceTest(LibraryCase):
     def test_when_from_the_config_bounds_a_download_and_a_given_one_wins(self):
         # Every post of the example source is from 2026-03-01.
         self.configure('[defaults]\nwhen = "2026-04"\n')
-        self.assertEqual(self.fl.download("exs:example_user").wait().saved, 0)
-        self.assertEqual(self.fl.download("exs:example_user", when="2026-03").wait().saved, 3)
-        self.assertEqual(self.fl.download("exs:example_user", when="").wait().saved, 0)
+        self.assertEqual(self.fl.get("exs:example_user").wait().saved, 0)
+        self.assertEqual(self.fl.get("exs:example_user", when="2026-03").wait().saved, 3)
+        self.assertEqual(self.fl.get("exs:example_user", when="").wait().saved, 0)
 
 
 if __name__ == "__main__":

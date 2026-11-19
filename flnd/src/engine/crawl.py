@@ -70,7 +70,7 @@ class Retry(Enum):
     # List each of their posts again first, for those failed on at most `store.RETRIES` runs;
     # then the target's listings: every download and sync.
     FIRST = "first"
-    # List each of their posts again, every one of them, and nothing else: `flnd retry`.
+    # List each of their posts again, every one of them, and nothing else: `flnd target list`'s r.
     ONLY = "only"
 
 
@@ -285,7 +285,7 @@ def logged_out(target: Target, message: str | None = None) -> LoginError:
     Returns:
         A `LoginError` whose hint is the command that logs in again.
     """
-    return LoginError(message or "not logged in", hint=f"run flnd login {target.plugin}",
+    return LoginError(message or "not logged in", hint=f"run flnd auth login {target.plugin}",
                       target=str(target))
 
 
@@ -2575,7 +2575,7 @@ async def _retry_failed(
 
     How it goes:
     1. Read the target's failures (`Home.pending`): those failed on at most `store.RETRIES`
-       runs, or every one for `flnd retry`. A gone file (`NotFound`) is never among them.
+       runs, or every one for `flnd target list`'s r. A gone file (`NotFound`) is never among them.
     2. Group them by listing, and by the cursor of the page their post was on.
     3. For each group, list from that cursor (`_relist`): each failed post met is queued like
        any post, which downloads only its files that aren't saved: the ones that failed.
@@ -2688,7 +2688,7 @@ async def _lost(
             error = NotFound(f"post {row.post} is no longer in its listing")
         else:
             error = SiteError(f"post {row.post} wasn't found near where it was listed",
-                              hint="flnd retry tries again", retryable=True)
+                              hint="flnd target list, then r, tries again", retryable=True)
         if db is not None:
             await run.off(functools.partial(
                 db.fail, run=run.settings.run, item=row.key, target=row.target, error=error,

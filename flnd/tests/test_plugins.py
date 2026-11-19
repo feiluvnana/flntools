@@ -116,13 +116,13 @@ class PluginCase(EngineCase):
                 if name.startswith(_plugins.MODULE_PREFIX) and "." not in name}
 
     def rows(self) -> dict[str, flnd.Installed]:
-        return {row.code: row for row in self.fl.sources}
+        return {row.code: row for row in self.fl.plugins}
 
 
 class DiscoveryTest(PluginCase):
     def test_a_file_plugin_downloads_like_a_built_in(self):
         self.install("exm.py", plugin("exm"))
-        report = self.fl.download("exm:example_user").wait()
+        report = self.fl.get("exm:example_user").wait()
         self.assertEqual((report.saved, report.failed), (1, ()))
         saved = self.home / "media" / "exm" / "example_user" / "p1_0.jpg"
         self.assertEqual(saved.read_bytes(), JPEG)
@@ -132,7 +132,7 @@ class DiscoveryTest(PluginCase):
         self.install("exo.py", plugin("exo"))
         self.fl._resolve(["exm:example_user", "ins:example_user"])
         self.assertEqual(self.loaded(), set())
-        self.fl.download("exm:example_user").wait()
+        self.fl.get("exm:example_user").wait()
         self.assertEqual(self.loaded(), {"exm"})
 
     def test_a_built_in_link_imports_no_plugin(self):
@@ -142,7 +142,7 @@ class DiscoveryTest(PluginCase):
 
     def test_a_built_in_download_never_looks_for_plugins(self):
         with mock.patch.object(PLUGINS, "manager", side_effect=AssertionError("checked plugins")):
-            self.fl.download("mht:70982").wait()
+            self.fl.get("mht:70982").wait()
 
     def test_a_link_no_built_in_reads_resolves_without_importing(self):
         self.install("exm.py", plugin("exm"))
@@ -168,13 +168,12 @@ class DiscoveryTest(PluginCase):
         self.fl.add(Own)
         self.assertEqual(self.rows()["own"].origin, "script")
 
-    def test_sources_lists_origin_version_and_login(self):
+    def test_plugins_list_origin_version_and_forms(self):
         self.install("exm.py", plugin("exm"))
         rows = self.rows()
         self.assertEqual((rows["ins"].origin, rows["ins"].version), ("built-in", flnd.__version__))
         exm = rows["exm"]
-        self.assertEqual((exm.origin, exm.version, exm.api, exm.login),
-                         ("file", "2.1", 2, "needs no login"))
+        self.assertEqual((exm.origin, exm.version, exm.api), ("file", "2.1", 2))
         self.assertEqual(exm.forms, ("exm:<user>", "https://www.exm.example/<user>/"))
 
     def test_a_folder_that_isnt_there_holds_no_plugin(self):
@@ -240,14 +239,14 @@ class ContainmentTest(PluginCase):
     def test_a_disabled_plugin_is_not_in_plugins(self):
         self.install("bad.py", plugin("bad"))
         self.write("bad.py", "raise RuntimeError('no')\n")
-        report = self.fl.download("bad:example_user").wait()
+        report = self.fl.get("bad:example_user").wait()
         self.assertEqual(len(report.failed), 1)
         self.assertIn("bad is disabled", str(report.failed[0].error))
         self.assertNotIn("bad", list(PLUGINS))
 
     def test_a_listing_that_raises_fails_its_target_alone(self):
         self.install("exm.py", plugin("exm"))
-        run = self.fl.download(["exm:broken", "exm:example_user"])
+        run = self.fl.get("exm:broken", "exm:example_user")
         failed = [event for event in run if isinstance(event, flnd.Failed)]
         self.assertEqual(run.report.saved, 1)
         [event] = failed
@@ -270,7 +269,7 @@ class ContainmentTest(PluginCase):
                     yield Post("p1", [File("https://cdn.example.com/p1.jpg")])
             ''')
         with mock.patch.object(job, "HELD", 0.01):
-            self.assertEqual(self.fl.download("slow:example_user").wait().saved, 1)
+            self.assertEqual(self.fl.get("slow:example_user").wait().saved, 1)
         self.assertIn("Slow.user held the loop", self.dest.getvalue())
 
 
@@ -292,11 +291,11 @@ class NeverFromAHomeTest(PluginCase):
     def test_no_read_or_command_loads_it(self):
         self.assertNotIn("evil", self.rows())
         with self.assertRaises(flnd.UsageError):
-            self.fl.download("evil:example_user")
-        self.fl.logins
+            self.fl.get("evil:example_user")
+        list(self.fl.auth)
         with contextlib.chdir(self.home.parent), contextlib.redirect_stdout(io.StringIO()):
-            flnd_cli.main(["--home", str(self.home), "sources"])
-            flnd_cli.main(["login"])
+            flnd_cli.main(["--home", str(self.home), "plugin", "list"])
+            flnd_cli.main(["auth", "list"])
         self.assertFalse(self.marker.exists())
 
 
@@ -307,23 +306,16 @@ class CliTest(PluginCase):
             code = flnd_cli.main(["--home", str(self.home), *argv])
         return code, out.getvalue()
 
-    def test_sources_shows_plugins_and_why_one_is_disabled(self):
+    def test_plugin_list_shows_plugins_and_why_one_is_disabled(self):
         self.install("exm.py", plugin("exm"))
         self.install("bad.py", plugin("bad", name="bad"))
         self.write("bad.py", "x = (\n")
-        code, out = self.run_app("sources")
+        code, out = self.run_app("plugin", "list")
         self.assertEqual(code, 0)
-        self.assertIn("ins  Instagram  (built-in 0.1.0)", out)
-        self.assertIn("exm  Example  (file 2.1)", out)
-        self.assertIn(f"  from:       {self.folder / 'exm.py'}", out)
-        self.assertIn("  login:      needs no login", out)
-        self.assertIn("bad  bad  (file)\n  disabled:   ", out)
-
-    def test_login_lists_plugin_sources(self):
-        self.install("exm.py", plugin("exm"))
-        code, out = self.run_app("login")
-        self.assertEqual(code, 0)
-        self.assertIn("exm ", out)
+        self.assertRegex(out, r"ins +Instagram +built-in +2 ")
+        self.assertRegex(out, r"exm +Example +file +2 ")
+        self.assertRegex(out, r"bad +bad +disabled +0 ")
+        self.assertIn("bad disabled: ", out)
 
 
 class HelpTest(unittest.TestCase):

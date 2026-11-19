@@ -37,9 +37,13 @@ from typing import Any
 
 import kit
 
+# `fakes.py`, the test helpers, lives in tests/, one folder up.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from fakes import Engine, drive  # noqa: E402
+
 from flnd.engine import run as _run
 from flnd.engine import store as _store
-from flnd.engine._engine import Engine, _drive
 from flnd.engine.crawl import Options
 from flnd.plugin import Ctx, File, Plugin, Post, Request, Target, route
 from flnd.ui.log import ui
@@ -153,7 +157,7 @@ def run(home: Path, *, again: bool = False) -> float:
             await runner.run(chosen)
 
     start = time.perf_counter()
-    _drive(command())
+    drive(command())
     return time.perf_counter() - start
 
 

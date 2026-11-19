@@ -5,11 +5,10 @@ import sys
 import unittest
 from unittest import mock
 
-from fakes import EngineCase, noise
+from fakes import Engine, EngineCase, noise
 from test_library import LibraryCase, example_source
 
 from flnd.engine import crawl, store
-from flnd.engine._engine import Engine
 from flnd.engine.resolve import Manifest, Resolved, resolve
 from flnd.errors import PluginError, UsageError
 from flnd.plugin import Target, route
@@ -279,14 +278,14 @@ class MixedRunTest(LibraryCase):
         self.fl.add(example_source(self.listing, code="exq", search=route("exq?{words}")(search)))
 
     def test_a_search_and_a_user_with_categories_are_both_stored(self):
-        self.fl.follow(["exq?words/reels", "exq:example_user/posts"]).wait()
+        self.fl.get("exq?words/reels", "exq:example_user/posts").wait()
         with store.open(self.home) as db:
             rows = db.targets()
         self.assertEqual((rows["exq:words"].categories, rows["exq:example_user"].categories),
                          (("reels",), ("posts",)))
 
     def test_a_followed_user_stops_at_saved_posts_in_a_mixed_run(self):
-        self.fl.follow("exq:example_user").wait()
+        self.fl.get("exq:example_user").wait()
         seen = []
         real = crawl.download
 
@@ -295,7 +294,7 @@ class MixedRunTest(LibraryCase):
             return await real(run, target, tally, options, **kwargs)
 
         with mock.patch.object(crawl, "download", download):
-            self.fl.download(["exq?words", "exq:example_user"]).wait()
+            self.fl.get("exq?words", "exq:example_user").wait()
         self.assertIn(("exq:example_user", True), seen)
 
 

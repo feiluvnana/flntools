@@ -465,7 +465,8 @@ async def read_single(ctx: Ctx, url: str, *, wanted: str | None = None,
              if wanted is None or item.id == wanted]
     if not found:
         raise NotFound(f"fbk: {url} shows no photo or video",
-                       hint="it may be private or deleted; if you can see it, run flnd login fbk")
+                       hint="it may be private or deleted; if you can see it, "
+                            "run flnd auth login fbk")
     for item in found:
         yield post_of(item, "")
 

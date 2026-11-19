@@ -54,7 +54,7 @@ them.
 
 ## Logging in
 
-`flnd login ins <how>` takes a browser or a cookie file's path. Left out in a terminal,
+`flnd auth login ins <how>` takes a browser or a cookie file's path. Left out in a terminal,
 the way is asked with numbered choices:
 
 - **From your browser**: reads Instagram's cookies from Chrome, Firefox, Edge, Brave,
@@ -70,7 +70,7 @@ Without a login, flnd still tries: it opens the same pages, and gets what Instag
 logged-out visitor. `ins:me` needs the logged-in account's id, read from the `ds_user_id` cookie,
 or else from the number at the start of the `sessionid` cookie. Without either it stops with a
 login error, "ins: not logged in, so there is no account to read", and the hint
-`run flnd login ins`.
+`run flnd auth login ins`.
 
 When a run starts, flnd warns if `sessionid` has expired or will expire within a day. When the
 session stops working mid-run, a page or a request that lands on one of the plugin's `walls` is

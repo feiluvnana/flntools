@@ -25,6 +25,8 @@ from rich.text import Text
 from flnd.ui import out, theme
 from flnkit import clock, text
 
+# Under the home: run journals, crash reports and samples.
+LOGS = Path("log")
 _SECRET_HEADERS = frozenset({"authorization", "cookie", "proxy-authorization", "set-cookie"})
 
 
@@ -81,6 +83,26 @@ def _color_settings(
     if color not in table:
         raise ValueError(f"unknown color setting {color!r}")
     return table[color]
+
+
+def stamped(home: str | os.PathLike[str], name: str, suffix: str) -> Path:
+    """A file in the home's `log/` named by the time: `<stamp>_<name><suffix>`."""
+    return Path(home) / LOGS / f"{datetime.now():%Y%m%d-%H%M%S}_{name}{suffix}"
+
+
+def crash(home: str | os.PathLike[str], trace: str) -> Path | None:
+    """Write a bug's traceback to `<home>/log/crash-<stamp>.txt`.
+
+    Returns:
+        The file; None when it can't be written (a read-only disk).
+    """
+    path = Path(home) / LOGS / f"crash-{datetime.now():%Y%m%d-%H%M%S}.txt"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(trace, encoding="utf-8")
+    except OSError:
+        return None
+    return path
 
 
 class Journal:

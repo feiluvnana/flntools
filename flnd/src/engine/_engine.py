@@ -12,8 +12,6 @@ from collections.abc import (
     AsyncIterator,
     Awaitable,
     Callable,
-    Coroutine,
-    Iterator,
     Mapping,
     Sequence,
 )
@@ -23,10 +21,10 @@ from typing import Any, NamedTuple, TypeVar
 
 import flnd.engine.resolve
 from flnd.engine import auth, config, crawl, ctx, jobs, plugins, save, store
-from flnd.engine.crawl import Options, Retry, RunShared, TargetReport
+from flnd.engine.crawl import Options, RunShared, TargetReport
 from flnd.engine.ctx import Ctx, PluginRun, shared_browser
 from flnd.engine.events import Failed, Planned, sink
-from flnd.engine.run import Stop, Tally, _shut_down, stopping
+from flnd.engine.run import Stop, Tally, stopping
 from flnd.errors import DiskError, Error, LoginError, NetworkError, PluginError, Stopped, UsageError
 from flnd.plugin import Account, Browser, Plugin, Range, Target
 from flnd.ui.log import ui
@@ -65,13 +63,15 @@ class TargetInfo:
     """A known target's state and its saved files, as `Engine.target_ls` reads them."""
 
     target: Target
-    sync: bool
+    follow: bool
     at: str
     files: int
     size: int
     seen: int
-    categories: dict[str, str]
+    categories: tuple[str, ...]
+    complete: dict[str, str]
     query: bool
+    account: str | None
 
 
 @dataclass(frozen=True)
@@ -97,7 +97,7 @@ class Results:
 
 
 class Engine:
-    """flnd's commands as methods: `resolve`, `download`, `sync`, `retry`, and the reads."""
+    """flnd's commands as methods: `run_download`, `run_sync`, `resolve`, and the target reads."""
 
     def __init__(
         self,
@@ -243,18 +243,6 @@ class Engine:
         return Chosen(Target(found.key, kind=found.kind),
                       found.categories if kept else None, found.link)
 
-    def download(self, targets: Sequence[Target | str], **options: Any) -> Results:
-        """`run_download`, on a loop of its own on this thread, for a caller outside a run."""
-        return _drive(self.run_download(targets, **options))
-
-    def sync(self, targets: Sequence[Target | str] = (), *, time: Range | None = None) -> Results:
-        """`run_sync`, on a loop of its own on this thread, for a caller outside a run."""
-        return _drive(self.run_sync(targets, time=time))
-
-    def retry(self) -> Results:
-        """`run_retry`, on a loop of its own on this thread, for a caller outside a run."""
-        return _drive(self.run_retry())
-
     async def run_download(
         self,
         targets: Sequence[Target | str | Chosen],
@@ -306,7 +294,7 @@ class Engine:
                 if dry:
                     return self._finish_report(await self._dry_run(chosen, span, stop), stop)
                 ui.info("Storage: {path}", path=await _off((self.home / store.MEDIA).resolve))
-                async with self._recording("download", [t for t, _ in chosen]):
+                async with self._recording("get", [t for t, _ in chosen]):
                     async with self._running(stop) as runner:
                         return await self._download(runner, chosen, span=span, sync=sync,
                                                     stop=stop, keep=keep)
@@ -332,7 +320,7 @@ class Engine:
             ui.info("nothing to sync")
             return Results(())
         with stopping(self.stop) as stop:
-            async with self._recording("sync", [t for t, _ in chosen]), \
+            async with self._recording("get", [t for t, _ in chosen]), \
                     self._live(), self._running(stop) as runner:
                 results: dict[int, TargetReport] = {}
                 await self._sync_normal(runner, chosen, results, stop)
@@ -340,94 +328,86 @@ class Engine:
                 report = Results(tuple(results[i] for i in range(len(chosen))))
             return self._finish_report(report, stop)
 
-    async def run_retry(self) -> Results:
-        """Retry every failure the home keeps, however many runs failed it (`flnd retry`).
+    def target_ls(self, *, plugin: str | None = None) -> list[TargetInfo]:
+        """Every target `flnd.db` has a row for, with its state and saved files.
 
-        Each target with failed files lists each failed post again, from the cursor of the page
-        it was on, and downloads the files that failed, from `(target, post, file)`: never a
-        stored URL (src/docs/errors). A target whose listing failed whole is downloaded again, its
-        failed files first. A gone file (`NotFound`) isn't retried; `--again` asks for those.
-
-        Returns:
-            One `TargetReport` per target retried; none when nothing failed.
-
-        Raises:
-            KeyboardInterrupt: Ctrl-C (or the run's stop) ended it.
-        """
-
-        failed, rows = await _off(self._failures)
-        chosen: list[tuple[Target, Options]] = []
-        for item, whole in failed.items():
-            row = rows.get(item)
-            # A target a search found has no row of its own: its key resolves it.
-            recorded = self._recorded({item: row}) if row is not None else []
-            try:
-                target = recorded[0] if recorded else await asyncio.to_thread(self._one, item)
-            except Error as error:
-                ui.warn("{target}: can't retry: {error}", target=item, error=error)
-                continue
-            if target.plugin not in self.sources or self._is_query(target):
-                continue
-            # A failed file may be in any category, so a retry lists the ones it failed in; a
-            # target that failed whole is downloaded as its last run would have been.
-            options = (Options(categories=(row.categories or None) if row else None,
-                               stop_at_saved=True)
-                       if whole else Options(retry=Retry.ONLY))
-            chosen.append((target, options))
-        if not chosen:
-            ui.info("nothing to retry")
-            return Results(())
-        with stopping(self.stop) as stop:
-            async with self._recording("retry", [target for target, _ in chosen]), \
-                    self._live(), self._running(stop) as runner:
-                report = Results(tuple(await runner.run(chosen)))
-            return self._finish_report(report, stop)
-
-    def _failures(self) -> tuple[dict[str, bool], dict[str, store.TargetRow]]:
-        """The targets with failures `flnd retry` takes, and every target's row."""
-        with store.open(self.home) as db:
-            return db.failed(), db.targets()
-
-    def target_ls(self) -> list[TargetInfo]:
-        """Every known target with its state and saved files, all read from `flnd.db`.
-
-        Returns:
-            The recorded targets, then the folders in `media/` no row names.
+        Args:
+            plugin: only this plugin's targets; None for all.
         """
         with store.open(self.home) as db:
             rows = db.targets()
-            recorded = self._recorded(rows)
-            all_targets = recorded + list(self._unrecorded(recorded, rows))
-            return [self._target_info(target, rows, db) for target in all_targets]
+            return [self._target_info(target, rows, db) for target in self._recorded(rows)
+                    if plugin is None or target.plugin == plugin]
 
-    def target_sync(self, targets: Sequence[Target | str], *, enabled: bool) -> list[Target]:
-        """Turn `sync` on or off for each known target (`fl.unfollow` turns it off).
+    def target_follow(self, targets: Sequence[Target | str], *, on: bool) -> list[TargetInfo]:
+        """Follow the targets, so `get` with none takes them, or stop following them.
 
-        A known target is one with a row in `flnd.db`, or a folder under `media/` that no row
-        names (a target downloaded before targets were recorded), which gets a row here. Every
-        target is checked before any row changes, so one unknown target changes nothing.
-
-        Args:
-            targets: the targets, as text or resolved.
-            enabled: True to sync them from now on, False to stop.
-
-        Returns:
-            The resolved targets, in order.
+        A target is followed even if it was never downloaded, except a single post; stopping
+        takes a known target only. Every target is checked before any row changes.
 
         Raises:
-            UsageError: a target isn't known; download it first.
+            UsageError: a target is a single post, or (to stop) isn't known.
         """
         resolved = self.resolve(targets)
         rows = self._rows()
-        recorded = self._recorded(rows)
-        unrecorded = set(self._unrecorded(recorded, rows))
         for target in resolved:
-            if store.key(target) not in rows and target not in unrecorded:
-                raise UsageError(f"{target}: not a known target; download it first")
+            if on and self._is_single(target):
+                raise UsageError(f"{target}: a single post is never followed")
+            if not on and store.key(target) not in rows:
+                raise UsageError(f"{target}: not a known target", hint="flnd get <target> first")
         with store.open(self.home) as db:
             for target in resolved:
-                db.follow(target, enabled)
+                db.follow(target, on)
+        return self._infos(resolved)
+
+    def target_retry(self, targets: Sequence[Target | str]) -> list[TargetInfo]:
+        """Make the failed files of known targets retryable again, for the next `get`.
+
+        Raises:
+            UsageError: a target isn't known.
+        """
+        resolved = self._known(targets)
+        with store.open(self.home) as db:
+            for target in resolved:
+                db.retry(store.key(target))
+        return self._infos(resolved)
+
+    def target_clean(self, targets: Sequence[Target | str], *, media: bool = False,
+                     ) -> list[TargetInfo]:
+        """Forget known targets: their rows, files rows, failures, cursors, heads and gaps.
+
+        With `media`, their recorded files, sidecars, links and extracted folders go too, and
+        the folders left empty. Files under `media/` no row names stay.
+
+        Returns:
+            Each target as it stood when it was forgotten.
+
+        Raises:
+            UsageError: a target isn't known.
+        """
+        resolved = self._known(targets)
+        found = self._infos(resolved)
+        with store.open(self.home) as db:
+            for target in resolved:
+                rows = db.forget(store.key(target))
+                if media:
+                    store.erase(self.home, rows)
+        return found
+
+    def _known(self, targets: Sequence[Target | str]) -> list[Target]:
+        """The targets resolved, each with a row in `flnd.db`."""
+        resolved = self.resolve(targets)
+        rows = self._rows()
+        for target in resolved:
+            if store.key(target) not in rows:
+                raise UsageError(f"{target}: not a known target", hint="flnd get <target> first")
         return resolved
+
+    def _infos(self, targets: Sequence[Target]) -> list[TargetInfo]:
+        """Each target's `TargetInfo`, in order, as its row stands."""
+        keys = [store.key(target) for target in targets]
+        found = {store.key(info.target): info for info in self.target_ls()}
+        return [found[key] for key in keys if key in found]
 
     async def _download(
         self,
@@ -478,37 +458,7 @@ class Engine:
                                                          stop=stop))
                 else:
                     reports.extend(await runner.run([(target, options)]))
-        return await self._complete_download([target for target, _ in kept], reports,
-                                             sync=sync, stop=stop, rows=rows)
-
-    async def _complete_download(
-        self,
-        resolved: Sequence[Target],
-        reports: Sequence[TargetReport],
-        *,
-        sync: bool,
-        stop: Stop,
-        rows: Mapping[str, store.TargetRow] | None = None,
-    ) -> Results:
-        """End a download: raise for Ctrl-C, log the totals, and say when a target isn't synced.
-
-        Args:
-            resolved: the command's targets.
-            reports: one report per target.
-            sync: whether the command followed them, so no reminder is needed.
-            stop: the run's stop state.
-            rows: the target rows read before the run; None reads them again.
-
-        Returns:
-            The command's `Results`.
-
-        Raises:
-            KeyboardInterrupt: Ctrl-C ended the run.
-        """
-        report = self._finish_report(Results(tuple(reports)), stop)
-        if not sync:
-            await _off(self._warn_unsynced, resolved, rows=rows)
-        return report
+        return self._finish_report(Results(tuple(reports)), stop)
 
     def _finish_report(self, report: Results, stop: Stop) -> Results:
         """Raise `KeyboardInterrupt` when the run was stopped, else log its totals and return it.
@@ -604,7 +554,7 @@ class Engine:
             db: the home's database, for a target with no row.
 
         Returns:
-            What `flnd ls` shows of it.
+            What `flnd target list` shows of it.
         """
         row = rows.get(store.key(target))
         is_query = self._is_query(target)
@@ -614,45 +564,43 @@ class Engine:
             files, size = row.files, row.bytes
         else:
             files, size = db.count(store.key(target))
-        complete = row.complete if row is not None else {}
-        cursors = row.cursors if row is not None else {}
-        categories = (
-            {}
-            if is_query
-            else {
-                cat: (
-                    "complete" if cat in complete
-                    else ("interrupted" if cat in cursors else "incomplete")
-                )
-                for cat in self.sources[target.plugin].categories
-            }
-        )
+        kept = row.categories if row is not None else ()
+        categories = () if is_query else kept or tuple(self.sources[target.plugin].categories)
         return TargetInfo(
             target=target,
-            # A folder no row names was downloaded before following existed: it syncs.
-            sync=row.follow if row is not None else True,
+            follow=row.follow if row is not None else False,
             at=row.last_sync if row is not None else "",
             files=files,
             size=size,
             seen=len(row.seen) if is_query and row is not None else 0,
             categories=categories,
+            complete=dict(row.complete) if row is not None else {},
             query=is_query,
+            account=row.account if row is not None else None,
         )
 
-    def _is_query(self, target: Target) -> bool:
-        """Whether `target`'s route discovers other targets (a search) rather than posts."""
+    def _route(self, target: Target) -> Any:
+        """The route that reads `target` (its manifest entry or its class's), or None."""
         plugin = self.manifest.plugins.get(target.plugin)
         if plugin is None and self._widen(target.plugin):
             plugin = self.manifest.plugins.get(target.plugin)
         if plugin is not None:
-            route = next((r for r in plugin.routes if r.name == target.kind), None)
-            return route is not None and route.discovers
+            return next((r for r in plugin.routes if r.name == target.kind), None)
         try:
             source = self.sources[target.plugin]
         except PluginError:
-            return False
-        route = next((r for r in source.routes if r.kind == target.kind), None)
+            return None
+        return next((r for r in source.routes if r.kind == target.kind), None)
+
+    def _is_query(self, target: Target) -> bool:
+        """Whether `target`'s route discovers other targets (a search) rather than posts."""
+        route = self._route(target)
         return route is not None and route.discovers
+
+    def _is_single(self, target: Target) -> bool:
+        """Whether `target`'s route reads one post, which is never followed."""
+        route = self._route(target)
+        return route is not None and route.single
 
     async def _dry_run(
         self,
@@ -999,14 +947,6 @@ class Engine:
         finally:
             await _off(db.close)
 
-    def _warn_unsynced(
-        self, resolved: Sequence[Target], *, rows: Mapping[str, store.TargetRow] | None = None,
-    ) -> None:
-        """Remind the user how to keep a target up to date, when one of them isn't followed."""
-        saved = self._rows() if rows is None else rows
-        if any((row := saved.get(store.key(t))) is None or not row.follow for t in resolved):
-            ui.info("not followed; flnd follow keeps it up to date")
-
     def _recorded(self, rows: Mapping[str, store.TargetRow]) -> list[Target]:
         """The targets of `flnd.db`'s rows, rebuilt from each row's source, kind and value.
 
@@ -1038,7 +978,7 @@ class Engine:
 
         Args:
             chosen: each target, with its options.
-            follow: as `store.Store.record` takes it.
+            follow: as `store.Store.record` takes it; a single post is never followed.
             keep: whether to keep each target's categories for later syncs; otherwise the
                 stored ones stay.
         """
@@ -1046,7 +986,8 @@ class Engine:
             return
         with store.open(self.home) as db, db.transaction():
             for target, options in chosen:
-                db.record(target, follow=follow, query=options.query,
+                db.record(target, query=options.query,
+                          follow=None if follow is None else follow and not self._is_single(target),
                           categories=(options.categories or ()) if keep else None)
 
     @contextlib.asynccontextmanager
@@ -1086,8 +1027,7 @@ class Engine:
     def _plan(self, targets: Sequence[Chosen]) -> list[tuple[Target, Options]]:
         """Which targets a sync takes, each with the options its row keeps.
 
-        With no targets named, a sync takes every followed row, then every folder under
-        `media/` no row names (a target downloaded before following existed, which syncs).
+        With no targets named, a sync takes every followed row.
 
         Args:
             targets: the targets named, with their categories; empty for every synced target.
@@ -1099,53 +1039,14 @@ class Engine:
         rows = self._rows()
         if not targets:
             followed = {item: row for item, row in rows.items() if row.follow}
-            recorded = self._recorded(rows)
             targets = [Chosen(target, rows[store.key(target)].categories or None)
                        for target in self._recorded(followed)]
-            targets += [Chosen(target) for target in self._unrecorded(recorded, rows)]
         planned = []
         for target, categories, link in targets:
             row = rows.get(store.key(target))
             planned.append((target, Options(categories=categories, link=link or None,
                                             query=row.query if row else None)))
         return planned
-
-    def _unrecorded(
-        self, known: Sequence[Target], rows: Mapping[str, store.TargetRow] | None = None,
-    ) -> Iterator[Target]:
-        """The targets whose folders are under `media/` but which no row of `known` names.
-
-        A folder a search's found target saved into belongs to the search (its `seen` keys),
-        so it isn't yielded on its own. A folder no source can read as a target is logged at
-        -vv and passed over. It lists one folder per source, never a target's files.
-
-        Args:
-            known: the targets the home's rows name.
-            rows: those rows, by key, for the searches' `seen` keys; None for none.
-
-        Yields:
-            Each unrecorded target, resolved by its source, in folder-name order per source.
-        """
-        seen = {store.target_folder(self.home, t) for t in known if not self._is_query(t)}
-        media = self.home / store.MEDIA
-        saved_rows = rows or {}
-        for target in known:
-            row = saved_rows.get(store.key(target))
-            if self._is_query(target) and row is not None:
-                for child_key in row.seen:
-                    if ":" in child_key:
-                        seen.add(store.target_folder(self.home, Target(child_key)))
-        for code in self.sources:
-            for folder in sorted((media / code).iterdir()) if (media / code).is_dir() else ():
-                if folder.is_dir() and folder not in seen:
-                    try:
-                        yield self._one(f"{code}:{folder.name}")
-                    except UsageError as error:
-                        ui.debug(
-                            "{folder}: not synced: {error}",
-                            folder=f"{code}/{folder.name}",
-                            error=error,
-                        )
 
     def _one(self, text: str) -> Target:
         """Resolve one target's text on any plugin, following a short link once; the
@@ -1239,7 +1140,7 @@ class _Runner:
             if not entry.logged_in and _required(source):
                 return entry
             if not entry.logged_in:
-                ui.warn("{code}: not logged in, using public access; run flnd login {code}",
+                ui.warn("{code}: not logged in, using public access; run flnd auth login {code}",
                         code=code)
             if account is not None:
                 stack.push_async_callback(run.off, auth.write_back, run.settings.home, account,
@@ -1598,23 +1499,6 @@ async def _off(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     `flnd.db`, a stat), so the loop never waits for it. The thread is the loop's default
     executor's, which the run shuts down at its end."""
     return await asyncio.to_thread(fn, *args, **kwargs)
-
-
-def _drive(command: Coroutine[Any, Any, T]) -> T:
-    """Run an engine command on a loop of its own, on this thread, and return what it gives.
-
-    Raises:
-        BaseException: what the command raised, `KeyboardInterrupt` included.
-    """
-    loop = asyncio.new_event_loop()
-    try:
-        ok, value = loop.run_until_complete(_carried(command))
-        loop.run_until_complete(_shut_down())
-    finally:
-        loop.close()
-    if not ok:
-        raise value
-    return value
 
 
 async def _carried(awaitable: Awaitable[T]) -> tuple[bool, Any]:

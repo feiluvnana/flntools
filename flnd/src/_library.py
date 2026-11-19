@@ -3,23 +3,25 @@
 src/docs/library explains it.
 
     with flnd.open("~/Media/flnd") as fl:
-        for event in fl.download("ins:example_user/reels"):
+        for event in fl.get("ins:example_user/reels"):
             ...
 
 Who calls it: scripts and the CLI (`src/cli.py`), both through `flnd.open`, so the command
 line can do nothing a script can't. What it calls: `flnd.engine._engine.Engine` for every command,
-`flnd.engine.store` (the home's `flnd.db`) and `flnd.engine.auth` for the reads, and the home's
-`config.toml` for settings past the five options a call takes.
+`flnd.engine.store` (the home's `flnd.db`), `flnd.engine.auth`, `flnd.engine.plugins` and
+`flnd.engine.extension` for the reads, and the home's `config.toml` for settings past the five
+options a call takes.
 
 How a call flows:
 1. The method checks its arguments at once: targets are resolved with the categories they
    name, `when` and `limit` are read, and a mistake raises `flnd.UsageError` before anything
    is fetched.
-2. A command that downloads (`download`, `follow`, `sync`, `retry`) returns a `flnd.Run` that
-   hasn't started. Its work is a closure that makes an `Engine` with the run's event sink and
-   stop state, and calls the engine's command; the run starts it on its own thread when read.
-3. A read (`targets`, `files`, `logins`, `status`) or a quick change (`unfollow`, `login`,
-   `logout`) runs on the caller's thread and returns plain rows from `flnd.engine.events`.
+2. `get` returns a `flnd.Run` that hasn't started. Its work is a closure that makes an `Engine`
+   with the run's event sink and stop state, and calls the engine's command; the run starts it
+   on its own thread when read.
+3. A read (`targets`, `auth`, `plugins`, `files`, `status`) or a quick change (`targets.follow`,
+   `auth.login`, `config.set`) runs on the caller's thread and returns plain rows from
+   `flnd.engine.events`.
 
 Rules a change must keep:
 - Importing this module imports nothing heavy: the engine, curl_cffi, Playwright and Rich load on
@@ -34,17 +36,19 @@ from __future__ import annotations
 
 import datetime
 import os
+import sys
 import threading
 import weakref
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from flnd.engine.events import Checked, Failure, Installed, Login, Record, Status, Tracked
+from flnd.engine.events import Checked, Failure, Installed, Record, Status, Tracked
 from flnd.errors import PluginError, UsageError
+from flnd.plugin import Account
 
 if TYPE_CHECKING:
-    from flnd.engine._engine import Chosen, Engine
+    from flnd.engine._engine import Chosen, Engine, TargetInfo
     from flnd.engine.run import Run
     from flnd.engine.store import FailureRow
     from flnd.plugin import Plugin, Target
@@ -66,10 +70,9 @@ def open(home: str | os.PathLike[str] | None = None, *, again: bool | None = Non
     Args:
         home: the home folder; `~` is expanded. None takes `$FLND_HOME`, else `.flnd` in the
             current folder.
-        again: whether every `download` and `follow` lists each post again, past the stop at
-            saved posts and the saved cursors, and asks again for files the site answered 404
-            or 410 for (recorded as gone). None (or False) doesn't; the CLI's `--again` sets
-            it.
+        again: whether every `get` lists each post again, past the stop at saved posts and the
+            saved cursors, and asks again for files the site answered 404 or 410 for (recorded
+            as gone). None (or False) doesn't; the CLI's `--again` sets it.
 
     Returns:
         The `Flnd` of that home, to use in a `with` block.
@@ -77,14 +80,14 @@ def open(home: str | os.PathLike[str] | None = None, *, again: bool | None = Non
     Example:
         >>> import flnd
         >>> with flnd.open("example-home") as fl:
-        ...     fl.targets()
+        ...     fl.targets.list()
         []
     """
     return Flnd(home, again=again)
 
 
 class Flnd:
-    """flnd for one home folder: each command of the CLI as a method.
+    """flnd for one home folder: each command of the CLI as a method or a group.
 
     It is a context manager: leaving the `with` (or `close()`) stops any run still going, as a
     first Ctrl-C does, and waits for it. A run made but never started can't start after that.
@@ -106,7 +109,17 @@ class Flnd:
         chosen = home if home is not None else os.environ.get(HOME_VARIABLE) or DEFAULT_HOME
         # The folder the home is.
         self.home = Path(chosen).expanduser()
-        # Whether downloads ask again for everything.
+        # The targets the home knows: list, follow, unfollow, retry, clean.
+        self.targets = Targets(self)
+        # The accounts: login, logout, default.
+        self.auth = Auth(self)
+        # The plugins: built-in, installed, added: install, uninstall.
+        self.plugins = Plugins(self)
+        # Chrome's extension: install, uninstall, connected, version.
+        self.extension = Extension(self)
+        # The settings of `config.toml`: read, set, unset.
+        self.config = Config(self)
+        # Whether `get` asks again for everything.
         self._again = again
         self._added: dict[str, type[Plugin]] = {}
         self._runs: weakref.WeakSet[Run] = weakref.WeakSet()
@@ -146,21 +159,23 @@ class Flnd:
     # Runs
     # -----------------------------------------------------------------------------------------
 
-    def download(
-        self, targets: str | Target | Sequence[str | Target], *,
-        when: str | None = None, limit: int | None = None, dry: bool = False,
+    def get(
+        self, *targets: str | Target, limit: int | None = None, when: str | None = None,
+        dry: bool = False,
     ) -> Run:
-        """Download what the targets have now, once: nothing is followed for later syncs.
+        """Run the targets: get what they have that isn't saved, and follow them.
+
+        A target that isn't a single post is added to the followed ones, so a `get` with no
+        target takes it later. The categories a target names (`"ins:example_user/reels"`) are
+        kept with it; naming others replaces them.
 
         Args:
-            targets: one target or several: `"ins:example_user"`, a link, or a `Target`. The
-                categories go in the target (`"ins:example_user/reels,posts"`, `/all`);
-                without them, a known target takes its stored ones, else the plugin's own.
-                A single post has none, so naming one is a usage error.
+            targets: `"ins:example_user"`, a link, or a `Target`; none gets every followed
+                target, or, when none is followed, ends at once with an empty report.
+            limit: at most this many posts per target, or targets per search; None for all.
             when: the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`,
                 `"2026-01..2026-03"` or `"30d"`; `""` for every day; None for the home's
                 `[defaults] when` in config.toml, which is every day unless it says otherwise.
-            limit: at most this many posts per target, or targets per search; None for all.
             dry: plan instead: the run yields a `Planned` event per file and writes nothing.
 
         Returns:
@@ -173,7 +188,7 @@ class Flnd:
         Example:
             >>> import flnd
             >>> with flnd.open("example-home") as fl:  # doctest: +ELLIPSIS
-            ...     fl.download("ins:example_user", when="tomorrow")
+            ...     fl.get("ins:example_user", when="tomorrow")
             Traceback (most recent call last):
             ...
             flnkit.errors.UsageError: when takes a year (2026), a month (2026-06), ...
@@ -181,92 +196,15 @@ class Flnd:
         span = self._when(when)
         if limit is not None and limit < 1:
             raise UsageError("limit must be at least 1")
-        resolved = self._checked(targets)
         again = bool(self._again)
-        return self._run(f"download {_names(resolved)}", lambda engine: engine.run_download(
-            resolved, time=span, limit=limit, dry=dry, again=again))
-
-    def follow(
-        self, targets: str | Target | Sequence[str | Target], *, when: str | None = None,
-    ) -> Run:
-        """Follow the targets, so `sync` keeps them up to date, then download what they have.
-
-        The categories a target names (`"ins:example_user/reels"`) are kept with it, and
-        later syncs take those alone; following again with others replaces them. `when`
-        bounds this first download only.
-
-        Args:
-            targets: one target or several, as `download` takes them.
-            when: the days this first download takes posts from, as `download` reads it;
-                None for the home's `[defaults] when`.
-
-        Returns:
-            The `Run` of the first download, not started yet.
-
-        Raises:
-            UsageError: a target, category or `when` is wrong.
-
-        Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:  # doctest: +ELLIPSIS
-            ...     fl.follow("zzz:example_user")
-            Traceback (most recent call last):
-            ...
-            flnkit.errors.UsageError: no plugin named zzz
-        """
-        span = self._when(when)
-        resolved = self._checked(targets)
-        again = bool(self._again)
-        return self._run(f"follow {_names(resolved)}", lambda engine: engine.run_download(
-            resolved, time=span, sync=True, keep=True, again=again))
-
-    def sync(self, targets: str | Target | Sequence[str | Target] = (),) -> Run:
-        """Download what is new for every followed target, or for the ones named.
-
-        The home's `[defaults] when` in config.toml, when it names days, bounds every sync too.
-
-        Args:
-            targets: the followed targets to sync; empty for every one.
-
-        Returns:
-            The `Run`, not started yet. With nothing to sync, it ends at once with an empty
-            report.
-
-        Raises:
-            UsageError: a target is wrong.
-
-        Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
-            ...     fl.sync().wait().saved
-            0
-        """
-        span = self._when(None)
-        resolved = self._engine().chosen(_listed(targets))
-        named = f"sync {_names(resolved)}" if resolved else "sync"
-        return self._run(named, lambda engine: engine.run_sync(resolved, time=span))
-
-    def retry(self) -> Run:
-        """Download again every file the home's failures name, however many runs failed it.
-
-        A download or sync already retries a target's failed files first, on at most 3 runs
-        each; this takes every one, at once. Each failed post is listed again through its
-        source, for fresh URLs, and only its failed files are downloaded: a retry never uses a
-        stored URL, which `flnd.db` keeps redacted (src/docs/errors). A target whose listing failed
-        whole is downloaded again. A gone file (a 404 or 410) isn't retried; `again=True`
-        asks for those.
-
-        Returns:
-            The `Run`, not started yet. With nothing to retry, it ends at once with an empty
-            report; `report.retried` counts the files it brought back.
-
-        Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
-            ...     fl.retry().wait().retried
-            0
-        """
-        return self._run("retry", lambda engine: engine.run_retry())
+        if not targets and not (limit or dry or again):
+            return self._run("get", lambda engine: engine.run_sync((), time=span))
+        named = list(targets) or [row.target for row in self.targets if row.follow]
+        if not named:
+            return self._run("get", lambda engine: engine.run_sync((), time=span))
+        resolved = self._checked(named)
+        return self._run(f"get {_names(resolved)}", lambda engine: engine.run_download(
+            resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again))
 
     @property
     def status(self) -> Status | None:
@@ -294,70 +232,19 @@ class Flnd:
                       failures=tuple(_failure(row) for row in rows))
 
     # -----------------------------------------------------------------------------------------
-    # Targets and files
+    # Files and checks
     # -----------------------------------------------------------------------------------------
-
-    def unfollow(self, targets: str | Target | Sequence[str | Target]) -> list[Target]:
-        """Stop following targets: `sync` leaves them out. Their files and history stay.
-
-        Args:
-            targets: one known target or several.
-
-        Returns:
-            The targets, resolved.
-
-        Raises:
-            UsageError: a target is wrong, or the home doesn't know it.
-
-        Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
-            ...     fl.unfollow("ins:example_user")
-            Traceback (most recent call last):
-            ...
-            flnkit.errors.UsageError: ins:example_user: not a known target; download it first
-        """
-        return self._engine().target_sync(self._resolve(targets), enabled=False)
-
-    def targets(self, *, source: str | None = None) -> list[Tracked]:
-        """Every target the home knows, followed or not, with its files and last sync.
-
-        Args:
-            source: only this source's targets (`"ins"`); None for every source.
-
-        Returns:
-            One `Tracked` row per target.
-
-        Raises:
-            UsageError: `source` is no source's code.
-
-        Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
-            ...     fl.targets(source="ins")
-            []
-        """
-        if source is not None:
-            self._source(source)
-        found: list[Tracked] = []
-        for info in self._engine().target_ls():
-            if source is not None and info.target.plugin != source:
-                continue
-            found.append(Tracked(info.target, follow=info.sync, at=info.at, files=info.files,
-                                 size=info.size, seen=info.seen,
-                                 categories=dict(info.categories), query=info.query))
-        return found
 
     def files(
         self, *, target: str | Target | None = None, kind: str | None = None,
-        since: str | None = None,
+        since: datetime.date | str | None = None,
     ) -> list[Record]:
         """The saved files, read from the home's `flnd.db`, oldest saved first.
 
         Args:
             target: only this target's files; None for every target.
             kind: only `"image"`, `"video"` or `"audio"` files; None for all.
-            since: only posts from this day on, written as `when` writes one end
+            since: only posts from this day on, a date or written as `when` writes one end
                 (`"2026"`, `"2026-01"`, `"2026-01-15"`); a file whose post has no date
                 counts by the day it was saved. None for every day.
 
@@ -377,10 +264,13 @@ class Flnd:
             raise UsageError(f"kind is one of {', '.join(KINDS)}, not {kind!r}")
         from flnd.engine import config, store
 
-        first = None if since is None else config.when(since).since
+        if isinstance(since, datetime.date):
+            first: datetime.date | None = since
+        else:
+            first = None if since is None else config.when(since).since
         owner = None
         if target is not None:
-            [resolved] = self._resolve(target)
+            [resolved] = self._resolve([target])
             owner = store.key(resolved)
         with store.open(self.home) as db:
             rows = db.records(target=owner, kind=kind)
@@ -422,133 +312,14 @@ class Flnd:
         with store.open(self.home) as db:
             return store.check(self.home, db, fix=fix)
 
-
-    # -----------------------------------------------------------------------------------------
-    # Logins and sources
-    # -----------------------------------------------------------------------------------------
-
-    def login(self, source: str, how: str) -> Login:
-        """Log in to a source, and seal the login in the home's vault.
-
-        Args:
-            source: the source's code (`"ins"`).
-            how: a browser to read its cookies from (`"chrome"`, `"firefox"`, `"edge"`,
-                `"brave"`, `"chromium"`, `"safari"` on macOS), `"browser"` for a window of
-                flnd's Chromium at the site's login page, the path of a cookies.txt or JSON
-                export, or the source's own way (`"qr"`, `"phone"` for tlg), which asks its
-                questions in the terminal.
-
-        Returns:
-            The source's `Login` after it.
-
-        Raises:
-            UsageError: `source` or `how` is wrong.
-            LoginError: the browser has no login for the site, or the site refused it.
-
-        Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:  # doctest: +ELLIPSIS
-            ...     fl.login("ins", "netscape")
-            Traceback (most recent call last):
-            ...
-            flnkit.errors.UsageError: ins logs in by a browser (chrome, ...) or a cookie file's ...
-        """
-        from flnd.engine import auth
-        from flnd.plugin import Cookies
-
-        cls = self._source(source)
-        if not isinstance(cls.login, Cookies):
-            methods = cls.login.methods if cls.login is not None else ()
-            if how not in methods:
-                raise UsageError(f"{source} logs in by {', '.join(methods) or 'nothing'}, "
-                                 f"not {how!r}")
-            auth.login(self.home, cls(), how, interactive=True)
-        elif how in auth.BROWSERS or how == "browser":
-            auth.login(self.home, cls(), how)
-        elif Path(how).expanduser().is_file():
-            auth.login(self.home, cls(), "file", path=how)
-        else:
-            raise UsageError(f"{source} logs in by a browser ({', '.join(auth.BROWSERS)}), "
-                             f"a browser window (browser) or a cookie file's path, not {how!r}")
-        return next(login for login in self.logins if login.source == source)
-
-    def logout(self, source: str) -> bool:
-        """Remove a source's saved login.
-
-        Args:
-            source: the source's code.
-
-        Returns:
-            Whether there was a login to remove.
-
-        Raises:
-            UsageError: `source` is no source's code.
-
-        Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
-            ...     fl.logout("ins")
-            False
-        """
-        from flnd.engine import auth
-
-        self._source(source)
-        return auth.logout(self.home, source)
-
-    @property
-    def logins(self) -> list[Login]:
-        """Each source's login: its state, where it came from, and cookies that expire soon."""
-        from flnd.engine import auth
-
-        return auth.logins(self.home, self._sources())
-
-    @property
-    def sources(self) -> list[Installed]:
-        """Every source: the built-ins, the plugins (disabled ones too, saying why), then `add`'s.
-
-        Reading it imports every source and plugin, as `flnd sources` does.
-
-        Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
-            ...     [row.origin for row in fl.sources if row.code == "ins"]
-            ['built-in']
-        """
-        from flnd.engine import plugins
-
-        logins = {login.source: login.state for login in self.logins}
-        registry = plugins.PLUGINS
-        rows = [_installed(registry[code], logins) for code in registry.built_in_codes()]
-        mgr = registry.manager()
-        index = mgr.manifest["plugins"]
-        registry.flush(mgr)
-        for code, entry in sorted(index.items()):
-            if code in registry._overrides or code in mgr.built_in:
-                continue
-            where = str(mgr.folder / str(entry.get("file", code)))
-            try:
-                cls = mgr.load(code)
-            except PluginError:
-                registry.flush(mgr)
-                rows.append(Installed(code, str(entry.get("name", code)), plugins.FILE,
-                                      where=where, disabled=mgr.disabled[code]))
-            else:
-                registry.flush(mgr)
-                rows.append(_installed(
-                    cls, logins, origin=plugins.FILE,
-                    where=plugins.where(cls) or where, version=plugins.version(cls)))
-        rows += [_installed(cls, logins, origin=plugins.SCRIPT) for cls in self._added.values()]
-        return rows
-
-    def add(self, source: type[Plugin]) -> None:
-        """Add a plugin for this `Flnd` alone: its targets resolve and download like a
-        built-in's.
+    def add(self, plugin: type[Plugin]) -> None:
+        """Add a plugin for this `Flnd` alone: its targets resolve and get like a built-in's.
 
         It comes after the built-ins and the installed plugins, so a code one of them has is
         refused, never replaced.
 
         Args:
-            source: the `flnd.plugin.Plugin` subclass.
+            plugin: the `flnd.plugin.Plugin` subclass.
 
         Raises:
             UsageError: it isn't one, or its code is taken.
@@ -563,18 +334,18 @@ class Flnd:
             ...         yield Post("p1")
             >>> with flnd.open("example-home") as fl:
             ...     fl.add(Example)
-            ...     fl.targets(source="exa")
+            ...     fl.targets.list(plugin="exa")
             []
         """
         from flnd.plugin import Plugin
 
-        if not (isinstance(source, type) and issubclass(source, Plugin)):
+        if not (isinstance(plugin, type) and issubclass(plugin, Plugin)):
             raise UsageError("add takes a flnd.plugin.Plugin subclass")
-        if source.code in self._sources():
-            taken = self._sources()[source.code]
-            raise UsageError(f"{source.code}: the code is taken by {taken.__module__}."
+        if plugin.code in self._sources():
+            taken = self._sources()[plugin.code]
+            raise UsageError(f"{plugin.code}: the code is taken by {taken.__module__}."
                              f"{taken.__qualname__}", hint="give the class another code")
-        self._added[source.code] = source
+        self._added[plugin.code] = plugin
 
     # -----------------------------------------------------------------------------------------
     # Helpers
@@ -595,21 +366,15 @@ class Flnd:
 
         return ChainMap(self._added, PLUGINS)
 
-    def _source(self, code: str) -> type[Plugin]:
-        """The source of a code, built-in or added.
-
-        Args:
-            code: the source's code (`"ins"`).
-
-        Returns:
-            The source's class.
+    def _plugin(self, code: str) -> type[Plugin]:
+        """The plugin of a code, built-in, installed or added.
 
         Raises:
-            UsageError: no source has it.
+            UsageError: no plugin has it.
         """
         sources = self._sources()
         if code not in sources:
-            raise UsageError(f"unknown source {code!r}. Sources: {', '.join(sources)}")
+            raise UsageError(f"unknown plugin {code!r}. Plugins: {', '.join(sources)}")
         return sources[code]
 
     def _when(self, when: str | None) -> Any:
@@ -625,45 +390,32 @@ class Flnd:
         return config.when(found.defaults.when if when is None else when)
 
     def _engine(self, emit: Any = None, stop: Any = None) -> Engine:
-        """An engine of this home and its sources, sending events to `emit`."""
+        """An engine of this home and its plugins, sending events to `emit`."""
         from flnd.engine._engine import Engine
 
         return Engine(home=self.home, sources=self._sources(), emit=emit, stop=stop)
 
-    def _resolve(self, targets: str | Target | Sequence[str | Target]) -> list[Target]:
-        """Each target resolved through its source; a `Target` is taken as it is.
+    def _resolve(self, targets: Sequence[str | Target]) -> list[Target]:
+        """Each target resolved through its plugin; a `Target` is taken as it is.
 
         A short link is followed once (one request) to learn where it points.
 
-        Args:
-            targets: one target or several, as text or resolved.
-
-        Returns:
-            The targets, resolved, in order.
-
         Raises:
-            UsageError: a text no source reads.
+            UsageError: a text no plugin reads.
         """
         from flnd.plugin import Target
 
-        given = [targets] if isinstance(targets, (str, Target)) else list(targets)
         engine = self._engine()
         return [item if isinstance(item, Target) else engine.resolve([item])[0]
-                for item in given]
+                for item in targets]
 
-    def _checked(self, targets: Any) -> list[Chosen]:
+    def _checked(self, targets: Sequence[str | Target]) -> list[Chosen]:
         """Targets resolved with their categories, before a run is made.
-
-        Args:
-            targets: one target or several, as text or resolved.
-
-        Returns:
-            The targets, resolved, in order.
 
         Raises:
             UsageError: no target, a target no plugin reads, or a category its route lacks.
         """
-        resolved = self._engine().chosen(_listed(targets))
+        resolved = self._engine().chosen(list(targets))
         if not resolved:
             raise UsageError("give at least one target")
         return resolved
@@ -692,14 +444,416 @@ class Flnd:
         return run
 
 
-def _installed(cls: type[Plugin], logins: Mapping[str, str], *,
-               origin: str | None = None, where: str | None = None,
+class Targets:
+    """The targets a home knows: iterate it for `Tracked` rows, or change them.
+
+    Reached as `Flnd.targets`.
+    """
+
+    def __init__(self, owner: Flnd) -> None:
+        self._owner = owner
+
+    def __iter__(self) -> Iterator[Tracked]:
+        return iter(self.list())
+
+    def list(self, *, plugin: str | None = None) -> list[Tracked]:
+        """Every target the home knows, followed or not, with its files and last run.
+
+        Args:
+            plugin: only this plugin's targets (`"ins"`); None for every plugin.
+
+        Returns:
+            One `Tracked` row per target.
+
+        Raises:
+            UsageError: `plugin` is no plugin's code.
+        """
+        if plugin is not None:
+            self._owner._plugin(plugin)
+        return [_tracked(info) for info in self._owner._engine().target_ls(plugin=plugin)]
+
+    def follow(self, *targets: str | Target) -> list[Tracked]:
+        """Follow targets, so `get` with none takes them; nothing is downloaded.
+
+        Raises:
+            UsageError: a target is wrong, or is a single post.
+        """
+        engine = self._owner._engine()
+        return [_tracked(info) for info in engine.target_follow(list(targets), on=True)]
+
+    def unfollow(self, *targets: str | Target) -> list[Tracked]:
+        """Stop following known targets. Their files and history stay.
+
+        Raises:
+            UsageError: a target is wrong, or the home doesn't know it.
+        """
+        engine = self._owner._engine()
+        return [_tracked(info) for info in engine.target_follow(list(targets), on=False)]
+
+    def retry(self, *targets: str | Target) -> list[Tracked]:
+        """Make known targets' failed files retryable again: the next `get` tries them.
+
+        A file the site said is gone (a 404 or 410) is never retried.
+
+        Raises:
+            UsageError: a target is wrong, or the home doesn't know it.
+        """
+        engine = self._owner._engine()
+        return [_tracked(info) for info in engine.target_retry(list(targets))]
+
+    def clean(self, *targets: str | Target, media: bool = False) -> list[Tracked]:
+        """Forget known targets: their rows, files rows, failures, cursors, heads and gaps.
+
+        Args:
+            targets: the targets to forget.
+            media: also delete their recorded files, sidecars, links, extracted folders and the
+                folders left empty. Files under `media/` that no row names are never deleted.
+
+        Returns:
+            Each target as it stood when it was forgotten.
+
+        Raises:
+            UsageError: a target is wrong, or the home doesn't know it.
+        """
+        engine = self._owner._engine()
+        return [_tracked(info) for info in engine.target_clean(list(targets), media=media)]
+
+
+class Auth:
+    """The accounts of a home: iterate it for `Account` rows, or log in and out.
+
+    Reached as `Flnd.auth`.
+    """
+
+    def __init__(self, owner: Flnd) -> None:
+        self._owner = owner
+
+    def __iter__(self) -> Iterator[Account]:
+        from flnd.engine import auth, store
+
+        home = self._owner.home
+        auth.seal_plaintext(home)
+        with store.open(home) as db:
+            return iter([auth.account(row) for row in db.accounts()])
+
+    def login(self, plugin: str, *, method: str | None = None, path: str | None = None,
+              name: str | None = None) -> Account:
+        """Log an account in, and seal the login in the home's vault.
+
+        Args:
+            plugin: the plugin's code (`"ins"`).
+            method: one of the plugin's login methods: a browser (`"chrome"`, `"firefox"`,
+                ...), `"browser"` for a window of flnd's Chromium at the site's login page,
+                `"file"` for a cookies.txt or JSON export (with `path`), or the plugin's own
+                (`"qr"`, `"phone"` for tlg). None takes the only one the plugin has, or `"file"`
+                when `path` is given.
+            path: the cookie file, for `"file"`.
+            name: the account's name; None takes the site's own name for it.
+
+        Returns:
+            The account after it.
+
+        Raises:
+            UsageError: `plugin` or `method` is wrong, or the plugin has several methods and
+                none was named.
+            LoginError: the browser has no login for the site, or the site refused it.
+
+        Example:
+            >>> import flnd
+            >>> with flnd.open("example-home") as fl:  # doctest: +ELLIPSIS
+            ...     fl.auth.login("ins", method="netscape")
+            Traceback (most recent call last):
+            ...
+            flnkit.errors.UsageError: ins logs in by ...
+        """
+        from flnd.engine import auth
+        from flnd.plugin import Cookies
+
+        cls = self._owner._plugin(plugin)
+        if cls.login is None:
+            raise UsageError(f"{plugin} needs no login")
+        methods = cls.login.methods
+        if method is None:
+            method = "file" if path is not None else (methods[0] if len(methods) == 1 else None)
+        if method is None:
+            raise UsageError(f"{plugin}: how to log in?",
+                             hint=f"flnd auth login {plugin} <method>, a method of "
+                                  f"{', '.join(methods)}")
+        if method not in methods:
+            raise UsageError(f"{plugin} logs in by {', '.join(methods)}, not {method!r}")
+        if method == "file" and not (path and Path(path).expanduser().is_file()):
+            raise UsageError(f"{plugin}: a file login needs the path of a cookie file",
+                             hint=f"flnd auth login {plugin} file <path>")
+        return auth.login(self._owner.home, cls(), method, path=path, name=name,
+                          interactive=not isinstance(cls.login, Cookies))
+
+    def logout(self, plugin: str, *, name: str | None = None) -> Account:
+        """Log an account out: its secrets and its row. The default when no `name` is given.
+
+        Returns:
+            The account that was removed.
+
+        Raises:
+            UsageError: `plugin` is no plugin's code, or has no such account.
+
+        Example:
+            >>> import flnd
+            >>> with flnd.open("example-home") as fl:
+            ...     fl.auth.logout("ins")
+            Traceback (most recent call last):
+            ...
+            flnkit.errors.UsageError: ins: no account
+        """
+        from flnd.engine import auth
+
+        self._owner._plugin(plugin)
+        return auth.logout(self._owner.home, plugin, name)
+
+    def default(self, plugin: str, name: str) -> Account:
+        """Make an account the one the plugin's runs use when none is named.
+
+        Raises:
+            UsageError: `plugin` is no plugin's code, or has no such account.
+        """
+        from flnd.engine import auth
+
+        self._owner._plugin(plugin)
+        return auth.default(self._owner.home, plugin, name)
+
+
+class Plugins:
+    """The plugins a home can use: iterate it for `Installed` rows, or install one.
+
+    Reached as `Flnd.plugins`.
+    """
+
+    def __init__(self, owner: Flnd) -> None:
+        self._owner = owner
+
+    def __iter__(self) -> Iterator[Installed]:
+        """The built-ins, the installed plugins (disabled ones too, saying why), then `add`'s.
+
+        Reading it imports every plugin, as `flnd plugin list` does.
+
+        Example:
+            >>> import flnd
+            >>> with flnd.open("example-home") as fl:
+            ...     [row.origin for row in fl.plugins if row.code == "ins"]
+            ['built-in']
+        """
+        from flnd.engine import plugins
+
+        registry = plugins.PLUGINS
+        rows = [_installed(registry[code]) for code in registry.built_in_codes()]
+        mgr = registry.manager()
+        index = mgr.manifest["plugins"]
+        registry.flush(mgr)
+        for code, entry in sorted(index.items()):
+            if code in registry._overrides or code in mgr.built_in:
+                continue
+            where = str(mgr.folder / str(entry.get("file", code)))
+            try:
+                cls = mgr.load(code)
+            except PluginError:
+                registry.flush(mgr)
+                rows.append(Installed(code, str(entry.get("name", code)), plugins.FILE,
+                                      where=where, api=0, disabled=mgr.disabled[code]))
+            else:
+                registry.flush(mgr)
+                rows.append(_installed(cls, origin=plugins.FILE,
+                                       where=plugins.where(cls) or where,
+                                       version=plugins.version(cls)))
+        rows += [_installed(cls, origin=plugins.SCRIPT)
+                 for cls in self._owner._added.values()]
+        return iter(rows)
+
+    def install(self, path: str | os.PathLike[str]) -> Installed:
+        """Check a plugin's `.py` file or package folder, copy it into the plugin folder, and
+        record it. An installed code is replaced.
+
+        Raises:
+            UsageError: not a plugin file or package, or a built-in's code.
+            PluginError: its API isn't this flnd's, or it fails its checks.
+        """
+        from flnd.engine.plugins import PLUGINS
+
+        mgr = PLUGINS.manager()
+        try:
+            code = _code(mgr.install(path))
+        finally:
+            PLUGINS.flush(mgr)
+        return next(row for row in self if row.code == code)
+
+    def uninstall(self, code: str) -> Installed:
+        """Remove an installed plugin. Its accounts and targets stay.
+
+        Returns:
+            The plugin's row as it was.
+
+        Raises:
+            UsageError: a built-in, or no plugin installed with that code.
+        """
+        from flnd.engine.plugins import PLUGINS
+
+        found = next((row for row in self if row.code == code), None)
+        mgr = PLUGINS.manager()
+        try:
+            mgr.uninstall(code)
+        finally:
+            PLUGINS.flush(mgr)
+        assert found is not None
+        return found
+
+
+class Extension:
+    """flnd's Chrome extension: install it, and ask whether it is connected.
+
+    Reached as `Flnd.extension`.
+    """
+
+    def __init__(self, owner: Flnd) -> None:
+        self._owner = owner
+
+    def install(self) -> None:
+        """Copy the extension, write its host for every Chromium browser found, say how to
+        load it in Chrome, and wait up to 10 minutes for it to connect. The popup acts on this
+        home, and may ask for the domains of the installed plugins.
+        """
+        from flnd.engine import extension
+
+        domains = [domain for row in self._owner.plugins if row.origin != "built-in"
+                   for domain in row.domains]
+        extension.install(home=self._owner.home.absolute(), domains=domains)
+
+    def uninstall(self) -> list[Path]:
+        """Remove the extension, its token and its host manifests.
+
+        Returns:
+            What was removed.
+        """
+        from flnd.engine import extension
+
+        return extension.uninstall()
+
+    def host(self, origin: str | None) -> int:
+        """Serve the extension on standard input and output: Chrome starts it as `flnd host`.
+
+        Raises:
+            UsageError: Chrome named another extension, or `install` hasn't written the token.
+        """
+        from flnd.engine import extension
+
+        return extension.host(origin)
+
+    @property
+    def version(self) -> str | None:
+        """The connected extension's version; None when it isn't connected."""
+        from flnd.engine import extension
+
+        return extension.probe()
+
+    @property
+    def connected(self) -> bool:
+        """Whether the extension answers now."""
+        return self.version is not None
+
+
+class Config(Mapping[str, Any]):
+    """The home's settings, by dotted name: `"defaults.when"`, `"plugins.ins.pace"`.
+
+    A bare name (`"when"`) is read as one of `[defaults]`. Iterating gives every `[defaults]`
+    key and the keys of each plugin a config file names. Reached as `Flnd.config`.
+    """
+
+    def __init__(self, owner: Flnd) -> None:
+        self._owner = owner
+
+    def _read(self) -> Any:
+        from flnd.engine import config
+
+        return config.settings(self._owner.home, plugins=self._owner._sources())
+
+    def __getitem__(self, key: str) -> Any:
+        from flnd.engine import config
+
+        found = self._read()
+        tables, name = config._known(key, self._owner._sources())
+        if tables == ["defaults"]:
+            value = getattr(found.defaults, name)
+        else:
+            plugin = found.plugin(tables[1])
+            value = getattr(plugin, name) if name in config.PLUGINS else getattr(
+                plugin.settings, name)
+        return list(value) if isinstance(value, tuple) else value
+
+    def __iter__(self) -> Iterator[str]:
+        from flnd.engine import config
+
+        found = self._read()
+        yield from (f"defaults.{name}" for name in config.DEFAULTS)
+        for code in found.plugins:
+            yield from (f"plugins.{code}.{name}" for name in config.PLUGINS)
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+    def where(self, key: str) -> str:
+        """Where a key's value comes from: `"home"`, `"user"`, `"argument"` or `"default"`."""
+        return str(self._read().origin(key))
+
+    def default(self, key: str) -> Any:
+        """A key's value when no file sets it.
+
+        Raises:
+            UsageError: flnd takes no such setting.
+        """
+        from flnd.engine import config
+
+        tables, name = config._known(key, self._owner._sources())
+        if tables == ["defaults"]:
+            value = getattr(config.Defaults(), name)
+        else:
+            value = getattr(config.PluginConfig(), name, None)
+        return list(value) if isinstance(value, tuple) else value
+
+    def set(self, key: str, value: Any) -> None:
+        """Set a key in `<home>/config.toml` (`defaults.exec`, in the user file), keeping the
+        file's comments.
+
+        Raises:
+            UsageError: the key isn't one flnd takes, or the value is one it doesn't take; the
+                file is left as it was.
+        """
+        from flnd.engine import config
+
+        config.write(key, value, home=self._owner.home, user=config.user_file(),
+                     plugins=self._owner._sources())
+
+    def unset(self, key: str) -> None:
+        """Remove a key from its file, so it takes the next file's value or the default.
+
+        Raises:
+            UsageError: flnd takes no such setting.
+        """
+        from flnd.engine import config
+
+        config.unset(key, home=self._owner.home, user=config.user_file(),
+                     plugins=self._owner._sources())
+
+
+def _tracked(info: TargetInfo) -> Tracked:
+    """A target's `TargetInfo` as the public `Tracked`."""
+    return Tracked(info.target, follow=info.follow, at=info.at, files=info.files,
+                   size=info.size, seen=info.seen, categories=info.categories,
+                   complete=info.complete, query=info.query, account=info.account)
+
+
+def _installed(cls: type[Plugin], *, origin: str | None = None, where: str | None = None,
                version: str = "") -> Installed:
-    """A working source's row for `Flnd.sources`.
+    """A working plugin's row for `Flnd.plugins`.
 
     Args:
-        cls: the source's class.
-        logins: the login state of each source (`Flnd.logins`).
+        cls: the plugin's class.
         origin: where it came from; None for a built-in.
         where: its file or folder when installed; None builds `module:cls`.
         version: its `__version__` when installed; `""` for a script.
@@ -707,31 +861,22 @@ def _installed(cls: type[Plugin], logins: Mapping[str, str], *,
     Returns:
         The row.
     """
-    import flnd
     from flnd.engine import plugins
 
     where = where or f"{cls.__module__}:{cls.__qualname__}"
-    version = flnd.__version__ if origin is None else version
+    # flnd is imported by now: the library is reached through it.
+    version = getattr(sys.modules.get("flnd"), "__version__", "") if origin is None else version
     origin = origin or plugins.BUILT_IN
-    if cls.login is None:
-        login = "needs no login"
-    else:
-        login = logins.get(cls.code, "not logged in")
     methods = cls.login.methods if cls.login is not None else ()
     return Installed(cls.code, cls.name, origin, where=where, version=version, api=cls.api,
-                     login=login, domains=tuple(cls.domains), forms=tuple(cls.forms),
+                     domains=tuple(cls.domains), forms=tuple(cls.forms),
                      categories=tuple(cls.categories), logins=tuple(methods))
 
 
-# ---------------------------------------------------------------------------------------------
-# Reading options
-# ---------------------------------------------------------------------------------------------
-
-def _listed(targets: str | Target | Sequence[str | Target]) -> list[str | Target]:
-    """One target or several, as a list."""
-    from flnd.plugin import Target
-
-    return [targets] if isinstance(targets, (str, Target)) else list(targets)
+def _code(entry: Mapping[str, Any]) -> str:
+    """The code of the plugin an install just recorded: its file's name without `.py`."""
+    file = str(entry["file"])
+    return file[:-3] if file.endswith(".py") else file
 
 
 def _names(targets: Sequence[Chosen]) -> str:
@@ -739,11 +884,6 @@ def _names(targets: Sequence[Chosen]) -> str:
     shown = " ".join(str(found.target) for found in targets[:2])
     return shown if len(targets) <= 2 else f"{shown} and {len(targets) - 2} more"
 
-
-
-# ---------------------------------------------------------------------------------------------
-# Reading saved files
-# ---------------------------------------------------------------------------------------------
 
 def _failure(row: FailureRow) -> Failure:
     """A failure's row of `flnd.db` as a `Failure`, its error made again from its class.

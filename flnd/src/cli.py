@@ -1,31 +1,28 @@
 """The flnd command line: flags in, one library call, events out as lines on the terminal.
 
-    flnd download ins:example_user/reels --when 2026
-    flnd follow tik:example_user
-    flnd sync
-    flnd login ins chrome
+    flnd get ins:example_user/reels --when 2026
+    flnd target list
+    flnd auth login ins chrome
+    flnd status
 
 Who calls it: `flnd` (the console script) and `python -m flnd`, through `main`. What it calls:
 the library alone (`flnd.open`, its `Run` and events), so anything the command line does, a
-script can do too; `flnd.plugins._manifest` for the built-in plugins `--help` lists;
-`flnd.ui.out` for every line it prints; `flnd.ui.forms` (`flnd login`'s questions) and
-`flnd.ui.log` (the level of flnd's own log lines and progress bars).
+script can do too; `flnd.plugins._manifest` for the built-in plugins `--help` lists; and
+`flnd.ui` for every line it prints and every question it asks.
 
 How a command runs (`main`):
 1. argparse reads the flags. A mistake prints an error and exits 2; `--help` prints the help
    made from each command's docstring, drawn in the theme by `flnd.ui.out.help`: `flnd -h`
-   fits in 24 lines, and `flnd download -h` and `flnd follow -h` add a row per source.
+   fits in 24 lines, and `flnd get -h` adds a row per plugin.
 2. The command function opens the home (`--home`, else `$FLND_HOME`, else `./.flnd`) and makes
    one library call with the flags.
-3. A run's own display is the summary table the library draws on a terminal: one row per
-   target and category, with the counts of its files (queued, downloading, saved, failed) and
-   the spinner on the rows still going. Events go to the journal and the view: a dry run prints
-   its listing, `--json` prints one JSON object per line. With `--exec CMD`, each `Saved`
-   event also runs CMD, without a shell (`_Exec`). The end of a run prints a short summary, and
-   its failures decide the exit code.
+3. A run's own display is the screen the library's events draw on a terminal (`flnd.ui.screen`);
+   a dry run prints its listing, `--json` prints one JSON object per line. With `--exec CMD`,
+   each `Saved` event also runs CMD, without a shell (`_Exec`). The end of a run prints a short
+   summary, and its failures decide the exit code.
 4. Whatever ends the command becomes an exit code (`exit_code`): 0 ok, 1 some files or targets
    failed, 2 usage, 3 a login is needed, 4 flnd itself stopped (a full disk, a missing tool, a
-   broken source, a bug), 130 Ctrl-C. A `flnd.Error` prints its message and its hint, never a
+   broken plugin, a bug), 130 Ctrl-C. A `flnd.Error` prints its message and its hint, never a
    traceback; a bug prints one line naming a crash file, or the traceback with `-v`.
 
 Rules a change must keep:
@@ -67,6 +64,12 @@ CODES = (
     ("PluginError", BROKE),
     ("Error", FAILED),
 )
+# The most failed targets `status` lists before "and N more".
+SHOWN = 10
+# An account whose login ends within this many days is listed by `status` as expiring.
+SOON_DAYS = 7
+
+
 # ---------------------------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------------------------
@@ -98,7 +101,7 @@ def _main(argv: Sequence[str] | None) -> int:
         return stop.code if isinstance(stop.code, int) else USAGE
     _settle(args)
     if args.command is None:
-        parser().print_help()
+        (getattr(args, "group", None) or parser()).print_help()
         return OK
     try:
         return args.command(args)
@@ -169,9 +172,7 @@ def _report(error: Any, *, as_json: bool = False) -> None:
     # `out.error` first: it gives the error flnd's hint when it has none, which the JSON shows.
     out.error(error)
     if as_json:
-        from flnd.engine.events import encode
-
-        out.plain('{"type":"Error","error":' + encode(error).decode() + "}")
+        out.json({"type": "Error", "error": error})
 
 
 def _crashed(error: Exception, args: argparse.Namespace) -> int:
@@ -188,26 +189,17 @@ def _crashed(error: Exception, args: argparse.Namespace) -> int:
     Returns:
         4, the exit code of a bug.
     """
-    import datetime
     import traceback
-    from pathlib import Path
 
     import flnd
-    from flnd.engine.store import LOGS
-    from flnd.ui import out
+    from flnd.ui import log, out
 
     trace = "".join(traceback.format_exception(error))
     first = (str(error).strip().splitlines() or [""])[0]
     line = f"flnd hit a bug: {type(error).__name__}" + (f": {first}" if first else "")
-    home = Path(args.home or os.environ.get("FLND_HOME") or ".flnd").expanduser()
-    path = home / LOGS / f"crash-{datetime.datetime.now():%Y%m%d-%H%M%S}.txt"
     if not args.verbose:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(trace, encoding="utf-8")
-        except OSError:
-            pass
-        else:
+        path = log.crash(args.home or os.environ.get("FLND_HOME") or ".flnd", trace)
+        if path is not None:
             out.error(flnd.Error(line, hint=f"details in {path}"))
             return BROKE
     out.plain(trace, err=True)
@@ -219,12 +211,13 @@ def _crashed(error: Exception, args: argparse.Namespace) -> int:
 # The commands: each docstring is the command's help
 # ---------------------------------------------------------------------------------------------
 
-def download(args: argparse.Namespace) -> int:
-    """Download what the targets have now, once.
+def get(args: argparse.Namespace) -> int:
+    """Get what the targets have, and follow them, so `flnd get` alone keeps them up to date.
 
-    Nothing is followed: a later `flnd sync` doesn't take these targets (`flnd follow` does).
-    With no targets, they are read from standard input, one per line; blank lines and lines
-    starting with # are skipped.
+    A target that isn't a single post is added to the followed ones; the categories it names
+    (ins:example_user/reels) are kept with it. With no target, from the arguments or standard
+    input (one per line; blank lines and lines starting with # are skipped), every followed
+    target is synced.
 
     --exec CMD runs CMD once for each saved file, after every post-download step, with
     no shell: {path}, {target} and {post} inside an argument become the file's values, which
@@ -240,47 +233,17 @@ def download(args: argparse.Namespace) -> int:
     runner = _runner(args)
     targets = _targets(args.targets)
     with _open(args) as fl:
-        run = fl.download(targets, when=args.when, limit=args.limit, dry=args.dry)
+        if not targets and not any(row.follow for row in fl.targets):
+            from flnd.ui import out
+
+            out.line(("nothing to sync", "dim"))
+            return OK
+        run = fl.get(*targets, when=args.when, limit=args.limit, dry=args.dry)
         return _watch(fl, run, args, runner=runner)
 
 
-def follow(args: argparse.Namespace) -> int:
-    """Follow targets, so `flnd sync` keeps them up to date, and download what they have now.
-
-    The categories a target names (ins:example_user/reels) are kept with it for later syncs;
-    following again with others replaces them. --when bounds this first download only.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        The run's exit code.
-    """
-    targets = _targets(args.targets)
-    with _open(args) as fl:
-        run = fl.follow(targets, when=args.when)
-        return _watch(fl, run, args)
-
-
-def sync(args: argparse.Namespace) -> int:
-    """Download what is new for every followed target, or for the ones named.
-
-    Each target keeps the categories it was followed with. A category stops after a few saved
-    posts in a row, so a sync with nothing new costs a few requests per target.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        The run's exit code.
-    """
-    runner = _runner(args)
-    with _open(args) as fl:
-        return _watch(fl, fl.sync(args.targets), args, runner=runner)
-
-
-def unfollow(args: argparse.Namespace) -> int:
-    """Stop following targets: `flnd sync` leaves them out. Their files and history stay.
+def target_list(args: argparse.Namespace) -> int:
+    """List the targets this home knows: followed or not, files, size, last run.
 
     Args:
         args: the parsed flags.
@@ -289,53 +252,31 @@ def unfollow(args: argparse.Namespace) -> int:
         0.
     """
     with _open(args) as fl:
-        for target in fl.unfollow(args.targets):
-            _line(args, {"type": "Unfollowed", "target": str(target)}, f"{target}: unfollowed")
-    return OK
-
-
-def ls(args: argparse.Namespace) -> int:
-    """List the targets this home knows: followed or not, files, size, last download.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        0.
-    """
-    from flnkit import text
-
-    with _open(args) as fl:
-        rows = fl.targets()
-    if args.targets:
-        named = set(args.targets)
-        rows = [row for row in rows if str(row.target) in named]
+        rows = list(fl.targets)
     if args.json:
         for row in rows:
             _json(row)
         return OK
-    if not rows:
-        from flnd.ui import out
+    from flnd.ui import out
 
-        out.line(("no targets yet", "dim"))
-        return OK
     table = []
     for row in rows:
-        held = (text.count(row.seen, "target") + " found" if row.query
-                else f"{text.count(row.files, 'file')}, {text.size(row.size)}")
-        states = ", ".join(f"{name}: {state}" for name, state in row.categories.items())
+        held = (out.count(row.seen, "target") + " found" if row.query
+                else f"{out.count(row.files, 'file')}, {out.size(row.size)}")
         table.append((str(row.target), "followed" if row.follow else "-", held,
-                      row.at[:10] or "never", states))
+                      row.at[:10] or "never", " ".join(row.categories)))
+    if not table:
+        out.line(("no targets yet", "dim"))
+        return OK
     _table(("target", "follow", "files", "last", "categories"), table)
     return OK
 
 
-def status(args: argparse.Namespace) -> int:
-    """Show the last run: what it saved, and each failure it left, with why and what to do.
+def target_clean(args: argparse.Namespace) -> int:
+    """Forget targets: their rows, files rows, failures, cursors, heads and gaps.
 
-    A failure a later run saved is left out. A failed file is retried by itself at the start of
-    its target's next 3 downloads or syncs; `flnd retry` tries every one at once. With --json,
-    one JSON object: the run's command and times, what it saved, and its failures.
+    --media also deletes their recorded files, sidecars, links, extracted folders and the
+    folders left empty. Files under media/ that nothing recorded are never deleted.
 
     Args:
         args: the parsed flags.
@@ -343,110 +284,45 @@ def status(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd.engine.events import encode
-    from flnd.ui import out
-
     with _open(args) as fl:
-        found = fl.status
-    if args.json:
-        body = encode(found).decode() if found is not None else "{}"
-        out.plain('{"type":"Status"' + ("," + body[1:] if body != "{}" else "}"))
-        return OK
-    if found is None:
-        out.line(("no run yet", "dim"))
-        return OK
-    ended = f", ended {found.ended[11:19]}" if found.ended else ", never ended"
-    out.line(("last run: ", "bold focus"), (found.command, "bold"),
-             (f", {found.started[:10]} {found.started[11:19]}{ended}: ", "dim"),
-             (f"{found.saved} saved", "bold good"), (", ", "dim"),
-             (f"{len(found.failures)} failed", "bold bad" if found.failures else "dim"))
-    for failure in found.failures:
-        where = f"{failure.target} {failure.post}" if failure.post else str(failure.target)
-        runs = f", {failure.attempts} runs" if failure.attempts > 1 else ""
-        out.line("  ", (where, "bold focus"), (f" ({_word(failure.error)}{runs}): ", "dim"),
-                 (str(failure.error), "bad"))
-        if failure.error.hint:
-            out.line("    ", (str(failure.error.hint), "dim"))
-    if found.failures:
-        _summary([(failure.error, bool(failure.post)) for failure in found.failures])
+        forgotten = fl.targets.clean(*args.targets, media=args.media)
+    for row in forgotten:
+        _line(args, row, f"{row.target}: forgotten" + (" with its files" if args.media else ""))
     return OK
 
 
-def retry(args: argparse.Namespace) -> int:
-    """Download again every file that failed, however many runs failed it.
-
-    Each failed post is listed again for fresh links, and only its failed files are downloaded.
-    A target whose listing failed is downloaded again. A gone file (the site answered 404 or
-    410) isn't retried: `flnd download --again` asks for those.
+def auth_list(args: argparse.Namespace) -> int:
+    """List every account of every plugin: its origin, default, and whether it is usable.
 
     Args:
         args: the parsed flags.
 
     Returns:
-        The run's exit code: 0 when nothing failed again.
+        0.
     """
     with _open(args) as fl:
-        return _watch(fl, fl.retry(), args)
-
-
-def check(args: argparse.Namespace) -> int:
-    """Compare the history with the disk: files missing, unknown, or of the wrong size.
-
-    --fix makes the history match the disk, and never deletes, moves or downloads a file: a
-    missing file's row goes, and a file of the wrong size gets its size from the disk. An
-    unknown file under media/ is never adopted, so the check fails until it is moved or
-    deleted.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        0 when history and disk agree (or --fix made them), else 1.
-    """
-    from flnd.ui import out
-    from flnkit import text
-
-    with _open(args) as fl:
-        found = fl.check(fix=args.fix)
+        rows = list(fl.auth)
     if args.json:
-        from flnd.engine.events import encode
+        for row in rows:
+            _json(row)
+        return OK
+    from flnd.ui import out
 
-        out.plain('{"type":"Checked",' + encode(found).decode()[1:])
-        return OK if found.ok else FAILED
-    for record in found.missing:
-        out.line(("missing     ", "bold bad"), (_shown(record.path), "bad"))
-    for path in found.unknown:
-        out.line(("unknown     ", "bold warn"), (_shown(path), "warn"))
-    for record in found.resized:
-        out.line(("wrong size  ", "bold warn"), (_shown(record.path), "warn"))
-    problems = [f"{len(found.missing)} missing"] if found.missing else []
-    if found.unknown:
-        problems.append(f"{len(found.unknown)} unknown")
-    if found.resized:
-        problems.append(f"{len(found.resized)} of the wrong size")
-    line = f"checked {text.count(found.files, 'file')}: "
-    if not problems:
-        out.line((line, "dim"), ("history and disk agree", "bold good"))
-    elif found.fixed:
-        out.line((line, "dim"), (", ".join(problems), "bold bad"),
-                 ("; the history now matches the disk", "dim"))
-    elif args.fix:
-        out.line((line, "dim"), (", ".join(problems), "bold bad"),
-                 ("; --fix repaired the rows, and never adopts an unknown file: move or delete "
-                  "it", "dim"), err=True)
-    else:
-        out.line((line, "dim"), (", ".join(problems), "bold bad"),
-                 ("; flnd check --fix makes the history match", "dim"), err=True)
-    return OK if found.ok else FAILED
+    if not rows:
+        out.line(("no accounts yet", "dim"))
+        return OK
+    _table(("plugin", "name", "default", "origin", "status", "since"),
+           [(row.plugin, row.name, "default" if row.is_default else "-", row.origin,
+             _state(row), row.at[:10]) for row in rows])
+    return OK
 
 
-def login(args: argparse.Namespace) -> int:
-    """Log in to a source, or with no source list every source's login.
+def auth_login(args: argparse.Namespace) -> int:
+    """Log an account of a plugin in, and save the login encrypted in the home.
 
-    HOW is a browser to read the site's cookies from (chrome, firefox, or safari on macOS),
-    the path of a cookies.txt or JSON cookie export, or the source's own
-    way (tlg: browser, qr, phone). Left out in a terminal, it is asked with numbered choices.
-    The login is saved encrypted in the home.
+    METHOD is a browser to read the site's cookies from (chrome, firefox, or safari on macOS),
+    browser (a window of flnd's Chromium), file (a cookies.txt or JSON export, with its PATH), or
+    the plugin's own way (tlg: qr, phone). Left out in a terminal, it is asked.
 
     Args:
         args: the parsed flags.
@@ -455,20 +331,22 @@ def login(args: argparse.Namespace) -> int:
         0.
 
     Raises:
-        UsageError: `how` is left out where nobody can be asked (no terminal, or --json).
+        UsageError: METHOD is left out where nobody can be asked (no terminal, or --json).
     """
-    if args.source is None:
-        return _logins(args)
-    how = args.how or _ask_how(args)
+    method, path = args.method, args.path
+    if method is not None and path is None and method not in _methods(args.plugin):
+        # `flnd auth login ins cookies.txt`: a path alone means a file.
+        method, path = "file", method
+    if method is None and path is None:
+        method, path = _ask_how(args)
     with _open(args) as fl:
-        done = fl.login(args.source, how)
-    origin = f" ({done.origin})" if done.origin else ""
-    _line(args, done, f"{done.source}: {done.state}{origin}")
+        done = fl.auth.login(args.plugin, method=method, path=path)
+    _line(args, done, f"{done.plugin}: logged in as {done.name} ({done.origin})")
     return OK
 
 
-def logout(args: argparse.Namespace) -> int:
-    """Remove a source's saved login.
+def auth_logout(args: argparse.Namespace) -> int:
+    """Log an account out: its saved login and its row. The default one when none is named.
 
     Args:
         args: the parsed flags.
@@ -477,18 +355,14 @@ def logout(args: argparse.Namespace) -> int:
         0.
     """
     with _open(args) as fl:
-        removed = fl.logout(args.source)
-    message = "logged out" if removed else "was not logged in"
-    _line(args, {"type": "Logout", "source": args.source, "removed": removed},
-          f"{args.source}: {message}")
+        gone = fl.auth.logout(args.plugin, name=args.account)
+    _line(args, gone, f"{gone.plugin}: {gone.name} logged out")
     return OK
 
 
-def sources(args: argparse.Namespace) -> int:
-    """List every source: built in, from a package or from the plugin folder, and its login.
+def plugin_list(args: argparse.Namespace) -> int:
+    """List the plugins: built in, installed from a file or folder, and why one is disabled.
 
-    Each shows where it came from and its version, the targets it reads, its categories and
-    its login. A plugin that is disabled is listed with the reason, naming its file and line.
     Plugins load from $FLND_PLUGINS, else ~/.config/flnd/plugins (APPDATA's flnd/plugins on
     Windows); never from a home.
 
@@ -498,38 +372,27 @@ def sources(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd.engine.events import encode
-    from flnd.ui import out, theme
-
     with _open(args) as fl:
-        found = fl.sources
-    for row in found:
-        if args.json:
-            out.plain('{"type":"Source",' + encode(row).decode()[1:])
-            continue
-        version = f" {row.version}" if row.version else ""
-        out.line((row.code, "bold good"), "  ", (row.name, "bold"), "  ",
-                 (f"({row.origin}{version})", "dim"))
+        rows = list(fl.plugins)
+        counts = {row.code: sum(1 for each in fl.targets if each.target.plugin == row.code)
+                  for row in rows}
+    if args.json:
+        for row in rows:
+            _json(row)
+        return OK
+    _table(("code", "name", "kind", "api", "domains", "targets"),
+           [(row.code, row.name, row.disabled and "disabled" or row.origin, str(row.api),
+             " ".join(row.domains), str(counts[row.code])) for row in rows])
+    from flnd.ui import out
+
+    for row in rows:
         if row.disabled:
-            out.line(("  disabled:   ", "bold bad"), (str(row.disabled), "bad"))
-            continue
-        if row.origin != "built-in":
-            out.line(("  from:       ", "bold focus"), (str(row.where), "dim"))
-        more = f", {theme.glyph('more', theme.unicode(sys.stdout))}" if len(row.forms) > 3 else ""
-        ways = f" ({', '.join(row.logins)})" if row.logins else ""
-        out.line(("  targets:    ", "bold focus"), f"{', '.join(row.forms[:3])}{more}")
-        out.line(("  categories: ", "bold focus"), ", ".join(row.categories))
-        out.line(("  login:      ", "bold focus"),
-                 (row.login, "bold good" if row.login == "logged in" else "dim"), (ways, "dim"))
+            out.line((f"{row.code} disabled: ", "bold bad"), (str(row.disabled), "bad"))
     return OK
 
 
-def extension(args: argparse.Namespace) -> int:
-    """Install flnd's Chrome extension, or uninstall it.
-
-    install copies the extension to ~/.config/flnd/extension/unpacked, writes its host for every
-    Chromium browser found, prints the three steps that load it in Chrome, and waits up to 10
-    minutes for it to connect. The popup acts on this home. uninstall removes all of it.
+def plugin_install(args: argparse.Namespace) -> int:
+    """Install a plugin from a .py file or a package folder, replacing one with its code.
 
     Args:
         args: the parsed flags.
@@ -537,28 +400,189 @@ def extension(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from pathlib import Path
+    with _open(args) as fl:
+        done = fl.plugins.install(args.path)
+    _line(args, done, f"{done.code}: installed ({done.name})")
+    return OK
 
-    from flnd.engine import extension
+
+def plugin_uninstall(args: argparse.Namespace) -> int:
+    """Uninstall a plugin. Its accounts and targets stay.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0.
+    """
+    with _open(args) as fl:
+        gone = fl.plugins.uninstall(args.code)
+    _line(args, gone, f"{gone.code}: uninstalled")
+    return OK
+
+
+def extension_install(args: argparse.Namespace) -> int:
+    """Connect Chrome to flnd.
+
+    It copies flnd's extension to ~/.config/flnd/extension/unpacked, writes its host for every
+    Chromium browser found, prints the three steps that load it in Chrome, and waits up to 10
+    minutes for it to connect. The popup acts on this home.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0.
+    """
+    with _open(args) as fl:
+        fl.extension.install()
+    return OK
+
+
+def extension_uninstall(args: argparse.Namespace) -> int:
+    """Remove flnd's Chrome extension, its token and its host.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0.
+    """
     from flnd.ui import out
 
-    if args.action == "uninstall":
-        for path in extension.uninstall():
-            out.line(("removed ", "dim"), str(path))
-        return OK
-    home = Path(args.home).expanduser() if args.home else None
     with _open(args) as fl:
-        domains = [domain for row in fl.sources if row.origin != "built-in"
-                   for domain in row.domains]
-    extension.install(home=home, domains=domains)
+        for path in fl.extension.uninstall():
+            out.line(("removed ", "dim"), str(path))
+    return OK
+
+
+def status(args: argparse.Namespace) -> int:
+    """Show the last run, its failures by target, the accounts that need care, and the disk.
+
+    A failure a later run saved is left out. A failed file is retried by itself at the start of
+    its target's next 3 gets; `flnd target list`'s r asks for it again after that. With --json,
+    one JSON object: the run's command and times, what it saved, and its failures.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0 when all is well, else 1.
+    """
+    from flnd.ui import out
+
+    with _open(args) as fl:
+        found = fl.status
+        accounts = [row for row in fl.auth if _state(row) != "ok"]
+        checked = fl.check()
+    well = (found is None or not found.failures) and not accounts and checked.ok
+    if args.json:
+        out.json({"type": "Status", "status": found, "accounts": accounts,
+                  "disk": checked})
+        return OK if well else FAILED
+    if found is None:
+        out.line(("no run yet", "dim"))
+    else:
+        _last(found)
+    for row in accounts:
+        out.line(("  account ", "dim"), (f"{row.plugin} {row.name}", "bold focus"), ": ",
+                 (_state(row), "warn"))
+    _disk(checked)
+    return OK if well else FAILED
+
+
+def config(args: argparse.Namespace) -> int:
+    """Show every setting of config.toml: its value, its default and where it comes from.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0.
+    """
+    with _open(args) as fl:
+        rows = [(key, fl.config[key], fl.config.default(key), fl.config.where(key))
+                for key in fl.config]
+    if args.json:
+        from flnd.ui import out
+
+        for key, value, default, where in rows:
+            out.json({"type": "Setting", "key": key, "value": value, "default": default,
+                      "from": where})
+        return OK
+    _table(("key", "value", "default", "from"),
+           [(key, _show(value), _show(default), where) for key, value, default, where in rows])
     return OK
 
 
 def host(args: argparse.Namespace) -> int:
     """Serve flnd's Chrome extension on standard input and output; Chrome starts it."""
-    from flnd.engine import extension
+    with _open(args) as fl:
+        return fl.extension.host(args.origin)
 
-    return extension.host(args.origin)
+
+def _show(value: Any) -> str:
+    """A setting's value as the table shows it."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value) if value not in ("", None) else "-"
+
+
+def _last(found: Any) -> None:
+    """Print the last run and its failures, grouped by target."""
+    from flnd.ui import out
+
+    ended = f", ended {found.ended[11:19]}" if found.ended else ", never ended"
+    out.line(("last run: ", "bold focus"), (found.command, "bold"),
+             (f", {found.started[:10]} {found.started[11:19]}{ended}: ", "dim"),
+             (f"{found.saved} saved", "bold good"), (", ", "dim"),
+             (f"{len(found.failures)} failed", "bold bad" if found.failures else "dim"))
+    groups: dict[str, list[Any]] = {}
+    for failure in found.failures:
+        groups.setdefault(str(failure.target), []).append(failure)
+    for name, failures in list(groups.items())[:SHOWN]:
+        first = failures[0]
+        runs = f", {first.attempts} runs" if first.attempts > 1 else ""
+        out.line("  ", (name, "bold focus"),
+                 (f"  {out.count(len(failures), 'failure')} ({_word(first.error)}{runs}): ",
+                  "dim"), (str(first.error), "bad"))
+        if first.error.hint:
+            out.line("    ", (str(first.error.hint), "dim"))
+    if len(groups) > SHOWN:
+        out.line(("  and ", "dim"), out.count(len(groups) - SHOWN, "more target"))
+
+
+def _disk(found: Any) -> None:
+    """Print how the disk compares to the history."""
+    from flnd.ui import out
+
+    problems = [f"{len(found.missing)} missing"] if found.missing else []
+    if found.unknown:
+        problems.append(f"{len(found.unknown)} unknown")
+    if found.resized:
+        problems.append(f"{len(found.resized)} of the wrong size")
+    line = f"disk: {out.count(found.files, 'file')}: "
+    if not problems:
+        out.line((line, "dim"), ("history and disk agree", "bold good"))
+    else:
+        out.line((line, "dim"), (", ".join(problems), "bold bad"))
+
+
+def _state(account: Any) -> str:
+    """What an account's status line says: ok, held, expired, or expiring soon."""
+    import datetime
+
+    now = datetime.datetime.now(datetime.UTC)
+    if account.status == "held" and account.held_until:
+        left = datetime.datetime.fromisoformat(account.held_until) - now
+        return f"held {max(1, round(left.total_seconds() / 60))} min"
+    if account.status == "expired":
+        return "expired"
+    if account.expires:
+        left = datetime.datetime.fromisoformat(account.expires) - now
+        if left.days < SOON_DAYS:
+            return "expired" if left.total_seconds() <= 0 else f"expires in {left.days + 1} days"
+    return "ok"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -568,7 +592,7 @@ def host(args: argparse.Namespace) -> int:
 class _Parser(argparse.ArgumentParser):
     """argparse, with its help and its errors printed by `flnd.ui.out`.
 
-    `tail` holds the rows the help ends with: the sources, for a command that takes targets.
+    `tail` holds the rows the help ends with: the plugins, for a command that takes targets.
     """
 
     tail: Sequence[tuple[str, Sequence[Any]]] = ()
@@ -606,7 +630,7 @@ class _Version(argparse.Action):
 
 
 def parser() -> argparse.ArgumentParser:
-    """The whole command line: the global flags, then one sub-parser per command.
+    """The whole command line: the global flags, then one sub-parser per command or group.
 
     Each command's help is its function's docstring: its first clause in the list of commands,
     the paragraphs before `Args:` on its own `--help`.
@@ -619,66 +643,66 @@ def parser() -> argparse.ArgumentParser:
     top = _Parser(prog="flnd", description="download whole accounts from the web",
                   parents=[_globals()])
     top.add_argument("-V", "--version", action=_Version, version=f"flnd {flnd.__version__}")
-    top.tail = [("sources", [" ".join(_sources())]),
-                ("", [("their targets: flnd download -h", "dim")])]
+    top.tail = [("plugins", [" ".join(_plugins())]),
+                ("", [("a plugin's targets: flnd get -h", "dim")])]
     verbs = top.add_subparsers(title="commands", metavar="<command>")
 
-    def command(function: Callable[[argparse.Namespace], int]) -> _Parser:
-        sub = verbs.add_parser(function.__name__, help=_short(_help(function)),
+    def command(owner: Any, name: str, function: Callable[[argparse.Namespace], int]
+                ) -> _Parser:
+        sub = owner.add_parser(name, help=_short(_help(function)),
                                description=_help(function), parents=[_globals()])
         sub.set_defaults(command=function)
         return sub
 
-    sub = command(download)
+    def group(name: str, help: str) -> Any:
+        sub = verbs.add_parser(name, help=help, description=help, parents=[_globals()])
+        sub.set_defaults(command=None, group=sub)
+        return sub.add_subparsers(title="commands", metavar="<command>")
+
+    sub = command(verbs, "get", get)
     sub.add_argument("targets", nargs="*", metavar="target",
                      help="ins:example_user, ins:example_user/reels,posts, a link, or "
-                          "mht?words; read from stdin when none")
+                          "mht?words; read from stdin too; none syncs every followed target")
     _when(sub)
     sub.add_argument("--limit", type=int, metavar="N",
                      help="at most N posts per target, or N targets per search")
     sub.add_argument("--dry", action="store_true",
-                     help="list what would be downloaded, and download and write nothing")
+                     help="list what would be saved, and save and write nothing")
     _again(sub)
     _exec(sub)
     sub.tail = _forms()
 
-    sub = command(follow)
-    sub.add_argument("targets", nargs="*", metavar="target",
-                     help="the targets to follow; read from stdin when none")
-    _when(sub)
-    _again(sub)
-    sub.tail = _forms()
+    targets = group("target", "List the targets flnd knows, or forget some")
+    command(targets, "list", target_list)
+    sub = command(targets, "clean", target_clean)
+    sub.add_argument("targets", nargs="+", metavar="target", help="the targets to forget")
+    sub.add_argument("--media", action="store_true",
+                     help="also delete their files, sidecars, links and extracted folders")
 
-    sub = command(sync)
-    sub.add_argument("targets", nargs="*", metavar="target",
-                     help="only these followed targets; every one when none")
-    _exec(sub)
+    accounts = group("auth", "List the accounts, log one in or out")
+    command(accounts, "list", auth_list)
+    sub = command(accounts, "login", auth_login)
+    sub.add_argument("plugin", help="the plugin's code (ins)")
+    sub.add_argument("method", nargs="?",
+                     help="a browser, browser, file, or the plugin's own way (qr, phone)")
+    sub.add_argument("path", nargs="?", help="the cookie file's path, for file")
+    sub = command(accounts, "logout", auth_logout)
+    sub.add_argument("plugin", help="the plugin's code (ins)")
+    sub.add_argument("account", nargs="?", help="the account's name; the default when left out")
 
-    sub = command(unfollow)
-    sub.add_argument("targets", nargs="+", metavar="target", help="the targets to stop following")
+    plugins = group("plugin", "List the plugins, install or uninstall one")
+    command(plugins, "list", plugin_list)
+    sub = command(plugins, "install", plugin_install)
+    sub.add_argument("path", help="a plugin's .py file or package folder")
+    sub = command(plugins, "uninstall", plugin_uninstall)
+    sub.add_argument("code", help="the plugin's code")
 
-    sub = command(ls)
-    sub.add_argument("targets", nargs="*", metavar="target", help="only these targets")
+    chrome = group("extension", "Connect Chrome to flnd, or remove it")
+    command(chrome, "install", extension_install)
+    command(chrome, "uninstall", extension_uninstall)
 
-    command(status)
-    command(retry)
-
-    sub = command(check)
-    sub.add_argument("--fix", action="store_true", help="also repair what can be repaired")
-
-    sub = command(login)
-    sub.add_argument("source", nargs="?", help="the source's code (ins); none lists the logins")
-    sub.add_argument("how", nargs="?",
-                     help="a browser, a cookie file's path, or the source's own way (qr, phone)")
-
-    sub = command(logout)
-    sub.add_argument("source", help="the source's code (ins)")
-
-    command(sources)
-
-    sub = command(extension)
-    sub.add_argument("action", choices=("install", "uninstall"),
-                     help="install connects Chrome; uninstall removes the extension")
+    command(verbs, "status", status)
+    command(verbs, "config", config)
 
     # Hidden from the help: Chrome starts it, with the extension's origin (and, on Windows,
     # --parent-window).
@@ -718,7 +742,7 @@ def _when(sub: argparse.ArgumentParser) -> None:
 
 
 def _again(sub: argparse.ArgumentParser) -> None:
-    """Add `--again` to a command that downloads.
+    """Add `--again` to a command that gets.
 
     Args:
         sub: the command's parser.
@@ -749,22 +773,30 @@ def _short(text: str) -> str:
     return re.split(r"[,:.](?:\s|$)", text, maxsplit=1)[0]
 
 
-def _sources() -> list[str]:
-    """The code of every built-in source, read from the manifest, so no source is imported."""
+def _plugins() -> list[str]:
+    """The code of every built-in plugin, read from the manifest, so no plugin is imported."""
     from flnd.plugins import _manifest
 
     return list(_manifest.PLUGINS)
 
 
+def _methods(code: str) -> tuple[str, ...]:
+    """The login methods of a built-in plugin, from the manifest; none for any other code."""
+    from flnd.plugins import _manifest
+
+    entry: Any = _manifest.PLUGINS.get(code)
+    return tuple(entry["logins"]) if entry is not None else ()
+
+
 def _forms() -> list[tuple[str, list[Any]]]:
-    """A row per built-in source for a command's help: the targets it reads, its categories.
+    """A row per built-in plugin for a command's help: the targets it reads, its categories.
 
     Returns:
-        The rows: the source's code, then its forms and categories as styled parts.
+        The rows: the plugin's code, then its forms and categories as styled parts.
     """
     from flnd.plugins import _manifest
 
-    rows: list[tuple[str, list[Any]]] = [("sources", [("the targets each reads, then its "
+    rows: list[tuple[str, list[Any]]] = [("plugins", [("the targets each reads, then its "
                                                       "categories", "dim")])]
     for code, entry in _manifest.PLUGINS.items():
         forms: Any = entry["forms"]
@@ -789,107 +821,53 @@ def _open(args: argparse.Namespace) -> flnd.Flnd:
 
 
 def _targets(given: Sequence[str]) -> list[str]:
-    """The targets on the command line, else the lines of a piped standard input.
+    """The targets on the command line, then the lines of a piped standard input.
 
     Args:
         given: the targets typed after the command.
 
     Returns:
-        The targets, in order.
-
-    Raises:
-        UsageError: there are none, and standard input is a terminal or holds none.
+        The targets, in order; none when neither holds one.
     """
-    if given:
-        return list(given)
+    found = list(given)
     if not sys.stdin.isatty():
         lines = [line.strip() for line in sys.stdin]
-        found = [line for line in lines if line and not line.startswith("#")]
-        if found:
-            return found
-    import flnd
-
-    raise flnd.UsageError("give at least one target, or pipe targets on stdin")
+        found += [line for line in lines if line and not line.startswith("#")]
+    return found
 
 
-def _ask_how(args: argparse.Namespace) -> str:
-    """Ask how to log in to `args.source`, with numbered choices.
-
-    A source that logs in by cookies offers each browser and a cookie file (whose path is then
-    asked); a source with its own login (tlg) offers its own ways.
+def _ask_how(args: argparse.Namespace) -> tuple[str, str | None]:
+    """Ask how to log in to `args.plugin`: one of its methods, and a path for a file.
 
     Args:
-        args: the parsed flags, with `source` set.
+        args: the parsed flags, with `plugin` set.
 
     Returns:
-        What `Flnd.login` takes as `how`.
+        The method, and the cookie file's path when the method is `file`.
 
     Raises:
-        UsageError: an unknown source, `--json`, or no terminal to ask in.
+        UsageError: an unknown plugin, `--json`, or no terminal to ask in.
     """
     import flnd
-    from flnd.plugins import _manifest
     from flnd.ui import forms
 
-    entry: Any = _manifest.PLUGINS.get(args.source)
-    if entry is None:
+    ways = _methods(args.plugin)
+    if not ways:
         # Not built in: a plugin's ways are read from its class, which this imports.
         with _open(args) as fl:
-            rows = [row for row in fl.sources if not row.disabled]
-        found = next((row for row in rows if row.code == args.source), None)
+            found = next((row for row in fl.plugins if row.code == args.plugin), None)
         if found is None:
-            codes = ", ".join(row.code for row in rows)
-            raise flnd.UsageError(f"unknown source {args.source!r}. Sources: {codes}")
-        entry = {"name": found.name, "logins": found.logins}
-    ways: tuple[str, ...] = tuple(entry["logins"])
-    hint = f"name it: flnd login {args.source} <how>, with how one of {_ways(ways)}"
+            raise flnd.UsageError(f"unknown plugin {args.plugin!r}",
+                                  hint="flnd plugin list shows the plugins")
+        ways = tuple(found.logins)
     if args.json or not forms.interactive():
-        raise flnd.UsageError(f"{args.source}: how to log in?", hint=hint)
-    if "file" not in ways:
-        return forms.choose(f"Log in to {entry['name']} with", list(ways))
-    from flnkit.cookies import BROWSERS
-
-    # Safari is read on macOS only, so it is offered only there.
-    choices = {f"cookies from {browser}": browser for browser in BROWSERS
-               if browser != "safari" or sys.platform == "darwin"}
-    choices["a cookie file (cookies.txt or JSON)"] = "file"
-    picked = forms.choose(f"Log in to {entry['name']} with", choices)
+        raise flnd.UsageError(f"{args.plugin}: how to log in?",
+                              hint=f"flnd auth login {args.plugin} <method>, a method of "
+                                   f"{', '.join(ways)}")
+    picked = forms.choose(f"Log in to {args.plugin} with", list(ways))
     if picked == "file":
-        return forms.ask("Path of the cookie file").strip()
-    return picked
-
-
-def _ways(ways: Sequence[str]) -> str:
-    """A source's login ways as `flnd login` takes them, for a hint."""
-    if "file" in ways:
-        return "chrome, firefox, safari (macOS), or a cookie file's path"
-    return ", ".join(ways)
-
-
-def _logins(args: argparse.Namespace) -> int:
-    """`flnd login` with no source: a table of every source's login.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        0.
-    """
-    from flnkit import text
-
-    with _open(args) as fl:
-        found = fl.logins
-    if args.json:
-        for row in found:
-            _json(row)
-        return OK
-    table = []
-    for row in found:
-        soon = ", ".join(f"{name} expired" if left <= 0 else f"{name} in {text.duration(left)}"
-                         for name, left in row.expiring)
-        table.append((row.source, row.name, row.state, row.origin, soon))
-    _table(("source", "site", "login", "from", "expiring"), table)
-    return OK
+        return picked, forms.ask("Path of the cookie file").strip()
+    return picked, None
 
 
 def _line(args: argparse.Namespace, value: Any, text: str) -> None:
@@ -909,15 +887,7 @@ def _line(args: argparse.Namespace, value: Any, text: str) -> None:
     if not colon:
         out.line(text)
         return
-    parts: list[Any] = [(head, "bold focus"), (colon, "dim")]
-    if tail.startswith("logged in"):
-        login_part, paren, origin_part = tail.partition(" (")
-        parts += [(login_part, "bold good"), (paren + origin_part, "dim")]
-    elif tail in ("logged out", "unfollowed"):
-        parts.append((tail, "bold good"))
-    else:
-        parts.append(tail)
-    out.line(*parts)
+    out.line((head, "bold focus"), (colon, "dim"), tail)
 
 
 def _json(value: Any) -> None:
@@ -926,10 +896,9 @@ def _json(value: Any) -> None:
     Args:
         value: an event, record, or dict to encode.
     """
-    from flnd.engine.events import encode
     from flnd.ui import out
 
-    out.plain(encode(value).decode())
+    out.json(value)
 
 
 def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
@@ -949,13 +918,13 @@ def _cell(index: int, text: str) -> tuple[str, str]:
     """A table cell with its style: the first column in focus, then by what the text says."""
     if index == 0:
         return text, "bold focus"
-    if text in ("followed", "logged in", "on"):
+    if text in ("followed", "ok", "on", "default", "true"):
         return text, "bold good"
-    if text in ("-", "never", "off"):
+    if text in ("-", "never", "off", "false"):
         return text, "dim"
-    if "expired" in text:
+    if "expired" in text or text == "disabled":
         return text, "bold bad"
-    if " in " in text:
+    if " in " in text or text.startswith("held"):
         return text, "warn"
     return text, "text"
 
@@ -969,7 +938,7 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
     """Read a run's events into the chosen view, print its end, and return its exit code.
 
     flnd's own log lines are held to warnings for the run, or opened to debug lines with `-v`.
-    The run's events go to `<home>/log/<stamp>_<command>.jsonl` (see src/docs/storage). On a
+    The run's events go to `<home>/log/<stamp>_get.jsonl` (see src/docs/storage). On a
     terminal the screen draws the run from its snapshot (`run.state`, `flnd.ui.screen`); the
     end summary follows.
 
@@ -986,44 +955,24 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
         Error: what stopped the whole run (a full disk), from the run.
         Stopped: Ctrl-C ended it.
     """
-    import datetime
     from contextlib import ExitStack, nullcontext
-    from pathlib import Path
 
-    from flnd.engine.store import LOGS
-    from flnd.ui.log import ui
+    import flnd
+    from flnd.ui.log import stamped, ui
     from flnd.ui.screen import Screen
 
-    journal_path: Path | None = None
-    try:
-        home = getattr(fl, "home", None)
-        if isinstance(home, (str, os.PathLike, Path)):
-            log_dir = Path(home) / LOGS
-            log_dir.mkdir(parents=True, exist_ok=True)
-            cmd = getattr(args, "command", None)
-            name = cmd.__name__ if cmd and hasattr(cmd, "__name__") else "run"
-            stamp = f"{datetime.datetime.now():%Y%m%d-%H%M%S}"
-            journal_path = log_dir / f"{stamp}_{name}.jsonl"
-    except (OSError, TypeError):
-        pass
-
-    cmd = getattr(args, "command", None)
-    name = cmd.__name__ if cmd and hasattr(cmd, "__name__") else "run"
-    view: _View = (
-        _Json()
-        if args.json
-        else _JournalView(journal_path=journal_path)
-    )
+    name = "get"
+    journal_path = stamped(fl.home, name, ".jsonl")
+    view: _View = _Json() if args.json else _JournalView()
     with ExitStack() as stack:
-        journal = (
-            stack.enter_context(ui.file(journal_path)) if journal_path is not None else None
-        )
+        try:
+            journal = stack.enter_context(ui.file(journal_path))
+        except OSError:
+            journal = None
         view.journal = journal
         stack.enter_context(view)
         stack.enter_context(ui.scope(level="debug" if args.verbose else "warn"))
         if journal is not None:
-            import flnd
-
             journal.write({"type": "Start", "command": name, "version": flnd.__version__})
         # The screen ends before the summary: its last frame stays above it.
         with nullcontext() if args.json else Screen(lambda: run.state, command=name):
@@ -1164,6 +1113,8 @@ class _View:
     A view is a context manager, so a live display stops even when the run raises.
     """
 
+    journal: Any = None
+
     def __enter__(self) -> _View:
         return self
 
@@ -1181,11 +1132,10 @@ class _View:
             state: its last snapshot (`run.state`).
         """
         from flnd.ui import out, screen
-        from flnkit import text
 
         if report.planned:
-            out.line(("planned ", "bold focus"), (text.count(report.planned, "file"), "bold focus"),
-                     ("; nothing was downloaded", "dim"))
+            out.line(("planned ", "bold focus"), (out.count(report.planned, "file"),
+                                                 "bold focus"), ("; nothing was saved", "dim"))
             return
         screen.summary(report, state)
 
@@ -1196,15 +1146,6 @@ class _JournalView(_View):
     The run's own display is the screen (`flnd.ui.screen`), drawn from the run's snapshot, so
     a view prints no line per file or failure: the screen counts them, and `end` sums them up.
     """
-
-    journal: Any = None
-
-    def __init__(self, *, journal_path: Any = None) -> None:
-        """Args:
-            journal_path: where the JSON Lines run log is written; None skips the file.
-        """
-        super().__init__()
-        self.journal_path = journal_path
 
     def show(self, event: Any) -> None:
         """Record one event, and print a dry run's planned files.
@@ -1240,65 +1181,22 @@ class _Json(_View):
             report: the run's report to encode.
             state: its last snapshot, which the JSON lines leave out.
         """
-        from flnd.engine.events import encode
-        from flnd.ui import out
-
-        out.plain('{"type":"Report",' + encode(report).decode()[1:])
+        _json(report)
 
 
-# Each error class's word in a failure summary, by class name; the first class in an error's MRO
+# Each error class's word in a failure line, by class name; the first class in an error's MRO
 # that is listed wins.
 WORDS = {
     "NotFound": "gone", "Blocked": "blocked", "Changed": "changed", "LoginError": "login",
     "SiteError": "site", "NetworkError": "network", "DiskError": "disk", "ToolError": "tool",
     "PluginError": "bug", "UsageError": "usage",
 }
-# The words of failures a retry won't bring back: a gone file is never asked for again.
-FINAL = frozenset({"gone"})
 
 
 def _word(error: BaseException) -> str:
-    """The word a failure summary counts an error under: "network", "gone", …; else "error"."""
+    """The word a failure line counts an error under: "network", "gone", …; else "error"."""
     return next((WORDS[kind.__name__] for kind in type(error).__mro__ if kind.__name__ in WORDS),
                 "error")
-
-
-def _summary(failed: Sequence[tuple[BaseException, bool]], *, details: bool = False,
-             err: bool = False) -> None:
-    """Print the one line that sums a run's failures up, by kind, saying which a retry may bring
-    back.
-
-        ✗ 3 files failed: 2 network (retry: flnd retry), 1 gone. Details: flnd status
-
-    Args:
-        failed: each failure's error, with whether it was a file's (else a whole target's).
-        details: whether to end with where the details are (`flnd status`).
-        err: print it on standard error instead of standard output.
-    """
-    from flnd.ui import out
-    from flnkit import text
-
-    files = sum(is_file for _, is_file in failed)
-    nouns = [text.count(count, noun) for count, noun in
-             ((files, "file"), (len(failed) - files, "target")) if count]
-    kinds: dict[str, int] = {}
-    for error, _ in failed:
-        word = _word(error)
-        kinds[word] = kinds.get(word, 0) + 1
-    retried = [f"{count} {word}" for word, count in kinds.items() if word not in FINAL]
-    final = [f"{count} {word}" for word, count in kinds.items() if word in FINAL]
-
-    parts: list[Any] = [(f"{' and '.join(nouns)} failed", "bold bad"), (": ", "dim")]
-    if retried:
-        parts += [(", ".join(retried), "bad"), (" (retry: ", "dim"), ("flnd retry", "bold focus"),
-                  (")", "dim")]
-        if final:
-            parts.append((", ", "dim"))
-    if final:
-        parts.append((", ".join(final), "bad"))
-    if details:
-        parts += [(". Details: ", "dim"), ("flnd status", "bold focus")]
-    out.line(*parts, mark="error", err=err)
 
 
 def _shown(path: Any) -> str:

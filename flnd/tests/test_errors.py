@@ -23,7 +23,7 @@ from pathlib import Path
 from unittest import mock
 
 from fakes import EngineCase, download, fetch, login_cookies, make_plugin
-from test_commands import FlndCase
+from test_cli import FlndCase
 
 import flnd
 from flnd.engine import crawl as job
@@ -105,17 +105,17 @@ class ClassesTest(HttpCase):
 
     def test_usage_error(self):
         with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
-            fl.download("nosuchsource:example_user")
+            fl.get("nosuchsource:example_user")
         with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
-            fl.download("ins:example_user", when="yesterday")
+            fl.get("ins:example_user", when="yesterday")
         with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
-            fl.logout("nosuchsource")
+            fl.auth.logout("nosuchsource")
 
     def test_login_error(self):
         made = job.failure(self.refusal(403, "https://api.aaa.example/me"),
                            Target("aaa:example_user", kind="user"), make_plugin("aaa")())
         self.assertIsInstance(made, LoginError)
-        self.assertIn("flnd login aaa", made.hint)
+        self.assertIn("flnd auth login aaa", made.hint)
         self.assertEqual(made.target, "aaa:example_user")
         self.assertFalse(made.retryable)
 
@@ -348,8 +348,8 @@ class CliTest(FlndCase):
 
     def test_a_usage_error_from_flnd_itself_has_no_traceback(self):
         with mock.patch.dict(PLUGINS, {"aaa": make_plugin("aaa")}):
-            for argv in (("download", "aaa:example_user", "--when", "yesterday"),
-                         ("download", "nosuchsource:example_user"), ("download", "--no-such-flag")):
+            for argv in (("get", "aaa:example_user", "--when", "yesterday"),
+                         ("get", "nosuchsource:example_user"), ("get", "--no-such-flag")):
                 self.dest.seek(0)
                 self.dest.truncate()
                 with self.subTest(argv=argv):
@@ -364,11 +364,11 @@ class CliTest(FlndCase):
             raise kit.LoginError("the site asked for a login")
 
         with mock.patch.dict(PLUGINS, {"aaa": make_plugin("aaa", refused)}):
-            code, out, err = self.run_app("download", "aaa:example_user")
+            code, out, err = self.run_app("get", "aaa:example_user")
         self.assertEqual(code, 3)
         # The end of the run names the command; flnkit's error had no hint at all.
-        self.assertIn("  hint  run flnd login aaa", err)
-        self.assertIn("  run flnd login aaa", err)
+        self.assertIn("  hint  run flnd auth login aaa", err)
+        self.assertIn("  run flnd auth login aaa", err)
         self.assertNotIn("Traceback", out + err)
 
     def test_a_full_disk_says_what_it_said_before_the_split(self):
@@ -376,7 +376,7 @@ class CliTest(FlndCase):
             raise kit.disk(OSError(errno.ENOSPC, "No space left on device"), "media/aaa")
 
         with mock.patch.dict(PLUGINS, {"aaa": make_plugin("aaa", full)}):
-            code, out, err = self.run_app("download", "aaa:example_user")
+            code, out, err = self.run_app("get", "aaa:example_user")
         self.assertEqual(code, 4)
         self.assertIn("media/aaa: No space left on device", err)
         self.assertIn("free some space on that disk, or use another --home", err)
@@ -384,9 +384,9 @@ class CliTest(FlndCase):
     def test_a_login_the_source_needs_exits_3(self):
         source = make_plugin("aaa", login=login_cookies("sid", required=True))
         with mock.patch.dict(PLUGINS, {"aaa": source}):
-            code, out, err = self.run_app("download", "aaa:example_user")
+            code, out, err = self.run_app("get", "aaa:example_user")
         self.assertEqual(code, 3)
-        self.assertIn("  run flnd login aaa", err)
+        self.assertIn("  run flnd auth login aaa", err)
         self.assertNotIn("Traceback", out + err)
 
 
@@ -446,7 +446,7 @@ class SplitTest(unittest.TestCase):
 
     def test_classify_fills_an_empty_hint_with_flnds(self):
         login = classify(kit.LoginError("not logged in"), target="ins:example_user")
-        self.assertEqual(login.hint, "run flnd login ins")
+        self.assertEqual(login.hint, "run flnd auth login ins")
         kept = classify(kit.LoginError("refused", hint="log in again"), target="ins:example_user")
         self.assertEqual(kept.hint, "log in again")
         self.assertEqual(classify(kit.LoginError("not logged in")).hint, "")

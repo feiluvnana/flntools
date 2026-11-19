@@ -6,8 +6,10 @@ import io
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from rich.console import Console as RichConsole
@@ -224,11 +226,11 @@ class LineTest(OutCase):
             out.line("saved", mark="ok")
             out.line("failed", mark="error", err=True)
             out.warn("held")
-            out.error(UsageError("ins:example_user needs a login", hint="flnd login ins"))
+            out.error(UsageError("ins:example_user needs a login", hint="flnd auth login ins"))
         self.assertEqual(self.stdout.getvalue(), "v saved\n")
         self.assertEqual(self.stderr.getvalue(), "x failed\n! held\n"
                                                  "x ins:example_user needs a login\n"
-                                                 "  hint  flnd login ins\n")
+                                                 "  hint  flnd auth login ins\n")
 
     def test_text_from_a_site_cannot_drive_the_terminal(self) -> None:
         out.line("a\x1b[2Jb\x07c", ("\x1b]8;;https://example.com\x07d", "dim"))
@@ -322,8 +324,9 @@ class FoldTest(OutCase):
         run.__iter__.return_value = events()
         run.report = flnd.Report(skipped=2)
         run.state = flnd.State()
-        args = mock.Mock(json=False, verbose=False, command=None)
-        self.assertEqual(cli._watch(mock.Mock(home=None), run, args), 0)
+        args = mock.Mock(json=False, verbose=False)
+        home = self.enterContext(tempfile.TemporaryDirectory())
+        self.assertEqual(cli._watch(mock.Mock(home=Path(home)), run, args), 0)
         self.assertEqual(both.getvalue().splitlines(),
                          ["! 429 from api.example.com", "! 429 from api.example.com (×2)",
                           "  ✓ done in 0ms · 0 targets · 0 saved · 2 already saved"
@@ -468,14 +471,14 @@ class HelpTest(OutCase):
         self.assertNotIn("\x1b", text)
         self.assertEqual(text.splitlines()[0],
                          "  flnd 0.1.0 · download whole accounts from the web")
-        self.assertIn("  download [target…]     Download what the targets have now\n", text)
+        self.assertIn("  get [target…]", text)
         self.assertTrue(all(line == line.rstrip() for line in text.splitlines()))
 
     def test_the_help_draws_in_the_theme_on_a_terminal(self) -> None:
         self.streams(Terminal(), Pipe())
         text = self.help()
         # The commands are in `focus`, #7D84D6.
-        self.assertIn("\x1b[38;2;125;132;214mdownload", text)
+        self.assertIn("\x1b[38;2;125;132;214mget", text)
 
 
 if __name__ == "__main__":

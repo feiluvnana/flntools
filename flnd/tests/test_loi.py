@@ -270,7 +270,7 @@ class RunTest(unittest.TestCase):
                                                          f"{FOLDER}/images/02.png"])
         self.assertEqual([item.url for item in files[1:]], POST["images"])
         self.assertEqual(asked(ctx), ["lois/5930"])
-        self.assertEqual(warned(ctx), ["archives need a login; run flnd login loi"])
+        self.assertEqual(warned(ctx), ["archives need a login; run flnd auth login loi"])
         info = texts(files)[f"{FOLDER}/info.md"]
         for line in ("# Night city: set", "`pass-word`", "> line one\n>\n> line two"):
             self.assertIn(line, info)

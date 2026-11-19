@@ -169,6 +169,31 @@ def plain(text: str, *, err: bool = False) -> None:
     _flush(stream)
 
 
+def count(n: int, noun: str) -> str:
+    """`1 file`, `2 files`: `n` with its noun, pluralised."""
+    from flnkit import text
+
+    return text.count(n, noun)
+
+
+def size(n: int) -> str:
+    """A byte count as people read it: `1.2 GB`."""
+    from flnkit import text
+
+    return text.size(n)
+
+
+def json(value: Any) -> None:
+    """Print one event, report or row as one line of JSON (`flnd.engine.events.encode`), with
+    its class's name in `"type"` when it has none."""
+    from flnd.engine.events import encode
+
+    text = encode(value).decode()
+    if text.startswith("{") and not text.startswith('{"type"'):
+        text = f'{{"type":"{type(value).__name__}"' + ("," + text[1:] if text != "{}" else "}")
+    plain(text)
+
+
 def spin(text: str, *, at: float | None) -> None:
     """Draw the spinner's frame at `at` seconds, then `text`, over the line, on a terminal.
 
@@ -452,11 +477,15 @@ def _flag(action: argparse.Action) -> tuple[Any, Any]:
 
 
 def _arguments(parser: argparse.ArgumentParser, fancy: bool) -> str:
-    """A command's positional arguments as its usage shows them: `[target…]`, `<source>`."""
+    """A command's positional arguments as its usage shows them: `[target…]`, `<source>`; a
+    group's own commands as `list|clean`."""
     more = theme.glyph("more", fancy)
     shown = []
     for action in parser._actions:
-        if action.option_strings or isinstance(action, argparse._SubParsersAction):
+        if isinstance(action, argparse._SubParsersAction):
+            shown.append("|".join(action.choices))
+            continue
+        if action.option_strings:
             continue
         name = str(action.metavar or action.dest)
         shown.append({"*": f"[{name}{more}]", "+": f"<{name}{more}>", "?": f"[{name}]"}

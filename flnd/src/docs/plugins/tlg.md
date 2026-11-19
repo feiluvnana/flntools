@@ -5,7 +5,7 @@ account can see. It talks to Telegram as a client of its own, through the Teleth
 SDK for Telegram's MTProto protocol), not through a web page. A login is required; no browser is
 used to download, only, if you choose it, to read an existing Telegram Web login.
 
-A *target* is what you give `flnd download`; a *category* is one part of a target, named after
+A *target* is what you give `flnd get`; a *category* is one part of a target, named after
 its last `/`. See the [glossary](../glossary.md) and the [CLI guide](../cli.md).
 
 ## Targets
@@ -56,10 +56,10 @@ more of these.
 ## Logging in
 
 Telegram has a login of its own, not cookies: the plugin declares `login = TelegramLogin()`, a
-`Login` subclass whose `methods` are `browser`, `qr` and `phone`. `flnd login tlg <how>` calls
+`Login` subclass whose `methods` are `browser`, `qr` and `phone`. `flnd auth login tlg <how>` calls
 its `start`, and its `check` says a login is kept when a session is stored.
 
-`flnd login tlg <how>` takes one of three ways:
+`flnd auth login tlg <how>` takes one of three ways:
 
 - `browser`: reads Telegram Web's login from Chrome's `Default` profile, in a headless browser
   (the login site's `storage`, a hidden copy of the profile), and turns it into a Telethon
@@ -78,7 +78,7 @@ under API development tools. They are kept with the session in the home's vault,
 What proves a login is the stored `session`; the API pair alone does not.
 
 Without a login, a `tlg` target fails with "tlg: not logged in", and flnd says to run
-`flnd login tlg`. Each run checks the session when it connects. If it was revoked (a logout from
+`flnd auth login tlg`. Each run checks the session when it connects. If it was revoked (a logout from
 another device, for example), the run fails with "tlg: the saved login no longer works", and
 only a new login helps.
 

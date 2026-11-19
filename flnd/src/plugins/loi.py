@@ -188,7 +188,7 @@ class Loibus(Plugin):
             `{"servers": [(name, url), …], "pan": url, "pan_key": text}`, or None.
         """
         if not decode_token(ctx.cookies.get("access-token", "")):
-            ctx.log("warn", "archives need a login; run flnd login loi")
+            ctx.log("warn", "archives need a login; run flnd auth login loi")
             return None
         used, limit = await self._quota(ctx, post["id"])
         if limit is not None and used >= limit:

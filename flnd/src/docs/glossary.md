@@ -19,7 +19,7 @@ targets, 2 to 16 lowercase letters and digits. The built-in plugins are `src/plu
 
 A plugin that isn't built in is an installed one: a package with an entry point in the
 `flnd.sources` group, or a `<code>.py` file (or `<code>/` package) in the user's plugin folder,
-`$FLND_SOURCES`, else `~/.config/flnd/sources/`. Never a file in a home. See
+`$FLND_PLUGINS`, else `~/.config/flnd/plugins/`. Never a file in a home. See
 [writing-a-plugin.md](writing-a-plugin.md#10-shipping-it-as-a-plugin).
 
 ## Route
@@ -59,8 +59,8 @@ What flnd remembers about each saved file, so a second run skips it: the `files`
 `{post}_{num}` by default; changing it makes every saved file look new.
 
 ## Sync
-Downloading only what is new, for followed targets. `flnd follow` follows a target, and
-`flnd sync` updates them: it downloads what is new for every followed target. On a sync, a
+Downloading only what is new, for followed targets. `flnd get` follows a target, and
+`flnd get` updates them: it downloads what is new for every followed target. On a sync, a
 category marked `newest_first` stops after 5 saved posts in a row (`stop_after` under the
 plugin's `[sources.<code>]` table in `config.toml` changes it), or sooner at its head
 ([architecture.md](architecture.md#smart-sync)).

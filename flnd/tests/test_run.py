@@ -17,14 +17,24 @@ from typing import Any
 from unittest import mock
 
 import fakes
-from fakes import CDN, EngineCase, login_cookies, make_plugin, noise, own_login, sign_in, vaulted
+from fakes import (
+    CDN,
+    Engine,
+    EngineCase,
+    login_cookies,
+    make_plugin,
+    noise,
+    own_login,
+    sign_in,
+    vaulted,
+)
 
 from flnd import Blocked, LoginError, Target, UsageError
 from flnd.engine import crawl as job
 from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine import store as _store
-from flnd.engine._engine import Engine, Results, _Runner
+from flnd.engine._engine import Results, _Runner
 from flnd.engine.crawl import Options, TargetReport
 from flnd.engine.events import Failed, Skipped
 from flnd.errors import Error, SiteError
@@ -205,7 +215,7 @@ class LoginStateTest(EngineCase):
         self.run_engine(make_plugin("aaa", ran.append, login=login_cookies("sid")),
                         targets=["aaa:a"])
         self.assertEqual(len(ran), 1)
-        self.assertIn("! aaa: not logged in, using public access; run flnd login aaa", self.lines())
+        self.assertIn("! aaa: not logged in, using public access; run flnd auth login aaa", self.lines())
 
     def test_logged_in_has_no_hint_and_cookies_reach_the_client(self):
         self.log_in("aaa", sid="1", other="2")
@@ -255,7 +265,7 @@ class LoginStateTest(EngineCase):
             # The message, and the hint: what to do, never a traceback.
             self.assertIn(f"{name}: not logged in", self.failures())
         self.assertEqual({event.error.hint for event in self.events if isinstance(event, Failed)},
-                         {"run flnd login aaa"})
+                         {"run flnd auth login aaa"})
 
     def test_download_never_asks(self):
         # The `Ctx` a download gives refuses `ask`, so a plugin can't stop to ask a question.
@@ -586,7 +596,6 @@ class OffTheLoopTest(EngineCase):
         engine = Engine(home=self.home, sources={"aaa": make_plugin("aaa", files=files)})
         engine.download(["aaa:example_user"], sync=True)
         engine.sync()
-        engine.retry()
         self.assertEqual(on_loop, [])
 
     def test_a_plugins_state_is_read_once_and_written_back_off_the_loop(self):

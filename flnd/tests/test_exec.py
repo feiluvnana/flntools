@@ -99,8 +99,9 @@ class WatchTest(unittest.TestCase):
         run.report = flnd.Report(saved=2)
         runner = mock.Mock()
         args = mock.Mock(json=True, ui="plain", verbose=False)
+        home = self.enterContext(tempfile.TemporaryDirectory())
         with redirect_stdout(io.StringIO()):
-            self.assertEqual(cli._watch(mock.Mock(ui=None), run, args, runner=runner), 0)
+            self.assertEqual(cli._watch(mock.Mock(home=Path(home)), run, args, runner=runner), 0)
         self.assertEqual([call.args[0].post for call in runner.run.call_args_list], ["1", "2"])
 
 
@@ -110,7 +111,7 @@ class JsonErrorTest(unittest.TestCase):
         error = flnd.UsageError("nothing to do", hint="give a target")
         with mock.patch("flnd._library.Flnd.check", side_effect=error), redirect_stdout(out), \
                 redirect_stderr(io.StringIO()):
-            code = cli.main(["--json", "check"])
+            code = cli.main(["--json", "status"])
         self.assertEqual(code, 2)
         self.assertEqual(json.loads(out.getvalue()), {
             "type": "Error",

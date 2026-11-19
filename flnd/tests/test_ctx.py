@@ -162,9 +162,9 @@ class ExpiringLoginTest(CtxCase):
     def test_a_login_cookie_near_its_end_is_named_never_its_value(self):
         """fixes #9: warned of at the run's start; one far off, or a session's, says nothing."""
         now = _time.wall()
-        rows = [(now + 3600, "! exm: the login cookie token expires in 1h; run flnd login exm "
+        rows = [(now + 3600, "! exm: the login cookie token expires in 1h; run flnd auth login exm "
                              "again soon"),
-                (now - 1000, "! exm: the login cookie token has expired; run flnd login exm "
+                (now - 1000, "! exm: the login cookie token has expired; run flnd auth login exm "
                              "again"),
                 (now + 30 * 24 * 3600, None), (-1, None)]
         for when, line in rows:

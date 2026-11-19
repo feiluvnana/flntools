@@ -138,10 +138,10 @@ The kit, `flnkit/` — each module a toolkit of its own:
 A plugin that isn't built in is an installed one. `PLUGINS` knows the built-ins from the
 manifest, and looks for installed plugins the first time a code that isn't built in is needed:
 first the `flnd.sources` entry points of installed packages, then `<code>.py` files and `<code>/`
-packages in the plugin folder (`$FLND_SOURCES`, else `~/.config/flnd/sources/`,
-`%APPDATA%\flnd\sources\` on Windows). Finding them reads names only, since a plugin's code is its
+packages in the plugin folder (`$FLND_PLUGINS`, else `~/.config/flnd/plugins/`,
+`%APPDATA%\flnd\plugins\` on Windows). Finding them reads names only, since a plugin's code is its
 entry point's or its file's name; `exm:example_user` then imports `exm` alone. A link imports the
-plugins only when no built-in's domains match it, `flnd sources` imports them all, and `--help`
+plugins only when no built-in's domains match it, `flnd plugin list` imports them all, and `--help`
 none. A code that is taken already is refused, never replaced.
 
 A plugin runs in flnd's process. A broken one (an import error, a class that fails its checks,
@@ -152,10 +152,10 @@ yours.
 
 ## One download, start to finish
 
-`flnd follow ins:example_user/posts`:
+`flnd get ins:example_user/posts`:
 
 1. **The CLI** (`src/cli.py`) parses the flags with argparse, opens the home (`flnd.open`), and
-   calls `fl.follow("ins:example_user/posts")`.
+   calls `fl.get("ins:example_user/posts")`.
 2. **Resolving.** The library resolves the target at once (`Engine.chosen`, through
    `src/engine/resolve.py`): it reads the manifest alone, finds the plugin by its code (or a
    bare link by its `domains`), and the first route whose pattern matches gives
@@ -238,7 +238,7 @@ yours.
 12. **Ending the target.** The crawl waits for its downloads, makes the links it held back, and
     saves the categories it listed to their end, the cursors of those a download cut short, the
     gaps a sync left and the heads in `flnd.db` (each failed file was written there as it
-    failed). It counts the target's files for `flnd ls`, then ends the target's rows. A failed
+    failed). It counts the target's files for `flnd target list`, then ends the target's rows. A failed
     listing fails the target alone (a `Failed` event); a refused login fails the plugin's
     remaining targets; a full disk stops the run.
 13. **Links to other sites.** Targets a listing yielded (a post linking to another site) are
@@ -248,10 +248,10 @@ yours.
     exits with 0, 1 if a file or a target failed, 3 if a login is needed, 4 if flnd itself
     stopped (a full disk, a missing tool, a broken plugin), 130 on Ctrl-C ([cli.md](cli.md)).
 
-`flnd sync` runs steps 6 to 14 for every target whose row has `sync` on, always stopping at
+`flnd get` runs steps 6 to 14 for every target whose row is followed, always stopping at
 saved posts. A search (`mht?words`) first lists the targets it finds, then downloads each one;
-on a sync, only those it hadn't seen before, at most 25 a run. `flnd retry` runs every target
-with failed files, listing only the failed posts' pages. `--dry` plans the same listing and
+on a sync, only those it hadn't seen before, at most 25 a run. A target with failed files lists
+the failed posts' pages first. `--dry` plans the same listing and
 sends a `Planned` event per file instead of downloading, and writes nothing.
 
 ## Smart sync
@@ -266,7 +266,7 @@ the three is in the events and in the run's report.
    the cursor of the page each post was on, lists from that cursor until it has met each failed
    post (or `RETRY_WINDOW` posts past it), and queues the post like any other, which downloads
    only its files that aren't saved. A file is retried this way on at most 3 runs, then left
-   for `flnd retry`; a gone file never. A post the listing no longer has is recorded gone. Each
+   for `r` in `flnd target list`; a gone file never. A post the listing no longer has is recorded gone. Each
    file brought back is a `Saved` event with `retried=True` (`report.retried`).
 2. **Nothing new.** A `newest_first` listing keeps its head: the newest post a run that read it
    from the top saw. A sync stops after the head and the post after it, so a target with
@@ -522,7 +522,7 @@ Everything lives in the home folder, `.flnd` in the current folder unless `--hom
 
 Two rules hold every write together: a post's rows commit in one transaction once all its files
 are in place, and a row is written only after its file, so a crash in between leaves a whole
-file without a row, which the next run finds on disk, records and skips. `flnd check`
+file without a row, which the next run finds on disk, records and skips. `flnd status`
 compares the rows with the disk and repairs toward the disk. [storage.md](storage.md) lists every file and what
 its rows hold.
 
@@ -622,12 +622,12 @@ What flnd leaves out, and why:
 
 The choices that explain how flnd behaves, made with its user in November 2026:
 
-1. **Flat verbs**: `flnd ls`, `flnd login`, `flnd follow`, not groups such as
-   `flnd auth login`. Every verb is unique; `login` with no source lists the logins.
+1. **One verb to run, groups to look after**: `flnd get` runs targets; `flnd target`, `flnd auth`
+   and `flnd plugin` list and change what flnd keeps. There is no `download`, `follow` or `sync`.
 2. **Categories in the target** (`ins:example_user/reels`, `/all`); without them, the plugin's
    own content (`own=True`), and never other people's (tagged posts, reposts, likes) unless named.
-3. **Following is a verb.** `flnd follow` opts a target in; a one-off `download` never grows
-   every later sync.
+3. **Getting follows.** `flnd get` adds a target that isn't a single post to the followed ones,
+   so `flnd get` alone syncs them; `flnd target clean` forgets one.
 4. **Scrolling is human-like by default** (`scroll = "human"`), with `"fast"` in a plugin's
    `[sources.<code>]` table for a site that can take it.
 5. **Concurrency per media host starts at 8 and adapts up to 32** while throughput still rises

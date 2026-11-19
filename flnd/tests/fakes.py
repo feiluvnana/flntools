@@ -22,10 +22,11 @@ import no_profiles  # noqa: F401  (refuses real browser profiles)
 import unawaited  # noqa: F401  (a coroutine never awaited fails its test)
 
 from flnd import plugin
+from flnd.engine import _engine
 from flnd.engine import auth as _auth
 from flnd.engine import run as _run
 from flnd.engine import store as _store
-from flnd.engine._engine import Engine, Results, _drive
+from flnd.engine._engine import Results, _carried
 from flnd.engine.crawl import Options
 from flnd.engine.events import Failed, Phase, State
 from flnd.plugin import Post, Target
@@ -34,8 +35,33 @@ from flnkit import clock as _time
 from flnkit import cookies as _cookies
 from flnkit import net as _net
 
-__all__ = ["CDN", "EngineCase", "download", "fetch", "history", "login_cookies", "make_plugin",
+__all__ = ["CDN", "Engine", "EngineCase", "download", "drive", "fetch", "history", "login_cookies", "make_plugin",
            "noise", "own_login", "run_targets", "sign_in", "targets", "vaulted"]
+
+
+def drive(command):
+    """Run an engine command on a loop of its own, on this thread, and return what it gives."""
+    loop = asyncio.new_event_loop()
+    try:
+        ok, value = loop.run_until_complete(_carried(command))
+        loop.run_until_complete(_run._shut_down())
+    finally:
+        loop.close()
+    if not ok:
+        raise value
+    return value
+
+
+class Engine(_engine.Engine):
+    """The engine, with `download` and `sync` run to the end on a loop of the test's own."""
+
+    def download(self, targets, **options):
+        """`run_download`, driven here."""
+        return drive(self.run_download(targets, **options))
+
+    def sync(self, targets=(), *, time=None):
+        """`run_sync`, driven here."""
+        return drive(self.run_sync(targets, time=time))
 
 
 def sign_in(home, code: str, jar=None, *, name: str = "default", origin: str = "file",
@@ -160,7 +186,7 @@ def run_targets(engine: Engine, chosen: Sequence[tuple[Target, Options]],
         async with engine._live(), engine._running(stop) as runner:
             return Results(tuple(await runner.run(chosen)))
 
-    return _drive(command())
+    return drive(command())
 
 
 CDN = "https://cdn.example"

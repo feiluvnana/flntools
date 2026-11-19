@@ -1,7 +1,7 @@
 # flnd from Python
 
 A script uses flnd through one object: `flnd.open(home)` gives a `Flnd` for a home folder, and
-its methods are the CLI's commands. A download returns a `Run`, which reports what it does as a
+its methods and groups are the CLI's commands. `get` returns a `Run`, which reports what it does as a
 stream of events. Every `python` block on this page runs offline in the docs test, against a
 small plugin defined below, so each one is a working example.
 
@@ -13,7 +13,7 @@ import flnd
 home = tempfile.mkdtemp()                       # the examples below share this home
 
 with flnd.open(home) as fl:                     # a Flnd; nothing is written yet
-    print(fl.targets(), fl.files())             # [] []: a new home knows nothing
+    print(list(fl.targets), fl.files())         # [] []: a new home knows nothing
 ```
 
 ## The home
@@ -73,13 +73,13 @@ class Notes(Plugin):
 
 ## Downloading: runs and events
 
-`fl.download(targets, …)` returns a `Run`. **Nothing happens until it is read**, like a
+`fl.get(*targets, …)` returns a `Run`. **Nothing happens until it is read**, like a
 generator: iterating it starts it, and yields each event as it happens.
 
 ```python
 with flnd.open(home) as fl:
     fl.add(Notes)
-    for event in fl.download("nts:example_user"):
+    for event in fl.get("nts:example_user"):
         match event:
             case flnd.Saved(path=path, date=date):
                 print("saved", path.name, date)
@@ -110,7 +110,7 @@ holds the counts so far at any time.
 ```python
 with flnd.open(home) as fl:
     fl.add(Notes)
-    report = fl.download("nts:example_user").wait()
+    report = fl.get("nts:example_user").wait()
     assert (report.saved, report.skipped, report.ok) == (0, 3, True)   # saved above already
 ```
 
@@ -141,7 +141,7 @@ screen is drawn from it alone.
 ```python
 with flnd.open(home) as fl:
     fl.add(Notes)
-    run = fl.download("nts:example_user")
+    run = fl.get("nts:example_user")
     assert run.state.version == 0
     run.wait()
     assert [(row.text, row.phase) for row in run.state.targets] == [
@@ -157,14 +157,14 @@ none, so naming one for it is a usage error.
 
 | option | what it does |
 | --- | --- |
-| `when` | the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"` (either end may be left out), or a span back from today: `"30d"`, `"8w"`, `"1y"`; `""` for every day. None (the default) takes `when` under `[defaults]` in the home's `config.toml`, which bounds `sync` too |
+| `when` | the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"` (either end may be left out), or a span back from today: `"30d"`, `"8w"`, `"1y"`; `""` for every day. None (the default) takes `when` under `[defaults]` in the home's `config.toml`, which bounds a sync too |
 | `limit` | at most this many posts per target, or targets per search |
 | `dry` | plan instead: `Planned` events, and nothing is written |
 
 ```python
 with flnd.open(home) as fl:
     fl.add(Notes)
-    planned = list(fl.download("nts:example_user/reels", when="2026-04", dry=True))
+    planned = list(fl.get("nts:example_user/reels", when="2026-04", dry=True))
     assert [(event.post, event.state) for event in planned] == [("r1", "saved")]
 ```
 
@@ -174,7 +174,7 @@ A mistake in a target or an option raises `flnd.UsageError` at the call, before 
 with flnd.open(home) as fl:
     fl.add(Notes)
     try:
-        fl.download("nts:example_user/stories")
+        fl.get("nts:example_user/stories")
     except flnd.UsageError as error:
         print(error)        # nts has no category stories
 ```
@@ -206,33 +206,35 @@ import asyncio
 async def main():
     with flnd.open(home) as fl:
         fl.add(Notes)
-        return await fl.download("nts:example_user")
+        return await fl.get("nts:example_user")
 
 assert asyncio.run(main()).skipped == 3
 ```
 
 ## Following and syncing
 
-`download` takes what is there once. `follow` records the targets, then downloads them like
-`download`; `sync` then takes what is new for every followed target (or the ones named), and
-`unfollow` stops following, keeping the files and the history.
+`get` takes what is there, and follows each target that isn't a single post: it keeps the
+categories the target names for later gets. `get()` with no target takes what is new for every
+followed target. The `targets` group looks after what the home knows.
 
 ```python
 with flnd.open(home) as fl:
     fl.add(Notes)
-    fl.follow("nts:example_user/posts").wait()             # later syncs take posts alone
-    print(fl.sync().wait())                                # nothing new since
-    fl.unfollow("nts:example_user")
+    fl.get("nts:example_user/posts").wait()                # later gets take posts alone
+    print(fl.get().wait())                                 # nothing new since
+    fl.targets.unfollow("nts:example_user")
 ```
 
-| method | returns | what it does |
+| call | returns | what it does |
 | --- | --- | --- |
-| `follow(targets, when=)` | `Run` | follow, then download; the categories each target names are kept for later syncs, `when` bounds this download alone |
-| `sync(targets=())` | `Run` | download what is new for followed targets |
-| `unfollow(targets)` | `list[Target]` | stop following; files and history stay |
-| `retry()` | `Run` | download again every file that failed, however many runs failed it ([errors.md](errors.md#retrying)) |
+| `get(*targets, when=, limit=, dry=)` | `Run` | get the targets and follow them; with none, get every followed target |
+| `targets.list(plugin=None)` | `list[Tracked]` | the targets the home knows; iterating `fl.targets` does the same |
+| `targets.follow(*targets)` | `list[Tracked]` | follow targets without getting them; a single post is a usage error |
+| `targets.unfollow(*targets)` | `list[Tracked]` | stop following; files and history stay |
+| `targets.retry(*targets)` | `list[Tracked]` | make failed files retryable again, however many runs failed them ([errors.md](errors.md#retrying)) |
+| `targets.clean(*targets, media=False)` | `list[Tracked]` | forget targets: rows, files rows, failures, cursors, heads, gaps. `media=True` also deletes their recorded files, sidecars, links, extracted folders and the folders left empty |
 
-A download or sync is smart about what it already has ([architecture.md](architecture.md#smart-sync)):
+A get is smart about what it already has ([architecture.md](architecture.md#smart-sync)):
 
 - it first retries the target's files that failed on earlier runs (on at most 3 runs each),
   listing each failed post again for fresh links; a file it brings back is a `Saved` event
@@ -246,7 +248,7 @@ A download or sync is smart about what it already has ([architecture.md](archite
 ```python
 with flnd.open(home) as fl:
     fl.add(Notes)
-    report = fl.retry().wait()           # nothing failed in this home
+    report = fl.get().wait()             # nothing is followed now: nothing to get
     print(report.retried, report.ok)     # 0 True
 ```
 
@@ -255,7 +257,8 @@ with flnd.open(home) as fl:
 ```python
 with flnd.open(home) as fl:
     fl.add(Notes)
-    [tracked] = fl.targets(source="nts")
+    fl.get("nts:example_user").wait()
+    [tracked] = fl.targets.list(plugin="nts")
     print(tracked.target, tracked.follow, tracked.files, tracked.categories)
     for record in fl.files(target="nts:example_user", since="2026-03"):
         print(record.path.name, record.size, record.date)
@@ -263,20 +266,24 @@ with flnd.open(home) as fl:
 
 | read | returns |
 | --- | --- |
-| `fl.targets(source=None)` | a `flnd.Tracked` per target the home knows: `target`, `follow`, `at` (last sync), `files`, `size`, `seen` (for a search), `categories` (each one's state), `query` |
-| `fl.files(target=None, kind=None, since=None)` | read from the home's `flnd.db`: a `flnd.Record` per saved file: `key`, `path`, `size`, `post`, `category`, `date`, `at`, and `kind` (`"image"`, `"video"`, `"audio"`) |
-| `fl.logins` | a `flnd.Login` per plugin: `source` (its code), `name`, `state`, `origin`, `expiring` |
+| `fl.targets` | a `flnd.Tracked` per target the home knows: `target`, `follow`, `at` (last run), `files`, `size`, `seen` (for a search), `categories`, `complete` (each listed category's day), `query`, `account` |
+| `fl.files(target=None, kind=None, since=None)` | read from the home's `flnd.db`: a `flnd.Record` per saved file: `key`, `path`, `size`, `post`, `category`, `date`, `at`, and `kind` (`"image"`, `"video"`, `"audio"`); `since` is a date or text such as `"2026-03"` |
+| `fl.auth` | a `flnd.Account` per account of every plugin: `plugin`, `name`, `origin`, `is_default`, `status` (`"ok"`, `"held"` or `"expired"`), `held_until`, `expires` |
+| `fl.plugins` | a `flnd.Installed` per plugin: the built-ins, the installed plugins (a disabled one too, with `disabled` saying why) and `add`'s. Each has `code`, `name`, `origin` (`"built-in"`, `"file"` or `"script"`), `where`, `version`, `api`, `domains`, `forms`, `categories` and `logins` (its ways to log in). Reading it imports every plugin |
 | `fl.status` | the last run that downloaded, as a `flnd.Status`: `command`, `started`, `ended`, `saved`, and `failures`, a `flnd.Failure` per file or target it left failed (`target`, `post`, `path`, `error`, `attempts`, `url`, `at`); `None` before the first run ([errors.md](errors.md#the-failure-report)) |
 | `fl.check(fix=False)` | a `flnd.Checked`: the history against the disk. `missing` and `resized` (each a `Record`, as the history has it), `unknown` (paths under `media/` no row names), `files` (rows checked), `fixed`, and `ok`. `fix=True` makes the history match the disk, and never deletes, moves or downloads a file ([storage.md](storage.md#checking-a-home)) |
+| `fl.config` | the settings as a mapping of dotted names (`"defaults.when"`, `"plugins.ins.pace"`; a bare `"when"` is one of `[defaults]`): `fl.config["when"]`, `fl.config.where("when")`, `fl.config.default("when")`, `fl.config.set(key, value)` and `fl.config.unset(key)` write `config.toml` and keep its comments |
 
-## Logins and plugins
+## Accounts, plugins and the extension
 
-| method | what it does |
+| call | what it does |
 | --- | --- |
-| `fl.login(source, how)` | log in: `how` is `"chrome"` (extension), `"firefox"`, `"safari"` (macOS), a cookies path, or the plugin's way (`"qr"`, `"phone"` for tlg); returns `Login` |
-| `fl.logout(source)` | remove a login; whether there was one |
-| `fl.add(source)` | a plugin class for this `Flnd` alone; a code another plugin has is a `UsageError` |
-| `fl.sources` | a `flnd.Installed` per plugin: the built-ins, the installed plugins (a disabled one too, with `disabled` saying why) and `add`'s. Each has `code`, `name`, `origin` (`"built-in"`, `"package"`, `"file"` or `"script"`), `where`, `version`, `api`, `login` (its state), `domains`, `forms`, `categories` and `logins` (its ways to log in). Reading it imports every plugin |
+| `fl.auth.login(plugin, method=None, path=None, name=None)` | log an account in: `method` is `"chrome"` (extension), `"firefox"`, `"safari"` (macOS), `"browser"`, `"file"` with a cookies `path`, or the plugin's way (`"qr"`, `"phone"` for tlg); returns the `Account` |
+| `fl.auth.logout(plugin, name=None)` | log an account out, the default one when no `name`; returns the `Account` |
+| `fl.auth.default(plugin, name)` | make an account the plugin's default |
+| `fl.plugins.install(path)`, `fl.plugins.uninstall(code)` | install a `.py` file or package folder, or remove one; each returns an `Installed` |
+| `fl.extension.install()`, `.uninstall()`, `.connected`, `.version` | connect Chrome's extension, remove it, and ask whether it is connected |
+| `fl.add(plugin)` | a plugin class for this `Flnd` alone; a code another plugin has is a `UsageError` |
 
 ```python
 import pathlib
@@ -286,33 +293,34 @@ cookies.write_text("# Netscape HTTP Cookie File\n"
                    ".instagram.com\tTRUE\t/\tTRUE\t2000000000\tsessionid\texample-value\n")
 
 with flnd.open(home) as fl:
-    assert fl.login("ins", str(cookies)).state == "logged in"
+    account = fl.auth.login("ins", path=str(cookies))
+    assert (account.plugin, account.origin, account.is_default) == ("ins", "file", True)
 ```
 
 The docs test runs this block offline: logging in from a cookie file reads the file and asks
-no site. `fl.login("ins", "chrome")` reads a browser's cookies the same way.
+no site. `fl.auth.login("ins", method="chrome")` reads a browser's cookies the same way.
 
 ## The CLI's commands, through the library
 
 | CLI | library |
 | --- | --- |
-| `flnd download T/C --when W --limit N --dry` | `fl.download("T/C", when=W, limit=N, dry=True)` |
-
-| `flnd follow T` | `fl.follow(T)` |
-| `flnd sync [T]` | `fl.sync(T)` |
-| `flnd ls` | `fl.targets()` |
-| `flnd unfollow T` | `fl.unfollow(T)` |
-| `flnd login S HOW` | `fl.login(S, HOW)` |
-| `flnd logout S` | `fl.logout(S)` |
-| `flnd login` (no plugin) | `fl.logins` |
-| `flnd check [--fix]` | `fl.check(fix=…)` |
-| `flnd status` | `fl.status` |
-| `flnd retry` | `fl.retry()` |
+| `flnd get T/C --when W --limit N --dry` | `fl.get("T/C", when=W, limit=N, dry=True)` |
+| `flnd get` | `fl.get()` |
+| `flnd target list` | `fl.targets.list()` |
+| `flnd target clean T --media` | `fl.targets.clean(T, media=True)` |
+| `flnd auth list` | `fl.auth` |
+| `flnd auth login P M PATH` | `fl.auth.login(P, method=M, path=PATH)` |
+| `flnd auth logout P A` | `fl.auth.logout(P, name=A)` |
+| `flnd plugin list` | `fl.plugins` |
+| `flnd plugin install PATH`, `uninstall C` | `fl.plugins.install(PATH)`, `fl.plugins.uninstall(C)` |
+| `flnd extension install`, `uninstall` | `fl.extension.install()`, `fl.extension.uninstall()` |
+| `flnd status` | `fl.status`, `fl.check()` |
+| `flnd config` | `fl.config` |
 | `--exec CMD` | `for event in run:` on each `flnd.Saved` |
 
-`--again` (the CLI's flag on `download` and `follow`) is `flnd.open(home, again=True)`: every
-`download` and `follow` then lists each post again and asks again for files the site answered
-404 or 410 for (recorded as gone, [storage.md](storage.md)). `[defaults]` in the home's
+`--again` (the CLI's flag on `get`) is `flnd.open(home, again=True)`: every `get` then lists each
+post again and asks again for files the site answered 404 or 410 for (recorded as gone,
+[storage.md](storage.md)). `[defaults]` in the home's
 `config.toml` turns off dedupe (`dedupe = false`), turns on sidecars (`sidecars = true`),
 and gives `when` its default; `[plugins.<code>]` sets a plugin's pace, limits, proxy and
 templates ([storage.md](storage.md#settings-configtoml)). An argument given to a call
@@ -331,7 +339,7 @@ a `Failed` event instead, and the run goes on.
 ```python
 with flnd.open(home) as fl:
     try:
-        fl.download("zzz:example_user")
+        fl.get("zzz:example_user")
     except flnd.Error as error:
-        print(type(error).__name__, error, "-", error.hint)    # UsageError unknown source 'zzz'…
+        print(type(error).__name__, error, "-", error.hint)    # UsageError unknown plugin 'zzz'…
 ```

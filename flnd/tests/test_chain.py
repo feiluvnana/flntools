@@ -12,12 +12,11 @@ import os
 from pathlib import Path
 from unittest import mock
 
-from fakes import CDN, EngineCase, make_plugin, noise
+from fakes import CDN, Engine, EngineCase, make_plugin, noise
 
 JPEG = noise("JPEG")
 
 from flnd.engine import store as _store
-from flnd.engine._engine import Engine
 from flnd.engine.events import Saved
 from flnd.plugin import File, Plugin, Post, route
 from flnkit import net as _net

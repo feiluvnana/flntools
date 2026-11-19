@@ -5,9 +5,8 @@ import datetime
 import unittest
 
 import no_profiles  # noqa: F401
-from fakes import EngineCase
+from fakes import Engine, EngineCase
 
-from flnd.engine._engine import Engine
 from flnd.plugin import NotFound, Range, Target, UsageError
 from flnd.plugins.mht import API, Mimi, format_order
 from flnd.testing import FakeCtx, Reply, check, collect

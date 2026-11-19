@@ -28,7 +28,7 @@ flnd.Stopped               Ctrl-C: a KeyboardInterrupt, never an Error
 Each error has:
 
 - **its message**, `str(error)`: one line, with no secret in it;
-- **`hint`**: what to do, as a command when there is one (`run flnd login <code>`); `""` when
+- **`hint`**: what to do, as a command when there is one (`run flnd auth login <code>`); `""` when
   there is nothing to suggest;
 - **`target`**: the target it is about, as written (`ins:example_user`), or `None`;
 - **`retryable`**: whether trying again later may work. Whoever raises the error sets it, from
@@ -47,7 +47,7 @@ import flnd
 
 try:
     with flnd.open() as fl:
-        fl.download("zzz:example_user")
+        fl.get("zzz:example_user")
 except flnd.Error as error:
     assert isinstance(error, flnd.UsageError)
     print(error)        # unknown source 'zzz'. Sources: tik, fbk, ins, twt, loi, tlg, mht
@@ -78,7 +78,7 @@ plugin's own class that is merely named `LoginError` exits 4, not 3.
 
 | error | flnd's hint |
 | --- | --- |
-| a `LoginError` about a target (`ins:example_user`) | `run flnd login ins` |
+| a `LoginError` about a target (`ins:example_user`) | `run flnd auth login ins` |
 | a `DiskError` for a full disk or quota | `free some space on that disk, or use another --home` |
 | a `DiskError` for a read-only disk | `that disk is read-only; use another --home` |
 | a `DiskError` for a name too long | `use a shorter --home or folder template` |
@@ -135,7 +135,7 @@ traceback. Its class gives the exit code: 2 for a `UsageError`, 3 for a `LoginEr
 
 ```
 ✗ ins:example_user needs a login
-  hint  flnd login ins
+  hint  flnd auth login ins
 ```
 
 An unexpected exception is a bug. The CLI prints `✗ flnd hit a bug: <the error>`, then
@@ -157,14 +157,14 @@ stop the run: it becomes that target's `PluginError`, and its cause is printed w
 Every failure is a row of `flnd.db`'s `failures` table ([storage.md](storage.md)):
 its target, post, category, the file it was to be, the error's class, message and hint, how
 many runs failed it (`attempts`), and its URL, redacted. That row is the only record, so the
-end of a run, `flnd status` and `flnd retry` can't disagree. A file has one row however often
+end of a run and `flnd status` can't disagree. A file has one row however often
 it fails, and a file saved since drops out of the report.
 
 The end of a run sums its failures up in one line on standard error, by kind, saying which a
 retry may bring back:
 
 ```
-✗ 3 files failed: 2 network (retry: flnd retry), 1 gone. Details: flnd status
+✗ 3 files failed: 2 network (retry: flnd get), 1 gone. Details: flnd status
 ```
 
 The kinds are `network`, `blocked`, `site`, `changed`, `login`, `disk`, `tool`, `bug` (a
@@ -198,13 +198,13 @@ post again through its plugin, starting from the cursor of the page the post was
 deep in a long listing costs one page, and downloads the post's files that aren't saved, which
 are the ones that failed. A post the listing no longer has is recorded gone.
 
-- **By itself.** Every `download` and `sync` of a target first retries that target's failed
+- **By itself.** Every `get` of a target first retries that target's failed
   files, before its new posts. A file is retried this way on at most 3 runs (its `attempts`
-  reach 4: the first failure and three retries); after that it waits for `flnd retry`. A gone
-  file (`NotFound`) is never retried.
-- **`flnd retry`** (`fl.retry()`) retries every failed file of every target at once, however
-  many runs failed it, and lists nothing but the failed posts' pages. A target whose whole
-  listing failed is downloaded again.
+  reach 4: the first failure and three retries); after that it waits for `r` in `flnd target list`
+  (`fl.targets.retry()`). A gone file (`NotFound`) is never retried.
+- **`r` in `flnd target list`** (`fl.targets.retry(target)`) makes a target's failed files
+  retryable again, however many runs failed them: the next `flnd get` lists the failed posts'
+  pages and nothing else for them. A target whose whole listing failed is downloaded again.
 
 A file a retry brought back is a `Saved` event with `retried=True`; the end of the run says
 `N brought back by a retry`.
@@ -218,9 +218,9 @@ A file a retry brought back is a `Saved` event with `retried=True`; the end of t
 | message | meaning | fix |
 | --- | --- | --- |
 | `<target> is one post, with no categories` | a single post has no categories | leave the `/categories` out |
-| `<target>: not logged in` | the plugin requires a login | `flnd login <code>` |
+| `<target>: not logged in` | the plugin requires a login | `flnd auth login <code>` |
 | `<code>: not logged in, using public access` | a warning: only public posts are listed | log in to get more |
-| `<code>: the site refused the login (HTTP 403)` | the saved login expired or was revoked | `flnd login <code>` |
+| `<code>: the site refused the login (HTTP 403)` | the saved login expired or was revoked | `flnd auth login <code>` |
 | `which source is "<text>"?` | a bare name, not a link, without a plugin's code | write it as `<code>:<text>` |
 | `got a web page instead of a photo` | the site answered a file request with a page | usually a login wall: log in again |
 | `<home>/flnd.db: database is locked` | another flnd run held the home's database for more than 30 s | wait for it to end, or use another `--home` |

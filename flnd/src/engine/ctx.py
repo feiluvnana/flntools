@@ -69,7 +69,7 @@ _DONE = object()
 # Methods a server may receive twice without harm: only their failures are tried again.
 SAFE = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
 # How soon before a login cookie expires a run warns of it, in seconds: 3 days, so a daily
-# `flnd sync` warns a few runs before the one that meets the login wall.
+# `flnd get` warns a few runs before the one that meets the login wall.
 EXPIRY_WARNING = 3 * 24 * 3600
 
 
@@ -363,7 +363,7 @@ class Ctx:
         run: the plugin's resources for the run.
         target: the target it acts for; `<code>:` for the plugin's account.
         when: the run's `when`.
-        login: for `flnd login`: `ask` asks in the terminal.
+        login: for `flnd auth login`: `ask` asks in the terminal.
     """
 
     def __init__(self, run: PluginRun, target: Target, *, when: Range = Range(),
@@ -715,7 +715,7 @@ class Ctx:
 
     async def ask(self, message: str, *, secret: bool = False, description: str = "",
                   choices: Sequence[str] = ()) -> str:
-        """See `flnd.plugin.Ctx.ask`: only `flnd login` asks, in a terminal.
+        """See `flnd.plugin.Ctx.ask`: only `flnd auth login` asks, in a terminal.
 
         Raises:
             UsageError: a run, or no terminal: nobody can answer.
@@ -723,7 +723,7 @@ class Ctx:
         code = self._plugin.code
         if not (self._login and self._run.settings.interactive and forms.interactive()):
             raise UsageError(f"{code}: nobody can answer {message!r} here",
-                             hint=f"run flnd login {code} in a terminal")
+                             hint=f"run flnd auth login {code} in a terminal")
         if description:
             ui.info("{description}", description=description)
         # On a thread, so the loop (a Telethon client's) runs on while a person types.
@@ -884,7 +884,7 @@ def _met() -> None:
 class Bridge:
     """The run's loop, as code on a `CALL` thread reaches it.
 
-    In a run it is the run's own loop. Outside one (`flnd login`), it starts a loop of its own
+    In a run it is the run's own loop. Outside one (`flnd auth login`), it starts a loop of its own
     on a thread the first time it is used, and `close` ends it.
 
     Args:
@@ -1310,11 +1310,11 @@ def _warn_expiring(plugin: Plugin, jar: Any) -> None:
     """
     for name, left in auth.expiring(plugin, jar, within=EXPIRY_WARNING):
         if left <= 0:
-            ui.warn("{code}: the login cookie {name} has expired; run flnd login {code} again",
+            ui.warn("{code}: the login cookie {name} has expired; run flnd auth login {code} again",
                     code=plugin.code, name=name)
         else:
             ui.warn("{code}: the login cookie {name} expires in {time}; "
-                    "run flnd login {code} again soon",
+                    "run flnd auth login {code} again soon",
                     code=plugin.code, name=name, time=text.duration(left))
 
 

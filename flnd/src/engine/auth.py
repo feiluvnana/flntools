@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import datetime
 import itertools
 import json
@@ -20,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 from flnd.engine import jobs, store
-from flnd.engine.events import Login
 from flnd.errors import (
     Blocked,
     DiskError,
@@ -37,8 +37,8 @@ from flnd.ui import forms
 from flnd.ui.log import ui
 from flnkit import browser, clock, cookies, db, text, vault
 
-__all__ = ["Switcher", "Vault", "account", "expiring", "fix_domains", "load", "logged_in",
-           "login", "logins", "logout", "pick", "seal_plaintext", "secrets", "settle",
+__all__ = ["Switcher", "Vault", "account", "default", "expiring", "fix_domains", "load",
+           "logged_in", "login", "logout", "pick", "seal_plaintext", "secrets", "settle",
            "write_back"]
 
 # The key file; None is the user's (`flnkit.vault.keyfile`). The tests set one of their own.
@@ -331,7 +331,8 @@ def _refresh(cookie: dict[str, Any], fresh: list[Cookie]) -> str | None:
 # ---------------------------------------------------------------------------------------------
 
 def login(home: Path, plugin: Plugin, method: str, *, path: Path | str | None = None,
-          profile: str | None = None, interactive: bool = False) -> Account:
+          profile: str | None = None, interactive: bool = False,
+          name: str | None = None) -> Account:
     """Log an account of `plugin` in by `method`, check it, and seal it in the vault.
 
     A cookie login reads its jar by the method; any other runs the plugin's `Login.start`,
@@ -346,6 +347,7 @@ def login(home: Path, plugin: Plugin, method: str, *, path: Path | str | None = 
         path: the cookie file, for `file`.
         profile: the browser's profile, for a browser's cookie store.
         interactive: whether the plugin's own login may ask in the terminal.
+        name: the account's name, instead of the one `Login.whoami` gives.
 
     Raises:
         UsageError: a plugin with no login, a method it doesn't take, or a missing `path`.
@@ -365,7 +367,8 @@ def login(home: Path, plugin: Plugin, method: str, *, path: Path | str | None = 
         # A stored API key isn't asked for again.
         with contextlib.suppress(LoginError), secrets(home, first.id) as saved:
             kept = dict(saved)
-    name = _signed_in(home, plugin, method, jar, kept, interactive=interactive)
+    found = _signed_in(home, plugin, method, jar, kept, interactive=interactive)
+    name = (name or "").strip() or found
     with store.open(home) as db:
         if not name and interactive and forms.interactive():
             name = forms.ask("Account name", default=first.name if first else None)
@@ -500,54 +503,48 @@ def _next_name(db: store.Store, plugin: str) -> str:
     return next(f"account{n}" for n in itertools.count(1) if f"account{n}" not in taken)
 
 
-def logout(home: Path, plugin: str) -> bool:
-    """Delete every account of `plugin`: its secrets, then its row.
+def logout(home: Path, plugin: str, name: str | None = None) -> Account:
+    """Log one account of `plugin` out: its secrets, then its row; the default when no `name`.
 
     Returns:
-        Whether there was one.
+        The account that was removed.
+
+    Raises:
+        UsageError: the plugin has no such account.
     """
-    if not (home / store.DB).is_file():
-        return False
+    found = _named(home, plugin, name)
     with store.open(home) as db:
-        rows = db.accounts(plugin)
-        for row in rows:
-            if (home / store.SECRETS).is_file():
-                with secrets(home, row.id) as saved:
-                    saved.clear()
-            db.logout(row.id)
-    return bool(rows)
+        if (home / store.SECRETS).is_file():
+            with secrets(home, found.id) as saved:
+                saved.clear()
+        db.logout(found.id)
+    return found
 
 
-def logins(home: Path, plugins: Mapping[str, type[Plugin]]) -> list[Login]:
-    """Each plugin's login, as its default account has it: "logged in", "key gone" (sealed
-    under a key file that is missing or changed), "api key only" (a secret but no login) or
-    "not logged in", where it came from, and the cookies of its login
-    that expire within `ctx.EXPIRY_WARNING`. Only the vault is read; no site is asked."""
-    from flnd.engine.ctx import EXPIRY_WARNING
+def default(home: Path, plugin: str, name: str) -> Account:
+    """Make the account `name` the one `plugin`'s runs use when none is named.
 
-    seal_plaintext(home)
-    rows: dict[str, store.AccountRow] = {}
+    Raises:
+        UsageError: the plugin has no such account.
+    """
+    found = _named(home, plugin, name)
+    with store.open(home) as db:
+        db.make_default(found.id)
+    return dataclasses.replace(found, is_default=True)
+
+
+def _named(home: Path, plugin: str, name: str | None) -> Account:
+    """The account `name` of `plugin`, or its default when none is named."""
+    rows = []
     if (home / store.DB).is_file():
         with store.open(home) as db:
-            rows = {row.plugin: row for row in reversed(db.accounts()) if row.default}
-    found = []
-    for code, cls in plugins.items():
-        row = rows.get(code)
-        state, origin, soon = "not logged in", "", ()
-        if row is not None:
-            kept = account(row)
-            if logged_in(home, kept):
-                state, origin = "logged in", row.origin
-                try:
-                    soon = tuple(expiring(cls(), load(home, kept), within=EXPIRY_WARNING))
-                except LoginError:
-                    # The rows are kept; using the login says the key is gone.
-                    state = "key gone"
-            elif (home / store.SECRETS).is_file():
-                with secrets(home, row.id) as saved:
-                    state = "api key only" if len(saved) else state
-        found.append(Login(code, cls.name, state, origin=origin, expiring=soon))
-    return found
+            rows = [account(row) for row in db.accounts(plugin)]
+    for found in rows:
+        if found.name == name or (name is None and found.is_default):
+            return found
+    taken = ", ".join(found.name for found in rows) or "none"
+    raise UsageError(f"{plugin}: no account {name!r}" if name else f"{plugin}: no account",
+                     hint=f"accounts of {plugin}: {taken}")
 
 
 # ---------------------------------------------------------------------------------------------

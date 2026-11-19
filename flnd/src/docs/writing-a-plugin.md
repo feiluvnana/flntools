@@ -619,7 +619,7 @@ Waits, threads and people:
 - **`await ctx.call(fn, *args)`**: run a blocking function in the thread pool, such as an
   SDK's, and return its value.
 - **`await ctx.ask(message, secret=…, description=…, choices=…)`**: ask the person a question.
-  Only `flnd login` asks, in a terminal; anywhere else it raises `UsageError`.
+  Only `flnd auth login` asks, in a terminal; anywhere else it raises `UsageError`.
 - **`ctx.log(level, message, **fields)`**: a line about the target, at `"debug"`, `"info"` or
   `"warn"`, its `{name}` fields filled from `fields`.
 
@@ -846,7 +846,7 @@ assert [seconds for _, seconds, _ in ctx.seen.holds] == [60.0]
 ### Logins
 
 A site with its own login flow subclasses `Login`. It sets `methods`, the ways
-`flnd login <code> <method>` accepts, and implements `async def start(self, ctx, method)`.
+`flnd auth login <code> <method>` accepts, and implements `async def start(self, ctx, method)`.
 `start` asks through `ctx.ask`, and keeps what it got in `ctx.secrets`; it raises `LoginError`
 when the site refused or the person gave up. `check(ctx)` says whether the account is logged
 in (by default, whether one of its `names` is a cookie), and `whoami(ctx)` gives the account's
@@ -860,7 +860,7 @@ from flnd.plugin import Login
 class CodeLogin(Login):
     """Logs in with a code the site sends to the person's phone."""
 
-    methods = ("phone",)               # flnd login cod phone
+    methods = ("phone",)               # flnd auth login cod phone
 
     async def start(self, ctx, method):
         ctx.secrets["session"] = await ctx.ask("Code", description="Sent to your phone")
@@ -889,7 +889,7 @@ assert message == "ctx.secrets is written only during Login.start"
 ```
 
 A login with a `browser` method sets `url`, the https page that method uses. During
-`flnd login`, a login may also read a web app's saved session from the user's browser with
+`flnd auth login`, a login may also read a web app's saved session from the user's browser with
 `ctx.storage(origin)`, as Telegram's reads Telegram Web's.
 
 ### Settings, the browser, walls

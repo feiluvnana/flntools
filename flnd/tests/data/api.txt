@@ -1,4 +1,14 @@
 flnd: module
+flnd.Account(id: int, plugin: str, name: str, origin: str, at: str, is_default: bool = False, status: Literal['ok', 'held', 'expired'] = 'ok', held_until: str | None = None, expires: str | None = None)
+flnd.Account.at: field -> str
+flnd.Account.expires: field -> str | None
+flnd.Account.held_until: field -> str | None
+flnd.Account.id: field -> int
+flnd.Account.is_default: field -> bool
+flnd.Account.name: field -> str
+flnd.Account.origin: field -> str
+flnd.Account.plugin: field -> str
+flnd.Account.status: field -> Literal['ok', 'held', 'expired']
 flnd.Blocked(flnd.SiteError)
 flnd.Blocked.hint: attribute
 flnd.Blocked.response: attribute
@@ -49,22 +59,18 @@ flnd.FileState.speed: attribute -> float
 flnd.FileState.target: attribute -> str
 flnd.FileState.total: attribute -> int | None
 flnd.Flnd(home: str | os.PathLike[str] | None = None, *, again: bool | None = None)
-flnd.Flnd.add(source: type[Plugin]) -> None
+flnd.Flnd.add(plugin: type[Plugin]) -> None
+flnd.Flnd.auth: attribute
 flnd.Flnd.check(*, fix: bool = False) -> Checked
 flnd.Flnd.close() -> None
-flnd.Flnd.download(targets: str | Target | Sequence[str | Target], *, when: str | None = None, limit: int | None = None, dry: bool = False) -> Run
-flnd.Flnd.files(*, target: str | Target | None = None, kind: str | None = None, since: str | None = None) -> list[Record]
-flnd.Flnd.follow(targets: str | Target | Sequence[str | Target], *, when: str | None = None) -> Run
+flnd.Flnd.config: attribute
+flnd.Flnd.extension: attribute
+flnd.Flnd.files(*, target: str | Target | None = None, kind: str | None = None, since: datetime.date | str | None = None) -> list[Record]
+flnd.Flnd.get(*targets: str | Target, limit: int | None = None, when: str | None = None, dry: bool = False) -> Run
 flnd.Flnd.home: attribute
-flnd.Flnd.login(source: str, how: str) -> Login
-flnd.Flnd.logins: property -> list[Login]
-flnd.Flnd.logout(source: str) -> bool
-flnd.Flnd.retry() -> Run
-flnd.Flnd.sources: property -> list[Installed]
+flnd.Flnd.plugins: attribute
 flnd.Flnd.status: property -> Status | None
-flnd.Flnd.sync(targets: str | Target | Sequence[str | Target] = ()) -> Run
-flnd.Flnd.targets(*, source: str | None = None) -> list[Tracked]
-flnd.Flnd.unfollow(targets: str | Target | Sequence[str | Target]) -> list[Target]
+flnd.Flnd.targets: attribute
 flnd.Hidden(flnd.SiteError)
 flnd.Hidden.hint: attribute
 flnd.Hidden.response: attribute
@@ -78,25 +84,18 @@ flnd.HoldState.count: attribute -> int
 flnd.HoldState.plugin: attribute -> str
 flnd.HoldState.reason: attribute -> str
 flnd.HoldState.until: attribute -> float
-flnd.Installed(code: str, name: str, origin: str, where: str = '', version: str = '', api: int = 0, login: str = '', domains: tuple[str, ...] = (), forms: tuple[str, ...] = (), categories: tuple[str, ...] = (), logins: tuple[str, ...] = (), disabled: str = '')
+flnd.Installed(code: str, name: str, origin: str, where: str = '', version: str = '', api: int = 2, domains: tuple[str, ...] = (), forms: tuple[str, ...] = (), categories: tuple[str, ...] = (), logins: tuple[str, ...] = (), disabled: str = '')
 flnd.Installed.api: attribute -> int
 flnd.Installed.categories: attribute -> tuple[str, ...]
 flnd.Installed.code: attribute -> str
 flnd.Installed.disabled: attribute -> str
 flnd.Installed.domains: attribute -> tuple[str, ...]
 flnd.Installed.forms: attribute -> tuple[str, ...]
-flnd.Installed.login: attribute -> str
 flnd.Installed.logins: attribute -> tuple[str, ...]
 flnd.Installed.name: attribute -> str
 flnd.Installed.origin: attribute -> str
 flnd.Installed.version: attribute -> str
 flnd.Installed.where: attribute -> str
-flnd.Login(source: str, name: str, state: str, origin: str = '', expiring: tuple[tuple[str, float], ...] = ())
-flnd.Login.expiring: attribute -> tuple[tuple[str, float], ...]
-flnd.Login.name: attribute -> str
-flnd.Login.origin: attribute -> str
-flnd.Login.source: attribute -> str
-flnd.Login.state: attribute -> str
 flnd.LoginError(flnd.Error)
 flnd.LoginError.hint: attribute
 flnd.LoginError.retryable: attribute
@@ -216,9 +215,11 @@ flnd.ToolError.hint: attribute
 flnd.ToolError.retryable: attribute
 flnd.ToolError.tail: attribute
 flnd.ToolError.target: attribute
-flnd.Tracked(target: flnd.plugin.Target, follow: bool = False, at: str = '', files: int = 0, size: int = 0, seen: int = 0, categories: dict[str, str] = <factory>, query: bool = False)
+flnd.Tracked(target: flnd.plugin.Target, follow: bool = False, at: str = '', files: int = 0, size: int = 0, seen: int = 0, categories: tuple[str, ...] = (), complete: dict[str, str] = <factory>, query: bool = False, account: str | None = None)
+flnd.Tracked.account: attribute -> str | None
 flnd.Tracked.at: attribute -> str
-flnd.Tracked.categories: attribute -> dict[str, str]
+flnd.Tracked.categories: attribute -> tuple[str, ...]
+flnd.Tracked.complete: attribute -> dict[str, str]
 flnd.Tracked.files: attribute -> int
 flnd.Tracked.follow: attribute -> bool
 flnd.Tracked.query: attribute -> bool

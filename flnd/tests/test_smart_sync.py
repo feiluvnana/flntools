@@ -19,14 +19,13 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 import fakes
-from fakes import CDN, EngineCase, login_cookies
+from fakes import CDN, Engine, EngineCase, login_cookies
 
 import flnd
 from flnd import cli as flnd_cli
 from flnd.engine import crawl as job
 from flnd.engine import save
 from flnd.engine import store as _store
-from flnd.engine._engine import Engine
 from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped, encode
 from flnd.errors import Changed
 from flnd.plugin import File, Plugin, Post, route
@@ -134,7 +133,7 @@ class NothingNewTest(FeedCase):
         self.download()
         with flnd.open(self.home) as fl:
             fl.add(self.source)
-            report = fl.sync().wait()
+            report = fl.get().wait()
         # A listing with nothing new is no file skipped.
         self.assertEqual((report.unchanged, report.skipped, report.saved), (1, 2, 0))
 
@@ -258,12 +257,13 @@ class RetryTest(FeedCase):
         # The first failure and three retries: no more by itself.
         self.sync()
         self.assertEqual((self.pages(), self.asked("p8")), ([None], []))
-        # `flnd retry` always tries, and lists nothing but the failed post's page.
+        # `target retry` marks it retryable again: the next get tries it.
         del self.routes[f"{CDN}/p8.jpg"]
         self.requests.clear()
         self.events.clear()
-        report = self.engine.retry()
-        self.assertEqual((report.files, self.pages()), (1, ["p6"]))
+        self.engine.target_retry(["fed:example_user"])
+        report = self.sync()
+        self.assertEqual(report.files, 1)
         self.assertIn("p8", self.saved())
         [saved] = [event for event in self.events if isinstance(event, Saved)]
         self.assertEqual((saved.post, saved.retried), ("p8", True))
@@ -306,7 +306,7 @@ class RetryTest(FeedCase):
         self.download()
         with flnd.open(self.home) as fl:
             status = fl.status
-        self.assertEqual((status.command, status.saved), ("download fed:example_user", 8))
+        self.assertEqual((status.command, status.saved), ("get fed:example_user", 8))
         [failure] = status.failures
         self.assertEqual((failure.target, failure.post, failure.attempts, failure.url),
                          ("fed:example_user", "p8", 1, f"{CDN}/p8.jpg"))
@@ -408,7 +408,6 @@ class SecretsTest(FeedCase):
         self.signed = SIGNED
         self.download()
         self.sync()
-        self.engine.retry()
         outputs = {"log": self.dest.getvalue()}
         outputs["events"] = "\n".join(encode(event).decode() for event in self.events)
         outputs["messages"] = "\n".join(f"{event.error} {event.error.hint}" for event in self.events

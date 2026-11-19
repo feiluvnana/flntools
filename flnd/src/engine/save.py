@@ -50,7 +50,7 @@ T = TypeVar("T")
 NOON = 12
 # Extensions that name one format, so a `.jpeg` holding a JPEG keeps its name.
 SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}
-NOT_MEDIA_HINT = "it is usually a login wall: run flnd login <source>, then try again"
+NOT_MEDIA_HINT = "it is usually a login wall: run flnd auth login <source>, then try again"
 # A lazy post's link that answers one of these has expired: its post is asked for a fresh one.
 EXPIRED = frozenset({403, 410})
 # How many saved files of the same size dedupe hashes at most, to compare with a new one.

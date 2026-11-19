@@ -123,7 +123,7 @@ class JournalTest(unittest.TestCase):
 
     def test_writes_paths_and_errors_as_data(self) -> None:
         target = Target("ins:example_user", kind="user")
-        error = flnd.LoginError("not logged in", hint="run flnd login ins chrome")
+        error = flnd.LoginError("not logged in", hint="run flnd auth login ins chrome")
         with UI().file(self.journal_path) as j:
             j.write(Saved(target, "posts", "9001", Path("media/9001.jpg"), date(2026, 1, 2), 5))
             j.write(Failed(target, error))
@@ -134,7 +134,7 @@ class JournalTest(unittest.TestCase):
         self.assertEqual(saved["target"], {"text": "ins:example_user", "kind": "user"})
         self.assertEqual(failed["error"], {
             "class": "LoginError", "message": "not logged in",
-            "hint": "run flnd login ins chrome",
+            "hint": "run flnd auth login ins chrome",
         })
 
     def test_lines_from_many_threads_stay_whole(self) -> None:

@@ -11,7 +11,7 @@ when the plugin or config chooses Chrome.
 ## The parts
 
 ```
-  a run (flnd download …)            flnd host                    Chrome
+  a run (flnd get …)            flnd host                    Chrome
   ┌──────────────────────┐  relay   ┌─────────────────┐  stdio   ┌──────────────────────┐
   │ extension.connect()  │ ───────▶ │ Host: checks    │ ───────▶ │ background.js runs   │
   │ client.call(op, …)   │ ◀─────── │ hello, routes   │ ◀─────── │ the op, page.js in   │
@@ -149,7 +149,7 @@ The popup asks flnd, through the host, about the tab it is opened on, for the ho
 install:
 
 - `resolve {url}` gives the tab's target and whether the home follows it. **Get** runs
-  `flnd download` on it and **Follow** runs `flnd follow`, each in a process of its own.
+  `flnd get` on it and **Follow** runs `flnd get`, each in a process of its own.
 - The tab's `media` are listed, each with **Get**, which sends its link to flnd. A link no
   plugin reads is refused in the popup.
 - **Allow** appears on a site a plugin reads but Chrome hasn't allowed yet.

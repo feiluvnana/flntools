@@ -10,10 +10,10 @@ import unittest
 from unittest import mock
 
 import fakes
-from fakes import CDN, EngineCase, make_plugin, noise
+from fakes import CDN, Engine, EngineCase, make_plugin, noise
 
 from flnd.engine import store as _store
-from flnd.engine._engine import Engine, _Runner
+from flnd.engine._engine import _Runner
 from flnd.engine.crawl import Options, TargetReport
 from flnd.engine.events import State
 from flnd.plugin import File, Plugin, Post, Range, Target, route
@@ -90,19 +90,14 @@ class SettingsTest(SyncCase):
         self.assertEqual(sorted(row.complete), ["posts"])
         self.assertEqual(self.plan()[0][1], Options())
 
-    def test_every_recorded_target_and_unrecorded_folders(self):
+    def test_a_folder_no_row_names_is_never_a_target(self):
         self.download()
         (self.home / _store.MEDIA / "aaa" / "older").mkdir(parents=True)
         (self.home / _store.MEDIA / "aaa" / "older" / "x.jpg").write_bytes(b"x")
-        chosen = dict(self.plan())
-        self.assertEqual(chosen[Target("aaa:older", kind="user")], Options())
-        # A folder of a source flnd doesn't have, or a file beside the folders, isn't a target.
         (self.home / _store.MEDIA / "zzz" / "b").mkdir(parents=True)
-        (self.home / _store.MEDIA / "aaa" / "a.zip").write_bytes(b"")
-        self.assertEqual(len(self.plan()), 2)
+        self.assertEqual([target for target, _ in self.plan()], [Target("aaa:a", kind="user")])
         self.sync()
-        self.assertEqual(sorted(self.saved()), ["aaa:a", "aaa:older"])
-
+        self.assertEqual(sorted(self.saved()), ["aaa:a"])
 
     def test_planning_creates_no_file(self):
         self.assertEqual(self.plan(), [])
@@ -190,20 +185,18 @@ class SyncOptInTest(SyncCase):
 
     def test_target_sync_ls_and_del(self):
         self.download(sync=False)
-        self.assertEqual(
-            self.engine().target_sync(["aaa:a"], enabled=True), [Target("aaa:a", kind="user")]
-        )
+        self.assertEqual([info.target for info in self.engine().target_follow(["aaa:a"], on=True)],
+                         [Target("aaa:a", kind="user")])
         self.assertEqual([t for t, _ in self.plan()], [Target("aaa:a", kind="user")])
         # Re-downloading without --sync preserves sync=True.
         self.download(sync=False)
         self.assertIs(self.saved()["aaa:a"].follow, True)
         items = self.engine().target_ls()
         self.assertEqual(len(items), 1)
-        self.assertTrue(items[0].sync)
+        self.assertTrue(items[0].follow)
         self.assertEqual(items[0].files, 3)
-        self.assertEqual(
-            self.engine().target_sync(["aaa:a"], enabled=False), [Target("aaa:a", kind="user")]
-        )
+        self.assertEqual([info.target for info in self.engine().target_follow(["aaa:a"], on=False)],
+                         [Target("aaa:a", kind="user")])
         self.assertEqual(self.plan(), [])
 
 

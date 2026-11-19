@@ -13,7 +13,6 @@ import sqlite3
 import stat
 import sys
 import tempfile
-import time
 import types
 import unittest
 from contextlib import contextmanager
@@ -96,7 +95,7 @@ class VaultTest(AuthCase):
         export = self.home.parent / "cookies.txt"
         export.write_text(NETSCAPE.replace("aaa.example", "instagram.com").replace("\tsid\t", "\tsessionid\t"))
         with flnd.open(self.home) as fl:
-            fl.login("ins", str(export))
+            fl.auth.login("ins", path=str(export))
         self.assertTrue(self.stored())
         self.assertFalse(b"aaa-session" in self.stored(), "plaintext in secret.db")
 
@@ -165,8 +164,8 @@ class VaultTest(AuthCase):
 
     def test_plaintext_is_sealed_on_first_open(self):
         self.version_1()
-        plugins = {"tlg": make_plugin("tlg", login=own_login())}
-        self.assertEqual([row.state for row in auth.logins(self.home, plugins)], ["logged in"])
+        with flnd.open(self.home) as fl:
+            self.assertEqual([row.plugin for row in fl.auth], ["ins", "tlg"])
         self.assertEqual(vaulted(self.home, "tlg")[1], {"session": "plain-session"})
         self.assertEqual([self.accounts(code) for code in ("ins", "tlg")],
                          [[("default", "", True)], [("default", "", True)]])
@@ -407,38 +406,30 @@ class AccountsTest(AuthCase):
                     found = auth.pick(listed, preferred=preferred)
                     self.assertEqual(found and found.name, expected)
 
-    def test_logout_deletes_every_account_and_its_secrets(self):
-        self.assertFalse(auth.logout(self.home, "aaa"))
+    def test_logout_deletes_one_account_and_its_secrets_and_the_next_becomes_default(self):
+        with self.assertRaises(UsageError):
+            auth.logout(self.home, "aaa")
         self.login("example_user")
         self.login("example_creator")
         sign_in(self.home, "bbb", session="b")
-        self.assertTrue(auth.logout(self.home, "aaa"))
+        self.assertEqual(auth.logout(self.home, "aaa").name, "example_user")
+        self.assertEqual([(row[0], row[2]) for row in self.accounts()],
+                         [("example_creator", True)])
+        with self.assertRaises(UsageError):
+            auth.logout(self.home, "aaa", "example_user")
+        self.assertEqual(auth.logout(self.home, "aaa", "example_creator").name, "example_creator")
         self.assertEqual(self.accounts(), [])
         with raw(self.home) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM secrets").fetchone(), (1,))
-        self.assertFalse(auth.logout(self.home, "aaa"))
 
-    def test_logins_says_each_plugins_state_and_names_expiring_cookies_only(self):
-        now = time.time()
-        sign_in(self.home, "aaa", [
-            {"name": "sid", "value": "top-secret-1", "domain": "aaa.example", "expires": now + 3600},
-            {"name": "other", "value": "top-secret-2", "domain": "aaa.example", "expires": now - 9}],
-            origin="chrome")
-        sign_in(self.home, "tlg", api_id="1")
-        plugins = {"aaa": self.plugin, "tlg": make_plugin("tlg", login=own_login()),
-                   "ccc": make_plugin("ccc")}
-        found = {row.source: row for row in auth.logins(self.home, plugins)}
-        self.assertEqual([(row.state, row.origin) for row in found.values()],
-                         [("logged in", "chrome"), ("api key only", ""), ("not logged in", "")])
-        [(name, left)] = found["aaa"].expiring
-        self.assertEqual(name, "sid")
-        self.assertGreater(left, 0)
-        self.assertNotIn("top-secret", repr(found))
-        # With the key gone, the listing says so, and the rows stay.
-        self.key.unlink()
-        self.assertEqual([row.state for row in auth.logins(self.home, plugins)],
-                         ["key gone", "api key only", "not logged in"])
-        self.assertEqual(len(self.accounts()), 1)
+    def test_default_names_the_account_runs_use(self):
+        self.login("example_user")
+        self.login("example_creator")
+        self.assertTrue(auth.default(self.home, "aaa", "example_creator").is_default)
+        self.assertEqual([(row[0], row[2]) for row in self.accounts()],
+                         [("example_creator", True), ("example_user", False)])
+        with self.assertRaises(UsageError):
+            auth.default(self.home, "aaa", "nobody")
 
 
 class WriteBackTest(AuthCase):

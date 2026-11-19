@@ -1,5 +1,5 @@
 """What a run reports, and the rows the library reads: events, `Report`, the `State` snapshot,
-`Login`, `Record`, `Tracked`, `Checked`, `Status`, `Failure` and `Installed`.
+`Account`, `Record`, `Tracked`, `Checked`, `Status`, `Failure` and `Installed`.
 
 src/docs/library explains it.
 
@@ -12,9 +12,9 @@ Who makes them:
 1. the job and the engine make `Saved`, `Skipped`, `Failed` and `Planned` as a run goes,
    and hand them to the run's sink (`flnd.engine.run.Run._emit`);
 2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
-3. `Flnd` makes `Login`, `Record`, `Tracked`, `Status` and `Failure` from the home's
-   `flnd.db`, for its reads, `Checked` from `fl.check()`, and `Installed` from the sources it
-   knows (`fl.sources`).
+3. `Flnd` makes `Account`, `Record`, `Tracked`, `Status` and `Failure` from the home's
+   `flnd.db`, for its reads, `Checked` from `fl.check()`, and `Installed` from the plugins it
+   knows (`fl.plugins`).
 
 The one rule a change must keep: an event holds data, never a live object (a site, a file
 handle, a lock), because a script may keep it after the run ends, and `encode` must turn it
@@ -36,11 +36,11 @@ import msgspec
 # Both are read at runtime, by `typing.get_type_hints` (the API snapshot, a decoder), so they
 # are real imports. `flnd.errors` is stdlib-only; `flnd.plugin` is the light half of flnd.
 from flnd.errors import Error
-from flnd.plugin import Target
+from flnd.plugin import Account, Target
 
 __all__ = [
-    "BUSY", "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure", "FileState",
-    "HoldState", "Installed", "Login", "Phase", "Planned", "Record", "Report", "Saved",
+    "BUSY", "NOTHING_NEW", "RESUMING", "Account", "Checked", "Event", "Failed", "Failure",
+    "FileState", "HoldState", "Installed", "Phase", "Planned", "Record", "Report", "Saved",
     "Skipped", "State", "Status", "TargetState", "Tracked", "encode", "sink",
 ]
 
@@ -125,9 +125,9 @@ class Failed(msgspec.Struct, frozen=True, tag=True):
         >>> import flnd
         >>> from flnd.plugin import Target
         >>> event = Failed(Target("ins:example_user", kind="user"),
-        ...                flnd.LoginError("not logged in", hint="run flnd login ins chrome"))
+        ...                flnd.LoginError("not logged in", hint="run flnd auth login ins chrome"))
         >>> event.error.hint
-        'run flnd login ins chrome'
+        'run flnd auth login ins chrome'
     """
 
     target: Target
@@ -322,57 +322,30 @@ class Report(msgspec.Struct, frozen=True):
         return not self.failed
 
 
-class Login(msgspec.Struct, frozen=True):
-    """One source's login, as `fl.logins` lists it: whether it is there, and for how long.
-
-    Example:
-        >>> login = Login("ins", "Instagram", "logged in", origin="Chrome")
-        >>> login.source, login.state
-        ('ins', 'logged in')
-    """
-
-    # The source's code.
-    source: str
-    # The site's name, as people know it.
-    name: str
-    # "logged in", "key gone" (sealed under a key file missing or changed), "api key only"
-    # or "not logged in".
-    state: str
-    # Where the login came from: a browser's name, a cookie file's name, or the source's own
-    # way ("qr", "phone"); "" when there is none.
-    origin: str = ""
-    # Each cookie that expires soon, with the seconds it has left (0 or less: expired).
-    expiring: tuple[tuple[str, float], ...] = ()
-
-
 class Installed(msgspec.Struct, frozen=True):
-    """One source flnd knows, as `fl.sources` lists it: where it came from, and whether it works.
+    """One plugin flnd knows, as `fl.plugins` lists it: where it came from, and whether it works.
 
-    A plugin that failed to load or was refused is listed too, with `disabled` saying why, so
-    `flnd sources` can show it; its other fields are what its name told (its code, its origin).
+    A plugin that failed to load or was refused is listed too, with `disabled` saying why; its
+    other fields are what its name told (its code, its origin).
 
     Example:
-        >>> row = Installed("exm", "Example", "file", where="/plugins/exm.py", api=1)
+        >>> row = Installed("exm", "Example", "file", where="/plugins/exm.py", api=2)
         >>> row.origin, row.disabled
         ('file', '')
     """
 
-    # The source's code.
+    # The plugin's code.
     code: str
     # The site's name, as people know it; the code for a plugin that didn't load.
     name: str
-    # "built-in", "package" (an installed package's entry point), "file" (the plugin folder)
-    # or "script" (`fl.add`).
+    # "built-in", "file" (the plugin folder) or "script" (`fl.add`).
     origin: str
-    # The module, entry point (`flnd_example:Example`) or file it comes from.
+    # The module or file it comes from.
     where: str = ""
-    # The package's version (flnd's own for a built-in), or a file plugin's `__version__`;
-    # "" when there is none.
+    # flnd's own version for a built-in, or a file plugin's `__version__`; "" when none.
     version: str = ""
-    # The source API it was written for; 0 for one that didn't load.
-    api: int = 0
-    # Its login: "logged in", "not logged in" or "needs no login"; "" for one that didn't load.
-    login: str = ""
+    # The plugin API it was written for; 0 for one that didn't load.
+    api: int = 2
     # Its domains, the target forms it reads, its categories and its ways to log in.
     domains: tuple[str, ...] = ()
     forms: tuple[str, ...] = ()
@@ -419,7 +392,7 @@ class Record(msgspec.Struct, frozen=True):
 
 
 class Tracked(msgspec.Struct, frozen=True):
-    """A target the home knows: downloaded once, or followed, with what is on disk for it.
+    """A target the home knows: gotten once, or followed, with what is on disk for it.
 
     Example:
         >>> from flnd.plugin import Target
@@ -429,19 +402,23 @@ class Tracked(msgspec.Struct, frozen=True):
     """
 
     target: Target
-    # Whether `sync` takes it: True once followed, False after `unfollow`.
+    # Whether `get` with no target takes it.
     follow: bool = False
-    # When it was last downloaded or synced, as an ISO 8601 time; "" when never.
+    # When it was last run, as an ISO 8601 time; "" when never.
     at: str = ""
     # How many files its folder holds, and their bytes.
     files: int = 0
     size: int = 0
     # For a search: how many targets it found so far.
     seen: int = 0
-    # Each category's state: "complete", "interrupted" or "incomplete".
-    categories: dict[str, str] = {}
-    # Whether it is a search (`<source>?<words>`) rather than one account or post.
+    # The categories it takes: the ones kept with it, else the plugin's own.
+    categories: tuple[str, ...] = ()
+    # Each category listed to its end, with the day it was.
+    complete: dict[str, str] = {}
+    # Whether it is a search (`<plugin>?<words>`) rather than one account or post.
     query: bool = False
+    # The account that last worked for it; None before one did.
+    account: str | None = None
 
 
 class Failure(msgspec.Struct, frozen=True):
@@ -467,7 +444,7 @@ class Failure(msgspec.Struct, frozen=True):
     # Where the file would have gone, for a failed file; None for a failed target.
     path: Path | None = None
     # The runs that tried it and failed. A file is retried by itself on at most 3 runs; past
-    # them, `flnd retry` still tries it.
+    # them, `flnd target list`'s r still tries it.
     attempts: int = 1
     # The file's URL, redacted: no query and no user info; "" for none.
     url: str = ""

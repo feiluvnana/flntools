@@ -23,11 +23,11 @@ import msgspec
 
 from flnd.engine.events import Checked, Record
 from flnd.errors import Changed, DiskError, NotFound, UsageError
-from flnd.ui.log import ui
+from flnd.ui.log import LOGS, ui
 from flnkit import clock, db, files, text
 
 __all__ = ["AccountRow", "FailureRow", "FileRow", "RunRow", "State", "Store", "TargetRow",
-           "busy", "check", "open", "sample", "sweep", "target_folder"]
+           "busy", "check", "erase", "open", "sample", "sweep", "target_folder"]
 
 # ---------------------------------------------------------------------------------------------
 # The schema
@@ -862,6 +862,30 @@ class Store:
             row.follow = on
             self._put(row)
 
+    def forget(self, item: str) -> list[FileRow]:
+        """Delete a target's row, its files rows and its failures, in one transaction.
+
+        Returns:
+            The rows of its files on disk (saved files and links), for `erase`.
+        """
+        with self._db.transaction() as sql:
+            gone = [_file_row(row) for row in sql.execute(
+                f"SELECT {ROW_SELECT} FROM files WHERE target = ? AND {ON_DISK}", (item,))]
+            for table in ("files", "failures", "targets"):
+                sql.execute(f"DELETE FROM {table} WHERE "
+                            f"{'key' if table == 'targets' else 'target'} = ?", (item,))
+        return gone
+
+    def retry(self, target: str) -> int:
+        """Make a target's failed files, past their automatic retries, retryable again.
+
+        Returns:
+            How many files it made retryable.
+        """
+        with self._db.transaction() as sql:
+            return sql.execute("UPDATE failures SET attempts = 1 WHERE target = ? AND attempts > ?"
+                               " AND class != 'NotFound'", (target, RETRIES)).rowcount
+
     def seen(self, target: _Target, found: Sequence[str]) -> None:
         """Add the targets a search found to its row, in order, each once."""
         if not found:
@@ -957,6 +981,12 @@ class Store:
                 sql.execute("UPDATE accounts SET is_default = 1 WHERE id = (SELECT min(id) FROM"
                             " accounts WHERE plugin = ?1) AND NOT EXISTS (SELECT 1 FROM accounts"
                             " WHERE plugin = ?1 AND is_default)", (found[0],))
+
+    def make_default(self, account: int) -> None:
+        """Make an account its plugin's default, and no other."""
+        with self._db.transaction() as sql:
+            sql.execute("UPDATE accounts SET is_default = (id = ?1) WHERE plugin = (SELECT plugin"
+                        " FROM accounts WHERE id = ?1)", (account,))
 
     def mark(self, account: int, *, status: str, held_until: str | None = None,
              expires: str | None = None) -> None:
@@ -1234,10 +1264,6 @@ def _norm(path: str | os.PathLike[str]) -> str:
 # The rest of the home: a target's folder, the logs and their samples
 # ---------------------------------------------------------------------------------------------
 
-# Under the home: media/ for downloads, metadata/ for stores (flnd.db and secret.db), and
-# log/ for run logs and crash reports.
-LOGS = Path("log")
-
 # Logs and samples older than this are swept at the start of each run that downloads.
 LOG_DAYS = 30
 # A response whose URL looks like this is a login's, and is never kept as a sample: its body may
@@ -1262,6 +1288,38 @@ def target_folder(home: Path, target: _Target) -> Path:
         'home/media/ins/example_user'
     """
     return home / MEDIA / target.plugin / text.filename(target.value)
+
+
+def erase(home: Path, rows: Sequence[FileRow]) -> int:
+    """Delete the files the rows name: each file, its sidecar and extracted folder, and the
+    folders under `media/` this leaves empty.
+
+    Returns:
+        The bytes freed by the files deleted.
+    """
+    media = (home / MEDIA).resolve()
+    freed, parents = 0, set()
+    for row in rows:
+        for name in (row.path, row.sidecar):
+            path = Path(name) if name else None
+            if path is not None and path.is_file() and path.resolve().is_relative_to(media):
+                if name == row.path and row.state == SAVED:
+                    freed += path.stat().st_size
+                path.unlink()
+                parents.add(path.parent)
+        folder = Path(row.folder) if row.folder else None
+        if folder is not None and folder.is_dir() and folder.resolve().is_relative_to(media):
+            shutil.rmtree(folder, ignore_errors=True)
+            parents.add(folder.parent)
+    for parent in sorted(parents, key=lambda path: len(path.parts), reverse=True):
+        for folder in (parent, *parent.parents):
+            if folder.resolve() == media or not folder.resolve().is_relative_to(media):
+                break
+            try:
+                folder.rmdir()
+            except OSError:
+                break
+    return freed
 
 
 def sample(home: Path, run: int | None, error: BaseException) -> Path | None:

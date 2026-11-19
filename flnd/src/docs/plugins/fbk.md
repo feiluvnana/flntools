@@ -78,7 +78,7 @@ names its album under `albums/<album>/`, whichever tab found it.
 
 ## Logging in
 
-`flnd login fbk <how>` takes a browser or a cookie file's path. Left out in a terminal,
+`flnd auth login fbk <how>` takes a browser or a cookie file's path. Left out in a terminal,
 the way is asked with numbered choices:
 
 - **From your browser**: reads Facebook's cookies from Chrome, Firefox, Edge, Brave,
@@ -132,7 +132,7 @@ URL.
 A photo or video that the results leave undated is dated afterwards: flnd requests
 `https://www.facebook.com/photo/?fbid=<id>` from inside the open page, so it carries the page's
 session, and reads the first `created_time` in the answer. The engine asks this once per undated
-post as its category ends, and again on `flnd sync` for files saved undated. The block rules
+post as its category ends, and again on `flnd get` for files saved undated. The block rules
 apply to these requests too (`blocked()`).
 
 **Pace and concurrency.** `pace` is 0.2: at least 0.2 seconds between requests to Facebook's

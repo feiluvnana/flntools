@@ -34,13 +34,7 @@ FLNKIT = ROOT / "flnkit"
 
 # Imports a rule forbids that stay for now: (importer, imported) -> the step that removes them.
 # An importer or an import ending in ".*" covers every module under it.
-EXEMPT = {
-    # The CLI still reads the engine's events, the home's paths and the kit's text and cookie
-    # names, and the library reads `flnd.__version__`; step 13 rewrites both.
-    ("flnd.cli", "flnd.engine.*"): 13,
-    ("flnd.cli", "flnkit.*"): 13,
-    ("flnd._library", "flnd"): 13,
-}
+EXEMPT: dict[tuple[str, str], int] = {}
 
 
 # The two packages this project ships: flnd (the folder src/) and flnkit.

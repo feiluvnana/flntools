@@ -30,10 +30,10 @@ bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
 cdn-real: ; $(RUN) python tests/bench/cdn_real.py $(ARGS)
 # The reference of the three public modules: the library, the plugin API and the test kit.
 docs:     ; $(RUN) pdoc -d google flnd flnd.plugin flnd.testing -o build/docs
-# Lists, live, what a download would save, without saving anything, in a scratch home `.try`:
-# `make try ARGS="ins:example_user --only reels"`. Log in there first for a site that needs it
-# (`uv run flnd --home .try login ins chrome`); `make clean` removes it.
-try:      ; $(RUN) flnd --home .try download --dry $(ARGS)
+# Lists, live, what a get would save, without saving anything, in a scratch home `.try`:
+# `make try ARGS="ins:example_user/reels"`. Log in there first for a site that needs it
+# (`uv run flnd --home .try auth login ins chrome`); `make clean` removes it.
+try:      ; $(RUN) python -c "import flnd, sys; [print(e) for e in flnd.open('.try').get(*sys.argv[1:], dry=True)]" $(ARGS)
 # The real Chrome extension in Playwright's Chromium, every op against a local page, in a
 # temporary home (tests/ext.py; src/docs/extension.md). Never part of `check`.
 ext:      ; $(RUN) python tests/ext.py $(ARGS)
