@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.plugin
-from flnd.engine import config, home, jobs, store
+from flnd.engine import auth, config, jobs, store
 from flnd.engine.config import PluginConfig
 from flnd.errors import (
     Blocked,
@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 
 __all__ = ["LOGGING_IN", "PAGE_LIMIT", "Bridge", "Ctx", "JsonState", "Listing", "PluginRun",
            "Secrets", "TargetTabs", "Time", "checked", "empty", "first_page", "granted",
-           "login_names", "met_turn", "opened", "plugin_run", "refused", "scheduler",
+           "met_turn", "opened", "plugin_run", "refused", "scheduler",
            "shared_browser", "start", "walled", "writable"]
 
 T = TypeVar("T")
@@ -68,9 +68,9 @@ LEVELS = ("debug", "info", "warn")
 _DONE = object()
 # Methods a server may receive twice without harm: only their failures are tried again.
 SAFE = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
-# How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
-# `flnd sync` warns the run before the one that meets the login wall.
-EXPIRY_WARNING = 24 * 3600
+# How soon before a login cookie expires a run warns of it, in seconds: 3 days, so a daily
+# `flnd sync` warns a few runs before the one that meets the login wall.
+EXPIRY_WARNING = 3 * 24 * 3600
 
 
 class _Leave:
@@ -724,8 +724,8 @@ class Ctx:
 
     @property
     def account(self) -> flnd.plugin.Account | None:
-        """None: accounts aren't rows of their own yet."""
-        return None
+        """The account this target runs as; None for a plugin without one."""
+        return self._run.account
 
     @property
     def cookies(self) -> Mapping[str, str]:
@@ -913,6 +913,8 @@ class PluginRun:
     # The plugin's `[plugins.<code>]` settings in config.toml: pace, limits, proxy, stop_after,
     # its templates and its own `Settings`, each over what its class says.
     config: PluginConfig = field(default_factory=PluginConfig)
+    # The account it runs as; None for a plugin with none.
+    account: flnd.plugin.Account | None = None
     # The posts its `date` hook had no day for, read once for the run (`crawl.asked`).
     asked: dict[str, float] | None = None
     _state: store.Store | None = field(default=None, repr=False)
@@ -996,10 +998,11 @@ class PluginRun:
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
-        """The plugin's sealed secrets in the home's `secrets.db`, opened on first use."""
+        """The account's sealed secrets in the home's `secrets.db`, opened on first use; none
+        without an account."""
         if self._secrets is None:
-            self._secrets = home.secrets(self.settings.home, self.source.code,
-                                         create=self.settings.interactive)
+            self._secrets = {} if self.account is None else auth.secrets(
+                self.settings.home, self.account.id, plugin=self.source.code)
         return self._secrets
 
     async def call(self, fn: Callable[..., T], *args: Any) -> T:
@@ -1025,9 +1028,7 @@ class PluginRun:
             if self.session.started:
                 await self.session.close()
         finally:
-            for db in (self._state, self._secrets):
-                if db is not None:
-                    db.close()
+            _close(self._state, self._secrets)
 
     def close(self) -> None:
         """Close the session, stores and the plugin's own loop; once."""
@@ -1044,12 +1045,17 @@ class PluginRun:
             except RuntimeError:
                 pass
         finally:
-            for db in (self._state, self._secrets):
-                if db is not None:
-                    db.close()
+            _close(self._state, self._secrets)
             if self._own_loop is not None:
                 self._own_loop.close()
 
+
+
+def _close(*kept: Any) -> None:
+    for each in kept:
+        close = getattr(each, "close", None)
+        if close is not None:
+            close()
 
 
 class _Values(MutableMapping[str, Any]):
@@ -1092,20 +1098,34 @@ class _Values(MutableMapping[str, Any]):
             return len(data)
 
 @contextlib.contextmanager
-def plugin_run(settings: RunShared, plugin: Plugin) -> Iterator[PluginRun]:
-    """Open one plugin's resources outside a run (`flnd login`), and close them however the
-    block ends.
+def plugin_run(settings: RunShared, plugin: Plugin, *, jar: cookies.Jar | None = None,
+               secrets: MutableMapping[str, str] | None = None) -> Iterator[PluginRun]:
+    """Open one plugin's resources outside a run (a login), and close them however the block
+    ends.
 
-    The login's cookies are read from the home once, here, and a cookie of the login that has
-    expired or expires within `EXPIRY_WARNING` is a warning line. The plugin's
-    `[plugins.<code>]` settings in config.toml are read here too (the run's, read as it began),
-    and give the run's scheduler its pace and its hosts' limits, the session its proxy, and the
-    instance its `folder` and `filename` templates. Nothing is sent yet.
+    The cookies of the plugin's default account are read from the home once, here, unless
+    `jar` is given, and a cookie of the login that has expired or expires within
+    `EXPIRY_WARNING` is a warning line. The plugin's `[plugins.<code>]` settings in config.toml
+    are read here too, and give the scheduler its pace and its hosts' limits, the session its
+    proxy, and the instance its `folder` and `filename` templates. Nothing is sent yet.
+
+    Args:
+        settings: what the run shares.
+        plugin: the plugin.
+        jar: the cookies to use instead of the default account's (a login's, being checked).
+        secrets: what `ctx.secrets` keeps instead of the default account's vault (a login's,
+            written once it is named).
 
     Raises:
         UsageError: the home's config.toml has a value it doesn't take.
     """
-    run = _made(settings, plugin)
+    found = None
+    if jar is None and (settings.home / store.DB).is_file():
+        with store.open(settings.home) as db:
+            found = auth.pick([auth.account(row) for row in db.accounts(plugin.code)])
+    configured, kept = _read(settings, plugin, found)
+    run = _made(settings, plugin, configured, kept if jar is None else jar, found)
+    run._secrets = secrets
     try:
         yield run
     finally:
@@ -1113,35 +1133,37 @@ def plugin_run(settings: RunShared, plugin: Plugin) -> Iterator[PluginRun]:
 
 
 @contextlib.asynccontextmanager
-async def opened(settings: RunShared, plugin: Plugin) -> AsyncIterator[PluginRun]:
-    """`plugin_run` inside a run, on its loop: the plugin's resources, closed on the loop.
+async def opened(settings: RunShared, plugin: Plugin,
+                 account: flnd.plugin.Account | None = None) -> AsyncIterator[PluginRun]:
+    """One plugin's resources for an account in a run, on its loop, closed on the loop.
 
     Raises:
         UsageError: the home's config.toml has a value it doesn't take.
+        LoginError: the vault's key is gone.
     """
-    # The home's config.toml and the login's cookies are read off the loop.
-    run = _made(settings, plugin, *await asyncio.to_thread(_read, settings, plugin))
+    # The home's config.toml and the account's cookies are read off the loop.
+    run = _made(settings, plugin, *await asyncio.to_thread(_read, settings, plugin, account),
+                account)
     try:
         yield run
     finally:
         await run.aclose()
 
 
-def _read(settings: RunShared, plugin: Plugin) -> tuple[PluginConfig, cookies.Jar]:
-    """A plugin's `[plugins.<code>]` settings (the run's, or read here) and its login's
+def _read(settings: RunShared, plugin: Plugin, account: flnd.plugin.Account | None,
+          ) -> tuple[PluginConfig, cookies.Jar]:
+    """A plugin's `[plugins.<code>]` settings (the run's, or read here) and the account's
     cookies, from the home."""
     found = getattr(settings, "config", None) or config.settings(
         settings.home, plugins={plugin.code: type(plugin)})
-    return found.plugin(plugin.code), home.load(settings.home, plugin.code)
+    return found.plugin(plugin.code), auth.load(settings.home, account)
 
 
-def _made(settings: RunShared, plugin: Plugin, configured: PluginConfig | None = None,
-          jar: cookies.Jar | None = None) -> PluginRun:
-    """A plugin's `PluginRun`: its login's cookies warned of, its settings applied; both
-    read here unless given. A configured template replaces its class's on this instance; a
-    category's or a route's own still wins (`crawl._format`)."""
-    if configured is None or jar is None:
-        configured, jar = _read(settings, plugin)
+def _made(settings: RunShared, plugin: Plugin, configured: PluginConfig, jar: cookies.Jar,
+          account: flnd.plugin.Account | None) -> PluginRun:
+    """A plugin's `PluginRun` for an account: its login's cookies warned of, its settings
+    applied. A configured template replaces its class's on this instance; a category's or a
+    route's own still wins (`crawl._format`)."""
     _warn_expiring(plugin, jar)
     for name in ("folder", "filename"):
         if getattr(configured, name) is not None:
@@ -1157,7 +1179,7 @@ def _made(settings: RunShared, plugin: Plugin, configured: PluginConfig | None =
     return PluginRun(plugin, settings, jar, session,
                      net.Client(session, stop=stop.soon if stop else None),
                      net.Client(session, stop=stop.now if stop else None), configured,
-                     _own_jobs=own)
+                     account=account, _own_jobs=own)
 
 
 def _network(plugin: Plugin, jar: Iterable[Mapping[str, Any]],
@@ -1237,32 +1259,20 @@ def scheduler(settings: RunShared) -> jobs.Scheduler | None:
     return _SCHEDULERS.get(pool) if pool is not None else None
 
 
-def login_names(plugin: Plugin) -> tuple[str, ...]:
-    """The cookies that prove a plugin's login (`cookies(...)`'s names); none for others."""
-    return tuple(getattr(plugin.login, "names", ())) if plugin.login is not None else ()
-
-
 def _warn_expiring(plugin: Plugin, jar: Any) -> None:
-    """Warn of login cookies (`login_names`) that have expired or will expire soon.
+    """Warn of login cookies (the login's `names`) that have expired or will expire soon.
 
     Only the cookies that prove the login are read, and a session cookie (expiry 0 or -1) never
     warns. The warning names the cookie, never its value.
     """
-    now = clock.wall()
-    names = login_names(plugin)
-    for cookie in jar:
-        expires = cookie.get("expires", -1)
-        # -1 (or 0) is a session cookie, which lasts as long as the browser it came from said.
-        if (cookie.get("name") not in names or not isinstance(expires, (int, float))
-                or expires <= 0):
-            continue
-        if expires <= now:
+    for name, left in auth.expiring(plugin, jar, within=EXPIRY_WARNING):
+        if left <= 0:
             ui.warn("{code}: the login cookie {name} has expired; run flnd login {code} again",
-                    code=plugin.code, name=cookie["name"])
-        elif expires - now <= EXPIRY_WARNING:
+                    code=plugin.code, name=name)
+        else:
             ui.warn("{code}: the login cookie {name} expires in {time}; "
                     "run flnd login {code} again soon",
-                    code=plugin.code, name=cookie["name"], time=text.duration(expires - now))
+                    code=plugin.code, name=name, time=text.duration(left))
 
 
 # ---------------------------------------------------------------------------------------------

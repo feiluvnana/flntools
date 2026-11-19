@@ -13,7 +13,7 @@ from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
-from flnd.engine import home as _home
+from flnd.engine import auth as _auth
 from flnd.errors import LoginError, UsageError
 from flnd.plugins.ins import Instagram
 from flnkit import cookies as _cookies
@@ -129,13 +129,13 @@ class LoadTest(SafariHome):
         self.assertIn("Full Disk Access", caught.exception.hint)
         # The login code keeps that advice.
         with self.assertRaises(LoginError) as caught:
-            _home.from_browser(Instagram(), browser="safari")
+            _auth._read_jar(Instagram(), Instagram.login, "safari", path=None, profile=None)
         self.assertIn("can't read Safari's cookies", str(caught.exception))
         self.assertIn("Full Disk Access", caught.exception.hint)
 
     def test_a_login_keeps_the_sites_cookies_only(self):
         self.write(_cookies.SAFARI_FILES[0])
-        jar = _home.from_browser(Instagram(), browser="safari")
+        jar = _auth._read_jar(Instagram(), Instagram.login, "safari", path=None, profile=None)
         self.assertEqual(sorted(c["name"] for c in jar), ["csrftoken", "sessionid"])
 
 
@@ -145,7 +145,7 @@ class OffMacTest(SafariHome):
     def test_safari_is_macos_only(self):
         self.write(_cookies.SAFARI_FILES[0])
         for read in (lambda: _cookies.load("safari"),
-                     lambda: _home.from_browser(Instagram(), browser="safari")):
+                     lambda: _auth._read_jar(Instagram(), Instagram.login, "safari", path=None, profile=None)):
             with self.assertRaises(UsageError) as caught:
                 read()
             self.assertIn("macOS only", str(caught.exception))

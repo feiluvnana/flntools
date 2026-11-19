@@ -14,7 +14,6 @@ from collections.abc import (
     Awaitable,
     Callable,
     Coroutine,
-    Iterable,
     Iterator,
     Mapping,
     Sequence,
@@ -25,17 +24,17 @@ from typing import Any, NamedTuple, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.engine.resolve
-from flnd.engine import config, crawl, ctx, home, jobs, plugins, save, store
+from flnd.engine import auth, config, crawl, ctx, home, jobs, plugins, save, store
 from flnd.engine.crawl import Options, Retry, RunShared, TargetReport
-from flnd.engine.ctx import Ctx, PluginRun, plugin_run, shared_browser, start
+from flnd.engine.ctx import Ctx, PluginRun, shared_browser
 from flnd.engine.events import Failed, Planned
 from flnd.engine.run import Stop, Tally, _shut_down, sink, stopping
 from flnd.errors import DiskError, Error, LoginError, NetworkError, PluginError, Stopped, UsageError
-from flnd.plugin import Browser, Cookies, Plugin, Range, Target
+from flnd.plugin import Account, Browser, Plugin, Range, Target
 from flnd.ui.log import ui
 from flnkit import net, text
 
-__all__ = ["AuthInfo", "Chosen", "Engine", "Report", "TargetInfo", "TargetReport"]
+__all__ = ["Chosen", "Engine", "Report", "TargetInfo", "TargetReport"]
 
 
 class _Unmatched(UsageError):
@@ -47,10 +46,6 @@ class _Unmatched(UsageError):
 
 
 T = TypeVar("T")
-# The kind of the pseudo-target a source's account `Site` is made for (`_account`).
-ACCOUNT = "account"
-# What `logout` takes for every source.
-ALL = "all"
 # How many links deep the targets that listings yield are followed (`Engine._found`).
 FOLLOW_DEPTH = 2
 # Targets a search's sync downloads at most per run, among those it hadn't seen: a search that
@@ -90,17 +85,6 @@ class TargetInfo:
 
 
 @dataclass(frozen=True)
-class AuthInfo:
-    """Saved authentication state for one source returned by `Engine.auth_ls`."""
-
-    code: str
-    name: str
-    state: str
-    origin: str
-    expiring: list[tuple[str, float]]
-
-
-@dataclass(frozen=True)
 class Report:
     """Summary of a `download` or `sync` run, one `TargetReport` per target."""
 
@@ -123,7 +107,7 @@ class Report:
 
 
 class Engine:
-    """flnd's commands as methods: `resolve`, `download`, `sync`, `retry`, `login`, `logout`."""
+    """flnd's commands as methods: `resolve`, `download`, `sync`, `retry`, and the reads."""
 
     def __init__(
         self,
@@ -452,153 +436,6 @@ class Engine:
             for target in resolved:
                 db.follow(target, enabled)
         return resolved
-
-    def auth_ls(self) -> list[AuthInfo]:
-        """Each source's login state, where its login came from, and its cookies expiring soon.
-
-        It reads the vault only; nothing asks a site whether the login still works.
-
-        Returns:
-            One `AuthInfo` per source, in the order of `sources`: "logged in", "api key only"
-            (a key with no cookies) or "not logged in".
-        """
-        items: list[AuthInfo] = []
-        for code, source_cls in self.sources.items():
-            logged = home.logged_in(self.home, code)
-            api_key = not logged and home.api_key_saved(self.home, code)
-            state = "logged in" if logged else ("api key only" if api_key else "not logged in")
-            items.append(AuthInfo(
-                code=code,
-                name=source_cls.name,
-                state=state,
-                origin=home.origin(self.home, code) if logged else "",
-                expiring=home.expiring(self.home, source_cls()) if logged else [],
-            ))
-        return items
-
-    def login(
-        self,
-        code: str,
-        method: str,
-        *,
-        browser: str | None = None,
-        profile: str | None = None,
-        path: Path | str | None = None,
-    ) -> str:
-        """Log in to a source by one of its login's `methods` and return a status message.
-
-        A cookie login (`flnd.plugin.cookies`) reads a browser's cookie store or a cookie file,
-        checks that it holds the login's cookies, and seals it in the vault. Any other login
-        runs the source's own `start` hook, interactively (a phone code, a browser window).
-
-        Args:
-            code: the source's code.
-            method: one of its login's `methods`, such as "browser" or "file".
-            browser: for "browser": which browser's cookies to read (a key of `browsers`).
-            profile: for "browser": the browser profile's name; None for the default one.
-            path: for "file": the cookie file, in Netscape `cookies.txt` form.
-
-        Returns:
-            What was saved, for the CLI to print; "" for an interactive login, which prints
-            its own lines.
-
-        Raises:
-            UsageError: an unknown source, one with no login, a method it doesn't take, or a
-                method's missing `browser` or `path`.
-            LoginError: the cookies found don't prove a login.
-        """
-        if code not in self.sources:
-            raise UsageError(f"unknown source '{code}'. Sources: {', '.join(self.sources)}")
-        source = self.sources[code]()
-        if source.login is None:
-            raise UsageError(f"{code} needs no login")
-        if method not in source.login.methods:
-            raise UsageError(
-                f"{code} logs in by {', '.join(source.login.methods)}, not {method!r}"
-            )
-        if code not in self.cookie_logins:
-            return self._interactive_login(code, source, method)
-        if method == "file":
-            if path is None:
-                raise UsageError("a file login needs the cookie file's path")
-            file = Path(path).expanduser()
-            return home.store(
-                source, home.from_file(source, file), home=self.home, origin=file.name
-            )
-        if browser is None:
-            raise UsageError("a browser login needs the browser to read cookies from")
-        jar = home.from_browser(source, browser=browser, profile=profile)
-        return home.store(source, jar, home=self.home, origin=home.BROWSERS.get(browser, browser))
-
-    def logout(self, codes: Iterable[str]) -> list[str]:
-        """Remove the saved logins of the given sources (`flnd logout`).
-
-        Every code is checked before any login is removed.
-
-        Args:
-            codes: source codes, or `all` for every source; a repeat counts once.
-
-        Returns:
-            The codes whose login was removed; a source that had none is left out.
-
-        Raises:
-            UsageError: a code names no known source.
-        """
-        asked = list(dict.fromkeys(codes))
-        unknown = [code for code in asked if code != ALL and code not in self.sources]
-        if unknown:
-            raise UsageError(
-                f"unknown source '{unknown[0]}'. Sources: {', '.join(self.sources)}"
-            )
-        chosen = list(self.sources) if ALL in asked else asked
-        return [code for code in chosen if home.logout(self.home, code)]
-
-    @property
-    def logins(self) -> dict[str, str]:
-        """Map each source code with saved credentials to its login state."""
-        found: dict[str, str] = {}
-        for code in self.sources:
-            if home.logged_in(self.home, code):
-                found[code] = "logged in"
-            elif home.api_key_saved(self.home, code):
-                found[code] = "api key saved"
-        return found
-
-    @property
-    def cookie_logins(self) -> tuple[str, ...]:
-        """Plugin codes that authenticate with browser or file cookies."""
-        return tuple(code for code, source in self.sources.items()
-                     if isinstance(source.login, Cookies))
-
-    def _interactive_login(self, code: str, source: Plugin, method: str) -> str:
-        """Run a plugin's own login hook (`Login.start`), with a terminal it may prompt on.
-
-        The hook gets the `Ctx` of the plugin's account in a run of its own, whose `ask` asks
-        in the terminal, so it may ask for a code or open a browser window. Its Ctrl-C ends
-        the login, not a download. Only a login the hook saved has its origin recorded.
-
-        Args:
-            code: the plugin's code.
-            source: the plugin, made from it.
-            method: the login method the hook is given.
-
-        Returns:
-            "": the hook prints its own lines.
-        """
-        with stopping() as stop:
-            settings = RunShared(home=self.home, stop=stop, interactive=True)
-            with plugin_run(settings, source) as run:
-                assert source.login is not None
-                # Its state, read and written back here, off the loop the login runs on.
-                run.load_state()
-                try:
-                    account = Ctx(run, Target(f"{code}:", kind=ACCOUNT), login=True)
-                    run.loop.run(start(source.login, account, method))
-                finally:
-                    run.save_state()
-            if home.logged_in(self.home, code):
-                home.record_origin(self.home, code, method)
-        return ""
 
     async def _download(
         self,
@@ -1149,6 +986,7 @@ class Engine:
                                  tally=self.tally, config=found)
             settings.claims = crawl.Claims()
             runner = _Runner(self, settings)
+            runner.worked = await _off(_worked, db)
             settings.follow = runner.follow
             async with shared_browser(settings), save.attached(settings):
                 try:
@@ -1341,10 +1179,15 @@ class _Runner:
 
     def __init__(self, engine: Engine, settings: RunShared) -> None:
         self.engine, self.settings = engine, settings
-        self._entries: dict[str, _Entry] = {}
+        # Each (plugin, account)'s instance.
+        self._entries: dict[tuple[str, str | None], _Entry] = {}
+        # Each plugin's accounts, read once; and the account that worked for each target, by
+        # key, read as the run starts (`Engine._running`).
+        self._accounts: dict[str, asyncio.Future[list[Account]]] = {}
+        self.worked: dict[str, str] = {}
         self._active = asyncio.Semaphore(ACTIVE)
-        # Each plugin's (and account's) listings at once.
-        self._listing: dict[str, asyncio.Semaphore] = {}
+        # Each plugin's and account's listings at once.
+        self._listing: dict[tuple[str, str | None], asyncio.Semaphore] = {}
         # The targets the run has started, each run once however often it is named; set
         # once each ends, with its report.
         self._once: dict[Target, asyncio.Event] = {}
@@ -1354,13 +1197,15 @@ class _Runner:
         # Each target's turn at its first step, in the order they started (`crawl.Turn`).
         self._turns: list[asyncio.Event] = []
 
-    async def entry(self, code: str) -> _Entry:
-        """The run's instance of the plugin `code`, started on first use.
+    async def entry(self, code: str, account: Account | None) -> _Entry:
+        """The run's instance of the plugin `code` for `account`, started on first use.
 
         Raises:
             UsageError: the home's config.toml has a value the plugin doesn't take.
+            LoginError: the vault's key is gone.
         """
-        entry = self._entries.get(code)
+        key = (code, account.name if account is not None else None)
+        entry = self._entries.get(key)
         if entry is not None:
             await entry.started.wait()
             if entry.run is None:
@@ -1371,9 +1216,10 @@ class _Runner:
         source = self.engine.sources[code]()
         stack = contextlib.AsyncExitStack()
         # Kept before the first wait, so a target that comes meanwhile waits for this one.
-        entry = self._entries[code] = _Entry(None, stack)  # type: ignore[arg-type]
+        entry = self._entries[key] = _Entry(None, stack)  # type: ignore[arg-type]
         try:
-            run = entry.run = await stack.enter_async_context(ctx.opened(self.settings, source))
+            run = entry.run = await stack.enter_async_context(
+                ctx.opened(self.settings, source, account))
         except BaseException as error:
             entry.error = error
             entry.started.set()
@@ -1388,8 +1234,9 @@ class _Runner:
             if not entry.logged_in:
                 ui.warn("{code}: not logged in, using public access; run flnd login {code}",
                         code=code)
-            stack.push_async_callback(run.off, home.write_back, run.settings.home, code,
-                                      run.session.jar)
+            if account is not None:
+                stack.push_async_callback(run.off, auth.write_back, run.settings.home, account,
+                                          run.session.jar)
             await stack.enter_async_context(_connected(run, _account(run)))
             # One cache of the posts the `date` hook had no day for, shared by its targets.
             await run.off(crawl.asked, run)
@@ -1408,7 +1255,7 @@ class _Runner:
         """
         settings, tally = self.settings, self.settings.tally
         try:
-            entry = await self.entry(target.plugin)
+            entry = await self.entry(target.plugin, await self._signed(target))
         except Exception as error:
             failed = crawl.failure(error, target)
             tally.end(target, failed=True)
@@ -1428,6 +1275,18 @@ class _Runner:
         tally.end(target, failed=True)
         await crawl.tell(target, failed, settings.emit)
         return entry, TargetReport(target, (), 0, error=failed)
+
+    async def _signed(self, target: Target) -> Account | None:
+        """The account `target` runs as: the one that worked for it last, else the plugin's
+        first usable one (`auth.pick`)."""
+        db = self.settings.db
+        if db is None:
+            return None
+        found = self._accounts.get(target.plugin)
+        if found is None:
+            found = self._accounts[target.plugin] = asyncio.ensure_future(
+                _off(_accounts, db, target.plugin))
+        return auth.pick(await found, preferred=self.worked.get(store.key(target)))
 
     async def _refused(self, target: Target, login: LoginError) -> TargetReport:
         """A target whose plugin's login an earlier target had refused: it fails, unasked."""
@@ -1541,12 +1400,12 @@ class _Runner:
             place back at once, and the active one when the target has no more files queued
             than its places, so the next target lists while these download.
         """
-        source = entry.run.source
-        listing = self._listing.get(source.code)
+        source, account = entry.run.source, entry.run.account
+        key = (source.code, account.name if account is not None else None)
+        listing = self._listing.get(key)
         if listing is None:
             browser = type(source).browser is not Browser.NONE
-            listing = self._listing[source.code] = asyncio.Semaphore(
-                1 if browser else HTTP_AT_ONCE)
+            listing = self._listing[key] = asyncio.Semaphore(1 if browser else HTTP_AT_ONCE)
         held = {"listing": False, "active": False}
         if listing.locked():
             turn.release()
@@ -1694,7 +1553,7 @@ class _Runner:
             try:
                 await entry.stack.aclose()
             except Exception as error:
-                account = Target(f"{entry.run.source.code}:", kind=ACCOUNT)
+                account = Target(f"{entry.run.source.code}:", kind=auth.ACCOUNT)
                 await crawl.tell(account, crawl.failure(error, account, entry.run.source),
                                  self.settings.emit)
 
@@ -1736,6 +1595,15 @@ async def _carried_call(call: Callable[..., Awaitable[T]], *args: Any) -> tuple[
     return await _carried(call(*args))
 
 
+def _accounts(db: store.Store, plugin: str) -> list[Account]:
+    return [auth.account(row) for row in db.accounts(plugin)]
+
+
+def _worked(db: store.Store) -> dict[str, str]:
+    """The account that worked for each target, by key."""
+    return {item: row.account for item, row in db.targets().items() if row.account}
+
+
 def _planned(options: Options) -> tuple[str, ...]:
     """The categories a target's row shows before its listings start: those it names."""
     names = options.categories or ()
@@ -1744,7 +1612,7 @@ def _planned(options: Options) -> tuple[str, ...]:
 
 def _account(run: PluginRun) -> Ctx:
     """The `Ctx` of a plugin's account, not of a target: what `connect` and `check` see."""
-    return Ctx(run, Target(f"{run.source.code}:", kind=ACCOUNT))
+    return Ctx(run, Target(f"{run.source.code}:", kind=auth.ACCOUNT))
 
 
 async def _logged_in(run: PluginRun) -> bool:

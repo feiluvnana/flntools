@@ -452,22 +452,22 @@ class Flnd:
             ...
             flnkit.errors.UsageError: ins logs in by a browser (chrome, ...) or a cookie file's ...
         """
-        from flnd.engine.home import BROWSERS
+        from flnd.engine import auth
+        from flnd.plugin import Cookies
 
         cls = self._source(source)
-        engine = self._engine()
-        if source not in engine.cookie_logins:
+        if not isinstance(cls.login, Cookies):
             methods = cls.login.methods if cls.login is not None else ()
             if how not in methods:
                 raise UsageError(f"{source} logs in by {', '.join(methods) or 'nothing'}, "
                                  f"not {how!r}")
-            engine.login(source, how)
-        elif how in BROWSERS:
-            engine.login(source, "browser", browser=how)
+            auth.login(self.home, cls(), how, interactive=True)
+        elif how in auth.BROWSERS:
+            auth.login(self.home, cls(), how)
         elif Path(how).expanduser().is_file():
-            engine.login(source, "file", path=how)
+            auth.login(self.home, cls(), "file", path=how)
         else:
-            raise UsageError(f"{source} logs in by a browser ({', '.join(BROWSERS)}) or a "
+            raise UsageError(f"{source} logs in by a browser ({', '.join(auth.BROWSERS)}) or a "
                              f"cookie file's path, not {how!r}")
         return next(login for login in self.logins if login.source == source)
 
@@ -489,15 +489,17 @@ class Flnd:
             ...     fl.logout("ins")
             False
         """
+        from flnd.engine import auth
+
         self._source(source)
-        return bool(self._engine().logout([source]))
+        return auth.logout(self.home, source)
 
     @property
     def logins(self) -> list[Login]:
         """Each source's login: its state, where it came from, and cookies that expire soon."""
-        return [Login(info.code, info.name, info.state, origin=info.origin,
-                      expiring=tuple((name, left) for name, left in info.expiring))
-                for info in self._engine().auth_ls()]
+        from flnd.engine import auth
+
+        return auth.logins(self.home, self._sources())
 
     @property
     def sources(self) -> list[Installed]:
@@ -513,7 +515,7 @@ class Flnd:
         """
         from flnd.engine import plugins
 
-        logins = self._engine().logins
+        logins = {login.source: login.state for login in self.logins}
         registry = plugins.PLUGINS
         rows = [_installed(registry[code], logins) for code in registry.built_in_codes()]
         mgr = registry.manager()
@@ -694,7 +696,7 @@ def _installed(cls: type[Plugin], logins: Mapping[str, str], *,
 
     Args:
         cls: the source's class.
-        logins: the login state of each source with one saved (`Engine.logins`).
+        logins: the login state of each source (`Flnd.logins`).
         origin: where it came from; None for a built-in.
         where: its file or folder when installed; None builds `module:cls`.
         version: its `__version__` when installed; `""` for a script.

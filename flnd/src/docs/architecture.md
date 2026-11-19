@@ -77,7 +77,8 @@ The rules between them:
         │
         ├── src/engine/config.py    config.toml: every setting, read, checked and edited
         ├── src/engine/store.py     flnd.db: files, targets, runs, failures, accounts; check
-        ├── src/engine/home.py      the home's layout, logs and the logins in the vault
+        ├── src/engine/home.py      the home's layout and logs
+        ├── src/engine/auth.py      accounts, the sealed vault, the login methods
         ├── src/engine/ctx.py       PluginRun (a plugin's resources for a run) and Ctx (what
         │                           a plugin acts through, for one target)
         ├── src/engine/jobs.py      the scheduler: every request and step as a job
@@ -106,7 +107,8 @@ The rules between them:
 | `src/engine/extension.py` | the Chrome extension's native-messaging host (`flnd host`), the relay a run reaches it by, the run's client, and `install` ([extension.md](extension.md)); the extension's own files are in `src/extension/` | Chrome, the CLI's `flnd extension` |
 | `src/testing.py` | the public test kit: `FakeCtx` (with `Reply`, `FakePage` and `Seen`) for a plugin, `collect`, `check`, `fake_clock` | a plugin's tests, flnd's own (`tests/fakes.py`) |
 | `src/engine/store.py` | `flnd.db`, schema 2: its tables, the migration of a version-1 home (copied to `flnd.v1.db` first), the rows and queries (files, posts, targets, runs, failures, plugins' state, accounts), the save's commit, and `check`, the history against the disk and its repair ([storage.md](storage.md#checking-a-home)) | the engine, the crawl, the save, `ctx`, `Flnd` |
-| `src/engine/home.py` | the rest of the home: a target's folder, the samples and their sweep, and the logins in the vault | the engine, the crawl, `ctx`, `Flnd` |
+| `src/engine/home.py` | the rest of the home: a target's folder, the samples and their sweep | the engine, the crawl, the save |
+| `src/engine/auth.py` | the accounts of each plugin and the one a target runs as (`pick`); the sealed vault in `secret.db` (`Vault`, `secrets`) under the key in `~/.config/flnd/key`, and the sealing of a version-1 `secret.db`; the login methods (`login`), `logout`, the logins' state (`logins`), and the cookies a run writes back ([storage.md](storage.md#the-vault)) | the engine, `ctx`, `Flnd` |
 | `src/engine/save.py` | a post's files as jobs (`Saver`): part, transfer by mirrors or a DASH pair (joined by `flnkit/media.py`) or a plugin's `fetch` function, the content check, dedupe, the post's commit, unpack, the sidecar, `Saved`, exec ([storage.md](storage.md)) | the crawl and the engine |
 | `src/ui/theme.py` | every colour and glyph flnd draws with, and when to drop colour or Unicode | `src/ui/*` |
 | `src/ui/out.py` | every line flnd prints: lines, folded warnings, errors and their hints, tables, the help; text from a site cleaned of escape codes | the CLI, `src/ui/log.py`, the run's hard exit |

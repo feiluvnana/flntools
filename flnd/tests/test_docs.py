@@ -58,7 +58,7 @@ MODULE_LINES = 3
 # `test_long_docstrings_are_still_long`.
 LONG = frozenset({
     "src/__init__.py", "src/_library.py", "src/cli.py", "src/errors.py", "src/testing.py",
-    "src/engine/events.py", "src/engine/home.py",
+    "src/engine/events.py",
     "src/engine/plugins.py",
     "flnkit/browser.py", "flnkit/cookies.py", "flnkit/db.py", "flnkit/html.py",
     "flnkit/net.py", "flnkit/text.py",

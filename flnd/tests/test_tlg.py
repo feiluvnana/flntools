@@ -19,7 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fakes import EngineCase, make_plugin
+from fakes import EngineCase, make_plugin, sign_in, vaulted
 from telethon.errors import (
     ChannelPrivateError,
     FloodWaitError,
@@ -29,9 +29,7 @@ from telethon.errors import (
 from telethon.tl import types
 from test_commands import FlndCase
 
-from flnd.engine import home as _home
-from flnd.engine import jobs
-from flnd.engine.core import Engine
+from flnd.engine import auth, jobs
 from flnd.engine.crawl import Options
 from flnd.engine.events import Failed
 from flnd.plugin import Hidden, LoginError, NetworkError, NotFound, Part, Range, UsageError
@@ -635,14 +633,20 @@ class LoginTest(Case):
 # ---------------------------------------------------------------------------------------------
 
 def store(home, **values):
-    with _home.secrets(home, "tlg", create=True) as secrets:
-        secrets.clear()
-        secrets.update(values)
+    auth.logout(home, "tlg")
+    if values:
+        sign_in(home, "tlg", **values)
 
 
 def stored(home):
-    with _home.secrets(home, "tlg") as secrets:
-        return {name: value for name, value in secrets.items() if name != "origin"}
+    """The secrets of the account logged in last: a login names it by `whoami`."""
+    from flnd.engine import store as _store
+
+    if not (home / _store.DB).is_file():
+        return {}
+    with _store.open(home) as db:
+        rows = db.accounts("tlg")
+    return vaulted(home, "tlg", max(rows, key=lambda row: row.id).name)[1] if rows else {}
 
 
 class TelegramCase(EngineCase):
@@ -664,7 +668,7 @@ class EngineLoginTest(TelegramCase):
     def log_in(self, method, *answers, tty=True):
         with mock.patch("sys.stdin.isatty", return_value=tty), \
                 mock.patch("flnd.ui.forms.ask", side_effect=list(answers)):
-            Engine(home=self.home, sources={"tlg": Telegram}).login("tlg", method)
+            auth.login(self.home, Telegram(), method, interactive=True)
 
     def assert_logged_in(self):
         self.assertEqual(stored(self.home), {"session": SESSION, **CREDENTIALS})
@@ -761,9 +765,14 @@ class LoginCommandTest(FlndCase):
             methods.append(method)
             if method == "browser":
                 raise LoginError("tlg: no QR code was scanned", hint="flnd auth login tlg qr")
+            ctx.secrets["session"] = "s"
+
+        async def whoami(ctx):
+            return "example_user"
 
         # On the login object: `FakeCtx` gives it a `start` of its own, over the class's.
-        with mock.patch.object(Telegram.login, "start", start):
+        with mock.patch.object(Telegram.login, "start", start), \
+                mock.patch.object(Telegram.login, "whoami", whoami):
             code, _, err = self.run_app("login", "tlg", "qr")
             self.assertEqual(code, 0, err)
             with select_from_lines("3"):

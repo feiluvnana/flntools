@@ -14,13 +14,11 @@ from unittest import mock
 
 import fakes
 
-from flnd.engine import home as _home
 from flnd.engine.core import Engine
 from flnd.errors import Blocked, Changed, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import File, Post, Range, Request, Target
 from flnd.plugins.ins import APP_ID, Instagram, best_file, pk_stamp
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
-from flnkit import cookies as _cookies
 from flnkit import net as _net
 from flnkit.clock import day
 
@@ -560,8 +558,8 @@ class MeEngineTest(fakes.EngineCase):
                                    {"username": "example_user"}]}]
         self.routes[f"{SITE}/api/v1/friendships/99/following/"] = (
             lambda request: _net.reply(200, json=self.follows[0]))
-        _home.save(self.home, "ins", _cookies.Jar([{"name": "sessionid", "value": "99:abc:1",
-                                                    "domain": ".instagram.com", "path": "/"}]))
+        fakes.sign_in(self.home, "ins", [{"name": "sessionid", "value": "99:abc:1",
+                                    "domain": ".instagram.com", "path": "/"}])
 
         async def read_tab(ctx, profile, tab):
             code = "A1" if profile.user == "example_user" else "B1"

@@ -11,10 +11,9 @@ from unittest import mock
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
-from fakes import EngineCase
+from fakes import EngineCase, sign_in, vaulted
 
-from flnd.engine import home as _home
-from flnd.engine.core import Engine
+from flnd.engine import auth as _auth
 from flnd.engine.crawl import Options
 from flnd.errors import Blocked, NotFound, SiteError
 from flnd.plugin import Range, Request
@@ -443,7 +442,7 @@ class EngineTest(EngineCase):
         super().setUp()
         jar = [{"name": "access-token", "value": "Bearer%20tok", "domain": ".loix.cc",
                 "path": "/"}]
-        _home.save(self.home, "loi", _cookies.Jar(jar))
+        sign_in(self.home, "loi", jar)
         self.routes.update({
             f"{API}lois/5930": _net.reply(200, json={"data": {**POST, "images": []}}),
             f"{API}user/info": _net.reply(200, json=USER)})
@@ -493,26 +492,24 @@ class LoginTest(EngineCase):
             return _cookies.Jar([*own, other])
 
         path = self.home.parent / "cookies.txt"
-        engine = Engine(home=self.home, sources={"loi": Loibus})
         for method, names, said in [
-            ("file", ("access-token", "user-level"),
-             "loi: logged in from cookies.txt (2 cookies)"),
+            ("file", ("access-token", "user-level"), None),
             ("file", ("user-level",), "no access-token for loix.cc in cookies.txt"),
-            ("browser", ("access-token",), "loi: logged in from Chrome (1 cookie)"),
-            ("browser", (), "no access-token for loix.cc in Chrome"),
+            ("chrome", ("access-token",), None),
+            ("chrome", (), "no access-token for loix.cc in Chrome"),
         ]:
             # The browser's store is faked; the file is a real one.
             browser = mock.patch("flnkit.cookies.load", return_value=jar(*names))
             with self.subTest(method=method, names=names), \
-                    browser if method == "browser" else contextlib.nullcontext():
+                    browser if method == "chrome" else contextlib.nullcontext():
                 jar(*names).save(path)
-                if "logged in" not in said:
+                if said is not None:
                     with self.assertRaisesRegex(_vault.LoginError, said):
-                        engine.login("loi", method, browser="chrome", path=path)
+                        _auth.login(self.home, Loibus(), method, path=path)
                     continue
-                self.assertEqual(engine.login("loi", method, browser="chrome", path=path),
-                                 said)
-                self.assertEqual({cookie["domain"] for cookie in _home.load(self.home, "loi")},
+                _auth.login(self.home, Loibus(), method,
+                            path=path if method == "file" else None)
+                self.assertEqual({cookie["domain"] for cookie in vaulted(self.home, "loi")[0]},
                                  {".loix.cc"})
 
 

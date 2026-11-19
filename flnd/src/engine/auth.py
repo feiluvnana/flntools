@@ -6,19 +6,38 @@ src/docs/storage explains it.
 from __future__ import annotations
 
 import contextlib
+import datetime
+import itertools
+import json
 import os
 import sqlite3
-from collections.abc import Iterator, MutableMapping
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from http.cookiejar import Cookie
 from pathlib import Path
+from typing import Any
 
 from flnd.engine import store
-from flnd.errors import DiskError, LoginError
-from flnkit import db, vault
+from flnd.engine.events import Login
+from flnd.errors import DiskError, Error, LoginError, UsageError
+from flnd.plugin import Account, Cookies, Plugin, Target
+from flnd.ui import forms
+from flnd.ui.log import ui
+from flnkit import clock, cookies, db, vault
 
-__all__ = ["Vault", "seal_plaintext", "secrets"]
+__all__ = ["Vault", "account", "expiring", "fix_domains", "load", "logged_in", "login",
+           "logins", "logout", "pick", "seal_plaintext", "secrets", "write_back"]
 
 # The key file; None is the user's (`flnkit.vault.keyfile`). The tests set one of their own.
 KEYFILE: Path | None = None
+# The secret that keeps a cookie login's jar, as JSON, and the one that keeps a plugin's own
+# session (tlg's); either proves a login, and any other (an API key) doesn't.
+COOKIES = "cookies"
+LOGINS = frozenset({COOKIES, "session"})
+# The kind of the pseudo-target a plugin's account `Ctx` acts for.
+ACCOUNT = "account"
+# The browsers whose cookie stores a login reads, by method, with the names people know.
+BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "Brave",
+            "chromium": "Chromium", "safari": "Safari"}
 TABLE = ("CREATE TABLE IF NOT EXISTS secrets (account INTEGER NOT NULL, name TEXT NOT NULL,"
          " sealed BLOB NOT NULL, PRIMARY KEY (account, name)) WITHOUT ROWID")
 # The name a version-1 home's one account per plugin takes.
@@ -45,26 +64,19 @@ class Vault(MutableMapping[str, str]):
         self._home, self._account, self._plugin = home, account, plugin
         self._db = db.Db(home / store.SECRETS, schema=TABLE, secure=True)
 
-    def _key(self, *, create: bool) -> bytes:
-        try:
-            return vault.key(KEYFILE or vault.keyfile(), home=self._home, create=create)
-        except LoginError as error:
-            raise LoginError(str(error), hint=f"flnd auth login {self._plugin}"
-                             if self._plugin else "") from None
-
     def __getitem__(self, name: str) -> str:
         found = self._db.one("SELECT sealed FROM secrets WHERE account = ? AND name = ?",
                              (self._account, name))
         if found is None:
             raise KeyError(name)
         try:
-            return vault.unseal(self._key(create=False), self._account, name, found[0])
-        except LoginError as error:
-            raise LoginError(str(error), hint=error.hint or (
-                f"flnd auth login {self._plugin}" if self._plugin else "")) from None
+            return vault.unseal(_key(self._home, create=False), self._account, name, found[0])
+        except LoginError:
+            raise LoginError(vault.KEY_GONE, hint=f"flnd auth login {self._plugin}"
+                             if self._plugin else "") from None
 
     def __setitem__(self, name: str, value: str) -> None:
-        sealed = vault.seal(self._key(create=True), self._account, name, str(value))
+        sealed = vault.seal(_key(self._home, create=True), self._account, name, str(value))
         self._db.write("INSERT OR REPLACE INTO secrets VALUES (?, ?, ?)",
                        (self._account, name, sealed))
 
@@ -131,7 +143,7 @@ def seal_plaintext(home: Path) -> None:
             ids = {row.plugin: row.id for row in reversed(home_db.accounts()) if row.default}
             for slot in sorted({slot for slot, _, _ in rows} - set(ids)):
                 ids[slot] = home_db.login(slot, DEFAULT, origin="").id
-        key = vault.key(KEYFILE or vault.keyfile(), home=home, create=True) if rows else b""
+        key = _key(home, create=True) if rows else b""
         sql.execute("BEGIN IMMEDIATE")
         try:
             sql.execute("ALTER TABLE secrets RENAME TO v1_secrets")
@@ -157,6 +169,295 @@ def seal_plaintext(home: Path) -> None:
             path.chmod(0o600)
 
 
+def _key(home: Path, *, create: bool) -> bytes:
+    return vault.key(KEYFILE or vault.keyfile(), home=home, create=create)
+
+
 def _text(value: object) -> str:
     return bytes(value).decode("utf-8", "replace") if isinstance(
         value, (bytes, memoryview)) else str(value)
+
+
+# ---------------------------------------------------------------------------------------------
+# Accounts
+# ---------------------------------------------------------------------------------------------
+
+def account(row: store.AccountRow) -> Account:
+    """An `accounts` row as the public `Account`."""
+    status = row.status if row.status in ("held", "expired") else "ok"
+    return Account(id=row.id, plugin=row.plugin, name=row.name, origin=row.origin, at=row.at,
+                   is_default=row.default, status=status, held_until=row.held_until,
+                   expires=row.expires)
+
+
+def pick(accounts: Sequence[Account], *, preferred: str | None = None) -> Account | None:
+    """The account a target runs as, of a plugin's `accounts` in `auth list` order:
+    `preferred` (the one that worked last time) when it is `ok`, else the first `ok` one,
+    else the first not expired.
+
+    Returns:
+        The account; None when the plugin has none to use.
+    """
+    usable = [found for found in accounts if found.status != "expired"]
+    usable.sort(key=lambda found: (found.status != "ok", found.name != preferred))
+    return usable[0] if usable else None
+
+
+# ---------------------------------------------------------------------------------------------
+# Cookies
+# ---------------------------------------------------------------------------------------------
+
+def fix_domains(jar: cookies.Jar) -> cookies.Jar:
+    """Every domain with a leading dot, so its subdomains see the cookie, and every path `/`
+    when it has none; a `__Host-` cookie stays on its host alone, as browsers require."""
+    fixed = []
+    for cookie in jar:
+        bare = str(cookie.get("domain", "")).lstrip(".")
+        host = str(cookie.get("name", "")).startswith("__Host-") or not bare
+        fixed.append({**cookie, "domain": bare if host else f".{bare}",
+                      "path": cookie.get("path") or "/"})
+    return cookies.Jar(fixed, error=LoginError)
+
+
+def load(home: Path, found: Account | None) -> cookies.Jar:
+    """An account's sealed cookies; an empty jar for no account, or one with none.
+
+    Raises:
+        LoginError: the vault's key is gone.
+    """
+    if found is None or not (home / store.SECRETS).is_file():
+        return cookies.Jar()
+    with secrets(home, found.id, plugin=found.plugin) as saved:
+        kept = saved.get(COOKIES)
+    return fix_domains(cookies.Jar(json.loads(kept), error=LoginError)) if kept else cookies.Jar()
+
+
+def logged_in(home: Path, found: Account) -> bool:
+    """Whether the account has cookies or a session in the vault."""
+    if not (home / store.SECRETS).is_file():
+        return False
+    with secrets(home, found.id) as saved:
+        return any(name in saved for name in LOGINS)
+
+
+def expiring(plugin: Plugin, jar: Iterable[Mapping[str, Any]], *,
+             within: float) -> list[tuple[str, float]]:
+    """The login's cookies (its `names`) that expire within `within` seconds, each with its
+    seconds left (0 or less: expired); a session cookie never does."""
+    names = getattr(plugin.login, "names", ())
+    now = clock.wall()
+    return [(str(cookie["name"]), float(cookie["expires"]) - now) for cookie in jar
+            if cookie.get("name") in names and isinstance(cookie.get("expires"), (int, float))
+            and 0 < cookie["expires"] <= now + within]
+
+
+def write_back(home: Path, found: Account, current: Iterable[Cookie]) -> list[str]:
+    """Save the cookies the site refreshed during a run, for the names the jar holds already.
+
+    A failure is a warning: the files are saved, and the next run uses the cookies it had.
+
+    Returns:
+        The names that changed.
+    """
+    fresh = list(current)
+    if not fresh or not (home / store.SECRETS).is_file():
+        return []
+    try:
+        saved = load(home, found).list
+        changed = [name for cookie in saved if (name := _refresh(cookie, fresh)) is not None]
+        if changed:
+            with secrets(home, found.id, plugin=found.plugin) as vaulted:
+                vaulted[COOKIES] = json.dumps(saved)
+            ui.debug("{code}: refreshed {names}", code=found.plugin, names=", ".join(changed))
+        return changed
+    except (OSError, ValueError, Error) as error:
+        ui.warn("{code}: could not save refreshed cookies ({kind})", code=found.plugin,
+                kind=type(error).__name__)
+        return []
+
+
+def _refresh(cookie: dict[str, Any], fresh: list[Cookie]) -> str | None:
+    """Take a saved cookie's new value from the run's, when the site changed it: the same name
+    on the same domain and path wins, else on a subdomain. Returns its name when it changed."""
+    domain, path = str(cookie.get("domain", "")).lstrip("."), cookie.get("path") or "/"
+    same = [found for found in fresh if found.name == cookie["name"] and (
+        found.domain.lstrip(".") == domain or found.domain.lstrip(".").endswith("." + domain))]
+    exact = [found for found in same if found.domain.lstrip(".") == domain and found.path == path]
+    matched = exact or same
+    if not matched or (new := matched[-1]).value in (None, "", cookie["value"]):
+        return None
+    cookie["value"] = new.value
+    if new.expires is not None and isinstance(cookie.get("expires"), (int, float)):
+        cookie["expires"] = new.expires
+    return str(cookie["name"])
+
+
+# ---------------------------------------------------------------------------------------------
+# Logging in and out
+# ---------------------------------------------------------------------------------------------
+
+def login(home: Path, plugin: Plugin, method: str, *, path: Path | str | None = None,
+          profile: str | None = None, interactive: bool = False) -> Account:
+    """Log an account of `plugin` in by `method`, check it, and seal it in the vault.
+
+    A cookie login reads its jar by the method; any other runs the plugin's `Login.start`,
+    which alone may write `ctx.secrets`. Then `Login.check` must pass, and the account is
+    named by `Login.whoami`, else asked for in a terminal, else the plugin's default account's
+    name, else `account<n>`: logging in again replaces that account's login.
+
+    Args:
+        home: the home folder.
+        plugin: the plugin, made from its class.
+        method: one of its login's `methods`.
+        path: the cookie file, for `file`.
+        profile: the browser's profile, for a browser's cookie store.
+        interactive: whether the plugin's own login may ask in the terminal.
+
+    Raises:
+        UsageError: a plugin with no login, a method it doesn't take, or a missing `path`.
+        LoginError: the cookies found don't prove a login, or the check failed.
+    """
+    own = plugin.login
+    if own is None:
+        raise UsageError(f"{plugin.code} needs no login")
+    if method not in own.methods:
+        raise UsageError(f"{plugin.code} logs in by {', '.join(own.methods)}, not {method!r}")
+    jar, kept = cookies.Jar(), {}
+    with store.open(home) as db:
+        first = next((row for row in db.accounts(plugin.code) if row.default), None)
+    if isinstance(own, Cookies):
+        jar = _read_jar(plugin, own, method, path=path, profile=profile)
+    elif first is not None and (home / store.SECRETS).is_file():
+        # A stored API key isn't asked for again.
+        with contextlib.suppress(LoginError), secrets(home, first.id) as saved:
+            kept = dict(saved)
+    name = _signed_in(home, plugin, method, jar, kept, interactive=interactive)
+    with store.open(home) as db:
+        if not name and interactive and forms.interactive():
+            name = forms.ask("Account name", default=first.name if first else None)
+        name = name or (first.name if first else _next_name(db, plugin.code))
+        row = db.login(plugin.code, name, origin=method)
+        with secrets(home, row.id, plugin=plugin.code) as saved:
+            saved.clear()
+            saved.update(kept)
+            if isinstance(own, Cookies):
+                saved[COOKIES] = json.dumps(jar.list)
+        ends = [float(cookie["expires"]) for cookie in jar
+                if cookie.get("name") in getattr(own, "names", ())
+                and isinstance(cookie.get("expires"), (int, float)) and cookie["expires"] > 0]
+        if ends:
+            at = datetime.datetime.fromtimestamp(min(ends), datetime.UTC)
+            db.mark(row.id, status="ok", expires=at.isoformat(timespec="seconds"))
+        return account(next(found for found in db.accounts(plugin.code) if found.id == row.id))
+
+
+def _signed_in(home: Path, plugin: Plugin, method: str, jar: cookies.Jar,
+               kept: dict[str, str], *, interactive: bool) -> str | None:
+    """Run the plugin's login steps on a `Ctx` of its account: `start` (not for cookies), which
+    writes into `kept`, then `check`, then `whoami`, whose name it returns."""
+    from flnd.engine import crawl, ctx, run
+
+    async def steps(context: ctx.Ctx) -> str | None:
+        assert plugin.login is not None
+        if not isinstance(plugin.login, Cookies):
+            await ctx.start(plugin.login, context, method)
+        if not await plugin.login.check(context):
+            raise LoginError(f"{plugin.code}: the login didn't work",
+                             hint=f"flnd auth login {plugin.code}")
+        found = await plugin.login.whoami(context)
+        return found.strip() if isinstance(found, str) and found.strip() else None
+
+    with run.stopping() as stop:
+        settings = crawl.RunShared(home=home, stop=stop, interactive=interactive)
+        with ctx.plugin_run(settings, plugin, jar=jar, secrets=kept) as opened:
+            opened.load_state()
+            try:
+                return opened.loop.run(steps(ctx.Ctx(opened, Target(f"{plugin.code}:",
+                                                                    kind=ACCOUNT), login=True)))
+            finally:
+                opened.save_state()
+
+
+def _read_jar(plugin: Plugin, own: Cookies, method: str, *, path: Path | str | None,
+             profile: str | None) -> cookies.Jar:
+    """The plugin's cookies by a cookie method, on its domains only.
+
+    Raises:
+        UsageError: `file` without a path.
+        LoginError: they can't be read, or none of `own.names` is among them.
+    """
+    if method == "file":
+        if path is None:
+            raise UsageError(f"{plugin.code}: a file login needs the cookie file's path")
+        where = Path(path).expanduser()
+        try:
+            jar = cookies.load(where)
+        except (OSError, ValueError, Error) as error:
+            raise LoginError(f"{plugin.code}: can't read {where}: {error}") from None
+        origin = where.name
+    else:
+        # `chrome` reads Chrome's cookie store, as a browser's store is read.
+        origin = BROWSERS.get(method, method)
+        try:
+            jar = cookies.load(method, profile=profile)
+        except UsageError:
+            raise
+        except (OSError, RuntimeError, ValueError, ImportError, Error) as error:
+            raise LoginError(f"{plugin.code}: can't read {origin}'s cookies: {error}",
+                             hint=getattr(error, "hint", "") or "try a cookie file instead"
+                             ) from None
+    jar = fix_domains(jar.filter(domains=plugin.domains))
+    if not any(name in jar for name in own.names):
+        raise LoginError(f"{plugin.code}: no {' or '.join(own.names)} for {plugin.domains[0]} "
+                         f"in {origin}; log in there first")
+    return jar
+
+
+def _next_name(db: store.Store, plugin: str) -> str:
+    taken = {row.name for row in db.accounts(plugin)}
+    return next(f"account{n}" for n in itertools.count(1) if f"account{n}" not in taken)
+
+
+def logout(home: Path, plugin: str) -> bool:
+    """Delete every account of `plugin`: its secrets, then its row.
+
+    Returns:
+        Whether there was one.
+    """
+    if not (home / store.DB).is_file():
+        return False
+    with store.open(home) as db:
+        rows = db.accounts(plugin)
+        for row in rows:
+            if (home / store.SECRETS).is_file():
+                with secrets(home, row.id) as saved:
+                    saved.clear()
+            db.logout(row.id)
+    return bool(rows)
+
+
+def logins(home: Path, plugins: Mapping[str, type[Plugin]]) -> list[Login]:
+    """Each plugin's login, as its default account has it: "logged in", "api key only" (a
+    secret but no login) or "not logged in", where it came from, and the cookies of its login
+    that expire within `ctx.EXPIRY_WARNING`. Only the vault is read; no site is asked."""
+    from flnd.engine.ctx import EXPIRY_WARNING
+
+    seal_plaintext(home)
+    rows: dict[str, store.AccountRow] = {}
+    if (home / store.DB).is_file():
+        with store.open(home) as db:
+            rows = {row.plugin: row for row in reversed(db.accounts()) if row.default}
+    found = []
+    for code, cls in plugins.items():
+        row = rows.get(code)
+        state, origin, soon = "not logged in", "", ()
+        if row is not None:
+            kept = account(row)
+            if logged_in(home, kept):
+                state, origin = "logged in", row.origin
+                soon = tuple(expiring(cls(), load(home, kept), within=EXPIRY_WARNING))
+            elif (home / store.SECRETS).is_file():
+                with secrets(home, row.id) as saved:
+                    state = "api key only" if len(saved) else state
+        found.append(Login(code, cls.name, state, origin=origin, expiring=soon))
+    return found

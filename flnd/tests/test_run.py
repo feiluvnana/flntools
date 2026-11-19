@@ -7,7 +7,6 @@ through its run (what `download` and `sync` await), then its commands: `download
 
 import asyncio
 import signal
-import sys
 import threading
 import time
 import unittest
@@ -17,11 +16,10 @@ from typing import Any
 from unittest import mock
 
 import fakes
-from fakes import CDN, EngineCase, login_cookies, make_plugin, own_login
+from fakes import CDN, EngineCase, login_cookies, make_plugin, own_login, sign_in, vaulted
 
 from flnd import Blocked, LoginError, Target, UsageError
 from flnd.engine import crawl as job
-from flnd.engine import home as _home
 from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine import store as _store
@@ -31,7 +29,6 @@ from flnd.engine.events import Failed, Skipped
 from flnd.errors import Error, SiteError
 from flnd.plugin import File, Plugin, Post, Request, route
 from flnd.ui.log import ui
-from flnkit import cookies as _cookies
 from flnkit import net as _net
 
 
@@ -232,7 +229,7 @@ class LoginStateTest(EngineCase):
             ("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/"),
             ("set-cookie", "_tracker=t1; Domain=.aaa.example; Path=/")])
         self.run_engine(source, targets=["aaa:a", "aaa:b"])
-        saved = _home.load(self.home, "aaa")
+        saved = vaulted(self.home, "aaa")[0]
         self.assertEqual((saved["ct0"], saved["sid"], "_tracker" in saved), ("new-ct0", "1", False))
         self.assertNotIn("new-ct0", "\n".join(self.lines()))
 
@@ -246,7 +243,7 @@ class LoginStateTest(EngineCase):
         self.routes["https://api.aaa.example/me"] = _net.reply(
             200, json={}, headers=[("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/")])
         self.run_engine(make_plugin("aaa", route, login=login_cookies("sid")), targets=["aaa:a"])
-        self.assertEqual(_home.load(self.home, "aaa")["ct0"], "new-ct0")
+        self.assertEqual(vaulted(self.home, "aaa")[0]["ct0"], "new-ct0")
 
     def test_requires_login_fails_the_targets(self):
         ran = []
@@ -551,59 +548,6 @@ class ClientTest(EngineCase):
         self.assertEqual(finished, [20])
 
 
-class EngineLoginTest(EngineCase):
-    def test_a_plugin_with_its_own_login_logs_in_by_its_method_and_keeps_its_secrets(self):
-        seen = []
-
-        def start(self, ctx, method):
-            seen.append(method)
-            ctx.secrets["session"] = "s"
-
-        source = make_plugin("aaa", login=own_login(start))
-        self.assertEqual(Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr"), "")
-        self.assertEqual(seen, ["qr"])
-        with _home.secrets(self.home, "aaa") as secrets:
-            self.assertEqual(secrets["session"], "s")
-
-    def test_ask_answers_only_during_login_in_a_terminal(self):
-        seen = []
-
-        async def asked(ctx):
-            try:
-                seen.append(await ctx.ask("Code"))
-            except UsageError:
-                seen.append(None)
-
-        async def start(self, ctx, method):
-            await asked(ctx)
-            ctx.secrets["session"] = "s"
-
-        source = make_plugin("aaa", asked, login=own_login(start))
-        engine = Engine(home=self.home, sources={"aaa": source})
-        self.enterContext(mock.patch("flnd.ui.forms.ask", return_value="1"))
-        with mock.patch.object(sys.stdin, "isatty", return_value=False):
-            engine.login("aaa", "qr")
-        with mock.patch.object(sys.stdin, "isatty", return_value=True):
-            engine.login("aaa", "qr")
-            self.run_engine(source, targets=["aaa:a"])
-        self.assertEqual(seen, [None, "1", None])
-
-    def test_ask_shows_its_description_in_the_question(self):
-        answers = []
-
-        async def start(self, ctx, method):
-            answers.append(await ctx.ask("Phone number",
-                                         description="With the country code, such as +44"))
-
-        source = make_plugin("aaa", login=own_login(start))
-        with mock.patch.object(sys.stdin, "isatty", return_value=True), \
-                mock.patch("flnd.ui.forms.ask", return_value="1") as asked:
-            Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr")
-        self.assertEqual(answers, ["1"])
-        asked.assert_called_once_with("Phone number", secret=False)
-        self.assertIn("With the country code, such as +44", "\n".join(self.lines()))
-
-
 class OffTheLoopTest(EngineCase):
     """flnd.db's connection waits up to 30 s for another process's lock: on the loop, that
     would stall every transfer of the run. Only the save's commit connection, which waits for no
@@ -766,68 +710,6 @@ class ApiTest(EngineCase):
         self.assertEqual(report.ok, True)
 
 
-class ApiLoginTest(EngineCase):
-    """`login` and `logout`: every credential in the vault, and nothing else written (redesign B7)."""
-
-    def setUp(self):
-        super().setUp()
-        self.source = make_plugin("aaa", login=login_cookies("sid"))
-        self.engine = Engine(home=self.home,
-                             sources={"aaa": self.source, "bbb": make_plugin("bbb")})
-        jar = _cookies.Jar([{"name": "sid", "value": "s", "domain": ".aaa.example", "path": "/"},
-                           {"name": "other", "value": "o", "domain": ".example.com", "path": "/"}])
-        patcher = mock.patch("flnkit.cookies.load", lambda browser="chrome", *, profile=None: jar)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_a_browser_login_lives_only_in_the_vault(self):
-        # A plugin without a login (bbb) has nothing to log in to.
-        self.assertEqual(self.engine.cookie_logins, ("aaa",))
-        self.assertEqual(self.engine.login("aaa", "browser", browser="chrome"), "aaa: logged in from Chrome (1 cookie)")
-        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.db"])
-        self.assertEqual(self.engine.logins, {"aaa": "logged in"})
-        self.assertEqual({cookie["name"] for cookie in _home.load(self.home, "aaa")}, {"sid"})
-
-    def test_a_file_login_reads_the_file_once_and_never_copies_it(self):
-        path = self.home.parent / "cookies.txt"
-        path.write_text("# Netscape HTTP Cookie File\n.aaa.example\tTRUE\t/\tTRUE\t1825861327\tsid\tv\n")
-        self.assertEqual(self.engine.login("aaa", "file", path=path), "aaa: logged in from cookies.txt (1 cookie)")
-        self.assertTrue(path.is_file())
-        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.db"])
-
-    def test_a_failed_login_and_bad_answers(self):
-        with mock.patch("flnkit.cookies.load",
-                        lambda browser="chrome", *, profile=None: _cookies.Jar()):
-            with self.assertRaisesRegex(LoginError, "no sid for aaa.example in Chrome"):
-                self.engine.login("aaa", "browser", browser="chrome")
-        for args, options in ((("aaa", "qr"), {}), (("zzz", "browser"), {}), (("aaa", "browser"), {}),
-                              (("aaa", "file"), {})):
-            with self.subTest(args=args), self.assertRaises(UsageError):
-                self.engine.login(*args, **options)
-        self.assertEqual(self.engine.logins, {})
-
-    def test_logout_clears_the_jar_and_returns_the_codes_that_had_one(self):
-        self.engine.login("aaa", "browser", browser="chrome")
-        self.assertEqual(self.engine.logout(["bbb", "aaa", "aaa"]), ["aaa"])
-        self.assertEqual(self.engine.logins, {})
-        self.assertEqual(_home.load(self.home, "aaa"), _cookies.Jar())
-        self.engine.login("aaa", "browser", browser="chrome")
-        self.assertEqual(self.engine.logout(["all"]), ["aaa"])
-        self.assertEqual(self.engine.logout(["all"]), [])
-        with self.assertRaisesRegex(UsageError, "unknown source 'zzz'"):
-            self.engine.logout(["zzz"])
-
-    def test_a_download_uses_the_vaulted_login(self):
-        self.engine.login("aaa", "browser", browser="chrome")
-        seen = []
-        source = make_plugin("aaa", lambda ctx: seen.append(dict(ctx.cookies)),
-                             login=login_cookies("sid"))
-        self.engine = Engine(home=self.home, sources={"aaa": source})
-        self.assertTrue(self.engine.download(["aaa:a/all"]).ok)
-        self.assertEqual(seen, [{"sid": "s"}])
-        self.assertFalse(any("not logged in" in line for line in self.lines()))
-
-
 class LoginStaysAtHomeTest(EngineCase):
     """twt (`flnd.plugins.twt`) through the engine: what its API and its media servers each
     receive, with a `ct0` that the site rotates."""
@@ -841,7 +723,7 @@ class LoginStaysAtHomeTest(EngineCase):
 
         jar = [{"name": name, "value": value, "domain": ".x.com", "path": "/"}
                for name, value in {"auth_token": "secret", "ct0": "old"}.items()]
-        _home.save(self.home, "twt", _cookies.Jar(jar))
+        sign_in(self.home, "twt", jar)
         user = {"data": {"user": {"result": {"rest_id": "42"}}}}
         self.routes[url("UserByScreenName")] = _net.reply(
             200, json=user, headers={"set-cookie": "ct0=new; Domain=x.com; Path=/"})

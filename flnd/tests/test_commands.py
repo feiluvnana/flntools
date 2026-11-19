@@ -19,7 +19,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from fakes import CDN, login_cookies, make_plugin, noise, own_login
+from fakes import CDN, login_cookies, make_plugin, noise, own_login, sign_in, vaulted
 from prompt_lines import select_from_lines
 from test_library import example_source
 
@@ -100,7 +100,7 @@ class FlndCase(unittest.TestCase):
     def saved(self, code):
         """The cookies the vault holds for a source; no plain cookie file is ever written."""
         self.assertFalse(Path(".flnd/cookies").exists())
-        return _home.load(Path(".flnd"), code).list
+        return vaulted(Path(".flnd"), code)[0].list
 
 
 class RunsCase(FlndCase):
@@ -627,11 +627,11 @@ class LoginQuestionsTest(FlndCase):
 
     def test_a_wrong_answer_is_asked_again(self):
         self.answer("9", "nope", "2")
-        with mock.patch("flnd.engine.home.from_browser", return_value=_cookies.Jar(
+        with mock.patch("flnkit.cookies.load", return_value=_cookies.Jar(
                 [{"name": "auth_token", "value": "t", "domain": ".x.com", "path": "/"}])) as read:
             code, out, err = self.run_app("login", "twt")
         self.assertEqual(code, 0, err)
-        self.assertEqual(read.call_args.kwargs["browser"], _cookies.BROWSERS[1])
+        self.assertEqual(read.call_args.args[0], _cookies.BROWSERS[1])
 
     def test_without_a_terminal_or_with_json_nothing_is_asked(self):
         self.pipe("")
@@ -671,13 +671,9 @@ class LoginsTest(FlndCase):
     def test_login_with_no_source_lists_every_login(self):
         import time
 
-        jar = _cookies.Jar([{"name": "sessionid", "value": "secret-val", "domain": ".instagram.com",
-                            "expires": time.time() - 10}])
-        from flnd.plugins.ins import Instagram
-
-        _home.store(Instagram(), jar, home=Path(".flnd"), origin="cookies.txt")
-        with _home.secrets(Path(".flnd"), "tlg", create=True) as secrets:
-            secrets["api_id"] = "1"
+        sign_in(".flnd", "ins", [{"name": "sessionid", "value": "secret-val",
+                                  "domain": ".instagram.com", "expires": time.time() - 10}])
+        sign_in(".flnd", "tlg", api_id="1")
         code, out, _ = self.run_app("login")
         self.assertEqual(code, 0)
         for token in ("Instagram", "logged in", "file", "sessionid expired", "Telegram",
@@ -692,11 +688,10 @@ class LoginsTest(FlndCase):
 
 class LogoutTest(FlndCase):
     def test_logout(self):
-        _home.save(Path(".flnd"), "ins", _cookies.Jar([{"name": "a", "value": "1",
-                                                     "domain": ".x.example"}]))
+        sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}])
         code, out, _ = self.run_app("logout", "ins")
         self.assertEqual((code, out), (0, "ins: logged out\n"))
-        self.assertEqual(_home.load(Path(".flnd"), "ins"), _cookies.Jar())
+        self.assertEqual(vaulted(".flnd", "ins")[0], _cookies.Jar())
         self.assertEqual(self.run_app("logout", "ins")[1], "ins: was not logged in\n")
 
     def test_logout_takes_one_known_source(self):

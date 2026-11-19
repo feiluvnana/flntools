@@ -15,8 +15,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from example_plugin import API, CDN, Example
+from fakes import sign_in
 
-from flnd.engine import home as _home
 from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine.crawl import RunShared
@@ -174,7 +174,7 @@ class ExpiringLoginTest(CtxCase):
                 jar = [{"name": name, "value": "secret-value", "domain": ".example.com",
                         "path": "/", "expires": expires}
                        for name, expires in (("token", when), ("other", now + 60))]
-                _home.save(self.home, "exm", _cookies.Jar(jar))
+                sign_in(self.home, "exm", jar)
                 self.open()
                 self.assertEqual(self.lines(), [line] if line else [])
 
@@ -260,7 +260,7 @@ class BrowserTest(CtxCase):
             stealth = False
 
         jar = [{"name": "token", "value": "t", "domain": ".example.com", "path": "/"}]
-        _home.save(self.home, "exm", _cookies.Jar(jar))
+        sign_in(self.home, "exm", jar)
         for plugin, stealth in ((Example, True), (Wide, False)):
             with self.subTest(stealth=stealth):
                 self.browsers.clear()

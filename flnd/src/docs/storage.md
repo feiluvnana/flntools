@@ -32,10 +32,11 @@ from a login URL or one that sets a cookie is never kept, and the file is named 
 never by anything the site sent.
 
 The code: `src/engine/store.py` is `flnd.db` (its schema, the migration of a version-1 home,
-its rows and queries, and `check`), and `src/engine/home.py` the rest of the home (a target's
-folder, the logs, the logins). They are built on three kit modules: `flnkit/db.py`, a SQLite
-store (WAL, one connection shared by threads, transactions), `flnkit/vault.py`, secrets stored
-in `secret.db`, and `flnkit/cookies.py`, cookie jars read from files and browsers.
+its rows and queries, and `check`), `src/engine/auth.py` the accounts and `secret.db`, and
+`src/engine/home.py` the rest of the home (a target's folder, the logs). They are built on three
+kit modules: `flnkit/db.py`, a SQLite store (WAL, one connection shared by threads,
+transactions), `flnkit/vault.py`, which seals secrets, and `flnkit/cookies.py`, cookie jars read
+from files and browsers.
 
 ## `media/`
 
@@ -270,10 +271,14 @@ download or sync of the target retries every failed file that has no row in `fil
   memory, and writes them back as each target ends and as the run ends, always off the loop.
   flnd keeps one entry of its own there too (`src/engine/crawl.py`): `redate.asked`, the posts
   whose date a plugin's `date` hook couldn't find, so they aren't asked again for 30 days.
-- `accounts`: each plugin's logged-in account (`name` `default`, `is_default` 1), with how it
-  logged in (`origin`: a browser such as `chrome`, `file` for a cookie file, or the plugin's
-  own way, `qr`, `phone`), `at`, and its `status`. No secret is ever here. `flnd logout`
-  removes the plugin's rows.
+- `accounts`: each plugin's logged-in accounts, one row each, named by the site
+  (`Login.whoami`), else as asked in a terminal, else `account1` (a home of version 1 names its
+  one `default`). The first is the plugin's default (`is_default` 1). Each keeps how it logged in
+  (`origin`: a browser such as `chrome`, `file` for a cookie file, or the plugin's own way,
+  `qr`, `phone`), `at`, when its login cookie expires (`expires`), and its `status`: `ok`,
+  `held` or `expired`. No secret is ever here. A target runs as the account that worked for it
+  last (`targets.account`), else the plugin's first `ok` one. `flnd logout` removes every
+  account of the plugin.
 - `meta`: the schema's `version`, `2`.
 
 ### A home of version 1
@@ -362,16 +367,15 @@ it is opened, each plugin's values under its default account.
 
 A cookie login (`flnd login <code> chrome`, or a cookie file) keeps only the cookies of the
 plugin's domains and their subdomains, and is refused unless one of the cookies the plugin's
-login names is there. When a run ends, the cookies the site refreshed are written back into the
-jar, for the names already in it. A plain cookie file a much older flnd left,
-`cookies/<code>.txt` (or `.json`), is moved into `secret.db` the first time the plugin is used,
-and deleted once it is saved.
+login names is there. Any login must pass the plugin's `Login.check` before it is kept; a
+plugin's own login (`qr`, `phone`) may write its secrets only while its `Login.start` runs.
+Logging in again as an account that is there replaces its login. When a run ends, the cookies
+the site refreshed are written back into its account's jar, for the names already in it.
 
 The code: `flnkit/cookies.py` reads cookies from a file or a browser, `flnkit/vault.py` seals
-them, `src/engine/auth.py` keeps them in `secret.db`, and `src/engine/home.py` holds the logins
-that use them.
+them, and `src/engine/auth.py` keeps the accounts and their logins in `secret.db`.
 
-`flnd logout <code>` removes a plugin's rows.
+`flnd logout <code>` removes every account of the plugin, and its secrets.
 
 ## Checking a home
 

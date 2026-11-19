@@ -17,7 +17,6 @@ from pathlib import Path
 import plugin_manifest
 
 from flnd import plugins
-from flnd.engine.ctx import login_names
 from flnd.plugin import COOKIE_METHODS
 from flnd.plugins import _manifest
 
@@ -107,7 +106,7 @@ class BuiltInTest(unittest.TestCase):
         logins = {"tlg": ("browser", "qr", "phone"), "mht": None, "web": None}
         for code, plugin in built_in().items():
             with self.subTest(plugin=code):
-                self.assertEqual((login_names(plugin), plugin.pace, plugin.stealth,
+                self.assertEqual((tuple(getattr(plugin.login, "names", ())), plugin.pace, plugin.stealth,
                                   bool(plugin.user_agent), dict(plugin.limits)), rows[code])
                 methods = plugin.login.methods if plugin.login is not None else None
                 self.assertEqual(methods, logins.get(code, COOKIE_METHODS))
