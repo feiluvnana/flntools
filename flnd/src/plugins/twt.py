@@ -39,8 +39,8 @@ TWITTER_BEARER = (
     "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
 )
 API = "https://x.com/i/api/graphql/"
-# The web client's query ids, from its main.js (`queryId:"…",operationName:"…"`). They change now
-# and then; a stale one is refreshed from x.com's script (`Graph.refresh`). The timelines'
+# The web client's query ids, from its main.js (`queryId:"…",operationName:"…"`). They change
+# now and then; a stale one is refreshed from x.com's script (`Graph.refresh`). The timelines'
 # operations are named too, so a refresh keeps their ids, though only the browser sends them.
 QUERIES = {
     "UserByScreenName": "AMIBMjtxEEATh4z8V9GtRg",
