@@ -327,6 +327,13 @@ with flnd.open(home) as fl:
   remove it, and ask whether it is connected
 - `fl.add(plugin)`: a plugin class for this `Flnd` alone; a code another plugin has is a
   `UsageError`
+- `async with fl.plugin(code, account=None) as ctx:`: a plugin's `Ctx` for a script, on the running
+  event loop of the caller (async only: no thread, no sync form). It opens the home's store and
+  the account's cookies (the default account unless `account` names one), and starts a scheduler,
+  so retries, holds and walls work as in a run. Leaving the block writes the refreshed cookies and
+  the plugin's state back and closes everything, an error included. A code that is no plugin's is a
+  `UsageError`; an account the plugin lacks, or a login it needs and lacks, is a `LoginError` whose
+  hint is `flnd auth login <code>`
 
 
 ```python

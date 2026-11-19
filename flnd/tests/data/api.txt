@@ -68,6 +68,7 @@ flnd.Flnd.extension: attribute
 flnd.Flnd.files(*, target: str | Target | None = None, kind: str | None = None, since: datetime.date | str | None = None) -> list[Record]
 flnd.Flnd.get(*targets: str | Target, limit: int | None = None, when: str | None = None, dry: bool = False) -> Run
 flnd.Flnd.home: attribute
+flnd.Flnd.plugin(code: str, *, account: str | None = None) -> AbstractAsyncContextManager[Ctx]
 flnd.Flnd.plugins: attribute
 flnd.Flnd.status: property -> Status | None
 flnd.Flnd.targets: attribute

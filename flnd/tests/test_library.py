@@ -18,7 +18,7 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
-from fakes import CDN, Engine, EngineCase, login_cookies, make_plugin, noise
+from fakes import CDN, Engine, EngineCase, drive, login_cookies, make_plugin, noise, sign_in
 
 import flnd
 from flnd.engine import jobs as jobs_module
@@ -488,6 +488,82 @@ class ReadsTest(LibraryCase):
             self.assertEqual(flnd.Flnd().home, Path("~/example-home").expanduser())
         with mock.patch.dict("os.environ", {}, clear=True):
             self.assertEqual(flnd.open().home, Path(".flnd"))
+
+
+class ScriptTest(LibraryCase):
+    """`fl.plugin(code)`: a plugin's `Ctx` for a script, on the caller's loop."""
+
+    API = "https://exc.example/api"
+
+    def setUp(self):
+        super().setUp()
+        self.fl.add(example_source({}, code="exc", login=login_cookies("sid")))
+        for name in ("one", "two"):
+            sign_in(self.home, "exc", [{"name": "sid", "value": f"v-{name}",
+                                        "domain": ".exc.example", "path": "/"}], name=name)
+
+    def use(self, work, *, account=None, code="exc"):
+        async def script():
+            async with self.fl.plugin(code, account=account) as ctx:
+                return await work(ctx)
+        return drive(script())
+
+    def test_it_fetches_as_the_default_account_with_its_cookies(self):
+        async def work(ctx):
+            self.assertEqual(ctx.account.name, "one")
+            return (await ctx.fetch(f"{self.API}/me")).status
+        self.assertEqual(self.use(work), 200)
+        self.assertIn("v-one", self.requests[-1].headers.get("cookie", ""))
+
+    def test_a_named_account_is_used(self):
+        async def work(ctx):
+            await ctx.fetch(f"{self.API}/me")
+            return ctx.account.name
+        self.assertEqual(self.use(work, account="two"), "two")
+        self.assertIn("v-two", self.requests[-1].headers.get("cookie", ""))
+
+    def test_retries_and_holds_work_as_in_a_run(self):
+        answers = [_net.reply(503), _net.reply(200, content=b"ok")]
+        self.routes[f"{self.API}/me"] = lambda request: answers.pop(0)
+
+        async def work(ctx):
+            return (await ctx.fetch(f"{self.API}/me")).status
+        self.assertEqual(self.use(work), 200)
+        self.assertEqual(len(self.requests), 2)
+        # The retry waited on the fake clock, not the real one.
+        self.assertGreater(self.now, 0)
+
+    def test_state_and_cookies_are_written_back_on_exit_and_after_an_error(self):
+        from flnd.engine import auth
+
+        async def work(ctx):
+            ctx.state["seen"] = 3
+            raise ValueError("example")
+        with mock.patch.object(auth, "write_back", wraps=auth.write_back) as back:
+            with self.assertRaises(ValueError):
+                self.use(work)
+        self.assertEqual(back.call_args.args[1].name, "one")
+
+        async def read(ctx):
+            return ctx.state.get("seen")
+        self.assertEqual(self.use(read), 3)
+
+    def test_a_missing_plugin_or_account_says_what_to_do(self):
+        async def work(ctx):
+            self.fail("the block must not run")
+        with self.assertRaises(flnd.UsageError):
+            self.use(work, code="nope")
+        with self.assertRaises(flnd.LoginError) as caught:
+            self.use(work, account="three")
+        self.assertIn("flnd auth login exc", caught.exception.hint)
+
+    def test_a_plugin_that_needs_a_login_it_lacks_raises_login_error(self):
+        self.fl.add(example_source({}, code="exr", login=login_cookies("sid", required=True)))
+
+        async def work(ctx):
+            self.fail("the block must not run")
+        with self.assertRaises(flnd.LoginError):
+            self.use(work, code="exr")
 
 
 if __name__ == "__main__":

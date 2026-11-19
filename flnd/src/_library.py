@@ -10,6 +10,7 @@ import sys
 import threading
 import weakref
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
     from flnd.engine._engine import Chosen, Engine, TargetInfo
     from flnd.engine.run import Run
     from flnd.engine.store import FailureRow
-    from flnd.plugin import Plugin, Target
+    from flnd.plugin import Ctx, Plugin, Target
 
 __all__ = ["Flnd", "open"]
 
@@ -316,6 +317,40 @@ class Flnd:
             raise UsageError(f"{plugin.code}: the code is taken by {taken.__module__}."
                              f"{taken.__qualname__}", hint="give the class another code")
         self._added[plugin.code] = plugin
+
+    def plugin(self, code: str, *,
+               account: str | None = None) -> AbstractAsyncContextManager[Ctx]:
+        """Use a plugin's account in a script, on the caller's running event loop.
+
+        It opens the home's store and the account's cookies, starts a scheduler on the caller's
+        loop (so retries, holds and walls work as in a run), and gives the plugin's `Ctx`.
+        Leaving the block writes the changed cookies and the plugin's state back and closes it
+        all, an error included. Only async code can use it; there is no thread.
+
+        Args:
+            code: the plugin's code (`"ins"`).
+            account: the account's name; None takes the plugin's default one.
+
+        Returns:
+            An async context manager of the plugin's `Ctx`.
+
+        Raises:
+            UsageError: `code` is no plugin's code, or the home's config.toml is wrong.
+            LoginError: the plugin has no such account, needs a login it lacks, or the vault's
+                key is gone.
+
+        Example:
+            >>> import asyncio, flnd
+            >>> async def main():
+            ...     with flnd.open("example-home") as fl:
+            ...         async with fl.plugin("nope"):
+            ...             pass
+            >>> asyncio.run(main())  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            flnkit.errors.UsageError: unknown plugin 'nope'. Plugins: ...
+        """
+        return self._engine().script(code, account)
 
     # -----------------------------------------------------------------------------------------
     # Helpers

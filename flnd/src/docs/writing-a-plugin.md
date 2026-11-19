@@ -981,7 +981,9 @@ library; an SDK its site needs (`telethon`, `qrcode`) is imported inside a funct
    built-in ones, such as [plugins/ins.md](plugins/ins.md));
 4. run `make check`;
 5. try it by hand on a test account: `make try ARGS=exm:example_user`, which lists what a
-   download would save without saving anything.
+   download would save without saving anything. To call its verbs yourself, a script can
+   `async with fl.plugin("exm") as ctx:` (see [library.md](library.md)): the real `Ctx`, with the
+   account's cookies and the scheduler's retries and holds, on your own loop.
 
 The built-in plugins are listed in `BUILT_IN` in `src/plugins/__init__.py`, in the order help
 lists them and links are matched (`web` reads any link, so it comes last). Each is also an entry

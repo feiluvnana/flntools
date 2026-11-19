@@ -1363,8 +1363,7 @@ class TargetTabs:
         return self._tabs
 
     def _made(self) -> browser.Tabs:
-        """A share of the run's browser for this target, which scrolls in the config's `scroll`
-        for the plugin, else like a person."""
+        """A share of the run's browser for this target, which scrolls like a person."""
         if self._shared is None:
             self._shared = browser.RunBrowser(self._run.loop.loop, stealth=self._source.stealth,
                                               screen=_Screen())
@@ -1379,10 +1378,9 @@ class TargetTabs:
         account = self._run.account
         budget = jobs.Budget(self._run.scheduler, self._source.code,
                              account.name if account is not None else None)
-        scroll = getattr(self._source, "scroll", browser.HUMAN)
         if chrome.uses_chrome(self._source, settings):
-            return chrome.ExtensionTabs(self._run, scroll=scroll, budget=budget)
-        return browser.Tabs(self._shared, self._run.jar, scroll=scroll, budget=budget)
+            return chrome.ExtensionTabs(self._run, scroll=browser.HUMAN, budget=budget)
+        return browser.Tabs(self._shared, self._run.jar, scroll=browser.HUMAN, budget=budget)
 
     @property
     def opened(self) -> bool:

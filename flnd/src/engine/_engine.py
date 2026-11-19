@@ -772,6 +772,42 @@ class Engine:
         finally:
             await _off(db.close)
 
+    @contextlib.asynccontextmanager
+    async def script(self, code: str, name: str | None = None) -> AsyncIterator[Ctx]:
+        """A plugin's account `Ctx` for a script, on the caller's running loop.
+
+        It opens what a run opens (the home's database, the scheduler with its holds and walls,
+        the plugin's instance, its login check and its `connect` hook), and on the way out
+        writes the cookies and the state back and closes it all, an error included. Nothing
+        stops it but its caller: there is no Ctrl-C handler.
+
+        Args:
+            code: the plugin's code.
+            name: the account's name; None takes the default one.
+
+        Raises:
+            UsageError: no such plugin, or the home's config.toml has a value it doesn't take.
+            LoginError: no such account, a login the plugin needs, or the vault's key is gone.
+        """
+        if code not in self.sources:
+            raise UsageError(f"unknown plugin {code!r}. Plugins: {', '.join(self.sources)}")
+        async with self._running(Stop()) as runner:
+            found = await _off(_accounts, runner.settings.db, code)
+            if name is None:
+                account = next((one for one in found if one.is_default), None) \
+                    or auth.pick(found)
+            else:
+                account = next((one for one in found if one.name == name), None)
+                if account is None:
+                    raise LoginError(f"{code}: no account {name!r}",
+                                     hint=f"run flnd auth login {code}")
+            entry = await runner.entry(code, account)
+            if entry.error is not None:
+                raise entry.error
+            if not entry.logged_in and _required(entry.run.source):
+                raise crawl.logged_out(Target(f"{code}:", kind=auth.ACCOUNT))
+            yield _account(entry.run)
+
     def _recorded(self, rows: Mapping[str, store.TargetRow]) -> list[Target]:
         """The targets of `flnd.db`'s rows, rebuilt from each row's source, kind and value."""
         return [
