@@ -41,7 +41,7 @@ DEFAULT_LIMIT = 5
 OPTION_KEYS = frozenset({"home", "limit", "only", "skip", "undated"})
 UNDATED_CATEGORIES = frozenset({"profile", "cover"})
 OPTIONAL_FIELDS = frozenset({
-    "album", "category", "extension", "index", "part", "path", "query", "title",
+    "album", "category", "extension", "idx", "index", "part", "path", "query", "title",
 })
 UNFILLED = re.compile(r"\{[^{}]*\}")
 

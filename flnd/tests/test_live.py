@@ -131,6 +131,21 @@ class _EmptyFieldPlugin(Plugin):
                    date=datetime.date(2026, 2, 3), author="")
 
 
+class _SingleFilePlugin(Plugin):
+    """Fake plugin like tik: `{idx}` numbers a photo, and is empty for a video (one file)."""
+
+    code = "sfl"
+    name = "SingleFile"
+    api = 2
+    fields = ("idx",)
+    filename = "{date}_{post}_{idx}"
+
+    @route("sfl:{user}")
+    async def user(self, ctx: Any, user: str):
+        yield Post("p1", [File("https://example.com/1.mp4")],
+                   date=datetime.date(2026, 2, 3), idx="")
+
+
 class LiveTest(unittest.TestCase):
     def setUp(self) -> None:
         self.scratch = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -181,6 +196,13 @@ class LiveTest(unittest.TestCase):
         self.assertIn("post p2: date hook found no day", errors)
         self.assertIn("post p3: date hook failed: down", errors)
         self.assertNotIn("missing date", errors)
+
+    def test_an_empty_idx_is_a_single_file_not_an_unfilled_field(self) -> None:
+        results, _ = live.run_checks(
+            {"home": str(self.home), "sfl": {"user": "sfl:example_user"}},
+            plugins=[_SingleFilePlugin],
+        )
+        self.assertTrue(results[0].ok, results)
 
     def test_undated_option_allows_missing_date(self) -> None:
         results, _ = live.run_checks(
