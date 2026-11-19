@@ -86,6 +86,18 @@ class ViewTest(unittest.TestCase):
         self.assertEqual(len(view.rows), 1)
         self.assertIn("  example.com refused it", drawn(view.view(True)))
 
+    def test_the_titles_head_the_rows_and_the_filter_keeps_them(self) -> None:
+        view = self.view()
+        before = drawn(view.view(True)).splitlines()
+        self.assertEqual([line.split() for line in before[2:4]],
+                         [["name", "n"], ["❯", "ins:example_user", "1"]])
+        feed(view, "/", "t", "w", "enter")
+        after = drawn(view.view(True)).splitlines()
+        self.assertEqual([line.split() for line in after[2:4]],
+                         [["name", "n"], ["❯", "twt:example_creator", "2"]])
+        # The columns don't move with the filter.
+        self.assertEqual(before[2], after[2])
+
     def test_the_panel_and_the_keys_line(self) -> None:
         view = self.view()
         feed(view, "enter")
@@ -108,21 +120,25 @@ class ListsTest(unittest.TestCase):
             ("targets", lists.TARGET_COLUMNS, [lists._target(t, True) for t in TARGETS], [
                 "  Targets · 3" + " " * 69 + "/ filter",
                 "",
+                "    target                followed     categories          files       size"
+                "   last run",
                 "  ❯ ins:example_user      ● followed   posts reels   1,620 files     2.1 GB"
-                "   2h ago",
+                "     2h ago",
                 "    twt:example_creator   ● followed   media            49 files   180.0 MB"
-                "   2h ago",
+                "     2h ago",
                 "    tik:example_handle    ○            videos            0 files          –"
-                "    never",
+                "      never",
             ]),
             ("accounts", lists.ACCOUNT_COLUMNS, [lists._account(a, True) for a in ACCOUNTS], [
                 "  Accounts · 3" + " " * 68 + "/ filter",
                 "",
-                "  ❯ ins   example_user      ★ default   browser   ok                   saved"
+                "    plugin   name              default     origin    status"
+                "                      saved",
+                "  ❯ ins      example_user      ★ default   browser   ok                   saved"
                 " 3d ago",
-                "    ins   example_handle                chrome    held 4 min           saved"
+                "    ins      example_handle                chrome    held 4 min           saved"
                 " 1d ago",
-                "    twt   example_creator   ★ default   file      expires in 2 days   saved"
+                "    twt      example_creator   ★ default   file      expires in 2 days   saved"
                 " 20d ago",
             ]),
         ]
@@ -130,7 +146,7 @@ class ListsTest(unittest.TestCase):
             with self.subTest(name):
                 view = View(name.title(), columns, lambda c=cells: [Row(n, x) for n, x in
                                                                    enumerate(c)], (), None)
-                self.assertEqual(drawn(view.view(True), width=90).splitlines()[:5], lines)
+                self.assertEqual(drawn(view.view(True), width=90).splitlines()[:6], lines)
 
     def test_a_pipe_prints_a_plain_table(self) -> None:
         stdout = self.enterContext(mock.patch("sys.stdout", io.StringIO()))

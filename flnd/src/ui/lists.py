@@ -143,13 +143,17 @@ class View(forms.Owner):
             return Text("    nothing matches" if self.query else "    nothing here",
                         style=theme.style("dim"))
         grid = Table.grid(padding=(0, 3))
-        # Widths from every row, so a filter doesn't move the columns.
-        widths = [max(len(_words(row.cells[n])) for row in self.rows)
-                  for n in range(len(self.columns))]
+        # Widths from every row and title, so a filter doesn't move the columns.
+        widths = [max(len(column.title), *(len(_words(row.cells[n])) for row in self.rows))
+                  for n, column in enumerate(self.columns)]
         widths[0] += 2
         for column, width in zip(self.columns, widths):
             grid.add_column(justify="right" if column.right else "left", no_wrap=True,
                             min_width=width)
+        # The titles, as the pipe's table prints them, over the cursor's two cells.
+        dim = theme.style("dim")
+        grid.add_row(Text.assemble("  ", Text(self.columns[0].title, style=dim)),
+                     *(Text(column.title, style=dim) for column in self.columns[1:]))
         here = self.current()
         for row in rows:
             on = row is here

@@ -188,7 +188,9 @@ flnd target clean <targets…> [--media]
   last ran, and their categories. On a terminal it is a list: `↑↓` move, `/` filters, `enter`
   opens a detail panel, `f` follows or unfollows the target under the cursor, `r` makes its
   failed files retryable, `a` asks for a target and gets it, `d` forgets one after a
-  confirmation, `q` quits. On a pipe it is a plain table; with `--json`, one
+  confirmation, `q` quits. Every list on a terminal (targets, accounts, plugins) has a header
+  row of the columns' titles, in dim, the same titles a pipe's table starts with. On a pipe it is a
+  plain table; with `--json`, one
   `{"type": "Tracked", …}` object per target.
 - `clean` forgets the targets: their rows, files rows, failures, cursors, heads and gaps. A
   target the home doesn't know is a usage error. `--media` also deletes their recorded files,
