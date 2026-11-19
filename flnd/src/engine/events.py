@@ -335,7 +335,8 @@ class Login(msgspec.Struct, frozen=True):
     source: str
     # The site's name, as people know it.
     name: str
-    # "logged in", "api key only" or "not logged in".
+    # "logged in", "key gone" (sealed under a key file missing or changed), "api key only"
+    # or "not logged in".
     state: str
     # Where the login came from: a browser's name, a cookie file's name, or the source's own
     # way ("qr", "phone"); "" when there is none.

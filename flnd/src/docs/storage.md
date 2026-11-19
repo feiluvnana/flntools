@@ -372,6 +372,7 @@ is 32 random bytes in `~/.config/flnd/key` (`%APPDATA%\flnd\key` on Windows), mo
 per user for every home, made by the first login. It is never inside a home, so a copy of a home
 carries no key. With the key missing or changed, a sealed value raises "the vault's key is gone",
 and the rows are kept: they open again once the key file is back, and a new login replaces them.
+`flnd login` lists such a login as `key gone`.
 A `secret.db` of an older flnd, whose values were plaintext, is sealed in place the first time
 it is opened, each plugin's values under its default account.
 

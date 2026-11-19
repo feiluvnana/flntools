@@ -387,6 +387,11 @@ class AccountsTest(AuthCase):
         self.assertEqual(name, "sid")
         self.assertGreater(left, 0)
         self.assertNotIn("top-secret", repr(found))
+        # With the key gone, the listing says so, and the rows stay.
+        self.key.unlink()
+        self.assertEqual([row.state for row in auth.logins(self.home, plugins)],
+                         ["key gone", "api key only", "not logged in"])
+        self.assertEqual(len(self.accounts()), 1)
 
 
 class WriteBackTest(AuthCase):

@@ -509,8 +509,9 @@ def logout(home: Path, plugin: str) -> bool:
 
 
 def logins(home: Path, plugins: Mapping[str, type[Plugin]]) -> list[Login]:
-    """Each plugin's login, as its default account has it: "logged in", "api key only" (a
-    secret but no login) or "not logged in", where it came from, and the cookies of its login
+    """Each plugin's login, as its default account has it: "logged in", "key gone" (sealed
+    under a key file that is missing or changed), "api key only" (a secret but no login) or
+    "not logged in", where it came from, and the cookies of its login
     that expire within `ctx.EXPIRY_WARNING`. Only the vault is read; no site is asked."""
     from flnd.engine.ctx import EXPIRY_WARNING
 
@@ -527,7 +528,11 @@ def logins(home: Path, plugins: Mapping[str, type[Plugin]]) -> list[Login]:
             kept = account(row)
             if logged_in(home, kept):
                 state, origin = "logged in", row.origin
-                soon = tuple(expiring(cls(), load(home, kept), within=EXPIRY_WARNING))
+                try:
+                    soon = tuple(expiring(cls(), load(home, kept), within=EXPIRY_WARNING))
+                except LoginError:
+                    # The rows are kept; using the login says the key is gone.
+                    state = "key gone"
             elif (home / store.SECRETS).is_file():
                 with secrets(home, row.id) as saved:
                     state = "api key only" if len(saved) else state
