@@ -307,6 +307,7 @@ when = ""            # the days every download, follow and sync takes, as --when
                      # ("1y", "2026", "2026-01.."); "" for every day
 rate = "0"           # the run's speed limit, such as "20 MB/s" or "500 KB/s"; "0" for none
 slowest = "0"        # cut a transfer slower than this over 30 s, and go on; "0" for off
+switch = false       # move a refused request to the plugin's next account (see below)
 # exec = ["notify-send", "{path}"]   # read only from the user file; see the CLI guide
 
 
@@ -315,6 +316,7 @@ pace = 1.0           # seconds between its page requests (over the plugin's own 
 limits = { "cdninstagram.com" = 8 }   # the most files at once from a host
 proxy = "socks5://127.0.0.1:1080"     # every HTTP request of the plugin goes through it
 stop_after = 5       # saved posts in a row that end a sync of a newest-first listing
+switch = true        # over [defaults] switch, for this plugin
 folder = "{category}"                # the folder and file name templates, over the plugin's
 filename = "{date}_{post}{index}"
 ```
@@ -324,6 +326,15 @@ filename = "{date}_{post}{index}"
   averaged under it over its last 30 s; it goes on from where it was, as one of its network
   tries. Before a file of known size starts, its disk must have its size, the bytes still due
   from the files in flight on that disk, and 64 MiB more, or the run stops with a `DiskError`.
+- **`switch`**, on for a plugin with several accounts, moves a request its account can't
+  make to the plugin's next account in `auth list` order that the request hasn't run as, isn't
+  expired and isn't held, and the target goes on as that account: on a block, on a login the
+  site refused (the account is marked `expired`), on `Hidden`, and on a target's first page
+  that is `NotFound`. A blocked account is held for the block's wait (at least 30 s), and
+  marked `held` until then. A request never goes back to an account it left: once it has run
+  as every one, it waits or fails as it would without switching. The account a target ran as
+  to its end is the one it starts as next time. Each move is a `switch` record in the run's
+  journal, and the `now` line shows it.
 - **`[defaults] when`** bounds a sync too, which has no `--when` of its own. Give `--when ""` (or
   `when=""` in the library) for every day in one run.
 - **`[plugins.<code>]`** settings win over what the plugin's class says: `pace` over its `pace`

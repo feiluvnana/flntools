@@ -7,6 +7,7 @@ vault is a real one in a temporary home, with its key outside it.
 
 import contextlib
 import io
+import json
 import os
 import sqlite3
 import stat
@@ -19,11 +20,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fakes import login_cookies, make_plugin, own_login, sign_in, vaulted
+from fakes import EngineCase, login_cookies, make_plugin, own_login, sign_in, targets, vaulted
 
 import flnd
-from flnd.engine import auth, store
-from flnd.errors import LoginError, PluginError, UsageError
+from flnd.engine import auth, jobs, store
+from flnd.errors import Blocked, Hidden, LoginError, NotFound, PluginError, UsageError
+from flnd.plugin import Account
 from flnd.testing import fake_clock
 from flnd.ui.log import ui
 from flnkit import cookies, net
@@ -405,3 +407,111 @@ class WriteBackTest(AuthCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SwitchTest(AuthCase):
+    """`auth.Switcher`, the scheduler's `switch`: which account a refused job moves to."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(fake_clock())
+        self.scheduler = jobs.Scheduler()
+        self.listed = [Account(id=n, plugin="aaa", name=name, origin="file", at="")
+                       for n, name in enumerate("abc", 1)]
+        self.shown = []
+        self.switch = auth.Switcher(self.scheduler, lambda code: code == "aaa",
+                                    lambda code: self.listed, shown=self.shown.append)
+
+    def job(self, plugin="aaa", account="a"):
+        return jobs.Job(kind=jobs.Kind.PAGE, work=None, plugin=plugin, account=account)
+
+    def test_each_trigger_moves_the_job_to_the_next_account_and_journals_it(self):
+        journal = Path(self.home.parent / "journal.jsonl")
+        table = [(Blocked("blocked", wait=60.0), "blocked"), (LoginError("401"), "expired"),
+                 (Hidden("hidden"), "hidden"), (NotFound("gone"), "not_found")]
+        with ui.file(journal):
+            for error, reason in table:
+                with self.subTest(reason):
+                    made = self.job()
+                    self.assertIs(self.switch(made, error), made)
+                    self.assertEqual((made.account, self.shown[-1]), ("b", f"aaa: a → b ({reason})"))
+        records = [json.loads(line) for line in journal.read_text().splitlines()]
+        self.assertEqual([(record["type"], record["from"], record["to"], record["reason"])
+                          for record in records],
+                         [("switch", "a", "b", reason) for _, reason in table])
+        self.assertEqual((self.switch.expired, list(self.switch.held)), ({("aaa", "a")}, [("aaa", "a")]))
+        self.assertEqual([(hold.account, hold.until) for hold in self.scheduler.holds], [("a", 60.0)])
+
+    def test_a_job_never_goes_back_to_an_account_it_left(self):
+        made, moves = self.job(), []
+        while self.switch(made, LoginError("403")) is not None:
+            moves.append(made.account)
+        self.assertEqual((moves, made.account), (["b", "c"], "c"))
+
+    def test_a_held_account_is_passed_over_and_with_every_one_held_the_earliest_is_taken(self):
+        self.scheduler.hold("aaa", "b", seconds=300.0, reason="blocked")
+        made = self.job()
+        self.switch(made, Hidden("hidden"))
+        self.assertEqual(made.account, "c")
+        self.listed[2] = Account(id=3, plugin="aaa", name="c", origin="file", at="",
+                                 status="held", held_until="2026-01-01T00:10:00+00:00")
+        made = self.job()
+        self.switch(made, Hidden("hidden"))
+        self.assertEqual(made.account, "b")
+        self.listed[1] = Account(id=2, plugin="aaa", name="b", origin="file", at="", status="expired")
+        made = self.job()
+        self.switch(made, Hidden("hidden"))
+        self.assertEqual(made.account, "c")
+
+    def test_nothing_moves_with_switching_off_or_without_an_account(self):
+        for made in (self.job(plugin="bbb"), self.job(account=None)):
+            with self.subTest(made.plugin, account=made.account):
+                self.assertIsNone(self.switch(made, Hidden("hidden")))
+        self.assertEqual(self.shown, [])
+
+
+class SwitchEngineTest(EngineCase):
+    """A run of a plugin with `switch = true` and two accounts."""
+
+    def setUp(self):
+        super().setUp()
+        self.home.mkdir(parents=True)
+        (self.home / "config.toml").write_text("[plugins.aaa]\nswitch = true\n")
+        for name in ("one", "two"):
+            sign_in(self.home, "aaa", [{"name": "sid", "value": name, "domain": "aaa.example"}],
+                    name=name)
+        self.refused = {"one"}
+
+        def page(request):
+            sid = request.headers["cookie"].removeprefix("sid=")
+            return net.reply(403 if sid in self.refused else 200, json={"as": sid})
+
+        self.routes["https://aaa.example/p"] = page
+        self.seen = []
+
+        async def route(ctx):
+            self.seen.append((await ctx.fetch("https://aaa.example/p")).json["as"])
+
+        self.plugin = make_plugin("aaa", route, login=login_cookies("sid"))
+
+    def sent(self):
+        return [request.headers["cookie"] for request in self.requests]
+
+    def test_a_refused_account_hands_the_target_to_the_next_which_is_kept(self):
+        self.assertTrue(self.report(self.plugin, targets=["aaa:x"]).ok)
+        self.assertEqual((self.sent(), self.seen), (["sid=one", "sid=two"], ["two"]))
+        self.assertEqual(targets(self.home)["aaa:x"].account, "two")
+        with store.open(self.home) as db:
+            self.assertEqual([(row.name, row.status) for row in db.accounts("aaa")],
+                             [("one", "expired"), ("two", "ok")])
+        # The next run starts as the account that worked.
+        self.requests.clear()
+        self.refused = set()
+        self.assertTrue(self.report(self.plugin, targets=["aaa:x"]).ok)
+        self.assertEqual(self.sent(), ["sid=two"])
+
+    def test_with_every_account_refused_the_target_fails(self):
+        self.refused = {"one", "two"}
+        report = self.report(self.plugin, targets=["aaa:x"])
+        self.assertIsInstance(report.targets[0].error, LoginError)
+        self.assertEqual(self.sent(), ["sid=one", "sid=two"])

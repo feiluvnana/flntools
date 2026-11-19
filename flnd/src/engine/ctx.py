@@ -382,6 +382,26 @@ class Ctx:
         self._secrets = Secrets(lambda: run.secrets)
         # The category's listing, which `pages` resumes and reports to; the crawl sets it.
         self.listing: Listing | None = None
+        # Whether a page of the plugin's own was asked for yet: the first is the target's.
+        self._paged = False
+
+    @property
+    def _who(self) -> str | None:
+        """The name of the account the target runs as now; None for none."""
+        return self._run.account.name if self._run.account is not None else None
+
+    async def _moved(self, name: str) -> None:
+        """Run the target as the account `name` from now on (6.7): its instance, its state and
+        secrets, and its tabs, which the old account's cookies opened, closed for new ones."""
+        peer = self._run.settings.peer
+        assert peer is not None, "a job moves only in a run that can open another account"
+        run = await peer(self._plugin.code, name)
+        old, self._tabs = self._tabs, TargetTabs(run)
+        self._run, self._plugin = run, run.source
+        self._state = JsonState(run.values)
+        self._secrets = Secrets(lambda: run.secrets)
+        if not old.idle:
+            await run.off(old.close)
 
     # -- what the crawl reads -------------------------------------------------------------
 
@@ -469,14 +489,24 @@ class Ctx:
 
     def _job(self, url: str, work: Callable[[], Awaitable[T]], *,
              bucket: str = "") -> Awaitable[T]:
-        """`work` as a scheduler job: a `PAGE` job on the plugin's domains, paced in its
-        bucket; a `FILE` job on any other host, under its cap, ahead of the target's files."""
+        """`work` as a scheduler job of the target's account: a `PAGE` job on the plugin's
+        domains, paced in its bucket; a `FILE` job on any other host, under its cap, ahead of
+        the target's files. A job the scheduler moved to another account moves the target."""
         host = net.URL(url).host
         own = on_domains(self._plugin, url)
         job = jobs.Job(kind=jobs.Kind.PAGE if own else jobs.Kind.FILE, work=work,
-                       plugin=self._plugin.code, host=host, bucket=bucket if own else "",
-                       target=str(self._target),
-                       priority=None if own else jobs.PRIORITY[jobs.Kind.PAGE])
+                       plugin=self._plugin.code, account=self._who, host=host,
+                       bucket=bucket if own else "", target=str(self._target),
+                       priority=None if own else jobs.PRIORITY[jobs.Kind.PAGE],
+                       first=own and not self._paged)
+        self._paged = self._paged or own
+
+        async def moved() -> T:
+            if job.account != self._who:
+                await self._moved(job.account)
+            return await work()
+
+        job.work = moved
         return self._run.scheduler.run(job)
 
     def pages(self, request: str | Request, *,
@@ -652,8 +682,8 @@ class Ctx:
         """
         code = self._plugin.code
         try:
-            held = self._run.scheduler.hold(code, None, seconds=seconds or 0.0, reason=reason,
-                                            bucket=bucket)
+            held = self._run.scheduler.hold(code, self._who, seconds=seconds or 0.0,
+                                            reason=reason, bucket=bucket)
         except Blocked as error:
             raise Blocked(f"{code}: {reason}, after {len(jobs.ROUND_WAITS)} holds",
                           hint="try again later, or raise the plugin's pace in config.toml",
@@ -661,11 +691,11 @@ class Ctx:
         ui.warn("{target}: {reason}; waiting {time}", target=str(self._target), reason=reason,
                 time=text.duration(round(held)))
         tally = self._run.settings.tally
-        shown = (tally.hold(code, None, "pages", held, reason) if tally is not None
+        shown = (tally.hold(code, self._who, "pages", held, reason) if tally is not None
                  else contextlib.nullcontext())
         with shown:
             try:
-                await self._run.scheduler.wait(code, None, bucket=bucket)
+                await self._run.scheduler.wait(code, self._who, bucket=bucket)
             except Stopped:
                 raise Stopped(f"{self._target}: stopped while waiting: {reason}") from None
 
@@ -1329,7 +1359,9 @@ class TargetTabs:
             # plugin's proxy: say so, rather than let page loads leave unproxied silently.
             ui.warn("{code}: the browser doesn't use the proxy in config.toml; only the "
                     "plugin's HTTP requests do", code=self._source.code)
-        budget = jobs.Budget(self._run.scheduler, self._source.code, None)
+        account = self._run.account
+        budget = jobs.Budget(self._run.scheduler, self._source.code,
+                             account.name if account is not None else None)
         return browser.Tabs(self._shared, self._run.jar,
                             scroll=getattr(self._source, "scroll", browser.HUMAN), budget=budget)
 

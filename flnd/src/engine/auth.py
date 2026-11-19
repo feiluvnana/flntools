@@ -13,21 +13,33 @@ import json
 import os
 import sqlite3
 import threading
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+import weakref
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from http.cookiejar import Cookie
 from pathlib import Path
 from typing import Any
 
-from flnd.engine import store
+from flnd.engine import jobs, store
 from flnd.engine.events import Login
-from flnd.errors import DiskError, Error, LoginError, Stopped, ToolError, UsageError
+from flnd.errors import (
+    Blocked,
+    DiskError,
+    Error,
+    Hidden,
+    LoginError,
+    NotFound,
+    Stopped,
+    ToolError,
+    UsageError,
+)
 from flnd.plugin import Account, Cookies, Plugin, Target
 from flnd.ui import forms
 from flnd.ui.log import ui
 from flnkit import browser, clock, cookies, db, text, vault
 
-__all__ = ["Vault", "account", "expiring", "fix_domains", "load", "logged_in", "login",
-           "logins", "logout", "pick", "seal_plaintext", "secrets", "write_back"]
+__all__ = ["Switcher", "Vault", "account", "expiring", "fix_domains", "load", "logged_in",
+           "login", "logins", "logout", "pick", "seal_plaintext", "secrets", "settle",
+           "write_back"]
 
 # The key file; None is the user's (`flnkit.vault.keyfile`). The tests set one of their own.
 KEYFILE: Path | None = None
@@ -503,3 +515,98 @@ def logins(home: Path, plugins: Mapping[str, type[Plugin]]) -> list[Login]:
                     state = "api key only" if len(saved) else state
         found.append(Login(code, cls.name, state, origin=origin, expiring=soon))
     return found
+
+
+# ---------------------------------------------------------------------------------------------
+# Switching
+# ---------------------------------------------------------------------------------------------
+
+class Switcher:
+    """The run's `jobs.Scheduler.switch`: a job refused on one account moves to the plugin's
+    next one, for a plugin whose `switch` is on (6.2, 6.7).
+
+    The next account is the first in `auth list` order that the job hasn't run as, isn't
+    expired, and isn't held; with every one held, the one whose hold ends first. A job never
+    goes back to an account it left, so two walled accounts can't pass it back and forth: once
+    it has run as every one, the scheduler's own policy holds or fails it. What the run learns
+    of its accounts (a block holds one, a login error expires it) is written to `flnd.db` as
+    the run ends (`settle`).
+
+    Args:
+        scheduler: the run's scheduler, whose holds it reads and sets.
+        enabled: whether a plugin's `switch` is on, by its code.
+        accounts: a plugin's accounts in `auth list` order, by its code.
+        shown: called with each move's line, for the `now` line; None shows nothing.
+    """
+
+    def __init__(self, scheduler: jobs.Scheduler, enabled: Callable[[str], bool],
+                 accounts: Callable[[str], Sequence[Account]], *,
+                 shown: Callable[[str], None] | None = None) -> None:
+        self.scheduler, self._enabled, self._accounts = scheduler, enabled, accounts
+        self._shown = shown
+        self._tried: weakref.WeakKeyDictionary[jobs.Job[Any], set[str]] = \
+            weakref.WeakKeyDictionary()
+        # Each held account's end (Unix seconds), and the expired ones, by (plugin, name).
+        self.held: dict[tuple[str, str], float] = {}
+        self.expired: set[tuple[str, str]] = set()
+
+    def __call__(self, job: jobs.Job[Any], error: BaseException) -> jobs.Job[Any] | None:
+        if job.account is None or not self._enabled(job.plugin):
+            return None
+        left = job.account
+        tried = self._tried.setdefault(job, set())
+        tried.add(left)
+        if isinstance(error, LoginError):
+            self.expired.add((job.plugin, left))
+        elif isinstance(error, Blocked):
+            wait = max(error.wait or 0.0, jobs.ROUND_WAITS[0])
+            self.held[(job.plugin, left)] = clock.wall() + wait
+            with contextlib.suppress(Blocked):
+                self.scheduler.hold(job.plugin, left, seconds=wait, reason=str(error))
+        free = [found for found in self._accounts(job.plugin) if found.name not in tried
+                and found.status != "expired" and (job.plugin, found.name) not in self.expired]
+        if not free:
+            return None
+        job.account = min(free, key=lambda found: self._wait(job, found)).name
+        reason = _reason(error)
+        ui.note({"type": "switch", "plugin": job.plugin, "from": left, "to": job.account,
+                 "reason": reason})
+        if self._shown is not None:
+            self._shown(f"{job.plugin}: {left} → {job.account} ({reason})")
+        return job
+
+    def _wait(self, job: jobs.Job[Any], found: Account) -> float:
+        """How long `found` is held for `job`: by this run's scheduler, or by an earlier run."""
+        now = clock.now()
+        waits = [hold.until - now for hold in self.scheduler.holds
+                 if hold.plugin == job.plugin and hold.account == found.name
+                 and hold.bucket in (None, job.bucket)]
+        if found.status == "held" and found.held_until:
+            ends = datetime.datetime.fromisoformat(found.held_until)
+            waits.append(ends.timestamp() - clock.wall())
+        return max([0.0, *waits])
+
+
+def _reason(error: BaseException) -> str:
+    """Why a job moved, as the journal names it."""
+    for kind, reason in ((LoginError, "expired"), (Blocked, "blocked"), (Hidden, "hidden"),
+                         (NotFound, "not_found")):
+        if isinstance(error, kind):
+            return reason
+    return type(error).__name__.lower()
+
+
+def settle(db: store.Store, switcher: Switcher, expired: Iterable[tuple[str, str | None]],
+           ) -> None:
+    """Write what a run learnt of its accounts: each held one's end, and each expired one,
+    from the switcher and from the scheduler's own login errors (`expired`); off the loop."""
+    ended = {*switcher.expired, *((plugin, name) for plugin, name in expired if name)}
+    marks = {**{key: ("held", until) for key, until in switcher.held.items()},
+             **dict.fromkeys(ended, ("expired", None))}
+    for plugin in {plugin for plugin, _ in marks}:
+        for row in db.accounts(plugin):
+            status, until = marks.get((plugin, row.name), (None, None))
+            if status is not None:
+                held = (datetime.datetime.fromtimestamp(until, datetime.UTC)
+                        .isoformat(timespec="seconds") if until is not None else None)
+                db.mark(row.id, status=status, held_until=held)

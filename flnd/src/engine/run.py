@@ -788,6 +788,8 @@ class Tally:
         self._holds: list[_Hold] = []
         # The newest listing step: its row, its category, and its `Listing` (pages read).
         self._step: tuple[_Row, str, Listing | None] | None = None
+        # The newest account switch since that step, as the `now` line shows it.
+        self._switch = ""
         self._received = 0
         self._rate = _Rate()
         self._started = clock.now()
@@ -827,6 +829,13 @@ class Tally:
             if name not in row.categories:
                 row.categories.append(name)
             self._step = (row, name, listing)
+            self._switch = ""
+
+    def switched(self, line: str) -> None:
+        """A job moved to another account (`flnd.engine.auth.Switcher`): the `now` line
+        shows `line` until the next listing step."""
+        with self._lock:
+            self._switch = line
 
     def downloading(self, target: Target) -> None:
         """`target`'s listings ended; what is left is its files in flight."""
@@ -1012,6 +1021,8 @@ class Tally:
             row, name, listing = self._step
             pages = listing.read if listing is not None else 0
             step = f"{row.text} · {name}" + (f", page {pages}" if pages else "")
+        if self._switch:
+            step = f"{step} · {self._switch}" if step else self._switch
         if not self._holds:
             return step
         hold = self._holds[-1]

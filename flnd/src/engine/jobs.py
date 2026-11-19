@@ -605,7 +605,7 @@ async def _nothing() -> None:
 
 
 def _no_switch(job: Job[Any], error: BaseException) -> Job[Any] | None:
-    """No other account: switching is the auth manager's, which isn't wired in yet."""
+    """No other account: a run's scheduler takes the auth manager's (`auth.Switcher`)."""
     return None
 
 

@@ -134,6 +134,9 @@ class RunShared:
     # Runs a target a listing discovered as a target of its own, on its own plugin's instance
     # (the engine's); None outside the engine.
     follow: Callable[..., Awaitable[Any]] | None = field(default=None, repr=False)
+    # Gives a plugin's instance for another of its accounts, by code and name, which a job
+    # moved to that account runs on (the engine's); None outside the engine.
+    peer: Callable[[str, str], Awaitable[Any]] | None = field(default=None, repr=False)
     # The files the run has queued, shared by every target (`flnd.engine.crawl.Claims`); None
     # outside the engine, where each target keeps its own.
     claims: Any = field(default=None, repr=False)
@@ -1498,8 +1501,11 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
         error = downloads.fatal
     await run.off(ledger.link_queued, downloads.written)
     if db is not None:
-        await run.off(_keep, db, target, options, progress, row,
-                      error is None and not run.settings.stop.soon.is_set(), bool(written))
+        finished = error is None and not run.settings.stop.soon.is_set()
+        # The account the target ran as to its end is tried first next time.
+        worked = site.account.name if finished and site.account is not None else None
+        await run.off(_keep, db, target, options, progress, row, finished, bool(written),
+                      worked if row is None or row.account != worked else None)
     # What the plugin changed of its state, written back as each target ends.
     await run.off(run.save_state)
     report = TargetReport(target, written, tally.totals(target).skipped,
@@ -1515,12 +1521,14 @@ def _opened(ledger: Ledger, db: store.Store | None, target: Target) -> store.Tar
 
 
 def _keep(db: store.Store, target: Target, options: Options, progress: _Progress,
-          row: store.TargetRow | None, finished: bool, written: bool) -> None:
-    """Write where a target's listings stand, off the loop: a write may wait for the lock."""
+          row: store.TargetRow | None, finished: bool, written: bool,
+          account: str | None) -> None:
+    """Write where a target's listings stand, and the account that worked when it changed,
+    off the loop: a write may wait for the lock."""
     # A target a search found has no row of its own: the search's row keeps what it found.
     if not options.query:
         db.progress(target, cursors=progress.cursors(), complete=progress.complete,
-                    heads=progress.heads, gaps=progress.gaps)
+                    heads=progress.heads, gaps=progress.gaps, account=account)
     if finished:
         # A failure of the whole target is over once it ran to its end.
         db.clear(store.key(target))

@@ -987,8 +987,13 @@ class Engine:
             settings.claims = crawl.Claims()
             runner = _Runner(self, settings)
             runner.worked = await _off(_worked, db)
-            settings.follow = runner.follow
+            settings.follow, settings.peer = runner.follow, runner.peer
             async with shared_browser(settings), save.attached(settings):
+                scheduler = ctx.scheduler(settings)
+                assert scheduler is not None
+                runner.switcher = scheduler.switch = auth.Switcher(
+                    scheduler, lambda code: found.plugin(code).switch, runner.listed,
+                    shown=self.tally.switched)
                 try:
                     yield runner
                 finally:
@@ -1185,6 +1190,8 @@ class _Runner:
         # key, read as the run starts (`Engine._running`).
         self._accounts: dict[str, asyncio.Future[list[Account]]] = {}
         self.worked: dict[str, str] = {}
+        # The run's switcher, whose holds and expiries `close` writes; None until it runs.
+        self.switcher: auth.Switcher | None = None
         self._active = asyncio.Semaphore(ACTIVE)
         # Each plugin's and account's listings at once.
         self._listing: dict[tuple[str, str | None], asyncio.Semaphore] = {}
@@ -1287,6 +1294,23 @@ class _Runner:
             found = self._accounts[target.plugin] = asyncio.ensure_future(
                 _off(_accounts, db, target.plugin))
         return auth.pick(await found, preferred=self.worked.get(store.key(target)))
+
+    def listed(self, code: str) -> list[Account]:
+        """A plugin's accounts, once read for one of its targets; none before."""
+        found = self._accounts.get(code)
+        return found.result() if found is not None and found.done() else []
+
+    async def peer(self, code: str, name: str) -> PluginRun:
+        """The plugin's instance for its account `name`, which a job moved to it runs on.
+
+        Raises:
+            Error: what broke that instance as it started.
+        """
+        account = next(found for found in self.listed(code) if found.name == name)
+        entry = await self.entry(code, account)
+        if entry.error is not None:
+            raise entry.error
+        return entry.run
 
     async def _refused(self, target: Target, login: LoginError) -> TargetReport:
         """A target whose plugin's login an earlier target had refused: it fails, unasked."""
@@ -1556,6 +1580,10 @@ class _Runner:
                 account = Target(f"{entry.run.source.code}:", kind=auth.ACCOUNT)
                 await crawl.tell(account, crawl.failure(error, account, entry.run.source),
                                  self.settings.emit)
+        db = self.settings.db
+        if self.switcher is not None and scheduler is not None and db is not None \
+                and not self.settings.dry:
+            await _off(auth.settle, db, self.switcher, scheduler.expired)
 
 
 async def _off(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
