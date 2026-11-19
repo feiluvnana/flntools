@@ -506,7 +506,7 @@ class SwitchEngineTest(EngineCase):
 
     def setUp(self):
         super().setUp()
-        self.home.mkdir(parents=True)
+        self.home.mkdir(parents=True, exist_ok=True)
         (self.home / "config.toml").write_text("[plugins.aaa]\nswitch = true\n")
         for name in ("one", "two"):
             sign_in(self.home, "aaa", [{"name": "sid", "value": name, "domain": "aaa.example"}],
@@ -566,6 +566,43 @@ class SwitchEngineTest(EngineCase):
         self.assertEqual([[raw.loaded for raw in browser.opened] for browser in browsers],
                          [[["https://aaa.example/p"]], [["https://aaa.example/p"]]])
         self.assertEqual(targets(self.home)["aaa:x"].account, "two")
+
+    def test_each_trigger_on_a_first_page_moves_the_target(self):
+        checks = []
+
+        def page(request):
+            sid = request.headers["cookie"].removeprefix("sid=")
+            if sid == "one":
+                return self.first_page[sid]
+            return net.reply(200, json={"ok": True})
+
+        for reason, first in (
+            ("blocked", net.reply(429, headers={"Retry-After": "30"})),
+            ("hidden", None),
+            ("not_found", net.reply(404)),
+        ):
+            with self.subTest(reason):
+                self.requests.clear()
+                self.seen = []
+                checks.clear()
+                if first is not None:
+                    self.first_page = {"one": first}
+
+                    async def route(ctx):
+                        await ctx.fetch("https://aaa.example/p")
+
+                    plugin = make_plugin("aaa", route, login=login_cookies("sid"))
+                else:
+
+                    async def route(ctx):
+                        checks.append(ctx.account.name)
+                        if ctx.account.name == "one":
+                            raise Hidden("walled")
+
+                    plugin = make_plugin("aaa", route, login=login_cookies("sid"))
+                self.routes["https://aaa.example/p"] = page
+                self.assertTrue(self.report(plugin, targets=["aaa:x"]).ok)
+                self.assertEqual(targets(self.home)["aaa:x"].account, "two")
 
 
 class BrowserAccountsTest(EngineCase):

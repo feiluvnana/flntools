@@ -136,6 +136,9 @@ class RunShared:
     # Gives a plugin's instance for another of its accounts, by code and name, which a job
     # moved to that account runs on (the engine's); None outside the engine.
     peer: Callable[[str, str], Awaitable[Any]] | None = field(default=None, repr=False)
+    # Moves a refused job to another account (`auth.Switcher`); None outside a run.
+    switch: Callable[[jobs.Job[Any], BaseException], jobs.Job[Any] | None] | None = \
+        field(default=None, repr=False)
     # The files the run has queued, shared by every target (`flnd.engine.crawl.Claims`); None
     # outside the engine, where each target keeps its own.
     claims: Any = field(default=None, repr=False)
@@ -2188,6 +2191,45 @@ async def _queue_listed(
     return (Ended.RAN_OUT if kept.ran_out else Ended.CUT), taken
 
 
+async def _switch_work() -> None:
+    """The work of a job made only so `auth.Switcher` can move the target (6.7)."""
+
+
+async def _try_switch(
+    work: _Work, run: PluginRun, site: Ctx, target: Target, error: Hidden,
+) -> bool:
+    """Move the target to the plugin's next account when switching is on.
+
+    Returns:
+        True when it moved; then posts whose files were `Hidden` are queued again.
+    """
+    switch = run.settings.switch
+    if switch is None:
+        return False
+    account = site.account.name if site.account is not None else None
+    job = jobs.Job(kind=jobs.Kind.PAGE, work=_switch_work, plugin=run.source.code,
+                   account=account, target=str(target))
+    moved = switch(job, error)
+    if moved is None:
+        return False
+    await site._moved(moved.account)
+    work.ledger.run = work.downloads.run = site._run
+    return True
+
+
+async def _with_switch(
+    work: _Work, run: PluginRun, site: Ctx, target: Target,
+    done: Callable[[], Awaitable[T]],
+) -> T:
+    """Run `done`, moving to the next account and trying again when the plugin raises `Hidden`."""
+    while True:
+        try:
+            return await done()
+        except Hidden as error:
+            if not await _try_switch(work, run, site, target, error):
+                raise
+
+
 async def _read(
     work: _Work, run: PluginRun, site: Ctx, target: Target, options: Options,
     progress: _Progress, turn: Turn | None = None,
@@ -2227,8 +2269,10 @@ async def _read(
         categories = wanted(route, options)
         if not categories:
             return
-        context = await _taking(turn, run,
-                                lambda: _context(run.source, route, site, target, options.link))
+        context = await _with_switch(
+            work, run, site, target,
+            lambda: _taking(turn, run,
+                            lambda: _context(run.source, route, site, target, options.link)))
         listings = [_Listed(category.name, category.newest_first,
                             _caller(run, getattr(run.source, category.name), site, context))
                     for category in categories]
@@ -2374,8 +2418,10 @@ async def _list_one(
         ui.info("{target}: {name}: going on where an interrupted run stopped",
                 target=str(target), name=name or target.kind)
         await run.settings.emit(RESUMING)
-    ended, taken, kept = await _listed(work, run, site, name, newest_first, items, listing,
-                                       stops, options, remaining)
+    ended, taken, kept = await _with_switch(
+        work, run, site, target,
+        lambda: _listed(work, run, site, name, newest_first, items, listing,
+                        stops, options, remaining))
     if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP):
         progress.complete.append(name)
         if not start and kept.newest is not None:
@@ -2387,8 +2433,10 @@ async def _list_one(
         if rest is None or rest > 0:
             ui.debug("{target}: list {name} from the newest", target=str(target),
                      name=name or target.kind)
-            ended, extra, newest = await _listed(work, run, site, name, True, items, Listing(),
-                                                 replace(stops, sync=True), options, rest)
+            ended, extra, newest = await _with_switch(
+                work, run, site, target,
+                lambda: _listed(work, run, site, name, True, items, Listing(),
+                                replace(stops, sync=True), options, rest))
             taken += extra
             if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and newest.newest is not None:
                 progress.heads[name] = newest.newest
@@ -2445,8 +2493,10 @@ async def _sync_one(
     # 1. The newest posts. A listing that raises (the site failed it) is cut short like any:
     # where it was is kept as a gap before the error goes on to fail the target.
     try:
-        ended, taken, kept = await _listed(work, run, site, name, True, items, listing, stops,
-                                           options, remaining)
+        ended, taken, kept = await _with_switch(
+            work, run, site, target,
+            lambda: _listed(work, run, site, name, True, items, listing, stops,
+                            options, remaining))
     except BaseException:
         progress.gaps[name] = list(dict.fromkeys([listing.cursor or "", *gaps]))
         raise
@@ -2467,8 +2517,10 @@ async def _sync_one(
             jump = progress.listings[name] = Listing(left[0], label=label)
             work.ledger.tally.start(target, name, jump)
             try:
-                ended, extra, filled = await _listed(work, run, site, name, True, items, jump,
-                                                     stops, options, rest)
+                ended, extra, filled = await _with_switch(
+                    work, run, site, target,
+                    lambda j=jump, r=rest: _listed(work, run, site, name, True, items, j,
+                                                   stops, options, r))
             except BaseException:
                 progress.gaps[name] = [jump.cursor or left[0], *left[1:]]
                 raise

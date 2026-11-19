@@ -991,6 +991,7 @@ class Engine:
                 runner.switcher = scheduler.switch = auth.Switcher(
                     scheduler, lambda code: found.plugin(code).switch, runner.listed,
                     shown=self.tally.switched)
+                settings.switch = scheduler.switch
                 try:
                     yield runner
                 finally:
