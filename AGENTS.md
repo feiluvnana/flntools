@@ -18,7 +18,6 @@ These rules are for anyone, person or agent, who changes this repository. It hol
 - Push only when the user says to.
 
 ## Privacy
-- Never read, print or commit `*_cookies.txt` or anything under `.flnd/`.
 - Never pass text from a site (a file name, a caption, any other text) to a shell. Run commands
   with an argument list.
 - Never put a cookie value, key, token or password in a log, an error, a comment, a doc or a
