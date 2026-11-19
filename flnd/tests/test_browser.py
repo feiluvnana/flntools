@@ -757,24 +757,44 @@ class FakeBrowserTest(BrowserCase):
         with self.assertRaises(_browser._raw_error()):
             run(_browser.Page(cast(Any, raw), cast(Any, None)).content())
 
-    def test_each_logins_cookies_are_added_once_and_a_released_tab_is_reused(self):
-        added = []
+    def test_a_second_account_has_a_window_of_its_own_whose_released_tab_is_reused(self):
+        launched = []
 
         class Fake:
+            def __init__(self):
+                self.added = []
+
             async def tab(self, *, by_script=False):
                 return _browser.Page(cast(Any, SimpleNamespace()), cast(Any, self),
                                      by_script=by_script)
 
             async def add_cookies(self, jar):
-                added.append(jar)
+                self.added.extend(jar)
+
+            async def cookies(self):
+                return _cookies.Jar(self.added)
+
+        async def launch(**options):
+            launched.append(Fake())
+            return launched[-1]
 
         shared = _browser.RunBrowser(LOOP)
-        shared._browser = cast(Any, Fake())
-        one, other = _cookies.Jar([]), _cookies.Jar([])
-        first, second, third = (run(shared.tab(jar)) for jar in (one, one, other))
-        self.assertEqual([jar is one for jar in added], [True, False])
-        run(shared.release([third]))
-        self.assertIs(run(shared.tab(one)), third)
+        one = _cookies.Jar([{"name": "sid", "value": "one", "domain": ".example.com"}])
+        other = _cookies.Jar([{"name": "sid", "value": "two", "domain": ".example.com"}])
+        with mock.patch.object(_browser, "launch", launch):
+            first, second, third = (run(shared.tab(jar)) for jar in (one, one, other))
+            self.assertEqual([[cookie["value"] for cookie in fake.added] for fake in launched],
+                             [["one"], ["two"]])
+            self.assertEqual([run(shared.cookies(jar))["sid"] for jar in (one, other)],
+                             ["one", "two"])
+            # A login of another site shares the first window.
+            elsewhere = _cookies.Jar([{"name": "t", "value": "x", "domain": ".other.example"}])
+            run(shared.tab(elsewhere))
+            self.assertEqual([len(fake.added) for fake in launched], [2, 1])
+            run(shared.release([third, first]))
+            # Each login's idle tab goes back to that login alone.
+            self.assertIs(run(shared.tab(one)), first)
+            self.assertIs(run(shared.tab(other)), third)
 
 
 class FakeFeed:

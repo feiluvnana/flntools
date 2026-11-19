@@ -1371,10 +1371,10 @@ class TargetTabs:
         return self._tabs is not None
 
     def cookies(self) -> list[Mapping[str, Any]]:
-        """The browser's cookies, or none when this target never opened a tab."""
+        """Its account's browser's cookies, or none when this target never opened a tab."""
         if self._tabs is None or self._shared is None or not self._shared.launched:
             return []
-        return list(self._tabs.run(self._shared.cookies()))
+        return list(self._tabs.run(self._shared.cookies(self._run.jar)))
 
     def document(self) -> Document:
         """The tab's page now, parsed on this thread, not on the loop."""

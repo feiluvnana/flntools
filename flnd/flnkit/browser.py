@@ -1726,20 +1726,23 @@ async def _carried(awaitable: Awaitable[Any]) -> tuple[bool, Any]:
 
 
 class RunBrowser:
-    """One browser shared by many users on one loop, launched the first time one asks for a tab.
+    """The run's browsers on one loop, launched the first time a login asks for a tab.
 
         shared = RunBrowser(asyncio.get_running_loop())   # on the loop
         tab = shared.run(shared.tab(jar))                 # from another thread
         shared.close()
 
-    Every user shares it, so one window serves them all; each user's cookies are added the first
-    time it asks. (In flnd there is one per run, and its users are the targets.) Its coroutines
-    run on the loop; `run` hands one to the loop from another thread.
+    One window serves every login whose cookies are on other sites than its logins' (two
+    sites' logins, or no login at all). A login with cookies on a site a login in a window has
+    already (a second account of that site) gets a window of its own, with its own cookies and
+    its own idle tab, so two accounts never see each other's cookies. (In flnd there is one
+    per run, and its users are the targets.) Its coroutines run on the loop; `run` hands one to
+    the loop from another thread.
 
     Args:
-        loop: the asyncio loop the browser lives on, running on its own thread.
+        loop: the asyncio loop the browsers live on, running on its own thread.
         stealth: hide `navigator.webdriver` (see `launch`).
-        headless: hide the window. A visible one (the default) lets a person solve a captcha.
+        headless: hide the windows. A visible one (the default) lets a person solve a captcha.
         screen: what asks a person and shows them progress (see `Screen`); None for the plain
             one.
     """
@@ -1751,31 +1754,29 @@ class RunBrowser:
         self.screen = screen or Screen()
         self._stealth = stealth
         self._headless = headless
-        self._browser: Browser | None = None
         # Made on the loop, the first time a tab is asked for: a lock belongs to its loop.
         self._launching: asyncio.Lock | None = None
-        # One tab a finished target left, for the next target to reuse, so the window stays open.
-        self._idle: list[Page] = []
-        # Each login whose cookies the browser has, by identity.
-        self._jars: list[Any] = []
+        # Each window: the logins (jars, by identity) whose cookies it has, the browser, and the
+        # one tab a finished target left in it, for the next target to reuse.
+        self._logins: list[tuple[list[Any], Browser, list[Page]]] = []
 
     @property
     def headless(self) -> bool:
-        """Whether the window is hidden; False before the browser is launched."""
-        return self._browser is not None and self._browser.headless
+        """Whether the windows are hidden; False before a browser is launched."""
+        return bool(self._logins) and self._logins[0][1].headless
 
     @property
     def launched(self) -> bool:
-        """Whether a target has asked for a tab yet, so the browser is running."""
-        return self._browser is not None
+        """Whether a target has asked for a tab yet, so a browser is running."""
+        return bool(self._logins)
 
     @property
     def tabs(self) -> int:
-        """How many tabs are open now, warm ones and the idle one included; 0 before launch.
+        """How many tabs are open now, warm and idle ones included, in every browser.
 
-        Read on the loop, where the browser lives: Playwright's list of the context's pages.
+        Read on the loop, where the browsers live: Playwright's lists of the contexts' pages.
         """
-        return 0 if self._browser is None else len(self._browser.raw.pages)
+        return sum(len(browser.raw.pages) for _, browser, _ in self._logins)
 
     def run(self, awaitable: Awaitable[Any]) -> Any:
         """Run `awaitable` on the loop from another thread, and return its value.
@@ -1792,11 +1793,15 @@ class RunBrowser:
         """
         return run_on(self.loop, awaitable)
 
+    def _login(self, jar: Any) -> tuple[list[Any], Browser, list[Page]] | None:
+        return next((found for found in self._logins
+                     if any(seen is jar for seen in found[0])), None)
+
     async def tab(self, jar: Any) -> Page:
-        """A tab for a target whose login is `jar`: the idle one, or a new one.
+        """A tab for a target whose login is `jar`: its window's idle one, or a new one.
 
         Args:
-            jar: the source's login cookies, added to the browser the first time they come.
+            jar: the login's cookies, given to its window the first time they come.
 
         Returns:
             The tab, which scrolls by script.
@@ -1804,27 +1809,36 @@ class RunBrowser:
         if self._launching is None:
             self._launching = asyncio.Lock()
         async with self._launching:
-            if self._browser is None:
-                self._browser = await launch(stealth=self._stealth, headless=self._headless,
-                                             screen=self.screen)
-            if not any(seen is jar for seen in self._jars):
-                await self._browser.add_cookies(jar)
-                self._jars.append(jar)
-        return self._idle.pop() if self._idle else await self._browser.tab(by_script=True)
+            found = self._login(jar)
+            if found is None:
+                found = next((window for window in self._logins
+                              if not any(_overlap(seen, jar) for seen in window[0])), None)
+                if found is None:
+                    browser = await launch(stealth=self._stealth, headless=self._headless,
+                                           screen=self.screen)
+                    found = ([], browser, [])
+                    self._logins.append(found)
+                await found[1].add_cookies(jar)
+                found[0].append(jar)
+        _, browser, idle = found
+        return idle.pop() if idle else await browser.tab(by_script=True)
 
     async def release(self, pages: Iterable[Page]) -> None:
-        """Take back a finished target's tabs: keep one open for the next target, close the rest.
+        """Take back a finished target's tabs: keep one open per window for its next target,
+        close the rest.
 
         Args:
             pages: the tabs; one given twice counts once.
         """
         seen: set[int] = set()
         for page in pages:
-            if id(page) in seen or any(page is idle for idle in self._idle):
+            found = next((login for login in self._logins if login[1] is page.browser), None)
+            if id(page) in seen or (found is not None and any(page is idle
+                                                               for idle in found[2])):
                 continue
             seen.add(id(page))
-            if not self._idle:
-                self._idle.append(page)
+            if found is not None and not found[2]:
+                found[2].append(page)
                 continue
             try:
                 await page.close()
@@ -1832,27 +1846,35 @@ class RunBrowser:
             except Exception:
                 pass
 
-    async def cookies(self) -> Jar:
-        """Every cookie in the browser; none before it is launched."""
-        if self._browser is None:
-            return Jar([])
-        return await self._browser.cookies()
+    async def cookies(self, jar: Any) -> Jar:
+        """The cookies of the window of the login `jar`; none before it has one."""
+        found = self._login(jar)
+        return Jar([]) if found is None else await found[1].cookies()
 
     def close(self) -> None:
-        """Close the browser, from a thread other than the loop's; a second call does nothing."""
-        browser, self._browser = self._browser, None
-        self._idle.clear()
-        self._jars.clear()
-        if browser is not None:
+        """Close the browsers, from a thread other than the loop's; a second call does
+        nothing."""
+        logins, self._logins = self._logins, []
+        for _, browser, _ in logins:
             self.run(browser.close())
 
     async def aclose(self) -> None:
-        """Close the browser, on the loop; a second call does nothing."""
-        browser, self._browser = self._browser, None
-        self._idle.clear()
-        self._jars.clear()
-        if browser is not None:
+        """Close the browsers, on the loop; a second call does nothing."""
+        logins, self._logins = self._logins, []
+        for _, browser, _ in logins:
             await browser.close()
+
+
+def _overlap(one: Iterable[Mapping[str, Any]], other: Iterable[Mapping[str, Any]]) -> bool:
+    """Whether two logins have cookies on one site: a domain of one is, or is under, the
+    other's."""
+    hosts = {str(cookie.get("domain", "")).lstrip(".").lower() for cookie in one}
+    for cookie in other:
+        host = str(cookie.get("domain", "")).lstrip(".").lower()
+        if any(host == seen or host.endswith("." + seen) or seen.endswith("." + host)
+               for seen in hosts):
+            return True
+    return False
 
 
 class Tabs:

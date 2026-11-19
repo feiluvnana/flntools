@@ -179,7 +179,8 @@ yours.
    `connect` hook runs (Telegram's client), once; it is left when the run ends, and an error
    of its exit is the run's failure. A plugin whose `login` is `required` and missing fails
    each of its targets; any other plugin without a login warns and goes on with public
-   access. The run's one browser (`ctx.shared_browser`) is shared by every plugin.
+   access. The run's browser (`ctx.shared_browser`) is shared by every plugin; a second
+   account of a site gets a window of its own, so accounts never share cookies.
    Targets run at once: a plugin whose `browser` is not `Browser.NONE` lists one target at a
    time, one that only sends requests four, and the run holds at most 16 active targets, each
    while it lists or has more files queued than its places; the next target lists while the
@@ -307,7 +308,8 @@ A run has one loop, and every rule below protects it:
     renamed, and its rows commit when its last file settles;
   - **async Playwright**: one browser per run (`flnkit.browser.RunBrowser`), launched the
     first time a target needs a tab and shared by every plugin, so one Chrome window serves
-    them all. Each target gets its own tab, and the warm tabs that pre-load the pages it will
+    them all; a login with cookies on a site whose login the window has already (a second
+    account) gets a window of its own, with its own cookies and idle tab. Each target gets its own tab, and the warm tabs that pre-load the pages it will
     open next while two of the run's six tabs stay free (`jobs.Budget`), opened together in one
     call to the loop. A warm tab keeps its load's responses unread: a body is read only when an
     open feed takes the tab and wants that response. A login's cookies go into the browser in

@@ -21,11 +21,12 @@ from types import SimpleNamespace
 from unittest import mock
 
 from fakes import EngineCase, login_cookies, make_plugin, own_login, sign_in, targets, vaulted
+from test_ctx import FakeBrowser, FakeRaw
 
 import flnd
 from flnd.engine import auth, jobs, store
 from flnd.errors import Blocked, Hidden, LoginError, NotFound, PluginError, UsageError
-from flnd.plugin import Account
+from flnd.plugin import Account, Target
 from flnd.testing import fake_clock
 from flnd.ui.log import ui
 from flnkit import cookies, db, net
@@ -438,9 +439,6 @@ class WriteBackTest(AuthCase):
         self.assertEqual(self.saved()["ct0"], "new-ct0")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class SwitchTest(AuthCase):
     """`auth.Switcher`, the scheduler's `switch`: which account a refused job moves to."""
@@ -548,3 +546,41 @@ class SwitchEngineTest(EngineCase):
         report = self.report(self.plugin, targets=["aaa:x"])
         self.assertIsInstance(report.targets[0].error, LoginError)
         self.assertEqual(self.sent(), ["sid=one", "sid=two"])
+
+
+class BrowserAccountsTest(EngineCase):
+    """Two accounts of a browser plugin in one run: each sees its own cookies alone."""
+
+    def setUp(self):
+        super().setUp()
+        for name in ("one", "two"):
+            sign_in(self.home, "aaa", [{"name": "sid", "value": name, "domain": "aaa.example",
+                                        "path": "/"}], name=name)
+        with store.open(self.home) as db:
+            db.progress(Target("aaa:y", kind="user"), cursors={}, complete=[], account="two")
+        self.browsers = []
+
+        async def launch(**options):
+            self.browsers.append(FakeBrowser(FakeRaw, options))
+            return self.browsers[-1]
+
+        self.enterContext(mock.patch("flnkit.browser.launch", launch))
+        self.routes["https://aaa.example/api"] = net.reply(200, json={})
+
+    def test_two_accounts_never_see_each_others_cookies(self):
+        async def route(ctx):
+            await ctx.open(f"https://aaa.example/{ctx.target.value}")
+            await ctx.fetch("https://aaa.example/api")
+
+        plugin = make_plugin("aaa", route, login=login_cookies("sid"), browser=True)
+        self.assertTrue(self.report(plugin, targets=["aaa:x", "aaa:y"]).ok)
+        self.assertEqual(sorted(request.headers["cookie"] for request in self.requests),
+                         ["sid=one", "sid=two"])
+        self.assertEqual(sorted([cookie["value"] for cookie in browser.added]
+                                for browser in self.browsers), [["one"], ["two"]])
+        self.assertEqual([vaulted(self.home, "aaa", name)[0]["sid"] for name in ("one", "two")],
+                         ["one", "two"])
+
+
+if __name__ == "__main__":
+    unittest.main()
