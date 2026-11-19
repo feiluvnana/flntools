@@ -20,6 +20,7 @@ _SERVING.start()
 def tearDownModule():
     LOOP.call_soon_threadsafe(LOOP.stop)
     _SERVING.join()
+    LOOP.close()
 
 
 class FakeClient:
