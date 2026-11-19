@@ -66,6 +66,8 @@ TIMEOUT = 30.0
 BUFFER = 4 << 20
 # The most bytes of one transfer that wait in memory for the disk before curl pauses it.
 HELD = 8 << 20
+# Pieces curl gives in one call are queued as one, up to this many bytes.
+BATCH = 256 << 10
 # Redirects followed for one request, as curl_cffi's default allows.
 REDIRECTS = 30
 # The statuses that send a request on to their `Location`.
@@ -620,9 +622,13 @@ class _Transfer:
         self._curl = curl
         self._give = give
         loop = asyncio.get_running_loop()
+        self._loop = loop
         self.head: asyncio.Future[None] = loop.create_future()
         self._ended = loop.create_future()
         self._queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        # The pieces curl gave in one call, queued together by the loop's next turn.
+        self._batch: list[bytes] = []
+        self._batched = 0
         self._lines: list[bytes] = []
         self._held = 0
         self._paused = False
@@ -659,8 +665,19 @@ class _Transfer:
         self._held += len(chunk)
         if self._held >= HELD and not self._paused:
             self._pause(True)
-        self._queue.put_nowait(chunk)
+        if not self._batch:
+            self._loop.call_soon(self._flush)
+        self._batch.append(chunk)
+        self._batched += len(chunk)
+        if self._batched >= BATCH:
+            self._flush()
         return len(chunk)
+
+    def _flush(self) -> None:
+        """Queue what curl's last call gave as one piece, so the reader wakes once for it."""
+        batch, self._batch, self._batched = self._batch, [], 0
+        if batch:
+            self._queue.put_nowait(batch[0] if len(batch) == 1 else b"".join(batch))
 
     def _end(self, done: asyncio.Future[None]) -> None:
         # The multi handle let go of the handle before it settled `done`.
@@ -668,6 +685,7 @@ class _Transfer:
             self.error = done.exception()
         if not self.head.done():
             self._read()
+        self._flush()
         self._queue.put_nowait(None)
         self._give(self._curl, self.plain)
         self._ended.set_result(None)
