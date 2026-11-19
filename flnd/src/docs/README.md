@@ -19,6 +19,7 @@ is now. A part that isn't built yet is named as such, never described as working
 | --- | --- |
 | [architecture.md](architecture.md) | the layers and parts, one download end to end, threads |
 | [cli.md](cli.md) | every command and flag, its default, examples and the exit codes |
+| [cookbook.md](cookbook.md) | practical CLI and Python recipes: filters, `--again`, repair, auth |
 | [library.md](library.md) | the calls a script can make, and what they return |
 | [writing-a-plugin.md](writing-a-plugin.md) | writing, testing and installing a plugin on API 2 |
 | [errors.md](errors.md) | each error class, what raises it, and what to do about it |

@@ -27,7 +27,10 @@ Every `x.com` form also works on `twitter.com`. The `post` patterns are tried be
 
 **Search.** `twt?<words>` opens `https://x.com/search?q=<words>&src=typed_query&f=live` (the
 Latest tab) and scrolls it, reading the `SearchTimeline` responses. X's own operators (`from:`,
-`filter:images`, …) work in the words. `--when` is also sent to X as `since:` and `until:`
+`filter:images`, `filter:media`, …) work in the words; for example,
+`twt?@example_handle -from:example_handle filter:media` fetches media from other people's tweets
+mentioning `example_handle` ([cookbook](../cookbook.md#twitterx-tagged-and-mentioned-media)).
+`--when` is also sent to X as `since:` and `until:`
 operators (`until:` is the day after `--when`'s last, since X's is exclusive), so a short range
 doesn't scroll through years. A search is a query target: it yields a tweet link
 (`https://x.com/i/web/status/<id>`) for each tweet with a file. The engine downloads each as a
