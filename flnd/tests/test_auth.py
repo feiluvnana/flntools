@@ -14,13 +14,24 @@ import stat
 import sys
 import tempfile
 import time
+import types
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fakes import EngineCase, login_cookies, make_plugin, own_login, sign_in, targets, vaulted
+from fakes import (
+    CDN,
+    EngineCase,
+    login_cookies,
+    make_plugin,
+    noise,
+    own_login,
+    sign_in,
+    targets,
+    vaulted,
+)
 from test_ctx import FakeBrowser, FakeRaw
 
 import flnd
@@ -603,6 +614,26 @@ class SwitchEngineTest(EngineCase):
                 self.routes["https://aaa.example/p"] = page
                 self.assertTrue(self.report(plugin, targets=["aaa:x"]).ok)
                 self.assertEqual(targets(self.home)["aaa:x"].account, "two")
+
+    def test_hidden_lazy_files_are_listed_again_after_a_move(self):
+        from flnd.plugin import File, Post  # noqa: PLC0415 - test-only plugin body
+
+        self.routes["https://aaa.example/a.jpg"] = net.reply(200, content=noise("jpg"))
+        built = make_plugin("aaa", login=login_cookies("sid"))
+
+        async def posts(self, ctx, context):
+            async def lazy_files():
+                if ctx.cookies.get("sid") == "one":
+                    raise Hidden("hidden")
+                return [File(f"{CDN}/a.jpg", name="a.jpg")]
+
+            yield Post("p1", lazy_files)
+            if ctx.account.name == "one":
+                raise Hidden("walled")
+
+        built.posts = types.MethodType(posts, built)
+        self.assertEqual(self.run_engine(built, targets=["aaa:x"]), 1)
+        self.assertEqual(targets(self.home)["aaa:x"].account, "two")
 
 
 class BrowserAccountsTest(EngineCase):

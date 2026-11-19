@@ -594,6 +594,8 @@ class Ledger:
         # Whether the files queued now are a retry's (`_retry_failed`), which their `Saved`
         # events say.
         self.retrying = False
+        # Lazy posts whose files were `Hidden`, listed again when the target moves (6.7).
+        self._hidden: list[Post] = []
 
     def load(self) -> None:
         """Read what the ledger keeps between runs: the posts the `date` hook had no day for.
@@ -750,6 +752,8 @@ class Ledger:
         """
         category = self._categories.get(post.category)
         failed = classify(error, target=str(self.target))
+        if isinstance(failed, Hidden):
+            self._hidden.append(post)
         key = self._first_key(post, category) or f"{self.source.code}:{post.id}"
         dest = self.folder / post.category / post.id
         listing = self.site.listing
@@ -2214,6 +2218,10 @@ async def _try_switch(
         return False
     await site._moved(moved.account)
     work.ledger.run = work.downloads.run = site._run
+    hidden, work.ledger._hidden = work.ledger._hidden, []
+    for post in hidden:
+        if await work.queue(post) is Outcome.STOPPED:
+            break
     return True
 
 
