@@ -331,6 +331,10 @@ IN_PAGE_FETCH = """async ({url, method, headers, body, ms}) => {
     clearTimeout(timer);
   }
 }"""
+# The script of `Page.shown`: an element is shown when it is displayed, visible and sized.
+SHOWN = """(css) => { const e = document.querySelector(css); if (!e) return false;
+  const s = getComputedStyle(e), r = e.getBoundingClientRect();
+  return s.display !== "none" && s.visibility !== "hidden" && r.width > 0 && r.height > 0; }"""
 # Seconds `Page.fetch` waits for an answer, body included.
 FETCH_TIMEOUT = 30.0
 # What Playwright says when what a call read is gone: the page navigated under an evaluation, or
@@ -974,6 +978,10 @@ class Page:
             The value, or None when the page kept navigating under it (logged).
         """
         return await self._steady(lambda: self.raw.evaluate(js, arg), None, "run a script")
+
+    async def shown(self, css: str) -> bool:
+        """Whether an element `css` matches is displayed, visible and not zero-sized now."""
+        return bool(await self.evaluate(SHOWN, css))
 
     async def click(self, css: str, *,
                     timeout: float = 10.0) -> None:  # noqa: ASYNC109 (Playwright's own)

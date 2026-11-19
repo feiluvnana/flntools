@@ -279,6 +279,11 @@ class ExtensionPage:
         self.url = found.get("url") or self.url
         return found.get("html") or ""
 
+    async def shown(self, css: str) -> bool:
+        found = await self._tabs._client.call(
+            "evaluate", tab=self._tab, script=f"({browser.SHOWN})({json.dumps(css)})")
+        return bool((found or {}).get("value"))
+
     async def click(self, css: str, *, timeout: float = 10.0) -> None:  # noqa: ASYNC109
         await self._tabs._client.call("click", tab=self._tab, css=css)
 

@@ -372,6 +372,14 @@ class FakeCtxTest(unittest.TestCase):
             run(fake().extension("title"))
         self.assertEqual(caught.exception.hint, "flnd extension install")
 
+    def test_shown_is_true_for_the_selectors_the_page_declares_shown(self):
+        page = FakePage('<b class="a"></b><b class="b"></b>', shown=[".a"])
+        ctx = fake(pages={PAGE: page})
+        self.assertFalse(run(ctx.shown(".a")))
+        run(ctx.open(PAGE))
+        self.assertEqual([run(ctx.shown(css)) for css in (".a", ".b", ".none")],
+                         [True, False, False])
+
     def test_a_feed_hears_what_the_page_sends_after_it_listens(self):
         page = FakePage('<script type="application/json">{"n": 1}</script><b class="more">',
                         feeds=[("https://www.example.com/api/liked?page=1", 1),

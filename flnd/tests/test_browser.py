@@ -588,6 +588,15 @@ class PageTest(PageCase):
         run(self.page.wait(idle=True, timeout=5))
         run(self.page.wait("body", url="**/site.test/", idle=True, timeout=5))
 
+    def test_shown_needs_an_element_displayed_visible_and_sized(self):
+        run(self.page.evaluate("document.body.innerHTML = '<p id=a>x</p><p id=b "
+                               "style=\"display:none\">x</p><p id=c style=\"visibility:hidden\""
+                               ">x</p><p id=d style=\"width:0;height:0;padding:0;overflow:"
+                               "hidden\"></p>'"))
+        got = {css: run(self.page.shown(css)) for css in ("#a", "#b", "#c", "#d", "#none")}
+        self.assertEqual(got, {"#a": True, "#b": False, "#c": False, "#d": False,
+                               "#none": False})
+
     def test_a_wait_that_times_out_names_what_it_waited_for(self):
         cases = [({"css": "#never"}, "an element to match '#never'"),
                  ({"url": "**/never/"}, "the URL to match '**/never/'"),

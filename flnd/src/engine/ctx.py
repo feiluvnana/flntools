@@ -629,6 +629,14 @@ class Ctx:
         """See `flnd.plugin.Ctx.click`."""
         await self._run.off(functools.partial(self._tabs.click, css, timeout=timeout))
 
+    async def shown(self, css: str) -> bool:
+        """See `flnd.plugin.Ctx.shown`."""
+        return await self._run.off(self._shown, css)
+
+    def _shown(self, css: str) -> bool:
+        tabs = self._tabs.verbs()
+        return tabs.run(tabs.page.shown(css))
+
     async def handoff(self, message: str, *, until: Callable[[], Awaitable[bool]],
                       timeout: float | None = None) -> bool:  # noqa: ASYNC109 (a person's)
         """See `flnd.plugin.Ctx.handoff`."""

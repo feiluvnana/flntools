@@ -129,12 +129,14 @@ class FakePage:
         feeds: the responses the page sends: a `Sent`, or a (URL, JSON) pair sent as the page
             loads. Each goes to the feeds of the tab listening then whose match takes its
             URL; one nobody hears is lost.
+        shown: the CSS selectors `ctx.shown` answers True for; any other, False.
     """
 
     html: str = ""
     status: int = field(default=200, kw_only=True)
     url: str = field(default="", kw_only=True)
     feeds: Sequence[Sent | tuple[str, Any]] = field(default=(), kw_only=True)
+    shown: Sequence[str] = field(default=(), kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -406,6 +408,11 @@ class FakeCtx:
 
         page = self._tabs[-1].page
         return html.parse(page.html if page is not None else "")
+
+    async def shown(self, css: str) -> bool:
+        """Whether the open page lists `css` in its `shown`."""
+        page = self._tabs[-1].page
+        return page is not None and css in page.shown
 
     async def click(self, css: str, *,
                     timeout: float = 10.0) -> None:  # noqa: ASYNC109 (the engine's signature)

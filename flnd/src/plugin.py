@@ -1085,6 +1085,11 @@ class Ctx(Protocol):
         """
         ...
 
+    async def shown(self, css: str) -> bool:
+        """Whether an element `css` matches is shown in the tab now: it exists, is displayed
+        and visible, and has a size above zero."""
+        ...
+
     async def handoff(self, message: str, *, until: Callable[[], Awaitable[bool]],
                       timeout: float | None = None) -> bool:  # noqa: ASYNC109 (a person's)
         """Show `message` and wait for a person to do a step in a visible window (a captcha).

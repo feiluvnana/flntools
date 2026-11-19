@@ -601,6 +601,10 @@ The tab:
 - **`await ctx.document()`**: the tab's page now, parsed (below).
 - **`await ctx.click(css, timeout=10.0)`**: click the first element `css` matches, once it is
   clickable; `NetworkError` when nothing clickable matched in time.
+- **`await ctx.shown(css)`**: whether an element `css` matches is shown in the tab now: it
+  exists, is displayed and visible, and has a size above zero. A page can keep a tab in its
+  markup and hide it with CSS, which `document()` can't tell; a `FakePage` lists its `shown`
+  selectors.
 - **`await ctx.warm(urls)`**: start loading pages the listing opens next in warm tabs, while
   the run has room, for pages no category's `url=` names (an album's pages). `open` of one then
   takes its tab. An empty URL opens nothing.

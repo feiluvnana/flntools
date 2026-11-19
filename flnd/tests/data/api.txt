@@ -301,6 +301,7 @@ flnd.plugin.Ctx.pages(request: str | Request, *, cursor: str | Callable[[Respons
 flnd.plugin.Ctx.pause(seconds: float, reason: str) -> None
 flnd.plugin.Ctx.secrets: property -> MutableMapping[str, str]
 flnd.plugin.Ctx.settings: property -> Settings
+flnd.plugin.Ctx.shown(css: str) -> bool
 flnd.plugin.Ctx.state: property -> MutableMapping[str, Any]
 flnd.plugin.Ctx.storage(origin: str) -> Mapping[str, str]
 flnd.plugin.Ctx.target: property -> Target
@@ -508,15 +509,17 @@ flnd.testing.FakeCtx.pause(seconds: float, reason: str) -> None
 flnd.testing.FakeCtx.secrets: property -> MutableMapping[str, str]
 flnd.testing.FakeCtx.seen: attribute -> Seen
 flnd.testing.FakeCtx.settings: property -> flnd.plugin.Settings
+flnd.testing.FakeCtx.shown(css: str) -> bool
 flnd.testing.FakeCtx.state: property -> MutableMapping[str, Any]
 flnd.testing.FakeCtx.storage(origin: str) -> Mapping[str, str]
 flnd.testing.FakeCtx.target: property -> flnd.plugin.Target
 flnd.testing.FakeCtx.time: property -> flnd.plugin.Clock
 flnd.testing.FakeCtx.warm(urls: Sequence[str]) -> None
 flnd.testing.FakeCtx.when: property -> flnd.plugin.Range
-flnd.testing.FakePage(html: str = '', *, status: int = 200, url: str = '', feeds: Sequence[Sent | tuple[str, Any]] = ())
+flnd.testing.FakePage(html: str = '', *, status: int = 200, url: str = '', feeds: Sequence[Sent | tuple[str, Any]] = (), shown: Sequence[str] = ())
 flnd.testing.FakePage.feeds: field -> Sequence[Sent | tuple[str, Any]]
 flnd.testing.FakePage.html: field -> str
+flnd.testing.FakePage.shown: field -> Sequence[str]
 flnd.testing.FakePage.status: field -> int
 flnd.testing.FakePage.url: field -> str
 flnd.testing.Reply(body: Any = None, *, status: int = 200, headers: Mapping[str, str] | None = None, url: str = '')
