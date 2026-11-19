@@ -101,7 +101,7 @@ class EditableTest(unittest.TestCase):
 
 # What only a command may load: the engine, the network, the browser and the screen. `import
 # flnd` must load none of them, or every script and `flnd --help` pays.
-HEAVY = {"flnd.engine.core", "flnd.engine.ctx", "playwright", "rich", "curl_cffi",
+HEAVY = {"flnd.engine.crawl", "flnd.engine.ctx", "playwright", "rich", "curl_cffi",
          "msgspec"}
 
 

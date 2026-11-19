@@ -25,12 +25,11 @@ from test_library import example_source
 
 from flnd import Blocked, Target
 from flnd import cli as flnd_cli
-from flnd.engine import home as _home
 from flnd.engine import store as _store
-from flnd.engine.core import Engine, TargetReport, _Runner
-from flnd.engine.crawl import Options
+from flnd.engine.crawl import Options, TargetReport
 from flnd.engine.events import Saved
 from flnd.engine.plugins import PLUGINS
+from flnd.engine.run import Engine, _Runner
 from flnd.plugin import Plugin, Post, route
 from flnd.ui.log import ui
 from flnkit import cookies as _cookies
@@ -211,7 +210,7 @@ class DownloadTest(RunsCase):
 
         code, out, _ = self.run_app("download", "ins:a")
         self.assertEqual(code, 0)
-        log_dir = Path(".flnd") / _home.LOGS
+        log_dir = Path(".flnd") / _store.LOGS
         self.assertTrue(log_dir.is_dir())
         timestamped = list(log_dir.glob("*_download.jsonl"))
         self.assertEqual(len(timestamped), 1)
@@ -232,7 +231,7 @@ class DownloadTest(RunsCase):
         with mock.patch.object(_Runner, "run", run_with_events):
             code, out, err = self.run_app("download", "ins:a", "-v")
             self.assertEqual(code, 0)
-            log_dir = Path(".flnd") / _home.LOGS
+            log_dir = Path(".flnd") / _store.LOGS
             [run_log] = list(log_dir.glob("*_download.jsonl"))
             import json
 
@@ -377,7 +376,7 @@ class OutputTest(FlndCase):
         self.assertEqual(saved, [])
         self.assertRegex(lines[-1], r"^  v done in .+ - 1 target - 3 saved \(.+\) - 0 already saved"
                                     r" - 0 failed$")
-        log_dir = Path(".flnd") / _home.LOGS
+        log_dir = Path(".flnd") / _store.LOGS
         import json
 
         saved_rows = [
@@ -532,7 +531,7 @@ class HelpTest(FlndCase):
         import subprocess
 
         code = ("import sys\nfrom flnd.cli import main\nmain(['--help'])\n"
-                "print(sorted(m for m in sys.modules if m.startswith(('flnd.engine.core', 'flnd.plugins.ins', 'curl_cffi'))))")
+                "print(sorted(m for m in sys.modules if m.startswith(('flnd.engine.crawl', 'flnd.plugins.ins', 'curl_cffi'))))")
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                              check=True).stdout.splitlines()[-1]
         self.assertEqual(out, "[]")

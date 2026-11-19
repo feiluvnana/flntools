@@ -193,7 +193,7 @@ def _crashed(error: Exception, args: argparse.Namespace) -> int:
     from pathlib import Path
 
     import flnd
-    from flnd.engine.home import LOGS
+    from flnd.engine.store import LOGS
     from flnd.ui import out
 
     trace = "".join(traceback.format_exception(error))
@@ -990,7 +990,7 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
     from contextlib import ExitStack, nullcontext
     from pathlib import Path
 
-    from flnd.engine.home import LOGS
+    from flnd.engine.store import LOGS
     from flnd.ui.log import ui
     from flnd.ui.screen import Screen
 

@@ -731,7 +731,7 @@ COMMIT = (store.Store, "commit")
 
 def probe(case) -> list[float]:
     """The stalls of each run's loop, from a probe that wakes every 5 ms, in real time."""
-    from flnd.engine import core
+    from flnd.engine import ctx as core
 
     stalls: list[float] = []
     real = core.shared_browser

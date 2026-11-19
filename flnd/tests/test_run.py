@@ -6,6 +6,7 @@ through its run (what `download` and `sync` await), then its commands: `download
 """
 
 import asyncio
+import os
 import signal
 import threading
 import time
@@ -16,16 +17,16 @@ from typing import Any
 from unittest import mock
 
 import fakes
-from fakes import CDN, EngineCase, login_cookies, make_plugin, own_login, sign_in, vaulted
+from fakes import CDN, EngineCase, login_cookies, make_plugin, noise, own_login, sign_in, vaulted
 
 from flnd import Blocked, LoginError, Target, UsageError
 from flnd.engine import crawl as job
 from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine import store as _store
-from flnd.engine.core import Engine, Report, TargetReport, _Runner
-from flnd.engine.crawl import Options
+from flnd.engine.crawl import Options, TargetReport
 from flnd.engine.events import Failed, Skipped
+from flnd.engine.run import Engine, Results, _Runner
 from flnd.errors import Error, SiteError
 from flnd.plugin import File, Plugin, Post, Request, route
 from flnd.ui.log import ui
@@ -352,7 +353,7 @@ class HttpTest(EngineCase):
 
         self.routes["https://api.aaa.example/feed"] = limited
         engine = Engine(home=self.home, sources={"aaa": make_plugin("aaa", run)})
-        with mock.patch("flnd.engine.core.stopping", capture_stopping), self.assertRaises(KeyboardInterrupt), \
+        with mock.patch("flnd.engine.run.stopping", capture_stopping), self.assertRaises(KeyboardInterrupt), \
                 ui.scope(level="debug"):
             engine.download(["aaa:a/all"])
         self.assertTrue(any(line.endswith("aaa:a: stopped") for line in self.lines()), self.lines())
@@ -614,11 +615,11 @@ class ApiTest(EngineCase):
 
     def test_report_files_failed_and_ok(self):
         good, bad = Target("aaa:good", kind="user"), Target("aaa:bad", kind="user")
-        report = Report((TargetReport(good, (Path("a.jpg"), Path("b.jpg")), 1),
+        report = Results((TargetReport(good, (Path("a.jpg"), Path("b.jpg")), 1),
                          TargetReport(bad, (Path("c.jpg"),), 0, error="blocked")))
         self.assertEqual((report.files, report.failed, report.ok), (3, (bad,), False))
-        self.assertTrue(Report((TargetReport(good, (), 2),)).ok)
-        self.assertTrue(Report(()).ok)
+        self.assertTrue(Results((TargetReport(good, (), 2),)).ok)
+        self.assertTrue(Results(()).ok)
         with self.assertRaises(AttributeError):
             report.targets = ()  # type: ignore[misc]
 
@@ -757,6 +758,39 @@ class LoginStaysAtHomeTest(EngineCase):
         self.assertIn("ct0=new", api[1].headers["cookie"])
         self.assertNotIn("ct0=old", api[1].headers["cookie"])
         self.assertTrue(any(path.name.endswith("_100_0.jpg") for path in self.target_dir("twt", "100").rglob("*")))
+
+
+class GoneTest(EngineCase):
+    def setUp(self):
+        super().setUp()
+        self.routes[f"{CDN}/a.jpg"] = _net.reply(200, content=noise("JPEG"))
+        self.routes[f"{CDN}/b.jpg"] = _net.reply(404)
+        self.source = make_plugin("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg"),
+                                                File(f"{CDN}/b.jpg", name="b.jpg")])
+
+    def asked(self):
+        return sum(str(request.url) == f"{CDN}/b.jpg" for request in self.requests)
+
+    def test_a_404_is_gone_and_asked_again_only_when_told(self):
+        engine = Engine(home=self.home, sources={"aaa": self.source})
+        engine.download(["aaa:example_user/all"])
+        self.assertEqual(self.asked(), 1)
+        with _store.open(self.home) as db:
+            self.assertEqual(db.known("aaa:b.jpg")[1], "gone")
+            self.assertEqual(db._db.all("SELECT key, class FROM failures", ()),
+                             [("aaa:b.jpg", "NotFound")])
+        engine.download(["aaa:example_user/all"])
+        self.assertEqual(self.asked(), 1)
+        engine.download(["aaa:example_user/all"], again=True)
+        self.assertEqual(self.asked(), 2)
+
+    def test_ls_sizes_come_from_the_database_never_a_walk(self):
+        engine = Engine(home=self.home, sources={"aaa": self.source})
+        engine.download(["aaa:example_user/all"], sync=True)
+        with mock.patch.object(Path, "rglob", side_effect=AssertionError("a walk")), \
+                mock.patch.object(os, "walk", side_effect=AssertionError("a walk")):
+            [info] = engine.target_ls()
+        self.assertEqual((info.files, info.size), (1, len(noise("JPEG"))))
 
 
 if __name__ == "__main__":

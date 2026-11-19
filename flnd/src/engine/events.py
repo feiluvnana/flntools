@@ -25,6 +25,8 @@ script can read its `hint`; `encode` writes its class, message and hint.
 from __future__ import annotations
 
 import datetime
+import inspect
+from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -39,7 +41,7 @@ from flnd.plugin import Target
 __all__ = [
     "BUSY", "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure", "FileState",
     "HoldState", "Installed", "Login", "Phase", "Planned", "Record", "Report", "Saved",
-    "Skipped", "State", "Status", "TargetState", "Tracked", "encode",
+    "Skipped", "State", "Status", "TargetState", "Tracked", "encode", "sink",
 ]
 
 # `Skipped.reason` for a listing a sync found nothing new in.
@@ -561,3 +563,16 @@ def _plain(value: Any) -> Any:
         return {"class": type(value).__name__, "message": str(value),
                 "hint": getattr(value, "hint", "")}
     raise NotImplementedError(f"can't encode {type(value).__name__}")
+
+
+def sink(emit: Callable[[Any], Any] | None) -> Callable[[Any], Awaitable[None]]:
+    """`emit` as a coroutine function the loop awaits: `Run._emit` as it is, a plain function
+    (a test's `list.append`) called at once, and None dropping every event."""
+
+    async def put(event: Any) -> None:
+        if emit is not None:
+            done = emit(event)
+            if inspect.isawaitable(done):
+                await done
+
+    return put

@@ -24,14 +24,14 @@ import fakes
 from example_plugin import API, CDN, FIXTURES, Example
 from fakes import EngineCase, make_plugin
 
-from flnd.engine import core as engine_module
 from flnd.engine import crawl as job
 from flnd.engine import jobs as jobs_module
 from flnd.engine import run as _run
+from flnd.engine import run as engine_module
 from flnd.engine import store as _store
-from flnd.engine.core import Engine
 from flnd.engine.crawl import Options
 from flnd.engine.events import Skipped
+from flnd.engine.run import Engine
 from flnd.errors import DiskError, LoginError, NotFound, PluginError, SiteError, UsageError, disk
 from flnd.plugin import Browser, File, Plugin, Post, Target, route
 from flnd.ui.log import ui
@@ -1704,7 +1704,7 @@ class SyncedQueryTest(EngineCase):
             return await real_download(run, child, board, opts, **listed)
 
         with mock.patch("flnd.engine.crawl.download", stop_on_second), \
-                mock.patch("flnd.engine.core.stopping", capture_stopping), \
+                mock.patch("flnd.engine.run.stopping", capture_stopping), \
                 self.assertRaises(KeyboardInterrupt):
             engine.download(["pgd?dogs/photo"], sync=True)
         self.assertEqual(seen_pages, [0, 1])

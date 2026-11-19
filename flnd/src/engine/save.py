@@ -26,10 +26,9 @@ from urllib.parse import urlsplit
 
 import msgspec
 
-from flnd.engine import home, jobs, store
-from flnd.engine.events import BUSY, Failed, Saved, Skipped
+from flnd.engine import jobs, store
+from flnd.engine.events import BUSY, Failed, Saved, Skipped, sink
 from flnd.engine.jobs import Job, Kind
-from flnd.engine.run import sink
 from flnd.errors import (
     DiskError,
     Error,
@@ -1241,7 +1240,7 @@ def sampled(settings: Any, error: BaseException) -> None:
         settings: the run's `RunShared`: its home and run id.
         error: what failed; anything but a `Changed` with a response is left as it is.
     """
-    path = home.sample(settings.home, settings.run, error)
+    path = store.sample(settings.home, settings.run, error)
     if path is not None and isinstance(error, Error):
         saved = f"the answer is saved, scrubbed, in {path}"
         error.hint = f"{error.hint}; {saved}" if error.hint else saved

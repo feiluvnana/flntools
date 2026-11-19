@@ -73,11 +73,10 @@ The rules between them:
    src/engine/run.py        Run: one command on the run's loop, read as a stream of events
         │
         ▼
-   src/engine/core.py       Engine: resolves targets, checks options, runs each plugin's targets
+   src/engine/run.py        Engine: resolves targets, checks options, runs each plugin's targets
         │
         ├── src/engine/config.py    config.toml: every setting, read, checked and edited
         ├── src/engine/store.py     flnd.db: files, targets, runs, failures, accounts; check
-        ├── src/engine/home.py      the home's layout and logs
         ├── src/engine/auth.py      accounts, the sealed vault, the login methods
         ├── src/engine/ctx.py       PluginRun (a plugin's resources for a run) and Ctx (what
         │                           a plugin acts through, for one target)
@@ -95,7 +94,7 @@ The rules between them:
 | `src/_library.py` | `open` and `Flnd`: each command as a method, over the engine; the reads (`targets`, `files`, `logins`, `status`), as rows | scripts and the CLI |
 | `src/engine/run.py` | `Run`: a command on the run's loop, `flnd-loop`, read as a stream of events through a channel of 256; `Stop` (the Ctrl-C stages) and `suspend`; the run's live counts and their snapshots (`Tally`) | `Flnd`, the engine |
 | `src/engine/events.py` | the events (`Saved`, `Skipped`, `Failed`, `Planned`), the public `Report`, the `State` snapshot, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the crawl, `Run`, `Flnd` |
-| `src/engine/core.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
+| `src/engine/run.py` (`Engine`) | `Engine`: every command as a method, over `flnd.engine.resolve`; the run's instance of each plugin and account (`_Runner`), the targets' places, searches and the targets listings link to | `Flnd` |
 | `src/engine/crawl.py` | `Options` (what one target downloads) and `RunShared` (what a run shares); one target, as a coroutine on the run's loop: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads (`Downloads`), history rows | the engine |
 | `src/engine/ctx.py` | `PluginRun`, a plugin's resources for a run: its cookies, HTTP session, clients, stores, loop and scheduler; `call` runs a blocking function as a step on a `CALL` thread, `off` runs the engine's own blocking step on one. `plugin_run` and `opened` make one (outside a run, or on the run's loop), and `shared_browser` gives the run its scheduler and its one browser. `TargetTabs` is a target's share of that browser, which `Ctx`'s verbs drive on a thread. `Listing` holds a category's saved cursor, and `first_page` reads the first page from it. `Ctx`, the plugin API 2 context for one target of a run: `fetch` and `pages` as page jobs (signed, `blocked` read, a 429 or a wall held, a refusal raised or, with `check=False`, read; a page body capped at 32 MiB), the browser verbs (`open` gives `Landed`, a 404 is `NotFound`; `feed`, `load`, `document`, `warm`, `click`, `handoff`) on the target's `TargetTabs`, a thread each, `hold`, `pause`, `call`, `ask` and `log`; the account's `state` (JSON values) and `secrets` (written only while `Login.start` runs, `LOGGING_IN`); the answer rules `refused`, `walled` and `checked`, which `flnd.testing.FakeCtx` shares | the crawl, the engine's login and `connect` |
 | `src/engine/resolve.py` | resolving target text (`code:value[/categories]`, `code?query`, links) from the manifest's plain data without importing any plugin | `Engine` |
@@ -106,8 +105,7 @@ The rules between them:
 | `src/engine/plugins.py` | finding installed plugins (installed packages' `flnd.sources` entry points, then the user's plugin folder), importing one when its code is first used, and disabling one that breaks, with its file and line | `PLUGINS` |
 | `src/engine/extension.py` | the Chrome extension's native-messaging host (`flnd host`), the relay a run reaches it by, the run's client, and `install` ([extension.md](extension.md)); the extension's own files are in `src/extension/` | Chrome, the CLI's `flnd extension` |
 | `src/testing.py` | the public test kit: `FakeCtx` (with `Reply`, `FakePage` and `Seen`) for a plugin, `collect`, `check`, `fake_clock` | a plugin's tests, flnd's own (`tests/fakes.py`) |
-| `src/engine/store.py` | `flnd.db`, schema 2: its tables, the migration of a version-1 home (copied to `flnd.v1.db` first), the rows and queries (files, posts, targets, runs, failures, plugins' state, accounts), the save's commit, and `check`, the history against the disk and its repair ([storage.md](storage.md#checking-a-home)) | the engine, the crawl, the save, `ctx`, `Flnd` |
-| `src/engine/home.py` | the rest of the home: a target's folder, the samples and their sweep | the engine, the crawl, the save |
+| `src/engine/store.py` | `flnd.db`, schema 2: its tables, the migration of a version-1 home (copied to `flnd.v1.db` first), the rows and queries (files, posts, targets, runs, failures, plugins' state, accounts), the save's commit, and `check`, the history against the disk and its repair ([storage.md](storage.md#checking-a-home)); the rest of the home: a target's folder, the samples and their sweep | the engine, the crawl, the save, `ctx`, `Flnd` |
 | `src/engine/auth.py` | the accounts of each plugin and the one a target runs as (`pick`); the sealed vault in `secret.db` (`Vault`, `secrets`) under the key in `~/.config/flnd/key`, and the sealing of a version-1 `secret.db`; the login methods (`login`), `logout`, the logins' state (`logins`), and the cookies a run writes back ([storage.md](storage.md#the-vault)) | the engine, `ctx`, `Flnd` |
 | `src/engine/save.py` | a post's files as jobs (`Saver`): part, transfer by mirrors or a DASH pair (joined by `flnkit/media.py`) or a plugin's `fetch` function, the content check, dedupe, the post's commit, unpack, the sidecar, `Saved`, exec ([storage.md](storage.md)) | the crawl and the engine |
 | `src/ui/theme.py` | every colour and glyph flnd draws with, and when to drop colour or Unicode | `src/ui/*` |

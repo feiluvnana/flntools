@@ -25,9 +25,9 @@ from flnd import plugin
 from flnd.engine import auth as _auth
 from flnd.engine import run as _run
 from flnd.engine import store as _store
-from flnd.engine.core import Engine, Report, _drive
 from flnd.engine.crawl import Options
 from flnd.engine.events import Failed, Phase, State
+from flnd.engine.run import Engine, Results, _drive
 from flnd.plugin import Post, Target
 from flnd.ui.log import ui
 from flnkit import clock as _time
@@ -153,11 +153,11 @@ async def _with_client(call: Callable[[_net.Client], Any], *, stop: Any, retry: 
 # ---------------------------------------------------------------------------------------------
 
 def run_targets(engine: Engine, chosen: Sequence[tuple[Target, Options]],
-                stop: _run.Stop) -> Report:
+                stop: _run.Stop) -> Results:
     """Run `chosen` through the engine's run, as a command does, on a loop on this thread."""
-    async def command() -> Report:
+    async def command() -> Results:
         async with engine._live(), engine._running(stop) as runner:
-            return Report(tuple(await runner.run(chosen)))
+            return Results(tuple(await runner.run(chosen)))
 
     return _drive(command())
 

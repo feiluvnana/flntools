@@ -37,11 +37,10 @@ from typing import Any
 
 import kit
 
-from flnd.engine import home as _home
 from flnd.engine import run as _run
 from flnd.engine import store as _store
-from flnd.engine.core import Engine, _drive
 from flnd.engine.crawl import Options
+from flnd.engine.run import Engine, _drive
 from flnd.plugin import Ctx, File, Plugin, Post, Request, Target, route
 from flnd.ui.log import ui
 from flnkit import net as _net
@@ -168,7 +167,7 @@ def grow(home: Path, files: int) -> None:
         home: the home of run 1.
         files: how many file rows the home holds after.
     """
-    folder = _home.target_folder(home, Target("bnc:example_user", kind="user")) / "posts"
+    folder = _store.target_folder(home, Target("bnc:example_user", kind="user")) / "posts"
     with _store.open(home) as db:
         held = db.count("bnc:example_user")[0]
         rows = [

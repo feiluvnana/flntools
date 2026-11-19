@@ -16,9 +16,9 @@ What it offers, for any caller:
         sql.execute("INSERT INTO notes VALUES (?, ?)", ("a", "hello"))
     db.one("SELECT text FROM notes WHERE key = ?", ("a",))      # ("hello",)
 
-A library: it knows no table but the ones a caller passes in. In flnd, `src/engine/home.py`
-keeps the home's `flnd.db` in a `Db` (with flnd's schema as `schema` and `setup`);
-`flnkit/vault.py` keeps `secret.db` in another.
+A library: it knows no table but the ones a caller passes in. In flnd, `src/engine/store.py`
+keeps the home's `flnd.db` in a `Db` (with flnd's schema as `schema` and `setup`), and
+`src/engine/auth.py` keeps `secret.db` in another.
 
 How a `Db` is used, from first call to close:
 1. `Db(path, …)` only remembers the path: nothing is opened or made;

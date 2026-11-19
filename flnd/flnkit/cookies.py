@@ -12,8 +12,8 @@ What it offers any caller:
 - `parse_binarycookies`, a stdlib reader of Safari's `Cookies.binarycookies` format.
 - `refuse_profile`, the guard that stops a test suite from reading a real browser profile.
 
-Who calls it: in flnd, the login code (`src/engine/ctx.py`, `src/engine/home.py`) loads a jar
-at `flnd login` and saves it in the vault; the HTTP client (`flnkit/net.py`) and the browser
+Who calls it: in flnd, the login code (`src/engine/auth.py`) loads a jar at `flnd login` and
+saves it in the vault; the HTTP client (`flnkit/net.py`) and the browser
 (`flnkit/browser.py`) send it. It calls only the stdlib, `cryptography` (lazily, for a Chromium
 value), and the `_files` (atomic writes) and `_ui` (a debug line) libraries. Its errors are
 `flnkit.errors.LoginError` and `UsageError`, so a caller can show them as they are.

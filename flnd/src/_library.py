@@ -7,9 +7,9 @@ src/docs/library explains it.
             ...
 
 Who calls it: scripts and the CLI (`src/cli.py`), both through `flnd.open`, so the command
-line can do nothing a script can't. What it calls: `flnd.engine.core.Engine` for every command,
-`flnd.engine.home` (the home's `flnd.db`) for the reads, and the home's `config.toml` for settings
-past the five options a call takes.
+line can do nothing a script can't. What it calls: `flnd.engine.run.Engine` for every command,
+`flnd.engine.store` (the home's `flnd.db`) and `flnd.engine.auth` for the reads, and the home's
+`config.toml` for settings past the five options a call takes.
 
 How a call flows:
 1. The method checks its arguments at once: targets are resolved with the categories they
@@ -41,11 +41,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from flnd.engine.events import Checked, Failure, Installed, Login, Record, Status, Tracked
-from flnd.engine.run import Run
 from flnd.errors import PluginError, UsageError
 
 if TYPE_CHECKING:
-    from flnd.engine.core import Chosen, Engine
+    from flnd.engine.run import Chosen, Engine, Run
     from flnd.engine.store import FailureRow
     from flnd.plugin import Plugin, Target
 
@@ -626,7 +625,7 @@ class Flnd:
 
     def _engine(self, emit: Any = None, stop: Any = None) -> Engine:
         """An engine of this home and its sources, sending events to `emit`."""
-        from flnd.engine.core import Engine
+        from flnd.engine.run import Engine
 
         return Engine(home=self.home, sources=self._sources(), emit=emit, stop=stop)
 
@@ -682,6 +681,8 @@ class Flnd:
         Returns:
             The run, not started, and remembered so `close()` can stop it.
         """
+        from flnd.engine.run import Run
+
         async def work(emit: Any, stop: Any) -> None:
             await command(self._engine(emit, stop))
 

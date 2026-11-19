@@ -14,7 +14,7 @@ from unittest import mock
 
 import fakes
 
-from flnd.engine.core import Engine
+from flnd.engine.run import Engine
 from flnd.errors import Blocked, Changed, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import File, Post, Range, Request, Target
 from flnd.plugins.ins import APP_ID, Instagram, best_file, pk_stamp

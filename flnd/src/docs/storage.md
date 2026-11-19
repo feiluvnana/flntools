@@ -32,9 +32,8 @@ from a login URL or one that sets a cookie is never kept, and the file is named 
 never by anything the site sent.
 
 The code: `src/engine/store.py` is `flnd.db` (its schema, the migration of a version-1 home,
-its rows and queries, and `check`), `src/engine/auth.py` the accounts and `secret.db`, and
-`src/engine/home.py` the rest of the home (a target's folder, the logs). They are built on three
-kit modules: `flnkit/db.py`, a SQLite store (WAL, one connection shared by threads,
+its rows and queries, and `check`) and the rest of the home (a target's folder, the logs), and
+`src/engine/auth.py` the accounts and `secret.db`. They are built on three kit modules: `flnkit/db.py`, a SQLite store (WAL, one connection shared by threads,
 transactions), `flnkit/vault.py`, which seals secrets, and `flnkit/cookies.py`, cookie jars read
 from files and browsers.
 

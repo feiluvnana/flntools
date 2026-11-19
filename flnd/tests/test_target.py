@@ -1,15 +1,19 @@
-"""Reading targets through the engine: every source's forms, bare URLs, short links and the refusals. No network."""
+"""Reading the built-in plugins' targets from the manifest (`flnd.engine.resolve`): every
+plugin's forms, bare URLs, short links and the refusals. No network."""
 
 import unittest
 
-from flnd.engine.core import resolve
+from flnd.engine.plugins import PLUGINS
+from flnd.engine.resolve import Manifest, resolve
 from flnd.errors import UsageError
 from flnd.plugin import Target
-from flnd.plugins import PLUGINS
+
+MANIFEST = Manifest(PLUGINS.manifest())
 
 
 def read(text, follow=None):
-    return resolve(text, PLUGINS, follow=follow)
+    found = resolve(text, manifest=MANIFEST, known={}, follow=follow)
+    return Target(found.key, kind=found.kind)
 
 
 class AcceptedFormsTest(unittest.TestCase):
@@ -21,12 +25,11 @@ class AcceptedFormsTest(unittest.TestCase):
     def test_ins(self):
         user = Target("ins:example_user", kind="user")
         self.check([
-            ("ins:example_user", user), ("ins:@example_user", user), ("ins:instagram.com/example_user", user),
+            ("ins:example_user", user), ("ins:@example_user", user),
             ("https://www.instagram.com/example_user/", user), ("https://instagram.com/example_user/?hl=en", user),
             ("instagram.com/example_user", user), ("https://m.instagram.com/example_user/reels/", user),
             ("ins:example.user", Target("ins:example.user", kind="user")),
             ("https://www.instagram.com/p/C1abcDEFghi/", Target("ins:C1abcDEFghi", kind="post")),
-            ("ins:https://www.instagram.com/reel/C1abcDEFghi/", Target("ins:C1abcDEFghi", kind="post")),
         ])
 
     def test_fbk(self):
@@ -71,8 +74,7 @@ class AcceptedFormsTest(unittest.TestCase):
 
     def test_loi(self):
         post = Target("loi:5930", kind="post")
-        self.check([("loi:5930", post), ("https://loix.cc/lois/5930", post), ("loix.cc/lois/5930", post),
-                    ("loi:https://www.loix.cc/lois/5930?ref=1", post)])
+        self.check([("loi:5930", post), ("https://loix.cc/lois/5930", post), ("loix.cc/lois/5930", post)])
 
     def test_tlg(self):
         self.check([("tlg:@examplechannel", Target("tlg:examplechannel", kind="chat")),
@@ -101,8 +103,7 @@ class ShortLinkTest(unittest.TestCase):
             return "https://www.tiktok.com/@example_creator/video/7301234567890123456?is_from_webapp=1"
 
         self.assertEqual(read("https://vm.tiktok.com/ZMabc123/", follow), Target("tik:7301234567890123456", kind="video"))
-        self.assertEqual(read("tik:vm.tiktok.com/ZMabc123/", follow), Target("tik:7301234567890123456", kind="video"))
-        self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/", "https://vm.tiktok.com/ZMabc123/"])
+        self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
 
     def test_other_links_are_not_followed(self):
         def follow(url):
@@ -134,22 +135,6 @@ class ShortLinkTest(unittest.TestCase):
 
 
 class RefusedTest(unittest.TestCase):
-    def test_bare_value_lists_every_source(self):
-        with self.assertRaises(UsageError) as caught:
-            read("example_user")
-        self.assertEqual(str(caught.exception), 'which source is "example_user"? Write it as tik:example_user, '
-                                                "fbk:example_user, ins:example_user, twt:example_user, loi:example_user, "
-                                                "tlg:example_user, mht:example_user")
-
-    def test_unknown_source(self):
-        with self.assertRaisesRegex(UsageError, "^unknown source 'ytb'. Sources: tik, fbk, ins, twt, loi, tlg, mht, web$"):
-            read("ytb:nasa")
-
-    def test_url_of_no_source_is_offered_to_web(self):
-        with self.assertRaisesRegex(UsageError, '^which source is "https://example.com/someone"'
-                                    r"\? Write it as web:https://example.com/someone$"):
-            read("https://example.com/someone")
-
     def test_refused_forms_have_a_hint(self):
         rows = [
             ("https://www.instagram.com/stories/example_user/123/", "ins: story links aren't supported; give the "
@@ -164,20 +149,10 @@ class RefusedTest(unittest.TestCase):
             with self.subTest(text=text), self.assertRaisesRegex(UsageError, "^" + message):
                 read(text)
 
-    def test_unreadable_forms_list_the_forms(self):
-        with self.assertRaises(UsageError) as caught:
-            read("ins:not a name")
-        self.assertEqual(str(caught.exception), "ins: can't read 'not a name'; write it like ins:me, ins:<user>, "
-                                                "https://www.instagram.com/p/<code>/, https://www.instagram.com/reel/<code>/, "
-                                                "https://www.instagram.com/reels/<code>/, https://www.instagram.com/tv/<code>/, "
-                                                "https://www.instagram.com/…/p/<code>/, "
-                                                "https://www.instagram.com/…/reel/<code>/, https://www.instagram.com/…/reels/<code>/, "
-                                                "https://www.instagram.com/…/tv/<code>/, https://www.instagram.com/<user>/")
-        # twt's forms are generated from its routes, so its first form is twt:<user>.
-        with self.assertRaisesRegex(UsageError, "^twt: can't read 'not a name'; write it like twt\\?<query>, twt:<user>, "):
-            read("twt:not a name")
-        for text in ("ins:", "tik:https://www.tiktok.com/"):
-            with self.subTest(text=text), self.assertRaisesRegex(UsageError, "can't read"):
+    def test_unreadable_forms(self):
+        for text, said in (("ins:", "write a value"), ("ins:not a name", "can't read"),
+                           ("tik:https://www.tiktok.com/", "can't read")):
+            with self.subTest(text=text), self.assertRaisesRegex(UsageError, said):
                 read(text)
 
     def test_empty(self):

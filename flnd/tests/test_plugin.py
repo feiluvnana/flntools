@@ -18,9 +18,9 @@ from test_ctx import CtxCase as RunCase
 from test_ctx import FakeRaw
 
 from flnd.engine import jobs
-from flnd.engine.core import Engine
 from flnd.engine.crawl import Options
 from flnd.engine.events import Planned
+from flnd.engine.run import Engine
 from flnd.errors import Blocked
 from flnd.plugin import (
     API,

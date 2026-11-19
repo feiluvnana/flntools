@@ -24,11 +24,10 @@ from fakes import CDN, EngineCase, login_cookies
 import flnd
 from flnd import cli as flnd_cli
 from flnd.engine import crawl as job
-from flnd.engine import home as _home
 from flnd.engine import save
 from flnd.engine import store as _store
-from flnd.engine.core import Engine
 from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped, encode
+from flnd.engine.run import Engine
 from flnd.errors import Changed
 from flnd.plugin import File, Plugin, Post, route
 from flnd.ui.log import ui
@@ -354,7 +353,7 @@ class SampleTest(EngineCase):
         return engine.download(["chg:example_user/all"])
 
     def samples(self):
-        return sorted((self.home / _home.LOGS).glob("*/samples/*"))
+        return sorted((self.home / _store.LOGS).glob("*/samples/*"))
 
     def test_a_changed_answer_is_kept_scrubbed_and_named_in_the_hint(self):
         report = self.run_changed("/feed", {"user": "example_user", "csrf_token": CSRF,
@@ -373,7 +372,7 @@ class SampleTest(EngineCase):
         self.assertEqual(self.samples(), [])
 
     def test_logs_older_than_30_days_are_swept_at_a_run(self):
-        old, new = self.home / _home.LOGS / "old-run", self.home / _home.LOGS / "crash-new.txt"
+        old, new = self.home / _store.LOGS / "old-run", self.home / _store.LOGS / "crash-new.txt"
         (old / "samples").mkdir(parents=True)
         new.write_text("x")
         month = time.time() - 31 * 86_400
@@ -419,7 +418,7 @@ class SecretsTest(FeedCase):
             with redirect_stdout(out):
                 flnd_cli.main(["--home", str(self.home), *argv])
             outputs[" ".join(argv)] = out.getvalue()
-        for path in sorted((self.home / _home.LOGS).rglob("*")):
+        for path in sorted((self.home / _store.LOGS).rglob("*")):
             if path.is_file():
                 outputs[str(path)] = path.read_text(encoding="utf-8", errors="replace")
         for name in ("flnd.db", "flnd.db-wal"):

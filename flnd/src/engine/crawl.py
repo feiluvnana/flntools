@@ -31,10 +31,9 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
-from flnd.engine import home, jobs, plugins, save, store
+from flnd.engine import jobs, plugins, save, store
 from flnd.engine.ctx import Ctx, Listing, PluginRun, met_turn
-from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped
-from flnd.engine.run import Counts, Tally, sink
+from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped, sink
 from flnd.errors import (
     Blocked,
     Changed,
@@ -57,7 +56,7 @@ from flnkit.text import fill
 
 if TYPE_CHECKING:
     from flnd.engine.events import Event
-    from flnd.engine.run import Stop
+    from flnd.engine.run import Counts, Stop, Tally
 
 __all__ = [
     "STOPPED", "Claims", "Downloads", "Ledger", "Options", "Placed", "Retry", "RunShared",
@@ -567,7 +566,7 @@ class Ledger:
         """Initialize a target ledger with its stores, dates, and category state."""
         self.run, self.source, self.settings, self.site = run, run.source, run.settings, site
         self.target, self.tally, self._options = target, tally, options
-        self.folder = home.target_folder(self.settings.home, target)
+        self.folder = store.target_folder(self.settings.home, target)
         # The home's database; None for a plan with nothing to read (`flnd.dry`).
         self._db = self.settings.db
         # Told to ask again for everything: files recorded gone are asked for once more.
@@ -1483,7 +1482,7 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
     # the sweep passes over the parts another run holds. It runs while the listing starts, and
     # ends before the first file is handed over.
     sweeping = asyncio.ensure_future(
-        run.off(files.sweep, home.target_folder(run.settings.home, target)))
+        run.off(files.sweep, store.target_folder(run.settings.home, target)))
     site = _site(run, target, options.since, options.until)
     ledger = Ledger(run, site, target, tally, options=options)
     downloads = Downloads(run, target, tally, swept=sweeping, site=site)
@@ -2699,7 +2698,7 @@ async def _run_discovered(run: PluginRun, options: Options, yielded: Any) -> Non
             if follow is not None:
                 await follow(child, child_options, inside=run.source.code)
             elif child.plugin == run.source.code:
-                await download(run, child, run.settings.tally or Tally(), child_options)
+                await download(run, child, run.settings.tally or _tally(), child_options)
             if options.limit is not None and len(seen) >= options.limit:
                 return
 
@@ -2885,3 +2884,10 @@ async def resolved(run: PluginRun, item: Target | str) -> Target | None:
                 error=error)
         return None
 
+
+
+def _tally() -> Tally:
+    """Live counts of their own, for a target run outside the engine; `run` imports this module."""
+    from flnd.engine.run import Tally
+
+    return Tally()

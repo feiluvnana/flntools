@@ -9,8 +9,8 @@ from fakes import EngineCase, noise
 from test_library import LibraryCase, example_source
 
 from flnd.engine import crawl, store
-from flnd.engine.core import Engine
 from flnd.engine.resolve import Manifest, Resolved, resolve
+from flnd.engine.run import Engine
 from flnd.errors import PluginError, UsageError
 from flnd.plugin import Target, route
 from flnd.plugins import _manifest

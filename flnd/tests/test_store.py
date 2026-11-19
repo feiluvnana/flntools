@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -15,7 +16,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from flnd.engine import store
-from flnd.errors import DiskError, NetworkError, NotFound, UsageError
+from flnd.errors import Changed, DiskError, NetworkError, NotFound, UsageError
 from flnd.testing import fake_clock
 
 # Version 1 as a home made it: its schema text, then what its `_upgrade` added.
@@ -575,6 +576,29 @@ class CheckTest(StoreCase):
             self.assertIsNone(opened.known("ins:b"))
             (folder / "lost.jpg").unlink()
             self.assertTrue(store.check(self.home, opened).ok)
+
+
+class SampleTest(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.home = Path(folder.name) / ".flnd"
+
+    def test_samples_saved_at_once_get_their_own_names(self):
+        response = SimpleNamespace(url="https://example.com/api", headers={}, content=b"{}")
+        barrier = threading.Barrier(2)
+
+        def keep():
+            barrier.wait(timeout=5)
+            for _ in range(50):
+                store.sample(self.home, 1, Changed("bad shape", response=response))
+
+        threads = [threading.Thread(target=keep) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(list((self.home / store.LOGS / "1" / "samples").iterdir())), 100)
 
 
 if __name__ == "__main__":
