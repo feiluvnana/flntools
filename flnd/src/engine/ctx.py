@@ -556,9 +556,14 @@ class Ctx:
         """See `flnd.plugin.Ctx.open`: a warm tab loading `url` becomes the target's."""
         plugin = self._plugin
         page, warm = await self._run.off(self._take, url)
+        taken = self._tabs
 
         async def attempt() -> Landed:
-            nonlocal warm
+            nonlocal page, warm, taken
+            if taken is not self._tabs:
+                # Moved to another account: its own window, with its cookies.
+                page, warm = await self._run.off(self._take, url)
+                taken = self._tabs
             if warm is not None:
                 visit, warm = warm, None
                 try:

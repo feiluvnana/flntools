@@ -266,7 +266,7 @@ else:
 
 def _child(code: str, *args: str) -> subprocess.CompletedProcess[str]:
     """Run `code` in a fresh Python, its output in UTF-8; it must end within 2 s."""
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "NO_COLOR": "1"}
     return subprocess.run([sys.executable, "-c", code, *args], capture_output=True, text=True,
                           encoding="utf-8", timeout=2, env=env)
 

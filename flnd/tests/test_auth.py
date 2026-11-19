@@ -547,6 +547,26 @@ class SwitchEngineTest(EngineCase):
         self.assertIsInstance(report.targets[0].error, LoginError)
         self.assertEqual(self.sent(), ["sid=one", "sid=two"])
 
+    def test_a_page_opened_after_a_move_is_the_new_accounts(self):
+        browsers = []
+
+        async def launch(**options):
+            # The first account's window is walled; the second's opens.
+            status = 403 if not browsers else 200
+            browsers.append(FakeBrowser(lambda: FakeRaw([status] * 20), options))
+            return browsers[-1]
+
+        async def route(ctx):
+            self.seen.append((await ctx.open("https://aaa.example/p")).status)
+
+        self.enterContext(mock.patch("flnkit.browser.launch", launch))
+        plugin = make_plugin("aaa", route, login=login_cookies("sid"), browser=True)
+        self.assertTrue(self.report(plugin, targets=["aaa:x"]).ok)
+        self.assertEqual(self.seen, [200])
+        self.assertEqual([[raw.loaded for raw in browser.opened] for browser in browsers],
+                         [[["https://aaa.example/p"]], [["https://aaa.example/p"]]])
+        self.assertEqual(targets(self.home)["aaa:x"].account, "two")
+
 
 class BrowserAccountsTest(EngineCase):
     """Two accounts of a browser plugin in one run: each sees its own cookies alone."""
