@@ -1,39 +1,6 @@
 """SQLite WAL store: one shared connection, explicit transactions.
 
-src/docs/storage explains it.
-
-What it offers, for any caller:
-- `connect(path)`: a connection in WAL mode with `synchronous = NORMAL` (and `fullfsync` on
-  macOS), a busy timeout, autocommit, usable from any thread.
-- `Db(path, schema=…, setup=…)`: one database file with its tables, connected on first use. A
-  read of a file that doesn't exist yet returns nothing and creates nothing; the first write
-  makes the file and runs `schema`, then `setup`.
-- `Db.transaction()`: `BEGIN IMMEDIATE` … `COMMIT`, rolled back on an error; nested blocks join
-  the outer one. `Db.one`, `Db.all` and `Db.write` run single statements.
-
-    db = Db(Path("notes.db"), schema="CREATE TABLE IF NOT EXISTS notes (key TEXT, text TEXT)")
-    with db.transaction() as sql:
-        sql.execute("INSERT INTO notes VALUES (?, ?)", ("a", "hello"))
-    db.one("SELECT text FROM notes WHERE key = ?", ("a",))      # ("hello",)
-
-A library: it knows no table but the ones a caller passes in. In flnd, `src/engine/store.py`
-keeps the home's `flnd.db` in a `Db` (with flnd's schema as `schema` and `setup`), and
-`src/engine/auth.py` keeps `secret.db` in another.
-
-How a `Db` is used, from first call to close:
-1. `Db(path, …)` only remembers the path: nothing is opened or made;
-2. a read (`one`, `all`) before the file exists returns no row, so a command that only looks
-   never leaves an empty database behind;
-3. the first write (`write`, `transaction`) calls `connection`, which opens the file in WAL mode
-   (`connect`), runs `schema` and then `setup`, and keeps the connection;
-4. every later call reuses that one connection under the `Db`'s lock; `close` ends it.
-
-Rules a change must keep:
-- Every statement runs under the `Db`'s lock, so threads share its one connection safely.
-- A transaction takes the write lock at its start (`IMMEDIATE`), so two processes never read a
-  row, change it and write it back over each other: the second waits up to `BUSY_MS`.
-- It imports only the stdlib and `flnkit.errors`: SQLite failures are `DiskError`s naming the file.
-"""
+src/docs/storage explains it."""
 
 from __future__ import annotations
 

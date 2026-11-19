@@ -1,26 +1,6 @@
-"""What a run reports, and the rows the library reads: events, `Report`, the `State` snapshot,
-`Account`, `Record`, `Tracked`, `Checked`, `Status`, `Failure` and `Installed`.
+"""What a run reports, and the rows the library reads.
 
-src/docs/library explains it.
-
-Every type here is a frozen msgspec struct, so it is cheap to make, safe to share between the
-run's threads, and encodes to JSON (`encode`) for a script or a cron job. The module imports
-msgspec, the errors and `flnd.plugin` (for `Target`), never the engine, so `flnd.Saved` is
-cheap to reach.
-
-Who makes them:
-1. the job and the engine make `Saved`, `Skipped`, `Failed` and `Planned` as a run goes,
-   and hand them to the run's sink (`flnd.engine.run.Run._emit`);
-2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
-3. `Flnd` makes `Account`, `Record`, `Tracked`, `Status` and `Failure` from the home's
-   `flnd.db`, for its reads, `Checked` from `fl.check()`, and `Installed` from the plugins it
-   knows (`fl.plugins`).
-
-The one rule a change must keep: an event holds data, never a live object (a site, a file
-handle, a lock), because a script may keep it after the run ends, and `encode` must turn it
-into JSON. An error is the one exception: `Failed.error` is the `flnd.Error` itself, so a
-script can read its `hint`; `encode` writes its class, message and hint.
-"""
+src/docs/library explains it."""
 
 from __future__ import annotations
 

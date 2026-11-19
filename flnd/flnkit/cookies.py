@@ -1,36 +1,6 @@
-"""Cookie jars, a library: read cookies from a file, a browser or text, narrow and save them.
+"""Cookie jars: read cookies from a file, a browser or text, and save them.
 
-src/docs/storage explains it.
-
-What it offers any caller:
-- `Jar`, an immutable collection of cookies in Playwright's dictionary shape (`name`, `value`,
-  `domain`, `path`, `expires`, `secure`, `httpOnly`, `sameSite`). It filters by domain and name,
-  reads a value by name, builds a `Cookie:` header and saves itself as a Netscape `cookies.txt`.
-- `load`, which reads a Netscape or JSON cookie file, raw cookie text, or the cookie database of
-  an installed browser (`BROWSERS`: Firefox and, on macOS, Safari). Chromium cookies are read
-  through flnd's Chrome extension (`flnd engine chrome`).
-- `parse_binarycookies`, a stdlib reader of Safari's `Cookies.binarycookies` format.
-- `refuse_profile`, the guard that stops a test suite from reading a real browser profile.
-
-Who calls it: in flnd, the login code (`src/engine/auth.py`) loads a jar at `flnd auth login` and
-saves it in the vault; the HTTP client (`flnkit/net.py`) and the browser
-(`flnkit/browser.py`) send it. It calls only the stdlib and the `_files` (atomic writes) and
-`_ui` (a debug line) libraries. Its errors are
-`flnkit.errors.LoginError` and `UsageError`, so a caller can show them as they are.
-
-How `load` reads a browser:
-1. find the profile folder for the platform (`_firefox_profile`, or Safari's cookie file,
-   `SAFARI_FILES`);
-2. copy the cookie database into memory with SQLite's backup API, read-only, so a running
-   browser's lock or write-ahead log never blocks or corrupts the read;
-3. read every row.
-
-Rules a change must keep:
-- A cookie's value is a login. It is never printed, logged, put in an error message or a
-  `repr`; messages name the file, the line number, the browser or the cookie's name only.
-- A `Jar` never changes after it is made: every method returns a new jar or a copy.
-- A saved file is written atomically with mode 0600, so a crash never leaves half a login.
-"""
+src/docs/storage explains it."""
 
 from __future__ import annotations
 

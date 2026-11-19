@@ -1,36 +1,6 @@
-"""The test kit for plugins: run one on fakes, with no network, no browser and no clock.
+"""The test kit for plugins: run one on fakes, with no network.
 
-src/docs/writing-a-plugin explains it.
-
-    from flnd.testing import FakeCtx, Reply, check, collect
-
-    check(Example)                                      # the class, and its routes' examples
-    ctx = FakeCtx(Example, routes={API: Reply({"items": []})})
-    saved = collect(Example, "exm:example_user", ctx=ctx)
-
-It is one of flnd's three public modules, next to `flnd` (the library) and `flnd.plugin` (the
-plugin API), and it is how a plugin's own tests are written.
-
-What it holds:
-- `FakeCtx`, a `flnd.plugin.Ctx` that answers from `Reply`s and `FakePage`s the way the engine
-  would: it signs, holds on blocks and walls, and raises the engine's errors, recording what
-  the plugin did in a `Seen`;
-- `collect`, which resolves a target, runs its route and categories on a `FakeCtx` as the
-  engine does, lists each lazy post's files, and names and keys every file the way a download
-  would: a `Collected` per file, nothing saved;
-- `check`, which checks a plugin class and resolves every example target its routes'
-  docstrings give;
-- `fake_clock`, a clock that only moves when something sleeps on it.
-
-Who calls it: a plugin's tests and flnd's own tests. What it calls: the engine's own naming
-and answer rules (`flnd.engine.crawl.place`, `flnd.engine.ctx`'s `refused`, `walled`,
-`checked`), so a plugin's test runs the same code a download does.
-
-Rules a change must keep:
-- Nothing here touches the network, a browser, a home folder or the real clock.
-- A `FakeCtx` has exactly the members a `Ctx` has, plus `seen` and what its constructor takes,
-  so a plugin that passes its tests here uses nothing a real context lacks.
-"""
+src/docs/writing-a-plugin explains it."""
 
 from __future__ import annotations
 

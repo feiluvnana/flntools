@@ -438,3 +438,76 @@ The home is self-contained: copy the whole folder while no run is going. To star
 target, unfollow it; its files and their rows stay, so a new download skips them. To download a
 file again, delete it, then download its target: a file whose row's path is missing is
 downloaded again.
+
+## Module `flnkit.cookies`
+
+Cookie jars, a library: read cookies from a file, a browser or text, narrow and save them.
+
+src/docs/storage explains it.
+
+What it offers any caller:
+- `Jar`, an immutable collection of cookies in Playwright's dictionary shape (`name`, `value`,
+  `domain`, `path`, `expires`, `secure`, `httpOnly`, `sameSite`). It filters by domain and name,
+  reads a value by name, builds a `Cookie:` header and saves itself as a Netscape `cookies.txt`.
+- `load`, which reads a Netscape or JSON cookie file, raw cookie text, or the cookie database of
+  an installed browser (`BROWSERS`: Firefox and, on macOS, Safari). Chromium cookies are read
+  through flnd's Chrome extension (`flnd engine chrome`).
+- `parse_binarycookies`, a stdlib reader of Safari's `Cookies.binarycookies` format.
+- `refuse_profile`, the guard that stops a test suite from reading a real browser profile.
+
+Who calls it: in flnd, the login code (`src/engine/auth.py`) loads a jar at `flnd auth login` and
+saves it in the vault; the HTTP client (`flnkit/net.py`) and the browser
+(`flnkit/browser.py`) send it. It calls only the stdlib and the `_files` (atomic writes) and
+`_ui` (a debug line) libraries. Its errors are
+`flnkit.errors.LoginError` and `UsageError`, so a caller can show them as they are.
+
+How `load` reads a browser:
+1. find the profile folder for the platform (`_firefox_profile`, or Safari's cookie file,
+   `SAFARI_FILES`);
+2. copy the cookie database into memory with SQLite's backup API, read-only, so a running
+   browser's lock or write-ahead log never blocks or corrupts the read;
+3. read every row.
+
+Rules a change must keep:
+- A cookie's value is a login. It is never printed, logged, put in an error message or a
+  `repr`; messages name the file, the line number, the browser or the cookie's name only.
+- A `Jar` never changes after it is made: every method returns a new jar or a copy.
+- A saved file is written atomically with mode 0600, so a crash never leaves half a login.
+
+## Module `flnkit.db`
+
+SQLite WAL store: one shared connection, explicit transactions.
+
+src/docs/storage explains it.
+
+What it offers, for any caller:
+- `connect(path)`: a connection in WAL mode with `synchronous = NORMAL` (and `fullfsync` on
+  macOS), a busy timeout, autocommit, usable from any thread.
+- `Db(path, schema=…, setup=…)`: one database file with its tables, connected on first use. A
+  read of a file that doesn't exist yet returns nothing and creates nothing; the first write
+  makes the file and runs `schema`, then `setup`.
+- `Db.transaction()`: `BEGIN IMMEDIATE` … `COMMIT`, rolled back on an error; nested blocks join
+  the outer one. `Db.one`, `Db.all` and `Db.write` run single statements.
+
+    db = Db(Path("notes.db"), schema="CREATE TABLE IF NOT EXISTS notes (key TEXT, text TEXT)")
+    with db.transaction() as sql:
+        sql.execute("INSERT INTO notes VALUES (?, ?)", ("a", "hello"))
+    db.one("SELECT text FROM notes WHERE key = ?", ("a",))      # ("hello",)
+
+A library: it knows no table but the ones a caller passes in. In flnd, `src/engine/store.py`
+keeps the home's `flnd.db` in a `Db` (with flnd's schema as `schema` and `setup`), and
+`src/engine/auth.py` keeps `secret.db` in another.
+
+How a `Db` is used, from first call to close:
+1. `Db(path, …)` only remembers the path: nothing is opened or made;
+2. a read (`one`, `all`) before the file exists returns no row, so a command that only looks
+   never leaves an empty database behind;
+3. the first write (`write`, `transaction`) calls `connection`, which opens the file in WAL mode
+   (`connect`), runs `schema` and then `setup`, and keeps the connection;
+4. every later call reuses that one connection under the `Db`'s lock; `close` ends it.
+
+Rules a change must keep:
+- Every statement runs under the `Db`'s lock, so threads share its one connection safely.
+- A transaction takes the write lock at its start (`IMMEDIATE`), so two processes never read a
+  row, change it and write it back over each other: the second waits up to `BUSY_MS`.
+- It imports only the stdlib and `flnkit.errors`: SQLite failures are `DiskError`s naming the file.

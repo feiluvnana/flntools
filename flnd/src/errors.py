@@ -1,9 +1,6 @@
-"""flnd's face of the one error hierarchy: flnkit's classes, `Hidden`, `PluginError`, `classify`.
+"""flnd's face of the one error hierarchy, over flnkit's classes.
 
-src/docs/errors explains it. The classes flnkit raises are defined in `flnkit.errors` and are
-the same objects here (`flnd.LoginError is flnkit.errors.LoginError`); `Hidden`, `PluginError`
-and the hints that name flnd's commands and flags are flnd's own.
-"""
+src/docs/errors explains it."""
 
 from __future__ import annotations
 

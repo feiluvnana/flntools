@@ -225,3 +225,55 @@ A file a retry brought back is a `Saved` event with `retried=True`; the end of t
 | `got a web page instead of a photo` | the site answered a file request with a page | usually a login wall: log in again |
 | `<home>/flnd.db: database is locked` | another flnd run held the home's database for more than 30 s | wait for it to end, or use another `--home` |
 | `unexpected <Type>: …` | a bug in a plugin or in flnd | run with `-v` and report it |
+
+## Module `flnd.errors`
+
+flnd's face of the one error hierarchy: flnkit's classes, `Hidden`, `PluginError`, `classify`.
+
+src/docs/errors explains it. The classes flnkit raises are defined in `flnkit.errors` and are
+the same objects here (`flnd.LoginError is flnkit.errors.LoginError`); `Hidden`, `PluginError`
+and the hints that name flnd's commands and flags are flnd's own.
+
+## Module `flnkit.net`
+
+HTTP for any program on an asyncio loop: a `Session`, a `Client`, and downloads into parts.
+
+What it offers, for any caller:
+- `Session`: libcurl handles on one multi handle, through curl_cffi, kept from one transfer to
+  the next (Chrome's TLS and HTTP/2 fingerprint), its default headers, its cookies, and a
+  `prepare` hook that may add headers to each request before it goes out (a signature, a CSRF
+  token).
+- `Client`: a session with a stop event. `fetch` sends one request; `fill` streams one try of a
+  file into a `flnkit.files.Part`, going on from the bytes it holds. Neither paces nor retries:
+  the caller's scheduler does (flnd's is `flnd.engine.jobs`).
+- `follow(url)`: where a short link leads, from one HEAD request (blocking, for any thread).
+- `fake(routes)`: answers every request in the block from routes or a handler, never the
+  network; `reply(...)` builds an answer for a handler.
+
+    session = Session(headers={"User-Agent": agent}, cookies=jar, prepare=sign)
+    client = Client(session, stop=event)
+    page = await client.fetch("https://example.com/api", body={"q": "x"})   # page.json
+    with files.part(dest, resume=True) as held:
+        headers = await client.fill(url, held, progress=row)
+    await session.close()
+
+What a failure raises (src/docs/errors):
+- a timeout, a reset or a cut-off transfer is a retryable `NetworkError`, a 5xx a retryable
+  `SiteError`;
+- a 429 is `Blocked`, with its `Retry-After`, or the site's rate-limit reset, as `wait` (at most
+  an hour);
+- a 404 or 410 is `NotFound`, any other 4xx a `SiteError`; neither is retryable;
+- a malformed URL, a name that doesn't resolve or a certificate that fails is a `NetworkError`
+  that isn't retryable; a write the disk refuses is a `DiskError`; a set `stop` is `Stopped`.
+A refusal carries its `Response` as `error.response`.
+
+Every message names the URL redacted (`flnkit.text.redact`), and any secret the request carried
+(a cookie, a token, a query value) is scrubbed from a library's error text.
+
+Rules a change must keep:
+- A session belongs to one asyncio loop: every coroutine here runs on it, and nothing here
+  blocks it. File writes go to a writer thread, `BUFFER` bytes at a time: the caller's (`Meter`'s
+  `write`), else this module's one. So a slow disk never stalls the loop (and the browser and
+  every other transfer on it); see src/docs/performance.
+- A write in flight on those threads always finishes before its transfer gives the part
+  back, even when the transfer is cancelled: the part's descriptor is closed only after it.

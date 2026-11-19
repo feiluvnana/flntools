@@ -1,57 +1,6 @@
-"""A browser library: async Playwright on an asyncio loop, shared tabs, response capture, scrolling.
+"""A browser library: async Playwright, shared tabs, response capture, scrolling.
 
-src/docs/architecture explains it.
-
-A standalone library: it imports the standard library, Playwright and the kit (`net`, `files`,
-`text`, `clock`) and `flnkit.errors`, and nothing of flnd's engine or screen. It logs through
-`logging`, and what it asks a person, or shows them, goes through the `Screen` its caller passes
-in. In flnd, `flnd.engine.ctx.TargetTabs` builds the browser verbs a plugin's `Ctx` calls on it,
-each one call across to the run's loop from the source's thread (`RunBrowser.run`).
-
-What it offers, from the bottom up:
-- `launch` starts Chrome (or Playwright's Chromium, offering to download it) and gives a
-  `Browser`. `Browser.tab` opens a `Page`, one tab.
-- `Page` drives one tab: `goto`, `wait`, `fetch` (a request sent by the page itself), `content`,
-  `evaluate`, `click`, `scroll`, and `capture`, which keeps the bodies of the responses the tab
-  receives. Every `Page` method is a coroutine and runs on the loop.
-- `RunBrowser` is one browser shared by many users on one loop, launched the first time one asks
-  for a tab, with each user's cookies added once. (In flnd, one per run.)
-- `Tabs` is one user's share of it (in flnd, a target's): the tab it works in, a stack of extra
-  tabs for nested scrolling feeds, and tabs pre-loading the pages it will open
-  next ("warm" tabs). Its methods are plain functions, called from the user's own thread.
-- `Feed` iterates the JSON of the matching responses a user's tab receives, in order, scrolling
-  the tab for more when asked, and ending when the site's own cursor says there is no more.
-- `local_storage` reads a page's local storage in a copy of a Chrome profile, on a loop of its own.
-
-The main flow of a scrolled feed (`Feed(tabs, match, scroll=True, cursor=read)`):
-1. the feed starts a `Capture` on the user's tab (one call to the loop), which keeps the bodies
-   of the responses `match` takes: the feed's own API calls;
-2. the user loads a page; its API calls arrive as responses, and the capture reads each matching
-   body on the loop, keeping their order;
-3. iterating the feed parses the bodies that arrived, on the user's thread, and yields them;
-   `read` (the caller's cursor reader) says of each whether the site has another page;
-4. when none is waiting, it scrolls one step at a time (one call to the loop each) until one is,
-   the cursor said there is no more, or the scroller says the feed went quiet.
-
-How a scroll step goes (`_Scroller`):
-1. it scrolls: `fast` jumps to the bottom; `human` glides down 1.2 to 1.8 screens in uneven
-   wheel steps, now and then after a small scroll back up;
-2. it watches for progress, a new matching response or the page growing, and at the very bottom
-   waits up to `WAIT` for it. `human` also pauses, as a reader looks at what came;
-3. progress, or room left to scroll, means go on; a bottom that stays quiet for `IDLE` more
-   seconds after a whole `WAIT` is the end of a feed whose site gave no cursor.
-
-There are no fixed sleeps: a step costs what the site takes to answer, plus the human pause.
-
-Rules a change must keep:
-- Playwright objects are used only on the loop's thread. Everything another thread holds (a
-  `Page`, a `Capture`) is touched there only through `RunBrowser.run`.
-- `RunBrowser.run` must not be called on the loop itself: it would wait for itself; code on the
-  loop awaits instead.
-- Responses are kept in the order they arrived, even though their bodies are read at once.
-- With `human`, a scroll step waits for its turn (`Page.turn`), which the caller's scheduler
-  gives, since a person doesn't scroll many tabs of one account at the same moment.
-"""
+src/docs/architecture explains it."""
 
 from __future__ import annotations
 

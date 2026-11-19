@@ -1,12 +1,6 @@
-"""The plugin manager: the plugin folder, `plugins.json`, install, uninstall and loading.
+"""The plugin manager: the plugin folder, install and loading.
 
-src/docs/architecture explains it.
-
-A plugin that isn't built in lives in `$FLND_PLUGINS` (else `~/.config/flnd/plugins/`, or
-`%APPDATA%\\flnd\\plugins\\` on Windows), indexed in `plugins.json` (`Manager`). `PLUGINS`
-combines the built-ins (from `flnd.plugins._manifest`, each imported on first use) with the
-installed plugins (loaded by `Manager` on first use).
-"""
+src/docs/architecture explains it."""
 
 from __future__ import annotations
 

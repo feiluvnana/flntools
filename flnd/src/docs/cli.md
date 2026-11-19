@@ -417,3 +417,42 @@ home holds no login at first; log in there for a site that needs one
 `make manifest` regenerates `src/plugins/_manifest.py`, the built-in plugins as plain data that
 `--help` and target resolution read; run it after changing a plugin's domains, routes or
 categories (`tests/test_manifest.py` fails until then).
+
+## Module `flnd.cli`
+
+The flnd command line: flags in, one library call, events out as lines on the terminal.
+
+    flnd get ins:example_user/reels --when 2026
+    flnd target list
+    flnd auth login ins chrome
+    flnd status
+
+Who calls it: `flnd` (the console script) and `python -m flnd`, through `main`. What it calls:
+the library alone (`flnd.open`, its `Run` and events), so anything the command line does, a
+script can do too; `flnd.plugins._manifest` for the built-in plugins `--help` lists; and
+`flnd.ui` for every line it prints and every question it asks.
+
+How a command runs (`main`):
+1. argparse reads the flags. A mistake prints an error and exits 2; `--help` prints the help
+   made from each command's docstring, drawn in the theme by `flnd.ui.out.help`: `flnd -h`
+   fits in 24 lines, and `flnd get -h` adds a row per plugin.
+2. The command function opens the home (`--home`, else `$FLND_HOME`, else `./.flnd`) and makes
+   one library call with the flags.
+3. A run's own display is the screen the library's events draw on a terminal (`flnd.ui.screen`);
+   a dry run prints its listing, `--json` prints one JSON object per line. With `--exec CMD`,
+   each `Saved` event also runs CMD, without a shell (`_Exec`). The end of a run prints a short
+   summary, and its failures decide the exit code.
+4. Whatever ends the command becomes an exit code (`exit_code`): 0 ok, 1 some files or targets
+   failed, 2 usage, 3 a login is needed, 4 flnd itself stopped (a full disk, a missing tool, a
+   broken plugin, a bug), 130 Ctrl-C. A `flnd.Error` prints its message and its hint, never a
+   traceback; a bug prints one line naming a crash file, or the traceback with `-v`.
+
+Rules a change must keep:
+- Import nothing heavy at the top: argparse, os and sys only. Everything else is imported by
+  the command that needs it, so `flnd --help` pays for none of it.
+- One flag, one spelling: no aliases. The docs' CLI page (src/docs/cli) names every command and
+  flag, and `tests/test_docs.py` checks it against this parser.
+- `--json` never asks a question: a command that would ask is a usage error instead. Every
+  line it prints on standard output is one JSON object with a `type`, an error included.
+- `--exec` never starts a shell: CMD is split once with `shlex`, and a value from a site (a
+  file name, a post id) only ever fills a placeholder inside one argument.

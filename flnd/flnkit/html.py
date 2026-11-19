@@ -1,55 +1,6 @@
-"""Getting data out of HTML and JSON: `parse` an HTML page, and `dig` a path in parsed JSON.
+"""Getting data out of HTML and JSON: `parse` a page, `dig` a path.
 
-src/docs/writing-a-plugin explains it.
-
-A small library over selectolax's lexbor parser (a C HTML parser with its own CSS engine) and
-msgspec's JSON decoder. It knows nothing of flnd: any program can use it.
-
-    from flnkit import html
-
-    page = html.parse(text)
-    page.first("h1").text                                      # "Example User"
-    [link.attr("href") for link in page.css("a[href*='/video/']")]
-    page.script("__NEXT_DATA__")                               # the JSON in <script id=...>
-    page.blocks("__bbox")                                      # every JSON block that names it
-    html.dig(data, "data.user.edges[].node")
-
-What it offers:
-1. `parse(text)` reads HTML text or bytes into a `Document`. HTML never fails to parse: lexbor
-   repairs broken markup the way a browser does.
-2. A `Document` (and each `Element` in it) answers CSS queries: `css` gives every match, `first`
-   the first one. An element gives its `text` (whitespace collapsed) and its `attr(name)`.
-3. A `Document` also reads the JSON a page embeds: `script(id)` decodes one
-   `<script id=...>`, and `blocks(contains)` decodes every `<script type="application/json">`.
-   `visible` is the text a reader sees: the page without its scripts and styles.
-4. `dig(data, path)` walks parsed JSON by a short path; see its docstring for the four forms.
-
-Who calls it: in flnd, `flnd.plugin` re-exports `dig`; `flnd.engine.ctx` parses the page a plugin's
-browser loads, `flnkit.net.Response.html` a response body, and `flnd.testing` the pages of its
-fakes. What it calls: selectolax, msgspec and `flnkit.errors`, nothing else.
-
-The main flow of a read:
-1. `parse` checks the size, decodes bytes as UTF-8 (a BOM dropped, bad bytes replaced) and
-   builds the tree;
-2. `css` or `first` runs lexbor's CSS engine over it, and wraps each node as an `Element`;
-3. `script` or `blocks` takes a script's text and decodes it with msgspec, raising `Changed`
-   when that text isn't JSON;
-4. `dig` walks the decoded value one path step at a time.
-
-There is no XPath and no `::text` or `::attr()` pseudo-element: an element's `text` and `attr`
-say the same thing in plain Python.
-
-Rules a change must keep:
-- selectolax is imported on the first `parse`, and msgspec on the first decode, so importing
-  this module (which `flnd.plugin` does, for `dig`) costs nothing at startup: `flnd --help`
-  must not load either.
-- A `Document` is never changed once made, so `visible` works on a copy of the tree.
-- One document is read from one thread at a time; lexbor's trees aren't thread-safe.
-
-Errors (from `flnkit.errors`): text over 64 MiB, or a script that should hold JSON but doesn't, is
-`Changed` (the site changed what it sends); a bad CSS selector or a bad `dig` path is a
-`ValueError` (the caller's mistake).
-"""
+src/docs/writing-a-plugin explains it."""
 
 from __future__ import annotations
 

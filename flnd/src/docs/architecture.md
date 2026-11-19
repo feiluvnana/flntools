@@ -662,3 +662,105 @@ The choices that explain how flnd behaves, made with its user in November 2026:
 - [storage.md](storage.md): every file of a home, and the rows of `flnd.db`.
 - [performance.md](performance.md): what is fast, what isn't, and how it is measured.
 - [errors.md](errors.md): every error and its hint.
+
+## Module `flnd.engine.plugins`
+
+The plugin manager: the plugin folder, `plugins.json`, install, uninstall and loading.
+
+src/docs/architecture explains it.
+
+A plugin that isn't built in lives in `$FLND_PLUGINS` (else `~/.config/flnd/plugins/`, or
+`%APPDATA%\flnd\plugins\` on Windows), indexed in `plugins.json` (`Manager`). `PLUGINS`
+combines the built-ins (from `flnd.plugins._manifest`, each imported on first use) with the
+installed plugins (loaded by `Manager` on first use).
+
+## Module `flnkit.browser`
+
+A browser library: async Playwright on an asyncio loop, shared tabs, response capture, scrolling.
+
+src/docs/architecture explains it.
+
+A standalone library: it imports the standard library, Playwright and the kit (`net`, `files`,
+`text`, `clock`) and `flnkit.errors`, and nothing of flnd's engine or screen. It logs through
+`logging`, and what it asks a person, or shows them, goes through the `Screen` its caller passes
+in. In flnd, `flnd.engine.ctx.TargetTabs` builds the browser verbs a plugin's `Ctx` calls on it,
+each one call across to the run's loop from the source's thread (`RunBrowser.run`).
+
+What it offers, from the bottom up:
+- `launch` starts Chrome (or Playwright's Chromium, offering to download it) and gives a
+  `Browser`. `Browser.tab` opens a `Page`, one tab.
+- `Page` drives one tab: `goto`, `wait`, `fetch` (a request sent by the page itself), `content`,
+  `evaluate`, `click`, `scroll`, and `capture`, which keeps the bodies of the responses the tab
+  receives. Every `Page` method is a coroutine and runs on the loop.
+- `RunBrowser` is one browser shared by many users on one loop, launched the first time one asks
+  for a tab, with each user's cookies added once. (In flnd, one per run.)
+- `Tabs` is one user's share of it (in flnd, a target's): the tab it works in, a stack of extra
+  tabs for nested scrolling feeds, and tabs pre-loading the pages it will open
+  next ("warm" tabs). Its methods are plain functions, called from the user's own thread.
+- `Feed` iterates the JSON of the matching responses a user's tab receives, in order, scrolling
+  the tab for more when asked, and ending when the site's own cursor says there is no more.
+- `local_storage` reads a page's local storage in a copy of a Chrome profile, on a loop of its own.
+
+The main flow of a scrolled feed (`Feed(tabs, match, scroll=True, cursor=read)`):
+1. the feed starts a `Capture` on the user's tab (one call to the loop), which keeps the bodies
+   of the responses `match` takes: the feed's own API calls;
+2. the user loads a page; its API calls arrive as responses, and the capture reads each matching
+   body on the loop, keeping their order;
+3. iterating the feed parses the bodies that arrived, on the user's thread, and yields them;
+   `read` (the caller's cursor reader) says of each whether the site has another page;
+4. when none is waiting, it scrolls one step at a time (one call to the loop each) until one is,
+   the cursor said there is no more, or the scroller says the feed went quiet.
+
+How a scroll step goes (`_Scroller`):
+1. it scrolls: `fast` jumps to the bottom; `human` glides down 1.2 to 1.8 screens in uneven
+   wheel steps, now and then after a small scroll back up;
+2. it watches for progress, a new matching response or the page growing, and at the very bottom
+   waits up to `WAIT` for it. `human` also pauses, as a reader looks at what came;
+3. progress, or room left to scroll, means go on; a bottom that stays quiet for `IDLE` more
+   seconds after a whole `WAIT` is the end of a feed whose site gave no cursor.
+
+There are no fixed sleeps: a step costs what the site takes to answer, plus the human pause.
+
+Rules a change must keep:
+- Playwright objects are used only on the loop's thread. Everything another thread holds (a
+  `Page`, a `Capture`) is touched there only through `RunBrowser.run`.
+- `RunBrowser.run` must not be called on the loop itself: it would wait for itself; code on the
+  loop awaits instead.
+- Responses are kept in the order they arrived, even though their bodies are read at once.
+- With `human`, a scroll step waits for its turn (`Page.turn`), which the caller's scheduler
+  gives, since a person doesn't scroll many tabs of one account at the same moment.
+
+## Module `flnkit.text`
+
+Text helpers: safe file names, URLs and bodies without secrets, readable numbers, templates.
+
+src/docs/architecture explains it.
+
+A library module. It imports only the stdlib, holds no state, and every function is pure, so any
+program and any thread may call it. Inside flnd, the file layer names files with `filename` and
+`fill`, every log line and error message passes URLs through `redact`, a bug report's sample body
+goes through `scrub`, and the progress display and the summaries use `size`, `duration` and
+`count`.
+
+What it offers:
+- `filename(text)`: a file name every OS accepts (Windows' reserved names and characters,
+  control and format characters, a byte cap that never splits a UTF-8 character);
+- `redact(url)`: the URL without user info, query and fragment, where tokens and signatures
+  live; it never raises, so it is safe inside an error handler;
+- `scrub(body)`: the values under secret-looking names replaced by "…", in JSON or any text;
+- `size`, `duration` and `count`: a number the way a person reads it (`1.5 KB`, `3m 5s`,
+  `3 files`);
+- `fill(template, values)` and `fields(template)`: a name template such as `"{date}_{post}"`,
+  filled per `/` segment, with the separators beside an empty field dropped.
+
+How `fill` works:
+1. The template is split at each `/` outside braces, so a format spec may hold a slash.
+2. Each segment is formatted with `str.format`'s own parser; an empty or missing field takes
+   the separators (`SEPARATORS`) next to it along.
+3. A segment that comes out empty is dropped, and each other one passes through `filename`.
+
+Rules a change must keep:
+- Nothing here may print or return a secret it was given: `redact` and `scrub` err on the side
+  of removing too much.
+- `filename` names files already saved on disk, so its output for a given input must not change,
+  or a re-run would save the same file a second time under a new name.

@@ -343,3 +343,90 @@ with flnd.open(home) as fl:
     except flnd.Error as error:
         print(type(error).__name__, error, "-", error.hint)    # UsageError unknown plugin 'zzz'…
 ```
+
+## Module `flnd`
+
+flnd: a media downloader for Instagram, TikTok, X, Facebook, Telegram and more, as a library.
+
+src/docs/library explains it.
+
+    import flnd
+
+    with flnd.open("~/Media/flnd") as fl:
+        for event in fl.get("ins:example_user/reels"):
+            if isinstance(event, flnd.Saved):
+                print(event.path)
+
+What it holds: the public names a script uses, and nothing else. `flnd.open(home)` gives a
+`Flnd`, whose methods and groups are the CLI's commands; `get` returns a `Run`, whose events
+(`Saved`, `Skipped`, `Failed`, `Planned`) are the only output, and whose `state`
+(a `State`) says what it is doing now; `Report`, `Account`, `Record`, `Tracked`, `Status`,
+`Failure`, `Checked` and `Installed` are what the reads return; the errors are the one
+hierarchy of `flnd.errors`. A
+plugin is written against `flnd.plugin` instead (src/docs/writing-a-plugin explains
+it), and tested with `flnd.testing`.
+
+How it loads: every name is lazy. `import flnd` imports nothing but this file, and the first
+use of a name (`flnd.open`, `flnd.Saved`) imports the one module that defines it. The engine,
+curl_cffi, Playwright and Rich load only when a command needs them, so a script, the CLI's
+`--help` and `python -c "import flnd"` stay fast. `tests/test_packaging.py` guards this.
+
+## Module `flnd._library`
+
+`Flnd` and `open`: the library a script uses, over the engine every command runs on.
+
+src/docs/library explains it.
+
+    with flnd.open("~/Media/flnd") as fl:
+        for event in fl.get("ins:example_user/reels"):
+            ...
+
+Who calls it: scripts and the CLI (`src/cli.py`), both through `flnd.open`, so the command
+line can do nothing a script can't. What it calls: `flnd.engine._engine.Engine` for every command,
+`flnd.engine.store` (the home's `flnd.db`), `flnd.engine.auth`, `flnd.engine.plugins` and
+`flnd.engine.extension` for the reads, and the home's `config.toml` for settings past the five
+options a call takes.
+
+How a call flows:
+1. The method checks its arguments at once: targets are resolved with the categories they
+   name, `when` and `limit` are read, and a mistake raises `flnd.UsageError` before anything
+   is fetched.
+2. `get` returns a `flnd.Run` that hasn't started. Its work is a closure that makes an `Engine`
+   with the run's event sink and stop state, and calls the engine's command; the run starts it
+   on its own thread when read.
+3. A read (`targets`, `auth`, `plugins`, `files`, `status`) or a quick change (`targets.follow`,
+   `auth.login`, `config.set`) runs on the caller's thread and returns plain rows from
+   `flnd.engine.events`.
+
+Rules a change must keep:
+- Importing this module imports nothing heavy: the engine, curl_cffi, Playwright and Rich load on
+  the first call that needs them, so `import flnd` stays fast.
+- Options are keyword-only and at most five per call; a setting past that belongs in the
+  config file (`flnd.engine.config`). An option left as None takes the file's setting
+  (`[defaults] when`), so a value given for one call always wins.
+- No callbacks: a run reports through its events alone.
+
+## Module `flnd.engine.events`
+
+What a run reports, and the rows the library reads: events, `Report`, the `State` snapshot,
+`Account`, `Record`, `Tracked`, `Checked`, `Status`, `Failure` and `Installed`.
+
+src/docs/library explains it.
+
+Every type here is a frozen msgspec struct, so it is cheap to make, safe to share between the
+run's threads, and encodes to JSON (`encode`) for a script or a cron job. The module imports
+msgspec, the errors and `flnd.plugin` (for `Target`), never the engine, so `flnd.Saved` is
+cheap to reach.
+
+Who makes them:
+1. the job and the engine make `Saved`, `Skipped`, `Failed` and `Planned` as a run goes,
+   and hand them to the run's sink (`flnd.engine.run.Run._emit`);
+2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
+3. `Flnd` makes `Account`, `Record`, `Tracked`, `Status` and `Failure` from the home's
+   `flnd.db`, for its reads, `Checked` from `fl.check()`, and `Installed` from the plugins it
+   knows (`fl.plugins`).
+
+The one rule a change must keep: an event holds data, never a live object (a site, a file
+handle, a lock), because a script may keep it after the run ends, and `encode` must turn it
+into JSON. An error is the one exception: `Failed.error` is the `flnd.Error` itself, so a
+script can read its `hint`; `encode` writes its class, message and hint.

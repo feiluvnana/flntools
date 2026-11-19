@@ -1,36 +1,6 @@
-"""`Flnd` and `open`: the library a script uses, over the engine every command runs on.
+"""`Flnd` and `open`: the library a script uses, over the engine.
 
-src/docs/library explains it.
-
-    with flnd.open("~/Media/flnd") as fl:
-        for event in fl.get("ins:example_user/reels"):
-            ...
-
-Who calls it: scripts and the CLI (`src/cli.py`), both through `flnd.open`, so the command
-line can do nothing a script can't. What it calls: `flnd.engine._engine.Engine` for every command,
-`flnd.engine.store` (the home's `flnd.db`), `flnd.engine.auth`, `flnd.engine.plugins` and
-`flnd.engine.extension` for the reads, and the home's `config.toml` for settings past the five
-options a call takes.
-
-How a call flows:
-1. The method checks its arguments at once: targets are resolved with the categories they
-   name, `when` and `limit` are read, and a mistake raises `flnd.UsageError` before anything
-   is fetched.
-2. `get` returns a `flnd.Run` that hasn't started. Its work is a closure that makes an `Engine`
-   with the run's event sink and stop state, and calls the engine's command; the run starts it
-   on its own thread when read.
-3. A read (`targets`, `auth`, `plugins`, `files`, `status`) or a quick change (`targets.follow`,
-   `auth.login`, `config.set`) runs on the caller's thread and returns plain rows from
-   `flnd.engine.events`.
-
-Rules a change must keep:
-- Importing this module imports nothing heavy: the engine, curl_cffi, Playwright and Rich load on
-  the first call that needs them, so `import flnd` stays fast.
-- Options are keyword-only and at most five per call; a setting past that belongs in the
-  config file (`flnd.engine.config`). An option left as None takes the file's setting
-  (`[defaults] when`), so a value given for one call always wins.
-- No callbacks: a run reports through its events alone.
-"""
+src/docs/library explains it."""
 
 from __future__ import annotations
 

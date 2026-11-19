@@ -1,14 +1,6 @@
-"""The built-in plugins on plugin API 2, one module per site, and their lazy registry.
+"""The built-in plugins on plugin API 2, one module per site.
 
-src/docs/writing-a-plugin explains it.
-
-`PLUGINS` maps each built-in code to its class, imported on first use from `_manifest.PLUGINS`;
-`flnd.engine.plugins` owns the full plugin registry (built-ins and installed plugins together).
-The CLI's help reads `flnd.plugins._manifest` directly, so `--help` imports no plugin.
-
-Adding a built-in plugin means writing its module, adding its class to `BUILT_IN` below, and
-running `make manifest`; `tests/test_manifest.py` fails until the manifest matches.
-"""
+src/docs/writing-a-plugin explains it."""
 
 from __future__ import annotations
 

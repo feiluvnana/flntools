@@ -1,36 +1,6 @@
-"""Text helpers: safe file names, URLs and bodies without secrets, readable numbers, templates.
+"""Text helpers: safe file names, URLs and bodies without secrets, numbers.
 
-src/docs/architecture explains it.
-
-A library module. It imports only the stdlib, holds no state, and every function is pure, so any
-program and any thread may call it. Inside flnd, the file layer names files with `filename` and
-`fill`, every log line and error message passes URLs through `redact`, a bug report's sample body
-goes through `scrub`, and the progress display and the summaries use `size`, `duration` and
-`count`.
-
-What it offers:
-- `filename(text)`: a file name every OS accepts (Windows' reserved names and characters,
-  control and format characters, a byte cap that never splits a UTF-8 character);
-- `redact(url)`: the URL without user info, query and fragment, where tokens and signatures
-  live; it never raises, so it is safe inside an error handler;
-- `scrub(body)`: the values under secret-looking names replaced by "…", in JSON or any text;
-- `size`, `duration` and `count`: a number the way a person reads it (`1.5 KB`, `3m 5s`,
-  `3 files`);
-- `fill(template, values)` and `fields(template)`: a name template such as `"{date}_{post}"`,
-  filled per `/` segment, with the separators beside an empty field dropped.
-
-How `fill` works:
-1. The template is split at each `/` outside braces, so a format spec may hold a slash.
-2. Each segment is formatted with `str.format`'s own parser; an empty or missing field takes
-   the separators (`SEPARATORS`) next to it along.
-3. A segment that comes out empty is dropped, and each other one passes through `filename`.
-
-Rules a change must keep:
-- Nothing here may print or return a secret it was given: `redact` and `scrub` err on the side
-  of removing too much.
-- `filename` names files already saved on disk, so its output for a given input must not change,
-  or a re-run would save the same file a second time under a new name.
-"""
+src/docs/architecture explains it."""
 
 from __future__ import annotations
 

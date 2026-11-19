@@ -1,28 +1,6 @@
-"""flnd: a media downloader for Instagram, TikTok, X, Facebook, Telegram and more, as a library.
+"""flnd: a media downloader, as a library.
 
-src/docs/library explains it.
-
-    import flnd
-
-    with flnd.open("~/Media/flnd") as fl:
-        for event in fl.get("ins:example_user/reels"):
-            if isinstance(event, flnd.Saved):
-                print(event.path)
-
-What it holds: the public names a script uses, and nothing else. `flnd.open(home)` gives a
-`Flnd`, whose methods and groups are the CLI's commands; `get` returns a `Run`, whose events
-(`Saved`, `Skipped`, `Failed`, `Planned`) are the only output, and whose `state`
-(a `State`) says what it is doing now; `Report`, `Account`, `Record`, `Tracked`, `Status`,
-`Failure`, `Checked` and `Installed` are what the reads return; the errors are the one
-hierarchy of `flnd.errors`. A
-plugin is written against `flnd.plugin` instead (src/docs/writing-a-plugin explains
-it), and tested with `flnd.testing`.
-
-How it loads: every name is lazy. `import flnd` imports nothing but this file, and the first
-use of a name (`flnd.open`, `flnd.Saved`) imports the one module that defines it. The engine,
-curl_cffi, Playwright and Rich load only when a command needs them, so a script, the CLI's
-`--help` and `python -c "import flnd"` stay fast. `tests/test_packaging.py` guards this.
-"""
+src/docs/library explains it."""
 
 from __future__ import annotations
 

@@ -52,18 +52,9 @@ PACKAGES = ("src", "flnkit")
 DOCS = ROOT / "src" / "docs"
 # The longest a module docstring may be, in lines: what the module holds, and its src/docs page.
 MODULE_LINES = 3
-# The modules that keep a longer docstring for now (17 of them): their flows and rules aren't
-# in a src/docs page yet. Step 16 (PLAN.md section 14) empties this list by moving each into
-# its page, or the module goes when a step replaces it. The list may only shrink:
-# `test_long_docstrings_are_still_long`.
-LONG = frozenset({
-    "src/__init__.py", "src/_library.py", "src/cli.py", "src/errors.py", "src/testing.py",
-    "src/engine/events.py",
-    "src/engine/plugins.py",
-    "flnkit/browser.py", "flnkit/cookies.py", "flnkit/db.py", "flnkit/html.py",
-    "flnkit/net.py", "flnkit/text.py",
-    "src/plugins/__init__.py", "src/plugins/_manifest.py",
-})
+# The modules that keep a longer docstring: none. Step 16 moved each flow into its src/docs
+# page. The list may only shrink: `test_long_docstrings_are_still_long`.
+LONG: frozenset[str] = frozenset()
 # The marker that skips the `python` block right after it, with an optional reason:
 # `<!-- docs-test: skip -->` or `<!-- docs-test: skip: it needs a real site -->`. A skipped block
 # in `src/docs/` is a gap; one in the README must give its reason, and is still compiled.
