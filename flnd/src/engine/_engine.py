@@ -428,13 +428,32 @@ class Engine:
         if not any(self._is_query(target) for target, _ in kept):
             reports = await runner.run(kept)
         else:
-            reports = []
-            for target, options in kept:
-                if self._is_query(target):
-                    reports.extend(await self._run_query(runner, target, options, span=span,
-                                                         stop=stop))
-                else:
-                    reports.extend(await runner.run([(target, options)]))
+            normal = [(i, item) for i, item in enumerate(kept) if not self._is_query(item[0])]
+            queries = [(i, item) for i, item in enumerate(kept) if self._is_query(item[0])]
+            by_slot: dict[int, list[TargetReport]] = {}
+
+            async def run_normal() -> None:
+                got = await runner.run([item for _, item in normal])
+                for (slot, _), rep in zip(normal, got):
+                    by_slot[slot] = [rep]
+                if len(got) > len(normal):
+                    by_slot[normal[-1][0]].extend(got[len(normal):])
+
+            async def run_query(slot: int, target: Target, options: Options) -> None:
+                by_slot[slot] = await self._run_query(runner, target, options, span=span,
+                                                      stop=stop)
+
+            tasks = [asyncio.ensure_future(run_query(i, t, o)) for i, (t, o) in queries]
+            if normal:
+                tasks.append(asyncio.ensure_future(run_normal()))
+            try:
+                await asyncio.gather(*tasks)
+            except BaseException:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            reports = [rep for i in range(len(kept)) for rep in by_slot[i]]
         return self._finish_report(Results(tuple(reports)), stop)
 
     def _finish_report(self, report: Results, stop: Stop) -> Results:
@@ -619,27 +638,35 @@ class Engine:
         """List a search's targets and download each as it comes, then keep what it saw."""
 
         seen_keys: list[str] = []
+        discover_failed = False
+        child_opts = replace(options, limit=None, query=target.value, link=None)
+        planned = _planned(child_opts)
         try:
+            self.tally.start(target, target.kind)
             async with contextlib.aclosing(crawl.discover(run, target, limit=options.limit,
                                                           time_range=span)) as found:
                 async for child in found:
                     if stop.soon.is_set():
                         break
-                    child_opts = replace(options, limit=None, query=target.value, link=None)
-                    rep = await runner.target(child, child_opts, parent=target)
+                    self.tally.add(child, planned)
+                    rep = await runner.target(child, child_opts)
                     if rep.error is None:
                         seen_keys.append(store.key(child))
                     reports.append(rep)
+            self.tally.end(target, failed=stop.soon.is_set())
         except KeyboardInterrupt:
+            discover_failed = True
             if not stop.soon.is_set() or stop.now.is_set():
                 raise
             reports.append(TargetReport(target, (), 0, error=Stopped(crawl.STOPPED)))
         except Exception as error:
+            discover_failed = True
             failed = crawl.failure(error, target, run.source)
             await crawl.tell(target, failed, self.emit)
             reports.append(TargetReport(target, (), 0, error=failed))
         finally:
-            self.tally.end(target, failed=any(r.error is not None for r in reports))
+            if discover_failed:
+                self.tally.end(target, failed=True)
             if seen_keys and run.settings.db is not None:
                 await run.off(run.settings.db.seen, target, seen_keys)
 
@@ -693,7 +720,7 @@ class Engine:
             await crawl.tell(target, ended, self.emit)
             return TargetReport(target, tuple(written), skipped, error=ended)
         finally:
-            self.tally.end(target, failed=failed or child_failed is not None)
+            self.tally.end(target, failed=failed)
             if seen_to_mark and run.settings.db is not None:
                 await run.off(run.settings.db.seen, target, seen_to_mark)
         return TargetReport(target, tuple(written), skipped, error=child_failed)
@@ -713,6 +740,9 @@ class Engine:
         """List a search's targets and download the new ones, at most `MAX_SYNC_NEW` of them."""
 
         skipped, new_count, child_failed = 0, 0, None
+        child_opts = replace(options, limit=None, query=target.value, link=None)
+        planned = _planned(child_opts)
+        self.tally.start(target, target.kind)
         async with contextlib.aclosing(crawl.discover(run, target, time_range=Range())) as found:
             async for child in found:
                 if stop.soon.is_set():
@@ -725,14 +755,15 @@ class Engine:
                 if new_count >= MAX_SYNC_NEW:
                     break
                 new_count += 1
-                child_opts = replace(options, limit=None, query=target.value, link=None)
-                rep = await runner.target(child, child_opts, parent=target)
+                self.tally.add(child, planned)
+                rep = await runner.target(child, child_opts)
                 written.extend(rep.written)
                 skipped += rep.skipped
                 if rep.error is None:
                     seen_to_mark.append(child_key)
                 else:
                     child_failed = rep.error
+        self.tally.end(target, failed=False)
         return skipped, child_failed
 
     @contextlib.asynccontextmanager
@@ -1063,7 +1094,7 @@ class _Runner:
         self._handed.append(asyncio.ensure_future(_carried_call(self.target, target, options)))
 
     async def target(self, target: Target, options: Options, *,
-                     parent: Target | None = None, inside: str | None = None,
+                     inside: str | None = None,
                      turn: crawl.Turn | None = None) -> TargetReport:
         """Run one target on its plugin's instance, a discovered or linked one included; a
         target named twice in the run runs once, and the second gets the first's report.
@@ -1075,8 +1106,6 @@ class _Runner:
         Args:
             target: the target, resolved.
             options: its options.
-            parent: the search that found it; a target of the search's own plugin counts on
-                the search's row of the run's snapshot.
             inside: the plugin of the listing it runs inside; None for a target of its own.
             turn: its turn at its route's call (`crawl.Turn`); None takes the next.
 
@@ -1095,8 +1124,7 @@ class _Runner:
             return self._reports.get(target) or TargetReport(target, (), 0)
         self._once[target] = asyncio.Event()
         try:
-            report = self._reports[target] = await self._run(target, options, parent, inside,
-                                                             began)
+            report = self._reports[target] = await self._run(target, options, inside, began)
         except BaseException as error:
             # What stops the run (a full disk) keeps the later targets' routes from running.
             if not jobs.stops(error):
@@ -1114,11 +1142,9 @@ class _Runner:
         self._turns.append(turn.passed)
         return turn
 
-    async def _run(self, target: Target, options: Options, parent: Target | None,
-                   inside: str | None, began: crawl.Turn) -> TargetReport:
+    async def _run(self, target: Target, options: Options, inside: str | None,
+                   began: crawl.Turn) -> TargetReport:
 
-        if parent is not None and parent.plugin == target.plugin:
-            self.settings.tally.adopt(target, parent)
         entry, failed = await self.ready(target)
         if entry is None or failed is not None:
             assert failed is not None

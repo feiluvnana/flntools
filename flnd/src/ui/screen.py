@@ -8,6 +8,7 @@ from __future__ import annotations
 import queue
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,8 +24,8 @@ from flnkit.text import count, duration, size
 
 __all__ = ["Screen", "frame", "paused", "summary"]
 
-# Seconds between two looks at the snapshot (30 fps).
-TICK = 1 / 30
+# Seconds between two screen redraws (60 fps).
+TICK = 1 / 60
 # The most cells a target, its categories and a file's path take, and a file's bar.
 TARGET_CELLS, CATEGORY_CELLS, PATH_CELLS, BAR_CELLS = 28, 14, 24, 30
 # The lines the block has beside its target and file rows: the header, the column titles, the
@@ -110,7 +111,8 @@ def _right(text: str, cells: int) -> str:
 # The frame: one draw of the live block
 # ---------------------------------------------------------------------------------------------
 
-def frame(state: State, *, command: str, width: int, height: int, fancy: bool = True) -> Text:
+def frame(state: State, *, command: str, width: int, height: int, fancy: bool = True,
+          elapsed: float | None = None) -> Text:
     """The live block for `state`, laid out in `width` by `height` cells.
 
     Args:
@@ -119,6 +121,7 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
         width: the terminal's columns; a longer line is cut.
         height: its lines; targets past the room fold into one `+ <n> targets` line.
         fancy: draw Unicode glyphs; False for ASCII.
+        elapsed: seconds since the run started; None takes `state.elapsed`.
 
     Returns:
         The block, one line of text per row.
@@ -126,8 +129,15 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
     at = clock.now()
     sep = f" {theme.glyph('sep', fancy)} "
     lines: list[Text] = []
-    title = (f"flnd {command}{sep}{count(len(state.targets), 'target')}{sep}"
-             f"{int(state.elapsed) // 60:02d}:{int(state.elapsed) % 60:02d}")
+    total = len(state.targets)
+    if total > 1:
+        done = sum(t.phase in (Phase.DONE, Phase.FAILED) for t in state.targets)
+        progress = f"{done}/{total} targets{sep}{total - done} left"
+    else:
+        progress = count(total, "target")
+    shown_elapsed = state.elapsed if elapsed is None else elapsed
+    title = (f"flnd {command}{sep}{progress}{sep}"
+             f"{int(shown_elapsed) // 60:02d}:{int(shown_elapsed) % 60:02d}")
     lines += [_line((title, "focus")), Text()]
     # Each column as wide as its widest cell, up to its most.
     widths = (
@@ -137,22 +147,35 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
     lines.append(_line((_pad("target", 2 + widths[0]) + "  " + _pad("categories", widths[1])
                         + "  " + "".join(_right(name, cells) for name, cells in COLUMNS), "dim")))
     files = _files(state, at, fancy)
-    room = height - FRAME_LINES - len(files)
-    shown = state.targets
-    if len(shown) > room:
-        shown = shown[:max(0, room - 1)]
+    room = max(0, height - FRAME_LINES - (len(files) + 1 if files else 0))
+    shown = _shown_targets(state.targets, room)
     lines += [_target(row, widths, at, fancy) for row in shown]
-    if len(shown) < len(state.targets):
-        lines.append(_line((f"+ {len(state.targets) - len(shown)} targets", "dim")))
+    if len(shown) < total and room > 0:
+        lines.append(_line((f"+ {total - len(shown)} targets", "dim")))
     lines.append(Text())
     if files:
         lines += files + [Text()]
     lines += [_now(state, fancy), Text(), _foot(state, width, fancy)]
+    limit = max(0, width - 1)
     for line in lines:
-        line.truncate(width)
+        line.truncate(limit)
     block = Text("\n").join(lines)
     block.no_wrap = True
     return block
+
+
+def _shown_targets(targets: tuple[TargetState, ...], room: int) -> list[TargetState]:
+    """The target rows that fit in `room`: active first, then waiting, then recent finished."""
+    if len(targets) <= room:
+        return list(targets)
+    keep = max(0, room - 1)
+    if keep == 0:
+        return []
+    active = [i for i, t in enumerate(targets) if t.phase in (Phase.LISTING, Phase.DOWNLOADING)]
+    waiting = [i for i, t in enumerate(targets) if t.phase is Phase.WAITING]
+    ended = [i for i, t in enumerate(targets) if t.phase in (Phase.DONE, Phase.FAILED)]
+    picked = sorted((active + waiting + list(reversed(ended)))[:keep])
+    return [targets[i] for i in picked]
 
 
 def _line(*parts: tuple[str, str]) -> Text:
@@ -218,7 +241,7 @@ def _files(state: State, at: float, fancy: bool) -> list[Text]:
 
 def _now(state: State, fancy: bool) -> Text:
     """`now  <State.now>`, in `warn` while a wait goes on."""
-    text = state.now
+    text = " ".join(state.now.split())
     if state.holds and state.holds[-1].count > 1:
         text += f" ({theme.glyph('times', fancy)}{state.holds[-1].count})"
     return _line(("now  ", "dim"), (text, "warn" if state.holds else "text"))
@@ -241,10 +264,10 @@ def _foot(state: State, width: int, fancy: bool) -> Text:
 # ---------------------------------------------------------------------------------------------
 
 class Screen:
-    """The run's live block on a terminal, redrawn only when the run's snapshot changed.
+    """The run's live block on a terminal, redrawn at `TICK` fps while the run is active.
 
-    On a terminal, a `flnd-screen` thread looks at `read()` every `TICK` seconds and redraws
-    the block (Rich `Live`, never refreshed on its own) when the snapshot's `version` moved.
+    On a terminal, a `flnd-screen` thread redraws the block (Rich `Live`, never refreshed on its
+    own) every `TICK` seconds so spinners and the elapsed clock keep moving even while waiting.
     The lines other threads print on standard error (warnings) go through its queue and print
     above the block. Anywhere else (a pipe, a file) it draws nothing.
 
@@ -268,6 +291,7 @@ class Screen:
         self._block: Any = None
         self._console: Any = None
         self._drawn = -1
+        self._at = clock.now()
         # Held while a draw goes on, and while a question has the terminal (`paused`).
         self._turn = threading.Lock()
 
@@ -314,11 +338,16 @@ class Screen:
         return block
 
     def _run(self) -> None:
-        while not self._done.wait(TICK):
+        next_at = time.monotonic() + TICK
+        while not self._done.wait(max(0.0, next_at - time.monotonic())):
             self.tick()
+            next_at += TICK
+            now = time.monotonic()
+            if next_at < now:
+                next_at = now + TICK
 
     def tick(self) -> None:
-        """Print the lines waiting above the block, and redraw it if the snapshot moved."""
+        """Print the lines waiting above the block, and redraw the live block."""
         with self._turn:
             self._tick()
 
@@ -332,13 +361,16 @@ class Screen:
             except queue.Empty:
                 break
         state = self._read()
-        if state.version == self._drawn:
-            return
-        self._drawn = state.version
+        now = clock.now()
+        if state.version != self._drawn:
+            self._drawn = state.version
+            self._at = now
+        elapsed = state.elapsed + max(0.0, now - self._at)
         console = block.console
         try:
             drawn = frame(state, command=self.command, width=console.width,
-                          height=console.height, fancy=theme.unicode(self._stream))
+                          height=max(1, console.height - 1),
+                          fancy=theme.unicode(self._stream), elapsed=elapsed)
         except Exception as error:  # a bug in a frame must not end the run, nor tear its screen
             from flnd.ui.log import ui
 

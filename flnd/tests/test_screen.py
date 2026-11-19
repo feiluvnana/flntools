@@ -74,7 +74,7 @@ class FrameTest(unittest.TestCase):
 
     def test_the_mockup_state_draws_its_rows(self) -> None:
         rows = draw(MOCKUP)
-        self.assertEqual(rows[0], "  flnd download · 3 targets · 01:42")
+        self.assertEqual(rows[0], "  flnd download · 1/3 targets · 2 left · 01:42")
         self.assertRegex(rows[2],
                          r"✓ ins:example_user +posts reels +412 +1,208 +0 +2\.1 GB +–$")
         self.assertRegex(rows[3],
@@ -139,6 +139,31 @@ class FrameTest(unittest.TestCase):
         self.assertIn("  + 19 targets", rows)
         self.assertEqual(sum("example_user_" in row for row in draw(many, height=60)), 30)
 
+    def test_a_short_terminal_keeps_active_and_waiting_targets_visible(self) -> None:
+        targets = (
+            *(TargetState(f"ins:done_{n}", (), Phase.DONE) for n in range(15)),
+            TargetState("ins:active_1", (), Phase.DOWNLOADING),
+            *(TargetState(f"ins:wait_{n}", (), Phase.WAITING) for n in range(10)),
+        )
+        rows = draw(State(targets=targets), height=16)
+        self.assertIn("15/26 targets · 11 left", rows[0])
+        self.assertTrue(any("ins:active_1" in row for row in rows))
+        self.assertTrue(any("ins:wait_0" in row for row in rows))
+        self.assertFalse(any("ins:done_0" in row for row in rows))
+
+    def test_files_and_long_now_stay_within_terminal_bounds(self) -> None:
+        state = State(
+            targets=(TargetState("ins:example_user", ("posts",), Phase.DOWNLOADING),),
+            files=(FileState("ins:example_user", "posts/1.mp4", 1, 10, 1),),
+            more=2,
+            now="line1\nline2\t" + "x" * 200,
+        )
+        block = screen.frame(state, command="get", width=80, height=13)
+        lines = block.plain.split("\n")
+        self.assertLessEqual(len(lines), 13)
+        self.assertTrue(all(cell_len(line) <= 79 for line in lines))
+        self.assertTrue(any("line1 line2" in line for line in lines))
+
 
 class TallyTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -196,15 +221,17 @@ class ScreenTest(unittest.TestCase):
         drawn._thread.join()
         return drawn
 
-    def test_an_idle_screen_writes_nothing(self) -> None:
+    def test_screen_keeps_redrawing_and_ticks_elapsed_at_60_fps(self) -> None:
+        self.assertEqual((screen.TICK, job.TICK), (1 / 60, 1 / 60))
         tty = _TTY()
         shown = self.shown(lambda: MOCKUP, tty)
         shown.tick()
         drawn = len(tty.getvalue())
-        for _ in range(50):
-            self.clock.advance(0.1)
-            shown.tick()
-        self.assertEqual(len(tty.getvalue()) - drawn, 0)
+        self.clock.advance(1.0)
+        shown.tick()
+        added = tty.getvalue()[drawn:]
+        self.assertGreater(len(added), 0)
+        self.assertIn("01:43", added)
 
     def test_a_frame_that_fails_goes_to_the_journal_and_the_screen_goes_on(self) -> None:
         tty, states = _TTY(), [State(version=5), MOCKUP]

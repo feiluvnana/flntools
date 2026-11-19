@@ -631,8 +631,8 @@ def _ignore(event: Any) -> None:
 # The tally: the run's live counts, and the `State` snapshots made from them
 # ---------------------------------------------------------------------------------------------
 
-# Seconds between two snapshots (30 Hz), and the window a speed is measured over.
-TICK = 1 / 30
+# Seconds between two snapshots (60 Hz), and the window a speed is measured over.
+TICK = 1 / 60
 SPEED_WINDOW = 3.0
 # The files in flight a snapshot names; `State.more` counts the rest.
 FILES_SHOWN = 6
@@ -718,8 +718,7 @@ class Tally:
     `TICK` seconds, while something changed, `publish` makes a new `State` and sends it to the
     run's sink, which swaps it in as `run.state`; the screen reads only that.
 
-    A target a search found counts on the search's row (`adopt`). Everything changes under one
-    lock, which is never held while calling out.
+    Everything changes under one lock, which is never held while calling out.
 
     Args:
         emit: the run's event sink; None drops the snapshots.
@@ -729,8 +728,7 @@ class Tally:
         self.emit = emit or _ignore
         self._lock = threading.Lock()
         self._rows: dict[Target, _Row] = {}
-        self._owners: dict[Target, Target] = {}
-        # Counts by the target and category they belong to, a found target's on its own.
+        # Counts by the target and category they belong to.
         self._lines: dict[tuple[Target, str], Counts] = {}
         self._flights: dict[str, Flight] = {}
         self._holds: list[_Hold] = []
@@ -754,13 +752,8 @@ class Tally:
             categories: the categories it will take, shown until its listings start.
         """
         with self._lock:
-            if target not in self._rows and target not in self._owners:
+            if target not in self._rows:
                 self._rows[target] = _Row(str(target), tuple(categories))
-
-    def adopt(self, child: Target, parent: Target) -> None:
-        """Count a target a search found on the search's row."""
-        with self._lock:
-            self._owners[child] = parent
 
     def start(self, target: Target, category: str, listing: Listing | None = None) -> None:
         """A listing of `target` starts: its row is listing, and it is the newest step.
@@ -793,10 +786,8 @@ class Tally:
                 row.phase = Phase.DOWNLOADING
 
     def end(self, target: Target, *, failed: bool) -> None:
-        """`target` is over: done, or failed (a stop included). A found target ends nothing."""
+        """`target` is over: done, or failed (a stop included)."""
         with self._lock:
-            if target in self._owners:
-                return
             self._row(target).phase = Phase.FAILED if failed else Phase.DONE
 
     def count(self, target: Target, category: str, **steps: int) -> None:
@@ -872,10 +863,9 @@ class Tally:
 
     def _row(self, target: Target) -> _Row:
         """The row `target` counts on, made when it has none; the caller holds the lock."""
-        owner = self._owners.get(target, target)
-        row = self._rows.get(owner)
+        row = self._rows.get(target)
         if row is None:
-            row = self._rows[owner] = _Row(str(owner), ())
+            row = self._rows[target] = _Row(str(target), ())
         return row
 
     # -- the snapshots ------------------------------------------------------------------------

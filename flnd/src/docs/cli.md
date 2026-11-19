@@ -336,11 +336,11 @@ one `{"type": "Setting", …}` object per key. The keys are in
 ## What a run prints
 
 - **On a terminal**, a run draws its screen on standard error, from the run's snapshot
-  (`run.state`, [library.md](library.md#what-a-run-is-doing-now)). It is redrawn only when the
-  snapshot changed, at most 30 times a second, so a run with nothing going on writes nothing:
+  (`run.state`, [library.md](library.md#what-a-run-is-doing-now)), redrawn at 60 frames a second
+  so spinners and the timer stay live even while waiting:
 
   ```text
-    flnd get · 3 targets · 01:42
+    flnd get · 1/3 targets · 2 left · 01:42
 
     target               categories        saved  skipped  failed      size     speed
     ✓ ins:example_user   posts reels         412    1,208       0    2.1 GB         –
@@ -360,8 +360,8 @@ one `{"type": "Setting", …}` object per key. The keys are in
   counts (`–` before it counted anything), its size and speed. Then up to 6 files in flight,
   their paths cut at the start to 24 cells, with `+ <n> more` for the rest; queued files never
   show. The `now` line says what the run does, in yellow while a site makes it wait. On a
-  terminal too short for every row, the last targets fold into `+ <n> targets`. A warning
-  prints above the block.
+  terminal too short for every row, active and waiting targets stay shown and the rest fold into
+  `+ <n> targets`. A warning prints above the block.
 - **On a pipe**, nothing is drawn while the run goes; the summary comes at the end.
 - **With `--dry`**, standard output lists what the run would save: `found <target>` per target
   a search finds, then `new <path>` or `saved <path>` per file, and a last line counts them.
