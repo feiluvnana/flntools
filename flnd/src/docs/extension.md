@@ -45,9 +45,22 @@ The manifest asks for these permissions:
 - `nativeMessaging`: to talk to `flnd host`.
 
 The sites it may read are the built-in plugins' domains. They are the manifest's
-`host_permissions`, which `make manifest` writes from the plugins. The domains of other plugins
-are optional permissions. Install adds them to the copy in `unpacked/`, and the popup asks for
-them one site at a time, with **Allow**.
+`host_permissions`, which `make manifest` writes from the plugins. The manifest also lists
+`optional_host_permissions: ["*://*/*"]`, which only lets the extension ask Chrome later: it
+never asks for all sites at once.
+
+The domains of an installed plugin (`flnd plugin install`) are asked for one plugin at a time:
+
+- The extension asks the host (the popup's `needs` question) which installed plugins have
+  domains Chrome hasn't granted yet. It asks when the popup opens and when it connects.
+- The popup lists them, grouped by plugin: "Allow flnd on example.com? (plugin xyz)". The
+  **Allow** click calls `chrome.permissions.request` for exactly that plugin's domains, because
+  Chrome wants the user's click.
+- An op on a site Chrome hasn't granted fails with a `UsageError` whose hint is `open the flnd
+  popup to allow <domain>`. It is never silent.
+- `flnd plugin uninstall <code>` makes the extension give back, with `chrome.permissions.remove`,
+  the origins no installed plugin needs, the next time it connects. A domain two plugins share
+  stays while one of them is installed.
 
 The manifest has a fixed `key`, so the extension's ID never changes. The one origin the host
 serves is `chrome-extension://<id>/`. The host refuses any other origin that starts it.
@@ -146,7 +159,7 @@ The host accepts these ops. Each is answered by `background.js`.
   extension's version.
 - `cookies`: args `{"domains": [str]}`. Value: a list of cookies, `{name, value, domain, path,
   expires, secure, httpOnly, sameSite}`, for the domains and their subdomains. Without permission
-  for those sites, it is a `UsageError` that asks for **Allow** in the popup.
+  for those sites, it is a `UsageError` with the hint to allow them in the popup.
 - `tabs.open`: args `{"url", "active": false}`. It waits until the tab has loaded, up to 60 s,
   then gives `{"tab", "url", "status"}`. `status` is the page's HTTP status, or null when the
   browser doesn't say. A tab that doesn't load in time is a `NetworkError`.
@@ -193,8 +206,10 @@ home recorded at install. The questions are:
 - `media`: the tab's media, answered by the extension itself with the `media` op. Each item has
   **Get**, which sends its link to flnd as a target. A link no plugin reads is refused in the
   popup, with the reason.
-- **Allow** appears for a site a plugin reads but Chrome hasn't been allowed yet. It asks Chrome
-  for that site's permission.
+- `needs {granted}`: the optional site permissions Chrome has granted, as match patterns. The
+  host answers `{ask, drop}`: per installed plugin, the domains still to ask for, and the
+  granted patterns no installed plugin needs, which the extension removes. The popup shows each
+  plugin in `ask` with **Allow**.
 
 The popup gives up after 30 s with `flnd didn't answer`.
 

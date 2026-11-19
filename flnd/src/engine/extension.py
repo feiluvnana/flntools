@@ -818,7 +818,7 @@ class Popup:
         self.home = home
 
     def __call__(self, op: str, args: Mapping[str, Any]) -> Any:
-        """`resolve {url}`, `get {target}` or `follow {target}`.
+        """`resolve {url}`, `get {target}`, `follow {target}` or `needs {granted}`.
 
         Raises:
             UsageError: an unknown question, or a target no plugin reads.
@@ -827,7 +827,37 @@ class Popup:
             return self.resolve(str(args.get("url") or ""))
         if op in ("get", "follow"):
             return self.start(op, str(args.get("target") or ""))
+        if op == "needs":
+            granted = args.get("granted")
+            return self.needs(granted if isinstance(granted, list) else [])
         raise UsageError(f"the popup has no question {op!r}")
+
+    def needs(self, granted: Sequence[Any]) -> dict[str, Any]:
+        """What the extension should ask Chrome for, and give back, for the installed plugins.
+
+        Args:
+            granted: the optional site permissions Chrome has granted, as match patterns.
+
+        Returns:
+            `ask`: per installed plugin with domains not granted yet, `{code, name, domains}`
+            with only those domains. `drop`: the granted patterns no installed plugin needs.
+        """
+        from flnd.engine.plugins import PLUGINS
+
+        have = {item for item in granted if isinstance(item, str)}
+        installed = PLUGINS.installed()
+        wanted = {pattern for entry in installed.values()
+                  for pattern in patterns(entry.get("domains", ()))}
+        ask = []
+        for code, entry in sorted(installed.items()):
+            missing = [domain for domain in dict.fromkeys(entry.get("domains", ()))
+                       if patterns([domain])[0] not in have]
+            if missing:
+                ask.append({"code": code, "name": entry.get("name", code), "domains": missing})
+        # Only the extension's own form of pattern is ever dropped, never another grant.
+        drop = sorted(item for item in have - wanted
+                      if item.startswith("*://*.") and item.endswith("/*"))
+        return {"ask": ask, "drop": drop}
 
     def resolve(self, url: str) -> dict[str, Any]:
         """The target a link is, and whether this home follows it."""
@@ -1061,7 +1091,7 @@ class Setup:
     connected: bool
 
 
-def install(*, home: Path | None = None, domains: Sequence[str] = (),
+def install(*, home: Path | None = None,
             profiles: Sequence[Path] | None = None, wait: float = WAIT) -> Setup:
     """Copy the extension, make its token, write the host manifests, and wait for `hello`.
 
@@ -1070,7 +1100,6 @@ def install(*, home: Path | None = None, domains: Sequence[str] = (),
 
     Args:
         home: the home the popup acts on; None for `default_home()`.
-        domains: the plugins' domains, which the extension may ask for (optional permissions).
         profiles: the browsers' profile folders; None for every one `browsers()` finds.
         wait: seconds to wait for the extension's first `hello`; 0 tries once.
     """
@@ -1084,13 +1113,7 @@ def install(*, home: Path | None = None, domains: Sequence[str] = (),
     _mkdir(where)
     _mkdir(unpacked())
     for name in FILES:
-        data = (SOURCE / name).read_bytes()
-        if name == "manifest.json" and domains:
-            manifest = json.loads(data)
-            manifest["optional_host_permissions"] = sorted(
-                {*manifest.get("optional_host_permissions", ()), *patterns(domains)})
-            data = (json.dumps(manifest, indent=2) + "\n").encode()
-        _put(unpacked() / name, data, 0o644)
+        _put(unpacked() / name, (SOURCE / name).read_bytes(), 0o644)
     try:
         secret = token()
     except UsageError:

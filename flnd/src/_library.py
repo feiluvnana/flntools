@@ -691,13 +691,11 @@ class Extension:
     def install(self) -> None:
         """Copy the extension, write its host for every Chromium browser found, say how to
         load it in Chrome, and wait up to 10 minutes for it to connect. The popup acts on this
-        home, and may ask for the domains of the installed plugins.
+        home. The extension asks for the installed plugins' domains itself, from its popup.
         """
         from flnd.engine import extension
 
-        domains = [domain for row in self._owner.plugins if row.origin != "built-in"
-                   for domain in row.domains]
-        extension.install(home=self._owner.home.absolute(), domains=domains)
+        extension.install(home=self._owner.home.absolute())
 
     def uninstall(self) -> list[Path]:
         """Remove the extension, its token and its host manifests.

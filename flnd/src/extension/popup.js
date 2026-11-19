@@ -82,23 +82,28 @@ async function showMedia() {
   place.replaceChildren(...items, status);
 }
 
-// The site's optional permission, when flnd's plugins may read it but Chrome hasn't allowed it.
+// The sites installed plugins read that Chrome hasn't allowed yet: one row per plugin, and one
+// click asks Chrome for exactly that plugin's domains (Chrome needs the click).
 async function showAllow() {
-  if (!tab.url?.startsWith("http")) return;
-  const host = new URL(tab.url).hostname;
-  const optional = chrome.runtime.getManifest().optional_host_permissions ?? [];
-  const pattern = optional.find((each) => {
-    const domain = each.replace(/^\*:\/\/\*\./, "").replace(/\/\*$/, "");
-    return host === domain || host.endsWith(`.${domain}`);
+  const place = document.getElementById("allow");
+  let found;
+  try {
+    found = await ask("needs", {});
+  } catch (error) {
+    return; // flnd isn't answering: showTarget says so
+  }
+  const rows = found.ask.map((plugin) => {
+    const shown = plugin.domains.join(", ");
+    const allow = document.createElement("button");
+    allow.textContent = "Allow";
+    allow.addEventListener("click", async () => {
+      const origins = plugin.domains.map((domain) => `*://*.${domain}/*`);
+      if (await chrome.permissions.request({ origins })) entry.remove();
+    });
+    const entry = row(`Allow flnd on ${shown}? (plugin ${plugin.code})`, allow);
+    return entry;
   });
-  if (!pattern || (await chrome.permissions.contains({ origins: [pattern] }))) return;
-  document.getElementById("allow-text").textContent = `Let flnd read ${host}`;
-  document.getElementById("allow").hidden = false;
-  document.getElementById("allow-button").addEventListener("click", async () => {
-    if (await chrome.permissions.request({ origins: [pattern] })) {
-      document.getElementById("allow").hidden = true;
-    }
-  });
+  place.replaceChildren(...rows);
 }
 
 showAllow();

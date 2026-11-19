@@ -18,7 +18,8 @@ from unittest import mock
 import no_profiles  # noqa: F401  (refuses real browser profiles and ~/.config/flnd)
 
 import flnd
-from flnd.engine import extension
+from flnd.engine import extension, plugins
+from flnd.plugins import _manifest
 
 # A fresh secret per run, so no token is written in the tests.
 TOKEN = secrets.token_hex(32)
@@ -311,13 +312,109 @@ class PopupTest(Case):
         self.assertEqual(argv[-5:], ["--home", str(home), "get", "--", "ins:example_user"])
 
 
+PLUGIN = """
+from flnd.plugin import Plugin, Post, route
+
+
+class Xyz(Plugin):
+    code, name, domains, api = "xyz", "Xyz", ("xyz.example.com", "cdn.example.com"), 2
+
+    @route("xyz:{user}", "xyz.example.com/{user}")
+    async def user(self, ctx, user):
+        yield Post("p1", [])
+"""
+
+
+class PluginDomainsTest(Case):
+    """What the host tells the extension to ask for, and to give back, per installed plugin."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        folder = self.temp / "plugins"
+        folder.mkdir()
+        source = self.temp / "xyz.py"
+        source.write_text(PLUGIN, encoding="utf-8")
+        for patch in (mock.patch.dict(os.environ, {plugins.VARIABLE: str(folder)}),
+                      mock.patch.multiple(plugins.PLUGINS, _overrides={}, _built_in={},
+                                          _removed=set(), _mgr=None, _stamp=None, _warned=0),
+                      mock.patch.dict(sys.modules)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.source = source
+
+    def install(self) -> None:
+        mgr = plugins.PLUGINS.manager()
+        mgr.install(self.source)
+        plugins.PLUGINS.flush(mgr)
+
+    def test_the_popup_asks_for_an_installed_plugins_domains_alone(self):
+        popup = extension.Popup(self.temp / "home")
+        self.assertEqual(popup("needs", {"granted": []}), {"ask": [], "drop": []})
+        self.install()
+        asked = {"code": "xyz", "name": "Xyz", "domains": ["xyz.example.com", "cdn.example.com"]}
+        self.assertEqual(popup("needs", {"granted": []}), {"ask": [asked], "drop": []})
+        # A granted domain is not asked again; one that is gone is not kept.
+        have = ["*://*.xyz.example.com/*"]
+        self.assertEqual(popup("needs", {"granted": have})["ask"],
+                         [{**asked, "domains": ["cdn.example.com"]}])
+        self.assertEqual(popup("needs", {"granted": [*have, "*://*.cdn.example.com/*"]}),
+                         {"ask": [], "drop": []})
+
+    def test_uninstalling_a_plugin_makes_the_extension_drop_what_only_it_used(self):
+        popup = extension.Popup(self.temp / "home")
+        self.install()
+        gone = ["*://*.xyz.example.com/*", "*://*.cdn.example.com/*"]
+        shared = ["*://*.example.net/*", "*://*/*", "https://other.example.org/*"]
+        self.assertEqual(popup("needs", {"granted": [*gone, *shared]})["drop"],
+                         ["*://*.example.net/*"])
+        mgr = plugins.PLUGINS.manager()
+        mgr.uninstall("xyz")
+        plugins.PLUGINS.flush(mgr)
+        found = popup("needs", {"granted": [*gone, *shared]})
+        # Only the extension's own kind of pattern is dropped, never a wider or other grant.
+        self.assertEqual(found, {"ask": [], "drop": sorted([*gone, "*://*.example.net/*"])})
+
+    def test_the_extension_answers_an_origin_it_may_not_read_with_a_hint_to_allow_it(self):
+        granted = {"example.com"}
+
+        def answer(op, args):
+            host = args.get("url", "https://example.com/").split("/")[2]
+            if host in granted:
+                return {"ok": True, "value": None}
+            return {"ok": False, "error": {"class": "UsageError", "hint":
+                    f"open the flnd popup to allow {host}",
+                    "message": f"flnd's extension may not read {host}"}}
+
+        async def run():
+            with Fake(answer=answer):
+                async with await extension.connect() as client:
+                    await client.call("tabs.open", url="https://example.com/a")
+                    with self.assertRaises(flnd.UsageError) as caught:
+                        await client.call("tabs.open", url="https://xyz.example.net/a")
+            return caught.exception
+
+        error = asyncio.run(run())
+        self.assertEqual(error.hint, "open the flnd popup to allow xyz.example.net")
+
+    def test_the_extension_files_ask_for_optional_origins_and_say_the_hint(self):
+        manifest = json.loads((extension.SOURCE / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["optional_host_permissions"], ["*://*/*"])
+        built_in = dict.fromkeys(domain for entry in _manifest.PLUGINS.values()
+                                 for domain in entry["domains"])
+        self.assertEqual(manifest["host_permissions"], [f"*://*.{each}/*" for each in built_in])
+        background = (extension.SOURCE / "background.js").read_text(encoding="utf-8")
+        self.assertIn("open the flnd popup to allow", background)
+        popup = (extension.SOURCE / "popup.js").read_text(encoding="utf-8")
+        self.assertNotIn("<all_urls>", popup)
+        self.assertNotIn("*://*/*", popup + background)
+
+
 class InstallTest(Case):
     def test_install_writes_the_extension_and_its_hosts_and_uninstall_removes_them(self):
         profiles = [self.temp / "Chrome", self.temp / "Brave"]
         with contextlib.redirect_stdout(io.StringIO()) as shown, \
                 mock.patch.object(extension, "WINDOWS", False):
-            done = extension.install(home=self.temp / "home", domains=["example.com"],
-                                     profiles=profiles, wait=0)
+            done = extension.install(home=self.temp / "home", profiles=profiles, wait=0)
         where = extension.folder()
         self.assertFalse(done.connected)
         self.assertEqual(done.folder, extension.unpacked())
@@ -328,8 +425,8 @@ class InstallTest(Case):
         self.assertEqual(sorted(path.name for path in extension.unpacked().iterdir()),
                          sorted(extension.FILES))
         self.assertEqual(extension.token(), TOKEN)  # a token already there is kept
-        manifest = json.loads((extension.unpacked() / "manifest.json").read_text())
-        self.assertIn("*://*.example.com/*", manifest["optional_host_permissions"])
+        self.assertEqual((extension.unpacked() / "manifest.json").read_bytes(),
+                         (extension.SOURCE / "manifest.json").read_bytes())
         for path in done.manifests:
             described = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(described["allowed_origins"], [extension.origin()])

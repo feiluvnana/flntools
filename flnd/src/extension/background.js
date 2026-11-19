@@ -13,7 +13,7 @@ const ANSWER = 30000;
 // How long `click` waits for its element, in seconds.
 const CLICK = 10;
 // The hint when Chrome hasn't let the extension read a site.
-const ALLOW = "open flnd's popup on that site and click Allow";
+const allow = (hosts) => `open the flnd popup to allow ${hosts}`;
 
 let port = null;
 let asked = 0;
@@ -136,9 +136,19 @@ async function inPage(tab, func, ...args) {
   try {
     results = await chrome.scripting.executeScript({ target: { tabId: tab }, func, args });
   } catch (error) {
-    throw fail("UsageError", `flnd's extension can't read tab ${tab}: ${error.message}`, ALLOW);
+    const host = await chrome.tabs.get(tab).then((found) => new URL(found.url).hostname, () => "");
+    const said = `flnd's extension can't read tab ${tab}: ${error.message}`;
+    throw fail("UsageError", said, host ? allow(host) : "");
   }
   return results?.[0]?.result;
+}
+
+// Fail with the hint to allow a site when Chrome hasn't granted the extension its origin.
+async function granted(url) {
+  const { protocol, hostname } = new URL(url);
+  if (protocol !== "http:" && protocol !== "https:") return;
+  if (await chrome.permissions.contains({ origins: [`${protocol}//${hostname}/*`] })) return;
+  throw fail("UsageError", `flnd's extension may not read ${hostname}`, allow(hostname));
 }
 
 function loaded(tab) {
@@ -248,7 +258,7 @@ const OPS = {
     const origins = domains.map((domain) => `*://*.${domain}/*`);
     if (!(await chrome.permissions.contains({ origins }))) {
       const said = `flnd's extension may not read the cookies of ${domains.join(", ")}`;
-      throw fail("UsageError", said, ALLOW);
+      throw fail("UsageError", said, allow(domains.join(", ")));
     }
     const found = new Map();
     for (const domain of domains) {
@@ -269,6 +279,7 @@ const OPS = {
   },
 
   "tabs.open": async ({ url, active = false }) => {
+    await granted(url);
     const tab = await chrome.tabs.create({ url, active });
     const done = await loaded(tab.id);
     const status = await inPage(tab.id, page.status).catch(() => null);
@@ -344,6 +355,7 @@ const OPS = {
 
   storage: async ({ origin }) => {
     const want = new URL(origin).origin;
+    await granted(want);
     const tabs = await chrome.tabs.query({});
     const open = tabs.find((tab) => tab.url && new URL(tab.url).origin === want);
     if (open) return inPage(open.id, page.storage);
@@ -371,6 +383,18 @@ const OPS = {
   media: async ({ tab }) => inPage(tab, page.media),
 };
 
+// Ask the host which sites the installed plugins need: give back the permissions none of them
+// uses, and return the rest for the popup to ask for. A plugin that was uninstalled loses its
+// origins here, the next time the extension connects.
+async function needs() {
+  const manifest = chrome.runtime.getManifest();
+  const { origins = [] } = await chrome.permissions.getAll();
+  const optional = origins.filter((each) => !manifest.host_permissions.includes(each));
+  const found = await question("needs", { granted: optional });
+  if (found.drop?.length) await chrome.permissions.remove({ origins: found.drop }).catch(() => {});
+  return found;
+}
+
 // ------------------------------------------------------------------------------------------
 // The popup
 // ------------------------------------------------------------------------------------------
@@ -394,7 +418,8 @@ function question(op, args) {
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id) return false;
   const { op, args } = message;
-  const asking = op === "media" ? OPS.media(args) : question(op, args);
+  const own = { media: OPS.media, needs };
+  const asking = Object.hasOwn(own, op) ? own[op](args) : question(op, args);
   asking.then(
     (value) => respond({ ok: true, value }),
     (error) => respond({ ok: false, message: String(error.message ?? error), hint: error.hint }),
@@ -403,3 +428,4 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 });
 
 connect();
+needs().catch(() => {}); // flnd isn't answering yet: the popup asks again when it opens
