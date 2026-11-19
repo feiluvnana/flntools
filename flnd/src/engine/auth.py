@@ -53,8 +53,7 @@ ACCOUNT = "account"
 WINDOW_WAIT = 600.0
 WINDOW_POLL = 1.0
 # The browsers whose cookie stores a login reads, by method, with the names people know.
-BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "Brave",
-            "chromium": "Chromium", "safari": "Safari"}
+BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "safari": "Safari"}
 TABLE = ("CREATE TABLE IF NOT EXISTS secrets (account INTEGER NOT NULL, name TEXT NOT NULL,"
          " sealed BLOB NOT NULL, PRIMARY KEY (account, name)) WITHOUT ROWID")
 # The name a version-1 home's one account per plugin takes.

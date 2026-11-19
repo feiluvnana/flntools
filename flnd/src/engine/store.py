@@ -134,8 +134,8 @@ FAILURE_SELECT = ("key, target, post_id, category, file, cursor, attempts, class
 ACCOUNT_SELECT = "id, plugin, name, origin, at, is_default, status, held_until, expires"
 
 # How version 1 named a login's origin, as version 2 names it; any other text was a file's name.
-ORIGINS = {"chrome": "chrome", "firefox": "firefox", "safari": "safari", "edge": "edge",
-           "brave": "brave", "chromium": "chromium", "browser": "browser", "qr": "qr",
+ORIGINS = {"chrome": "chrome", "firefox": "firefox", "safari": "safari", "browser": "browser",
+           "qr": "qr",
            "phone": "phone"}
 
 

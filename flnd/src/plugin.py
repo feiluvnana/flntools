@@ -84,7 +84,7 @@ OLD_NAMES = {
     "single_kinds": "@route(..., single=True) on each one-post route",
 }
 # The ways a cookie site's login is read: flnd's own window, a browser's store, a cookies.txt.
-COOKIE_METHODS = ("browser", "chrome", "file", "firefox", "safari", "edge", "brave", "chromium")
+COOKIE_METHODS = ("browser", "chrome", "file", "firefox", "safari")
 # Each optional hook: whether it is `async def`, and the parameters it takes.
 HOOKS = {
     "sign": (False, ("self", "request", "cookies")),

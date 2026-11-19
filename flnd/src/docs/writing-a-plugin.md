@@ -68,7 +68,7 @@ What each part does:
   cookies. A 401 or 403 from one is a `LoginError`.
 - **`login`** says how it logs in. `cookies("token", url=…)` is logged in when one of those
   cookies is set; `url` is the site's login page. Its methods are `browser` (flnd's own window
-  on that page), `chrome`, `firefox`, `safari`, `edge`, `brave`, `chromium` (a browser's cookie
+  on that page), `chrome` (the extension), `firefox`, `safari` (a browser's cookie
   store) and `file` (a cookies.txt). `cookies(..., required=True)` means nothing can be listed
   without a login. A site with its own flow assigns an instance of a `Login` subclass
   (section 8). No `login` means the plugin needs none.

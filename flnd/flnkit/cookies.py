@@ -7,26 +7,23 @@ What it offers any caller:
   `domain`, `path`, `expires`, `secure`, `httpOnly`, `sameSite`). It filters by domain and name,
   reads a value by name, builds a `Cookie:` header and saves itself as a Netscape `cookies.txt`.
 - `load`, which reads a Netscape or JSON cookie file, raw cookie text, or the cookie database of
-  an installed browser (`BROWSERS`: Chrome, Chromium, Edge, Brave, Firefox and, on macOS,
-  Safari), decrypting Chromium's encrypted values with the operating system's key store.
+  an installed browser (`BROWSERS`: Firefox and, on macOS, Safari). Chromium cookies are read
+  through flnd's Chrome extension (`flnd engine chrome`).
 - `parse_binarycookies`, a stdlib reader of Safari's `Cookies.binarycookies` format.
 - `refuse_profile`, the guard that stops a test suite from reading a real browser profile.
 
 Who calls it: in flnd, the login code (`src/engine/auth.py`) loads a jar at `flnd login` and
 saves it in the vault; the HTTP client (`flnkit/net.py`) and the browser
-(`flnkit/browser.py`) send it. It calls only the stdlib, `cryptography` (lazily, for a Chromium
-value), and the `_files` (atomic writes) and `_ui` (a debug line) libraries. Its errors are
+(`flnkit/browser.py`) send it. It calls only the stdlib and the `_files` (atomic writes) and
+`_ui` (a debug line) libraries. Its errors are
 `flnkit.errors.LoginError` and `UsageError`, so a caller can show them as they are.
 
 How `load` reads a browser:
-1. find the profile folder for the platform (`_chromium_root`, `_firefox_profile`, or Safari's
-   cookie file, `SAFARI_FILES`);
+1. find the profile folder for the platform (`_firefox_profile`, or Safari's cookie file,
+   `SAFARI_FILES`);
 2. copy the cookie database into memory with SQLite's backup API, read-only, so a running
    browser's lock or write-ahead log never blocks or corrupts the read;
-3. read every row; for Chromium, fetch the AES key from the Keychain (macOS), the keyring
-   (Linux) or DPAPI (Windows), but only if some value is encrypted;
-4. decrypt each value, strip Chromium's host hash, and skip a value that can't be decrypted,
-   failing only when none can.
+3. read every row.
 
 Rules a change must keep:
 - A cookie's value is a login. It is never printed, logged, put in an error message or a
@@ -37,16 +34,12 @@ Rules a change must keep:
 
 from __future__ import annotations
 
-import base64
 import configparser
-import ctypes
-import hashlib
 import json
 import logging
 import os
 import sqlite3
 import struct
-import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -55,6 +48,8 @@ from typing import Any
 
 from flnkit import browser
 from flnkit.errors import LoginError, UsageError
+
+_REMOVED = frozenset({"chrome", "chromium", "edge", "brave"})
 
 _log = logging.getLogger(__name__)
 
@@ -69,18 +64,9 @@ _PLATFORM = sys.platform
 # anything this size is a mistake or an attack, refused before it is parsed.
 MAX_SIZE = 16 * 1024 * 1024
 
-# Keychain name, macOS folder, Linux folder, Linux keyring app, Windows User Data folder.
-_CHROMIUM = {
-    "chrome": ("Chrome", "Google/Chrome", "google-chrome", "chrome", "Google/Chrome/User Data"),
-    "chromium": ("Chromium", "Chromium", "chromium", "chromium", "Chromium/User Data"),
-    "edge": ("Microsoft Edge", "Microsoft Edge", "microsoft-edge", "chromium",
-             "Microsoft/Edge/User Data"),
-    "brave": ("Brave", "BraveSoftware/Brave-Browser", "BraveSoftware/Brave-Browser", "brave",
-              "BraveSoftware/Brave-Browser/User Data"),
-}
 # Every browser `load` reads cookies from, by the name `flnd login <source> <browser>` takes.
 # Safari is read on macOS only.
-BROWSERS = (*_CHROMIUM, "firefox", "safari")
+BROWSERS = ("firefox", "safari")
 # Safari's cookie file, under the home folder: in its sandbox container since Safari 14, and
 # where older versions kept it. The first that exists is read.
 SAFARI_FILES = (
@@ -102,11 +88,6 @@ _SAME_SITE = {0: "None", 1: "Lax", 2: "Strict"}
 # The spellings JSON exports use: Playwright and extensions ("no_restriction" in Chrome).
 _JSON_SAME_SITE = {"none": "None", "no_restriction": "None", "lax": "Lax", "strict": "Strict"}
 _HTTP_ONLY = "#HttpOnly_"
-# Seconds from 1601-01-01 (Chromium's epoch, Windows' FILETIME) to 1970-01-01.
-_WINDOWS_EPOCH_OFFSET = 11_644_473_600
-# The cookie database version from which each value starts with SHA-256(host), 32 bytes.
-_HOST_HASH_VERSION = 24
-_HOST_HASH_SIZE = 32
 # Set by flnd's test suite (`make test`, and `tests/fakes.py`): while set, a browser profile in
 # the real home folder is refused, so no test can read a person's real cookies or logins.
 NO_PROFILES = "FLND_TEST_NO_PROFILES"
@@ -173,14 +154,12 @@ def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
     `source` is read as, in order: a browser name from `BROWSERS` (any case); raw text, when it
     holds a line break or a tab, or starts with `[` or `{` (JSON); else a file path. A file may
     be a Netscape `cookies.txt` (curl, browser extensions) or a JSON list in Playwright's or an
-    extension's shape, and is refused past `MAX_SIZE` before it is parsed. Reading a Chromium
-    browser may show the operating system's prompt for the Keychain or keyring.
+    extension's shape, and is refused past `MAX_SIZE` before it is parsed.
 
     Args:
         source: a browser name, cookie text, or the path of a cookie file.
-        profile: the browser profile's folder name (Chromium's `Default`, `Profile 1`, or a
-            Firefox profile folder); `None` means Chromium's `Default`, or the profile Firefox
-            opens first. Only for a browser name.
+        profile: the Firefox profile folder name; `None` means the profile Firefox opens first.
+            Only for a browser name.
 
     Returns:
         A new jar with every cookie read, in the source's order.
@@ -196,12 +175,15 @@ def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
     """
     if isinstance(source, str):
         lower = source.lower()
+        if lower in _REMOVED:
+            raise UsageError(
+                f"{lower}'s cookies are read through the downloader's Chrome extension",
+                hint="use the chrome login, not cookies.load",
+            )
         if lower in BROWSERS:
             if lower == "firefox":
                 return Jar(_load_firefox(profile), error=LoginError)
-            if lower == "safari":
-                return Jar(_load_safari(), error=LoginError)
-            return Jar(_load_chromium(lower, profile or "Default"), error=LoginError)
+            return Jar(_load_safari(), error=LoginError)
         if profile is not None:
             raise UsageError(f"unknown browser {source!r}: use one of {', '.join(BROWSERS)}")
         if "\n" in source or "\r" in source or "\t" in source or source.lstrip()[:1] in ("[", "{"):
@@ -534,353 +516,6 @@ def _cookie(name: str, value: str, domain: str, path: str, expires: int,
         "name": name, "value": value, "domain": domain, "path": path, "expires": expires,
         "secure": bool(secure), "httpOnly": bool(http_only), "sameSite": same_site,
     }
-
-
-def _load_chromium(browser: str, profile: str) -> list[Cookie]:
-    """Every cookie of a Chromium-family profile, each encrypted value decrypted.
-
-    The steps:
-    1. find the cookie database (`Network/Cookies`, or `Cookies` in an old profile);
-    2. copy it into memory and read its rows and its schema version;
-    3. read the key, only when some value is encrypted, since reading it may prompt;
-    4. decrypt each value; one that fails is skipped, so a single cookie in a scheme this
-       reader can't undo doesn't lose every other site's login.
-
-    Args:
-        browser: a Chromium-family name from `_CHROMIUM`.
-        profile: the profile's folder name, such as `Default` or `Profile 1`.
-
-    Returns:
-        The cookies that could be read, in the database's row order.
-
-    Raises:
-        LoginError: the database can't be read, the key can't be read, or not one encrypted
-            value could be decrypted (a wrong key, most likely).
-        FileNotFoundError: the profile has no cookie database.
-        RuntimeError: the test suite forbids reading the real profile (`refuse_profile`).
-    """
-    folder = _chromium_root(browser) / profile
-    refuse_profile(folder)
-    # Chromium 96 moved the database into Network/; an older profile still has it at the top.
-    database = folder / "Network" / "Cookies"
-    if not database.is_file() and (folder / "Cookies").is_file():
-        database = folder / "Cookies"
-    with _open_copy(database) as connection:
-        try:
-            version_row = connection.execute(
-                "SELECT value FROM meta WHERE key = 'version'"
-            ).fetchone()
-            rows = connection.execute(
-                "SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, "
-                "is_httponly, samesite FROM cookies"
-            ).fetchall()
-        except sqlite3.Error as error:
-            raise LoginError(f"cannot read {browser} cookies: {error}") from error
-    has_host_hash = int(version_row[0]) >= _HOST_HASH_VERSION if version_row else False
-    # The key is read only when a value needs it, so a profile of plain values shows no prompt.
-    keys = _chromium_keys(browser) if any(row[3] for row in rows) else {}
-    jar = []
-    encrypted_count = 0
-    failures: list[LoginError] = []
-    for host, name, value, encrypted, path, expires_utc, secure, http_only, same_site in rows:
-        if encrypted:
-            encrypted_count += 1
-            # A whole profile holds every site's cookies, and some use a scheme this reader can't
-            # undo (Chrome's app-bound "v20" values, a damaged row), so one such cookie is skipped
-            # rather than failing. Only when every encrypted value fails is key wrong.
-            try:
-                what = f"{browser} cookie {name} for {host}"
-                value = _decrypt_chromium(bytes(encrypted), keys, host, has_host_hash, what)
-            except LoginError as error:
-                failures.append(error)
-                continue
-        # Chromium counts microseconds from 1601; 0 marks a session cookie.
-        expires = expires_utc // 1_000_000 - _WINDOWS_EPOCH_OFFSET if expires_utc else -1
-        same = _SAME_SITE.get(same_site, "Lax")
-        jar.append(_cookie(name, value, host, path, expires, secure, http_only, same))
-    if failures and len(failures) == encrypted_count:
-        raise LoginError(
-            f"can't decrypt any of {encrypted_count} {browser} cookies: wrong key or unknown "
-            f"format; first: {failures[0]}"
-        )
-    if failures:
-        # The count only: a cookie's name or host says which sites a person uses.
-        _log.debug(
-            "skipped {count} {browser} cookies that can't be decrypted",
-            extra={"fields": {
-                "count": len(failures),
-                "browser": browser,
-            }},
-        )
-    return jar
-
-
-def _chromium_root(browser: str) -> Path:
-    """The `User Data` folder of a Chromium-family browser, which holds its profiles.
-
-    Args:
-        browser: a Chromium-family name from `_CHROMIUM`.
-
-    Returns:
-        The folder in the platform's per-user application folder; it may not exist.
-    """
-    _, mac_folder, linux_folder, _, win_folder = _CHROMIUM[browser]
-    if _PLATFORM == "darwin":
-        return Path.home() / "Library" / "Application Support" / mac_folder
-    if _PLATFORM == "win32":
-        local = os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
-        return Path(local) / win_folder
-    return Path.home() / ".config" / linux_folder
-
-
-def _chromium_keys(browser: str) -> dict[bytes, bytes]:
-    """The AES keys by the 3-byte prefix a value starts with: `v10`, and `v11`.
-
-    Each platform keeps Chromium's secret differently: a Keychain item on macOS, a keyring
-    entry (or the fixed password "peanuts") on Linux, and a DPAPI-protected key in `Local State`
-    on Windows. macOS may show a Keychain prompt here.
-
-    Args:
-        browser: a Chromium-family name from `_CHROMIUM`.
-
-    Returns:
-        `{prefix: key}`: 16-byte AES-128 keys on macOS and Linux, a 32-byte AES-256 key on
-        Windows.
-    """
-    keychain_name, _, _, application, _ = _CHROMIUM[browser]
-    if _PLATFORM == "darwin":
-        # macOS: PBKDF2 over the Keychain's password, 1003 rounds, as Chromium's os_crypt_mac does.
-        return {b"v10": _derive_key(_read_keychain_password(f"{keychain_name} Safe Storage"), 1003)}
-    if _PLATFORM == "win32":
-        key = _read_windows_key(browser)
-        return {b"v10": key, b"v11": key}
-    # Linux writes v10 with the fixed password, and v11 with the keyring's when there is one.
-    keyring_password = _read_keyring_password(application)
-    v11_pw = keyring_password or "peanuts"
-    return {b"v10": _derive_key("peanuts", 1), b"v11": _derive_key(v11_pw, 1)}
-
-
-class _DataBlob(ctypes.Structure):
-    """Windows' `DATA_BLOB`: a byte count and a pointer, what `CryptUnprotectData` takes."""
-
-    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
-
-
-def _read_windows_key(browser: str) -> bytes:
-    """Read and DPAPI-decrypt Chromium's AES-256-GCM master key from `Local State`.
-
-    `Local State` is JSON; `os_crypt.encrypted_key` is base64 of `DPAPI` plus the key that
-    Windows protected for the signed-in account.
-
-    Args:
-        browser: a Chromium-family name from `_CHROMIUM`.
-
-    Returns:
-        The 32-byte key.
-
-    Raises:
-        LoginError: `Local State` is missing, unreadable, or holds a key in another format, or
-            DPAPI refuses to decrypt it.
-    """
-    state_path = _chromium_root(browser) / "Local State"
-    if not state_path.is_file():
-        raise LoginError(f"no Local State file for {browser} at {state_path}")
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8-sig"))
-        raw = base64.b64decode(state["os_crypt"]["encrypted_key"])
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise LoginError(f"cannot read {browser} Local State key: {error}") from error
-    if not raw.startswith(b"DPAPI"):
-        raise LoginError(f"unexpected {browser} Local State key format")
-    return _dpapi_unprotect(raw[5:])
-
-
-def _dpapi_unprotect(data: bytes) -> bytes:
-    """Decrypt `data` using Windows DPAPI (`CryptUnprotectData`).
-
-    DPAPI decrypts only what the same Windows account protected, so this works for the
-    signed-in user's own browser. The output buffer is Windows-allocated and freed with
-    `LocalFree` even if copying it fails.
-
-    Args:
-        data: the protected bytes, without Chromium's `DPAPI` prefix.
-
-    Returns:
-        The plain bytes.
-
-    Raises:
-        LoginError: not on Windows, or Windows refuses to decrypt `data`.
-    """
-    windll = getattr(ctypes, "windll", None)
-    if windll is None:
-        raise LoginError("Windows DPAPI is only available on Windows")
-    buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
-    blob_in = _DataBlob(len(data), buf)
-    blob_out = _DataBlob()
-    ok = windll.crypt32.CryptUnprotectData(
-        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
-    )
-    if not ok:
-        raise LoginError("Windows DPAPI CryptUnprotectData failed")
-    try:
-        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
-    finally:
-        windll.kernel32.LocalFree(blob_out.pbData)
-
-
-def _read_keychain_password(service: str) -> str:
-    """The password of a macOS Keychain item, read with the `security` tool.
-
-    macOS may ask the person to allow the read; a refusal is an error, not an empty password.
-
-    Args:
-        service: the item's service name, such as `Chrome Safe Storage`.
-
-    Returns:
-        The password, without its trailing newline.
-
-    Raises:
-        LoginError: `security` failed: no such item, or the person denied access.
-    """
-    result = subprocess.run(
-        ["security", "find-generic-password", "-w", "-s", service],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        err = result.stderr.strip() or "denied"
-        raise LoginError(f"can't read the Keychain item {service!r}: {err}")
-    return result.stdout.strip()
-
-
-def _read_keyring_password(application: str) -> str | None:
-    """Chromium's password from the Linux Secret Service keyring, read with `secret-tool`.
-
-    No `secret-tool`, or no entry, means the browser runs without a keyring, and Chromium then
-    encrypts with the fixed password "peanuts"; the caller falls back to it.
-
-    Args:
-        application: the keyring's `application` attribute, such as `chrome`.
-
-    Returns:
-        The password, or `None` when there is none.
-    """
-    try:
-        result = subprocess.run(
-            ["secret-tool", "lookup", "application", application],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
-
-
-def _derive_key(password: str, iterations: int) -> bytes:
-    # Chromium's fixed salt and 16-byte (AES-128) key.
-    return hashlib.pbkdf2_hmac("sha1", password.encode("utf-8"), b"saltysalt", iterations, 16)
-
-
-def _decrypt_chromium(
-    encrypted: bytes, keys: dict[bytes, bytes], host: str, has_host_hash: bool, what: str
-) -> str:
-    """One Chromium value, decrypted; errors name `what`, never the value.
-
-    A value is a 3-byte version prefix (`v10`, `v11`) and the ciphertext: AES-256-GCM on
-    Windows, AES-128-CBC elsewhere. From database version 24 the plain text starts with
-    SHA-256 of the cookie's host, which is checked and removed.
-
-    Args:
-        encrypted: the `encrypted_value` column.
-        keys: the keys by prefix, from `_chromium_keys`.
-        host: the cookie's `host_key`, for the host hash.
-        has_host_hash: whether the database's version adds the host hash.
-        what: how errors name the cookie, such as `chrome cookie sid for .example.com`.
-
-    Returns:
-        The value as text.
-
-    Raises:
-        LoginError: an unknown prefix, a wrong key, a damaged value, or a host hash that
-            differs.
-    """
-    key = keys.get(encrypted[:3])
-    if key is None:
-        raise LoginError(f"can't decrypt {what}: unknown format {encrypted[:3]!r}")
-    # ValueError: bad padding, bad host hash, or bad UTF-8 (wrong key or damaged value).
-    try:
-        plain = (
-            _decrypt_aes_gcm(key, encrypted[3:]) if _PLATFORM == "win32"
-            else _decrypt_aes_cbc(key, encrypted[3:])
-        )
-        if has_host_hash:
-            # A matching host hash also proves the key was right.
-            if plain[:_HOST_HASH_SIZE] != hashlib.sha256(host.encode("utf-8")).digest():
-                raise ValueError("host hash differs")
-            plain = plain[_HOST_HASH_SIZE:]
-        return plain.decode("utf-8")
-    except ValueError:
-        raise LoginError(f"can't decrypt {what}: wrong key or damaged value") from None
-
-
-def _decrypt_aes_gcm(key: bytes, ciphertext: bytes) -> bytes:
-    """AES-256-GCM with 12-byte nonce followed by ciphertext and 16-byte tag.
-
-    Args:
-        key: the 32-byte key.
-        ciphertext: the nonce, the ciphertext and the tag, in that order.
-
-    Returns:
-        The plain bytes.
-
-    Raises:
-        ValueError: the input is too short or the tag doesn't match (wrong key or damage).
-        ImportError: the `cryptography` package isn't installed.
-    """
-    try:
-        from cryptography.exceptions import InvalidTag
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    except ImportError:
-        raise ImportError(
-            "flnkit.cookies needs cryptography: pip install cryptography"
-        ) from None
-    if len(ciphertext) < 12 + 16:
-        raise ValueError("ciphertext too short")
-    try:
-        return AESGCM(key).decrypt(ciphertext[:12], ciphertext[12:], None)
-    except InvalidTag:
-        raise ValueError("authentication tag mismatch") from None
-
-
-def _decrypt_aes_cbc(key: bytes, ciphertext: bytes) -> bytes:
-    """AES-CBC with Chromium's fixed IV of 16 spaces, then PKCS#7 unpadding.
-
-    Args:
-        key: the 16-byte key from `_derive_key`.
-        ciphertext: the value without its version prefix.
-
-    Returns:
-        The plain bytes.
-
-    Raises:
-        ValueError: the padding is wrong, which almost always means a wrong key.
-        ImportError: the `cryptography` package isn't installed.
-    """
-    try:
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        from cryptography.hazmat.primitives.padding import PKCS7
-    except ImportError:
-        raise ImportError(
-            "flnkit.cookies needs cryptography: pip install cryptography"
-        ) from None
-    decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
-    unpadder = PKCS7(128).unpadder()
-    padded = decryptor.update(ciphertext) + decryptor.finalize()
-    return unpadder.update(padded) + unpadder.finalize()
 
 
 def _parse_netscape(text: str) -> list[Cookie]:

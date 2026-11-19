@@ -273,7 +273,7 @@ with flnd.open(home) as fl:
 
 | method | what it does |
 | --- | --- |
-| `fl.login(source, how)` | log in to the plugin with that code: `how` is a browser to read cookies from (`"chrome"`, `"firefox"`, `"edge"`, `"brave"`, `"chromium"`, `"safari"` on macOS), a cookies.txt path, or the plugin's own way (`"qr"`, `"phone"` for tlg). Returns the plugin's `Login` |
+| `fl.login(source, how)` | log in: `how` is `"chrome"` (extension), `"firefox"`, `"safari"` (macOS), a cookies path, or the plugin's way (`"qr"`, `"phone"` for tlg); returns `Login` |
 | `fl.logout(source)` | remove a login; whether there was one |
 | `fl.add(source)` | a plugin class for this `Flnd` alone; a code another plugin has is a `UsageError` |
 | `fl.sources` | a `flnd.Installed` per plugin: the built-ins, the installed plugins (a disabled one too, with `disabled` saying why) and `add`'s. Each has `code`, `name`, `origin` (`"built-in"`, `"package"`, `"file"` or `"script"`), `where`, `version`, `api`, `login` (its state), `domains`, `forms`, `categories` and `logins` (its ways to log in). Reading it imports every plugin |

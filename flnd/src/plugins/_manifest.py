@@ -71,7 +71,7 @@ PLUGINS: dict[str, dict[str, object]] = {
             'favorites',
             'profile',
         ],
-        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari', 'edge', 'brave', 'chromium'],
+        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari'],
     },
     'fbk': {
         'module': 'flnd.plugins.fbk',
@@ -243,7 +243,7 @@ PLUGINS: dict[str, dict[str, object]] = {
             'stories',
             'profile',
         ],
-        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari', 'edge', 'brave', 'chromium'],
+        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari'],
     },
     'ins': {
         'module': 'flnd.plugins.ins',
@@ -314,7 +314,7 @@ PLUGINS: dict[str, dict[str, object]] = {
             'https://www.instagram.com/<user>/',
         ],
         'categories': ['posts', 'reels', 'tagged', 'reposts', 'stories', 'highlights', 'profile'],
-        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari', 'edge', 'brave', 'chromium'],
+        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari'],
     },
     'twt': {
         'module': 'flnd.plugins.twt',
@@ -406,7 +406,7 @@ PLUGINS: dict[str, dict[str, object]] = {
             'https://www.twitter.com/i/user/<user>/',
         ],
         'categories': ['posts', 'media', 'highlights', 'reposts', 'replies', 'profile'],
-        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari', 'edge', 'brave', 'chromium'],
+        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari'],
     },
     'loi': {
         'module': 'flnd.plugins.loi',
@@ -434,7 +434,7 @@ PLUGINS: dict[str, dict[str, object]] = {
             'https://www.moegoat.com/lois/<id>/',
         ],
         'categories': ['archive', 'photo'],
-        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari', 'edge', 'brave', 'chromium'],
+        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari'],
     },
     'tlg': {
         'module': 'flnd.plugins.tlg',

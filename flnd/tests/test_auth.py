@@ -209,7 +209,7 @@ class LoginTest(AuthCase):
         async def connect():
             return Client()
 
-        for method in ("firefox", "edge"):
+        for method in ("firefox",):
             with self.subTest(method), mock.patch("flnkit.cookies.load", return_value=jar) as read:
                 self.assertEqual(auth.login(self.home, self.plugin(), method).origin, method)
                 read.assert_called_once_with(method, profile=None)

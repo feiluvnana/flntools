@@ -252,7 +252,7 @@ flnd login [source] [how]
 
 `how` is one of:
 
-- **a browser**: `chrome`, `firefox`, `edge`, `brave`, `chromium`, or `safari` on macOS
+- **a browser**: `chrome` (through the extension), `firefox`, or `safari` on macOS
   (which needs Full Disk Access for the terminal, in System Settings › Privacy & Security; the
   error says so when it is missing). flnd reads the site's
   cookies from it and keeps only those of the site's domains;

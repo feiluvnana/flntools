@@ -443,8 +443,8 @@ def check(args: argparse.Namespace) -> int:
 def login(args: argparse.Namespace) -> int:
     """Log in to a source, or with no source list every source's login.
 
-    HOW is a browser to read the site's cookies from (chrome, firefox, edge, brave, chromium,
-    or safari on macOS), the path of a cookies.txt or JSON cookie export, or the source's own
+    HOW is a browser to read the site's cookies from (chrome, firefox, or safari on macOS),
+    the path of a cookies.txt or JSON cookie export, or the source's own
     way (tlg: browser, qr, phone). Left out in a terminal, it is asked with numbered choices.
     The login is saved encrypted in the home.
 
@@ -862,7 +862,7 @@ def _ask_how(args: argparse.Namespace) -> str:
 def _ways(ways: Sequence[str]) -> str:
     """A source's login ways as `flnd login` takes them, for a hint."""
     if "file" in ways:
-        return "chrome, firefox, edge, brave, chromium, safari (macOS), or a cookie file's path"
+        return "chrome, firefox, safari (macOS), or a cookie file's path"
     return ", ".join(ways)
 
 

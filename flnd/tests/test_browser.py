@@ -34,6 +34,7 @@ from flnkit import browser as _browser
 from flnkit import clock as _time
 from flnkit import cookies as _cookies
 from flnkit import net as _net
+from flnkit.errors import UsageError as _UsageError
 
 # The real lookup, before BrowserCase patches it out.
 CHROME_INSTALLED = _browser._chrome_installed
@@ -962,10 +963,10 @@ class NoProfilesTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
             run(_browser._open_context(cast(Any, None), _cookies.home() / "profile",
                                        "chrome", {"headless": True, "args": []}, {}))
-        for browser in ("chrome", "firefox"):
-            with self.subTest(browser=browser), \
-                    self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
-                _cookies.load(browser)
+        with self.assertRaisesRegex(_UsageError, "Chrome extension"):
+            _cookies.load("chrome")
+        with self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
+            _cookies.load("firefox")
 
     def test_a_temporary_home_is_allowed_and_the_guard_is_off_without_the_variable(self):
         with tempfile.TemporaryDirectory() as folder:
