@@ -22,7 +22,7 @@ built-in plugin. `flnd get --help` adds a row per built-in plugin: the targets i
 its categories. The help imports no plugin, so it answers in a few tens of milliseconds.
 
 ```text
-  flnd 0.1.0 · download whole accounts from the web
+  flnd 0.2.0 · download whole accounts from the web
 
   get [target…]                   Get what the targets have
   target list|clean               List the targets flnd knows, or forget some

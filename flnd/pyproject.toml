@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flntools"
-version = "0.1.0"
+version = "0.2.0"
 description = "Dead simple media downloader for TikTok, Facebook, Instagram, and Twitter/X"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -471,7 +471,7 @@ class HelpTest(OutCase):
         text = self.help()
         self.assertNotIn("\x1b", text)
         self.assertEqual(text.splitlines()[0],
-                         "  flnd 0.1.0 · download whole accounts from the web")
+                         "  flnd 0.2.0 · download whole accounts from the web")
         self.assertIn("  get [target…]", text)
         self.assertTrue(all(line == line.rstrip() for line in text.splitlines()))
 

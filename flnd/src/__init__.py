@@ -7,7 +7,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Where each public name is defined. A name is imported from its module on first use, then
 # kept in this module's globals, so `__getattr__` runs once per name.

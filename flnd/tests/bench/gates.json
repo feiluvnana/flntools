@@ -1,7 +1,7 @@
 {
   "recorded": {
-    "date": "2026-11-18",
-    "commit": "e128f92",
+    "date": "2026-11-19",
+    "commit": "b807d37",
     "platform": "macOS-26.2-arm64-arm-64bit-Mach-O",
     "cpus": 10,
     "python": "3.14.6",
@@ -11,334 +11,334 @@
     "startup.help": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 35.2208,
+      "baseline": 38.8076,
       "target": 60,
       "gate": "P11: styled help stays fast"
     },
     "startup.python_pass": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 12.9386
+      "baseline": 14.7055
     },
     "startup.import_flnd": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 13.9658
+      "baseline": 16.1697
     },
     "startup.import_flnd_plugin": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 33.8465
+      "baseline": 25.2206
     },
     "startup.import_flnd_cli": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 15.0442
+      "baseline": 16.8
     },
     "ui.overhead": {
       "unit": "%",
       "better": "lower",
-      "baseline": 16.5185,
+      "baseline": 3.6029,
       "target": 3,
       "gate": "P7: the screen from a snapshot"
     },
     "ui.frame": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 0.5485,
+      "baseline": 0.5686,
       "target": 1,
       "gate": "P7: the screen from a snapshot"
     },
     "ui.idle_bytes": {
       "unit": "B",
       "better": "lower",
-      "baseline": 654248,
+      "baseline": 0,
       "target": 0,
       "gate": "P7: the screen from a snapshot"
     },
     "ui.open": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 100.5,
+      "baseline": 84.0507,
       "target": 250,
       "gate": "P17: lists and forms open fast"
     },
     "net.big_rate": {
       "unit": "GiB/s",
       "better": "higher",
-      "baseline": 2.4749,
+      "baseline": 3.7844,
       "target": 4,
       "gate": "perf:fetch with curl_cffi on the loop"
     },
     "net.small_8_at_once": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 476.4999,
+      "baseline": 594.661,
       "target": 300,
       "gate": "perf:fetch with curl_cffi on the loop"
     },
     "net.small_1_at_once": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 700.249
+      "baseline": 805.877
     },
     "net.stall_20mbs": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 9.4334,
+      "baseline": 9.2725,
       "target": 100,
       "gate": "perf:fetch with curl_cffi on the loop"
     },
     "net.two_disks": {
       "unit": "%",
       "better": "lower",
-      "baseline": 3915.9385,
+      "baseline": 16.9399,
       "target": 10,
       "gate": "P6: one writer per device"
     },
     "net.per_conn_limit": {
       "unit": "x",
       "better": "higher",
-      "baseline": 0.9973,
+      "baseline": 4.4614,
       "target": 4,
       "gate": "P13: dynamic segments"
     },
     "net.big_4_at_once": {
       "unit": "x",
       "better": "higher",
-      "baseline": 1.215,
+      "baseline": 1.76,
       "target": 2.5,
       "gate": "P14: a hasher pool"
     },
     "net.hls_200": {
       "unit": "x",
       "better": "higher",
-      "baseline": 0.9781,
+      "baseline": 7.477,
       "target": 6,
       "gate": "P16: HLS segments at once"
     },
     "disk.part_write": {
       "unit": "us",
       "better": "lower",
-      "baseline": 112.076,
+      "baseline": 116.3197,
       "target": 130,
       "gate": "perf:write downloads to a locked part and rename"
     },
     "disk.fs_write": {
       "unit": "us",
       "better": "lower",
-      "baseline": 107.4964
+      "baseline": 112.6941
     },
     "disk.plain_write": {
       "unit": "us",
       "better": "lower",
-      "baseline": 59.362
+      "baseline": 58.3178
     },
     "disk.temp_replace": {
       "unit": "us",
       "better": "lower",
-      "baseline": 104.5426
+      "baseline": 106.3401
     },
     "db.point_read": {
       "unit": "us",
       "better": "lower",
-      "baseline": 1.8418,
+      "baseline": 1.9381,
       "target": 2.2,
       "gate": "refactor:store history, targets and runs in one flnd.db, and migrate old homes"
     },
     "db.commit_per_post": {
       "unit": "us",
       "better": "lower",
-      "baseline": 12.5247,
+      "baseline": 14.4996,
       "target": 15,
       "gate": "refactor:store history, targets and runs in one flnd.db, and migrate old homes"
     },
     "db.insert": {
       "unit": "us",
       "better": "lower",
-      "baseline": 2.2003
+      "baseline": 2.2815
     },
     "db.contains": {
       "unit": "us",
       "better": "lower",
-      "baseline": 1.7804
+      "baseline": 1.8789
     },
     "db.prefix_scan_10k": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 15.6007
+      "baseline": 16.239
     },
     "db.filter_json": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 1.4172
+      "baseline": 1.7604
     },
     "db.commit_per_file": {
       "unit": "us",
       "better": "lower",
-      "baseline": 13.3982
+      "baseline": 13.5637
     },
     "db.commit_per_500": {
       "unit": "us",
       "better": "lower",
-      "baseline": 1.2194
+      "baseline": 1.2609
     },
     "db.commit_per_file_full": {
       "unit": "us",
       "better": "lower",
-      "baseline": 60.7908
+      "baseline": 38.9132
     },
     "walk.fs_walk": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 44.0592
+      "baseline": 45.2183
     },
     "walk.scandir": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 31.7048
+      "baseline": 31.9967
     },
     "walk.rglob_is_file": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 256.6865
+      "baseline": 280.7881
     },
     "walk.fs_walk_stat": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 198.3085
+      "baseline": 219.8197
     },
     "walk.stat": {
       "unit": "us",
       "better": "lower",
-      "baseline": 1.388
+      "baseline": 1.4182
     },
     "cpu.html_meta": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 6.666,
+      "baseline": 6.9907,
       "target": 8,
       "gate": "perf:parse html with selectolax and paths with dig"
     },
     "cpu.json_decode": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 1.6112
+      "baseline": 1.6089
     },
     "cpu.msgspec_decode": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 0.8713
+      "baseline": 0.8864
     },
     "cpu.msgspec_decode_typed": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 0.4226
+      "baseline": 0.4395
     },
     "cpu.json_encode": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 1.7948
+      "baseline": 1.8335
     },
     "cpu.msgspec_encode": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 0.298
+      "baseline": 0.3064
     },
     "cpu.dig": {
       "unit": "us",
       "better": "lower",
-      "baseline": 38.4171
+      "baseline": 41.4171
     },
     "cpu.dict_access": {
       "unit": "us",
       "better": "lower",
-      "baseline": 16.833
+      "baseline": 18.9999
     },
     "cpu.html_images": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 10.8045
+      "baseline": 10.5268
     },
     "cpu.hash_sha256": {
       "unit": "us",
       "better": "lower",
-      "baseline": 297.14
+      "baseline": 318.8014
     },
     "cpu.hash_blake2b": {
       "unit": "us",
       "better": "lower",
-      "baseline": 660.5112
+      "baseline": 689.3991
     },
     "cpu.hash_crc32": {
       "unit": "us",
       "better": "lower",
-      "baseline": 21.7404
+      "baseline": 23.4704
     },
     "cpu.place": {
       "unit": "us",
       "better": "lower",
-      "baseline": 11.6929
+      "baseline": 14.9135
     },
     "cpu.filename": {
       "unit": "us",
       "better": "lower",
-      "baseline": 4.0017
+      "baseline": 4.277
     },
     "cpu.day": {
       "unit": "us",
       "better": "lower",
-      "baseline": 0.408
+      "baseline": 0.4643
     },
     "cpu.executor_task": {
       "unit": "us",
       "better": "lower",
-      "baseline": 2.6707
+      "baseline": 2.7782
     },
     "cpu.advance_plain": {
       "unit": "us",
       "better": "lower",
-      "baseline": 0.0293
+      "baseline": 0.0248
     },
     "cpu.advance_live": {
       "unit": "us",
       "better": "lower",
-      "baseline": 0.1176
+      "baseline": 0.0286
     },
     "cpu.loop_task": {
       "unit": "us",
       "better": "lower",
-      "baseline": 6.1373
+      "baseline": 7.0351
     },
     "e2e.sync_nothing_new": {
       "unit": "s",
       "better": "lower",
-      "baseline": 0.0054,
+      "baseline": 0.0071,
       "note": "a home of 4,000 files; e2e.sync_nothing_new_100k carries the gate"
     },
     "e2e.sync_nothing_new_100k": {
       "unit": "s",
       "better": "lower",
-      "baseline": 0.0055,
+      "baseline": 0.007,
       "target": 0.3,
       "gate": "refactor:store history, targets and runs in one flnd.db, and migrate old homes"
     },
     "e2e.latency_500_posts": {
       "unit": "s",
       "better": "lower",
-      "baseline": 4.8669,
+      "baseline": 4.8511,
       "target": 5.5,
       "gate": "perf:adapt download concurrency per host"
     },
     "e2e.per_file": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 0.4831
+      "baseline": 0.7061
     },
     "e2e.sync_100_targets": {
       "unit": "s",
       "better": "lower",
-      "baseline": 15.4132,
+      "baseline": 3.9091,
       "target": 3.84,
       "gate": "P4: targets at once",
       "note": "the goal is 1/4 of the step-0 baseline"
@@ -346,14 +346,14 @@
     "e2e.db_contended": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 2104.441,
+      "baseline": 1.4264,
       "target": 100,
       "gate": "P9: a commit never blocks the loop"
     },
     "browser.scroll_default": {
       "unit": "s",
       "better": "lower",
-      "baseline": 14.6382,
+      "baseline": 13.2039,
       "target": 16,
       "gate": "perf:drive feeds by responses and end on the site's cursor",
       "note": "the human-like scroll"
@@ -361,7 +361,7 @@
     "browser.scroll_fast": {
       "unit": "s",
       "better": "lower",
-      "baseline": 2.001,
+      "baseline": 1.9885,
       "target": 3,
       "gate": "perf:drive feeds by responses and end on the site's cursor",
       "note": "the fast scroll; it didn't exist before this gate's commit"
@@ -369,42 +369,42 @@
     "browser.launch": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 524.3975
+      "baseline": 806.163
     },
     "browser.open_tab": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 68.4161
+      "baseline": 78.6113
     },
     "browser.evaluate": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 0.3843
+      "baseline": 0.3627
     },
     "browser.document": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 0.7787
+      "baseline": 0.769
     },
     "browser.page_fetch": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 0.9376
+      "baseline": 1.0258
     },
     "browser.http_fetch": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 0.5672
+      "baseline": 0.6093
     },
     "browser.close": {
       "unit": "ms",
       "better": "lower",
-      "baseline": 753.3417
+      "baseline": 715.3553
     },
     "browser.warm_4": {
       "unit": "s",
       "better": "lower",
-      "baseline": 0.2775,
+      "baseline": 0.1211,
       "target": 0.091,
       "gate": "P5: warm tabs opened together, cookies in one call, no unread bodies",
       "note": "the goal is 1/3 of the step-0 baseline"

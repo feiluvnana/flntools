@@ -614,7 +614,7 @@ class HelpTest(FlndCase):
     def test_help_lists_the_commands_and_every_plugin_from_the_manifest(self):
         code, text, _ = self.run_app("--help")
         self.assertEqual(code, 0)
-        self.assertIn("flnd 0.1.0 - download whole accounts from the web", text)
+        self.assertIn("flnd 0.2.0 - download whole accounts from the web", text)
         for verb in ("get ", "target list|clean", "auth list|login|logout",
                      "plugin list|install|uninstall", "extension install|uninstall", "status",
                      "config"):
@@ -653,7 +653,7 @@ class HelpTest(FlndCase):
         self.assertEqual(stdout, "[]")
 
     def test_the_version(self):
-        self.assertEqual(self.run_app("--version")[:2], (0, "flnd 0.1.0\n"))
+        self.assertEqual(self.run_app("--version")[:2], (0, "flnd 0.2.0\n"))
 
 
 class ListsTest(FlndCase):
