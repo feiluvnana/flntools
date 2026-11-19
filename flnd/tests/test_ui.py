@@ -178,7 +178,8 @@ class ThemeTest(unittest.TestCase):
     def test_the_glyphs_and_their_ascii(self) -> None:
         names = ("bullet", "cursor", "done", "failed", "waiting", "followed", "unfollowed",
                  "default", "bar")
-        self.assertEqual("".join(theme.glyph(name, True) for name in names), "•❯✓✗·●○★┃")
+        self.assertEqual("".join(theme.glyph(name, True) for name in names),
+                         "•❯✓✗·●○★┃")
         self.assertEqual("".join(theme.glyph(name, False) for name in names), "*>vx-o +|")
         self.assertEqual(theme.SPINNER, (tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"), tuple("|/-\\")))
         self.assertEqual(theme.spinner(0.25, True), "⠹")

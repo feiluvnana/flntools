@@ -48,7 +48,8 @@ class WheelTest(unittest.TestCase):
 
 def run_python(code: str) -> subprocess.CompletedProcess:
     """Run code in a fresh interpreter from the repository root, so imports start clean."""
-    return subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    return subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,
+                          timeout=60)
 
 
 def missing_dependency_message(module: str, package: str) -> str:
@@ -158,7 +159,8 @@ class MissingDependencyTest(unittest.TestCase):
         # `flnkit.net` imports curl_cffi on its first request, so that is where it is missed.
         code = ("import sys, asyncio; sys.modules['curl_cffi'] = None\n"
                 "from flnkit import net\n"
-                "try:\n    net.Session()._session()\nexcept ImportError as error:\n    print(error)")
+                "try:\n    net.Session()._session()\n"
+                "except ImportError as error:\n    print(error)")
         self.assertEqual(run_python(code).stdout.strip(),
                          "flnkit.net needs curl_cffi: pip install curl_cffi")
 

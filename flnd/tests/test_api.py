@@ -1,6 +1,7 @@
 """The API snapshot, tests/data/api.txt: it lists exactly the public names the code has today.
 
-The snapshot is what `make api` (`tests/api_snapshot.py --write`) writes, so a rename shows in review
+The snapshot is what `make api` (`tests/api_snapshot.py --write`) writes, so a rename shows
+in review
 as a one-line diff of that file. Nothing is faked: the names come from importing `flnd`.
 """
 
@@ -16,7 +17,8 @@ class SnapshotTest(unittest.TestCase):
         written = (ROOT / "tests" / "data" / "api.txt").read_text(encoding="utf-8")
         current = snapshot.api_text()
         if current != written:
-            diff = "".join(difflib.unified_diff(written.splitlines(keepends=True), current.splitlines(keepends=True),
+            diff = "".join(difflib.unified_diff(written.splitlines(keepends=True),
+                                                current.splitlines(keepends=True),
                                                 "tests/data/api.txt", "the code"))
             self.fail("the public API differs from tests/data/api.txt; if the change is meant, run "
                       f"`make api` and commit the file with it:\n{diff}")
@@ -34,12 +36,14 @@ class RenderTest(unittest.TestCase):
     """How a line is drawn, where the output must not depend on the OS or the run."""
 
     def test_signature_marks_positional_only_and_keyword_only(self):
-        def debug(message: "str" = "", /, *args: "int", level: "str" = "info", **fields: "object") -> "None": ...
+        def debug(message: "str" = "", /, *args: "int", level: "str" = "info",
+                  **fields: "object") -> "None": ...
 
         def fetch(url, *, timeout=30.0): ...
 
         self.assertEqual(snapshot._signature(debug),
-                         "(message: str = '', /, *args: int, level: str = 'info', **fields: object) -> None")
+                         "(message: str = '', /, *args: int, level: str = 'info', "
+                         "**fields: object) -> None")
         self.assertEqual(snapshot._signature(fetch), "(url, *, timeout=30.0)")
 
     def test_defaults_are_the_same_on_every_os(self):

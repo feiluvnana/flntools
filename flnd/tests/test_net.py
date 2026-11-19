@@ -97,7 +97,8 @@ class FetchTest(NetCase):
         with _net.fake({f"{SITE}/items": route}):
             page = fetch(f"{SITE}/items?sort=new", body={"page": 2})
         self.assertIsInstance(page, _net.Response)
-        self.assertEqual((page.status, page.ok, page.url), (200, True, f"{SITE}/items?sort=new&page=2"))
+        self.assertEqual((page.status, page.ok, page.url), (200, True,
+                                                            f"{SITE}/items?sort=new&page=2"))
         self.assertEqual((page.headers["x-id"], page.headers["X-ID"]), ("7", "7"))
         self.assertEqual(page.json, {"page": "2"})
 
@@ -109,11 +110,13 @@ class FetchTest(NetCase):
             fetch(f"{SITE}/api", method="POST", body="text")
         self.assertEqual(self.seen[0].method, "POST")
         self.assertEqual(self.seen[0].headers["x-a"], "b")
-        self.assertEqual([request.content for request in self.seen], [b'{"id":1}', b"[1,2]", b"\x00raw", b"text"])
+        self.assertEqual([request.content for request in self.seen], [b'{"id":1}', b"[1,2]",
+                                                                      b"\x00raw", b"text"])
         self.assertEqual(self.seen[0].headers["content-type"], "application/json")
 
     def test_a_refusal_raises_with_its_response(self):
-        with _net.fake({f"{SITE}/gone": _net.Response(410, f"{SITE}/gone", {}, b'{"reason": "gone"}')}):
+        with _net.fake({f"{SITE}/gone": _net.Response(410, f"{SITE}/gone", {},
+                                                      b'{"reason": "gone"}')}):
             with self.assertRaises(SiteError) as raised:
                 fetch(f"{SITE}/gone")
         self.assertEqual(raised.exception.status, 410)
@@ -186,14 +189,17 @@ class ResponseTest(unittest.TestCase):
         self.assertEqual(page.json, {"a": [1, 2.5, None, True, "é"]})
 
     def test_html_is_a_document(self):
-        page = _net.Response(200, SITE, {"Content-Type": "text/html"}, b"<h1>Hello</h1><a href='/a'>a</a>")
+        page = _net.Response(200, SITE, {"Content-Type": "text/html"},
+                             b"<h1>Hello</h1><a href='/a'>a</a>")
         self.assertIsInstance(page.html, _html.Document)
         self.assertEqual(page.html.first("h1").text, "Hello")
 
     def test_text_uses_the_charset(self):
-        page = _net.Response(200, SITE, {"Content-Type": "text/plain; charset=latin-1"}, "café".encode("latin-1"))
+        page = _net.Response(200, SITE, {"Content-Type": "text/plain; charset=latin-1"},
+                             "café".encode("latin-1"))
         self.assertEqual(page.text, "café")
-        unknown = _net.Response(200, SITE, {"Content-Type": "text/plain; charset=nope"}, "café".encode())
+        unknown = _net.Response(200, SITE, {"Content-Type": "text/plain; charset=nope"},
+                                "café".encode())
         self.assertEqual(unknown.text, "café")
 
     def test_reads_are_cached(self):
@@ -215,7 +221,8 @@ class ResponseTest(unittest.TestCase):
         self.assertEqual((request.headers["x-a"], request.headers["X-A"]), ("b", "b"))
 
     def test_with_query_replaces_a_name_and_spells_values(self):
-        self.assertEqual(_net.with_query("https://a.example/p?a=1&b=2", {"a": 3, "c": True, "d": None}),
+        self.assertEqual(_net.with_query("https://a.example/p?a=1&b=2", {"a": 3, "c": True,
+                                                                         "d": None}),
                          "https://a.example/p?b=2&a=3&c=true&d=")
         self.assertEqual(_net.with_query("https://a.example/p", None), "https://a.example/p")
 
@@ -237,7 +244,8 @@ class SessionTest(NetCase):
     def test_cookies_by_domain_and_set_cookie_kept_for_the_next_request(self):
         jar = [{"name": "sid", "value": "1", "domain": ".site.example", "path": "/"}]
         session = _net.Session(cookies=jar, headers={"User-Agent": "Agent/1"})
-        route = self.serve(_net.reply(200, headers=[("Set-Cookie", "ct0=new; Domain=.site.example; Path=/"),
+        route = self.serve(_net.reply(200, headers=[("Set-Cookie",
+                                                     "ct0=new; Domain=.site.example; Path=/"),
                                                    ("Set-Cookie", "b=2; Path=/")]))
         with _net.fake(route):
             fetch("https://api.site.example/a", session=session)
@@ -245,7 +253,8 @@ class SessionTest(NetCase):
             fetch("https://other.example/c", session=session)
         self.assertEqual(self.seen[0].headers["cookie"], "sid=1")
         self.assertEqual(self.seen[0].headers["user-agent"], "Agent/1")
-        self.assertEqual(sorted(self.seen[1].headers["cookie"].split("; ")), ["b=2", "ct0=new", "sid=1"])
+        self.assertEqual(sorted(self.seen[1].headers["cookie"].split("; ")), ["b=2", "ct0=new",
+                                                                              "sid=1"])
         self.assertNotIn("cookie", self.seen[2].headers)
         self.assertEqual(session.names["ct0"], "new")
         self.assertIn("ct0", [cookie["name"] for cookie in session.cookies])
@@ -348,7 +357,8 @@ class SessionTest(NetCase):
         self.assertEqual([request.headers["x-signature"] for request in self.seen], ["0", "1", "2"])
 
     def test_follows_redirects(self):
-        routes = {f"{SITE}/old": _net.reply(301, headers={"Location": "/new"}), f"{SITE}/new": "here"}
+        routes = {f"{SITE}/old": _net.reply(301, headers={"Location": "/new"}),
+                  f"{SITE}/new": "here"}
         with _net.fake(routes):
             page = fetch(f"{SITE}/old")
         self.assertEqual((page.url, page.text), (f"{SITE}/new", "here"))
@@ -362,7 +372,8 @@ class SessionTest(NetCase):
         url = f"https://example_user:{self.PASSWORD}@www.example.com/?auth={self.COOKIE}"
         for route in (403, 429, 500, connection_lost):
             session = _net.Session(headers={"Authorization": self.TOKEN}, cookies=[
-                {"name": "sessionid", "value": self.COOKIE, "domain": "www.example.com", "path": "/"}])
+                {"name": "sessionid", "value": self.COOKIE, "domain": "www.example.com",
+                 "path": "/"}])
             with _net.fake({SITE + "/*": route}), self.assertRaises(Error) as raised:
                 fetch(url, session=session)
             self.assert_no_secret(str(raised.exception))
@@ -418,13 +429,15 @@ class FakeTest(NetCase):
     def test_the_longest_prefix_wins_and_an_exact_url_beats_both(self):
         routes = {f"{SITE}/*": "site", f"{SITE}/api/*": "api", f"{SITE}/api/me": "me"}
         with _net.fake(routes):
-            texts = [fetch(f"{SITE}/{path}").text for path in ("a", "api/x", "api/me", "api/me?v=2")]
+            texts = [fetch(f"{SITE}/{path}").text for path in ("a", "api/x", "api/me",
+                                                               "api/me?v=2")]
         self.assertEqual(texts, ["site", "api", "me", "me"])
 
     def test_an_unmatched_url_raises_and_is_never_sent(self):
         with _net.fake({f"{SITE}/a": "a"}), self.assertRaises(Error) as raised:
             fetch("https://other.example.com/b?token=abc")
-        self.assertIn("GET https://other.example.com/b: no route in net.fake", str(raised.exception))
+        self.assertIn("GET https://other.example.com/b: no route in net.fake",
+                      str(raised.exception))
         self.assertEqual(self.clock.slept, [])
 
     def test_the_innermost_block_answers_and_each_ends_with_its_block(self):
@@ -505,7 +518,8 @@ class DownloadTest(NetCase):
         self.assertEqual((sink.total, sink.count), (len(BODY), len(BODY)))
 
     def test_a_dropped_connection_resumes_on_the_next_try(self):
-        answers = iter([_net.reply(200, headers={"content-length": str(len(BODY))}, chunks=cut(BODY[:100])),
+        answers = iter([_net.reply(200, headers={"content-length": str(len(BODY))},
+                                   chunks=cut(BODY[:100])),
                         BODY])
         with _net.fake({FILE: self.logged(lambda request: next(answers))}):
             download(FILE, self.dest, retry=True)
@@ -536,12 +550,14 @@ class DownloadTest(NetCase):
 
             return route
 
-        broken = lambda request: _net.reply(200, headers={"content-length": str(len(BODY)), "ETag": '"v1"'},
+        broken = lambda request: _net.reply(200, headers={"content-length": str(len(BODY)),
+                                                          "ETag": '"v1"'},
                                             chunks=cut(BODY[:6]))
         with _net.fake({FILE: broken}), self.assertRaises(NetworkError):
             download(FILE, self.dest)
         self.assertEqual(self.stage.read_bytes(), BODY[:6])
-        self.assertEqual(self.stage.with_name("file.bin.part.json").read_text(), '{"etag": "\\"v1\\""}')
+        self.assertEqual(self.stage.with_name("file.bin.part.json").read_text(),
+                         '{"etag": "\\"v1\\""}')
         # The same file: the range comes, under its ETag.
         with _net.fake({FILE: self.logged(tagged(BODY, '"v1"'))}):
             download(FILE, self.dest)
@@ -561,7 +577,8 @@ class DownloadTest(NetCase):
 
     def test_a_weak_etag_is_never_an_if_range(self):
         self.assertIsNone(_net._validator({"etag": 'W/"x"'}))
-        self.assertEqual(_net._validator({"etag": 'W/"x"', "last-modified": "Mon, 02 Jan 2026 00:00:00 GMT"}),
+        self.assertEqual(_net._validator({"etag": 'W/"x"',
+                                          "last-modified": "Mon, 02 Jan 2026 00:00:00 GMT"}),
                          "Mon, 02 Jan 2026 00:00:00 GMT")
         self.assertEqual(_net._validator({"etag": '"x"'}), '"x"')
 
@@ -573,7 +590,8 @@ class DownloadTest(NetCase):
             stop.set()
             yield BODY[10:]
 
-        route = lambda request: _net.reply(200, headers={"content-length": str(len(BODY))}, chunks=pieces())
+        route = lambda request: _net.reply(200, headers={"content-length": str(len(BODY))},
+                                           chunks=pieces())
         with _net.fake({FILE: route}), self.assertRaises(Stopped):
             download(FILE, self.dest, stop=stop)
         self.assertEqual(self.stage.read_bytes(), BODY[:10])
@@ -742,7 +760,9 @@ class FollowTest(NetCase):
         def serve(request):
             self.seen.append(request)
             if request.url.host == "vm.example.com":
-                return _net.reply(301, headers={"location": "https://www.example.com/@example_user/video/1"})
+                return _net.reply(
+                    301, headers={"location": "https://www.example.com/@example_user/video/1"}
+                )
             return _net.reply(200)
 
         with _net.fake(serve):
@@ -781,7 +801,8 @@ class HopTest(NetCase):
             return asyncio.run(sent())
 
     def test_a_hop_to_another_host_carries_no_header_of_the_callers_but_the_safe_ones(self):
-        routes = {"api.example.com/a": _net.reply(302, headers={"Location": "https://cdn.example/v"}),
+        routes = {"api.example.com/a": _net.reply(302,
+                                                  headers={"Location": "https://cdn.example/v"}),
                   "cdn.example/v": _net.reply(200, content=b"abcd")}
         headers = {"Cookie": "sessionid=SESSION-SECRET", "Authorization": "Bearer FILE-SECRET",
                    "X-Token": "TOKEN-SECRET", "Referer": "https://www.example.com/",
@@ -799,8 +820,12 @@ class HopTest(NetCase):
                 self.assertNotIn("x-signed", second.headers)
 
     def test_a_hop_between_its_own_hosts_is_signed_again(self):
-        routes = {"api.example.com/a": _net.reply(302, headers={"Location": "https://www.example.com/b"}),
-                  "www.example.com/b": _net.reply(200, json={})}
+        routes = {
+            "api.example.com/a": _net.reply(
+                302, headers={"Location": "https://www.example.com/b"}
+            ),
+            "www.example.com/b": _net.reply(200, json={}),
+        }
         self.hopped(routes)
         self.assertEqual([request.headers["x-signed"] for request in self.seen],
                          ["api.example.com", "www.example.com"])

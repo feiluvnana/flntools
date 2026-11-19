@@ -35,7 +35,8 @@ from flnkit import clock as _time
 from flnkit import cookies as _cookies
 from flnkit import net as _net
 
-__all__ = ["CDN", "Engine", "EngineCase", "download", "drive", "fetch", "history", "login_cookies", "make_plugin",
+__all__ = ["CDN", "Engine", "EngineCase", "download", "drive", "fetch", "history", "login_cookies",
+           "make_plugin",
            "noise", "own_login", "run_targets", "sign_in", "targets", "vaulted"]
 
 
@@ -199,9 +200,11 @@ def noise(format, size=(64, 48)):
 
 
 def make_plugin(code, route=None, *, files: Any = (), **declared):
-    """A test plugin on API 2: `code:<name>` reads a user, `route(ctx)` is its route, and `files` are its `posts`.
+    """A test plugin on API 2: `code:<name>` reads a user, `route(ctx)` is its route, and
+    `files` are its `posts`.
 
-        make_plugin("aaa", lambda ctx: seen.append(ctx.target.value), files=[File(url, name="a.jpg")])
+        make_plugin("aaa", lambda ctx: seen.append(ctx.target.value),
+                    files=[File(url, name="a.jpg")])
 
     Args:
         code: the plugin's code; its domain is `<code>.example`.
@@ -242,7 +245,8 @@ def login_cookies(*names: str, required: bool = False) -> plugin.Cookies:
 
 
 def own_login(start=None, *, methods=("qr",), check=None, whoami=None):
-    """A plugin's own `Login`: `start(self, ctx, method)` logs in; `check(self, ctx)` says whether it did.
+    """A plugin's own `Login`: `start(self, ctx, method)` logs in; `check(self, ctx)` says
+    whether it did.
 
     Either may be a plain function or an `async def`; what a plain one returns is awaited when it
     is awaitable. Without `check`, it is logged in when its secrets hold `session`. `whoami` is
@@ -283,7 +287,8 @@ class EngineCase(unittest.TestCase):
         self.enterContext(_net.fake(lambda request: self.serve(request)))
         # Every wait (pacing, back-offs, retries) passes at once on the fake clock.
         self.fake = self.enterContext(_time.use(_time.Fake()))
-        # The events of the runs `report` makes: what the CLI shows, now that the engine logs no rows.
+        # The events of the runs `report` makes: what the CLI shows, now that the engine logs
+        # no rows.
         self.events = []
         # The run's snapshots, kept apart from its events.
         self.states = []
@@ -306,22 +311,26 @@ class EngineCase(unittest.TestCase):
         return self.report(*sources, targets=targets, options=options, **settings).files
 
     def report(self, *sources, targets, options=Options(), stop=None, **settings):
-        """Run the targets, each with `options`, and return the `Report`; its events go in `events`."""
+        """Run the targets, each with `options`, and return the `Report`; its events go in
+        `events`."""
         settings.setdefault("emit", lambda event: (
             self.states if isinstance(event, State) else self.events).append(event))
-        engine = Engine(home=self.home, sources={source.code: source for source in sources}, **settings)
+        engine = Engine(home=self.home, sources={source.code: source for source in sources},
+                        **settings)
         return run_targets(engine, [(target, options) for target in engine.resolve(targets)],
                            stop or _run.Stop())
 
     def log_in(self, code, **values):
-        jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
+        jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name,
+               value in values.items()]
         sign_in(self.home, code, jar)
 
     def lines(self):
         return self.dest.getvalue().splitlines()
 
     def failures(self):
-        """Each `Failed` event of the runs so far, as `<target>: <message>` (a file's: `<name>: ...`)."""
+        """Each `Failed` event of the runs so far, as `<target>: <message>` (a file's:
+        `<name>: ...`)."""
         return [f"{event.path.name if event.path else event.target}: {event.error}"
                 for event in self.events if isinstance(event, Failed)]
 

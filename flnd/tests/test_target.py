@@ -26,8 +26,10 @@ class AcceptedFormsTest(unittest.TestCase):
         user = Target("ins:example_user", kind="user")
         self.check([
             ("ins:example_user", user), ("ins:@example_user", user),
-            ("https://www.instagram.com/example_user/", user), ("https://instagram.com/example_user/?hl=en", user),
-            ("instagram.com/example_user", user), ("https://m.instagram.com/example_user/reels/", user),
+            ("https://www.instagram.com/example_user/", user),
+                    ("https://instagram.com/example_user/?hl=en", user),
+            ("instagram.com/example_user", user), ("https://m.instagram.com/example_user/reels/",
+                                                   user),
             ("ins:example.user", Target("ins:example.user", kind="user")),
             ("https://www.instagram.com/p/C1abcDEFghi/", Target("ins:C1abcDEFghi", kind="post")),
         ])
@@ -37,7 +39,8 @@ class AcceptedFormsTest(unittest.TestCase):
             ("fbk:example.page", Target("fbk:example.page", kind="user")),
             ("fbk:100012345678901", Target("fbk:100012345678901", kind="user")),
             ("https://www.facebook.com/example.page", Target("fbk:example.page", kind="user")),
-            ("https://www.facebook.com/profile.php?id=100012345678901", Target("fbk:100012345678901", kind="user")),
+            ("https://www.facebook.com/profile.php?id=100012345678901",
+             Target("fbk:100012345678901", kind="user")),
             ("https://fb.com/example.page", Target("fbk:example.page", kind="user")),
             ("https://m.facebook.com/example.page/photos", Target("fbk:example.page", kind="user")),
             ("https://mobile.facebook.com/example.page", Target("fbk:example.page", kind="user")),
@@ -49,12 +52,14 @@ class AcceptedFormsTest(unittest.TestCase):
     def test_twt(self):
         user = Target("twt:example_handle", kind="user")
         self.check([
-            ("twt:example_handle", user), ("twt:@example_handle", user), ("https://x.com/example_handle", user),
+            ("twt:example_handle", user), ("twt:@example_handle", user),
+                    ("https://x.com/example_handle", user),
             ("https://twitter.com/example_handle/media", user), ("x.com/example_handle", user),
             # A number is a user id, never a tweet.
             ("twt:44196397", Target("twt:44196397", kind="user")),
             ("twt:1234567890123456789", Target("twt:1234567890123456789", kind="user")),
-            ("https://x.com/example_handle/status/1790000000000000000", Target("twt:1790000000000000000", kind="post")),
+            ("https://x.com/example_handle/status/1790000000000000000",
+             Target("twt:1790000000000000000", kind="post")),
             ("https://twitter.com/example_handle/status/1790000000000000000",
              Target("twt:1790000000000000000", kind="post")),
         ])
@@ -64,17 +69,20 @@ class AcceptedFormsTest(unittest.TestCase):
         video = Target("tik:7301234567890123456", kind="video")
         self.check([
             ("tik:example_creator", user), ("tik:@example_creator", user),
-            ("https://www.tiktok.com/@example_creator", user), ("https://www.tiktok.com/@example_creator?lang=en", user),
+            ("https://www.tiktok.com/@example_creator", user),
+                    ("https://www.tiktok.com/@example_creator?lang=en", user),
             ("https://www.tiktok.com/@example_creator/video/7301234567890123456", video),
             ("https://www.tiktok.com/@example_creator/photo/7301234567890123456", video),
             # A number of 16 or more digits is a video id; a shorter one is a name.
-            ("tik:7301234567890123456", video), ("tik:1234567890123456", Target("tik:1234567890123456", kind="video")),
+            ("tik:7301234567890123456", video), ("tik:1234567890123456",
+                                                 Target("tik:1234567890123456", kind="video")),
             ("tik:123456789012345", Target("tik:123456789012345", kind="user")),
         ])
 
     def test_loi(self):
         post = Target("loi:5930", kind="post")
-        self.check([("loi:5930", post), ("https://loix.cc/lois/5930", post), ("loix.cc/lois/5930", post)])
+        self.check([("loi:5930", post), ("https://loix.cc/lois/5930", post), ("loix.cc/lois/5930",
+                                                                              post)])
 
     def test_tlg(self):
         self.check([("tlg:@examplechannel", Target("tlg:examplechannel", kind="chat")),
@@ -100,16 +108,21 @@ class ShortLinkTest(unittest.TestCase):
 
         def follow(url):
             followed.append(url)
-            return "https://www.tiktok.com/@example_creator/video/7301234567890123456?is_from_webapp=1"
+            return (
+                "https://www.tiktok.com/@example_creator/video/"
+                "7301234567890123456?is_from_webapp=1"
+            )
 
-        self.assertEqual(read("https://vm.tiktok.com/ZMabc123/", follow), Target("tik:7301234567890123456", kind="video"))
+        self.assertEqual(read("https://vm.tiktok.com/ZMabc123/", follow),
+                         Target("tik:7301234567890123456", kind="video"))
         self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
 
     def test_other_links_are_not_followed(self):
         def follow(url):
             raise AssertionError("followed a link that isn't short")
 
-        self.assertEqual(read("https://www.tiktok.com/@example_creator", follow), Target("tik:example_creator", kind="user"))
+        self.assertEqual(read("https://www.tiktok.com/@example_creator", follow),
+                         Target("tik:example_creator", kind="user"))
 
     def test_fb_watch_belongs_to_facebook(self):
         def follow(url):
@@ -137,11 +150,13 @@ class ShortLinkTest(unittest.TestCase):
 class RefusedTest(unittest.TestCase):
     def test_refused_forms_have_a_hint(self):
         rows = [
-            ("https://www.instagram.com/stories/example_user/123/", "ins: story links aren't supported; give the "
-                                                                   "profile, and its stories come with it"),
+            ("https://www.instagram.com/stories/example_user/123/",
+             "ins: story links aren't supported; give the "
+             "profile, and its stories come with it"),
             ("https://www.instagram.com/explore/", "ins: that's not a profile"),
             ("https://www.instagram.com/accounts/login/", "ins: that's not a profile"),
-            ("https://www.facebook.com/example.page/posts/123", "fbk: this kind of link isn't supported yet"),
+            ("https://www.facebook.com/example.page/posts/123",
+             "fbk: this kind of link isn't supported yet"),
             ("https://x.com/explore", "twt: that's not a profile"),
             ("https://x.com/intent/tweet", "twt: that's not a profile"),
         ]

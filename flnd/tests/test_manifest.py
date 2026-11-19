@@ -106,7 +106,8 @@ class BuiltInTest(unittest.TestCase):
         logins = {"tlg": ("browser", "qr", "phone"), "mht": None, "web": None}
         for code, plugin in built_in().items():
             with self.subTest(plugin=code):
-                self.assertEqual((tuple(getattr(plugin.login, "names", ())), plugin.pace, plugin.stealth,
+                self.assertEqual((tuple(getattr(plugin.login, "names", ())), plugin.pace,
+                                  plugin.stealth,
                                   bool(plugin.user_agent), dict(plugin.limits)), rows[code])
                 methods = plugin.login.methods if plugin.login is not None else None
                 self.assertEqual(methods, logins.get(code, COOKIE_METHODS))

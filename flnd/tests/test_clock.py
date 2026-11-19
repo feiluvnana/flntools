@@ -92,7 +92,8 @@ class ClockTest(unittest.TestCase):
         fake.advance(3600)
         self.assertEqual(fake.day(), datetime.date(2026, 1, 2))
         real = _time.current()
-        self.assertEqual(real.day(), datetime.datetime.fromtimestamp(real.wall, datetime.UTC).date())
+        self.assertEqual(real.day(), datetime.datetime.fromtimestamp(real.wall,
+                                                                     datetime.UTC).date())
 
     def test_day_reads_today_from_the_fake_clock(self):
         # Far past any real today, so a `date.today()` bound would refuse it.
@@ -105,16 +106,19 @@ class ClockTest(unittest.TestCase):
 
 
 class DayTest(unittest.TestCase):
-    """The one date rule, the engine's (`flnkit.clock.day`): any form a site gives, in UTC, 2004 to next year."""
+    """The one date rule, the engine's (`flnkit.clock.day`): any form a site gives, in UTC, 2004 to
+    next year."""
 
     def test_seconds_milliseconds_and_digit_strings(self):
-        for value in (1767312000, 1767312000.5, 1767312000000, "1767312000", "1767312000000", " 1767312000 "):
+        for value in (1767312000, 1767312000.5, 1767312000000, "1767312000", "1767312000000",
+                      " 1767312000 "):
             with self.subTest(value=value):
                 self.assertEqual(_time.day(value), datetime.date(2026, 1, 2))
 
     def test_dates_datetimes_and_iso_text(self):
         minus_five = datetime.timezone(datetime.timedelta(hours=-5))
-        self.assertEqual(_time.day(datetime.datetime(2026, 1, 2, 23, tzinfo=minus_five)), datetime.date(2026, 1, 3))
+        self.assertEqual(_time.day(datetime.datetime(2026, 1, 2, 23, tzinfo=minus_five)),
+                         datetime.date(2026, 1, 3))
         self.assertEqual(_time.day(datetime.datetime(2026, 1, 2, 23)), datetime.date(2026, 1, 2))
         self.assertEqual(_time.day(datetime.date(2026, 1, 2)), datetime.date(2026, 1, 2))
         self.assertEqual(_time.day("2026-11-10 01:58:16"), datetime.date(2026, 11, 10))

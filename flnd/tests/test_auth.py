@@ -80,7 +80,8 @@ class AuthCase(unittest.TestCase):
 class VaultTest(AuthCase):
     def test_a_value_is_sealed_under_the_key_outside_the_home(self):
         sign_in(self.home, "tlg", session="1BVts-secret", api_hash="abc")
-        self.assertEqual(vaulted(self.home, "tlg")[1], {"session": "1BVts-secret", "api_hash": "abc"})
+        self.assertEqual(vaulted(self.home, "tlg")[1], {"session": "1BVts-secret",
+                                                        "api_hash": "abc"})
         with raw(self.home) as db:
             [(sealed,)] = db.execute("SELECT sealed FROM secrets WHERE name = 'session'")
         self.assertEqual(sealed[0], 1)
@@ -93,7 +94,8 @@ class VaultTest(AuthCase):
 
     def test_s16_secret_db_holds_no_plaintext_after_a_login(self):
         export = self.home.parent / "cookies.txt"
-        export.write_text(NETSCAPE.replace("aaa.example", "instagram.com").replace("\tsid\t", "\tsessionid\t"))
+        export.write_text(NETSCAPE.replace("aaa.example", "instagram.com").replace("\tsid\t",
+                                                                                   "\tsessionid\t"))
         with flnd.open(self.home) as fl:
             fl.auth.login("ins", path=str(export))
         self.assertTrue(self.stored())
@@ -181,7 +183,8 @@ class LoginTest(AuthCase):
     def test_a_cookie_file_keeps_the_plugins_domains_only_and_is_never_copied(self):
         found = auth.login(self.home, self.plugin(), "file", path=self.export)
         self.assertEqual((found.name, found.origin, found.is_default), ("account1", "file", True))
-        self.assertEqual([(cookie["domain"], cookie["value"]) for cookie in vaulted(self.home, "aaa")[0]],
+        self.assertEqual([(cookie["domain"], cookie["value"]) for cookie in vaulted(self.home,
+                                                                                    "aaa")[0]],
                          [(".aaa.example", "aaa-session")])
         self.assertTrue(self.export.is_file())
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()),
@@ -222,7 +225,8 @@ class LoginTest(AuthCase):
                                "aaa.example\tFALSE\t/\tTRUE\t0\t__Host-sid\th\n"
                                "aaa.example\tFALSE\t/\tTRUE\t0\tsid\ts\n")
         auth.login(self.home, self.plugin(), "file", path=self.export)
-        self.assertEqual({cookie["name"]: cookie["domain"] for cookie in vaulted(self.home, "aaa")[0]},
+        self.assertEqual({cookie["name"]: cookie["domain"] for cookie in vaulted(self.home,
+                                                                                 "aaa")[0]},
                          {"__Host-sid": "aaa.example", "sid": ".aaa.example"})
 
     def test_a_refused_login_keeps_nothing(self):
@@ -376,7 +380,8 @@ class AccountsTest(AuthCase):
         self.login("example_user", "three")
         self.assertEqual(self.accounts(), [("example_user", "qr", True),
                                            ("example_creator", "qr", False)])
-        self.assertEqual([vaulted(self.home, "aaa", name)[1] for name in ("example_user", "example_creator")],
+        self.assertEqual([vaulted(self.home, "aaa", name)[1] for name in ("example_user",
+                                                                          "example_creator")],
                          [{"session": "three"}, {"session": "two"}])
 
     def test_an_unnamed_account_is_asked_for_in_a_terminal_else_the_default_or_account1(self):
@@ -436,7 +441,8 @@ class WriteBackTest(AuthCase):
     def setUp(self):
         super().setUp()
         self.account = sign_in(self.home, "twt", [
-            {"name": "ct0", "value": "old-ct0", "domain": ".x.example", "path": "/", "expires": 1900000000},
+            {"name": "ct0", "value": "old-ct0", "domain": ".x.example", "path": "/",
+             "expires": 1900000000},
             {"name": "auth_token", "value": "login-token", "domain": ".x.example", "path": "/"}])
 
     def current(self, domain=".x.example", **values):
@@ -451,7 +457,8 @@ class WriteBackTest(AuthCase):
             with self.subTest(domain):
                 self.assertEqual(auth.write_back(self.home, self.account,
                                                  self.current(domain, ct0=f"new{domain}")), ["ct0"])
-                self.assertEqual((self.saved()["ct0"], self.saved()["auth_token"], len(self.saved())),
+                self.assertEqual((self.saved()["ct0"], self.saved()["auth_token"],
+                                  len(self.saved())),
                                  (f"new{domain}", "login-token", 2))
         self.assertEqual([cookie["expires"] for cookie in self.saved() if cookie["name"] == "ct0"],
                          [1900000000])
@@ -462,13 +469,15 @@ class WriteBackTest(AuthCase):
             with self.subTest(current=current):
                 self.assertEqual(auth.write_back(self.home, self.account, current), [])
         self.assertEqual([cookie["name"] for cookie in self.saved()], ["ct0", "auth_token"])
-        self.assertEqual(auth.write_back(self.home / "never", self.account, self.current(ct0="x")), [])
+        self.assertEqual(auth.write_back(self.home / "never", self.account, self.current(ct0="x")),
+                         [])
         self.assertFalse((self.home / "never").exists())
 
     def test_a_failure_warns_and_no_value_reaches_a_line(self):
         auth.write_back(self.home, self.account, self.current(ct0="new-ct0"))
         with mock.patch.object(auth, "secrets", side_effect=OSError("disk full: newer-ct0")):
-            self.assertEqual(auth.write_back(self.home, self.account, self.current(ct0="newer-ct0")), [])
+            self.assertEqual(auth.write_back(self.home, self.account,
+                                             self.current(ct0="newer-ct0")), [])
         said = self.dest.getvalue()
         self.assertIn("twt: could not save refreshed cookies (OSError)", said)
         for value in ("old-ct0", "new-ct0", "newer-ct0", "login-token"):
@@ -536,13 +545,16 @@ class SwitchTest(AuthCase):
                 with self.subTest(reason):
                     made = self.job()
                     self.assertIs(self.switch(made, error), made)
-                    self.assertEqual((made.account, self.shown[-1]), ("b", f"aaa: a → b ({reason})"))
+                    self.assertEqual((made.account, self.shown[-1]), ("b",
+                                                                      f"aaa: a → b ({reason})"))
         records = [json.loads(line) for line in journal.read_text().splitlines()]
         self.assertEqual([(record["type"], record["from"], record["to"], record["reason"])
                           for record in records],
                          [("switch", "a", "b", reason) for _, reason in table])
-        self.assertEqual((self.switch.expired, list(self.switch.held)), ({("aaa", "a")}, [("aaa", "a")]))
-        self.assertEqual([(hold.account, hold.until) for hold in self.scheduler.holds], [("a", 60.0)])
+        self.assertEqual((self.switch.expired, list(self.switch.held)), ({("aaa", "a")}, [("aaa",
+                                                                                           "a")]))
+        self.assertEqual([(hold.account, hold.until) for hold in self.scheduler.holds], [("a",
+                                                                                          60.0)])
 
     def test_a_job_never_goes_back_to_an_account_it_left(self):
         made, moves = self.job(), []
@@ -560,7 +572,8 @@ class SwitchTest(AuthCase):
         made = self.job()
         self.switch(made, Hidden("hidden"))
         self.assertEqual(made.account, "b")
-        self.listed[1] = Account(id=2, plugin="aaa", name="b", origin="file", at="", status="expired")
+        self.listed[1] = Account(id=2, plugin="aaa", name="b", origin="file", at="",
+                                 status="expired")
         made = self.job()
         self.switch(made, Hidden("hidden"))
         self.assertEqual(made.account, "c")

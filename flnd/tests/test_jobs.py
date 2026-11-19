@@ -385,7 +385,8 @@ class RetryTest(unittest.TestCase):
             "a 401 moves with switching": (
                 (errors.LoginError("401"),), {"switch": moved}, "on b", []),
             "hidden fails": ((errors.Hidden("hidden"),), {}, errors.Hidden, []),
-            "hidden moves with switching": ((errors.Hidden("hidden"),), {"switch": moved}, "on b", []),
+            "hidden moves with switching": ((errors.Hidden("hidden"),), {"switch": moved}, "on b",
+                                            []),
             "not found fails": ((errors.NotFound("gone"),), {}, errors.NotFound, []),
             "not found past the first page fails with switching": (
                 (errors.NotFound("gone"),), {"switch": moved}, errors.NotFound, []),

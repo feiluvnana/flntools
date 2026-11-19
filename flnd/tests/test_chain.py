@@ -1,4 +1,5 @@
-"""The chain's own steps (`flnd.engine.steps`): hashing, dedupe, the sidecar, and `Saved` at the end.
+"""The chain's own steps (`flnd.engine.steps`): hashing, dedupe, the sidecar, and
+`Saved` at the end.
 
 Every run fakes the network (`flnkit.net.reply` routes, from `test_engine`) and uses synthetic
 photos.

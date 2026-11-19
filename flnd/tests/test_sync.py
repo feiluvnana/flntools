@@ -21,7 +21,8 @@ from flnkit import net as _net
 
 
 class Site:
-    """A test source's posts: `files` maps a name to its body; its `posts` category yields every one."""
+    """A test source's posts: `files` maps a name to its body; its `posts` category yields every
+    one."""
 
     def __init__(self, case, **files):
         self.case, self.files = case, files
@@ -46,7 +47,8 @@ def recorded(record):
 class SyncCase(EngineCase):
     def setUp(self):
         super().setUp()
-        self.site = Site(self, **{"a.jpg": noise("JPEG"), "b.jpg": noise("JPEG"), "c.jpg": noise("JPEG")})
+        self.site = Site(self, **{"a.jpg": noise("JPEG"), "b.jpg": noise("JPEG"),
+                                  "c.jpg": noise("JPEG")})
         self.site.serve()
 
     def engine(self, source=None):
@@ -83,10 +85,12 @@ class SyncCase(EngineCase):
 
 class SettingsTest(SyncCase):
     def test_from_and_time_are_never_saved(self):
-        self.download(Options(categories=("posts",), since=datetime.date(2026, 1, 1), until=datetime.date(2026, 6, 30)))
+        self.download(Options(categories=("posts",), since=datetime.date(2026, 1, 1),
+                              until=datetime.date(2026, 6, 30)))
         row = self.saved()["aaa:a"]
         # `complete` is what was listed to its end, not a setting: here the one category, `posts`.
-        self.assertEqual((row.kind, row.follow, row.categories, row.cursors), ("user", True, (), {}))
+        self.assertEqual((row.kind, row.follow, row.categories, row.cursors), ("user", True, (),
+                                                                               {}))
         self.assertEqual(sorted(row.complete), ["posts"])
         self.assertEqual(self.plan()[0][1], Options())
 
@@ -125,7 +129,8 @@ class HistoryTest(SyncCase):
 
 class SummaryTest(SyncCase):
     def test_one_line_per_target(self):
-        # History keys are per source, so aaa:b, saving the same names, finds them saved and stays empty.
+        # History keys are per source, so aaa:b, saving the same names, finds them saved and
+        # stays empty.
         self.download(texts=("aaa:a", "aaa:b"))
         gone = Site(self, **{"a.jpg": b"", "b.jpg": b""})
         self.requests.clear()

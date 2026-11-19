@@ -5,8 +5,8 @@ The gate of the library is that every command of today's CLI can be done through
 alone. The other classes test a `Run` (lazy start, the warning when it is never started, stop,
 async), the events and the report, the reads, and `when`.
 
-Every test runs on `EngineCase`: the fake network answers from `self.routes`, the clock is fake, and the
-home is a temporary folder.
+Every test runs on `EngineCase`: the fake network answers from `self.routes`, the clock is fake,
+and the home is a temporary folder.
 """
 
 import asyncio

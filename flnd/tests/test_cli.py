@@ -335,7 +335,8 @@ class RunTest(ExampleCase):
                          ["target", "followed", "categories", "files", "size", "last", "run"])
         followed = {line.split()[0]: "followed" in line for line in lines[1:]}
         self.assertEqual(followed, {"exs:example_user": True, "exs:9": False})
-        rows = [json.loads(line) for line in self.run_app("--json", "target", "list")[1].splitlines()]
+        rows = [json.loads(line) for line in self.run_app("--json", "target",
+                                                          "list")[1].splitlines()]
         self.assertIn({"text": "exs:example_user", "kind": "user"}, [row["target"] for row in rows])
         code, out, _ = self.run_app("target", "clean", "exs:example_user", "--media")
         self.assertEqual((code, out), (0, "exs:example_user: forgotten with its files\n"))

@@ -1,6 +1,7 @@
 """`flnkit.browser`: `launch`, the profile copy, the Chromium offer, `Page`, `Capture`, scrolling.
 
-Every coroutine runs on one loop on a thread of its own for the module (`run`). Profile and Chromium tests
+Every coroutine runs on one loop on a thread of its own for the module (`run`). Profile and
+Chromium tests
 fake Playwright, the home and the temp folder. Page tests run Playwright's own headless Chromium
 on pages served from memory (`fulfill`), or from 127.0.0.1 for `Page.fetch`, and skip without it.
 """
@@ -325,7 +326,8 @@ class ChromeOnlyTest(BrowserCase):
         """Playwright's installer: it prints progress lines, then the browser is there."""
         self.installs.append((argv, options))
         self.place()
-        return FakeInstaller("|■■■■      |  40% of 167.3 MiB\n|■■■■■■■■■■| 100% of 167.3 MiB\n"
+        return FakeInstaller("|■■■■      |  40% of 167.3 MiB\n"
+                             "|■■■■■■■■■■| 100% of 167.3 MiB\n"
                              "Chromium downloaded\n", 0)
 
     def place(self):
@@ -1088,7 +1090,8 @@ class FetchTest(PageCase):
         self.assertEqual(response.headers["Content-Type"], "application/json")
         self.assertEqual(response.json, {"path": "/json", "query": "page=2"})
         text = self.fetch("/text")
-        self.assertEqual((text.content, text.text), ("héllo\r\nwörld".encode(), "héllo\r\nwörld"))
+        self.assertEqual((text.content, text.text), ("héllo\r\nwörld".encode(),
+                                                     "héllo\r\nwörld"))
         self.assertEqual(self.fetch("/binary").content, BINARY_BODY)
         relative = self.fetch("data/json")
         self.assertEqual((relative.url, relative.json["path"]),

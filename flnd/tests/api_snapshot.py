@@ -77,7 +77,8 @@ class ApiName(NamedTuple):
 
 
 def write_api() -> None:
-    """Write `api_text()` to `tests/data/api.txt`, with Unix line ends on every OS, so the file never differs by OS."""
+    """Write `api_text()` to `tests/data/api.txt`, with Unix line ends on every OS, so the file
+    never differs by OS."""
     API_FILE.write_text(api_text(), encoding="utf-8", newline="\n")
 
 
@@ -119,12 +120,16 @@ def api_names(modules: tuple[str, ...] = API_MODULES) -> list[ApiName]:
             public.setdefault(id(name.obj), name.name)
     for name, entry in names.items():
         if entry.kind == "error":
-            bases = ", ".join(public.get(id(base), base.__qualname__) for base in entry.obj.__bases__)
+            bases = ", ".join(
+                public.get(id(base), base.__qualname__) for base in entry.obj.__bases__
+            )
             names[name] = entry._replace(detail=f"({bases})")
     return sorted(names.values(), key=lambda name: name.name)
 
 
-def parameters(name: ApiName, function: Callable[..., Any] | None = None) -> list[inspect.Parameter]:
+def parameters(
+    name: ApiName, function: Callable[..., Any] | None = None
+) -> list[inspect.Parameter]:
     """The parameters a caller passes to a function, method or class: `self` and `cls` left out.
 
     Args:
@@ -157,7 +162,8 @@ def _add(name: str, value: Any, names: dict[str, ApiName], owner: Any = None) ->
                 _add(f"{name}.{member}", member_value, names)
     elif inspect.isclass(value):
         kind = "error" if issubclass(value, BaseException) else "class"
-        names[name] = ApiName(name, kind, value, owner, detail="" if kind == "error" else _signature(value))
+        names[name] = ApiName(name, kind, value, owner,
+                              detail="" if kind == "error" else _signature(value))
         _add_members(name, value, names)
     elif inspect.isfunction(value):
         names[name] = ApiName(name, "function", value, owner, detail=_signature(value))
@@ -165,8 +171,11 @@ def _add(name: str, value: Any, names: dict[str, ApiName], owner: Any = None) ->
         names[name] = ApiName(name, "value", value, owner, detail=f": {_kind(value)}")
 
 
-def _add_stand_in(name: str, value: Any, backing: types.ModuleType, names: dict[str, ApiName]) -> None:
-    """Add an object that stands in for a module: its class's members, then its file's other names."""
+def _add_stand_in(
+    name: str, value: Any, backing: types.ModuleType, names: dict[str, ApiName]
+) -> None:
+    """Add an object that stands in for a module: its class's members, then its file's
+    other names."""
     names[name] = ApiName(name, "module", value, detail=f": {builtins.type(value).__name__}")
     _add_members(name, builtins.type(value), names)
     for member in backing.__all__:
@@ -175,7 +184,8 @@ def _add_stand_in(name: str, value: Any, backing: types.ModuleType, names: dict[
 
 
 def _add_members(name: str, cls: builtins.type, names: dict[str, ApiName]) -> None:
-    """Add a class's public members: fields, then its own and its project bases' members, then `__init__`'s.
+    """Add a class's public members: fields, then its own and its project bases' members,
+    then `__init__`'s.
 
     Nearest class first, so an override is listed with its own signature, and a property keeps its
     place even when `__init__` assigns to it (`self.color = …` runs `Theme.color`'s setter).
@@ -200,11 +210,14 @@ def _add_members(name: str, cls: builtins.type, names: dict[str, ApiName]) -> No
         for member, annotation in _instance_attributes(klass).items():
             if member not in seen:
                 seen.add(member)
-                names.setdefault(f"{name}.{member}", ApiName(f"{name}.{member}", "attribute", None, cls,
-                                                             detail=_typed(": attribute", annotation)))
+                names.setdefault(f"{name}.{member}", ApiName(f"{name}.{member}", "attribute", None,
+                                                             cls,
+                                                             detail=_typed(": attribute",
+                                                                           annotation)))
 
 
-def _add_member(name: str, raw: Any, cls: builtins.type, names: dict[str, ApiName], *, annotation: Any) -> None:
+def _add_member(name: str, raw: Any, cls: builtins.type, names: dict[str, ApiName], *,
+                annotation: Any) -> None:
     """Add one member found in a class's `__dict__`, by what it is.
 
     Args:
@@ -219,7 +232,8 @@ def _add_member(name: str, raw: Any, cls: builtins.type, names: dict[str, ApiNam
     if isinstance(raw, (staticmethod, classmethod)):
         function = raw.__func__
         bound = isinstance(raw, classmethod)
-        names[name] = ApiName(name, "method", function, cls, bound, _signature(function, bound=bound))
+        names[name] = ApiName(name, "method", function, cls, bound, _signature(function,
+                                                                               bound=bound))
     elif inspect.isfunction(raw):
         names[name] = ApiName(name, "method", raw, cls, True, _signature(raw, bound=True))
     elif isinstance(raw, property):
@@ -230,11 +244,13 @@ def _add_member(name: str, raw: Any, cls: builtins.type, names: dict[str, ApiNam
         _add(name, raw, names, owner=cls)
     else:
         names[name] = ApiName(name, "attribute", raw, cls,
-                              detail=_typed(": attribute", annotation or builtins.type(raw).__name__))
+                              detail=_typed(": attribute",
+                                            annotation or builtins.type(raw).__name__))
 
 
 def _record_fields(cls: builtins.type) -> dict[str, Any]:
-    """The fields of a dataclass or a NamedTuple, in order, with their annotations; empty for any other class."""
+    """The fields of a dataclass or a NamedTuple, in order, with their annotations;
+    empty for any other class."""
     if is_dataclass(cls):
         return {field.name: field.type for field in fields(cls)}
     annotations = inspect.get_annotations(cls)
@@ -272,7 +288,8 @@ def _instance_attributes(cls: builtins.type) -> dict[str, str]:
 
 
 def _signature(obj: Any, *, bound: bool = False) -> str:
-    """A function's or class's signature as the snapshot shows it: `(path, *, table: str = 'default', timeout: float = 5.0) -> Store`.
+    """A function's or class's signature as the snapshot shows it:
+    `(path, *, table: str = 'default', timeout: float = 5.0) -> Store`.
 
     Args:
         obj: the function or class.
@@ -289,12 +306,14 @@ def _signature(obj: Any, *, bound: bool = False) -> str:
         # The markers Python's own rendering puts in: `/` after the positional-only parameters,
         # and `*` before the keyword-only ones when there is no `*args`.
         if parameter.kind is inspect.Parameter.KEYWORD_ONLY and \
-                all(earlier.kind is not inspect.Parameter.VAR_POSITIONAL for earlier in found[:index]) and \
+                all(earlier.kind is not inspect.Parameter.VAR_POSITIONAL
+                    for earlier in found[:index]) and \
                 (index == 0 or found[index - 1].kind is not inspect.Parameter.KEYWORD_ONLY):
             parts.append("*")
         parts.append(_parameter_text(parameter, scope))
         last_positional_only = parameter.kind is inspect.Parameter.POSITIONAL_ONLY and \
-            (index + 1 == len(found) or found[index + 1].kind is not inspect.Parameter.POSITIONAL_ONLY)
+            (index + 1 == len(found)
+             or found[index + 1].kind is not inspect.Parameter.POSITIONAL_ONLY)
         if last_positional_only:
             parts.append("/")
     returns = "" if signature.return_annotation is inspect.Signature.empty or inspect.isclass(obj) \
@@ -304,7 +323,8 @@ def _signature(obj: Any, *, bound: bool = False) -> str:
 
 def _parameter_text(parameter: inspect.Parameter, scope: dict[str, Any]) -> str:
     """One parameter: `name: annotation = default`, or `name=default` without an annotation."""
-    stars = {inspect.Parameter.VAR_POSITIONAL: "*", inspect.Parameter.VAR_KEYWORD: "**"}.get(parameter.kind, "")
+    stars = {inspect.Parameter.VAR_POSITIONAL: "*",
+             inspect.Parameter.VAR_KEYWORD: "**"}.get(parameter.kind, "")
     text = f"{stars}{parameter.name}"
     annotated = parameter.annotation is not inspect.Parameter.empty
     if annotated:
@@ -318,8 +338,8 @@ def _parameter_text(parameter: inspect.Parameter, scope: dict[str, Any]) -> str:
 def _annotation_text(annotation: Any) -> str:
     """An annotation as written: `from __future__ import annotations` keeps it a string already.
 
-    Python 3.11's NamedTuple wraps that string in a `ForwardRef`, which is unwrapped, so the snapshot
-    reads the same on every supported Python.
+    Python 3.11's NamedTuple wraps that string in a `ForwardRef`, which is unwrapped, so the
+    snapshot reads the same on every supported Python.
     """
     if isinstance(annotation, typing.ForwardRef):
         return annotation.__forward_arg__
@@ -353,7 +373,8 @@ def _default_text(value: Any, scope: dict[str, Any]) -> str:
     if inspect.isclass(value) or inspect.isroutine(value):
         return value.__qualname__
     text = repr(value)
-    return f"{builtins.type(value).__name__}(...)" if re.search(r" at 0x[0-9a-fA-F]+", text) else text
+    return f"{builtins.type(value).__name__}(...)" if re.search(r" at 0x[0-9a-fA-F]+",
+                                                                text) else text
 
 
 def _scope(obj: Any) -> dict[str, Any]:

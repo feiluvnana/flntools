@@ -51,7 +51,8 @@ REEXPORTS = ("Blocked", "Changed", "DiskError", "Error", "LoginError", "NetworkE
 
 
 def breaches() -> set[str]:
-    """Every breach of the conventions in the snapshot, one text per breach, as `ALLOWED` spells it."""
+    """Every breach of the conventions in the snapshot, one text per breach, as `ALLOWED`
+    spells it."""
     found: set[str] = set()
     for name in NAMES:
         found |= prefix_breaches(name) | option_breaches(name)
@@ -78,18 +79,26 @@ def option_breaches(name: Any) -> set[str]:
             parameters = snapshot.parameters(name, function)
         except ValueError:  # no signature to read: a class whose constructor is a builtin's
             continue
-        # S3, for functions and methods; a constructor's fields are its data, so they may be positional.
+        # S3, for functions and methods; a constructor's fields are its data, so
+        # they may be positional.
         if name.kind != "class" and not follows_protocol(name):
-            found |= {f"{name.name}: positional option {parameter.name}" for parameter in parameters[1:]
-                      if parameter.kind in POSITIONAL and parameter.default is not inspect.Parameter.empty}
+            found |= {
+                f"{name.name}: positional option {parameter.name}"
+                for parameter in parameters[1:]
+                if parameter.kind in POSITIONAL and parameter.default is not inspect.Parameter.empty
+            }
         for parameter, scope in expanded(parameters, name.obj, function):
             field = name.kind == "class" and parameter.kind in POSITIONAL
             if parameter.name in RENAMED and not field:
                 found.add(f"{name.name}: option {parameter.name}, not {RENAMED[parameter.name]}")
             if parameter.name == "progress" and progress_callback(parameter.annotation, scope):
                 found.add(f"{name.name}: option progress, a callback, not a sink")
-        options = [parameter for parameter in parameters[1:] if parameter.kind is not inspect.Parameter.VAR_KEYWORD
-                   and parameter.kind is not inspect.Parameter.VAR_POSITIONAL]
+        options = [
+            parameter
+            for parameter in parameters[1:]
+            if parameter.kind is not inspect.Parameter.VAR_KEYWORD
+            and parameter.kind is not inspect.Parameter.VAR_POSITIONAL
+        ]
         if name.kind != "class" and len(options) > MAX_OPTIONS:
             found.add(f"{name.name}: {len(options)} options, more than {MAX_OPTIONS}")
     return found
@@ -108,8 +117,10 @@ def follows_protocol(name: Any) -> bool:
                if base.__module__.split(".")[0] not in snapshot.PROJECT_PACKAGES)
 
 
-def expanded(parameters: list[inspect.Parameter], obj: Any, function: Any) -> list[tuple[inspect.Parameter, dict]]:
-    """Each parameter with the globals its annotation is read in; `**options: Unpack[T]` becomes T's keys.
+def expanded(parameters: list[inspect.Parameter], obj: Any,
+             function: Any) -> list[tuple[inspect.Parameter, dict]]:
+    """Each parameter with the globals its annotation is read in; `**options: Unpack[T]` becomes
+    T's keys.
 
     `worker`'s functions take their options as a TypedDict, so its keys are the real option names.
     """
@@ -117,10 +128,15 @@ def expanded(parameters: list[inspect.Parameter], obj: Any, function: Any) -> li
     found = []
     for parameter in parameters:
         unpacked = re.fullmatch(r"Unpack\[(\w+)\]", str(parameter.annotation))
-        if parameter.kind is inspect.Parameter.VAR_KEYWORD and unpacked and unpacked.group(1) in scope:
+        if (
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            and unpacked
+            and unpacked.group(1) in scope
+        ):
             options = scope[unpacked.group(1)]
             options_scope = snapshot._scope(options)
-            found += [(inspect.Parameter(key, inspect.Parameter.KEYWORD_ONLY, annotation=annotation), options_scope)
+            found += [(inspect.Parameter(key, inspect.Parameter.KEYWORD_ONLY,
+                                         annotation=annotation), options_scope)
                       for key, annotation in inspect.get_annotations(options).items()]
         else:
             found.append((parameter, scope))
@@ -128,13 +144,15 @@ def expanded(parameters: list[inspect.Parameter], obj: Any, function: Any) -> li
 
 
 def progress_callback(annotation: Any, scope: dict) -> bool:
-    """Whether an annotation is a `progress(done, total)` callback, or None: `Callable[[A, B], R]` or `Callable[..., R]`.
+    """Whether an annotation is a `progress(done, total)` callback, or None:
+    `Callable[[A, B], R]` or `Callable[..., R]`.
 
     Args:
         annotation: the annotation as written, such as "Progress | None"; a bare alias is looked up.
         scope: the globals of the function's module, where an alias like `Progress` is defined.
     """
-    kinds = [part for part in split_top_level(snapshot._annotation_text(annotation), "|") if part != "None"]
+    kinds = [part for part in split_top_level(snapshot._annotation_text(annotation),
+                                              "|") if part != "None"]
     if len(kinds) != 1:
         return False
     kind = kinds[0]
@@ -146,11 +164,13 @@ def progress_callback(annotation: Any, scope: dict) -> bool:
     arguments = split_top_level(kind[len("Callable["):-1], ",")[0]
     if arguments == "...":
         return True
-    return arguments.startswith("[") and len([part for part in split_top_level(arguments[1:-1], ",") if part]) == 2
+    return arguments.startswith("[") and len([part for part in split_top_level(arguments[1:-1],
+                                                                               ",") if part]) == 2
 
 
 def split_top_level(text: str, separator: str) -> list[str]:
-    """`text` split at `separator` outside brackets, each part stripped: "a[b, c], d" gives "a[b, c]" and "d"."""
+    """`text` split at `separator` outside brackets, each part stripped: "a[b, c], d" gives
+    "a[b, c]" and "d"."""
     parts, depth, start = [], 0, 0
     for index, character in enumerate(text):
         depth += {"[": 1, "]": -1}.get(character, 0)
@@ -164,7 +184,8 @@ def module_of(name: str, names: list[Any] = NAMES) -> str:
     """The module a name is in: the longest module among `names` that it starts with."""
     modules = {entry.name for entry in names if entry.kind == "module"}
     parts = name.split(".")
-    return next(".".join(parts[:end]) for end in range(len(parts), 0, -1) if ".".join(parts[:end]) in modules)
+    return next(".".join(parts[:end]) for end in range(len(parts), 0,
+                                                       -1) if ".".join(parts[:end]) in modules)
 
 
 def error_breaches(names: list[Any] = NAMES) -> set[str]:
@@ -212,7 +233,9 @@ def private_imports(source: str) -> list[str]:
             if node.module.startswith("flnd._"):
                 found.append(node.module)
             elif node.module == "flnd":
-                found += [f"flnd.{alias.name}" for alias in node.names if alias.name.startswith("_")]
+                found += [
+                    f"flnd.{alias.name}" for alias in node.names if alias.name.startswith("_")
+                ]
     return found
 
 
@@ -268,7 +291,9 @@ def flnd_import_aliases(source: str) -> list[str]:
             if node.level > 0 or mod.split(".")[0] in ("flnd", "flnkit"):
                 for alias in node.names:
                     if alias.asname:
-                        found.append(f"line {node.lineno}: from {mod} import {alias.name} as {alias.asname}")
+                        found.append(
+                            f"line {node.lineno}: from {mod} import {alias.name} as {alias.asname}"
+                        )
     return found
 
 
@@ -432,7 +457,8 @@ class NamesTest(unittest.TestCase):
     def test_no_new_breach(self):
         allowed = {breach for group in ALLOWED.values() for breach in group}
         new = sorted(breaches() - allowed)
-        self.assertEqual(new, [], "these break AGENTS.md › API and naming; rename them, don't allow them")
+        self.assertEqual(new, [],
+                         "these break AGENTS.md › API and naming; rename them, don't allow them")
 
     def test_no_stale_allowance(self):
         allowed = {breach for group in ALLOWED.values() for breach in group}
@@ -516,7 +542,8 @@ class PrivateImportTest(unittest.TestCase):
     def test_every_spelling_of_a_private_import_is_found(self):
         source = ("import flnd._library\nfrom flnd._library import Flnd\n"
                   "from flnd import _library, ui\n")
-        self.assertEqual(private_imports(source), ["flnd._library", "flnd._library", "flnd._library"])
+        self.assertEqual(private_imports(source), ["flnd._library", "flnd._library",
+                                                   "flnd._library"])
         self.assertEqual(private_imports("from flnkit import net\nimport flnd\n"), [])
 
 
@@ -532,7 +559,8 @@ class ReadableTest(unittest.TestCase):
     def test_no_plan_or_history_references_in_code(self):
         for path in _source_files():
             with self.subTest(path):
-                self.assertEqual(history_breaches((snapshot.ROOT / path).read_text(encoding="utf-8")), [])
+                text = (snapshot.ROOT / path).read_text(encoding="utf-8")
+                self.assertEqual(history_breaches(text), [])
 
     def test_no_flnd_import_aliases(self):
         for path in sorted([*FLND.rglob("*.py"), *FLNKIT.rglob("*.py")]):
@@ -543,7 +571,8 @@ class ReadableTest(unittest.TestCase):
     def test_lines_are_at_most_100_characters(self):
         for path in _source_files():
             with self.subTest(path):
-                self.assertEqual(line_length_breaches((snapshot.ROOT / path).read_text(encoding="utf-8")), [])
+                text = (snapshot.ROOT / path).read_text(encoding="utf-8")
+                self.assertEqual(line_length_breaches(text), [])
 
     def test_history_and_alias_checks_catch_breaches(self):
         bad = ('"""See plan/phase-6/redesign.md (B3)."""\n'
@@ -564,9 +593,11 @@ class ReadableTest(unittest.TestCase):
 
 
 class ChecksTest(unittest.TestCase):
-    """The checks themselves, on made-up names, so a check that silently passes everything fails here."""
+    """The checks themselves, on made-up names, so a check that silently passes everything
+    fails here."""
 
-    def name(self, kind: str, obj: Any, *, owner: Any = None, bound: bool = False, name: str = "flnd.x.f") -> Any:
+    def name(self, kind: str, obj: Any, *, owner: Any = None, bound: bool = False,
+             name: str = "flnd.x.f") -> Any:
         return snapshot.ApiName(name, kind, obj, owner, bound)
 
     def test_prefix(self):
@@ -577,7 +608,8 @@ class ChecksTest(unittest.TestCase):
     def test_positional_option(self):
         def fetch(url, timeout=30.0, *, attempts=3): ...
 
-        self.assertEqual(option_breaches(self.name("function", fetch)), {"flnd.x.f: positional option timeout"})
+        self.assertEqual(option_breaches(self.name("function", fetch)),
+                         {"flnd.x.f: positional option timeout"})
 
     def test_first_parameter_may_have_a_default(self):
         def save(dest=None, *, mode=0o666): ...
@@ -588,7 +620,8 @@ class ChecksTest(unittest.TestCase):
         class Store:
             def keys(self, prefix=""): ...
 
-        self.assertEqual(option_breaches(self.name("method", Store.keys, owner=Store, bound=True)), set())
+        self.assertEqual(option_breaches(self.name("method", Store.keys, owner=Store, bound=True)),
+                         set())
 
     def test_a_stdlib_protocol_keeps_its_signature(self):
         class Store(dict):
@@ -632,10 +665,12 @@ class ChecksTest(unittest.TestCase):
 
         class Stray(ValueError): ...
 
-        names = [self.name("module", None, name="flnd.x"), self.name("error", Module, name="flnd.x.Error"),
+        names = [self.name("module", None, name="flnd.x"), self.name("error", Module,
+                                                                     name="flnd.x.Error"),
                  self.name("error", Kept, name="flnd.x.KeptError"),
                  self.name("error", Stray, name="flnd.x.Inner.StrayError")]
-        self.assertEqual(error_breaches(names), {"flnd.x: errors outside flnd.x.Error: flnd.x.Inner.StrayError"})
+        self.assertEqual(error_breaches(names),
+                         {"flnd.x: errors outside flnd.x.Error: flnd.x.Inner.StrayError"})
 
     def test_a_keyboard_interrupt_is_no_stray_error(self):
         # `flnd.Stopped` derives from KeyboardInterrupt so `except flnd.Error` never eats a Ctrl-C.
@@ -643,7 +678,8 @@ class ChecksTest(unittest.TestCase):
 
         class Stopped(KeyboardInterrupt): ...
 
-        names = [self.name("module", None, name="flnd"), self.name("error", Error, name="flnd.Error"),
+        names = [self.name("module", None, name="flnd"), self.name("error", Error,
+                                                                   name="flnd.Error"),
                  self.name("error", Stopped, name="flnd.Stopped")]
         self.assertEqual(error_breaches(names), set())
 
@@ -659,8 +695,10 @@ class ChecksTest(unittest.TestCase):
                  self.name("module", None, name="flnd.plugin"),
                  self.name("error", PluginError, name="flnd.plugin.Error"),
                  self.name("error", Kept, name="flnd.plugin.TargetError"),
-                 self.name("error", Kept, name="flnd.TargetError"), self.name("error", Stray, name="flnd.StrayError")]
-        self.assertEqual(error_breaches(names), {"flnd: errors outside flnd.Error: flnd.StrayError"})
+                 self.name("error", Kept, name="flnd.TargetError"),
+                 self.name("error", Stray, name="flnd.StrayError")]
+        self.assertEqual(error_breaches(names),
+                         {"flnd: errors outside flnd.Error: flnd.StrayError"})
 
 
 if __name__ == "__main__":

@@ -151,9 +151,11 @@ class GroupsTest(EngineCase):
         sources = {"aaa": make_plugin("aaa"), "bbb": make_plugin("bbb")}
         engine = Engine(home=self.home, sources=sources)
         chosen = [(Target("aaa:a", kind="user"), Options(again=True)),
-                  (Target("aaa:b", kind="user"), Options()), (Target("bbb:c", kind="user"), Options())]
+                  (Target("aaa:b", kind="user"), Options()), (Target("bbb:c", kind="user"),
+                                                              Options())]
         stop = _run.Stop()
-        with mock.patch.object(job, "download", download), mock.patch.object(_store, "open", opening):
+        with mock.patch.object(job, "download", download), mock.patch.object(_store, "open",
+                                                                             opening):
             reports = fakes.run_targets(engine, chosen, stop).targets
         self.assertEqual(sorted(seen), [("a", True), ("b", False), ("c", False)])
         self.assertEqual(opened, [self.home])
@@ -215,7 +217,8 @@ class LoginStateTest(EngineCase):
         self.run_engine(make_plugin("aaa", ran.append, login=login_cookies("sid")),
                         targets=["aaa:a"])
         self.assertEqual(len(ran), 1)
-        self.assertIn("! aaa: not logged in, using public access; run flnd auth login aaa", self.lines())
+        self.assertIn("! aaa: not logged in, using public access; run flnd auth login aaa",
+                      self.lines())
 
     def test_logged_in_has_no_hint_and_cookies_reach_the_client(self):
         self.log_in("aaa", sid="1", other="2")
@@ -344,7 +347,8 @@ class HttpTest(EngineCase):
         self.assertEqual(len(self.listed()), 3)
 
     def test_ctrl_c_during_a_wait_stops_the_run(self):
-        """The first Ctrl-C ends a rate-limit wait at once; the target ends as stopped and the command as Ctrl-C."""
+        """The first Ctrl-C ends a rate-limit wait at once; the target ends as stopped and the
+        command as Ctrl-C."""
         stop_ref: list[_run.Stop] = []
         real_stopping = _run.stopping
 
@@ -363,7 +367,8 @@ class HttpTest(EngineCase):
 
         self.routes["https://api.aaa.example/feed"] = limited
         engine = Engine(home=self.home, sources={"aaa": make_plugin("aaa", run)})
-        with mock.patch("flnd.engine._engine.stopping", capture_stopping), self.assertRaises(KeyboardInterrupt), \
+        with mock.patch("flnd.engine._engine.stopping",
+                        capture_stopping), self.assertRaises(KeyboardInterrupt), \
                 ui.scope(level="debug"):
             engine.download(["aaa:a/all"])
         self.assertTrue(any(line.endswith("aaa:a: stopped") for line in self.lines()), self.lines())
@@ -552,8 +557,10 @@ class ClientTest(EngineCase):
         files = [File(fetch=fetch, name=f"{number}.bin") for number in range(20)]
         source = make_plugin("aaa", connect=connect, limits={"aaa.example": 1}, files=files)
         finished = []
-        runner = threading.Thread(target=lambda: finished.append(self.run_engine(source, targets=["aaa:a"])),
-                                  daemon=True)
+        runner = threading.Thread(
+            target=lambda: finished.append(self.run_engine(source, targets=["aaa:a"])),
+            daemon=True,
+        )
         runner.start()
         runner.join(timeout=10)
         self.assertEqual(finished, [20])
@@ -614,7 +621,8 @@ class OffTheLoopTest(EngineCase):
 
 
 class ApiTest(EngineCase):
-    """The engine API of redesign B1: what `src/__init__.py` exports, `Report`, and `download`'s options."""
+    """The engine API of redesign B1: what `src/__init__.py` exports, `Report`, and
+    `download`'s options."""
 
     def engine(self, *sources):
         return Engine(home=self.home, sources={source.code: source for source in sources})
@@ -643,11 +651,14 @@ class ApiTest(EngineCase):
         engine = self.engine(make_plugin("aaa", files=files))
         report = engine.download(["aaa:one/all", "aaa:bad/all"])
         one, bad = report.targets
-        self.assertEqual((one.target, bad.target), (Target("aaa:one", kind="user"), Target("aaa:bad", kind="user")))
+        self.assertEqual((one.target, bad.target), (Target("aaa:one", kind="user"),
+                                                    Target("aaa:bad", kind="user")))
         self.assertEqual(sorted(path.name for path in one.written), ["a.jpg", "b.jpg"])
         self.assertTrue(all(path.is_file() for path in one.written))
         self.assertEqual((one.skipped, one.error, str(bad.error)), (0, None, "blocked"))
-        self.assertEqual((report.files, report.failed, report.ok), (2, (Target("aaa:bad", kind="user"),), False))
+        self.assertEqual((report.files, report.failed, report.ok), (2, (Target("aaa:bad",
+                                                                               kind="user"),),
+                                                                    False))
         again = engine.download([Target("aaa:one", kind="user")])
         self.assertEqual((again.files, again.targets[0].skipped, again.ok), (0, 2, True))
 
@@ -750,23 +761,27 @@ class LoginStaysAtHomeTest(EngineCase):
     def test_media_servers_never_see_the_login_and_the_api_sees_the_refreshed_token(self):
         from flnd.plugins.twt import TWITTER_BEARER, Twitter
 
-        self.run_engine(Twitter, targets=["twt:example_handle", "https://x.com/example_handle/status/100"],
+        self.run_engine(Twitter, targets=["twt:example_handle",
+                                          "https://x.com/example_handle/status/100"],
                         options=Options(categories=("profile",)))
         api = [request for request in self.requests if request.url.host == "x.com"]
         media = [request for request in self.requests if request.url.host.endswith("twimg.com")]
-        self.assertEqual(sorted(request.url.host for request in media), ["pbs.twimg.com", "video.twimg.com"])
+        self.assertEqual(sorted(request.url.host for request in media), ["pbs.twimg.com",
+                                                                         "video.twimg.com"])
         for request in media:
             with self.subTest(host=request.url.host):
                 self.assertNotIn("authorization", request.headers)
                 self.assertNotIn("x-csrf-token", request.headers)
                 self.assertNotIn("cookie", request.headers)
         self.assertEqual({request.headers["authorization"] for request in api}, {TWITTER_BEARER})
-        # The first request carries the token it was saved with; x.com rotated it, and the rest carry the new one.
+        # The first request carries the token it was saved with; x.com rotated it, and the rest
+        # carry the new one.
         tokens = [request.headers["x-csrf-token"] for request in api]
         self.assertEqual((tokens[0], set(tokens[1:]), len(tokens) >= 2), ("old", {"new"}, True))
         self.assertIn("ct0=new", api[1].headers["cookie"])
         self.assertNotIn("ct0=old", api[1].headers["cookie"])
-        self.assertTrue(any(path.name.endswith("_100_0.jpg") for path in self.target_dir("twt", "100").rglob("*")))
+        folder = self.target_dir("twt", "100")
+        self.assertTrue(any(path.name.endswith("_100_0.jpg") for path in folder.rglob("*")))
 
 
 class GoneTest(EngineCase):

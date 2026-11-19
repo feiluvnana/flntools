@@ -646,7 +646,8 @@ class EngineTest(EngineCase):
         record = self.home.parent / "ran.txt"
         script = f"import sys; open({str(record)!r}, 'a').write(sys.argv[1] + '\\n')"
         user = self.home.parent / "user.toml"
-        user.write_text(f'[defaults]\nexec = {json.dumps([sys.executable, "-c", script, "{path}"])}\n')
+        command = json.dumps([sys.executable, "-c", script, "{path}"])
+        user.write_text(f'[defaults]\nexec = {command}\n')
         self.routes.update({f"{CDN}/a.jpg": JPEG, f"{CDN}/b.jpg": JPEG + b"b"})
         # A home's own `exec` is ignored, with a warning: only the user's file runs programs.
         self.configure('[defaults]\nexec = ["false"]\n')

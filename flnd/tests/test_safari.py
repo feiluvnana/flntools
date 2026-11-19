@@ -145,7 +145,8 @@ class OffMacTest(SafariHome):
     def test_safari_is_macos_only(self):
         self.write(_cookies.SAFARI_FILES[0])
         for read in (lambda: _cookies.load("safari"),
-                     lambda: _auth._read_jar(Instagram(), Instagram.login, "safari", path=None, profile=None)):
+                     lambda: _auth._read_jar(Instagram(), Instagram.login, "safari", path=None,
+                                             profile=None)):
             with self.assertRaises(UsageError) as caught:
                 read()
             self.assertIn("macOS only", str(caught.exception))
