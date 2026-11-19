@@ -31,7 +31,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
-from flnd.engine import home, jobs, save, store
+from flnd.engine import home, jobs, plugins, save, store
 from flnd.engine.ctx import Ctx, Listing, PluginRun, met_turn
 from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped
 from flnd.engine.run import Counts, Tally, sink
@@ -50,7 +50,6 @@ from flnd.errors import (
     classify,
 )
 from flnd.plugin import Category, File, Plugin, Post, Range, Route, Target
-from flnd.plugins import PLUGINS
 from flnd.ui.log import ui
 from flnkit import files, text
 from flnkit.clock import day
@@ -238,9 +237,10 @@ def failure(error: BaseException, target: Target, source: Plugin | None = None) 
     made = classify(error, target=str(target))
     assert isinstance(made, Error), made
     # A bug in a plugin is its author's to fix, not flnd's: the hint says whose code it is.
-    plugin = PLUGINS.plugin(type(source)) if source is not None else None
-    if plugin is not None and isinstance(made, PluginError) and made.__cause__ is error:
-        made.hint = (f"a bug in the plugin {plugin.code} ({plugin.where}), not in flnd; "
+    where = plugins.where(type(source)) if source is not None else None
+    if (where is not None and source is not None and isinstance(made, PluginError)
+            and made.__cause__ is error):
+        made.hint = (f"a bug in the plugin {source.code} ({where}), not in flnd; "
                      "report it to its author")
     if (source is not None and type(made) is SiteError and made.status in LOGIN_WALLS
             and _on_domains(made, source.domains)):

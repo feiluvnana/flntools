@@ -489,8 +489,8 @@ def sources(args: argparse.Namespace) -> int:
 
     Each shows where it came from and its version, the targets it reads, its categories and
     its login. A plugin that is disabled is listed with the reason, naming its file and line.
-    Plugins load from $FLND_SOURCES, else ~/.config/flnd/sources (APPDATA's flnd/sources on
-    Windows), and from installed packages; never from a home.
+    Plugins load from $FLND_PLUGINS, else ~/.config/flnd/plugins (APPDATA's flnd/plugins on
+    Windows); never from a home.
 
     Args:
         args: the parsed flags.

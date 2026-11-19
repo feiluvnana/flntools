@@ -1,367 +1,873 @@
-"""Plugins: installed packages and files in the user's plugin folder, found lazily.
+"""The plugin manager: the plugin folder, `plugins.json`, install, uninstall and loading.
 
-src/docs/writing-a-plugin explains it.
+src/docs/architecture explains it.
 
-A plugin here is one that isn't built in. flnd finds them in this order, after the built-ins:
-1. installed packages that declare an entry point in the `flnd.sources` group:
-   `[project.entry-points."flnd.sources"] exm = "flnd_example:Example"`;
-2. the user's plugin folder (`folder()`): `$FLND_SOURCES`, else `~/.config/flnd/sources/`
-   (`%APPDATA%\\flnd\\sources\\` on Windows), holding `<code>.py` files and `<code>/` packages;
-3. `Flnd.add(cls)` in a script, which the library keeps itself (`flnd._library`).
-
-A later one with a code already taken is refused with a warning, never shadowing the first.
-
-Who calls it: the plugin registry (`flnd.plugins.Registry`), which runs `discover` the first
-time a code it doesn't know is asked for, and `load` the first time a plugin's class is needed.
-What it calls: `importlib` and `importlib.metadata`, `flnd.plugin` to check what a plugin
-defines, and `flnd.ui.log` for the warnings.
-
-How loading stays lazy:
-1. `discover` reads names only: an entry point's name and a file's name are the plugin's code,
-   so nothing is imported to learn which codes exist. It reads the package metadata once
-   (a few milliseconds) and lists one folder.
-2. `load` imports one plugin, on the first use of its code: an `exm:…` target imports `exm`
-   alone. A link imports plugins only when no built-in's domains match it
-   (`flnd.engine.core.owner`),
-   and `flnd sources` imports them all. `flnd --help` imports none.
-
-Rules a change must keep:
-- **Never load from a home.** A home is often the current folder, which may be a cloned
-  repository or an unpacked archive; code there isn't the user's own. Plugins load only from
-  the folder above and from installed packages. `tests/test_plugins.py` keeps a
-  `<home>/sources/evil.py` that must never run.
-- **Containment.** An import error, or a class that fails its checks when it is made (a newer
-  plugin API, a bad pattern), disables that plugin alone, with a warning naming its file and
-  line. The plugin folder is never put on `sys.path`, so a stray `json.py` in it can't shadow
-  the standard library; a `<code>/` package imports its own modules relatively.
-- It is not a security boundary: a plugin runs in flnd's process with the user's logins, like
-  any code the user installs.
+A plugin that isn't built in lives in `$FLND_PLUGINS` (else `~/.config/flnd/plugins/`, or
+`%APPDATA%\\flnd\\plugins\\` on Windows), indexed in `plugins.json` (`Manager`). `PLUGINS`
+combines the built-ins (from `flnd.plugins._manifest`, each imported on first use) with the
+installed plugins (loaded by `Manager` on first use).
 """
 
 from __future__ import annotations
 
+import ast
+import contextlib
+import hashlib
+import importlib
 import importlib.util
 import inspect
+import json
 import os
+import shutil
+import stat
 import sys
+import tempfile
+import time
 import traceback
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Collection, Iterator, Mapping, MutableMapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from flnd.engine import resolve
+from flnd.errors import PluginError, UsageError
+from flnd.plugin import API, CODE, OLD_NAMES, Plugin
+from flnd.plugins import _manifest
 from flnd.ui.log import ui
+from flnkit import clock, files
 
-if TYPE_CHECKING:
-    import flnd.plugin
+__all__ = [
+    "BUILT_IN",
+    "FILE",
+    "MODULE_PREFIX",
+    "PLUGINS",
+    "Registry",
+    "SCRIPT",
+    "VARIABLE",
+    "folder",
+    "version",
+    "where",
+]
 
-__all__ = ["BUILT_IN", "FILE", "PACKAGE", "SCRIPT", "Plugin", "discover", "folder", "load"]
-
-# Where a source came from, as `flnd sources` shows it.
-BUILT_IN, PACKAGE, FILE, SCRIPT = "built-in", "package", "file", "script"
-# The entry point group an installed package declares its sources in.
-GROUP = "flnd.sources"
+# Where a plugin came from, as `flnd sources` shows it.
+BUILT_IN, FILE, SCRIPT = "built-in", "file", "script"
 # The variable naming the plugin folder, which replaces the default one.
-VARIABLE = "FLND_SOURCES"
-# The name a file plugin's module gets in `sys.modules`: never a name a real package could have,
-# so a plugin can't replace a module by its file name.
+VARIABLE = "FLND_PLUGINS"
+# The index of what is installed, in the plugin folder.
+INDEX = "plugins.json"
+VERSION = 1
+# A plugin's module name: one no real package has, so a plugin never replaces a module.
 MODULE_PREFIX = "_flnd_plugin_"
-
-
-@dataclass
-class Plugin:
-    """One plugin found: its code, where it came from, and, once loaded, its class or its error.
-
-    Args:
-        code: the source's code, from the entry point's or the file's name.
-        origin: `PACKAGE` or `FILE`.
-        where: the entry point's value (`flnd_example:Example`) or the file's or folder's path.
-        version: the package's version, or a file's `__version__`; "" when it has none.
-        error: why it is disabled; "" while it works (or isn't loaded yet).
-        cls: its class once loaded; None before, or when it failed.
-
-    Example:
-        >>> Plugin("exm", FILE, "/plugins/exm.py").error
-        ''
-    """
-
-    code: str
-    origin: str
-    where: str
-    version: str = ""
-    error: str = ""
-    cls: type[flnd.plugin.Plugin] | None = None
-    # How to import it: an entry point's `load`, or a file's import; None once refused.
-    _load: Callable[[], Any] | None = field(default=None, repr=False)
+# A home folder's name, and a cookie file's ending, casefolded: never read, copied or installed.
+HOME = ".flnd"
+COOKIES = "_cookies.txt"
+# Opening a file: never through a link, and never waiting on a pipe.
+OPEN = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(
+    os, "O_BINARY", 0)
+HINT = "install the plugin's own .py file or package folder"
 
 
 def folder() -> Path:
-    """The user's plugin folder: `$FLND_SOURCES`, else the platform's config folder.
+    """The plugin folder: `$FLND_PLUGINS`, else the platform's config folder.
 
-    Returns:
-        The folder, `~` expanded; it may not exist.
+    Raises:
+        RuntimeError: the tests are running (`FLND_TEST_NO_PROFILES`) and `$FLND_PLUGINS`
+            isn't set, so the real folder would be used.
     """
     chosen = os.environ.get(VARIABLE)
     if chosen:
         return Path(chosen).expanduser()
-    # Windows keeps per-user settings under the roaming AppData folder.
+    from flnkit.cookies import NO_PROFILES
+
+    if os.environ.get(NO_PROFILES):
+        raise RuntimeError(f"{NO_PROFILES} is set: set ${VARIABLE} to a test's folder")
     if sys.platform == "win32":
         base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(base) / "flnd" / "sources"
-    return Path.home() / ".config" / "flnd" / "sources"
+        return Path(base) / "flnd" / "plugins"
+    return Path.home() / ".config" / "flnd" / "plugins"
 
 
-def discover(taken: Mapping[str, str]) -> list[Plugin]:
-    """Every plugin, from installed packages then the plugin folder, without importing any.
-
-    A plugin whose code is taken (by a built-in, or by a plugin found before it) is returned
-    disabled, with a warning, so `flnd sources` can say why; so is a file whose name isn't a
-    code.
-
-    Args:
-        taken: the codes already used, each with what uses it ("the built-in Instagram").
-
-    Returns:
-        The plugins in discovery order: packages by entry point name, then files and folders
-        by name.
-    """
-    from flnd.plugin import CODE
-
-    owners = dict(taken)
-    found: list[Plugin] = []
-    for plugin in [*_packages(), *_files(folder())]:
-        if plugin.error:
-            pass
-        elif not CODE.fullmatch(plugin.code):
-            plugin.error = (f"{plugin.where}: {plugin.code!r} isn't a plugin code; name it "
-                            "2 to 16 lowercase letters and digits, what targets start with")
-        elif plugin.code in owners:
-            plugin.error = (f"{plugin.where}: the code {plugin.code} is taken by "
-                            f"{owners[plugin.code]}; a plugin never replaces another")
-        else:
-            owners[plugin.code] = f"{plugin.origin} {plugin.where}"
-        if plugin.error:
-            plugin._load = None
-            _warn(plugin)
-        found.append(plugin)
-    return found
-
-
-def load(plugin: Plugin) -> type[flnd.plugin.Plugin] | None:
-    """Import a plugin once and check what it gives; on any failure, disable it with a warning.
-
-    Args:
-        plugin: a plugin `discover` found; a second call gives what the first did.
-
-    Returns:
-        The source's class; None when it is disabled (`plugin.error` says why).
-    """
-    if plugin.cls is not None or plugin._load is None:
-        return plugin.cls
-    loader, plugin._load = plugin._load, None
-    try:
-        made = loader()
-        plugin.cls = _checked(plugin, made)
-    except Exception as error:
-        plugin.error = _described(plugin, error)
-        _warn(plugin)
+def where(cls: type[Plugin]) -> str | None:
+    """The installed `.py` file or package folder `cls` came from; None for built-ins or `add`."""
+    if not cls.__module__.startswith(MODULE_PREFIX):
         return None
-    return plugin.cls
+    module = sys.modules.get(cls.__module__.split(".", 1)[0])
+    if module is None:
+        return None
+    paths = getattr(module, "__path__", None)
+    if paths:
+        return str(paths[0])
+    located = getattr(module, "__file__", "")
+    return str(located) if located else None
 
 
-# ---------------------------------------------------------------------------------------------
-# Finding them
-# ---------------------------------------------------------------------------------------------
-
-def _packages() -> list[Plugin]:
-    """The plugins installed packages declare, by entry point name.
-
-    Returns:
-        One plugin per entry point of the `flnd.sources` group, not loaded.
-    """
-    from importlib import metadata
-
-    try:
-        points = metadata.entry_points(group=GROUP)
-    except Exception as error:  # a broken install's metadata must not stop flnd
-        ui.debug("plugins: can't read installed packages: {error}", error=error)
-        return []
-    found = []
-    for point in sorted(points, key=lambda point: point.name):
-        version = getattr(point.dist, "version", "") or ""
-        found.append(Plugin(point.name, PACKAGE, point.value, version=version,
-                            _load=point.load))
-    return found
+def version(cls: type[Plugin]) -> str:
+    """An installed plugin module's `__version__`, or `""` when it has none."""
+    module = sys.modules.get(cls.__module__.split(".", 1)[0])
+    found = getattr(module, "__version__", "") if module is not None else ""
+    return found if isinstance(found, str) else ""
 
 
-def _files(where: Path) -> list[Plugin]:
-    """The plugins in a plugin folder: `<code>.py` files and `<code>/` packages, by name.
+class Manager:
+    """The installed plugins: what `plugins.json` says of each, and each class once imported.
 
-    Names starting with `_` or `.` are left alone (`__pycache__`, editor files), as is a folder
-    without an `__init__.py`.
+    Reading the manifest imports nothing; a plugin is imported by `load`, on first use.
 
     Args:
-        where: the plugin folder; one that doesn't exist holds none.
-
-    Returns:
-        One plugin per file or package, not loaded.
+        where: the plugin folder; None takes `folder()`.
+        built_in: the built-ins' codes, which no plugin may take.
     """
-    try:
-        entries = sorted(where.iterdir())
-    except OSError:
-        return []
-    found = []
-    for path in entries:
-        if path.name.startswith(("_", ".")):
-            continue
-        if path.is_file() and path.suffix == ".py":
-            found.append(Plugin(path.stem, FILE, str(path), _load=_importer(path.stem, path)))
-        elif path.is_dir() and (path / "__init__.py").is_file():
-            found.append(Plugin(path.name, FILE, str(path), _load=_importer(path.name, path)))
-    return found
 
+    def __init__(self, where: str | os.PathLike[str] | None = None, *,
+                 built_in: Collection[str] = ()) -> None:
+        self.folder = Path(where) if where is not None else folder()
+        self.built_in = frozenset(built_in)
+        # Said once each, for the caller to show: an unlisted file, an uninstall.
+        self.warnings: list[str] = []
+        # Code -> why it is disabled, with the file and line.
+        self.disabled: dict[str, str] = {}
+        self._classes: dict[str, type[Plugin]] = {}
+        self._index: dict[str, dict[str, Any]] | None = None
 
-def _importer(code: str, path: Path) -> Callable[[], Any]:
-    """A function that imports a plugin file or package from its path, as its own module.
+    @property
+    def manifest(self) -> dict[str, Any]:
+        """`plugins.json`'s data, `{"version": 1, "plugins": {code: entry}}`, read once.
 
-    Args:
-        code: the plugin's code, which names its module (`_flnd_plugin_<code>`).
-        path: the `.py` file, or the package's folder.
+        A file or package in the folder without an entry is ignored, with a warning, and so is
+        an entry with a built-in's code.
+        """
+        if self._index is None:
+            self._index = self._read()
+            for code in sorted(self.built_in & set(self._index)):
+                del self._index[code]
+                self.warnings.append(f"{self.folder / INDEX} lists {code}, a built-in plugin's "
+                                     "code; that entry is ignored")
+            for path in self._found():
+                if path.name.removesuffix(".py") in self.built_in:
+                    self.warnings.append(f"{path} has a built-in plugin's code; it is ignored")
+                elif path.name.removesuffix(".py") not in self._index:
+                    self.warnings.append(f"{path} isn't installed: flnd plugin install {path}")
+        return {"version": VERSION, "plugins": self._index}
 
-    Returns:
-        The function; it returns the module, or raises what importing it raised.
-    """
-    def run() -> Any:
-        name = MODULE_PREFIX + code
-        if path.is_dir():
-            spec = importlib.util.spec_from_file_location(
-                name, path / "__init__.py", submodule_search_locations=[str(path)])
-        else:
-            spec = importlib.util.spec_from_file_location(name, path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"can't import {path}")
-        module = importlib.util.module_from_spec(spec)
-        # Kept in `sys.modules` while it runs, so a package's relative imports find it; taken
-        # out again when it fails, so nothing half-made stays importable.
-        sys.modules[name] = module
+    def install(self, path: str | os.PathLike[str]) -> dict[str, Any]:
+        """Check a plugin's `.py` file or package folder, copy it in, and record its entry.
+
+        It is copied to a temporary folder first, and everything is read from that copy: its
+        code, its API, and what is imported and kept. So the bytes checked are the bytes kept.
+        An installed code is replaced.
+
+        Returns:
+            Its entry in `plugins.json`.
+
+        Raises:
+            UsageError: not a `.py` file or a package; a link, a hard link, a special file, a
+                home or a cookie file, or a package holding one; a built-in's code.
+            PluginError: its API can't be read without running it, or isn't this flnd's; it
+                fails to import, has no or several plugin classes, or fails their checks.
+        """
+        source = Path(path).expanduser()
+        package = _refused(source)
+        index = self.manifest["plugins"]
+        with tempfile.TemporaryDirectory(prefix="flnd-install-") as temporary:
+            copy = Path(temporary) / ("plugin" if package else "plugin.py")
+            _copy(source, copy, source)
+            # Checked again as copied, so nothing swapped in meanwhile is kept.
+            _refused(copy, shown=source)
+            guess = _literal(_sources(copy), "code")
+            guess = guess if isinstance(guess, str) and CODE.fullmatch(guess) else "plugin"
+            cls = _checked(copy, guess, shown=source, keep=False)
+            # A plain copy, which `_checked` has seen is a code: paths are made from it alone.
+            code = str.__str__(cls.code)
+            if code in self.built_in:
+                raise UsageError(f"{code} is a built-in plugin's code",
+                                 hint=f"set another code in {source}")
+            name = code if package else f"{code}.py"
+            entry = _entry(cls, name, _digest(copy, source), installed=_stamp())
+            self._place(copy, name)
+        self._forget(code)
+        index[code] = entry
+        self._write()
+        return entry
+
+    def uninstall(self, code: str) -> dict[str, Any]:
+        """Remove an installed plugin's file or folder, and its entry.
+
+        Its accounts and targets stay, and a warning says so.
+
+        Returns:
+            The entry it had.
+
+        Raises:
+            UsageError: a built-in, or no plugin installed with that code.
+        """
+        if code in self.built_in:
+            raise UsageError(f"{code} is built in; it can't be uninstalled")
+        index = self.manifest["plugins"]
+        if not _is_code(code) or code not in index:
+            raise UsageError(f"no plugin named {code} is installed",
+                             hint=f"installed: {', '.join(sorted(index)) or 'none'}")
+        for name in (f"{code}.py", code):
+            _remove(self.folder / name)
+        entry = index.pop(code)
+        self._write()
+        self._forget(code)
+        self.warnings.append(f"{code} is uninstalled; its accounts and targets stay")
+        return entry
+
+    def load(self, code: str) -> type[Plugin]:
+        """Import an installed plugin once, checking it again if its files changed.
+
+        A plugin that fails is disabled alone, with its own file and line.
+
+        Raises:
+            UsageError: a built-in's code, or no plugin installed with that code.
+            PluginError: it is disabled; the error says why.
+        """
+        if code in self._classes:
+            return self._classes[code]
+        if code in self.built_in:
+            raise UsageError(f"{code} is built in; plugins.json's entry for it is ignored")
+        if code in self.disabled:
+            raise PluginError(f"{code} is disabled: {self.disabled[code]}")
+        index = self.manifest["plugins"]
+        entry = index.get(code) if _is_code(code) else None
+        if entry is None:
+            raise UsageError(f"no plugin named {code} is installed")
         try:
-            spec.loader.exec_module(module)
-        except BaseException:
-            sys.modules.pop(name, None)
-            raise
-        return module
+            file = entry.get("file")
+            if file not in (code, f"{code}.py"):
+                raise PluginError(f"its entry names {file!r}, not {code}.py",
+                                  hint=f"flnd plugin install {self.folder / code}.py")
+            path = self.folder / file
+            # Walks it without following links, so an edit that adds one disables it.
+            digest = _digest(path, path)
+            cls = _checked(path, code, shown=path, keep=True)
+            if cls.code != code:
+                raise PluginError(f"its plugin's code is {cls.code!r}, not {code!r}",
+                                  hint=f"flnd plugin install {path}")
+            if digest != entry.get("sha256"):
+                index[code] = _entry(cls, file, digest,
+                                     installed=str(entry.get("installed", _stamp())))
+                self._write()
+        except Exception as error:  # any failure disables this plugin alone
+            _unload(MODULE_PREFIX + code)
+            hint = getattr(error, "hint", "")
+            self.disabled[code] = f"{error}; {hint}" if hint else str(error)
+            self.warnings.append(f"{code}: disabled: {self.disabled[code]}")
+            raise PluginError(f"{code} is disabled: {error}", hint=hint) from error
+        self._classes[code] = cls
+        return cls
 
-    return run
+    # -----------------------------------------------------------------------------------------
+
+    def _read(self) -> dict[str, dict[str, Any]]:
+        try:
+            data = json.loads((self.folder / INDEX).read_text("utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as error:
+            self.warnings.append(f"{self.folder / INDEX} can't be read ({error}); "
+                                 "install the plugins again")
+            return {}
+        if not isinstance(data, dict) or data.get("version") != VERSION or not isinstance(
+                data.get("plugins"), dict):
+            self.warnings.append(f"{self.folder / INDEX} isn't version {VERSION}; "
+                                 "install the plugins again")
+            return {}
+        return {code: dict(entry) for code, entry in data["plugins"].items()
+                if CODE.fullmatch(str(code)) and isinstance(entry, dict)}
+
+    def _write(self) -> None:
+        text = json.dumps(self.manifest, indent=2, sort_keys=True) + "\n"
+        files.write(self.folder / INDEX, text)
+
+    def _found(self) -> list[Path]:
+        """The `.py` files and package folders in the plugin folder, by name."""
+        try:
+            entries = sorted(self.folder.iterdir())
+        except OSError:
+            return []
+        return [path for path in entries if not path.name.startswith(("_", "."))
+                and ((path.suffix == ".py" and path.is_file())
+                     or (path / "__init__.py").is_file())]
+
+    def _place(self, copy: Path, name: str) -> None:
+        """Put the checked copy in the folder as `name`, in place of either form of its code."""
+        if not _is_code(name.removesuffix(".py")):
+            raise PluginError(f"{name!r} isn't named by a plugin's code")
+        self.folder.mkdir(parents=True, exist_ok=True)
+        dest = self.folder / name
+        if copy.is_dir():
+            new, old = self.folder / f".{name}.new", self.folder / f".{name}.old"
+            _remove(new)
+            _remove(old)
+            shutil.copytree(copy, new, symlinks=True,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            if dest.exists() or dest.is_symlink():
+                os.replace(dest, old)
+            os.replace(new, dest)
+            _remove(old)
+            _remove(self.folder / f"{name}.py")
+        else:
+            files.write(dest, copy.read_bytes())
+            _remove(self.folder / name.removesuffix(".py"))
+
+    def _forget(self, code: str) -> None:
+        """Drop what was loaded of `code`, so the next `load` imports the new files."""
+        self._classes.pop(code, None)
+        self.disabled.pop(code, None)
+        _unload(MODULE_PREFIX + code)
+
+
+class Registry(MutableMapping[str, "type[Plugin]"]):
+    """Built-in and installed plugins by code, each imported only when first asked for.
+
+    Built-ins come from `flnd.plugins._manifest` and never touch the plugin folder; installed
+    plugins come from `Manager`. Resolving reads `_manifest` and `plugins.json` without
+    importing any plugin.
+    """
+
+    def __init__(self) -> None:
+        self._overrides: dict[str, type[Plugin]] = {}
+        self._built_in: dict[str, type[Plugin]] = {}
+        self._removed: set[str] = set()
+        self._mgr: Manager | None = None
+        self._stamp: tuple[Path, int | None] | None = None
+        self._warned = 0
+
+    def manager(self) -> Manager:
+        """The `Manager` of the current plugin folder, refreshed when `plugins.json` changes."""
+        target = folder()
+        try:
+            mtime: int | None = (target / INDEX).stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        if self._mgr is None or self._stamp != (target, mtime):
+            self._mgr = Manager(target, built_in=_manifest.PLUGINS)
+            self._stamp = (target, mtime)
+            self._warned = 0
+        self.flush(self._mgr)
+        return self._mgr
+
+    def flush(self, mgr: Manager) -> None:
+        """Log any warnings `mgr` recorded since the last call."""
+        if mgr is not self._mgr:
+            return
+        while self._warned < len(mgr.warnings):
+            ui.warn("{warning}", warning=mgr.warnings[self._warned])
+            self._warned += 1
+
+    def built_in_codes(self) -> list[str]:
+        """The built-in codes (in order) plus any test overrides, without touching disk."""
+        known = [code for code in _manifest.PLUGINS if code not in self._removed]
+        return known + [code for code in self._overrides if code not in _manifest.PLUGINS]
+
+    def manifest(self) -> dict[str, Mapping[str, Any]]:
+        """Manifest entries for built-ins and overrides, importing no built-in plugin."""
+        entries: dict[str, Mapping[str, Any]] = {
+            code: entry for code, entry in _manifest.PLUGINS.items()
+            if code not in self._removed
+        }
+        for code, cls in self._overrides.items():
+            entries[code] = resolve.entry(cls)
+        return entries
+
+    def installed(self, code: str | None = None) -> dict[str, Mapping[str, Any]]:
+        """Installed entries from `plugins.json`, without importing any plugin."""
+        mgr = self.manager()
+        index = mgr.manifest["plugins"]
+        self.flush(mgr)
+        if code is not None:
+            return {code: index[code]} if code in index and code not in self._overrides else {}
+        return {name: entry for name, entry in index.items() if name not in self._overrides}
+
+    def __getitem__(self, code: str) -> type[Plugin]:
+        if code in self._overrides:
+            return self._overrides[code]
+        if code in _manifest.PLUGINS and code not in self._removed:
+            if code not in self._built_in:
+                entry = _manifest.PLUGINS[code]
+                module = importlib.import_module(str(entry["module"]))
+                self._built_in[code] = getattr(module, str(entry["cls"]))
+            return self._built_in[code]
+        mgr = self.manager()
+        try:
+            return mgr.load(code)
+        except UsageError:
+            raise KeyError(code) from None
+        finally:
+            self.flush(mgr)
+
+    def __setitem__(self, code: str, cls: type[Plugin]) -> None:
+        if code in _manifest.PLUGINS and cls is self._built_in.get(code):
+            self._removed.discard(code)
+            self._overrides.pop(code, None)
+            return
+        self._removed.discard(code)
+        self._overrides[code] = cls
+
+    def __delitem__(self, code: str) -> None:
+        if code in self._overrides:
+            del self._overrides[code]
+            if code in _manifest.PLUGINS:
+                self._removed.add(code)
+            return
+        if code in _manifest.PLUGINS and code not in self._removed:
+            self._removed.add(code)
+            return
+        raise KeyError(code)
+
+    def clear(self) -> None:
+        """Clear overrides and temporarily hide built-ins (for `unittest.mock.patch.dict`)."""
+        self._overrides.clear()
+        self._removed = set(_manifest.PLUGINS)
+
+    def __iter__(self) -> Iterator[str]:
+        yield from self.built_in_codes()
+        mgr = self.manager()
+        index = mgr.manifest["plugins"]
+        self.flush(mgr)
+        for code in sorted(index):
+            if code in _manifest.PLUGINS or code in self._overrides:
+                continue
+            try:
+                mgr.load(code)
+            except PluginError:
+                continue
+            finally:
+                self.flush(mgr)
+            yield code
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+    def __contains__(self, code: object) -> bool:
+        if code in self._overrides or (code in _manifest.PLUGINS and code not in self._removed):
+            return True
+        if not isinstance(code, str):
+            return False
+        mgr = self.manager()
+        try:
+            mgr.load(code)
+        except (UsageError, PluginError):
+            return False
+        finally:
+            self.flush(mgr)
+        return True
+
+    def copy(self) -> dict[str, type[Plugin]]:
+        """Every working plugin as a plain dictionary, importing those not loaded yet."""
+        return dict(self.items())
+
+    def __repr__(self) -> str:
+        return f"<flnd.engine.plugins.Registry {', '.join(self.built_in_codes())}>"
+
+
+PLUGINS: Registry = Registry()
 
 
 # ---------------------------------------------------------------------------------------------
-# Checking what a plugin gives
+# What may be installed: judged by names and file types, then read only through `_read`
 # ---------------------------------------------------------------------------------------------
 
-def _checked(plugin: Plugin, made: Any) -> type[flnd.plugin.Plugin]:
-    """The plugin class a loaded plugin gives, checked against its code.
+def _refused(source: Path, *, shown: Path | None = None) -> bool:
+    """Refuse what may never be installed, from its names and types alone; True for a package.
 
-    An entry point names its class; a file's module is searched for the `flnd.plugin.Plugin`
-    subclass it defines with its file's name as its code. The class's own checks already ran
-    when it was made, so a newer plugin API or a bad pattern has failed by now.
-
-    Args:
-        plugin: the plugin.
-        made: what loading gave: the entry point's object, or the file's module.
-
-    Returns:
-        The class.
+    Names are compared casefolded, since the disk may ignore case.
 
     Raises:
-        PluginError: it gives no plugin class, or one with another code.
+        UsageError: anything but a `.py` file or a package folder; a link, a hard link, a
+            special file, a home or a cookie file, or a package holding one. It names `shown`.
     """
-    import flnd.plugin
-    from flnd.errors import PluginError
+    shown = shown or source
+    for path in (source, source.absolute(), source.resolve()):
+        if _forbidden(path.name) or HOME in (part.casefold() for part in path.parts):
+            raise UsageError(f"{shown} is a home or cookie file; never a plugin", hint=HINT)
+    try:
+        info = os.lstat(source)
+    except OSError as error:
+        raise UsageError(f"{shown} can't be read: {error.strerror}", hint=HINT) from None
+    if stat.S_ISDIR(info.st_mode) and (source / "__init__.py").is_file():
+        _tree(source, shown)
+        return True
+    if not stat.S_ISLNK(info.st_mode) and not (stat.S_ISREG(info.st_mode)
+                                               and source.suffix == ".py"):
+        raise UsageError(f"{shown} is neither a .py file nor a folder holding __init__.py",
+                         hint=HINT)
+    _tree(source, shown)
+    return False
 
-    if plugin.origin == FILE:
-        version = getattr(made, "__version__", "")
-        plugin.version = version if isinstance(version, str) else ""
-        classes = [value for value in vars(made).values()
-                   if inspect.isclass(value) and issubclass(value, flnd.plugin.Plugin)
-                   and value is not flnd.plugin.Plugin
-                   and _inside(value.__module__, made.__name__) and getattr(value, "code", None)]
-        mine = [cls for cls in classes if cls.code == plugin.code]
-        if mine:
-            return mine[0]
-        if classes:
-            raise PluginError(f"its plugin's code is {classes[0].code!r}, not its file's name",
-                              hint=f"name the file {classes[0].code}.py, or set "
-                                   f'code = "{plugin.code}"')
-        raise PluginError("it defines no flnd.plugin.Plugin subclass",
+
+def _forbidden(name: str) -> bool:
+    folded = name.casefold()
+    return folded == HOME or folded.endswith(COOKIES)
+
+
+def _tree(root: Path, shown: Path) -> list[tuple[Path, int, int]]:
+    """The regular files of a plugin file or package, with their device and inode, by name.
+
+    Nothing is followed or opened: a link, a special file, a file with other hard links, a
+    home or a cookie file is refused. `__pycache__` folders are left out.
+
+    Raises:
+        UsageError: one of those, named under `shown`.
+    """
+    found: list[tuple[Path, int, int]] = []
+
+    def judge(path: Path, info: os.stat_result) -> None:
+        inside = path.relative_to(root)
+        named = shown / inside if inside.parts else shown
+        what = (f"{shown} holds {named}, " if inside.parts else f"{shown} is ")
+        if inside.parts and _forbidden(path.name):
+            raise UsageError(what + "a home or cookie file", hint=HINT)
+        if stat.S_ISLNK(info.st_mode):
+            raise UsageError(what + f"a link to {os.readlink(path)}",
+                             hint="install the file itself; flnd copies a plugin in, "
+                                  "never links it")
+        if stat.S_ISDIR(info.st_mode):
+            for entry in sorted(os.scandir(path), key=lambda entry: entry.name):
+                if entry.name != "__pycache__":
+                    judge(Path(entry.path), entry.stat(follow_symlinks=False))
+        elif not stat.S_ISREG(info.st_mode):
+            raise UsageError(what + "a special file, not a regular one", hint=HINT)
+        elif info.st_nlink > 1:
+            raise UsageError(what + "a file with other hard links, which its name can't "
+                             "speak for", hint="install a copy of it")
+        else:
+            found.append((path, info.st_dev, info.st_ino))
+
+    judge(root, os.lstat(root))
+    return found
+
+
+def _read(path: Path, device: int, inode: int, shown: Path) -> bytes:
+    """A file's bytes, only if it is still the regular file `_tree` judged.
+
+    Raises:
+        UsageError: it was swapped for a link, a pipe or another file since.
+    """
+    try:
+        fd = os.open(path, OPEN)
+    except OSError as error:
+        raise UsageError(f"{shown} changed while it was installed: {error.strerror}",
+                         hint=HINT) from None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink > 1
+                or (info.st_dev, info.st_ino) != (device, inode)):
+            raise UsageError(f"{shown} changed while it was installed", hint=HINT)
+        with os.fdopen(os.dup(fd), "rb") as stream:
+            return stream.read()
+    finally:
+        os.close(fd)
+
+
+def _copy(source: Path, dest: Path, shown: Path) -> None:
+    """Copy a plugin file or package, reading each file only through `_read`."""
+    for path, device, inode in _tree(source, shown):
+        inside = path.relative_to(source)
+        target = dest / inside if inside.parts else dest
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(_read(path, device, inode, shown / inside if inside.parts else shown))
+
+
+def _digest(path: Path, shown: Path) -> str:
+    """The SHA-256 of a file, or of a package's files and their names, as hex.
+
+    Raises:
+        UsageError: it is, or holds, what `_tree` refuses.
+    """
+    found = _tree(path, shown)
+    if not path.is_dir():
+        return hashlib.sha256(_read(*found[0], shown)).hexdigest()
+    total = hashlib.sha256()
+    for file, device, inode in found:
+        total.update(file.relative_to(path).as_posix().encode() + b"\0")
+        total.update(hashlib.sha256(_read(file, device, inode, shown)).digest())
+    return total.hexdigest()
+
+
+def _remove(path: Path) -> None:
+    """Remove a file, a link or a folder; nothing when it isn't there. A link is never followed."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+# ---------------------------------------------------------------------------------------------
+# What a plugin declares, read without running it
+# ---------------------------------------------------------------------------------------------
+
+def _sources(path: Path) -> list[Path]:
+    """The `.py` files of a plugin file or package."""
+    if not path.is_dir():
+        return [path]
+    return sorted(found for found in path.rglob("*.py") if "__pycache__" not in found.parts)
+
+
+def _trees(paths: list[Path], shown: Path, root: Path) -> list[ast.Module]:
+    """Each file parsed; a syntax error is refused here, so nothing of the plugin runs.
+
+    Raises:
+        PluginError: a file doesn't parse, named under `shown`.
+    """
+    parsed = []
+    for path in paths:
+        try:
+            parsed.append(ast.parse(path.read_bytes(), str(path)))
+        except (SyntaxError, ValueError) as error:
+            raise PluginError(_described(error, root, shown)) from None
+    return parsed
+
+
+def _plugin_classes(trees: list[ast.Module]) -> list[ast.ClassDef]:
+    """The classes that subclass `flnd.plugin.Plugin` where the files say so plainly.
+
+    A base counts when it is `Plugin` imported from `flnd.plugin` (under any name), the
+    module's `.Plugin`, or another such class, by its name or an imported alias of it.
+    """
+    names, modules = set(), {"flnd.plugin"}
+    for tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "flnd.plugin":
+                names |= {"Plugin" if alias.name == "*" else alias.asname or alias.name
+                          for alias in node.names if alias.name in ("Plugin", "*")}
+            elif isinstance(node, ast.ImportFrom) and node.module == "flnd":
+                modules |= {alias.asname or alias.name for alias in node.names
+                            if alias.name == "plugin"}
+            elif isinstance(node, ast.Import):
+                modules |= {alias.asname for alias in node.names
+                            if alias.name == "flnd.plugin" and alias.asname}
+    classes = [node for tree in trees for node in ast.walk(tree)
+               if isinstance(node, ast.ClassDef)]
+    imports = [(alias.name, alias.asname) for tree in trees for node in ast.walk(tree)
+               if isinstance(node, ast.ImportFrom) for alias in node.names if alias.asname]
+    found: list[ast.ClassDef] = []
+    while True:
+        more = [cls for cls in classes if cls not in found and any(
+            _names_plugin(base, names, modules) for base in cls.bases)]
+        if not more:
+            return found
+        found += more
+        names |= {cls.name for cls in more}
+        names |= {alias for name, alias in imports if name in names}
+
+
+def _names_plugin(base: ast.expr, names: set[str], modules: set[str]) -> bool:
+    if isinstance(base, ast.Name):
+        return base.id in names
+    if isinstance(base, ast.Attribute):
+        return base.attr in names or (base.attr == "Plugin" and ast.unparse(base.value) in modules)
+    return False
+
+
+def _scope(cls: ast.ClassDef) -> Iterator[ast.AST]:
+    """Every node a class body runs in its own scope: not inside its functions or classes."""
+    pending: list[ast.AST] = list(cls.body)
+    while pending:
+        node = pending.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                                 ast.Lambda)):
+            pending.extend(ast.iter_child_nodes(node))
+
+
+def _literals(cls: ast.ClassDef, name: str) -> tuple[list[Any], bool]:
+    """What a class body sets `name` to, as literals; False when one setting isn't plain.
+
+    Plain is `name = <literal>`, `name: T = <literal>` or a tuple of names set from a tuple,
+    in the class body itself, outside any `if`, loop or `with`.
+    """
+    plain: dict[int, Any] = {}
+    for node in cls.body:
+        if isinstance(node, ast.AnnAssign) and isinstance(node.value, ast.Constant):
+            pairs = [(node.target, node.value)]
+        elif isinstance(node, ast.Assign):
+            pairs = []
+            for target in node.targets:
+                if isinstance(target, ast.Tuple) and isinstance(node.value, ast.Tuple) and len(
+                        target.elts) == len(node.value.elts):
+                    pairs += zip(target.elts, node.value.elts)
+                else:
+                    pairs.append((target, node.value))
+        else:
+            continue
+        plain.update((id(target), value.value) for target, value in pairs
+                     if isinstance(target, ast.Name) and target.id == name
+                     and isinstance(value, ast.Constant))
+    stores = [node for node in _scope(cls) if isinstance(node, ast.Name)
+              and node.id == name and isinstance(node.ctx, ast.Store)]
+    return [plain[id(node)] for node in stores if id(node) in plain], all(
+        id(node) in plain for node in stores)
+
+
+def _literal(paths: list[Path], name: str) -> Any:
+    """The one literal the plugin classes in `paths` set `name` to; None when there isn't one."""
+    try:
+        trees = [ast.parse(path.read_bytes()) for path in paths]
+    except (SyntaxError, ValueError):
+        return None
+    values = {value for cls in _plugin_classes(trees) for value in _literals(cls, name)[0]}
+    return values.pop() if len(values) == 1 else None
+
+
+def _api(paths: list[Path], code: str, shown: Path, root: Path) -> None:
+    """Refuse a plugin unless every `api` its plugin classes set is the literal `API`.
+
+    Raises:
+        PluginError: an `api` set otherwise, or none; another API, naming what an older
+            plugin must change.
+    """
+    classes = _plugin_classes(_trees(paths, shown, root))
+    read = [_literals(cls, "api") for cls in classes]
+    values = {value for found, _ in read for value in found}
+    if not classes or not values or not all(plain for _, plain in read) or not all(
+            type(value) is int for value in values):
+        raise PluginError(f"{shown}: its plugin API can't be read without running it",
+                          hint=f"set api = {API} in the body of a class that subclasses "
+                               "flnd.plugin.Plugin, as a plain number")
+    if max(values) > API:
+        raise PluginError(f"{code} is written for plugin API {max(values)}; this flnd has {API}",
+                          hint="it needs a newer flnd")
+    if min(values) < API:
+        used = sorted({old for cls in classes for node in _scope(cls) for old in OLD_NAMES
+                       if _sets(node, old)})
+        hint = "; ".join(f"{old} becomes {OLD_NAMES[old]}" for old in used) or (
+            "see the writing-a-plugin page of flnd's docs")
+        raise PluginError(f"{code} is written for plugin API {min(values)}; this flnd has "
+                          f"{API}", hint=hint)
+
+
+def _sets(node: ast.AST, name: str) -> bool:
+    """Whether a node of a class body defines or sets `name`."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return node.name == name
+    return isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store)
+
+
+# ---------------------------------------------------------------------------------------------
+# Importing it
+# ---------------------------------------------------------------------------------------------
+
+def _checked(path: Path, code: str, *, shown: Path, keep: bool) -> type[Plugin]:
+    """Import a plugin from `path` as `_flnd_plugin_<code>`, and give its one plugin class.
+
+    Its API is read from the files first, so a plugin whose API can't be read, or isn't this
+    flnd's, is never imported. `keep` leaves its modules imported; otherwise `sys.modules` is
+    left as it was.
+
+    Raises:
+        PluginError: another API, an import error or a failed check, naming the file and line
+            as `shown`; no plugin class, or several; an `api` changed once its class was made.
+    """
+    _api(_sources(path), code, shown, path)
+    name = MODULE_PREFIX + code
+    with _isolated(name, keep=keep):
+        try:
+            module = _import(name, path)
+        except Exception as error:
+            raise PluginError(_described(error, path, shown),
+                              hint=getattr(error, "hint", "")) from error
+        found = [value for value in vars(module).values()
+                 if inspect.isclass(value) and issubclass(value, Plugin) and value is not Plugin
+                 and _inside_module(value.__module__, name)
+                 and isinstance(getattr(value, "code", None), str)]
+    if len(found) != 1:
+        what = ", ".join(cls.__name__ for cls in found) or "no flnd.plugin.Plugin subclass"
+        raise PluginError(f"{shown} defines {what}; a plugin defines exactly one",
                           hint="see the writing-a-plugin page of flnd's docs")
-    if not (inspect.isclass(made) and issubclass(made, flnd.plugin.Plugin)):
-        raise PluginError(f"the entry point gives {made!r}, not a flnd.plugin.Plugin subclass")
-    if made.code != plugin.code:
-        raise PluginError(f"its plugin's code is {made.code!r}, not the entry point's name",
-                          hint=f"name the entry point {made.code}, or set "
-                               f'code = "{plugin.code}"')
-    return made
+    if found[0].api != API:
+        raise PluginError(f"{shown}: its api is {found[0].api!r} once it has run, not {API}",
+                          hint=f"set api = {API} in the class, and never change it after")
+    # The code names its file in the folder, so it is checked as it is once the module ran.
+    if not _is_code(found[0].code):
+        code = found[0].code
+        what = repr(code) if type(code) is str else f"a {type(code).__name__}, not a plain str"
+        raise PluginError(f"{shown}: its code is {what} once it has run",
+                          hint='set code = "exm": 2 to 16 lowercase letters and digits, and '
+                               "never change it after")
+    return found[0]
 
 
-def _inside(module: str, package: str) -> bool:
-    """Whether `module` is `package` or one of its submodules (a `<code>/` plugin's own)."""
+def _is_code(code: object) -> bool:
+    """Whether `code` is a plugin's code: the only text that becomes a path in the folder.
+
+    Only a plain `str`: a subclass could read as one code and format as another path.
+    """
+    return type(code) is str and CODE.fullmatch(code) is not None
+
+
+def _import(name: str, path: Path) -> Any:
+    """Import a file or package from its path, never putting its folder on `sys.path`."""
+    if path.is_dir():
+        spec = importlib.util.spec_from_file_location(
+            name, path / "__init__.py", submodule_search_locations=[str(path)])
+    else:
+        spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"can't import {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@contextlib.contextmanager
+def _isolated(name: str, *, keep: bool) -> Iterator[None]:
+    """Import `name` afresh; a failure, or `keep=False`, leaves `sys.modules` as it was."""
+    saved = {key: value for key, value in sys.modules.items() if _inside_module(key, name)}
+    _unload(name)
+    kept = False
+    try:
+        yield
+        kept = keep
+    finally:
+        if not kept:
+            _unload(name)
+            sys.modules.update(saved)
+
+
+def _unload(name: str) -> None:
+    for key in [key for key in sys.modules if _inside_module(key, name)]:
+        del sys.modules[key]
+
+
+def _inside_module(module: str, package: str) -> bool:
     return module == package or module.startswith(package + ".")
 
 
-def _described(plugin: Plugin, error: BaseException) -> str:
-    """Why a plugin failed, naming the file and line where it did: what the warning says.
+def _described(error: BaseException, path: Path, shown: Path) -> str:
+    """`<file>, line <n>: <what>`, at the deepest frame in the plugin's own files (S7).
 
-    Args:
-        plugin: the plugin that failed.
-        error: what loading it raised.
-
-    Returns:
-        `<file>, line <n>: <what>`, with the error's hint after a semicolon when it has one.
+    A frame is the plugin's when its file is `path` or inside it, compared by whole path
+    parts, so `exm2.py` is never `exm`'s. It is named as `shown`, the file people know.
     """
-    from flnd.errors import Error
+    what = f"{type(error).__name__}: {error}" if not isinstance(error, PluginError) else (
+        str(error))
+    places = [(error.filename, error.lineno)] if isinstance(error, SyntaxError) else []
+    places += [(frame.filename, frame.lineno)
+               for frame in reversed(traceback.extract_tb(error.__traceback__))]
+    for filename, line in places:
+        if not filename:
+            continue
+        try:
+            inside = Path(filename).resolve().relative_to(path.resolve())
+        except (OSError, ValueError):
+            continue
+        return f"{shown / inside if inside.parts else shown}, line {line}: {what}"
+    return f"{shown}: {what}"
 
-    place = _place(plugin, error)
-    what = str(error) if isinstance(error, Error) else f"{type(error).__name__}: {error}"
-    hint = getattr(error, "hint", None)
-    text = f"{place}: {what}" if place else what
-    return f"{text}; {hint}" if hint else text
 
+def _entry(cls: type[Plugin], file: str, digest: str, *, installed: str) -> dict[str, Any]:
+    """A plugin's entry in `plugins.json`: what resolving and help read without importing it.
 
-def _place(plugin: Plugin, error: BaseException) -> str:
-    """The file and line a plugin's error comes from: the deepest frame in its own code.
-
-    A syntax error names its own place. Otherwise the traceback is read from the deepest
-    frame up: the first frame in the plugin's file or package wins; for an installed package,
-    the first frame that isn't importlib's or flnd's own (flnd raises a class's `PluginError`
-    from `src/plugin.py`, but the mistake is where the class is).
-
-    Args:
-        plugin: the plugin.
-        error: what loading it raised.
-
-    Returns:
-        `<file>, line <n>`; the plugin's `where` when no frame is its own.
+    Its `api` is the literal its files declare, which `_api` has checked is `API`.
     """
-    if isinstance(error, SyntaxError) and error.filename:
-        return f"{error.filename}, line {error.lineno}"
-    flnd_folder = str(Path(__file__).resolve().parent)
-    own = Path(plugin.where).resolve() if plugin.origin == FILE else None
-    for frame in reversed(traceback.extract_tb(error.__traceback__)):
-        filename = frame.filename
-        if own is not None:
-            # A file plugin's own path, or a module inside its `<code>/` folder.
-            try:
-                inside = Path(filename).resolve().is_relative_to(own)
-            except (OSError, ValueError):
-                inside = False
-            if inside:
-                return f"{filename}, line {frame.lineno}"
-        elif not (filename.startswith("<") or "importlib" in filename
-                  or filename.startswith(flnd_folder)):
-            return f"{filename}, line {frame.lineno}"
-    return plugin.where
+    return {
+        "name": cls.name, **resolve.entry(cls), "api": API, "file": file, "sha256": digest,
+        "installed": installed,
+    }
 
 
-def _warn(plugin: Plugin) -> None:
-    """Say, once, that a plugin is disabled and why."""
-    ui.warn("{code}: disabled: {error}", code=plugin.code, error=plugin.error)
+def _stamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock.wall()))

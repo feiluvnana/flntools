@@ -30,8 +30,8 @@ from flnd.engine import store as _store
 from flnd.engine.core import Engine, TargetReport, _Runner
 from flnd.engine.crawl import Options
 from flnd.engine.events import Saved
+from flnd.engine.plugins import PLUGINS
 from flnd.plugin import Plugin, Post, route
-from flnd.plugins import PLUGINS
 from flnd.ui.log import ui
 from flnkit import cookies as _cookies
 from flnkit import net as _net

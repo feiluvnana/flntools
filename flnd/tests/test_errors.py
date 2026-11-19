@@ -27,6 +27,7 @@ from test_commands import FlndCase
 
 import flnd
 from flnd.engine import crawl as job
+from flnd.engine.plugins import PLUGINS
 from flnd.errors import (
     Blocked,
     Changed,
@@ -44,7 +45,6 @@ from flnd.errors import (
     disk,
 )
 from flnd.plugin import File, Plugin, Target, dig, route
-from flnd.plugins import PLUGINS
 from flnd.ui.log import ui
 from flnkit import clock as _time
 from flnkit import errors as kit

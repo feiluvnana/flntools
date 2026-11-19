@@ -35,12 +35,6 @@ FLNKIT = ROOT / "flnkit"
 # Imports a rule forbids that stay for now: (importer, imported) -> the step that removes them.
 # An importer or an import ending in ".*" covers every module under it.
 EXEMPT = {
-    # The registry (src/plugins/__init__.py) finds installed plugins through the old loader,
-    # and the engine and the library reach the registry directly, until step 9's plugin
-    # manager (`engine/plugins.py`) owns the lookup.
-    ("flnd.plugins", "flnd.engine.plugins"): 9,
-    ("flnd.engine.*", "flnd.plugins.*"): 9,
-    ("flnd._library", "flnd.plugins"): 9,
     # The CLI still reads the engine's events, the home's paths and the kit's text and cookie
     # names, and the library reads `flnd.__version__`; step 13 rewrites both.
     ("flnd.cli", "flnd.engine.*"): 13,
@@ -159,6 +153,10 @@ def allowed(importer: str, imported: str) -> bool:
         return under(imported, "flnd.ui", "flnkit") or imported == "flnd.engine.events"
     if importer == "flnd.engine.events":
         return imported == "flnd.plugin" or under(imported, "flnkit")
+    if importer == "flnd.engine.plugins":
+        # The plugin manager reads the built-ins' plain-data manifest, without importing them.
+        return (under(imported, "flnd.engine", "flnkit", "flnd.ui")
+                or imported in ("flnd.plugin", "flnd.plugins._manifest"))
     if under(importer, "flnd.engine"):
         return under(imported, "flnd.engine", "flnkit", "flnd.ui") or imported == "flnd.plugin"
     if importer == "flnd.plugin":

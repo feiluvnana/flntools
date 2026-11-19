@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 from flnd.engine.events import Checked, Failure, Installed, Login, Record, Status, Tracked
 from flnd.engine.run import Run
-from flnd.errors import UsageError
+from flnd.errors import PluginError, UsageError
 
 if TYPE_CHECKING:
     from flnd.engine.core import Chosen, Engine
@@ -512,17 +512,29 @@ class Flnd:
             ['built-in']
         """
         from flnd.engine import plugins
-        from flnd.plugins import PLUGINS
 
         logins = self._engine().logins
-        found = PLUGINS.plugins
-        by_code = {plugin.code: plugin for plugin in found if not plugin.error}
-        rows = [_installed(PLUGINS[code], by_code.get(code), logins) for code in PLUGINS]
-        rows += [Installed(plugin.code, plugin.code, plugin.origin, where=plugin.where,
-                           version=plugin.version, disabled=plugin.error)
-                 for plugin in found if plugin.error]
-        rows += [_installed(cls, None, logins, origin=plugins.SCRIPT)
-                 for cls in self._added.values()]
+        registry = plugins.PLUGINS
+        rows = [_installed(registry[code], logins) for code in registry.built_in_codes()]
+        mgr = registry.manager()
+        index = mgr.manifest["plugins"]
+        registry.flush(mgr)
+        for code, entry in sorted(index.items()):
+            if code in registry._overrides or code in mgr.built_in:
+                continue
+            where = str(mgr.folder / str(entry.get("file", code)))
+            try:
+                cls = mgr.load(code)
+            except PluginError:
+                registry.flush(mgr)
+                rows.append(Installed(code, str(entry.get("name", code)), plugins.FILE,
+                                      where=where, disabled=mgr.disabled[code]))
+            else:
+                registry.flush(mgr)
+                rows.append(_installed(
+                    cls, logins, origin=plugins.FILE,
+                    where=plugins.where(cls) or where, version=plugins.version(cls)))
+        rows += [_installed(cls, logins, origin=plugins.SCRIPT) for cls in self._added.values()]
         return rows
 
     def add(self, source: type[Plugin]) -> None:
@@ -576,7 +588,7 @@ class Flnd:
         """
         from collections import ChainMap
 
-        from flnd.plugins import PLUGINS
+        from flnd.engine.plugins import PLUGINS
 
         return ChainMap(self._added, PLUGINS)
 
@@ -675,15 +687,17 @@ class Flnd:
         return run
 
 
-def _installed(cls: type[Plugin], plugin: Any, logins: Mapping[str, str], *,
-               origin: str | None = None) -> Installed:
+def _installed(cls: type[Plugin], logins: Mapping[str, str], *,
+               origin: str | None = None, where: str | None = None,
+               version: str = "") -> Installed:
     """A working source's row for `Flnd.sources`.
 
     Args:
         cls: the source's class.
-        plugin: its `flnd.engine.plugins.Plugin` when it is one; None for a built-in or `add`'s.
         logins: the login state of each source with one saved (`Engine.logins`).
-        origin: where it came from, when `plugin` doesn't say; None for a built-in.
+        origin: where it came from; None for a built-in.
+        where: its file or folder when installed; None builds `module:cls`.
+        version: its `__version__` when installed; `""` for a script.
 
     Returns:
         The row.
@@ -691,12 +705,9 @@ def _installed(cls: type[Plugin], plugin: Any, logins: Mapping[str, str], *,
     import flnd
     from flnd.engine import plugins
 
-    if plugin is not None:
-        origin, where, version = plugin.origin, plugin.where, plugin.version
-    else:
-        where = f"{cls.__module__}:{cls.__qualname__}"
-        version = flnd.__version__ if origin is None else ""
-        origin = origin or plugins.BUILT_IN
+    where = where or f"{cls.__module__}:{cls.__qualname__}"
+    version = flnd.__version__ if origin is None else version
+    origin = origin or plugins.BUILT_IN
     if cls.login is None:
         login = "needs no login"
     else:

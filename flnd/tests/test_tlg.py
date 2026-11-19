@@ -750,7 +750,7 @@ class EngineLoginTest(TelegramCase):
 class LoginCommandTest(FlndCase):
     def setUp(self):
         super().setUp()
-        self.enterContext(mock.patch.dict("flnd.engine.core.PLUGINS", {"tlg": Telegram}))
+        self.enterContext(mock.patch.dict("flnd.engine.plugins.PLUGINS", {"tlg": Telegram}))
 
     def test_the_way_is_named_or_asked_and_a_refusal_is_reported(self):
         from prompt_lines import select_from_lines

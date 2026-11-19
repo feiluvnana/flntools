@@ -25,14 +25,13 @@ from typing import Any, NamedTuple, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.engine.resolve
-from flnd.engine import config, crawl, ctx, home, jobs, save, store
+from flnd.engine import config, crawl, ctx, home, jobs, plugins, save, store
 from flnd.engine.crawl import Options, Retry, RunShared, TargetReport
 from flnd.engine.ctx import Ctx, PluginRun, plugin_run, shared_browser, start
 from flnd.engine.events import Failed, Planned
 from flnd.engine.run import Stop, Tally, _shut_down, sink, stopping
-from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
+from flnd.errors import DiskError, Error, LoginError, NetworkError, PluginError, Stopped, UsageError
 from flnd.plugin import Browser, Cookies, Plugin, Range, Target
-from flnd.plugins import PLUGINS, Registry, _manifest
 from flnd.ui.log import ui
 from flnkit import net, text
 
@@ -130,7 +129,7 @@ class Engine:
         self,
         *,
         home: Path = Path(".flnd"),
-        sources: Mapping[str, type[Plugin]] = PLUGINS,
+        sources: Mapping[str, type[Plugin]] = plugins.PLUGINS,
         emit: Callable[[Any], Any] | None = None,
         stop: Stop | None = None,
     ) -> None:
@@ -155,6 +154,7 @@ class Engine:
         self.tally = Tally(self._shown)
         # What resolving reads of each plugin known so far, by code (`manifest`).
         self._entries: dict[str, Mapping[str, Any]] | None = None
+        self._installed: dict[str, Mapping[str, Any]] = {}
         self._manifest: flnd.engine.resolve.Manifest | None = None
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
@@ -199,36 +199,48 @@ class Engine:
     @property
     def manifest(self) -> flnd.engine.resolve.Manifest:
         """What resolving reads of the plugins known so far: each built-in's manifest entry,
-        which imports none of them, then each other plugin's, made from its class."""
+        which imports none of them, then each other plugin's, from `plugins.json` or its class."""
         if self._entries is None:
             self._entries = {}
             maps = self.sources.maps if isinstance(self.sources, ChainMap) else [self.sources]
             for found in reversed(maps):
-                if isinstance(found, Registry):
-                    self._entries |= {code: entry for code, entry in _manifest.PLUGINS.items()
-                                      if code in found}
+                if isinstance(found, plugins.Registry):
+                    self._entries |= found.manifest()
                 else:
                     self._entries |= {code: flnd.engine.resolve.entry(cls)
                                       for code, cls in found.items()}
         if self._manifest is None:
-            self._manifest = flnd.engine.resolve.Manifest(self._entries)
+            installed = {"plugins": self._installed} if self._installed else None
+            self._manifest = flnd.engine.resolve.Manifest(self._entries, installed)
         return self._manifest
 
     def _widen(self, code: str | None = None) -> bool:
-        """Add one plugin, or every plugin, to `manifest`, importing it; whether any was new.
+        """Add one installed plugin, or every installed plugin, to `manifest`, without importing it.
 
         Args:
-            code: the plugin's code; None for every plugin (`flnd.plugins.Registry` imports
-                each).
+            code: the plugin's code; None for every installed plugin from `plugins.json`.
         """
         known = self.manifest.plugins
-        codes = [code] if code is not None else list(self.sources)
-        new = {name: flnd.engine.resolve.entry(self.sources[name]) for name in codes
-               if name not in known and name in self.sources}
-        if new:
-            self._entries = {**(self._entries or {}), **new}
+        if code is not None and code in known:
+            return False
+        maps = self.sources.maps if isinstance(self.sources, ChainMap) else [self.sources]
+        added_entries: dict[str, Mapping[str, Any]] = {}
+        added_installed: dict[str, Mapping[str, Any]] = {}
+        for found in reversed(maps):
+            if isinstance(found, plugins.Registry):
+                for name, entry in found.installed(code).items():
+                    if name not in known and name not in self._installed:
+                        added_installed[name] = entry
+            else:
+                codes = [code] if code is not None else list(found)
+                for name in codes:
+                    if name not in known and name in found:
+                        added_entries[name] = flnd.engine.resolve.entry(found[name])
+        if added_entries or added_installed:
+            self._entries = {**(self._entries or {}), **added_entries}
+            self._installed.update(added_installed)
             self._manifest = None
-        return bool(new)
+        return bool(added_entries or added_installed)
 
     def _read(self, text: str, stored: Mapping[str, Sequence[str]]) -> Chosen:
         """One target's text, resolved (`flnd.engine.resolve`), with its categories.
@@ -800,7 +812,16 @@ class Engine:
 
     def _is_query(self, target: Target) -> bool:
         """Whether `target`'s route discovers other targets (a search) rather than posts."""
-        source = self.sources[target.plugin]
+        plugin = self.manifest.plugins.get(target.plugin)
+        if plugin is None and self._widen(target.plugin):
+            plugin = self.manifest.plugins.get(target.plugin)
+        if plugin is not None:
+            route = next((r for r in plugin.routes if r.name == target.kind), None)
+            return route is not None and route.discovers
+        try:
+            source = self.sources[target.plugin]
+        except PluginError:
+            return False
         route = next((r for r in source.routes if r.kind == target.kind), None)
         return route is not None and route.discovers
 
@@ -1913,9 +1934,7 @@ def _owner_source(cleaned: str, sources: Mapping[str, type[Plugin]]) -> Plugin:
 
 def _domains(code: str, sources: Mapping[str, type[Plugin]]) -> Sequence[str]:
     """A plugin's domains: a built-in's from the manifest, so no plugin is imported."""
-    from flnd.plugins import _manifest
-
-    known = _manifest.PLUGINS.get(code)
+    known = plugins.PLUGINS.manifest().get(code)
     return known["domains"] if known is not None else sources[code].domains  # type: ignore
 
 
@@ -1924,7 +1943,7 @@ def owner(target_text: str, sources: Mapping[str, type[Plugin]]) -> type[Plugin]
 
     A built-in source's domains come from the manifest, so matching a link imports only the
     source that owns it. The built-ins are asked first: only a link none of them owns asks the
-    other plugins, which imports every installed one (`flnd.plugins.Registry`).
+    other plugins.
 
     Args:
         target_text: a link, or a target written without its source.
@@ -1933,13 +1952,12 @@ def owner(target_text: str, sources: Mapping[str, type[Plugin]]) -> type[Plugin]
     Returns:
         The class of the source whose domains the link is on; None when no source's are.
     """
-    from flnd.plugins import _manifest
-
-    for code, known in _manifest.PLUGINS.items():
+    manifest = plugins.PLUGINS.manifest()
+    for code, known in manifest.items():
         if code in sources and _on(target_text, known["domains"]):  # type: ignore[arg-type]
             return sources[code]
     for code in sources:
-        cls = None if code in _manifest.PLUGINS else sources.get(code)
+        cls = None if code in manifest else sources.get(code)
         if cls is not None and _on(target_text, cls.domains):
             return cls
     return None

@@ -311,8 +311,6 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     "src/engine/config.py:unset": "early part; `flnd config` and `Flnd.config` call it",
     "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
-    "src/engine/manager.py:Manager": "the plugin manager, built early; tests/test_plugins.py "
-                                     "drives it until the wiring renames it plugins.py",
 }
 # Kit names built early, before the code that calls them: each counts as unused, whatever the
 # word search finds, until a module of src/ or flnkit/ calls it as `<module>.<name>`. Then

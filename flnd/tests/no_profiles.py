@@ -5,9 +5,8 @@ It sets `FLND_TEST_NO_PROFILES`, which `flnkit.cookies.refuse_profile` reads: wh
 launching Chrome on one) refuse any profile inside the real home folder, before anything is read.
 A test that needs a profile fakes the home folder in a temporary folder instead.
 
-It also points `FLND_SOURCES` and `FLND_PLUGINS` (the plugin folders of
-`flnd.engine.plugins.folder` and `flnd.engine.manager.folder`) at a folder that doesn't exist,
-unless they are set already, so a plugin the person running the tests has installed in
+It also points `FLND_PLUGINS` (`flnd.engine.plugins.folder`) at a folder that doesn't exist,
+unless it is set already, so a plugin the person running the tests has installed in
 `~/.config/flnd/` never loads into a test. A test of plugins sets its own.
 
 `make test` sets the first variable for the whole run. `fakes.py` and the test modules that deal
@@ -19,9 +18,9 @@ the whole suite.
 import os
 from pathlib import Path
 
-from flnd.engine import manager, plugins
+from flnd.engine import plugins
 from flnkit.cookies import NO_PROFILES
 
 os.environ[NO_PROFILES] = "1"
-for variable in (plugins.VARIABLE, manager.VARIABLE):
-    os.environ.setdefault(variable, str(Path(__file__).resolve().parent / "data" / "no-plugins"))
+os.environ.setdefault(
+    plugins.VARIABLE, str(Path(__file__).resolve().parent / "data" / "no-plugins"))

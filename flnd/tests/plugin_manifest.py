@@ -52,16 +52,31 @@ Each entry, by the plugin's code:
 '''
 
 
+def _facts(cls: Any) -> dict[str, Any]:
+    """What resolving and help read of a plugin without importing it, as plain data."""
+    return {
+        "name": cls.name, "domains": list(cls.domains),
+        "routes": [{"name": known.kind, "single": known.single, "discovers": known.discovers,
+                    "shown": known.shown,
+                    "patterns": [list(item) if isinstance(item, tuple) else item
+                                 for item in known.patterns],
+                    "categories": [{"name": category.name, "own": category.own}
+                                   for category in known.categories]}
+                   for known in cls.routes],
+        "unsupported": dict(cls.unsupported),
+    }
+
+
 def entries() -> dict[str, dict[str, Any]]:
     """Each built-in plugin's manifest entry, in the registry's order."""
     sys.path.insert(0, str(ROOT))
-    from flnd.plugins import BUILT_IN, facts
+    from flnd.plugins import BUILT_IN
 
     found: dict[str, dict[str, Any]] = {}
     for module, name in BUILT_IN:
         plugin = getattr(importlib.import_module(module), name)
         found[plugin.code] = {
-            "module": plugin.__module__, "cls": plugin.__name__, **facts(plugin),
+            "module": plugin.__module__, "cls": plugin.__name__, **_facts(plugin),
             "forms": list(plugin.forms), "categories": list(plugin.categories),
             "logins": list(plugin.login.methods) if plugin.login is not None else [],
         }
