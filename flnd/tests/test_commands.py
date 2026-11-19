@@ -676,7 +676,7 @@ class LoginsTest(FlndCase):
         from flnd.plugins.ins import Instagram
 
         _home.store(Instagram(), jar, home=Path(".flnd"), origin="cookies.txt")
-        with _home.secrets(Path(".flnd"), "tlg") as secrets:
+        with _home.secrets(Path(".flnd"), "tlg", create=True) as secrets:
             secrets["api_id"] = "1"
         code, out, _ = self.run_app("login")
         self.assertEqual(code, 0)

@@ -43,7 +43,7 @@ from flnd.errors import (
 from flnd.plugin import Landed, Plugin, Range, Request, Target
 from flnd.ui import forms
 from flnd.ui.log import ui
-from flnkit import browser, clock, net, text, vault
+from flnkit import browser, clock, net, text
 
 if TYPE_CHECKING:
     from flnd.engine.crawl import RunShared
@@ -916,7 +916,7 @@ class PluginRun:
     # The posts its `date` hook had no day for, read once for the run (`crawl.asked`).
     asked: dict[str, float] | None = None
     _state: store.Store | None = field(default=None, repr=False)
-    _secrets: vault.Vault | None = field(default=None, repr=False)
+    _secrets: MutableMapping[str, str] | None = field(default=None, repr=False)
     # A loop of the plugin's own, made only outside a run (`shared_browser` gives the run's).
     _own_loop: Bridge | None = field(default=None, repr=False)
     # A scheduler of the plugin's own, made only outside a run, on its own loop.
@@ -995,10 +995,11 @@ class PluginRun:
                 stored.pop(key, None)
 
     @property
-    def secrets(self) -> vault.Vault:
+    def secrets(self) -> MutableMapping[str, str]:
         """The plugin's sealed secrets in the home's `secrets.db`, opened on first use."""
         if self._secrets is None:
-            self._secrets = home.secrets(self.settings.home, self.source.code)
+            self._secrets = home.secrets(self.settings.home, self.source.code,
+                                         create=self.settings.interactive)
         return self._secrets
 
     async def call(self, fn: Callable[..., T], *args: Any) -> T:

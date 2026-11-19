@@ -11,7 +11,7 @@ import json
 import os
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -294,8 +294,7 @@ def busy(error: BaseException) -> bool:
 # Opening, and the migration from version 1
 # ---------------------------------------------------------------------------------------------
 
-def open(home: Path, *, loop: bool = False,
-         seal: Callable[[sqlite3.Connection, Mapping[str, int]], None] | None = None) -> Store:
+def open(home: Path, *, loop: bool = False) -> Store:
     """Open a home's `flnd.db`, migrating a version-1 file in place.
 
     A home without `flnd.db` is left untouched until the first write.
@@ -304,14 +303,12 @@ def open(home: Path, *, loop: bool = False,
         home: the home folder.
         loop: the run's shared connection, committing on the loop: it never waits for a lock
             and never checkpoints by itself. False for any other (30 s for a lock).
-        seal: called inside the migration's transaction with each migrated plugin's default
-            account id, to seal that plugin's secrets in `secret.db`; None leaves them.
 
     Raises:
         UsageError: the file is of a later schema, or of none with files in it.
         DiskError: `flnd.db` can't be read or written.
     """
-    store = Store(home, loop=loop, seal=seal)
+    store = Store(home, loop=loop)
     try:
         if (home / DB).is_file():
             store._db.connection()
@@ -321,8 +318,7 @@ def open(home: Path, *, loop: bool = False,
     return store
 
 
-def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool,
-           seal: Callable[[sqlite3.Connection, Mapping[str, int]], None] | None) -> None:
+def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
     """Set the pragmas, then make schema 2 or migrate version 1, in one transaction.
 
     A version-1 file is copied whole to `BACKUP` first, once: the migration never loses a
@@ -342,7 +338,7 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool,
                 sql.execute(statement)
             sql.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
         elif version == "1":
-            _migrate(sql, home, seal)
+            _migrate(sql, home)
         elif version != VERSION:
             raise UsageError(f"home schema {version!r} needs a newer flnd",
                              hint="upgrade flnd, or open the home with the flnd that wrote it")
@@ -399,8 +395,7 @@ def _tables(sql: sqlite3.Connection) -> set[str]:
     return {name for (name,) in sql.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
-def _migrate(sql: sqlite3.Connection, home: Path,
-             seal: Callable[[sqlite3.Connection, Mapping[str, int]], None] | None) -> None:
+def _migrate(sql: sqlite3.Connection, home: Path) -> None:
     """Rebuild a version-1 file's tables as schema 2, in the caller's transaction.
 
     Each table is renamed aside, made again from `SCHEMA` and filled from the old one, so the
@@ -420,12 +415,10 @@ def _migrate(sql: sqlite3.Connection, home: Path,
             _copy(sql, table, renames)
     if "targets" in tables:
         _copy_targets(sql)
-    accounts = _accounts(sql, home, tables)
+    _accounts(sql, home, tables)
     for table in [*(f"v1_{name}" for name in REBUILT if name in tables), *V1_DROPPED]:
         sql.execute(f"DROP TABLE IF EXISTS {table}")
     sql.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (VERSION,))
-    if seal is not None:
-        seal(sql, accounts)
 
 
 def _columns(sql: sqlite3.Connection, table: str) -> list[str]:
@@ -469,12 +462,9 @@ def _categories(options: str) -> list[str]:
     return [name for name in names if isinstance(name, str)] if isinstance(names, list) else []
 
 
-def _accounts(sql: sqlite3.Connection, home: Path, tables: set[str]) -> dict[str, int]:
-    """Make a default account for each `logins` row, and each `secret.db` slot not in it.
-
-    Returns:
-        Each plugin's code, with its account's id.
-    """
+def _accounts(sql: sqlite3.Connection, home: Path, tables: set[str]) -> None:
+    """Make a default account for each `logins` row, and each `secret.db` slot not in it;
+    `flnd.engine.auth` seals that slot's values under it."""
     logins = (sql.execute("SELECT source, origin, at FROM logins").fetchall()
               if "logins" in tables else [])
     known = {code for code, _, _ in logins}
@@ -483,7 +473,6 @@ def _accounts(sql: sqlite3.Connection, home: Path, tables: set[str]) -> dict[str
             *((code, "", made) for code in _slots(home / SECRETS) if code not in known)]
     sql.executemany("INSERT INTO accounts (plugin, name, origin, at, is_default)"
                     " VALUES (?, 'default', ?, ?, 1)", rows)
-    return {code: ident for ident, code in sql.execute("SELECT id, plugin FROM accounts")}
 
 
 def _origin(origin: str) -> str:
@@ -494,7 +483,8 @@ def _origin(origin: str) -> str:
 
 
 def _slots(path: Path) -> list[str]:
-    """The slots (plugin codes) of a `secret.db`, read only; none when it is missing."""
+    """The slots (plugin codes) of a version-1 `secret.db`, read only; none when it is
+    missing or sealed already."""
     if not path.is_file():
         return []
     try:
@@ -502,7 +492,7 @@ def _slots(path: Path) -> list[str]:
     except sqlite3.Error as error:
         raise DiskError(f"{path}: {error}") from error
     try:
-        if "secrets" not in _tables(sql):
+        if "secrets" not in _tables(sql) or "slot" not in _columns(sql, "secrets"):
             return []
         found = sql.execute("SELECT DISTINCT slot FROM secrets ORDER BY slot").fetchall()
     except sqlite3.Error as error:
@@ -522,17 +512,13 @@ class Store:
     Args:
         home: the home folder; `flnd.db` is made in it on the first write.
         loop: the run's shared connection (see `open`).
-        seal: the migration's hook for `secret.db` (see `open`).
     """
 
-    def __init__(self, home: Path, *, loop: bool = False,
-                 seal: Callable[[sqlite3.Connection, Mapping[str, int]], None] | None = None
-                 ) -> None:
+    def __init__(self, home: Path, *, loop: bool = False) -> None:
         self.home = home
         self.path = home / DB
         self._loop = loop
-        self._db = db.Db(self.path, setup=functools.partial(_setup, home=home, loop=loop,
-                                                            seal=seal))
+        self._db = db.Db(self.path, setup=functools.partial(_setup, home=home, loop=loop))
         # Rows committed since the last checkpoint; read and reset from any thread.
         self._rows = 0
         self._checkpointer: sqlite3.Connection | None = None

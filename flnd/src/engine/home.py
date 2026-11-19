@@ -22,11 +22,12 @@ from http.cookiejar import Cookie
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import flnd.engine.auth
 import flnd.engine.store
 from flnd.engine.store import DB, MEDIA, SECRETS
 from flnd.errors import Error, LoginError, UsageError
 from flnd.ui.log import ui
-from flnkit import cookies, text, vault
+from flnkit import cookies, text
 
 if TYPE_CHECKING:
     from flnd.plugin import Plugin, Target
@@ -183,8 +184,6 @@ ACCOUNT = "default"
 # `api_hash`, is only the source's API key.
 LOGIN_SECRET = "session"
 LOGIN_SECRETS = frozenset({COOKIES, LOGIN_SECRET})
-# What a login that can't be read says to do: the vault holds logins only.
-LOGIN_HINT = "log in again: flnd login <source> (a damaged secret.key: delete it first)"
 
 
 def from_browser(source: Plugin, *, browser: str, profile: str | None = None) -> cookies.Jar:
@@ -278,7 +277,7 @@ def save(home: Path, code: str, jar: cookies.Jar, *, origin: str | None = None) 
     Raises:
         DiskError: the key file is damaged, or the vault can't be written.
     """
-    with secrets(home, code) as vault:
+    with secrets(home, code, create=True) as vault:
         vault[COOKIES] = json.dumps(fix_domains(jar).list)
     if origin is not None:
         record_origin(home, code, origin)
@@ -506,7 +505,7 @@ def _move(home: Path, code: str) -> None:
             continue
         try:
             jar = cookies.load(path)
-            with secrets(home, code) as vault:
+            with secrets(home, code, create=True) as vault:
                 if COOKIES not in vault:
                     vault[COOKIES] = json.dumps(fix_domains(jar).list)
         # A file that can't be read or isn't a cookie file (a LoginError), a damaged key (a
@@ -564,23 +563,24 @@ def _own(source: Plugin, jar: cookies.Jar) -> cookies.Jar:
 
 
 
-def secrets(home: Path, code: str) -> vault.Vault:
-    """The secrets of one source, as a mapping of `str` to `str`, for a `with` block.
+def secrets(home: Path, code: str, *, create: bool = False) -> flnd.engine.auth.Vault:
+    """The sealed secrets of a plugin's default account, for a `with` block.
 
     Args:
         home: the home folder; `metadata/secret.db` is made in it on the first write.
-        code: the source's code; another source's secrets aren't visible.
-
-    Returns:
-        The `flnkit.vault.Vault`; leaving the `with` closes it.
-
-    Example:
-        >>> import tempfile
-        >>> with secrets(Path(tempfile.mkdtemp()), "tlg") as saved:
-        ...     dict(saved)
-        {}
+        code: the plugin's code; another plugin's secrets aren't visible.
+        create: make the default account when there is none, to write to it; else a plugin
+            without one reads no secrets.
     """
-    return vault.Vault(home / SECRETS, code, hint=LOGIN_HINT)
+    flnd.engine.auth.seal_plaintext(home)
+    account = 0
+    if create or (home / DB).is_file():
+        with flnd.engine.store.open(home) as db:
+            found = next((row for row in db.accounts(code) if row.default), None)
+            if found is None and create:
+                found = db.login(code, ACCOUNT, origin="")
+        account = found.id if found is not None else 0
+    return flnd.engine.auth.secrets(home, account, plugin=code)
 
 
 def _login_names(source: Plugin) -> tuple[str, ...]:

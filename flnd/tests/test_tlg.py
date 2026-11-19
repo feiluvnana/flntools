@@ -635,7 +635,7 @@ class LoginTest(Case):
 # ---------------------------------------------------------------------------------------------
 
 def store(home, **values):
-    with _home.secrets(home, "tlg") as secrets:
+    with _home.secrets(home, "tlg", create=True) as secrets:
         secrets.clear()
         secrets.update(values)
 

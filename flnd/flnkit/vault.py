@@ -1,36 +1,30 @@
-"""Secrets sealed per account and name under a key file kept outside any home, the plaintext
-`Vault` of `secret.db`, and `digest`. src/docs/storage explains it.
+"""Secrets sealed per account and name under a key file kept outside any home, and
+`digest`. src/docs/storage explains it.
 """
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import io
 import operator
 import os
 import secrets as _secrets
-import subprocess
 import sys
 import time
 import unicodedata
-from collections.abc import Iterator, MutableMapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
-from flnkit import db
 from flnkit.errors import DiskError, LoginError, ToolError, UsageError, disk
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-__all__ = ["Keychain", "Vault", "decrypt", "digest", "encrypt", "key", "keyfile", "seal",
-           "unseal"]
+__all__ = ["decrypt", "digest", "encrypt", "key", "keyfile", "seal", "unseal"]
 
 # Rules a change must keep:
 # - no secret or key reaches a message: every way a value fails to open says the same thing;
-# - a key file is written whole, with mode 0600, and never replaced: the first creator wins;
-# - a key never goes on a command line: a keychain tool reads it on standard input.
+# - a key file is written whole, with mode 0600, and never replaced: the first creator wins.
 
 _PLATFORM = sys.platform
 
@@ -50,7 +44,7 @@ GCM_TAG_SIZE = 16
 KEY_SIZE = 32
 # One message for every way decryption fails, so it says nothing about the key or the data.
 DECRYPT_FAILED = "cannot decrypt: wrong key or damaged data"
-# What a blob that does not open says to do; a `Vault` gives its own advice instead.
+# What a blob that does not open says to do, unless the caller gives its own advice.
 SEAL_AGAIN = "seal it again, with the key it is opened with"
 MISSING_CRYPTOGRAPHY = "sealing secrets needs cryptography"
 
@@ -172,92 +166,11 @@ def _aes_gcm(key: bytes) -> AESGCM:
 
 
 # ---------------------------------------------------------------------------------------------
-# The plaintext vault of `secret.db`
-# ---------------------------------------------------------------------------------------------
-
-# The vault's one table: each value stored in plaintext, bound to its slot and name. `{}` takes
-# a schema name ("" or "<name>." for an attached database).
-SCHEMA = ("CREATE TABLE IF NOT EXISTS {}secrets (slot TEXT NOT NULL, name TEXT NOT NULL,"
-          " value TEXT NOT NULL, PRIMARY KEY (slot, name)) WITHOUT ROWID")
-# What a damaged key file says to do, unless the caller gives its own advice.
-DAMAGED_KEY = "delete it, then seal the secrets again"
-
-
-class Vault(MutableMapping[str, str]):
-    """One slot's secrets: a mapping of `str` to `str`, stored in plaintext in SQLite.
-
-    Opening a vault creates nothing: the database is made on the first write of a value.
-
-    Args:
-        path: the database file (`secret.db`).
-        slot: whose secrets these are (a source's code); another slot's aren't visible.
-        hint: what a value that doesn't open says to do.
-
-    Example:
-        >>> import tempfile
-        >>> folder = Path(tempfile.mkdtemp())
-        >>> with Vault(folder / "secret.db", "tlg") as saved:
-        ...     saved["session"] = "s"
-        ...     dict(saved)
-        {'session': 's'}
-    """
-
-    def __init__(self, path: Path, slot: str, *, hint: str = DAMAGED_KEY):
-        self._slot, self._hint = slot, hint
-        self._db = db.Db(path, schema=SCHEMA.format(""), secure=True)
-
-    def __getitem__(self, name: str) -> str:
-        found = self._db.one("SELECT value FROM secrets WHERE slot = ? AND name = ?",
-                             (self._slot, name))
-        if found is None:
-            raise KeyError(name)
-        val = found[0]
-        if isinstance(val, str):
-            return val
-        if isinstance(val, (bytes, memoryview)):
-            return bytes(val).decode("utf-8", errors="replace")
-        return str(val)
-
-    def __setitem__(self, name: str, value: str) -> None:
-        self._db.write("INSERT OR REPLACE INTO secrets VALUES (?, ?, ?)",
-                       (self._slot, name, str(value)))
-
-    def __delitem__(self, name: str) -> None:
-        if name not in self:
-            raise KeyError(name)
-        self._db.write("DELETE FROM secrets WHERE slot = ? AND name = ?", (self._slot, name))
-
-    def __contains__(self, name: object) -> bool:
-        return self._db.one("SELECT 1 FROM secrets WHERE slot = ? AND name = ?",
-                            (self._slot, name)) is not None
-
-    def __iter__(self) -> Iterator[str]:
-        found = self._db.all("SELECT name FROM secrets WHERE slot = ? ORDER BY name", (self._slot,))
-        return iter([name for (name,) in found])
-
-    def __len__(self) -> int:
-        found = self._db.one("SELECT count(*) FROM secrets WHERE slot = ?", (self._slot,))
-        return found[0] if found else 0
-
-    def clear(self) -> None:
-        """Remove every secret of the slot; a vault with no database is left without one."""
-        if self._db.path.is_file():
-            self._db.write("DELETE FROM secrets WHERE slot = ?", (self._slot,))
-
-    def __enter__(self) -> Vault:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
-
-    def close(self) -> None:
-        """Close the database; the same as leaving `with`."""
-        self._db.close()
-
-
-# ---------------------------------------------------------------------------------------------
 # Sealed values, under one key file kept outside any home
 # ---------------------------------------------------------------------------------------------
+
+# What a damaged key file says to do, unless the caller gives its own advice.
+DAMAGED_KEY = "delete it, then seal the secrets again"
 
 # Every way a sealed value fails to open says this, with no advice: the caller adds its own.
 KEY_GONE = "the vault's key is gone"
@@ -268,7 +181,7 @@ KEY_WAIT = 2.0
 # How often a short key file is read again while waiting, in seconds.
 KEY_POLL = 0.01
 # The variable flnd's test suite sets (as `flnkit.cookies.NO_PROFILES` reads it): while it is
-# set, the real key folder and the real keychain tools are refused, so no test can touch them.
+# set, the real key folder is refused, so no test can touch it.
 NO_PROFILES = "FLND_TEST_NO_PROFILES"
 
 
@@ -525,221 +438,3 @@ def _refuse_real(path: Path) -> None:
         if _inside(path, folder):
             raise RuntimeError(f"{NO_PROFILES} is set: a test may not use the real key file "
                                f"{path}; give one in a temporary folder")
-
-
-# ---------------------------------------------------------------------------------------------
-# The key in the OS keychain, kept only until the sealed vault above replaces the plaintext one
-# ---------------------------------------------------------------------------------------------
-
-# macOS's keychain tool, at the path every Mac has it; a fixed path, so no program named
-# `security` earlier on PATH is ever handed a key.
-SECURITY = "/usr/bin/security"
-# Linux's Secret Service tool (libsecret), found on PATH.
-SECRET_TOOL = "secret-tool"
-# What `security find-generic-password` exits with when no item matches.
-NOT_FOUND = 44
-# Seconds a keychain tool may take before it counts as hung: a locked keychain that wants a
-# password shows a dialog, which nobody may be there to answer.
-TOOL_TIMEOUT = 30.0
-# What a missing keychain says, unless the caller gives its own advice.
-NO_KEYCHAIN = "keep the key in a file instead"
-
-
-class Keychain:
-    """A 32-byte key kept in the operating system's keychain, instead of a key file.
-
-        chain = Keychain("vault-1f2e", service="example")
-        secret = chain.key()          # made and stored on first use
-        Vault(Path("secrets.db"), "tlg")
-
-    On macOS the item is a generic password in the login keychain, through `/usr/bin/security`;
-    on Linux an item of the Secret Service (GNOME Keyring, KWallet), through `secret-tool`. The
-    key is stored as base64 text. It never goes on a command line, where any process could read
-    it: macOS's tool reads the command that stores it from its standard input (`security -i`),
-    and `secret-tool store` reads the secret from its standard input. Every tool runs from an
-    argument list, never through a shell, and its output is never logged.
-
-    Args:
-        account: the item's account: which key this is (in flnd, one per home).
-        service: the item's service name, which groups a program's items.
-        hint: what a missing keychain says to do.
-
-    Raises:
-        UsageError: when used, there is no keychain tool here (`available` is False).
-    """
-
-    def __init__(self, account: str, *, service: str = "flnd", hint: str = NO_KEYCHAIN):
-        # `security -i` splits its commands at spaces, so the names must have none.
-        if not account or any(char.isspace() for char in account + service):
-            raise ValueError("a keychain account and service are words without spaces")
-        self.account, self.service, self._hint = account, service, hint
-
-    @staticmethod
-    def tool() -> str | None:
-        """The keychain tool here: macOS's `security`, else Linux's `secret-tool`; None for none.
-
-        Returns:
-            The tool's path, or None when there is none, or when the test suite's guard
-            (`NO_PROFILES`) refuses the real one.
-        """
-        import shutil
-
-        if _PLATFORM == "darwin":
-            found = SECURITY if os.path.exists(SECURITY) else None
-        elif _PLATFORM == "win32":
-            # Windows' Credential Manager has no command-line tool that reads a secret back.
-            found = None
-        else:
-            found = shutil.which(SECRET_TOOL)
-        if found is not None and os.environ.get(NO_PROFILES) and not _is_fake(found):
-            return None
-        return found
-
-    def read(self) -> bytes | None:
-        """The key in the keychain; None when there is no item for this account.
-
-        Returns:
-            The key's 32 bytes, or None.
-
-        Raises:
-            UsageError: there is no keychain here.
-            DiskError: the item isn't a key (not base64 of 32 bytes).
-            ToolError: the keychain refused (locked, or access denied).
-        """
-        tool = self.require()
-        if _is_security(tool):
-            done = _call([tool, "find-generic-password", "-s", self.service, "-a", self.account,
-                          "-w"])
-            if done.returncode == NOT_FOUND:
-                return None
-        else:
-            done = _call([tool, "lookup", "service", self.service, "account", self.account])
-            # `secret-tool lookup` exits 1 with nothing printed for an item that isn't there.
-            if done.returncode == 1 and not done.stdout.strip():
-                return None
-        if done.returncode != 0:
-            raise _refused(tool, done)
-        try:
-            secret = base64.b64decode(done.stdout.strip(), validate=True)
-        except ValueError:
-            secret = b""
-        if len(secret) != KEY_SIZE:
-            raise DiskError(f"the keychain item {self.service}/{self.account} is not a key",
-                            hint="delete the item, then seal the secrets again")
-        return secret
-
-    def write(self, secret: bytes) -> None:
-        """Store `secret` as the account's key, replacing any, and check that it reads back.
-
-        Args:
-            secret: the key's 32 bytes.
-
-        Raises:
-            ValueError: the key isn't 32 bytes.
-            UsageError: there is no keychain here.
-            ToolError: the keychain refused, or what it holds afterwards isn't `secret`.
-        """
-        if len(secret) != KEY_SIZE:
-            raise ValueError(f"a key is {KEY_SIZE} bytes, not {len(secret)}")
-        tool = self.require()
-        text = base64.b64encode(secret).decode("ascii")
-        if _is_security(tool):
-            # `-U` updates an item that is there. The command goes in on standard input, so the
-            # key is never in the tool's argument list.
-            line = (f"add-generic-password -U -s {self.service} -a {self.account} "
-                    f"-w {text}\n")
-            done = _call([tool, "-i"], stdin=line)
-        else:
-            done = _call([tool, "store", f"--label={self.service} key", "service", self.service,
-                          "account", self.account], stdin=text)
-        if done.returncode != 0:
-            raise _refused(tool, done)
-        # `security -i` exits 0 even when a command in it failed, so the read-back is the check.
-        if self.read() != secret:
-            raise ToolError(f"the keychain didn't keep the key {self.service}/{self.account}",
-                            hint="unlock the keychain, then try again")
-
-    def key(self) -> bytes:
-        """The account's key: the one stored, or a new one stored now.
-
-        Returns:
-            The key's 32 bytes.
-
-        Raises:
-            UsageError: there is no keychain here.
-            ToolError: the keychain refused.
-        """
-        found = self.read()
-        if found is not None:
-            return found
-        made = _secrets.token_bytes(KEY_SIZE)
-        self.write(made)
-        return made
-
-    def require(self) -> str:
-        """The keychain tool, checked to be there before anything is stored in it.
-
-        Returns:
-            The tool's path.
-
-        Raises:
-            UsageError: there is no keychain here, with the hint this item was made with.
-        """
-        tool = self.tool()
-        if tool is None:
-            raise UsageError("the OS keychain isn't available here: it needs macOS's "
-                             f"{SECURITY}, or Linux's {SECRET_TOOL}", hint=self._hint)
-        return tool
-
-
-def _call(argv: list[str], *, stdin: str = "") -> subprocess.CompletedProcess[str]:
-    """Run a keychain tool from an argument list, never a shell, and capture what it says.
-
-    Args:
-        argv: the tool and its arguments; never a secret, which goes in `stdin`.
-        stdin: what the tool reads, such as the secret to store.
-
-    Returns:
-        The finished process, with its output as text; the caller never logs it.
-
-    Raises:
-        ToolError: the tool can't start, or takes longer than `TOOL_TIMEOUT`.
-    """
-    try:
-        return subprocess.run(argv, input=stdin, capture_output=True, text=True, check=False,
-                              timeout=TOOL_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        raise ToolError(f"{Path(argv[0]).name} didn't answer in {TOOL_TIMEOUT:.0f} s",
-                        hint="unlock the keychain, then try again") from None
-    except OSError as error:
-        raise ToolError(f"{argv[0]}: {error.strerror or error}") from None
-
-
-def _refused(tool: str, done: subprocess.CompletedProcess[str]) -> ToolError:
-    """The error for a keychain tool that failed: its first line on standard error.
-
-    Its standard output is never shown: `find-generic-password -w` prints the key there.
-
-    Args:
-        tool: the tool's path.
-        done: the finished process.
-
-    Returns:
-        The `ToolError` to raise.
-    """
-    said = (done.stderr or "").strip().splitlines()
-    reason = said[0] if said else f"exit {done.returncode}"
-    return ToolError(f"the keychain refused ({Path(tool).name}): {reason}",
-                     hint="unlock the keychain, or allow access, then try again")
-
-
-def _is_security(tool: str) -> bool:
-    """Whether a keychain tool is macOS's `security` (or a test's stand-in named so)."""
-    return Path(tool).name == "security"
-
-
-def _is_fake(tool: str) -> bool:
-    """Whether a tool lives in a temporary folder: a test's stand-in, never the real one."""
-    import tempfile
-
-    return Path(tool).resolve().is_relative_to(Path(tempfile.gettempdir()).resolve())

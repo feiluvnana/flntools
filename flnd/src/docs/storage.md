@@ -14,7 +14,7 @@ holds your logins and cookies.
   metadata/
     flnd.db          what the home remembers: files, posts, targets, runs, failures, …
     flnd.v1.db       a home of version 1, copied whole before its migration (see below)
-    secret.db        the vault: logins, cookies and tokens, stored in plaintext
+    secret.db        the vault: logins, cookies and tokens, each sealed under your key
   media/
     <code>/<target>/<category>/…   the downloaded files
   log/
@@ -346,11 +346,19 @@ The code: `src/engine/config.py` reads, checks and edits both files, in one plac
 
 ## The vault: `secret.db`
 
-`secret.db` in `metadata/` has one table, `secrets`: a row per secret of a plugin, keyed
-`(slot, name)`, where the slot is the plugin's code. A cookie plugin keeps its jar as `cookies`,
-a JSON list of cookies in Playwright's shape (each domain with a leading dot); Telegram keeps its
-`session` and its API credentials. Secrets are stored unencrypted in plaintext, so no key file
-is needed.
+`secret.db` in `metadata/` has one table, `secrets`: a row per secret of an account, keyed
+`(account, name)`, where the account is a row of `flnd.db`'s `accounts`. A cookie plugin keeps
+its jar as `cookies`, a JSON list of cookies in Playwright's shape; Telegram keeps its `session`
+and its API credentials.
+
+Each value is sealed with AES-256-GCM: a version byte, a 12-byte nonce, then the ciphertext and
+its tag, bound to its `(account, name)`, so a value copied to another row doesn't open. The key
+is 32 random bytes in `~/.config/flnd/key` (`%APPDATA%\flnd\key` on Windows), mode 0600, one
+per user for every home, made by the first login. It is never inside a home, so a copy of a home
+carries no key. With the key missing or changed, a sealed value raises "the vault's key is gone",
+and the rows are kept: they open again once the key file is back, and a new login replaces them.
+A `secret.db` of an older flnd, whose values were plaintext, is sealed in place the first time
+it is opened, each plugin's values under its default account.
 
 A cookie login (`flnd login <code> chrome`, or a cookie file) keeps only the cookies of the
 plugin's domains and their subdomains, and is refused unless one of the cookies the plugin's
@@ -359,8 +367,9 @@ jar, for the names already in it. A plain cookie file a much older flnd left,
 `cookies/<code>.txt` (or `.json`), is moved into `secret.db` the first time the plugin is used,
 and deleted once it is saved.
 
-The code: `flnkit/cookies.py` reads cookies from a file or a browser, `flnkit/vault.py`
-stores them in `secret.db`, and `src/engine/home.py` holds the logins that use both.
+The code: `flnkit/cookies.py` reads cookies from a file or a browser, `flnkit/vault.py` seals
+them, `src/engine/auth.py` keeps them in `secret.db`, and `src/engine/home.py` holds the logins
+that use them.
 
 `flnd logout <code>` removes a plugin's rows.
 

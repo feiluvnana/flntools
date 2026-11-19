@@ -17,7 +17,6 @@ from unittest import mock
 from flnd.engine import store
 from flnd.errors import DiskError, NetworkError, NotFound, UsageError
 from flnd.testing import fake_clock
-from flnkit import vault
 
 # Version 1 as a home made it: its schema text, then what its `_upgrade` added.
 V1 = """
@@ -143,16 +142,20 @@ class StoreCase(unittest.TestCase):
         with sqlite3.connect(self.path) as sql:
             sql.executescript(V1)
         sql.close()
-        for slot in slots:
-            with vault.Vault(self.home / store.SECRETS, slot) as saved:
-                saved["cookies"] = "[]"
+        if not slots:
+            return
+        with sqlite3.connect(self.home / store.SECRETS) as sql:
+            sql.execute("CREATE TABLE secrets (slot TEXT NOT NULL, name TEXT NOT NULL,"
+                        " value TEXT NOT NULL, PRIMARY KEY (slot, name)) WITHOUT ROWID")
+            sql.executemany("INSERT INTO secrets VALUES (?, 'cookies', '[]')",
+                            [(slot,) for slot in slots])
+        sql.close()
 
 
 class MigrationTest(StoreCase):
     def test_every_row_of_a_version_1_home_moves_to_schema_2(self):
         self.v1()
-        sealed = []
-        with self.open(seal=lambda sql, accounts: sealed.append(dict(accounts))) as opened:
+        with self.open() as opened:
             self.assertEqual(rows(self.path, "SELECT * FROM meta"), [("version", "2")])
             files = {row.key: row for row in opened.on_disk()}
             self.assertEqual(sorted(files), ["ins:1_0", "ins:1_0@reels", "ins:1_1"])
@@ -189,8 +192,6 @@ class MigrationTest(StoreCase):
                                         ("loi", "default", "", True, "ok"),
                                         ("tlg", "default", "qr", True, "ok"),
                                         ("twt", "default", "file", True, "ok")])
-        self.assertEqual(sealed, [{row[0]: row[1] for row in rows(
-            self.path, "SELECT plugin, id FROM accounts")}])
         with store.open(self.home / "fresh") as fresh:
             fresh.state("x")["y"] = 1
         self.assertEqual(schema(self.path), schema(fresh.path))
@@ -246,23 +247,9 @@ class MigrationTest(StoreCase):
         self.open().close()
         before = (schema(self.path), rows(self.path, "SELECT * FROM files ORDER BY key"),
                   rows(self.path, "SELECT * FROM accounts"))
-        sealed = []
-        self.open(seal=lambda sql, accounts: sealed.append(accounts)).close()
+        self.open().close()
         self.assertEqual((schema(self.path), rows(self.path, "SELECT * FROM files ORDER BY key"),
                           rows(self.path, "SELECT * FROM accounts")), before)
-        self.assertEqual(sealed, [])
-
-    def test_a_failing_seal_leaves_version_1_whole(self):
-        self.v1()
-        before = schema(self.path)
-
-        def seal(sql, accounts):
-            raise DiskError("no key")
-
-        with self.assertRaises(DiskError):
-            store.open(self.home, seal=seal)
-        self.assertEqual((schema(self.path), rows(self.path, "SELECT * FROM meta")),
-                         (before, [("version", "1")]))
 
     def test_a_home_flnd_cannot_read_is_refused(self):
         cases = {"newer": "INSERT INTO meta VALUES ('version', '3')",

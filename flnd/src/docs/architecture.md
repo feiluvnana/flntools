@@ -513,8 +513,8 @@ Everything lives in the home folder, `.flnd` in the current folder unless `--hom
 - `media/<code>/<target>/<category>/…`: the files, each written as `<name>.part` first, which
   locks itself, so two runs may share a home and never write one file twice;
 - `metadata/`: the databases: `flnd.db` for what the home remembers (`files`, `targets`,
-  `runs`, `failures`, `state`, `logins`), and `secret.db` for plugin logins and credentials in
-  plaintext;
+  `runs`, `failures`, `state`, `accounts`), and `secret.db` for the accounts' logins and
+  credentials, sealed under the user's key;
 - `log/`: each run's scrubbed samples of answers a plugin couldn't read, kept 30 days.
 
 Two rules hold every write together: a post's rows commit in one transaction once all its files
@@ -639,8 +639,9 @@ The choices that explain how flnd behaves, made with its user in November 2026:
    project.
 10. **Plugins load from the user's folder or installed packages, never from a home**, since a
     home is often the current folder, and code there may not be the user's own.
-11. **Secrets are stored in `metadata/secret.db`** in plaintext, so an unattended sync can open
-    it without passwords or key files.
+11. **Secrets are sealed in `metadata/secret.db`** under a key file kept outside every home
+    (`~/.config/flnd/key`), so an unattended sync opens them without a password, and a copied
+    home carries no readable login.
 12. **One `Plugin` class per site**, with routes and categories (above).
 13. **A fixed chain of steps** after each file (above).
 14. **Ruff is the one checker** (`make lint`), with no type checker: type hints are for readers,

@@ -104,7 +104,7 @@ which is also the CLI's. Its layout is in [storage.md](storage.md).
 
 ## Login
 A plugin's saved credentials: browser cookies for most sites, a session for Telegram. Logins are
-kept in the home's vault, `metadata/secret.db`, in plaintext
+kept in the home's vault, `metadata/secret.db`, sealed under the user's key
 ([storage.md](storage.md#the-vault)).
 
 ## Pace
