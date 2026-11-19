@@ -290,10 +290,25 @@ def target_clean(args: argparse.Namespace) -> int:
         0.
     """
     with _open(args) as fl:
+        if not args.json and not _sure(fl, args):
+            _line(args, None, "kept: nothing was forgotten")
+            return OK
         forgotten = fl.targets.clean(*args.targets, media=args.media)
     for row in forgotten:
         _line(args, row, f"{row.target}: forgotten" + (" with its files" if args.media else ""))
     return OK
+
+
+def _sure(fl: flnd.Flnd, args: argparse.Namespace) -> bool:
+    """Ask "Forget 2 targets and delete 1.2 GB?" of a terminal; a pipe isn't asked."""
+    from flnd.ui import forms, out
+
+    named = {str(each) for each in args.targets}
+    size = sum(row.size for row in fl.targets if str(row.target) in named)
+    title = f"Forget {out.count(len(named), 'target')}"
+    if args.media:
+        title += f" and delete {out.size(size)}" if size else " and delete their files"
+    return forms.confirm(title + "?")
 
 
 def auth_list(args: argparse.Namespace) -> int:
@@ -373,7 +388,13 @@ def auth_logout(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
+    from flnd.ui import forms
+
     with _open(args) as fl:
+        if not args.json and not forms.confirm(
+                f"Log {args.account or 'the default account'} out of {args.plugin}?"):
+            _line(args, None, "kept: nobody was logged out")
+            return OK
         gone = fl.auth.logout(args.plugin, name=args.account)
     _line(args, gone, f"{gone.plugin}: {gone.name} logged out")
     return OK
@@ -442,7 +463,12 @@ def plugin_uninstall(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
+    from flnd.ui import forms
+
     with _open(args) as fl:
+        if not args.json and not forms.confirm(f"Uninstall {args.code}?"):
+            _line(args, None, "kept: nothing was uninstalled")
+            return OK
         gone = fl.plugins.uninstall(args.code)
     _line(args, gone, f"{gone.code}: uninstalled")
     return OK
@@ -496,7 +522,7 @@ def status(args: argparse.Namespace) -> int:
     Returns:
         0 when all is well, else 1.
     """
-    from flnd.ui import out
+    from flnd.ui import forms, out
 
     with _open(args) as fl:
         found = fl.status
@@ -515,11 +541,21 @@ def status(args: argparse.Namespace) -> int:
         out.line(("  account ", "dim"), (f"{row.plugin} {row.name}", "bold focus"), ": ",
                  (_state(row), "warn"))
     _disk(checked)
+    rows = len(checked.missing) + len(checked.resized)
+    if rows and not checked.fixed and forms.confirm(f"Repair {out.count(rows, 'row')}?",
+                                                    default=False):
+        with _open(args) as fl:
+            checked = fl.check(fix=True)
+        _disk(checked)
+        well = (found is None or not found.failures) and not accounts and checked.ok
     return OK if well else FAILED
 
 
 def config(args: argparse.Namespace) -> int:
-    """Show every setting of config.toml: its value, its default and where it comes from.
+    """Work in every setting of config.toml: its value, its default and where it comes from.
+
+    On a terminal it is a list: e edits the value under the cursor in a form, a sets another
+    key, d resets one to its default. On a pipe it is a plain table.
 
     Args:
         args: the parsed flags.
@@ -527,19 +563,58 @@ def config(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    with _open(args) as fl:
-        rows = [(key, fl.config[key], fl.config.default(key), fl.config.where(key))
-                for key in fl.config]
-    if args.json:
-        from flnd.ui import out
+    from flnd.ui import forms, lists
 
-        for key, value, default, where in rows:
-            out.json({"type": "Setting", "key": key, "value": value, "default": default,
-                      "from": where})
-        return OK
-    _table(("key", "value", "default", "from"),
-           [(key, _show(value), _show(default), where) for key, value, default, where in rows])
+    with _open(args) as fl:
+        if args.json:
+            from flnd.ui import out
+
+            for key in fl.config:
+                out.json({"type": "Setting", "key": key, "value": fl.config[key],
+                          "default": fl.config.default(key), "from": fl.config.where(key)})
+            return OK
+
+        def load() -> list[lists.Row]:
+            return [lists.Row(key, (key, _show(fl.config[key]), _show(fl.config.default(key)),
+                                    fl.config.where(key))) for key in fl.config]
+
+        def edit(key: str | None) -> None:
+            if key is None:
+                return
+            typed = forms.text(f"{key} = ", default=_show(fl.config[key]))
+            if typed is not None:
+                fl.config.set(key, _typed(typed, fl.config.default(key)))
+
+        def add(_: str | None) -> None:
+            key = forms.text("Setting (defaults.when, plugins.ins.pace)")
+            if key:
+                edit(key.strip())
+
+        columns = (lists.Column("key"), lists.Column("value"), lists.Column("default"),
+                   lists.Column("from"))
+        lists.show("Settings", columns, load,
+                   keys=(lists.Key("e", "edit", edit, leave=True),
+                         lists.Key("a", "add", add, leave=True)),
+                   delete=lists.Key("d", "reset", lambda key: fl.config.unset(key)))
     return OK
+
+
+def _typed(text: str, like: Any) -> Any:
+    """What a form's text means for a setting that defaults to `like`: a bool, a number, a
+    list or table written as JSON, else the text itself."""
+    import json
+
+    text = text.strip()
+    if isinstance(like, bool):
+        return text.lower() in ("true", "yes", "on", "1")
+    if isinstance(like, (int, float, list, dict)) or text[:1] in "[{":
+        try:
+            return json.loads(text)
+        except ValueError:
+            return text
+    if like is None and text.lower() in ("true", "false"):
+        return text.lower() == "true"
+    return "" if text == "-" else text
 
 
 def host(args: argparse.Namespace) -> int:
@@ -591,6 +666,9 @@ def _disk(found: Any) -> None:
     line = f"disk: {out.count(found.files, 'file')}: "
     if not problems:
         out.line((line, "dim"), ("history and disk agree", "bold good"))
+    elif found.fixed:
+        out.line((line, "dim"), ("repaired " + ", ".join(problems), "bold good"),
+                 ("; the history now matches the disk", "dim"))
     else:
         out.line((line, "dim"), (", ".join(problems), "bold bad"))
 
@@ -897,10 +975,34 @@ def _ask_how(args: argparse.Namespace, code: str | None = None,
         raise flnd.UsageError(f"{code}: how to log in?",
                               hint=f"flnd auth login {code} <method>, a method of "
                                    f"{', '.join(ways)}")
-    picked = forms.choose(f"Log in to {code} with", list(ways))
+    name = _names().get(code, code)
+    picked = forms.select(f"Log in to {name}", [_way(way) for way in ways])
+    if picked is None:
+        raise flnd.UsageError(f"{code}: no way chosen to log in")
+    path = None
     if picked == "file":
-        return picked, forms.ask("Path of the cookie file").strip()
-    return picked, None
+        path = (forms.text("Cookie file") or "").strip()
+    return picked, path
+
+
+def _way(way: str) -> Any:
+    """One way to log in as the login form words it."""
+    from flnd.ui import forms
+
+    words = {"browser": ("In a browser window", "flnd opens Chromium; log in as usual"),
+             "chrome": ("From your Chrome", "through the extension"),
+             "file": ("From a cookie file", "a cookies.txt you exported"),
+             "qr": ("With a QR code", "scan it in the app"),
+             "phone": ("With your phone number", "a code comes by message")}
+    label, note = words.get(way, (f"From your {way.title()}", "reads its cookies"))
+    return forms.Option(label, way, note)
+
+
+def _names() -> dict[str, str]:
+    """The name of every built-in plugin, by code, from the manifest."""
+    from flnd.plugins import _manifest
+
+    return {code: str(entry["name"]) for code, entry in _manifest.PLUGINS.items()}
 
 
 def _pick_plugin(fl: flnd.Flnd) -> str:
@@ -908,7 +1010,12 @@ def _pick_plugin(fl: flnd.Flnd) -> str:
     from flnd.ui import forms
 
     logins = {row.code: row.name for row in fl.plugins if row.logins}
-    return forms.choose("Log in to", {f"{name} ({code})": code for code, name in logins.items()})
+    picked = forms.select("Log in to", {f"{name} ({code})": code for code, name in logins.items()})
+    if picked is None:
+        import flnd
+
+        raise flnd.UsageError("no plugin chosen to log in to")
+    return str(picked)
 
 
 def _ago(at: str) -> float | None:

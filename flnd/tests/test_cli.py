@@ -105,6 +105,16 @@ class FlndCase(unittest.TestCase):
         self.stdin = mock.patch("sys.stdin", Stdin(tty=True))
         self.stdin.start()
         self.addCleanup(lambda: self.stdin.stop())
+        # What a terminal is asked is recorded, and answered with `self.sure`; a pipe isn't asked.
+        self.asked, self.sure = [], True
+
+        def confirm(title, *, default=True):
+            if not sys.stdin.isatty():
+                return default
+            self.asked.append(title)
+            return self.sure
+
+        self.enterContext(mock.patch("flnd.ui.forms.confirm", confirm))
 
     def pipe(self, text):
         self.stdin.stop()
@@ -335,6 +345,21 @@ class RunTest(ExampleCase):
         self.assertIn("not a known target", err)
         self.assertEqual(self.run_app("target", "clean")[0], 2)
 
+    def test_a_terminal_is_asked_before_a_forget_and_a_pipe_is_not(self):
+        self.run_app("get", "exs:example_user", "exs:p/9")
+        self.sure = False
+        code, text, _ = self.run_app("target", "clean", "exs:example_user", "--media")
+        self.assertEqual((code, text), (0, "kept: nothing was forgotten\n"))
+        self.assertRegex(self.asked[-1], r"^Forget 1 target and delete [\d.]+ B\?$")
+        self.assertEqual(len(self.run_app("--json", "target", "list")[1].splitlines()), 2)
+        self.sure = True
+        self.assertEqual(self.run_app("target", "clean", "exs:example_user")[0], 0)
+        self.assertEqual(self.asked[-1], "Forget 1 target?")
+        self.pipe("")
+        self.asked.clear()
+        self.assertEqual(self.run_app("target", "clean", "exs:9")[0], 0)
+        self.assertEqual((self.asked, self.run_app("target", "list")[1].split()[6:]), ([], ["run"]))
+
 
 class WiringTest(ExampleCase):
     """On a terminal each list gets its rows and keys from the library (`flnd.ui.lists`)."""
@@ -412,6 +437,75 @@ class WiringTest(ExampleCase):
 
         with mock.patch.dict(os.environ, {"FLND_PLUGINS": str(Path(self.tmp.name) / "plugins")}):
             self.listed(script, "plugin", "list")
+
+
+class FormsTest(ExampleCase):
+    """What a terminal is asked, in forms (`flnd.ui.forms`): status's repair, config, the login."""
+
+    def test_status_offers_to_repair_the_rows_a_terminal_can_and_a_pipe_cannot(self):
+        import time
+
+        self.run_app("get", "exs:example_user")
+        next(Path(".flnd/media").rglob("*p1*")).unlink()
+        aged = mock.patch("flnd.engine.store.time.time",
+                          return_value=time.time() + 2 * _store.SETTLING)
+        with aged:
+            self.sure = False
+            code, text, _ = self.run_app("status")
+            self.assertEqual((code, self.asked), (1, ["Repair 1 row?"]))
+            self.assertIn("disk: 3 files: 1 missing", text)
+            self.pipe("")
+            self.assertEqual(self.run_app("status")[0], 1)
+            self.assertEqual(self.asked, ["Repair 1 row?"])
+            self.stdin.stop()
+            self.stdin = mock.patch("sys.stdin", Stdin(tty=True))
+            self.stdin.start()
+            self.sure = True
+            code, text, _ = self.run_app("status")
+            self.assertEqual(code, 0)
+            self.assertEqual(text.splitlines()[-1], "disk: 3 files: repaired 1 missing; "
+                             "the history now matches the disk")
+            self.assertEqual(self.run_app("status")[0], 0)
+
+    def test_config_edits_adds_and_resets_a_setting_in_forms(self):
+        def script(title, load, keys, delete):
+            self.assertEqual(title, "Settings")
+            with mock.patch("flnd.ui.forms.text", return_value="30d"):
+                keys["e"].run("defaults.when")
+            with mock.patch("flnd.ui.forms.text", side_effect=["defaults.height", "720"]):
+                keys["a"].run(None)
+            with mock.patch("flnd.ui.forms.text", return_value="true"):
+                keys["e"].run("defaults.sidecars")
+            rows = {row.key: row.cells for row in load()}
+            self.assertEqual(rows["defaults.when"], ("defaults.when", "30d", "-", "home"))
+            self.assertEqual(rows["defaults.height"][1], "720")
+            self.assertEqual(rows["defaults.sidecars"][1:], ("true", "false", "home"))
+            delete.run("defaults.when")
+            self.assertEqual({row.key: row.cells[3] for row in load()}["defaults.when"], "default")
+
+        from flnd.ui import lists
+
+        with mock.patch.object(lists, "show", lambda *a, **k: script(*a[:1], a[2], *[
+                {key.char: key for key in k["keys"]}, k["delete"]])):
+            self.assertEqual(self.run_app("config")[0], 0)
+        self.assertIn("height = 720", Path(".flnd/config.toml").read_text(encoding="utf-8"))
+
+    def test_the_login_form_words_each_way_and_asks_the_path_of_a_file(self):
+        shown = []
+
+        def select(title, options, **_):
+            shown.append((title, [(option.label, option.note) for option in options]))
+            return "file"
+
+        with mock.patch("flnd.ui.forms.select", select), \
+                mock.patch("flnd.ui.forms.text", return_value=str(self.cookie_file(NETSCAPE))):
+            code, text, err = self.run_app("auth", "login", "twt")
+        self.assertEqual(code, 0, err)
+        title, options = shown[0]
+        self.assertEqual(title, "Log in to Twitter/X")
+        self.assertIn(("From a cookie file", "a cookies.txt you exported"), options)
+        self.assertIn(("From your Chrome", "through the extension"), options)
+        self.assertRegex(text, r"^twt: logged in as ")
 
 
 class ExitStatusTest(FlndCase):
@@ -598,6 +692,11 @@ class ListsTest(FlndCase):
             code, text, err = self.run_app("plugin", "install", str(source))
             self.assertEqual((code, text), (0, "exa: installed (Example)\n"), err)
             self.assertRegex(self.run_app("plugin", "list")[1], r"exa +Example +installed +2 ")
+            self.sure = False
+            self.assertEqual(self.run_app("plugin", "uninstall", "exa")[1],
+                             "kept: nothing was uninstalled\n")
+            self.assertEqual(self.asked, ["Uninstall exa?"])
+            self.sure = True
             self.assertEqual(self.run_app("plugin", "uninstall", "exa")[1], "exa: uninstalled\n")
             self.assertEqual(self.run_app("plugin", "uninstall", "ins")[0], 2)
             self.assertEqual(self.run_app("plugin", "install", "missing.py")[0], 2)
@@ -640,6 +739,15 @@ class AuthTest(FlndCase):
         for argv in (("ins",), ("ytb",), ("ins", "nobody")):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_app("auth", "logout", *argv)[0], 2)
+
+    def test_a_logout_asks_a_terminal_and_a_declined_one_keeps_the_account(self):
+        sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="one")
+        self.sure = False
+        self.assertEqual(self.run_app("auth", "logout", "ins")[1], "kept: nobody was logged out\n")
+        self.assertEqual(self.asked, ["Log the default account out of ins?"])
+        self.assertIn("one", self.run_app("auth", "list")[1])
+        self.pipe("")
+        self.assertEqual(self.run_app("auth", "logout", "ins")[1], "ins: one logged out\n")
 
     def test_a_missing_cookie_exits_3_and_a_wrong_way_or_plugin_exits_2(self):
         code, _, err = self.run_app("auth", "login", "fbk", "file",

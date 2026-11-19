@@ -171,7 +171,8 @@ flnd target clean <targets…> [--media]
 - `clean` forgets the targets: their rows, files rows, failures, cursors, heads and gaps. A
   target the home doesn't know is a usage error. `--media` also deletes their recorded files,
   sidecars, links, extracted archive folders and the folders this leaves empty. Files under
-  `media/` that no row names are never deleted.
+  `media/` that no row names are never deleted. A terminal is asked first ("Forget 2 targets and
+  delete 1.2 GB?"); a pipe, and `--json`, aren't.
 
 ## `flnd auth`
 
@@ -202,7 +203,22 @@ flnd auth logout <plugin> [account]
   plugin's login cookies. It is sealed in the home's vault, `metadata/secret.db`, under a key
   kept outside the home ([storage.md](storage.md#the-vault)). Each account the site names is
   kept apart; logging in again as one replaces its login.
-- `logout` logs one account out, or the plugin's default when none is named.
+- `logout` logs one account out, or the plugin's default when none is named; a terminal is asked
+  first, a pipe isn't.
+
+On a terminal, the questions are forms in the style of Huh, drawn inline: a bar `┃` and a
+title, `↑↓` choose, `enter` confirms, `esc` goes back and Ctrl-C stops. Logging in, for example:
+
+```text
+  ┃ Log in to Instagram
+  ┃
+  ┃ ❯ In a browser window      flnd opens Chromium; log in as usual
+  ┃   From your Chrome         through the extension
+  ┃   From a cookie file       a cookies.txt you exported
+```
+
+Without a terminal, a question that has no answer (the method of a login) is a usage error that
+names what was needed; a yes-or-no question isn't asked, and the command goes on.
 
 ```sh
 flnd auth list
@@ -228,7 +244,8 @@ flnd plugin uninstall <code>
   plugin.
 - `install` checks a plugin's `.py` file or package folder, copies it into the plugin folder
   and records it; an installed code is replaced.
-- `uninstall` removes an installed plugin. Its accounts and targets stay.
+- `uninstall` removes an installed plugin, after asking a terminal. Its accounts and targets
+  stay.
 
 Plugins load from `$FLND_PLUGINS`, else `~/.config/flnd/plugins/` (`%APPDATA%\flnd\plugins\` on
 Windows); never from a home ([writing-a-plugin.md](writing-a-plugin.md#10-shipping-it-as-a-plugin)).
@@ -268,15 +285,21 @@ flnd status --json
 - The **accounts** that are held, expired or expiring within a week.
 - The **disk**: files missing, unknown, or of the wrong size ([storage.md](storage.md#checking-a-home)).
 
-It exits 0 when all is well, and 1 when a failure, an account or the disk needs care. With
+On a terminal with rows to repair (files missing or of the wrong size) it asks "Repair 2
+rows? (y/N)", and a yes makes the history match the disk (`fl.check(fix=True)`); unknown files
+are only reported. It exits 0 when all is well, and 1 when a failure, an account or the disk
+needs care. With
 `--json`, it prints one `{"type": "Status", "status", "accounts", "disk"}` object.
 
 ## `flnd config`
 
-Show every setting of `config.toml`: its key, value, default and where the value comes from
-(`home`, `user` or `default`). `--json` prints one `{"type": "Setting", …}` object per key.
-Settings are written with the library's `fl.config.set` ([library.md](library.md)); the keys
-are in [storage.md](storage.md#settings-configtoml).
+Work in the settings of `config.toml`: each key, its value, its default and where the value comes
+from (`home`, `user` or `default`). On a terminal it is a list: `e` edits the value under the
+cursor in a form, `a` asks for another key (a plugin's `plugins.ins.pace`) and its value, and `d`
+resets a key to its default. The file is edited with tomlkit, so its comments stay, and a value
+the key doesn't take is a message in the list. On a pipe it is a plain table; `--json` prints
+one `{"type": "Setting", …}` object per key. The keys are in
+[storage.md](storage.md#settings-configtoml).
 
 ## What a run prints
 
