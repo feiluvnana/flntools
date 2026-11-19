@@ -1,7 +1,6 @@
-"""flnd.plugin, plugin API 2, on its own: every check a plugin's class gets when it is made,
-routes and categories (patterns, value pairs, single, discovers, own, url), `resolve` and its
-refusals, walls by whole segments, the types a plugin yields and reads, the hooks' defaults,
-logins, `Ctx`'s members, and the helpers. Made-up plugins on example.com; no network.
+"""flnd.plugin (plugin API 2) on its own: the checks a plugin's class gets when it is made, routes
+and categories, `resolve`, walls, the types a plugin yields and reads, hooks, logins, `Ctx`'s
+members and the helpers. Made-up plugins on example.com; no network.
 """
 
 import asyncio
@@ -281,18 +280,6 @@ class DeclarationTest(unittest.TestCase):
         for patterns, message in rows:
             with self.subTest(patterns), self.assertRaisesRegex(PluginError, message):
                 plugin(user=route(*patterns)(listing))
-        with self.assertRaisesRegex(PluginError, r"route <lambda>: take \(self, ctx, value\)"):
-            route("exm:{user}")(lambda self, user: None)
-        with self.assertRaisesRegex(PluginError, r"a single route reads one post"):
-            route("exm:{user}", single=True, discovers=True)(listing)
-        with self.assertRaisesRegex(PluginError, r"category <lambda>: take \(self, ctx, profile\)"):
-            route("exm:{user}")(profile).category(lambda self, profile: None)
-        with self.assertRaisesRegex(PluginError, r"category 'posts' is declared twice"):
-            made = route("exm:{user}")(profile)
-            made.category(posts)
-            made.category(posts)
-        with self.assertRaisesRegex(PluginError, r"category posts: url '\{user'"):
-            route("exm:{user}")(profile).category(url="{user")(posts)
         options = [
             (lambda: route("exm:{user}", single=1)(listing), r"route listing: single is True"),
             (lambda: route("exm:{user}", discovers="yes")(listing), r"discovers is True or"),
@@ -302,10 +289,22 @@ class DeclarationTest(unittest.TestCase):
              r"category posts: own is True or False, not 0"),
             (lambda: route("exm:{user}")(profile).category(newest_first=1)(posts),
              r"category posts: newest_first is True or False, not 1"),
+            (lambda: route("exm:{user}")(profile).category(url="{user")(posts),
+             r"category posts: url '\{user'"),
+            (lambda: route("exm:{user}")(profile).category(lambda self, profile: None),
+             r"category <lambda>: take \(self, ctx, profile\)"),
+            (lambda: route("exm:{user}")(lambda self, user: None),
+             r"route <lambda>: take \(self, ctx, value\)"),
+            (lambda: route("exm:{user}", single=True, discovers=True)(listing),
+             r"a single route reads one post"),
         ]
         for make, message in options:
             with self.subTest(message), self.assertRaisesRegex(PluginError, message):
                 make()
+        with self.assertRaisesRegex(PluginError, r"category 'posts' is declared twice"):
+            made = route("exm:{user}")(profile)
+            made.category(posts)
+            made.category(posts)
 
     def test_a_valid_plugin_derives_its_routes_forms_and_categories(self):
         self.assertEqual([known.kind for known in Example.routes],
@@ -327,8 +326,8 @@ class DeclarationTest(unittest.TestCase):
                 yield Post(user)
 
         self.assertEqual([known.kind for known in Again.routes][-1], "user")
-        self.assertEqual(Again.resolve("exa:example_user"), Target("exa:example_user",
-                                                                   kind="user"))
+        self.assertEqual(Again.resolve("exa:example_user"),
+                         Target("exa:example_user", kind="user"))
 
 
 class RouteTest(unittest.TestCase):
@@ -416,8 +415,8 @@ class RouteTest(unittest.TestCase):
                     return Target(f"ext:{text[5:]}", kind="chat")
                 return super().resolve(text)
 
-        self.assertEqual(Titled.resolve("ext:#Example Chat"), Target("ext:Example Chat",
-                                                                     kind="chat"))
+        self.assertEqual(Titled.resolve("ext:#Example Chat"),
+                         Target("ext:Example Chat", kind="chat"))
         self.assertEqual(Titled.resolve("ext:example_user").kind, "user")
 
     def test_walls_match_whole_path_segments(self):
@@ -473,12 +472,11 @@ class TypesTest(unittest.TestCase):
         self.assertEqual(Post("1", date=1, listed=2).replace(date=3).listed, 2)
         pinned = Post("1", pinned=True)
         self.assertEqual((post.pinned, pinned.replace(date=3).pinned,
-                          pinned.replace(pinned=False).pinned, pinned.listed), (False, True, False,
-                                                                                None))
+                          pinned.replace(pinned=False).pinned, pinned.listed),
+                         (False, True, False, None))
         with self.assertRaises(PluginError):
             Post("1", pinned=1)
-        lazy = Post("1", files)
-        self.assertTrue(lazy.lazy)
+        self.assertTrue(Post("1", files).lazy)
         for made, name in ((post, "id"), (post, "date"), (File("https://a.example.com/x"), "url")):
             with self.subTest(name), self.assertRaises(dataclasses.FrozenInstanceError):
                 setattr(made, name, "changed")
@@ -526,9 +524,8 @@ class TypesTest(unittest.TestCase):
 
     def test_text_and_stream_files(self):
         note = File.text("info.md", "# Title\n")
-        self.assertEqual((note.name, note.content, note.url, note.mirrors), ("info.md",
-                                                                              "# Title\n", None,
-                                                                              ()))
+        self.assertEqual((note.name, note.content, note.url, note.mirrors),
+                         ("info.md", "# Title\n", None, ()))
         live = File.stream("https://cdn.example.com/v.m3u8", headers={"referer": "x"})
         self.assertEqual((live.playlist, dict(live.headers), live.url),
                          ("https://cdn.example.com/v.m3u8", {"referer": "x"}, None))
@@ -718,24 +715,20 @@ class HelpersTest(unittest.TestCase):
                 self.assertEqual(None if found is None else found.url, expected)
         self.assertIsNone(best([]))
 
-    def test_numbered(self):
+    def test_numbered_and_dig(self):
         rows = [((7,), {}, "07"), ((7,), {"suffix": "_cover"}, "07_cover"),
                 ((2,), {"suffix": ".webp", "width": 3}, "002.webp"), ((123,), {}, "123")]
         for args, options, expected in rows:
             with self.subTest(expected):
                 self.assertEqual(numbered(*args, **options), expected)
-
-    def test_dig_is_the_kits(self):
         self.assertIs(dig, kit_dig.dig)
         self.assertEqual(dig({"a": [{"b": 1}]}, "a[0].b"), 1)
         with self.assertRaises(ValueError):
             dig({}, "a[")
 
 
-# ---------------------------------------------------------------------------------------------
 # The engine's `Ctx` (src/engine/ctx.py), on a real plugin run with tests/test_ctx.py's fake
-# browser and `flnkit.net.fake`
-# ---------------------------------------------------------------------------------------------
+# browser and `flnkit.net.fake`.
 
 API_URL = "https://api.example.com"
 PROFILE = "https://www.example.com/example_user/"
@@ -760,16 +753,16 @@ class CtxCase(RunCase):
 
 
 class PagesTest(CtxCase):
-    def listing(self, start):
-        from flnd.engine.ctx import Listing
-
-        return Listing(start, label="exw:example_user: posts")
-
     def collected(self, run, ctx):
         async def pages():
             return [page.json async for page in ctx.pages(f"{API_URL}/posts", cursor="next")]
 
         return self.call(run, pages())
+
+    def listing(self, start):
+        from flnd.engine.ctx import Listing
+
+        return Listing(start, label="exw:example_user: posts")
 
     def test_a_429_on_a_resumed_page_keeps_its_cursor(self):
         """S6: the saved cursor outlives a rate limit; the next run resumes from it."""
@@ -797,22 +790,15 @@ class PagesTest(CtxCase):
 
 
 class OpenTest(CtxCase):
-    def opened(self, statuses, url=PROFILE, **raw):
-        self.raw = FakeRaw(statuses, **raw)
+    def opened(self, statuses, url=PROFILE):
+        self.raw = FakeRaw(statuses)
         run, ctx = self.ctx()
         return run, ctx, lambda: self.call(run, ctx.open(url))
-
-    def test_a_404_page_is_not_found_and_a_page_says_where_it_landed(self):
-        """S5: `open` keeps the page's status: a 404 raises `NotFound`, never a quiet False."""
-        _, _, opened = self.opened([200, 404])
-        self.assertEqual(opened(), Landed(PROFILE, 200))
-        with self.assertRaises(NotFound):
-            opened()
 
     def landed(self, lands, name):
         """`open` of `example.com/<name>/`, its tab landing where `lands` says."""
         url = f"https://www.example.com/{name}/"
-        _, ctx, opened = self.opened([200] * 4, url)
+        _, _, opened = self.opened([200] * 4, url)
         original = self.raw.goto
 
         async def goto(target, **options):
@@ -822,6 +808,13 @@ class OpenTest(CtxCase):
 
         self.raw.goto = goto
         return opened
+
+    def test_a_404_page_is_not_found_and_a_page_says_where_it_landed(self):
+        """S5: `open` keeps the page's status: a 404 raises `NotFound`, never a quiet False."""
+        _, _, opened = self.opened([200, 404])
+        self.assertEqual(opened(), Landed(PROFILE, 200))
+        with self.assertRaises(NotFound):
+            opened()
 
     def test_landed_keeps_the_pages_own_status(self):
         _, _, opened = self.opened([203])
@@ -835,17 +828,13 @@ class OpenTest(CtxCase):
         self.assertEqual(len(self.raw.loaded), 3)
         self.assertGreaterEqual(self.now, 150.0)
 
-    # The three wall tests the API-1 plugins had (fbk, ins, twt), on the engine's rule.
-    def test_a_profile_named_like_the_login_page_is_no_wall(self):
+    def test_a_profile_named_like_a_wall_is_read_as_a_profile(self):
+        # The engine's wall rule matches whole path segments, so these names are no wall.
         self.assertEqual(self.landed({}, "login.example")().status, 200)
-
-    def test_a_profile_whose_name_starts_like_a_wall_is_not_one(self):
         for name in ("challenge_example", "challengers"):
             with self.subTest(name=name):
                 self.assertEqual(self.landed({}, name)().status, 200)
                 self.assertEqual(self.raw.loaded, [f"https://www.example.com/{name}/"])
-
-    def test_a_handle_that_starts_like_the_login_path_is_read(self):
         self.assertEqual(self.landed({}, "login_example")().url,
                          "https://www.example.com/login_example/")
 
@@ -890,6 +879,20 @@ class FetchTest(CtxCase):
         _, response = self.fetched(Request(f"{API_URL}/busy", check=False), serve=serve)
         self.assertEqual((response.status, len(self.requests)), (503, 5))
 
+    def test_a_post_is_never_tried_again(self):
+        """A POST's 5xx comes back at once: the server may have acted (a 2FA code sent)."""
+        def serve(request):
+            self.requests.append(request)
+            return _net.reply(503)
+
+        _, response = self.fetched(Request(f"{API_URL}/login", method="POST", check=False),
+                                   serve=serve)
+        self.assertEqual((response.status, len(self.requests)), (503, 1))
+        with self.assertRaises(SiteError):
+            self.fetched(Request(f"{API_URL}/login", method="POST", body={"code": "1"}),
+                         serve=serve)
+        self.assertEqual(len(self.requests), 2)
+
     def test_blocked_holds_for_what_it_reads(self):
         class Strict(Wired):
             code = "exs"
@@ -909,21 +912,6 @@ class FetchTest(CtxCase):
         with mock.patch.object(ctx, "PAGE_LIMIT", 10), \
                 self.assertRaisesRegex(SiteError, "too big to read as a page"):
             self.fetched(f"{API_URL}/big", serve=lambda request: _net.reply(200, content=b"x" * 11))
-
-
-    def test_a_post_is_never_tried_again(self):
-        """A POST's 5xx comes back at once: the server may have acted (a 2FA code sent)."""
-        def serve(request):
-            self.requests.append(request)
-            return _net.reply(503)
-
-        _, response = self.fetched(Request(f"{API_URL}/login", method="POST", check=False),
-                                   serve=serve)
-        self.assertEqual((response.status, len(self.requests)), (503, 1))
-        with self.assertRaises(SiteError):
-            self.fetched(Request(f"{API_URL}/login", method="POST", body={"code": "1"}),
-                         serve=serve)
-        self.assertEqual(len(self.requests), 2)
 
     def test_a_redirect_to_a_wall_is_one_and_a_direct_request_is_not(self):
         wall = "https://www.example.com/accounts/login/"
@@ -1064,9 +1052,10 @@ class ReadsTest(CtxCase):
             self.call(run, release())
 
     def test_its_cookies_are_its_domains_only(self):
+        jar = [{"name": "sid", "value": "1", "domain": ".example.com", "path": "/"},
+               {"name": "cdn", "value": "2", "domain": "cdn.example", "path": "/"}]
         run, made = self.ctx()
-        run.session.add([{"name": "sid", "value": "1", "domain": ".example.com", "path": "/"},
-                         {"name": "cdn", "value": "2", "domain": "cdn.example", "path": "/"}])
+        run.session.add(jar)
         self.assertEqual(dict(made.cookies), {"sid": "1"})
         seen = {}
 
@@ -1078,8 +1067,7 @@ class ReadsTest(CtxCase):
                 return request
 
         run, made = self.ctx(Seeing)
-        run.session.add([{"name": "sid", "value": "1", "domain": ".example.com", "path": "/"},
-                         {"name": "cdn", "value": "2", "domain": "cdn.example", "path": "/"}])
+        run.session.add(jar)
         self.call(run, made.fetch(f"{API_URL}/me"))
         self.assertEqual(seen, {"sid": "1"})
 
@@ -1135,16 +1123,15 @@ class ReadsTest(CtxCase):
                                                            "https://www.example.com/b/"])
 
 
-# ---------------------------------------------------------------------------------------------
-# Through the real engine (`fakes.EngineCase`): names, a single route's categories, `ranged`
-# ---------------------------------------------------------------------------------------------
+# The engine end to end (`fakes.EngineCase`): file names, a single route's categories, and
+# ranged fetches.
 
 JPEG = b"\xff\xd8\xff\xe0" + b"\0" * 60
 CDN_URL = "https://cdn.example"
 
 
 class Saving(Plugin):
-    """A post of the files `FILES` holds, one route per case of the engine's naming."""
+    """A post of the files `files` holds, one route per case of the engine's naming."""
 
     code = "exn"
     name = "Saving"
@@ -1218,8 +1205,7 @@ class EngineTest(EngineCase):
     def ranged(self, count):
         """`count` ranged fetch files of 4 small segments each, saved at once on one host."""
         size = 4 * (64 << 10) + 123
-        blob = bytes(range(256)) * (size // 256 + 1)
-        blob = blob[:size]
+        blob = (bytes(range(256)) * (size // 256 + 1))[:size]
 
         async def fetch(part):
             end = part.end if part.end is not None else size
