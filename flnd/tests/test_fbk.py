@@ -1,7 +1,6 @@
 """Facebook on plugin API 2 (`src/plugins/fbk.py`), run on `FakeCtx`: the routes, a profile's
 categories, blocks and walls, pages that don't load, the single links and the media walker."""
 
-import asyncio
 import datetime
 import json
 import unittest
@@ -10,7 +9,7 @@ from types import SimpleNamespace
 import fakes  # noqa: F401  (refuses real profiles; fails a coroutine never awaited)
 
 from flnd.errors import Blocked, LoginError, NotFound, SiteError, UsageError
-from flnd.plugin import Post, Range, Target
+from flnd.plugin import Plugin, Range, Target
 from flnd.plugins.fbk import (
     TEMPORARILY_BLOCKED,
     Facebook,
@@ -441,16 +440,9 @@ class SingleLinkTest(unittest.TestCase):
 
 
 class DateTest(unittest.TestCase):
-    def test_a_photo_page_dates_an_undated_photo_from_the_tab(self):
-        url = f"{SITE}/photo/?fbid=123"
-        cases = [('<script>{"created_time":1767312000,"x":{"created_time":1}}</script>',
-                  datetime.date(2026, 1, 2)), ("<p>gone</p>", None)]
-        for html, day in cases:
-            with self.subTest(day=day):
-                ctx = FakeCtx(Facebook, routes={url: Reply(html)})
-                self.assertEqual(asyncio.run(Facebook().date(ctx, Post("123"))), day)
-                self.assertEqual((ctx.seen.requests[0][1], ctx.seen.requests[0][2]["in_page"]),
-                                 (url, True))
+    def test_there_is_no_date_hook_since_a_photo_page_embeds_no_day(self):
+        # Live (2026-11-19): 9 of 9 photo pages held no timestamp, so asking cost a request each.
+        self.assertIs(Facebook.date, Plugin.date)
 
 
 class WalkerTest(unittest.TestCase):

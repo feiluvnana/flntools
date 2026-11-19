@@ -138,12 +138,9 @@ merged). Otherwise its progressive files are kept in turn as mirrors, an address
 when one refuses, HD first, and so are its other video addresses. A photo is its largest image
 URL.
 
-A photo or video that the results leave undated is dated afterwards. flnd requests
-`https://www.facebook.com/photo/?fbid=<id>` from inside the open page, so the request carries the
-page's session, and reads the first `created_time` in the answer. The engine asks for the day of an
-undated post. A post the page gives no day for is not asked again for 30 days, and asking stops
-after a block. A block answer to this request is held like any other
-(`blocked()`). This has not been checked on a live page.
+A photo or video the results leave undated has no day of its own: its page embeds no timestamp
+(a live check, 2026-11-19, found none on 9 of 9 photo pages), so there is no `date` hook. The
+engine gives it the day of its nearest dated neighbour in the listing.
 
 **Pace and concurrency.** `pace` is 0.2: at least 0.2 seconds between two page requests of one
 account. Each CDN host's files download 8 at once, adapting up to 32. The plugin sets no `limits`
@@ -194,8 +191,6 @@ Example:
   waits are the engine's.
 - **The next page's cursor** is looked for at most 3 objects deep under a result's `data`, so a
   comment list's `page_info` is not taken for the tab's.
-- **A photo's own day** is taken to be the first `created_time` on its page. This has not been
-  checked on a live page; a wrong guess only dates a photo that would otherwise be undated.
 - **Login wall paths** are matched as whole path segments, so a profile named `login.example` is
   not a wall.
 - **`fb.watch` short links** are followed in the browser to the video they point to.

@@ -5,7 +5,6 @@ src/docs/plugins/fbk explains it: the pages it reads, the site's quirks, the rul
 
 from __future__ import annotations
 
-import datetime
 import re
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from typing import Any, NamedTuple
@@ -91,9 +90,6 @@ NOT_MEDIA = {"profile_header_renderer"}
 TIMESTAMPS = ("creation_time", "publish_time", "post_timestamp", "timestamp", "created_time")
 # The Comet GraphQL endpoint's responses carry the feed.
 FEED = "graphql"
-# 2026-11-13: a photo page's own day is taken to be its first `created_time`; not yet checked
-# on a live page, and a wrong guess only dates a photo that would be undated.
-CREATED_TIME = re.compile(r'"created_time":(\d{9,11})\b')
 # A video's id in the URL a video link lands on: `/videos/<id>`, `/<page>/videos/<id>`,
 # `/reel/<id>`.
 VIDEO_PATH = re.compile(r"/(?:videos|reel|reels)/(?:[^/]+/)?(\d+)")
@@ -179,14 +175,6 @@ class Facebook(Plugin):
         if "__bbox" not in text and BLOCKED in text.lower():
             return 0.0
         return None
-
-    async def date(self, ctx: Ctx, post: Post) -> datetime.date | None:
-        """A photo's day, from its own page's first `created_time`, asked from the tab."""
-        page = (await ctx.fetch(f"{SITE}/photo/?fbid={post.id}", in_page=True)).text
-        found = CREATED_TIME.search(page)
-        if found is None:
-            return None
-        return datetime.datetime.fromtimestamp(int(found[1]), datetime.UTC).date()
 
     @route(
         r"facebook.com/watch?v={video:\d+}", r"fb.com/watch?v={video:\d+}",
