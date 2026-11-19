@@ -220,7 +220,7 @@ class RoutesTest(unittest.TestCase):
     def test_declarations(self):
         # S13: the API version is no longer shadowed by an API client on the instance.
         self.assertEqual((Instagram.api, Instagram().api), (2, 2))
-        self.assertEqual(Instagram.pace, 0.5)
+        self.assertEqual(Instagram.pace, 2.0)
         self.assertEqual(Instagram.walls, ("/accounts/login", "/challenge", "/accounts/suspended"))
         route = next(known for known in Instagram.routes if known.kind == "user")
         self.assertEqual([c.name for c in route.categories if not c.own], ["tagged", "reposts"])
@@ -399,6 +399,17 @@ class TabTest(unittest.TestCase):
                          [f"posts/{DAY}_P2.jpg"])
         self.assertEqual([(post, type(error)) for post, error in ctx.seen.failed],
                          [("RP2", NotFound)])
+
+    def test_placeholder_null_image_is_skipped(self):
+        """Instagram's rsrc.php/null.jpg placeholder is ignored, leaving valid carousel slides."""
+        broken = feed("P1", product_type="carousel_container", carousel_media=[
+            image("https://static.cdninstagram.com/rsrc.php/null.jpg", width=1080),
+            image("https://cdn.example/real.jpg", width=1080),
+        ])
+        ctx = self.tab(grid(broken, more=""), embeds=[grid(broken, more="c1")],
+                       routes={f"{SITE}/p/P1/": post_page(**broken)})
+        self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
+                         [f"posts/{DAY}_P1.jpg"])
 
     def test_a_tab_whose_embedded_page_is_its_last_is_not_scrolled(self):
         """Every embedded result is read, the highlights after the last grid page too; then
@@ -585,6 +596,8 @@ class MeEngineTest(fakes.EngineCase):
         self.assertEqual(fakes.targets(self.home), {})
         report = engine.download(["ins:me/posts"], sync=True)
         self.assertTrue(report.ok, report)
+        self.assertEqual([row.text for row in engine.tally.publish(force=True).targets],
+                         ["ins:me", "ins:example_user"])
         rows = fakes.targets(self.home)
         self.assertEqual((list(rows), rows["ins:me"].seen), (["ins:me"], ["ins:example_user"]))
         [listed] = engine.target_ls()
@@ -593,6 +606,8 @@ class MeEngineTest(fakes.EngineCase):
         self.follows.pop(0)
         report = engine.sync()
         self.assertTrue(report.ok, report)
+        self.assertEqual([row.text for row in engine.tally.publish(force=True).targets],
+                         ["ins:me", "ins:example_creator"])
         self.assertEqual([str(found.target) for found in report.targets], ["ins:me"])
         self.assertEqual(list(fakes.targets(self.home)), ["ins:me"])
         self.assertTrue(self.saved("example_creator", "B1"))

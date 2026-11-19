@@ -98,6 +98,9 @@ class Instagram(Plugin):
     # Logged in when `sessionid` is there. Not required: a public profile shows something.
     login = cookies("sessionid", url=f"{SITE}/accounts/login/")
     browser = Browser.ANY
+    # Instagram rate-limits bursts of `/p/<code>/` and GraphQL page requests; 2 s keeps a long
+    # sync under the limit.
+    pace = 2.0
     # A throttled session is sent to the login wall or a challenge, which lifts after a wait;
     # a suspended or locked account is sent to its own page (2026-11).
     walls = ("/accounts/login", "/challenge", "/accounts/suspended")
@@ -664,11 +667,18 @@ def as_file(urls: tuple[str, ...], audio: str | None, *, name: str | None = None
     return File(mirrors=urls, audio=audio, name=name)
 
 
+def _placeholder(url: str) -> bool:
+    """Whether `url` is Instagram's `rsrc.php/null.*` placeholder for a missing image."""
+    return urlsplit(url).path.startswith("/rsrc.php/null")
+
+
 def _streams(versions: Any) -> list[Stream]:
     """An item's image or video versions as streams, each with its URL and size."""
     if not isinstance(versions, list):
         return []
     return [Stream(version["url"], height=version.get("height") or 0,
                    width=version.get("width") or 0)
-            for version in versions if isinstance(version, dict) and version.get("url")]
+            for version in versions
+            if isinstance(version, dict) and version.get("url")
+            and not _placeholder(version["url"])]
 

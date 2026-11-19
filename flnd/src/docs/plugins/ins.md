@@ -128,10 +128,10 @@ a mirror: it is saved alone, without the audio, if the DASH video fails. A DASH 
 `.webm` only when its video stream is WebM, else as `.mp4`. A photo is its largest image
 candidate.
 
-**Pace and concurrency.** The plugin sets no `pace`, so the default of 0.5 seconds applies
-between two page requests of one account. Each CDN host's files download 8 at once, adapting up
-to 32 (the plugin sets no `limits` of its own). The CDN gets a `Referer: https://www.instagram.com/`
-header, which it requires.
+**Pace and concurrency.** The plugin sets `pace = 2.0`, so 2 seconds apply between two page
+requests of one account to stay below Instagram's rate limit. Each CDN host's files download 8
+at once, adapting up to 32 (the plugin sets no `limits` of its own). The CDN gets a
+`Referer: https://www.instagram.com/` header, which it requires.
 
 ## Where files go
 

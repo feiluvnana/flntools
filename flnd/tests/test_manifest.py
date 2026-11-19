@@ -96,7 +96,7 @@ class BuiltInTest(unittest.TestCase):
         rows = {  # code: (login cookies, pace, stealth, own User-Agent, host limits)
             "tik": (("sessionid", "sid_tt"), 0.2, True, True, {}),
             "fbk": (("c_user", "xs"), 0.2, True, False, {}),
-            "ins": (("sessionid",), 0.5, True, False, {}),
+            "ins": (("sessionid",), 2.0, True, False, {}),
             "twt": (("auth_token",), 0.2, False, True, {}),
             "loi": (("access-token",), 0.5, True, False, {}),
             "tlg": ((), 0.5, True, False, {"t.me": 3}),
