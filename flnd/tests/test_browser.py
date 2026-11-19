@@ -745,6 +745,33 @@ class FakeBrowserTest(BrowserCase):
                 # The debug mark is a glyph of the theme; the text after it is what matters.
                 self.assertEqual([line[2:] for line in self.lines()], lines)
 
+    def test_a_429_feed_response_raises_blocked_with_reset_wait_even_without_body(self):
+        raw = SimpleNamespace(on=lambda *args: None, remove_listener=lambda *args: None)
+        page = _browser.Page(cast(Any, raw), cast(Any, None))
+        tabs = SimpleNamespace(
+            page=page, scroll=_browser.FAST,
+            push=lambda *a, **kw: None, pop=lambda *a, **kw: None,
+            run=lambda coro: run(coro),
+        )
+        with _time.use(_time.Fake()):
+            feed = _browser.Feed(cast(Any, tabs), "/graphql", scroll=False)
+
+            async def deliver():
+                feed._capture.listener(SimpleNamespace(
+                    url="https://site.test/api/graphql", status=200, headers={},
+                    text=mock.AsyncMock(return_value='{"n": 1}')))
+                feed._capture.listener(SimpleNamespace(
+                    url="https://site.test/api/graphql", status=429,
+                    headers={"X-Rate-Limit-Reset": str(int(_time.FAKE_WALL) + 60)},
+                    text=mock.AsyncMock(side_effect=_browser._raw_error()("No resource"))))
+                await feed._capture.settle()
+
+            run(deliver())
+            self.assertEqual(next(feed), {"n": 1})
+            with self.assertRaises(Blocked) as caught:
+                next(feed)
+        self.assertEqual((caught.exception.status, caught.exception.wait), (429, 61.0))
+
     def test_a_read_survives_a_navigation_or_two_and_no_other_error(self):
         navigating = _browser._raw_error()("Page.content: Execution context was destroyed, "
                                            "most likely because of a navigation")

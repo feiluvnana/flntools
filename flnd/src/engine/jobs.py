@@ -718,7 +718,7 @@ class Scheduler:
         return self.tabs.free >= WARM_FREE and not self.tabs.waiting
 
     def hold(self, plugin: str, account: str | None, *, seconds: float, reason: str,
-             bucket: str | None = None) -> float:
+             bucket: str | None = None, reset: bool = False) -> float:
         """Hold an account, or one of its buckets, as a block round: the plugin's `ctx.hold`.
 
         The hold lasts the larger of `seconds` and the round's wait (30, 120, 480 s), and
@@ -728,6 +728,7 @@ class Scheduler:
             seconds: what the site asked for; 0 when it said nothing.
             reason: why, for the screen.
             bucket: the bucket held; None holds the whole account.
+            reset: forget earlier block rounds first (progress was made since the last hold).
 
         Returns:
             The seconds the hold lasts from now.
@@ -735,7 +736,12 @@ class Scheduler:
         Raises:
             Blocked: a fourth round; it fails its job without another try.
         """
-        hold = self._counted((plugin, account, bucket))
+        key = (plugin, account, bucket)
+        if reset:
+            existing = self._holds.get(key)
+            if existing is not None:
+                existing.rounds = 0
+        hold = self._counted(key)
         if not self._rounded(hold, seconds, reason):
             raise errors.Blocked(f"{reason}: still blocked after {len(ROUND_WAITS)} holds",
                                  wait=seconds or None, retryable=False)

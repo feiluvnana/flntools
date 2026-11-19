@@ -428,6 +428,23 @@ class FeedTest(CtxCase):
 
         self.assertEqual(self.call(run, two()), [1, 2])
 
+    def test_a_429_feed_response_surfaces_blocked_with_its_wait(self):
+        from flnd.errors import Blocked
+
+        run, ctx = self.ctx()
+
+        async def read_429():
+            async with ctx.feed("graphql", scroll=False) as feed:
+                self.raw.answer(SimpleNamespace(
+                    url=GRAPHQL, status=429, headers={"Retry-After": "12"},
+                    text=mock.AsyncMock(return_value="")))
+                await asyncio.sleep(0)
+                return [item async for item in feed]
+
+        with self.assertRaises(Blocked) as caught:
+            self.call(run, read_429())
+        self.assertEqual((caught.exception.status, caught.exception.wait), (429, 12.0))
+
 
 class TabTest(CtxCase):
     def setUp(self):

@@ -709,7 +709,7 @@ class Ctx:
                 raise Stopped(f"{self._target}: stopped while waiting: {reason}")
 
     async def hold(self, reason: str, *, seconds: float | None = None,
-                   bucket: str | None = None) -> None:
+                   bucket: str | None = None, reset: bool = False) -> None:
         """See `flnd.plugin.Ctx.hold`: a block round, waited out here before the plugin goes
         on, as its next job would wait it out: a listing that reads a feed or an SDK, which
         aren't jobs, resumes only once the hold ends.
@@ -721,7 +721,7 @@ class Ctx:
         code = self._plugin.code
         try:
             held = self._run.scheduler.hold(code, self._who, seconds=seconds or 0.0,
-                                            reason=reason, bucket=bucket)
+                                            reason=reason, bucket=bucket, reset=reset)
         except Blocked as error:
             raise Blocked(f"{code}: {reason}, after {len(jobs.ROUND_WAITS)} holds",
                           hint="try again later, or raise the plugin's pace in config.toml",
@@ -865,7 +865,11 @@ class _Feed:
             raise StopAsyncIteration
         feed = await self._open()
         step = chrome.next_block if isinstance(feed, chrome.ExtensionFeed) else next
-        item = await self._ctx._run.off(step, feed, _DONE)
+        try:
+            item = await self._ctx._run.off(step, feed, _DONE)
+        except BaseException:
+            await self.aclose()
+            raise
         if item is _DONE:
             await self.aclose()
             raise StopAsyncIteration

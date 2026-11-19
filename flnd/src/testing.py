@@ -30,9 +30,9 @@ from urllib.parse import urlsplit
 import flnd.engine.ctx
 import flnd.plugin
 from flnd.engine import jobs
-from flnd.errors import Changed, NetworkError, NotFound, PluginError, SiteError, UsageError
+from flnd.errors import Blocked, Changed, NetworkError, NotFound, PluginError, SiteError, UsageError
 from flnd.plugin import Document, File, Landed, Plugin, Post, Request, Response
-from flnkit import clock
+from flnkit import clock, net
 
 if TYPE_CHECKING:
     pass
@@ -145,20 +145,25 @@ class Sent:
 
     Args:
         url: the response's URL, which a feed's match reads.
-        body: its parsed JSON.
+        body: its parsed JSON, or None for an empty body.
         click: sent when `ctx.click` clicks this CSS selector on the page; None for none.
         scroll: sent on the page's n-th scroll (from 1) by a scrolling feed; None for none.
             With neither, it is sent as the page loads.
+        request: the request that triggered this response, if any.
+        status: the HTTP status code.
+        headers: the response's headers, if any.
 
     Raises:
         PluginError: both `click` and `scroll`, or a `scroll` under 1.
     """
 
     url: str
-    body: Any
+    body: Any = None
     click: str | None = field(default=None, kw_only=True)
     scroll: int | None = field(default=None, kw_only=True)
     request: Request | None = field(default=None, kw_only=True)
+    status: int = field(default=200, kw_only=True)
+    headers: Mapping[str, str] | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.click is not None and self.scroll is not None:
@@ -468,7 +473,7 @@ class FakeCtx:
         self._clock().sleep(seconds)
 
     async def hold(self, reason: str, *, seconds: float | None = None,
-                   bucket: str | None = None) -> None:
+                   bucket: str | None = None, reset: bool = False) -> None:
         """Take a block round, as the scheduler's `hold`, and wait it out on the fake clock,
         as the engine does.
 
@@ -477,7 +482,7 @@ class FakeCtx:
         """
         with clock.use(self._clock()):
             self._jobs.hold(self._plugin.code, self._account, seconds=seconds or 0.0,
-                            reason=reason, bucket=bucket)
+                            reason=reason, bucket=bucket, reset=reset)
             await self._jobs.wait(self._plugin.code, self._account, bucket=bucket)
 
     async def call(self, fn: Callable[..., T], *args: Any) -> T:
@@ -650,7 +655,8 @@ class _Tab:
         """Hand each response to the feeds listening now; one nobody hears is lost."""
         for entry in sent:
             for listening in list(self.feeds):
-                listening._push(entry.url, entry.body, entry.request)
+                listening._push(entry.url, entry.body, entry.request,
+                                status=entry.status, headers=entry.headers)
 
 
 class _CtxFeed:
@@ -668,9 +674,18 @@ class _CtxFeed:
         self._done = False
         tab.feeds.append(self)
 
-    def _push(self, url: str, data: Any, request: Request | None = None) -> None:
+    def _push(self, url: str, data: Any, request: Request | None = None, *,
+              status: int = 200, headers: Mapping[str, str] | None = None) -> None:
         """Take one response if it matches and the feed is open."""
         if not self._done and self._matches(url):
+            if status == 429:
+                hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+                method = request.method if request is not None else "GET"
+                with clock.use(self._ctx._clock()):
+                    error = net.refusal(net.Response(status, url, hdrs), method=method)
+                assert error is not None
+                self._waiting.append((error, request))
+                return
             self._waiting.append((data, request))
             self._cursors.read(data)
 
@@ -692,6 +707,9 @@ class _CtxFeed:
             self.close()
             raise StopAsyncIteration
         data, self._ctx._request = self._waiting.popleft()
+        if isinstance(data, Blocked):
+            self.close()
+            raise data
         return data
 
     def close(self) -> None:

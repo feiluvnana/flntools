@@ -34,9 +34,11 @@ flnd get twt:example_handle --folder=example_handle
 flnd get "twt?@example_handle -from:example_handle" --folder=example_handle
 ```
 
-**Slice older search history by year.** X search slows down or stops scrolling deep histories.
-Split older years with `--when` (flnd translates `--when` into X's `since:` and `until:`
-operators) into the same `--folder`:
+**Slice older search history by year (optional).** flnd automatically continues past X search
+cursor limits with `max_id:` windows and waits out HTTP 429 rate-limit resets, so long searches
+resume on their own. For very deep multi-year histories, splitting by year with `--when` (flnd
+translates `--when` into X's `since:` and `until:` operators) into the same `--folder` still
+keeps each run focused:
 
 ```sh
 flnd get "twt?@example_handle -from:example_handle" --when 30d --folder=example_handle/tagged

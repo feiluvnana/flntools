@@ -294,7 +294,7 @@ flnd.plugin.Ctx.extension(op: str, **args: Any) -> Any
 flnd.plugin.Ctx.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
 flnd.plugin.Ctx.fetch(request: str | Request, *, bucket: str | None = None, in_page: bool = False) -> Response
 flnd.plugin.Ctx.handoff(message: str, *, until: Callable[[], Awaitable[bool]], timeout: float | None = None) -> bool
-flnd.plugin.Ctx.hold(reason: str, *, seconds: float | None = None, bucket: str | None = None) -> None
+flnd.plugin.Ctx.hold(reason: str, *, seconds: float | None = None, bucket: str | None = None, reset: bool = False) -> None
 flnd.plugin.Ctx.load(url: str, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
 flnd.plugin.Ctx.log(level: str, message: str, **fields: Any) -> None
 flnd.plugin.Ctx.open(url: str) -> Landed
@@ -502,7 +502,7 @@ flnd.testing.FakeCtx.extension(op: str, **args: Any) -> Any
 flnd.testing.FakeCtx.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
 flnd.testing.FakeCtx.fetch(request: str | Request, *, bucket: str | None = None, in_page: bool = False) -> Response
 flnd.testing.FakeCtx.handoff(message: str, *, until: Callable[[], Awaitable[bool]], timeout: float | None = None) -> bool
-flnd.testing.FakeCtx.hold(reason: str, *, seconds: float | None = None, bucket: str | None = None) -> None
+flnd.testing.FakeCtx.hold(reason: str, *, seconds: float | None = None, bucket: str | None = None, reset: bool = False) -> None
 flnd.testing.FakeCtx.load(url: str, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
 flnd.testing.FakeCtx.log(level: str, message: str, **fields: Any) -> None
 flnd.testing.FakeCtx.open(url: str) -> Landed
@@ -538,11 +538,13 @@ flnd.testing.Seen.requests: field -> list[tuple[str, str, dict[str, Any]]]
 flnd.testing.Seen.scrolls: field -> int
 flnd.testing.Seen.visited: field -> list[str]
 flnd.testing.Seen.warmed: field -> list[str]
-flnd.testing.Sent(url: str, body: Any, *, click: str | None = None, scroll: int | None = None, request: Request | None = None)
+flnd.testing.Sent(url: str, body: Any = None, *, click: str | None = None, scroll: int | None = None, request: Request | None = None, status: int = 200, headers: Mapping[str, str] | None = None)
 flnd.testing.Sent.body: field -> Any
 flnd.testing.Sent.click: field -> str | None
+flnd.testing.Sent.headers: field -> Mapping[str, str] | None
 flnd.testing.Sent.request: field -> Request | None
 flnd.testing.Sent.scroll: field -> int | None
+flnd.testing.Sent.status: field -> int
 flnd.testing.Sent.url: field -> str
 flnd.testing.check(plugin: type[Plugin]) -> list[flnd.plugin.Target]
 flnd.testing.collect(plugin: type[Plugin], target: str, *, ctx: FakeCtx | None = None, categories: Sequence[str] | None = None, limit: int | None = None) -> list[Collected]

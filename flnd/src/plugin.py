@@ -1121,7 +1121,7 @@ class Ctx(Protocol):
         ...
 
     async def hold(self, reason: str, *, seconds: float | None = None,
-                   bucket: str | None = None) -> None:
+                   bucket: str | None = None, reset: bool = False) -> None:
         """Hold the plugin's requests for a block it read itself (a feed's, a page's, an SDK's).
 
         The engine holds the bucket, or switches accounts, by its block rules.
@@ -1130,6 +1130,7 @@ class Ctx(Protocol):
             reason: what the site did, shown with the hold.
             seconds: how long the site asked for; None holds by the block rules.
             bucket: the bucket it holds; None is the host's.
+            reset: forget earlier block rounds first, when progress was made since the last hold.
         """
         ...
 

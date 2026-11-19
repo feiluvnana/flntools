@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 
 import no_profiles  # noqa: F401
 
-from flnd.errors import LoginError, NotFound, SiteError
+from flnd.errors import Blocked, LoginError, NotFound, SiteError
 from flnd.plugin import Range, Request, Target
 from flnd.plugins.twt import (
     QUERIES,
@@ -390,6 +390,153 @@ class SearchTest(unittest.TestCase):
         finally:
             case.doCleanups()
 
+    def search_url(self, q):
+        from urllib.parse import urlencode
+
+        return "https://x.com/search?" + urlencode({"q": q, "src": "typed_query", "f": "live"})
+
+    def test_search_continues_across_max_id_windows_and_text_only_tweets(self):
+        plugin = Twitter()
+        # Tweet 95 is text-only (no media), so oldest_id still advances to 95 -> max_id:94.
+        w1 = self.search_url("example words")
+        w2 = self.search_url("example words max_id:94")
+        w3 = self.search_url("example words max_id:89")
+        pages = {
+            w1: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("100", [photo("a")])), item(tweet("95", [])),
+                     cursor="c1", search=True),
+                page(cursor="c2", search=True),
+            ])),
+            w2: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("95", [])), item(tweet("90", [photo("b")])),
+                     cursor="c3", search=True),
+                page(cursor="c4", search=True),
+            ])),
+            w3: FakePage(feeds=sent(self.RESPONSE, [page(cursor="c5", search=True)])),
+        }
+        ctx = FakeCtx(plugin, "twt?example words", pages=pages)
+        found = listed(plugin, ctx, "search", "example words")
+        self.assertEqual([str(target) for target in found],
+                         ["https://x.com/i/web/status/100", "https://x.com/i/web/status/90"])
+        self.assertEqual(ctx.seen.visited, [w1, w2, w3])
+        saved = collect(Twitter, str(found[1]), ctx=FakeCtx(plugin, str(found[1])))
+        self.assertEqual([f.path for f in saved], [f"{DAY}_90_0.jpg"])
+
+    def test_search_replaces_user_max_id_and_stops_before_when_since(self):
+        plugin = Twitter()
+        old = tweet("190", [photo("b")])
+        old["legacy"]["created_at"] = "Sat Oct 31 23:59:00 +0000 2026"
+        w1 = self.search_url("example max_id:500 since:2026-11-01 until:2026-11-10")
+        w2 = self.search_url("example max_id:299 since:2026-11-01 until:2026-11-10")
+        pages = {
+            w1: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("300", [photo("a")])), cursor="c1", search=True),
+            ])),
+            w2: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(old), cursor="c2", search=True),
+            ])),
+        }
+        ctx = FakeCtx(plugin, "twt?example max_id:500", pages=pages,
+                      when=Range(date(2026, 11, 1), date(2026, 11, 9)))
+        found = listed(plugin, ctx, "search", "example max_id:500")
+        self.assertEqual([str(t) for t in found],
+                         ["https://x.com/i/web/status/300", "https://x.com/i/web/status/190"])
+        self.assertEqual(ctx.seen.visited, [w1, w2])
+
+    def test_search_empty_pages_continue_with_new_cursor_and_stop_on_repeat_or_limit(self):
+        plugin = Twitter()
+        w1 = self.search_url("example")
+        w2 = self.search_url("example max_id:9")
+        # 2 advancing empty pages followed by tweet 10; then repeated cursor c5 stops;
+        # then max_id:9 has >3 advancing empty pages and stops before reaching tweet 5.
+        pages = {
+            w1: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("20", [photo("a")])), cursor="c1", search=True),
+                page(cursor="c2", search=True),
+                page(cursor="c3", search=True),
+                page(item(tweet("10", [photo("b")])), cursor="c4", search=True),
+                page(cursor="c5", search=True),
+                page(cursor="c5", search=True),
+                page(item(tweet("8", [photo("x")])), cursor="c6", search=True),
+            ])),
+            w2: FakePage(feeds=sent(self.RESPONSE, [
+                page(cursor="e1", search=True),
+                page(cursor="e2", search=True),
+                page(cursor="e3", search=True),
+                page(cursor="e4", search=True),
+                page(item(tweet("5", [photo("y")])), cursor="e5", search=True),
+            ])),
+        }
+        ctx = FakeCtx(plugin, "twt?example", pages=pages)
+        found = listed(plugin, ctx, "search", "example")
+        self.assertEqual([str(t) for t in found],
+                         ["https://x.com/i/web/status/20", "https://x.com/i/web/status/10"])
+        # Empty page followed by cursor=None also stops immediately.
+        p_none = FakePage(feeds=sent(self.RESPONSE, [
+            page(item(tweet("1", [photo("a")])), cursor="c1", search=True),
+            page(cursor="c2", search=True),
+            {"data": {"search_by_raw_query": {"search_timeline": {"timeline": {
+                "instructions": [{"type": "TimelineAddEntries", "entries": []}]}}}}},
+            page(item(tweet("2", [photo("b")])), cursor="c3", search=True),
+        ]))
+        ctx2 = FakeCtx(plugin, "twt?example", pages={w1: p_none})
+        self.assertEqual([str(t) for t in listed(plugin, ctx2, "search", "example")],
+                         ["https://x.com/i/web/status/1"])
+
+    def test_search_429_holds_and_resumes_past_three_windows_and_fails_when_stalled(self):
+        from unittest import mock
+
+        plugin = Twitter()
+        w1 = self.search_url("example")
+        w2 = self.search_url("example max_id:99")
+        w3 = self.search_url("example max_id:89")
+        w4 = self.search_url("example max_id:79")
+        w5 = self.search_url("example max_id:69")
+
+        def make_429_page(tid, img, cursor, reset_hdr):
+            return FakePage(feeds=[
+                Sent(self.RESPONSE, page(item(tweet(tid, [photo(img)])),
+                                         cursor=cursor, search=True)),
+                Sent(self.RESPONSE, status=429, headers=reset_hdr, scroll=1),
+            ])
+
+        pages = {
+            w1: [lambda r: make_429_page("100", "a", "c1", r)],
+            w2: [
+                # First try hits 429 before any tweets: retries same window w2.
+                lambda r: FakePage(feeds=[Sent(self.RESPONSE, status=429, headers=r)]),
+                lambda r: make_429_page("90", "b", "c2", r),
+            ],
+            w3: [lambda r: make_429_page("80", "c", "c3", r)],
+            w4: [lambda r: make_429_page("70", "d", "c4", r)],
+            w5: [lambda _r: FakePage(feeds=sent(self.RESPONSE, [page(cursor="c5", search=True)]))],
+        }
+        ctx = FakeCtx(plugin, "twt?example")
+        orig_open = ctx.open
+
+        async def open_queued(target_url):
+            reset_hdr = {"x-rate-limit-reset": str(int(ctx.time.wall()) + 60)}
+            ctx._pages[target_url] = pages[target_url].pop(0)(reset_hdr)
+            return await orig_open(target_url)
+
+        with mock.patch.object(ctx, "open", side_effect=open_queued):
+            found = listed(plugin, ctx, "search", "example")
+        self.assertEqual([str(t) for t in found], [
+            "https://x.com/i/web/status/100", "https://x.com/i/web/status/90",
+            "https://x.com/i/web/status/80", "https://x.com/i/web/status/70"])
+        self.assertEqual(ctx.seen.visited, [w1, w2, w2, w3, w4, w5])
+        self.assertEqual(len(ctx.seen.holds), 5)
+        self.assertTrue(all(b == "SearchTimeline" and s >= 60.0 for _, s, b in ctx.seen.holds))
+
+        # 4 consecutive 429s with no progress fail with Blocked (even with a 900s reset).
+        long_reset = {"x-rate-limit-reset": str(int(FAKE_WALL) + 900)}
+        stalled_ctx = FakeCtx(plugin, "twt?example", pages={
+            w1: FakePage(feeds=[Sent(self.RESPONSE, status=429, headers=long_reset)]),
+        })
+        with self.assertRaises(Blocked):
+            listed(plugin, stalled_ctx, "search", "example")
+        self.assertEqual(len(stalled_ctx.seen.holds), 3)
+
 
 class TimelineTest(unittest.TestCase):
     def test_grid_items_and_the_pinned_tweet_are_read_the_pinned_one_unordered(self):
@@ -466,6 +613,48 @@ class TimelineTest(unittest.TestCase):
                 ctx = fake(target, user=user, pages=tabs(profile, replies=timeline))
                 saved = collect(Twitter, target, ctx=ctx, categories=["replies"])
                 self.assertEqual([found.post.id for found in saved], expected)
+
+    def test_a_429_on_a_timeline_holds_its_bucket_retries_and_propagates_when_exhausted(self):
+        from unittest import mock
+
+        reset = {"x-rate-limit-reset": str(int(FAKE_WALL) + 60)}
+        link = f"{API}id/UserOriginalsTimeline"
+        ctx = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle": FakePage(feeds=[
+                Sent(link, page(item(tweet("2", [photo("a")])), cursor="c1")),
+                Sent(link, status=429, headers=reset, scroll=1),
+            ]),
+        })
+        with self.assertRaises(Blocked):
+            collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertEqual([(b, s >= 60.0) for _, s, b in ctx.seen.holds],
+                         [("UserOriginalsTimeline", True)] * 3)
+
+        # When the 429 lifts on retry, remaining posts are collected without duplicates.
+        queue = [
+            FakePage(feeds=[
+                Sent(link, page(item(tweet("2", [photo("a")])), cursor="c1")),
+                Sent(link, status=429, headers=reset, scroll=1),
+            ]),
+            FakePage(feeds=[
+                Sent(link, page(item(tweet("2", [photo("a")])),
+                                item(tweet("1", [photo("b")])), cursor="c2")),
+                Sent(link, page(cursor="c3"), scroll=1),
+            ]),
+        ]
+        ctx2 = fake(pages=tabs())
+        orig_open = ctx2.open
+
+        async def async_open(target_url):
+            if target_url == "https://x.com/example_handle":
+                ctx2._pages[target_url] = queue.pop(0)
+            return await orig_open(target_url)
+
+        with mock.patch.object(ctx2, "open", side_effect=async_open):
+            saved = collect(Twitter, "twt:example_handle", ctx=ctx2, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved], ["2", "1"])
+        self.assertEqual([b for _, _, b in ctx2.seen.holds], ["UserOriginalsTimeline"])
 
 
 class LoadTest(unittest.TestCase):

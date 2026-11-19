@@ -402,6 +402,27 @@ class FakeCtxTest(unittest.TestCase):
             with self.subTest(wrong), self.assertRaises(PluginError):
                 Sent("https://www.example.com/api/liked", 0, **wrong)
 
+    def test_a_429_sent_in_a_feed_raises_blocked_with_its_wait(self):
+        reset = str(int(_time.FAKE_WALL) + 45)
+        page = FakePage(feeds=[
+            Sent("https://www.example.com/api/liked?p=1", {"items": [1]}),
+            Sent("https://www.example.com/api/liked?p=2", status=429,
+                 headers={"x-rate-limit-reset": reset}, scroll=1),
+        ])
+        ctx = fake(pages={PAGE: page})
+
+        async def read():
+            items = []
+            async with ctx.feed("/api/liked") as feed:
+                await ctx.open(PAGE)
+                async for item in feed:
+                    items.append(item)
+            return items
+
+        with self.assertRaises(Blocked) as caught:
+            run(read())
+        self.assertEqual((caught.exception.status, caught.exception.wait), (429, 46.0))
+
     def test_it_runs_on_the_active_fake_clock_and_logs(self):
         with fake_clock() as clock:
             ctx = fake()

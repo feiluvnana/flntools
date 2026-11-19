@@ -13,7 +13,7 @@ from typing import Any
 
 from flnd.engine import extension
 from flnd.engine.config import PluginConfig
-from flnd.errors import Stopped, UsageError
+from flnd.errors import Blocked, Stopped, UsageError
 from flnd.plugin import Browser, Plugin
 from flnkit import browser, clock, cookies, net
 
@@ -324,6 +324,7 @@ class ExtensionCapture:
         self._accepts = accepts
         self._id: int | None = None
         self._items: deque[tuple[str, str]] = deque()
+        self._metas: deque[tuple[int, dict[str, str]]] = deque()
         self._pending = False
 
     async def start(self, match: str) -> None:
@@ -336,8 +337,11 @@ class ExtensionCapture:
         rows = await self._tabs._client.call("capture.read", capture=self._id)
         for row in rows:
             body = base64.b64decode(row["body"])
-            if self._accepts(net.Response(int(row.get("status") or 200), row["url"], {}, body)):
+            status = int(row.get("status") or 200)
+            headers = {str(k).lower(): str(v) for k, v in (row.get("headers") or {}).items()}
+            if self._accepts(net.Response(status, row["url"], headers, body)):
                 self._items.append((row["url"], body.decode("utf-8", "replace")))
+                self._metas.append((status, headers))
 
     async def settle(self) -> None:
         await asyncio.sleep(0.1)
@@ -452,16 +456,26 @@ class ExtensionFeed:
     def _arrived(self) -> Iterator[Any]:
         self._fill()
         while self._waiting:
-            yield self._waiting.popleft()
+            value = self._waiting.popleft()
+            if isinstance(value, Blocked):
+                raise value
+            yield value
 
     def _fill(self) -> bool:
         self._tabs.run(self._capture._pull())
         while self._capture._items:
             url, body = self._capture._items.popleft()
-            self._parse(url, body)
+            status, headers = self._capture._metas.popleft() if self._capture._metas else (200, {})
+            self._parse(url, body, status, headers)
         return bool(self._waiting)
 
-    def _parse(self, url: str, body: str) -> None:
+    def _parse(self, url: str, body: str, status: int = 200,
+               headers: Mapping[str, str] | None = None) -> None:
+        if status == 429:
+            error = net.refusal(net.Response(status, url, headers or {}, body.encode()))
+            assert error is not None
+            self._waiting.append(error)
+            return
         pieces = [line for line in body.splitlines() if line.strip()] if self._lines else [body]
         for piece in pieces:
             try:

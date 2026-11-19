@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Union
 from urllib.parse import urlsplit
 
 from flnkit import clock, net
-from flnkit.errors import Changed, NetworkError, Stopped, ToolError, UsageError
+from flnkit.errors import Blocked, Changed, NetworkError, Stopped, ToolError, UsageError
 from flnkit.text import redact
 
 _log = logging.getLogger(__name__)
@@ -1355,6 +1355,7 @@ class Capture:
     def __init__(self, page: Page, accept: Callable[[Response], bool], *, lazy: bool = False):
         self.items: deque[tuple[str, str]] = deque()
         self.requests: deque[tuple[str, str, dict[str, str], str | None] | None] = deque()
+        self._metas: deque[tuple[int, dict[str, str]]] = deque()
         self._page = page
         self._accept = accept
         # A lazy capture's responses, in the order they came.
@@ -1364,7 +1365,8 @@ class Capture:
         self._numbered = 0
         self._flushed = 0
         self._ready: dict[int, tuple[tuple[str, str],
-                          tuple[str, str, dict[str, str], str | None] | None] | None] = {}
+                          tuple[str, str, dict[str, str], str | None] | None,
+                          tuple[int, dict[str, str]]] | None] = {}
         self._reads: set[asyncio.Task[None]] = set()
         self._stopped = False
         # Set on the loop each time responses have their turn; a scroll step clears it and waits.
@@ -1392,6 +1394,10 @@ class Capture:
     async def _read(self, number: int, response: Response) -> None:
         """Read one body, then move every body now in turn into `items`."""
         entry: tuple[str, str] | None = None
+        raw_status = getattr(response, "status", 200)
+        status = raw_status if isinstance(raw_status, int) else 200
+        raw_headers = getattr(response, "headers", None) or {}
+        headers = {str(k).lower(): str(v) for k, v in raw_headers.items()}
         req = getattr(response, "request", None)
         sent = (
             (response.url, req.method, dict(getattr(req, "headers", None) or {}),
@@ -1401,10 +1407,12 @@ class Capture:
         try:
             entry = (response.url, await response.text())
         except _raw_error() as error:
+            if status == 429:
+                entry = (response.url, "")
             # Chrome frees a page's response bodies when the page moves on, and a read that comes
             # after that finds nothing: expected, so it is skipped without a line. Any other
             # unreadable body is still worth a debug line.
-            if not _gone(error):
+            elif not _gone(error):
                 _log.debug(
                     "responses: no body for {url}: {error}",
                     extra={"fields": {
@@ -1413,13 +1421,14 @@ class Capture:
                     }},
                 )
         finally:
-            self._ready[number] = (entry, sent) if entry is not None else None
+            self._ready[number] = (entry, sent, (status, headers)) if entry is not None else None
             while self._flushed in self._ready:
                 done = self._ready.pop(self._flushed)
                 self._flushed += 1
                 if done is not None:
                     self.items.append(done[0])
                     self.requests.append(done[1])
+                    self._metas.append(done[2])
                 self.news.set()
 
     async def settle(self) -> None:
@@ -1450,6 +1459,7 @@ class Capture:
         left = list(self.items)
         self.items.clear()
         self.requests.clear()
+        self._metas.clear()
         return left
 
 
@@ -2111,19 +2121,31 @@ class Feed:
         self._fill()
         while self._waiting:
             value, self.request = self._waiting.popleft()
+            if isinstance(value, Blocked):
+                raise value
             yield value
 
     def _fill(self) -> bool:
         """Parse the bodies the capture holds into `_waiting`; whether any is waiting."""
         items, requests = self._capture.items, self._capture.requests
+        metas = self._capture._metas
         while items:
             req = requests.popleft() if requests else None
-            self._parse(*items.popleft(), req)
+            status, headers = metas.popleft() if metas else (200, {})
+            self._parse(*items.popleft(), req, status, headers)
         return bool(self._waiting)
 
     def _parse(self, url: str, body: str,
-               request: tuple[str, str, dict[str, str], str | None] | None = None) -> None:
+               request: tuple[str, str, dict[str, str], str | None] | None = None,
+               status: int = 200, headers: Mapping[str, str] | None = None) -> None:
         """Parse `body`, or each line of it with `lines`, into `_waiting`, reading its cursor."""
+        if status == 429:
+            method = request[1] if request is not None else "GET"
+            error = net.refusal(net.Response(status, url, headers or {}, body.encode()),
+                                method=method)
+            assert error is not None
+            self._waiting.append((error, request))
+            return
         pieces = [line for line in body.splitlines() if line.strip()] if self._lines else [body]
         for piece in pieces:
             try:

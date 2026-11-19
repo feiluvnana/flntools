@@ -34,7 +34,13 @@ X's `filter:media` and `filter:images` index drops many tweets, while flnd alrea
 tweets locally, so leaving `filter:media` out is more complete.
 `--when` is also sent to X as `since:` and `until:`
 operators (`until:` is the day after `--when`'s last, since X's is exclusive), so a short range
-doesn't scroll through years and older history can be sliced year by year. A search is a query
+doesn't scroll through years and older history can be sliced year by year. When a search window
+stops at X's cursor limit (before reaching `--when`'s start date), flnd automatically opens a
+follow-up window with `max_id:<oldest_id - 1>` (counting text-only tweets too, and replacing any
+existing `max_id:` operator) until a clean window finds no older tweets. Transient empty pages
+with advancing `Bottom` cursors are scrolled past (up to 3 in a row), and HTTP 429 rate limits
+hold the `SearchTimeline` bucket for `x-rate-limit-reset` or `Retry-After` before resuming. A
+search is a query
 target: it yields a tweet link (`https://x.com/i/web/status/<id>`) for each tweet with a file.
 The engine downloads each as a
 `post` target, into its own folder `twt/<tweet id>/`, named and keyed as a tweet link is. Pass
@@ -186,6 +192,13 @@ separate `twt/<target>/` folders.
 - **Limited-visibility tweets** come wrapped in an outer object. flnd reads the tweet inside.
 - **Tombstones and error pages.** A removed tweet (a *tombstone*) has no id, so it is never new. A
   response that is an error or throttle body, with no cursor, is skipped, and the scroll goes on.
+  An HTTP 429 response on a feed (`SearchTimeline` or a profile timeline) holds that operation's
+  bucket for `x-rate-limit-reset` or `Retry-After` and resumes cleanly (failing only after
+  repeated holds without progress).
+- **Search cursor limits and empty pages.** X search can stop scrolling mid-history or return
+  empty pages while advancing the `Bottom` cursor. flnd continues across up to 3 consecutive empty
+  search pages when the cursor advances, and chains `max_id:<oldest_id - 1>` windows until a
+  clean window returns no older tweets (or reaches `--when`'s start).
 - **Dates.** A tweet's `created_at` reads like `Mon Nov 09 10:00:00 +0000 2026`, always UTC. A
   date in another shape leaves the tweet undated, instead of failing the timeline.
 - **Avatar size.** An avatar URL with `_normal` in it is the 48 px version. flnd drops that to get

@@ -6,13 +6,14 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from datetime import UTC, date, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any, NamedTuple
 from urllib.parse import urlencode, urlsplit
 
 from flnd.plugin import (
+    Blocked,
     Browser,
     Changed,
     Ctx,
@@ -54,6 +55,10 @@ QUERIES = {
 }
 # The operation whose responses carry a search's tweets; only the browser sends it.
 SEARCH = "SearchTimeline"
+# Consecutive empty search pages with advancing Bottom cursors allowed before stopping.
+SEARCH_EMPTY = 3
+# Matches a `max_id:<digits>` operator in a search query as its own whitespace-delimited token.
+MAX_ID = re.compile(r"(?<!\S)max_id:\d+(?!\S)", re.IGNORECASE)
 # The flags sent before the web app's own are known: a refresh replaces them with each query's
 # `featureSwitches` and the values x.com's page gives them.
 FEATURES = {"responsive_web_graphql_timeline_navigation_enabled": True,
@@ -207,16 +212,59 @@ class Twitter(Plugin):
     async def search(self, ctx: Ctx, query: str) -> AsyncIterator[Target]:
         """A search's tweets with media, such as `twt?example`, each as a tweet link.
 
-        The Latest tab is scrolled in the browser. `when` is asked of X too, as `since:` and
-        `until:`, so a search for a few days doesn't scroll through years.
+        The Latest tab is scrolled in the browser, opening follow-up `max_id:` windows past X's
+        cursor limit and holding out HTTP 429 rate limits. `when` is asked of X too, as
+        `since:` and `until:`, so a search for a few days doesn't scroll through years.
         """
-        words = " ".join([query, *range_operators(ctx.when)])
-        url = "https://x.com/search?" + urlencode({"q": words, "src": "typed_query", "f": "live"})
-        async for tweet, _ in self._scroll(ctx, url, SEARCH):
-            if any(True for _ in tweet_posts(tweet, "posts", None, part="")):
-                tweet_id = tweet_id_of(tweet)
-                self.found[tweet_id] = tweet
-                yield Target(f"https://x.com/i/web/status/{tweet_id}")
+        seen: set[str] = set()
+        oldest_id: int | None = None
+        oldest_date: date | None = None
+        window_query = query
+        stalled = 0
+        while True:
+            prev_oldest = oldest_id
+            window_seen = False
+            words = " ".join([window_query, *range_operators(ctx.when)])
+            url = "https://x.com/search?" + urlencode({
+                "q": words, "src": "typed_query", "f": "live"})
+            try:
+                async for tweet, _ in self._scroll(ctx, url, SEARCH):
+                    tweet_id = tweet_id_of(tweet)
+                    if not tweet_id or tweet_id in seen:
+                        continue
+                    seen.add(tweet_id)
+                    window_seen = True
+                    if tweet_id.isdigit():
+                        tid = int(tweet_id)
+                        if oldest_id is None or tid < oldest_id:
+                            oldest_id = tid
+                            posted = parse_date(dig(unwrap(tweet), "legacy.created_at"))
+                            oldest_date = (posted.astimezone(UTC).date()
+                                           if posted is not None else None)
+                    if any(True for _ in tweet_posts(tweet, "posts", None, part="")):
+                        self.found[tweet_id] = tweet
+                        yield Target(f"https://x.com/i/web/status/{tweet_id}")
+            except Blocked as error:
+                advanced = oldest_id is not None and (
+                    prev_oldest is None or oldest_id < prev_oldest)
+                progress = window_seen if prev_oldest is None else advanced
+                stalled = 0 if progress else stalled + 1
+                if stalled > 3:
+                    raise
+                await ctx.hold("rate limited", seconds=error.wait,
+                               bucket=SEARCH, reset=progress)
+                if advanced and oldest_id is not None and oldest_id > 1:
+                    window_query = with_max_id(query, oldest_id - 1)
+                continue
+            stalled = 0
+            advanced = oldest_id is not None and (
+                prev_oldest is None or oldest_id < prev_oldest)
+            if not advanced or oldest_id is None or oldest_id <= 1:
+                break
+            if (ctx.when.since is not None and oldest_date is not None
+                    and oldest_date < ctx.when.since):
+                break
+            window_query = with_max_id(query, oldest_id - 1)
 
     @route("twt:{user}", "x.com/{user}", "twitter.com/{user}",
            r"x.com/i/user/{user:\d+}", r"twitter.com/i/user/{user:\d+}")
@@ -322,9 +370,27 @@ class Twitter(Plugin):
         """Scroll one timeline's tab to its end, yielding the posts its category keeps."""
         timeline = TIMELINES[category]
         tab = profile["page"] + timeline.tab
-        async for tweet, pinned in self._scroll(ctx, tab, timeline.query):
-            for post in tweet_posts(tweet, category, profile):
-                yield post.replace(pinned=True) if pinned else post
+        yielded: set[str] = set()
+        stalled = 0
+        while True:
+            progress = False
+            try:
+                async for tweet, pinned in self._scroll(ctx, tab, timeline.query):
+                    tid = tweet_id_of(tweet)
+                    if tid and tid in yielded:
+                        continue
+                    if tid:
+                        yielded.add(tid)
+                        progress = True
+                    for post in tweet_posts(tweet, category, profile):
+                        yield post.replace(pinned=True) if pinned else post
+                return
+            except Blocked as error:
+                stalled = 0 if progress else stalled + 1
+                if stalled > 3:
+                    raise
+                await ctx.hold("rate limited", seconds=error.wait,
+                               bucket=timeline.query, reset=progress)
 
     async def _scroll(self, ctx: Ctx, url: str,
                       query: str) -> AsyncIterator[tuple[dict, bool]]:
@@ -332,14 +398,19 @@ class Twitter(Plugin):
         and whether it is the pinned one.
 
         The end is the site's: a page that brings no new tweet, or `timeline_state` reading a
-        last page. The engine closes the generator sooner for its early stops.
+        last page. Search allows a few consecutive empty pages when the `Bottom` cursor
+        advances. The engine closes the generator sooner for its early stops.
 
         Raises:
             SiteError: the tab didn't load (NotFound for a 404), so nothing is recorded complete.
             LoginError: the tab landed on one of `walls`.
+            Blocked: the feed or page was rate limited (HTTP 429).
         """
         seen: set[str] = set()
-        async with ctx.feed(f"/{query}", scroll=True, cursor=timeline_state) as responses:
+        seen_cursors: set[str] = set()
+        empty_pages = 0
+        reader = _search_reader() if query == SEARCH else timeline_state
+        async with ctx.feed(f"/{query}", scroll=True, cursor=reader) as responses:
             landed = await ctx.open(url)
             if landed.status >= 400:
                 # A server error (a 503) may pass, so the engine's back-off tries it again.
@@ -350,12 +421,21 @@ class Twitter(Plugin):
                 # 2026-11-16: a tombstone has no id; it is never new, nor stands for a seen one.
                 new = [tweet for tweet in tweets
                        if (tid := tweet_id_of(tweet)) and tid not in seen]
-                # Only a timeline page carries a cursor: an error or throttle body is skipped,
-                # and a page of seen tweets is the end.
-                if not new and cursor is None:
-                    continue
                 if not new:
-                    break
+                    if cursor is None:
+                        if query == SEARCH and empty_pages > 0:
+                            break
+                        continue
+                    if query != SEARCH or cursor in seen_cursors:
+                        break
+                    empty_pages += 1
+                    seen_cursors.add(cursor)
+                    if empty_pages > SEARCH_EMPTY:
+                        break
+                    continue
+                empty_pages = 0
+                if cursor is not None:
+                    seen_cursors.add(cursor)
                 seen.update(tweet_id_of(tweet) for tweet in new)
                 for tweet in new:
                     yield tweet, tweet_id_of(tweet) in pinned
@@ -454,6 +534,23 @@ class Graph:
 # Reading X's JSON
 # ---------------------------------------------------------------------------------------------
 
+def with_max_id(query: str, max_id: int) -> str:
+    """`query` with `max_id:<max_id>` replacing any earlier `max_id:` operator."""
+    token = f"max_id:{max_id}"
+    if not MAX_ID.search(query):
+        return f"{query} {token}".strip()
+    replaced = False
+
+    def swap(_match: re.Match[str]) -> str:
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            return token
+        return ""
+
+    return re.sub(r" {2,}", " ", MAX_ID.sub(swap, query)).strip()
+
+
 def range_operators(when: Range) -> list[str]:
     """`when` as X search's operators: `since:` its first day, `until:` the day after its last,
     since X's `until:` is exclusive."""
@@ -507,6 +604,30 @@ def timeline_state(data: Any) -> tuple[bool, str | None] | None:
     if cursor is None:
         return None
     return bool(tweets), cursor
+
+
+def _search_reader() -> Callable[[Any], tuple[bool, str | None] | None]:
+    """A stateful cursor reader for X search: allows up to `SEARCH_EMPTY` empty pages when the
+    `Bottom` cursor advances, stopping immediately on a repeated cursor or `None` after empty."""
+    seen_cursors: set[str] = set()
+    empty = 0
+
+    def read(data: Any) -> tuple[bool, str | None] | None:
+        nonlocal empty
+        tweets, cursor, _ = read_timeline_page(data)
+        if cursor is None:
+            return (False, None) if empty > 0 else None
+        if any(tweet_id_of(tweet) for tweet in tweets):
+            empty = 0
+            seen_cursors.add(cursor)
+            return True, cursor
+        if cursor in seen_cursors:
+            return False, cursor
+        seen_cursors.add(cursor)
+        empty += 1
+        return empty <= SEARCH_EMPTY, cursor
+
+    return read
 
 
 def timeline_entries(instructions: list[Any]) -> Iterator[tuple[dict, bool]]:
