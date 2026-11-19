@@ -162,9 +162,12 @@ flnd target list
 flnd target clean <targets…> [--media]
 ```
 
-- `list` shows the targets this home knows, followed or not: their files and size (or, for a
-  search, how many targets it found), when they last ran, and their categories. On a pipe it is
-  a plain table; with `--json`, one `{"type": "Tracked", …}` object per target.
+- `list` works in the targets this home knows, followed or not: their files and size, when they
+  last ran, and their categories. On a terminal it is a list: `↑↓` move, `/` filters, `enter`
+  opens a detail panel, `f` follows or unfollows the target under the cursor, `r` makes its
+  failed files retryable, `a` asks for a target and gets it, `d` forgets one after a
+  confirmation, `q` quits. On a pipe it is a plain table; with `--json`, one
+  `{"type": "Tracked", …}` object per target.
 - `clean` forgets the targets: their rows, files rows, failures, cursors, heads and gaps. A
   target the home doesn't know is a usage error. `--media` also deletes their recorded files,
   sidecars, links, extracted archive folders and the folders this leaves empty. Files under
@@ -178,8 +181,10 @@ flnd auth login <plugin> [method] [path]
 flnd auth logout <plugin> [account]
 ```
 
-- `list` shows every account of every plugin: its name, whether it is the plugin's default, where
-  its login came from, and its status (`ok`, `held 4 min`, `expires in 2 days`, `expired`).
+- `list` works in every account of every plugin: its name, whether it is the plugin's default,
+  where its login came from, and its status (`ok`, `held 4 min`, `expires in 2 days`,
+  `expired`). On a terminal the list has the keys above, and `*` makes the account under the
+  cursor its plugin's default, `a` logs one in, `d` logs it out. On a pipe it is a plain table.
 - `login` logs an account in. `method` is one of:
   - **a browser**: `chrome` (through the extension), `firefox`, or `safari` on macOS (which
     needs Full Disk Access for the terminal, in System Settings › Privacy & Security; the error
@@ -215,10 +220,12 @@ flnd plugin install <file|folder>
 flnd plugin uninstall <code>
 ```
 
-- `list` shows every plugin: the built-ins and the installed ones, with the kind
-  (`built-in`, `file`, `disabled`), the plugin API, its domains and how many targets use it. A
-  plugin that is disabled is listed with the reason, naming its file and line. With `--json`,
-  one `{"type": "Installed", …}` object per plugin.
+- `list` works in the plugins: the built-ins and the installed ones, with the kind
+  (`built-in`, `installed`, `disabled`), the plugin API, its domains and how many targets use it.
+  A plugin that is disabled is followed by its reason, naming its file and line. On a terminal
+  the list has the keys above, and `a` installs the plugin at a path, `d` uninstalls an
+  installed one (a built-in has none). With `--json`, one `{"type": "Installed", …}` object per
+  plugin.
 - `install` checks a plugin's `.py` file or package folder, copies it into the plugin folder
   and records it; an installed code is replaced.
 - `uninstall` removes an installed plugin. Its accounts and targets stay.

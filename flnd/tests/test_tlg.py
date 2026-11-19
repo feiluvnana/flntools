@@ -789,7 +789,7 @@ class LoginCommandTest(FlndCase):
         sign_in(Path(".flnd"), "tlg", name="example_user", origin="qr")
         code, out, _ = self.run_app("auth", "list")
         self.assertEqual(code, 0)
-        self.assertRegex(out, r"tlg +example_user +default +qr +ok")
+        self.assertRegex(out, r"tlg +example_user +. default +qr +ok")
 
 
 def zipped(name, text):

@@ -341,7 +341,8 @@ class AccountRow:
 
 @dataclass(frozen=True)
 class PluginRow:
-    """A row of `plugin list`: `targets` counts the targets that use it."""
+    """A row of `plugin list`: `targets` counts the targets that use it; `disabled` is why a
+    plugin that didn't load is off (the row says "disabled"; the command prints the reason)."""
 
     code: str
     name: str
@@ -349,6 +350,7 @@ class PluginRow:
     api: int
     domains: tuple[str, ...]
     targets: int
+    disabled: str = ""
 
 
 TARGET_COLUMNS = (Column("target"), Column("followed"), Column("categories"),
@@ -465,6 +467,8 @@ def _status(account: AccountRow) -> Part:
 
 def _plugin(plugin: PluginRow) -> tuple[Part, ...]:
     kind: Part = ("built-in", "dim") if plugin.builtin else "installed"
+    if plugin.disabled:
+        kind = ("disabled", "bad")
     return (plugin.code, plugin.name, kind, str(plugin.api), " ".join(plugin.domains),
             f"{plugin.targets:,}")
 

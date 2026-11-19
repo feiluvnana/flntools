@@ -238,8 +238,8 @@ class GetTest(RunsCase):
         self.assertEqual(self.runs[0][1], [Target("tik:7301234567890123456", kind="video")])
 
 
-class RunTest(FlndCase):
-    """A real `get` of an example plugin; the CDN answers from a fake transport."""
+class ExampleCase(FlndCase):
+    """An example plugin, `exs`, on a fake network: the CDN answers from a fake transport."""
 
     listing = {("example_user", "posts"): ["p1", "p2"], ("example_user", "reels"): ["r1"]}
 
@@ -260,6 +260,10 @@ class RunTest(FlndCase):
         self.enterContext(_time.use(_time.Fake()))
         self.listing = {key: list(ids) for key, ids in type(self).listing.items()}
         self.enterContext(mock.patch.dict(PLUGINS, {"exs": example_source(self.listing)}))
+
+
+class RunTest(ExampleCase):
+    """A real `get`, and the commands that read what it left."""
 
     def test_the_summary_and_a_second_get_that_skips(self):
         code, out, err = self.run_app("get", "exs:example_user")
@@ -317,9 +321,10 @@ class RunTest(FlndCase):
         code, out, _ = self.run_app("target", "list")
         self.assertEqual(code, 0)
         lines = out.splitlines()
-        self.assertEqual(lines[0].split(), ["target", "follow", "files", "last", "categories"])
-        followed = {line.split()[0]: line.split()[1] for line in lines[1:]}
-        self.assertEqual(followed, {"exs:example_user": "followed", "exs:9": "-"})
+        self.assertEqual(lines[0].split(),
+                         ["target", "followed", "categories", "files", "size", "last", "run"])
+        followed = {line.split()[0]: "followed" in line for line in lines[1:]}
+        self.assertEqual(followed, {"exs:example_user": True, "exs:9": False})
         rows = [json.loads(line) for line in self.run_app("--json", "target", "list")[1].splitlines()]
         self.assertIn({"text": "exs:example_user", "kind": "user"}, [row["target"] for row in rows])
         code, out, _ = self.run_app("target", "clean", "exs:example_user", "--media")
@@ -329,6 +334,84 @@ class RunTest(FlndCase):
         self.assertEqual(code, 2)
         self.assertIn("not a known target", err)
         self.assertEqual(self.run_app("target", "clean")[0], 2)
+
+
+class WiringTest(ExampleCase):
+    """On a terminal each list gets its rows and keys from the library (`flnd.ui.lists`)."""
+
+    def listed(self, script, *argv):
+        """Run `flnd <argv>` with `lists.show` replaced by `script(title, load, keys, delete)`,
+        which runs while the home is open, as the real list would."""
+        from flnd.ui import lists
+
+        def show(title, columns, load, *, keys=(), delete=None):
+            script(title, load, {key.char: key for key in keys}, delete)
+
+        with mock.patch.object(lists, "show", show):
+            code, _, err = self.run_app(*argv)
+        self.assertEqual(code, 0, err)
+
+    def test_the_target_list_follows_retries_adds_and_forgets(self):
+        self.run_app("get", "exs:example_user")
+
+        def script(title, load, keys, delete):
+            [row] = [each.key for each in load()]
+            self.assertEqual((title, row.name, row.followed, row.files),
+                             ("Targets", "exs:example_user", True, 3))
+            keys["f"].run(row)
+            self.assertFalse(load()[0].key.followed)
+            keys["f"].run(load()[0].key)
+            self.assertTrue(load()[0].key.followed)
+            keys["r"].run(row)
+            with mock.patch("flnd.ui.forms.text", return_value="exs:p/9"):
+                keys["a"].run(None)
+            self.assertEqual(len(load()), 2)
+            delete.run(row)
+            self.assertEqual([each.key.name for each in load()], ["exs:9"])
+
+        self.listed(script, "target", "list")
+
+    def test_the_account_list_sets_the_default_and_logs_out(self):
+        sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="one")
+        sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="two")
+        self.answer(str(list(PLUGINS["ins"].login.methods).index("file") + 1),
+                    str(self.cookie_file(NETSCAPE)))
+
+        def script(title, load, keys, delete):
+            def defaults():
+                return {each.key.name: each.key.default for each in load()}
+
+            self.assertEqual((defaults(), load()[0].key.origin), ({"one": True, "two": False},
+                                                                  "file"))
+            keys["*"].run([each.key for each in load() if each.key.name == "two"][0])
+            self.assertEqual(defaults(), {"one": False, "two": True})
+            delete.run([each.key for each in load() if each.key.name == "two"][0])
+            self.assertEqual(list(defaults()), ["one"])
+            # `a` on a row logs in to its plugin, asking the way; the same account is renewed.
+            keys["a"].run(load()[0].key)
+            self.assertEqual([each.key.name for each in load()], ["one"])
+
+        self.listed(script, "auth", "list")
+
+    def test_the_plugin_list_installs_and_uninstalls(self):
+        source = Path(self.tmp.name) / "exa.py"
+        source.write_text(
+            "from flnd.plugin import Plugin, Post, route\n\n\nclass Example(Plugin):\n"
+            "    code, name, api, domains = 'exa', 'Example', 2, ('exa.example',)\n\n"
+            "    @route('exa:{user}')\n    async def user(self, ctx, user):\n"
+            "        yield Post(user)\n", encoding="utf-8")
+
+        def script(title, load, keys, delete):
+            self.assertIn("ins", [each.key.code for each in load() if each.key.builtin])
+            with mock.patch("flnd.ui.forms.text", return_value=str(source)):
+                keys["a"].run(None)
+            [added] = [each.key for each in load() if not each.key.builtin]
+            self.assertEqual((added.code, added.api), ("exa", 2))
+            delete.run(added)
+            self.assertEqual([each.key for each in load() if not each.key.builtin], [])
+
+        with mock.patch.dict(os.environ, {"FLND_PLUGINS": str(Path(self.tmp.name) / "plugins")}):
+            self.listed(script, "plugin", "list")
 
 
 class ExitStatusTest(FlndCase):
@@ -482,8 +565,10 @@ class ListsTest(FlndCase):
     def test_status_config_and_the_lists_of_a_home_with_nothing_in_it(self):
         self.assertEqual(self.run_app("status")[:2], (0, "no run yet\ndisk: 0 files: "
                                                          "history and disk agree\n"))
-        self.assertEqual(self.run_app("target", "list")[1], "no targets yet\n")
-        self.assertEqual(self.run_app("auth", "list")[1], "no accounts yet\n")
+        self.assertEqual(self.run_app("target", "list")[1].split(),
+                         ["target", "followed", "categories", "files", "size", "last", "run"])
+        self.assertEqual(self.run_app("auth", "list")[1].split(),
+                         ["plugin", "name", "default", "origin", "status", "saved"])
         code, text, _ = self.run_app("config")
         self.assertEqual(code, 0)
         self.assertEqual(text.splitlines()[0].split(), ["key", "value", "default", "from"])
@@ -512,7 +597,7 @@ class ListsTest(FlndCase):
         with mock.patch.dict(os.environ, {"FLND_PLUGINS": str(folder)}):
             code, text, err = self.run_app("plugin", "install", str(source))
             self.assertEqual((code, text), (0, "exa: installed (Example)\n"), err)
-            self.assertRegex(self.run_app("plugin", "list")[1], r"exa +Example +file +2 ")
+            self.assertRegex(self.run_app("plugin", "list")[1], r"exa +Example +installed +2 ")
             self.assertEqual(self.run_app("plugin", "uninstall", "exa")[1], "exa: uninstalled\n")
             self.assertEqual(self.run_app("plugin", "uninstall", "ins")[0], 2)
             self.assertEqual(self.run_app("plugin", "install", "missing.py")[0], 2)
@@ -542,8 +627,8 @@ class AuthTest(FlndCase):
         sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="two")
         code, text, _ = self.run_app("auth", "list")
         self.assertEqual(code, 0)
-        self.assertRegex(text, r"ins +one +default +file +ok")
-        self.assertRegex(text, r"ins +two +- +file")
+        self.assertRegex(text, r"ins +one +. default +file +ok")
+        self.assertRegex(text, r"ins +two +file +ok")
         rows = [json.loads(line) for line in self.run_app("--json", "auth", "list")[1]
                 .splitlines()]
         self.assertEqual([row["name"] for row in rows], ["one", "two"])

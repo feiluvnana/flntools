@@ -313,7 +313,7 @@ class CliTest(PluginCase):
         code, out = self.run_app("plugin", "list")
         self.assertEqual(code, 0)
         self.assertRegex(out, r"ins +Instagram +built-in +2 ")
-        self.assertRegex(out, r"exm +Example +file +2 ")
+        self.assertRegex(out, r"exm +Example +installed +2 ")
         self.assertRegex(out, r"bad +bad +disabled +0 ")
         self.assertIn("bad disabled: ", out)
 

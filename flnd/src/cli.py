@@ -243,7 +243,10 @@ def get(args: argparse.Namespace) -> int:
 
 
 def target_list(args: argparse.Namespace) -> int:
-    """List the targets this home knows: followed or not, files, size, last run.
+    """Work in the targets this home knows: followed or not, files, size, last run.
+
+    On a terminal it is a list: f follows or unfollows the target under the cursor, r makes its
+    failed files retryable, a gets a target, d forgets one. On a pipe it is a plain table.
 
     Args:
         args: the parsed flags.
@@ -251,24 +254,26 @@ def target_list(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    with _open(args) as fl:
-        rows = list(fl.targets)
-    if args.json:
-        for row in rows:
-            _json(row)
-        return OK
-    from flnd.ui import out
+    from flnd.ui import lists
 
-    table = []
-    for row in rows:
-        held = (out.count(row.seen, "target") + " found" if row.query
-                else f"{out.count(row.files, 'file')}, {out.size(row.size)}")
-        table.append((str(row.target), "followed" if row.follow else "-", held,
-                      row.at[:10] or "never", " ".join(row.categories)))
-    if not table:
-        out.line(("no targets yet", "dim"))
-        return OK
-    _table(("target", "follow", "files", "last", "categories"), table)
+    with _open(args) as fl:
+        if args.json:
+            for row in fl.targets:
+                _json(row)
+            return OK
+
+        def load() -> list[lists.TargetRow]:
+            return [lists.TargetRow(str(row.target), row.follow, row.categories, row.files,
+                                    row.size, _ago(row.at)) for row in fl.targets]
+
+        def follow(row: lists.TargetRow) -> None:
+            (fl.targets.unfollow if row.followed else fl.targets.follow)(row.name)
+
+        def add(text: str) -> None:
+            _watch(fl, fl.get(text), args)
+
+        lists.targets(load, follow=follow, retry=lambda row: fl.targets.retry(row.name),
+                      add=add, delete=lambda row: fl.targets.clean(row.name))
     return OK
 
 
@@ -292,7 +297,10 @@ def target_clean(args: argparse.Namespace) -> int:
 
 
 def auth_list(args: argparse.Namespace) -> int:
-    """List every account of every plugin: its origin, default, and whether it is usable.
+    """Work in the accounts of every plugin: origin, default, and whether each is usable.
+
+    On a terminal it is a list: * makes the account under the cursor its plugin's default, a
+    logs one in, d logs it out. On a pipe it is a plain table.
 
     Args:
         args: the parsed flags.
@@ -300,20 +308,31 @@ def auth_list(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    with _open(args) as fl:
-        rows = list(fl.auth)
-    if args.json:
-        for row in rows:
-            _json(row)
-        return OK
-    from flnd.ui import out
+    from flnd.ui import lists
 
-    if not rows:
-        out.line(("no accounts yet", "dim"))
-        return OK
-    _table(("plugin", "name", "default", "origin", "status", "since"),
-           [(row.plugin, row.name, "default" if row.is_default else "-", row.origin,
-             _state(row), row.at[:10]) for row in rows])
+    with _open(args) as fl:
+        if args.json:
+            for row in fl.auth:
+                _json(row)
+            return OK
+
+        def load() -> list[lists.AccountRow]:
+            last: dict[tuple[str, str], str] = {}
+            for each in fl.targets:
+                key = (each.target.plugin, each.account or "")
+                last[key] = max(last.get(key, ""), each.at)
+            return [lists.AccountRow(row.plugin, row.name, row.is_default, row.origin,
+                                     _left(row.held_until, held=True), _left(row.expires),
+                                     _ago(last.get((row.plugin, row.name), "")))
+                    for row in fl.auth]
+
+        def login(row: lists.AccountRow | None) -> None:
+            code = row.plugin if row is not None else _pick_plugin(fl)
+            method, path = _ask_how(args, code, fl)
+            fl.auth.login(code, method=method, path=path)
+
+        lists.accounts(load, default=lambda row: fl.auth.default(row.plugin, row.name),
+                       add=login, logout=lambda row: fl.auth.logout(row.plugin, name=row.name))
     return OK
 
 
@@ -361,10 +380,11 @@ def auth_logout(args: argparse.Namespace) -> int:
 
 
 def plugin_list(args: argparse.Namespace) -> int:
-    """List the plugins: built in, installed from a file or folder, and why one is disabled.
+    """Work in the plugins: built in, installed from a file or folder, and why one is disabled.
 
-    Plugins load from $FLND_PLUGINS, else ~/.config/flnd/plugins (APPDATA's flnd/plugins on
-    Windows); never from a home.
+    On a terminal it is a list: a installs a plugin from a path, d uninstalls an installed one.
+    On a pipe it is a plain table. Plugins load from $FLND_PLUGINS, else ~/.config/flnd/plugins
+    (APPDATA's flnd/plugins on Windows); never from a home.
 
     Args:
         args: the parsed flags.
@@ -372,22 +392,29 @@ def plugin_list(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    with _open(args) as fl:
-        rows = list(fl.plugins)
-        counts = {row.code: sum(1 for each in fl.targets if each.target.plugin == row.code)
-                  for row in rows}
-    if args.json:
-        for row in rows:
-            _json(row)
-        return OK
-    _table(("code", "name", "kind", "api", "domains", "targets"),
-           [(row.code, row.name, row.disabled and "disabled" or row.origin, str(row.api),
-             " ".join(row.domains), str(counts[row.code])) for row in rows])
-    from flnd.ui import out
+    from flnd.ui import lists
 
-    for row in rows:
-        if row.disabled:
-            out.line((f"{row.code} disabled: ", "bold bad"), (str(row.disabled), "bad"))
+    with _open(args) as fl:
+        if args.json:
+            for row in fl.plugins:
+                _json(row)
+            return OK
+
+        def load() -> list[lists.PluginRow]:
+            used: dict[str, int] = {}
+            for each in fl.targets:
+                used[each.target.plugin] = used.get(each.target.plugin, 0) + 1
+            return [lists.PluginRow(row.code, row.name, row.origin == "built-in", row.api,
+                                    tuple(row.domains), used.get(row.code, 0), row.disabled)
+                    for row in fl.plugins if row.origin != "script"]
+
+        lists.plugins(load, install=fl.plugins.install,
+                      uninstall=lambda row: fl.plugins.uninstall(row.code))
+        from flnd.ui import out
+
+        for row in fl.plugins:
+            if row.disabled:
+                out.line((f"{row.code} disabled: ", "bold bad"), (str(row.disabled), "bad"))
     return OK
 
 
@@ -836,11 +863,14 @@ def _targets(given: Sequence[str]) -> list[str]:
     return found
 
 
-def _ask_how(args: argparse.Namespace) -> tuple[str, str | None]:
-    """Ask how to log in to `args.plugin`: one of its methods, and a path for a file.
+def _ask_how(args: argparse.Namespace, code: str | None = None,
+             fl: flnd.Flnd | None = None) -> tuple[str, str | None]:
+    """Ask how to log in to a plugin: one of its methods, and a path for a file.
 
     Args:
-        args: the parsed flags, with `plugin` set.
+        args: the parsed flags.
+        code: the plugin's code; None takes `args.plugin`.
+        fl: the open home, when the caller has one.
 
     Returns:
         The method, and the cookie file's path when the method is `file`.
@@ -848,26 +878,56 @@ def _ask_how(args: argparse.Namespace) -> tuple[str, str | None]:
     Raises:
         UsageError: an unknown plugin, `--json`, or no terminal to ask in.
     """
+    from contextlib import nullcontext
+
     import flnd
     from flnd.ui import forms
 
-    ways = _methods(args.plugin)
+    code = code or args.plugin
+    ways = _methods(code)
     if not ways:
         # Not built in: a plugin's ways are read from its class, which this imports.
-        with _open(args) as fl:
-            found = next((row for row in fl.plugins if row.code == args.plugin), None)
+        with (nullcontext(fl) if fl is not None else _open(args)) as home:
+            found = next((row for row in home.plugins if row.code == code), None)
         if found is None:
-            raise flnd.UsageError(f"unknown plugin {args.plugin!r}",
+            raise flnd.UsageError(f"unknown plugin {code!r}",
                                   hint="flnd plugin list shows the plugins")
         ways = tuple(found.logins)
     if args.json or not forms.interactive():
-        raise flnd.UsageError(f"{args.plugin}: how to log in?",
-                              hint=f"flnd auth login {args.plugin} <method>, a method of "
+        raise flnd.UsageError(f"{code}: how to log in?",
+                              hint=f"flnd auth login {code} <method>, a method of "
                                    f"{', '.join(ways)}")
-    picked = forms.choose(f"Log in to {args.plugin} with", list(ways))
+    picked = forms.choose(f"Log in to {code} with", list(ways))
     if picked == "file":
         return picked, forms.ask("Path of the cookie file").strip()
     return picked, None
+
+
+def _pick_plugin(fl: flnd.Flnd) -> str:
+    """Ask which plugin to log in to, of those that have a login."""
+    from flnd.ui import forms
+
+    logins = {row.code: row.name for row in fl.plugins if row.logins}
+    return forms.choose("Log in to", {f"{name} ({code})": code for code, name in logins.items()})
+
+
+def _ago(at: str) -> float | None:
+    """Seconds since an ISO 8601 time; None for none."""
+    import datetime
+
+    if not at:
+        return None
+    then = datetime.datetime.fromisoformat(at)
+    return (datetime.datetime.now(datetime.UTC) - then).total_seconds()
+
+
+def _left(at: str | None, *, held: bool = False) -> float | None:
+    """Seconds until an ISO 8601 time (0 or less: it has passed); None for none. A hold that
+    has passed is none too."""
+    ago = _ago(at or "")
+    if ago is None or (held and ago >= 0):
+        return None
+    return -ago
 
 
 def _line(args: argparse.Namespace, value: Any, text: str) -> None:

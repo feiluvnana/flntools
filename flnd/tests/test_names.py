@@ -301,9 +301,6 @@ WORD = re.compile(r"[A-Za-z_]\w*")
 # when nothing in flnd/ could use it instead. The list may only shrink: a listed name that
 # becomes used, or goes, fails `test_no_stale_allowance`.
 CALLED_FROM_OUTSIDE: dict[str, str] = {
-    # Public (PLAN.md 8.3); the target list's `f` key calls it (step 13, `feat:work in the
-    # target, auth and plugin lists`), which removes this entry.
-    "src/_library.py:Targets.unfollow": "public; the target list's `f` key calls it",
     "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
 }
