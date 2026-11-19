@@ -2281,6 +2281,23 @@ is built on the earlier layout.
 - **Commits:** `docs:describe flnd as built`, `test:trim the tests to their budget`, then
   `chore:record the benchmarks and set version 0.2.0`.
 
+### Step 17. A file's own cost on the loop (added 2026-11-19)
+Step 15 was dropped: 4 lanes gave `net.small_8_at_once` 386 ms (goal 300, from 599) and made
+`net.small_1_at_once` 84% slower (700 -> 1,291 ms). They helped `stall_20mbs` (10.6 -> 1.0 ms)
+and `big_4_at_once` (1.5x -> 2.7x), but they work around the per-file cost instead of removing
+it, and they add processes, Ctrl-C across them and cookies handed to children.
+- **Changes:**
+  - profile `small_1` end to end and list where its time goes;
+  - cut that cost on the loop: batch the store's commits, move fsync and hashing to a thread
+    (not a process), write the sidecar in the post's transaction, drop repeated `stat` and
+    `rename` calls;
+  - then run P15 again. Only if `small_8` is still well over 300 ms and the loop is shown
+    CPU-bound at realistic rates, add lanes that start only when 4 or more file jobs wait (or a
+    big file comes), take jobs only once ready, and stop when idle, so one file never pays
+    for them.
+- **Bench:** `net.*` and `e2e.*`, before and after, alternating; `--gate`.
+- **Commits:** `perf:` commits, each with its numbers.
+
 ## 15. How the plan is carried out
 
 One session is the **orchestrator**. It writes no implementation code. For each step, in
