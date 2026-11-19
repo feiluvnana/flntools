@@ -149,6 +149,14 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 - A user error never shows a traceback.
 - `Stopped` derives from `KeyboardInterrupt`, never from `flnd.Error`.
 
+## Plugin API
+- The API grows by additions within API 2: a new verb, a new optional field. An old plugin
+  keeps working, so such a change needs no new major version.
+- A change that breaks plugins means API 3, plus an adapter that runs API 2 plugins with a
+  deprecation warning for at least one release.
+- `flnd.plugin.API` and `src/docs/writing-a-plugin.md` ("Plugin API versions") say which
+  version this flnd has.
+
 ## Bugs
 - Write the failing test first, and run it against the unfixed code. It must fail there.
 - Put the test and its fix in the same commit.
