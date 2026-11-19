@@ -17,7 +17,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -62,11 +62,12 @@ FREE_FOR = 1.0
 # Waits before the 4 tries after a network failure or a 5xx, each times a random 0.5 to 1.5.
 NETWORK_WAITS = (1.0, 2.0, 4.0, 8.0)
 JITTER = (0.5, 1.5)
-# A 429's wait when the site named none, the longest one waited out, and how many 429s in a
-# row on one bucket make a block round.
+# A 429's wait when the site named none, the longest one waited out, how many 429s in a row
+# on one bucket make a block round, and the most rate-limit waits one job endures before failing.
 REFUSED_WAIT = 30.0
 MAX_WAIT = 3600.0
 REFUSALS = 3
+BLOCKED_TRIES = 3
 # The hold of each block round; one more round fails the job. Rounds are forgotten after RESET
 # seconds with no block.
 ROUND_WAITS = (30.0, 120.0, 480.0)
@@ -591,6 +592,7 @@ class _Tries:
 
     network: int = 0
     walls: int = 0
+    blocked: int = 0
     # When the first try met another process's lock on flnd.db; None while none did.
     busy: float | None = None
 
@@ -631,9 +633,10 @@ class Scheduler:
                  limits: Mapping[str, int] | None = None, rate: float = 0.0,
                  slowest: float = 0.0,
                  switch: Callable[[Job[Any], BaseException], Job[Any] | None] = _no_switch,
-                 stop: Any = None) -> None:
+                 stop: Any = None, tally: Any = None) -> None:
         cpus = os.cpu_count() or 1
         self.stop = stop
+        self.tally = tally
         self.pace = dict(pace or {})
         self.limits = Limits(limits)
         self.rate = Rate(rate)
@@ -980,6 +983,12 @@ class Scheduler:
         if isinstance(error, errors.Blocked) and not error.retryable:
             raise error
         if isinstance(error, errors.Blocked):
+            if tries.blocked >= BLOCKED_TRIES:
+                moved = self.switch(job, error)
+                if moved is not None:
+                    return _retried(moved)
+                raise error
+            tries.blocked += 1
             if error.status == 429:
                 return await self._refused(job, error)
             return await self._round(job, error, error.wait or 0.0)
@@ -1025,9 +1034,10 @@ class Scheduler:
         on a 401 or 403, the job moves to another account, or fails and the account expires."""
         if error.retryable and tries.walls < len(WALL_WAITS):
             hold = self._hold((job.plugin, job.account, None))
-            self._hold_for(hold, WALL_WAITS[tries.walls], str(error))
+            wait = WALL_WAITS[tries.walls]
+            self._hold_for(hold, wait, str(error))
             tries.walls += 1
-            await self._held(job)
+            await self._wait_hold(job, hold, wait, str(error))
             return _retried(job)
         moved = self.switch(job, error)
         if moved is not None:
@@ -1040,7 +1050,9 @@ class Scheduler:
         is a block round."""
         key = self._key(job)
         hold = self._hold(key)
-        hold.refused += 1
+        now = clock.now()
+        if hold.until <= now:
+            hold.refused += 1
         bucket = self._buckets.get(key)
         if bucket is not None:
             bucket.slow()
@@ -1048,10 +1060,11 @@ class Scheduler:
         if hold.refused >= REFUSALS:
             hold.refused = 0
             return await self._round(job, error, wait)
-        ui.warn("{host}: rate limited; waiting {time}", host=job.host or job.plugin,
-                time=text.duration(round(wait)))
-        self._hold_for(hold, wait, str(error))
-        await self._held(job)
+        if hold.until <= now:
+            ui.warn("{host}: rate limited; waiting {time}", host=job.host or job.plugin,
+                    time=text.duration(round(wait)))
+            self._hold_for(hold, wait, str(error))
+        await self._wait_hold(job, hold, max(0.0, hold.until - now), str(error))
         return _retried(job)
 
     async def _round(self, job: Job[T], error: errors.Blocked, seconds: float) -> Job[T]:
@@ -1063,8 +1076,16 @@ class Scheduler:
             return _retried(moved)
         if not self._rounded(hold, seconds, str(error)):
             raise error
-        await self._held(job)
+        wait = max(0.0, hold.until - clock.now())
+        await self._wait_hold(job, hold, wait, str(error))
         return _retried(job)
+
+    async def _wait_hold(self, job: Job[Any], hold: Hold, wait: float, reason: str) -> None:
+        shown = (self.tally.hold(job.plugin, job.account, job.bucket or "pages", wait, reason,
+                                 count=max(1, hold.rounds))
+                 if self.tally is not None else nullcontext())
+        with shown:
+            await self._held(job)
 
     def _counted(self, key: tuple[str, str | None, str | None]) -> Hold:
         """The hold of `key`, with one more block round counted."""

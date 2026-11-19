@@ -38,8 +38,9 @@ from flnd.engine._engine import Results, _Runner
 from flnd.engine.crawl import Options, TargetReport
 from flnd.engine.events import Failed, Skipped
 from flnd.errors import Error, SiteError
-from flnd.plugin import File, Plugin, Post, Request, route
+from flnd.plugin import Browser, File, Plugin, Post, Request, route
 from flnd.ui.log import ui
+from flnkit import clock
 from flnkit import net as _net
 
 
@@ -335,6 +336,46 @@ class HttpTest(EngineCase):
         self.assertEqual(sorted(ran), [("a", {"ok": 1}), ("b", {"ok": 1}), ("c", {"ok": 1})])
         self.assertIn("rate limited; waiting", " ".join(self.lines()))
         self.assertIn(("aaa:c", "posts"), self.listed())
+
+    def test_a_rate_limited_query_lets_other_targets_run_while_waiting(self):
+        ran = []
+
+        class Query(Plugin):
+            code, name, domains, api, pace = "qqq", "Q", ("api.qqq.example",), 2, 0.0
+            browser = Browser.NONE
+
+            @route("qqq?{words}")
+            async def search(self, ctx, words):
+                await ctx.fetch("https://api.qqq.example/search")
+                if False:
+                    yield Target("qqq:never")
+
+            @route("qqq:{user}")
+            async def user(self, ctx, user):
+                return None
+
+            @user.category
+            async def posts(self, ctx, profile):
+                if False:
+                    yield Post("p", ())
+
+        async def other(ctx):
+            ran.append(("other", clock.now()))
+
+        self.routes["https://api.qqq.example/search"] = _net.reply(429)
+        engine = Engine(home=self.home,
+                        sources={"qqq": Query, "bbb": make_plugin("bbb", other)})
+        real_pause = clock.pause
+
+        async def yielding_pause(seconds, *, stop=None):
+            await asyncio.sleep(0)
+            return await real_pause(seconds, stop=stop)
+
+        with mock.patch.object(clock, "pause", yielding_pause):
+            report = engine.download(["qqq?cats", "bbb:example_user"])
+        self.assertFalse(report.ok)
+        self.assertIsInstance(report.targets[0].error, Blocked)
+        self.assertEqual(ran, [("other", 0.0)])
 
     def test_challenges_are_waited_out_by_rounds_of_the_account(self):
         self.run_engine(make_plugin("aaa", lambda ctx: ctx.hold("challenged")),

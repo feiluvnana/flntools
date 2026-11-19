@@ -25,6 +25,7 @@ from flnd.engine.jobs import (
     Segments,
     Speed,
 )
+from flnd.engine.run import Tally
 from flnd.testing import fake_clock
 from flnkit import clock, files
 
@@ -533,6 +534,70 @@ class RetryTest(unittest.TestCase):
         # The retry was the first clean request; the 20th keeps the time the halved pace saved.
         self.assertEqual(gaps[:19], [1.0] * 19)
         self.assertEqual(gaps[20:], [0.5, 0.5])
+
+    def test_a_429_hold_shows_on_the_tally_while_waiting(self):
+        tally = Tally()
+        seen = []
+
+        async def main():
+            with fake_clock() as fake:
+                scheduler = Scheduler(pace={"exm": 0.0}, tally=tally)
+                real_sleep = fake.sleep
+
+                def spy_sleep(seconds, **kwargs):
+                    if seconds >= 5:
+                        seen.append(tally.publish(force=True).now)
+                    return real_sleep(seconds, **kwargs)
+
+                with mock.patch.object(fake, "sleep", spy_sleep):
+                    try:
+                        await scheduler.run(job(work=raising(blocked(5, 429), "ok")))
+                    finally:
+                        await scheduler.close()
+
+        asyncio.run(main())
+        self.assertEqual(seen, ["held 5 s: blocked"])
+        self.assertEqual(tally.publish(force=True).now, "")
+
+    def test_a_job_rate_limited_too_much_fails_with_blocked(self):
+        async def main(scheduler, fake):
+            with self.assertRaises(errors.Blocked):
+                await scheduler.run(job(work=raising(*(blocked(5, 429),) * 10)))
+            return [s for s in fake.slept if s > 1]
+
+        self.assertEqual(run(main), [5, 5, 30])
+
+    def test_concurrent_429_burst_shares_hold_and_other_bucket_runs(self):
+        async def main():
+            scheduler = Scheduler(pace={"exm": 0.0})
+            starts = []
+            seen_a = [0]
+
+            async def work_a():
+                seen_a[0] += 1
+                if seen_a[0] <= 2:
+                    raise errors.Blocked("blocked", wait=0.08, status=429)
+                starts.append(("a", clock.now()))
+
+            async def work_b():
+                starts.append(("b", clock.now()))
+
+            try:
+                t0 = clock.now()
+                await asyncio.gather(
+                    scheduler.run(job(bucket="a", work=work_a)),
+                    scheduler.run(job(bucket="a", work=work_a)),
+                    scheduler.run(job(bucket="b", work=work_b)),
+                )
+            finally:
+                await scheduler.close()
+            return starts, t0
+
+        starts, t0 = asyncio.run(main())
+        b_time = next(t for name, t in starts if name == "b")
+        a_times = [t for name, t in starts if name == "a"]
+        self.assertLess(b_time - t0, 0.06)
+        self.assertGreaterEqual(min(a_times) - t0, 0.06)
 
     def test_an_overloaded_host_halves_its_cap_once_a_round(self):
         async def main(scheduler, fake):

@@ -265,6 +265,19 @@ class FetchTest(CtxCase):
         raws = [raw for browser in self.browsers for raw in browser.opened]
         self.assertEqual([raw.loaded for raw in raws], [[f"{API}/robots.txt"]])
 
+    def test_in_page_signs_requests_to_own_domains_with_cookies(self):
+        class Signed(Example):
+            def sign(self, request, cookies):
+                return request.replace(headers={**request.headers, "X-Token": cookies["token"]})
+
+        sign_in(self.home, "exm", [{"name": "token", "value": "t", "domain": ".example.com",
+                                    "path": "/"}])
+        run, ctx = self.ctx(Signed)
+        answer = _net.Response(200, f"{API}/feed", {}, b"{}")
+        with mock.patch.object(Page, "fetch", new=mock.AsyncMock(return_value=answer)) as sent:
+            self.call(run, ctx.fetch(f"{API}/feed", in_page=True))
+        self.assertEqual(sent.call_args.kwargs["headers"]["X-Token"], "t")
+
 
 class BrowserTest(CtxCase):
     def test_it_opens_on_the_first_page_with_its_stealth_and_cookies_and_closes_with_it(self):

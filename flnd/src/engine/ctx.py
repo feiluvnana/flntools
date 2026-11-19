@@ -480,17 +480,21 @@ class Ctx:
                 # page loads the site's own robots.txt first, so the fetch is same-origin.
                 parts = urlsplit(url)
                 await page.goto(f"{parts.scheme}://{parts.netloc}/robots.txt")
+            await self._sync_cookies(url)
+            _sign(self._plugin, url, asked.method, headers, body, self._run.session.cookies)
             return capped(await page.fetch(url, method=asked.method, headers=headers,
                                            body=body, check=False))
-        if self._tabs.opened:
-            # Cookies the browser set for the request's host reach the session too, as a
-            # logged-in page sends them; another site's never do.
-            cookies = host_cookies(await self._run.off(self._tabs.cookies),
-                                   net.URL(url).host)
-            if cookies:
-                self._run.session.add(cookies)
+        await self._sync_cookies(url)
         return await self._run.web.fetch(url, method=asked.method, headers=headers, body=body,
                                          check=False, limit=PAGE_LIMIT)
+
+    async def _sync_cookies(self, url: str) -> None:
+        """Copy cookies the browser set for `url`'s host into the run's session."""
+        if not self._tabs.opened:
+            return
+        cookies = host_cookies(await self._run.off(self._tabs.cookies), net.URL(url).host)
+        if cookies:
+            self._run.session.add(cookies)
 
     def _job(self, url: str, work: Callable[[], Awaitable[T]], *,
              bucket: str = "") -> Awaitable[T]:
@@ -1233,6 +1237,23 @@ def _made(settings: RunShared, plugin: Plugin, configured: PluginConfig, jar: co
                      account=account, _own_jobs=own)
 
 
+def _sign(plugin: Plugin, url: str, method: str, headers: MutableMapping[str, str],
+          body: bytes | str | None, cookies: Any) -> None:
+    """Apply `plugin.user_agent` and `plugin.sign` to `headers` for `plugin.domains`."""
+    if not _on(net.URL(url).host or "", plugin.domains):
+        return
+    if plugin.user_agent:
+        headers["User-Agent"] = plugin.user_agent
+    asked = Request(url, method=method, headers=dict(headers), body=body)
+    given = plugin.sign(asked, MappingProxyType(domain_cookies(cookies, plugin.domains)))
+    if not isinstance(given, Request):
+        # The type alone: what `sign` gave may hold a token.
+        raise PluginError(f"{plugin.code}.sign: return the request, not a "
+                          f"{type(given).__name__}")
+    for name, value in (given.headers or {}).items():
+        headers[name] = value
+
+
 def _network(plugin: Plugin, jar: Iterable[Mapping[str, Any]],
              settings: PluginConfig, *, handles: int) -> net.Session:
     """A plugin's session: its `sign` hook and `user_agent` on requests to its own domains
@@ -1248,20 +1269,8 @@ def _network(plugin: Plugin, jar: Iterable[Mapping[str, Any]],
     def prepare(request: net.Request) -> net.Request | None:
         # Runs on the loop before each try. The plugin sees its API's own request, never the
         # HTTP client's type; what it sets in `headers` is copied back.
-        if not _on(request.url.host or "", plugin.domains):
-            return None
-        if plugin.user_agent:
-            request.headers["User-Agent"] = plugin.user_agent
-        asked = Request(str(request.url), method=request.method,
-                        headers=dict(request.headers), body=request.content)
-        given = plugin.sign(asked, MappingProxyType(domain_cookies(session.cookies,
-                                                                   plugin.domains)))
-        if not isinstance(given, Request):
-            # The type alone: what `sign` gave may hold a token.
-            raise PluginError(f"{plugin.code}.sign: return the request, not a "
-                              f"{type(given).__name__}")
-        for name, value in (given.headers or {}).items():
-            request.headers[name] = value
+        _sign(plugin, str(request.url), request.method, request.headers, request.content,
+              session.cookies)
         return None
 
     session = net.Session(cookies=jar, prepare=prepare, handles=handles, proxy=settings.proxy)
@@ -1287,7 +1296,7 @@ async def shared_browser(settings: RunShared) -> AsyncIterator[None]:
         config.settings, settings.home)
     made = _SCHEDULERS[shared] = jobs.Scheduler(
         stop=getattr(settings, "stop", None), rate=config.speed(found.defaults.rate),
-        slowest=config.speed(found.defaults.slowest))
+        slowest=config.speed(found.defaults.slowest), tally=getattr(settings, "tally", None))
     settings.browser_pool = shared
     try:
         yield
