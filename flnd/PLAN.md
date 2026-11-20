@@ -57,10 +57,22 @@ A target is written one of three ways, and each plugin accepts every way that fi
 
 - Then an optional category list: `<target>/<cat>[,<cat>...]`, or `/all`. With none, every
   category is taken. This is the one way to choose categories (decision 2).
-- A single post's `<plugin>:` form is `post/<id>` on every plugin: `fbk:post/<id>`,
-  `ins:post/<code>`, `twt:post/<id>`, `tik:post/<id>`, `loi:post/<id>`. The old forms `tik:<id>`
-  and `loi:<id>` stay readable, since stored targets use them, but the cookbook shows only the
-  new ones.
+- A single post's `<plugin>:` form is `<word>/<id>`, where the word is one the site's own
+  links use. `post/<id>` works on every plugin. The other words:
+
+  | plugin | words | stored as |
+  | --- | --- | --- |
+  | `fbk` | `post`, `video`, `reel`, `photo` | `reel` as `fbk:video/<id>`; `photo`, `post` apart |
+  | `ins` | `post`, `reel` | `ins:post/<code>` (`/p/` and `/reel/` open one post) |
+  | `twt` | `post` | `twt:post/<id>` |
+  | `tik` | `post`, `video`, `photo` | `tik:post/<id>` (one id space) |
+  | `loi` | `post` | `loi:post/<id>` |
+
+- Words that share an id space are stored as one form, so `ins:reel/C1abc` and
+  `ins:post/C1abc` are one target, never two. The word never picks the category: the post's
+  own data does (step 3), since an `/p/` link may well be a reel.
+- The old forms `tik:<id>` and `loi:<id>` stay readable, since stored targets use them, but
+  the cookbook shows only the new ones.
 - Any other text of a plugin's own domains is refused before any request (`UsageError`, exit 2)
   with a hint naming the right form.
 - Stored targets (`targets` table) must keep resolving. If a value changes form, step 4's
@@ -234,8 +246,9 @@ line limit. Opus reads the page once, end to end, against "no gray area".
    over many targets.
 3. **A category with no entry in a `--folder` list.** Recommended: its default place. The
    other way: refuse the run until every wanted category has an entry or `*` is given.
-4. **`post/<id>` on every plugin.** Recommended, with the old `tik:<id>` and `loi:<id>` still
-   read. The other way: keep each plugin's own short form.
+4. **`<word>/<id>` on every plugin** (`post/` everywhere, plus the site's own words such as
+   `reel/`). Recommended, with the old `tik:<id>` and `loi:<id>` still read. The other
+   way: keep each plugin's own short form.
 5. **Facebook pages.** Recommended: one route for profiles and pages. A separate
    `fbk:page/<name>` is possible, but the links can't tell which is which.
 6. **`fbk:me`.** Facebook has friends and follows. Recommended: follows (pages and people),
