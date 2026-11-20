@@ -109,8 +109,8 @@ V1_INDEXES = ("files_post", "files_hash", "files_undated", "failures_target", "f
 
 # The loop's connection waits for no lock (a busy commit is queued again); any other waits 30 s.
 LOOP_BUSY_MS, OTHER_BUSY_MS = 0, 30_000
-# A negative size is in KiB: 64 MiB, so a home of 100,000 files (20 MiB) stays in memory.
-CACHE_KIB = 64 * 1024
+# A negative size is in KiB: 4 MiB, so a home of 100,000 files (20 MiB) stays in memory.
+CACHE_KIB = 4 * 1024
 # Another connection (a read-only command, another process) checkpoints by itself, as today.
 OTHER_CHECKPOINT_PAGES = 10_000
 # The loop's connection never checkpoints by itself; the run checkpoints after this many rows.
@@ -615,7 +615,13 @@ class Store:
             if self._checkpointer is None:
                 # The same pragmas as the store's: on macOS, its syncs reach the disk.
                 self._checkpointer = db.connect(self.path)
-            self._checkpointer.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            try:
+                self._checkpointer.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                self._checkpointer.execute("PRAGMA shrink_memory")
+            finally:
+                self._checkpointer.close()
+                self._checkpointer = None
+            self._db.connection().execute("PRAGMA shrink_memory")
         except sqlite3.Error as error:
             raise DiskError(f"{self.path}: {error}") from error
 

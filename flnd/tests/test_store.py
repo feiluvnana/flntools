@@ -223,8 +223,8 @@ class MigrationTest(StoreCase):
         self.assertEqual(done.returncode, 9)
         self.assertEqual(rows(self.path, "SELECT * FROM meta"), [("version", "1")])
         with self.open() as opened:
-            self.assertEqual((rows(self.path, "SELECT * FROM meta ORDER BY key"), len(opened.on_disk()),
-                              len(opened.targets()), len(opened.accounts())),
+            self.assertEqual((rows(self.path, "SELECT * FROM meta ORDER BY key"),
+                              len(opened.on_disk()), len(opened.targets()), len(opened.accounts())),
                              ([("keys", "2"), ("version", "2")], 3, 4, 4))
 
     def test_a_failure_from_before_retryable_was_recorded_is_not_retryable(self):
@@ -272,10 +272,8 @@ class MigrationTest(StoreCase):
 
 class PragmaTest(StoreCase):
     def test_the_loop_waits_for_no_lock_and_never_checkpoints_by_itself(self):
-        expected = {
-            True: {"busy_timeout": 0, "wal_autocheckpoint": 0},
-            False: {"busy_timeout": 30_000, "wal_autocheckpoint": 10_000},
-        }
+        expected = {True: {"busy_timeout": 0, "wal_autocheckpoint": 0},
+                    False: {"busy_timeout": 30_000, "wal_autocheckpoint": 10_000}}
         for loop, own in expected.items():
             with self.subTest(loop=loop), self.open(loop=loop) as opened:
                 opened.state("x")["y"] = 1
@@ -284,19 +282,27 @@ class PragmaTest(StoreCase):
                          for name in [*own, "journal_mode", "synchronous", "cache_size",
                                       "fullfsync"]}
                 self.assertEqual(found, {**own, "journal_mode": "wal", "synchronous": 1,
-                                         "cache_size": -65536,
+                                         "cache_size": -4096,
                                          "fullfsync": int(sys.platform == "darwin")})
 
     def test_the_checkpoint_connection_syncs_as_the_store_does(self):
-        opened = self.open(loop=True)
+        from flnkit import db
+
+        opened, seen, real = self.open(loop=True), {}, db.connect
         opened.state("x")["y"] = 1
-        opened.checkpoint(force=True)
-        sql = opened._checkpointer
-        found = {name: sql.execute(f"PRAGMA {name}").fetchone()[0]
-                 for name in ("journal_mode", "synchronous", "fullfsync", "checkpoint_fullfsync")}
+
+        def spy(path: Path) -> sqlite3.Connection:
+            conn = real(path)
+            for name in ("journal_mode", "synchronous", "fullfsync", "checkpoint_fullfsync"):
+                seen[name] = conn.execute(f"PRAGMA {name}").fetchone()[0]
+            return conn
+
+        with mock.patch("flnkit.db.connect", side_effect=spy):
+            opened.checkpoint(force=True)
         darwin = int(sys.platform == "darwin")
-        self.assertEqual(found, {"journal_mode": "wal", "synchronous": 1, "fullfsync": darwin,
-                                 "checkpoint_fullfsync": darwin})
+        self.assertEqual((seen, opened._checkpointer),
+                         ({"journal_mode": "wal", "synchronous": 1, "fullfsync": darwin,
+                           "checkpoint_fullfsync": darwin}, None))
 
     def test_a_failed_checkpoint_still_closes(self):
         opened = self.open(loop=True)
@@ -690,8 +696,8 @@ class RekeyTest(StoreCase):
         # A new home is made with the row, so it never runs.
         self.path.unlink()
         with mock.patch.object(store, "_rekey") as rekey:
-            self.open(), self.open().close()
-            store.Store(self.home).record(Target("ins:example_user", kind="user"))
+            self.open().close()
+            with store.Store(self.home) as s: s.record(Target("ins:example_user", kind="user"))
             self.open().close()
         self.assertEqual(rekey.call_count, 0)
 
