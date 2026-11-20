@@ -52,27 +52,16 @@ A target is written one of three ways, and each plugin accepts every way that fi
 | form | meaning | example |
 | --- | --- | --- |
 | a link | an accepted link, with or without `https://` and `www.` | `instagram.com/p/C1abc` |
-| `<plugin>:<value>` | a user, `me`, or `post/<id>` | `ins:example_user`, `ins:post/C1abc` |
+| `<plugin>:<value>` | a user or `me` (a post only where noted) | `ins:example_user`, `twt:me` |
 | `<plugin>?<query>` | a search, on plugins with one | `tik?cats`, `twt?from:example_handle` |
 
 - Then an optional category list: `<target>/<cat>[,<cat>...]`, or `/all`. With none, every
   category is taken. This is the one way to choose categories (decision 2).
-- A single post's `<plugin>:` form is `<word>/<id>`, where the word is one the site's own
-  links use. `post/<id>` works on every plugin. The other words:
-
-  | plugin | words | stored as |
-  | --- | --- | --- |
-  | `fbk` | `post`, `video`, `reel`, `photo` | `reel` as `fbk:video/<id>`; `photo`, `post` apart |
-  | `ins` | `post`, `reel` | `ins:post/<code>` (`/p/` and `/reel/` open one post) |
-  | `twt` | `post` | `twt:post/<id>` |
-  | `tik` | `post`, `video`, `photo` | `tik:post/<id>` (one id space) |
-  | `loi` | `post` | `loi:post/<id>` |
-
-- Words that share an id space are stored as one form, so `ins:reel/C1abc` and
-  `ins:post/C1abc` are one target, never two. The word never picks the category: the post's
-  own data does (step 3), since an `/p/` link may well be a reel.
-- The old forms `tik:<id>` and `loi:<id>` stay readable, since stored targets use them, but
-  the cookbook shows only the new ones.
+- After `<plugin>:`, a `/` always starts the category list: `ins:example_user/tagged` is the
+  user with one category. So no `<word>/<id>` forms (`ins:post/<code>` would read as the user
+  `post`). A single post is written as its link. The two exceptions, kept because they can't
+  be a user name: `tik:<id>` (16 digits or more) and `loi:<id>` (`loi` has no users).
+- `me` is reserved after `<plugin>:`. A user really named `me` is written as their link.
 - Any other text of a plugin's own domains is refused before any request (`UsageError`, exit 2)
   with a hint naming the right form.
 - Stored targets (`targets` table) must keep resolving. If a value changes form, step 4's
@@ -180,24 +169,24 @@ Each plugin gets one table test: accepted text to `(kind, value)`, refused text 
 Order: `tik`, `loi`, `fbk`, then `twt` and `ins` last, under the guard.
 
 - **fbk.** Profiles and pages share one route, told apart after load (decision 5); a tab a page
-  lacks logs "no such tab". Add `fbk:post/<id>`, `/<owner>/posts/<id or pfbid…>`,
+  lacks logs "no such tab". Add `/<owner>/posts/<id or pfbid…>`,
   `/share/p|r|v/<code>` (followed like `fb.watch`), `/<owner>/videos/<slug>/<id>`, and the `m.`,
   `web.`, `mbasic.` hosts. Refuse groups, events, stories, marketplace, hashtags, `/watch/`
   without `v=`. Add `fbk:me`: the accounts the login follows, from `/me/following` (confirm
   live), each as `fbk:<name or id>`.
-- **ins.** User names `[A-Za-z0-9._]{1,30}`. Add `ins:post/<code>`. Refuse `/explore/`,
+- **ins.** User names `[A-Za-z0-9._]{1,30}`. Refuse `/explore/`,
   `/accounts/`, `/direct/`, `/stories/…` (hint: the user target with `stories`/`highlights`).
   `ins:me` stays as it is.
-- **twt.** Handles `[A-Za-z0-9_]{1,15}`. Add `twt:post/<id>`, `x.com/search?q=…` as a query,
+- **twt.** Handles `[A-Za-z0-9_]{1,15}`. Add `x.com/search?q=…` as a query,
   `/status/<id>/photo|video/<n>`, `mobile.` hosts. Refuse lists, communities, hashtags,
   spaces, other `/i/…` pages. Add `twt:me`: the `Following` GraphQL operation (its query id
   read from the main script, as the others are), paged by its cursor, held like the timelines.
-- **tik.** Add `tik:post/<id>`; `tik?<query>` and `/search?q=`, `/search/video?q=` links,
+- **tik.** Add `tik?<query>` and `/search?q=`, `/search/video?q=` links,
   discovering post targets from `api/search/item/full/` (confirm live); short links
   `vm.tiktok.com/…`, `vt.tiktok.com/…`, `tiktok.com/t/…`, followed to the video. Refuse `/tag/`,
   `/music/`, `/discover/`, `/live`, `/explore`. Add `tik:me`: the following list,
   `api/user/list/` (confirm live), from the logged-in page.
-- **loi.** Add `loi:post/<id>`; `loi?<query>` and the site's search link, paged by the API
+- **loi.** Add `loi?<query>` and the site's search link, paged by the API
   (endpoint read from the web client's script, confirm live; `sign` already signs). Refuse
   every other page of its domains.
 - **Done when:** the five table tests pass; `me` tests use faked lists; the guard holds.
@@ -246,9 +235,8 @@ line limit. Opus reads the page once, end to end, against "no gray area".
    over many targets.
 3. **A category with no entry in a `--folder` list.** Recommended: its default place. The
    other way: refuse the run until every wanted category has an entry or `*` is given.
-4. **`<word>/<id>` on every plugin** (`post/` everywhere, plus the site's own words such as
-   `reel/`). Recommended, with the old `tik:<id>` and `loi:<id>` still read. The other
-   way: keep each plugin's own short form.
+4. **Single posts by link only** (settled 2026-11-20 by the user): no `<word>/<id>` forms,
+   since a `/` after `<plugin>:<value>` is the category list.
 5. **Facebook pages.** Recommended: one route for profiles and pages. A separate
    `fbk:page/<name>` is possible, but the links can't tell which is which.
 6. **`fbk:me`.** Facebook has friends and follows. Recommended: follows (pages and people),
