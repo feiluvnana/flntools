@@ -929,6 +929,10 @@ class _Feed:
                     continue
                 if item is _DONE:
                     if getattr(feed, "stalled", False):
+                        # The list was cut short, not read to its end: the crawl keeps it
+                        # incomplete (`Listing.stalled`).
+                        if self._ctx.listing is not None:
+                            self._ctx.listing.stalled = True
                         ui.warn("{target}: the list got no new answer in {time}; it ends here",
                                 target=str(self._ctx._target),
                                 time=text.duration(browser.STALL))
@@ -1581,6 +1585,8 @@ class Listing:
         self.refused = False
         # The pages `pages` has read for it so far, for the live stats.
         self.read = 0
+        # Whether a feed of it ended on the stall guard: the list was cut short, not complete.
+        self.stalled = False
 
 
 class Resume:

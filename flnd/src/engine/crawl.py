@@ -2244,7 +2244,8 @@ async def _relist(
 ) -> tuple[set[str], bool]:
     """List one listing from `cursor` until it has met every post of `posts`, queueing each."""
     left, past, last = set(posts), 0, None
-    site.listing = Listing(cursor, label=f"{site.target}: {listed.name or site.target.kind}")
+    listing = site.listing = Listing(
+        cursor, label=f"{site.target}: {listed.name or site.target.kind}")
     kept = _Kept(await listed.items(), listed.name, newest_first=listed.newest_first,
                  span=Range())
     try:
@@ -2267,7 +2268,7 @@ async def _relist(
     finally:
         await kept.aclose()
         site.listing = None
-    return left, kept.ran_out
+    return left, kept.ran_out and not listing.stalled
 
 
 async def _lost(
@@ -2302,6 +2303,9 @@ async def _listed(
         kept = _Kept(await items(), name, newest_first=newest_first,
                      span=Range(options.since, options.until))
         ended, taken = await _queue_all(work, kept, stops=stops, limit=remaining)
+        if ended is Ended.RAN_OUT and listing.stalled:
+            # A feed the stall guard ended is cut short, so the category is not complete.
+            ended = Ended.CUT
     finally:
         site.listing = None
     work.linked.extend(kept.linked)

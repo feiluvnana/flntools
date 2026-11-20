@@ -21,7 +21,7 @@ from fakes import sign_in
 from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine.crawl import RunShared
-from flnd.engine.ctx import Ctx, opened, plugin_run, shared_browser
+from flnd.engine.ctx import Ctx, Listing, opened, plugin_run, shared_browser
 from flnd.errors import NetworkError, SiteError
 from flnd.plugin import Landed, Request, Target
 from flnd.ui.log import ui
@@ -478,6 +478,17 @@ class FeedTest(CtxCase):
         self.assertGreaterEqual(self.now, 50.0)
         self.assertEqual(list(run.scheduler._holds), [("exm", None, "g")])
 
+    def stuck_in(self, run, ctx, step, **options):
+        async def scroller(page, **_):
+            return SimpleNamespace(step=step)
+
+        async def read():
+            async with ctx.feed("graphql", **options) as feed:
+                return await asyncio.wait_for(alist(feed), 5)
+
+        with mock.patch.object(Page, "scroller", scroller):
+            return self.call(run, read())
+
     def stuck(self, step, **options):
         """What a feed yields when each scroll step is `step` (an async function)."""
         run, ctx = self.ctx()
@@ -506,6 +517,38 @@ class FeedTest(CtxCase):
         self.assertEqual(len(steps), 60)
         self.assertIn("exm:example_user: the list got no new answer in 1m; it ends here",
                       self.lines()[-1])
+
+    def test_a_stalled_feed_marks_its_listing_stalled(self):
+        run, ctx = self.ctx()
+        ctx.listing = Listing(None)
+
+        async def step():
+            self.fake.advance(1.0)
+            return True
+
+        self.assertEqual(self.stuck_in(run, ctx, step), [])
+        self.assertTrue(ctx.listing.stalled)
+
+    def test_a_stalled_resuming_feed_marks_its_listing_stalled(self):
+        run, ctx = self.ctx()
+        ctx.listing = Listing(None)
+
+        async def step():
+            self.fake.advance(1.0)
+            return True
+
+        self.assertEqual(self.stuck_in(run, ctx, step, resume=True), [])
+        self.assertTrue(ctx.listing.stalled)
+
+    def test_a_feed_that_ends_by_itself_leaves_its_listing_not_stalled(self):
+        run, ctx = self.ctx()
+        ctx.listing = Listing(None)
+
+        async def step():
+            return False
+
+        self.assertEqual(self.stuck_in(run, ctx, step), [])
+        self.assertFalse(ctx.listing.stalled)
 
     def test_a_scroll_step_or_a_body_that_never_ends_is_given_up(self):
         async def forever():

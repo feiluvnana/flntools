@@ -1204,6 +1204,33 @@ class ResumeTest(JobCase):
         self.assertEqual(self.cursors_fetched, [None, "c1", "c2"])
 
 
+class StalledListTest(JobCase):
+    """A list the stall guard cut short is not complete: the next sync reads it whole."""
+
+    def run_lists(self, stalled):
+        async def posts(plugin, ctx, user):
+            yield Post("p1", [File(f"{CDN}/p1.jpg")], date=datetime.date(2026, 1, 1))
+            ctx.listing.stalled = stalled
+
+        async def media(plugin, ctx, user):
+            yield Post("m1", [File(f"{CDN}/m1.jpg")], date=datetime.date(2026, 1, 1))
+
+        self.engine = Engine(home=self.home, sources={
+            "stl": feed("stl", posts, media, newest_first=True, key="{post}")})
+        self.assertTrue(self.engine.download(["stl:example_user|all"]).ok)
+        return fakes.targets(self.home)["stl:example_user"]
+
+    def test_a_stalled_list_is_left_out_of_the_complete_set(self):
+        row = self.run_lists(True)
+        self.assertNotIn("posts", row.complete)
+        self.assertIn("media", row.complete)
+
+    def test_a_list_that_ends_normally_is_complete(self):
+        row = self.run_lists(False)
+        self.assertIn("posts", row.complete)
+        self.assertIn("media", row.complete)
+
+
 class MemoryTest(JobCase):
     """The listing memory: an undated post waits for its category's end, and takes any day found."""
 
