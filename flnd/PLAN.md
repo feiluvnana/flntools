@@ -159,6 +159,26 @@ Accepted kinds per plugin:
 - **Done when:** `src/docs/` is gone; the two pages are within their limits; `make check` green.
 - Later steps update COOKBOOK.md in the same commit as the behaviour.
 
+## Step 1b: `--exec` without holding output in memory (sonnet)
+
+Asked by the user 2026-11-20. Built after step 4's first (resolver) commit, before step 2.
+Files: `src/engine/save.py` (`_exec`), `src/cli.py` (`_Exec`), `src/engine/config.py`, tests.
+
+- Today `subprocess.run(..., capture_output=True)` keeps all the program's stdout and stderr in
+  memory until it exits: a command writing media to stdout (`ffmpeg -i {path} -f mp4 -`) puts
+  the whole file in flnd's memory. Instead: stdout to `DEVNULL`; stderr read as it comes,
+  keeping only its last 4 KiB, for the warning line.
+- A timeout: `[defaults] exec_timeout` in `config.toml`, seconds, default 3600, `0` for none.
+  Past it, the program's whole process group is killed and a warning says so.
+- Ctrl-C kills the running program's process group too, not only flnd's wait.
+- One exec at a time stays (`Kind.EXEC: 1`), so two encodes never run together.
+- `src/cli.py` `_Exec` and `save.py` `_exec` both fill `{path}`, `{target}`, `{post}`: keep one
+  and delete the other.
+- Tests, faked with a tiny Python program as the command: a program writing 50 MB to stdout
+  leaves flnd's memory flat (stdout not kept); a long stderr keeps its last line; a timeout
+  kills it; the config key is read. COOKBOOK.md's `--exec` and config parts updated.
+- **Done when:** the tests pass; code lines go down or stay the same.
+
 ## Step 2: per-category folder templates (sonnet)
 
 Files: `engine/config.py`, `engine/crawl.py`, `_library.py`, `cli.py`, their tests.
