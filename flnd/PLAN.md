@@ -311,6 +311,62 @@ and 3 folders and the step 4 grammar. Modelled on `ins` (same company, same web 
 - **Done when:** the table test and faked-feed tests pass; `make check` green; a hand live
   check on a test account follows.
 
+## Step 5c: a lighter browser, hidden where it can be (sonnet, Opus reviews closely)
+
+Asked by the user 2026-11-20. Found: the engine always opens a visible window (only
+`flnkit.browser.launch(headless=...)` can hide it, and nothing passes it); pages load every
+image, video and font, though plugins read JSON (`ASSET_TYPES` only filters what is captured);
+videos autoplay (TikTok, Facebook reels); `LAUNCH_ARGS` turn off background throttling on
+purpose (background tabs must keep running).
+
+1. **Measure first.** A bench in `tests/bench/` for one scrolled faked page: the browser's peak
+   memory (all its processes) and CPU seconds. Record before every change below.
+2. **Block what no plugin reads.** A context route that aborts `image`, `media` and `font`
+   requests in every tab. A plugin that needs them declares `Plugin.assets = True` (an API 2
+   addition). The captured responses are unchanged. Confirm live per plugin that scrolling
+   still loads more (a feed sized by images may need a viewport height instead).
+3. **Cheaper switches.** Add `--mute-audio`, `--autoplay-policy=user-gesture-required`,
+   `--disable-features=Translate,MediaRouter,OptimizationHints`,
+   `--disable-component-update`, `--no-first-run`, a small fixed window. Keep the anti-throttling
+   switches. Each switch measured; one that saves nothing is left out.
+4. **Hidden by default, visible when needed.** `[defaults] window` in `config.toml`, `"hidden"`
+   (default) or `"visible"`. A handoff (captcha) in a hidden browser closes it, reopens the
+   same profile visible, and carries on. The `browser` login method is always visible.
+5. **Hide the hidden state.** Use Chrome's new headless (the full browser, not the headless
+   shell). Already done: `navigator.webdriver`, the `HeadlessChrome` user agent. Add: the
+   client-hint brands (`Sec-CH-UA`, `navigator.userAgentData`) set through CDP
+   `Emulation.setUserAgentOverride` with metadata, so no `HeadlessChrome` brand is sent; a real
+   screen and window size (`screen`, `outerWidth`); `navigator.plugins` and `mimeTypes` as a
+   desktop Chrome has them; WebGL vendor and renderer not `SwiftShader`; `Notification`
+   permission consistent with `permissions.query`. A test page in the suite reads each of these
+   in hidden and visible mode and asserts they match.
+6. **Per plugin**, after a hand live check on the test accounts: `twt`, `ins`, `fbk`, `loi`
+   (none), `thr` hidden; `tik` hidden too, relying on rule 4 for its captcha. A plugin that is
+   caught hidden goes back to visible by declaring it, with the reason.
+
+- **Done when:** the bench shows the memory and CPU saved (numbers in the commit message);
+  the fingerprint test passes; COOKBOOK.md says what is blocked, the `window` key, and the
+  reopen rule.
+
+## Step 5d: resources on the run screen (sonnet)
+
+Asked by the user 2026-11-20. The `get` (and sync) screen gains one line: flnd's processes
+(itself, the browser's, a running `--exec` program) with their count, total memory (RSS) and
+CPU %, and the same for the browser alone. Read every 2 s off the loop (a `CALL` thread), drawn
+by `src/ui` through the theme. `--json` gets it as a periodic event; a plain non-terminal log
+does not.
+
+- Reading: `psutil` (one new dependency, with its reason in `pyproject.toml`, and added to
+  AGENTS.md's planned set), since the standard library can't read another process's memory on
+  all three systems. The process tree is flnd's own pid and its children, so the browser and
+  exec programs are counted without asking Playwright.
+- The cost stays small: one read per 2 s, measured by `make bench` (`ui.overhead` must not get
+  worse by over 15%).
+- Tests fake the reading; one test that the line renders, one for the JSON event.
+- **Done when:** the line shows on a live run; COOKBOOK.md's run-screen part says what each
+  number counts.
+- Built after step 5c, whose bench reads the same numbers.
+
 ## Step 6: cookbook pass (haiku)
 
 Bring COOKBOOK.md in line with steps 2 to 5 where a commit missed something, and recheck its
