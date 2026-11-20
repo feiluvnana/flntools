@@ -29,6 +29,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Union
 from urllib.parse import urlsplit
 
+import msgspec
+
 from flnkit import clock, net
 from flnkit.errors import Blocked, Changed, NetworkError, Stopped, ToolError, UsageError
 from flnkit.text import redact
@@ -354,6 +356,7 @@ HIDDEN_SCRIPT = """(() => {
   }
 })();"""
 DEFAULT_VIEWPORT = (1024, 720)
+GC_EVERY = 25
 PAGE_HEIGHT = "(document.scrollingElement || document.documentElement).scrollHeight"
 # Within a few pixels of the end counts as the bottom: a scroll position may be fractional.
 AT_BOTTOM = ("(() => { const page = document.scrollingElement || document.documentElement;"
@@ -1097,8 +1100,22 @@ class Page:
         self.random = random.Random()
         self.turn: Callable[[Callable[[], Awaitable[bool]]], Awaitable[bool]] | None = None
         self._blocking = False
+        self._cdp: Any | None = None
         # The captures still listening, which a move to another window gives its new tab again.
         self.captures: set[Capture] = set()
+
+    async def _nudge_memory(self) -> None:
+        """Periodically nudge Blink and V8 to free layers, caches, and garbage."""
+        try:
+            raw = self.raw
+            context = getattr(raw, "context", None)
+            if context is not None and hasattr(context, "new_cdp_session"):
+                cdp = self._cdp or await context.new_cdp_session(raw)
+                self._cdp = cdp
+                await cdp.send("Memory.simulatePressureNotification", {"level": "critical"})
+                await cdp.send("HeapProfiler.collectGarbage")
+        except Exception:
+            pass
 
     async def move(self, browser: Browser, url: str) -> None:
         """Carry this tab to a new tab of `browser`: the same `Page`, its captures and its
@@ -1112,7 +1129,7 @@ class Page:
         browser.pages.discard(fresh)
         browser.pages.add(self)
         blocking = self._blocking
-        self.raw, self.browser, self._blocking = fresh.raw, browser, False
+        self.raw, self.browser, self._blocking, self._cdp = fresh.raw, browser, False, None
         for capture in self.captures:
             self.raw.on("response", capture.listener)
         if blocking:
@@ -1274,18 +1291,19 @@ class Page:
             raise NetworkError(f"could not click {css!r}: {_first_line(error)}") from None
 
     async def capture(self, accept: Callable[[Response], bool], *,
-                      lazy: bool = False) -> Capture:
+                      lazy: bool = False, requests: bool = False) -> Capture:
         """Start keeping the bodies of the responses this tab receives that `accept` takes.
 
         Args:
             accept: says, on the loop, whether a response is kept; it must not block.
             lazy: keep the responses and read no body until `Capture.close` is told which
                 ones it wants (a warm tab's, which a feed may never take).
+            requests: record full request metadata (URL, method, headers, post_data) in `requests`.
 
         Returns:
             The `Capture`, which `Capture.close` stops.
         """
-        capture = Capture(self, accept, lazy=lazy)
+        capture = Capture(self, accept, lazy=lazy, requests=requests)
         self.raw.on("response", capture.listener)
         self.captures.add(capture)
         return capture
@@ -1528,6 +1546,8 @@ class _Scroller:
         # 2. Scroll.
         await self._move()
         self.scrolls += 1
+        if self.scrolls % GC_EVERY == 0:
+            await page._nudge_memory()
         moved = clock.now()
         # 3. Watch, pausing meanwhile. One draw sets both pauses, so a step takes as many numbers
         # from the random source whatever the page does, and a seeded run repeats.
@@ -1624,14 +1644,17 @@ class Capture:
         page: the tab it listens on.
         accept: whether a response is kept; called on the loop.
         lazy: keep the responses, and read their bodies only at `close`.
+        requests: record full request metadata (URL, method, headers, post_data) in `requests`.
     """
 
-    def __init__(self, page: Page, accept: Callable[[Response], bool], *, lazy: bool = False):
+    def __init__(self, page: Page, accept: Callable[[Response], bool], *, lazy: bool = False,
+                 requests: bool = False):
         self.items: deque[tuple[str, str]] = deque()
         self.requests: deque[tuple[str, str, dict[str, str], str | None] | None] = deque()
         self._metas: deque[tuple[int, dict[str, str]]] = deque()
         self._page = page
         self._accept = accept
+        self._requests = requests
         # A lazy capture's responses, in the order they came.
         self._lazy = lazy
         self._kept: list[Response] = []
@@ -1671,13 +1694,16 @@ class Capture:
         raw_status = getattr(response, "status", 200)
         status = raw_status if isinstance(raw_status, int) else 200
         raw_headers = getattr(response, "headers", None) or {}
-        headers = {str(k).lower(): str(v) for k, v in raw_headers.items()}
-        req = getattr(response, "request", None)
-        sent = (
-            (response.url, req.method, dict(getattr(req, "headers", None) or {}),
-             getattr(req, "post_data", None))
-            if req is not None and isinstance(getattr(req, "method", None), str) else None
-        )
+        headers = ({str(k).lower(): str(v) for k, v in raw_headers.items()}
+                   if status == 429 else {})
+        sent = None
+        if self._requests:
+            req = getattr(response, "request", None)
+            if req is not None and isinstance(getattr(req, "method", None), str):
+                sent = (
+                    response.url, req.method, dict(getattr(req, "headers", None) or {}),
+                    getattr(req, "post_data", None)
+                )
         try:
             entry = (response.url, await asyncio.wait_for(response.text(), READ))
         except TimeoutError:
@@ -1704,7 +1730,8 @@ class Capture:
                 self._flushed += 1
                 if done is not None:
                     self.items.append(done[0])
-                    self.requests.append(done[1])
+                    if self._requests:
+                        self.requests.append(done[1])
                     self._metas.append(done[2])
                 self.news.set()
 
@@ -2362,16 +2389,20 @@ class Feed:
         lines: a body holds one JSON value per line (NDJSON), not one in all.
         cursor: reads each parsed value (each line, with `lines`), as `Reader` says; None never
             ends the feed on the site's word.
+        requests: record full request metadata on captured responses.
     """
 
     def __init__(self, tabs: Tabs, match: Match, *, scroll: bool = False, lines: bool = False,
-                 cursor: Reader | None = None):
+                 cursor: Reader | None = None, requests: bool = False):
         self._tabs = tabs
         self._matches = matcher(match)
         self._scroll = scroll
         self._lines = lines
         self._cursors = Cursors(cursor)
         self._closed = False
+        self._requests = requests
+        self._raw: deque[tuple[str, str, tuple[str, str, dict[str, str], str | None] | None,
+                               int, Mapping[str, str]]] = deque()
         self._waiting: deque[tuple[Any, tuple[str, str, dict[str, str], str | None] | None]] = (
             deque()
         )
@@ -2380,7 +2411,7 @@ class Feed:
         self.stalled = False
         tabs.push(self, scroll=scroll)
         self._page = tabs.page
-        self._capture: Capture = tabs.run(self._page.capture(self._accepts))
+        self._capture: Capture = tabs.run(self._page.capture(self._accepts, requests=requests))
         # Made at the first scroll, and again after `adopt` moves the feed to another tab.
         self._scroller: _Scroller | None = None
         self._items = self._iterate()
@@ -2410,6 +2441,8 @@ class Feed:
         if self._closed:
             return
         self._closed = True
+        self._waiting.clear()
+        self._raw.clear()
         try:
             self._tabs.run(self._capture.close())
         finally:
@@ -2425,11 +2458,11 @@ class Feed:
         if self._closed or page is self._page:
             return
         for url, body in self._tabs.run(self._capture.close()):
-            self._parse(url, body)
+            self._raw.append((url, body, None, 200, {}))
         self._page = page
         for url, body in self._tabs.take_buffer(page, self._matches):
-            self._parse(url, body)
-        self._capture = self._tabs.run(page.capture(self._accepts))
+            self._raw.append((url, body, None, 200, {}))
+        self._capture = self._tabs.run(page.capture(self._accepts, requests=self._requests))
         self._scroller = None
 
     def _iterate(self) -> Iterator[Any]:
@@ -2481,21 +2514,24 @@ class Feed:
 
     def _arrived(self) -> Iterator[Any]:
         self._fill()
-        while self._waiting:
-            value, self.request = self._waiting.popleft()
-            if isinstance(value, Blocked):
-                raise value
-            yield value
+        while self._waiting or self._raw:
+            if not self._waiting:
+                self._parse(*self._raw.popleft())
+            while self._waiting:
+                value, self.request = self._waiting.popleft()
+                if isinstance(value, Blocked):
+                    raise value
+                yield value
 
     def _fill(self) -> bool:
-        """Parse the bodies the capture holds into `_waiting`; whether any is waiting."""
+        """Move arrived bodies from the capture into `_raw`; whether any is waiting."""
         items, requests = self._capture.items, self._capture.requests
         metas = self._capture._metas
         while items:
             req = requests.popleft() if requests else None
             status, headers = metas.popleft() if metas else (200, {})
-            self._parse(*items.popleft(), req, status, headers)
-        return bool(self._waiting)
+            self._raw.append((*items.popleft(), req, status, headers))
+        return bool(self._waiting or self._raw)
 
     def _parse(self, url: str, body: str,
                request: tuple[str, str, dict[str, str], str | None] | None = None,
@@ -2511,9 +2547,9 @@ class Feed:
         pieces = [line for line in body.splitlines() if line.strip()] if self._lines else [body]
         for piece in pieces:
             try:
-                value = json.loads(piece)
+                value = msgspec.json.decode(piece)
             # A piece that isn't JSON (an HTML error page, say) is skipped; the others still count.
-            except ValueError:
+            except (ValueError, msgspec.DecodeError):
                 _log.debug(
                     "responses: skipped a body that is not JSON from {url}",
                     extra={"fields": {

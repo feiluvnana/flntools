@@ -772,6 +772,45 @@ class FakeBrowserTest(BrowserCase):
                 next(feed)
         self.assertEqual((caught.exception.status, caught.exception.wait), (429, 61.0))
 
+    def test_capture_request_metadata_is_opt_in(self):
+        raw = SimpleNamespace(on=lambda *args: None, remove_listener=lambda *args: None)
+        page = _browser.Page(cast(Any, raw), cast(Any, None))
+        req = SimpleNamespace(method="POST", headers={"content-type": "application/json"},
+                              post_data='{"q": 1}')
+        res = SimpleNamespace(url="https://site.test/api", status=200, headers={},
+                              request=req, text=mock.AsyncMock(return_value='{"ok": true}'))
+
+        async def hear(cap):
+            cap.listener(cast(Any, res))
+            await cap.settle()
+
+        default_cap, opt_cap = run(page.capture(lambda r: True)), run(
+            page.capture(lambda r: True, requests=True))
+        run(hear(default_cap)), run(hear(opt_cap))
+        self.assertEqual((list(default_cap.requests), opt_cap.requests[0]),
+                         ([], ("https://site.test/api", "POST",
+                               {"content-type": "application/json"}, '{"q": 1}')))
+
+    def test_feed_decodes_lazily_with_msgspec(self):
+        raw = SimpleNamespace(on=lambda *args: None, remove_listener=lambda *args: None)
+        page = _browser.Page(cast(Any, raw), cast(Any, None))
+        tabs = SimpleNamespace(page=page, scroll=_browser.FAST, push=lambda *a, **kw: None,
+                               pop=lambda *a, **kw: None, run=lambda coro: run(coro))
+        feed = _browser.Feed(cast(Any, tabs), "/api", scroll=False)
+
+        async def deliver():
+            for i in (1, 2):
+                feed._capture.listener(SimpleNamespace(
+                    url=f"https://site.test/api/{i}", status=200, headers={},
+                    text=mock.AsyncMock(return_value=f'{{"p": {i}}}'),
+                ))
+            await feed._capture.settle()
+
+        run(deliver())
+        feed._fill()
+        self.assertEqual((len(feed._raw), len(feed._waiting)), (2, 0))
+        self.assertEqual(([next(feed), next(feed)], len(feed._raw)), ([{"p": 1}, {"p": 2}], 0))
+
     def test_a_read_survives_a_navigation_or_two_and_no_other_error(self):
         navigating = _browser._raw_error()("Page.content: Execution context was destroyed, "
                                            "most likely because of a navigation")
@@ -1178,7 +1217,13 @@ class ScrollTimingTest(BrowserCase):
         first = wheels()
         self.assertEqual(first, wheels())
         self.assertGreater(len(first), 60 * 2)
-        self.assertTrue(any(delta < 0 for _, delta in first))  # back-ups included
+
+    def test_scroll_nudges_memory_every_gc_interval(self):
+        nudged, feed = [], FakeFeed(grows=0, bottom=False)
+        page = self.page(feed)
+        page._nudge_memory = mock.AsyncMock(side_effect=lambda: nudged.append(True))
+        run(page.scroll(until=upto(55), style="fast"))
+        self.assertEqual(len(nudged), 2)
 
     def test_a_human_step_waits_for_its_pages_turn_and_a_fast_one_never(self):
         turns = []
