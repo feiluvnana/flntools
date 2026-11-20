@@ -52,19 +52,36 @@ A target is written one of three ways, and each plugin accepts every way that fi
 | form | meaning | example |
 | --- | --- | --- |
 | a link | an accepted link, with or without `https://` and `www.` | `instagram.com/p/C1abc` |
-| `<plugin>:<value>` | a user or `me` (a post only where noted) | `ins:example_user`, `twt:me` |
+| `<plugin>:<value>` | a user, `me`, or `<kind>/<id>` | `ins:example_user`, `ins:post/C1abc` |
 | `<plugin>?<query>` | a search, on plugins with one | `tik?cats`, `twt?from:example_handle` |
 
-- Then an optional category list: `<target>/<cat>[,<cat>...]`, or `/all`. With none, only
-  the owned categories (`own=True`) are taken, as the code does now (settled 2026-11-20 by the
-  user). Other people's are opt-in: `fbk` `tagged`; `ins` `tagged`, `reposts`; `twt`
-  `reposts`; `tik` `reposts`, `liked`, `favorites`. A target found by `me` or a query takes
-  its own owned set. The cookbook lists each plugin's owned and opt-in categories.
-  The suffix is the one way to choose categories (decision 2).
-- After `<plugin>:`, a `/` always starts the category list: `ins:example_user/tagged` is the
-  user with one category. So no `<word>/<id>` forms (`ins:post/<code>` would read as the user
-  `post`). A single post is written as its link. The two exceptions, kept because they can't
-  be a user name: `tik:<id>` (16 digits or more) and `loi:<id>` (`loi` has no users).
+- Then an optional category list after `|`: `<target>|<cat>[,<cat>...]`, or `|all` (settled
+  2026-11-20 by the user; `/` is no longer a category separator). Examples:
+  `ins:example_user|tagged,reposts`, `instagram.com/example_user|all`. `|` is the shell's
+  pipe, so the cookbook quotes every such target: `flnd get "ins:example_user|tagged"`.
+- On a query, the text after the last `|` is a category list only when every name in it is a
+  category of that plugin or `all`; otherwise the `|` is part of the query. No other case.
+- With no list, only the owned categories (`own=True`) are taken, as the code does now
+  (settled by the user). Other people's are opt-in: `fbk` `tagged`; `ins` `tagged`,
+  `reposts`; `twt` `reposts`; `tik` `reposts`, `liked`, `favorites`. A target found by `me` or
+  a query takes its own owned set. The cookbook lists each plugin's owned and opt-in ones.
+  The `|` list is the one way to choose categories (decision 2).
+- A single post is `<plugin>:<kind>/<id>`, where `<kind>` is the name of a single route, as
+  `mht:chapter/<id>` is today (settled by the user). The forms:
+
+  | plugin | forms |
+  | --- | --- |
+  | `fbk` | `fbk:video/<id>` (and reels), `fbk:photo/<id>`, `fbk:post/<owner id>_<story id>` |
+  | `ins` | `ins:post/<code>` (posts, reels, tv) |
+  | `twt` | `twt:post/<id>` |
+  | `tik` | `tik:post/<id>` (videos and photo posts; the route `video` is renamed `post`) |
+  | `loi` | `loi:post/<id>` |
+  | `mht` | `mht:chapter/<id>`, as now |
+
+  A user name never holds `/`, so `ins:post` alone is still the user `post`. `fb.watch` and
+  share links stay links only: their id is known only after following them. The old
+  `tik:<id>` and `loi:<id>` stay readable, since stored targets use them, but the cookbook
+  shows only the new forms. No other words (`reel/`, `video/` on `ins`): one form per kind.
 - `me` is reserved after `<plugin>:`. A user really named `me` is written as their link.
 - Any other text of a plugin's own domains is refused before any request (`UsageError`, exit 2)
   with a hint naming the right form.
@@ -74,8 +91,8 @@ A target is written one of three ways, and each plugin accepts every way that fi
   `<code>:<id>`, the same shape as a user's: `instagram.com/p/C1abc` is `ins:C1abc`, the user
   `C1abc` too; `facebook.com/reel/123` and `profile.php?id=123` are both `fbk:123`; a tweet
   `twt:123` and a numeric handle too. They share one `targets` row. Fix in step 4 first: a
-  single post's key carries its kind (`ins:post:C1abc`, shown only in `flnd status`), with a
-  store migration of old rows by their `kind` column, and a test per plugin.
+  single post's key is its written form, `ins:post/C1abc`, so the key is what you type. A
+  store migration rewrites old rows by their `kind` column; a test per plugin.
 - **A query needs a folder** (settled 2026-11-20 by the user). A query target, written as
   `<plugin>?<query>` or as a search link, on every plugin with one (`twt`, `tik`, `loi`,
   `mht`), is refused before any request unless `--folder` (or `folder=`) is given and places
@@ -186,6 +203,12 @@ Files: `plugin.py` (`Post`), `engine/crawl.py`, the five plugins' single routes,
 
 ## Step 4: hard targets and `me` (sonnet, one commit per plugin)
 
+First commit, in the resolver (`engine/resolve.py`, sonnet): read `|` as the category
+separator and `<plugin>:<kind>/<id>` as a single post; refuse the old `<target>/<cat>` written
+form with the hint `write the categories after |: "ins:example_user|tagged"`; key single posts
+by their written form (the key clash above), with the store migration; rename `tik`'s route
+`video` to `post`. Stored rows keep resolving (a test).
+
 Each plugin gets one table test: accepted text to `(kind, value)`, refused text to its message.
 Order: `tik`, `loi`, `fbk`, then `twt` and `ins` last, under the guard.
 
@@ -251,14 +274,14 @@ line limit. Opus reads the page once, end to end, against "no gray area".
 
 1. **Single-post folders (step 3).** Recommended: the owner's folder. The other way: keep
    `media/<code>/<post id>/` and only add the category.
-2. **Choosing categories.** Owned by default is settled. Recommended: only the `/<cat>,<cat>`
-   suffix on the target, as now, documented in full. The other way:
+2. **Choosing categories.** Owned by default is settled. Recommended: only the `|<cat>,<cat>`
+   list on the target, as now, documented in full. The other way:
    bring `--from <cats>` back as a flag, for one choice
    over many targets.
 3. **A category with no entry in a `--folder` list.** Recommended: its default place. The
    other way: refuse the run until every wanted category has an entry or `*` is given.
-4. **Single posts by link only** (settled 2026-11-20 by the user): no `<word>/<id>` forms,
-   since a `/` after `<plugin>:<value>` is the category list.
+4. **Single posts** (settled by the user): a link, or `<plugin>:<kind>/<id>`; categories
+   after `|`.
 5. **Facebook pages.** Recommended: one route for profiles and pages. A separate
    `fbk:page/<name>` is possible, but the links can't tell which is which.
 6. **`fbk:me`.** Facebook has friends and follows. Recommended: follows (pages and people),
