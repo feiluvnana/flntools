@@ -274,19 +274,15 @@ line limit. Opus reads the page once, end to end, against "no gray area".
 - No behaviour change; every test passes unchanged except moves. Lower `CODE_LINES` and
   `TEST_LINES` to the new counts in the same commit.
 
-## Decisions to settle
+## Decisions (all settled by the user, 2026-11-20)
 
-1. **Single-post folders (step 3).** Recommended: the owner's folder. The other way: keep
-   `media/<code>/<post id>/` and only add the category.
-2. **Choosing categories.** Owned by default is settled. Recommended: only the `|<cat>,<cat>`
-   list on the target, as now, documented in full. The other way:
-   bring `--from <cats>` back as a flag, for one choice
-   over many targets.
-3. **A category with no entry in a `--folder` list.** Recommended: its default place. The
-   other way: refuse the run until every wanted category has an entry or `*` is given.
-4. **Single posts** (settled by the user): a link, or `<plugin>:<kind>/<id>`; categories
-   after `|`.
-5. **Facebook pages.** Recommended: one route for profiles and pages. A separate
-   `fbk:page/<name>` is possible, but the links can't tell which is which.
-6. **`fbk:me`.** Facebook has friends and follows. Recommended: follows (pages and people),
-   which are public-content accounts. The other way: friends, or both.
+1. **Single-post links** go to the owner's folder (step 3); queries go to their `--folder`.
+2. **Categories:** owned by default; chosen only by the `|<cat>,<cat>` list or `|all`. No
+   `--from` flag.
+3. **A category with no entry in a `--folder` list** keeps its default place. For a query the
+   list must cover every category (one template, or `*`).
+4. **Single posts:** a link, or `<plugin>:<kind>/<id>`.
+5. **Facebook pages:** one route for profiles and pages, told apart after load.
+6. **`fbk:me`:** the accounts the login follows (pages and people), not friends.
+7. **A followed query's folder** is stored; a different `--folder` later is refused unless
+   `--again` is given.
