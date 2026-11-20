@@ -19,6 +19,7 @@ from flnd.plugin import (
     Ctx,
     File,
     LoginError,
+    NetworkError,
     NotFound,
     Plugin,
     Post,
@@ -45,16 +46,12 @@ TABS = {"posts": "", "reels": "reels/", "tagged": "tagged/", "reposts": "reposts
 CDN_HEADERS = {"Referer": f"{SITE}/"}
 # Where each profile tab's result lists its posts; the name Instagram uses now comes first.
 TAB_CONNECTIONS = {
-    "posts": (
-        "xdt_api__v1__feed__user_timeline_graphql_connection",
-        "xig_user_by_username.polaris_ordered_timeline_connection",
-    ),
+    "posts": ("xdt_api__v1__feed__user_timeline_graphql_connection",
+              "xig_user_by_username.polaris_ordered_timeline_connection"),
     "reels": ("fetch__XDTUserDict.clips_connection", "xdt_api__v1__clips__user__connection_v2"),
     "tagged": ("xdt_api__v1__usertags__user_id__feed_connection",),
-    "reposts": (
-        "fetch__XDTUserDict.user_reposts_timeline",
-        "xdt_api__v1__feed__user_reposts_graphql_connection",
-    ),
+    "reposts": ("fetch__XDTUserDict.user_reposts_timeline",
+                "xdt_api__v1__feed__user_reposts_graphql_connection"),
 }
 # Each tab's `(more, cursor)` reader, for its feed and for its embedded first page.
 TAB_PAGES = {tab: page_info(" || ".join(f"data.{name}.page_info" for name in names))
@@ -100,6 +97,31 @@ STORY_MUSIC = ("story_music_stickers[0].music_asset_info.progressive_download_ur
                "music_metadata.music_info.music_asset_info.progressive_download_url")
 USER_NAME = re.compile(r"[A-Za-z0-9._]{1,30}")
 LOGIN_HINT = "run flnd auth login ins"
+
+
+async def _api_fetch(ctx: Ctx, request: str | Request) -> Response:
+    """Fetch an API endpoint: direct HTTP first, falling back to in_page=True on error."""
+    try:
+        return await ctx.fetch(request, in_page=False)
+    except (LoginError, SiteError, NetworkError):
+        return await ctx.fetch(request, in_page=True)
+
+
+async def _api_pages(
+    ctx: Ctx, request: Request, *, cursor: str | Callable[[Any], str | None],
+    send: str | Callable[[str], Mapping[str, Any] | Request] = "cursor",
+) -> AsyncIterator[Response]:
+    """Iterate API pages: try direct HTTP first, falling back to in_page=True on initial failure."""
+    yielded = False
+    try:
+        async for response in ctx.pages(request, cursor=cursor, send=send, in_page=False):
+            yielded = True
+            yield response
+    except (LoginError, SiteError, NetworkError):
+        if yielded:
+            raise
+        async for response in ctx.pages(request, cursor=cursor, send=send, in_page=True):
+            yield response
 
 
 class Instagram(Plugin):
@@ -173,11 +195,11 @@ class Instagram(Plugin):
     # `post` comes before `user`, so instagram.com/p/<code> is never the user "p". A post's code is
     # base64url, so it takes `-` as well as `\w`.
     @route(*((pattern, "post/{code}") for pattern in (
-        r"ins:post/{code:[\w-]+}",
-        r"instagram.com/p/{code:[\w-]+}", r"instagram.com/reel/{code:[\w-]+}",
-        r"instagram.com/reels/{code:[\w-]+}", r"instagram.com/tv/{code:[\w-]+}",
-        r"instagram.com/*/p/{code:[\w-]+}", r"instagram.com/*/reel/{code:[\w-]+}",
-        r"instagram.com/*/reels/{code:[\w-]+}", r"instagram.com/*/tv/{code:[\w-]+}",
+        r"ins:post/{code:[\w-]+}", r"instagram.com/p/{code:[\w-]+}",
+        r"instagram.com/reel/{code:[\w-]+}", r"instagram.com/reels/{code:[\w-]+}",
+        r"instagram.com/tv/{code:[\w-]+}", r"instagram.com/*/p/{code:[\w-]+}",
+        r"instagram.com/*/reel/{code:[\w-]+}", r"instagram.com/*/reels/{code:[\w-]+}",
+        r"instagram.com/*/tv/{code:[\w-]+}",
     )), single=True)
     async def post(self, ctx: Ctx, code: str) -> AsyncIterator[Post]:
         """One post or reel: `ins:post/C1abcDEFghi`, or its page, `instagram.com/p/C1abcDEFghi`.
@@ -208,8 +230,7 @@ class Instagram(Plugin):
                              hint=LOGIN_HINT)
         first = Request(f"{API}/friendships/{user_id}/following/",
                         params={"count": FOLLOWING_COUNT})
-        async for response in ctx.pages(first, cursor="next_max_id", send="max_id",
-                                        in_page=True):
+        async for response in _api_pages(ctx, first, cursor="next_max_id", send="max_id"):
             # Instagram rotates this claim and expects it echoed back on the next calls.
             self.claim = response.headers.get("x-ig-set-www-claim") or self.claim
             data = response.json
@@ -393,10 +414,8 @@ async def api_posts(ctx: Ctx, profile: Profile, plugin: Instagram) -> AsyncItera
     yielded = False
     try:
         if user_id is None:
-            info = await ctx.fetch(
-                Request(f"{API}/users/web_profile_info/", params={"username": profile.user}),
-                in_page=True,
-            )
+            info = await _api_fetch(
+                ctx, Request(f"{API}/users/web_profile_info/", params={"username": profile.user}))
             plugin.claim = info.headers.get("x-ig-set-www-claim") or plugin.claim
             user = dig(info.json, "data.user")
             user_id = str(user["id"]) if isinstance(user, dict) and user.get("id") else None
@@ -410,8 +429,7 @@ async def api_posts(ctx: Ctx, profile: Profile, plugin: Instagram) -> AsyncItera
                 if isinstance(pic, str):
                     profile.picture = pic
         first = Request(f"{API}/feed/user/{user_id}/", params={"count": FEED_COUNT})
-        async for response in ctx.pages(first, cursor="next_max_id", send="max_id",
-                                        in_page=True):
+        async for response in _api_pages(ctx, first, cursor="next_max_id", send="max_id"):
             plugin.claim = response.headers.get("x-ig-set-www-claim") or plugin.claim
             data = response.json
             items = data.get("items") if isinstance(data, dict) else None
@@ -565,7 +583,7 @@ async def media_info(ctx: Ctx, code: str, pk: str, plugin: Instagram) -> dict | 
     A block or a "please wait" raises `Blocked`, which the engine holds and retries.
     """
     try:
-        response = await ctx.fetch(f"{API}/media/{pk}/info/", in_page=True)
+        response = await _api_fetch(ctx, f"{API}/media/{pk}/info/")
         plugin.claim = response.headers.get("x-ig-set-www-claim") or plugin.claim
         data = response.json
         items = data.get("items") if isinstance(data, dict) else None

@@ -592,6 +592,25 @@ class TabTest(unittest.TestCase):
         self.assertIn(f"{SITE}/example_creator/", ctx.seen.visited)
         self.assertFalse(any("/p/" in url for url in fetched(ctx)))
 
+    def test_api_posts_falls_back_to_in_page_on_error(self):
+        """Direct HTTP error on feed API falls back to in_page before falling back to tab."""
+        feed_answers = [
+            Reply(status=403),
+            Reply({"items": [feed("P1", **image("https://cdn.example/p1.jpg"))],
+                   "more_available": False}),
+        ]
+        ctx = fake(
+            cookies={"sessionid": "99%3As%3A1"},
+            routes={
+                f"{SITE}/api/v1/users/web_profile_info/": Reply({"data": {"user": {"id": "42"}}}),
+                f"{SITE}/api/v1/feed/user/42/": lambda req: feed_answers.pop(0),
+            },
+        )
+        saved = run(categories=["posts"], ctx=ctx)
+        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"])
+        feed_reqs = [r for r in ctx.seen.requests if "/feed/user/42/" in r[1]]
+        self.assertEqual([r[2]["in_page"] for r in feed_reqs], [False, True])
+
     def test_polaris_timeline_and_xig_polaris_media_embeds_are_read(self):
         """2026-11 public pages embed `xig_user_by_username` and `xig_polaris_media`."""
         profile_embed = {"data": {"xig_user_by_username": {
@@ -664,8 +683,24 @@ class PostTest(unittest.TestCase):
         self.assertEqual([item.path for item in saved], [f"C1abc-DEF_0/{DAY}_C1abc-DEF_0.jpg"])
         self.assertEqual(ctx.seen.visited, [])
         self.assertEqual(fetched(ctx), [f"{SITE}/api/v1/media/{pk}/info/"])
-        self.assertTrue(ctx.seen.requests[0][2]["in_page"])
+        self.assertFalse(ctx.seen.requests[0][2]["in_page"])
         self.assertEqual(ctx._plugin.claim, "hmac.next")
+
+    def test_logged_in_media_info_falls_back_to_in_page_on_error(self):
+        """When direct HTTP gets an error (e.g. 403 / wall), media info falls back to in_page."""
+        pk = code_pk("FALLBACK")
+        answers = [
+            Reply(status=403),
+            Reply({"items": [{"code": "FALLBACK", "taken_at": STAMP,
+                              **image("https://cdn.example/fb.jpg")}]}),
+        ]
+        ctx = fake(
+            cookies={"sessionid": "99%3As%3A1"},
+            routes={f"{SITE}/api/v1/media/{pk}/info/": lambda req: answers.pop(0)},
+        )
+        saved = run("https://www.instagram.com/p/FALLBACK/", ctx=ctx)
+        self.assertEqual([item.path for item in saved], [f"FALLBACK/{DAY}_FALLBACK.jpg"])
+        self.assertEqual([r[2]["in_page"] for r in ctx.seen.requests], [False, True])
 
     def test_logged_in_media_info_not_found(self):
         """Empty items, another post, or a 404 raise `NotFound`."""
@@ -759,8 +794,21 @@ class MeTest(unittest.TestCase):
                 found, ctx = self.follows(cookies, {self.URL.format(user_id): following})
                 self.assertEqual(found, [Target("ins:example_user"), Target("ins:example_creator")])
                 [first, second] = ctx.seen.requests
-                self.assertEqual((first[2]["params"], first[2]["in_page"]), ({"count": 100}, True))
+                self.assertEqual((first[2]["params"], first[2]["in_page"]), ({"count": 100}, False))
                 self.assertEqual(second[2]["headers"]["X-IG-WWW-Claim"], "c1")
+
+    def test_follows_falls_back_to_in_page_on_error(self):
+        """When direct HTTP gets an error on follows, me() falls back to in_page."""
+        answers = [
+            Reply(status=403),
+            Reply({"users": [{"username": "example_creator"}]}),
+        ]
+        found, ctx = self.follows(
+            {"sessionid": "s", "ds_user_id": "99"},
+            {self.URL.format("99"): lambda req: answers.pop(0)},
+        )
+        self.assertEqual(found, [Target("ins:example_creator")])
+        self.assertEqual([r[2]["in_page"] for r in ctx.seen.requests], [False, True])
 
     def test_no_login_or_an_odd_answer_raises(self):
         with self.assertRaises(LoginError):
