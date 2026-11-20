@@ -1061,7 +1061,7 @@ def _command(args: argparse.Namespace) -> list[str] | None:
     except ValueError as error:
         raise flnd.UsageError(f"--exec: {error}: {text!r}") from None
     if not argv:
-        raise flnd.UsageError("--exec needs a command", hint="--exec 'echo {path}'")
+        raise flnd.UsageError("--exec needs a command", hint="--exec 'cp {path} /backup/'")
     if shutil.which(argv[0]) is None:
         raise flnd.UsageError(f"--exec: {argv[0]}: no such program",
                               hint="give a program on PATH, or its full path")
