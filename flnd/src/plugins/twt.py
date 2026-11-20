@@ -443,26 +443,14 @@ class Twitter(Plugin):
         timeline = TIMELINES[category]
         tab = profile["page"] + timeline.tab
         yielded: set[str] = set()
-        stalled = 0
-        while True:
-            progress = False
-            try:
-                async for tweet, pinned in self._scroll(ctx, tab, timeline.query):
-                    tid = tweet_id_of(tweet)
-                    if tid and tid in yielded:
-                        continue
-                    if tid:
-                        yielded.add(tid)
-                        progress = True
-                    for post in tweet_posts(tweet, category, profile):
-                        yield post.replace(pinned=True) if pinned else post
-                return
-            except Blocked as error:
-                stalled = 0 if progress else stalled + 1
-                if stalled > 3:
-                    raise
-                await ctx.hold("rate limited", seconds=error.wait,
-                               bucket=timeline.query, reset=progress)
+        async for tweet, pinned in self._scroll(ctx, tab, timeline.query):
+            tid = tweet_id_of(tweet)
+            if tid and tid in yielded:
+                continue
+            if tid:
+                yielded.add(tid)
+            for post in tweet_posts(tweet, category, profile):
+                yield post.replace(pinned=True) if pinned else post
 
     async def _scroll(self, ctx: Ctx, url: str,
                       query: str) -> AsyncIterator[tuple[dict, bool]]:
@@ -476,13 +464,14 @@ class Twitter(Plugin):
         Raises:
             SiteError: the tab didn't load (NotFound for a 404), so nothing is recorded complete.
             LoginError: the tab landed on one of `walls`.
-            Blocked: the feed or page was rate limited (HTTP 429).
+            Blocked: the feed or page was rate limited (HTTP 429); a timeline's holds ran out.
         """
         seen: set[str] = set()
         seen_cursors: set[str] = set()
         empty_pages = 0
         reader = _search_reader() if query == SEARCH else timeline_state
-        async with ctx.feed(f"/{query}", scroll=True, cursor=reader) as responses:
+        async with ctx.feed(f"/{query}", scroll=True, cursor=reader, resume=query != SEARCH,
+                            bucket=query) as responses:
             landed = await ctx.open(url)
             if landed.status >= 400:
                 # A server error (a 503) may pass, so the engine's back-off tries it again.
