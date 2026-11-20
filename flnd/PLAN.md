@@ -367,10 +367,28 @@ does not.
   number counts.
 - Built after step 5c, whose bench reads the same numbers.
 
-## Step 6: cookbook pass (haiku)
+## Step 6: SPEC.md and a short COOKBOOK.md (sonnet splits, haiku moves text)
 
-Bring COOKBOOK.md in line with steps 2 to 5 where a commit missed something, and recheck its
-line limit. Opus reads the page once, end to end, against "no gray area".
+Asked by the user 2026-11-20. Built right after step 4's `fbk` commit, before `twt` and `ins`,
+so every later step updates the right page.
+
+- `flnd/SPEC.md` holds everything, with no gray area: today's COOKBOOK.md content (every
+  grammar with its accepted forms, refused forms and exact errors; every command, flag, config
+  key, error class; every plugin's spec; the library; writing a plugin; developers). At most
+  1,500 lines.
+- `flnd/COOKBOOK.md` keeps only simple, common uses, each a one-line goal and the command or
+  three-line script that does it: download a profile, pick categories, a single post, a search
+  with a folder, sync what you follow, a date window, a dry run, log in, switch accounts,
+  `--exec` with ffmpeg, fix a failed run. Each recipe links to its SPEC.md section. At most 250
+  lines.
+- `flnd/README.md` stays at most 40 lines, linking both.
+- Module docstrings and `AGENTS.md` name `SPEC.md#<section>`. `tests/test_docs.py` checks both
+  pages: python blocks run and `flnd` lines parse in both; links and fragments resolve; SPEC.md
+  names every command, flag and plugin; each page within its limit.
+- From here on, a behaviour change updates SPEC.md, and COOKBOOK.md only when a common use
+  changes.
+- Opus reads both pages once, end to end: SPEC.md against "no gray area", COOKBOOK.md against
+  "simple and common".
 
 ## Step 7: shrink (sonnet, Opus picks the targets)
 
