@@ -55,7 +55,7 @@ OLD_STAGE = ".stage"
 # `.info` sidecar and lock file.
 SIDES = (SIDE, ".link", ".info", ".lock")
 # Writes reach the disk this many bytes at a time; a digest reads a file back the same way.
-BUFFER = 1 << 20
+BUFFER = 128 << 10
 # Errnos that mean this file system (or this pair of folders) can't hard-link: FAT and exFAT
 # (EPERM, ENOTSUP), two volumes (EXDEV), or a file at its file system's link limit (EMLINK).
 NO_LINKS = {errno.EPERM, errno.EXDEV, errno.EMLINK, errno.EOPNOTSUPP,
@@ -190,7 +190,7 @@ class Part:
             self.side = True
 
     def write(self, data: bytes) -> None:
-        """Append `data` after the part's bytes, through a 1 MiB buffer, hashing it when the
+        """Append `data` after the part's bytes, through a 128 KiB buffer, hashing it when the
         part hashes (`digest`).
 
         Args:

@@ -60,13 +60,14 @@ EPOCH = 1_000_000_000.0
 HANDLES = 260
 # Seconds before a connection counts as dead: to connect, or with no byte received.
 TIMEOUT = 30.0
-# The file system's writes go to the writer thread this many bytes at a time. Each hand-off to
-# a thread waits for the GIL when it comes back, which on a busy loop can take milliseconds, so
-# fewer, larger pieces pay: 4 MiB moved 1 GiB 15% faster than 1 MiB
-# (SPEC.md#for-developers).
-BUFFER = 4 << 20
+# The file system's writes go to the writer thread this many bytes at a time.
+BUFFER = 512 << 10
 # The most bytes of one transfer that wait in memory for the disk before curl pauses it.
-HELD = 8 << 20
+HELD = 1 << 20
+# The most bytes all active transfers together may hold before incoming data is paused.
+TOTAL_HELD = 16 << 20
+# The most idle handles kept ready between transfers.
+IDLE_HANDLES = 16
 # Pieces curl gives in one call are queued as one, up to this many bytes.
 BATCH = 256 << 10
 # Redirects followed for one request, as curl_cffi's default allows.
@@ -589,7 +590,7 @@ class _Curls:
         # but reads options only during a transfer, and the next one sets its own first.
         curl.clean_handles_and_buffers()
         self._free.release()
-        if self._closed:
+        if self._closed or len(self._idle) >= IDLE_HANDLES:
             curl.close()
             return
         if not plain:
@@ -663,9 +664,7 @@ class _Transfer:
         if self._quit:
             return WRITE_ERROR
         self.wrote = True
-        self._held += len(chunk)
-        if self._held >= HELD and not self._paused:
-            self._pause(True)
+        _add_held(self, len(chunk))
         if not self._batch:
             self._loop.call_soon(self._flush)
         self._batch.append(chunk)
@@ -688,6 +687,8 @@ class _Transfer:
             self._read()
         self._flush()
         self._queue.put_nowait(None)
+        if self._paused:
+            self._pause(False)
         self._give(self._curl, self.plain)
         self._ended.set_result(None)
 
@@ -722,15 +723,28 @@ class _Transfer:
             raise self.error
 
     def _took(self, size: int) -> None:
-        self._held -= size
-        if self._paused and self._held <= HELD // 2:
+        dropped = min(self._held, size)
+        self._held -= dropped
+        if dropped:
+            _drop_held(dropped)
+        if self._paused and self._held <= HELD // 2 and _total_held <= TOTAL_HELD // 2:
             self._pause(False)
+
+    def _drop_all(self) -> None:
+        _paused_transfers.discard(self)
+        if self._held > 0:
+            held, self._held = self._held, 0
+            _drop_held(held)
 
     def quit(self) -> None:
         """Abort the transfer at its next byte: nothing more of it is read."""
         self._quit = True
         if self._paused:
             self._pause(False)
+        self._drop_all()
+
+    def __del__(self) -> None:
+        self._drop_all()
 
     async def close(self) -> None:
         """Stop the transfer, and wait until curl gives the handle back."""
@@ -738,9 +752,38 @@ class _Transfer:
         await asyncio.shield(self._ended)
 
     def _pause(self, paused: bool) -> None:
+        if self._paused == paused:
+            return
         self._paused = paused
+        if paused:
+            _paused_transfers.add(self)
+        else:
+            _paused_transfers.discard(self)
         # 1 is CURLPAUSE_RECV, 0 CURLPAUSE_CONT (curl/curl.h).
         _curl_pause(self._curl._curl, 1 if paused else 0)
+
+
+_total_held = 0
+_paused_transfers: set[_Transfer] = set()
+
+
+def _add_held(transfer: _Transfer, size: int) -> None:
+    """Account for `size` bytes received for `transfer`, pausing if limits are reached."""
+    global _total_held
+    _total_held += size
+    transfer._held += size
+    if (transfer._held >= HELD or _total_held >= TOTAL_HELD) and not transfer._paused:
+        transfer._pause(True)
+
+
+def _drop_held(size: int) -> None:
+    """Account for `size` bytes drained to disk, resuming paused transfers when room frees."""
+    global _total_held
+    _total_held = max(0, _total_held - size)
+    if _total_held <= TOTAL_HELD // 2:
+        for transfer in list(_paused_transfers):
+            if not transfer._quit and transfer._held <= HELD // 2:
+                transfer._pause(False)
 
 
 def _curl_pause(handle: Any, how: int) -> None:
@@ -1143,14 +1186,12 @@ class _Sink:
         self._run = write
         self._until = until
         self._wrote = wrote
-        self._chunks: list[bytes] = []
-        self._size = 0
+        self._buffer = bytearray()
         self.written = 0
 
     async def add(self, chunk: bytes) -> None:
-        self._chunks.append(chunk)
-        self._size += len(chunk)
-        if self._size >= BUFFER:
+        self._buffer.extend(chunk)
+        if len(self._buffer) >= BUFFER:
             await self.flush()
 
     async def flush(self, *, last: bool = False) -> None:
@@ -1168,32 +1209,36 @@ class _Sink:
         Raises:
             DiskError: the part can't be written.
         """
-        if not self._chunks:
+        if not self._buffer:
             return
-        data = self._chunks[0] if len(self._chunks) == 1 else b"".join(self._chunks)
-        self._chunks, self._size = [], 0
-        if last and self._offset is None and len(data) < files.BUFFER and (
+        data = self._buffer
+        size = len(data)
+        if last and self._offset is None and size < files.BUFFER and (
                 self._until is None or self._until() is None):
             self._held.write(data)
-            self.written += len(data)
+            self._buffer.clear()
+            self.written += size
             if self._wrote is not None:
-                await self._wrote(len(data))
+                await self._wrote(size)
             return
         if self._offset is None:
             call, args = self._append, (data,)
         else:
             call, args = self._held.write_at, (self._offset + self.written, data)
-        if self._run is not None:
-            # The caller's writer, which waits for its write to end even through a cancel.
-            await self._run(call, *args)
-        else:
-            loop = asyncio.get_running_loop()
-            await _settle(loop.run_in_executor(_writer_thread(), call, *args))
-        self.written += len(data)
+        try:
+            if self._run is not None:
+                # The caller's writer, which waits for its write to end even through a cancel.
+                await self._run(call, *args)
+            else:
+                loop = asyncio.get_running_loop()
+                await _settle(loop.run_in_executor(_writer_thread(), call, *args))
+        finally:
+            self._buffer.clear()
+        self.written += size
         if self._wrote is not None:
-            await self._wrote(len(data))
+            await self._wrote(size)
 
-    def _append(self, data: bytes) -> None:
+    def _append(self, data: bytes | bytearray) -> None:
         self._held.write(data)
         self._held.flush()
 

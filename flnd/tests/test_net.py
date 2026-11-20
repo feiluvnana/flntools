@@ -660,15 +660,15 @@ class ValveTest(unittest.TestCase):
 
         async def run():
             transfer = _net._Transfer(self.Curl(), lambda curl, plain: None)
-            chunk = bytes(1 << 20)
-            for _ in range(_net.HELD >> 20):
+            chunk = bytes(_net.HELD // 8)
+            for _ in range(8):
                 self.assertEqual(transfer.write(chunk), len(chunk))
             self.assertEqual(calls, [1])
             self.assertEqual((transfer.status, transfer.url), (200, "https://www.example.com/a"))
             body = transfer.chunks()
             await anext(body)
             self.assertEqual(calls, [1])
-            for _ in range(1, (_net.HELD >> 20) // 2):
+            for _ in range(1, 4):
                 await anext(body)
             self.assertEqual(calls, [1, 0])
             transfer.quit()
@@ -683,8 +683,8 @@ class ValveTest(unittest.TestCase):
 
         async def run():
             transfer = _net._Transfer(self.Curl(), lambda curl, plain: None)
-            for _ in range(_net.HELD >> 20):
-                transfer.write(bytes(1 << 20))
+            for _ in range(8):
+                transfer.write(bytes(_net.HELD // 8))
             transfer.quit()
 
         with mock.patch.object(_net, "_curl_pause", lambda handle, how: calls.append(how)):

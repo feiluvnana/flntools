@@ -496,6 +496,8 @@ class Saver:
         self._checkpoints: set[asyncio.Task[Any]] = set()
         # Each target's last file to join the scheduler's queue (`_turn`).
         self._turns: dict[Target, asyncio.Event] = {}
+        # Concurrency slot semaphore per target, limiting open parts to scheduler places.
+        self._slots: dict[Target, asyncio.Semaphore] = {}
         # Each ranged fetch file's segments, by its first transfer's job (`_ranged`).
         self._fetching: dict[Job[Any], _Fetching] = {}
 
@@ -651,29 +653,42 @@ class Saver:
                 mirrors = mirrors[1:]
         turn = self._turn(item.target)
         try:
-            async with self._part(item.dest) as held:
-                if item.day is not None:
-                    held.mtime = noon(item.day)
-                try:
-                    await self._mirrors(item, mirrors, held, client, plugin, received, flow,
-                                        turn)
-                except _Dropped:
-                    if not held.size:
-                        # Never started: no empty part is left behind.
-                        await self._call(held.drop)
-                    raise
-                # The last mirror's content check, and the landing, come after the job gave
-                # back its places: a small file holds its host's cap for its transfer alone.
-                if item.kind is not None:
-                    await self._call(_place, held, item, received)
-                if held.mtime is None:
-                    served = served_day(received.get("last-modified"))
-                    held.mtime = noon(served) if served is not None else None
+            slot = self._slot(item.target)
+            await slot.acquire()
+            try:
+                async with self._part(item.dest) as held:
+                    if item.day is not None:
+                        held.mtime = noon(item.day)
+                    try:
+                        await self._mirrors(item, mirrors, held, client, plugin, received, flow,
+                                            turn)
+                    except _Dropped:
+                        if not held.size:
+                            # Never started: no empty part is left behind.
+                            await self._call(held.drop)
+                        raise
+                    # The last mirror's content check, and the landing, come after the job gave
+                    # back its places: a small file holds its host's cap for its transfer alone.
+                    if item.kind is not None:
+                        await self._call(_place, held, item, received)
+                    if held.mtime is None:
+                        served = served_day(received.get("last-modified"))
+                        held.mtime = noon(served) if served is not None else None
+            finally:
+                slot.release()
         finally:
             # A file that never queued (a busy part) lets the next one go on.
             turn[1].set()
         assert held.saved is not None
         return held.saved
+
+    def _slot(self, target: Target) -> asyncio.Semaphore:
+        """A target's places slot semaphore: limits concurrent downloads holding parts."""
+        slot = self._slots.get(target)
+        if slot is None:
+            places = getattr(getattr(self.scheduler, "limits", None), "places", 32)
+            slot = self._slots[target] = asyncio.Semaphore(max(1, places))
+        return slot
 
     def _turn(self, target: Target) -> tuple[asyncio.Event | None, asyncio.Event]:
         """The file's turn among its target's: the one before it, and its own."""
@@ -967,18 +982,19 @@ class Saver:
             BusyError: another run holds the part: the file's, never the run's stop.
         """
         manager = files.part(dest, resume=True)
-        held = await self._enter(manager)
+        held = await self._enter(manager, dest)
         if held is None:
             raise files.BusyError(f"{dest.name}: being saved by another run")
         try:
             yield held
         except BaseException as error:
             # The part keeps its bytes for the next run, and raises `error` again.
-            await self._call(manager.__exit__, type(error), error, error.__traceback__)
+            await self.scheduler.on(Kind.WRITE, manager.__exit__, type(error), error,
+                                    error.__traceback__, path=dest)
             raise
-        await self._call(manager.__exit__, None, None, None)
+        await self.scheduler.on(Kind.WRITE, manager.__exit__, None, None, None, path=dest)
 
-    async def _enter(self, manager: Any) -> files.Part | None:
+    async def _enter(self, manager: Any, dest: Path) -> files.Part | None:
         """Open a part on a thread; None when another run holds it."""
         opened: list[files.Part] = []
 
@@ -998,10 +1014,11 @@ class Saver:
             return held
 
         try:
-            return await self._call(enter)
+            return await self.scheduler.on(Kind.WRITE, enter, path=dest)
         except asyncio.CancelledError as error:
             if opened:
-                await self._call(manager.__exit__, type(error), error, None)
+                await self.scheduler.on(Kind.WRITE, manager.__exit__, type(error), error, None,
+                                        path=dest)
             raise
 
     async def _dedupe(self, landed: _Landed, plugin: str) -> None:
