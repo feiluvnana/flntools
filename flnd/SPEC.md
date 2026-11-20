@@ -1065,9 +1065,8 @@ up to 32.
 ### fbk (Facebook)
 
 - **Reads:** a profile or page in the browser, and one video, reel, photo or post by link (a
-  `fb.watch` or `/share/` link is opened to find where it lands). A tab's first scroll captures its
-  GraphQL POST; its pages then go by the same body with the cursor (`cursor`, `after` or
-  `afterCursor`) replaced, in the page. With no capture or an unreadable answer it scrolls.
+  `fb.watch` or `/share/` link is opened to find where it lands). A tab is scrolled until its
+  `page_info` says it ends; nothing is replayed.
 - **Categories:** every tab is read to its end each run. `posts`, `photos`, `albums`, `reels`,
   `videos`, `stories`, `profile` (own); `tagged` (opt-in). A video found in another tab goes to
   `videos`, a photo naming its album to `albums/<album>`; others' media is left out.

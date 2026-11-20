@@ -6,13 +6,12 @@ import datetime
 import json
 import unittest
 from types import SimpleNamespace
-from urllib.parse import parse_qsl, urlencode
 
 import fakes  # noqa: F401  (refuses real profiles; fails a coroutine never awaited)
 
 from flnd.engine.resolve import Manifest, resolve
 from flnd.errors import Blocked, LoginError, NotFound, SiteError, UsageError
-from flnd.plugin import Plugin, Range, Request, Target
+from flnd.plugin import Plugin, Range, Target
 from flnd.plugins import _manifest
 from flnd.plugins.fbk import (
     TEMPORARILY_BLOCKED,
@@ -242,98 +241,6 @@ def run(text="fbk:example.page", categories=None, **given):
     return collect(Facebook, text, ctx=ctx, categories=categories), ctx
 
 
-def query(cursor):
-    """The POST a tab's scroll sends: a form with `variables` holding the cursor."""
-    body = urlencode([("fb_dtsg", "tok"), ("variables", json.dumps({"count": 8, "cursor": cursor})),
-                      ("doc_id", "77")])
-    return Request(GRAPHQL, method="POST", body=body, headers={"x-fb-lsd": "l", "cookie": "no"})
-
-
-def lines(*values):
-    return "\n".join(json.dumps(value) for value in values)
-
-
-def replayed(answers):
-    """A GRAPHQL route answering each replay by the cursor its body names: `answers[cursor]`."""
-    asked = []
-
-    def answer(request):
-        sent = dict(parse_qsl(request.body))
-        cursor = json.loads(sent["variables"])["cursor"]
-        asked.append(cursor)
-        got = answers[cursor]
-        return got if isinstance(got, Reply) else Reply(lines(*got))
-    return answer, asked
-
-
-class ReplayTest(unittest.TestCase):
-    def pages(self):
-        first = Sent(GRAPHQL, info("c1"), scroll=1, request=query(None))
-        return {BASE: page(header(*TABS)),
-                f"{BASE}/photos_by": FakePage(
-                    embedded(header(*TABS), photo("1")), feeds=[first])}
-
-    def go(self, answers, pages=None):
-        route, asked = replayed(answers)
-        saved, ctx = run(categories=["photos"], pages=pages or self.pages(),
-                         routes={**UNDATED, GRAPHQL: route})
-        return [s.key for s in saved], asked, ctx
-
-    def test_a_tab_is_paged_by_its_captured_query_to_the_end(self):
-        keys, asked, ctx = self.go({"c1": [photo("2"), info("c2")], "c2": [photo("3"), info("")]})
-        self.assertEqual(keys, ["1", "2", "3"])
-        self.assertEqual(asked, ["c1", "c2"])
-        self.assertEqual(ctx.seen.scrolls, 1)
-        sent = ctx.seen.requests[-1]
-        self.assertTrue(sent[2]["in_page"])
-        self.assertEqual(sent[2]["headers"]["x-fb-lsd"], "l")
-        self.assertNotIn("cookie", sent[2]["headers"])
-        self.assertEqual(dict(parse_qsl(sent[2]["body"]))["doc_id"], "77")
-
-    def test_a_429_mid_paging_is_held_and_asked_again_from_the_same_cursor(self):
-        limit = Reply("slow down", status=429, headers={"Retry-After": "5"})
-        route, asked = replayed({"c1": [photo("2"), info("c2")], "c2": limit})
-        seen = {"n": 0}
-
-        def flaky(request):
-            if json.loads(dict(parse_qsl(request.body))["variables"])["cursor"] == "c2":
-                seen["n"] += 1
-                if seen["n"] > 3:
-                    return Reply(lines(photo("3"), info("")))
-            return route(request)
-        saved, ctx = run(categories=["photos"], pages=self.pages(),
-                         routes={**UNDATED, GRAPHQL: flaky})
-        self.assertEqual([s.key for s in saved], ["1", "2", "3"])
-        self.assertTrue(ctx.seen.holds)
-        self.assertEqual(asked.count("c1"), 1)
-
-    def test_an_answer_that_cannot_be_read_falls_back_to_scrolling(self):
-        pages = self.pages()
-        pages[f"{BASE}/photos_by"] = FakePage(
-            embedded(header(*TABS), photo("1")),
-            feeds=[Sent(GRAPHQL, info("c1"), scroll=1, request=query(None)),
-                   Sent(GRAPHQL, photo("2"), scroll=2), Sent(GRAPHQL, info(""), scroll=2)])
-        keys, _, ctx = self.go({"c1": Reply("<html>not json</html>")}, pages)
-        self.assertEqual(keys, ["1", "2"])
-        self.assertEqual(ctx.seen.scrolls, 2)
-
-    def test_no_captured_query_scrolls(self):
-        saved, ctx = run(categories=["photos"], pages={
-            BASE: page(header(*TABS)),
-            f"{BASE}/photos_by": page(header(*TABS), photo("1"),
-                                      scroll=[[photo("2"), info("")]])})
-        self.assertEqual([s.key for s in saved], ["1", "2"])
-
-    def test_a_rate_limit_code_is_held_and_asked_again(self):
-        limited = {"errors": [{"code": 1675004, "message": "rate limited"}]}
-        answers = iter([[limited], [photo("2"), info("")]])
-        ctx_route = lambda request: Reply(lines(*next(answers)))
-        saved, ctx = run(categories=["photos"], pages=self.pages(),
-                         routes={**UNDATED, GRAPHQL: ctx_route})
-        self.assertEqual([s.key for s in saved], ["1", "2"])
-        self.assertEqual([hold[0] for hold in ctx.seen.holds], [TEMPORARILY_BLOCKED])
-
-
 class RoutesTest(unittest.TestCase):
     def test_every_form(self):
         for text, expected in ROUTES:
@@ -463,6 +370,15 @@ class BlockTest(unittest.TestCase):
                 pages[url] = page(header(*TABS), photo("1"), scroll=[[comet] * 4])
                 with self.assertRaises(Blocked):
                     run(categories=[category], pages=pages)
+
+    def test_a_rate_limit_code_line_is_held_and_the_scroll_goes_on(self):
+        limited = {"errors": [{"code": 1675004, "message": "rate limited"}]}
+        pages = {BASE: page(header(*TABS)),
+                 f"{BASE}/photos_by": page(header(*TABS), photo("1"),
+                                           scroll=[[photo("2"), limited, photo("3")]])}
+        saved, ctx = run(categories=["photos"], pages=pages)
+        self.assertEqual([s.key for s in saved], ["1", "2", "3"])
+        self.assertEqual([hold[0] for hold in ctx.seen.holds], [TEMPORARILY_BLOCKED])
 
     def test_a_scroll_stops_where_the_tab_says_it_ends(self):
         # The Tiles feed's "no next page" as the page loads says nothing; the tab's own last

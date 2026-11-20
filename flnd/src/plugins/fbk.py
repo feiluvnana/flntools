@@ -5,11 +5,10 @@ SPEC.md#fbk-facebook explains it: the pages it reads, the quirks, the rules a ch
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from typing import Any, NamedTuple
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from flnd.plugin import (
     Browser,
@@ -19,7 +18,6 @@ from flnd.plugin import (
     NotFound,
     Plugin,
     Post,
-    Request,
     Response,
     SiteError,
     Target,
@@ -102,10 +100,6 @@ COMET_ERROR = "CometErrorRoot.react"
 TEMPORARILY_BLOCKED = "Facebook says you've been temporarily blocked"
 # Comet's rate-limit codes in a GraphQL line's `errors` (confirm live: the set is a guess).
 RATE_LIMIT_CODES = frozenset({"1675004", "368"})
-# The variable that carries a tab's cursor (confirm live which one a tab's query uses).
-CURSOR_VARIABLES = ("cursor", "after", "afterCursor")
-# Captured request headers safe to replay in the page; `sign` and the tab set the rest.
-QUERY_HEADERS = ("content-type", "x-fb-")
 # 2026-11-12: a comment list carries its own `page_info`, deeper than the tab's; the tab's sits
 # at most this many objects under `data` (data, node, connection, page_info).
 PAGE_INFO_DEPTH = 3
@@ -324,7 +318,7 @@ class Facebook(Plugin):
                 yield post
         async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor(),
                             resume=True) as lines:
-            async for line in paged(ctx, lines, "posts"):
+            async for line in unblocked(ctx, lines):
                 for post in media_posts(line, "posts", owner=profile["owner"], seen=seen):
                     yield post
 
@@ -457,7 +451,7 @@ async def tab_results(ctx: Ctx, url: str, tab: str) -> AsyncIterator[Any]:
             raise SiteError(f"fbk: {url} didn't load")
         for result in results:
             yield result
-        async for line in paged(ctx, lines, tab):
+        async for line in unblocked(ctx, lines):
             yield line
 
 
@@ -476,108 +470,6 @@ async def unblocked(ctx: Ctx, lines: AsyncIterator[Any]) -> AsyncIterator[Any]:
             await ctx.hold(TEMPORARILY_BLOCKED)
         else:
             yield line
-
-
-class Query(NamedTuple):
-    """A tab's captured GraphQL POST: its form, and the name of the variable with the cursor."""
-
-    url: str
-    headers: dict[str, str]
-    form: dict[str, str]
-    name: str
-
-    def request(self, cursor: str) -> Request:
-        """The same form with the cursor replaced."""
-        variables = {**json.loads(self.form["variables"]), self.name: cursor}
-        form = {**self.form, "variables": json.dumps(variables, separators=(",", ":"))}
-        return Request(self.url, method="POST", headers=self.headers, body=urlencode(form),
-                       check=False)
-
-
-class Unreadable(Exception):
-    """A replayed answer that isn't GraphQL lines."""
-
-
-def capture(request: Request | None, line: Any) -> Query | None:
-    """The replayable query of the request whose answer `line` says has a next page, or None."""
-    state = next_page(line)
-    if (state is None or not state[0] or request is None or request.method != "POST"
-            or not isinstance(request.body, str) or "/graphql" not in urlsplit(request.url).path):
-        return None
-    form = dict(parse_qsl(request.body, keep_blank_values=True))
-    try:
-        variables = json.loads(form["variables"])
-        name = next(n for n in CURSOR_VARIABLES if n in variables)
-    except (KeyError, ValueError, StopIteration, TypeError):
-        return None
-    headers = {"content-type": "application/x-www-form-urlencoded"} | {
-        k: v for k, v in (request.headers or {}).items() if k.lower().startswith(QUERY_HEADERS)}
-    return Query(request.url, headers, form, name)
-
-
-def answer_lines(response: Response) -> list[Any]:
-    """The GraphQL lines of a replayed answer; `Unreadable` when it isn't ok or isn't JSON lines."""
-    try:
-        if response.ok:
-            return [json.loads(text) for text in response.text.splitlines() if text.strip()]
-    except ValueError:
-        pass
-    raise Unreadable
-
-
-def more(response: Response) -> str | None:
-    """The cursor an answer's lines name for the next page; None at the end or unreadable."""
-    try:
-        states = [state for line in answer_lines(response) if (state := next_page(line))]
-    except Unreadable:
-        return None
-    return states[0][1] if states and states[0][0] else None
-
-
-async def replay(ctx: Ctx, query: Query, cursor: str | None) -> AsyncIterator[Any]:
-    """The tab's pages after `cursor`, each asked in the page with the same body, to the end.
-
-    A 429 holds through `ctx.pages(resume=True)`; Comet's block line or a rate-limit code holds
-    and asks the same cursor again, forgetting earlier rounds when a page came since. An
-    answer that isn't GraphQL lines raises `Unreadable`.
-    """
-    came = False
-    while cursor:
-        pages = ctx.pages(query.request(cursor), cursor=more, send=query.request,
-                          in_page=True, resume=True)
-        async for response in pages:
-            lines = answer_lines(response)
-            if any(held(line) for line in lines):
-                await ctx.hold(TEMPORARILY_BLOCKED, reset=came)
-                came = False
-                break
-            came = True
-            for line in lines:
-                yield line
-            cursor = more(response)
-
-
-async def paged(ctx: Ctx, lines: AsyncIterator[Any], tab: str) -> AsyncIterator[Any]:
-    """A scrolled tab's lines; once one shows the tab's own query, its pages by that query.
-
-    With no query captured, or an answer that can't be read, the scroll goes on.
-    """
-    tried = False
-    async for line in unblocked(ctx, lines):
-        request = ctx.request
-        yield line
-        query = None if tried else capture(request, line)
-        if query is not None:
-            tried = True
-            try:
-                async for found in replay(ctx, query, next_page(line)[1]):
-                    yield found
-                ctx.log("info", "{tab}: paged by its query", tab=tab)
-                return
-            except Unreadable:
-                ctx.log("warn", "{tab}: its query's answer can't be read; scrolling", tab=tab)
-    if not tried:
-        ctx.log("info", "{tab}: scrolled", tab=tab)
 
 
 async def read_tab(ctx: Ctx, profile: Mapping[str, Any], category: str) -> AsyncIterator[Post]:
