@@ -272,11 +272,19 @@ __all__ = [
 # `navigator.webdriver`; infobars shows the automated-software bar) and keep Chrome from
 # throttling the background tabs of the one window every target shares.
 LAUNCH_ARGS = [
-    "--disable-blink-features=AutomationControlled",
-    "--disable-infobars",
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
+    "--disable-blink-features=AutomationControlled", "--disable-infobars",
+    "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding", "--disable-gpu", "--in-process-gpu",
+    "--renderer-process-limit=1", "--disable-site-isolation-trials",
+    "--disable-component-extensions-with-background-pages", "--disable-extensions",
+    "--disable-default-apps", "--disable-background-networking", "--disable-component-update",
+    "--disable-sync", "--disable-translate", "--disable-client-side-phishing-detection",
+    "--disable-domain-reliability", "--disable-renderer-accessibility", "--mute-audio",
+    "--autoplay-policy=user-gesture-required", "--disk-cache-size=1", "--media-cache-size=1",
+    "--js-flags=--max-old-space-size=128",
+    ("--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,"
+     "AcceptCHFrame,InterestFeedContentSuggestions,ProcessPerSiteUpToMainFrameThreshold,"
+     "SpareRendererForSitePerProcess"),
 ]
 # `navigator.webdriver` is removed rather than set to false, matching how an ordinary browser acts.
 HIDE_WEBDRIVER = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -301,6 +309,20 @@ SOFTWARE_GL = {
     "linux": ("Google Inc. (Intel)",
               "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6)"),
 }
+GL_SCRIPT = """(() => {
+  const named = %(named)s;
+  const patch = (proto) => {
+    proto.getParameter = new Proxy(proto.getParameter, {apply(target, self, args) {
+      const value = Reflect.apply(target, self, args);
+      if ((args[0] === 0x9245 || args[0] === 0x9246) && /SwiftShader/i.test(String(value))) {
+        return named[args[0] === 0x9245 ? 0 : 1];
+      }
+      return value;
+    }});
+  };
+  patch(WebGLRenderingContext.prototype);
+  if (self.WebGL2RenderingContext) patch(WebGL2RenderingContext.prototype);
+})();"""
 # The height of a visible window's toolbar, which a hidden one's `outerHeight` adds to its page.
 TOOLBAR = 87
 # What makes a hidden browser read as a visible one, run in every page before its own scripts:
@@ -331,7 +353,7 @@ HIDDEN_SCRIPT = """(() => {
     }).catch(() => {});
   }
 })();"""
-DEFAULT_VIEWPORT = (1280, 900)
+DEFAULT_VIEWPORT = (1024, 720)
 PAGE_HEIGHT = "(document.scrollingElement || document.documentElement).scrollHeight"
 # Within a few pixels of the end counts as the bottom: a scroll position may be fractional.
 AT_BOTTOM = ("(() => { const page = document.scrollingElement || document.documentElement;"
@@ -547,7 +569,8 @@ class Visit:
 # ---------------------------------------------------------------------------------------------
 
 async def launch(*, profile: str | None = None, headless: bool = False,
-                 stealth: bool = True, screen: Screen | None = None) -> Browser:
+                 stealth: bool = True, screen: Screen | None = None,
+                 assets: bool = True) -> Browser:
     """Launch Chrome, or Playwright's Chromium, and return it as a `Browser`. Runs on the loop.
 
         chrome = await launch()
@@ -560,6 +583,7 @@ async def launch(*, profile: str | None = None, headless: bool = False,
         stealth: hide `navigator.webdriver`, which sites read to tell automation apart.
         screen: where the offer to download Chromium is asked and its progress shown; None
             for the plain `Screen`.
+        assets: load images, media and fonts; False disables image loading natively.
 
     Returns:
         The browser, which `Browser.close` closes, deleting the profile copy.
@@ -576,7 +600,7 @@ async def launch(*, profile: str | None = None, headless: bool = False,
         playwright = await _start_playwright()
         try:
             return await _launch(playwright, copy, headless=headless, stealth=stealth,
-                                 screen=screen or Screen())
+                                 screen=screen or Screen(), assets=assets)
         # Any exception, Ctrl-C included, stops Playwright's driver before it goes on up.
         except BaseException:
             await playwright.stop()
@@ -647,9 +671,11 @@ def _copy_profile(name: str) -> Path:
 
 
 async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
-                  stealth: bool, screen: Screen) -> Browser:
+                  stealth: bool, screen: Screen, assets: bool = True) -> Browser:
     """Launch a browser for `launch`, with or without a copied profile."""
     launch_options: dict[str, Any] = {"headless": headless, "args": list(LAUNCH_ARGS)}
+    if not assets:
+        launch_options["args"].append("--blink-settings=imagesEnabled=false")
     width, height = DEFAULT_VIEWPORT
     context_options: dict[str, Any] = {"viewport": {"width": width, "height": height}}
     if copy is not None:
@@ -666,6 +692,7 @@ async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
     )
     if stealth:
         await context.add_init_script(HIDE_WEBDRIVER)
+        await context.add_init_script(gl_script())
     await context.add_init_script(KEEP_VISIBLE)
     override = None
     if headless:
@@ -674,7 +701,13 @@ async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
     if copy is not None:
         # Removed after Chrome has closed, or Chrome would still be writing into it.
         close_steps.append(lambda: shutil.rmtree(copy, ignore_errors=True))
-    return Browser(context, close_steps=close_steps, headless=headless, override=override)
+    return Browser(context, close_steps=close_steps, headless=headless, override=override,
+                   assets=assets)
+
+
+def gl_script() -> str:
+    key = sys.platform if sys.platform in SOFTWARE_GL else "linux"
+    return GL_SCRIPT % {"named": json.dumps(SOFTWARE_GL[key])}
 
 
 def hidden_script() -> str:
@@ -801,6 +834,42 @@ _HINTS_SCRIPT = """async () => {
 PROBE_URL = "https://probe.invalid/"
 
 
+def _cache_file() -> Path:
+    if os.environ.get(NO_PROFILES):
+        return Path(tempfile.gettempdir()) / "flnd-cache" / "headful.json"
+    root = os.environ.get("XDG_CACHE_HOME")
+    return (Path(root) if root else Path.home() / ".cache") / "flnd" / "headful.json"
+
+
+def _read_disk_cache(key: str) -> tuple[str, dict[str, Any]] | None:
+    try:
+        data = json.loads(_cache_file().read_text(encoding="utf-8")).get(key)
+        if not data:
+            return None
+        st = os.stat(key)
+        if data.get("mtime_ns") == st.st_mtime_ns and data.get("size") == st.st_size:
+            return data["agent"], data["hints"]
+    except Exception:
+        pass
+    return None
+
+
+def _write_disk_cache(key: str, agent: str, hints: dict[str, Any]) -> None:
+    try:
+        path = _cache_file()
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        st = os.stat(key)
+        data[key] = {
+            "mtime_ns": st.st_mtime_ns, "size": st.st_size, "agent": agent, "hints": hints,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from flnkit import files
+        with files.part(path) as held:
+            held.write(json.dumps(data).encode("utf-8"))
+    except Exception:
+        pass
+
+
 async def _headful_override(playwright: Playwright, channel: str) -> dict[str, Any] | None:
     """The `Emulation.setUserAgentOverride` parameters that give a hidden tab the user agent and
     client hints a visible Chrome sends, or None where the browser has no client hints.
@@ -809,6 +878,8 @@ async def _headful_override(playwright: Playwright, channel: str) -> dict[str, A
     any brand that says "Headless".
     """
     key = _executable_key(playwright, channel)
+    if key is not None and key not in _HEADFUL_HINTS and (cached := _read_disk_cache(key)):
+        _HEADFUL_UA[key], _HEADFUL_HINTS[key] = cached
     if key is None or key not in _HEADFUL_HINTS:
         remote = await playwright.chromium.launch(channel=channel, headless=True)
         try:
@@ -830,6 +901,7 @@ async def _headful_override(playwright: Playwright, channel: str) -> dict[str, A
         if key is None:
             return _override(agent, hints)
         _HEADFUL_HINTS[key] = hints or {}
+        _write_disk_cache(key, _HEADFUL_UA.get(key, agent), _HEADFUL_HINTS[key])
     return _override(_HEADFUL_UA[key], _HEADFUL_HINTS[key])
 
 
@@ -854,8 +926,11 @@ def _override(agent: str, hints: Mapping[str, Any] | None) -> dict[str, Any] | N
 async def _headful_ua(playwright: Playwright, channel: str, remote: Any) -> str:
     """The user agent `remote` reports, with "HeadlessChrome" replaced by "Chrome", cached."""
     key = _executable_key(playwright, channel)
-    if key is not None and key in _HEADFUL_UA:
-        return _HEADFUL_UA[key]
+    if key is not None:
+        if key not in _HEADFUL_UA and (cached := _read_disk_cache(key)):
+            _HEADFUL_UA[key], _HEADFUL_HINTS[key] = cached
+        if key in _HEADFUL_UA:
+            return _HEADFUL_UA[key]
     probe = await remote.new_context()
     try:
         agent = await (await probe.new_page()).evaluate("navigator.userAgent")
@@ -888,12 +963,14 @@ class Browser:
         headless: whether the window is hidden, which a handoff to a person reopens visible.
         override: for a hidden browser, the parameters of `Emulation.setUserAgentOverride` that
             each new tab is given (see `_headful_override`).
+        assets: whether images, media and fonts are enabled for this browser.
     """
 
     def __init__(self, context: BrowserContext, *, close_steps: list[Callable[[], Any]],
-                 headless: bool, override: dict[str, Any] | None = None):
+                 headless: bool, override: dict[str, Any] | None = None, assets: bool = True):
         self.raw = context
         self.headless = headless
+        self.assets = assets
         self._override = override
         # Its tabs, so `RunBrowser.reveal` can carry them to a window that replaces it.
         self.pages: weakref.WeakSet[Page] = weakref.WeakSet()
@@ -1874,6 +1951,14 @@ class RunBrowser:
                 continue
             seen.add(id(page))
             if found is not None and not found[2]:
+                if hasattr(page.raw, "context") and hasattr(page.raw, "goto"):
+                    try:
+                        if getattr(page.raw, "url", "") != "about:blank":
+                            is_closed = getattr(page.raw, "is_closed", None)
+                            if is_closed is None or not is_closed():
+                                await page.raw.goto("about:blank")
+                    except Exception:
+                        pass
                 found[2].append(page)
                 continue
             try:

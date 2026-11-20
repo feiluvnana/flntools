@@ -51,10 +51,10 @@ if TYPE_CHECKING:
     from flnkit import cookies
     from flnkit.html import Document
 
-__all__ = ["LOGGING_IN", "PAGE_LIMIT", "Bridge", "Ctx", "JsonState", "Listing", "PluginRun",
-           "Secrets", "TargetTabs", "Time", "checked", "empty", "first_page", "granted",
-           "met_turn", "opened", "plugin_run", "refused", "scheduler",
-           "shared_browser", "start", "walled", "writable"]
+__all__ = ["IDLE_TIMEOUT", "LOGGING_IN", "PAGE_LIMIT", "Bridge", "Ctx", "JsonState", "Listing",
+           "PluginRun", "Secrets", "TargetTabs", "Time", "checked", "empty",
+           "first_page", "granted", "met_turn", "opened", "plugin_run", "refused",
+           "scheduler", "shared_browser", "start", "walled", "writable"]
 
 T = TypeVar("T")
 # While a plugin's `Login.start` runs, its leave to write `ctx.secrets` (6.7): what it starts
@@ -1408,6 +1408,10 @@ async def shared_browser(settings: RunShared) -> AsyncIterator[None]:
         yield
     finally:
         settings.browser_pool = None
+        timer = _IDLE_TIMERS.pop(shared, None)
+        if timer is not None:
+            timer.cancel()
+        _ACTIVE_TABS.pop(shared, None)
         try:
             await shared.aclose()
         finally:
@@ -1417,6 +1421,44 @@ async def shared_browser(settings: RunShared) -> AsyncIterator[None]:
 # Each run's scheduler, by the run's browser, so every `RunShared` given that browser shares it.
 _SCHEDULERS: weakref.WeakKeyDictionary[browser.RunBrowser, jobs.Scheduler] = \
     weakref.WeakKeyDictionary()
+IDLE_TIMEOUT = 15.0
+_ACTIVE_TABS: weakref.WeakKeyDictionary[browser.RunBrowser, set[TargetTabs]] = (
+    weakref.WeakKeyDictionary()
+)
+_IDLE_TIMERS: weakref.WeakKeyDictionary[browser.RunBrowser, asyncio.TimerHandle] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _release_active(shared: browser.RunBrowser, target_tabs: TargetTabs) -> None:
+    active = _ACTIVE_TABS.get(shared)
+    if active is not None:
+        active.discard(target_tabs)
+        if not active and shared.launched:
+            _schedule_idle_close(shared)
+
+
+def _close_idle(shared: browser.RunBrowser) -> None:
+    active = _ACTIVE_TABS.get(shared)
+    if not active and shared.launched:
+        shared.close()
+
+
+def _schedule_idle_close(shared: browser.RunBrowser, timeout: float = IDLE_TIMEOUT) -> None:
+    timer = _IDLE_TIMERS.pop(shared, None)
+    if timer is not None:
+        timer.cancel()
+
+    def on_timeout() -> None:
+        _IDLE_TIMERS.pop(shared, None)
+        _close_idle(shared)
+
+    try:
+        loop = shared.loop
+        if loop.is_running():
+            _IDLE_TIMERS[shared] = loop.call_later(timeout, on_timeout)
+    except Exception:
+        pass
 
 
 def scheduler(settings: RunShared) -> jobs.Scheduler | None:
@@ -1483,6 +1525,12 @@ class TargetTabs:
             self._shared = browser.RunBrowser(self._run.loop.loop, stealth=self._source.stealth,
                                               screen=_Screen())
             self._own = True
+        else:
+            active = _ACTIVE_TABS.setdefault(self._shared, set())
+            active.add(self)
+            timer = _IDLE_TIMERS.pop(self._shared, None)
+            if timer is not None:
+                timer.cancel()
         settings = self._run.config
         if settings.proxy is not None and not self._run._told_proxy:
             self._run._told_proxy = True
@@ -1540,6 +1588,7 @@ class TargetTabs:
         """Give back the target's tabs, handing the session the cookies set in them."""
         tabs, found = self._tabs, self.cookies()
         self._tabs = None
+        shared = self._shared
         try:
             if found:
                 self._run.session.add(found)
@@ -1549,6 +1598,8 @@ class TargetTabs:
             if self._own and self._shared is not None:
                 self._shared.close()
                 self._shared, self._own = None, False
+            elif shared is not None:
+                _release_active(shared, self)
 
 
 # ---------------------------------------------------------------------------------------------
