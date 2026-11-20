@@ -1335,13 +1335,11 @@ def _zip_link(info: zipfile.ZipInfo) -> bool:
 
 
 def _7z_password_args(password: str | None) -> tuple[str, ...]:
-    """7-Zip password argv tail: `-p` alone when a password is set, else `-p` with no value."""
-    return ("-p",) if password else (f"-p{''}",)
+    """7-Zip password argv item: `-p<password>`, or a bare `-p` so 7-Zip never prompts.
 
-
-def _7z_password_input(password: str | None) -> str | None:
-    """What goes to 7-Zip's standard input for the password, or None when there is none."""
-    return password if password else None
+    7-Zip does not read a password from a pipe, so it goes in argv (never through a shell).
+    """
+    return (f"-p{password or ''}",)
 
 
 def _save(stream: IO[bytes], target: Path) -> None:
@@ -1354,8 +1352,7 @@ def _ls_7z(path: Path, *, password: str | None) -> list[Entry]:
     """List a 7z, RAR or encrypted zip with `7zz l -slt`, refusing links."""
     tool = sevenzip()
     try:
-        res = tool.run("l", "-slt", *_7z_password_args(password), "--", str(path),
-                       input=_7z_password_input(password))
+        res = tool.run("l", "-slt", *_7z_password_args(password), "--", str(path))
     except RunError as error:
         raise _failed(path, error) from error
     entries: list[Entry] = []
@@ -1390,8 +1387,7 @@ def _unpack_7z(path: Path, dest: Path, *, password: str | None) -> None:
     """Extract with `7zz x` into `dest` (a 7z, a RAR, or an encrypted zip)."""
     tool = sevenzip()
     try:
-        tool.run("x", "-y", *_7z_password_args(password), f"-o{dest}", "--", str(path),
-                 input=_7z_password_input(password))
+        tool.run("x", "-y", *_7z_password_args(password), f"-o{dest}", "--", str(path))
     except RunError as error:
         raise _failed(path, error) from error
 

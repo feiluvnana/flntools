@@ -160,8 +160,9 @@ class ExtractTest(ArchiveCase):
         with _tools.fake({"7zz": tool}):
             folder = _unpack.extract(archive, password="pw")
         self.assertEqual((folder / "a.txt").read_bytes(), b"secret")
-        self.assertEqual(tool.calls[-1][:3], ("x", "-y", "-p"))
-        self.assertNotIn("pw", tool.calls[-1])  # given on standard input, never in argv
+        self.assertEqual(tool.calls[-1][:3], ("x", "-y", "-ppw"))
+        self.assertEqual(_tools._7z_password_args(None), ("-p",))
+        self.assertEqual(_tools._7z_password_args("pw"), ("-ppw",))
 
     def test_a_7z_or_rar_goes_to_7zip_and_is_verified(self) -> None:
         for name, data in (("made.7z", SEVEN_ZIP), ("made.rar", RAR)):
