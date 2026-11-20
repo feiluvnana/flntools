@@ -87,6 +87,7 @@ class ReadTest(Case):
             ("[defaults]\nexec_timeout = 0", "defaults.exec_timeout", 0),
             ("[defaults]\nswitch = true", "defaults.switch", True),
             ("[defaults]\nlean = true", "defaults.lean", True),
+            ("[defaults]\nwindow = \"hidden\"", "defaults.window", "hidden"),
             ("[plugins.exm]\npace = 2", "plugins.exm.pace", 2.0),
             ('[plugins.exm]\nlimits = { "cdn.example.com" = 4 }', "plugins.exm.limits",
              {"cdn.example.com": 4}),
@@ -120,7 +121,7 @@ class ReadTest(Case):
         rows = [
             '[defaults]\ndedupe = "yes"', "[defaults]\nsidecars = 1", '[defaults]\nwhen = "soon"',
             '[defaults]\nwhen = "2026-03..2026-01"', '[defaults]\nrate = "fast"',
-            "[defaults]\nheight = -1", "[defaults]\nexec_timeout = -1", '[defaults]\nlean = "yes"',
+            "[defaults]\nheight = -1", "[defaults]\nexec_timeout = -1", '[defaults]\nlean = "yes"', '[defaults]\nwindow = "shown"',
             '[defaults]\nexec_timeout = "9"',
             '[defaults]\nheight = "720"', '[plugins.exm]\npace = "2"', "[plugins.exm]\npace = -1",
             '[plugins.exm]\nlimits = { "a" = 0 }', '[plugins.exm]\nproxy = "ftp://h:1"',

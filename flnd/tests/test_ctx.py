@@ -9,6 +9,7 @@ import asyncio
 import io
 import json
 import unittest
+import weakref
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ from flnd.engine import jobs
 from flnd.engine import run as _run
 from flnd.engine.crawl import RunShared
 from flnd.engine.ctx import Ctx, opened, plugin_run, shared_browser
-from flnd.errors import NetworkError, SiteError, UsageError
+from flnd.errors import NetworkError, SiteError
 from flnd.plugin import Landed, Request, Target
 from flnd.ui.log import ui
 from flnkit import browser as _browser
@@ -70,6 +71,9 @@ class FakeRaw:
     async def close(self):
         pass
 
+    def is_closed(self):
+        return False
+
     async def emit(self, url, body):
         """Deliver one response to the tab's listeners, and let their body reads finish."""
         async def text():
@@ -96,10 +100,13 @@ class FakeBrowser:
         self.make_raw, self.options = make_raw, options
         self.opened, self.added = [], []
         self.headless = self.closed = False
+        self.pages = weakref.WeakSet()
 
     async def tab(self, *, by_script=False):
         self.opened.append(self.make_raw())
-        return Page(self.opened[-1], self, by_script=by_script)
+        page = Page(self.opened[-1], self, by_script=by_script)
+        self.pages.add(page)
+        return page
 
     async def cookies(self):
         return _cookies.Jar(self.added)
@@ -605,12 +612,36 @@ class HandoffTest(CtxCase):
         self.assertFalse(self.call(run, ctx.handoff("Solve it", until=until(), timeout=5)))
         self.assertGreaterEqual(self.now, 6.0)
 
-    def test_a_headless_window_cannot_be_handed_to_a_person(self):
+    def test_a_hidden_window_is_reopened_visible_with_its_cookies_and_page(self):
+        self.raw = FakeRaw([200, 200])
+        jar = [{"name": "token", "value": "t", "domain": ".example.com", "path": "/"}]
+        sign_in(self.home, "exm", jar)
         run, ctx = self.ctx()
         self.call(run, ctx.open(PAGE))
         self.browsers[0].headless = True
-        with self.assertRaisesRegex(UsageError, "headless"):
-            self.call(run, ctx.handoff("Solve it", until=lambda: asyncio.sleep(0, False)))
+        answers = iter([False, True])
+
+        async def done():
+            return next(answers)
+
+        self.assertTrue(self.call(run, ctx.handoff("Solve it", until=done)))
+        old, new = self.browsers
+        self.assertTrue(old.closed)
+        self.assertFalse(new.closed)
+        self.assertIs(new.options["headless"], False)
+        self.assertEqual([cookie["name"] for cookie in new.added], ["token"])
+        # The same tab, in the new window, at the page it was on.
+        self.assertEqual(self.raw.loaded, [PAGE, PAGE])
+        self.assertEqual(len(new.pages), 1)
+        self.assertEqual(self.raw.url, PAGE)
+
+    def test_a_visible_window_is_not_reopened(self):
+        run, ctx = self.ctx()
+        self.call(run, ctx.open(PAGE))
+        done = lambda: asyncio.sleep(0, True)  # noqa: E731
+        self.assertTrue(self.call(run, ctx.handoff("Solve it", until=done)))
+        self.assertEqual(len(self.browsers), 1)
+        self.assertFalse(self.browsers[0].closed)
 
 
 if __name__ == "__main__":

@@ -23,8 +23,7 @@ uv tool install -e ./flnd        # puts `flnd` on your PATH, Telegram support in
 ```
 
 From a checkout, `make setup` (inside `flnd/`) makes `.venv`, then `uv run flnd ...` runs it. On
-Windows, install make with `winget install ezwinports.make`, or type the `uv` command each Makefile
-target holds.
+Windows, `winget install ezwinports.make`, or type the `uv` command each target holds.
 
 Outside programs, each needed only for some files:
 
@@ -35,8 +34,7 @@ Outside programs, each needed only for some files:
 - 7-Zip (`7zz`, or `7z`), for 7z, RAR and encrypted zip archives. When missing: a `ToolError`; the
   archive is kept, not extracted.
 
-zip and tar are read by Python. flnd looks for each program on your PATH and never downloads ffmpeg
-or 7-Zip.
+zip and tar are read by Python. flnd finds each program on your PATH, never downloads one.
 
 First run:
 
@@ -921,6 +919,7 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
 | `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
 | `switch` | bool | `false` | move a refused request to the plugin's next account |
+| `window` | text | `"visible"` | `"hidden"` hides the browser; **off until live-checked** |
 | `lean` | bool | `false` | lighter browser, see below; **off until live-checked** |
 
 `[plugins.<code>]` (one table per plugin):
@@ -951,6 +950,8 @@ A plugin's own settings (its `Settings` struct) are keys of its table and reach 
   `--exec` hand a program to one run, over the file's.
 - Gone keys: `[defaults] again`, `[vault]`, `scroll` (unknown now); `dedupe = "link"` reads as
   `true`, `"off"` as `false`, each with a warning.
+- `window = "hidden"`: a handoff (a captcha) closes the browser, opens it again visible with the
+  same cookies and tabs, and goes on. A `browser` login is always visible.
 - `lean`: tabs abort image, media and font requests (unless the plugin's `assets` is True); the
   responses a plugin reads are unchanged. Off until each plugin is checked live.
 
@@ -1371,9 +1372,8 @@ The contract:
 - `ctx.fetch`, `ctx.pages(req, cursor=, send=, resume=)`, `ctx.feed(..., resume=, bucket=)`,
   `ctx.open`, `ctx.pause`, `ctx.hold` (): the run's requests. `resume=True` holds a 429 through
   `ctx.hold` and goes on from the last page or cursor; past the last round: `Blocked`
-- `sign(request, cookies)` (`def` hook): before each try: the request, signed
-- `connect(ctx)` (async context manager): once per run
-- `date(ctx, post)` (`async def` hook): a post with no date: its day
+- `sign(request, cookies)` (`def` hook): the request, signed, before each try
+- `connect(ctx)` (async context manager): once per run; `date(ctx, post)` (`async def` hook): a day
 - `blocked(response)` (`def` hook): seconds to hold, or None
 - `refresh(ctx, post)` (`async def` hook): a link expired: the post, fresh
 - `resolve(text)` (classmethod hook): text no pattern can say: a `Target` or None

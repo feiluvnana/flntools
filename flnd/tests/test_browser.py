@@ -899,6 +899,50 @@ class AssetsTest(BrowserCase):
         self.assertEqual(asked, [True, False])
 
 
+class MoveTest(BrowserCase):
+    def test_a_moved_tab_keeps_its_captures_and_blocking_and_loads_its_page_again(self):
+        events = []
+
+        class Raw:
+            def __init__(self, url=""):
+                self.url = url
+
+            def on(self, event, listener):
+                events.append(("on", id(self), event))
+
+            def remove_listener(self, event, listener):
+                events.append(("off", id(self), event))
+
+            async def route(self, pattern, handler):
+                events.append(("route", id(self)))
+
+            async def goto(self, url, **options):
+                events.append(("goto", id(self), url))
+
+        class Context:
+            def __init__(self, raw):
+                self.raw = raw
+
+            async def new_page(self):
+                return self.raw
+
+        old_raw, new_raw = Raw("https://example.com/a"), Raw()
+        old = _browser.Browser(cast(Any, Context(old_raw)), close_steps=[], headless=True)
+        new = _browser.Browser(cast(Any, Context(new_raw)), close_steps=[], headless=False)
+        page = run(old.tab())
+        run(page.assets(False))
+        capture = run(page.capture(lambda response: True))
+        run(page.move(new, "https://example.com/a"))
+        self.assertIs(page.raw, new_raw)
+        self.assertIs(page.browser, new)
+        self.assertEqual(list(new.pages), [page])
+        self.assertIn(("on", id(new_raw), "response"), events)
+        self.assertIn(("route", id(new_raw)), events)
+        self.assertEqual(events[-1], ("goto", id(new_raw), "https://example.com/a"))
+        run(capture.close())
+        self.assertEqual(page.captures, set())
+
+
 class FakeFeed:
     """A raw page on a fake clock: each scroll brings a page `after` seconds later, `grows` times.
 

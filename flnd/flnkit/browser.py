@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import weakref
 from collections import Counter, deque
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -763,6 +764,8 @@ class Browser:
                  headless: bool):
         self.raw = context
         self.headless = headless
+        # Its tabs, so `RunBrowser.reveal` can carry them to a window that replaces it.
+        self.pages: weakref.WeakSet[Page] = weakref.WeakSet()
         self._close_steps = close_steps
         self._closed = False
 
@@ -781,7 +784,9 @@ class Browser:
         Returns:
             The tab.
         """
-        return Page(await self.raw.new_page(), self, by_script=by_script)
+        page = Page(await self.raw.new_page(), self, by_script=by_script)
+        self.pages.add(page)
+        return page
 
     async def cookies(self) -> Jar:
         """Every cookie in the browser, as a `Jar` snapshot."""
@@ -879,6 +884,32 @@ class Page:
         self.random = random.Random()
         self.turn: Callable[[Callable[[], Awaitable[bool]]], Awaitable[bool]] | None = None
         self._blocking = False
+        # The captures still listening, which a move to another window gives its new tab again.
+        self.captures: set[Capture] = set()
+
+    async def move(self, browser: Browser, url: str) -> None:
+        """Carry this tab to a new tab of `browser`: the same `Page`, its captures and its
+        blocking kept, the page loaded again from `url` (a failed load is logged).
+
+        Args:
+            browser: the browser that replaces the one this tab was in.
+            url: the address the old tab was at; "" or a blank page loads nothing.
+        """
+        fresh = await browser.tab()
+        browser.pages.discard(fresh)
+        browser.pages.add(self)
+        blocking = self._blocking
+        self.raw, self.browser, self._blocking = fresh.raw, browser, False
+        for capture in self.captures:
+            self.raw.on("response", capture.listener)
+        if blocking:
+            await self.assets(False)
+        if url and url != "about:blank":
+            try:
+                await self.raw.goto(url)
+            except _raw_error() as error:
+                _log.warning("the window was reopened, but its page was not loaded again: {error}",
+                             extra={"fields": {"error": _first_line(error)}})
 
     async def assets(self, load: bool) -> None:
         """Load the images, media and fonts of this tab's pages (`load`), or abort their requests.
@@ -1043,6 +1074,7 @@ class Page:
         """
         capture = Capture(self, accept, lazy=lazy)
         self.raw.on("response", capture.listener)
+        self.captures.add(capture)
         return capture
 
     async def fetch(self, url: str, *, method: str = "GET",
@@ -1476,6 +1508,7 @@ class Capture:
         if not self._stopped:
             self._stopped = True
             self._page.raw.remove_listener("response", self.listener)
+            self._page.captures.discard(self)
         kept, self._kept = self._kept, []
         if wanted is not None:
             for response in kept:
@@ -1637,6 +1670,30 @@ class RunBrowser:
         await page.assets(assets)
         return page
 
+    async def reveal(self) -> None:
+        """Close each hidden window and open it again visible, with its cookies and its tabs
+        (each loaded again from its URL), so a person can act in it; a visible one stays.
+
+        Later windows open visible too. A tab's page state (a form, a scroll position) is lost;
+        a tab another target is using fails the call it is in the middle of.
+        """
+        if self._launching is None:
+            self._launching = asyncio.Lock()
+        async with self._launching:
+            self._headless = False
+            for index, (logins, old, idle) in enumerate(self._logins):
+                if not old.headless:
+                    continue
+                jar = await old.cookies()
+                tabs = [(page, page.raw.url) for page in list(old.pages)
+                        if not page.raw.is_closed()]
+                await old.close()
+                new = await launch(stealth=self._stealth, headless=False, screen=self.screen)
+                await new.add_cookies(jar)
+                for page, url in tabs:
+                    await page.move(new, url)
+                self._logins[index] = (logins, new, idle)
+
     async def release(self, pages: Iterable[Page]) -> None:
         """Take back a finished target's tabs: keep one open per window for its next target,
         close the rest.
@@ -1782,6 +1839,8 @@ class Tabs:
                 stop: _threading.Event | None) -> bool:
         """Show `message` and wait for a person to finish a step in the window; see `Site.handoff`.
 
+        A hidden browser is closed and reopened visible first (`RunBrowser.reveal`).
+
         Args:
             until: True once the step is done; asked on this thread about once a second.
             message: what the person should do.
@@ -1792,14 +1851,12 @@ class Tabs:
             True when `until` came true; False when `timeout` passed first.
 
         Raises:
-            UsageError: the window is hidden, so no person can see it.
             Stopped: the run was told to stop.
         """
         if until():
             return True
         if self.headless:
-            raise UsageError(f"cannot hand off to a person in a headless browser: {message}",
-                             hint="run it again with a visible browser")
+            self.run(self._shared.reveal())
         _log.warning(message)
         deadline = None if timeout is None else clock.now() + timeout
         with self._shared.screen.progress(message) as bar:

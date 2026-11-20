@@ -75,6 +75,7 @@ class Defaults(msgspec.Struct, frozen=True):
     height: int = 0
     switch: bool = False
     lean: bool = False
+    window: str = "visible"
 
 
 class PluginConfig(msgspec.Struct, frozen=True):
@@ -158,6 +159,7 @@ DEFAULTS = {
     "height": Key(int, "a whole number of pixels, 0 for the best", lambda value: value >= 0),
     "switch": Key(bool, "true or false"),
     "lean": Key(bool, "true or false"),
+    "window": Key(str, '"hidden" or "visible"', lambda value: value in ("hidden", "visible")),
 }
 PLUGINS = {
     "pace": Key(float, "a number of seconds, 0 or more", lambda value: value >= 0),
