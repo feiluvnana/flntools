@@ -158,7 +158,8 @@ class MigrationTest(StoreCase):
     def test_every_row_of_a_version_1_home_moves_to_schema_2(self):
         self.v1()
         with self.open() as opened:
-            self.assertEqual(rows(self.path, "SELECT * FROM meta"), [("version", "2")])
+            self.assertEqual(rows(self.path, "SELECT * FROM meta ORDER BY key"),
+                             [("keys", "2"), ("version", "2")])
             files = {row.key: row for row in opened.on_disk()}
             self.assertEqual(sorted(files), ["ins:1_0", "ins:1_0@reels", "ins:1_1"])
             self.assertEqual((files["ins:1_0"].plugin, files["ins:1_0"].hash,
@@ -222,9 +223,9 @@ class MigrationTest(StoreCase):
         self.assertEqual(done.returncode, 9)
         self.assertEqual(rows(self.path, "SELECT * FROM meta"), [("version", "1")])
         with self.open() as opened:
-            self.assertEqual((rows(self.path, "SELECT * FROM meta"), len(opened.on_disk()),
+            self.assertEqual((rows(self.path, "SELECT * FROM meta ORDER BY key"), len(opened.on_disk()),
                               len(opened.targets()), len(opened.accounts())),
-                             ([("version", "2")], 3, 4, 4))
+                             ([("keys", "2"), ("version", "2")], 3, 4, 4))
 
     def test_a_failure_from_before_retryable_was_recorded_is_not_retryable(self):
         self.v1(slots=())
@@ -654,6 +655,20 @@ class RekeyTest(StoreCase):
         before = rows(self.path, query)
         self.open().close()
         self.assertEqual(rows(self.path, query), before)
+
+    def test_the_rewrite_runs_once_per_home(self):
+        self.old_home()
+        with mock.patch.object(store, "_rekey", wraps=store._rekey) as rekey:
+            self.open().close()
+            self.open().close()
+        self.assertEqual(rekey.call_count, 1)
+        # A new home is made with the row, so it never runs.
+        self.path.unlink()
+        with mock.patch.object(store, "_rekey") as rekey:
+            self.open(), self.open().close()
+            store.Store(self.home).record(Target("ins:example_user", kind="user"))
+            self.open().close()
+        self.assertEqual(rekey.call_count, 0)
 
     def test_an_old_row_is_found_by_the_written_form_and_runs_as_its_route(self):
         from fakes import Engine

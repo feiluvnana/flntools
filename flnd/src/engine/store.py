@@ -337,13 +337,15 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
             for statement in STATEMENTS:
                 sql.execute(statement)
             sql.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
+            sql.execute("INSERT INTO meta VALUES ('keys', '2')")
         elif version == "1":
             _migrate(sql, home)
         elif version != VERSION:
             raise UsageError(f"home schema {version!r} needs a newer flnd",
                              hint="upgrade flnd, or open the home with the flnd that wrote it")
-        if version is not None:
+        if version and not sql.execute("SELECT 1 FROM meta WHERE key = 'keys'").fetchone():
             _rekey(sql)
+            sql.execute("INSERT INTO meta VALUES ('keys', '2')")
         sql.execute("COMMIT")
     except BaseException:
         if sql.in_transaction:
@@ -423,7 +425,7 @@ REKEYED = {("fbk", "video"): "video", ("fbk", "watch"): "watch", ("fbk", "photo"
 def _rekey(sql: sqlite3.Connection) -> None:
     """Rewrite the rows of single posts keyed `<code>:<id>` to `<code>:<kind>/<id>`: the target,
     its files' and failures' `target`, and the keys a search lists. A home with none is left
-    alone, so this runs on every open and does nothing after the first."""
+    alone. It runs once per home: `meta` keeps a `keys` row afterwards."""
     kinds = sorted({kind for _, kind in REKEYED})
     rows = sql.execute(f"SELECT key, plugin, value, kind FROM targets WHERE kind IN"
                        f" ({', '.join('?' * len(kinds))})", kinds).fetchall()
