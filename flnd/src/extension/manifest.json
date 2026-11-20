@@ -20,6 +20,8 @@
     "*://*.fb.com/*",
     "*://*.fb.watch/*",
     "*://*.instagram.com/*",
+    "*://*.threads.com/*",
+    "*://*.threads.net/*",
     "*://*.x.com/*",
     "*://*.twitter.com/*",
     "*://*.loix.cc/*",

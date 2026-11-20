@@ -400,6 +400,95 @@ PLUGINS: dict[str, dict[str, object]] = {
         'categories': ['posts', 'reels', 'tagged', 'reposts', 'stories', 'highlights', 'profile'],
         'logins': ['browser', 'chrome', 'file', 'firefox', 'safari'],
     },
+    'thr': {
+        'module': 'flnd.plugins.thr',
+        'cls': 'Threads',
+        'name': 'Threads',
+        'domains': ['threads.com', 'threads.net'],
+        'routes': [
+            {
+                'name': 'post',
+                'single': True,
+                'discovers': False,
+                'shown': None,
+                'patterns': [
+                    ['thr:post/{code:[\\w-]+}', 'post/{code}'],
+                    ['threads.com/*/post/{code:[\\w-]+}', 'post/{code}'],
+                    ['threads.net/*/post/{code:[\\w-]+}', 'post/{code}'],
+                ],
+                'categories': [],
+            },
+            {
+                'name': 'user',
+                'single': False,
+                'discovers': False,
+                'shown': None,
+                'patterns': ['thr:{user}', 'threads.com/{user}', 'threads.net/{user}'],
+                'categories': [
+                    {'name': 'posts', 'own': True},
+                    {'name': 'replies', 'own': True},
+                    {'name': 'reposts', 'own': False},
+                    {'name': 'profile', 'own': True},
+                ],
+            },
+        ],
+        'unsupported': {
+            'threads.com/*/replies': (
+                'a profile tab isn\'t a target; write the user with a category, e.g. "thr:example_u'
+                'ser|replies"'),
+            'threads.com/*/reposts': (
+                'a profile tab isn\'t a target; write the user with a category, e.g. "thr:example_u'
+                'ser|replies"'),
+            'threads.com/*/media': (
+                'a profile tab isn\'t a target; write the user with a category, e.g. "thr:example_u'
+                'ser|replies"'),
+            'threads.com/search': 'thr has no search; give a user or a post',
+            'threads.com/activity': "that's not a profile",
+            'threads.com/settings': "that's not a profile",
+            'threads.com/login': "that's not a profile",
+            'threads.com/following': "that's not a profile",
+            'threads.com/saved': "that's not a profile",
+            'threads.com/liked': "that's not a profile",
+            'threads.com/insights': "that's not a profile",
+            'threads.com/about': "that's not a profile",
+            'threads.com/privacy': "that's not a profile",
+            'threads.com/terms': "that's not a profile",
+            'threads.com/direct': "that's not a profile",
+            'threads.com/onboarding': "that's not a profile",
+            'threads.net/*/replies': (
+                'a profile tab isn\'t a target; write the user with a category, e.g. "thr:example_u'
+                'ser|replies"'),
+            'threads.net/*/reposts': (
+                'a profile tab isn\'t a target; write the user with a category, e.g. "thr:example_u'
+                'ser|replies"'),
+            'threads.net/*/media': (
+                'a profile tab isn\'t a target; write the user with a category, e.g. "thr:example_u'
+                'ser|replies"'),
+            'threads.net/search': 'thr has no search; give a user or a post',
+            'threads.net/activity': "that's not a profile",
+            'threads.net/settings': "that's not a profile",
+            'threads.net/login': "that's not a profile",
+            'threads.net/following': "that's not a profile",
+            'threads.net/saved': "that's not a profile",
+            'threads.net/liked': "that's not a profile",
+            'threads.net/insights': "that's not a profile",
+            'threads.net/about': "that's not a profile",
+            'threads.net/privacy': "that's not a profile",
+            'threads.net/terms': "that's not a profile",
+            'threads.net/direct': "that's not a profile",
+            'threads.net/onboarding': "that's not a profile",
+        },
+        'forms': [
+            'thr:post/<code>',
+            'thr:<user>',
+            'https://www.threads.com/…/post/<code>/',
+            'https://www.threads.net/…/post/<code>/',
+            'https://www.threads.com/<user>/',
+            'https://www.threads.net/<user>/',
+        ],
+        'categories': ['posts', 'replies', 'reposts', 'profile'],
+        'logins': ['browser', 'chrome', 'file', 'firefox', 'safari'],
+    },
     'twt': {
         'module': 'flnd.plugins.twt',
         'cls': 'Twitter',

@@ -133,7 +133,7 @@ Refusals, with the text printed (all `UsageError`, exit 2, before any request):
 - (empty): `a target can't be empty`
 - `example_user`: `which plugin is "example_user"? Write it as tik:example_user, fbk:example_user,
   ins:example_user, ...`
-- `nope:x`: `no plugin named nope`; hint `Plugins: tik, fbk, ins, twt, loi, tlg, mht, web`
+- `nope:x`: `no plugin named nope`; hint `Plugins: tik, fbk, ins, thr, twt, loi, tlg, mht, web`
 - `ins:`: `ins: write a value after ins:`; hint `Write it like <every form of the plugin>`
 - `ins:%`: `ins: can't read '%'`; hint `Write it like <every form of the plugin>`
 - `ins:example_user|nope`: `ins has no category nope`; hint `Categories: posts, reels, tagged,
@@ -160,12 +160,8 @@ library says `give at least one target` when a call ends with none.
 ### Reading from standard input
 
 `flnd get` reads standard input when it is not a terminal: each line is a target, blank lines and
-lines starting with `#` are skipped, and the lines come after the targets on the command line.
-
-```sh
-cat targets.txt | flnd get
-flnd get ins:example_user tik:example_user
-```
+lines starting with `#` are skipped, and the lines come after the targets on the command line
+(`cat targets.txt | flnd get`).
 
 ### `me`, searches and `--limit`
 
@@ -201,6 +197,17 @@ Refused: a name past that rule is `ins: '<name>' isn't a user name; a user name 
 letters, digits, . or _`; `/stories/...` and `/stories/highlights/...` are `ins: story links aren't
 supported; ...` with the hint `"ins:example_user|highlights"`; `/explore/` (and `/explore/tags/`),
 `/accounts/`, `/direct/` are `ins: that's not a profile`; `instagram.com/` alone.
+
+**thr**
+
+| Form | Route | Reads |
+| --- | --- | --- |
+| `thr:<user>`, `threads.com/@<user>`, `threads.net/@<user>` | `user` | the profile |
+| `thr:post/<code>`, `threads.com/@<user>/post/<code>` (and `threads.net`) | `post` | one post |
+
+Refused: a bad name as `ins`'s; a tab link (`/@<user>/replies`, `/reposts`, `/media`), hint
+`"thr:example_user|replies"`; `/search` and `thr?<words>`: `thr has no search`; `/activity`,
+`/settings`, `/login` and other site pages: `thr: that's not a profile`.
 
 **twt**
 
@@ -289,8 +296,7 @@ pages aren't supported; ...`). `loi:post/<id>|archive` and `|photo` are allowed.
 - `mht:<id>`, `mimihentai.moe/manga/<id>` (digits): one manga (route ``manga``)
 - `mht:chapter/<id>`, `mimihentai.moe/manga/.../chapter/<id>`: one chapter (route ``chapter``)
 - `mht:author/<name or id>`, `mimihentai.moe/author/<x>`, `/authors/<x>`: an author's manga (route
-  ``author``)
-- `mht:genre/<name or id>`, `mimihentai.moe/genre/<x>`, `/genres/<x>`: a genre's manga (``genre``)
+  ``author``); `mht:genre/<x>`, `/genre/<x>`, `/genres/<x>`: a genre's (``genre``)
 - `mht?<query>`: every manga a search finds (route ``query``)
 
 Query terms: plain words (title), `title:`, `author:`, `genre:` (repeatable), `-genre:`, `parody:`,
@@ -358,6 +364,7 @@ A category is one part of a target that can be got alone. Each plugin's list is 
 | Plugin | Own (default) | Opt-in |
 | --- | --- | --- |
 | `ins` | `posts reels stories highlights profile` | `tagged reposts` |
+| `thr` | `posts replies profile` | `reposts` |
 | `twt` | `posts media highlights replies profile` | `reposts` |
 | `tik` | `videos stories playlists profile` | `reposts liked favorites` |
 | `fbk` | `posts photos albums reels videos stories profile` | `tagged` |
@@ -412,6 +419,7 @@ name):
 | --- | --- | --- |
 | `ins` post | `posts` | `media/ins/<username>/posts/` |
 | `ins` reel (a clip) | `reels` | `media/ins/<username>/reels/` |
+| `thr` post; a reply | `posts`; `replies` | `media/thr/<username>/posts/`; `.../replies/` |
 | `twt` tweet; a reply | `posts`; `replies` | `media/twt/<handle>/posts/`; `.../replies/` |
 | `tik` video; photo post | `videos` | `media/tik/<user>/videos/`; `.../images/` |
 | `fbk` video, reel, photo | `videos`, `reels`, `photos` | `media/fbk/<owner>/<category>/` |
@@ -986,11 +994,25 @@ up to 32.
   `/accounts/suspended`; "Please wait a few minutes" answers are blocks.
 - **Known gaps:** story links are refused; only stories active now; a private post is `NotFound`,
   not `Hidden`; `tagged`, `stories`, `highlights`, `profile` are read in full on every run.
+- **Saved as:** `media/ins/example_user/posts/2026-01-02_Cexample123_0.jpg`,
+  `media/ins/example_user/highlights/Travel/2026-01-02_1234567890.mp4`
 
-```text
-media/ins/example_user/posts/2026-01-02_Cexample123_0.jpg
-media/ins/example_user/highlights/Travel/2026-01-02_1234567890.mp4
-```
+### thr (Threads)
+
+- **Reads:** a profile's posts, replies, reposts and picture; one post by link: the page's embedded
+  data, then its GraphQL feed scrolled to its end. No `me`, no search. Unconfirmed live.
+- **Categories:** `posts` NF, `replies` NF, `profile` (own); `reposts` NF (opt-in). Only a post of
+  the profile's own is kept in `posts` and `replies`; a post without files is skipped.
+- **Folder:** `{category}`; `profile`. A single post goes in its owner's folder, as a reply (its
+  `reply_to_author` set) under `replies`, else `posts`.
+- **Filename:** `{date}_{post}{index}`; a carousel or video post saves each file, a video as its
+  best MP4.
+- **Key:** `{post}_{num}` (`thr:C1abc_0`); `profile` keys by `{path}`.
+- **Login:** cookie `sessionid`, as Instagram's (optional).
+- **Limits and walls:** pace 2.0; wall `/login`; "Please wait a few minutes" answers are blocks;
+  429s hold and ask the same page again.
+- **Known gaps:** a post is opened by `/t/<code>`; only images and videos are saved.
+- **Saved as:** `media/thr/example_user/posts/2026-01-02_C1abc_0.jpg`
 
 ### twt (Twitter/X)
 
@@ -1014,11 +1036,7 @@ media/ins/example_user/highlights/Travel/2026-01-02_1234567890.mp4
   refreshed from x.com's script on a 400 or 404, at most once a run.
 - **Known gaps:** a single tweet has no browser fallback; a protected and a deleted tweet are both
   `NotFound`; video is MP4 only (streaming-only is skipped); text-only tweets save nothing.
-
-```text
-media/twt/example_handle/posts/2026-01-02_1234567890_0.jpg
-media/twt/example_handle/videos/2026-01-02_1234567891_0.mp4
-```
+- **Saved as:** `media/twt/example_handle/posts/2026-01-02_1234567890_0.jpg`
 
 ### tik (TikTok)
 
@@ -1039,11 +1057,8 @@ media/twt/example_handle/videos/2026-01-02_1234567891_0.mp4
   `videos` and `playlists` with `Hidden`.
 - **Known gaps:** no such tab is logged; a tab deaf to the click for 10 s fails `Changed`; stories
   only as the page shows them on load.
-
-```text
-media/tik/example_creator/videos/2026-01-02_1234567890123456789.mp4
-media/tik/example_creator/albums/Example_Playlist/2026-01-03_1234567890123456781.mp4
-```
+- **Saved as:** `media/tik/example_creator/videos/2026-01-02_1234567890123456789.mp4`,
+  `media/tik/example_creator/albums/Example_Playlist/2026-01-03_1234567890123456781.mp4`
 
 ### fbk (Facebook)
 
@@ -1064,11 +1079,8 @@ media/tik/example_creator/albums/Example_Playlist/2026-01-03_1234567890123456781
 - **Known gaps:** `/photos /groups /events /stories /marketplace /hashtag` are refused; a page is
   told from a profile by the header's `__typename` (confirm live); stories are those active now;
   without a header `stories` and `profile` are skipped; undated photos take a neighbour's date.
-
-```text
-media/fbk/example.page/photos/2026-01-02_1234567890.jpg
-media/fbk/example.page/albums/Holiday/2026-01-02_1234567891.jpg
-```
+- **Saved as:** `media/fbk/example.page/photos/2026-01-02_1234567890.jpg`,
+  `media/fbk/example.page/albums/Holiday/2026-01-02_1234567891.jpg`
 
 ### tlg (Telegram)
 
@@ -1088,11 +1100,7 @@ media/fbk/example.page/albums/Holiday/2026-01-02_1234567891.jpg
 - **Known gaps:** an invite you have not joined is `NotFound` (`join it first`), flnd never joins; a
   private or left chat is `Hidden`; a message link downloads the whole chat; two chats with one
   title fail with both ids.
-
-```text
-media/tlg/examplechannel/Example_Channel/photo/2026-01-02_1234.jpg
-media/tlg/examplechannel/Example_Channel/file/2026-01-02_1235_report.pdf
-```
+- **Saved as:** `media/tlg/examplechannel/Example_Channel/photo/2026-01-02_1234.jpg`
 
 ### loi (LOIBUS)
 
@@ -1114,11 +1122,7 @@ media/tlg/examplechannel/Example_Channel/file/2026-01-02_1235_report.pdf
   by a short page; rate answers are held like the links'.
 - **Known gaps:** no author or tag target; a post counts once its links are fetched; Baidu links
   go to info.md only; an expired token reads as "no download links".
-
-```text
-media/loi/example_author/1234567890_Example_Title/info.md
-media/loi/example_author/1234567890_Example_Title/images/01.jpg
-```
+- **Saved as:** `media/loi/example_author/1234567890_Example_Title/info.md`
 
 ### mht (mimihentai)
 
@@ -1135,11 +1139,7 @@ media/loi/example_author/1234567890_Example_Title/images/01.jpg
   repeated cursor.
 - **Known gaps:** `chapters:<n>` is an exact count, checked on each result; negation works for
   genres only; `mht:<number>` is always a manga.
-
-```text
-media/mht/1234567890/chapters/001_Example_Chapter/001.jpg
-media/mht/1234567890/cover/cover.jpg
-```
+- **Saved as:** `media/mht/1234567890/chapters/001_Example_Chapter/001.jpg`
 
 ### web (the web)
 

@@ -65,7 +65,7 @@ src/                 the package flnd
   ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
     theme.py out.py screen.py lists.py forms.py
   plugins/         built-ins, importing only flnd.plugin and the standard library
-    __init__.py _manifest.py fbk.py ins.py loi.py mht.py tik.py tlg.py twt.py web.py
+    __init__.py _manifest.py fbk.py ins.py loi.py mht.py thr.py tik.py tlg.py twt.py web.py
   extension/       manifest.json background.js page.js popup.html popup.js
 flnkit/              the standalone package flnkit, imports nothing of flnd
   net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py media.py

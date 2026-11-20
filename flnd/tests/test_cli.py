@@ -654,7 +654,7 @@ class HelpTest(FlndCase):
                      "plugin list|install|uninstall", "extension install|uninstall", "status",
                      "config"):
             self.assertIn(f"  {verb}", text)
-        self.assertIn("tik fbk ins twt loi tlg mht", text)
+        self.assertIn("tik fbk ins thr twt loi tlg mht", text)
         self.assertEqual(self.run_app()[1], text)
 
     def test_get_help_has_a_row_per_plugin_and_its_flags(self):
@@ -714,7 +714,7 @@ class ListsTest(FlndCase):
         rows = [json.loads(line) for line in self.run_app("--json", "plugin", "list")[1]
                 .splitlines()]
         self.assertEqual([row["code"] for row in rows],
-                         ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht", "web"])
+                         ["tik", "fbk", "ins", "thr", "twt", "loi", "tlg", "mht", "web"])
 
     def test_plugin_install_and_uninstall(self):
         source = Path(self.tmp.name) / "exa.py"

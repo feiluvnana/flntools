@@ -178,7 +178,7 @@ class DiscoveryTest(PluginCase):
 
     def test_a_folder_that_isnt_there_holds_no_plugin(self):
         os.environ[_plugins.VARIABLE] = str(self.folder / "missing")
-        self.assertEqual(list(PLUGINS), ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht", "web"])
+        self.assertEqual(list(PLUGINS), ["tik", "fbk", "ins", "thr", "twt", "loi", "tlg", "mht", "web"])
 
     def test_the_default_folder_is_the_users_config(self):
         del os.environ[_plugins.VARIABLE]

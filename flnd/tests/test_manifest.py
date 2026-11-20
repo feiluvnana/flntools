@@ -55,7 +55,7 @@ class ManifestTest(unittest.TestCase):
                          "src/extension/manifest.json is stale: run make manifest")
 
     def test_the_registry_lists_the_built_in_plugins_in_order(self):
-        codes = ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht", "web"]
+        codes = ["tik", "fbk", "ins", "thr", "twt", "loi", "tlg", "mht", "web"]
         self.assertEqual(list(built_in()), codes)
         self.assertEqual(list(_manifest.PLUGINS), codes)
         self.assertEqual(list(plugins.PLUGINS)[:len(codes)], codes)
@@ -97,6 +97,7 @@ class BuiltInTest(unittest.TestCase):
             "tik": (("sessionid", "sid_tt"), 0.2, True, True, {}),
             "fbk": (("c_user", "xs"), 0.2, True, False, {}),
             "ins": (("sessionid",), 2.0, True, False, {}),
+            "thr": (("sessionid",), 2.0, True, False, {}),
             "twt": (("auth_token",), 0.2, False, True, {}),
             "loi": (("access-token",), 0.5, True, False, {}),
             "tlg": ((), 0.5, True, False, {"t.me": 3}),
@@ -119,6 +120,7 @@ class BuiltInTest(unittest.TestCase):
             "fbk": ("posts photos tagged albums reels videos stories profile",
                     "video watch share photo post"),
             "ins": ("posts reels tagged reposts stories highlights profile", "post"),
+            "thr": ("posts replies reposts profile", "post"),
             "twt": ("posts media highlights reposts replies profile", "post"),
             "loi": ("archive photo", "post"),
             "tlg": ("photo video file", ""),

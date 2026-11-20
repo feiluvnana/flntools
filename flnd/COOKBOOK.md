@@ -15,8 +15,8 @@ flnd get ins:example_user
 
 The plugin's code, a colon, the user. Posts, reels, stories and the rest of what the account
 owns are saved under `media/ins/example_user/`. The same command with another code does
-Twitter/X (`twt:example_handle`), TikTok (`tik:`), Facebook (`fbk:`), and so on. A profile link
-works too: `flnd get https://www.instagram.com/example_user/`.
+Twitter/X (`twt:example_handle`), TikTok (`tik:`), Threads (`thr:`), Facebook (`fbk:`), and so
+on. A profile link works too: `flnd get https://www.instagram.com/example_user/`.
 More: [Targets](SPEC.md#targets), [Folders](SPEC.md#folders).
 
 ## Pick categories

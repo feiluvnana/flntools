@@ -22,6 +22,7 @@ BUILT_IN = (
     ("flnd.plugins.tik", "TikTok"),
     ("flnd.plugins.fbk", "Facebook"),
     ("flnd.plugins.ins", "Instagram"),
+    ("flnd.plugins.thr", "Threads"),
     ("flnd.plugins.twt", "Twitter"),
     ("flnd.plugins.loi", "Loibus"),
     ("flnd.plugins.tlg", "Telegram"),
