@@ -18,6 +18,7 @@ from flnd.plugin import (
     Changed,
     Ctx,
     File,
+    LoginError,
     NetworkError,
     NotFound,
     Plugin,
@@ -26,6 +27,7 @@ from flnd.plugin import (
     Request,
     SiteError,
     Target,
+    UsageError,
     cookies,
     dig,
     route,
@@ -52,6 +54,8 @@ QUERIES = {
     "UserRepostsTimeline": "bWzOK-jDN4SYVcF6AQ22Qw",
     "UserRepliesTimeline": "fpl-c0_APDI3nZ1CeeBMbg",
     "TweetResultByRestId": "U8lc5aomF5krJzZ9vJ9wxg",
+    # 2026-11-20, unconfirmed live: `twt:me`'s list, with the id remembered from older clients.
+    "Following": "iSicc7LrzWGBgDPL0tM_TQ",
 }
 # The operation whose responses carry a search's tweets; only the browser sends it.
 SEARCH = "SearchTimeline"
@@ -64,6 +68,10 @@ MAX_ID = re.compile(r"(?<!\S)max_id:\d+(?!\S)", re.IGNORECASE)
 FEATURES = {"responsive_web_graphql_timeline_navigation_enabled": True,
             "responsive_web_media_download_video_enabled": True}
 HOME = "https://x.com/"
+# A handle: 1 to 15 letters, digits or underscores (a user id is digits of any length).
+HANDLE = re.compile(r"\w{1,15}|\d+", re.ASCII)
+# Accounts per `Following` page, as the web client asks.
+FOLLOWING_COUNT = 100
 # The web app's main script, which x.com's page loads: it holds every operation's query id.
 MAIN_SCRIPT = re.compile(
     r"https://abs\.twimg\.com/responsive-web/client-web(?:-legacy)?/main\.[\w.-]+\.js"
@@ -104,6 +112,9 @@ TWEET_LINKS = ("twt:post/{tweet_id:\\d+}", *(
 ))
 
 
+NOT_A_PROFILE = "that's not a profile"
+
+
 class Timeline(NamedTuple):
     """One timeline: the GraphQL operation its responses carry, and its tab under the profile."""
 
@@ -135,13 +146,19 @@ class Twitter(Plugin):
     api = 2
     # Paths on the site that are pages of it, not profiles. x.com/i covers x.com/i/* too,
     # except the tweet and user-id links the routes read (more literal segments win).
+    # The first match is the one told, so a narrow rule comes before `i`.
     unsupported = {
-        f"{host}/{path}": "that's not a profile"
+        f"{host}/{path}": reason
         for host in ("x.com", "twitter.com")
-        for path in (
-            "home", "explore", "search", "settings", "notifications", "messages",
-            "hashtag", "i", "intent", "compose", "login",
+        for paths, reason in (
+            (("search",), "a search needs q=: x.com/search?q=example"),
+            (("i/lists", "*/lists"), "lists aren't supported; give a user, a tweet or a search"),
+            (("i/communities",), "communities aren't supported; give a user, a tweet or a search"),
+            (("i/spaces",), "spaces aren't supported; give a user, a tweet or a search"),
+            (("home", "explore", "settings", "notifications", "messages", "hashtag", "i",
+              "intent", "compose", "login"), NOT_A_PROFILE),
         )
+        for path in paths
     }
     # Not required by the code, but X usually sends a logged-out browser to its login page.
     login = cookies("auth_token", url="https://x.com/i/flow/login")
@@ -213,7 +230,7 @@ class Twitter(Plugin):
         for post in tweet_posts(tweet, "posts", None, part=category if owner else ""):
             yield post.replace(owner=owner, category=category)
 
-    @route("twt?{query}")
+    @route("twt?{query}", "x.com/search?q={query:.+}", "twitter.com/search?q={query:.+}")
     async def search(self, ctx: Ctx, query: str) -> AsyncIterator[Target]:
         """A search's tweets with media, such as `twt?example`, each as a tweet link.
 
@@ -270,6 +287,56 @@ class Twitter(Plugin):
                     and oldest_date < ctx.when.since):
                 break
             window_query = with_max_id(query, oldest_id - 1)
+
+    @route("twt:{me:me}", shown="twt:me", discovers=True)
+    async def me(self, ctx: Ctx, me: str) -> AsyncIterator[Target]:
+        """Every account the login follows, each as `twt:<screen name>`: `twt:me`, read from the
+        `Following` operation page by page. A 429 is held by the operation's bucket.
+
+        Raises:
+            LoginError: no login, or none that names its own account.
+            Changed: a page of the list without its timeline.
+        """
+        found = re.search(r"u(?:=|%3D)(\d+)", ctx.cookies.get("twid", ""))
+        if not ctx.cookies.get("auth_token") or found is None:
+            raise LoginError("twt: not logged in, so there is no account to read",
+                             hint="log in: flnd auth login twt")
+        variables: dict[str, Any] = {"userId": found[1], "count": FOLLOWING_COUNT,
+                                     "includePromotedContent": False}
+        seen: set[str] = set()
+        while True:
+            data = await self.graph.get(ctx, "Following", variables)
+            instructions = dig(data, "data.user.result.timeline.timeline.instructions")
+            if not isinstance(instructions, list):
+                raise Changed("twt:me: X's following list has no timeline")
+            cursor, new = None, 0
+            for entry, _ in timeline_entries(instructions):
+                content = entry.get("content") or entry.get("item") or {}
+                if content.get("cursorType") == "Bottom":
+                    cursor = content.get("value")
+                name = dig(content, "itemContent.user_results.result.core.screen_name"
+                           " || itemContent.user_results.result.legacy.screen_name")
+                if isinstance(name, str) and name not in seen:
+                    seen.add(name)
+                    new += 1
+                    yield Target(f"twt:{name}")
+            # The last page has a cursor but no new account, or none at all.
+            if not new or not cursor:
+                return
+            variables = {**variables, "cursor": cursor}
+
+    @classmethod
+    def resolve(cls, text: str) -> Target | None:
+        """The routes' reading, then the handle rule: a user name is `HANDLE`.
+
+        Raises:
+            UsageError: a name that isn't a handle, or one of the site's own pages.
+        """
+        found = super().resolve(text)
+        if found is not None and found.kind == "user" and not HANDLE.fullmatch(found.value):
+            raise UsageError(f"twt: {found.value!r} isn't a handle; a handle is 1 to 15 "
+                             "letters, digits or _")
+        return found
 
     @route("twt:{user}", "x.com/{user}", "twitter.com/{user}",
            r"x.com/i/user/{user:\d+}", r"twitter.com/i/user/{user:\d+}")

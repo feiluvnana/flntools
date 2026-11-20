@@ -88,12 +88,11 @@ Goal: get everyone your own login follows.
 ```sh
 flnd get ins:me
 flnd get "ins:me|posts,stories"
-flnd get tik:me fbk:me
+flnd get tik:me fbk:me twt:me
 ```
 
-`ins:me`, `tik:me` and `fbk:me` list every account the login follows, each as its own target.
-They need a login. `twt:me` is not this: it is a user named `me`. Add `--limit 20` to take only
-the first 20 accounts.
+`ins:me`, `tik:me`, `fbk:me` and `twt:me` list every account the login follows, each as its own
+target. They need a login. Add `--limit 20` to take only the first 20 accounts.
 More: [`me`, searches and `--limit`](SPEC.md#me-searches-and---limit).
 
 ## A date window

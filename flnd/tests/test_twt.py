@@ -12,7 +12,7 @@ from pathlib import PurePosixPath
 import no_profiles  # noqa: F401
 from fakes import filed
 
-from flnd.errors import Blocked, LoginError, NotFound, SiteError
+from flnd.errors import Blocked, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import Range, Request, Target
 from flnd.plugins.twt import (
     QUERIES,
@@ -129,7 +129,6 @@ ROUTES = [
     ("twt?example words", ("search", "example words")),
     ("twt:@example_handle", ("user", "example_handle")),
     ("twt:example_handle", ("user", "example_handle")),
-    ("twt:x.com", ("user", "x.com")),
     ("twt:1000000001", ("user", "1000000001")),
     ("https://x.com/i/user/1000000001", ("user", "1000000001")),
     ("https://twitter.com/i/user/1000000001", ("user", "1000000001")),
@@ -154,7 +153,7 @@ ROUTES = [
     ("https://x.com/i/web/status/1790", ("post", "post/1790")),
     ("https://twitter.com/i/web/status/1790", ("post", "post/1790")),
     *[(f"https://{host}/{path}", NOT_A_PROFILE) for host in ("x.com", "twitter.com") for path in (
-        "home", "explore", "search?q=example", "settings", "notifications", "messages/1",
+        "home", "explore", "settings", "notifications", "messages/1",
         "hashtag/tag", "i/flow/login", "intent/tweet", "compose/post", "login")],
     ("https://x.com/i", NOT_A_PROFILE),
     ("twt:https://x.com/explore", NOT_A_PROFILE),
@@ -164,8 +163,50 @@ ROUTES = [
         "https://x.com/", "https://x.com/example handle")],
 ]
 
+# Added 2026-11-20: search links read as the query; handles; pages refused with their reason.
+MORE_ROUTES = [
+    ("https://x.com/search?q=cats", ("search", "cats")),
+    ("twitter.com/search?q=cats&f=live&src=typed_query", ("search", "cats")),
+    ("https://www.x.com/search?q=from%3Aexample_handle+filter%3Amedia",
+     ("search", "from:example_handle filter:media")),
+    ("twt:123456789012345", ("user", "123456789012345")),
+    ("twt:abcdefghijklmno", ("user", "abcdefghijklmno")),
+    ("twt:me", ("me", "me")),
+    ("https://x.com/example_handle/status/1790/video/1", ("post", "post/1790")),
+    ("https://mobile.x.com/example_handle/status/1790", ("post", "post/1790")),
+    ("twt:post/1790", ("post", "post/1790")),
+]
+REFUSED = [
+    ("twt:x.com", "twt: 'x.com' isn't a handle"),
+    ("twt:abcdefghijklmnop", "twt: 'abcdefghijklmnop' isn't a handle"),
+    ("https://x.com/example.handle", "twt: 'example.handle' isn't a handle"),
+    ("https://x.com/search", "twt: a search needs q="),
+    ("https://twitter.com/search?f=live", "twt: a search needs q="),
+    ("https://x.com/i/lists/123", "twt: lists aren't supported"),
+    ("https://x.com/example_handle/lists", "twt: lists aren't supported"),
+    ("https://x.com/i/communities/123", "twt: communities aren't supported"),
+    ("https://x.com/i/spaces/1abc", "twt: spaces aren't supported"),
+    ("https://x.com/hashtag/cats", "twt: that's not a profile"),
+    ("https://x.com/i/bookmarks", "twt: that's not a profile"),
+    ("https://x.com/i/web/status/abc", "twt: that's not a profile"),
+]
+
 
 class RoutesTest(unittest.TestCase):
+    def test_new_forms_and_refusals(self):
+        for text, (kind, value) in MORE_ROUTES:
+            with self.subTest(text=text):
+                sep = "?" if kind == "search" else ":"
+                self.assertEqual(Twitter.resolve(text), Target(f"twt{sep}{value}", kind=kind))
+        for text, message in REFUSED:
+            with self.subTest(text=text):
+                with self.assertRaises(UsageError) as caught:
+                    Twitter.resolve(text)
+                self.assertTrue(str(caught.exception).startswith(message), caught.exception)
+
+    def test_a_search_link_keeps_the_key_of_the_typed_query(self):
+        self.assertEqual(Twitter.resolve("x.com/search?q=a+b&f=live"), Twitter.resolve("twt?a b"))
+
     def test_every_form(self):
         for text, expected in ROUTES:
             with self.subTest(text=text):
@@ -773,6 +814,49 @@ class RefreshTest(unittest.TestCase):
         ctx = fake(user=Reply(status=500), pages=tabs())
         collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
         self.assertNotIn(HOME, [found for found, _ in asked(ctx)])
+
+
+def person(handle, *, new=True):
+    core = {"core": {"screen_name": handle}} if new else {"legacy": {"screen_name": handle}}
+    return {"entryId": f"user-{handle}", "content": {
+        "itemContent": {"user_results": {"result": core}}}}
+
+
+def following(*handles, cursor=None, legacy=()):
+    entries = [person(handle) for handle in handles] + [person(h, new=False) for h in legacy]
+    if cursor:
+        entries.append({"entryId": "cursor-bottom",
+                        "content": {"cursorType": "Bottom", "value": cursor}})
+    return Reply({"data": {"user": {"result": {"timeline": {"timeline": {"instructions": [
+        {"type": "TimelineAddEntries", "entries": entries}]}}}}}})
+
+
+class MeTest(unittest.TestCase):
+    COOKIES = {"auth_token": "t", "ct0": "c", "twid": "u%3D42"}
+
+    def run_me(self, answers, cookies=None):
+        ctx = fake("twt:me", cookies=self.COOKIES if cookies is None else cookies,
+                   routes={url("Following"): lambda _: answers.pop(0)})
+        return listed(Twitter(), ctx, "me", "me"), ctx
+
+    def test_two_pages_are_followed_by_cursor_and_yield_each_handle(self):
+        found, ctx = self.run_me([following("a_1", cursor="c1"),
+                                  following("b_2", legacy=["c_3"], cursor="c2"), following()])
+        self.assertEqual([str(target) for target in found], ["twt:a_1", "twt:b_2", "twt:c_3"])
+        self.assertEqual(len(ctx.seen.requests), 3)
+        self.assertTrue(next(r for r in Twitter.routes if r.kind == "me").discovers)
+
+    def test_a_429_is_held_and_the_page_asked_again(self):
+        found, ctx = self.run_me([Reply(status=429, headers={"retry-after": "60"}),
+                                  following("a_1")])
+        self.assertEqual([str(target) for target in found], ["twt:a_1"])
+        self.assertEqual([bucket for _, _, bucket in ctx.seen.holds], ["Following"])
+
+    def test_no_login_is_refused_with_the_login_hint(self):
+        for cookies in ({}, {"ct0": "c"}, {"auth_token": "t"}):
+            with self.subTest(cookies=cookies), self.assertRaises(LoginError) as caught:
+                self.run_me([], cookies)
+            self.assertEqual(caught.exception.hint, "log in: flnd auth login twt")
 
 
 class SignTest(unittest.TestCase):

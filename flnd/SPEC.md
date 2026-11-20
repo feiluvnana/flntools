@@ -172,7 +172,7 @@ flnd get ins:example_user tik:example_user
 - `ins:me`, `tik:me` and `fbk:me` list every account the login follows (`fbk`: pages and people, not
   friends), each its own `user` target (`"ins:me|posts,stories"` passes the list on to each). They
   need a login. `tik:me` reads your Following list, `fbk:me` the `/me/following` page (unconfirmed
-  live). `twt:me` is a user named `me`.
+  live). `twt:me` reads X's `Following` operation (unconfirmed live).
 - A search (`twt?<words>`, `mht?<words>`, `tik?<words>`, `loi?<words>`, or a search link) finds
   targets, and each found target is got as its own. A search needs `--folder`, which puts all its
   hits in one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search gets
@@ -208,13 +208,15 @@ profile`; `instagram.com/` alone, and a code with no value.
 | --- | --- | --- |
 | `twt:<user>`, `x.com/<user>` (any tab link, such as `/media`) | `user` | the profile |
 | `twt:<id>`, `x.com/i/user/<id>` (digits) | `user` | the profile with that id |
-| `twt:post/<id>` | `post` | one tweet |
-| `x.com/<user>/status/<id>`, `x.com/status/<id>`, `x.com/i/web/status/<id>` | `post` | one tweet |
-| `twt?<words>` | `search` | the Latest tab of a search |
+| `twt:post/<id>`, `x.com/<user>/status/<id>`, `x.com/[i/web/]status/<id>` | `post` | one tweet |
+| `twt?<words>`, `x.com/search?q=<words>` (`f=` and the like ignored) | `search` | the Latest tab |
+| `twt:me` | `me` | the accounts the login follows |
 
-Refused with `twt: that's not a profile`: `x.com/home`, `explore`, `search` (so `x.com/search?q=`
-links), `settings`, `notifications`, `messages`, `hashtag`, `i` (but `i/web/status/<id>` and
-`i/user/<id>` read), `intent`, `compose`, `login`; `x.com/` alone.
+A handle is 1 to 15 letters, digits or `_` (digits of any length: an id); another is refused
+(`twt: 'x.com' isn't a handle`), as are `x.com/search` without `q=`, lists, communities and spaces
+(`twt: lists aren't supported; ...`), and, as `twt: that's not a profile`, `home`, `explore`,
+`settings`, `notifications`, `messages`, `hashtag`, `i` (`i/web/status/<id>` and `i/user/<id>`
+read), `intent`, `compose`, `login`; `x.com/` alone.
 
 **tik**
 
@@ -994,26 +996,25 @@ media/ins/example_user/highlights/Travel/2026-01-02_1234567890.mp4
 
 ### twt (Twitter/X)
 
-- **Reads:** a user's posts, Media tab, highlights, reposts, replies, avatar and banner; one tweet
-  by link; a search's Latest tab. The profile and single tweets come from X's GraphQL API; timelines
-  and searches are scrolled in the browser.
+- **Reads:** a user's posts, Media tab, highlights, reposts, replies, avatar and banner; one tweet;
+  a search; the accounts you follow. Profile and tweets: GraphQL; timelines and searches: scrolled.
 - **Categories:** `posts` NF, `media` NF, `highlights`, `replies` NF, `profile` (own); `reposts`
   (opt-in). Retweets are left out of every category but `reposts`; a tweet's files include the media
   of a tweet it quotes and its card image.
 - **Folder:** `{part}` (the category; `media` uses `images` and `videos`); `profile`.
 - **Filename:** `{date}_{post}_{n}` (`n` is `0`, `1`, ..., `q0` for a quoted tweet, `card`).
 - **Key:** `{post}_{n}` (`twt:<tweet id>_<n>`); `profile` keys by `{path}`.
-- **Search:** `twt?<words>` opens the Latest tab; X operators (`from:`, `filter:media`) work.
-  `--when` is sent as `since:` and `until:`. When X's cursor ends early, flnd opens a follow-up
-  window with `max_id:<oldest id - 1>`; up to 3 empty pages in a row are scrolled past; a 429 holds
-  that operation's bucket until X's reset. Each tweet with files is got as a `post` target, which
-  goes to the search's `--folder`. X has no tagged tab: use `twt?@example_handle
-  -from:example_handle`. Dropping `filter:media` is more complete.
-- **Login:** cookie `auth_token` (needed in practice: a logged-out browser lands on the login wall
-  and the job fails); API calls also send `ct0` back as the CSRF token.
-- **Limits and walls:** pace 0.2 per bucket (a bucket per operation, so a 429 holds only that
-  operation); walls `/i/flow/login`, `/login`, `/account/access`. Query ids are refreshed from
-  x.com's script on a 400 or 404, at most once a run.
+- **Search:** `twt?<words>` opens the Latest tab; X operators (`from:`, `filter:media`) work;
+  `--when` is sent as `since:`/`until:`. When X's cursor ends early, a `max_id:<oldest id - 1>`
+  window follows; 3 empty pages in a row are passed; a 429 holds that bucket. Each tweet with files
+  is a `post` target in the search's `--folder`. No tagged tab: use
+  `twt?@example_handle -from:example_handle`.
+- **Login:** cookie `auth_token` (a logged-out browser lands on the login wall); API calls send
+  `ct0` back as the CSRF token. `twt:me`: `Following` for the `twid` cookie's id, paged by `Bottom`;
+  no login is `LoginError`, hint `log in: flnd auth login twt`. Query id and path: unconfirmed live.
+- **Limits and walls:** pace 0.2 per bucket (a 429 holds only its operation); walls
+  `/i/flow/login`, `/login`, `/account/access`. Query ids are refreshed from x.com's script on a
+  400 or 404, at most once a run.
 - **Known gaps:** a single tweet has no browser fallback; a protected and a deleted tweet are both
   `NotFound`; video is MP4 only (streaming-only is skipped); text-only tweets save nothing.
 
