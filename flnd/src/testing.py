@@ -22,14 +22,13 @@ from collections.abc import (
 )
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.engine.ctx
 import flnd.plugin
-from flnd.engine import jobs, store
+from flnd.engine import jobs
 from flnd.errors import Blocked, Changed, NetworkError, NotFound, PluginError, SiteError, UsageError
 from flnd.plugin import Document, File, Landed, Plugin, Post, Request, Response
 from flnkit import clock, net
@@ -999,33 +998,15 @@ def _placed(ctx: FakeCtx, route: flnd.plugin.Route, category: flnd.plugin.Catego
         raise PluginError(f"{plugin.code}: post {post.id} gives no {', '.join(missing)}, "
                           "which a template names",
                           hint="give the field on every post, None when it has none")
-    placed, used = [], set()
-    for num, file in enumerate(files):
-        own = bool(crawl.own_extension(file.name))
-        if own or file.content is not None:
-            extension = PurePosixPath(file.name or "").suffix
-        else:
-            extension = crawl.planned(file, _typed(ctx, file))[0]
-        values = {**post.fields, "plugin": plugin.code, "target": store.folder_name(target),
-                  "category": category.name if category else "", "post": post.id,
-                  "num": num, "count": len(files), "index": "" if len(files) == 1 else f"_{num}",
-                  "extension": extension, "date": clock.day(post.date),
-                  "query": target.value if target.query else ""}
-        if own or file.content is not None:
-            name = text.filename(file.name or post.id)
-        else:
-            stem = file.name if file.name is not None else text.fill(plugin.filename, values)
-            name = text.filename(stem or post.id) + extension
-        where = text.fill(folder, values)
-        path = "/".join(part for part in (where, name) if part)
-        if path in used:
-            # Files of one post may share a name (`cover.jpg`): a later one takes its number.
-            name = f"{PurePosixPath(name).stem}_{num}{PurePosixPath(name).suffix}"
-            path = "/".join(part for part in (where, name) if part)
-        used.add(path)
-        placed.append((path, text.fill(key, {**values, "path": path}, safe=False) or path,
-                       file))
-    return placed
+    # The engine's own placement, so a single post sits in its owner's folder here too.
+    named = {c.name: c for known in plugin.routes for c in known.categories}
+    if category is None and post.owner:
+        category = named.get(post.category or "")
+    filed = crawl._Filed(post, category.name if category else "")
+    options = crawl.Options(query=target.value) if target.query else None
+    return [(placed.path, placed.key, placed.file) for placed in crawl.place(
+        plugin, filed, files, category=category, route=route, target=target, options=options,
+        typed=lambda file: _typed(ctx, file))]
 
 
 def _typed(ctx: FakeCtx, file: flnd.plugin.File) -> str:

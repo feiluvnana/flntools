@@ -446,12 +446,12 @@ class SingleLinkTest(unittest.TestCase):
 
     def test_a_video_is_named_by_the_templates_from_its_best_streams(self):
         hd_first = ("https://cdn.example/hd.mp4", "https://cdn.example/sd.mp4")
-        cases = [(video("22", dash=DASH), ("2023-11-15_22.mp4", "22"),
+        cases = [(video("22", dash=DASH), ("22/2023-11-15_22.mp4", "22"),
                   ("https://cdn.example/1080.mp4", (), "https://cdn.example/a95.mp4")),
-                 (video("22", stamp=0, dash=DASH), ("22.mp4", "22"), None),
-                 (video("22", dash=WEBM), ("2023-11-15_22.webm", "22"), None),
+                 (video("22", stamp=0, dash=DASH), ("22/22.mp4", "22"), None),
+                 (video("22", dash=WEBM), ("22/2023-11-15_22.webm", "22"), None),
                  # No manifest: every progressive address is a mirror, HD first.
-                 (video("22"), ("2023-11-15_22.mp4", "22"), (None, hd_first, None))]
+                 (video("22"), ("22/2023-11-15_22.mp4", "22"), (None, hd_first, None))]
         for result, pair, streams in cases:
             with self.subTest(pair=pair, streams=streams):
                 [saved], _ = run(f"{SITE}/watch/?v=22",

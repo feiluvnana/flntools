@@ -100,6 +100,24 @@ class Gallery(v2.Plugin):
         return files
 
 
+class Owned(v2.Plugin):
+    code, name, api, domains = "exo", "Owned", 2, ("owned.example",)
+
+    @v2.route("owned.example/p/{post:\\w+}", single=True)
+    async def post(self, ctx, post):
+        yield v2.Post(post, [v2.File("https://cdn.example/a.jpg")], owner="example_user",
+                      category="posts")
+
+    @v2.route("exo:{user}")
+    async def user(self, ctx, user):
+        return {}
+
+    @user.category
+    async def posts(self, ctx, profile):
+        return
+        yield
+
+
 class Signing(v2.Login):
     methods = ("code",)
 
@@ -134,6 +152,12 @@ def bodies(ctx, items):
 ITEMS = [{"id": "p2", "time": "2026-01-03", "album": "trip"},
          {"id": "p1", "time": "2026-01-02", "album": None}]
 PROFILE = {f"{BASE}/users/example_user": Reply({"id": "42"})}
+
+
+class SingleLinkTest(unittest.TestCase):
+    def test_a_single_links_path_shows_its_owners_folder(self):
+        [found] = collect(Owned, "https://owned.example/p/p1")
+        self.assertEqual(found.path, "example_user/posts/p1_0.jpg")
 
 
 class FakeCtxTest(unittest.TestCase):

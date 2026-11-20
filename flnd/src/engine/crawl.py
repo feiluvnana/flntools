@@ -441,6 +441,7 @@ async def _files(run: PluginRun, site: Ctx, post: Post) -> list[File]:
 def place(
     source: Plugin, post: Post, files: Sequence[File], *, category: Category | None = None,
     route: Route | None = None, target: Target | None = None, options: Options | None = None,
+    typed: Callable[[File], str] | None = None,
 ) -> list[Placed]:
     """Give each file of `post` its path under the target's folder and its history key.
 
@@ -458,6 +459,7 @@ def place(
         target: the target, for the `{source}` and `{target}` fields; None for the source's.
             A single post's `{target}` is its owner, else its id.
         options: the target's options, for the `{query}` field of a search's found target.
+        typed: a file's `Content-Type` where known (the test kit); None for none.
 
     Returns:
         One `Placed` per file, in order.
@@ -476,7 +478,7 @@ def place(
     placed: list[Placed] = []
     used: set[str] = set()
     for num, file in enumerate(files):
-        extension, kind = planned(file)
+        extension, kind = planned(file, typed(file) if typed else "")
         values = _file_values(
             source, post, num, len(files), posted, extension, target, options,
         )

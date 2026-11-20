@@ -294,7 +294,7 @@ class ProfileTest(unittest.TestCase):
                                                **image("https://cdn.example/a.jpg")}}}
         rows = [
             ("https://www.instagram.com/p/SINGLE/", None, f"{SITE}/p/SINGLE/",
-             [single], [f"{DAY}_SINGLE.jpg"]),
+             [single], [f"SINGLE/{DAY}_SINGLE.jpg"]),
             ("ins:example_creator", ["highlights", "profile"], f"{SITE}/example_creator/",
              [PROFILE, HIGHLIGHTS], [path for path, _ in SAVED
                                      if path.startswith(("highlights", "profile"))]),
@@ -314,7 +314,7 @@ class ProfileTest(unittest.TestCase):
         ctx = fake(routes={}, pages={f"{SITE}/p/SINGLE/": FakePage("<html></html>",
                                                                    feeds=feeds)})
         saved = run("https://www.instagram.com/p/SINGLE/", ctx=ctx)
-        self.assertEqual([item.path for item in saved], [f"{DAY}_SINGLE.jpg"])
+        self.assertEqual([item.path for item in saved], [f"SINGLE/{DAY}_SINGLE.jpg"])
         self.assertEqual((ctx.seen.holds, ctx.seen.visited), ([], [f"{SITE}/p/SINGLE/"]))
 
     def test_a_story_or_highlight_page_that_fails_fails_its_category(self):
@@ -672,7 +672,8 @@ class PostTest(unittest.TestCase):
                 ctx = fake(routes={}, pages={f"{SITE}/p/SINGLE/": page})
                 saved = run("https://www.instagram.com/p/SINGLE/", ctx=ctx)
                 self.assertEqual([(item.path, item.key) for item in saved], [
-                    (f"{DAY}_SINGLE_0.jpg", "SINGLE_0"), (f"{DAY}_SINGLE_1.mp4", "SINGLE_1")])
+                    (f"SINGLE/{DAY}_SINGLE_0.jpg", "SINGLE_0"),
+                    (f"SINGLE/{DAY}_SINGLE_1.mp4", "SINGLE_1")])
                 self.assertEqual((ctx.seen.requests, ctx.seen.scrolls), ([], 0))
 
     def test_a_page_without_the_post_is_not_found(self):
@@ -700,7 +701,7 @@ class PostTest(unittest.TestCase):
                 headers={"x-ig-set-www-claim": "hmac.next"})},
         )
         saved = run("https://www.instagram.com/p/C1abc-DEF_0/", ctx=ctx)
-        self.assertEqual([item.path for item in saved], [f"{DAY}_C1abc-DEF_0.jpg"])
+        self.assertEqual([item.path for item in saved], [f"C1abc-DEF_0/{DAY}_C1abc-DEF_0.jpg"])
         self.assertEqual(ctx.seen.visited, [])
         self.assertEqual(fetched(ctx), [f"{SITE}/api/v1/media/{pk}/info/"])
         self.assertTrue(ctx.seen.requests[0][2]["in_page"])

@@ -246,7 +246,8 @@ class NamesAndKeysTest(unittest.TestCase):
                    routes={url("TweetResultByRestId"): tweet_result(wrapped)})
         saved = collect(Twitter, "https://x.com/example_handle/status/1790", ctx=ctx)
         self.assertEqual([(found.path, found.key) for found in saved],
-                         [(f"{DAY}_1790_0.jpg", "1790_0"), (f"{DAY}_1790_1.mp4", "1790_1")])
+                         [(f"1790/{DAY}_1790_0.jpg", "1790_0"),
+                          (f"1790/{DAY}_1790_1.mp4", "1790_1")])
         variables = json.loads(ctx.seen.requests[0][2]["params"]["variables"])
         self.assertEqual(variables["tweetId"], "1790")
 
@@ -343,7 +344,7 @@ class SearchTest(unittest.TestCase):
         # The discovered tweet runs on the same instance: its files, and no API call.
         later = FakeCtx(plugin, str(found[0]))
         saved = collect(Twitter, str(found[0]), ctx=later)
-        self.assertEqual([found.path for found in saved], [f"{DAY}_1_0.jpg"])
+        self.assertEqual([found.path for found in saved], [f"1/{DAY}_1_0.jpg"])
         self.assertEqual(later.seen.requests, [])
 
     def test_when_is_asked_of_x_as_search_operators(self):
@@ -433,7 +434,7 @@ class SearchTest(unittest.TestCase):
                          ["https://x.com/i/web/status/100", "https://x.com/i/web/status/90"])
         self.assertEqual(ctx.seen.visited, [w1, w2, w3])
         saved = collect(Twitter, str(found[1]), ctx=FakeCtx(plugin, str(found[1])))
-        self.assertEqual([f.path for f in saved], [f"{DAY}_90_0.jpg"])
+        self.assertEqual([f.path for f in saved], [f"90/{DAY}_90_0.jpg"])
 
     def test_search_replaces_user_max_id_and_stops_before_when_since(self):
         plugin = Twitter()
