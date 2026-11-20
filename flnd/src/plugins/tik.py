@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
+from urllib.parse import quote_plus, urlsplit
 
 from flnd.plugin import (
     Blocked,
@@ -151,7 +151,7 @@ class Profile:
                 for read in range(REREADS + 1):
                     ended = False
                     async with feed:
-                        async for data in paged(ctx, feed, "videos", FEEDS["videos"], page_state):
+                        async for data in filled(ctx, feed, page_state):
                             ended = self._take(ctx, data)
                             while queue:
                                 yield queue.popleft()
@@ -347,7 +347,7 @@ class TikTok(Plugin):
         await ctx.pause(SETTLE, "letting the search settle")
         await wait_out(ctx, url)
         async with feed:
-            async for data in paged(ctx, feed, "search", (SEARCH_API,), search_state):
+            async for data in filled(ctx, feed, search_state):
                 for found in dig(data, "item_list || itemList") or []:
                     post_id = str(dig(found, "id") or "")
                     if post_id and post_id not in seen:
@@ -376,7 +376,7 @@ class TikTok(Plugin):
                 await ctx.click(FOLLOWING_TAB, timeout=CLICK_TIMEOUT)
             except NetworkError:
                 raise Changed("tik:me: the profile's Following list didn't open") from None
-            async for data in paged(ctx, feed, "following", (FOLLOWING_API,), search_state):
+            async for data in filled(ctx, feed, search_state):
                 for entry in dig(data, "userList || user_list") or []:
                     name = dig(entry, "user.uniqueId || uniqueId")
                     if name:
@@ -502,90 +502,25 @@ def _watch(ctx: Ctx, category: str) -> Any:
     return ctx.feed(_matches(category), scroll=True, cursor=page_state, resume=True)
 
 
-class Unreadable(Exception):
-    """A replayed answer that isn't a list's page."""
+async def filled(ctx: Ctx, feed: AsyncIterator[Any],
+                 state: Callable[[Any], Any]) -> AsyncIterator[Any]:
+    """A scrolled feed's answers, but for an empty one that still says it has more.
 
-
-def own_request(request: Request | None, data: Any, state: Callable[[Any], Any],
-                apis: Sequence[str]) -> Callable[[str], Request] | None:
-    """The page's own request for one of `apis`, as a function from a cursor to the same
-    request asking for that cursor; None when `data` says no more or there is none to copy."""
-    if (request is None or request.method != "GET" or not (state(data) or (False,))[0]
-            or not any(api in request.url for api in apis)):
-        return None
-    parts = urlsplit(request.url)
-    query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    query |= {name: str(value) for name, value in (request.params or {}).items()}
-    name = next((name for name in ("cursor", "offset") if name in query), None)
-    if name is None:
-        return None
-    return lambda cursor: Request(
-        urlunsplit(parts._replace(query=urlencode({**query, name: cursor}))), check=False)
-
-
-def answer(response: Any, state: Callable[[Any], Any]) -> Any:
-    """A replayed answer's JSON; `Unreadable` when it isn't ok or isn't a list's page."""
-    try:
-        data = response.json if response.ok else None
-    except SiteError:
-        data = None
-    if state(data) is None:
-        raise Unreadable
-    return data
-
-
-async def replay(ctx: Ctx, send: Callable[[str], Request], state: Callable[[Any], Any],
-                 cursor: str | None) -> AsyncIterator[Any]:
-    """The pages after `cursor`, each asked in the page with its own request, to the end.
-
-    A 429 holds through `ctx.pages(resume=True)`. A page with no item that still says `hasMore`
-    holds, once per page, and asks the same cursor again; the second ends the list.
+    That answer holds, once in a row, and the scroll goes on; a second one ends the list.
     """
-    def after(response: Any) -> str | None:
-        more, following = state(answer(response, state))
-        return following if more else None
-
     came = retried = False
-    while cursor:
-        pages = ctx.pages(send(cursor), cursor=after, send=send, in_page=True, resume=True)
-        async for response in pages:
-            data = answer(response, state)
-            more, after = state(data)
-            if more and not any(isinstance(v, list) and v for v in data.values()):
-                if retried:
-                    ctx.log("warn", "an empty page still says hasMore; the list ends here")
-                    return
-                retried = True
-                await ctx.hold("TikTok sent an empty page", reset=came)
-                came = False
-                break
-            retried, came, cursor = False, True, after
-            yield data
-        else:
-            return
-
-
-async def paged(ctx: Ctx, feed: AsyncIterator[Any], tab: str,
-                apis: Sequence[str], state: Callable[[Any], Any]) -> AsyncIterator[Any]:
-    """A scrolled feed's answers; once one shows the page's own request for `apis`, the pages
-    after it by that request. With none captured, or an answer that can't be read, the scroll
-    goes on."""
-    tried = False
     async for data in feed:
-        request = ctx.request
-        yield data
-        send = None if tried else own_request(request, data, state, apis)
-        if send is not None:
-            tried = True
-            ctx.log("info", "{tab}: paged by its own request", tab=tab)
-            try:
-                async for found in replay(ctx, send, state, state(data)[1]):
-                    yield found
+        more = (state(data) or (False,))[0]
+        if more and not any(isinstance(v, list) and v for v in data.values()):
+            if retried:
+                ctx.log("warn", "an empty page still says hasMore; the list ends here")
                 return
-            except Unreadable:
-                ctx.log("warn", "{tab}: its request's answer can't be read; scrolling", tab=tab)
-    if not tried:
-        ctx.log("info", "{tab}: scrolled", tab=tab)
+            retried = True
+            await ctx.hold("TikTok sent an empty page", reset=came)
+            came = False
+            continue
+        retried, came = False, True
+        yield data
 
 
 async def embed(ctx: Ctx, post_id: str) -> list[Post]:

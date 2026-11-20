@@ -1041,10 +1041,8 @@ up to 32.
 
 ### tik (TikTok)
 
-- **Reads:** a profile in the browser: the first scroll captures the page's own
-  `api/post/item_list/` request, whose pages go by `cursor` in the page, else it
-  scrolls (logged). One post from the embed page; a search, short link and `tik:me` in the browser
-  (see Targets).
+- **Reads:** a profile in the browser, its lists scrolled to their end. One post from the embed
+  page; a search, short link and `tik:me` in the browser (see Targets).
 - **Categories:** `videos` NF, `stories`, `playlists` NF, `profile` (own); `reposts`, `liked`,
   `favorites` (opt-in; the last two only if public). `videos` and `playlists` share one scroll.
 - **Folder:** `{part}/{album}`: `part` is `videos` or `images` for a post, `albums` for a playlist
@@ -1054,8 +1052,8 @@ up to 32.
 - **Login:** cookies `sessionid` or `sid_tt` (optional).
 - **Limits and walls:** pace 0.2; no walls. A captcha gets 60 s in the browser window (a hidden one
   is shown), then a block hold; a fourth unsolved one fails the job; a post list stopped short by
-  one is read again (3 times at most). A 429 holds and carries on from the same cursor; an empty
-  page that says `hasMore` holds once, then ends with a warning. A walled post list fails `videos`
+  one is read again (3 times at most). A 429 holds and the scroll goes on; an empty page that says
+  `hasMore` holds once, then ends with a warning. A walled post list fails `videos`
   and `playlists` with `Hidden`.
 - **Known gaps:** no such tab is logged; a tab deaf to the click for 10 s fails `Changed`; stories
   only as the page shows them on load.
