@@ -276,14 +276,13 @@ __all__ = [
 LAUNCH_ARGS = [
     "--disable-blink-features=AutomationControlled", "--disable-infobars",
     "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding", "--disable-gpu", "--in-process-gpu",
-    "--renderer-process-limit=1", "--disable-site-isolation-trials",
-    "--disable-component-extensions-with-background-pages", "--disable-extensions",
-    "--disable-default-apps", "--disable-background-networking", "--disable-component-update",
+    "--disable-renderer-backgrounding", "--disable-gpu", "--renderer-process-limit=1",
+    "--disable-site-isolation-trials", "--disable-extensions", "--disable-default-apps",
+    "--disable-component-extensions-with-background-pages", "--disable-background-networking",
     "--disable-sync", "--disable-translate", "--disable-client-side-phishing-detection",
-    "--disable-domain-reliability", "--disable-renderer-accessibility", "--mute-audio",
-    "--autoplay-policy=user-gesture-required", "--disk-cache-size=1", "--media-cache-size=1",
-    "--js-flags=--max-old-space-size=128",
+    "--disable-component-update", "--disable-domain-reliability", "--mute-audio",
+    "--disable-renderer-accessibility", "--autoplay-policy=user-gesture-required",
+    "--disk-cache-size=1", "--media-cache-size=1", "--js-flags=--max-old-space-size=512",
     ("--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,"
      "AcceptCHFrame,InterestFeedContentSuggestions,ProcessPerSiteUpToMainFrameThreshold,"
      "SpareRendererForSitePerProcess"),
@@ -1180,7 +1179,13 @@ class Page:
                 url, wait_until="networkidle" if idle else "load", timeout=timeout * 1000
             )
         # Playwright's Error covers DNS failures, aborted requests and timeouts ("not loaded").
-        except _raw_error() as error:
+        except (_raw_error(), TimeoutError) as error:
+            if not idle and (isinstance(error, (_raw_timeout(), TimeoutError))
+                             or "timeout" in str(error).lower()):
+                if (url_now := self.raw.url) not in ("", "about:blank"):
+                    with contextlib.suppress(_raw_error(), TimeoutError):
+                        await self.raw.wait_for_load_state("domcontentloaded", timeout=5000)
+                    return Visit(200, url_now, {})
             clean = redact(url)
             _log.warning(
                 "could not open {url}: {error}",

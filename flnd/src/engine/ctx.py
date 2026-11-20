@@ -1212,7 +1212,6 @@ class PluginRun:
                 self._own_loop.close()
 
 
-
 def _close(*kept: Any) -> None:
     for each in kept:
         close = getattr(each, "close", None)
@@ -1421,13 +1420,12 @@ async def shared_browser(settings: RunShared) -> AsyncIterator[None]:
 # Each run's scheduler, by the run's browser, so every `RunShared` given that browser shares it.
 _SCHEDULERS: weakref.WeakKeyDictionary[browser.RunBrowser, jobs.Scheduler] = \
     weakref.WeakKeyDictionary()
-IDLE_TIMEOUT = 15.0
-_ACTIVE_TABS: weakref.WeakKeyDictionary[browser.RunBrowser, set[TargetTabs]] = (
+IDLE_TIMEOUT = 60.0
+jobs.TABS, jobs.WARM_FREE = 6, 2
+_ACTIVE_TABS: weakref.WeakKeyDictionary[browser.RunBrowser, set[TargetTabs]] = \
     weakref.WeakKeyDictionary()
-)
-_IDLE_TIMERS: weakref.WeakKeyDictionary[browser.RunBrowser, asyncio.TimerHandle] = (
+_IDLE_TIMERS: weakref.WeakKeyDictionary[browser.RunBrowser, asyncio.TimerHandle] = \
     weakref.WeakKeyDictionary()
-)
 
 
 def _release_active(shared: browser.RunBrowser, target_tabs: TargetTabs) -> None:
