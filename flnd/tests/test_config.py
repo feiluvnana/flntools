@@ -72,6 +72,7 @@ class ReadTest(Case):
     def test_missing_files_are_every_default(self):
         found = config.read(self.home, user=self.user)
         self.assertEqual(found, Config())
+        self.assertEqual(found.defaults.exec_timeout, 3600)
         self.assertEqual(found.plugin("ins").stop_after, 5)
         self.assertEqual(found.origin("when"), Where.DEFAULT)
 
@@ -83,6 +84,7 @@ class ReadTest(Case):
             ('[defaults]\nrate = "20 MB/s"', "defaults.rate", "20 MB/s"),
             ('[defaults]\nslowest = "500 KB/s"', "defaults.slowest", "500 KB/s"),
             ("[defaults]\nheight = 720", "defaults.height", 720),
+            ("[defaults]\nexec_timeout = 0", "defaults.exec_timeout", 0),
             ("[defaults]\nswitch = true", "defaults.switch", True),
             ("[plugins.exm]\npace = 2", "plugins.exm.pace", 2.0),
             ('[plugins.exm]\nlimits = { "cdn.example.com" = 4 }', "plugins.exm.limits",
@@ -117,7 +119,8 @@ class ReadTest(Case):
         rows = [
             '[defaults]\ndedupe = "yes"', "[defaults]\nsidecars = 1", '[defaults]\nwhen = "soon"',
             '[defaults]\nwhen = "2026-03..2026-01"', '[defaults]\nrate = "fast"',
-            "[defaults]\nheight = -1",
+            "[defaults]\nheight = -1", "[defaults]\nexec_timeout = -1",
+            '[defaults]\nexec_timeout = "9"',
             '[defaults]\nheight = "720"', '[plugins.exm]\npace = "2"', "[plugins.exm]\npace = -1",
             '[plugins.exm]\nlimits = { "a" = 0 }', '[plugins.exm]\nproxy = "ftp://h:1"',
             '[plugins.exm]\nproxy = "http://h:99999"', '[plugins.exm]\nproxy = "http://h:1\\n"',

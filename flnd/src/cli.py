@@ -183,21 +183,20 @@ def get(args: argparse.Namespace) -> int:
     Returns:
         The run's exit code.
     """
-    # Read before the run is made, so a mistake in CMD is a usage error, not one per file.
-    runner = _runner(args)
+    command = _command(args)
     targets = _targets(args.targets)
     with _open(args) as fl:
         if not targets and not any(row.follow for row in fl.targets):
             if args.folder is not None:
                 fl.get(when=args.when, limit=args.limit, dry=args.dry,
-                       folder=args.folder).wait()
+                       folder=args.folder, exec=command).wait()
             from flnd.ui import out
 
             out.line(("nothing to sync", "dim"))
             return OK
         run = fl.get(*targets, when=args.when, limit=args.limit, dry=args.dry,
-                     folder=args.folder)
-        return _watch(fl, run, args, runner=runner)
+                     folder=args.folder, exec=command)
+        return _watch(fl, run, args)
 
 
 def target_list(args: argparse.Namespace) -> int:
@@ -1007,8 +1006,7 @@ def _cell(index: int, text: str) -> tuple[str, str]:
 # Watching a run
 # ---------------------------------------------------------------------------------------------
 
-def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
-           runner: _Exec | None = None) -> int:
+def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace) -> int:
     """Read a run's events into the chosen view, print its end, and return its exit code."""
     from contextlib import ExitStack, nullcontext
 
@@ -1033,8 +1031,6 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
         with nullcontext() if args.json else Screen(lambda: run.state, command=name):
             for event in run:
                 view.show(event)
-                if runner is not None and type(event).__name__ == "Saved":
-                    runner.run(event)
             report = run.report
             # The warnings still folded print above the screen, never after the summary.
             ui.drain()
@@ -1046,87 +1042,30 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
     return FAILED if report.failed else OK
 
 
-class _Exec:
-    """`--exec CMD`: a command run once per saved file, never through a shell."""
+def _command(args: argparse.Namespace) -> list[str] | None:
+    """`--exec`'s command split once like a POSIX shell; None without `--exec`."""
+    import shlex
+    import shutil
 
-    # The placeholders, matched in one pass so a substituted value is never read again.
-    FIELDS = ("path", "target", "post")
+    import flnd
 
-    def __init__(self, command: str, *, quiet: bool = False) -> None:
-        import re
-        import shlex
-        import shutil
-
-        import flnd
-
-        lexer = shlex.shlex(command, posix=True)
-        lexer.whitespace_split = True
-        if os.name == "nt":
-            lexer.escape = ""
-        try:
-            argv = list(lexer)
-        except ValueError as error:
-            raise flnd.UsageError(f"--exec: {error}: {command!r}") from None
-        if not argv:
-            raise flnd.UsageError("--exec needs a command", hint="--exec 'echo {path}'")
-        if shutil.which(argv[0]) is None:
-            raise flnd.UsageError(f"--exec: {argv[0]}: no such program",
-                                  hint="give a program on PATH, or its full path")
-        self.argv = argv
-        self.quiet = quiet
-        self._pattern = re.compile(r"\{(" + "|".join(self.FIELDS) + r")\}")
-
-    def argv_for(self, event: Any) -> list[str]:
-        """The command's arguments for one saved file.
-
-        Args:
-            event: the `flnd.Saved` event.
-
-        Returns:
-            CMD's arguments with the placeholders filled in.
-        """
-        values = self._values(event)
-        return [self._pattern.sub(lambda found: values[found[1]], arg) for arg in self.argv]
-
-    def run(self, event: Any) -> int:
-        """Run the command for one saved file and wait for it.
-
-        A command that can't start or fails is reported on standard error, and the run goes
-        on: the file is saved either way.
-
-        Args:
-            event: the `flnd.Saved` event.
-
-        Returns:
-            The command's exit code; 127 when it couldn't start.
-        """
-        import subprocess
-
-        from flnd.ui import out
-
-        values = self._values(event)
-        env = {**os.environ, "FLND_PATH": values["path"], "FLND_TARGET": values["target"],
-               "FLND_POST": values["post"]}
-        argv = self.argv_for(event)
-        try:
-            done = subprocess.run(argv, env=env, shell=False, stdin=subprocess.DEVNULL,
-                                  stdout=sys.stderr if self.quiet else None, check=False)
-        except OSError as error:
-            out.warn(f"--exec: {argv[0]}: {error.strerror or error}")
-            return 127
-        if done.returncode:
-            out.warn(f"--exec: {argv[0]} exited {done.returncode} for {_shown(event.path)}")
-        return done.returncode
-
-    @staticmethod
-    def _values(event: Any) -> dict[str, str]:
-        return {"path": str(event.path), "target": str(event.target), "post": event.post}
-
-
-def _runner(args: argparse.Namespace) -> _Exec | None:
-    """`--exec`'s command, read from the flags; None without `--exec`."""
-    command = getattr(args, "exec", None)
-    return _Exec(command, quiet=args.json) if command is not None else None
+    text = args.exec
+    if text is None:
+        return None
+    lexer = shlex.shlex(text, posix=True)
+    lexer.whitespace_split = True
+    if os.name == "nt":
+        lexer.escape = ""
+    try:
+        argv = list(lexer)
+    except ValueError as error:
+        raise flnd.UsageError(f"--exec: {error}: {text!r}") from None
+    if not argv:
+        raise flnd.UsageError("--exec needs a command", hint="--exec 'echo {path}'")
+    if shutil.which(argv[0]) is None:
+        raise flnd.UsageError(f"--exec: {argv[0]}: no such program",
+                              hint="give a program on PATH, or its full path")
+    return argv
 
 
 def _login(error: BaseException) -> bool:

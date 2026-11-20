@@ -133,6 +133,7 @@ class Flnd:
     def get(
         self, *targets: str | Target, limit: int | None = None, when: str | None = None,
         dry: bool = False, folder: str | None = None,
+        exec: Sequence[str] | None = None,
     ) -> Run:
         """Run the targets: get what they have that isn't saved, and follow them.
 
@@ -151,13 +152,15 @@ class Flnd:
             folder: a relative folder template under `media/<plugin>/` (`"example_handle/tagged"`,
                 `"{target}/{date}"`, `"{query}"`), overriding plugin, route, category and config
                 folder templates; None uses each target's own folder.
+            exec: a program and arguments run for each saved file, as `[defaults] exec` does
+                (`["cp", "{path}", "/backup"]`); None uses the user file's.
 
         Returns:
             The `Run`, not started yet: iterate it, or call `wait()`.
 
         Raises:
-            UsageError: a target, category, `when`, `limit` or `folder` is wrong, or the home's
-                config.toml is.
+            UsageError: a target, category, `when`, `limit`, `folder` or `exec` is wrong, or the
+                home's config.toml is.
 
         Example:
             >>> import flnd
@@ -176,16 +179,16 @@ class Flnd:
             config.check_folder(folder, self._sources())
         again = bool(self._again)
         if not targets and not (limit or dry or again or folder is not None):
-            return self._run("get", lambda engine: engine.run_sync((), time=span))
+            return self._run("get", lambda engine: engine.run_sync((), time=span), exec=exec)
         named = list(targets) or [row.target for row in self.targets if row.follow]
         if not named:
-            return self._run("get", lambda engine: engine.run_sync((), time=span))
+            return self._run("get", lambda engine: engine.run_sync((), time=span), exec=exec)
         resolved = self._checked(named)
         if folder is not None:
             config.check_folder(folder, self._sources(), resolved)
         return self._run(f"get {_names(resolved)}", lambda engine: engine.run_download(
             resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again,
-            folder=folder))
+            folder=folder), exec=exec)
 
     @property
     def status(self) -> Status | None:
@@ -414,12 +417,14 @@ class Flnd:
             raise UsageError("give at least one target")
         return resolved
 
-    def _run(self, name: str, command: Any) -> Run:
+    def _run(self, name: str, command: Any, *, exec: Sequence[str] | None = None) -> Run:
         """A `Run` whose loop makes this home's engine and awaits `command` with it."""
         from flnd.engine.run import Run
 
         async def work(emit: Any, stop: Any) -> None:
-            await command(self._engine(emit, stop))
+            engine = self._engine(emit, stop)
+            engine.exec = exec
+            await command(engine)
 
         run = Run(work, name=name, closed=self._closed)
         self._runs.add(run)

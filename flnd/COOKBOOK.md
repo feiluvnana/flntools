@@ -515,9 +515,13 @@ flnd get --exec 'sh -c "echo \"$FLND_PATH\" >> saved.txt"'
 
 To use a shell's features call the shell yourself and read the environment. A mistake in CMD
 (`--exec: <error>: '<cmd>'`, `--exec needs a command`, `--exec: <program>: no such program`) is a
-usage error before anything is saved; a command that exits non-zero prints a line to standard
-error and the run goes on. With `--json` its output goes to standard error. `[defaults] exec` in
-the user file runs a command for every get the same way.
+usage error before anything is saved. The program's standard output is dropped, never kept; its
+standard error is read as it comes and only the last 4 KiB is kept, for the warning. A program
+that cannot start, exits non-zero (the warning shows the last line it wrote to standard error)
+or runs past `[defaults] exec_timeout` is a warning, and the run goes on. The program runs in
+its own process group, and the whole group is killed on the timeout and when the run stops
+(Ctrl-C). `[defaults] exec` in the user file runs a command for every get the same way; with
+both, `--exec` wins.
 
 Ctrl-C: the first stops listing and lets files in progress finish; the second stops at once and
 leaves `.part` files to resume; the third quits at once, exit 130.
@@ -790,6 +794,7 @@ or table is a warning, said once, and ignored (`[sources.<code>]` reads as `[plu
 | `sidecars` | bool | `false` | write `<file>.json` beside each file |
 | `when` | text | `""` | days a get takes, as `--when` writes them; also bounds a sync |
 | `exec` | list | none | program and arguments run per saved file; the **user file only** |
+| `exec_timeout` | int | `3600` | seconds an `exec` program may run before it is killed; 0 none |
 | `rate` | text | `"0"` | the run's speed limit (`"20 MB/s"`, `"500 KB/s"`; `"0"` off) |
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
 | `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
@@ -819,7 +824,8 @@ A plugin's own settings (its `Settings` struct) are keys of its table and reach 
 - `pace` and `limits` win over the plugin's class. A host's cap still adapts under the file's
   number.
 - `exec` in a home's file is ignored with a warning; given in a call it is a usage error:
-  `defaults.exec is read only from the user file, not from a call`.
+  `defaults.exec is read only from the user file, not from a call`. `fl.get(exec=[...])` and
+  `--exec` hand a program to one run, over the file's.
 - Gone keys: `[defaults] again`, `[vault]`, `scroll` (unknown now); `dedupe = "link"` reads as
   `true`, `"off"` as `false`, each with a warning.
 
@@ -1047,7 +1053,7 @@ Every call, and the CLI command it matches:
 | Call | Returns | Same as |
 | --- | --- | --- |
 | `flnd.open(home=None, *, again=None)` | `Flnd`, a context manager | `--home`, `--again` |
-| `fl.get(*targets, when=, limit=, dry=, folder=)` | `Run`, not started | `flnd get` |
+| `fl.get(*targets, when=, limit=, dry=, folder=, exec=)` | `Run`, not started | `flnd get` |
 | `fl.targets` / `.list(plugin=None)` | `list[Tracked]` | `flnd target list` |
 | `fl.targets.follow(*t)`, `.unfollow(*t)`, `.retry(*t)` | `list[Tracked]` | `f`, `r` in the list |
 | `fl.targets.clean(*t, media=False)` | `list[Tracked]` | `flnd target clean` |

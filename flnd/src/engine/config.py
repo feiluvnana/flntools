@@ -69,6 +69,7 @@ class Defaults(msgspec.Struct, frozen=True):
     sidecars: bool = False
     when: str = ""
     exec: tuple[str, ...] = ()
+    exec_timeout: int = 3600
     rate: str = "0"
     slowest: str = "0"
     height: int = 0
@@ -150,6 +151,7 @@ DEFAULTS = {
     "when": Key(str, 'text such as "1y", "2026" or "2026-01..2026-03", or ""', _when_ok),
     "exec": Key(tuple[str, ...], 'a list: a program and its arguments, ["<program>", ...]',
                 lambda value: all(value) and (not value or bool(value[0].strip()))),
+    "exec_timeout": Key(int, "a whole number of seconds, 0 for none", lambda value: value >= 0),
     "rate": Key(str, 'a speed such as "20 MB/s" or "500 KB/s", or "0" for off', _speed_ok),
     "slowest": Key(str, 'a speed such as "50 KB/s", or "0" for off', _speed_ok),
     "height": Key(int, "a whole number of pixels, 0 for the best", lambda value: value >= 0),

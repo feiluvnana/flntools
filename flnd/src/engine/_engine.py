@@ -122,6 +122,8 @@ class Engine:
         # Where the snapshots go (`run.state`), at once and never awaited.
         self._shown: Callable[[Any], Any] = emit or (lambda state: None)
         self.stop = stop
+        # `--exec`'s program for a run's saved files; the user file's `exec` when None.
+        self.exec: Sequence[str] | None = None
         # The `runs` row of the command going on, which its failures name; None between them.
         self.run: int | None = None
         # The live counts of the command going on, which `run.state` is made from.
@@ -791,7 +793,7 @@ class Engine:
         try:
             settings = RunShared(home=self.home, db=db, run=None if dry else self.run,
                                  stop=stop, dry=dry, emit=self.emit, resolve=self._one,
-                                 tally=self.tally, config=found)
+                                 tally=self.tally, config=found, exec=self.exec)
             settings.claims = crawl.Claims()
             runner = _Runner(self, settings)
             runner.worked = await _off(_worked, db)

@@ -12,10 +12,12 @@ import mimetypes
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import threading
+import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -59,6 +61,8 @@ CANDIDATES = 8
 SIDECAR = ".json"
 # `exec`'s placeholders, filled in one pass, so a value holding `{post}` stays literal.
 PLACEHOLDER = re.compile(r"\{(path|target|post)\}")
+# How much of a program's stderr is kept, for the warning's last line.
+EXEC_TAIL = 4096
 # The kind of an API 2 file named by a stem (5.3): its extension is what its bytes are, else
 # what its `Content-Type` names, else its URL's, else none; the planned name may hold the URL's.
 STEM = "stem"
@@ -462,8 +466,9 @@ class Saver:
         run: the run's id in `runs`, for failures; None outside a run.
         dedupe: whether a file whose bytes are saved already becomes a hard link to them.
         sidecars: whether a file with `meta` gets `<name>.json`.
-        exec: the program and arguments to run after each saved file, read only from the
-            user's own config; None runs nothing.
+        exec: the program and arguments to run after each saved file, from the user's own
+            config or `--exec`; None runs nothing.
+        exec_timeout: seconds a program may run before it is killed; 0 for no limit.
         stop: the run's second Ctrl-C, which a plugin's `fetch` function stops at when it
             next reports its progress; None never stops it.
         tally: the run's live counts (`flnd.engine.run.Tally`); None counts nothing.
@@ -473,8 +478,9 @@ class Saver:
     def __init__(self, db: store.Store, scheduler: jobs.Scheduler,
                  emit: Callable[[Any], Awaitable[None]], *,
                  run: int | None = None, dedupe: bool = True, sidecars: bool = True,
-                 exec: Sequence[str] | None = None, stop: threading.Event | None = None,
-                 tally: Any = None, sample: Callable[[Error], None] | None = None) -> None:
+                 exec: Sequence[str] | None = None, exec_timeout: float = 3600,
+                 stop: threading.Event | None = None, tally: Any = None,
+                 sample: Callable[[Error], None] | None = None) -> None:
         if exec is not None and (not isinstance(exec, (list, tuple)) or not exec
                                  or not all(isinstance(arg, str) for arg in exec)):
             raise UsageError("exec must be a list: the program, then its arguments",
@@ -482,6 +488,7 @@ class Saver:
         self.store, self.scheduler, self.run = db, scheduler, run
         self.emit = sink(emit)
         self.dedupe, self.sidecars, self.exec, self.stop = dedupe, sidecars, exec, stop
+        self.exec_timeout = exec_timeout
         self.tally, self.sample = tally, sample
         self.done = _Done()
         # The pairs of devices (saved file's, new file's) found unable to hard-link.
@@ -1084,7 +1091,8 @@ class Saver:
             argv = self.exec
 
             async def work() -> None:
-                await self.scheduler.on(Kind.EXEC, _exec, argv, path, item.target, item.post)
+                await self.scheduler.on(Kind.EXEC, _exec, argv, path, item.target, item.post,
+                                        self.exec_timeout, self.stop)
             await self.scheduler.run(Job(kind=Kind.EXEC, work=work, plugin=plugin,
                                          target=str(item.target)))
 
@@ -1140,7 +1148,8 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     found, db = await asyncio.to_thread(_opened, settings)
     defaults = found.defaults
     saver = Saver(db, scheduler, settings.emit, run=settings.run, dedupe=defaults.dedupe,
-                  sidecars=defaults.sidecars, exec=defaults.exec or None, stop=settings.stop.now,
+                  sidecars=defaults.sidecars, exec=settings.exec or defaults.exec or None,
+                  exec_timeout=defaults.exec_timeout, stop=settings.stop.now,
                   tally=settings.tally, sample=lambda error: sampled(settings, error))
     settings.saver = saver
     try:
@@ -1236,22 +1245,68 @@ def _extract(path: Path, password: str | None) -> Path:
     return files.extract(path, password=password)
 
 
-def _exec(argv: Sequence[str], path: Path, target: Target, post: str) -> None:
-    """Run the user's program for a saved file, with no shell; a failure is a warning."""
+def _exec(argv: Sequence[str], path: Path, target: Target, post: str, timeout: float,
+          stop: threading.Event | None) -> None:
+    """Run the user's program for a saved file, with no shell; a failure is a warning.
+
+    stdout is dropped and stderr keeps its last `EXEC_TAIL` bytes.
+    """
     values = {"path": str(path), "target": str(target), "post": post}
     filled = [PLACEHOLDER.sub(lambda found: values[found[1]], arg) for arg in argv]
     env = {**os.environ, "FLND_PATH": values["path"], "FLND_TARGET": values["target"],
            "FLND_POST": post}
+    # A group of its own, so the timeout and a stop kill what the program started too.
+    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+             else {"start_new_session": True})
     try:
-        done = subprocess.run(filled, env=env, stdin=subprocess.DEVNULL, capture_output=True,
-                              check=False)
+        proc = subprocess.Popen(filled, env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, **group)
     except OSError as error:
         ui.warn("exec {program}: {error}", program=argv[0], error=error)
         return
-    if done.returncode:
-        said = done.stderr.decode("utf-8", "replace").strip().splitlines()
+    tail = bytearray()
+
+    def read() -> None:
+        while chunk := proc.stderr.read1(EXEC_TAIL):
+            tail[:] = (tail + chunk)[-EXEC_TAIL:]
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    deadline = time.monotonic() + timeout if timeout else float("inf")
+    while (code := _wait(proc)) is None:
+        if stop is not None and stop.is_set():
+            _kill(proc)
+            raise Stopped("stopped while a program ran")
+        if time.monotonic() > deadline:
+            _kill(proc)
+            proc.wait()
+            ui.warn("exec {program}: killed after {seconds:g} s for {name}", program=argv[0],
+                    seconds=timeout, name=path.name)
+            return
+    reader.join(1)
+    if code:
+        said = tail.decode("utf-8", "replace").strip().splitlines()
         ui.warn("exec {program}: exit {code} for {name}{said}", program=argv[0],
-                code=done.returncode, name=path.name, said=f": {said[-1]}" if said else "")
+                code=code, name=path.name, said=f": {said[-1]}" if said else "")
+
+
+def _wait(proc: subprocess.Popen[bytes]) -> int | None:
+    """The program's exit code, or None when it still runs after a tenth of a second."""
+    try:
+        return proc.wait(0.1)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def _kill(proc: subprocess.Popen[bytes]) -> None:
+    """Kill the program and everything it started."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        proc.kill()
 
 
 def _place(held: files.Part, item: Item, received: Mapping[str, str]) -> None:
