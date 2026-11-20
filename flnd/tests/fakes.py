@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import io
+import posixpath
 import unittest
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -27,7 +28,7 @@ from flnd.engine import auth as _auth
 from flnd.engine import run as _run
 from flnd.engine import store as _store
 from flnd.engine._engine import Results, _carried
-from flnd.engine.crawl import Options
+from flnd.engine.crawl import Options, place
 from flnd.engine.events import Failed, Phase, State
 from flnd.plugin import Post, Target
 from flnd.ui.log import ui
@@ -35,7 +36,8 @@ from flnkit import clock as _time
 from flnkit import cookies as _cookies
 from flnkit import net as _net
 
-__all__ = ["CDN", "Engine", "EngineCase", "download", "drive", "fetch", "history", "login_cookies",
+__all__ = ["CDN", "Engine", "EngineCase", "download", "drive", "fetch", "filed", "history",
+           "login_cookies",
            "make_plugin",
            "noise", "own_login", "run_targets", "sign_in", "targets", "vaulted"]
 
@@ -270,6 +272,18 @@ def own_login(start=None, *, methods=("qr",), check=None, whoami=None):
 
     return type("OwnLogin", (plugin.Login,), {"methods": methods, "start": started,
                                               "check": checked, "whoami": named})()
+
+
+def filed(plugin_class, link, found):
+    """The folder under `media/<code>/` the engine files a single link's collected post in."""
+    target = plugin_class.resolve(link)
+    route = next(known for known in plugin_class.routes if known.kind == target.kind)
+    named = {c.name: c for known in plugin_class.routes for c in known.categories}
+    # The crawl reads a post's category only with its owner.
+    post = found.post if found.post.owner else found.post.replace(category=None)
+    placed = place(plugin_class(), post, post.files, category=named.get(post.category),
+                   route=route, target=target)
+    return posixpath.dirname(placed[0].path)
 
 
 class EngineCase(unittest.TestCase):

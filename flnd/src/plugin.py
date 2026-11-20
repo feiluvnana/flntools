@@ -516,6 +516,10 @@ class Post:
         listed: the date its listing is ordered by; None means `date`.
         headers: headers for downloading each of its files, such as a CDN's Referer.
         pinned: a post the site shows above its date order; saved like any other.
+        owner: whose post it is, as a user name; read only on a `single` route, which files it
+            under `media/<code>/<owner>/`. None: the post's id names the folder.
+        category: its category by the site's data (`posts`, `reels`); read only on a `single`
+            route, with an `owner`.
         **fields: the site's own fields (`caption`, `title`, ...), for templates and sidecars.
 
     Raises:
@@ -530,13 +534,15 @@ class Post:
     _listed: DateLike
     headers: Mapping[str, str] | None
     pinned: bool
+    owner: str | None
+    category: str | None
     fields: Mapping[str, Any]
 
     def __init__(self, id: str | int,
                  files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]] = (), *,
                  date: DateLike = None, listed: DateLike = None,
                  headers: Mapping[str, str] | None = None, pinned: bool = False,
-                 **fields: Any):
+                 owner: str | None = None, category: str | None = None, **fields: Any):
         if id is None or not str(id).strip():
             raise PluginError(f"Post({id!r}): a post needs an id, the one the site gives it")
         if not isinstance(pinned, bool):
@@ -556,7 +562,8 @@ class Post:
         # Frozen: its own constructor is the one place that sets its fields.
         for name, value in (("id", str(id)), ("files", files), ("date", date),
                             ("_listed", listed), ("headers", _frozen(headers)),
-                            ("pinned", pinned),
+                            ("pinned", pinned), ("owner", str(owner) if owner else None),
+                            ("category", str(category) if category else None),
                             ("fields", MappingProxyType(dict(fields)))):
             object.__setattr__(self, name, value)
 
@@ -571,12 +578,14 @@ class Post:
         return callable(self.files)
 
     def replace(self, **changes: Any) -> Post:
-        """A copy with `id`, `files`, `date`, `listed`, `headers`, `pinned` or fields changed."""
+        """A copy with `id`, `files`, `date`, `listed`, `headers`, `pinned`, `owner`, `category`
+        or fields changed."""
         return Post(
             changes.pop("id", self.id), changes.pop("files", self.files),
             date=changes.pop("date", self.date), listed=changes.pop("listed", self._listed),
             headers=changes.pop("headers", self.headers),
-            pinned=changes.pop("pinned", self.pinned), **{**self.fields, **changes},
+            pinned=changes.pop("pinned", self.pinned), owner=changes.pop("owner", self.owner),
+            category=changes.pop("category", self.category), **{**self.fields, **changes},
         )
 
 

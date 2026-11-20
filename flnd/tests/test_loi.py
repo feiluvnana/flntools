@@ -446,7 +446,8 @@ class EngineTest(EngineCase):
         self.routes.update({
             f"{API}lois/5930": _net.reply(200, json={"data": {**POST, "images": []}}),
             f"{API}user/info": _net.reply(200, json=USER)})
-        self.folder = self.target_dir("loi", "5930") / FOLDER
+        # Its template starts with `{author}`: rooted at `media/loi/`, no target folder.
+        self.folder = self.target_dir("loi", "") / FOLDER
 
     def test_a_retried_request_is_signed_again_and_the_archive_is_saved_as_sent(self):
         attempts = []

@@ -15,6 +15,7 @@ import unittest
 from unittest import mock
 
 import no_profiles  # noqa: F401
+from fakes import filed
 
 from flnd.errors import Blocked, Changed, Hidden, NetworkError, NotFound, PluginError, SiteError
 from flnd.plugin import Range
@@ -231,6 +232,16 @@ class NamesAndKeysTest(unittest.TestCase):
             with self.subTest(post=item["id"]):
                 ctx = embedded(item)
                 self.assertEqual(pairs(collect(TikTok, f"tik:{item['id']}", ctx=ctx)), expected)
+
+    def test_a_post_link_is_filed_by_its_creator_and_kind(self):
+        link, creator = f"{API}/@example_creator/video/{VIDEO}", {"author": {"uniqueId": "me"}}
+        rows = [(video(VIDEO, f"{CDN}/v", **creator), "me/videos"),
+                (photo(VIDEO, f"{CDN}/p", **creator), "me/images"),
+                (video(VIDEO, f"{CDN}/v"), f"{VIDEO}/videos")]
+        for item, folder in rows:
+            with self.subTest(folder=folder):
+                [found] = collect(TikTok, link, ctx=embedded(item))
+                self.assertEqual(filed(TikTok, link, found), folder)
 
     def test_a_profile_with_every_category_once_opened(self):
         ctx = fake(feeds=FEEDS)

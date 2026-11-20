@@ -456,7 +456,8 @@ def post_of(ctx: Ctx, item: dict[str, Any], category: str) -> Post:
     urls = item["urls"]
     file = File(urls[0], name=name) if len(urls) == 1 else File(mirrors=urls, name=name)
     return Post(item["id"], [file], date=item["date"], pinned=item["pinned"],
-                headers=cdn_headers(ctx.cookies), part=part, album=album, idx=idx)
+                headers=cdn_headers(ctx.cookies), owner=item.get("owner"), category=category,
+                part=part, album=album, idx=idx)
 
 
 def cdn_headers(cookies: Mapping[str, str]) -> dict[str, str]:
@@ -508,7 +509,8 @@ def items_of(data: Any, now: float) -> list[dict[str, Any]]:
 
     Returns:
         Dicts with `id`, `date` (Unix seconds, or None), `playlist` (its name or None),
-        `pinned` (whether it sits pinned at the top of the profile), `urls`
+        `pinned` (whether it sits pinned at the top of the profile), `owner` (its author's
+        `uniqueId`, or None), `urls`
         (the file's CDN addresses, best first), `kind` ("video" or "image") and `idx`: 0 for a
         video, else the photo's place from 1. A photo post has `imagePost`, and its video, if
         any, is never read.
@@ -525,7 +527,8 @@ def items_of(data: Any, now: float) -> list[dict[str, Any]]:
         common = {"id": item_id, "date": stamp_of(raw, item_id, now),
                   "playlist": dig(raw, "playlist.name || playlist_info.name"),
                   # A post pinned to the profile's top; the mark is unconfirmed live.
-                  "pinned": bool(raw.get("isPinnedItem"))}
+                  "pinned": bool(raw.get("isPinnedItem")),
+                  "owner": dig(raw, "author.uniqueId")}
         images = dig(raw, "imagePost.images")
         if images:
             for idx, image in enumerate(images, 1):

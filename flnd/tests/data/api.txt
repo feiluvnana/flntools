@@ -410,7 +410,8 @@ flnd.plugin.PluginError(flnd.Error)
 flnd.plugin.PluginError.hint: attribute
 flnd.plugin.PluginError.retryable: attribute
 flnd.plugin.PluginError.target: attribute
-flnd.plugin.Post(id: str | int, files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]] = (), *, date: DateLike = None, listed: DateLike = None, headers: Mapping[str, str] | None = None, pinned: bool = False, **fields: Any)
+flnd.plugin.Post(id: str | int, files: Sequence[File] | Callable[[], Awaitable[Sequence[File]]] = (), *, date: DateLike = None, listed: DateLike = None, headers: Mapping[str, str] | None = None, pinned: bool = False, owner: str | None = None, category: str | None = None, **fields: Any)
+flnd.plugin.Post.category: field -> str | None
 flnd.plugin.Post.date: field -> DateLike
 flnd.plugin.Post.fields: field -> Mapping[str, Any]
 flnd.plugin.Post.files: field -> tuple[File, ...] | Callable[[], Awaitable[Sequence[File]]]
@@ -418,6 +419,7 @@ flnd.plugin.Post.headers: field -> Mapping[str, str] | None
 flnd.plugin.Post.id: field -> str
 flnd.plugin.Post.lazy: property -> bool
 flnd.plugin.Post.listed: property -> DateLike
+flnd.plugin.Post.owner: field -> str | None
 flnd.plugin.Post.pinned: field -> bool
 flnd.plugin.Post.replace(**changes: Any) -> Post
 flnd.plugin.Range(since: datetime.date | None = None, until: datetime.date | None = None)

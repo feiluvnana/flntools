@@ -206,8 +206,12 @@ class Twitter(Plugin):
         # A protected tweet's own reason waits for a live check; until then it is NotFound.
         if not isinstance(tweet, dict) or not unwrap(tweet).get("legacy"):
             raise NotFound(f"twt: tweet {tweet_id} isn't there, or isn't visible to this login")
-        for post in tweet_posts(tweet, "posts", None, part=""):
-            yield post
+        # The folder is its category's: a reply is filed under `replies`, any other as `posts`.
+        category = "replies" if unwrap(tweet)["legacy"].get("in_reply_to_status_id_str") \
+            else "posts"
+        owner = dig(unwrap(tweet), AUTHOR)
+        for post in tweet_posts(tweet, "posts", None, part=category if owner else ""):
+            yield post.replace(owner=owner, category=category)
 
     @route("twt?{query}")
     async def search(self, ctx: Ctx, query: str) -> AsyncIterator[Target]:

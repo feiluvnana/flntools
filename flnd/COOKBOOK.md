@@ -373,8 +373,8 @@ flnd get "instagram.com/example_user|tagged" # a link takes a list the same way
 ## Folders
 
 Each target has a folder, `media/<code>/<value>/`, where `<value>` is the target's value made
-safe as a file name (a single post's `post/`, `video/`, `photo/` or `watch/` is left out:
-`ins:post/C1abc` is `media/ins/C1abc/`). Under it a file goes where its plugin's `folder`
+safe as a file name. (A single post is the exception, below.) Under it a file goes where its
+plugin's `folder`
 template puts it, named by its `filename` template, with the extension its content calls for:
 
 ```text
@@ -383,10 +383,34 @@ media/ins/example_user/highlights/Travel/2026-01-02_1234567890.mp4
 ```
 
 A template is picked for each file: the category's own, else the route's, else the plugin's.
-A single post's files go in its own target folder, `media/<code>/<value>/`, with the plugin's
-folder template over no category (so `ins:` posts sit directly in it). A file's modified time is
+A file's modified time is
 its post's day at noon UTC. A file listed in two categories of one target is saved once, and
 the second gets a link ([For developers](#for-developers)).
+
+### A single post
+
+A single post (a link, or `<plugin>:<kind>/<id>`) goes in its owner's folder, by the category the
+site's data gives it, with that category's own `folder` template, so `{category}` and a
+`--folder` list entry for the category apply under `media/<code>/<owner>/` (`<owner>` made safe
+as a file name):
+
+| post | category | folder |
+| --- | --- | --- |
+| `ins` post | `posts` | `media/ins/<username>/posts/` |
+| `ins` reel (a clip) | `reels` | `media/ins/<username>/reels/` |
+| `twt` tweet; a reply | `posts`; `replies` | `media/twt/<handle>/posts/`; `.../replies/` |
+| `tik` video; photo post | `videos` | `media/tik/<user>/videos/`; `.../images/` |
+| `fbk` video, reel, photo | `videos`, `reels`, `photos` | `media/fbk/<owner>/<category>/` |
+| `fbk` permalink | `posts` | `media/fbk/<owner>/posts/` |
+| `loi` post | `archive`, `photo` | `media/loi/<author>/<post> <title>/` |
+
+The owner is the post's: `user.username`, `screen_name`, `uniqueId`, a Facebook vanity name else
+its id. With no owner in the data the post goes where it always did, `media/<code>/<post id>/`,
+with no category folder, and a log line says so. `loi`'s template starts with `{author}`, so
+its root is `media/loi/`. A search's hits ignore all this: they go to the search's `--folder`
+([A search needs a folder](#a-search-needs-a-folder)). Files saved earlier stay where they are,
+and keys are unchanged, so a post saved by link is skipped, and found in place, when its
+profile is synced later.
 
 ### `--folder`
 
@@ -978,7 +1002,7 @@ media/ins/example_user/highlights/Travel/2026-01-02_1234567890.mp4
   `--when` is sent as `since:` and `until:`. When X's cursor ends early, flnd opens a follow-up
   window with `max_id:<oldest id - 1>`; up to 3 empty pages in a row are scrolled past; a 429
   holds that operation's bucket until X's reset. Each tweet with files is got as a `post`
-  target in `media/twt/<tweet id>/`; `--folder` collapses them. X has no tagged tab: use
+  target, which goes to the search's `--folder`. X has no tagged tab: use
   `twt?@example_handle -from:example_handle`. Dropping `filter:media` is more complete.
 - **Login:** cookie `auth_token` (needed in practice: a logged-out browser lands on the login
   wall and the job fails); API calls also send `ct0` back as the CSRF token.
@@ -1071,9 +1095,9 @@ media/tlg/examplechannel/Example_Channel/file/2026-01-02_1235_report.pdf
   download links arrive AES-encrypted.
 - **Categories:** `archive` NF (info.md with links, the archives) then `photo` NF (previews;
   info.md without links only when `archive` is not wanted), both own.
-- **Folder:** `{author}/{post} {title}/{part}` (`author` is the post's category, `misc` when
-  none; `part` is `images` for previews). **Filename:** the plugin's: `01.jpg`, `02.jpg`,
-  archives keep their URL's name. **Key:** `{path}` (`loi:<path>`).
+- **Folder:** `{author}/{post} {title}/{part}`, from `media/loi/` (`author` is the post's
+  category, `misc` when none; `part` is `images` for previews). **Filename:** the plugin's:
+  `01.jpg`, `02.jpg`, archives keep their URL's name. **Key:** `{path}` (`loi:<path>`).
 - **Login:** cookie `access-token` (optional; sent as a Bearer token). Archives need a VIP
   account; without a login `archive` warns and writes info.md without links.
 - **Limits and walls:** pace 0.5. Daily archive quota by VIP level: 15, 25, 40, 60 (SVIP
@@ -1085,8 +1109,8 @@ media/tlg/examplechannel/Example_Channel/file/2026-01-02_1235_report.pdf
   detected, only "no download links".
 
 ```text
-media/loi/1234567890/example_author/1234567890_Example_Title/info.md
-media/loi/1234567890/example_author/1234567890_Example_Title/images/01.jpg
+media/loi/example_author/1234567890_Example_Title/info.md
+media/loi/example_author/1234567890_Example_Title/images/01.jpg
 ```
 
 ### mht (mimihentai)
@@ -1333,7 +1357,8 @@ The contract:
 - `unsupported` (dict): `{pattern: reason}`: a link refused with the reason
 - `walls` (tuple): login-wall paths, matched as whole segments
 - `@route(patterns, single=, discovers=, shown=, folder=, newest_first=)` (method): reads one kind
-  of target
+  of target; a `single` route's `Post(owner=, category=)` file it in the owner's folder
+  ([A single post](#a-single-post))
 - `@route.category(own=, url=, newest_first=, folder=, key=)` (method): one part of a route's target
 - `ctx.fetch`, `ctx.pages(req, cursor=, send=)`, `ctx.open`, `ctx.pause`, `ctx.hold` (): the run's
   requests

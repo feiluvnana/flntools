@@ -101,6 +101,8 @@ TEMPORARILY_BLOCKED = "Facebook says you've been temporarily blocked"
 # 2026-11-12: a comment list carries its own `page_info`, deeper than the tab's; the tab's sits
 # at most this many objects under `data` (data, node, connection, page_info).
 PAGE_INFO_DEPTH = 3
+# A media node's owner by vanity name (unconfirmed live).
+OWNER_NAME = "owner.vanity || video_owner.vanity"
 
 
 class Facebook(Plugin):
@@ -238,7 +240,7 @@ class Facebook(Plugin):
         post = post.removeprefix("post/")
         owner, _, story = post.partition("_")
         url = f"{SITE}/permalink.php?story_fbid={story}&id={owner}"
-        async for found in read_single(ctx, url, owner=owner):
+        async for found in read_single(ctx, url, owner=owner, category="posts"):
             yield found
 
     @route(
@@ -439,9 +441,9 @@ async def read_tab(ctx: Ctx, profile: Mapping[str, Any], category: str) -> Async
             yield post
 
 
-async def read_single(ctx: Ctx, url: str, *, wanted: str | None = None,
-                      owner: str | None = None) -> AsyncIterator[Post]:
-    """The media of one video, photo or post page, in the target's own folder.
+async def read_single(ctx: Ctx, url: str, *, wanted: str | None = None, owner: str | None = None,
+                      category: str | None = None) -> AsyncIterator[Post]:
+    """The media of one video, photo or post page, in its owner's folder.
 
     A video's or photo's page also shows suggestions, so only the media whose id is `wanted`
     is kept; a post's page keeps every media `owner` owns.
@@ -461,7 +463,10 @@ async def read_single(ctx: Ctx, url: str, *, wanted: str | None = None,
                        hint="it may be private or deleted; if you can see it, "
                             "run flnd auth login fbk")
     for item in found:
-        yield post_of(item, "")
+        # Its folder is its category's, found in the data; a post's page files all as `posts`.
+        item = item._replace(owner=item.owner or owner)
+        kind = category or post_of(item, "").category
+        yield post_of(item, kind if item.owner else "", category=kind)
 
 
 def _place(url: str) -> tuple[str, str]:
@@ -613,6 +618,9 @@ class Item(NamedTuple):
     album: str | None = None
     # A DASH video's audio stream, joined with it.
     audio: str | None = None
+    # Its owner's vanity name, else id (None: unnamed); and whether its node's type says reel.
+    owner: str | None = None
+    reel: bool = False
 
 
 def media_posts(result: Any, tab: str, *, album: str | None = None, owner: str | None = None,
@@ -640,14 +648,20 @@ def media_posts(result: Any, tab: str, *, album: str | None = None, owner: str |
         yield post_of(item, part, album=title)
 
 
-def post_of(item: Item, part: str, *, album: str | None = None) -> Post:
+def post_of(item: Item, part: str, *, album: str | None = None,
+            category: str | None = None) -> Post:
     """One item as a post of one file, with the CDN's Referer; the engine names its extension
-    from the content (the CDN converts an image to the format its `stp=dst-<format>` names)."""
+    from the content (the CDN converts an image to the format its `stp=dst-<format>` names).
+
+    Its `owner` and `category` are read only for a single link."""
+    if category is None:
+        category = "photos" if item.kind == "image" else "reels" if item.reel else "videos"
     if item.audio is not None or isinstance(item.url, str):
         file = File(item.url, audio=item.audio)
     else:
         file = File(mirrors=item.url)
-    return Post(item.id, [file], date=item.date, headers=CDN_HEADERS, part=part, album=album)
+    return Post(item.id, [file], date=item.date, headers=CDN_HEADERS, owner=item.owner,
+                category=category, part=part, album=album)
 
 
 def image_extension(url: str) -> str:
@@ -695,7 +709,7 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
     owned_by = dig(data, "owner.id || video_owner.id")
     if item is not None and item.id not in seen and not (owner and owned_by and owned_by != owner):
         seen.add(item.id)
-        yield item
+        yield item._replace(owner=dig(data, OWNER_NAME) or owned_by)
     if item is not None and item.kind == "video":
         return
     for key, value in data.items():
@@ -710,8 +724,9 @@ def video_item(node: dict, stamp: Any) -> Item | None:
     if not ("Video" in typename or "Reel" in typename or "progressive_urls" in node):
         return None
     video = str(node.get("id") or node.get("video_id") or "")
+    reel = "Reel" in typename
     if video and (joined := File.dash(dig(node, MANIFEST))) is not None:
-        return Item(video, joined.url or "", "video", stamp, audio=joined.audio)
+        return Item(video, joined.url or "", "video", stamp, audio=joined.audio, reel=reel)
     progressive = [entry for entry in dig(node, PROGRESSIVE) or [] if isinstance(entry, dict)]
     hd = [entry for entry in progressive if dig(entry, "metadata.quality") == "HD"]
     found = ([entry.get("progressive_url") for entry in hd + progressive]
@@ -719,7 +734,7 @@ def video_item(node: dict, stamp: Any) -> Item | None:
     urls = tuple(dict.fromkeys(url for url in found if isinstance(url, str) and url))
     if not video or not urls:
         return None
-    return Item(video, urls[0] if len(urls) == 1 else urls, "video", stamp)
+    return Item(video, urls[0] if len(urls) == 1 else urls, "video", stamp, reel=reel)
 
 
 def photo_item(node: dict, stamp: Any) -> Item | None:

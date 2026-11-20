@@ -8,6 +8,7 @@ import contextvars
 import dataclasses
 import datetime
 import inspect
+import shutil
 import threading
 import unittest
 from unittest import mock
@@ -54,6 +55,7 @@ from flnkit import dig as kit_dig
 from flnkit import html
 from flnkit import net as _net
 from flnkit.browser import Page
+from flnkit.text import filename
 
 
 async def listing(self, ctx, user):
@@ -490,9 +492,14 @@ class TypesTest(unittest.TestCase):
             with self.subTest(id=empty), self.assertRaisesRegex(PluginError, "a post needs an id"):
                 Post(empty)
         self.assertEqual(Post(0).id, "0")
-        for field in ("post", "category", "num", "plugin"):
+        # `category` is a Post argument now (read on a single route), no longer a refused field.
+        for field in ("post", "num", "plugin"):
             with self.subTest(field), self.assertRaisesRegex(PluginError, f"{field} is the"):
                 Post("1", **{field: "x"})
+        single = Post("1", owner="example_user", category="posts")
+        self.assertEqual((single.owner, single.category), ("example_user", "posts"))
+        self.assertEqual(single.replace(id="2").category, "posts")
+        self.assertEqual((Post("1").owner, Post("1").category), (None, None))
 
     def test_file_takes_exactly_one_source(self):
         async def fetch(part):
@@ -1156,6 +1163,67 @@ class Saving(Plugin):
     @post.category(own=False)
     async def archive(self, ctx, profile):
         yield Post(profile["post"], [File(f"{CDN_URL}/{profile['post']}.zip", name="a.zip")])
+
+
+class Owned(Plugin):
+    """A profile and single posts that name their owner and category."""
+
+    code = "exo"
+    name = "Owned"
+    api = API
+    domains = ("owned.example",)
+    filename = "{post}_{num}"
+    # Set by each test: who owns the single post, and its category.
+    who, kind = "example_user", "posts"
+
+    @route("owned.example/p/{post:\\w+}", single=True)
+    async def post(self, ctx, post):
+        yield Post(post, [File(f"{CDN_URL}/p1.jpg")], owner=self.who, category=self.kind)
+
+    @route("exo:{user}")
+    async def user(self, ctx, user):
+        return {"user": user}
+
+    @user.category
+    async def posts(self, ctx, profile):
+        yield Post("p1", [File(f"{CDN_URL}/p1.jpg")])
+
+    @user.category(own=False)
+    async def reels(self, ctx, profile):
+        return
+        yield
+
+
+class OwnerTest(EngineCase):
+    def saved(self, target, who="example_user", kind="posts", **options):
+        self.routes[f"{CDN_URL}/p1.jpg"] = _net.reply(200, content=JPEG)
+        with mock.patch.multiple(Owned, who=who, kind=kind):
+            files = self.run_engine(Owned, targets=[target], options=Options(**options))
+        folder = self.home / "media" / "exo"
+        return files, sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*")
+                             if path.is_file() and not path.name.endswith(".json"))
+
+    def test_a_single_post_goes_to_its_owners_category_folder(self):
+        link = "https://owned.example/p/p1"
+        rows = [  # owner, category, options, where it goes
+            ("example_user", "posts", {}, "example_user/posts/p1_0.jpg"),
+            ("example_user", "reels", {"folder": "reels:clips/{category}"},
+             "example_user/clips/reels/p1_0.jpg"),
+            ("example_user", "posts", {"folder": "reels:clips"}, "example_user/posts/p1_0.jpg"),
+            ("x/y", "posts", {}, f"{filename('x/y')}/posts/p1_0.jpg"),
+            (None, "posts", {}, "p1/p1_0.jpg"),
+        ]
+        for who, kind, options, expected in rows:
+            with self.subTest(who=who, options=options):
+                files, found = self.saved(link, who, kind, **options)
+                self.assertEqual(found, [expected])
+                self.assertEqual("no owner found" in "".join(self.lines()), who is None)
+                shutil.rmtree(self.home)
+
+    def test_a_post_saved_by_link_is_found_in_place_by_its_profile(self):
+        self.assertEqual(self.saved("https://owned.example/p/p1")[0], 1)
+        files, found = self.saved("exo:example_user")
+        self.assertEqual((files, found), (0, ["example_user/posts/p1_0.jpg"]))
 
 
 class EngineTest(EngineCase):

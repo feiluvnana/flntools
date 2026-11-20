@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import PurePosixPath
 
 import no_profiles  # noqa: F401
+from fakes import filed
 
 from flnd.errors import Blocked, LoginError, NotFound, SiteError
 from flnd.plugin import Range, Request, Target
@@ -248,6 +249,17 @@ class NamesAndKeysTest(unittest.TestCase):
                          [(f"{DAY}_1790_0.jpg", "1790_0"), (f"{DAY}_1790_1.mp4", "1790_1")])
         variables = json.loads(ctx.seen.requests[0][2]["params"]["variables"])
         self.assertEqual(variables["tweetId"], "1790")
+
+    def test_a_tweet_link_is_filed_by_its_handle_and_kind(self):
+        link = "https://x.com/example_handle/status/1790"
+        for kind, reply, by in (("example_handle/posts", None, "example_handle"),
+                                ("example_handle/replies", "5", "example_handle"),
+                                ("1790", None, None)):
+            with self.subTest(kind=kind):
+                found = tweet("1790", [photo("a")], reply_to=reply, by=by)
+                ctx = fake(link, routes={url("TweetResultByRestId"): tweet_result(found)})
+                [saved] = collect(Twitter, link, ctx=ctx)
+                self.assertEqual(filed(Twitter, link, saved), kind)
 
     def test_a_quoted_tweets_media_and_the_card_image_come_with_the_post(self):
         quoting = tweet("1", [photo("own")])

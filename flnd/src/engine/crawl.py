@@ -406,7 +406,7 @@ async def plan(run: PluginRun, target: Target, options: Options) -> AsyncIterato
     """
     site = _site(run, target, options.since, options.until)
     route = next(r for r in run.source.routes if r.kind == target.kind)
-    categories = {c.name: c for c in route.categories}
+    categories = {c.name: c for r in run.source.routes for c in r.categories}
     taken = 0
     try:
         async with contextlib.aclosing(posts(run.source, site, target, options)) as stream:
@@ -414,6 +414,8 @@ async def plan(run: PluginRun, target: Target, options: Options) -> AsyncIterato
                 if options.limit is not None and taken >= options.limit:
                     break
                 taken += 1
+                if options.query and not route.categories:
+                    post = _Filed.bare(post)
                 for placed in place(run.source, post, await _files(run, site, post),
                                     category=categories.get(post.category), route=route,
                                     target=target, options=options):
@@ -454,6 +456,7 @@ def place(
         category: the post's category; None for a route's own posts.
         route: the target's route, whose `folder` comes before the source's.
         target: the target, for the `{source}` and `{target}` fields; None for the source's.
+            A single post's `{target}` is its owner, else its id.
         options: the target's options, for the `{query}` field of a search's found target.
 
     Returns:
@@ -463,6 +466,11 @@ def place(
     # A category the folder value leaves out keeps its default place, under `{target}`; its
     # history key still reads the path as the default place gives it.
     fallback = _falls_back(category, options)
+    # A single post (a link) sits in its owner's folder: `{target}` is the owner, whatever
+    # template its category has; with no owner it is the post's id, where it always went.
+    owned = (_rooted(source, target, options) and not (route is not None and route.categories))
+    if owned and not fallback:
+        folder = f"{{target}}/{folder}" if folder else "{target}"
     filename, key = (_format(source, category, name) for name in ("filename", "key"))
     posted = day(post.date)
     placed: list[Placed] = []
@@ -472,6 +480,8 @@ def place(
         values = _file_values(
             source, post, num, len(files), posted, extension, target, options,
         )
+        if owned and post.owner:
+            values["target"] = post.owner
         name = _named(post, file, filename, values, extension)
         where = fill(folder, values)
         path = "/".join(part for part in (where, name) if part)
@@ -553,13 +563,16 @@ class Ledger:
         self.run, self.source, self.settings, self.site = run, run.source, run.settings, site
         self.target, self.tally, self._options = target, tally, options
         self._custom_folder = options is not None and options.folder is not None
-        self.folder = target_root(self.settings.home, target, options)
+        self.folder = target_root(self.settings.home, target, options, self.source)
         # The home's database; None for a plan with nothing to read (`flnd.dry`).
         self._db = self.settings.db
         # Told to ask again for everything: files recorded gone are asked for once more.
         self._again = options is not None and options.again
         self._route = next((r for r in self.source.routes if r.kind == target.kind), None)
         self._categories = {c.name: c for r in self.source.routes for c in r.categories}
+        # A search's hit that is a single post goes to the search's folder, not its owner's.
+        self._hit = bool(options and options.query and self._route
+                         and not self._route.categories)
         # The files the run queued, by path and key: every target's (`Claims`).
         self._queued: Claims = self.settings.claims or Claims()
         self._dates: dict[str, datetime.date] = {}
@@ -568,6 +581,9 @@ class Ledger:
         self._estimated: set[str] = set()
         self._asking = type(self.source).date is not Plugin.date
         self._link_warned = False
+        # Whether a post with no owner is yet to be told of: a single post filed by owner.
+        self._ownerless = _rooted(self.source, target, options) and not (
+            self._route is not None and self._route.categories)
         self._later: list[tuple[Path, str, str]] = []
         # The posts the `date` hook had no day for, read off the loop by `load`.
         self._asked: dict[str, float] = {}
@@ -606,6 +622,8 @@ class Ledger:
         Returns:
             What became of the post, and its files to download (empty unless `QUEUED`).
         """
+        if self._hit:
+            post = _Filed.bare(post)
         category = self._categories.get(post.category)
         first = self._first_key(post, category)
         dated, skipped = await self.run.off(self._before_files, post, category, hold)
@@ -651,6 +669,10 @@ class Ledger:
         """Place each file of `post` and queue those not held, writing inline text files now."""
         found = 0
         todo: list[_Queued] = []
+        if self._ownerless and not post.owner:
+            self._ownerless = False
+            _say(self.target, "info", "no owner found for post {post}; saved under its id",
+                 post=post.id)
         for placed in place(
             self.source, post, listed, category=category, route=self._route,
             target=self.target, options=self._options,
@@ -1646,7 +1668,8 @@ class _Kept:
             pinned = post.pinned
             # Posts are ordered by `listed`, which is `date` unless given.
             listed = day(post.listed)
-            post = _Filed(post, self.category)
+            # A single route has no categories: its post names its own, with its owner.
+            post = _Filed(post, self.category or (post.owner and post.category) or "")
             posted = day(post.date)
             if pinned:
                 self.pinned.add(post.id)
@@ -1688,6 +1711,13 @@ class _Filed:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.post, name)
+
+    @staticmethod
+    def bare(post: Any) -> Any:
+        """A single post as a search's hit: with no owner and no category of its own."""
+        if isinstance(post, _Filed) and post.category:
+            return _Filed(post.post.replace(owner=None, category=None), "")
+        return post
 
     def replace(self, **changes: Any) -> _Filed:
         """The post with `changes`, in the same category."""
@@ -2397,12 +2427,25 @@ def _fields(template: str) -> set[str]:
     }
 
 
-def target_root(home: Path, target: Target, options: Options | None = None) -> Path:
-    """Base media folder for `target`: `media/<plugin>` when `options.folder` is set, else
+def target_root(home: Path, target: Target, options: Options | None = None,
+                source: Plugin | None = None) -> Path:
+    """Base media folder for `target`: `media/<plugin>` when `options.folder` is set or the
+    target is a single post that `source` files by owner (`place` adds the owner), else
     `media/<plugin>/<target>`."""
-    if options is not None and options.folder is not None:
+    if (options is not None and options.folder is not None) or _rooted(source, target, options):
         return home / store.MEDIA / target.plugin
     return store.target_folder(home, target)
+
+
+def _rooted(source: Plugin | None, target: Target | None, options: Options | None) -> bool:
+    """Whether a single post (not a search's hit) is filed from `media/<plugin>/`: its route
+    has no categories, or its folder starts with `{author}`."""
+    if source is None or target is None or target.kind not in store.POST_KINDS or (
+            options is not None and options.query):
+        return False
+    route = next((r for r in source.routes if r.kind == target.kind), None)
+    return route is not None and (
+        not route.categories or _plugin_folder(source, route, None).startswith("{author}"))
 
 
 def checked_dest(root: Path, relative: str, *, check: bool = False) -> Path:

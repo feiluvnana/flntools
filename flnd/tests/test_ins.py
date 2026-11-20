@@ -760,6 +760,21 @@ class PostTest(unittest.TestCase):
         self.assertEqual(fetched(ctx), [f"{SITE}/api/v1/media/{PK['R1']}/info/", GRAPHQL])
         self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/reels/", f"{SITE}/p/RP2/"])
 
+    def test_a_post_link_is_filed_by_its_owner_and_kind(self):
+        rows = [("https://www.instagram.com/p/SINGLE/", {}, "example_creator/posts"),
+                ("https://www.instagram.com/reel/SINGLE/", {"product_type": "clips"},
+                 "example_creator/reels"),
+                # No owner in the data: the post's id names the folder, as before.
+                ("https://www.instagram.com/p/SINGLE/", {"user": {}}, "SINGLE")]
+        for link, extra, folder in rows:
+            with self.subTest(link=link, extra=extra):
+                media = {"code": "SINGLE", "taken_at": STAMP, **image("https://cdn.example/a.jpg"),
+                         "user": {"username": "example_creator"}, **extra}
+                feeds = [Sent(GRAPHQL, {"data": {"xig_fetch_media": media}})]
+                ctx = fake(routes={}, pages={f"{SITE}/p/SINGLE/": FakePage("", feeds=feeds)})
+                [found] = run(link, ctx=ctx)
+                self.assertEqual(fakes.filed(Instagram, link, found), folder)
+
 
 class MeTest(unittest.TestCase):
     URL = f"{SITE}/api/v1/friendships/{{}}/following/"

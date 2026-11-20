@@ -1462,7 +1462,7 @@ async def _log_dry(
                 ui.info("{target}", target=str(item))
                 await emit(Planned(item, "", None, "new"))
         return
-    folder = crawl.target_root(run.settings.home, target, options)
+    folder = crawl.target_root(run.settings.home, target, options, run.source)
     db = run.settings.db
     shown: set[str] = set()
     async with contextlib.aclosing(crawl.plan(run, target, options)) as planned:

@@ -708,9 +708,11 @@ async def story_page(ctx: Ctx, url: str, where: str) -> list[Post]:
 # ---------------------------------------------------------------------------------------------
 
 def post_of(media: dict) -> Post:
-    """A post with its files read: the engine reads `taken_at` as its date."""
+    """A post with its files read (`taken_at` is its date); a clip is a reel, else a post."""
+    clip = media.get("product_type") == "clips" or "clips_metadata" in media
     return Post(post_name(media), files_of(media), date=media.get("taken_at"),
-                headers=CDN_HEADERS)
+                headers=CDN_HEADERS, owner=dig(media, "user.username"),
+                category="reels" if clip else "posts")
 
 
 def files_of(media: dict, *, named: bool = False) -> list[File]:

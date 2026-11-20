@@ -410,7 +410,30 @@ class SingleLinkTest(unittest.TestCase):
                 saved, ctx = run(text, pages=pages)
                 self.assertEqual(ctx.seen.visited, visited)
                 self.assertEqual([s.key for s in saved], keys)
-                self.assertEqual({s.post.fields["part"] for s in saved}, {""})
+                # A link whose data names an owner is filed by its category.
+                self.assertEqual({s.post.fields["part"] for s in saved},
+                                 {"posts"} if text == permalink else {""})
+
+    def test_a_link_is_filed_by_its_owner_and_the_kind_the_data_gives(self):
+        def owned(result, kind=None):
+            node = result["data"]["node"]
+            node.update(owner={"id": "42", "vanity": "example.page"})
+            node.update(__typename=kind or node["__typename"])
+            return result
+
+        watch, fbid = f"{SITE}/watch/?v=22", f"{SITE}/photo/?fbid=21"
+        permalink = f"{SITE}/permalink.php?story_fbid=7&id=42"
+        rows = [(f"{BASE}/videos/22/", {watch: page(owned(video("22")))}, "example.page/videos"),
+                (f"{SITE}/reel/22", {watch: page(owned(video("22"), "Reel"))},
+                 "example.page/reels"),
+                (f"{SITE}/photo.php?fbid=21", {fbid: page(owned(photo("21")))},
+                 "example.page/photos"),
+                (permalink, {permalink: page(owned(photo("1")))}, "example.page/posts"),
+                (f"{SITE}/reel/22", {watch: page(video("22"))}, "22")]
+        for text, pages, folder in rows:
+            with self.subTest(text=text, folder=folder):
+                [found], _ = run(text, pages=pages)
+                self.assertEqual(fakes.filed(Facebook, text, found), folder)
 
     def test_a_link_to_nothing_is_not_found(self):
         short = "https://fb.watch/aBc-12/"
