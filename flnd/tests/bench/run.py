@@ -56,7 +56,7 @@ ROOT = HERE.parent.parent
 GATES = HERE / "gates.json"
 LAST = HERE / "last.json"
 # Every group, in the order a full run takes them: quick ones first, the browser late.
-GROUPS = ("startup", "ui", "net", "disk", "db", "walk", "cpu", "e2e", "browser")
+GROUPS = ("startup", "ui", "net", "disk", "db", "walk", "cpu", "mem", "e2e", "browser")
 TOLERANCE = 15.0
 
 

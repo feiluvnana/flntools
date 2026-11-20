@@ -6,6 +6,7 @@ SPEC.md#commands-and-flags explains it.
 from __future__ import annotations
 
 import os
+import sys
 
 from flnd.engine.events import Resources
 
@@ -47,15 +48,18 @@ class Meter:
             proc = self._seen.get(proc.pid, proc)
             try:
                 with proc.oneshot():
-                    rss, cpu = proc.memory_info().rss, proc.cpu_percent(None)
-                    name = proc.name().lower()
+                    cpu, name = proc.cpu_percent(None), proc.name().lower()
+                    try:
+                        win = sys.platform == "win32"
+                        mem = getattr(proc.memory_info() if win else proc.memory_full_info(),
+                                      "private" if win else "uss", None)
+                        rss = mem if isinstance(mem, int) else proc.memory_info().rss
+                    except Exception:
+                        rss = getattr(proc.memory_info(), "rss", 0)
             except psutil.Error:
                 continue
             live[proc.pid] = proc
-            rows = [total, browser] if any(part in name for part in BROWSER) else [total]
-            for row in rows:
-                row[0] += 1
-                row[1] += rss
-                row[2] += cpu
+            for row in ([total, browser] if any(b in name for b in BROWSER) else [total]):
+                row[0], row[1], row[2] = row[0] + 1, row[1] + rss, row[2] + cpu
         self._seen = live
         return Resources(total[0], total[1], total[2], browser[0], browser[1], browser[2])
