@@ -34,6 +34,8 @@ BUILT_IN = {
                 ["exm:permalink/{user:\\d+}_{post:\\w+}", "permalink/{user}_{post}"],
                 ["example.com/permalink.php?story_fbid={post:\\w+}&id={user:\\d+}",
                  "permalink/{user}_{post}"]]},
+            {"name": "watch", "single": True, "patterns": [["example.com/w/{code:[\\w-]+}",
+                                                           "watch/{code}"]]},
             {"name": "search", "patterns": ["exm?{words}"]},
             {"name": "list", "discovers": True, "patterns": ["exm:list/{list}"]},
             {"name": "me", "discovers": True, "patterns": ["exm:{me:me}"]},
@@ -91,6 +93,11 @@ TABLE = [
     # A single post is `<kind>/<id>`, and its key is that text: it never clashes with a user's.
     ("exm:post/Abc-1", R("exm", "post/Abc-1", "post", ())),
     ("exm:post", R("exm", "post", "user", ("posts", "reels"))),
+    # A link-only kind's key typed back; a word that is no single kind names the kinds.
+    ("exm:watch/ab-1", R("exm", "watch/ab-1", "watch", ())),
+    ("exm:reel/C1", ("exm:reel/C1: reel isn't a post kind of exm; write exm:post/<id> or "
+                     'exm:album/<id> or exm:permalink/<id> or exm:watch/<id>, or categories '
+                     'after |: "exm:<user>|tagged"', "")),
     ("exm:album/12", R("exm", "album/12", "album", ("photo", "archive"))),
     ("exm:album/12|archive", N("exm", "album/12", "album", ("archive",))),
     ("exm:permalink/4_abc", R("exm", "permalink/4_abc", "permalink", ())),

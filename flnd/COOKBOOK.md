@@ -142,7 +142,10 @@ Refusals, with the text printed (all `UsageError`, exit 2, before any request):
   reposts, stories, highlights, profile`
 - `ins:example_user/tagged`: `ins:example_user/tagged: categories aren't written after a /`;
   hint `write the categories after |: "ins:example_user|tagged"`
-- `ins:example_user/posts/`: `ins: can't read 'example_user/posts/'`; hint `Write it like ...`
+- `ins:reel/C1`, `ins:example_user/posts/`: `ins:reel/C1: reel isn't a post kind of ins; write
+  ins:post/<id>, or categories after |: "ins:<user>|tagged"` (every single kind of the plugin is
+  listed; a plugin with none gives only the `|` hint)
+- Every target's key can be typed back, such as `tik:short/ZMabc123` or `fbk:watch/abc`.
 - `tik:post/1234567890123456|all`: `tik:post/1234567890123456 is one post, with no categories`
 - `ins?cats`: `ins has no search`; hint `Write it like ...`
 - `twt?`: `twt: the query is empty`

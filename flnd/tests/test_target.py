@@ -103,6 +103,25 @@ class AcceptedFormsTest(unittest.TestCase):
         )
 
 
+class RoundTripTest(unittest.TestCase):
+    def test_every_single_post_key_resolves_when_typed_back(self):
+        for link in (
+            "https://www.instagram.com/p/C1abcDEFghi/", "https://x.com/example_handle/status/1",
+            "https://www.tiktok.com/@example_creator/video/7301234567890123456",
+            "https://vm.tiktok.com/ZMabc123/", "https://www.facebook.com/watch/?v=123",
+            "https://fb.watch/abc/", "https://www.facebook.com/photo.php?fbid=123",
+            "https://www.facebook.com/permalink.php?story_fbid=pfbid1&id=2",
+        ):
+            with self.subTest(link=link):
+                key = read(link)
+                self.assertEqual(read(key.text), key)
+        self.assertEqual(read("tik:short/ZMabc"), Target("tik:short/ZMabc", kind="short"))
+        self.assertEqual(read("fbk:watch/abc"), Target("fbk:watch/abc", kind="watch"))
+        with self.assertRaisesRegex(UsageError, r"reel isn't a post kind of ins; write "
+                                    r"ins:post/<id>, or categories after \|"):
+            read("ins:reel/C1")
+
+
 class ShortLinkTest(unittest.TestCase):
     def test_followed_with_the_given_function(self):
         followed = []

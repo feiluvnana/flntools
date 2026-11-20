@@ -437,10 +437,13 @@ def _plain(plugin: _Plugin, body: str, known: Mapping[str, Sequence[str]]) -> Re
         elif not isinstance(whole, tuple):
             whole = hit
     elif not isinstance(whole, tuple):
-        _refuse_slash(plugin, body)
+        whole = _typed_key(plugin, body) or whole
+        if not isinstance(whole, tuple):
+            _refuse_slash(plugin, body)
     if isinstance(whole, str):
         raise UsageError(f"{plugin.code}: {whole}")
     if whole is None:
+        _refuse_kind(plugin, body)
         raise UsageError(f"{plugin.code}: can't read {body!r}",
                          hint=f"Write it like {plugin.forms}")
     return _made(plugin, whole[0], whole[1], None, known)
@@ -450,10 +453,37 @@ def _refuse_slash(plugin: _Plugin, body: str) -> None:
     """Raise when `body` is a value, a `/`, and a category list: the old way to write one."""
     head, slash, tail = body.rpartition("/")
     hit = _find(plugin, head.strip(), None) if slash else None
-    if isinstance(hit, tuple) and _tokens(tail) and (hit[0].names or hit[0].discovers):
+    names = hit[0].names if isinstance(hit, tuple) and not hit[0].discovers else plugin.categories
+    if isinstance(hit, tuple) and _tokens(tail) and _named(_tokens(tail), names) and (
+            hit[0].names or hit[0].discovers):
         raise UsageError(f"{plugin.code}:{body}: categories aren't written after a /",
                          hint=f'write the categories after |: "{plugin.code}:{head.strip()}'
                               f'|{tail.strip()}"')
+
+
+def _typed_key(plugin: _Plugin, body: str) -> tuple[_Route, str] | None:
+    """A single route's key typed back (`tik:short/ZMabc`): the route whose template, a
+    `<kind>/{...}` value, makes `body`. Its placeholders are read as `[\\w.~%-]+`."""
+    for route in plugin.routes:
+        for pattern in route.patterns if route.single else ():
+            if pattern.template and pattern.template.startswith(f"{route.name}/"):
+                pieces = re.split(r"{\w+}", pattern.template)
+                regex = r"[\w.~%-]+".join(re.escape(piece) for piece in pieces)
+                if re.fullmatch(regex, body):
+                    return route, body
+    return None
+
+
+def _refuse_kind(plugin: _Plugin, body: str) -> None:
+    """Raise when `body` is `<word>/<rest>` and the word is no single-post kind of the plugin."""
+    word, slash, rest = body.partition("/")
+    if not (slash and rest and re.fullmatch(r"[A-Za-z]\w*", word)):
+        return
+    kinds = [route.name for route in plugin.routes if route.single]
+    forms = " or ".join(f"{plugin.code}:{kind}/<id>" for kind in kinds)
+    pipe = f'categories after |: "{plugin.code}:<user>|tagged"'
+    raise UsageError(f"{plugin.code}:{body}: {word} isn't a post kind of {plugin.code}; "
+                     f"write {forms + ', or ' if forms else ''}{pipe}")
 
 
 def _search(plugin: _Plugin, body: str, known: Mapping[str, Sequence[str]]) -> Resolved:

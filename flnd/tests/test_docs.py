@@ -44,7 +44,7 @@ README = ROOT / "README.md"
 PAGES = (README, COOKBOOK)
 # The longest a module docstring may be, in lines; the pages' longest, in lines.
 MODULE_LINES = 3
-README_LINES, COOKBOOK_LINES, LINE_CHARS = 40, 1510, 100
+README_LINES, COOKBOOK_LINES, LINE_CHARS = 40, 1515, 100
 SECTION = re.compile(r"COOKBOOK\.md#([\w-]+)")
 
 
