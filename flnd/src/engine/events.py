@@ -20,8 +20,8 @@ from flnd.plugin import Account, Target
 
 __all__ = [
     "BUSY", "NOTHING_NEW", "RESUMING", "Account", "Checked", "Event", "Failed", "Failure",
-    "FileState", "HoldState", "Installed", "Phase", "Planned", "Record", "Report", "Saved",
-    "Skipped", "State", "Status", "TargetState", "Tracked", "encode", "sink",
+    "FileState", "HoldState", "Installed", "Phase", "Planned", "Record", "Report", "Resources",
+    "Saved", "Skipped", "State", "Status", "TargetState", "Tracked", "encode", "sink",
 ]
 
 # `Skipped.reason` for a listing a sync found nothing new in.
@@ -143,8 +143,28 @@ class Planned(msgspec.Struct, frozen=True, tag=True):
 
 
 
+class Resources(msgspec.Struct, frozen=True, tag=True):
+    """What flnd's processes use, read every 2 s while a run goes: flnd itself and every process
+    below it (the browser's, a running `--exec` program), then the browser's alone.
+
+    Example:
+        >>> use = Resources(procs=5, rss=300 << 20, cpu=12.5, browser=3, browser_rss=200 << 20)
+        >>> use.procs, use.browser_cpu
+        (5, 0.0)
+    """
+
+    # Processes, bytes of resident memory, and CPU percent (100 is one core's worth).
+    procs: int
+    rss: int
+    cpu: float
+    # The same for the browser's processes alone.
+    browser: int = 0
+    browser_rss: int = 0
+    browser_cpu: float = 0.0
+
+
 # Any event a run yields, for a `match` or an annotation.
-Event = Saved | Skipped | Failed | Planned
+Event = Saved | Skipped | Failed | Planned | Resources
 
 
 # ---------------------------------------------------------------------------------------------
@@ -260,6 +280,8 @@ class State(msgspec.Struct, frozen=True):
     failed: int = 0
     bytes: int = 0
     speed: float = 0.0
+    # The newest reading of flnd's processes; None before the first.
+    resources: Resources | None = None
 
 # ---------------------------------------------------------------------------------------------
 # The report and the reads

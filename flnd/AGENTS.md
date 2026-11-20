@@ -173,7 +173,7 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 ## Dependencies
 - Each dependency has a reason beside it in `pyproject.toml`.
 - The planned set is curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode,
-  rich, msgspec, tomlkit and textual. Textual stays only if `ui.open` is at most 250 ms.
+  rich, msgspec, tomlkit, textual and psutil. Textual stays only if `ui.open` is at most 250 ms.
 
 ## Size
 - The limits live in `tests/test_size.py`: `CODE_LINES` for `src/` and `flnkit/`, and

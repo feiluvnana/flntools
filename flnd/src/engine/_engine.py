@@ -815,7 +815,7 @@ class Engine:
     async def _live(self) -> AsyncIterator[None]:
         """Count one command afresh, publishing its snapshots while it runs (`run.state`)."""
         self.tally = Tally(self._shown)
-        async with self.tally.publishing():
+        async with self.tally.publishing(self.emit):
             yield
 
     @contextlib.asynccontextmanager

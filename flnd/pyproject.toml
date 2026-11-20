@@ -26,6 +26,9 @@ dependencies = [
     # The lists and forms, inline under the prompt (`src/ui/lists.py`, `src/ui/forms.py`):
     # `ui.open` measured 100 ms to a list's first frame, under P17's 250 ms.
     "textual>=8.2",
+    # Reads flnd's process tree (count, memory, CPU %) for the run screen's `use` line, on all
+    # three systems, which the standard library cannot do (`src/engine/meter.py`).
+    "psutil>=5.9",
 ]
 
 [project.scripts]

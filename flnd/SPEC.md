@@ -29,10 +29,10 @@ Outside programs, each needed only for some files:
 
 - Google Chrome, for the sites that open a browser. When missing: asks once to download Chromium
   (about 200 MB) on a terminal; off a terminal the run stops with "Google Chrome is needed".
-- ffmpeg, for joining a video with its sound track. When missing: a `ToolError`; that file fails and
+- ffmpeg, for joining a video with its sound track. When missing: a `ToolError`; the file fails and
   is retried on later runs.
-- 7-Zip (`7zz`, or `7z`), for 7z, RAR and encrypted zip archives. When missing: a `ToolError`; the
-  archive is kept, not extracted.
+- 7-Zip (`7zz` or `7z`), for 7z, RAR and encrypted zip. When missing: a `ToolError`; the archive is
+  kept, not extracted.
 
 zip and tar are read by Python. flnd finds each program on your PATH, never downloads one.
 
@@ -48,8 +48,8 @@ Then `flnd get` alone gets what is new for every target you have followed.
 
 ### The home
 
-The home is `--home DIR`, else `$FLND_HOME`, else `./.flnd`. Nothing is written until the first
-command that saves something.
+The home is `--home DIR`, else `$FLND_HOME`, else `./.flnd`; nothing is written until a command
+saves something.
 
 ```text
 .flnd/
@@ -157,9 +157,8 @@ library says `give at least one target` when a call ends with none.
 
 ### Reading from standard input
 
-`flnd get` reads standard input when it is not a terminal: each line is a target, blank lines and
-lines starting with `#` are skipped, and the lines come after the targets on the command line
-(`cat targets.txt | flnd get`).
+`flnd get` reads standard input when it is not a terminal: each line is a target (blank lines and
+`#` lines are skipped), after the command line's targets (`cat targets.txt | flnd get`).
 
 ### `me`, searches and `--limit`
 
@@ -891,13 +890,16 @@ terminal `e` edits, `a` adds a key, `d` resets one; comments in the file stay. `
 
 **`flnd host [origin] [--parent-window ...]`**: hidden; Chrome starts it for the extension.
 
-What a run prints: on a terminal a live screen on standard error (a row per target, files in flight,
-the `now` line); on a pipe only the end summary. The end summary goes to standard output (`done in
-4m 12s · 3 targets · 1,021 saved (3.3 GB) · 1,220 already saved · 1 failed`, starting with `✓` when
-nothing failed); up to 10 failures follow on standard error, each with its message and hint, then
-`details  flnd status`. Warnings repeated within 10 s fold into one line, `text (x2)`. Text from a
-site is stripped of control codes before it is printed. Each run's events go to
-`log/<time>_get.jsonl`.
+What a run prints: on a terminal a live screen on standard error (a row per target, files in
+flight, the `now` line, and a `use` line read every 2 s with `psutil`: flnd's process tree, meaning
+itself, the browser's and a running `--exec` program, as count, resident memory and CPU % (100 is
+one core), then the browser's alone); on a pipe only the end summary, with no `use` line.
+`--json` gets each reading as a `Resources` event (`procs rss cpu browser browser_rss
+browser_cpu`). The end summary goes to standard output (`done in 4m 12s · 3 targets · 1,021 saved
+(3.3 GB) · 1,220 already saved · 1 failed`, starting with `✓` when nothing failed); up to 10
+failures follow on standard error, each with its message and hint, then `details  flnd status`.
+Warnings repeated within 10 s fold into one line, `text (x2)`. Text from a site is stripped of
+control codes before it is printed. Each run's events go to `log/<time>_get.jsonl`.
 
 ## Config
 
@@ -1239,10 +1241,11 @@ with flnd.open(home) as fl:
 
 Iterating a `Run` starts it and yields each event: `Saved` (target, category, post, path, date,
 size, retried), `Skipped` (reason `saved`, `nothing new` or `busy`), `Failed` (target, error, and
-for a file post and path), `Planned` (state `new` or `saved`). `run.wait()` returns the `Report`
-(`saved skipped bytes planned failed stopped retried resumed unchanged`, and `ok`). `run.state` is a
-live snapshot (`State`, `TargetState`, `FileState`, `HoldState`, `Phase`); `run.stop()` stops as a
-first Ctrl-C does; `async for` and `await run` work from asyncio.
+for a file post and path), `Planned` (state `new` or `saved`), `Resources` (every 2 s).
+`run.wait()` returns the `Report` (`saved skipped bytes planned failed stopped retried resumed
+unchanged`, and `ok`). `run.state` is a live snapshot (`State`, `TargetState`, `FileState`,
+`HoldState`, `Phase`); `run.stop()` stops as a first Ctrl-C does; `async for` and `await run` work
+from asyncio.
 
 ```python
 with flnd.open(home) as fl:
@@ -1461,15 +1464,14 @@ flnkit/   standalone toolkit, imports nothing of flnd: net browser files html di
           db cookies vault media stream errors
 src/      the package flnd
   _library.py cli.py errors.py plugin.py testing.py
-  engine/  run jobs crawl save resolve plugins auth extension store config
+  engine/  run meter jobs crawl save resolve plugins auth extension store config
   ui/      theme out screen lists forms (imports only flnkit, ui, events, errors)
   plugins/ the built-ins, importing only flnd.plugin and the standard library
   extension/ the Chrome extension
 ```
 
 `tests/test_layers.py` checks the import rules. A run has one asyncio loop on its own thread; plugin
-code is async; only `engine/jobs.py` retries, sleeps and picks threads. A commit is one per post and
-never blocks the loop.
+code is async; only `engine/jobs.py` retries, sleeps and picks threads; a commit is one per post.
 
 **The home's files.** `flnd.db` is SQLite in WAL mode, schema version 2: `files` (a row per file,
 key `<code>:<key>`, with target, post, category, path, size, date, hash, state `saved`, `gone` or
@@ -1488,13 +1490,11 @@ Read it with any SQLite tool.
 | `make test ARGS="-k fetch"` | the tests, or some (`FLND_TEST_NO_PROFILES=1`) |
 | `make api`, `make manifest` | regenerate `tests/data/api.txt` (read its diff); the manifest |
 | `make bench` | offline benchmarks; `ARGS=--gate` fails on a 15% slowdown, `--record` rebases |
-| `make docs`, `make dist` | the API reference into `build/docs/`; a one-file binary |
+| `make docs`, `dist`, `setup`, `clean` | API reference; a binary; sync `.venv`; remove builds |
 | `make try ARGS="ins:example_user"` | list, live, what a get would save (scratch home `.try`) |
 | `make ext`, `make live`, `make cdn-real` | hand checks, never part of `check` |
-| `make setup`, `make clean` | sync `.venv` from `uv.lock`; remove `build`, `dist`, `.try` |
 
 **Benchmarks** (`tests/bench/`, groups `startup ui net disk db walk cpu e2e browser`) run offline
 against a loopback server and scratch folders; `make check` runs each in smoke mode only. Run them
-before a speed change for the "before" numbers, and `--gate` before its commit. The `browser`
-group also reports `heavy_*` and `lean_*` (peak MiB, CPU seconds of Chrome's processes on a scrolled
-page of 300 images, loaded or blocked), read with `ps`, not on Windows.
+before a speed change, and `--gate` before its commit. The `browser` group also reports `heavy_*`
+and `lean_*` (Chrome's peak MiB and CPU seconds on a page of 300 images), via `ps`, not on Windows.

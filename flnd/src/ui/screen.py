@@ -17,7 +17,7 @@ from typing import IO, Any
 from rich.cells import cell_len
 from rich.text import Text
 
-from flnd.engine.events import Failed, Phase, Report, State, TargetState
+from flnd.engine.events import Failed, Phase, Report, Resources, State, TargetState
 from flnd.ui import out, theme
 from flnkit import clock
 from flnkit.text import count, duration, size
@@ -147,7 +147,8 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
     lines.append(_line((_pad("target", 2 + widths[0]) + "  " + _pad("categories", widths[1])
                         + "  " + "".join(_right(name, cells) for name, cells in COLUMNS), "dim")))
     files = _files(state, at, fancy)
-    room = max(0, height - FRAME_LINES - (len(files) + 1 if files else 0))
+    room = max(0, height - FRAME_LINES - (len(files) + 1 if files else 0)
+               - (state.resources is not None))
     shown = _shown_targets(state.targets, room)
     lines += [_target(row, widths, at, fancy) for row in shown]
     if len(shown) < total and room > 0:
@@ -155,7 +156,10 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
     lines.append(Text())
     if files:
         lines += files + [Text()]
-    lines += [_now(state, fancy), Text(), _foot(state, width, fancy)]
+    lines.append(_now(state, fancy))
+    if state.resources is not None:
+        lines.append(_use(state.resources, sep))
+    lines += [Text(), _foot(state, width, fancy)]
     limit = max(0, width - 1)
     for line in lines:
         line.truncate(limit)
@@ -245,6 +249,18 @@ def _now(state: State, fancy: bool) -> Text:
     if state.holds and state.holds[-1].count > 1:
         text += f" ({theme.glyph('times', fancy)}{state.holds[-1].count})"
     return _line(("now  ", "dim"), (text, "warn" if state.holds else "text"))
+
+
+def _use(use: Resources, sep: str) -> Text:
+    """`use  flnd 5 processes · 312.0 MB · 14% · browser 3 processes · 200.0 MB · 9%`."""
+    def part(name: str, procs: int, rss: int, cpu: float) -> str:
+        found = count(procs, "process", plural="processes")
+        return sep.join([f"{name} {found}", size(rss), f"{cpu:.0f}%"])
+
+    both = part("flnd", use.procs, use.rss, use.cpu)
+    if use.browser:
+        both += sep + part("browser", use.browser, use.browser_rss, use.browser_cpu)
+    return _line(("use  ", "dim"), (both, "text"))
 
 
 def _foot(state: State, width: int, fancy: bool) -> Text:

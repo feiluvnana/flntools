@@ -174,7 +174,7 @@ flnd.Skipped.path: attribute -> Path | None
 flnd.Skipped.post: attribute -> str
 flnd.Skipped.reason: attribute -> str
 flnd.Skipped.target: attribute -> Target
-flnd.State(version: int = 0, elapsed: float = 0.0, targets: tuple[flnd.engine.events.TargetState, ...] = (), files: tuple[flnd.engine.events.FileState, ...] = (), more: int = 0, holds: tuple[flnd.engine.events.HoldState, ...] = (), now: str = '', saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, speed: float = 0.0)
+flnd.State(version: int = 0, elapsed: float = 0.0, targets: tuple[flnd.engine.events.TargetState, ...] = (), files: tuple[flnd.engine.events.FileState, ...] = (), more: int = 0, holds: tuple[flnd.engine.events.HoldState, ...] = (), now: str = '', saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, speed: float = 0.0, resources: flnd.engine.events.Resources | None = None)
 flnd.State.bytes: attribute -> int
 flnd.State.elapsed: attribute -> float
 flnd.State.failed: attribute -> int
@@ -182,6 +182,7 @@ flnd.State.files: attribute -> tuple[FileState, ...]
 flnd.State.holds: attribute -> tuple[HoldState, ...]
 flnd.State.more: attribute -> int
 flnd.State.now: attribute -> str
+flnd.State.resources: attribute -> Resources | None
 flnd.State.saved: attribute -> int
 flnd.State.skipped: attribute -> int
 flnd.State.speed: attribute -> float
