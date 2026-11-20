@@ -650,8 +650,9 @@ process group, and the whole group is killed on the timeout and when the run sto
 `[defaults] exec` in the user file runs a command for every get the same way; with both, `--exec`
 wins.
 
-Ctrl-C: the first stops listing and lets files in progress finish; the second stops at once and
-leaves `.part` files to resume; the third quits at once, exit 130.
+Ctrl-C: the first stops listing and lets files in progress finish; the second, or a SIGTERM, stops
+at once and leaves `.part` files to resume (what still runs 2 s later is cancelled, and 5 s later
+the process quits); the third quits at once, exit 130.
 
 Two runs may share a home: a part is its own lock, and a file another run is saving is skipped as
 `busy`.
@@ -1201,11 +1202,9 @@ home = tempfile.mkdtemp()
 
 def text_file(name, body):
     data = body.encode()
-
     async def fetch(part):
         part.total(len(data))
         await part.write(data[part.offset:part.end])
-
     return File(fetch=fetch, name=name)
 
 class Demo(Plugin):

@@ -694,7 +694,7 @@ class Scheduler:
         if self._listings is None:
             self._listings = ThreadPoolExecutor(LISTINGS, thread_name_prefix="flnd-listing")
         try:
-            return await self._thread(self._listings, work, *args)
+            return await self._thread(self._listings, work, *args, finish=False)
         except Exception as error:
             # A full disk met at a listing's step stops the run, as it would in a job.
             if stops(error):
@@ -862,7 +862,7 @@ class Scheduler:
             if pool is None:
                 pool = self._threads[kind] = ThreadPoolExecutor(
                     self.pools[kind].size, thread_name_prefix=f"flnd-{kind.value}")
-        return await self._thread(pool, work, *args)
+        return await self._thread(pool, work, *args, finish=kind is not Kind.CALL)
 
     async def _page(self, job: Job[T]) -> T:
         await self._held(job)
@@ -907,11 +907,18 @@ class Scheduler:
             pools = self._targets[target] = (Pool(places * QUEUED), Pool(places))
         return pools
 
-    async def _thread(self, pool: ThreadPoolExecutor, work: Callable[..., T], *args: Any) -> T:
-        """Run `work` on `pool` with the run's clock; a cancel still waits for it to end, since
-        a write still in flight would land in whatever file reused its descriptor."""
+    async def _thread(self, pool: ThreadPoolExecutor, work: Callable[..., T], *args: Any,
+                      finish: bool = True) -> T:
+        """Run `work` on `pool` with the run's clock.
+
+        With `finish`, a cancel still waits for it to end, since a write still in flight would
+        land in whatever file reused its descriptor. A `CALL` or a listing's step writes no file
+        and may wait on the loop or a page, so its cancel leaves it to end on its own.
+        """
         done = asyncio.get_running_loop().run_in_executor(
             pool, contextvars.copy_context().run, work, *args)
+        if not finish:
+            return await done
         try:
             return await asyncio.shield(done)
         except asyncio.CancelledError:

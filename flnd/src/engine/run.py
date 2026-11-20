@@ -57,6 +57,13 @@ STOPPED = "stopped by Ctrl-C"
 AGAIN = "stopping now: the files in flight are cancelled; Ctrl-C again to quit now"
 # The exit status of a third Ctrl-C: 128 + SIGINT (2), what a shell reports for a Ctrl-C.
 QUIT_STATUS = 130
+# Seconds after the second Ctrl-C (or a SIGTERM) before every task of the run's loop is
+# cancelled, when the run hasn't ended on its own; and before the process quits as a third
+# Ctrl-C does, when even that didn't end it.
+CANCEL_AFTER = 2.0
+GRACE = 5.0
+# What the reader says before it quits a run that didn't stop.
+STUCK = "the run didn't stop in {seconds:g} s; quitting"
 # The undo steps a hard exit runs, in the order they were registered (`restoring`): each puts
 # back something on the terminal. A list, not a lock-guarded structure: it is changed and read
 # on the main thread only, where the signal handler runs too.
@@ -221,6 +228,10 @@ class Run:
         self._error: BaseException | None = None
         # Whether `stop()` asked the run to stop, which makes its end not an error.
         self._asked = False
+        # The loop, once its thread made it, and when the reader first saw a stop now.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._halted: float | None = None
+        self._cancelled = False
         # The report's counts, kept under `_lock`.
         self._saved = self._skipped = self._bytes = self._planned = 0
         self._retried = self._resumed = self._unchanged = 0
@@ -300,6 +311,7 @@ class Run:
             # A join with a timeout, in a loop, so Ctrl-C's handler runs while it waits.
             while thread is not None and thread.is_alive():
                 thread.join(WAKE)
+                self._watch()
             self._over = True
         self._raise()
         return self.report
@@ -428,7 +440,7 @@ class Run:
 
     def _main(self) -> None:
         """The loop's thread: run the command, end what it left, then mark the end."""
-        loop = asyncio.new_event_loop()
+        loop = self._loop = asyncio.new_event_loop()
         try:
             try:
                 loop.run_until_complete(self._serve())
@@ -446,6 +458,11 @@ class Run:
             done = self._work(self._emit, self._stop)
             if inspect.isawaitable(done):
                 await done
+        except asyncio.CancelledError:
+            # Only the reader cancels it, after a stop now that didn't end it (`_watch`).
+            from flnd.errors import Stopped
+
+            self._error = self._error or Stopped(STOPPED)
         except BaseException as error:  # handed to the reader, who raises it
             self._error = error
 
@@ -458,11 +475,32 @@ class Run:
             is gone and the channel is empty); or `_IDLE` when nothing came in time.
         """
         item = self._channel.take(WAKE)
+        self._watch()
         if item is _IDLE:
             thread = self._thread
             if thread is not None and not thread.is_alive() and not len(self._channel):
                 return _END
         return item
+
+    def _watch(self) -> None:
+        """After a stop now, cancel every task of the loop once `CANCEL_AFTER` passed, and quit
+        the process (`quit_now`) once `GRACE` passed, while the loop's thread still runs."""
+        if not self._stop.now.is_set():
+            return
+        now = clock.now()
+        if self._halted is None:
+            self._halted = now
+        waited = now - self._halted
+        if waited >= GRACE:
+            from flnd.ui.log import ui
+
+            ui.warn(STUCK, seconds=GRACE)
+            quit_now()
+        elif waited >= CANCEL_AFTER and not self._cancelled and self._loop is not None:
+            self._cancelled = True
+            # The loop is closed already: the run ended meanwhile.
+            with contextlib.suppress(RuntimeError):
+                self._loop.call_soon_threadsafe(_cancel_all)
 
     def _raise(self) -> None:
         """Raise what ended the run, once the loop's thread is done; nothing for a normal end."""
@@ -486,6 +524,12 @@ class Run:
         return stopping(self._stop)
 
 
+def _cancel_all() -> None:
+    """Cancel every task of the running loop: what a stop now that didn't end the run does."""
+    for task in asyncio.all_tasks():
+        task.cancel()
+
+
 async def _shut_down() -> None:
     """Cancel every other task on the running loop and wait for them, then shut it down."""
     current = asyncio.current_task()
@@ -504,7 +548,8 @@ def stopping(state: Stop | None = None) -> Iterator[Stop]:
 
     1. The first Ctrl-C sets `soon`: listing stops, the files in flight finish.
     2. The second sets `now`: the files in flight are cancelled, their parts kept, and a line
-       says a third Ctrl-C quits now (`AGAIN`).
+       says a third Ctrl-C quits now (`AGAIN`). A SIGTERM does this at once. A run still going
+       `CANCEL_AFTER` later has its tasks cancelled, and `GRACE` later the process quits.
     3. The third quits at once (`quit_now`), with the terminal put back.
 
     Only the main thread can install a signal handler: Python runs handlers there alone. On
@@ -527,12 +572,13 @@ def stopping(state: Stop | None = None) -> Iterator[Stop]:
         yield state
         return
 
-    def handle(_signum: int, _frame: Any) -> None:
+    def handle(signum: int, _frame: Any) -> None:
         # A suspended run would never get to its stop: Ctrl-C ends the suspension too.
         state.suspended.clear()
         if state.now.is_set():
             quit_now()
-        elif state.soon.is_set():
+        elif state.soon.is_set() or signum == signal.SIGTERM:
+            state.soon.set()
             state.now.set()
             # `ui`'s lock is reentrant, and its fold never waits on the thread holding it, so
             # this line can't deadlock on code this handler interrupted while it was logging.
@@ -542,11 +588,13 @@ def stopping(state: Stop | None = None) -> Iterator[Stop]:
         else:
             state.soon.set()
 
-    previous = signal.signal(signal.SIGINT, handle)
+    previous = {number: signal.signal(number, handle)
+                for number in (signal.SIGINT, signal.SIGTERM)}
     try:
         yield state
     finally:
-        signal.signal(signal.SIGINT, previous)
+        for number, handler in previous.items():
+            signal.signal(number, handler)
 
 
 @contextlib.contextmanager

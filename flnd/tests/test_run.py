@@ -6,6 +6,7 @@ through its run (what `download` and `sync` await), then its commands: `download
 """
 
 import asyncio
+import contextlib
 import os
 import signal
 import threading
@@ -40,6 +41,7 @@ from flnd.engine.events import Failed, Skipped
 from flnd.errors import Error, SiteError
 from flnd.plugin import Browser, File, Plugin, Post, Request, route
 from flnd.ui.log import ui
+from flnkit import browser as _browser
 from flnkit import clock
 from flnkit import net as _net
 
@@ -536,6 +538,78 @@ class CtrlCTest(unittest.TestCase):
             handler(signal.SIGINT, None)
             self.assertTrue(stop.now.is_set())
         self.assertIs(signal.getsignal(signal.SIGINT), before)
+
+    def stuck(self, *signals, work=None):
+        """How long `Run.wait` took, and what it raised, for a run whose one job waits on the
+        loop for ever (as a browser feed's step does), `signals` sent to the process while the
+        reader waits. An unfixed run is freed after 8 s, so the test fails, never hangs."""
+        held, done = [], threading.Event()
+
+        async def waits_for_ever(emit, stop):
+            loop = asyncio.get_running_loop()
+            held.append((loop, loop.create_future()))
+            with jobs.Scheduler(stop=stop) as scheduler:
+                await scheduler.on(jobs.Kind.CALL, _browser.run_on, loop, held[0][1])
+
+        def send():
+            for sent in signals:
+                time.sleep(0.2)
+                os.kill(os.getpid(), sent)
+            if not done.wait(8) and held:
+                loop, never = held[0]
+                loop.call_soon_threadsafe(never.set_result, None)
+
+        # SIGTERM's own action would end the test process.
+        self.enterContext(_signal_kept(signal.SIGTERM))
+        threading.Thread(target=send, daemon=True).start()
+        began = time.monotonic()
+        try:
+            _run.Run(work or waits_for_ever, name="stuck").wait()
+            raised = None
+        except BaseException as error:  # noqa: BLE001 (returned for the test to check)
+            raised = error
+        done.set()
+        return time.monotonic() - began, raised
+
+    def test_the_second_ctrl_c_or_a_sigterm_ends_a_run_stuck_in_a_thread(self):
+        from flnd.errors import Stopped
+
+        for signals in ((signal.SIGINT, signal.SIGINT), (signal.SIGTERM,)):
+            with self.subTest(signals=signals):
+                took, raised = self.stuck(*signals)
+                self.assertIsInstance(raised, Stopped)
+                self.assertLess(took, 5)
+
+    def test_a_run_that_ignores_its_cancel_quits_the_process(self):
+        class Quit(BaseException):
+            """What the patched `os._exit` raises, so the test sees the exit."""
+
+        ended = threading.Event()
+        self.addCleanup(ended.set)
+
+        async def deaf(emit, stop):
+            # Deaf to its cancel: it goes on until the test ends.
+            while not ended.is_set():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.sleep(0.01)
+
+        with mock.patch.object(_run.os, "_exit", side_effect=Quit) as exit_now, \
+                mock.patch.object(_run, "CANCEL_AFTER", 0.2), \
+                mock.patch.object(_run, "GRACE", 0.6):
+            took, raised = self.stuck(signal.SIGINT, signal.SIGINT, work=deaf)
+        self.assertIsInstance(raised, Quit)
+        exit_now.assert_called_once_with(130)
+        self.assertLess(took, 5)
+
+
+@contextmanager
+def _signal_kept(number):
+    """A handler for `number` that does nothing, put back to the old one afterwards."""
+    before = signal.signal(number, lambda *_: None)
+    try:
+        yield
+    finally:
+        signal.signal(number, before)
 
 
 def history(home):
