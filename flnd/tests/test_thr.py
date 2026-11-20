@@ -116,7 +116,7 @@ class RoutesTest(unittest.TestCase):
             (f"thr:{'a' * 31}", name), ("thr:café", name),
             ("threads.com/@example_user/replies", tabs),
             ("https://www.threads.net/@example_user/reposts", tabs),
-            ("threads.com/search?q=cats", "thr has no search"),
+            ("threads.com/search?q=cats", "^thr: there's no search"),
             ("threads.com/activity", "that's not a profile"),
             ("threads.com/settings", "that's not a profile"),
         ]
@@ -128,7 +128,7 @@ class RoutesTest(unittest.TestCase):
     def test_a_query_and_another_kind_are_refused(self):
         manifest = Manifest(_manifest.PLUGINS)
         for text, message in [("thr?cats", "thr has no search"),
-                              ("threads.com/search?q=cats", "thr has no search"),
+                              ("threads.com/search?q=cats", "^thr: there's no search"),
                               ("thr:thing/C1abc", "thing isn't a post kind of thr")]:
             with self.subTest(text=text), self.assertRaisesRegex(UsageError, message):
                 resolve(text, manifest=manifest, known={})

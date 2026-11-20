@@ -442,7 +442,7 @@ PLUGINS: dict[str, dict[str, object]] = {
             'threads.com/*/media': (
                 'a profile tab isn\'t a target; write the user with a category, e.g. "thr:example_u'
                 'ser|replies"'),
-            'threads.com/search': 'thr has no search; give a user or a post',
+            'threads.com/search': "there's no search; give a user or a post",
             'threads.com/activity': "that's not a profile",
             'threads.com/settings': "that's not a profile",
             'threads.com/login': "that's not a profile",
@@ -464,7 +464,7 @@ PLUGINS: dict[str, dict[str, object]] = {
             'threads.net/*/media': (
                 'a profile tab isn\'t a target; write the user with a category, e.g. "thr:example_u'
                 'ser|replies"'),
-            'threads.net/search': 'thr has no search; give a user or a post',
+            'threads.net/search': "there's no search; give a user or a post",
             'threads.net/activity': "that's not a profile",
             'threads.net/settings': "that's not a profile",
             'threads.net/login': "that's not a profile",

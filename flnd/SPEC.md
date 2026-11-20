@@ -206,8 +206,8 @@ supported; ...` with the hint `"ins:example_user|highlights"`; `/explore/` (and 
 | `thr:post/<code>`, `threads.com/@<user>/post/<code>` (and `threads.net`) | `post` | one post |
 
 Refused: a bad name as `ins`'s; a tab link (`/@<user>/replies`, `/reposts`, `/media`), hint
-`"thr:example_user|replies"`; `/search` and `thr?<words>`: `thr has no search`; `/activity`,
-`/settings`, `/login` and other site pages: `thr: that's not a profile`.
+`"thr:example_user|replies"`; `thr?<words>`: `thr has no search`; `/search`: `thr: there's no
+search`; `/activity`, `/settings`, `/login`, other site pages: `thr: that's not a profile`.
 
 **twt**
 

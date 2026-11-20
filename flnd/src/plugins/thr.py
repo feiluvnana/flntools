@@ -77,7 +77,7 @@ class Threads(Plugin):
             (("*/replies", "*/reposts", "*/media"),
              'a profile tab isn\'t a target; write the user with a category, e.g. '
              '"thr:example_user|replies"'),
-            (("search",), "thr has no search; give a user or a post"),
+            (("search",), "there's no search; give a user or a post"),
             (("activity", "settings", "login", "following", "saved", "liked",
               "insights", "about", "privacy", "terms", "direct", "onboarding"), NOT_A_PROFILE),
         )
