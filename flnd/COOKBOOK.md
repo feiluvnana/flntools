@@ -149,6 +149,9 @@ flnd get ins:example_user --exec 'ffmpeg -n -i {path} -vf scale=-2:720 {path}.72
 file with no shell. A file ffmpeg cannot read is a warning, and the run goes on.
 More: [Sync](SPEC.md#sync).
 
+The run screen's `use` line counts flnd's processes (itself, the browser, your `--exec` program):
+how many, their memory and their CPU %, then the browser alone.
+
 ## Fix a failed run
 
 Goal: a run said some files failed, or the disk and the history disagree.

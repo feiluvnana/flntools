@@ -951,13 +951,14 @@ class Tally:
     @contextlib.asynccontextmanager
     async def publishing(
         self, events: Callable[[Any], Awaitable[None]] | None = None,
+        off: Callable[[Callable[[], Resources]], Awaitable[Resources | None]] | None = None,
     ) -> AsyncIterator[Tally]:
         """Publish a snapshot every `TICK` seconds from the loop, then a last one.
 
         Args:
-            events: the run's event sink; given, flnd's processes are read every
-                `RESOURCES_EVERY` seconds on a thread, shown on the snapshot and sent as
-                `Resources` events.
+            events: the run's event sink; given with `off`, flnd's processes are read every
+                `RESOURCES_EVERY` seconds, shown on the snapshot and sent as `Resources` events.
+            off: runs a blocking read on the scheduler's thread; gives None while it has none.
 
         Yields:
             This tally.
@@ -969,23 +970,25 @@ class Tally:
                 await asyncio.sleep(TICK)
                 self.publish()
 
-        async def watch(events: Callable[[Any], Awaitable[None]]) -> None:
+        async def watch(events: Callable[[Any], Awaitable[None]], off: Any) -> None:
             from flnd.engine.meter import Meter
 
-            meter = Meter()
-            # The first read only sets the CPU baselines.
-            await asyncio.to_thread(meter.read)
+            meter, primed = Meter(), False
             while True:
                 await asyncio.sleep(RESOURCES_EVERY)
-                use = await asyncio.to_thread(meter.read)
+                use = await off(meter.read)
+                # The first read only sets the CPU baselines.
+                if use is None or not primed:
+                    primed = primed or use is not None
+                    continue
                 with self._lock:
                     self._resources = use
                 await events(use)
 
         loop = asyncio.get_running_loop()
         tasks = [loop.create_task(tick())]
-        if events is not None:
-            tasks.append(loop.create_task(watch(events)))
+        if events is not None and off is not None:
+            tasks.append(loop.create_task(watch(events, off)))
         try:
             yield self
         finally:

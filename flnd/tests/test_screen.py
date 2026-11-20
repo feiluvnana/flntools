@@ -186,8 +186,11 @@ class ResourcesTest(unittest.TestCase):
                 sent.append(event)
                 got.set()
 
+            async def off(fn):
+                return fn()
+
             tally = job.Tally()
-            async with tally.publishing(events):
+            async with tally.publishing(events, off):
                 await got.wait()
                 return tally.publish(force=True)
 

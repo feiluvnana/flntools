@@ -128,6 +128,8 @@ class Engine:
         self.run: int | None = None
         # The live counts of the command going on, which `run.state` is made from.
         self.tally = Tally(self._shown)
+        # The scheduler of the command going on; None until it opens one.
+        self._scheduler: jobs.Scheduler | None = None
         # What resolving reads of each plugin known so far, by code (`manifest`).
         self._entries: dict[str, Mapping[str, Any]] | None = None
         self._installed: dict[str, Mapping[str, Any]] = {}
@@ -815,8 +817,14 @@ class Engine:
     async def _live(self) -> AsyncIterator[None]:
         """Count one command afresh, publishing its snapshots while it runs (`run.state`)."""
         self.tally = Tally(self._shown)
-        async with self.tally.publishing(self.emit):
+        self._scheduler = None
+        async with self.tally.publishing(self.emit, self._off_loop):
             yield
+
+    async def _off_loop(self, fn: Callable[[], T]) -> T | None:
+        """`fn()` on a `CALL` thread of the command's scheduler; None before it has one."""
+        scheduler = self._scheduler
+        return None if scheduler is None else await scheduler.on(jobs.Kind.CALL, fn)
 
     @contextlib.asynccontextmanager
     async def _running(self, stop: Stop, *, dry: bool = False) -> AsyncIterator[_Runner]:
@@ -837,6 +845,7 @@ class Engine:
             async with shared_browser(settings), save.attached(settings):
                 scheduler = ctx.scheduler(settings)
                 assert scheduler is not None
+                self._scheduler = scheduler
                 runner.switcher = scheduler.switch = auth.Switcher(
                     scheduler, lambda code: found.plugin(code).switch, runner.listed,
                     shown=self.tally.switched)
