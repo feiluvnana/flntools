@@ -76,6 +76,15 @@ A target is written one of three ways, and each plugin accepts every way that fi
   `twt:123` and a numeric handle too. They share one `targets` row. Fix in step 4 first: a
   single post's key carries its kind (`ins:post:C1abc`, shown only in `flnd status`), with a
   store migration of old rows by their `kind` column, and a test per plugin.
+- **A query needs a folder** (settled 2026-11-20 by the user). A query target, written as
+  `<plugin>?<query>` or as a search link, on every plugin with one (`twt`, `tik`, `loi`,
+  `mht`), is refused before any request unless `--folder` (or `folder=`) is given and places
+  every category: one template, or a list with `*`. `[plugins.<code>] folder` in
+  `config.toml` doesn't count. The error: `<code>?<query>: a search needs --folder`, with a
+  hint showing `--folder "{query}"`. Its hits all go there, not to their owners' folders
+  (step 3 is for links only). A followed query stores its folder in its `targets` row (a
+  store migration), so a plain `flnd get` sync reuses it, and a different `--folder` on a
+  later run is refused unless `--again` is given.
 - Already working, per the probe, so step 4 only adds tests for them: tweet links with
   `/photo/<n>`, `/i/web/status/`, `mobile.` hosts; `m.facebook.com`; Instagram `/reel/`.
 
@@ -161,10 +170,10 @@ Files: `plugin.py` (`Post`), `engine/crawl.py`, the five plugins' single routes,
 | `fbk` permalink, `/<owner>/posts/<id>`, `share/p/` | `posts` | `media/fbk/<owner>/posts/` |
 | `ins` `/p/<code>` | `posts` | `media/ins/<username>/posts/` |
 | `ins` `/reel/`, `/reels/`, `/tv/` | `reels` | `media/ins/<username>/reels/` |
-| `twt` a tweet, each search hit | `posts` (`replies`: a reply) | `media/twt/<handle>/posts/` |
-| `tik` a video, each search hit | `videos` | `media/tik/<user>/videos/` |
+| `twt` a tweet | `posts` (`replies`: a reply) | `media/twt/<handle>/posts/` |
+| `tik` a video | `videos` | `media/tik/<user>/videos/` |
 | `tik` a photo post | `videos` | `media/tik/<user>/images/` |
-| `loi` a post, each search hit | `archive`, `photo` | `media/loi/<author>/<post> <title>/` |
+| `loi` a post | `archive`, `photo` | `media/loi/<author>/<post> <title>/` |
 
 - `Post` gains optional `owner` and `category`, read only on a single route (API 2 addition).
   `crawl.place` roots such a file at `media/<code>/<owner>/` with that category's `folder`
