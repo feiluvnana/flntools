@@ -782,6 +782,22 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual([b for _, _, b in ctx2.seen.holds], ["UserOriginalsTimeline"])
 
 
+class MissingTabTest(unittest.TestCase):
+    def test_a_tab_the_profile_lacks_redirects_to_it_and_ends_with_a_line(self):
+        # Live 2026-11-20: no Highlights tab (not Premium); /highlights lands on the profile.
+        profile = "https://x.com/example_handle"
+        for category, tab in (("highlights", "highlights"), ("media", "media"),
+                              ("replies", "with_replies"), ("reposts", "reposts")):
+            with self.subTest(category):
+                shown = FakePage(url=profile)
+                ctx = fake(pages={f"{profile}/{tab}": shown})
+                saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=[category])
+                self.assertEqual(saved, [])
+                self.assertIn(("info", f"{category}: this profile has no such tab"),
+                              ctx.seen.logs)
+                self.assertEqual(ctx.seen.holds, [])
+
+
 class LoadTest(unittest.TestCase):
     """S4: a tab that doesn't load fails its category, which is never recorded complete."""
 

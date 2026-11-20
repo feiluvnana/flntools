@@ -445,7 +445,8 @@ class Twitter(Plugin):
         timeline = TIMELINES[category]
         tab = profile["page"] + timeline.tab
         yielded: set[str] = set()
-        async for tweet, pinned in self._scroll(ctx, tab, timeline.query):
+        async for tweet, pinned in self._scroll(ctx, tab, timeline.query,
+                                                tab=category if timeline.tab else ""):
             tid = tweet_id_of(tweet)
             if tid and tid in yielded:
                 continue
@@ -455,13 +456,14 @@ class Twitter(Plugin):
                 yield post.replace(pinned=True) if pinned else post
 
     async def _scroll(self, ctx: Ctx, url: str,
-                      query: str) -> AsyncIterator[tuple[dict, bool]]:
+                      query: str, *, tab: str = "") -> AsyncIterator[tuple[dict, bool]]:
         """Open a tab and scroll it to its end, yielding each new tweet of `query`'s responses,
         and whether it is the pinned one.
 
         The end is the site's: a page that brings no new tweet, or `timeline_state` reading a
         last page. Search allows a few consecutive empty pages when the `Bottom` cursor
-        advances. The engine closes the generator sooner for its early stops.
+        advances. The engine closes the generator sooner for its early stops. A profile `tab`
+        that lands on another page (the user has no such tab) logs it and yields nothing.
 
         Raises:
             SiteError: the tab didn't load (NotFound for a 404), so nothing is recorded complete.
@@ -479,6 +481,10 @@ class Twitter(Plugin):
                 # A server error (a 503) may pass, so the engine's back-off tries it again.
                 raise SiteError(f"twt: {url} answered HTTP {landed.status}",
                                 status=landed.status, retryable=landed.status >= 500)
+            last = urlsplit(landed.url).path.rstrip("/").rsplit("/", 1)[-1].lower()
+            if tab and last != TIMELINES[tab].tab.strip("/"):
+                ctx.log("info", "{tab}: this profile has no such tab", tab=tab)
+                return
             async for data in responses:
                 tweets, cursor, pinned = read_timeline_page(data)
                 # 2026-11-16: a tombstone has no id; it is never new, nor stands for a seen one.
