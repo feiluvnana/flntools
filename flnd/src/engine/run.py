@@ -680,8 +680,8 @@ def _ignore(event: Any) -> None:
 # The tally: the run's live counts, and the `State` snapshots made from them
 # ---------------------------------------------------------------------------------------------
 
-# Seconds between two snapshots (60 Hz), and the window a speed is measured over.
-TICK = 1 / 60
+# Seconds between two snapshots (10 Hz), and the window a speed is measured over.
+TICK = 1 / 10
 SPEED_WINDOW = 3.0
 # The files in flight a snapshot names; `State.more` counts the rest.
 FILES_SHOWN = 6

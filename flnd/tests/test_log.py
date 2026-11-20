@@ -153,7 +153,7 @@ class JournalTest(unittest.TestCase):
                 t.join()
 
         lines = self.journal_path.read_text("utf-8").splitlines()
-        whole = [line for line in lines if re.fullmatch(r'\{"type": "Log", .*"x{200}".*\}', line)]
+        whole = [line for line in lines if re.fullmatch(r'\{"type":\s*"Log",.*"x{200}".*\}', line)]
         self.assertEqual(len(whole), 4000)
         self.assertEqual(len(lines), 4000)
         records = [json.loads(line) for line in whole]

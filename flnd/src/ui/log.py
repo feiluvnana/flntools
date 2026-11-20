@@ -6,7 +6,6 @@ SPEC.md#commands-and-flags explains it.
 from __future__ import annotations
 
 import atexit
-import json
 import logging
 import os
 import sys
@@ -92,6 +91,10 @@ def crash(home: str | os.PathLike[str], trace: str) -> Path | None:
     return path
 
 
+FLUSH_INTERVAL = 1.0
+FLUSH_BYTES = 64 * 1024
+
+
 class Journal:
     """A JSON Lines run journal file recording outcome records and log lines.
 
@@ -104,6 +107,8 @@ class Journal:
         self.path = Path(path)
         self.owner = owner
         self._file: IO[str] | None = None
+        self._buffered = 0
+        self._last_flush = 0.0
         # Held for each whole line and for the close. Reentrant: a Ctrl-C handler logs on the
         # main thread, which may be inside `write` already.
         self._lock = threading.RLock()
@@ -111,6 +116,8 @@ class Journal:
     def __enter__(self) -> Journal:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(self.path, "a", encoding="utf-8")
+        self._buffered = 0
+        self._last_flush = clock.wall()
         self.owner._journal = self
         return self
 
@@ -124,6 +131,17 @@ class Journal:
                 finally:
                     self._file = None
 
+    def flush(self) -> None:
+        """Flush buffered journal lines to disk."""
+        with self._lock:
+            if self._file is not None:
+                try:
+                    self._file.flush()
+                except (OSError, ValueError):
+                    pass
+                self._buffered = 0
+                self._last_flush = clock.wall()
+
     def write(self, record: Any) -> None:
         """Write one JSON record object, adding `at` and `type` if omitted.
 
@@ -135,34 +153,50 @@ class Journal:
         if self._file is None:
             return
 
-        event_type = type(record).__name__
+        now = clock.wall()
         if isinstance(record, dict):
-            event_type = str(record.get("type", "Event"))
+            data = dict(record)
+            if "type" not in data:
+                data["type"] = str(record.get("type", "Event"))
         elif hasattr(record, "__dict__"):
-            record = record.__dict__
-        data = msgspec.to_builtins(record, enc_hook=_encode)
-        if not isinstance(data, dict):
-            data = {"value": data}
+            data = dict(record.__dict__)
+            if "type" not in data:
+                data["type"] = type(record).__name__
+        elif isinstance(record, msgspec.Struct):
+            data = {f: getattr(record, f) for f in record.__struct_fields__}
+            data["type"] = type(record).__name__
+        else:
+            data = msgspec.to_builtins(record, enc_hook=_encode)
+            if not isinstance(data, dict):
+                data = {"value": data}
+            if "type" not in data:
+                data["type"] = type(record).__name__
 
-        if "type" not in data:
-            data["type"] = event_type
         if "at" not in data:
-            data["at"] = datetime.fromtimestamp(clock.wall(), tz=UTC).isoformat()
+            data["at"] = datetime.fromtimestamp(now, tz=UTC).isoformat()
 
-        line = json.dumps(data, ensure_ascii=False) + "\n"
+        line = msgspec.json.encode(data, enc_hook=_encode).decode("utf-8") + "\n"
+        urgent = data.get("level") in ("warn", "error")
         with self._lock:
             if self._file is not None:
                 self._file.write(line)
-                self._file.flush()
+                self._buffered += len(line)
+                if (urgent or self._buffered >= FLUSH_BYTES
+                        or (now - self._last_flush) >= FLUSH_INTERVAL):
+                    self._file.flush()
+                    self._buffered = 0
+                    self._last_flush = now
 
 
 def _encode(value: Any) -> Any:
     """Write a value msgspec has no form for: a path as a string, an error as its parts."""
-    if isinstance(value, os.PathLike):
-        return os.fspath(value)
+    if isinstance(value, (os.PathLike, Path)):
+        return Path(value).as_posix()
     if isinstance(value, BaseException):
         hint = getattr(value, "hint", None)
         return {"class": type(value).__name__, "message": str(value), "hint": hint}
+    if hasattr(value, "__dict__"):
+        return value.__dict__
     return str(value)
 
 

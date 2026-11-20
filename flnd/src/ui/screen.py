@@ -24,8 +24,8 @@ from flnkit.text import count, duration, size
 
 __all__ = ["Screen", "frame", "paused", "summary"]
 
-# Seconds between two screen redraws (60 fps).
-TICK = 1 / 60
+# Seconds between two screen redraws (10 fps).
+TICK = 1 / 10
 # The most cells a target, its categories and a file's path take, and a file's bar.
 TARGET_CELLS, CATEGORY_CELLS, PATH_CELLS, BAR_CELLS = 28, 14, 24, 30
 # The lines the block has beside its target and file rows: the header, the column titles, the
