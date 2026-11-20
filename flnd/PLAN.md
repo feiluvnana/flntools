@@ -55,8 +55,12 @@ A target is written one of three ways, and each plugin accepts every way that fi
 | `<plugin>:<value>` | a user or `me` (a post only where noted) | `ins:example_user`, `twt:me` |
 | `<plugin>?<query>` | a search, on plugins with one | `tik?cats`, `twt?from:example_handle` |
 
-- Then an optional category list: `<target>/<cat>[,<cat>...]`, or `/all`. With none, every
-  category is taken. This is the one way to choose categories (decision 2).
+- Then an optional category list: `<target>/<cat>[,<cat>...]`, or `/all`. With none, only
+  the owned categories (`own=True`) are taken, as the code does now (settled 2026-11-20 by the
+  user). Other people's are opt-in: `fbk` `tagged`; `ins` `tagged`, `reposts`; `twt`
+  `reposts`; `tik` `reposts`, `liked`, `favorites`. A target found by `me` or a query takes
+  its own owned set. The cookbook lists each plugin's owned and opt-in categories.
+  The suffix is the one way to choose categories (decision 2).
 - After `<plugin>:`, a `/` always starts the category list: `ins:example_user/tagged` is the
   user with one category. So no `<word>/<id>` forms (`ins:post/<code>` would read as the user
   `post`). A single post is written as its link. The two exceptions, kept because they can't
@@ -230,8 +234,9 @@ line limit. Opus reads the page once, end to end, against "no gray area".
 
 1. **Single-post folders (step 3).** Recommended: the owner's folder. The other way: keep
    `media/<code>/<post id>/` and only add the category.
-2. **Choosing categories.** Recommended: only the `/<cat>,<cat>` suffix on the target, as now,
-   documented in full. The other way: bring `--from <cats>` back as a flag, for one choice
+2. **Choosing categories.** Owned by default is settled. Recommended: only the `/<cat>,<cat>`
+   suffix on the target, as now, documented in full. The other way:
+   bring `--from <cats>` back as a flag, for one choice
    over many targets.
 3. **A category with no entry in a `--folder` list.** Recommended: its default place. The
    other way: refuse the run until every wanted category has an entry or `*` is given.
