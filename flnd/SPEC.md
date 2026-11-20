@@ -228,12 +228,11 @@ read), `intent`, `compose`, `login`; `x.com/` alone.
   video or photo post is `NotFound` with the hint `check the link in a browser; only video and photo
   links work`.
 - `tik?<words>`, `tiktok.com/search?q=<words>`, `tiktok.com/search/video?q=<words>`: a search (route
-  ``search``). The Videos tab is scrolled in the browser and each hit found as `tik:post/<id>`, so
-  `--limit N` is N posts. It needs `--folder`. The page's `api/search/item/full/` answers are read
-  as faked answers show; unconfirmed live.
+  ``search``). The Videos tab's `api/search/item/full/` is paged like a profile's, each hit found as
+  `tik:post/<id>`, so `--limit N` is N posts. It needs `--folder`. Unconfirmed live.
 - `tik:me`: the accounts the login follows, each as `tik:<uniqueId>` (route ``me``; needs a login,
-  else `LoginError` with the hint `log in: flnd auth login tik`). Read from `api/user/list/` after
-  opening your profile's Following list; unconfirmed live.
+  else `LoginError` with the hint `log in: flnd auth login tik`), read from `api/user/list/` after
+  opening your Following list; unconfirmed live.
 
 `tik:123` (under 16 digits) is a user. Refused with `tik: <what> aren't supported; give a user, a
 post or a search`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pages),
@@ -1023,22 +1022,23 @@ media/twt/example_handle/videos/2026-01-02_1234567891_0.mp4
 
 ### tik (TikTok)
 
-- **Reads:** a profile in the browser, by watching the page's own API answers while scrolling; one
-  video or photo post from the public embed page over HTTP; a search, a short link and `tik:me` in
-  the browser (see Targets).
+- **Reads:** a profile in the browser: the first scroll captures the page's own
+  `api/post/item_list/` request, whose pages go by `cursor` in the page (confirm live), else it
+  scrolls (logged). One post from the embed page; a search, short link and `tik:me` in the browser
+  (see Targets).
 - **Categories:** `videos` NF, `stories`, `playlists` NF, `profile` (own); `reposts`, `liked`,
-  `favorites` (opt-in; the last two only when the account made them public). `videos` and
-  `playlists` share one scroll.
+  `favorites` (opt-in; the last two only if public). `videos` and `playlists` share one scroll.
 - **Folder:** `{part}/{album}`: `part` is `videos` or `images` for a post, `albums` for a playlist
   video (`album` is the playlist's name), else the category; `profile` for `profile`.
 - **Filename:** `{date}_{post}_{idx}` (`idx` empty for a video; a photo's place from 1).
 - **Key:** `{post}_{idx}` (`tik:<id>`, `tik:<id>_<n>`); `profile` keys `profile/avatar_<id>.jpg`.
 - **Login:** cookies `sessionid` or `sid_tt` (optional).
 - **Limits and walls:** pace 0.2; no walls. A captcha gets 60 s in the browser window, then a block
-  hold; a fourth unsolved captcha fails the job. A walled post list fails `videos` and `playlists`
-  with `Hidden`.
-- **Known gaps:** a missing tab is "this profile has no such tab"; a tab that ignores the click for
-  10 s fails with `Changed`; only stories the page shows on load; no rate limit known.
+  hold; a fourth unsolved one fails the job. A 429 holds and carries on from the same cursor; an
+  empty page that says `hasMore` holds once, then ends with a warning. A walled post list fails
+  `videos` and `playlists` with `Hidden`.
+- **Known gaps:** no such tab is logged; a tab deaf to the click for 10 s fails `Changed`; stories
+  only as the page shows them on load.
 
 ```text
 media/tik/example_creator/videos/2026-01-02_1234567890123456789.mp4

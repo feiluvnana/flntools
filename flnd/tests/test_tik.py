@@ -13,6 +13,7 @@ import re
 import time
 import unittest
 from unittest import mock
+from urllib.parse import parse_qsl, urlsplit
 
 import no_profiles  # noqa: F401
 from fakes import filed
@@ -28,7 +29,7 @@ from flnd.errors import (
     SiteError,
     UsageError,
 )
-from flnd.plugin import Range, Target
+from flnd.plugin import Range, Request, Target
 from flnd.plugins.tik import TIKTOK_UA, Profile, TikTok, best_video
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
 from flnkit import html
@@ -595,6 +596,82 @@ class CaptchaTest(unittest.TestCase):
         ctx = fake(feeds=[Sent(FEEDS[0][0], POSTS, scroll=2)], ctx=Covered)
         posts, raised = listed(ctx, "videos")
         self.assertEqual((len(posts), raised, ctx.seen.holds), (6, None, []))
+
+
+class PagedTest(unittest.TestCase):
+    """The post list paged by the page's own `api/post/item_list/` request, in the page."""
+
+    LIST = f"{API}/api/post/item_list/"
+    FIRST = Request(f"{LIST}?secUid=x&count=2&cursor=0")
+
+    def ids(self, *ids, more, cursor=None):
+        body = {"hasMore": more, "itemList": [video(i, f"{CDN}/{i}", createTime=1700000000)
+                                              for i in ids]}
+        return {**body, "cursor": cursor} if cursor else body
+
+    def run_list(self, answers):
+        """The videos of a profile whose first page came by scrolling and the rest by `answers`,
+        a function of the asked cursor to a `Reply`."""
+        first = self.ids("1", "2", more=True, cursor="2")
+        ctx = fake(feeds=[Sent(f"{self.LIST}?count=2", first, request=self.FIRST)],
+                   routes={self.LIST: lambda asked: answers(dict(
+                       parse_qsl(urlsplit(asked.url).query))["cursor"])})
+        posts, raised = listed(ctx, "videos")
+        return [post.id for post in posts], raised, ctx
+
+    def test_paged_to_its_end(self):
+        pages = {"2": self.ids("3", "4", more=True, cursor="4"),
+                 "4": self.ids("5", more=False)}
+        got, raised, ctx = self.run_list(lambda cursor: Reply(pages[cursor]))
+        self.assertEqual((got, raised), (["1", "2", "3", "4", "5"], None))
+        self.assertEqual(ctx.seen.scrolls, 0)
+        self.assertEqual([url.startswith(self.LIST) for _, url, _ in ctx.seen.requests].count(True), 2)
+        self.assertIn(("info", "videos: paged by its own request"), ctx.seen.logs)
+
+    def test_a_429_mid_paging_carries_on_with_no_item_twice(self):
+        pages = {"2": self.ids("3", more=True, cursor="3"), "3": self.ids("4", more=False)}
+        limited = [True]
+
+        def answers(cursor):
+            if cursor == "3" and limited:
+                limited.clear()
+                return Reply(None, status=429, headers={"retry-after": "1"})
+            return Reply(pages[cursor])
+
+        got, raised, ctx = self.run_list(answers)
+        self.assertEqual((got, raised), (["1", "2", "3", "4"], None))
+        self.assertTrue(ctx.seen.holds)
+
+    def test_no_captured_request_or_an_unreadable_answer_scrolls_on(self):
+        first = self.ids("1", "2", more=True, cursor="2")
+        for name, request, answer in (("no request", None, self.ids("9", more=False)),
+                                      ("unreadable", self.FIRST, "<html></html>")):
+            with self.subTest(name):
+                ctx = fake(feeds=[Sent(f"{self.LIST}?count=2", first, request=request),
+                                  Sent(f"{self.LIST}?count=2", self.ids("3", more=False),
+                                       scroll=1)],
+                           routes={self.LIST: Reply(answer)})
+                posts, raised = listed(ctx, "videos")
+                self.assertEqual(([post.id for post in posts], raised), (["1", "2", "3"], None))
+                self.assertEqual(ctx.seen.scrolls, 1)
+                self.assertEqual(any("can't be read" in line[1] for line in ctx.seen.logs),
+                                 request is not None)
+
+    def test_an_empty_page_that_says_hasmore_is_held_once_then_ends(self):
+        asked = []
+
+        def answers(cursor):
+            asked.append(cursor)
+            return Reply(self.ids(more=True, cursor="9"))
+
+        got, raised, ctx = self.run_list(answers)
+        self.assertEqual((got, raised, asked), (["1", "2"], None, ["2", "2"]))
+        self.assertEqual(len(ctx.seen.holds), 1)
+        self.assertTrue([log for log in ctx.seen.logs if log[0] == "warn"])
+        # A page that comes full after the hold carries on.
+        pages = iter([self.ids(more=True, cursor="9"), self.ids("3", more=False)])
+        got, raised, ctx = self.run_list(lambda cursor: Reply(next(pages)))
+        self.assertEqual((got, len(ctx.seen.holds)), (["1", "2", "3"], 1))
 
 
 class BestVideoTest(unittest.TestCase):
