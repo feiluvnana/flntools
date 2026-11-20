@@ -1323,7 +1323,9 @@ def _place(held: files.Part, item: Item, received: Mapping[str, str]) -> None:
         if kind == STEM:
             url = _url(item.file)
             planned = stem_extension("", url)
-            base = held.dest.name
+            # From the planned name, not `held.dest`: a file with mirrors is placed once per
+            # mirror, and a name already placed would take its extension twice.
+            base = item.dest.name
             if planned and base.lower().endswith(planned):
                 base = base[:-len(planned)]
             # The rule (`stem_extension`), then the bytes when they are another known kind.
@@ -1333,7 +1335,7 @@ def _place(held: files.Part, item: Item, received: Mapping[str, str]) -> None:
         elif kind == files.SNIFF:
             found = files.kind_of(f"file{extension}") if extension else None
             if found is not None:
-                held.dest = held.dest.with_name(held.dest.name + extension)
+                held.dest = held.dest.with_name(item.dest.name + extension)
         elif extension is not None and not same_extension(extension, held.dest.suffix):
             held.dest = held.dest.with_suffix(extension)
     except BaseException:

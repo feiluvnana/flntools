@@ -1261,6 +1261,38 @@ class EngineTest(EngineCase):
         self.assertEqual([found.path for found, (_, _, body, _) in zip(kit, rows) if body != JPEG],
                          [name for _, _, body, name in rows if body != JPEG])
 
+    def test_a_file_with_mirrors_is_named_once(self):
+        """A stem with mirrors lands once and is placed once: its extension is not added again
+        for the last mirror. The templates are the plugins': a single video has an empty idx."""
+        mp4 = b"\0\0\0\x18ftypmp42" + b"\0" * 60
+        rows = [  # plugin, filename template, post fields, name saved
+            ("tik", "{date}_{post}_{idx}", {"idx": ""}, "2026-01-02_p1.mp4"),
+            ("fbk", "{date}_{post}", {}, "2026-01-02_p1.mp4"),
+            ("ins", "{date}_{post}{index}", {}, "2026-01-02_p1.mp4"),
+            ("twt", "{date}_{post}_{n}", {"n": ""}, "2026-01-02_p1.mp4"),
+        ]
+        urls = [f"{CDN_URL}/one", f"{CDN_URL}/two"]
+        for url in urls:
+            self.routes[url] = _net.reply(200, content=mp4, headers={"Content-Type": "video/mp4"})
+        for code, template, declared, expected in rows:
+            with self.subTest(plugin=code):
+                class Mirrored(Saving):
+                    filename = template
+                    fields = tuple(declared)
+                    given = declared
+
+                    @route("exn:{user}")
+                    async def user(self, ctx, user):
+                        yield Post("p1", [File(mirrors=urls)], date="2026-01-02", **self.given)
+
+                self.run_engine(Mirrored, targets=["exn:example_user"])
+                folder = self.home / "media" / "exn"
+                self.assertEqual(sorted(path.relative_to(folder).as_posix() for path in
+                                        folder.rglob("*") if path.is_file()
+                                        and not path.name.endswith(".json")),
+                                 [f"example_user/{expected}"])
+                shutil.rmtree(folder)
+
     def test_a_dry_run_shows_the_path_that_is_saved(self):
         self.routes[f"{CDN_URL}/d.php"] = _net.reply(200, content=b"plain")
         Saving.files = (File(f"{CDN_URL}/d.php", name="01"),)
