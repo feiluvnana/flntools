@@ -980,8 +980,9 @@ up to 32.
 ### ins (Instagram)
 
 - **Reads:** a profile's posts, reels, tagged, reposts, stories, highlights and profile picture; one
-  post or reel by link; `ins:me`. Logged in, `posts`, single posts, lazy posts and `ins:me` use the
-  web API from inside the tab, else pages are read.
+  post or reel by link; `ins:me`. Logged in, `posts`, `ins:me` and a post use the web API from
+  inside the tab; logged out, pages are opened. A 429 on a post's info holds and asks again; only
+  an unreadable answer opens that post's page. No captured request is replayed.
 - **Categories:** `posts` NF, `reels` NF, `stories`, `highlights`, `profile` (own); `tagged`,
   `reposts` NF (opt-in). A pinned post does not count toward the stop for older posts.
 - **Folder:** `{category}`; `highlights/{album}` (a folder per highlight); `profile`.

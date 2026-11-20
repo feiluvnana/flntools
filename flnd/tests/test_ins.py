@@ -1,7 +1,7 @@
 """Instagram on plugin API 2 (`src/plugins/ins.py`), run on `FakeCtx`: no network, no browser.
 
-The tabs are faked pages whose feeds bring the scrolled results; a lazy post's page answers the
-in-page fetch of `/p/<code>/`, and the post's own page answers `open` when the HTML lacks it.
+The tabs are faked pages whose feeds bring the scrolled results; a lazy post is read from its
+own page, opened in a tab of its own (logged in: from `/api/v1/media/<pk>/info/` first).
 """
 
 import asyncio
@@ -12,11 +12,10 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any
 from unittest import mock
-from urllib.parse import parse_qsl, urlencode
 
 import fakes
 
-from flnd.errors import Blocked, Changed, LoginError, NotFound, SiteError, UsageError
+from flnd.errors import Changed, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import File, Post, Range, Request, Target
 from flnd.plugins.ins import APP_ID, Instagram, best_file, code_pk, pk_stamp
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
@@ -126,7 +125,7 @@ TABS = {
         {"media": feed("RP1", **image("https://cdn.example/rp1.jpg"))},
         {"media": {"code": "RP2"}}]}}}},
 }
-# The pages of the lazy posts, as the in-page fetch of `/p/<code>/` answers them.
+# The pages of the lazy posts, as `/p/<code>/` opened in a tab answers.
 POSTS = {
     "CAR": post_page("CAR", taken_at=STAMP, carousel_media=[
         image("https://cdn.example/c0.jpg"),
@@ -138,8 +137,9 @@ POSTS = {
         image("https://cdn.example/t0.jpg"), image("https://cdn.example/t1.jpg")]),
     "RP2": post_page("RP2", taken_at=STAMP, **image("https://cdn.example/rp2.jpg")),
 }
-ROUTES = {f"{SITE}/p/{code}/": Reply(page) for code, page in POSTS.items()}
+ROUTES = {}
 PAGES = {
+    **{f"{SITE}/p/{code}/": page for code, page in POSTS.items()},
     # The profile page is the posts tab: its HTML embeds the user and the first grid page.
     f"{SITE}/example_creator/": embedded(PROFILE, HIGHLIGHTS, TABS[""]),
     **{f"{SITE}/example_creator/{tab}": embedded(result)
@@ -282,15 +282,16 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(by_path["posts/2023-11-15_CAR_1.mp4"].file.audio,
                          "https://cdn.example/a95.mp4")
         self.assertEqual(by_path["posts/2023-11-15_P1.jpg"].post.headers, {"Referer": f"{SITE}/"})
-        # S22: no media-API call; each lazy post fetches its page HTML directly, R1 once a tab.
-        self.assertEqual(fetched(ctx), [f"{SITE}/p/{code}/" for code in (
-            "CAR", "R1", "NOFILE", "R1", "R2", "T1", "RP2")])
-        self.assertFalse(any(options["in_page"] for _, _, options in ctx.seen.requests))
+        # S22: logged out, no request is sent; each lazy post opens its own page, R1 once a tab.
+        self.assertEqual(ctx.seen.requests, [])
         # The profile page is the posts tab, so highlights and the picture load nothing more.
-        self.assertEqual(ctx.seen.visited, [
+        visited = [url for url in ctx.seen.visited if "/p/" not in url]
+        self.assertEqual(visited, [
             f"{SITE}/example_creator/", f"{SITE}/example_creator/reels/",
             f"{SITE}/example_creator/tagged/", f"{SITE}/example_creator/reposts/",
             f"{SITE}/stories/example_creator/", f"{SITE}/stories/highlights/9001/"])
+        self.assertEqual(sorted(url for url in ctx.seen.visited if "/p/" in url), sorted(
+            f"{SITE}/p/{code}/" for code in ("CAR", "R1", "NOFILE", "R1", "R2", "T1", "RP2")))
 
     def test_the_default_takes_only_the_accounts_own(self):
         folders = {item.path.split("/")[0] for item in run()}
@@ -381,15 +382,16 @@ class TabTest(unittest.TestCase):
                     **options)
 
     def test_each_lazy_post_is_read_where_the_tab_lists_it(self):
-        """S17: a lazy post's files come from an in-page fetch while the tab scrolls on, so
-        none is put aside for after the scroll, and no page is opened for it."""
+        """S17: a lazy post's files come from its own page while the tab scrolls on, so
+        none is put aside for after the scroll, and it is read from a page of its own."""
         ctx = self.tab(grid(feed("P2", **image("https://cdn.example/p2.jpg")), more=""),
-                       embeds=[grid({"code": "RP2", "product_type": "feed"}, more="c1")])
+                       embeds=[grid({"code": "RP2", "product_type": "feed"}, more="c1")],
+                       pages={f"{SITE}/p/RP2/": POSTS["RP2"]})
         saved = run(categories=["posts"], ctx=ctx)
         self.assertEqual([item.path for item in saved],
                          [f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_P2.jpg"])
-        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/"])
-        self.assertEqual(fetched(ctx), [f"{SITE}/p/RP2/"])
+        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/RP2/"])
+        self.assertEqual(fetched(ctx), [])
 
     def test_a_post_page_without_the_post_is_read_from_its_own_tab(self):
         """The fallback page is opened from the post's files, in a tab of its own: the
@@ -398,29 +400,10 @@ class TabTest(unittest.TestCase):
             "code": "RP2", "taken_at": STAMP, **image("https://cdn.example/rp2.jpg")}}})])
         ctx = self.tab(grid(feed("P2", **image("https://cdn.example/p2.jpg")), more=""),
                        embeds=[grid({"code": "RP2", "product_type": "feed"}, more="c1")],
-                       routes={f"{SITE}/p/RP2/": Reply("<html></html>")},
                        pages={f"{SITE}/p/RP2/": own})
         self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
                          [f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_P2.jpg"])
         self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/RP2/"])
-
-    def test_when_post_page_does_not_embed_later_lazy_posts_open_directly(self):
-        """Once `/p/<code>/` HTML proves not to embed the post, later lazy posts skip the fetch."""
-        own = {code: FakePage("<html></html>", feeds=[Sent(GRAPHQL, {"data": {
-            "xig_fetch_media": {"code": code, "taken_at": STAMP,
-                                **image(f"https://cdn.example/{code.lower()}.jpg")}}})])
-            for code in ("RP2", "RP3")}
-        ctx = self.tab(
-            embeds=[grid({"code": "RP2", "product_type": "feed"},
-                         {"code": "RP3", "product_type": "feed"}, more="")],
-            routes={f"{SITE}/p/RP2/": Reply("<html></html>"),
-                    f"{SITE}/p/RP3/": Reply("<html></html>")},
-            pages={f"{SITE}/p/RP2/": own["RP2"], f"{SITE}/p/RP3/": own["RP3"]})
-        self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
-                         [f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_RP3.jpg"])
-        self.assertEqual(fetched(ctx), [f"{SITE}/p/RP2/"])
-        self.assertEqual(ctx.seen.visited,
-                         [f"{SITE}/example_creator/", f"{SITE}/p/RP2/", f"{SITE}/p/RP3/"])
 
     def test_a_pinned_post_keeps_its_date_and_is_marked_pinned(self):
         """Pinned posts above newer ones don't break newest-first; `--when` still drops them."""
@@ -430,12 +413,13 @@ class TabTest(unittest.TestCase):
                 "clips_tab_pinned_user_ids": [42]}
         new = feed("NEW", taken_at=STAMP + 86400, **image("https://cdn.example/new.jpg"))
         embeds = [grid(old, lazy, new, more="")]
-        saved = run(categories=["posts"], ctx=self.tab(embeds=embeds))
+        pages = {f"{SITE}/p/RP2/": POSTS["RP2"]}
+        saved = run(categories=["posts"], ctx=self.tab(embeds=embeds, pages=pages))
         self.assertEqual([(item.path, day(item.post.date).isoformat(), item.post.pinned)
                           for item in saved], [
             ("posts/2023-10-16_OLD.jpg", "2023-10-16", True),
             (f"posts/{DAY}_RP2.jpg", DAY, True), ("posts/2023-11-16_NEW.jpg", "2023-11-16", False)])
-        ctx = self.tab(embeds=embeds, when=Range(since=date(2023, 11, 1)))
+        ctx = self.tab(embeds=embeds, pages=pages, when=Range(since=date(2023, 11, 1)))
         self.assertEqual([item.post.id for item in run(categories=["posts"], ctx=ctx)],
                          ["RP2", "NEW"])
 
@@ -443,7 +427,7 @@ class TabTest(unittest.TestCase):
         """A lazy post whose page answers 404 is that post's failure; the tab goes on."""
         ctx = self.tab(grid(feed("P2", **image("https://cdn.example/p2.jpg")), more=""),
                        embeds=[grid({"code": "RP2", "product_type": "feed"}, more="c1")],
-                       routes={f"{SITE}/p/RP2/": Reply(status=404)})
+                       pages={f"{SITE}/p/RP2/": FakePage(status=404)})
         self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
                          [f"posts/{DAY}_P2.jpg"])
         self.assertEqual([(post, type(error)) for post, error in ctx.seen.failed],
@@ -510,44 +494,34 @@ class TabTest(unittest.TestCase):
             with self.subTest(width=width, original=original):
                 item = feed("RP2", **{**image("https://cdn.example/rp2.jpg", width=width),
                                       "original_width": original})
-                ctx = self.tab(grid(item, more=""), embeds=[grid(item, more="c1")])
+                ctx = self.tab(grid(item, more=""), embeds=[grid(item, more="c1")],
+                               pages={f"{SITE}/p/RP2/": POSTS["RP2"]})
                 self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
                                  [f"posts/{DAY}_RP2.jpg"])
-                self.assertEqual(fetched(ctx), requests)
+                self.assertEqual(ctx.seen.visited[1:], requests)
 
     def test_a_lazy_post_outside_when_by_its_own_date_saves_nothing(self):
         """Its pk says the 15th, which `--when` keeps; its page says the 14th, which it drops."""
         page = post_page("RP2", taken_at=STAMP - 86400, **image("https://cdn.example/rp2.jpg"))
         ctx = self.tab(embeds=[grid({"code": "RP2", "pk": PK["T1"], "product_type": "feed"},
                                     more="")],
-                       routes={f"{SITE}/p/RP2/": Reply(page)}, when=Range(since=date(2023, 11, 15)))
+                       pages={f"{SITE}/p/RP2/": page}, when=Range(since=date(2023, 11, 15)))
         self.assertEqual(run(categories=["posts"], ctx=ctx), [])
-        self.assertEqual(fetched(ctx), [f"{SITE}/p/RP2/"])
+        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/RP2/"])
 
     def test_a_please_wait_answer_holds_and_the_same_post_is_saved(self):
-        throttles = [Reply(THROTTLE)]
-
-        def page(request):
-            return throttles.pop() if throttles else Reply(POSTS["RP2"])
-
+        single = {"data": {"xig_fetch_media": {"code": "RP2", "taken_at": STAMP,
+                                               **image("https://cdn.example/rp2.jpg")}}}
+        feeds = Loads([Sent(GRAPHQL, THROTTLE)], [Sent(GRAPHQL, single)])
         ctx = self.tab(THROTTLE, grid(feed("P2", **image("https://cdn.example/p2.jpg")), more=""),
                        embeds=[grid({"code": "RP2", "product_type": "feed"}, more="c1")],
-                       routes={f"{SITE}/p/RP2/": page})
+                       pages={f"{SITE}/p/RP2/": FakePage("<html></html>", feeds=feeds)})
         saved = run(categories=["posts"], ctx=ctx)
         self.assertEqual([item.path for item in saved],
                          [f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_P2.jpg"])
-        # One hold for the fetch's answer (blocked), one for the feed's (ctx.hold).
-        [fetch, scroll] = [reason for reason, _, _ in ctx.seen.holds]
-        self.assertTrue(fetch.startswith("ins: blocked, HTTP 200"), fetch)
-        self.assertEqual(scroll, "Instagram asked to wait a few minutes")
-
-    def test_while_blocked_no_post_page_opens(self):
-        """S3: a lazy post refused for good raises; it never opens its page instead."""
-        ctx = self.tab(embeds=[grid({"code": "RP2", "product_type": "feed"}, more="")],
-                       routes={f"{SITE}/p/RP2/": Reply(THROTTLE)})
-        with self.assertRaises(Blocked):
-            run(categories=["posts"], ctx=ctx)
-        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/"])
+        # One hold for the post page's answer, one for the feed's.
+        self.assertEqual([reason for reason, _, _ in ctx.seen.holds],
+                         ["Instagram asked to wait a few minutes"] * 2)
 
     def test_a_dash_video_keeps_its_mp4_as_a_mirror_without_the_audio(self):
         """S9: the audio joins only the DASH video, so the MP4 saves alone when it fails."""
@@ -618,50 +592,6 @@ class TabTest(unittest.TestCase):
         self.assertIn(f"{SITE}/example_creator/", ctx.seen.visited)
         self.assertFalse(any("/p/" in url for url in fetched(ctx)))
 
-    def test_captured_graphql_post_query_replays_for_later_posts(self):
-        """Once `opened_post` captures a `POST /graphql/query`, later posts replay it."""
-        def gql_request(code):
-            return Request(GRAPHQL, method="POST", headers={
-                "content-type": "application/x-www-form-urlencoded",
-                "x-fb-friendly-name": "PolarisPostRootQuery",
-                "x-fb-lsd": "lsd-tok",
-            }, body=urlencode({
-                "fb_dtsg": "dtsg-tok", "lsd": "lsd-tok", "doc_id": "123456",
-                "variables": json.dumps({"shortcode": code}),
-            }))
-
-        def gql_reply(req):
-            form = dict(parse_qsl(req.body or ""))
-            code = json.loads(form["variables"])["shortcode"]
-            if code == "STALE":
-                return Reply({"errors": [{"message": "stale doc_id"}]})
-            return Reply({"data": {"xdt_api__v1__media__shortcode__web_info": {"items": [{
-                "code": code, "taken_at": STAMP,
-                **image(f"https://cdn.example/{code.lower()}.jpg")}]}}})
-
-        pages = {
-            f"{SITE}/example_creator/": FakePage(embedded(grid(
-                {"code": "RP2", "product_type": "feed"},
-                {"code": "RP3", "product_type": "feed"},
-                {"code": "STALE", "product_type": "feed"}, more=""))),
-            f"{SITE}/p/RP2/": FakePage("<html></html>", feeds=[Sent(
-                GRAPHQL, {"data": {"xig_fetch_media": {
-                    "code": "RP2", "taken_at": STAMP, **image("https://cdn.example/rp2.jpg")}}},
-                request=gql_request("RP2"))]),
-            f"{SITE}/p/STALE/": FakePage("<html></html>", feeds=[Sent(
-                GRAPHQL, {"data": {"xig_fetch_media": {
-                    "code": "STALE", "taken_at": STAMP, **image("https://cdn.example/s.jpg")}}},
-                request=gql_request("STALE"))]),
-        }
-        ctx = fake(routes={f"{SITE}/p/RP2/": Reply("<html></html>"), GRAPHQL: gql_reply},
-                   pages=pages)
-        saved = run(categories=["posts"], ctx=ctx)
-        self.assertEqual([item.path for item in saved], [
-            f"posts/{DAY}_RP2.jpg", f"posts/{DAY}_RP3.jpg", f"posts/{DAY}_STALE.jpg"])
-        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/RP2/",
-                                            f"{SITE}/p/STALE/"])
-        self.assertEqual(fetched(ctx), [f"{SITE}/p/RP2/", GRAPHQL, GRAPHQL])
-
     def test_polaris_timeline_and_xig_polaris_media_embeds_are_read(self):
         """2026-11 public pages embed `xig_user_by_username` and `xig_polaris_media`."""
         profile_embed = {"data": {"xig_user_by_username": {
@@ -679,14 +609,14 @@ class TabTest(unittest.TestCase):
                                         **image("https://cdn.example/pol1.jpg")},
         }}})
         ctx = fake(
-            pages={f"{SITE}/example_creator/": FakePage(embedded(profile_embed, grid_embed))},
-            routes={f"{SITE}/p/POL1/": Reply(pol1)},
+            pages={f"{SITE}/example_creator/": FakePage(embedded(profile_embed, grid_embed)),
+                   f"{SITE}/p/POL1/": pol1},
         )
         saved = run(categories=["posts", "profile"], ctx=ctx)
         self.assertEqual(sorted(item.path for item in saved),
                          [f"posts/{DAY}_POL1.jpg", "profile/pic.jpg"])
-        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/"])
-        self.assertEqual(fetched(ctx), [f"{SITE}/p/POL1/"])
+        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/POL1/"])
+        self.assertEqual(fetched(ctx), [])
 
 
 class PostTest(unittest.TestCase):
@@ -737,8 +667,8 @@ class PostTest(unittest.TestCase):
         self.assertTrue(ctx.seen.requests[0][2]["in_page"])
         self.assertEqual(ctx._plugin.claim, "hmac.next")
 
-    def test_logged_in_media_info_not_found_and_refusal_fallback(self):
-        """Empty items/404 raise `NotFound`; non-JSON refusal falls back to tab and GraphQL."""
+    def test_logged_in_media_info_not_found(self):
+        """Empty items, another post, or a 404 raise `NotFound`."""
         pk_single = code_pk("SINGLE")
         for reply in (Reply(status=404), Reply({"items": []}),
                       Reply({"items": [{"code": "OTHER", "taken_at": STAMP,
@@ -748,23 +678,23 @@ class PostTest(unittest.TestCase):
                            routes={f"{SITE}/api/v1/media/{pk_single}/info/": reply})
                 with self.assertRaises(NotFound):
                     run("https://www.instagram.com/p/SINGLE/", ctx=ctx)
-                self.assertFalse(ctx._plugin.media_info_refused)
                 self.assertEqual(ctx.seen.visited, [])
 
-        # When media info is refused, logged-in fallback skips raw GET /p/ and goes to
-        # opened_post -> captured GraphQL replay for the next post.
-        def gql_request(code):
-            return Request(GRAPHQL, method="POST", headers={
-                "content-type": "application/x-www-form-urlencoded",
-                "x-fb-friendly-name": "PolarisPostRootQuery",
-            }, body=urlencode({"doc_id": "123", "variables": json.dumps({"shortcode": code})}))
+    def test_a_please_wait_on_media_info_is_held_and_retried_never_fallen_back(self):
+        """A 429 on media info is `Blocked`: the engine holds, then asks the API again."""
+        pk = code_pk("SINGLE")
+        answers = [Reply(status=429), Reply({"items": [{
+            "code": "SINGLE", "taken_at": STAMP, **image("https://cdn.example/s.jpg")}]})]
+        ctx = fake(cookies={"sessionid": "99%3As%3A1"},
+                   routes={f"{SITE}/api/v1/media/{pk}/info/": lambda request: answers.pop(0)})
+        saved = run("https://www.instagram.com/p/SINGLE/", ctx=ctx)
+        self.assertEqual([item.path for item in saved], [f"SINGLE/{DAY}_SINGLE.jpg"])
+        self.assertEqual(len(ctx.seen.holds), 1)
+        self.assertEqual(fetched(ctx), [f"{SITE}/api/v1/media/{pk}/info/"] * 2)
+        self.assertEqual(ctx.seen.visited, [])
 
-        def gql_reply(req):
-            code = json.loads(dict(parse_qsl(req.body or ""))["variables"])["shortcode"]
-            return Reply({"data": {"xdt_api__v1__media__shortcode__web_info": {"items": [{
-                "code": code, "taken_at": STAMP,
-                **image(f"https://cdn.example/{code.lower()}.jpg")}]}}})
-
+    def test_an_unreadable_media_info_opens_that_posts_page_only(self):
+        """A `Changed` answer opens the post's page; the next post still uses the API."""
         pages = {
             f"{SITE}/example_creator/reels/": FakePage(embedded({"data": {"fetch__XDTUserDict": {
                 "clips_connection": {"edges": [
@@ -773,22 +703,21 @@ class PostTest(unittest.TestCase):
                     {"node": {"media": {"code": "RP3", "pk": PK["R2"],
                                         "product_type": "clips"}}},
                 ]}}}})),
-            f"{SITE}/p/RP2/": FakePage("<html></html>", feeds=[Sent(
-                GRAPHQL, {"data": {"xig_fetch_media": {
-                    "code": "RP2", "taken_at": STAMP, **image("https://cdn.example/rp2.jpg")}}},
-                request=gql_request("RP2"))]),
+            f"{SITE}/p/RP2/": POSTS["RP2"],
         }
         ctx = fake(
             cookies={"sessionid": "99%3As%3A1"},
             routes={f"{SITE}/api/v1/media/{PK['R1']}/info/": Reply("<html></html>"),
-                    GRAPHQL: gql_reply},
+                    f"{SITE}/api/v1/media/{PK['R2']}/info/": Reply({"items": [{
+                        "code": "RP3", "taken_at": STAMP,
+                        **image("https://cdn.example/rp3.jpg")}]})},
             pages=pages,
         )
         saved = run(categories=["reels"], ctx=ctx)
         self.assertEqual([item.path for item in saved],
                          [f"reels/{DAY}_RP2.jpg", f"reels/{DAY}_RP3.jpg"])
-        self.assertTrue(ctx._plugin.media_info_refused)
-        self.assertEqual(fetched(ctx), [f"{SITE}/api/v1/media/{PK['R1']}/info/", GRAPHQL])
+        self.assertEqual(fetched(ctx), [f"{SITE}/api/v1/media/{PK['R1']}/info/",
+                                        f"{SITE}/api/v1/media/{PK['R2']}/info/"])
         self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/reels/", f"{SITE}/p/RP2/"])
 
     def test_a_post_link_is_filed_by_its_owner_and_kind(self):

@@ -4,14 +4,13 @@ link, and the accounts the login follows, read from the pages. SPEC.md#ins-insta
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import aclosing
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any, NamedTuple
-from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
+from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from flnd.plugin import (
     Blocked,
@@ -85,10 +84,6 @@ API_PATHS = ("/api/", "/graphql")
 FOLLOWING_COUNT = 100
 # Posts asked for in one page of the user feed API.
 FEED_COUNT = 33
-# Response keys that carry a single post in GraphQL answers.
-POST_KEYS = ("xig_fetch_media", "xdt_api__v1__media__shortcode__web_info")
-# Captured GraphQL request headers safe to replay via in-page `fetch`; `sign` sets the rest.
-QUERY_HEADERS = ("content-type", "x-fb-", "x-bloks-")
 # A grid image within this share of the post's `original_width` is its full size, not a thumbnail.
 FULL_SIZE = 0.9
 # Instagram ids carry creation time: milliseconds since this moment (2011-08-24 21:07:01.721
@@ -156,14 +151,8 @@ class Instagram(Plugin):
     def __init__(self) -> None:
         # The `X-IG-WWW-Claim` Instagram gave last, echoed on the next API calls (2026-11-12).
         self.claim = "0"
-        # Whether `/p/<code>/` HTML embeds its post; False skips redundant fetches for the run.
-        self.embeds_post: bool | None = None
         # Whether `/api/v1/feed/user/` was refused this run, falling back to tab scrolling.
         self.feed_refused = False
-        # Whether `/api/v1/media/<pk>/info/` was refused this run.
-        self.media_info_refused = False
-        # Captured GraphQL post query (`POST /graphql/query`) replayed instead of opening `/p/`.
-        self.post_query: PostQuery | None = None
         # `username -> user_id` cached from `ins:me` or `web_profile_info` for `api_posts`.
         self.user_ids: dict[str, str] = {}
 
@@ -199,10 +188,8 @@ class Instagram(Plugin):
         code = code.removeprefix("post/")
         if account_id(ctx.cookies) is not None:
             media = await logged_in_post(ctx, code, self)
-        elif self.post_query is not None:
-            media = await post_by_query(ctx, code, self)
         else:
-            media = await opened_post(ctx, code, self)
+            media = await opened_post(ctx, code)
         if not post_files(media):
             raise NotFound(f"ins: post {code} has no files")
         yield post_of(media)
@@ -398,39 +385,6 @@ class Profile(Mapping[str, Any]):
         self.highlights += [h for h in listed_highlights(result) if h not in self.highlights]
 
 
-class PostQuery(NamedTuple):
-    """A captured GraphQL post query (`POST /graphql/query`), replayed with a new shortcode."""
-
-    url: str
-    headers: dict[str, str]
-    pairs: tuple[tuple[str, str], ...]
-    var_index: int
-    variables: dict[str, Any]
-
-
-def parse_post_query(request: Request) -> PostQuery | None:
-    """Extract a replayable `PostQuery` from a captured `/graphql` POST; None for others."""
-    if request.method != "POST" or not isinstance(request.body, str):
-        return None
-    if GRAPHQL not in urlsplit(request.url).path:
-        return None
-    pairs = parse_qsl(request.body, keep_blank_values=True)
-    for idx, (key, raw) in enumerate(pairs):
-        if key != "variables":
-            continue
-        try:
-            variables = json.loads(raw)
-        except ValueError:
-            return None
-        if not isinstance(variables, dict) or "shortcode" not in variables:
-            return None
-        headers = {k: v for k, v in (request.headers or {}).items()
-                   if k.lower().startswith(QUERY_HEADERS)}
-        headers.setdefault("content-type", "application/x-www-form-urlencoded")
-        return PostQuery(request.url, headers, tuple(pairs), idx, variables)
-    return None
-
-
 async def api_posts(ctx: Ctx, profile: Profile, plugin: Instagram) -> AsyncIterator[Post]:
     """Read `posts` via `/api/v1/feed/user/<id>/`, falling back to `read_tab` if refused."""
     user_id = profile.id or plugin.user_ids.get(profile.user)
@@ -490,7 +444,6 @@ async def api_posts(ctx: Ctx, profile: Profile, plugin: Instagram) -> AsyncItera
 
 async def page_results(
     ctx: Ctx, url: str, *, enough: Callable[[list[Any]], bool] | None = None,
-    on_item: Callable[[Any, Request | None], None] | None = None,
 ) -> list[Any]:
     """Every result of a page opened without a scroll: the ones it embeds, then its calls'.
 
@@ -500,7 +453,6 @@ async def page_results(
     Args:
         enough: whether the results hold what the caller wants, a throttle beside them or
             not; None wants every answer unthrottled.
-        on_item: called with `(result, request)` for each captured feed response.
     """
     while True:
         found: list[Any] = []
@@ -512,8 +464,6 @@ async def page_results(
                     embedded = False
                 else:
                     found.append(item)
-                    if on_item is not None:
-                        on_item(item, ctx.request)
         if (enough is not None and enough(found)) or not any(map(throttled, found)):
             return found
         await ctx.hold(THROTTLE_REASON)
@@ -589,49 +539,31 @@ def lazy_post(ctx: Ctx, code: str, pk: str | None, plugin: Instagram | None = No
 
 async def post_page(ctx: Ctx, code: str, plugin: Instagram | None = None, *,
                     pk: str | None = None) -> dict:
-    """A post, from `/api/v1/media/<pk>/info/`, a replayed query, its HTML, or its own tab.
-
-    Never sends a raw HTTP `GET /p/<code>/` when logged in. Once logged-out `/p/<code>/` HTML
-    proves not to embed its post, later lazy posts skip the HTML fetch.
+    """A post: logged in from `/api/v1/media/<pk>/info/`, otherwise from its own page.
 
     Raises:
-        NotFound: none of the sources holds a post of that code.
+        NotFound: the source holds no post of that code.
     """
-    if account_id(ctx.cookies) is not None:
-        if plugin is not None:
-            return await logged_in_post(ctx, code, plugin, pk)
-        return await opened_post(ctx, code, None)
-    if plugin is not None and plugin.post_query is not None:
-        return await post_by_query(ctx, code, plugin)
-    if plugin is not None and plugin.embeds_post is False:
-        return await opened_post(ctx, code, plugin)
-    response = await ctx.fetch(f"{SITE}/p/{code}/")
-    found = next((media for result in meta(response.html)
-                  if (media := post_media(result, code)) is not None), None)
-    if found is not None:
-        if plugin is not None:
-            plugin.embeds_post = True
-        return found
-    media = await opened_post(ctx, code, plugin)
-    if plugin is not None and response.status < 400:
-        plugin.embeds_post = False
-    return media
+    if plugin is not None and account_id(ctx.cookies) is not None:
+        return await logged_in_post(ctx, code, plugin, pk)
+    return await opened_post(ctx, code)
 
 
 async def logged_in_post(ctx: Ctx, code: str, plugin: Instagram,
                          pk: str | None = None) -> dict:
-    """Resolve one post while logged in: media info API, replayed GraphQL, then its tab."""
-    if not plugin.media_info_refused and (resolved := pk or code_pk(code)) is not None:
+    """Resolve one post while logged in: the media info API, then its page if unreadable."""
+    if (resolved := pk or code_pk(code)) is not None:
         media = await media_info(ctx, code, resolved, plugin)
         if media is not None:
             return media
-    if plugin.post_query is not None:
-        return await post_by_query(ctx, code, plugin)
-    return await opened_post(ctx, code, plugin)
+    return await opened_post(ctx, code)
 
 
 async def media_info(ctx: Ctx, code: str, pk: str, plugin: Instagram) -> dict | None:
-    """Fetch one post via `/api/v1/media/{pk}/info/`, returning None if refused."""
+    """Fetch one post via `/api/v1/media/{pk}/info/`; None when its shape is unreadable.
+
+    A block or a "please wait" raises `Blocked`, which the engine holds and retries.
+    """
     try:
         response = await ctx.fetch(f"{API}/media/{pk}/info/", in_page=True)
         plugin.claim = response.headers.get("x-ig-set-www-claim") or plugin.claim
@@ -647,37 +579,11 @@ async def media_info(ctx: Ctx, code: str, pk: str, plugin: Instagram) -> dict | 
         if item.get("code") and item["code"] != code and media_pk(item) != code:
             raise NotFound(f"ins: post {code}: its page holds no post")
         return item
-    except (Blocked, LoginError, NotFound):
-        raise
-    except (Changed, SiteError):
-        plugin.media_info_refused = True
+    except Changed:
         return None
 
 
-async def post_by_query(ctx: Ctx, code: str, plugin: Instagram) -> dict:
-    """Fetch one post via a captured `POST /graphql/query`, falling back to `opened_post`."""
-    query = plugin.post_query
-    assert query is not None
-    pairs = list(query.pairs)
-    pairs[query.var_index] = ("variables", json.dumps({**query.variables, "shortcode": code},
-                                                      separators=(",", ":")))
-    request = Request(query.url, method="POST", headers=query.headers,
-                      body=urlencode(pairs), check=False)
-    response = await ctx.fetch(request, in_page=True)
-    plugin.claim = response.headers.get("x-ig-set-www-claim") or plugin.claim
-    data = _json(response) if response.status < 400 else None
-    if isinstance(data, dict) and not data.get("errors"):
-        media = post_media(data, code)
-        if media is not None:
-            return media
-        inner = data.get("data")
-        if isinstance(inner, dict) and any(key in inner for key in POST_KEYS):
-            raise NotFound(f"ins: post {code}: its page holds no post")
-    plugin.post_query = None
-    return await opened_post(ctx, code, plugin)
-
-
-async def opened_post(ctx: Ctx, code: str, plugin: Instagram | None = None) -> dict:
+async def opened_post(ctx: Ctx, code: str) -> dict:
     """A post, from its page opened with its GraphQL calls listened to, never scrolled.
 
     Raises:
@@ -687,15 +593,8 @@ async def opened_post(ctx: Ctx, code: str, plugin: Instagram | None = None) -> d
         return next((media for result in found
                      if (media := post_media(result, code)) is not None), None)
 
-    def capture(result: Any, request: Request | None) -> None:
-        if plugin is None or plugin.post_query is not None or request is None:
-            return
-        if post_media(result, code) is not None:
-            plugin.post_query = parse_post_query(request)
-
     media = post(await page_results(ctx, f"{SITE}/p/{code}/",
-                                    enough=lambda found: post(found) is not None,
-                                    on_item=capture))
+                                    enough=lambda found: post(found) is not None))
     if media is None:
         raise NotFound(f"ins: post {code}: its page holds no post")
     return media
