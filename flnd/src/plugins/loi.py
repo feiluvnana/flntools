@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import functools
 import hashlib
 import secrets
@@ -102,6 +103,17 @@ class Loibus(Plugin):
         self._limit_read = False
         # Posts whose `archive` was listed: that category writes their info.md, with links.
         self._archived: set[str] = set()
+        # Archives skipped for the day's quota, said once at the run's end.
+        self._left = 0
+
+    @contextlib.asynccontextmanager
+    async def connect(self, ctx: Ctx) -> AsyncIterator[None]:
+        """Around the run's targets; at its end, say how many archives are left for tomorrow."""
+        try:
+            yield
+        finally:
+            if self._left:
+                ctx.log("info", "archives left for tomorrow by the VIP quota: {n}", n=self._left)
 
     @route("loi?{query}", "loix.cc/search?q={query:.+}", "moegoat.com/search?q={query:.+}",
            newest_first=False)
@@ -230,6 +242,7 @@ class Loibus(Plugin):
                 ctx.log("warn", "the account has no VIP level, so no archives a day; "
                         "archives skipped")
             else:
+                self._left += 1
                 ctx.log("warn", "the daily VIP quota is used up ({used} of {limit}); "
                         "archives skipped", used=used, limit=limit)
             return None
@@ -238,6 +251,7 @@ class Loibus(Plugin):
         if not isinstance(data, dict) or not data.get("sv_list"):
             if refusal(status, body) is Refusal.QUOTA:
                 _mark_exhausted(ctx)
+                self._left += 1
                 ctx.log("warn", "the daily VIP quota is used up; archives skipped")
                 return None
             needed = f"VIP{post['vip_requirement']}" if post.get("vip_requirement") else "a login"

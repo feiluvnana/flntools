@@ -1096,24 +1096,24 @@ media/tlg/examplechannel/Example_Channel/file/2026-01-02_1235_report.pdf
 
 ### loi (LOIBUS)
 
-- **Reads:** one post: `info.md` (a table of its fields, description, tags, links), preview images,
-  and for a VIP account its archives. Plain HTTP to `api.moegoat.com` (no browser); requests are
-  signed as the site's script does; download links arrive AES-encrypted.
+- **Reads:** one post: `info.md` (its fields, description, tags, links), previews and, for a VIP
+  account, archives. HTTP to `api.moegoat.com`, signed as the site's script signs; links are AES.
 - **Categories:** `archive` NF (info.md with links, the archives) then `photo` NF (previews; info.md
   without links only when `archive` is not wanted), both own.
 - **Folder:** `{author}/{post} {title}/{part}`, from `media/loi/` (`author` is the post's category,
-  `misc` when none; `part` is `images` for previews). **Filename:** the plugin's: `01.jpg`,
-  `02.jpg`, archives keep their URL's name. **Key:** `{path}` (`loi:<path>`).
-- **Login:** cookie `access-token` (optional; sent as a Bearer token). Archives need a VIP account;
-  without a login `archive` warns and writes info.md without links.
+  `misc` when none; `part` is `images` for previews). **Filename:** `01.jpg`, `02.jpg`, archives
+  keep their URL's name. **Key:** `{path}` (`loi:<path>`).
+- **Login:** cookie `access-token` (optional; a Bearer token). Archives need a VIP account; without
+  one `archive` warns and writes info.md without links.
 - **Limits and walls:** pace 0.5. Daily archive quota by VIP level: 15, 25, 40, 60 (SVIP doubles),
-  counted per UTC day in the plugin's state; at the limit or on the API's quota answer `archive`
-  skips the day's remaining posts with a warning. A rate-limit answer is a block hold.
+  read once per run, counted per UTC day in the plugin's state; once it is used up `archive` skips
+  the day's posts with a warning, and the run says how many were left for tomorrow. A 429 holds for
+  its `Retry-After`; a JSON rate answer is a block hold.
 - **Search:** `loi?<words>` reads `GET api/lois?keyword=<words>&page=<n>&page_size=20` (confirm
   live: endpoint, parameters, answer shape): each page's `data.list` ids as `loi:post/<id>`, ended
-  by a short page; rate-limit answers are held like the links'.
-- **Known gaps:** no author or tag target; a post counts once its links are fetched; Baidu links go
-  to info.md only; an expired token shows only as "no download links".
+  by a short page; rate answers are held like the links'.
+- **Known gaps:** no author or tag target; a post counts once its links are fetched; Baidu links
+  go to info.md only; an expired token reads as "no download links".
 
 ```text
 media/loi/example_author/1234567890_Example_Title/info.md

@@ -390,6 +390,17 @@ class QuotaTest(unittest.TestCase):
                 self.assertEqual(warned(ctx), [warning] if warning else [])
                 self.assertEqual(5930 in ctx.state.get("quota", {}).get("posts", []), count > 1)
 
+    def test_the_run_says_how_many_archives_were_left_for_tomorrow(self):
+        plugin = Loibus()
+        ctx = fake(plugin=plugin, state={"quota": {"day": "2026-01-01", "posts": list(range(15))}})
+        archive_files(ctx)
+        self.assertIn(("info", "archives left for tomorrow by the VIP quota: 1"),
+                      ctx.seen.logs)
+        # No line when nothing was left.
+        ctx = fake()
+        archive_files(ctx)
+        self.assertFalse([line for line in ctx.seen.logs if "left for tomorrow" in line[1]])
+
     def test_a_post_counted_today_is_free_and_counted_once(self):
         ctx = fake(state={"quota": {"day": "2026-01-01", "posts": [*range(14), 5930]}})
         self.assertEqual(len(archive_files(ctx)), 3)
@@ -489,6 +500,12 @@ class RateTest(unittest.TestCase):
         self.assertEqual(len({sent["x-request-id"] for sent in tries}), 2)
         self.assertEqual(len({sent["x-signature-timestamp"] for sent in tries}), 2)
         self.assertNotIn("exhausted", ctx.state["quota"])
+
+    def test_a_plain_429_waits_for_its_retry_after(self):
+        answers = iter([Reply(None, status=429, headers={"retry-after": "7"}), Reply(LINKS)])
+        ctx = fake(**{LINKS_PATH: lambda request: next(answers)})
+        self.assertEqual(len(archive_files(ctx)), 3)
+        self.assertEqual([seconds for _, seconds, _ in ctx.seen.holds], [7])
 
     def test_a_rate_limit_that_lasts_stops_the_target_uncounted(self):
         ctx = fake(**{LINKS_PATH: RATE})
