@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote_plus, urlsplit
 
 from flnd.plugin import (
     Blocked,
@@ -20,6 +20,7 @@ from flnd.plugin import (
     Document,
     File,
     Hidden,
+    LoginError,
     NetworkError,
     NotFound,
     Plugin,
@@ -27,6 +28,7 @@ from flnd.plugin import (
     Request,
     SiteError,
     Stream,
+    Target,
     best,
     cookies,
     dig,
@@ -75,6 +77,13 @@ FEEDS = {
     "liked": ("/api/favorite/item_list",),
     "favorites": ("/api/user/collect/item_list",),
 }
+# The search page's answers, and the Following list's (both unconfirmed live, 2026-11-20).
+SEARCH_API = "/api/search/item/full/"
+FOLLOWING_API = "/api/user/list/"
+# The logged-in user's own profile (it redirects to `/@<name>`), and the click that opens its
+# Following list: unconfirmed live.
+OWN_PAGE = f"{SITE}/profile"
+FOLLOWING_TAB = '[data-e2e="following"]'
 # Each clicked tab's `data-e2e` name.
 TABS = {"reposts": "repost-tab", "liked": "liked-tab", "favorites": "favorites-tab"}
 
@@ -221,18 +230,8 @@ class Profile:
         self._shown = True
 
     async def _clear(self, ctx: Ctx) -> None:
-        """Wait out a captcha: a person solves it, else it is held as a block and the page
-        opened again, until the engine's holds run out (`Blocked`)."""
-        async def gone() -> bool:
-            return not has_captcha(await ctx.document())
-
-        while has_captcha(await ctx.document()):
-            if await ctx.handoff("Solve the TikTok captcha in the browser window", until=gone,
-                                 timeout=CAPTCHA_TIMEOUT):
-                return
-            await ctx.hold("TikTok captcha")
-            await ctx.open(self.url)
-            await ctx.pause(SETTLE, "letting the profile settle")
+        """Wait out a captcha on the profile's page (see `wait_out`)."""
+        await wait_out(ctx, self.url)
 
     def _take(self, ctx: Ctx, data: Any) -> bool:
         """Queue one post-list page's items for their owners; whether it says it is the last."""
@@ -246,13 +245,27 @@ class Profile:
         return more is False
 
 
+async def wait_out(ctx: Ctx, url: str) -> None:
+    """Wait out a captcha: a person solves it, else it is held as a block and `url` opened
+    again, until the engine's holds run out (`Blocked`)."""
+    async def gone() -> bool:
+        return not has_captcha(await ctx.document())
+
+    while has_captcha(await ctx.document()):
+        if await ctx.handoff("Solve the TikTok captcha in the browser window", until=gone,
+                             timeout=CAPTCHA_TIMEOUT):
+            return
+        await ctx.hold("TikTok captcha")
+        await ctx.open(url)
+        await ctx.pause(SETTLE, "letting the page settle")
+
+
 class TikTok(Plugin):
     """TikTok profiles in a browser tab, and single videos from the public embed page."""
 
     code = "tik"
     name = "TikTok"
-    # Short-link hosts (vm., vt.) are subdomains: no route reads one, so the engine follows it.
-    domains = ("tiktok.com",)
+    domains = ("tiktok.com", "vm.tiktok.com", "vt.tiktok.com")
     api = 2
     # Either cookie proves a login; none is needed, since public profiles are read without one.
     login = cookies("sessionid", "sid_tt", url="https://www.tiktok.com/login")
@@ -262,6 +275,12 @@ class TikTok(Plugin):
     user_agent = TIKTOK_UA
     # No login wall is known: a logged-out visitor is shown the public profile.
     walls = ()
+    unsupported = {
+        f"tiktok.com/{path}": f"{why} aren't supported; give a user, a post or a search"
+        for path, why in (("tag", "hashtag pages"), ("music", "sound pages"),
+                          ("discover", "discover pages"), ("live", "live streams"),
+                          ("explore", "the explore page"))
+    }
     # Names and keys as they always were: `<date>_<post>` and `<post>` for a video, and
     # `<date>_<post>_<n>` and `<post>_<n>` for the n-th photo (from 1). A changed key downloads
     # every saved file again. `part` is the folder (videos, images, albums or the category),
@@ -286,6 +305,78 @@ class TikTok(Plugin):
         """
         for post in await embed(ctx, id.removeprefix("post/")):
             yield post
+
+    # Followed in the browser, the way `fbk`'s `watch` follows fb.watch.
+    @route(*((pattern, "short/{code}") for pattern in (
+        r"vm.tiktok.com/{code:[\w-]+}", r"vt.tiktok.com/{code:[\w-]+}",
+        r"tiktok.com/t/{code:[\w-]+}")), single=True)
+    async def short(self, ctx: Ctx, code: str) -> AsyncIterator[Post]:
+        """One post by its short link (`vm.`, `vt.` or `tiktok.com/t/`), followed in the
+        browser and read from the video it lands on.
+
+        Raises:
+            NotFound: the link didn't land on a video or photo post.
+        """
+        link = f"https://vm.tiktok.com/{code.removeprefix('short/')}"
+        landed = (await ctx.open(link)).url
+        found = POST_LINK.search(urlsplit(landed).path)
+        if found is None:
+            raise NotFound(f"tik: {link} didn't lead to a post",
+                           hint="check the link in a browser; only video and photo links work")
+        for post in await embed(ctx, found[1]):
+            yield post
+
+    @route("tik?{query}", r"tiktok.com/search?q={query:.+}", newest_first=False)
+    async def search(self, ctx: Ctx, query: str) -> AsyncIterator[Target]:
+        """A search's posts, such as `tik?cats`, each as `tik:post/<id>`: the Videos tab
+        scrolled in the browser, its `api/search/item/full/` answers read.
+
+        Raises:
+            Blocked: a captcha nobody solved, held until the engine's holds run out.
+        """
+        url = f"{SITE}/search/video?q={quote_plus(query)}"
+        seen: set[str] = set()
+        feed = ctx.feed(SEARCH_API, scroll=True, cursor=search_state)
+        await ctx.open(url)
+        await ctx.pause(SETTLE, "letting the search settle")
+        await wait_out(ctx, url)
+        async with feed:
+            async for data in feed:
+                for found in dig(data, "item_list || itemList") or []:
+                    post_id = str(dig(found, "id") or "")
+                    if post_id and post_id not in seen:
+                        seen.add(post_id)
+                        yield Target(f"tik:post/{post_id}")
+                if not (search_state(data) or (False,))[0]:
+                    break
+
+    @route("tik:{me:me}", shown="tik:me", discovers=True)
+    async def me(self, ctx: Ctx, me: str) -> AsyncIterator[Target]:
+        """Every account the login follows, each as `tik:<uniqueId>`: `tik:me`. The own
+        profile's Following list is opened in the logged-in browser, its answers read.
+
+        Raises:
+            LoginError: no login, so no account to read.
+            Changed: the profile has no Following list to open.
+        """
+        if not any(ctx.cookies.get(name) for name in ("sessionid", "sid_tt")):
+            raise LoginError("tik: not logged in, so there is no account to read",
+                             hint="log in: flnd auth login tik")
+        async with ctx.feed(FOLLOWING_API, scroll=True, cursor=search_state) as feed:
+            await ctx.open(OWN_PAGE)
+            await ctx.pause(SETTLE, "letting the profile settle")
+            await wait_out(ctx, OWN_PAGE)
+            try:
+                await ctx.click(FOLLOWING_TAB, timeout=CLICK_TIMEOUT)
+            except NetworkError:
+                raise Changed("tik:me: the profile's Following list didn't open") from None
+            async for data in feed:
+                for entry in dig(data, "userList || user_list") or []:
+                    name = dig(entry, "user.uniqueId || uniqueId")
+                    if name:
+                        yield Target(f"tik:{name}")
+                if not (search_state(data) or (False,))[0]:
+                    break
 
     # The `@` is in the link's pattern, so `tiktok.com/@@example_creator` is refused.
     @route("tik:{user}", r"tiktok.com/@{user:[\w.]+}", newest_first=False)
@@ -491,6 +582,15 @@ def page_state(data: Any) -> tuple[bool, str | None] | None:
         return None
     cursor = data.get("cursor")
     return more, str(cursor) if cursor not in (None, "") else None
+
+
+def search_state(data: Any) -> tuple[bool, str | None] | None:
+    """`(more, cursor)` of a search or follow list answer (`has_more` or `hasMore`), or None."""
+    if not isinstance(data, dict) or not {"has_more", "hasMore"} & data.keys():
+        return None
+    cursor = data.get("cursor")
+    return bool(data.get("has_more", data.get("hasMore"))), (
+        str(cursor) if cursor not in (None, "") else None)
 
 
 def page_user(data: Any) -> dict[str, Any]:

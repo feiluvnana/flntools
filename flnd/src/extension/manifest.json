@@ -14,6 +14,8 @@
   ],
   "host_permissions": [
     "*://*.tiktok.com/*",
+    "*://*.vm.tiktok.com/*",
+    "*://*.vt.tiktok.com/*",
     "*://*.facebook.com/*",
     "*://*.fb.com/*",
     "*://*.fb.watch/*",

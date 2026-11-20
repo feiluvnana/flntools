@@ -114,9 +114,9 @@ class ShortLinkTest(unittest.TestCase):
                 "7301234567890123456?is_from_webapp=1"
             )
 
-        self.assertEqual(read("https://vm.tiktok.com/ZMabc123/", follow),
+        self.assertEqual(read("https://www.tiktok.com/example_creator", follow),
                          Target("tik:post/7301234567890123456", kind="post"))
-        self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
+        self.assertEqual(followed, ["https://www.tiktok.com/example_creator"])
 
     def test_other_links_are_not_followed(self):
         def follow(url):
@@ -141,12 +141,12 @@ class ShortLinkTest(unittest.TestCase):
 
     def test_cross_source_redirect_and_unchanged_follow(self):
         self.assertEqual(
-            read("https://vm.tiktok.com/ZMabc123/",
+            read("https://www.tiktok.com/example_creator",
                  lambda url: "https://www.instagram.com/p/C1abcDEFghi/"),
             Target("ins:post/C1abcDEFghi", kind="post"),
         )
         with self.assertRaisesRegex(UsageError, "can't read"):
-            read("https://vm.tiktok.com/ZMabc123/", lambda url: url)
+            read("https://www.tiktok.com/example_creator", lambda url: url)
 
 
 class RefusedTest(unittest.TestCase):

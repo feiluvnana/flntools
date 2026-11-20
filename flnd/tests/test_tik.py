@@ -17,8 +17,18 @@ from unittest import mock
 import no_profiles  # noqa: F401
 from fakes import filed
 
-from flnd.errors import Blocked, Changed, Hidden, NetworkError, NotFound, PluginError, SiteError
-from flnd.plugin import Range
+from flnd.errors import (
+    Blocked,
+    Changed,
+    Hidden,
+    LoginError,
+    NetworkError,
+    NotFound,
+    PluginError,
+    SiteError,
+    UsageError,
+)
+from flnd.plugin import Range, Target
 from flnd.plugins.tik import TIKTOK_UA, Profile, TikTok, best_video
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
 from flnkit import html
@@ -173,6 +183,20 @@ class Watching(FakeCtx):
         return super().feed(match, **options)
 
 
+def listed_targets(stream):
+    """The targets a discovering route yields, and the error that ended it (None when none)."""
+    async def run():
+        found = []
+        try:
+            async for target in stream:
+                found.append(target)
+        except Exception as error:  # noqa: BLE001 (returned for the test to check)
+            return found, error
+        return found, None
+
+    return asyncio.run(run())
+
+
 class RoutesTest(unittest.TestCase):
     def test_every_form(self):
         # (text, (kind, value)), or None for a form no route reads; the kinds and values are
@@ -206,17 +230,34 @@ class RoutesTest(unittest.TestCase):
             ("https://www.tiktok.com/@my-user", None), ("https://www.tiktok.com/@", None),
             ("https://www.tiktok.com/@@example_creator", None),
             ("https://www.tiktok.com/video/", None),
-            # A short link is no route's form: the engine follows it once.
-            ("https://vm.tiktok.com/ZMabc123/", None),
+            ("https://vm.tiktok.com/ZMabc123/", ("short", "short/ZMabc123")),
+            ("vt.tiktok.com/ZSabc-1", ("short", "short/ZSabc-1")),
+            ("https://www.tiktok.com/t/ZTabc123/", ("short", "short/ZTabc123")),
+            ("tik?cats", ("search", "cats")), ("tik?cats | dogs", ("search", "cats | dogs")),
+            ("https://www.tiktok.com/search?q=cats", ("search", "cats")),
+            ("https://www.tiktok.com/search/video?q=cat+dogs&lang=en", ("search", "cat dogs")),
+            ("tik:me", ("me", "me")),
             ("notiktok.com/@example_creator", None), ("tiktok.com.evil.example/@x", None),
         ]:
             with self.subTest(text=text):
                 found = TikTok.resolve(text)
                 self.assertEqual(found and (found.kind, found.value), expected)
 
+    def test_refused_text(self):
+        for text, message in [
+            ("https://www.tiktok.com/tag/cats", "hashtag pages"),
+            ("https://www.tiktok.com/music/Song-123", "sound pages"),
+            ("https://www.tiktok.com/discover/cats", "discover pages"),
+            ("https://www.tiktok.com/live", "live streams"),
+            ("https://www.tiktok.com/explore", "the explore page"),
+            ("tik?", "the query is empty"),
+        ]:
+            with self.subTest(text=text), self.assertRaisesRegex(UsageError, message):
+                TikTok.resolve(text)
+
     def test_the_declarations(self):
-        self.assertEqual([str(found) for found in check(TikTok)][:2],
-                         ["tik:post/7301234567890123456", "tik:example_creator"])
+        self.assertEqual([str(found) for found in check(TikTok)][:4], [
+            "tik:post/7301234567890123456", "tik?cats", "tik:me", "tik:example_creator"])
         user = next(known for known in TikTok.routes if known.kind == "user")
         self.assertEqual([(c.name, c.own, c.newest_first) for c in user.categories], [
             ("videos", True, True), ("stories", True, False), ("playlists", True, True),
@@ -442,6 +483,73 @@ class ProfileTest(unittest.TestCase):
             return [[item async for item in profile.stories(ctx)] for _ in range(2)]
 
         self.assertEqual([len(items) for items in asyncio.run(twice())], [3, 0])
+
+
+class SearchTest(unittest.TestCase):
+    URL = f"{API}/search/video?q=cat+dogs"
+
+    def search(self, *feeds, page=""):
+        plugin = TikTok()
+        ctx = FakeCtx(plugin, "tik?cat dogs", pages={self.URL: FakePage(page, feeds=feeds)})
+        return listed_targets(plugin.search(ctx, "cat dogs"))[0], ctx
+
+    def test_each_hit_is_a_post_target_once(self):
+        answer = f"{API}/api/search/item/full/"
+        found, ctx = self.search(
+            (answer, {"item_list": [{"id": "1"}, {"id": "2"}], "has_more": 1, "cursor": "2"}),
+            (answer, {"item_list": [{"id": "2"}, {"id": "3"}], "has_more": 0}))
+        self.assertEqual(found, [Target("tik:post/1"), Target("tik:post/2"),
+                                 Target("tik:post/3")])
+        self.assertEqual(ctx.seen.visited, [self.URL])
+        self.assertEqual(TikTok.resolve(str(found[0])).kind, "post")
+
+    def test_a_captcha_is_waited_out(self):
+        found, ctx = self.search(page=CAPTCHA)
+        self.assertEqual(found, [])
+        self.assertTrue(ctx.seen.holds or ctx.seen.handoffs)
+
+
+class ShortLinkTest(unittest.TestCase):
+    def read(self, landed):
+        item = video(VIDEO, f"{CDN}/e1", createTime=1700000000)
+        ctx = FakeCtx(TikTok, "https://vm.tiktok.com/ZMabc123/",
+                      pages={"https://vm.tiktok.com/ZMabc123": FakePage(url=landed)},
+                      routes={f"{API}/embed/v2/{VIDEO}": Reply(embed_page(item))})
+        return collect(TikTok, "https://vm.tiktok.com/ZMabc123/", ctx=ctx)
+
+    def test_it_is_followed_to_its_video(self):
+        for landed in (f"{API}/@example_creator/video/{VIDEO}?is_from_webapp=1",
+                       f"{API}/@example_creator/photo/{VIDEO}"):
+            with self.subTest(landed=landed):
+                self.assertEqual([found.key for found in self.read(landed)], [VIDEO])
+
+    def test_a_landing_that_is_no_post_is_refused_with_a_hint(self):
+        with self.assertRaises(NotFound) as caught:
+            self.read(f"{API}/@example_creator")
+        self.assertTrue(caught.exception.hint)
+
+
+class MeTest(unittest.TestCase):
+    def follows(self, cookies, *feeds):
+        plugin = TikTok()
+        ctx = FakeCtx(plugin, "tik:me", cookies=cookies, pages={
+            f"{API}/profile": FakePage(feeds=feeds, shown=['[data-e2e="following"]'])})
+        return listed_targets(plugin.me(ctx, "me"))
+
+    def test_the_accounts_the_login_follows(self):
+        answer = f"{API}/api/user/list/"
+        found, _ = self.follows(
+            {"sessionid": "s"},
+            Sent(answer, {"userList": [{"user": {"uniqueId": "example_user"}}], "hasMore": True},
+                 click='[data-e2e="following"]'),
+            Sent(answer, {"userList": [{"user": {"uniqueId": "example_creator"}}],
+                          "hasMore": False}, click='[data-e2e="following"]'))
+        self.assertEqual(found, [Target("tik:example_user"), Target("tik:example_creator")])
+
+    def test_no_login_is_a_login_error_with_a_hint(self):
+        found, error = self.follows({})
+        self.assertIsInstance(error, LoginError)
+        self.assertTrue(error.hint)
 
 
 class CaptchaTest(unittest.TestCase):

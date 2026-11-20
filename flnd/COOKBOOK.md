@@ -106,7 +106,7 @@ How a target is read, in order:
    refused with its reason, unless a route matches it with more literal path parts. Path parts
    after the ones a route names are ignored (`.../example_user/reels/` is the user), and so
    are other query keys, so a link's own path is never a category list. One no route reads is
-   followed once with a HEAD request (a short link such as `vm.tiktok.com`), then read again.
+   followed once with a HEAD request (a short link of a site with no route for it), then read again.
    The text after a link's last `|` is its categories when every word in it is `all` or a
    category of the plugin that owns it (`instagram.com/example_user|tagged`); else it stays in
    the link.
@@ -144,7 +144,7 @@ Refusals, with the text printed (all `UsageError`, exit 2, before any request):
   hint `write the categories after |: "ins:example_user|tagged"`
 - `ins:example_user/posts/`: `ins: can't read 'example_user/posts/'`; hint `Write it like ...`
 - `tik:post/1234567890123456|all`: `tik:post/1234567890123456 is one post, with no categories`
-- `tik?cats`: `tik has no search`; hint `Write it like ...`
+- `ins?cats`: `ins has no search`; hint `Write it like ...`
 - `twt?`: `twt: the query is empty`
 - `https://x.com/home`: `twt: that's not a profile`
 - `https://www.tiktok.com/@@example_user`: `tik: can't read https://www.tiktok.com/@@example_user`;
@@ -168,9 +168,10 @@ flnd get ins:example_user tik:example_user
 
 ### `me`, searches and `--limit`
 
-- `ins:me` is the only `me`. It lists every account the logged-in Instagram account follows and
-  gets each as its own `user` target (`"ins:me|posts,stories"` passes the list on to each). It
-  needs a login. `twt:me` is a user named `me`.
+- `ins:me` and `tik:me` list every account the logged-in account follows and get each as its
+  own `user` target (`"ins:me|posts,stories"` passes the list on to each). They need a login
+  (`tik:me` reads the Following list of your own profile, opened in the browser; unconfirmed
+  live). `twt:me` is a user named `me`.
 - A search (`twt?<words>`, `mht?<words>`, `tik?<words>`, `loi?<words>`, or a search link) finds
   targets, and each found target is got as its own. A search needs `--folder`, which puts all
   its hits in one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search
@@ -221,9 +222,21 @@ Refused with `twt: that's not a profile`: `x.com/home`, `explore`, `search` (so
   more) reads too
 - `tiktok.com/@<user>/video/<id>`, `/photo/<id>`, `tiktok.com/video/<id>`, `/photo/<id>`: one post
   (route ``post``)
+- `vm.tiktok.com/<code>`, `vt.tiktok.com/<code>`, `tiktok.com/t/<code>`: one post, link only
+  (route ``short``). It is opened in the browser and read from the video it lands on; a landing
+  that is no video or photo post is `NotFound` with the hint `check the link in a browser; only
+  video and photo links work`.
+- `tik?<words>`, `tiktok.com/search?q=<words>`, `tiktok.com/search/video?q=<words>`: a search
+  (route ``search``). The Videos tab is scrolled in the browser and each hit found as
+  `tik:post/<id>`, so `--limit N` is N posts. It needs `--folder`. The page's
+  `api/search/item/full/` answers are read as faked answers show; unconfirmed live.
+- `tik:me`: the accounts the login follows, each as `tik:<uniqueId>` (route ``me``; needs a
+  login, else `LoginError` with the hint `log in: flnd auth login tik`). Read from
+  `api/user/list/` after opening your profile's Following list; unconfirmed live.
 
-`tik:123` (under 16 digits) is a user. Refused: `tik?...` (`tik has no search`), `@@user`, any
-other `tiktok.com` link. A short link on a `tiktok.com` subdomain is followed once.
+`tik:123` (under 16 digits) is a user. Refused with `tik: <what> aren't supported; give a user,
+a post or a search`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pages),
+`/discover/...`, `/live`, `/explore`. Also refused: `@@user`, any other `tiktok.com` link.
 
 **fbk**
 
@@ -1020,7 +1033,8 @@ media/twt/example_handle/videos/2026-01-02_1234567891_0.mp4
 ### tik (TikTok)
 
 - **Reads:** a profile in the browser, by watching the page's own API answers while scrolling;
-  one video or photo post from the public embed page over HTTP.
+  one video or photo post from the public embed page over HTTP; a search, a short link and
+  `tik:me` in the browser (see Targets).
 - **Categories:** `videos` NF, `stories`, `playlists` NF, `profile` (own); `reposts`, `liked`,
   `favorites` (opt-in; the last two only when the account made them public). `videos` and
   `playlists` share one scroll.

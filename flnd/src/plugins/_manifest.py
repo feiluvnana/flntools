@@ -8,7 +8,7 @@ PLUGINS: dict[str, dict[str, object]] = {
         'module': 'flnd.plugins.tik',
         'cls': 'TikTok',
         'name': 'TikTok',
-        'domains': ['tiktok.com'],
+        'domains': ['tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com'],
         'routes': [
             {
                 'name': 'post',
@@ -23,6 +23,34 @@ PLUGINS: dict[str, dict[str, object]] = {
                     ['tiktok.com/video/{id:\\d+}', 'post/{id}'],
                     ['tiktok.com/photo/{id:\\d+}', 'post/{id}'],
                 ],
+                'categories': [],
+            },
+            {
+                'name': 'short',
+                'single': True,
+                'discovers': False,
+                'shown': None,
+                'patterns': [
+                    ['vm.tiktok.com/{code:[\\w-]+}', 'short/{code}'],
+                    ['vt.tiktok.com/{code:[\\w-]+}', 'short/{code}'],
+                    ['tiktok.com/t/{code:[\\w-]+}', 'short/{code}'],
+                ],
+                'categories': [],
+            },
+            {
+                'name': 'search',
+                'single': False,
+                'discovers': True,
+                'shown': None,
+                'patterns': ['tik?{query}', 'tiktok.com/search?q={query:.+}'],
+                'categories': [],
+            },
+            {
+                'name': 'me',
+                'single': False,
+                'discovers': True,
+                'shown': 'tik:me',
+                'patterns': ['tik:{me:me}'],
                 'categories': [],
             },
             {
@@ -42,15 +70,29 @@ PLUGINS: dict[str, dict[str, object]] = {
                 ],
             },
         ],
-        'unsupported': {},
+        'unsupported': {
+            'tiktok.com/tag': "hashtag pages aren't supported; give a user, a post or a search",
+            'tiktok.com/music': "sound pages aren't supported; give a user, a post or a search",
+            'tiktok.com/discover': (
+                "discover pages aren't supported; give a user, a post or a search"),
+            'tiktok.com/live': "live streams aren't supported; give a user, a post or a search",
+            'tiktok.com/explore': (
+                "the explore page aren't supported; give a user, a post or a search"),
+        },
         'forms': [
             'tik:post/<id>',
             'tik:<id>',
+            'tik?<query>',
+            'tik:me',
             'tik:<user>',
             'https://www.tiktok.com/…/video/<id>/',
             'https://www.tiktok.com/…/photo/<id>/',
             'https://www.tiktok.com/video/<id>/',
             'https://www.tiktok.com/photo/<id>/',
+            'https://vm.tiktok.com/<code>/',
+            'https://vt.tiktok.com/<code>/',
+            'https://www.tiktok.com/t/<code>/',
+            'https://www.tiktok.com/search?q=<query>',
             'https://www.tiktok.com/@<user>/',
         ],
         'categories': [

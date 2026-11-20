@@ -277,8 +277,8 @@ class GetTest(RunsCase):
             return "https://www.tiktok.com/@example_creator/video/7301234567890123456"
 
         with mock.patch("flnkit.net.follow", follow):
-            self.assertEqual(self.run_app("get", "https://vm.tiktok.com/ZMabc123/")[0], 0)
-        self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
+            self.assertEqual(self.run_app("get", "https://www.tiktok.com/example_creator")[0], 0)
+        self.assertEqual(followed, ["https://www.tiktok.com/example_creator"])
         self.assertEqual(self.runs[0][1], [Target("tik:post/7301234567890123456", kind="post")])
 
 
