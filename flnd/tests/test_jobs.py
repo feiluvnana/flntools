@@ -74,7 +74,7 @@ def job(kind: Kind = Kind.PAGE, **fields) -> Job:
 class PoolTest(unittest.TestCase):
     def test_each_pools_numbers(self):
         rows = [  # (cores, kind, places)
-            (8, Kind.CALL, 12), (64, Kind.CALL, 32), (8, Kind.HASH, 8), (8, Kind.UNPACK, 1),
+            (8, Kind.CALL, 8), (64, Kind.CALL, 8), (8, Kind.HASH, 4), (8, Kind.UNPACK, 1),
             (8, Kind.MERGE, 4), (1, Kind.MERGE, 1), (8, Kind.EXEC, 1),
         ]
         for cpus, kind, size in rows:
@@ -88,16 +88,16 @@ class PoolTest(unittest.TestCase):
         rows = {  # name: (jobs, options, most at once)
             "merge lane": ([job(Kind.MERGE) for _ in range(9)], {}, 4),
             "exec lane": ([job(Kind.EXEC) for _ in range(3)], {}, 1),
-            "tab budget": (tabs(9), {}, 6),
+            "tab budget": (tabs(9), {}, 2),
             "scrolling tabs of one account": (tabs(5, scroll=True), {}, 2),
-            "scrolling tabs of two accounts": (tabs(6, 2, scroll=True), {}, 4),
+            "scrolling tabs of two accounts": (tabs(6, 2, scroll=True), {}, 2),
             "a host's cap starts at 8": ([job(Kind.FILE) for _ in range(20)], {}, 8),
             "a host's own limit": (
                 [job(Kind.FILE, host="cdn.example.com") for _ in range(9)],
                 {"limits": {"example.com": 3}}, 3),
             "places per target": (
                 [job(Kind.FILE, host=f"h{i}.example.com", target="t") for i in range(40)],
-                {}, 32),
+                {}, 12),
             "places follow the largest limit": (
                 [job(Kind.FILE, host=f"h{i}.example.com", target="t") for i in range(50)],
                 {"limits": {"other.example": 40}}, 40),
@@ -106,14 +106,14 @@ class PoolTest(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(run(lambda s, f, m=made: peak(s, m), **options), most)
 
-    def test_a_targets_queue_holds_four_jobs_a_place(self):
+    def test_a_targets_queue_holds_two_jobs_a_place(self):
         async def main(scheduler, fake):
             queue, places = scheduler._target("t")
             return queue.size, places.size, scheduler.limits.cap("x.example.com").most
 
-        self.assertEqual(run(main), (128, 32, 32))
+        self.assertEqual(run(main), (24, 12, 12))
 
-    def test_a_warm_tab_opens_only_with_two_tabs_free(self):
+    def test_a_warm_tab_opens_only_with_one_tab_free(self):
         async def main(scheduler, fake):
             gate = asyncio.Event()
             seen = []
@@ -123,15 +123,15 @@ class PoolTest(unittest.TestCase):
                 await gate.wait()
 
             tasks = [asyncio.ensure_future(scheduler.run(job(Kind.TAB, work=work)))
-                     for _ in range(5)]
-            for _ in range(3):
+                     for _ in range(2)]
+            for _ in range(2):
                 await asyncio.sleep(0)
             seen.append(scheduler.warm)
             gate.set()
             await asyncio.gather(*tasks)
             return seen
 
-        self.assertEqual(run(main), [True, True, True, True, False, False])
+        self.assertEqual(run(main), [True, False, False])
 
     def test_exec_runs_in_the_order_files_were_saved(self):
         async def main(scheduler, fake):
@@ -150,6 +150,7 @@ class PoolTest(unittest.TestCase):
 
     def test_a_tab_waiting_to_scroll_holds_no_tab(self):
         async def main(scheduler, fake):
+            scheduler.tabs = Pool(6)
             gate, started = asyncio.Event(), []
 
             async def scroll():
@@ -799,11 +800,11 @@ class SegmentTest(unittest.TestCase):
                                  (3.7, False)]]
         self.assertEqual(made, [True, False, True, True, False])
 
-    def test_a_file_takes_at_most_8_segments(self):
+    def test_a_file_takes_at_most_4_segments(self):
         plan = Segments(1 << 30)
         for second in range(2, 30):
             plan.split(elapsed=second, room=True)
-        self.assertEqual(len(plan.parts), 8)
+        self.assertEqual(len(plan.parts), 4)
         self.assertEqual(sum(part.end - part.start for part in plan.parts), 1 << 30)
 
     def test_a_fetch_file_takes_at_most_4_segments(self):

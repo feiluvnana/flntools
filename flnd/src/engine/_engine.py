@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import re
 from collections import ChainMap
 from collections.abc import (
@@ -44,6 +45,7 @@ MAX_SYNC_NEW = 25
 # whose site sees one person, and `HTTP_AT_ONCE` for one that only sends requests.
 ACTIVE = jobs.LISTINGS
 HTTP_AT_ONCE = 4
+_SCHEDULER: jobs.Scheduler | None = None
 
 
 class Chosen(NamedTuple):
@@ -130,6 +132,8 @@ class Engine:
         self.tally = Tally(self._shown)
         # The scheduler of the command going on; None until it opens one.
         self._scheduler: jobs.Scheduler | None = None
+        # The database of the run going on; None between them.
+        self._db: store.Store | None = None
         # What resolving reads of each plugin known so far, by code (`manifest`).
         self._entries: dict[str, Mapping[str, Any]] | None = None
         self._installed: dict[str, Mapping[str, Any]] = {}
@@ -833,7 +837,12 @@ class Engine:
         # The home's settings are read once, off the loop: its browser, its save and each
         # plugin's run take theirs from them, and a file's warnings are said once.
         found = await _off(config.settings, self.home, plugins=self.sources)
-        db = await _off(store.open, self.home)
+        opened_here = False
+        db = self._db
+        if db is None:
+            db = await _off(store.open, self.home)
+            self._db = db
+            opened_here = True
         try:
             settings = RunShared(home=self.home, db=db, run=None if dry else self.run,
                                  stop=stop, dry=dry, emit=self.emit, resolve=self._one,
@@ -846,6 +855,8 @@ class Engine:
                 scheduler = ctx.scheduler(settings)
                 assert scheduler is not None
                 self._scheduler = scheduler
+                global _SCHEDULER
+                _SCHEDULER = scheduler
                 runner.switcher = scheduler.switch = auth.Switcher(
                     scheduler, lambda code: found.plugin(code).switch, runner.listed,
                     shown=self.tally.switched)
@@ -853,9 +864,15 @@ class Engine:
                 try:
                     yield runner
                 finally:
-                    await runner.close()
+                    try:
+                        await runner.close()
+                    finally:
+                        _SCHEDULER = None
+                        self._scheduler = None
         finally:
-            await _off(db.close)
+            if opened_here:
+                self._db = None
+                await _off(db.close)
 
     @contextlib.asynccontextmanager
     async def script(self, code: str, name: str | None = None) -> AsyncIterator[Ctx]:
@@ -904,6 +921,8 @@ class Engine:
 
     def _rows(self) -> dict[str, store.TargetRow]:
         """Every target `flnd.db` knows, by key; none for a home that has no database yet."""
+        if self._db is not None:
+            return self._db.targets()
         with store.open(self.home) as db:
             return db.targets()
 
@@ -911,6 +930,15 @@ class Engine:
                 keep: bool = False) -> None:
         """Remember the targets of a run in `flnd.db`, in one transaction."""
         if not chosen:
+            return
+        if self._db is not None:
+            with self._db.transaction():
+                for target, options in chosen:
+                    self._db.record(
+                        target, query=options.query,
+                        folder=options.folder if self._is_search(target) else None,
+                        follow=None if follow is None else follow and not self._is_single(target),
+                        categories=(options.categories or ()) if keep else None)
             return
         with store.open(self.home) as db, db.transaction():
             for target, options in chosen:
@@ -930,22 +958,36 @@ class Engine:
             targets: its targets; the first three are named in the row.
         """
         named = " ".join([command, *map(str, targets[:3])])
-        self.run = await _off(self._started, named if len(targets) <= 3 else f"{named} …")
+        opened_here = False
+        if self._db is None:
+            self._db = await _off(store.open, self.home)
+            opened_here = True
         try:
-            yield
+            self.run = await _off(self._started, named if len(targets) <= 3 else f"{named} …")
+            try:
+                yield
+            finally:
+                run, self.run = self.run, None
+                # The command's tally: `_live` made it before, or inside, this block.
+                await _off(self._ended, run, self.tally.saved)
         finally:
-            run, self.run = self.run, None
-            # The command's tally: `_live` made it before, or inside, this block.
-            await _off(self._ended, run, self.tally.saved)
+            if opened_here and self._db is not None:
+                db, self._db = self._db, None
+                await _off(db.close)
 
     def _started(self, named: str) -> int:
         """Open a command's `runs` row, after sweeping the month-old logs
         (SPEC.md#install-and-first-run)."""
         store.sweep(self.home)
+        if self._db is not None:
+            return self._db.start(named)
         with store.open(self.home) as db:
             return db.start(named)
 
     def _ended(self, run: int | None, saved: int) -> None:
+        if self._db is not None:
+            self._db.end(run, saved=saved)
+            return
         with store.open(self.home) as db:
             db.end(run, saved=saved)
 
@@ -1405,8 +1447,13 @@ class _Runner:
 
 async def _off(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """`fn(*args, **kwargs)` on a thread: the engine's own blocking step (a read or write of
-    `flnd.db`, a stat), so the loop never waits for it. The thread is the loop's default
-    executor's, which the run shuts down at its end."""
+    `flnd.db`, a stat), so the loop never waits for it. It runs on the scheduler's CALL pool
+    when one is active, else on asyncio's default executor."""
+    scheduler = _SCHEDULER
+    if scheduler is not None:
+        if kwargs:
+            return await scheduler.on(jobs.Kind.CALL, functools.partial(fn, *args, **kwargs))
+        return await scheduler.on(jobs.Kind.CALL, fn, *args)
     return await asyncio.to_thread(fn, *args, **kwargs)
 
 

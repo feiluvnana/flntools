@@ -40,17 +40,19 @@ T = TypeVar("T")
 # Seconds between two page requests of one bucket, when neither the config nor the class says.
 PACE = 0.5
 # Tabs open at once in a run, and scrolling tabs at once per account.
-TABS = 6
+TABS = 2
 SCROLLING = 2
 # A warm tab opens only while this many tabs of the budget are free, so it never takes the
 # last one an active target would wait for.
-WARM_FREE = 2
+WARM_FREE = 1
+# Targets active at once in a run (`flnd.engine._engine.ACTIVE`).
+ACTIVE = 6
 # The threads of the plugins' blocking steps (`ctx.call`): one for each of the run's active
 # targets (`flnd.engine._engine.ACTIVE`), whatever the number of cores, beside the `CALL` threads.
-LISTINGS = 16
+LISTINGS = ACTIVE
 # Places per target at least, and FILE jobs a target may queue per place.
-PLACES = 32
-QUEUED = 4
+PLACES = 12
+QUEUED = 2
 # Free space kept on a device beyond the files in flight, and how long a reading of it is kept.
 SPARE = 64 << 20
 FREE_FOR = 1.0
@@ -91,7 +93,7 @@ CLEAN = 20
 BURST = 1.0
 # Where a host's cap starts, and the most it grows to without a limit of its own.
 CAP = 8
-MOST = 32
+MOST = 12
 # A cap measures its host's throughput, and may grow by one, every STEP clean transfers.
 STEP = 10
 # A step must raise the throughput by this share of what one more place adds, or it is undone.
@@ -114,7 +116,7 @@ SUSPENDED_POLL = 0.1
 # most segments of one file, and of a file a plugin's `fetch` serves by ranges.
 SPLIT_FILE = 16 << 20
 SPLIT_RANGE = 8 << 20
-SEGMENTS = 8
+SEGMENTS = 4
 FETCH_SEGMENTS = 4
 # A transfer may first split this long after it started, then every TICK seconds.
 SPLIT_AFTER = 2.0
@@ -645,7 +647,7 @@ class Scheduler:
         # Accounts a login error ended, for the auth manager to mark expired.
         self.expired: set[tuple[str, str | None]] = set()
         self.tabs = Pool(TABS)
-        sizes = {Kind.CALL: min(32, cpus + 4), Kind.HASH: cpus, Kind.UNPACK: 1,
+        sizes = {Kind.CALL: min(8, cpus + 2), Kind.HASH: min(4, cpus), Kind.UNPACK: 1,
                  Kind.MERGE: max(1, cpus // 2), Kind.EXEC: 1}
         self.pools = {kind: Pool(size) for kind, size in sizes.items()}
         self._threads: dict[Kind, ThreadPoolExecutor] = {}
