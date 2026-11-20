@@ -388,6 +388,9 @@ class Ctx:
         self._opened = ""
         # The feeds made, each listening from its call: `open` and `click` wait for them.
         self._feeds: list[_Feed] = []
+        # The last feed being made: each waits for the one before, since a target's tabs are
+        # used from one thread at a time (two at once would each open a tab of their own).
+        self._making: asyncio.Future[Any] | None = None
 
     @property
     def _who(self) -> str | None:
@@ -879,7 +882,14 @@ class _Feed:
     def listen(self) -> None:
         """Start making the feed, so it listens from now on; on the loop."""
         if self._feed is None and self._opening is None and not self._done:
-            self._opening = asyncio.ensure_future(self._ctx._run.off(self._make))
+            before, ctx = self._ctx._making, self._ctx
+
+            async def make() -> Any:
+                if before is not None:
+                    await asyncio.wait([before])
+                return await ctx._run.off(self._make)
+
+            self._opening = ctx._making = asyncio.ensure_future(make())
 
     async def _open(self) -> browser.Feed:
         if self._feed is None:

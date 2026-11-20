@@ -531,16 +531,29 @@ class FeedTest(CtxCase):
                 await self.emit(GRAPHQL, json.dumps({"n": 1}))
                 return visit
 
-        self.raw = Loading([200])
+        # Each tab its own, as in a real browser; a tab takes a moment to open.
+        self.make_raw = lambda: Loading([200])
+        tab = FakeBrowser.tab
+
+        async def slow(browser, **options):
+            await asyncio.sleep(0.01)
+            return await tab(browser, **options)
+
+        self.enterContext(mock.patch.object(FakeBrowser, "tab", slow))
         run, ctx = self.ctx()
 
         async def read():
+            # As tik's profile does: its post list's feed, then its stories', then the load.
             feed = ctx.feed("graphql", scroll=False)
+            stories = ctx.feed("story", scroll=False)
             await ctx.open(PAGE)
+            async with stories:
+                pass
             async with feed:
                 return [item["n"] async for item in feed]
 
         self.assertEqual(self.call(run, read()), [1])
+        self.assertEqual(len(self.browsers[0].opened), 1)
 
 
 async def alist(feed):

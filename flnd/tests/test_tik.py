@@ -421,6 +421,35 @@ class ProfileTest(unittest.TestCase):
                 self.assertEqual(getattr(raised, "hint", None), hint)
                 self.assertEqual(len(ctx.seen.requests), len(ids))
 
+    def test_limit_holds_on_the_list_the_walled_fallback_and_a_read_again(self):
+        """`--limit 3` takes 3 posts on each path, a photo post's photos counting once."""
+        ids = [f"72345678901234567{n:02}" for n in range(6)]
+        links = "".join(f'<a href="/@example_creator/video/{post}">clip</a>' for post in ids)
+        routes = {f"{API}/embed/v2/{post}": Reply(embed_page(photo(post, f"{CDN}/{post}a",
+                                                                   f"{CDN}/{post}b")))
+                  for post in ids}
+        page = profile_page(video_count=6, body=links)
+        listing = {"hasMore": False, "itemList": [photo(post, f"{CDN}/{post}a", f"{CDN}/{post}b",
+                                                        createTime=1700000000) for post in ids]}
+
+        class Covered(FakeCtx):
+            async def document(self):
+                if self.seen.scrolls == 1:
+                    return html.parse(CAPTCHA)
+                return await super().document()
+
+            async def handoff(self, message, *, until, timeout=None):  # noqa: ASYNC109
+                return True
+
+        for name, feeds, ctx in (("list", [(FEEDS[0][0], listing)], FakeCtx),
+                                 ("walled", (), FakeCtx),
+                                 ("read again", [Sent(FEEDS[0][0], listing, scroll=2)], Covered)):
+            with self.subTest(name):
+                saved = collect(TikTok, "tik:example_creator", limit=3,
+                                ctx=fake(page, feeds, ctx=ctx, routes=routes),
+                                categories=["videos"])
+                self.assertEqual(len({found.post.id for found in saved}), 3)
+
     def test_a_block_stops_the_walled_fallback(self):
         def refused(request):
             raise Blocked("tik: blocked")
