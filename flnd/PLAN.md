@@ -76,6 +76,7 @@ A target is written one of three ways, and each plugin accepts every way that fi
   | `twt` | `twt:post/<id>` |
   | `tik` | `tik:post/<id>` (videos and photo posts; the route `video` is renamed `post`) |
   | `loi` | `loi:post/<id>` |
+  | `thr` | `thr:post/<code>` |
   | `mht` | `mht:chapter/<id>`, as now |
 
   A user name never holds `/`, so `ins:post` alone is still the user `post`. `fb.watch` and
@@ -118,6 +119,7 @@ Accepted kinds per plugin:
 | `twt` | yes | follows (new) | yes | yes |
 | `tik` | yes | follows (new) | yes | yes (new) |
 | `loi` | no | no | yes | yes (new) |
+| `thr` (new, step 5b) | yes | no | yes | no |
 
 `me` needs a login. It discovers user targets, one per followed account, as `ins:me` does now.
 `--limit N` takes the first N.
@@ -258,6 +260,36 @@ Order: `tik`, `loi`, `fbk`, then `twt` and `ins` last, under the guard.
 - Each new limit is tested on a faked answer. `fbk` and `tik` commits run
   `make bench ARGS=--gate`.
 - **Done when:** the listed tests pass; `twt` lost more lines than the engine gained.
+
+## Step 5b: Threads, a new plugin `thr` (sonnet)
+
+Asked by the user 2026-11-20. Built after step 5, so it starts on `resume=True`, the step 2
+and 3 folders and the step 4 grammar. Modelled on `ins` (same company, same web stack): read
+`src/plugins/ins.py` and its tests first, and copy their shape, not their code.
+
+- **Targets:** a user and a single post only. No `me`, no query (a `thr?…` or search link is
+  refused: `thr has no search`).
+  - User: `thr:<name>`, `threads.com/@<name>`, `threads.net/@<name>`; names as Instagram's,
+    `[A-Za-z0-9._]{1,30}`.
+  - Post: `threads.com/@<name>/post/<code>` (and `threads.net`), `thr:post/<code>`.
+  - Refused, each with a hint: `/search`, `/activity`, `/settings` and the site's other
+    pages; tab links such as `threads.com/@<name>/replies` (hint: `"thr:<name>|replies"`).
+- **Categories:** `posts` (owned), `replies` (owned: the user's own replies' media), `reposts`
+  (opt-in), `profile` (owned: the avatar, `folder="profile"`, `key="{path}"`).
+- **Reading:** a logged-in browser, the profile page's embedded data then its GraphQL feed
+  (or in-page requests replayed like `ins`; confirm live which). A post's files: photos at
+  their best size, carousels, videos (best MP4). Owner for step 3: the post's `username`.
+- **Login:** Threads uses the Instagram login. `login = cookies("sessionid", url=...)` on
+  `threads.com` (confirm live which cookies); without one, what the public sees.
+- **Limits:** treat as `ins`: its "please wait" answers held through `blocked`, 429 through
+  `resume=True`, pace measured on a live run (start at 2 s as `ins`).
+- **Templates:** `folder = "{category}"`, `filename = "{date}_{post}{index}"`, key by post
+  and index, as `ins`.
+- **Files:** `src/plugins/thr.py`, `src/plugins/_manifest.py` (the built-in list), its test
+  file with a table test of accepted and refused targets and faked pages, a COOKBOOK.md
+  plugin section, `CODE_LINES`/`TEST_LINES` raised in the same commit with the reason.
+- **Done when:** the table test and faked-feed tests pass; `make check` green; a hand live
+  check on a test account follows.
 
 ## Step 6: cookbook pass (haiku)
 
