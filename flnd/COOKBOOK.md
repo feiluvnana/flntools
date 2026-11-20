@@ -278,9 +278,12 @@ characters), `t.me/` alone, `web.telegram.org` links: `tlg: can't read <text>`.
 | Form | Route | Reads |
 | --- | --- | --- |
 | `loi:post/<id>`, `loix.cc/lois/<id>`, `moegoat.com/lois/<id>` (digits) | `post` | one post |
+| `loi?<words>`, `loix.cc/search?q=<words>`, `moegoat.com/search?q=<words>` | `search` | a search |
 
-The old `loi:<id>` reads too. Refused: `loi:abc`, `loix.cc/` alone. `loi:post/<id>|archive` and
-`|photo` are allowed: `post` is single but has categories.
+The old `loi:<id>` reads too. A search finds `loi:post/<id>` (`--limit N` is N posts) and needs
+`--folder`; its endpoint and paging are unconfirmed live. Every other page of both domains is
+refused: `that page isn't supported; give a post or a search` (`/library...`: `author and
+library pages aren't supported; ...`). `loi:post/<id>|archive` and `|photo` are allowed.
 
 **mht**
 
@@ -1107,9 +1110,8 @@ media/tlg/examplechannel/Example_Channel/file/2026-01-02_1235_report.pdf
 ### loi (LOIBUS)
 
 - **Reads:** one post: `info.md` (a table of its fields, description, tags, links), preview
-  images, and for a VIP account its archives. Plain HTTP to `api.moegoat.com` (no browser:
-  the site blocks one); every API request is signed as the site's own script signs it, and
-  download links arrive AES-encrypted.
+  images, and for a VIP account its archives. Plain HTTP to `api.moegoat.com` (no browser);
+  requests are signed as the site's script does; download links arrive AES-encrypted.
 - **Categories:** `archive` NF (info.md with links, the archives) then `photo` NF (previews;
   info.md without links only when `archive` is not wanted), both own.
 - **Folder:** `{author}/{post} {title}/{part}`, from `media/loi/` (`author` is the post's
@@ -1121,9 +1123,11 @@ media/tlg/examplechannel/Example_Channel/file/2026-01-02_1235_report.pdf
   doubles), counted per UTC day in the plugin's state; at the limit or on the API's quota
   answer `archive` skips the day's remaining posts with a warning. A rate-limit answer is a
   block hold.
-- **Known gaps:** one post per target (no author, tag or search); a post is counted as soon as
-  its links are fetched; Baidu links are written to info.md only; an expired token is not
-  detected, only "no download links".
+- **Search:** `loi?<words>` reads `GET api/lois?keyword=<words>&page=<n>&page_size=20` (confirm
+  live: endpoint, parameters, answer shape): each page's `data.list` ids as `loi:post/<id>`,
+  ended by a short page; rate-limit answers are held like the links'.
+- **Known gaps:** no author or tag target; a post counts once its links are fetched; Baidu links
+  go to info.md only; an expired token shows only as "no download links".
 
 ```text
 media/loi/example_author/1234567890_Example_Title/info.md

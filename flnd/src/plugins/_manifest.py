@@ -464,6 +464,18 @@ PLUGINS: dict[str, dict[str, object]] = {
         'domains': ['loix.cc', 'moegoat.com'],
         'routes': [
             {
+                'name': 'search',
+                'single': False,
+                'discovers': True,
+                'shown': None,
+                'patterns': [
+                    'loi?{query}',
+                    'loix.cc/search?q={query:.+}',
+                    'moegoat.com/search?q={query:.+}',
+                ],
+                'categories': [],
+            },
+            {
                 'name': 'post',
                 'single': True,
                 'discovers': False,
@@ -477,10 +489,19 @@ PLUGINS: dict[str, dict[str, object]] = {
                 'categories': [{'name': 'archive', 'own': True}, {'name': 'photo', 'own': True}],
             },
         ],
-        'unsupported': {},
+        'unsupported': {
+            'loix.cc/library': "author and library pages aren't supported; give a post or a search",
+            'moegoat.com/library': (
+                "author and library pages aren't supported; give a post or a search"),
+            'loix.cc': "that page isn't supported; give a post or a search",
+            'moegoat.com': "that page isn't supported; give a post or a search",
+        },
         'forms': [
+            'loi?<query>',
             'loi:post/<id>',
             'loi:<id>',
+            'https://www.loix.cc/search?q=<query>',
+            'https://www.moegoat.com/search?q=<query>',
             'https://www.loix.cc/lois/<id>/',
             'https://www.moegoat.com/lois/<id>/',
         ],

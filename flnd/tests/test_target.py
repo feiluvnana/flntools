@@ -111,6 +111,7 @@ class RoundTripTest(unittest.TestCase):
             "https://vm.tiktok.com/ZMabc123/", "https://www.facebook.com/watch/?v=123",
             "https://fb.watch/abc/", "https://www.facebook.com/photo.php?fbid=123",
             "https://www.facebook.com/permalink.php?story_fbid=pfbid1&id=2",
+            "https://loix.cc/lois/5930", "https://loix.cc/search?q=night+city",
         ):
             with self.subTest(link=link):
                 key = read(link)

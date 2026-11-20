@@ -543,7 +543,9 @@ def _link(text: str, tokens: list[str] | None, manifest: Manifest,
     parts = tuple(unquote(part) for part in parsed.path.split("/") if part)
     hit = _find(plugin, text, _Url(_bare(host), parts, query))
     if isinstance(hit, tuple):
-        return _made(plugin, hit[0], hit[1], tokens, known)
+        # A search link keys as the search (`loi?cats`), so its key reads back.
+        return _made(plugin, hit[0], hit[1], tokens, known,
+                     query=any(pattern.search for pattern in hit[0].patterns))
     if isinstance(hit, str):
         raise UsageError(f"{plugin.code}: {hit}")
     # A short link (fb.watch/<code>) no route reads: where it leads, once.

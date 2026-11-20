@@ -27,6 +27,7 @@ from flnd.plugin import (
     Post,
     Request,
     Response,
+    Target,
     cookies,
     numbered,
     route,
@@ -36,6 +37,10 @@ API = "https://api.moegoat.com/api/"
 API_HOST = "api.moegoat.com"
 # The links request, under `API`: the one answer whose JSON may say "slow down".
 LINKS = "user/loi/download_v6/"
+# The search request, under `API`, and its page size. Confirm live: the endpoint, its `keyword`
+# and `page` parameters and the answer's shape are built against a faked answer.
+SEARCH = "lois"
+PAGE_SIZE = 20
 SITE = "https://loix.cc/"
 # The site's image servers and archive mirrors answer 403 without these (seen 2026-11-11); they
 # aren't the plugin's domains, so each post passes them to its files.
@@ -74,6 +79,13 @@ class Loibus(Plugin):
     name = "LOIBUS"
     domains = ("loix.cc", "moegoat.com")
     api = 2
+    # A more literal route (a post, a search) wins over these catch-alls.
+    unsupported = {
+        **{f"{host}/library": "author and library pages aren't supported; give a post or a search"
+           for host in ("loix.cc", "moegoat.com")},
+        **{host: "that page isn't supported; give a post or a search"
+           for host in ("loix.cc", "moegoat.com")},
+    }
     # Without it: the info and images only, no archives.
     login = cookies("access-token", url=SITE)
     # `part` is "images" for the previews and empty otherwise.
@@ -90,6 +102,32 @@ class Loibus(Plugin):
         self._limit_read = False
         # Posts whose `archive` was listed: that category writes their info.md, with links.
         self._archived: set[str] = set()
+
+    @route("loi?{query}", "loix.cc/search?q={query:.+}", "moegoat.com/search?q={query:.+}",
+           newest_first=False)
+    async def search(self, ctx: Ctx, query: str) -> AsyncIterator[Target]:
+        """A search's posts, such as `loi?night city`, each as `loi:post/<id>`: the API's list,
+        paged by `page` until a page is short or empty. Confirm live: endpoint and paging.
+
+        Raises:
+            Blocked: the API kept saying "slow down".
+        """
+        first = Request(f"{API}{SEARCH}", params={"keyword": query, "page": "1",
+                                                  "page_size": str(PAGE_SIZE)})
+        seen: set[str] = set()
+        page = 1
+
+        def next_page(response: Response) -> str | None:
+            nonlocal page
+            page += 1
+            return str(page) if len(_hits(response)) >= PAGE_SIZE else None
+
+        async for response in ctx.pages(first, cursor=next_page, send="page"):
+            for found in _hits(response):
+                post_id = str(found.get("id") or "")
+                if post_id and post_id not in seen:
+                    seen.add(post_id)
+                    yield Target(f"loi:post/{post_id}")
 
     @route(*((pattern, "post/{id}") for pattern in (
         r"loi:post/{id:\d+}", r"loi:{id:\d+}", r"loix.cc/lois/{id:\d+}",
@@ -150,13 +188,14 @@ class Loibus(Plugin):
     def blocked(self, response: Response) -> float | None:
         """Hold (the engine's block round) on a rate limit the links answer states in its JSON.
 
-        Only the links answer is read, as API 1 did: a post's own refusal ("请稍后再试") is
+        Only the links and search answers are read: a post's own refusal ("请稍后再试") is
         `NotFound` at once. A plain HTTP 429 is left to the engine's own 429 hold. A used-up
         quota is no hold: the archive category skips the day's posts itself.
         """
         where = urlsplit(response.url)
         if (response.status == 429 or where.hostname != API_HOST
-                or not where.path.startswith(f"/api/{LINKS}")):
+                or not (where.path.startswith(f"/api/{LINKS}")
+                        or where.path.rstrip("/") == f"/api/{SEARCH}")):
             return None
         try:
             body = response.json
@@ -268,6 +307,15 @@ def refusal(status: int, body: Any) -> Refusal | None:
     if failed and any(word in message for word in QUOTA_WORDS):
         return Refusal.QUOTA
     return None
+
+
+def _hits(response: Response) -> list[dict[str, Any]]:
+    """The posts of one search answer: `data` as a list, or `data.list` / `data.items`."""
+    body = response.json
+    data = body.get("data") if isinstance(body, dict) else None
+    if isinstance(data, dict):
+        data = data.get("list") or data.get("items")
+    return [hit for hit in data if isinstance(hit, dict)] if isinstance(data, list) else []
 
 
 def fields_of(post: dict[str, Any], *, part: str = "") -> dict[str, Any]:
