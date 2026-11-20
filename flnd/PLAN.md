@@ -70,6 +70,14 @@ A target is written one of three ways, and each plugin accepts every way that fi
   with a hint naming the right form.
 - Stored targets (`targets` table) must keep resolving. If a value changes form, step 4's
   worker adds a store migration and a test that an old row still syncs.
+- **Key clash (found 2026-11-20 by probing the resolver).** A single post's key is
+  `<code>:<id>`, the same shape as a user's: `instagram.com/p/C1abc` is `ins:C1abc`, the user
+  `C1abc` too; `facebook.com/reel/123` and `profile.php?id=123` are both `fbk:123`; a tweet
+  `twt:123` and a numeric handle too. They share one `targets` row. Fix in step 4 first: a
+  single post's key carries its kind (`ins:post:C1abc`, shown only in `flnd status`), with a
+  store migration of old rows by their `kind` column, and a test per plugin.
+- Already working, per the probe, so step 4 only adds tests for them: tweet links with
+  `/photo/<n>`, `/i/web/status/`, `mobile.` hosts; `m.facebook.com`; Instagram `/reel/`.
 
 Accepted kinds per plugin:
 
