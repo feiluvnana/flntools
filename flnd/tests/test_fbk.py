@@ -269,6 +269,17 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual({tuple(s.post.headers.items()) for s in saved},
                          {(("Referer", f"{SITE}/"),)})
 
+    def test_posts_pops_results_from_profile(self):
+        profile = {"results": [{"data": photo("1")["data"]}], "owner": "42"}
+        ctx = FakeCtx(Facebook)
+
+        async def run_posts():
+            return [p async for p in Facebook().posts(ctx, profile)]
+
+        posts = asyncio.run(run_posts())
+        self.assertEqual(len(posts), 1)
+        self.assertNotIn("results", profile)
+
     def test_each_category_opens_only_its_pages(self):
         cases = [
             # 57 is another account's, in the scroll: left out; 55 and 56 came with the page.

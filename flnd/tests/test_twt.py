@@ -383,10 +383,32 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(ctx.seen.visited, [self.SEARCH])
         self.assertEqual(Twitter.resolve(str(found[0])), Target("twt:post/1", kind="post"))
         # The discovered tweet runs on the same instance: its files, and no API call.
+        self.assertIsInstance(plugin.found["1"], list)
         later = FakeCtx(plugin, str(found[0]))
         saved = collect(Twitter, str(found[0]), ctx=later)
         self.assertEqual([found.path for found in saved], [f"1/{DAY}_1_0.jpg"])
         self.assertEqual(later.seen.requests, [])
+
+    def test_search_stores_extracted_posts_and_caps_lru(self):
+        plugin = Twitter()
+        # Putting tweet "1" as the oldest tweet ends the search without opening another window.
+        lots = [item(tweet(str(i), [photo("p")])) for i in range(75, 0, -1)]
+        ctx = FakeCtx(plugin, "twt?lots", pages={self.search_url("lots"): FakePage(
+            feeds=sent(self.RESPONSE, [page(*lots, cursor="end", search=True)]))})
+        found = listed(plugin, ctx, "search", "lots")
+        self.assertEqual(len(found), 75)
+        self.assertLessEqual(len(plugin.found), 64)
+        first_key = next(iter(plugin.found))
+        self.assertIsInstance(plugin.found[first_key], list)
+        self.assertNotIn("75", plugin.found)
+        self.assertIn("1", plugin.found)
+        # Starting a new search clears prior cache.
+        ctx2 = FakeCtx(plugin, "twt?small", pages={self.search_url("small"): FakePage(
+            feeds=sent(self.RESPONSE, [page(item(tweet("1", [photo("p")])),
+                                            cursor="end", search=True)]))})
+        found2 = listed(plugin, ctx2, "search", "small")
+        self.assertEqual(len(found2), 1)
+        self.assertEqual(list(plugin.found), ["1"])
 
     def test_when_is_asked_of_x_as_search_operators(self):
         asked_for = ("https://x.com/search?q=example+since%3A2026-11-01+until%3A2026-11-10"

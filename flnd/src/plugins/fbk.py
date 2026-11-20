@@ -6,6 +6,7 @@ SPEC.md#fbk-facebook explains it: the pages it reads, the quirks, the rules a ch
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 from urllib.parse import parse_qs, urlsplit
@@ -105,6 +106,30 @@ RATE_LIMIT_CODES = frozenset({"1675004", "368"})
 PAGE_INFO_DEPTH = 3
 # A media node's owner by vanity name (unconfirmed live).
 OWNER_NAME = "owner.vanity || video_owner.vanity"
+
+
+def _wanted_categories(target: Any = None) -> set[str] | None:
+    """The categories wanted for this target, if known."""
+    if target is not None and hasattr(target, "text") and "|" in target.text:
+        tail = target.text.rpartition("|")[2]
+        tokens = {t.strip() for t in tail.split(",") if t.strip()}
+        if "all" in tokens:
+            return None
+        if tokens:
+            return tokens
+    frame = sys._getframe()
+    while frame:
+        if "categories" in frame.f_locals:
+            cats = frame.f_locals["categories"]
+            if isinstance(cats, (list, tuple)):
+                names = {c.name if hasattr(c, "name") else c for c in cats}
+                found = {n for n in names if isinstance(n, str)}
+                if "all" in found:
+                    return None
+                if found:
+                    return found
+        frame = frame.f_back
+    return None
 
 
 class Facebook(Plugin):
@@ -304,7 +329,12 @@ class Facebook(Plugin):
             if results is None:
                 raise SiteError(f"fbk: {url} didn't load", hint="check the profile in a browser")
             early = [line async for line in arrived]
-        return profile_of(url, results, early)
+        profile = profile_of(url, results, early)
+        early.clear()
+        wanted = _wanted_categories(getattr(ctx, "target", None))
+        if wanted is not None and "posts" not in wanted:
+            profile.pop("results", None)
+        return profile
 
     # The posts tab is the profile page the route left open, so it comes first: the tabs after
     # it navigate away.
@@ -313,9 +343,13 @@ class Facebook(Plugin):
         """The profile's own posts: the page's photos and videos, then its scroll's."""
         seen: set[str] = set()
         # Not filtered by owner: the header that names the owner came from the same results.
-        for result in profile["results"]:
+        results = profile.pop("results", ()) if isinstance(profile, dict) else profile.get(
+            "results", ()
+        )
+        for result in results:
             for post in media_posts(result, "posts", seen=seen):
                 yield post
+        del results
         async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor(),
                             resume=True) as lines:
             async for line in unblocked(ctx, lines):

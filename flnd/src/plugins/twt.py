@@ -66,6 +66,8 @@ SEARCH_EMPTY = 3
 # How many of a search window's last tweets, in scroll order, set where the next window starts.
 SEARCH_TAIL = 5
 MAX_ID = re.compile(r"(?<!\S)max_id:\d+(?!\S)", re.IGNORECASE)
+# The search tweets held by id for `post` to read instead of asking the API.
+MAX_FOUND = 64
 # The flags sent before the web app's own are known: a refresh replaces them with each query's
 # `featureSwitches` and the values x.com's page gives them.
 FEATURES = {"responsive_web_graphql_timeline_navigation_enabled": True,
@@ -187,7 +189,7 @@ class Twitter(Plugin):
         # One instance serves every target of its account in a run: the query table, and the
         # tweets a search listed, by id, which `post` reads instead of asking the API.
         self.graph = Graph()
-        self.found: dict[str, dict] = {}
+        self.found: dict[str, list[Post] | dict] = {}
 
     def sign(self, request: Request, cookies: Mapping[str, str]) -> Request:
         """Twitter's API headers on a request to `/i/api/`, with the current CSRF token."""
@@ -218,7 +220,12 @@ class Twitter(Plugin):
             NotFound: the tweet is gone (404), or the API gives this login no tweet.
         """
         tweet_id = tweet_id.removeprefix("post/")
-        tweet = self.found.pop(tweet_id, None)
+        cached = self.found.pop(tweet_id, None)
+        if isinstance(cached, list):
+            for post in cached:
+                yield post
+            return
+        tweet = cached
         if tweet is None:
             data = await self.graph.get(ctx, "TweetResultByRestId", {
                 "tweetId": tweet_id, "withCommunity": False,
@@ -246,6 +253,7 @@ class Twitter(Plugin):
         seen: set[str] = set()
         window_query = query
         stalled = 0
+        self.found.clear()
         while True:
             # The last tweets reached in scroll order: an old outlier early in a window must not
             # set where the next one starts, so it is the oldest of these, not of all.
@@ -267,8 +275,20 @@ class Twitter(Plugin):
                         continue
                     seen.add(tweet_id)
                     added = True
-                    if any(True for _ in tweet_posts(tweet, "posts", None, part="")):
-                        self.found[tweet_id] = tweet
+                    category = "replies" if unwrap(tweet)["legacy"].get(
+                        "in_reply_to_status_id_str"
+                    ) else "posts"
+                    owner = dig(unwrap(tweet), AUTHOR)
+                    posts = [
+                        post.replace(owner=owner, category=category)
+                        for post in tweet_posts(
+                            tweet, "posts", None, part=category if owner else ""
+                        )
+                    ]
+                    if posts:
+                        if len(self.found) >= MAX_FOUND:
+                            self.found.pop(next(iter(self.found)), None)
+                        self.found[tweet_id] = posts
                         yield Target(f"https://x.com/i/web/status/{tweet_id}")
             except Blocked as error:
                 stalled = 0 if added else stalled + 1

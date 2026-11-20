@@ -353,6 +353,16 @@ class ProfileTest(unittest.TestCase):
                                  {category == "playlists"})
                 self.assertEqual(len(saved), count)
 
+    def test_unwanted_categories_are_not_queued_in_profile(self):
+        ctx = fake(feeds=FEEDS[:1])
+        profile = Profile("example_creator", wanted={"videos"})
+
+        async def run_videos():
+            return [p async for p in profile.posts(ctx, "videos")]
+
+        asyncio.run(run_videos())
+        self.assertEqual(len(profile._queues["playlists"]), 0)
+
     def test_an_older_pinned_post_above_newer_ones(self):
         # Marked pinned, it sits outside the date order; unmarked, the order is broken.
         for pinned, error in ((True, None), (False, PluginError)):

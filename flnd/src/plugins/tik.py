@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime
 import re
+import sys
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import PurePosixPath
@@ -90,6 +91,30 @@ FOLLOWING_TAB = '[data-e2e="following"]'
 TABS = {"reposts": "repost-tab", "liked": "liked-tab", "favorites": "favorites-tab"}
 
 
+def _wanted_categories(target: Any = None) -> set[str] | None:
+    """The categories wanted for this target, if known."""
+    if target is not None and hasattr(target, "text") and "|" in target.text:
+        tail = target.text.rpartition("|")[2]
+        tokens = {t.strip() for t in tail.split(",") if t.strip()}
+        if "all" in tokens:
+            return None
+        if tokens:
+            return tokens
+    frame = sys._getframe()
+    while frame:
+        if "categories" in frame.f_locals:
+            cats = frame.f_locals["categories"]
+            if isinstance(cats, (list, tuple)):
+                names = {c.name if hasattr(c, "name") else c for c in cats}
+                found = {n for n in names if isinstance(n, str)}
+                if "all" in found:
+                    return None
+                if found:
+                    return found
+        frame = frame.f_back
+    return None
+
+
 class Profile:
     """One profile's page, shared by the target's categories, opened on first need.
 
@@ -102,9 +127,10 @@ class Profile:
         name: the user name, without `@`.
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, wanted: set[str] | None = None) -> None:
         self.name = name
         self.url = f"{SITE}/@{name}"
+        self.wanted = wanted
         # The profile's own data (its `user` and `stats`); empty until the page is read.
         self.user: dict[str, Any] = {}
         # The items the post list held.
@@ -142,6 +168,8 @@ class Profile:
         other category's call then drains its queue. Closed early (a sync caught up), it stops
         the scroll, and the other gets what was queued so far.
         """
+        if self.wanted is None:
+            self.wanted = _wanted_categories(getattr(ctx, "target", None))
         queue = self._queues[wanted]
         if not self._scrolled:
             self._scrolled = True
@@ -170,6 +198,10 @@ class Profile:
                         listed=dig(self.user, "stats.videoCount"))
         while queue:
             yield queue.popleft()
+        if self.wanted is not None and "playlists" not in self.wanted:
+            self._queues["playlists"].clear()
+        if self.wanted is not None and "videos" not in self.wanted:
+            self._queues["videos"].clear()
 
     async def stories(self, ctx: Ctx) -> AsyncIterator[dict[str, Any]]:
         """Each story item the page's load brought; it opens the page with its watcher alone
@@ -245,7 +277,9 @@ class Profile:
         self.found += len(items)
         for item in items:
             self._seen.add((item["id"], item["idx"]))
-            self._queues["playlists" if item["playlist"] else "videos"].append(item)
+            cat = "playlists" if item["playlist"] else "videos"
+            if self.wanted is None or cat in self.wanted:
+                self._queues[cat].append(item)
         return more is False
 
 
@@ -389,7 +423,7 @@ class TikTok(Plugin):
     async def user(self, ctx: Ctx, user: str) -> Profile:
         """A profile, by its user name: `tik:example_creator`, `tik:@example_creator` or
         `https://www.tiktok.com/@example_creator`. Nothing is opened yet."""
-        return Profile(user)
+        return Profile(user, wanted=_wanted_categories(getattr(ctx, "target", None)))
 
     # Newest first, apart from pinned videos at the top, which the engine's early stop allows for.
     @user.category(newest_first=True)
