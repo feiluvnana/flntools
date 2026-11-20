@@ -1,6 +1,6 @@
 """The theme: every colour and glyph flnd draws with, and when to drop colour or Unicode.
 
-src/docs/cli explains it.
+COOKBOOK.md#commands-and-flags explains it.
 """
 
 from __future__ import annotations

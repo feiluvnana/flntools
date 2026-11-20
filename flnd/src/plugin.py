@@ -1,6 +1,6 @@
 """Plugin API 2: what a plugin declares, the types it yields and reads, `Ctx`, and its helpers.
 
-src/docs/writing-a-plugin explains it; a mistake in a plugin's class raises when it is made.
+COOKBOOK.md#writing-a-plugin explains it; a mistake in a plugin's class raises when it is made.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 """TikTok on plugin API 2: a profile read from its own page's list answers in a tab, and one
-post from its public embed page over HTTP. src/docs/plugins/tik explains it.
+post from its public embed page over HTTP. COOKBOOK.md#tik-tiktok explains it.
 """
 
 from __future__ import annotations

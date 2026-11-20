@@ -1,6 +1,6 @@
 """Accounts, switching, the sealed vault and the login methods.
 
-src/docs/storage explains it.
+COOKBOOK.md#logins-and-accounts explains it.
 """
 
 from __future__ import annotations

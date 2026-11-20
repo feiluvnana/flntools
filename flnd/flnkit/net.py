@@ -1,6 +1,6 @@
 """HTTP for any program on an asyncio loop: a Session, a Client, downloads into parts.
 
-src/docs/errors explains it."""
+COOKBOOK.md#when-it-goes-wrong explains it."""
 
 from __future__ import annotations
 
@@ -62,7 +62,8 @@ HANDLES = 260
 TIMEOUT = 30.0
 # The file system's writes go to the writer thread this many bytes at a time. Each hand-off to
 # a thread waits for the GIL when it comes back, which on a busy loop can take milliseconds, so
-# fewer, larger pieces pay: 4 MiB moved 1 GiB 15% faster than 1 MiB (src/docs/performance).
+# fewer, larger pieces pay: 4 MiB moved 1 GiB 15% faster than 1 MiB
+# (COOKBOOK.md#for-developers).
 BUFFER = 4 << 20
 # The most bytes of one transfer that wait in memory for the disk before curl pauses it.
 HELD = 8 << 20

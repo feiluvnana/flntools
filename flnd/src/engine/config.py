@@ -1,6 +1,6 @@
 """config.toml: its structs, how a setting resolves, editing it, and the name templates.
 
-src/docs/storage explains every key ("config.toml").
+COOKBOOK.md#config explains every key ("config.toml").
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ class Where(enum.StrEnum):
 
 
 class Defaults(msgspec.Struct, frozen=True):
-    """The `[defaults]` table (src/docs/storage)."""
+    """The `[defaults]` table (COOKBOOK.md#config)."""
 
     dedupe: bool = True
     sidecars: bool = False
@@ -663,7 +663,7 @@ def _known(key: str, plugins: Mapping[str, type]) -> tuple[list[str], str]:
         if name in PLUGINS or name in _settings_fields(plugins.get(code)):
             return parts[:2], name
     raise UsageError(f"{key} is not a setting flnd knows",
-                     hint="see src/docs/storage for every key of config.toml")
+                     hint="see COOKBOOK.md#config for every key of config.toml")
 
 
 def _without_exec(data: dict[str, Any], origin: Where) -> dict[str, Any]:

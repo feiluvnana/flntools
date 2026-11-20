@@ -1,6 +1,6 @@
 """The log lines' levels and scope, the folding of repeated warnings, and the run journal.
 
-src/docs/cli explains it.
+COOKBOOK.md#commands-and-flags explains it.
 """
 
 from __future__ import annotations

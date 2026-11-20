@@ -15,7 +15,7 @@ Steps:
    (the default cap per host);
 4. download the four 16 MiB files at once onto a disk throttled to 20 MB/s (each write sleeps
    for its size at that rate), while a probe on the loop wakes every 5 ms: `stall_20mbs` is the
-   longest the loop was held up, which must stay under 100 ms (src/docs/performance);
+   longest the loop was held up, which must stay under 100 ms (COOKBOOK.md#for-developers);
 5. `two_disks`: sixteen 16 MiB downloads to a fast folder, alone and then while a second
    client (a second target) writes the four 16 MiB files to a folder throttled to 20 MB/s, as
    the percentage the slow disk adds to the fast target's time. Both folders sit in one

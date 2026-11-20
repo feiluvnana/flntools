@@ -1,6 +1,6 @@
 """SQLite WAL store: one shared connection, explicit transactions.
 
-src/docs/storage explains it."""
+COOKBOOK.md#for-developers explains it."""
 
 from __future__ import annotations
 

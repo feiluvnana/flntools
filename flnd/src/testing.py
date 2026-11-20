@@ -1,6 +1,6 @@
 """The test kit for plugins: run one on fakes, with no network.
 
-src/docs/writing-a-plugin explains it."""
+COOKBOOK.md#writing-a-plugin explains it."""
 
 from __future__ import annotations
 

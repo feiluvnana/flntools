@@ -1,6 +1,6 @@
 """The scheduler: jobs, the pools they wait for, and the one retry policy.
 
-src/docs/architecture explains it.
+COOKBOOK.md#for-developers explains it.
 """
 
 from __future__ import annotations
@@ -309,7 +309,7 @@ class Bucket:
 class Cap:
     """Transfers at once to one host, adapted to what the host can take (AIMD).
 
-    src/docs/performance explains its steps. `take` returns the round a transfer started in,
+    COOKBOOK.md#for-developers explains its steps. `take` returns the round a transfer started in,
     and only a failure of the current round halves the cap.
 
     Args:

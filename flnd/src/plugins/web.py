@@ -1,5 +1,5 @@
 """The web (`web`): any link no other plugin claims, as a file, an HLS or DASH stream, or a page's
-video and images. See src/docs/plugins/web.
+video and images. See COOKBOOK.md#web-the-web.
 """
 
 from __future__ import annotations

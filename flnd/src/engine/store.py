@@ -1,5 +1,6 @@
 """`flnd.db`, schema 2: its tables, the migration from version 1, its rows and queries, and
-`check`, which compares the rows with the disk and repairs them. `src/docs/storage` explains it.
+`check`, which compares the rows with the disk and repairs them. COOKBOOK.md#for-developers
+explains it.
 """
 
 from __future__ import annotations

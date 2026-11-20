@@ -5,7 +5,7 @@ writing, models) are in `../AGENTS.md`. This file holds flnd's own rules. Run ev
 this folder, `flnd/`.
 
 These rules are for anyone who changes flnd: how to check, lay out, name, write and measure. The
-`src/docs/architecture.md` page is the map of the code, and says why it is built the way it is.
+`COOKBOOK.md#for-developers` section is the map of the code.
 
 ## Checks
 - `make check` runs ruff, then the tests. It must be green at every commit, not only the last
@@ -23,7 +23,7 @@ These rules are for anyone who changes flnd: how to check, lay out, name, write 
   a regression over 15% against `tests/bench/gates.json`. Run the benchmarks before a speed
   change, to get the "before" numbers. Run `ARGS=--gate` on any change that touches speed,
   before its commit. `ARGS=--record` stores a run as the new baseline. See
-  `src/docs/performance.md`.
+  `COOKBOOK.md#for-developers`.
 - `make check PY=3.11` runs on the oldest Python that `requires-python` allows. Run it before
   a release.
 - `make docs` builds the API reference into `build/docs/`. `make dist` builds a one-file binary.
@@ -67,7 +67,6 @@ src/                 the package flnd
   plugins/         built-ins, importing only flnd.plugin and the standard library
     __init__.py _manifest.py fbk.py ins.py loi.py mht.py tik.py tlg.py twt.py web.py
   extension/       manifest.json background.js page.js popup.html popup.js
-  docs/
 flnkit/              the standalone package flnkit, imports nothing of flnd
   net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py media.py
   stream.py
@@ -152,7 +151,7 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
   keeps working, so such a change needs no new major version.
 - A change that breaks plugins means API 3, plus an adapter that runs API 2 plugins with a
   deprecation warning for at least one release.
-- `flnd.plugin.API` and `src/docs/writing-a-plugin.md` ("Plugin API versions") say which
+- `flnd.plugin.API` and `COOKBOOK.md#writing-a-plugin` say which
   version this flnd has.
 
 ## Bugs
@@ -183,8 +182,10 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
   commit, and say why in the commit body.
 
 ## Writing
-- A module docstring is 1 to 3 lines. It names the `src/docs` page that explains the module.
+- A module docstring is 1 to 3 lines. It names the `COOKBOOK.md#<section>` that explains the
+  module.
 - A public name has a summary line. Then `Args:`, `Returns:` and `Raises:`, only when they add
   something to the name and type.
 - Comments cover only what the code cannot say. Keep them short.
-- A behaviour change updates its `src/docs` page in the same commit.
+- `README.md` is short and `COOKBOOK.md` says everything, with no gray area: grammar, accepted
+  and refused forms, exact errors. A behaviour change updates `COOKBOOK.md` in the same commit.

@@ -1,6 +1,6 @@
 """`python -m flnd`: the command line, as the `flnd` script runs it.
 
-src/docs/cli explains it.
+COOKBOOK.md#commands-and-flags explains it.
 """
 
 from flnd.cli import main

@@ -1,6 +1,6 @@
 """Questions in the terminal, in Huh's look: a pick, a line of text, a yes or no (Textual, inline).
 
-src/docs/cli explains it.
+COOKBOOK.md#commands-and-flags explains it.
 """
 
 from __future__ import annotations

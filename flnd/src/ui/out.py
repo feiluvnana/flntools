@@ -1,6 +1,6 @@
 """Every line flnd prints: lines, folded warnings, errors with their hint, tables and the help.
 
-src/docs/cli explains it.
+COOKBOOK.md#commands-and-flags explains it.
 """
 
 from __future__ import annotations

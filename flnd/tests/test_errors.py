@@ -1,4 +1,4 @@
-"""The one error hierarchy (`flnd.errors`) and its policy (src/docs/errors.md).
+"""The one error hierarchy (`flnd.errors`) and its policy (COOKBOOK.md#when-it-goes-wrong).
 
 Four groups of tests:
 1. `ClassesTest`: one test per class, raising it where flnd raises it and checking its place in

@@ -1,6 +1,6 @@
 """A swappable clock: monotonic time, wall time, interruptible sleeps, and site dates.
 
-src/docs/architecture explains it.
+COOKBOOK.md#for-developers explains it.
 """
 
 from __future__ import annotations

@@ -1,27 +1,21 @@
-"""Keeps the docs in step with the code: docstrings, `src/docs/` pages, links, CLI flags, plugins.
+"""Keeps the docs in step with the code: docstrings, `COOKBOOK.md`, links, CLI flags, plugins.
 
 AGENTS.md › Writing sets the rules this file checks. Each check is a test class below:
 
 1. `DocstringTest` reads every module of `flnd` with `ast` (nothing is imported) and lists each
-   docstring gap: a module without a docstring, one longer than `MODULE_LINES` lines (but the
-   modules of `LONG`), one that names no `src/docs` page, and a public name without a summary.
-   Every docstring with `>>>` lines then runs as a doctest.
-2. `PageTest` runs every `python` block of `src/docs/**/*.md`, page by page, in a scratch folder.
-3. `LinkTest` checks that every relative link in `src/docs/` and in the root's markdown resolves:
-   the file exists, and a `#fragment` names one of its headings.
-4. `CliTest` checks that `src/docs/cli.md` names every command and every option the CLI parses.
-5. `PluginPageTest` checks that each built-in plugin has `src/docs/plugins/<code>.md`, and that
-   no page is left for a plugin that is gone.
-6. `ReadmeTest` runs the `python` blocks of `README.md` offline, and parses every `flnd …`
-   command line of its `bash` blocks with the CLI's own argparse parser, so a command, a flag or
-   an example the README shows can't drift from the code.
+   docstring gap: a module without a docstring, one longer than `MODULE_LINES` lines, one that
+   names no `COOKBOOK.md#<section>` or a section the page lacks, and a public name without a
+   summary. Every docstring with `>>>` lines then runs as a doctest.
+2. `PageTest` runs every `python` block of `COOKBOOK.md`, in page order, in one namespace.
+3. `LinkTest` checks every relative link of the two pages: the file exists, and a `#fragment`
+   names one of its headings.
+4. `CliTest` checks that `COOKBOOK.md` names every command and every option the CLI parses, and
+   that each `flnd …` command line of the two pages parses with the CLI's own parser.
+5. `PluginTest` checks that each built-in plugin has a `COOKBOOK.md` section headed by its code.
+6. `SizeTest` keeps `README.md` and `COOKBOOK.md` within their limits.
 
 A gap fails `test_no_gap`, with one line per gap naming the module or the name and the rule it
-breaks, so new code is documented as it is written. The one allowlist, `LONG`, may only shrink:
-fix the gap, or the docs page, in the same commit.
-
-The whole file runs in well under a second on a laptop, since it parses and never imports the
-modules it checks; only the API snapshot's names are imported, as `test_names.py` does.
+breaks, so new code is documented as it is written.
 """
 
 from __future__ import annotations
@@ -34,6 +28,7 @@ import inspect
 import io
 import os
 import re
+import shlex
 import tempfile
 import unittest
 from collections.abc import Iterator
@@ -42,43 +37,25 @@ from pathlib import Path
 import api_snapshot
 from test_packaging import ROOT
 
-# ---------------------------------------------------------------------------------------------
-# What is checked, and where
-# ---------------------------------------------------------------------------------------------
-
-# The packages whose modules must document themselves. `tests/` is for contributors, not the
-# product, so it is left out.
+# The packages whose modules must document themselves. `tests/` is for contributors.
 PACKAGES = ("src", "flnkit")
-DOCS = ROOT / "src" / "docs"
-# The longest a module docstring may be, in lines: what the module holds, and its src/docs page.
-MODULE_LINES = 3
-# The modules that keep a longer docstring: none. Step 16 moved each flow into its src/docs
-# page. The list may only shrink: `test_long_docstrings_are_still_long`.
-LONG: frozenset[str] = frozenset()
-# The marker that skips the `python` block right after it, with an optional reason:
-# `<!-- docs-test: skip -->` or `<!-- docs-test: skip: it needs a real site -->`. A skipped block
-# in `src/docs/` is a gap; one in the README must give its reason, and is still compiled.
-SKIP = re.compile(r"^<!-- docs-test: skip(?:: (?P<reason>.+?))? -->$")
+COOKBOOK = ROOT / "COOKBOOK.md"
 README = ROOT / "README.md"
-# The terms the glossary must define: the words every page uses.
-TERMS = ("target", "plugin", "route", "category", "post", "file", "event", "home")
+PAGES = (README, COOKBOOK)
+# The longest a module docstring may be, in lines; the pages' longest, in lines.
+MODULE_LINES = 3
+README_LINES, COOKBOOK_LINES, LINE_CHARS = 40, 1500, 100
+SECTION = re.compile(r"COOKBOOK\.md#([\w-]+)")
 
-
-# ---------------------------------------------------------------------------------------------
-# 1. Docstrings
-# ---------------------------------------------------------------------------------------------
 
 def public_names() -> dict[tuple[str, str], str]:
     """The public functions, methods, classes, errors and properties, by where they are defined.
 
-    "Public" means listed in the API snapshot (`make api`), which is what a script or
-    a source author can reach. A name the snapshot reaches through a re-export points at the
-    file that defines it, so the AST walk below can match it.
+    "Public" means listed in the API snapshot (`make api`).
 
     Returns:
         `{(path, qualname): kind}`: the file's path relative to the root, with `/`; the
-        `__qualname__`; and the snapshot's kind (`function`, `method`, `class`, `error` or
-        `property`).
+        `__qualname__`; and the snapshot's kind.
     """
     found: dict[tuple[str, str], str] = {}
     for name in api_snapshot.api_names():
@@ -104,24 +81,23 @@ def dotted(path: Path) -> str:
 
 
 def modules() -> list[Path]:
-    """Every module of `PACKAGES`, sorted, so the gaps are reported in one order on every OS."""
+    """Every module of `PACKAGES`, sorted, so the gaps come in one order on every OS."""
     return sorted(path for package in PACKAGES for path in (ROOT / package).rglob("*.py"))
 
 
-def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
+def module_gaps(path: Path, public: dict[tuple[str, str], str], sections: set[str]) -> list[str]:
     """Every docstring gap of one module, one line each.
 
-    The rules (AGENTS.md › Writing): a module starts with a docstring of at most `MODULE_LINES`
-    lines that names its `src/docs` page; a public name (in the API snapshot) has a docstring
-    whose first line sums it up. `Args:`, `Returns:` and `Raises:` are written only when they
-    add something, so nothing asks for them, and an `Example:` is never required.
+    A module starts with a docstring of at most `MODULE_LINES` lines that names a real
+    `COOKBOOK.md#<section>`; a public name has a docstring whose first line sums it up.
 
     Args:
         path: the module's file.
         public: the API snapshot's names, from `public_names`.
+        sections: the `#fragment` of every heading of `COOKBOOK.md`.
 
     Returns:
-        `<path>: <gap>` for the module itself, `<path>:<qualname>: <gap>` for a public name.
+        `<path>: <gap>` for the module, `<path>:<qualname>: <gap>` for a public name.
     """
     relative = path.relative_to(ROOT).as_posix()
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
@@ -129,9 +105,12 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
     if not doc:
         return [f"{relative}: no module docstring"]
     gaps = []
-    if "src/docs" not in doc:
-        gaps.append(f"{relative}: the module docstring names no src/docs page")
-    if len(doc.splitlines()) > MODULE_LINES and relative not in LONG:
+    named = SECTION.findall(doc)
+    if not named:
+        gaps.append(f"{relative}: the module docstring names no COOKBOOK.md section")
+    gaps += [f"{relative}: COOKBOOK.md has no section #{name}" for name in named
+             if name not in sections]
+    if len(doc.splitlines()) > MODULE_LINES:
         gaps.append(f"{relative}: the module docstring is over {MODULE_LINES} lines")
 
     def walk(body: list[ast.stmt], prefix: str) -> None:
@@ -139,8 +118,7 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
             if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             name = prefix + node.name
-            summary = (ast.get_docstring(node) or "").strip()
-            if (relative, name) in public and not summary:
+            if (relative, name) in public and not (ast.get_docstring(node) or "").strip():
                 gaps.append(f"{relative}:{name}: no summary")
             if isinstance(node, ast.ClassDef):
                 walk(node.body, name + ".")
@@ -149,42 +127,22 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
     return gaps
 
 
-def page_gaps() -> list[str]:
-    """One gap per `src/docs/` page with skipped `python` blocks: `<page>: <n> skipped blocks`."""
-    gaps = []
-    for page in sorted(DOCS.rglob("*.md")):
-        skipped = sum(1 for _, _, skip in python_blocks(page) if skip)
-        if skipped:
-            gaps.append(f"{page.relative_to(ROOT).as_posix()}: {skipped} skipped python blocks")
-    return gaps
-
-
 def gaps() -> list[str]:
-    """Every gap the code and the docs have, sorted: `test_no_gap` wants none."""
-    public = public_names()
-    found = [gap for path in modules() for gap in module_gaps(path, public)]
+    """Every gap the code has, sorted: `test_no_gap` wants none."""
+    public, sections = public_names(), anchors(COOKBOOK)
+    found = [gap for path in modules() for gap in module_gaps(path, public, sections)]
     # A property and its setter share a name, so the same gap can come twice; it is listed once.
-    return sorted(set(found + page_gaps()))
+    return sorted(set(found))
 
 
 def rule(gap: str) -> str:
-    """The rule of AGENTS.md › Writing that one gap breaks, for the failure message.
-
-    Args:
-        gap: one line of `gaps()`.
-
-    Returns:
-        A short statement of the rule.
-    """
-    if gap.endswith("skipped python blocks"):
-        return "every python block in src/docs/ runs; drop its skip marker and make it run"
+    """The rule of AGENTS.md › Writing that one gap breaks, for the failure message."""
     if gap.endswith("no module docstring"):
         return "a module starts with a docstring"
-    if gap.endswith("names no src/docs page"):
-        return "a module docstring names the src/docs page that explains it"
+    if "COOKBOOK.md" in gap:
+        return "a module docstring names the COOKBOOK.md#<section> that explains it"
     if gap.endswith(f"over {MODULE_LINES} lines"):
-        return (f"a module docstring is 1 to {MODULE_LINES} lines; the explanation lives in "
-                "src/docs")
+        return f"a module docstring is 1 to {MODULE_LINES} lines"
     return "a public name has a docstring that sums it up"
 
 
@@ -193,15 +151,8 @@ class DocstringTest(unittest.TestCase):
 
     def test_no_gap(self) -> None:
         found = gaps()
-        self.assertFalse(found, "document these (AGENTS.md › Writing), or fix the docs page:\n"
+        self.assertFalse(found, "document these (AGENTS.md › Writing):\n"
                          + "\n".join(f"{gap}  [rule: {rule(gap)}]" for gap in found))
-
-    def test_long_docstrings_are_still_long(self) -> None:
-        # A module of `LONG` trimmed to `MODULE_LINES` lines leaves the list.
-        short = sorted(name for name in LONG
-                       if len((ast.get_docstring(ast.parse((ROOT / name).read_text(
-                           encoding="utf-8"))) or "").splitlines()) <= MODULE_LINES)
-        self.assertEqual(short, [], "these are short now: delete them from LONG")
 
     def test_examples_run(self) -> None:
         """Every docstring with `>>>` lines runs as a doctest, in a scratch folder."""
@@ -214,27 +165,13 @@ class DocstringTest(unittest.TestCase):
             with scratch():
                 for test in finder.find(module, name):
                     runner.run(test)
-        self.assertFalse(runner.failures, f"{runner.failures} docstring examples failed; "
-                         "the output above shows each")
+        self.assertFalse(runner.failures, f"{runner.failures} docstring examples failed")
 
 
-# ---------------------------------------------------------------------------------------------
-# 2. Pages: the python blocks of src/docs/
-# ---------------------------------------------------------------------------------------------
-
-def fenced_blocks(page: Path) -> list[tuple[int, str, str, str]]:
-    """Each fenced block of a page: its first line number, language, code, and the line before.
-
-    Args:
-        page: a markdown file.
-
-    Returns:
-        `(line, language, code, before)` per block, in page order: `line` is the number of the
-        block's first code line, `language` the word after the fence ("" for none), and
-        `before` the stripped line above the fence, where a `SKIP` marker sits.
-    """
+def fenced_blocks(page: Path) -> list[tuple[int, str, str]]:
+    """Each fenced block of a page: its first code line's number, language and code."""
     lines = page.read_text(encoding="utf-8").splitlines()
-    blocks: list[tuple[int, str, str, str]] = []
+    blocks: list[tuple[int, str, str]] = []
     start: int | None = None
     fence = language = ""
     for number, line in enumerate(lines):
@@ -244,29 +181,14 @@ def fenced_blocks(page: Path) -> list[tuple[int, str, str, str]]:
             language = stripped[len(fence):].strip()
             start = number + 1
         elif start is not None and stripped == fence:
-            before = lines[start - 2].strip() if start >= 2 else ""
-            blocks.append((start + 1, language, "\n".join(lines[start:number]), before))
+            blocks.append((start + 1, language, "\n".join(lines[start:number])))
             start = None
     return blocks
 
 
-def python_blocks(page: Path) -> list[tuple[int, str, bool]]:
-    """Each fenced `python` block of a page: its first line number, its code, and whether the
-    `SKIP` marker sits on the line before its fence.
-
-    Args:
-        page: a markdown file.
-
-    Returns:
-        `(line, code, skipped)` per block, in page order.
-    """
-    return [(line, code, bool(SKIP.match(before)))
-            for line, language, code, before in fenced_blocks(page) if language == "python"]
-
-
 @contextlib.contextmanager
 def scratch() -> Iterator[Path]:
-    """Run the block in a new empty folder, so an example never touches the real `.flnd`."""
+    """Run in a new empty folder, so an example never touches the real `.flnd`."""
     previous = Path.cwd()
     with tempfile.TemporaryDirectory() as folder:
         os.chdir(folder)
@@ -277,24 +199,18 @@ def scratch() -> Iterator[Path]:
 
 
 class PageTest(unittest.TestCase):
-    """Every `python` block in `src/docs/` runs, so an example can't rot."""
+    """Every `python` block of `COOKBOOK.md` runs, so an example can't rot."""
 
     def test_python_blocks_run(self) -> None:
-        # The blocks of one page share a namespace, like a doctest session: a tutorial builds a
-        # class in one block and tests it in the next. `tests/` is on the path for the fakes.
-        for page in sorted(DOCS.rglob("*.md")):
-            namespace: dict[str, object] = {"__name__": f"docs_{page.stem.replace('-', '_')}"}
-            for line, code, skipped in python_blocks(page):
-                if skipped:
-                    continue
-                with (self.subTest(page=page.relative_to(ROOT).as_posix(), line=line), scratch(),
-                      contextlib.redirect_stdout(io.StringIO())):
-                    exec(compile(code, f"{page.name}:{line}", "exec"), namespace)
+        # The blocks share one namespace, like a doctest session: a recipe builds a plugin in
+        # one block and uses it in the next. `tests/` is on the path for the fakes.
+        namespace: dict[str, object] = {"__name__": "docs_cookbook"}
+        for line, language, code in fenced_blocks(COOKBOOK):
+            if language != "python":
+                continue
+            with (self.subTest(line=line), scratch(), contextlib.redirect_stdout(io.StringIO())):
+                exec(compile(code, f"COOKBOOK.md:{line}", "exec"), namespace)
 
-
-# ---------------------------------------------------------------------------------------------
-# 3. Links
-# ---------------------------------------------------------------------------------------------
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
@@ -321,55 +237,29 @@ def anchors(page: Path) -> set[str]:
     return found
 
 
-def markdown_files() -> list[Path]:
-    """The pages whose links are checked: `src/docs/` and the root's markdown files."""
-    return sorted([*DOCS.rglob("*.md"), *ROOT.glob("*.md")])
-
-
 class LinkTest(unittest.TestCase):
     """Every relative link resolves, to a file and, with a `#fragment`, to one of its headings."""
 
     def test_links_resolve(self) -> None:
         broken: list[str] = []
-        for page in markdown_files():
+        for page in PAGES:
             for link in LINK.findall(prose(page.read_text(encoding="utf-8"))):
                 if re.match(r"[a-z][a-z0-9+.-]*:", link):  # https:, mailto: and the like
                     continue
                 path, _, fragment = link.partition("#")
                 target = (page.parent / path).resolve() if path else page
-                where = f"{page.relative_to(ROOT).as_posix()}: {link}"
+                where = f"{page.name}: {link}"
                 if not target.exists():
                     broken.append(f"{where} (no such file)")
                 elif fragment and target.suffix == ".md" and fragment not in anchors(target):
                     broken.append(f"{where} (no such heading)")
         self.assertFalse(broken, "broken links:\n" + "\n".join(broken))
 
-    def test_docs_index_links_every_page(self) -> None:
-        index = (DOCS / "README.md").read_text(encoding="utf-8")
-        linked = {(DOCS / link.partition("#")[0]).resolve() for link in LINK.findall(index)}
-        pages = {page.resolve() for page in DOCS.rglob("*.md")} - {(DOCS / "README.md").resolve()}
-        missing = sorted(page.relative_to(DOCS).as_posix() for page in pages - linked)
-        self.assertFalse(missing, f"src/docs/README.md doesn't link: {', '.join(missing)}")
-
-    def test_glossary_defines_the_terms(self) -> None:
-        glossary = (DOCS / "glossary.md").read_text(encoding="utf-8").lower()
-        missing = [term for term in TERMS if not re.search(rf"^#+\s+{term}\b", glossary, re.M)]
-        self.assertFalse(missing, f"src/docs/glossary.md has no heading for: {', '.join(missing)}")
-
-
-# ---------------------------------------------------------------------------------------------
-# 4. The CLI
-# ---------------------------------------------------------------------------------------------
 
 def cli_words() -> list[str]:
-    """Every command the CLI has, as typed (`flnd download`), and every flag it parses.
+    """Every command the CLI has, as typed (`flnd get`), and every flag it parses.
 
-    Read from the argparse parser itself (`flnd.cli.parser`): the top parser's flags, then each
-    command's name and its own flags (`--only`, `-v`, `--verbose`). Positionals (`target`) and
-    `--help`'s `-h` spelling are left out: the page shows them in each command's usage line.
-
-    Returns:
-        The words `src/docs/cli.md` must contain, in command order.
+    Read from the argparse parser itself (`flnd.cli.parser`). Positionals and `-h` are left out.
     """
     import argparse
 
@@ -382,63 +272,28 @@ def cli_words() -> list[str]:
         for action in command._actions:
             words.extend(flag for flag in action.option_strings if flag != "-h")
 
+    def walk(command: argparse.ArgumentParser, prefix: str) -> None:
+        for action in command._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, sub in action.choices.items():
+                    words.append(f"{prefix} {name}")
+                    flags(sub)
+                    walk(sub, f"{prefix} {name}")
+
     flags(top)
-    for action in top._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            for name, command in action.choices.items():
-                words.append(f"flnd {name}")
-                flags(command)
+    walk(top, "flnd")
     return list(dict.fromkeys(words))
 
 
-class CliTest(unittest.TestCase):
-    """`src/docs/cli.md` names every command and every option, so the page can't fall behind."""
-
-    def test_every_command_and_option_is_documented(self) -> None:
-        page = (DOCS / "cli.md").read_text(encoding="utf-8")
-        missing = [word for word in cli_words()
-                   if not re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", page)]
-        self.assertFalse(missing, f"src/docs/cli.md doesn't mention: {', '.join(missing)}")
-
-
-# ---------------------------------------------------------------------------------------------
-# 5. One page per source
-# ---------------------------------------------------------------------------------------------
-
-class PluginPageTest(unittest.TestCase):
-    """Each built-in plugin has `src/docs/plugins/<code>.md`, and each page a plugin."""
-
-    def test_one_page_per_plugin(self) -> None:
-        from flnd.plugins import PLUGINS
-
-        pages = {page.stem for page in (DOCS / "plugins").glob("*.md")}
-        self.assertEqual(sorted(pages), sorted(PLUGINS))
-
-
-# ---------------------------------------------------------------------------------------------
-# 6. The README
-# ---------------------------------------------------------------------------------------------
-
-# The words a shell joins commands with; each part is checked as a command of its own.
 JOINERS = {"|", "||", "&&", ";"}
 
 
 def commands(code: str) -> list[list[str]]:
-    """The arguments of every `flnd` command in a block of shell lines.
+    """The arguments of every `flnd` command in a block of shell lines, without `flnd` itself.
 
-    Each line is split the way a POSIX shell splits words (`shlex`), comments dropped, and cut at
-    `|`, `&&`, `||` and `;`. A part runs flnd when one of its words is a program named `flnd`
-    (`flnd`, `/path/to/flnd`, `uv run flnd`, or the command of a cron line); what follows that
-    word is flnd's arguments. A line ending in `\\` goes on on the next.
-
-    Args:
-        code: the block's lines.
-
-    Returns:
-        One argument list per `flnd` command, without the `flnd` itself.
+    Each line is split like a POSIX shell, comments dropped, and cut at `|`, `&&`, `||`, `;`. A
+    part runs flnd when one of its words is a program named `flnd`. A line ending in `\\` goes on.
     """
-    import shlex
-
     found: list[list[str]] = []
     for line in code.replace("\\\n", " ").splitlines():
         part: list[str] = []
@@ -454,19 +309,14 @@ def commands(code: str) -> list[list[str]]:
 
 
 def parse_error(args: list[str]) -> str:
-    """What the CLI's parser says about `flnd <args>`: "" when it parses.
+    """What the CLI's parser says about `flnd <args>`: "" when it parses."""
+    import contextlib as cl
 
-    Args:
-        args: flnd's arguments, as a shell would pass them.
-
-    Returns:
-        argparse's message (an unknown command or flag, a missing value), or "".
-    """
     from flnd.cli import parser
 
     stderr = io.StringIO()
     try:
-        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
+        with cl.redirect_stderr(stderr), cl.redirect_stdout(io.StringIO()):
             parser().parse_args(args)
     except SystemExit as stop:
         if stop.code:
@@ -474,36 +324,48 @@ def parse_error(args: list[str]) -> str:
     return ""
 
 
-class ReadmeTest(unittest.TestCase):
-    """The README's examples are true: its Python runs, and its `flnd` command lines parse."""
+class CliTest(unittest.TestCase):
+    """The page names every command and option, and its command lines are true."""
 
-    def test_python_blocks_run(self) -> None:
-        # The blocks share one namespace, in page order: "Add a site" defines a source in one
-        # block and tests it with `flnd.testing` in the next. A block marked to skip (one that
-        # needs a real site) must say why, and is compiled, so at least its syntax is checked.
-        namespace: dict[str, object] = {"__name__": "docs_readme"}
-        for line, language, code, before in fenced_blocks(README):
-            if language != "python":
-                continue
-            with self.subTest(line=line):
-                compiled = compile(code, f"README.md:{line}", "exec")
-                skip = SKIP.match(before)
-                if skip:
-                    self.assertTrue(skip["reason"], f"README.md:{line}: say why it is skipped")
-                    continue
-                with scratch(), contextlib.redirect_stdout(io.StringIO()):
-                    exec(compiled, namespace)
+    def test_every_command_and_option_is_documented(self) -> None:
+        page = COOKBOOK.read_text(encoding="utf-8")
+        missing = [word for word in cli_words()
+                   if not re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", page)]
+        self.assertFalse(missing, f"COOKBOOK.md doesn't mention: {', '.join(missing)}")
 
     def test_commands_parse(self) -> None:
         checked = 0
-        for line, language, code, _ in fenced_blocks(README):
-            if language not in ("bash", "sh", "shell"):
-                continue
-            for args in commands(code):
-                checked += 1
-                with self.subTest(line=line, command=" ".join(["flnd", *args])):
-                    self.assertEqual(parse_error(args), "")
-        self.assertGreater(checked, 5, "README.md shows no flnd command lines")
+        for page in PAGES:
+            for line, language, code in fenced_blocks(page):
+                if language not in ("sh", "bash", "shell"):
+                    continue
+                for args in commands(code):
+                    checked += 1
+                    with self.subTest(page=page.name, line=line, command=" ".join(args)):
+                        self.assertEqual(parse_error(args), "")
+        self.assertGreater(checked, 10, "the pages show too few flnd command lines")
+
+
+class PluginTest(unittest.TestCase):
+    """Each built-in plugin has a `COOKBOOK.md` section headed by its code."""
+
+    def test_one_section_per_plugin(self) -> None:
+        from flnd.plugins import PLUGINS
+
+        text = prose(COOKBOOK.read_text(encoding="utf-8"))
+        sections = re.findall(r"^#{3}\s+([a-z]{3})\b", text, re.M)
+        self.assertEqual(sorted(sections), sorted(PLUGINS))
+
+
+class SizeTest(unittest.TestCase):
+    """The two pages stay short: the README's and the cookbook's lines, and every line's width."""
+
+    def test_limits(self) -> None:
+        for page, limit in ((README, README_LINES), (COOKBOOK, COOKBOOK_LINES)):
+            lines = page.read_text(encoding="utf-8").splitlines()
+            self.assertLessEqual(len(lines), limit, f"{page.name} has {len(lines)} lines")
+            wide = [number for number, line in enumerate(lines, 1) if len(line) > LINE_CHARS]
+            self.assertEqual(wide, [], f"{page.name}: lines over {LINE_CHARS} characters")
 
 
 if __name__ == "__main__":

@@ -36,16 +36,13 @@ flnd = "flnd.cli:main"
 # maps the folder src/ to the name flnd, which hatchling's dev mode cannot do (it rejects such
 # a rewrite).
 # setup.py only moves the egg-info into build/, as no pyproject setting can.
-packages = ["flnd", "flnd.engine", "flnd.ui", "flnd.plugins", "flnd.docs", "flnd.docs.plugins",
-            "flnd.extension", "flnkit"]
+packages = ["flnd", "flnd.engine", "flnd.ui", "flnd.plugins", "flnd.extension", "flnkit"]
 package-dir = {"flnd" = "src", "flnkit" = "flnkit"}
 
 [tool.setuptools.package-data]
-# The docs and the Chrome extension are data in folders without an __init__.py: listed as
+# The Chrome extension is data in a folder without an __init__.py: listed as
 # packages, so setuptools ships them and does not warn that they are absent.
 flnd = ["py.typed"]
-"flnd.docs" = ["*.md"]
-"flnd.docs.plugins" = ["*.md"]
 "flnd.extension" = ["*.json", "*.js", "*.html"]
 
 [dependency-groups]

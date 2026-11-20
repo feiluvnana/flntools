@@ -1,6 +1,6 @@
 """Safe file writes, tool execution, archives and file helpers.
 
-src/docs/storage explains it.
+COOKBOOK.md#folders explains it.
 """
 
 from __future__ import annotations

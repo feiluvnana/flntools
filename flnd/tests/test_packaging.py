@@ -21,7 +21,7 @@ def data_files() -> list[str]:
 class WheelTest(unittest.TestCase):
     @unittest.skipIf(shutil.which("uv") is None, "uv is not installed")
     def test_wheel_ships_every_data_file(self):
-        # A folder of data (the docs, the Chrome extension) ships only when pyproject.toml maps
+        # A folder of data (the Chrome extension) ships only when pyproject.toml maps
         # it. The build runs on a clean copy, since setuptools reuses build/lib, where a file
         # from an older build would hide a missing mapping.
         with tempfile.TemporaryDirectory() as temp:

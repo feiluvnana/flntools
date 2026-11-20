@@ -1,6 +1,6 @@
 """flnd: a media downloader, as a library.
 
-src/docs/library explains it."""
+COOKBOOK.md#python explains it."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 """Cookie jars: read cookies from a file, a browser or text, and save them.
 
-src/docs/storage explains it."""
+COOKBOOK.md#logins-and-accounts explains it."""
 
 from __future__ import annotations
 

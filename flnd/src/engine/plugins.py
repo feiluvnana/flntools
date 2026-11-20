@@ -1,6 +1,6 @@
 """The plugin manager: the plugin folder, install and loading.
 
-src/docs/architecture explains it."""
+COOKBOOK.md#for-developers explains it."""
 
 from __future__ import annotations
 

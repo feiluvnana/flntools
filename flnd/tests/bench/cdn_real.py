@@ -9,7 +9,7 @@ ceiling a host's adaptive cap grows to (`flnd.engine.jobs.MOST`) is set by hand:
 about 200 files on one CDN host, taken from the authorized test accounts (from the browser's
 network panel, say), one per line in a file kept outside the repo, or given as arguments. This
 script is never part of `make check` or `make bench`. It prints no URL, file name or host, only
-numbers, so its output can be pasted into src/docs/performance.md as it is.
+numbers, so its output can be pasted into COOKBOOK.md#for-developers as it is.
 
 How it goes:
 1. Each round runs every cap in turn (rounds alternate, so a change in the link's load spreads

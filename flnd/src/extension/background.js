@@ -1,5 +1,5 @@
 // flnd's service worker: the port to `flnd host`, every op a run sends through it, and the
-// popup's questions (src/docs/extension.md).
+// popup's questions (COOKBOOK.md#the-chrome-extension).
 import * as page from "./page.js";
 
 const HOST = "com.flnd.host";
@@ -251,7 +251,7 @@ chrome.tabs.onRemoved.addListener((tab) => {
 });
 
 // ------------------------------------------------------------------------------------------
-// The ops (src/docs/extension.md lists their arguments and values)
+// The ops (COOKBOOK.md#the-chrome-extension lists their arguments and values)
 // ------------------------------------------------------------------------------------------
 
 const OPS = {
