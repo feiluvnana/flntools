@@ -120,6 +120,8 @@ class Facebook(Plugin):
     name = "Facebook"
     domains = ("facebook.com", "fb.com", "fb.watch")
     api = 2
+    # Images, media and fonts load until a live check shows its pages work without them.
+    assets = True
     # Not required: a logged-out browser gets what Facebook shows the public, which is little.
     login = cookies("c_user", "xs", url=f"{SITE}/login/")
     # No published limit; the floor only keeps a burst slower than the other sites'.

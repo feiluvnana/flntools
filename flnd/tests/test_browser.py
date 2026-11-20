@@ -800,6 +800,8 @@ class FakeBrowserTest(BrowserCase):
         launched = []
 
         class Fake:
+            headless = False
+
             def __init__(self):
                 self.added = []
 
@@ -875,6 +877,8 @@ class AssetsTest(BrowserCase):
         asked = []
 
         class Fake:
+            headless = False
+
             async def tab(self, *, by_script=False):
                 page = _browser.Page(cast(Any, SimpleNamespace()), cast(Any, self))
 
@@ -890,13 +894,59 @@ class AssetsTest(BrowserCase):
         async def launch(**options):
             return Fake()
 
-        shared = _browser.RunBrowser(LOOP, lean=True)
-        self.assertTrue(shared.lean)
+        shared = _browser.RunBrowser(LOOP)
         jar = _cookies.Jar([{"name": "s", "value": "1", "domain": ".example.com"}])
         with mock.patch.object(_browser, "launch", launch):
             run(shared.tab(jar))
             run(shared.tab(jar, assets=False))
         self.assertEqual(asked, [True, False])
+
+
+class HiddenAskersTest(BrowserCase):
+    def test_the_browser_is_hidden_only_while_every_asker_is_hidden(self):
+        made = []
+
+        class Fake:
+            def __init__(self, headless):
+                self.headless, self.closed, self.added = headless, False, []
+                self.pages = __import__("weakref").WeakSet()
+
+            async def tab(self, *, by_script=False):
+                page = _browser.Page(cast(Any, SimpleNamespace(
+                    url="", is_closed=lambda: False, goto=mock.AsyncMock())), cast(Any, self))
+                self.pages.add(page)
+                return page
+
+            async def add_cookies(self, jar):
+                self.added.extend(jar)
+
+            async def cookies(self):
+                return _cookies.Jar(self.added)
+
+            async def close(self):
+                self.closed = True
+
+        async def launch(**options):
+            made.append(Fake(options["headless"]))
+            return made[-1]
+
+        site = _cookies.Jar([{"name": "a", "value": "1", "domain": ".one.example"}])
+        other = _cookies.Jar([{"name": "b", "value": "1", "domain": ".two.example"}])
+        shared = _browser.RunBrowser(LOOP)
+        with mock.patch.object(_browser, "launch", launch):
+            first = run(shared.tab(site, hidden=True))
+            run(shared.tab(site, hidden=True))
+            self.assertEqual([(fake.headless, fake.closed) for fake in made], [(True, False)])
+            self.assertTrue(shared.headless)
+            run(shared.tab(other, hidden=False))
+            # The hidden window was replaced by a visible one, which now holds every tab.
+            self.assertEqual([(fake.headless, fake.closed) for fake in made],
+                             [(True, True), (False, False)])
+            self.assertIs(first.browser, made[1])
+            self.assertFalse(shared.headless)
+            # Once visible it stays so, whoever asks next.
+            run(shared.tab(site, hidden=True))
+            self.assertEqual(len(made), 2)
 
 
 class MoveTest(BrowserCase):

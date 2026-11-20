@@ -74,6 +74,12 @@ class FakeRaw:
     def is_closed(self):
         return False
 
+    async def route(self, pattern, handler):
+        pass
+
+    async def unroute(self, pattern, handler):
+        pass
+
     async def emit(self, url, body):
         """Deliver one response to the tab's listeners, and let their body reads finish."""
         async def text():

@@ -144,6 +144,8 @@ class Twitter(Plugin):
     name = "Twitter/X"
     domains = ("x.com", "twitter.com")
     api = 2
+    # Images, media and fonts load until a live check shows its pages work without them.
+    assets = True
     # Paths on the site that are pages of it, not profiles. x.com/i covers x.com/i/* too,
     # except the tweet and user-id links the routes read (more literal segments win).
     # The first match is the one told, so a narrow rule comes before `i`.

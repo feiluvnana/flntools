@@ -35,6 +35,8 @@ class Web(Plugin):
     code = "web"
     name = "the web"
     api = 2
+    # Images, media and fonts load until a live check shows its pages work without them.
+    assets = True
     # It owns no domain: the resolver gives it links no other plugin claims, so every request
     # is a file job, paced by the host's file cap, with no cookies and no walls.
     browser = Browser.NONE

@@ -213,6 +213,7 @@ class DeclarationTest(unittest.TestCase):
             ("browser", lambda: plugin(browser="chrome"), r"exm\.browser.*Browser\.CHROME"),
             ("stealth", lambda: plugin(stealth=1), r"exm\.stealth"),
             ("assets", lambda: plugin(assets=1), r"exm\.assets"),
+            ("hidden", lambda: plugin(hidden=1), r"exm\.hidden"),
             ("user_agent", lambda: plugin(user_agent=" "), r"exm\.user_agent"),
             ("walls", lambda: plugin(walls="/login"), r"exm\.walls"),
             ("walls", lambda: plugin(walls=("login",)), r"exm\.walls"),

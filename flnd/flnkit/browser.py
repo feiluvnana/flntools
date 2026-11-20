@@ -1583,18 +1583,15 @@ class RunBrowser:
     Args:
         loop: the asyncio loop the browsers live on, running on its own thread.
         stealth: hide `navigator.webdriver` (see `launch`).
-        headless: hide the windows. A visible one (the default) lets a person solve a captcha.
-        lean: a lighter browser; a plugin's tabs then load no images, media or fonts unless it
-            asks (see `Tabs`). `Tabs` reads it.
+        headless: hide a window when a tab is asked for without saying (see `tab`); a visible
+            one (the default) lets a person solve a captcha.
         screen: what asks a person and shows them progress (see `Screen`); None for the plain
             one.
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop, *, stealth: bool = True,
-                 headless: bool = False, lean: bool = False,
-                 screen: Screen | None = None):
+                 headless: bool = False, screen: Screen | None = None):
         self.loop = loop
-        self.lean = lean
         self.screen = screen or Screen()
         self._stealth = stealth
         self._headless = headless
@@ -1641,12 +1638,16 @@ class RunBrowser:
         return next((found for found in self._logins
                      if any(seen is jar for seen in found[0])), None)
 
-    async def tab(self, jar: Any, *, assets: bool = True) -> Page:
+    async def tab(self, jar: Any, *, assets: bool = True, hidden: bool | None = None) -> Page:
         """A tab for a target whose login is `jar`: its window's idle one, or a new one.
 
         Args:
             jar: the login's cookies, given to its window the first time they come.
             assets: load images, media and fonts (`Page.assets`, the default); False aborts them.
+            hidden: whether the asker works in a hidden window; None takes the `headless` this
+                browser was made with. A window opens hidden only for such an asker; an asker
+                that is not hidden makes every window visible (`reveal`), so the browser is
+                hidden only while all its askers accept it.
 
         Returns:
             The tab, which scrolls by script.
@@ -1654,12 +1655,15 @@ class RunBrowser:
         if self._launching is None:
             self._launching = asyncio.Lock()
         async with self._launching:
+            wanted = self._headless if hidden is None else hidden
+            if not wanted and any(window[1].headless for window in self._logins):
+                await self._reveal()
             found = self._login(jar)
             if found is None:
                 found = next((window for window in self._logins
                               if not any(_overlap(seen, jar) for seen in window[0])), None)
                 if found is None:
-                    browser = await launch(stealth=self._stealth, headless=self._headless,
+                    browser = await launch(stealth=self._stealth, headless=wanted,
                                            screen=self.screen)
                     found = ([], browser, [])
                     self._logins.append(found)
@@ -1680,19 +1684,23 @@ class RunBrowser:
         if self._launching is None:
             self._launching = asyncio.Lock()
         async with self._launching:
-            self._headless = False
-            for index, (logins, old, idle) in enumerate(self._logins):
-                if not old.headless:
-                    continue
-                jar = await old.cookies()
-                tabs = [(page, page.raw.url) for page in list(old.pages)
-                        if not page.raw.is_closed()]
-                await old.close()
-                new = await launch(stealth=self._stealth, headless=False, screen=self.screen)
-                await new.add_cookies(jar)
-                for page, url in tabs:
-                    await page.move(new, url)
-                self._logins[index] = (logins, new, idle)
+            await self._reveal()
+
+    async def _reveal(self) -> None:
+        """`reveal`, with the launch lock already held."""
+        self._headless = False
+        for index, (logins, old, idle) in enumerate(self._logins):
+            if not old.headless:
+                continue
+            jar = await old.cookies()
+            tabs = [(page, page.raw.url) for page in list(old.pages)
+                    if not page.raw.is_closed()]
+            await old.close()
+            new = await launch(stealth=self._stealth, headless=False, screen=self.screen)
+            await new.add_cookies(jar)
+            for page, url in tabs:
+                await page.move(new, url)
+            self._logins[index] = (logins, new, idle)
 
     async def release(self, pages: Iterable[Page]) -> None:
         """Take back a finished target's tabs: keep one open per window for its next target,
@@ -1773,18 +1781,20 @@ class Tabs:
             `warm` says whether a warm tab may open now, and `turn(step)` runs a `human` scroll
             step in its turn. None limits nothing and opens no warm tab.
         assets: load images, media and fonts (the default); False aborts their requests in its tabs.
+        hidden: its tabs may be in a hidden window (see `RunBrowser.tab`).
 
     Raises:
         ValueError: `scroll` is neither.
     """
 
     def __init__(self, shared: RunBrowser, jar: Any, *, scroll: str = HUMAN,
-                 budget: Any = None, assets: bool = True):
+                 budget: Any = None, assets: bool = True, hidden: bool = False):
         if scroll not in SCROLLS:
             raise ValueError(f"scroll must be one of {', '.join(SCROLLS)}, not {scroll!r}")
         self._shared = shared
         self._jar = jar
         self._assets = assets
+        self._hidden = hidden
         self.scroll = scroll
         self._budget = budget
         # The places taken from the budget: one per tab the target holds.
@@ -1888,7 +1898,7 @@ class Tabs:
         tab doesn't open."""
         budget = self._budget
         try:
-            page = await self._shared.tab(self._jar, assets=self._assets)
+            page = await self._shared.tab(self._jar, assets=self._assets, hidden=self._hidden)
         except BaseException:
             if budget is not None:
                 self._held -= 1

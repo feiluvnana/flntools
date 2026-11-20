@@ -80,6 +80,8 @@ class Loibus(Plugin):
     name = "LOIBUS"
     domains = ("loix.cc", "moegoat.com")
     api = 2
+    # Images, media and fonts load until a live check shows its pages work without them.
+    assets = True
     # A more literal route (a post, a search) wins over these catch-alls.
     unsupported = {
         **{f"{host}/library": "author and library pages aren't supported; give a post or a search"

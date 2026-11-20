@@ -120,6 +120,8 @@ class Telegram(Plugin):
     name = "Telegram"
     domains = ("t.me", "telegram.org")
     api = 2
+    # Images, media and fonts load until a live check shows its pages work without them.
+    assets = True
     login = TelegramLogin()
     browser = Browser.NONE
     # A chat's name, then the category; the engine sanitizes both as file names.

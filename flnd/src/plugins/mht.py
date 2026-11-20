@@ -36,6 +36,8 @@ class Mimi(Plugin):
     name = "mimihentai"
     domains = ("mimihentai.moe",)
     api = 2
+    # Images, media and fonts load until a live check shows its pages work without them.
+    assets = True
     # Everything it reads is public JSON: no login, no tab, so no walls.
     browser = Browser.NONE
     # The site publishes no limit, and each chapter costs a request: half a second keeps a long

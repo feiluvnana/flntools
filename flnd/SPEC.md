@@ -919,8 +919,6 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
 | `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
 | `switch` | bool | `false` | move a refused request to the plugin's next account |
-| `window` | text | `"visible"` | `"hidden"` hides the browser; **off until live-checked** |
-| `lean` | bool | `false` | lighter browser, see below; **off until live-checked** |
 
 `[plugins.<code>]` (one table per plugin):
 
@@ -950,10 +948,6 @@ A plugin's own settings (its `Settings` struct) are keys of its table and reach 
   `--exec` hand a program to one run, over the file's.
 - Gone keys: `[defaults] again`, `[vault]`, `scroll` (unknown now); `dedupe = "link"` reads as
   `true`, `"off"` as `false`, each with a warning.
-- `window = "hidden"`: a handoff (a captcha) closes the browser, opens it again visible with the
-  same cookies and tabs, and goes on. A `browser` login is always visible.
-- `lean`: tabs abort image, media and font requests (unless the plugin's `assets` is True); the
-  responses a plugin reads are unchanged. Off until each plugin is checked live.
 
 ```toml
 [defaults]
@@ -1364,7 +1358,11 @@ The contract:
 - `fields` (tuple): post fields the templates may use
 - `unsupported` (dict): `{pattern: reason}`: a link refused with the reason
 - `walls` (tuple): login-wall paths, matched as whole segments
-- `assets` (bool): its tabs load images, media and fonts when `lean` is on (False)
+- `assets` (bool): its tabs load images, media and fonts; False (default) aborts those requests, so
+  the responses a plugin reads are unchanged. The built-ins set True until checked live
+- `hidden` (bool): its tabs may be in a hidden window (False). The browser is hidden only while
+  every plugin using it is; a handoff (a captcha) closes it and reopens it visible, same cookies
+  and tabs. A `browser` login is always visible. The built-ins stay False until checked live
 - `@route(patterns, single=, discovers=, shown=, folder=, newest_first=)` (method): reads one kind
   of target; a `single` route's `Post(owner=, category=)` file it in the owner's folder ([A single
   post](#a-single-post))
