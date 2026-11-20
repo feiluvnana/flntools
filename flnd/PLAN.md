@@ -327,9 +327,11 @@ purpose (background tabs must keep running).
    `--disable-features=Translate,MediaRouter,OptimizationHints`,
    `--disable-component-update`, `--no-first-run`, a small fixed window. Keep the anti-throttling
    switches. Each switch measured; one that saves nothing is left out.
-4. **Hidden by default, visible when needed.** `[defaults] window` in `config.toml`, `"hidden"`
-   (default) or `"visible"`. A handoff (captcha) in a hidden browser closes it, reopens the
-   same profile visible, and carries on. The `browser` login method is always visible.
+4. **Hidden where it works, not a setting** (user, 2026-11-20). No config key: each plugin
+   declares `Plugin.hidden` (default False), set True only after a live run shows the site
+   works hidden. The shared browser is hidden only when every plugin in the run is. A handoff
+   (captcha) in a hidden browser closes it and reopens the same profile visible. Asset blocking
+   is per plugin the same way (`Plugin.assets`); built-ins keep assets until live-checked.
 5. **Hide the hidden state.** Use Chrome's new headless (the full browser, not the headless
    shell). Already done: `navigator.webdriver`, the `HeadlessChrome` user agent. Add: the
    client-hint brands (`Sec-CH-UA`, `navigator.userAgentData`) set through CDP
