@@ -162,10 +162,10 @@ library says `give at least one target` when a call ends with none.
 
 ### `me`, searches and `--limit`
 
-- `ins:me`, `tik:me` and `fbk:me` list every account the login follows (`fbk`: pages and people, not
-  friends), each its own `user` target (`"ins:me|posts,stories"` passes the list on to each). They
-  need a login. `tik:me` reads your Following list, `fbk:me` the `/me/following` page, `twt:me` X's
-  `Following` operation (all unconfirmed live).
+- `ins:me`, `tik:me`, `fbk:me` and `twt:me` list every account the login follows (`fbk`: pages and
+  people, not friends), each its own `user` target (`"ins:me|posts,stories"` passes the list on to
+  each). They need a login. `tik:me` reads your Following list, `fbk:me` the `/me/following` page,
+  `twt:me` X's `Following` operation.
 - A search (`twt?<words>`, `mht?<words>`, `tik?<words>`, `loi?<words>`, or a search link) finds
   targets, and each found target is got as its own. A search needs `--folder`, which puts all its
   hits in one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search gets
@@ -233,10 +233,10 @@ read), `intent`, `compose`, `login`; `x.com/` alone.
   links work`.
 - `tik?<words>`, `tiktok.com/search?q=<words>`, `tiktok.com/search/video?q=<words>`: a search (route
   ``search``). The Videos tab's `api/search/item/full/` is paged like a profile's, each hit found as
-  `tik:post/<id>`, so `--limit N` is N posts. It needs `--folder`. Unconfirmed live.
+  `tik:post/<id>`, so `--limit N` is N posts. It needs `--folder`.
 - `tik:me`: the accounts the login follows, each as `tik:<uniqueId>` (route ``me``; needs a login,
   else `LoginError` with the hint `log in: flnd auth login tik`), read from `api/user/list/` after
-  opening your Following list; unconfirmed live.
+  opening your Following list.
 
 `tik:123` (under 16 digits) is a user. Refused with `tik: <what> aren't supported; give a user, a
 post or a search`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pages),
@@ -284,7 +284,7 @@ characters), `t.me/` alone, `web.telegram.org` links: `tlg: can't read <text>`.
 | `loi?<words>`, `loix.cc/search?q=<words>`, `moegoat.com/search?q=<words>` | `search` | a search |
 
 The old `loi:<id>` reads too. A search finds `loi:post/<id>` (`--limit N` is N posts) and needs
-`--folder`; its endpoint and paging are unconfirmed live. Every other page of both domains is
+`--folder`; its paging is unconfirmed live. Every other page of both domains is
 refused: `that page isn't supported; give a post or a search` (`/library...`: `author and library
 pages aren't supported; ...`). `loi:post/<id>|archive` and `|photo` are allowed.
 
@@ -1030,7 +1030,7 @@ up to 32.
   search's `--folder`. Tagged: `twt?@example_handle -from:example_handle`.
 - **Login:** cookie `auth_token` (a logged-out browser lands on the login wall); API calls send
   `ct0` back as the CSRF token. `twt:me`: `Following` for the `twid` cookie's id, paged by `Bottom`;
-  no login is `LoginError`, hint `log in: flnd auth login twt`. Query id and path: unconfirmed live.
+  no login is `LoginError`, hint `log in: flnd auth login twt`.
 - **Limits and walls:** pace 0.2 per bucket (a 429 holds only its operation, and a timeline
   goes on with `resume`); walls `/i/flow/login`, `/login`, `/account/access`. Query ids are
   refreshed from x.com's script on a 400 or 404, at most once a run.
@@ -1041,7 +1041,7 @@ up to 32.
 ### tik (TikTok)
 
 - **Reads:** a profile in the browser: the first scroll captures the page's own
-  `api/post/item_list/` request, whose pages go by `cursor` in the page (confirm live), else it
+  `api/post/item_list/` request, whose pages go by `cursor` in the page, else it
   scrolls (logged). One post from the embed page; a search, short link and `tik:me` in the browser
   (see Targets).
 - **Categories:** `videos` NF, `stories`, `playlists` NF, `profile` (own); `reposts`, `liked`,
@@ -1118,9 +1118,8 @@ up to 32.
   read once per run, counted per UTC day in the plugin's state; once it is used up `archive` skips
   the day's posts with a warning, and the run says how many were left for tomorrow. A 429 holds for
   its `Retry-After`; a JSON rate answer is a block hold.
-- **Search:** `loi?<words>` reads `GET api/lois?keyword=<words>&page=<n>&page_size=20` (confirm
-  live: endpoint, parameters, answer shape): each page's `data.list` ids as `loi:post/<id>`, ended
-  by a short page; rate answers are held like the links'.
+- **Search:** `loi?<words>` reads `GET api/lois?keyword=<words>&page=<n>&page_size=20`: each page's
+  `data.list` ids as `loi:post/<id>`, ended by a short page; rate answers are held like the links'.
 - **Known gaps:** no author or tag target; a post counts once its links are fetched; Baidu links
   go to info.md only; an expired token reads as "no download links".
 - **Saved as:** `media/loi/example_author/1234567890_Example_Title/info.md`

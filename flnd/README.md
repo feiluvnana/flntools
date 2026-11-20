@@ -2,8 +2,8 @@
 
 flnd downloads photos, videos and files from the sites you follow, and keeps them up to date.
 It is a Python library with a thin command line on top, and new sites are added as plugins.
-Built in: Instagram (`ins`), TikTok (`tik`), Twitter/X (`twt`), Facebook (`fbk`), Telegram
-(`tlg`), LOIBUS (`loi`), mimihentai (`mht`), and `web` for any other link.
+Built in: Instagram (`ins`), TikTok (`tik`), Twitter/X (`twt`), Facebook (`fbk`), Threads
+(`thr`), Telegram (`tlg`), LOIBUS (`loi`), mimihentai (`mht`), and `web` for any other link.
 
 ## Install
 

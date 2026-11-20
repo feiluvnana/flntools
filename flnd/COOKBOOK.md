@@ -15,8 +15,8 @@ flnd get ins:example_user
 
 The plugin's code, a colon, the user. Posts, reels, stories and the rest of what the account
 owns are saved under `media/ins/example_user/`. The same command with another code does
-Twitter/X (`twt:example_handle`), TikTok (`tik:`), Threads (`thr:`), Facebook (`fbk:`), and so
-on. A profile link works too: `flnd get https://www.instagram.com/example_user/`.
+Twitter/X (`twt:example_handle`), TikTok (`tik:example_creator`), Threads (`thr:`), Facebook
+(`fbk:`), and so on. A profile link works too: `flnd get https://www.instagram.com/example_user/`.
 More: [Targets](SPEC.md#targets), [Folders](SPEC.md#folders).
 
 ## Pick categories
@@ -29,7 +29,8 @@ flnd get "ins:example_user|tagged"
 flnd get "ins:example_user|all"
 ```
 
-After `|`, a comma list of categories: these two, only the opt-in one, or every category.
+After `|`, a comma list of categories. Opt-in ones (such as `tagged`) need their name; `all`
+takes every category.
 More: [Categories](SPEC.md#categories).
 
 ## A single post
@@ -146,7 +147,7 @@ flnd get ins:example_user --exec 'ffmpeg -n -i {path} -vf scale=-2:720 {path}.72
 ```
 
 `{path}`, `{target}` and `{post}` fill in each file's values, and the program runs once per
-file with no shell. A file ffmpeg cannot read is a warning, and the run goes on.
+file with no shell. A program that fails on a file is a warning, and the run goes on.
 More: [Sync](SPEC.md#sync).
 
 The run screen's `use` line counts flnd's processes (itself, the browser, your `--exec` program):
