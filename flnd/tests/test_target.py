@@ -152,12 +152,12 @@ class ShortLinkTest(unittest.TestCase):
         self.assertEqual(read("https://fb.watch/abc/", follow),
                          Target("fbk:watch/abc", kind="watch"))
 
-    def test_share_links_are_followed(self):
-        self.assertEqual(
-            read("https://www.facebook.com/share/r/abc/",
-                 lambda url: "https://www.facebook.com/example.page"),
-            Target("fbk:example.page", kind="user"),
-        )
+    def test_share_links_belong_to_facebook(self):
+        def follow(url):
+            raise AssertionError("a share link is read by fbk's own route, never followed here")
+
+        self.assertEqual(read("https://www.facebook.com/share/r/abc/", follow),
+                         Target("fbk:share/r/abc", kind="share"))
 
     def test_cross_source_redirect_and_unchanged_follow(self):
         self.assertEqual(
@@ -177,8 +177,7 @@ class RefusedTest(unittest.TestCase):
              "profile, and its stories come with it"),
             ("https://www.instagram.com/explore/", "ins: that's not a profile"),
             ("https://www.instagram.com/accounts/login/", "ins: that's not a profile"),
-            ("https://www.facebook.com/example.page/posts/123",
-             "fbk: this kind of link isn't supported yet"),
+            ("https://www.facebook.com/groups/123/posts/1", "fbk: groups aren't supported"),
             ("https://x.com/explore", "twt: that's not a profile"),
             ("https://x.com/intent/tweet", "twt: that's not a profile"),
         ]

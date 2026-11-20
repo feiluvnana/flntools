@@ -14,6 +14,7 @@ from flnd.plugin import (
     Browser,
     Ctx,
     File,
+    LoginError,
     NotFound,
     Plugin,
     Post,
@@ -28,11 +29,8 @@ from flnd.plugin import (
 )
 
 SITE = "https://www.facebook.com"
-# What a link Facebook has no route for here is refused with: a profile is what is read.
-SINGLE_POST = (
-    "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-    "permalink.php link"
-)
+# What a link Facebook has no route for here is refused with: a profile or page is what is read.
+REFUSED = "{} aren't supported; give a profile or page, or a video, photo or post link"
 # The CDN refuses a request without the site's Referer.
 CDN_HEADERS = {"Referer": f"{SITE}/"}
 # The site's own pages, which a user-name pattern must never read as a profile's name.
@@ -41,6 +39,8 @@ NOT_NAMES = (
     r"photo\.php", r"permalink\.php", r"story\.php", "login", r"login\.php",
 )
 USER_NAME = r"(?!(?:" + "|".join(NOT_NAMES) + r")$)[\w.]+"
+# A post page's path: `<owner>/posts/<id>` (the owner's vanity name or id; a story id or `pfbid…`).
+POST_LINK = re.compile(r"([A-Za-z0-9.]+)/posts/(\w+)")
 # The pages that name one post by `story_fbid=` and its owner's `id=`, which `resolve` reads.
 PERMALINKS = ("permalink.php", "story.php")
 # The pages that name one photo by `fbid=`, which the `photo` route reads.
@@ -125,10 +125,12 @@ class Facebook(Plugin):
     filename = "{date}_{post}"
     # A photo found in two tabs is saved once; changing it downloads every saved file again.
     key = "{post}"
-    # Refused before any route. Each page is exact; `*/posts` also refuses `/posts/<id>`.
+    # Refused before any route that has fewer literal parts: `watch?v=<id>` still reads.
     unsupported = {
-        f"{host}/{path}": SINGLE_POST for host in ("facebook.com", "fb.com")
-        for path in ("*/posts", "photos", "groups", "events", "stories")
+        f"{host}/{path}": REFUSED.format(what) for host in ("facebook.com", "fb.com")
+        for path, what in (("photos", "photo lists"), ("groups", "groups"), ("events", "events"),
+                           ("stories", "stories"), ("marketplace", "marketplace pages"),
+                           ("hashtag", "hashtag pages"), ("watch", "watch pages without v="))
     }
 
     @classmethod
@@ -182,6 +184,7 @@ class Facebook(Plugin):
         r"fbk:video/{video:\d+}",
         r"facebook.com/watch?v={video:\d+}", r"fb.com/watch?v={video:\d+}",
         r"facebook.com/*/videos/{video:\d+}", r"fb.com/*/videos/{video:\d+}",
+        r"facebook.com/*/videos/*/{video:\d+}", r"fb.com/*/videos/*/{video:\d+}",
         r"facebook.com/videos/{video:\d+}", r"fb.com/videos/{video:\d+}",
         r"facebook.com/reel/{video:\d+}", r"fb.com/reel/{video:\d+}",
         r"facebook.com/reels/{video:\d+}", r"fb.com/reels/{video:\d+}",
@@ -200,14 +203,20 @@ class Facebook(Plugin):
         has the same key. A landing on the login page is the engine's wall.
 
         Raises:
-            NotFound: the link didn't lead to a video's page.
+            NotFound: the link didn't lead to a video or a post.
         """
-        link = f"https://fb.watch/{code.removeprefix('watch/')}/"
-        video = video_id((await ctx.open(link)).url)
-        if video is None:
-            raise NotFound(f"fbk: {link} didn't lead to a video",
-                           hint="check the link in a browser")
-        async for post in read_single(ctx, f"{SITE}/watch/?v={video}", wanted=video):
+        async for post in follow(ctx, f"https://fb.watch/{code.removeprefix('watch/')}/"):
+            yield post
+
+    @route((r"facebook.com/share/{kind:[prv]}/{code:[\w-]+}", "share/{kind}/{code}"),
+           (r"fb.com/share/{kind:[prv]}/{code:[\w-]+}", "share/{kind}/{code}"), single=True)
+    async def share(self, ctx: Ctx, share: str) -> AsyncIterator[Post]:
+        """One post, reel or video by its `/share/p|r|v/<code>` link, followed like `watch`.
+
+        Raises:
+            NotFound: the link didn't lead to a video or a post.
+        """
+        async for post in follow(ctx, f"{SITE}/{share}/"):
             yield post
 
     @route(*((pattern, "photo/{photo}") for pattern in (
@@ -222,26 +231,47 @@ class Facebook(Plugin):
             yield post
 
     @route(
-        (r"fbk:post/{user:\d+}_{post:\w+}", "post/{user}_{post}"),
+        (r"fbk:post/{user:[A-Za-z0-9.]+}_{post:\w+}", "post/{user}_{post}"),
+        (r"facebook.com/{user:[A-Za-z0-9.]+}/posts/{post:\w+}", "post/{user}_{post}"),
+        (r"fb.com/{user:[A-Za-z0-9.]+}/posts/{post:\w+}", "post/{user}_{post}"),
         (r"facebook.com/permalink.php?story_fbid={post:\w+}&id={user:\d+}",
          "post/{user}_{post}"),
         (r"fb.com/permalink.php?story_fbid={post:\w+}&id={user:\d+}", "post/{user}_{post}"),
         (r"facebook.com/story.php?story_fbid={post:\w+}&id={user:\d+}", "post/{user}_{post}"),
         (r"fb.com/story.php?story_fbid={post:\w+}&id={user:\d+}", "post/{user}_{post}"),
-        shown=f"{SITE}/permalink.php?story_fbid=<post>&id=<user>",
+        shown=f"{SITE}/<owner>/posts/<post>",
         single=True,
     )
     async def post(self, ctx: Ctx, post: str) -> AsyncIterator[Post]:
         """One post's photos and videos its owner owns, by its permalink (`resolve`).
 
         Args:
-            post: `<owner id>_<story_fbid>`, as `resolve` made it, after `post/`.
+            post: `<owner id or name>_<story id>`, as `resolve` made it, after `post/`.
         """
-        post = post.removeprefix("post/")
-        owner, _, story = post.partition("_")
-        url = f"{SITE}/permalink.php?story_fbid={story}&id={owner}"
-        async for found in read_single(ctx, url, owner=owner, category="posts"):
+        owner, _, story = post.removeprefix("post/").partition("_")
+        async for found in read_post(ctx, owner, story):
             yield found
+
+    # Before `user`, whose `fbk:{user}` would read `fbk:me` as a name.
+    @route("fbk:{me:me}", shown="fbk:me", discovers=True)
+    async def me(self, ctx: Ctx, me: str) -> AsyncIterator[Target]:
+        """The accounts the login follows, pages and people, each as `fbk:<name or id>`.
+
+        The logged-in following page is scrolled with the feed the tabs use. Confirm live: the
+        page (`/me/following`) and the shape of its tiles.
+
+        Raises:
+            LoginError: no login, so no account to read.
+        """
+        if "c_user" not in ctx.cookies:
+            raise LoginError("fbk: not logged in, so there is no account to read",
+                             hint="log in: flnd auth login fbk")
+        seen: set[str] = set()
+        async for result in tab_results(ctx, f"{SITE}/me/following"):
+            for name in followed(result):
+                if name not in seen:
+                    seen.add(name)
+                    yield Target(f"fbk:{name}")
 
     @route(
         "fbk:{user}",
@@ -469,6 +499,42 @@ async def read_single(ctx: Ctx, url: str, *, wanted: str | None = None, owner: s
         yield post_of(item, kind if item.owner else "", category=kind)
 
 
+async def follow(ctx: Ctx, link: str) -> AsyncIterator[Post]:
+    """Open a short or share link, read where it lands, then read that video or post.
+
+    Raises:
+        NotFound: it landed on neither a video nor a post.
+    """
+    landed = (await ctx.open(link)).url
+    if (video := video_id(landed)) is not None:
+        async for post in read_single(ctx, f"{SITE}/watch/?v={video}", wanted=video):
+            yield post
+        return
+    owner, _, story = post_id(landed).partition("_")
+    if not story:
+        raise NotFound(f"fbk: {link} didn't lead to a video or a post",
+                       hint="check the link in a browser")
+    async for post in read_post(ctx, owner, story):
+        yield post
+
+
+def read_post(ctx: Ctx, owner: str, story: str) -> AsyncIterator[Post]:
+    """One post's media its owner owns: by `permalink.php` for an owner id, else by its name."""
+    url = (f"{SITE}/permalink.php?story_fbid={story}&id={owner}" if owner.isdigit()
+           else f"{SITE}/{owner}/posts/{story}")
+    return read_single(ctx, url, owner=owner, category="posts")
+
+
+def followed(result: Any) -> Iterator[str]:
+    """The name or id of each person or page a following page's result lists. Confirm live."""
+    for tile in dig(result, f"..[__typename={TILE}]"):
+        link = urlsplit(tile.get("url") or "")
+        if dig(tile, "node.__typename") in ("User", "Page"):
+            name = (parse_qs(link.query).get("id") or [link.path.strip("/").split("/")[0]])[0]
+            if name:
+                yield name
+
+
 def _place(url: str) -> tuple[str, str]:
     """A URL's path and query, without a trailing slash: where a tab is, whatever its host."""
     parts = urlsplit(url)
@@ -488,15 +554,29 @@ def video_id(url: str) -> str | None:
     return found[1] if found else None
 
 
+def post_id(url: str) -> str:
+    """`<owner>_<story id>` for a post page's URL (`permalink.php`, `/<owner>/posts/<id>`);
+    "" for a URL off Facebook or one that names none."""
+    parts = urlsplit(url)
+    if not (parts.hostname or "").endswith(("facebook.com", "fb.com")):
+        return ""
+    query = parse_qs(parts.query)
+    story, owner = (query.get("story_fbid") or [""])[0], (query.get("id") or [""])[0]
+    if story and owner.isdigit():
+        return f"{owner}_{story}"
+    found = POST_LINK.fullmatch(parts.path.strip("/"))
+    return f"{found[1]}_{found[2]}" if found else ""
+
+
 def profile_of(url: str, results: list[Any], early: list[Any]) -> dict[str, Any]:
     """What every category of a profile reads, from its page's results and early responses.
 
     Returns:
         `url`; `results` (the page's and its first load's, the posts tab's first batch);
-        `header` (whether it was found); `owner` (the profile's id, which keeps other accounts'
-        media out of its tabs; None keeps all); `pictures` as (kind, URL, id); `buckets` (story
-        bucket ids); and `<tab>_url` per tab, "" when the header lacks it. Without a header
-        every tab is tried at its first path.
+        `header` (whether it was found; a page's has no `tagged` tab); `owner` (the profile's
+        id, which keeps other accounts' media out of its tabs; None keeps all); `pictures` as
+        (kind, URL, id); `buckets` (story bucket ids); and `<tab>_url` per tab, "" when the
+        header lacks it. Without a header every tab is tried at its first path.
     """
     header = next((found for result in results if (found := read_header(result)) is not None),
                   None)
@@ -508,7 +588,8 @@ def profile_of(url: str, results: list[Any], early: list[Any]) -> dict[str, Any]
         "buckets": header["buckets"] if header else [],
     }
     for tab in TABS:
-        path = tab_path(tab, paths)
+        path = None if header and header["page"] and tab.category == "tagged" else (
+            tab_path(tab, paths))
         profile[f"{tab.category}_url"] = f"{url}/{path}" if path else ""
     return profile
 
@@ -547,8 +628,9 @@ def read_header(result: Any) -> dict[str, Any] | None:
     ]
     buckets = [str(node["id"]) for node in dig(user, "story_bucket.nodes") or []
                if isinstance(node, dict) and node.get("id")]
+    # A page's `__typename` is "Page" (confirm live): it has no tagged tab.
     return {"id": user.get("id"), "pictures": pictures, "buckets": buckets,
-            "paths": {path for path in paths if path}}
+            "paths": {path for path in paths if path}, "page": user.get("__typename") == "Page"}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -633,7 +715,7 @@ def media_posts(result: Any, tab: str, *, album: str | None = None, owner: str |
     Args:
         tab: the category of the tab being read.
         album: the album being read, which files every media under it.
-        owner: the profile's id: media another account owns is left out. None keeps all.
+        owner: the profile's id or name: media another account owns is left out. None keeps all.
         seen: the ids already yielded across one tab; None starts a set for this result.
     """
     if not isinstance(result, dict):
@@ -695,7 +777,7 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
     Args:
         stamp: the date of the nearest dated node above `data`.
         seen: the ids found so far, shared across results.
-        owner: the profile's id; None keeps all.
+        owner: the profile's id or name; None keeps all.
     """
     seen = set() if seen is None else seen
     if isinstance(data, list):
@@ -706,10 +788,12 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
         return
     stamp = posted_on(data) or stamp
     item = video_item(data, stamp) or photo_item(data, stamp)
-    owned_by = dig(data, "owner.id || video_owner.id")
-    if item is not None and item.id not in seen and not (owner and owned_by and owned_by != owner):
+    owned_by, named = dig(data, "owner.id || video_owner.id"), dig(data, OWNER_NAME)
+    # An owner written as a name is compared with the node's vanity name, when it has one.
+    theirs = owned_by if (owner or "0").isdigit() else named
+    if item is not None and item.id not in seen and not (owner and theirs and theirs != owner):
         seen.add(item.id)
-        yield item._replace(owner=dig(data, OWNER_NAME) or owned_by)
+        yield item._replace(owner=named or owned_by)
     if item is not None and item.kind == "video":
         return
     for key, value in data.items():

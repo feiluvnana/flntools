@@ -117,7 +117,7 @@ class BuiltInTest(unittest.TestCase):
         rows = {
             "tik": ("videos stories playlists reposts liked favorites profile", "post short"),
             "fbk": ("posts photos tagged albums reels videos stories profile",
-                    "video watch photo post"),
+                    "video watch share photo post"),
             "ins": ("posts reels tagged reposts stories highlights profile", "post"),
             "twt": ("posts media highlights reposts replies profile", "post"),
             "loi": ("archive photo", "post"),

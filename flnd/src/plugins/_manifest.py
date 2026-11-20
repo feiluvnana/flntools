@@ -123,6 +123,8 @@ PLUGINS: dict[str, dict[str, object]] = {
                     ['fb.com/watch?v={video:\\d+}', 'video/{video}'],
                     ['facebook.com/*/videos/{video:\\d+}', 'video/{video}'],
                     ['fb.com/*/videos/{video:\\d+}', 'video/{video}'],
+                    ['facebook.com/*/videos/*/{video:\\d+}', 'video/{video}'],
+                    ['fb.com/*/videos/*/{video:\\d+}', 'video/{video}'],
                     ['facebook.com/videos/{video:\\d+}', 'video/{video}'],
                     ['fb.com/videos/{video:\\d+}', 'video/{video}'],
                     ['facebook.com/reel/{video:\\d+}', 'video/{video}'],
@@ -138,6 +140,17 @@ PLUGINS: dict[str, dict[str, object]] = {
                 'discovers': False,
                 'shown': None,
                 'patterns': [['fb.watch/{code:[\\w-]+}', 'watch/{code}']],
+                'categories': [],
+            },
+            {
+                'name': 'share',
+                'single': True,
+                'discovers': False,
+                'shown': None,
+                'patterns': [
+                    ['facebook.com/share/{kind:[prv]}/{code:[\\w-]+}', 'share/{kind}/{code}'],
+                    ['fb.com/share/{kind:[prv]}/{code:[\\w-]+}', 'share/{kind}/{code}'],
+                ],
                 'categories': [],
             },
             {
@@ -158,9 +171,11 @@ PLUGINS: dict[str, dict[str, object]] = {
                 'name': 'post',
                 'single': True,
                 'discovers': False,
-                'shown': 'https://www.facebook.com/permalink.php?story_fbid=<post>&id=<user>',
+                'shown': 'https://www.facebook.com/<owner>/posts/<post>',
                 'patterns': [
-                    ['fbk:post/{user:\\d+}_{post:\\w+}', 'post/{user}_{post}'],
+                    ['fbk:post/{user:[A-Za-z0-9.]+}_{post:\\w+}', 'post/{user}_{post}'],
+                    ['facebook.com/{user:[A-Za-z0-9.]+}/posts/{post:\\w+}', 'post/{user}_{post}'],
+                    ['fb.com/{user:[A-Za-z0-9.]+}/posts/{post:\\w+}', 'post/{user}_{post}'],
                     [
                         'facebook.com/permalink.php?story_fbid={post:\\w+}&id={user:\\d+}',
                         'post/{user}_{post}',
@@ -178,6 +193,14 @@ PLUGINS: dict[str, dict[str, object]] = {
                         'post/{user}_{post}',
                     ],
                 ],
+                'categories': [],
+            },
+            {
+                'name': 'me',
+                'single': False,
+                'discovers': True,
+                'shown': 'fbk:me',
+                'patterns': ['fbk:{me:me}'],
                 'categories': [],
             },
             {
@@ -214,45 +237,54 @@ PLUGINS: dict[str, dict[str, object]] = {
             },
         ],
         'unsupported': {
-            'facebook.com/*/posts': (
-                "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-                'permalink.php link'),
             'facebook.com/photos': (
-                "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-                'permalink.php link'),
+                "photo lists aren't supported; give a profile or page, or a video, photo or post li"
+                'nk'),
             'facebook.com/groups': (
-                "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-                'permalink.php link'),
+                "groups aren't supported; give a profile or page, or a video, photo or post link"),
             'facebook.com/events': (
-                "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-                'permalink.php link'),
+                "events aren't supported; give a profile or page, or a video, photo or post link"),
             'facebook.com/stories': (
-                "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-                'permalink.php link'),
-            'fb.com/*/posts': (
-                "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-                'permalink.php link'),
+                "stories aren't supported; give a profile or page, or a video, photo or post link"),
+            'facebook.com/marketplace': (
+                "marketplace pages aren't supported; give a profile or page, or a video, photo or p"
+                'ost link'),
+            'facebook.com/hashtag': (
+                "hashtag pages aren't supported; give a profile or page, or a video, photo or post "
+                'link'),
+            'facebook.com/watch': (
+                "watch pages without v= aren't supported; give a profile or page, or a video, photo"
+                ' or post link'),
             'fb.com/photos': (
-                "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-                'permalink.php link'),
+                "photo lists aren't supported; give a profile or page, or a video, photo or post li"
+                'nk'),
             'fb.com/groups': (
-                "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-                'permalink.php link'),
+                "groups aren't supported; give a profile or page, or a video, photo or post link"),
             'fb.com/events': (
-                "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-                'permalink.php link'),
+                "events aren't supported; give a profile or page, or a video, photo or post link"),
             'fb.com/stories': (
-                "this kind of link isn't supported yet; give the profile, or a video, photo.php or "
-                'permalink.php link'),
+                "stories aren't supported; give a profile or page, or a video, photo or post link"),
+            'fb.com/marketplace': (
+                "marketplace pages aren't supported; give a profile or page, or a video, photo or p"
+                'ost link'),
+            'fb.com/hashtag': (
+                "hashtag pages aren't supported; give a profile or page, or a video, photo or post "
+                'link'),
+            'fb.com/watch': (
+                "watch pages without v= aren't supported; give a profile or page, or a video, photo"
+                ' or post link'),
         },
         'forms': [
             'fbk:video/<video>',
             'fbk:photo/<photo>',
+            'fbk:me',
             'fbk:<user>',
             'https://www.facebook.com/watch?v=<video>',
             'https://www.fb.com/watch?v=<video>',
             'https://www.facebook.com/…/videos/<video>/',
             'https://www.fb.com/…/videos/<video>/',
+            'https://www.facebook.com/…/videos/…/<video>/',
+            'https://www.fb.com/…/videos/…/<video>/',
             'https://www.facebook.com/videos/<video>/',
             'https://www.fb.com/videos/<video>/',
             'https://www.facebook.com/reel/<video>/',
@@ -260,11 +292,15 @@ PLUGINS: dict[str, dict[str, object]] = {
             'https://www.facebook.com/reels/<video>/',
             'https://www.fb.com/reels/<video>/',
             'https://www.fb.watch/<code>/',
+            'https://www.facebook.com/share/<kind>/<code>/',
+            'https://www.fb.com/share/<kind>/<code>/',
             'https://www.facebook.com/photo.php?fbid=<photo>',
             'https://www.fb.com/photo.php?fbid=<photo>',
             'https://www.facebook.com/photo?fbid=<photo>',
             'https://www.fb.com/photo?fbid=<photo>',
-            'https://www.facebook.com/permalink.php?story_fbid=<post>&id=<user>',
+            'https://www.facebook.com/<owner>/posts/<post>',
+            'https://www.facebook.com/<user>/posts/<post>/',
+            'https://www.fb.com/<user>/posts/<post>/',
             'https://www.facebook.com/permalink.php?story_fbid=<post>&id=<user>',
             'https://www.fb.com/permalink.php?story_fbid=<post>&id=<user>',
             'https://www.facebook.com/story.php?story_fbid=<post>&id=<user>',

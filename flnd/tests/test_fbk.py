@@ -1,6 +1,7 @@
 """Facebook on plugin API 2 (`src/plugins/fbk.py`), run on `FakeCtx`: the routes, a profile's
 categories, blocks and walls, pages that don't load, the single links and the media walker."""
 
+import asyncio
 import datetime
 import json
 import unittest
@@ -8,8 +9,10 @@ from types import SimpleNamespace
 
 import fakes  # noqa: F401  (refuses real profiles; fails a coroutine never awaited)
 
+from flnd.engine.resolve import Manifest, resolve
 from flnd.errors import Blocked, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import Plugin, Range, Target
+from flnd.plugins import _manifest
 from flnd.plugins.fbk import (
     TEMPORARILY_BLOCKED,
     Facebook,
@@ -24,8 +27,8 @@ SITE = "https://www.facebook.com"
 GRAPHQL = f"{SITE}/api/graphql/"
 NOON = 1700049600
 DAY = "2023-11-15"
-USER, VIDEO, PHOTO, POST, WATCH = "user", "video", "photo", "post", "watch"
-SINGLE = "this kind of link isn't supported yet"
+USER, VIDEO, PHOTO, POST, WATCH, SHARE, ME = (
+    "user", "video", "photo", "post", "watch", "share", "me")
 
 # Every form fbk reads, and what it becomes: (kind, value), a refusal's text, or None (no
 # route reads it). The kinds and values are the history's keys: a change here is a migration.
@@ -50,12 +53,32 @@ ROUTES = [
     ("https://www.facebook.com/", None),
     ("fbk:example.com/example.page", None),
     ("fbk:not a name", None),
-    ("https://www.facebook.com/example.page/posts/123", SINGLE),
-    ("https://fb.com/example.page/posts", SINGLE),
-    ("https://fb.com/photos/1", SINGLE),
-    ("https://www.facebook.com/groups/x", SINGLE),
-    ("https://fb.com/events/x", SINGLE),
-    ("https://www.facebook.com/stories/x/1", SINGLE),
+    ("https://www.facebook.com/example.page/posts/123", (POST, "post/example.page_123")),
+    ("https://m.facebook.com/example.page/posts/pfbid0Abc/?x=1", (POST, "post/example.page_pfbid0Abc")),
+    ("https://fb.com/100012345678901/posts/7", (POST, "post/100012345678901_7")),
+    ("fbk:post/example.page_123", (POST, "post/example.page_123")),
+    ("fbk:post/100012345678901_pfbid0Abc", (POST, "post/100012345678901_pfbid0Abc")),
+    ("https://www.facebook.com/example.page/videos/some-title/22/", (VIDEO, "video/22")),
+    ("https://fb.com/example.page/videos/22", (VIDEO, "video/22")),
+    ("https://www.facebook.com/share/p/1aBc-9/", (SHARE, "share/p/1aBc-9")),
+    ("facebook.com/share/r/1aBc", (SHARE, "share/r/1aBc")),
+    ("https://fb.com/share/v/1aBc", (SHARE, "share/v/1aBc")),
+    ("https://m.facebook.com/watch/?v=5", (VIDEO, "video/5")),
+    ("https://web.facebook.com/reel/6", (VIDEO, "video/6")),
+    ("https://mbasic.facebook.com/photo.php?fbid=7", (PHOTO, "photo/7")),
+    ("https://mbasic.facebook.com/example.page", (USER, "example.page")),
+    ("https://m.facebook.com/share/r/1aBc", (SHARE, "share/r/1aBc")),
+    ("fbk:me", (ME, "me")),
+    ("https://www.facebook.com/share/x/1aBc", None),
+    ("https://fb.com/example.page/posts", (USER, "example.page")),
+    ("https://fb.com/photos/1", "photo lists aren't supported"),
+    ("https://www.facebook.com/groups/x", "groups aren't supported"),
+    ("https://fb.com/events/x", "events aren't supported"),
+    ("https://www.facebook.com/stories/x/1", "stories aren't supported"),
+    ("https://m.facebook.com/marketplace/item/1", "marketplace pages aren't supported"),
+    ("https://www.facebook.com/hashtag/cats", "hashtag pages aren't supported"),
+    ("https://www.facebook.com/watch/", "watch pages without v= aren't supported"),
+    ("https://www.facebook.com/watch/?ref=x", "watch pages without v= aren't supported"),
     ("https://www.facebook.com/watch/?v=123", (VIDEO, "video/123")),
     ("fbk:facebook.com/watch/?v=1", (VIDEO, "video/1")),
     ("https://fb.com/example.page/videos/2", (VIDEO, "video/2")),
@@ -116,10 +139,10 @@ def page(*results, feeds=(), scroll=(), url=""):
                              for line in batch]])
 
 
-def header(*tab_keys, user_id=None, cover="https://cdn.example/c.png"):
+def header(*tab_keys, user_id=None, cover="https://cdn.example/c.png", typename="User"):
     sections = [{"node": {"tab_key": key, "all_collections": {"nodes": []}}} for key in tab_keys]
     return {"data": {"user": {"profile_header_renderer": {"user": {
-        "id": user_id,
+        "id": user_id, "__typename": typename,
         "profilePicLarge": {"uri": "https://cdn.example/v/pic.jpg?stp=1"},
         "profilePhoto": {"id": "11"},
         "cover_photo": {"photo": {"id": "12", "image": {"uri": cover}}},
@@ -460,6 +483,105 @@ class SingleLinkTest(unittest.TestCase):
                 if streams:
                     self.assertEqual((saved.file.url, saved.file.mirrors, saved.file.audio),
                                      streams)
+
+
+def owned_by_name(result, vanity="example.page", ident="42"):
+    """`result`'s node, owned by the account `vanity` (id `ident`)."""
+    result["data"]["node"]["owner"] = {"id": ident, "vanity": vanity}
+    return result
+
+
+class HardTargetTest(unittest.TestCase):
+    def test_a_typed_key_resolves_to_itself(self):
+        manifest = Manifest(_manifest.PLUGINS)
+        for link in [
+            "https://www.facebook.com/example.page/posts/pfbid0Abc",
+            "https://www.facebook.com/100012345678901/posts/7",
+            "https://www.facebook.com/permalink.php?story_fbid=pfbid0Abc&id=100012345678901",
+            "https://www.facebook.com/example.page/videos/some-title/22",
+            "https://web.facebook.com/reel/6", "https://mbasic.facebook.com/photo.php?fbid=7",
+            "https://www.facebook.com/share/p/1aBc", "https://www.facebook.com/share/r/1aBc",
+            "https://www.facebook.com/share/v/1aBc", "https://fb.watch/aBc-12/", "fbk:me",
+        ]:
+            with self.subTest(link=link):
+                key = resolve(link, manifest=manifest, known={}).key
+                self.assertTrue(key.startswith("fbk:"))
+                self.assertEqual(resolve(key, manifest=manifest, known={}).key, key)
+
+    def test_a_share_link_is_followed_to_the_post_reel_or_video_it_lands_on(self):
+        watch, post = f"{SITE}/watch/?v=22", f"{SITE}/example.page/posts/7"
+        cases = [
+            ("p", f"{SITE}/example.page/posts/7?rdid=x",
+             {post: page(owned_by_name(photo("1")), owned_by_name(photo("2"), "other", "999"))},
+             [post], ["1"]),
+            ("p", f"{SITE}/permalink.php?story_fbid=7&id=42",
+             {f"{SITE}/permalink.php?story_fbid=7&id=42": page(photo("1", owner="42"))},
+             [f"{SITE}/permalink.php?story_fbid=7&id=42"], ["1"]),
+            ("r", f"{SITE}/reel/22", {watch: page(video("22"))}, [watch], ["22"]),
+            ("v", f"{BASE}/videos/some-title/22/", {watch: page(video("22"), video("9"))},
+             [watch], ["22"]),
+        ]
+        for kind, landing, pages, visited, keys in cases:
+            with self.subTest(kind=kind, landing=landing):
+                link = f"{SITE}/share/{kind}/1aBc/"
+                saved, ctx = run(f"facebook.com/share/{kind}/1aBc",
+                                 pages={link: FakePage(url=landing), **pages})
+                self.assertEqual(ctx.seen.visited, [link, *visited])
+                self.assertEqual([s.key for s in saved], keys)
+
+    def test_a_share_link_that_lands_elsewhere_is_not_found_with_a_hint(self):
+        link = f"{SITE}/share/p/1aBc/"
+        for landed in (f"{SITE}/", f"{SITE}/groups/x/", "https://example.com/posts/1"):
+            with self.subTest(landed=landed), self.assertRaises(NotFound) as caught:
+                run("fbk:facebook.com/share/p/1aBc", pages={link: FakePage(url=landed)})
+            self.assertTrue(caught.exception.hint)
+
+    def test_a_page_has_no_tagged_tab_and_the_log_says_so(self):
+        for typename in ("Page", "User"):
+            with self.subTest(typename):
+                pages = {BASE: page(header("photos_by", "photos_of", typename=typename)),
+                         f"{BASE}/photos_of": page(photo("71"))}
+                saved, ctx = run(categories=["tagged"], pages=pages)
+                self.assertEqual([s.key for s in saved], [] if typename == "Page" else ["71"])
+                self.assertEqual(("info", "tagged: this profile has no such tab") in ctx.seen.logs,
+                                 typename == "Page")
+
+    def follows(self, cookies, *results):
+        plugin = Facebook()
+        pages = {f"{SITE}/me/following": page(*results)}
+        ctx = FakeCtx(plugin, "fbk:me", cookies=cookies, pages=pages)
+
+        async def listed():
+            found = []
+            try:
+                async for target in plugin.me(ctx, "me"):
+                    found.append(target)
+            except LoginError as error:
+                return found, error
+            return found, None
+
+        return asyncio.run(listed())
+
+    def test_me_lists_the_pages_and_people_the_login_follows(self):
+        def tile(url, kind):
+            return {"__typename": "TimelineAppCollectionItem", "url": url,
+                    "node": {"__typename": kind}}
+
+        result = {"data": {"node": {"items": [
+            tile(f"{SITE}/example.page", "Page"),
+            tile(f"{SITE}/profile.php?id=100012345678901", "User"),
+            tile(f"{SITE}/example.page/", "Page"),
+            tile(f"{SITE}/groups/x", "Group"),
+        ]}}}
+        found, error = self.follows({"c_user": "1", "xs": "x"}, result)
+        self.assertIsNone(error)
+        self.assertEqual(found, [Target("fbk:example.page"), Target("fbk:100012345678901")])
+
+    def test_me_without_a_login_is_a_login_error_with_a_hint(self):
+        found, error = self.follows({})
+        self.assertEqual(found, [])
+        self.assertIsInstance(error, LoginError)
+        self.assertEqual(error.hint, "log in: flnd auth login fbk")
 
 
 class DateTest(unittest.TestCase):

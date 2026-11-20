@@ -643,8 +643,9 @@ class _Pattern:
             self.regexes = [_compile(segment, pattern, self.names) for segment in self.segments]
             self.query = [(key, _compile(value, pattern, self.names))
                           for key, _, value in self.keys]
-        # How specific it is: its literal segments, the host being one; a code pattern has none.
-        self.literals = 0 if self.host is None else 1 + sum(
+        # How specific it is: its literal segments and query keys, the host being one; a code
+        # pattern has none.
+        self.literals = 0 if self.host is None else 1 + len(self.keys) + sum(
             1 for segment in self.segments if not set(segment) & set("{}*"))
         if template is not None:
             _check_value_template(pattern, template, self.names)

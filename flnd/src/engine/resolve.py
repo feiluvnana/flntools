@@ -101,8 +101,9 @@ class _Pattern:
         self.segments = [_compile(part, text, self.names) for part in parts]
         pairs = [_split(pair, "=", once=True) for pair in _split(query, "&")] if mark else []
         self.keys = [(key, _compile(value, text, self.names)) for key, _, value in pairs]
-        # How specific it is: the host and each literal segment count one; a code pattern none.
-        self.literals = 0 if self.host is None else 1 + sum(
+        # How specific it is: the host, each literal segment and each query key count one; a code
+        # pattern none.
+        self.literals = 0 if self.host is None else 1 + len(self.keys) + sum(
             1 for part in parts if not set(part) & set("{}*"))
         if template is None and len(self.names) > 1:
             raise PluginError(f"pattern {text!r}: two placeholders need a value template")

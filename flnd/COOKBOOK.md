@@ -127,8 +127,7 @@ How a target is read, in order:
 7. The code is matched in any case; the value is kept as typed. A target's key is
    `<code>:<value>`, or `<code>?<query>`; categories are no part of it. A single post's value
    starts with its kind, so its key is what you type (`ins:post/C1abc`) and never clashes with a
-   user's (`ins:C1abc`). A link's `user:pw@`
-   is left out of every key, message and log line.
+   user's (`ins:C1abc`). A link's `user:pw@` is left out of every key, message and log line.
 
 Refusals, with the text printed (all `UsageError`, exit 2, before any request):
 
@@ -171,10 +170,10 @@ flnd get ins:example_user tik:example_user
 
 ### `me`, searches and `--limit`
 
-- `ins:me` and `tik:me` list every account the logged-in account follows and get each as its
-  own `user` target (`"ins:me|posts,stories"` passes the list on to each). They need a login
-  (`tik:me` reads the Following list of your own profile, opened in the browser; unconfirmed
-  live). `twt:me` is a user named `me`.
+- `ins:me`, `tik:me` and `fbk:me` list every account the login follows (`fbk`: pages and people,
+  not friends), each its own `user` target (`"ins:me|posts,stories"` passes the list on to
+  each). They need a login. `tik:me` reads your Following list, `fbk:me` the `/me/following`
+  page (unconfirmed live). `twt:me` is a user named `me`.
 - A search (`twt?<words>`, `mht?<words>`, `tik?<words>`, `loi?<words>`, or a search link) finds
   targets, and each found target is got as its own. A search needs `--folder`, which puts all
   its hits in one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search
@@ -221,10 +220,8 @@ Refused with `twt: that's not a profile`: `x.com/home`, `explore`, `search` (so
 **tik**
 
 - `tik:<user>`, `tiktok.com/@<user>`: the profile (route ``user``)
-- `tik:post/<id>`: one video or photo post (route ``post``); the old `tik:<id>` (16 digits or
-  more) reads too
-- `tiktok.com/@<user>/video/<id>`, `/photo/<id>`, `tiktok.com/video/<id>`, `/photo/<id>`: one post
-  (route ``post``)
+- `tik:post/<id>` (so does the old `tik:<id>`, 16 digits or more), `tiktok.com/@<user>/video/<id>`
+  and `/photo/<id>`, `tiktok.com/video/<id>` and `/photo/<id>`: one post (route ``post``)
 - `vm.tiktok.com/<code>`, `vt.tiktok.com/<code>`, `tiktok.com/t/<code>`: one post, link only
   (route ``short``). It is opened in the browser and read from the video it lands on; a landing
   that is no video or photo post is `NotFound` with the hint `check the link in a browser; only
@@ -243,32 +240,35 @@ a post or a search`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound p
 
 **fbk**
 
-- `fbk:<user>`, `facebook.com/<user>`, `/@<user>`, `/profile.php?id=<id>`, `/people/.../<id>`: the
-  profile or page (route ``user``)
-- `fbk:video/<id>`, `facebook.com/watch?v=<id>`, `/<page>/videos/<id>`, `/videos/<id>`,
-  `/reel/<id>`, `/reels/<id>`: one video or reel (route ``video``)
-- `fb.watch/<code>`: the video the short link leads to (route ``watch``, link only)
-- `fbk:photo/<id>`, `facebook.com/photo.php?fbid=<id>`, `/photo?fbid=<id>`: one photo (route
-  ``photo``)
-- `fbk:post/<owner id>_<story id>`, `facebook.com/permalink.php?story_fbid=<post>&id=<id>` (or
-  `story.php`): one post (route ``post``)
+- `fbk:<user>`, `facebook.com/<user>`, `/@<user>`, `/profile.php?id=<id>`, `/people/.../<id>`: a
+  profile or page, one route (``user``) told apart after it loads; a tab a page lacks
+  (`tagged`) logs `no such tab` and gives nothing
+- `fbk:me`: the accounts the login follows, each `fbk:<name or id>` (route ``me``); no login is
+  a `LoginError`, hint `log in: flnd auth login fbk`
+- `fbk:video/<id>`, `facebook.com/watch?v=<id>`, `/videos/<id>`, `/<page>/videos/<id>` (or
+  `.../<slug>/<id>`), `/reel/<id>`, `/reels/<id>`: one video or reel (route ``video``)
+- `fb.watch/<code>`, `facebook.com/share/p|r|v/<code>`: followed in the browser to the video or
+  post they land on (routes ``watch``, ``share``; `fbk:share/r/<code>` types the key back);
+  landing elsewhere is `NotFound`, hint `check the link in a browser`
+- `fbk:photo/<id>`, `facebook.com/photo.php?fbid=<id>`, `/photo?fbid=<id>`: one photo (``photo``)
+- `fbk:post/<owner>_<story id>`, `facebook.com/<owner>/posts/<id or pfbid...>`,
+  `/permalink.php?story_fbid=<post>&id=<id>` (or `story.php`): one post (route ``post``)
 
-A link's profile name never is one of `profile.php people share watch reel reels videos photo
-photo.php permalink.php story.php login login.php`. Refused with `fbk: this kind of link isn't
-supported yet; give the profile, or a video, photo.php or permalink.php link`:
-`facebook.com/<name>/posts` (and `/posts/<id>`), `/photos`, `/groups`, `/events`, `/stories`.
-`photo.php` without `fbid`, `permalink.php` without both ids: `fbk: can't read <link>`. Any path
-after a profile name (`/photos`, `/reels`) is ignored.
+`m.`, `web.`, `mbasic.` read as `www.`. A profile name is never one of `profile.php people share
+watch reel reels videos photo photo.php permalink.php story.php login login.php`. Refused with
+`fbk: <what> aren't supported; give a profile or page, or a video, photo or post link`:
+`/photos`, `/groups`, `/events`, `/stories`, `/marketplace`, `/hashtag`, `/watch` without `v=`.
+`photo.php` without `fbid`, `permalink.php` without both ids: `fbk: can't read <link>`. Any
+other path after a profile name (`/photos`, `/posts`, `/reels`) is ignored.
 
 **tlg**
 
-- `tlg:@<username>` or `tlg:<username>` (4 to 32 characters, a letter first): a chat (route
-  ``chat``)
-- `tlg:<title or id>` (`tlg:Example Chat`, `tlg:-1001234567890`): a chat among yours (route
-  ``chat``)
-- `t.me/<username>`, `t.me/s/<username>`, `t.me/+<invite>`, `t.me/joinchat/<invite>`: a chat (route
-  ``chat``)
-- `t.me/c/<id>` (read as `-100<id>`): a private chat (route ``chat``)
+Every form is route ``chat``:
+
+- `tlg:@<username>` or `tlg:<username>` (4 to 32 characters, a letter first): a chat
+- `tlg:<title or id>` (`tlg:Example Chat`, `tlg:-1001234567890`): a chat among yours
+- `t.me/<username>`, `t.me/s/<username>`, `t.me/+<invite>`, `t.me/joinchat/<invite>`: a chat
+- `t.me/c/<id>` (read as `-100<id>`): a private chat
 
 A message number at the end of a link is ignored. Refused: `tlg:@abc` (a username under 4
 characters), `t.me/` alone, `web.telegram.org` links: `tlg: can't read <text>`.
@@ -289,10 +289,9 @@ library pages aren't supported; ...`). `loi:post/<id>|archive` and `|photo` are 
 
 - `mht:<id>`, `mimihentai.moe/manga/<id>` (digits): one manga (route ``manga``)
 - `mht:chapter/<id>`, `mimihentai.moe/manga/.../chapter/<id>`: one chapter (route ``chapter``)
-- `mht:author/<name or id>`, `mimihentai.moe/author/<x>`, `/authors/<x>`: every manga of an author
+- `mht:author/<name or id>`, `mimihentai.moe/author/<x>`, `/authors/<x>`: an author's manga
   (route ``author``)
-- `mht:genre/<name or id>`, `mimihentai.moe/genre/<x>`, `/genres/<x>`: every manga of a genre (route
-  ``genre``)
+- `mht:genre/<name or id>`, `mimihentai.moe/genre/<x>`, `/genres/<x>`: a genre's manga (``genre``)
 - `mht?<query>`: every manga a search finds (route ``query``)
 
 Query terms: plain words (title), `title:`, `author:`, `genre:` (repeatable), `-genre:`, `parody:`,
@@ -420,7 +419,7 @@ as a file name):
 | `twt` tweet; a reply | `posts`; `replies` | `media/twt/<handle>/posts/`; `.../replies/` |
 | `tik` video; photo post | `videos` | `media/tik/<user>/videos/`; `.../images/` |
 | `fbk` video, reel, photo | `videos`, `reels`, `photos` | `media/fbk/<owner>/<category>/` |
-| `fbk` permalink | `posts` | `media/fbk/<owner>/posts/` |
+| `fbk` post | `posts` | `media/fbk/<owner>/posts/` |
 | `loi` post | `archive`, `photo` | `media/loi/<author>/<post> <title>/` |
 
 The owner is the post's: `user.username`, `screen_name`, `uniqueId`, a Facebook vanity name else
@@ -1063,7 +1062,7 @@ media/tik/example_creator/albums/Example_Playlist/2026-01-03_1234567890123456781
 ### fbk (Facebook)
 
 - **Reads:** a profile or page in the browser (loading and scrolling), and one video, reel,
-  photo or post by link. A `fb.watch` link is opened to find the video's id.
+  photo or post by link. A `fb.watch` or `/share/` link is opened to find where it lands.
 - **Categories:** none is newest first, so every tab is read to its end each run. `posts`,
   `photos`, `albums`, `reels`, `videos`, `stories`, `profile` (own); `tagged` (opt-in).
   A video found in `posts`, `photos` or `tagged` is filed under `videos`; a photo naming its
@@ -1074,9 +1073,10 @@ media/tik/example_creator/albums/Example_Playlist/2026-01-03_1234567890123456781
 - **Login:** cookies `c_user` or `xs` (optional, but a logged-out browser sees little).
 - **Limits and walls:** pace 0.2; walls `/login`, `/login.php`; "temporarily blocked" pages and
   the Comet error page are blocks. The CDN needs `Referer: https://www.facebook.com/`.
-- **Known gaps:** `/posts` links and the site's own `/photos /groups /events /stories` are
-  refused; stories are those active now; without a profile header `stories` and `profile` are
-  skipped with a warning; photos carry no date, so they take the nearest neighbour's.
+- **Known gaps:** `/photos /groups /events /stories /marketplace /hashtag` are refused; a page
+  is told from a profile by the header's `__typename` (confirm live); stories are those active
+  now; without a header `stories` and `profile` are skipped with a warning; photos carry no
+  date, so they take the nearest neighbour's.
 
 ```text
 media/fbk/example.page/photos/2026-01-02_1234567890.jpg
