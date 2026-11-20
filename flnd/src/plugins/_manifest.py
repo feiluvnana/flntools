@@ -377,7 +377,8 @@ PLUGINS: dict[str, dict[str, object]] = {
         ],
         'unsupported': {
             'instagram.com/stories': (
-                "story links aren't supported; give the profile, and its stories come with it"),
+                "story links aren't supported; give the profile, and its stories come with it: the "
+                'user with |stories or |highlights, e.g. "ins:example_user|highlights"'),
             'instagram.com/explore': "that's not a profile",
             'instagram.com/accounts': "that's not a profile",
             'instagram.com/direct': "that's not a profile",

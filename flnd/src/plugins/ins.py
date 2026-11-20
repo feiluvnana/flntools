@@ -5,6 +5,7 @@ link, and the accounts the login follows, read from the pages. SPEC.md#ins-insta
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import aclosing
 from datetime import UTC, datetime
@@ -27,6 +28,7 @@ from flnd.plugin import (
     SiteError,
     Stream,
     Target,
+    UsageError,
     best,
     cookies,
     dig,
@@ -101,6 +103,7 @@ GRAPHQL = "graphql"
 # sticker's asset, or the story's own music metadata.
 STORY_MUSIC = ("story_music_stickers[0].music_asset_info.progressive_download_url || "
                "music_metadata.music_info.music_asset_info.progressive_download_url")
+USER_NAME = re.compile(r"[A-Za-z0-9._]{1,30}")
 LOGIN_HINT = "run flnd auth login ins"
 
 
@@ -127,12 +130,26 @@ class Instagram(Plugin):
     # Every story link, a user's or a highlight's: a story expires, but the profile lists them all.
     unsupported = {
         "instagram.com/stories": (
-            "story links aren't supported; give the profile, and its stories come with it"
+            "story links aren't supported; give the profile, and its stories come with it: "
+            'the user with |stories or |highlights, e.g. "ins:example_user|highlights"'
         ),
         "instagram.com/explore": "that's not a profile",
         "instagram.com/accounts": "that's not a profile",
         "instagram.com/direct": "that's not a profile",
     }
+
+    @classmethod
+    def resolve(cls, text: str) -> Target | None:
+        """The routes' reading, then the name rule: a user name is `USER_NAME`.
+
+        Raises:
+            UsageError: a name that isn't one, or one of the site's own pages.
+        """
+        found = super().resolve(text)
+        if found is not None and found.kind == "user" and not USER_NAME.fullmatch(found.value):
+            raise UsageError(f"ins: {found.value!r} isn't a user name; "
+                             "a user name is 1 to 30 letters, digits, . or _")
+        return found
 
     def __init__(self) -> None:
         # The `X-IG-WWW-Claim` Instagram gave last, echoed on the next API calls (2026-11-12).

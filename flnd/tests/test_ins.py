@@ -6,6 +6,7 @@ in-page fetch of `/p/<code>/`, and the post's own page answers `open` when the H
 
 import asyncio
 import json
+import re
 import unittest
 from collections.abc import Sequence
 from datetime import date
@@ -217,6 +218,35 @@ class RoutesTest(unittest.TestCase):
                         Instagram.resolve(text)
                 else:
                     self.assertIsNone(Instagram.resolve(text))
+
+    def test_user_names_and_other_pages_of_the_site(self):
+        for text, kind, value in [
+            ("ins:a.b_c9", "user", "a.b_c9"), (f"ins:{'a' * 30}", "user", "a" * 30),
+            ("https://www.instagram.com/p/C1abc/", "post", "post/C1abc"),
+            ("https://www.instagram.com/reel/C1abc/", "post", "post/C1abc"),
+            ("https://www.instagram.com/example_user/", "user", "example_user"),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(Instagram.resolve(text), Target(f"ins:{value}", kind=kind))
+        name = "a user name is 1 to 30 letters, digits, . or _"
+        for text, message in [
+            (f"ins:{'a' * 31}", name), ("ins:caf\u00e9", name),
+            ("https://www.instagram.com/explore/", "that's not a profile"),
+            ("https://www.instagram.com/explore/tags/cats/", "that's not a profile"),
+            ("https://www.instagram.com/accounts/edit/", "that's not a profile"),
+            ("https://www.instagram.com/direct/t/1/", "that's not a profile"),
+            ("https://www.instagram.com/stories/highlights/1789/", "|highlights"),
+            ("https://www.instagram.com/stories/example_user/", "|stories"),
+        ]:
+            with self.subTest(text=text), self.assertRaisesRegex(UsageError, re.escape(message)):
+                Instagram.resolve(text)
+
+    def test_a_link_and_its_key_name_the_same_target(self):
+        for link in ("https://www.instagram.com/p/C1abc/", "instagram.com/reel/C1abc",
+                     "https://www.instagram.com/example_user/"):
+            with self.subTest(link=link):
+                found = Instagram.resolve(link)
+                self.assertEqual(Instagram.resolve(found.text), found)
 
     def test_declarations(self):
         # S13: the API version is no longer shadowed by an API client on the instance.

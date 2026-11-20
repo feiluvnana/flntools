@@ -192,15 +192,15 @@ in that place. Messages not shown say `<code>: can't read <text>` with the hint 
 
 | Form | Route | Reads |
 | --- | --- | --- |
-| `ins:<user>`, `instagram.com/<user>` (a leading `@` is dropped) | `user` | the profile |
+| `ins:<user>`, `instagram.com/<user>` (`@` dropped; `A-Za-z0-9._`, 1-30) | `user` | the profile |
 | `ins:post/<code>` | `post` | one post |
-| `instagram.com/p/<code>`, `/reel/<code>`, `/reels/<code>`, `/tv/<code>` | `post` | one post |
-| `instagram.com/<user>/p/<code>` (and `reel`, `reels`, `tv`) | `post` | one post |
+| `instagram.com/p/<code>`, `/reel/`, `/reels/`, `/tv/`; also under `/<user>/` | `post` | one post |
 | `ins:me` | `me` | every account the login follows |
 
-Refused: `instagram.com/stories/...` is `ins: story links aren't supported; give the profile, and
-its stories come with it`; `instagram.com/explore`, `/accounts`, `/direct` are `ins: that's not a
-profile`; `instagram.com/` alone, and a code with no value.
+Refused: a name past that rule is `ins: '<name>' isn't a user name; a user name is 1 to 30
+letters, digits, . or _`; `/stories/...` and `/stories/highlights/...` are `ins: story links aren't
+supported; ...` with the hint `"ins:example_user|highlights"`; `/explore/` (and `/explore/tags/`),
+`/accounts/`, `/direct/` are `ins: that's not a profile`; `instagram.com/` alone.
 
 **twt**
 
