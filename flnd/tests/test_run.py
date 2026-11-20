@@ -359,8 +359,11 @@ class HttpTest(EngineCase):
                 if False:
                     yield Post("p", ())
 
+        started = threading.Event()
+
         async def other(ctx):
             ran.append(("other", clock.now()))
+            started.set()
 
         self.routes["https://api.qqq.example/search"] = _net.reply(429)
         engine = Engine(home=self.home,
@@ -368,7 +371,12 @@ class HttpTest(EngineCase):
         real_pause = clock.pause
 
         async def yielding_pause(seconds, *, stop=None):
-            await asyncio.sleep(0)
+            # The fake clock passes a wait at once, while bbb's start takes real thread hops:
+            # a wait gives bbb up to 2 s of real time to start before its fake time passes.
+            for _ in range(200):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
             return await real_pause(seconds, stop=stop)
 
         with mock.patch.object(clock, "pause", yielding_pause):
