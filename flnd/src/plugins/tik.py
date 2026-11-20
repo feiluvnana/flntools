@@ -272,7 +272,7 @@ class TikTok(Plugin):
     domains = ("tiktok.com", "vm.tiktok.com", "vt.tiktok.com")
     api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
-    assets = True
+    hidden = True
     # Either cookie proves a login; none is needed, since public profiles are read without one.
     login = cookies("sessionid", "sid_tt", url="https://www.tiktok.com/login")
     # No known limit; TikTok's answer to heavy use is the captcha, which `Profile` holds for.
