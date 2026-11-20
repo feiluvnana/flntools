@@ -577,9 +577,11 @@ class Ledger:
                          and not self._route.categories)
         # The files the run queued, by path and key: every target's (`Claims`).
         self._queued: Claims = self.settings.claims or Claims()
+        self._queued_keys: set[str] = set()
         self._dates: dict[str, datetime.date] = {}
         self._waiting: dict[str, Post] = {}
         self._order: list[tuple[str, datetime.date | None]] = []
+        self._last_dated: tuple[str, datetime.date] | None = None
         self._estimated: set[str] = set()
         self._asking = type(self.source).date is not Plugin.date
         self._link_warned = False
@@ -687,7 +689,11 @@ class Ledger:
             item_key = f"{self.source.code}:{placed.key}"
             held = self._held(dest, item_key, placed)
             if held is not None:
-                if dest not in self._queued and item_key not in self._queued:
+                if (
+                    dest not in self._queued
+                    and item_key not in self._queued
+                    and item_key not in self._queued_keys
+                ):
                     found += 1
                 self._skip_held(post, placed.path, dest, item_key, held)
                 continue
@@ -699,6 +705,7 @@ class Ledger:
             self.tally.count(self.target, post.category, found=1)
             # The cursor of the page the post is on, which a failure keeps for its retry.
             listing = self.site.listing
+            self._queued_keys.add(item_key)
             todo.append(_Queued(placed, dest, item_key, estimated=first in self._estimated,
                                 cursor=listing.cursor if listing is not None else None,
                                 retried=self.retrying))
@@ -764,7 +771,7 @@ class Ledger:
         for dest, item_key, category in self._later:
             holder = written.get(item_key)
             # The compress step may have moved the file to a new suffix; its row says where.
-            found = self._db.known(item_key) if holder is not None and self._db else None
+            found = self._db.known(item_key) if self._db else None
             if found is not None and found[0]:
                 holder = Path(found[0])
             if holder is not None:
@@ -811,6 +818,8 @@ class Ledger:
                 self._estimated.add(item_key)
             released.append(post if found is None else post.replace(date=found))
         self._order.clear()
+        self._dates.clear()
+        self._last_dated = None
         return released
 
     async def redate(self) -> int:
@@ -904,10 +913,13 @@ class Ledger:
         if item_key is None:
             return post
         known = day(post.date)
-        if hold:
-            self._order.append((item_key, known))
         if known is not None:
-            self._dates[item_key] = known
+            if hold:
+                if self._waiting:
+                    self._order.append((item_key, known))
+                    self._dates[item_key] = known
+                else:
+                    self._last_dated = (item_key, known)
             self._waiting.pop(item_key, None)
             return post
         found = self._dates.get(item_key)
@@ -915,6 +927,11 @@ class Ledger:
             found = self._db.day(item_key)
         if found is not None:
             self._dates[item_key] = found
+            if hold:
+                if self._waiting:
+                    self._order.append((item_key, found))
+                else:
+                    self._last_dated = (item_key, found)
             return post.replace(date=found)
         if not hold:
             return post
@@ -922,6 +939,10 @@ class Ledger:
             self._skip(post.category, post.id)
             ui.debug("{post}: listed twice", post=post.id)
             return None
+        if not self._order and self._last_dated is not None:
+            self._order.append(self._last_dated)
+            self._dates[self._last_dated[0]] = self._last_dated[1]
+        self._order.append((item_key, None))
         self._waiting[item_key] = post
         return None
 
@@ -961,7 +982,11 @@ class Ledger:
             ]
             if any(self._held(None, k) is None for k in checked[1:]):
                 return None
-        return Outcome.EMPTY if any(k in self._queued for k in checked) else Outcome.SAVED
+        return (
+            Outcome.EMPTY
+            if any(k in self._queued or k in self._queued_keys for k in checked)
+            else Outcome.SAVED
+        )
 
     def _skip(self, category: str, post: str, path: Path | None = None) -> None:
         """Count one file (or post) found and skipped, and make its `Skipped` event (`_tell`)."""
@@ -1043,6 +1068,12 @@ class Claims:
             self._held[dest] = self._held[key] = name
             return None
 
+    def release(self, dest: Path, key: str) -> None:
+        """Release a finished file's claim so only in-flight files are held."""
+        with self._lock:
+            self._held.pop(dest, None)
+            self._held.pop(key, None)
+
 
 def asked(run: PluginRun) -> None:
     """Read the posts the plugin's `date` hook had no day for, asked in the last 30 days, once
@@ -1113,10 +1144,12 @@ class Downloads:
 
     def __init__(self, run: PluginRun, target: Target, tally: Tally, *,
                  swept: Awaitable[None] | None = None,
-                 site: Ctx | None = None) -> None:
+                 site: Ctx | None = None,
+                 ledger: Ledger | None = None) -> None:
         self.run, self.target, self.tally = run, target, tally
         # The target's Ctx, whose `aside` tabs a refresh lists on; None for none.
         self._site = site
+        self._ledger = ledger
         # The sweep of the target's folder, which the first file waits for.
         self._swept = swept
         self.source, self.settings = run.source, run.settings
@@ -1125,6 +1158,7 @@ class Downloads:
         # Set once the run stopped, so a file that hasn't started ends at once.
         self._halted = False
         self._written: dict[str, Path] = {}
+        self._landed: list[Path] = []
         # Set each time a post settles, for whoever waits for room or for the end.
         self._changed = asyncio.Event()
         # Files handed over and not settled, and the keys of those whose transfer started.
@@ -1208,7 +1242,7 @@ class Downloads:
             self._halted = True
             while self._pending:
                 await self._settled()
-        return tuple(self._written.values())
+        return tuple(self._landed)
 
     async def below(self, places: int) -> None:
         """Wait until at most `places` of the target's files are queued or downloading, or
@@ -1252,7 +1286,12 @@ class Downloads:
         """One post's save on the loop; never an exception out."""
         try:
             written = await saver.post(items, client=self.run.files, plugin=self.source.code)
-            self._written.update(written)
+            self._landed.extend(written.values())
+            if self._ledger is not None:
+                needed = {k for _, k, _ in self._ledger._later}
+                self._written.update({k: p for k, p in written.items() if k in needed})
+            else:
+                self._written.update(written)
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -1347,7 +1386,7 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
                 if sweep_dir is not None else None)
     site = _site(run, target, options.since, options.until)
     ledger = Ledger(run, site, target, tally, options=options)
-    downloads = Downloads(run, target, tally, swept=sweeping, site=site)
+    downloads = Downloads(run, target, tally, swept=sweeping, site=site, ledger=ledger)
     work = _Work(ledger, downloads)
     db = run.settings.db
     row = await run.off(_opened, ledger, db, target)

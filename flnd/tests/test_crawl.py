@@ -1316,6 +1316,26 @@ class MemoryTest(JobCase):
             ["A1.jpg"],
         )
 
+    def test_ledger_order_and_dates_not_tracked_on_dated_feed(self):
+        posts = [
+            Post(f"P{i}", [File(f"{CDN}/p{i}.jpg")], date=datetime.date(2026, 1, 1))
+            for i in range(10)
+        ]
+        self.assertEqual(len(self.run_feed(posts)), 10)
+
+    def test_claims_release_removes_in_flight_dest_and_key(self):
+        from flnd.engine.crawl import Claims
+        claims = Claims()
+        dest = Path(self.home) / "dest.jpg"
+        key = "mem:key1"
+        self.assertIsNone(claims.claim(dest, key, "dest.jpg"))
+        self.assertIn(dest, claims)
+        self.assertIn(key, claims)
+        claims.release(dest, key)
+        self.assertNotIn(dest, claims)
+        self.assertNotIn(key, claims)
+        self.assertIsNone(claims.claim(dest, key, "dest.jpg"))
+
 
 class LinkTest(JobCase):
     """A file found in a second category's folder is linked there, not downloaded again."""

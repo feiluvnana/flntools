@@ -480,7 +480,8 @@ class Saver:
                  run: int | None = None, dedupe: bool = True, sidecars: bool = True,
                  exec: Sequence[str] | None = None, exec_timeout: float = 3600,
                  stop: threading.Event | None = None, tally: Any = None,
-                 sample: Callable[[Error], None] | None = None) -> None:
+                 sample: Callable[[Error], None] | None = None,
+                 claims: Any = None) -> None:
         if exec is not None and (not isinstance(exec, (list, tuple)) or not exec
                                  or not all(isinstance(arg, str) for arg in exec)):
             raise UsageError("exec must be a list: the program, then its arguments",
@@ -490,6 +491,7 @@ class Saver:
         self.dedupe, self.sidecars, self.exec, self.stop = dedupe, sidecars, exec, stop
         self.exec_timeout = exec_timeout
         self.tally, self.sample = tally, sample
+        self.claims = claims
         self.done = _Done()
         # The pairs of devices (saved file's, new file's) found unable to hard-link.
         self._unlinkable: set[tuple[int, int]] = set()
@@ -557,6 +559,8 @@ class Saver:
             landed = await self._land(item, client, plugin, flow)
         except _Dropped:
             self._count(item, queued=-1)
+            if self.claims is not None:
+                self.claims.release(item.dest, item.key)
             return None
         except files.BusyError:
             self._count(item, downloading=-1, skipped=1)
@@ -1077,6 +1081,11 @@ class Saver:
         hashes = {key: digest for one in landed for key, digest in one.hashes.items()}
         failed = [_failed_row(one) for one in failures]
         await self._write(self.store.commit, rows, hashes=hashes, failures=failed, run=self.run)
+        if self.claims is not None:
+            for one in landed:
+                self.claims.release(one.item.dest, one.item.key)
+            for failure in failures:
+                self.claims.release(failure.item.dest, failure.item.key)
         if self.store.due:
             task = asyncio.ensure_future(self._call(self.store.checkpoint))
             self._checkpoints.add(task)
@@ -1164,10 +1173,12 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     # The configs and the store are read and opened off the loop.
     found, db = await asyncio.to_thread(_opened, settings)
     defaults = found.defaults
+    claims = getattr(settings, "claims", None)
     saver = Saver(db, scheduler, settings.emit, run=settings.run, dedupe=defaults.dedupe,
                   sidecars=defaults.sidecars, exec=settings.exec or defaults.exec or None,
                   exec_timeout=defaults.exec_timeout, stop=settings.stop.now,
-                  tally=settings.tally, sample=lambda error: sampled(settings, error))
+                  tally=settings.tally, sample=lambda error: sampled(settings, error),
+                  claims=claims)
     settings.saver = saver
     try:
         yield saver

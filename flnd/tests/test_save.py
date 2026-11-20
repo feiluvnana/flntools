@@ -182,6 +182,17 @@ class StagesTest(SaveCase):
             self.save(self.item("b.jpg", file=File(fetch=fetch)), stop=stop)
         self.assertEqual((self.tmp / "media" / "b.jpg.part").read_bytes(), JPEG)
 
+    def test_saver_releases_claims_on_commit(self) -> None:
+        from flnd.engine.crawl import Claims
+        claims = Claims()
+        item = self.item("claimed.jpg")
+        claims.claim(item.dest, item.key, "claimed.jpg")
+        self.assertIn(item.dest, claims)
+        self.routes[f"{CDN}/claimed.jpg"] = JPEG
+        self.save(item, claims=claims)
+        self.assertNotIn(item.dest, claims)
+        self.assertNotIn(item.key, claims)
+
     def test_an_expired_link_is_asked_for_again(self) -> None:
         self.routes.update({f"{CDN}/old.jpg": 403, f"{CDN}/new.jpg": JPEG})
 
@@ -267,7 +278,8 @@ class SegmentTest(SaveCase):
         mib = 1 << 20
         # (file, its size, ranges, the most segments, at least)
         cases = [("small.bin", 8 * mib, True, 1, 1), ("plain.bin", 24 * mib, False, 1, 1),
-                 ("big.bin", 24 * mib, True, 8, 2), ("huge.bin", 96 * mib, True, 8, 8)]
+                 ("big.bin", 24 * mib, True, jobs.SEGMENTS, 2),
+                 ("huge.bin", 96 * mib, True, jobs.SEGMENTS, jobs.SEGMENTS)]
         for name, size, ranges, most, least in cases:
             with self.subTest(name):
                 body = os.urandom(size)
