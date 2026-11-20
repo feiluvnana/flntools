@@ -22,14 +22,29 @@ The browser runs on a loop thread of its own (`kit.Loop`), and every step is han
 from this thread with `Loop.run`, as a plain source's thread does through `Site`'s verbs, so
 each time includes that hop.
 
+`heavy_rss` and `heavy_cpu` measure what the browser costs (SPEC.md#for-developers): a feed of
+the same shape whose rows each hold an image (a distinct URL, so none is shared), plus a web
+font, read once with the default scroll in a browser of its own. `heavy_rss` is the peak of the
+summed resident memory of Chrome's processes, sampled every 0.1 s (macOS counts a page that
+processes share once for each, so read it only against itself); `heavy_cpu` is their CPU
+seconds, the most each process showed. Both are read with `ps` (not on Windows, where the two
+are left out). They give the baseline that the choices of what a page loads and which switches
+Chrome starts with are measured against.
+
 The group is skipped when Chromium can't be launched (run `playwright install chromium`).
 """
 
 from __future__ import annotations
 
 import json
+import os
+import struct
+import subprocess
+import sys
 import tempfile
+import threading
 import time
+import zlib
 from pathlib import Path
 
 import kit
@@ -60,6 +75,103 @@ addEventListener('scroll', () => {
 });
 more();
 </script></body></html>"""
+# The heavy feed: each row also holds an image, and the page uses a web font.
+HEAVY = FEED.replace("d.textContent = t;", "d.textContent = t; const i = new Image(); "
+                     "i.height = 120; i.src = '/pic.png?' + n + '-' + t; d.appendChild(i);")
+HEAVY = HEAVY.replace("<html><body>", "<html><head><style>@font-face {font-family: x; "
+                      "src: url(/f.woff2)} body {font-family: x}</style></head><body>")
+PICTURE = (480, 320)
+
+
+def png(width: int, height: int) -> bytes:
+    """A `width` by `height` picture of a pattern that does not compress away."""
+    rows = b"".join(b"\0" + bytes((x * 7 + y * 13 + x * y) % 256 for x in range(width * 3))
+                    for y in range(height))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2,
+                                                                0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def _seconds(text: str) -> float:
+    """`ps`'s CPU time, `[[dd-]hh:]mm:ss[.ff]`, in seconds."""
+    days, _, clock = text.rpartition("-")
+    total = 0.0
+    for part in clock.split(":"):
+        total = total * 60 + float(part)
+    return total + (int(days) * 86400 if days else 0)
+
+
+def chrome_processes() -> dict[int, tuple[int, float]]:
+    """Chrome's processes under this one: pid -> (resident KiB, CPU seconds), read with `ps`."""
+    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,rss=,time=,command="],
+                         capture_output=True, text=True, check=True).stdout
+    rows: dict[int, tuple[int, int, float, str]] = {}
+    for line in out.splitlines():
+        pid, ppid, rss, cpu, command = line.split(None, 4)
+        rows[int(pid)] = (int(ppid), int(rss), _seconds(cpu), command)
+    found = {}
+    for pid, (_, rss, cpu, command) in rows.items():
+        up, hops = pid, 0
+        while up in rows and up != os.getpid() and hops < 50:
+            up, hops = rows[up][0], hops + 1
+        if up == os.getpid() and "hrom" in command:
+            found[pid] = (rss, cpu)
+    return found
+
+
+class Meter:
+    """Samples `chrome_processes` every 0.1 s on a thread: the peak memory and the CPU seconds."""
+
+    def __init__(self) -> None:
+        self.peak_kib = 0
+        self._cpu: dict[int, float] = {}
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._sample, daemon=True)
+
+    def _sample(self) -> None:
+        while True:
+            seen = chrome_processes()
+            self.peak_kib = max(self.peak_kib, sum(rss for rss, _ in seen.values()))
+            for pid, (_, cpu) in seen.items():
+                self._cpu[pid] = max(self._cpu.get(pid, 0.0), cpu)
+            if self._stop.wait(0.1):
+                return
+
+    @property
+    def cpu(self) -> float:
+        """CPU seconds, summed over every process seen."""
+        return sum(self._cpu.values())
+
+    def __enter__(self) -> Meter:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._stop.set()
+        self._thread.join()
+
+
+def heavy(shared: _browser.RunBrowser, base: str, report: kit.Report) -> None:
+    """Read the heavy feed once, with the default scroll, and report the browser's cost."""
+    tabs = _browser.Tabs(shared, _cookies.Jar([]), scroll=_browser.HUMAN)
+    try:
+        _ = tabs.page
+        with Meter() as meter:
+            batches = read_feed(tabs, f"{base}/heavy.html")
+            time.sleep(0.5)
+        loaded = tabs.run(tabs.page.evaluate("document.images.length"))
+    finally:
+        tabs.close()
+    if batches != BATCHES:
+        raise SystemExit(f"browser: the heavy feed stopped at {batches} of {BATCHES} batches")
+    print(f"  heavy page: {loaded} images", file=sys.stderr, flush=True)
+    report.add("heavy_rss", meter.peak_kib / 1024, "MiB")
+    report.add("heavy_cpu", meter.cpu, "s")
 
 
 def timed(work):
@@ -113,6 +225,9 @@ def main() -> None:
                      "next": f"c{n + 1}" if n < BATCHES - 1 else None}
             (folder / f"items{n}.json").write_text(json.dumps(batch))
         (folder / "feed.html").write_text(FEED)
+        (folder / "heavy.html").write_text(HEAVY)
+        (folder / "pic.png").write_bytes(png(*PICTURE))
+        (folder / "f.woff2").write_bytes(b"not a font")
         for n in range(WARM):
             (folder / f"warm{n}.html").write_text(f"<html><body>page {n}</body></html>")
         with kit.serve(folder) as base:
@@ -170,6 +285,12 @@ def main() -> None:
                 report.add("warm_4", warm_4(shared, base), "s")
             finally:
                 shared.close()
+            if sys.platform != "win32":
+                alone = _browser.RunBrowser(loop.loop, headless=True)
+                try:
+                    heavy(alone, base, report)
+                finally:
+                    alone.close()
     report.emit()
 
 

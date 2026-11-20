@@ -26,7 +26,8 @@ import sys
 from typing import Any
 
 # Content types by suffix: the browser needs text/html for the feed page and JSON for its batches.
-TYPES = {".html": "text/html", ".json": "application/json"}
+TYPES = {".html": "text/html", ".json": "application/json", ".png": "image/png",
+         ".woff2": "font/woff2"}
 # How long a `/slow/` and a `/late/` request wait before answering, in seconds.
 SLOW, LATE = 0.05, 0.04
 # The rate of one `/capped/` connection, in bytes a second, and the piece it is sent in.

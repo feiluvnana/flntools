@@ -1483,18 +1483,18 @@ Read it with any SQLite tool.
 | Target | Does |
 | --- | --- |
 | `make setup` | sync `.venv` from `uv.lock` |
-| `make check` | ruff, then every test; green at every commit |
+| `make check` | ruff (`make lint` alone), then every test; green at every commit |
 | `make test ARGS="-k fetch"` | the tests, or some (`FLND_TEST_NO_PROFILES=1`) |
-| `make lint` | ruff alone |
 | `make api` | regenerate `tests/data/api.txt`, the public surface; read its diff |
 | `make manifest` | regenerate `src/plugins/_manifest.py` after a plugin's routes change |
 | `make bench` | offline benchmarks; `ARGS=--gate` fails on a 15% slowdown, `--record` rebases |
-| `make docs` | the API reference into `build/docs/` |
-| `make dist` | a one-file binary |
+| `make docs`, `make dist` | the API reference into `build/docs/`; a one-file binary |
 | `make try ARGS="ins:example_user"` | list, live, what a get would save (scratch home `.try`) |
 | `make ext`, `make live`, `make cdn-real` | hand checks, never part of `check` |
 | `make clean` | remove `build`, `dist`, `.try` |
 
 **Benchmarks** (`tests/bench/`, groups `startup ui net disk db walk cpu e2e browser`) run offline
 against a loopback server and scratch folders; `make check` runs each in smoke mode only. Run them
-before a speed change for the "before" numbers, and `--gate` before its commit.
+before a speed change for the "before" numbers, and `--gate` before its commit. The `browser`
+group also reports `heavy_rss` and `heavy_cpu`: the peak memory (MiB) and CPU seconds of Chrome's
+processes on one scrolled page of 300 images, read with `ps` (not on Windows).

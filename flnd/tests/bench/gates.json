@@ -408,6 +408,18 @@
       "target": 0.091,
       "gate": "P5: warm tabs opened together, cookies in one call, no unread bodies",
       "note": "the goal is 1/3 of the step-0 baseline"
+    },
+    "browser.heavy_rss": {
+      "unit": "MiB",
+      "better": "lower",
+      "baseline": 737.0,
+      "note": "step 5c: peak resident memory of Chrome's processes on a scrolled page of 300 images"
+    },
+    "browser.heavy_cpu": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 1.6,
+      "note": "step 5c: their CPU seconds on the same page"
     }
   }
 }
