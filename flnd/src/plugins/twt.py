@@ -482,7 +482,8 @@ class Twitter(Plugin):
                 raise SiteError(f"twt: {url} answered HTTP {landed.status}",
                                 status=landed.status, retryable=landed.status >= 500)
             last = urlsplit(landed.url).path.rstrip("/").rsplit("/", 1)[-1].lower()
-            if tab and last != TIMELINES[tab].tab.strip("/"):
+            if tab and (last != TIMELINES[tab].tab.strip("/")
+                        or tab in LINKED and not await _has_tab(ctx, tab)):
                 ctx.log("info", "{tab}: this profile has no such tab", tab=tab)
                 return
             async for data in responses:
@@ -508,6 +509,19 @@ class Twitter(Plugin):
                 seen.update(tweet_id_of(tweet) for tweet in new)
                 for tweet in new:
                     yield tweet, tweet_id_of(tweet) in pinned
+
+
+# The tabs linked in the profile's tab bar; X moves a missing one away after load (2026-11-20).
+LINKED = {"media": "media", "highlights": "highlights", "replies": "with_replies"}
+
+
+async def _has_tab(ctx: Ctx, tab: str) -> bool:
+    """Whether the tab bar links `tab`, waiting up to 5 s for it (Media's link) to render."""
+    for _ in range(5):
+        if await ctx.shown('a[href$="/media"]'):
+            return await ctx.shown(f'a[href$="/{LINKED[tab]}"]')
+        await ctx.pause(1, "waiting for the profile's tab bar")
+    return True
 
 
 class Graph:

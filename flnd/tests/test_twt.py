@@ -798,6 +798,30 @@ class MissingTabTest(unittest.TestCase):
                 self.assertEqual(ctx.seen.holds, [])
 
 
+    def test_a_tab_x_redirects_away_from_after_load_has_no_link_in_the_tab_bar(self):
+        # Live 2026-11-20: the page lands on the tab, and about a second later X moves it to
+        # the profile. The tab bar then has Media's link but not Highlights'.
+        profile = "https://x.com/example_handle"
+        bar = 'a[href$="/media"]'
+        link = 'a[href$="/highlights"]'
+        for name, category, tab, shown, missing in (
+                ("missing", "highlights", "highlights", [bar], True),
+                ("replies missing", "replies", "with_replies", [bar], True),
+                ("present", "highlights", "highlights", [bar, link], False),
+                ("reposts has no link", "reposts", "reposts", [bar], False)):
+            with self.subTest(name):
+                ctx = fake(pages={f"{profile}/{tab}": FakePage(shown=shown)})
+                collect(Twitter, "twt:example_handle", ctx=ctx, categories=[category])
+                line = ("info", f"{category}: this profile has no such tab")
+                self.assertEqual(line in ctx.seen.logs, missing)
+
+    def test_a_tab_bar_that_never_shows_waits_a_little_and_leaves_the_tab_to_the_feed(self):
+        profile = "https://x.com/example_handle"
+        ctx = fake(pages={f"{profile}/highlights": FakePage()})
+        collect(Twitter, "twt:example_handle", ctx=ctx, categories=["highlights"])
+        self.assertNotIn(("info", "highlights: this profile has no such tab"), ctx.seen.logs)
+
+
 class LoadTest(unittest.TestCase):
     """S4: a tab that doesn't load fails its category, which is never recorded complete."""
 
