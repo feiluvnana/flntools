@@ -312,7 +312,7 @@ class FakeCtx:
 
     def pages(self, request: str | Request, *,
               cursor: str | Callable[[Response], str | None],
-              send: str | Callable[[str], Mapping[str, Any]] = "cursor",
+              send: str | Callable[[str], Mapping[str, Any] | Request] = "cursor",
               bucket: str | None = None, in_page: bool = False,
               resume: bool = False) -> AsyncIterator[Response]:
         """Each page of a paged listing, through `fetch`; it ends on a missing, empty or
@@ -330,7 +330,8 @@ class FakeCtx:
             asked = first
             if at is not None:
                 more = send(at) if callable(send) else {send: at}
-                asked = first.replace(params={**(first.params or {}), **more})
+                asked = more if isinstance(more, Request) else first.replace(
+                    params={**(first.params or {}), **more})
             return await self.fetch(asked, bucket=bucket, in_page=in_page)
 
         asking = flnd.engine.ctx.ask_again(self, ask, bucket, came) if resume else ask

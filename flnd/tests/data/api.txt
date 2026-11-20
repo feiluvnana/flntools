@@ -298,7 +298,7 @@ flnd.plugin.Ctx.hold(reason: str, *, seconds: float | None = None, bucket: str |
 flnd.plugin.Ctx.load(url: str, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
 flnd.plugin.Ctx.log(level: str, message: str, **fields: Any) -> None
 flnd.plugin.Ctx.open(url: str) -> Landed
-flnd.plugin.Ctx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any]] = 'cursor', bucket: str | None = None, in_page: bool = False, resume: bool = False) -> AsyncIterator[Response]
+flnd.plugin.Ctx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any] | Request] = 'cursor', bucket: str | None = None, in_page: bool = False, resume: bool = False) -> AsyncIterator[Response]
 flnd.plugin.Ctx.pause(seconds: float, reason: str) -> None
 flnd.plugin.Ctx.request: property -> Request | None
 flnd.plugin.Ctx.secrets: property -> MutableMapping[str, str]
@@ -508,7 +508,7 @@ flnd.testing.FakeCtx.hold(reason: str, *, seconds: float | None = None, bucket: 
 flnd.testing.FakeCtx.load(url: str, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
 flnd.testing.FakeCtx.log(level: str, message: str, **fields: Any) -> None
 flnd.testing.FakeCtx.open(url: str) -> Landed
-flnd.testing.FakeCtx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any]] = 'cursor', bucket: str | None = None, in_page: bool = False, resume: bool = False) -> AsyncIterator[Response]
+flnd.testing.FakeCtx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any] | Request] = 'cursor', bucket: str | None = None, in_page: bool = False, resume: bool = False) -> AsyncIterator[Response]
 flnd.testing.FakeCtx.pause(seconds: float, reason: str) -> None
 flnd.testing.FakeCtx.request: property -> Request | None
 flnd.testing.FakeCtx.secrets: property -> MutableMapping[str, str]

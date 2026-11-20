@@ -647,3 +647,19 @@ class PagesResumeTest(CtxCase):
                 run, ctx = self.ctx()
                 with self.assertRaises(Blocked):
                     self.read(ctx, run, **options)
+
+    def test_a_body_cursor_resumes_with_the_same_body(self):
+        blocked = [_net.reply(429, headers={"retry-after": "1"}) for _ in range(4)]
+        self.serve_in([_net.reply(200, json={"n": 1, "next": "c2"}), *blocked,
+                       _net.reply(200, json={"n": 2})])
+        run, ctx = self.ctx()
+        first = Request(f"{API}/feed", method="POST", body="after=")
+
+        async def go():
+            return [page.json["n"] async for page in ctx.pages(
+                first, cursor="next", send=lambda at: first.replace(body=f"after={at}"),
+                resume=True)]
+
+        self.assertEqual(self.call(run, go()), [1, 2])
+        self.assertEqual([request.content for request in self.requests[-2:]], [b"after=c2"] * 2)
+        self.assertEqual({str(request.url) for request in self.requests}, {f"{API}/feed"})

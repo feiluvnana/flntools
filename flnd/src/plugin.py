@@ -1022,7 +1022,7 @@ class Ctx(Protocol):
 
     def pages(self, request: str | Request, *,
               cursor: str | Callable[[Response], str | None],
-              send: str | Callable[[str], Mapping[str, Any]] = "cursor",
+              send: str | Callable[[str], Mapping[str, Any] | Request] = "cursor",
               bucket: str | None = None, in_page: bool = False,
               resume: bool = False) -> AsyncIterator[Response]:
         """Each page of a paged listing, one page job each; the engine keeps and resumes it.
@@ -1032,7 +1032,8 @@ class Ctx(Protocol):
             cursor: where an answer says what comes next: a `dig` path into its JSON, or a
                 function returning the next cursor, None at the end.
             send: where the cursor goes in the next request: a query parameter's name, or a
-                function from the cursor to more params.
+                function from the cursor to more params, or to the whole next `Request` (a
+                cursor in a POST body).
             bucket: the pace bucket it counts against; None is the host's.
             in_page: fetch each page from the account's logged-in tab.
             resume: when the engine's block rounds run out on a page, hold through `hold`
