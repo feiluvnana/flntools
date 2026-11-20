@@ -1007,8 +1007,7 @@ media/ins/example_user/highlights/Travel/2026-01-02_1234567890.mp4
 - **Search:** `twt?<words>` opens the Latest tab; X operators (`from:`, `filter:media`) work;
   `--when` is sent as `since:`/`until:`. When X's cursor ends early, a `max_id:<oldest id - 1>`
   window follows; 3 empty pages in a row are passed; a 429 holds that bucket. Each tweet with files
-  is a `post` target in the search's `--folder`. No tagged tab: use
-  `twt?@example_handle -from:example_handle`.
+  is a `post` target in the search's `--folder`. Tagged: `twt?@example_handle -from:example_handle`.
 - **Login:** cookie `auth_token` (a logged-out browser lands on the login wall); API calls send
   `ct0` back as the CSRF token. `twt:me`: `Following` for the `twid` cookie's id, paged by `Bottom`;
   no login is `LoginError`, hint `log in: flnd auth login twt`. Query id and path: unconfirmed live.
@@ -1367,8 +1366,9 @@ The contract:
   of target; a `single` route's `Post(owner=, category=)` file it in the owner's folder ([A single
   post](#a-single-post))
 - `@route.category(own=, url=, newest_first=, folder=, key=)` (method): one part of a route's target
-- `ctx.fetch`, `ctx.pages(req, cursor=, send=)`, `ctx.open`, `ctx.pause`, `ctx.hold` (): the run's
-  requests
+- `ctx.fetch`, `ctx.pages(req, cursor=, send=, resume=)`, `ctx.feed(..., resume=, bucket=)`,
+  `ctx.open`, `ctx.pause`, `ctx.hold` (): the run's requests. `resume=True` holds a 429 through
+  `ctx.hold` and goes on from the last page or cursor; past the last round: `Blocked`
 - `sign(request, cookies)` (`def` hook): before each try: the request, signed
 - `connect(ctx)` (async context manager): once per run
 - `date(ctx, post)` (`async def` hook): a post with no date: its day

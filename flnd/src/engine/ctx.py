@@ -385,6 +385,7 @@ class Ctx:
         # Whether a page of the plugin's own was asked for yet: the first is the target's.
         self._paged = False
         self._request: Request | None = None
+        self._opened = ""
 
     @property
     def _who(self) -> str | None:
@@ -522,13 +523,14 @@ class Ctx:
     def pages(self, request: str | Request, *,
               cursor: str | Callable[[Any], str | None],
               send: str | Callable[[str], Mapping[str, Any]] = "cursor",
-              bucket: str | None = None, in_page: bool = False) -> AsyncIterator[net.Response]:
+              bucket: str | None = None, in_page: bool = False,
+              resume: bool = False) -> AsyncIterator[net.Response]:
         """See `flnd.plugin.Ctx.pages`: the category's first `pages` resumes its listing."""
         first = request if isinstance(request, Request) else Request(request)
-        return self._pages(first, cursor, send, bucket, in_page)
+        return self._pages(first, cursor, send, bucket, in_page, resume)
 
     async def _pages(self, first: Request, cursor: Any, send: Any, bucket: str | None,
-                     in_page: bool) -> AsyncIterator[net.Response]:
+                     in_page: bool, resume: bool) -> AsyncIterator[net.Response]:
         listing = self.listing if self.listing is not None and not self.listing.taken else None
         if listing is not None:
             listing.taken = True
@@ -540,11 +542,14 @@ class Ctx:
                 asked = first.replace(params={**(first.params or {}), **more})
             return await self.fetch(asked, bucket=bucket, in_page=in_page)
 
-        response = await first_page(ask, listing)
+        came = [False]
+        asking = ask_again(self, ask, bucket, came) if resume else ask
+        response = await first_page(asking, listing)
         seen: set[str] = set()
         while not empty(response):
             if listing is not None:
                 listing.read += 1
+            came[0] = True
             yield response
             following = (cursor(response) if callable(cursor)
                          else flnd.plugin.dig(response.json, cursor))
@@ -554,7 +559,7 @@ class Ctx:
             if listing is not None:
                 # The cursor of the page being read: a run cut short reads it again.
                 listing.cursor = str(following)
-            response = await ask(str(following))
+            response = await asking(str(following))
 
     # -- the tab --------------------------------------------------------------------------
 
@@ -574,6 +579,7 @@ class Ctx:
     async def open(self, url: str) -> Landed:
         """See `flnd.plugin.Ctx.open`: a warm tab loading `url` becomes the target's."""
         plugin = self._plugin
+        self._opened = url
         page, warm = await self._run.off(self._take, url)
         taken = self._tabs
 
@@ -615,10 +621,11 @@ class Ctx:
 
     def feed(self, match: str | Any | Callable[[str], bool], *, scroll: bool = True,
              lines: bool = False,
-             cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None
-             ) -> _Feed:
+             cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None,
+             resume: bool = False, bucket: str | None = None) -> _Feed:
         """See `flnd.plugin.Ctx.feed`; it listens from `async with`, or its first item."""
-        return _Feed(self, match, scroll=scroll, lines=lines, cursor=cursor)
+        return _Feed(self, match, scroll=scroll, lines=lines, cursor=cursor, resume=resume,
+                     bucket=bucket)
 
     def load(self, url: str, match: str | Any | Callable[[str], bool], *,
              scroll: bool = True, lines: bool = False,
@@ -833,11 +840,13 @@ class _Feed:
     """What `Ctx.feed` returns: a `flnkit.browser.Feed`, made and read on a thread."""
 
     def __init__(self, ctx: Ctx, match: Any, *, scroll: bool, lines: bool,
-                 cursor: Any) -> None:
+                 cursor: Any, resume: bool = False, bucket: str | None = None) -> None:
         self._ctx = ctx
         self._make = functools.partial(self._made, match, scroll, lines, cursor)
         self._feed: browser.Feed | None = None
         self._done = False
+        self._resume = Resume(bucket)
+        self._on = resume
 
     def _made(self, match: Any, scroll: bool, lines: bool, cursor: Any) -> Any:
         tabs = self._ctx._tabs.verbs()
@@ -863,20 +872,39 @@ class _Feed:
     async def __anext__(self) -> Any:
         if self._done:
             raise StopAsyncIteration
-        feed = await self._open()
-        step = chrome.next_block if isinstance(feed, chrome.ExtensionFeed) else next
         try:
-            item = await self._ctx._run.off(step, feed, _DONE)
+            while True:
+                feed = await self._open()
+                step = chrome.next_block if isinstance(feed, chrome.ExtensionFeed) else next
+                try:
+                    item = await self._ctx._run.off(step, feed, _DONE)
+                except Blocked as error:
+                    if not self._on:
+                        raise
+                    await self._again(error)
+                    continue
+                if item is _DONE:
+                    await self.aclose()
+                    raise StopAsyncIteration
+                if self._on and not self._resume.new(item):
+                    continue
+                raw = getattr(feed, "request", None)
+                self._ctx._request = (Request(raw[0], method=raw[1], headers=raw[2],
+                                              body=raw[3]) if raw is not None else None)
+                return item
         except BaseException:
             await self.aclose()
             raise
-        if item is _DONE:
-            await self.aclose()
-            raise StopAsyncIteration
-        raw = getattr(feed, "request", None)
-        self._ctx._request = (Request(raw[0], method=raw[1], headers=raw[2], body=raw[3])
-                              if raw is not None else None)
-        return item
+
+    async def _again(self, error: Blocked) -> None:
+        """A 429: hold, then listen again on the page the tab was opened to, past what was read."""
+        feed, self._feed = self._feed, None
+        if feed is not None:
+            await self._ctx._run.off(feed.close)
+        await self._resume.hold(self._ctx, error)
+        await self._open()
+        if self._ctx._opened:
+            await self._ctx.open(self._ctx._opened)
 
     async def aclose(self) -> None:
         """Stop listening; a second call does nothing."""
@@ -1501,6 +1529,53 @@ class Listing:
         self.refused = False
         # The pages `pages` has read for it so far, for the live stats.
         self.read = 0
+
+
+class Resume:
+    """What a resuming feed keeps: the bodies read, and whether any came since the last hold."""
+
+    def __init__(self, bucket: str | None) -> None:
+        self.bucket = bucket
+        self.read: set[int] = set()
+        self.came = False
+        self.held = False
+
+    def new(self, item: Any) -> bool:
+        """Whether `item` is for the plugin: one read before a hold is not given again."""
+        key = hash(json.dumps(item, sort_keys=True, default=str))
+        if key in self.read:
+            return not self.held
+        self.read.add(key)
+        self.came = True
+        return True
+
+    async def hold(self, ctx: Any, error: Blocked) -> None:
+        """Hold through `ctx.hold`: the site's wait, else the engine's; `reset` after progress.
+
+        Raises:
+            Blocked: past the engine's last round.
+        """
+        await ctx.hold("rate limited", seconds=error.wait, bucket=self.bucket,
+                       reset=self.came)
+        self.came, self.held = False, True
+
+
+def ask_again(ctx: Any, ask: Callable[[Any], Awaitable[Any]], bucket: str | None,
+              came: list[bool]) -> Callable[[Any], Awaitable[Any]]:
+    """`ask`, holding through `ctx.hold` on a `Blocked` and asking the same cursor again, once
+    a page was read since the last hold (`came[0]`); else the `Blocked` ends it."""
+    async def asking(at: Any) -> Any:
+        while True:
+            try:
+                return await ask(at)
+            except Blocked as error:
+                # The engine's rounds ran out on this page with none read since the last hold.
+                if not came[0]:
+                    raise
+                await ctx.hold("rate limited", seconds=error.wait, bucket=bucket or "",
+                               reset=True)
+                came[0] = False
+    return asking
 
 
 async def first_page(ask: Callable[[Any], Awaitable[Any]], listing: Listing | None) -> Any:

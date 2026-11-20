@@ -254,6 +254,7 @@ class FakeCtx:
         # The last answer each URL (without its query) got, which naming a file may read.
         self._answered: dict[str, Any] = {}
         self._request: Request | None = None
+        self._opened = ""
 
     # -- HTTP --------------------------------------------------------------------------------
 
@@ -312,24 +313,32 @@ class FakeCtx:
     def pages(self, request: str | Request, *,
               cursor: str | Callable[[Response], str | None],
               send: str | Callable[[str], Mapping[str, Any]] = "cursor",
-              bucket: str | None = None, in_page: bool = False) -> AsyncIterator[Response]:
+              bucket: str | None = None, in_page: bool = False,
+              resume: bool = False) -> AsyncIterator[Response]:
         """Each page of a paged listing, through `fetch`; it ends on a missing, empty or
-        repeated cursor, or an empty page."""
+        repeated cursor, or an empty page. With `resume`, a `Blocked` holds and asks again."""
         return self._pages_of(request if isinstance(request, Request) else Request(request),
-                              cursor, send, bucket, in_page)
+                              cursor, send, bucket, in_page, resume)
 
     async def _pages_of(self, first: Request, cursor: Any, send: Any, bucket: str | None,
-                        in_page: bool) -> AsyncIterator[Response]:
+                        in_page: bool, resume: bool) -> AsyncIterator[Response]:
         at: str | None = None
         seen: set[str] = set()
-        while True:
+        came = [False]
+
+        async def ask(at: str | None) -> Response:
             asked = first
             if at is not None:
                 more = send(at) if callable(send) else {send: at}
                 asked = first.replace(params={**(first.params or {}), **more})
-            response = await self.fetch(asked, bucket=bucket, in_page=in_page)
+            return await self.fetch(asked, bucket=bucket, in_page=in_page)
+
+        asking = flnd.engine.ctx.ask_again(self, ask, bucket, came) if resume else ask
+        while True:
+            response = await asking(at)
             if flnd.engine.ctx.empty(response):
                 return
+            came[0] = True
             yield response
             following = (cursor(response) if callable(cursor)
                          else flnd.plugin.dig(response.json, cursor))
@@ -351,6 +360,7 @@ class FakeCtx:
         from flnkit import net
 
         tab = self._tabs[-1]
+        self._opened = url
 
         async def attempt() -> Landed:
             self.seen.visited.append(url)
@@ -372,8 +382,8 @@ class FakeCtx:
 
     def feed(self, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True,
              lines: bool = False,
-             cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None
-             ) -> AsyncIterator[Any]:
+             cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None,
+             resume: bool = False, bucket: str | None = None) -> AsyncIterator[Any]:
         """The JSON of the tab's feed responses whose URL matches, from this call on.
 
         It hears only what the tab's page sends after the call, as a real tab's listener
@@ -387,8 +397,12 @@ class FakeCtx:
             scroll: scroll for more when none is waiting; without it, take what came.
             lines: ignored: a fake response is one parsed value already.
             cursor: reads each value: `(more, cursor)`, or None.
+            resume: a 429 holds, listens again, opens the page last opened again and skips
+                what was read, as the engine's feed does.
+            bucket: the bucket of those holds.
         """
-        return _CtxFeed(self, self._tabs[-1], match, scroll=scroll, cursor=cursor)
+        return _CtxFeed(self, self._tabs[-1], match, scroll=scroll, cursor=cursor,
+                        resume=resume, bucket=bucket)
 
     def load(self, url: str, match: str | re.Pattern[str] | Callable[[str], bool], *,
              scroll: bool = True, lines: bool = False,
@@ -662,13 +676,16 @@ class _CtxFeed:
     """What `FakeCtx.feed` returns: the responses its tab heard that match, as an async feed."""
 
     def __init__(self, ctx: FakeCtx, tab: _Tab, match: Any, *, scroll: bool,
-                 cursor: Any) -> None:
+                 cursor: Any, resume: bool = False, bucket: str | None = None) -> None:
         from flnkit import browser
 
         self._ctx, self._tab = ctx, tab
         self._matches = browser.matcher(match)
         self._scroll = scroll
+        self._reader = cursor
         self._cursors = browser.Cursors(cursor)
+        self._on = resume
+        self._resume = flnd.engine.ctx.Resume(bucket)
         self._waiting: deque[tuple[Any, Request | None]] = deque()
         self._done = False
         tab.feeds.append(self)
@@ -707,9 +724,30 @@ class _CtxFeed:
             raise StopAsyncIteration
         data, self._ctx._request = self._waiting.popleft()
         if isinstance(data, Blocked):
-            self.close()
-            raise data
+            if not self._on:
+                self.close()
+                raise data
+            try:
+                await self._again(data)
+            except BaseException:
+                self.close()
+                raise
+            return await self.__anext__()
+        if self._on and not self._resume.new(data):
+            return await self.__anext__()
         return data
+
+    async def _again(self, error: Blocked) -> None:
+        from flnkit import browser
+
+        self.close()
+        await self._resume.hold(self._ctx, error)
+        self._waiting.clear()
+        self._cursors = browser.Cursors(self._reader)
+        self._done = False
+        self._tab.feeds.append(self)
+        if self._ctx._opened:
+            await self._ctx.open(self._ctx._opened)
 
     def close(self) -> None:
         """Stop listening; a second call does nothing."""

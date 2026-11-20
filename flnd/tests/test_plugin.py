@@ -676,8 +676,8 @@ class HooksTest(unittest.TestCase):
         self.assertEqual(str(inspect.signature(Ctx.pages)),
                          "(self, request: 'str | Request', *, cursor: 'str | Callable[[Response], "
                          "str | None]', send: 'str | Callable[[str], Mapping[str, Any]]' = "
-                         "'cursor', bucket: 'str | None' = None, in_page: 'bool' = False) -> "
-                         "'AsyncIterator[Response]'")
+                         "'cursor', bucket: 'str | None' = None, in_page: 'bool' = False, "
+                         "resume: 'bool' = False) -> 'AsyncIterator[Response]'")
 
 
 class HelpersTest(unittest.TestCase):

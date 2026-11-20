@@ -1023,7 +1023,8 @@ class Ctx(Protocol):
     def pages(self, request: str | Request, *,
               cursor: str | Callable[[Response], str | None],
               send: str | Callable[[str], Mapping[str, Any]] = "cursor",
-              bucket: str | None = None, in_page: bool = False) -> AsyncIterator[Response]:
+              bucket: str | None = None, in_page: bool = False,
+              resume: bool = False) -> AsyncIterator[Response]:
         """Each page of a paged listing, one page job each; the engine keeps and resumes it.
 
         Args:
@@ -1034,6 +1035,9 @@ class Ctx(Protocol):
                 function from the cursor to more params.
             bucket: the pace bucket it counts against; None is the host's.
             in_page: fetch each page from the account's logged-in tab.
+            resume: when the engine's block rounds run out on a page, hold through `hold`
+                (with `reset`) and ask the same cursor again, instead of ending with `Blocked`,
+                if a page came since the last hold; with none, `Blocked` ends it.
         """
         ...
 
@@ -1048,8 +1052,8 @@ class Ctx(Protocol):
 
     def feed(self, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True,
              lines: bool = False,
-             cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None
-             ) -> AsyncIterator[Any]:
+             cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None,
+             resume: bool = False, bucket: str | None = None) -> AsyncIterator[Any]:
         """The JSON of the tab's responses whose URL matches, as they arrive; a tab job.
 
         It listens from the call, so use it with `async with` before `click` or `open`, or
@@ -1061,6 +1065,11 @@ class Ctx(Protocol):
             lines: each body holds one JSON value per line.
             cursor: reads each value: `(more, cursor)` for a page of the feed, None for a value
                 that says nothing about paging.
+            resume: a 429 holds through `hold` (the site's wait, else the engine's; `reset`
+                once a new body came since the last hold), then the tab is opened again to
+                the page last opened and scrolled on, and a body read before is not given
+                again; past the engine's last round it still raises `Blocked`.
+            bucket: the bucket those holds count against; None holds the account.
         """
         ...
 

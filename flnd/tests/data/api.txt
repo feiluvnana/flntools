@@ -291,14 +291,14 @@ flnd.plugin.Ctx.click(css: str, *, timeout: float = 10.0) -> None
 flnd.plugin.Ctx.cookies: property -> Mapping[str, str]
 flnd.plugin.Ctx.document() -> Document
 flnd.plugin.Ctx.extension(op: str, **args: Any) -> Any
-flnd.plugin.Ctx.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
+flnd.plugin.Ctx.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None, resume: bool = False, bucket: str | None = None) -> AsyncIterator[Any]
 flnd.plugin.Ctx.fetch(request: str | Request, *, bucket: str | None = None, in_page: bool = False) -> Response
 flnd.plugin.Ctx.handoff(message: str, *, until: Callable[[], Awaitable[bool]], timeout: float | None = None) -> bool
 flnd.plugin.Ctx.hold(reason: str, *, seconds: float | None = None, bucket: str | None = None, reset: bool = False) -> None
 flnd.plugin.Ctx.load(url: str, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
 flnd.plugin.Ctx.log(level: str, message: str, **fields: Any) -> None
 flnd.plugin.Ctx.open(url: str) -> Landed
-flnd.plugin.Ctx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any]] = 'cursor', bucket: str | None = None, in_page: bool = False) -> AsyncIterator[Response]
+flnd.plugin.Ctx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any]] = 'cursor', bucket: str | None = None, in_page: bool = False, resume: bool = False) -> AsyncIterator[Response]
 flnd.plugin.Ctx.pause(seconds: float, reason: str) -> None
 flnd.plugin.Ctx.request: property -> Request | None
 flnd.plugin.Ctx.secrets: property -> MutableMapping[str, str]
@@ -501,14 +501,14 @@ flnd.testing.FakeCtx.click(css: str, *, timeout: float = 10.0) -> None
 flnd.testing.FakeCtx.cookies: property -> Mapping[str, str]
 flnd.testing.FakeCtx.document() -> Document
 flnd.testing.FakeCtx.extension(op: str, **args: Any) -> Any
-flnd.testing.FakeCtx.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
+flnd.testing.FakeCtx.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None, resume: bool = False, bucket: str | None = None) -> AsyncIterator[Any]
 flnd.testing.FakeCtx.fetch(request: str | Request, *, bucket: str | None = None, in_page: bool = False) -> Response
 flnd.testing.FakeCtx.handoff(message: str, *, until: Callable[[], Awaitable[bool]], timeout: float | None = None) -> bool
 flnd.testing.FakeCtx.hold(reason: str, *, seconds: float | None = None, bucket: str | None = None, reset: bool = False) -> None
 flnd.testing.FakeCtx.load(url: str, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> AsyncIterator[Any]
 flnd.testing.FakeCtx.log(level: str, message: str, **fields: Any) -> None
 flnd.testing.FakeCtx.open(url: str) -> Landed
-flnd.testing.FakeCtx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any]] = 'cursor', bucket: str | None = None, in_page: bool = False) -> AsyncIterator[Response]
+flnd.testing.FakeCtx.pages(request: str | Request, *, cursor: str | Callable[[Response], str | None], send: str | Callable[[str], Mapping[str, Any]] = 'cursor', bucket: str | None = None, in_page: bool = False, resume: bool = False) -> AsyncIterator[Response]
 flnd.testing.FakeCtx.pause(seconds: float, reason: str) -> None
 flnd.testing.FakeCtx.request: property -> Request | None
 flnd.testing.FakeCtx.secrets: property -> MutableMapping[str, str]

@@ -445,6 +445,26 @@ class FeedTest(CtxCase):
             self.call(run, read_429())
         self.assertEqual((caught.exception.status, caught.exception.wait), (429, 12.0))
 
+    def test_a_resuming_feed_holds_a_429_opens_the_page_again_and_skips_what_was_read(self):
+        self.raw = FeedRaw([[{"n": 1}, {"n": 2}]])
+        run, ctx = self.ctx()
+
+        async def read():
+            async with ctx.feed("graphql", scroll=False, resume=True, bucket="g") as feed:
+                await ctx.open(PAGE)
+                await self.raw.emit(GRAPHQL, json.dumps({"n": 1}))
+                self.raw.answer(SimpleNamespace(
+                    url=GRAPHQL, status=429, headers={"Retry-After": "50"},
+                    text=mock.AsyncMock(return_value="")))
+                await asyncio.sleep(0)
+                return [item["n"] async for item in feed]
+
+        self.assertEqual(self.call(run, read()), [1, 2])
+        self.assertEqual(self.raw.loaded, [PAGE, PAGE])
+        # The site's 50 s is longer than the first round's 30 s; the hold is of bucket "g".
+        self.assertGreaterEqual(self.now, 50.0)
+        self.assertEqual(list(run.scheduler._holds), [("exm", None, "g")])
+
 
 class TabTest(CtxCase):
     def setUp(self):
@@ -595,3 +615,35 @@ class HandoffTest(CtxCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PagesResumeTest(CtxCase):
+    def serve_in(self, answers):
+        self.serve = lambda request: (self.requests.append(request), answers.pop(0))[1]
+
+    def read(self, ctx, run, **options):
+        async def go():
+            return [page.json["n"] async for page in
+                    ctx.pages(f"{API}/feed", cursor="next", **options)]
+
+        return self.call(run, go())
+
+    def test_a_resuming_listing_holds_past_the_rounds_and_asks_the_same_cursor(self):
+        blocked = [_net.reply(429, headers={"retry-after": "1"}) for _ in range(4)]
+        answers = [_net.reply(200, json={"n": 1, "next": "c2"}), *blocked,
+                   _net.reply(200, json={"n": 2})]
+        self.serve_in(answers)
+        run, ctx = self.ctx()
+        self.assertEqual(self.read(ctx, run, resume=True), [1, 2])
+        self.assertEqual([str(request.url).rsplit("?", 1)[-1] for request in self.requests[-2:]],
+                         ["cursor=c2"] * 2)
+
+    def test_it_still_ends_with_blocked_without_resume_or_without_progress(self):
+        from flnd.errors import Blocked
+
+        for options in ({}, {"resume": True}):
+            with self.subTest(options):
+                self.serve_in([_net.reply(429) for _ in range(20)])
+                run, ctx = self.ctx()
+                with self.assertRaises(Blocked):
+                    self.read(ctx, run, **options)
