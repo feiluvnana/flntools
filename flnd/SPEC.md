@@ -1362,7 +1362,9 @@ The contract:
   the responses a plugin reads are unchanged. The built-ins set True until checked live
 - `hidden` (bool): its tabs may be in a hidden window (False). The browser is hidden only while
   every plugin using it is; a handoff (a captcha) closes it and reopens it visible, same cookies
-  and tabs. A `browser` login is always visible. The built-ins stay False until checked live
+  and tabs. A `browser` login is always visible. The built-ins stay False until checked live. A
+  hidden tab reads as a visible one: same user agent and client hints, a desktop screen and window,
+  no software-GL name, and agreeing notification state (`tests/test_hidden.py`)
 - `@route(patterns, single=, discovers=, shown=, folder=, newest_first=)` (method): reads one kind
   of target; a `single` route's `Post(owner=, category=)` file it in the owner's folder ([A single
   post](#a-single-post))

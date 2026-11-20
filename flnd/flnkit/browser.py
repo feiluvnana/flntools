@@ -288,6 +288,49 @@ KEEP_VISIBLE = (
     "});"
     "Document.prototype.hasFocus = () => true;"
 )
+# What a browser reports as its screen: a desktop one, larger than its window. Playwright would
+# report the page's size, which no real screen is.
+SCREEN = {"width": 1920, "height": 1080}
+# What the WebGL vendor and renderer read when a hidden browser has no GPU (SwiftShader), by
+# platform: a typical desktop's, so they match the user agent.
+SOFTWARE_GL = {
+    "darwin": ("Google Inc. (Apple)",
+               "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"),
+    "win32": ("Google Inc. (NVIDIA)",
+              "ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+    "linux": ("Google Inc. (Intel)",
+              "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6)"),
+}
+# The height of a visible window's toolbar, which a hidden one's `outerHeight` adds to its page.
+TOOLBAR = 87
+# What makes a hidden browser read as a visible one, run in every page before its own scripts:
+# a window taller than its page, no software WebGL name, and a notification permission that
+# agrees with `permissions.query`.
+HIDDEN_SCRIPT = """(() => {
+  const define = (target, name, get) =>
+    Object.defineProperty(target, name, {get, configurable: true});
+  define(window, 'outerWidth', () => innerWidth);
+  define(window, 'outerHeight', () => innerHeight + %(toolbar)d);
+  const named = %(named)s;
+  const patch = (proto) => {
+    proto.getParameter = new Proxy(proto.getParameter, {apply(target, self, args) {
+      const value = Reflect.apply(target, self, args);
+      if ((args[0] === 0x9245 || args[0] === 0x9246) && /SwiftShader/i.test(String(value))) {
+        return named[args[0] === 0x9245 ? 0 : 1];
+      }
+      return value;
+    }});
+  };
+  patch(WebGLRenderingContext.prototype);
+  if (self.WebGL2RenderingContext) patch(WebGL2RenderingContext.prototype);
+  if (self.Notification && navigator.permissions) {
+    navigator.permissions.query({name: 'notifications'}).then((status) => {
+      if (Notification.permission === 'denied' && status.state === 'prompt') {
+        define(Notification, 'permission', () => 'default');
+      }
+    }).catch(() => {});
+  }
+})();"""
 DEFAULT_VIEWPORT = (1280, 900)
 PAGE_HEIGHT = "(document.scrollingElement || document.documentElement).scrollHeight"
 # Within a few pixels of the end counts as the bottom: a scroll position may be fractional.
@@ -434,6 +477,8 @@ _chromium_failed: ToolError | None = None
 _chromium_offer = threading.Lock()
 # The headed user agent of each browser executable, by its path: measuring it costs a launch.
 _HEADFUL_UA: dict[str, str] = {}
+# The client-hint data of each browser executable (its brands and platform), the same way.
+_HEADFUL_HINTS: dict[str, Mapping[str, Any]] = {}
 
 
 class _NeverRaised(Exception):
@@ -608,16 +653,27 @@ async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
     else:
         # It may ask a person and download Chromium: off the loop, so nothing else stalls.
         channel = await asyncio.to_thread(_channel, playwright, screen)
+    context_options["screen"] = dict(SCREEN)
     context, close_steps = await _open_context(
         playwright, copy, channel, launch_options, context_options
     )
     if stealth:
         await context.add_init_script(HIDE_WEBDRIVER)
     await context.add_init_script(KEEP_VISIBLE)
+    override = None
+    if headless:
+        await context.add_init_script(hidden_script())
+        override = await _headful_override(playwright, channel)
     if copy is not None:
         # Removed after Chrome has closed, or Chrome would still be writing into it.
         close_steps.append(lambda: shutil.rmtree(copy, ignore_errors=True))
-    return Browser(context, close_steps=close_steps, headless=headless)
+    return Browser(context, close_steps=close_steps, headless=headless, override=override)
+
+
+def hidden_script() -> str:
+    """`HIDDEN_SCRIPT` for this platform's WebGL names."""
+    key = sys.platform if sys.platform in SOFTWARE_GL else "linux"
+    return HIDDEN_SCRIPT % {"toolbar": TOOLBAR, "named": json.dumps(SOFTWARE_GL[key])}
 
 
 def _channel(playwright: Playwright, screen: Screen) -> str:
@@ -719,13 +775,78 @@ async def _open_context(playwright: Playwright, profile: Path | None, channel: s
     return context, [context.close, playwright.stop]
 
 
-async def _headful_ua(playwright: Playwright, channel: str, remote: Any) -> str:
-    """The user agent `remote` reports, with "HeadlessChrome" replaced by "Chrome", cached."""
+def _executable_key(playwright: Playwright, channel: str) -> str | None:
+    """What names the browser executable `channel` runs, for the caches above."""
     if channel == "chrome":
         path = _chrome_executable()
-        key = str(path) if path is not None else None
-    else:
-        key = playwright.chromium.executable_path
+        return str(path) if path is not None else None
+    return playwright.chromium.executable_path
+
+
+# Read in a probe page on a secure origin (client hints are given to no other).
+_HINTS_SCRIPT = """async () => {
+  const data = navigator.userAgentData;
+  if (!data) return null;
+  const high = await data.getHighEntropyValues(
+    ['fullVersionList', 'platformVersion', 'architecture', 'model', 'bitness', 'wow64']);
+  return {brands: data.brands, mobile: data.mobile, platform: data.platform, ...high};
+}"""
+PROBE_URL = "https://probe.invalid/"
+
+
+async def _headful_override(playwright: Playwright, channel: str) -> dict[str, Any] | None:
+    """The `Emulation.setUserAgentOverride` parameters that give a hidden tab the user agent and
+    client hints a visible Chrome sends, or None where the browser has no client hints.
+
+    The browser's own values, read once per executable in a throwaway headless browser, minus
+    any brand that says "Headless".
+    """
+    key = _executable_key(playwright, channel)
+    if key is None or key not in _HEADFUL_HINTS:
+        remote = await playwright.chromium.launch(channel=channel, headless=True)
+        try:
+            agent = await _headful_ua(playwright, channel, remote)
+            probe = await remote.new_context()
+            try:
+                page = await probe.new_page()
+
+                async def answer(route: Any) -> None:
+                    await route.fulfill(body="<html></html>", content_type="text/html")
+
+                await page.route(PROBE_URL, answer)
+                await page.goto(PROBE_URL)
+                hints = await page.evaluate(_HINTS_SCRIPT)
+            finally:
+                await probe.close()
+        finally:
+            await remote.close()
+        if key is None:
+            return _override(agent, hints)
+        _HEADFUL_HINTS[key] = hints or {}
+    return _override(_HEADFUL_UA[key], _HEADFUL_HINTS[key])
+
+
+def _override(agent: str, hints: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The parameters of `Emulation.setUserAgentOverride` for `agent` and the browser's `hints`."""
+    if not hints:
+        return None
+
+    def listed(brands: Iterable[Mapping[str, str]]) -> list[dict[str, str]]:
+        return [{"brand": entry["brand"], "version": entry["version"]} for entry in brands
+                if "headless" not in entry["brand"].lower()]
+
+    return {"userAgent": agent, "userAgentMetadata": {
+        "brands": listed(hints["brands"]),
+        "fullVersionList": listed(hints.get("fullVersionList", hints["brands"])),
+        "platform": hints["platform"], "platformVersion": hints.get("platformVersion", ""),
+        "architecture": hints.get("architecture", ""), "model": hints.get("model", ""),
+        "mobile": bool(hints.get("mobile")), "bitness": hints.get("bitness", ""),
+        "wow64": bool(hints.get("wow64"))}}
+
+
+async def _headful_ua(playwright: Playwright, channel: str, remote: Any) -> str:
+    """The user agent `remote` reports, with "HeadlessChrome" replaced by "Chrome", cached."""
+    key = _executable_key(playwright, channel)
     if key is not None and key in _HEADFUL_UA:
         return _HEADFUL_UA[key]
     probe = await remote.new_context()
@@ -757,13 +878,16 @@ class Browser:
         context: Playwright's browser context, which holds the tabs and the cookies.
         close_steps: what `close` runs, in order: the context, the browser, Playwright's driver,
             and the deletion of a profile copy. Each may be a coroutine function.
-        headless: whether the window is hidden, which a handoff to a person can't use.
+        headless: whether the window is hidden, which a handoff to a person reopens visible.
+        override: for a hidden browser, the parameters of `Emulation.setUserAgentOverride` that
+            each new tab is given (see `_headful_override`).
     """
 
     def __init__(self, context: BrowserContext, *, close_steps: list[Callable[[], Any]],
-                 headless: bool):
+                 headless: bool, override: dict[str, Any] | None = None):
         self.raw = context
         self.headless = headless
+        self._override = override
         # Its tabs, so `RunBrowser.reveal` can carry them to a window that replaces it.
         self.pages: weakref.WeakSet[Page] = weakref.WeakSet()
         self._close_steps = close_steps
@@ -784,7 +908,12 @@ class Browser:
         Returns:
             The tab.
         """
-        page = Page(await self.raw.new_page(), self, by_script=by_script)
+        raw = await self.raw.new_page()
+        if self._override is not None:
+            # The session stays open: an override lasts only as long as the session that set it.
+            session = await self.raw.new_cdp_session(raw)
+            await session.send("Emulation.setUserAgentOverride", self._override)
+        page = Page(raw, self, by_script=by_script)
         self.pages.add(page)
         return page
 
