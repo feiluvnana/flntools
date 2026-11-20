@@ -22,9 +22,10 @@ The browser runs on a loop thread of its own (`kit.Loop`), and every step is han
 from this thread with `Loop.run`, as a plain source's thread does through `Site`'s verbs, so
 each time includes that hop.
 
-`heavy_rss` and `heavy_cpu` measure what the browser costs (SPEC.md#for-developers): a feed of
+`heavy_*` and `lean_*` measure what the browser costs (SPEC.md#for-developers): a feed of
 the same shape whose rows each hold an image (a distinct URL, so none is shared), plus a web
-font, read once with the default scroll in a browser of its own. `heavy_rss` is the peak of the
+font, read once with the default scroll in a browser of its own, with the images, media and
+fonts loaded (`heavy`) and with them blocked (`lean`). `heavy_rss` is the peak of the
 summed resident memory of Chrome's processes, sampled every 0.1 s (macOS counts a page that
 processes share once for each, so read it only against itself); `heavy_cpu` is their CPU
 seconds, the most each process showed. Both are read with `ps` (not on Windows, where the two
@@ -156,9 +157,10 @@ class Meter:
         self._thread.join()
 
 
-def heavy(shared: _browser.RunBrowser, base: str, report: kit.Report) -> None:
+def heavy(shared: _browser.RunBrowser, base: str, report: kit.Report, name: str, *,
+          assets: bool) -> None:
     """Read the heavy feed once, with the default scroll, and report the browser's cost."""
-    tabs = _browser.Tabs(shared, _cookies.Jar([]), scroll=_browser.HUMAN)
+    tabs = _browser.Tabs(shared, _cookies.Jar([]), scroll=_browser.HUMAN, assets=assets)
     try:
         _ = tabs.page
         with Meter() as meter:
@@ -170,8 +172,8 @@ def heavy(shared: _browser.RunBrowser, base: str, report: kit.Report) -> None:
     if batches != BATCHES:
         raise SystemExit(f"browser: the heavy feed stopped at {batches} of {BATCHES} batches")
     print(f"  heavy page: {loaded} images", file=sys.stderr, flush=True)
-    report.add("heavy_rss", meter.peak_kib / 1024, "MiB")
-    report.add("heavy_cpu", meter.cpu, "s")
+    report.add(f"{name}_rss", meter.peak_kib / 1024, "MiB")
+    report.add(f"{name}_cpu", meter.cpu, "s")
 
 
 def timed(work):
@@ -286,11 +288,12 @@ def main() -> None:
             finally:
                 shared.close()
             if sys.platform != "win32":
-                alone = _browser.RunBrowser(loop.loop, headless=True)
-                try:
-                    heavy(alone, base, report)
-                finally:
-                    alone.close()
+                for name, assets in (("heavy", True), ("lean", False)):
+                    alone = _browser.RunBrowser(loop.loop, headless=True)
+                    try:
+                        heavy(alone, base, report, name, assets=assets)
+                    finally:
+                        alone.close()
     report.emit()
 
 

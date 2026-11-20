@@ -786,12 +786,11 @@ Any other `Error` exits 1. What the engine does, by cause:
 - a login wall (`LoginError`): waits 30 s, then 2 min, then as a 401
 - expired link (403, 410 on a lazy post's file): the post's files are listed again once
 - unreadable answer (`Changed`): never retried; a scrubbed sample is kept in `log/<run>/samples/`
-- a web page where media was expected (`SiteError`): the file fails; usually a login wall
+- `got a web page instead of a photo` (`SiteError`): the file fails; usually a login wall
 - disk full, refused, name too long (`DiskError`): the run stops; saved files keep their rows
 - `flnd.db` locked by another process: queued again every 20 ms up to 30 s, then the run stops (`let
   the other run finish`)
-- missing ffmpeg, 7zz or browser (`ToolError`): the run stops
-- a tool failed (`ToolError`): a failed DASH join is retried like a network failure
+- `ToolError`: a missing ffmpeg, 7zz or browser stops the run; a failed DASH join is retried
 - an exception in a listing (`PluginError`): the target fails with the bug hint
 
 Failing means: a file is counted failed, written to `failures`, and retried at the start of its
@@ -804,7 +803,6 @@ Messages you will meet:
 - `<code>: not logged in, using public access; run flnd auth login <code>`: warning: only public
   posts
 - `<code>: the site refused the login (HTTP 403)`: the login expired or was revoked: log in again
-- `got a web page instead of a photo`: usually a login wall
 - `<home>/flnd.db: locked by another process, for 30s`: wait, or use another `--home`
 - `unexpected <Type>: ...`: a bug: run with `-v` and report it
 - `ins: not logged in, so there is no account to read`: `ins:me` needs a login
@@ -923,6 +921,7 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
 | `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
 | `switch` | bool | `false` | move a refused request to the plugin's next account |
+| `lean` | bool | `false` | lighter browser, see below; **off until live-checked** |
 
 `[plugins.<code>]` (one table per plugin):
 
@@ -952,6 +951,8 @@ A plugin's own settings (its `Settings` struct) are keys of its table and reach 
   `--exec` hand a program to one run, over the file's.
 - Gone keys: `[defaults] again`, `[vault]`, `scroll` (unknown now); `dedupe = "link"` reads as
   `true`, `"off"` as `false`, each with a warning.
+- `lean`: tabs abort image, media and font requests (unless the plugin's `assets` is True); the
+  responses a plugin reads are unchanged. Off until each plugin is checked live.
 
 ```toml
 [defaults]
@@ -1362,6 +1363,7 @@ The contract:
 - `fields` (tuple): post fields the templates may use
 - `unsupported` (dict): `{pattern: reason}`: a link refused with the reason
 - `walls` (tuple): login-wall paths, matched as whole segments
+- `assets` (bool): its tabs load images, media and fonts when `lean` is on (False)
 - `@route(patterns, single=, discovers=, shown=, folder=, newest_first=)` (method): reads one kind
   of target; a `single` route's `Post(owner=, category=)` file it in the owner's folder ([A single
   post](#a-single-post))
@@ -1482,19 +1484,17 @@ Read it with any SQLite tool.
 
 | Target | Does |
 | --- | --- |
-| `make setup` | sync `.venv` from `uv.lock` |
 | `make check` | ruff (`make lint` alone), then every test; green at every commit |
 | `make test ARGS="-k fetch"` | the tests, or some (`FLND_TEST_NO_PROFILES=1`) |
-| `make api` | regenerate `tests/data/api.txt`, the public surface; read its diff |
-| `make manifest` | regenerate `src/plugins/_manifest.py` after a plugin's routes change |
+| `make api`, `make manifest` | regenerate `tests/data/api.txt` (read its diff); the manifest |
 | `make bench` | offline benchmarks; `ARGS=--gate` fails on a 15% slowdown, `--record` rebases |
 | `make docs`, `make dist` | the API reference into `build/docs/`; a one-file binary |
 | `make try ARGS="ins:example_user"` | list, live, what a get would save (scratch home `.try`) |
 | `make ext`, `make live`, `make cdn-real` | hand checks, never part of `check` |
-| `make clean` | remove `build`, `dist`, `.try` |
+| `make setup`, `make clean` | sync `.venv` from `uv.lock`; remove `build`, `dist`, `.try` |
 
 **Benchmarks** (`tests/bench/`, groups `startup ui net disk db walk cpu e2e browser`) run offline
 against a loopback server and scratch folders; `make check` runs each in smoke mode only. Run them
 before a speed change for the "before" numbers, and `--gate` before its commit. The `browser`
-group also reports `heavy_rss` and `heavy_cpu`: the peak memory (MiB) and CPU seconds of Chrome's
-processes on one scrolled page of 300 images, read with `ps` (not on Windows).
+group also reports `heavy_*` and `lean_*` (peak MiB, CPU seconds of Chrome's processes on a scrolled
+page of 300 images, loaded or blocked), read with `ps`, not on Windows.

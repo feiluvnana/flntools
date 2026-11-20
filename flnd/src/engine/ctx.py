@@ -1343,9 +1343,10 @@ async def shared_browser(settings: RunShared) -> AsyncIterator[None]:
     if settings.browser_pool is not None:
         yield
         return
-    shared = browser.RunBrowser(asyncio.get_running_loop(), screen=_Screen())
     found = getattr(settings, "config", None) or await asyncio.to_thread(
         config.settings, settings.home)
+    shared = browser.RunBrowser(asyncio.get_running_loop(), lean=found.defaults.lean,
+                                screen=_Screen())
     made = _SCHEDULERS[shared] = jobs.Scheduler(
         stop=getattr(settings, "stop", None), rate=config.speed(found.defaults.rate),
         slowest=config.speed(found.defaults.slowest), tally=getattr(settings, "tally", None))
@@ -1441,7 +1442,8 @@ class TargetTabs:
                              account.name if account is not None else None)
         if chrome.uses_chrome(self._source, settings):
             return chrome.ExtensionTabs(self._run, scroll=browser.HUMAN, budget=budget)
-        return browser.Tabs(self._shared, self._run.jar, scroll=browser.HUMAN, budget=budget)
+        return browser.Tabs(self._shared, self._run.jar, scroll=browser.HUMAN, budget=budget,
+                            assets=not self._shared.lean or self._source.assets)
 
     @property
     def opened(self) -> bool:

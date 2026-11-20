@@ -1253,6 +1253,8 @@ class Plugin:
     browser: ClassVar[Browser] = Browser.NONE
     # Hide automation in its tabs.
     stealth: ClassVar[bool] = True
+    # Load images, media and fonts in its tabs; off, flnd aborts those requests.
+    assets: ClassVar[bool] = False
     # The User-Agent of its HTTP requests; None keeps the client's.
     user_agent: ClassVar[str | None] = None
     # URL paths meaning "log in" or a stopped account, matched by whole path segments.
@@ -1464,6 +1466,8 @@ def _check_values(cls: type[Plugin], code: str) -> None:
                           "Browser.CHROME")
     if not isinstance(cls.stealth, bool):
         raise PluginError(f"{code}.stealth: {cls.stealth!r}; set True or False")
+    if not isinstance(cls.assets, bool):
+        raise PluginError(f"{code}.assets: {cls.assets!r}; set True or False")
     agent = cls.user_agent
     if agent is not None and (not isinstance(agent, str) or not agent.strip()):
         raise PluginError(f"{code}.user_agent: {agent!r}; set the User-Agent text, or None")

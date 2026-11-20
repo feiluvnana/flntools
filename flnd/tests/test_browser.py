@@ -836,6 +836,69 @@ class FakeBrowserTest(BrowserCase):
             self.assertIs(run(shared.tab(other)), third)
 
 
+class AssetsTest(BrowserCase):
+    """A tab aborts images, media and fonts unless told to load them."""
+
+    def test_a_tab_blocks_those_requests_once_and_unblocks_them_on_asking(self):
+        routes = []
+
+        class Raw:
+            async def route(self, pattern, handler):
+                routes.append(("route", pattern))
+
+            async def unroute(self, pattern, handler):
+                routes.append(("unroute", pattern))
+
+        page = _browser.Page(cast(Any, Raw()), cast(Any, SimpleNamespace()))
+        run(page.assets(True))
+        run(page.assets(False))
+        run(page.assets(False))
+        run(page.assets(True))
+        self.assertEqual(routes, [("route", "**/*"), ("unroute", "**/*")])
+
+    def test_the_route_aborts_only_the_blocked_types(self):
+        done = []
+        for kind in ("image", "media", "font", "xhr", "script", "document"):
+            request = SimpleNamespace(resource_type=kind)
+
+            async def abort(kind=kind):
+                done.append(("abort", kind))
+
+            async def go(kind=kind):
+                done.append(("continue", kind))
+
+            run(_browser._block(SimpleNamespace(request=request, abort=abort, continue_=go)))
+        self.assertEqual([what for what, _ in done],
+                         ["abort"] * 3 + ["continue"] * 3)
+
+    def test_a_run_browser_hands_out_tabs_that_follow_the_ask(self):
+        asked = []
+
+        class Fake:
+            async def tab(self, *, by_script=False):
+                page = _browser.Page(cast(Any, SimpleNamespace()), cast(Any, self))
+
+                async def assets(load):
+                    asked.append(load)
+
+                page.assets = assets
+                return page
+
+            async def add_cookies(self, jar):
+                pass
+
+        async def launch(**options):
+            return Fake()
+
+        shared = _browser.RunBrowser(LOOP, lean=True)
+        self.assertTrue(shared.lean)
+        jar = _cookies.Jar([{"name": "s", "value": "1", "domain": ".example.com"}])
+        with mock.patch.object(_browser, "launch", launch):
+            run(shared.tab(jar))
+            run(shared.tab(jar, assets=False))
+        self.assertEqual(asked, [True, False])
+
+
 class FakeFeed:
     """A raw page on a fake clock: each scroll brings a page `after` seconds later, `grows` times.
 

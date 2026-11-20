@@ -384,6 +384,9 @@ HANDOFF_POLL = 1.0
 WARM_TIMEOUT = 15_000
 # A warm tab keeps the responses of its load, except these, which no source reads.
 ASSET_TYPES = frozenset({"image", "media", "font", "stylesheet", "script", "manifest"})
+# What a tab does not load unless its plugin reads it (`Plugin.assets`): sites' JSON carries the
+# data, and these are the bulk of a page's memory, CPU and bytes.
+BLOCKED_TYPES = frozenset({"image", "media", "font"})
 # The longest a feed that doesn't scroll waits for the network to go quiet, in seconds.
 QUIET = 10.0
 
@@ -841,6 +844,14 @@ class Browser:
             )
 
 
+async def _block(route: Any) -> None:
+    """A route's handler: abort a request of a `BLOCKED_TYPES` kind, let any other go on."""
+    if route.request.resource_type in BLOCKED_TYPES:
+        await route.abort()
+    else:
+        await route.continue_()
+
+
 class Page:
     """One tab. Every method is a coroutine for the loop; `raw` is Playwright's `Page`.
 
@@ -867,6 +878,22 @@ class Page:
         self.by_script = by_script
         self.random = random.Random()
         self.turn: Callable[[Callable[[], Awaitable[bool]]], Awaitable[bool]] | None = None
+        self._blocking = False
+
+    async def assets(self, load: bool) -> None:
+        """Load the images, media and fonts of this tab's pages (`load`), or abort their requests.
+
+        Args:
+            load: True to load them; False aborts every `BLOCKED_TYPES` request. The responses
+                of the page's other requests are not touched.
+        """
+        if load == (not self._blocking):
+            return
+        if load:
+            await self.raw.unroute("**/*", _block)
+        else:
+            await self.raw.route("**/*", _block)
+        self._blocking = not load
 
     @property
     def url(self) -> str:
@@ -1524,14 +1551,17 @@ class RunBrowser:
         loop: the asyncio loop the browsers live on, running on its own thread.
         stealth: hide `navigator.webdriver` (see `launch`).
         headless: hide the windows. A visible one (the default) lets a person solve a captcha.
+        lean: a lighter browser; a plugin's tabs then load no images, media or fonts unless it
+            asks (see `Tabs`). `Tabs` reads it.
         screen: what asks a person and shows them progress (see `Screen`); None for the plain
             one.
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop, *, stealth: bool = True,
-                 headless: bool = False,
+                 headless: bool = False, lean: bool = False,
                  screen: Screen | None = None):
         self.loop = loop
+        self.lean = lean
         self.screen = screen or Screen()
         self._stealth = stealth
         self._headless = headless
@@ -1578,11 +1608,12 @@ class RunBrowser:
         return next((found for found in self._logins
                      if any(seen is jar for seen in found[0])), None)
 
-    async def tab(self, jar: Any) -> Page:
+    async def tab(self, jar: Any, *, assets: bool = True) -> Page:
         """A tab for a target whose login is `jar`: its window's idle one, or a new one.
 
         Args:
             jar: the login's cookies, given to its window the first time they come.
+            assets: load images, media and fonts (`Page.assets`, the default); False aborts them.
 
         Returns:
             The tab, which scrolls by script.
@@ -1602,7 +1633,9 @@ class RunBrowser:
                 await found[1].add_cookies(jar)
                 found[0].append(jar)
         _, browser, idle = found
-        return idle.pop() if idle else await browser.tab(by_script=True)
+        page = idle.pop() if idle else await browser.tab(by_script=True)
+        await page.assets(assets)
+        return page
 
     async def release(self, pages: Iterable[Page]) -> None:
         """Take back a finished target's tabs: keep one open per window for its next target,
@@ -1682,17 +1715,19 @@ class Tabs:
         budget: the caller's tabs: each tab held takes a place (`await take()`, `give()`),
             `warm` says whether a warm tab may open now, and `turn(step)` runs a `human` scroll
             step in its turn. None limits nothing and opens no warm tab.
+        assets: load images, media and fonts (the default); False aborts their requests in its tabs.
 
     Raises:
         ValueError: `scroll` is neither.
     """
 
     def __init__(self, shared: RunBrowser, jar: Any, *, scroll: str = HUMAN,
-                 budget: Any = None):
+                 budget: Any = None, assets: bool = True):
         if scroll not in SCROLLS:
             raise ValueError(f"scroll must be one of {', '.join(SCROLLS)}, not {scroll!r}")
         self._shared = shared
         self._jar = jar
+        self._assets = assets
         self.scroll = scroll
         self._budget = budget
         # The places taken from the budget: one per tab the target holds.
@@ -1796,7 +1831,7 @@ class Tabs:
         tab doesn't open."""
         budget = self._budget
         try:
-            page = await self._shared.tab(self._jar)
+            page = await self._shared.tab(self._jar, assets=self._assets)
         except BaseException:
             if budget is not None:
                 self._held -= 1

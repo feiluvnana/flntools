@@ -384,6 +384,7 @@ flnd.plugin.Part.total(size: int) -> None
 flnd.plugin.Part.write(data: bytes) -> None
 flnd.plugin.Plugin()
 flnd.plugin.Plugin.Settings()
+flnd.plugin.Plugin.assets: attribute -> ClassVar[bool]
 flnd.plugin.Plugin.blocked(response: Response) -> float | None
 flnd.plugin.Plugin.browser: attribute -> ClassVar[Browser]
 flnd.plugin.Plugin.categories: attribute -> ClassVar[tuple[str, ...]]

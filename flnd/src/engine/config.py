@@ -74,6 +74,7 @@ class Defaults(msgspec.Struct, frozen=True):
     slowest: str = "0"
     height: int = 0
     switch: bool = False
+    lean: bool = False
 
 
 class PluginConfig(msgspec.Struct, frozen=True):
@@ -156,6 +157,7 @@ DEFAULTS = {
     "slowest": Key(str, 'a speed such as "50 KB/s", or "0" for off', _speed_ok),
     "height": Key(int, "a whole number of pixels, 0 for the best", lambda value: value >= 0),
     "switch": Key(bool, "true or false"),
+    "lean": Key(bool, "true or false"),
 }
 PLUGINS = {
     "pace": Key(float, "a number of seconds, 0 or more", lambda value: value >= 0),

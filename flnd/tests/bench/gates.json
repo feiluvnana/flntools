@@ -420,6 +420,18 @@
       "better": "lower",
       "baseline": 1.6,
       "note": "step 5c: their CPU seconds on the same page"
+    },
+    "browser.lean_rss": {
+      "unit": "MiB",
+      "better": "lower",
+      "baseline": 688.0,
+      "note": "step 5c: heavy_rss with images, media and fonts blocked (lean)"
+    },
+    "browser.lean_cpu": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 1.27,
+      "note": "step 5c: heavy_cpu with images, media and fonts blocked (lean)"
     }
   }
 }
