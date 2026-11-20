@@ -171,8 +171,8 @@ flnd get ins:example_user tik:example_user
 
 - `ins:me`, `tik:me` and `fbk:me` list every account the login follows (`fbk`: pages and people, not
   friends), each its own `user` target (`"ins:me|posts,stories"` passes the list on to each). They
-  need a login. `tik:me` reads your Following list, `fbk:me` the `/me/following` page (unconfirmed
-  live). `twt:me` reads X's `Following` operation (unconfirmed live).
+  need a login. `tik:me` reads your Following list, `fbk:me` the `/me/following` page, `twt:me` X's
+  `Following` operation (all unconfirmed live).
 - A search (`twt?<words>`, `mht?<words>`, `tik?<words>`, `loi?<words>`, or a search link) finds
   targets, and each found target is got as its own. A search needs `--folder`, which puts all its
   hits in one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search gets
@@ -242,12 +242,11 @@ post or a search`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pag
 **fbk**
 
 - `fbk:<user>`, `facebook.com/<user>`, `/@<user>`, `/profile.php?id=<id>`, `/people/.../<id>`: a
-  profile or page, one route (``user``) told apart after it loads; a tab a page lacks (`tagged`)
-  logs `no such tab` and gives nothing
-- `fbk:me`: the accounts the login follows, each `fbk:<name or id>` (route ``me``); no login is a
+  profile or page, one route (``user``); a tab it lacks (`tagged`) logs `no such tab`
+- `fbk:me`: the accounts the login follows, each `fbk:<name or id>` (``me``); no login is a
   `LoginError`, hint `log in: flnd auth login fbk`
 - `fbk:video/<id>`, `facebook.com/watch?v=<id>`, `/videos/<id>`, `/<page>/videos/<id>` (or
-  `.../<slug>/<id>`), `/reel/<id>`, `/reels/<id>`: one video or reel (route ``video``)
+  `.../<slug>/<id>`), `/reel/<id>`, `/reels/<id>`: one video or reel (``video``)
 - `fb.watch/<code>`, `facebook.com/share/p|r|v/<code>`: followed in the browser to the video or post
   they land on (routes ``watch``, ``share``; `fbk:share/r/<code>` types the key back); landing
   elsewhere is `NotFound`, hint `check the link in a browser`
@@ -259,8 +258,8 @@ post or a search`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pag
 watch reel reels videos photo photo.php permalink.php story.php login login.php`. Refused with `fbk:
 <what> aren't supported; give a profile or page, or a video, photo or post link`: `/photos`,
 `/groups`, `/events`, `/stories`, `/marketplace`, `/hashtag`, `/watch` without `v=`. `photo.php`
-without `fbid`, `permalink.php` without both ids: `fbk: can't read <link>`. Any other path after a
-profile name (`/photos`, `/posts`, `/reels`) is ignored.
+without `fbid`, `permalink.php` without both ids: `fbk: can't read <link>`. Any other path after
+a profile name is ignored.
 
 **tlg**
 
@@ -1048,22 +1047,23 @@ media/tik/example_creator/albums/Example_Playlist/2026-01-03_1234567890123456781
 
 ### fbk (Facebook)
 
-- **Reads:** a profile or page in the browser (loading and scrolling), and one video, reel, photo or
-  post by link. A `fb.watch` or `/share/` link is opened to find where it lands.
-- **Categories:** none is newest first, so every tab is read to its end each run. `posts`, `photos`,
-  `albums`, `reels`, `videos`, `stories`, `profile` (own); `tagged` (opt-in). A video found in
-  `posts`, `photos` or `tagged` is filed under `videos`; a photo naming its album under
-  `albums/<album>`. Media another account owns is left out.
-- **Folder:** `{part}/{album}`; `profile` for `profile`.
-- **Filename:** `{date}_{post}`; profile pictures `profile_<id>`, covers `cover_<id>`.
+- **Reads:** a profile or page in the browser, and one video, reel, photo or post by link (a
+  `fb.watch` or `/share/` link is opened to find where it lands). A tab's first scroll captures its
+  GraphQL POST; its pages then go by the same body with the cursor (`cursor`, `after` or
+  `afterCursor`) replaced, in the page. With no capture or an unreadable answer it scrolls.
+- **Categories:** every tab is read to its end each run. `posts`, `photos`, `albums`, `reels`,
+  `videos`, `stories`, `profile` (own); `tagged` (opt-in). A video found in another tab goes to
+  `videos`, a photo naming its album to `albums/<album>`; others' media is left out.
+- **Folder:** `{part}/{album}`; `profile` for `profile`. **Filename:** `{date}_{post}`; profile
+  pictures `profile_<id>`, covers `cover_<id>`.
 - **Key:** `{post}` (`fbk:<id>`, so a photo in two tabs is saved once); `profile` keys `{path}`.
 - **Login:** cookies `c_user` or `xs` (optional, but a logged-out browser sees little).
-- **Limits and walls:** pace 0.2; walls `/login`, `/login.php`; "temporarily blocked" pages and the
-  Comet error page are blocks. The CDN needs `Referer: https://www.facebook.com/`.
+- **Limits and walls:** pace 0.2; walls `/login`, `/login.php`. A 429, a "temporarily blocked" page,
+  Comet's error line and GraphQL `errors` codes 1675004 and 368 (confirm live) hold, then carry on
+  from the same cursor. The CDN needs `Referer: https://www.facebook.com/`.
 - **Known gaps:** `/photos /groups /events /stories /marketplace /hashtag` are refused; a page is
   told from a profile by the header's `__typename` (confirm live); stories are those active now;
-  without a header `stories` and `profile` are skipped with a warning; photos carry no date, so they
-  take the nearest neighbour's.
+  without a header `stories` and `profile` are skipped; undated photos take a neighbour's date.
 
 ```text
 media/fbk/example.page/photos/2026-01-02_1234567890.jpg
