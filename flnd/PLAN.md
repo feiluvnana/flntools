@@ -98,7 +98,11 @@ A target is written one of three ways, and each plugin accepts every way that fi
   `mht`), is refused before any request unless `--folder` (or `folder=`) is given and places
   every category: one template, or a list with `*`. `[plugins.<code>] folder` in
   `config.toml` doesn't count. The error: `<code>?<query>: a search needs --folder`, with a
-  hint showing `--folder "{query}"`. Its hits all go there, not to their owners' folders
+  hint showing `--folder "{query}"`. Examples: `--folder "{query}"` and
+  `--folder "posts:{query}/posts,*:{query}/other"` pass; `--folder "posts:{query}/posts"` is
+  refused (`replies` would fall back to their owners' folders), as is no `--folder`. The
+  `<cat>:<path>[,...]` list stays allowed here (settled by the user).
+  Its hits all go there, not to their owners' folders
   (step 3 is for links only). A followed query stores its folder in its `targets` row (a
   store migration), so a plain `flnd get` sync reuses it, and a different `--folder` on a
   later run is refused unless `--again` is given.
