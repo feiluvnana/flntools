@@ -176,7 +176,7 @@ class RunsCase(FlndCase):
 
 class GetTest(RunsCase):
     def test_targets_and_flags_reach_the_engine(self):
-        code, _, err = self.run_app("get", "ins:example_user/tagged,reels",
+        code, _, err = self.run_app("get", "ins:example_user|tagged,reels",
                                     "https://x.com/example_handle", "--when", "2026-01..2026-06",
                                     "--limit", "5")
         self.assertEqual(code, 0, err)
@@ -224,7 +224,7 @@ class GetTest(RunsCase):
         self.assertEqual(self.runs, [])
 
     def test_a_mistake_is_a_usage_error_before_anything_starts(self):
-        for argv in (("ytb:nasa",), ("tik:7312345678901234567/videos",), ("ins:a/videos",),
+        for argv in (("ytb:nasa",), ("tik:7312345678901234567|videos",), ("ins:a|videos",),
                      ("ins:a", "--limit", "0"), ("ins:a", "--limit", "five"),
                      ("ins:a", "--when", "yesterday"), ("ins:a", "--nope"),
                      ("ins:a", "--exec", "no-such-program-here {path}"),
@@ -245,7 +245,7 @@ class GetTest(RunsCase):
         self.pipe("")
         code, out, err = self.run_app("get")
         self.assertEqual((code, self.runs, out), (0, [], "nothing to sync\n"), err)
-        self.run_app("get", "ins:example_user/reels")
+        self.run_app("get", "ins:example_user|reels")
         self.run_app("get", "tik:example_creator")
         self.runs.clear()
         self.pipe("")
@@ -279,7 +279,7 @@ class GetTest(RunsCase):
         with mock.patch("flnkit.net.follow", follow):
             self.assertEqual(self.run_app("get", "https://vm.tiktok.com/ZMabc123/")[0], 0)
         self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
-        self.assertEqual(self.runs[0][1], [Target("tik:7301234567890123456", kind="video")])
+        self.assertEqual(self.runs[0][1], [Target("tik:post/7301234567890123456", kind="post")])
 
 
 class ExampleCase(FlndCase):
@@ -318,7 +318,7 @@ class RunTest(ExampleCase):
         self.assertRegex(out.splitlines()[-1], r" - 0 saved - 3 already saved - 0 failed$")
 
     def test_json_lines(self):
-        code, out, _ = self.run_app("--json", "get", "exs:example_user/reels")
+        code, out, _ = self.run_app("--json", "get", "exs:example_user|reels")
         self.assertEqual(code, 0)
         rows = [json.loads(line) for line in out.splitlines()]
         self.assertEqual([row["post"] for row in rows if row["type"] == "Saved"], ["r1"])
@@ -662,7 +662,7 @@ class HelpTest(FlndCase):
         self.assertEqual(code, 0)
         flat = " ".join(text.split())
         self.assertIn("tlg:<@username, chat title or id>, tlg:@<chat>, a link on t.me", flat)
-        self.assertIn("/posts,reels,tagged", flat)
+        self.assertIn("|posts,reels,tagged", flat)
         for flag in ("--when", "--limit", "--dry", "--again", "--exec", "--home", "--json"):
             self.assertIn(flag, text)
         self.assertNotIn("Args:", text)

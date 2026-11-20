@@ -169,7 +169,7 @@ def get(args: argparse.Namespace) -> int:
     """Get what the targets have, and follow them, so `flnd get` alone keeps them up to date.
 
     A target that isn't a single post is added to the followed ones; the categories it names
-    (ins:example_user/reels) are kept with it. With no target, from the arguments or standard
+    (ins:example_user|reels) are kept with it. With no target, from the arguments or standard
     input (one per line; blank lines and lines starting with # are skipped), every followed
     target is synced.
 
@@ -721,7 +721,7 @@ def parser() -> argparse.ArgumentParser:
 
     sub = command(verbs, "get", get)
     sub.add_argument("targets", nargs="*", metavar="target",
-                     help="ins:example_user, ins:example_user/reels,posts, a link, or "
+                     help="ins:example_user, \"ins:example_user|reels,posts\", a link, or "
                           "mht?words; read from stdin too; none syncs every followed target")
     _when(sub)
     sub.add_argument("--limit", type=int, metavar="N",
@@ -851,7 +851,7 @@ def _forms() -> list[tuple[str, list[Any]]]:
         categories: Any = entry["categories"]
         own = [form for form in forms if not form.startswith("http")]
         on = [f"a link on {', '.join(domains)}"] if domains else []
-        cats: list[Any] = [("\n/", "dim"), ",".join(categories)] if categories else []
+        cats: list[Any] = [("\n|", "dim"), ",".join(categories)] if categories else []
         rows.append((code, [", ".join([*own, *on]), *cats]))
     return rows
 

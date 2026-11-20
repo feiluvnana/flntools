@@ -231,7 +231,7 @@ class RoutesTest(unittest.TestCase):
             with self.subTest(text=text):
                 found = Loibus.resolve(text)
                 self.assertEqual(found and (found.text, found.kind),
-                                 value and (f"loi:{value}", "post"))
+                                 value and (f"loi:post/{value}", "post"))
 
     def test_the_class(self):
         check(Loibus)

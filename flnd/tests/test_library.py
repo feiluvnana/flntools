@@ -101,7 +101,7 @@ class GetTest(LibraryCase):
                                             "reels": tracked.complete["reels"]})
 
     def test_get_with_categories_when_and_limit(self):
-        run = self.fl.get("exs:example_user/reels", when="2026", limit=5)
+        run = self.fl.get("exs:example_user|reels", when="2026", limit=5)
         self.assertEqual(self.saved(run), ["r1"])
 
     def test_get_dry_plans_and_writes_nothing(self):
@@ -117,7 +117,7 @@ class GetTest(LibraryCase):
         self.assertEqual(self.fl.get("exs:example_user").wait().saved, 0)
 
     def test_get_with_folder_template_and_validation(self):
-        saved = list(self.fl.get("exs:example_user/posts", folder="custom/{target}/{date}"))
+        saved = list(self.fl.get("exs:example_user|posts", folder="custom/{target}/{date}"))
         root = self.home / "media" / "exs"
         self.assertEqual(
             sorted(e.path.relative_to(root).as_posix() for e in saved if isinstance(e, flnd.Saved)),
@@ -125,7 +125,7 @@ class GetTest(LibraryCase):
              "custom/example_user/2026-03-01/2026-03-01_p2.jpg"])
 
         # Dry run reflects the custom folder path and writes nothing.
-        planned = list(self.fl.get("exs:example_user/reels", folder="preview/{target}", dry=True))
+        planned = list(self.fl.get("exs:example_user|reels", folder="preview/{target}", dry=True))
         self.assertEqual(
             [e.path.relative_to(root).as_posix() for e in planned],
             ["preview/example_user/2026-03-01_r1.jpg"])
@@ -252,7 +252,7 @@ class RunTest(LibraryCase):
 
         self.enterContext(mock.patch.object(_run, "QUEUE", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(6)]
-        run = self.fl.get("exs:example_user/posts")
+        run = self.fl.get("exs:example_user|posts")
         landed, real = threading.Event(), run._emit
 
         def emit(event):
@@ -272,7 +272,7 @@ class RunTest(LibraryCase):
         # finishes only what is downloading. At the default of 32 places all 30 would be in flight.
         self.enterContext(mock.patch.object(jobs_module, "PLACES", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
-        run = self.fl.get("exs:example_user/posts")
+        run = self.fl.get("exs:example_user|posts")
         for event in run:
             if isinstance(event, flnd.Saved):
                 run.stop()
@@ -286,7 +286,7 @@ class RunTest(LibraryCase):
         # One place, as above: at 32 places every file could be in flight before the first lands.
         self.enterContext(mock.patch.object(jobs_module, "PLACES", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
-        run = self.fl.get("exs:example_user/posts")
+        run = self.fl.get("exs:example_user|posts")
         with self.assertRaises(flnd.Stopped):
             for event in run:
                 if isinstance(event, flnd.Saved) and run.report.saved == 1:
@@ -309,7 +309,7 @@ class RunTest(LibraryCase):
         self.enterContext(mock.patch.object(jobs_module, "PLACES", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
         warn = self.enterContext(mock.patch.object(ui, "warn"))
-        run = self.fl.get("exs:example_user/posts")
+        run = self.fl.get("exs:example_user|posts")
         with mock.patch.object(_run.os, "_exit", side_effect=Quit) as exit_now, \
                 _run.restoring(lambda: undone.append("keys")), \
                 _run.restoring(lambda: undone.append("screen")):
@@ -335,8 +335,8 @@ class RunTest(LibraryCase):
 
     def test_async_for_and_await(self):
         async def main():
-            events = [event async for event in self.fl.get("exs:example_user/reels")]
-            report = await self.fl.get("exs:example_user/posts")
+            events = [event async for event in self.fl.get("exs:example_user|reels")]
+            report = await self.fl.get("exs:example_user|posts")
             return events, report
 
         events, report = asyncio.run(main())
@@ -345,8 +345,8 @@ class RunTest(LibraryCase):
 
     def test_a_usage_mistake_raises_before_anything_runs(self):
         for call in (lambda: self.fl.get("zzz:example_user"),
-                     lambda: self.fl.get("exs:example_user/stories"),
-                     lambda: self.fl.get("exs:p/1/posts"),
+                     lambda: self.fl.get("exs:example_user|stories"),
+                     lambda: self.fl.get("exs:p/1|posts"),
                      lambda: self.fl.get("exs:example_user", limit=0),
                      lambda: self.fl.get("exs:example_user", when="yesterday")):
             with self.subTest(), self.assertRaises(flnd.UsageError):
@@ -357,7 +357,7 @@ class RunTest(LibraryCase):
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
         with flnd.open(self.home) as fl:
             fl.add(self.source)
-            going = fl.get("exs:example_user/posts")
+            going = fl.get("exs:example_user|posts")
             next(iter(going))
             later = fl.get("exs:example_user")
         self.assertTrue(going.report.stopped)
@@ -401,7 +401,7 @@ class EventsTest(LibraryCase):
 
         self.serve = lambda request: serve(request) if str(request.url).startswith(CDN) \
             else _net.reply(200)
-        events = list(self.fl.get("exs:example_user/posts"))
+        events = list(self.fl.get("exs:example_user|posts"))
         [failed] = [event for event in events if isinstance(event, flnd.Failed)]
         self.assertEqual((failed.post, failed.path.name), ("gone", "2026-03-01_gone.jpg"))
         self.assertIsInstance(failed.error, flnd.NotFound)
@@ -417,7 +417,7 @@ class EventsTest(LibraryCase):
         self.assertFalse(report.ok)
 
     def test_events_encode_to_json(self):
-        events = list(self.fl.get("exs:example_user/reels"))
+        events = list(self.fl.get("exs:example_user|reels"))
         lines = [encode(event) for event in events]
         self.assertTrue(any(line.startswith(b'{"type":"Saved"') for line in lines))
         self.assertIn(b'"path":"', lines[-1])
@@ -463,8 +463,8 @@ class SearchSkipTest(LibraryCase):
 
         source = example_source(listing, code="exq", search=route("exq?{words}")(search))
         engine = Engine(home=self.home, sources={"exq": source})
-        engine.download(["exq:example_handle/all"])
-        engine.download(["exq?words/all"], sync=True)
+        engine.download(["exq:example_handle|all"])
+        engine.download(["exq?words|all"], sync=True)
         # Two targets seen before, and a new one whose 3 files are saved already.
         found.append("exq:example_handle2")
         listing["example_handle2", "posts"] = ["p1", "p2", "p3"]
@@ -474,13 +474,13 @@ class SearchSkipTest(LibraryCase):
 
 class FollowTest(LibraryCase):
     def test_categories_are_kept_for_later_syncs(self):
-        self.assertEqual(self.saved(self.fl.get("exs:example_user/reels")), ["r1"])
+        self.assertEqual(self.saved(self.fl.get("exs:example_user|reels")), ["r1"])
         self.listing["example_user", "posts"].insert(0, "p0")
         self.listing["example_user", "reels"].insert(0, "r0")
         self.assertEqual(self.saved(self.fl.get()), ["r0"])
         # Following again without categories keeps them; `/all` follows every one.
         self.assertEqual(self.saved(self.fl.get("exs:example_user")), [])
-        self.assertEqual(self.saved(self.fl.get("exs:example_user/all")), ["p0", "p1", "p2"])
+        self.assertEqual(self.saved(self.fl.get("exs:example_user|all")), ["p0", "p1", "p2"])
         self.assertEqual(self.saved(self.fl.get()), [])
         self.assertEqual(len(self.fl.files(target="exs:example_user")), 5)
 

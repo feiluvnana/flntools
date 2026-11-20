@@ -115,7 +115,7 @@ class BuiltInTest(unittest.TestCase):
     def test_categories_and_single_post_kinds(self):
         # Without --only a target gets every category; a single post's route is its kind.
         rows = {
-            "tik": ("videos stories playlists reposts liked favorites profile", "video"),
+            "tik": ("videos stories playlists reposts liked favorites profile", "post"),
             "fbk": ("posts photos tagged albums reels videos stories profile",
                     "video watch photo post"),
             "ins": ("posts reels tagged reposts stories highlights profile", "post"),

@@ -696,7 +696,7 @@ class Category:
     Args:
         function: the method.
         own: the account's own content, taken by default; False is other people's, taken only
-            with `/all` or when named.
+            with `|all` or when named.
         url: a template over `profile`: the page the engine opens ahead in a warm tab.
         newest_first: its listing comes newest first, so a sync may stop at old posts.
         folder: its files' folder template, instead of the route's or the plugin's.

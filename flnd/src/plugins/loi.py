@@ -91,14 +91,17 @@ class Loibus(Plugin):
         # Posts whose `archive` was listed: that category writes their info.md, with links.
         self._archived: set[str] = set()
 
-    @route(r"loi:{id:\d+}", r"loix.cc/lois/{id:\d+}", r"moegoat.com/lois/{id:\d+}",
-           single=True)
+    @route(*((pattern, "post/{id}") for pattern in (
+        r"loi:post/{id:\d+}", r"loi:{id:\d+}", r"loix.cc/lois/{id:\d+}",
+        r"moegoat.com/lois/{id:\d+}")), single=True)
     async def post(self, ctx: Ctx, id: str) -> dict[str, Any]:
-        """One post by id (`loi:5930`), or its link on either site: its JSON, for the categories.
+        """One post by id (`loi:post/5930`), or its link on either site: its JSON, for the
+        categories.
 
         Raises:
             NotFound: the API has no such post, or one without a title.
         """
+        id = id.removeprefix("post/")
         body = (await ctx.fetch(f"{API}lois/{id}")).json
         post = body.get("data") if isinstance(body, dict) else None
         if not isinstance(post, dict) or not post.get("loi_title"):

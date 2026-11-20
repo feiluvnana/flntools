@@ -188,14 +188,16 @@ class RoutesTest(unittest.TestCase):
             ("https://www.tiktok.com/@example_creator/video/abc", ("user", "example_creator")),
             ("https://www.tiktok.com/@example_creator/x/7301234567890123456",
              ("user", "example_creator")),
-            ("tik:7301234567890123456", ("video", "7301234567890123456")),
-            ("tik:1234567890123456", ("video", "1234567890123456")),
-            (f"https://www.tiktok.com/@example_creator/photo/{VIDEO}", ("video", VIDEO)),
-            (f"https://www.tiktok.com/@example_creator/video/{VIDEO}/?lang=en", ("video", VIDEO)),
-            (f"https://www.tiktok.com/@example_creator/video/{VIDEO}/photo/1", ("video", VIDEO)),
-            ("https://www.tiktok.com/@example_creator/video/0", ("video", "0")),
-            (f"https://www.tiktok.com/video/{VIDEO}", ("video", VIDEO)),
-            (f"https://www.tiktok.com/photo/{VIDEO}", ("video", VIDEO)),
+            ("tik:7301234567890123456", ("post", "post/7301234567890123456")),
+            ("tik:1234567890123456", ("post", "post/1234567890123456")),
+            (f"https://www.tiktok.com/@example_creator/photo/{VIDEO}", ("post", f"post/{VIDEO}")),
+            (f"https://www.tiktok.com/@example_creator/video/{VIDEO}/?lang=en",
+             ("post", f"post/{VIDEO}")),
+            (f"https://www.tiktok.com/@example_creator/video/{VIDEO}/photo/1",
+             ("post", f"post/{VIDEO}")),
+            ("https://www.tiktok.com/@example_creator/video/0", ("post", "post/0")),
+            (f"https://www.tiktok.com/video/{VIDEO}", ("post", f"post/{VIDEO}")),
+            (f"https://www.tiktok.com/photo/{VIDEO}", ("post", f"post/{VIDEO}")),
             ("tik:not a name", None), ("tik:ex-ample", None), ("tik:@@example_creator", None),
             ("tik:", None), ("tik:https://www.tiktok.com/", None),
             ("https://www.tiktok.com/example_creator", None),
@@ -212,7 +214,7 @@ class RoutesTest(unittest.TestCase):
 
     def test_the_declarations(self):
         self.assertEqual([str(found) for found in check(TikTok)][:2],
-                         ["tik:7301234567890123456", "tik:example_creator"])
+                         ["tik:post/7301234567890123456", "tik:example_creator"])
         user = next(known for known in TikTok.routes if known.kind == "user")
         self.assertEqual([(c.name, c.own, c.newest_first) for c in user.categories], [
             ("videos", True, True), ("stories", True, False), ("playlists", True, True),

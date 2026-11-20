@@ -35,7 +35,7 @@ class Resolved(NamedTuple):
         categories: the categories to take; empty for a route without any, and for a search
             or a `discovers` route with none named, whose found targets take their own.
         query: a search (`code?query`).
-        named: whether the text named its categories (`/reels`, `/all`), which a run keeps
+        named: whether the text named its categories (`|reels`, `|all`), which a run keeps
             for the target; False when they are the stored or the route's own.
         link: the value as typed, when it holds a link's `user:pw@`, which `value` (so the
             key) leaves out: what the route reads; "" when they are the same.
@@ -51,7 +51,10 @@ class Resolved(NamedTuple):
 
     @property
     def key(self) -> str:
-        """`code:value`, or `code?query` for a search; categories are not part of it."""
+        """`code:value`, or `code?query` for a search; categories are not part of it.
+
+        A single post's value starts with its kind (`ins:post/C1abc`), so it never clashes with
+        a user's key."""
         return f"{self.code}{'?' if self.query else ':'}{self.value}"
 
 
@@ -361,13 +364,13 @@ def resolve(
     known: Mapping[str, Sequence[str]],
     follow: Callable[[str], str] | None = None,
 ) -> Resolved:
-    """Read one target's text: `code:value[/categories]`, `code?query`, a link.
+    """Read one target's text: `code:value[|categories]`, `code?query[|categories]`, a link.
 
     Args:
         text: the target as typed; spaces around it are ignored.
         manifest: the plugins to resolve with.
         known: the stored categories of each known target, by key; a target written without
-            `/categories` takes its own.
+            `|categories` takes its own.
         follow: where a short link leads (one HEAD request); None never follows one.
 
     Returns:
@@ -396,14 +399,14 @@ def _resolve(text: str, manifest: Manifest, known: Mapping[str, Sequence[str]],
     if not text:
         raise UsageError("a target can't be empty")
     if text.lower().startswith(("http://", "https://")):
-        return _link(text, manifest, known, follow)
+        return _link(*_listed(text, manifest), manifest, known, follow)
     found = re.match(r"([A-Za-z][A-Za-z0-9]*)\s*([:?])", text)
     if found is None:
         # A link without its scheme (`example.com/example_user`) reads as one, as today, only
         # when a plugin claims its host.
         host = text.split("/", 1)[0].lower() if "/" in text else ""
         if host and _owner(manifest, host) is not None:
-            return _link(f"https://{text}", manifest, known, follow)
+            return _link(*_listed(f"https://{text}", manifest), manifest, known, follow)
         choices = ", ".join(f"{code}:{text}" for code in manifest.plugins)
         raise UsageError(f'which plugin is "{text}"? Write it as {choices}')
     code, body = found[1].lower(), text[found.end():].strip()
@@ -416,39 +419,41 @@ def _resolve(text: str, manifest: Manifest, known: Mapping[str, Sequence[str]],
 
 
 def _plain(plugin: _Plugin, body: str, known: Mapping[str, Sequence[str]]) -> Resolved:
-    """`code:value[/categories]`, split at the last `/` only where 6.5 allows it."""
+    """`code:value[|categories]`; the old `code:value/categories` is refused."""
     if not body:
         raise UsageError(f"{plugin.code}: write a value after {plugin.code}:",
                          hint=f"Write it like {plugin.forms}")
-    head, slash, tail = body.rpartition("/")
-    hit = _find(plugin, head.strip(), None) if slash else None
+    head, bar, tail = body.rpartition("|")
     whole = _find(plugin, body, None)
-    if isinstance(hit, tuple) and isinstance(whole, tuple) and whole[0] is not hit[0]:
-        # Another route reads the whole text (`exm:a/12` is an album, not user `a`).
-        hit = None
-    if isinstance(hit, tuple):
-        route, value = hit
-        names = route.names if not route.discovers else plugin.categories
-        tokens = _tokens(tail)
-        if tokens is None:
-            # A trailing `/` or `,` names nothing: the target's defaults, as with no slash.
-            return _made(plugin, route, value, None, known)
-        if isinstance(whole, tuple):
-            # The head's own route is a catch-all (`tlg:{chat:.+}`) that reads the whole text
-            # too: split only when every token is a category, so `tlg:News / Updates` stays.
-            if _named(tokens, names):
+    if bar:
+        hit = _find(plugin, head.strip(), None)
+        if isinstance(hit, tuple):
+            route, value = hit
+            names = plugin.categories if route.discovers else route.names
+            tokens = _tokens(tail)
+            # A catch-all value (`tlg:{chat:.+}`) holds a `|` unless every token is a category.
+            if not isinstance(whole, tuple) or tokens is None or _named(tokens, names):
                 return _made(plugin, route, value, tokens, known)
-        elif names:
-            return _made(plugin, route, value, tokens, known)
-        elif route.single:
-            raise UsageError(f"{plugin.code}:{value} is one post, with no categories")
-    hit = whole
-    if isinstance(hit, str):
-        raise UsageError(f"{plugin.code}: {hit}")
-    if hit is None:
+        elif not isinstance(whole, tuple):
+            whole = hit
+    elif not isinstance(whole, tuple):
+        _refuse_slash(plugin, body)
+    if isinstance(whole, str):
+        raise UsageError(f"{plugin.code}: {whole}")
+    if whole is None:
         raise UsageError(f"{plugin.code}: can't read {body!r}",
                          hint=f"Write it like {plugin.forms}")
-    return _made(plugin, hit[0], hit[1], None, known)
+    return _made(plugin, whole[0], whole[1], None, known)
+
+
+def _refuse_slash(plugin: _Plugin, body: str) -> None:
+    """Raise when `body` is a value, a `/`, and a category list: the old way to write one."""
+    head, slash, tail = body.rpartition("/")
+    hit = _find(plugin, head.strip(), None) if slash else None
+    if isinstance(hit, tuple) and _tokens(tail) and (hit[0].names or hit[0].discovers):
+        raise UsageError(f"{plugin.code}:{body}: categories aren't written after a /",
+                         hint=f'write the categories after |: "{plugin.code}:{head.strip()}'
+                              f'|{tail.strip()}"')
 
 
 def _search(plugin: _Plugin, body: str, known: Mapping[str, Sequence[str]]) -> Resolved:
@@ -456,10 +461,10 @@ def _search(plugin: _Plugin, body: str, known: Mapping[str, Sequence[str]]) -> R
                   if any(pattern.search for pattern in route.patterns)), None)
     if route is None:
         raise UsageError(f"{plugin.code} has no search", hint=f"Write it like {plugin.forms}")
-    # A query is free text, so like a catch-all it splits only before a list of categories:
-    # `mht?AC/DC` and `twt?url:example.com/x` stay whole.
-    head, slash, tail = body.rpartition("/")
-    split = bool(slash) and _named(_tokens(tail), plugin.categories)
+    # A query is free text, so it splits only before a list of categories:
+    # `mht?AC|DC` and `twt?url:example.com|x` stay whole.
+    head, bar, tail = body.rpartition("|")
+    split = bool(bar) and _named(_tokens(tail), plugin.categories)
     tokens = _tokens(tail) if split else None
     query = (head if split else body).strip()
     if not query:
@@ -468,7 +473,7 @@ def _search(plugin: _Plugin, body: str, known: Mapping[str, Sequence[str]]) -> R
 
 
 def _tokens(tail: str) -> list[str] | None:
-    """The category names after a `/`; None when there are none (`exm:example_user/`)."""
+    """The category names after a `|`; None when there are none (`exm:example_user|`)."""
     tokens = [token.strip() for token in tail.split(",") if token.strip()]
     return tokens or None
 
@@ -478,9 +483,22 @@ def _named(tokens: list[str] | None, names: Sequence[str]) -> bool:
     return all(token == "all" or token in names for token in tokens or ())
 
 
-def _link(text: str, manifest: Manifest, known: Mapping[str, Sequence[str]],
-          follow: Callable[[str], str] | None, *, typed: str | None = None) -> Resolved:
-    """A link: the first plugin whose domains have its host, else `web`; default categories."""
+def _listed(text: str, manifest: Manifest) -> tuple[str, list[str] | None]:
+    """A link and the categories after its last `|`, when it is a plugin's and every name in
+    the list is one of the plugin's categories or `all`; else the text whole, with none."""
+    head, bar, tail = text.rpartition("|")
+    plugin = _owner(manifest, (urlsplit(head).hostname or "").lower().rstrip(".")) if bar else None
+    tokens = _tokens(tail)
+    if plugin is None or not tokens or not _named(tokens, plugin.categories):
+        return text, None
+    return head.strip(), tokens
+
+
+def _link(text: str, tokens: list[str] | None, manifest: Manifest,
+          known: Mapping[str, Sequence[str]], follow: Callable[[str], str] | None, *,
+          typed: str | None = None) -> Resolved:
+    """A link: the first plugin whose domains have its host, else `web`; its categories are
+    `tokens`, else the stored or the route's own."""
     parsed = urlsplit(text)
     host = (parsed.hostname or "").lower().rstrip(".")
     plugin = _owner(manifest, host)
@@ -495,13 +513,13 @@ def _link(text: str, manifest: Manifest, known: Mapping[str, Sequence[str]],
     parts = tuple(unquote(part) for part in parsed.path.split("/") if part)
     hit = _find(plugin, text, _Url(_bare(host), parts, query))
     if isinstance(hit, tuple):
-        return _made(plugin, hit[0], hit[1], None, known)
+        return _made(plugin, hit[0], hit[1], tokens, known)
     if isinstance(hit, str):
         raise UsageError(f"{plugin.code}: {hit}")
     # A short link (fb.watch/<code>) no route reads: where it leads, once.
     followed = follow(text) if follow is not None else ""
     if followed and followed != text:
-        return _link(followed, manifest, known, None, typed=text)
+        return _link(followed, tokens, manifest, known, None, typed=text)
     led = f" (from {typed})" if typed is not None else ""
     raise UsageError(f"{plugin.code}: can't read {text}{led}",
                      hint=f"Write it like {plugin.forms}")

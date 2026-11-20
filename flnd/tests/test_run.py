@@ -419,7 +419,7 @@ class HttpTest(EngineCase):
         with mock.patch("flnd.engine._engine.stopping",
                         capture_stopping), self.assertRaises(KeyboardInterrupt), \
                 ui.scope(level="debug"):
-            engine.download(["aaa:a/all"])
+            engine.download(["aaa:a|all"])
         self.assertTrue(any(line.endswith("aaa:a: stopped") for line in self.lines()), self.lines())
 
 
@@ -698,7 +698,7 @@ class ApiTest(EngineCase):
                     File(f"{CDN}/{value}/b.jpg", name="b.jpg")]
 
         engine = self.engine(make_plugin("aaa", files=files))
-        report = engine.download(["aaa:one/all", "aaa:bad/all"])
+        report = engine.download(["aaa:one|all", "aaa:bad|all"])
         one, bad = report.targets
         self.assertEqual((one.target, bad.target), (Target("aaa:one", kind="user"),
                                                     Target("aaa:bad", kind="user")))
@@ -717,18 +717,18 @@ class ApiTest(EngineCase):
                 raise RuntimeError("cut short")
             return []
 
-        self.engine(make_plugin("aaa", files=files)).download(["aaa:whole/all", "aaa:cut/all"])
+        self.engine(make_plugin("aaa", files=files)).download(["aaa:whole|all", "aaa:cut|all"])
         rows = self.saved()
         self.assertEqual(rows["aaa:whole"].complete, {"posts": "2026-01-01"})
         self.assertEqual(rows["aaa:cut"].complete, {})
         # Re-running keeps the record.
-        self.engine(make_plugin("aaa")).download(["aaa:whole/all"])
+        self.engine(make_plugin("aaa")).download(["aaa:whole|all"])
         self.assertIn("posts", self.saved()["aaa:whole"].complete)
 
     def test_bad_values_are_value_errors_before_anything_starts(self):
         engine = self.engine(make_plugin("aaa"))
         cases: tuple[tuple[dict[str, Any], str], ...] = (
-            ({"targets": ["aaa:a/reels"]}, "aaa has no category reels"),
+            ({"targets": ["aaa:a|reels"]}, "aaa has no category reels"),
             ({"limit": 0}, "--limit must be at least 1"),
         )
         for options, message in cases:
@@ -743,10 +743,10 @@ class ApiTest(EngineCase):
     def test_categories_on_a_single_post_are_refused_before_any_request(self):
         from flnd.plugins import PLUGINS
 
-        message = "tik:7312345678901234567 is one post, with no categories"
+        message = "tik:post/7312345678901234567 is one post, with no categories"
         engine = Engine(home=self.home, sources=PLUGINS)
-        for targets in (["tik:7312345678901234567/videos"],
-                        ["ins:example_user", "tik:7312345678901234567/all"]):
+        for targets in (["tik:7312345678901234567|videos"],
+                        ["ins:example_user", "tik:7312345678901234567|all"]):
             with self.subTest(targets=targets), self.assertRaisesRegex(UsageError, f"^{message}$"):
                 engine.download(targets)
         self.assertEqual(self.requests, [])
@@ -769,7 +769,7 @@ class ApiTest(EngineCase):
             return [File(f"{CDN}/{name}", name=name) for name in sorted(listed)]
 
         engine = self.engine(make_plugin("aaa", files=files))
-        engine.download(["aaa:a/all"], sync=True)
+        engine.download(["aaa:a|all"], sync=True)
         folder = self.target_dir("aaa", "a")
         (folder / "a.jpg").unlink()
         (folder / "c.jpg").unlink()
@@ -846,20 +846,20 @@ class GoneTest(EngineCase):
 
     def test_a_404_is_gone_and_asked_again_only_when_told(self):
         engine = Engine(home=self.home, sources={"aaa": self.source})
-        engine.download(["aaa:example_user/all"])
+        engine.download(["aaa:example_user|all"])
         self.assertEqual(self.asked(), 1)
         with _store.open(self.home) as db:
             self.assertEqual(db.known("aaa:b.jpg")[1], "gone")
             self.assertEqual(db._db.all("SELECT key, class FROM failures", ()),
                              [("aaa:b.jpg", "NotFound")])
-        engine.download(["aaa:example_user/all"])
+        engine.download(["aaa:example_user|all"])
         self.assertEqual(self.asked(), 1)
-        engine.download(["aaa:example_user/all"], again=True)
+        engine.download(["aaa:example_user|all"], again=True)
         self.assertEqual(self.asked(), 2)
 
     def test_ls_sizes_come_from_the_database_never_a_walk(self):
         engine = Engine(home=self.home, sources={"aaa": self.source})
-        engine.download(["aaa:example_user/all"], sync=True)
+        engine.download(["aaa:example_user|all"], sync=True)
         with mock.patch.object(Path, "rglob", side_effect=AssertionError("a walk")), \
                 mock.patch.object(os, "walk", side_effect=AssertionError("a walk")):
             [info] = engine.target_ls()

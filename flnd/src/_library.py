@@ -137,7 +137,7 @@ class Flnd:
         """Run the targets: get what they have that isn't saved, and follow them.
 
         A target that isn't a single post is added to the followed ones, so a `get` with no
-        target takes it later. The categories a target names (`"ins:example_user/reels"`) are
+        target takes it later. The categories a target names (`"ins:example_user|reels"`) are
         kept with it; naming others replaces them.
 
         Args:

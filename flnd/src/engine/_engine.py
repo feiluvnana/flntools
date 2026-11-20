@@ -50,7 +50,7 @@ class Chosen(NamedTuple):
     """A target as a run takes it: resolved, with the categories it runs."""
 
     target: Target
-    # The categories named in its text (`/reels`), else the stored ones; None takes the
+    # The categories named in its text (`|reels`), else the stored ones; None takes the
     # route's own.
     categories: tuple[str, ...] | None = None
     # The value as typed, with a link's `user:pw@`, which the target leaves out (`Options.link`);
@@ -141,8 +141,8 @@ class Engine:
         return [found.target for found in self.chosen(texts)]
 
     def chosen(self, targets: Sequence[Target | str | Chosen]) -> list[Chosen]:
-        """Each target resolved, with its categories: those its text names (`/reels,posts`,
-        `/all`), else the stored ones of a known target, else None for the route's own.
+        """Each target resolved, with its categories: those its text names (`|reels,posts`,
+        `|all`), else the stored ones of a known target, else None for the route's own.
 
         A `Target` takes its stored categories, and a `Chosen` is taken as it is.
 
@@ -254,7 +254,7 @@ class Engine:
         """Download each target with its saved or given options and return a `Results`.
 
         Args:
-            targets: the targets, as text (`ins:example_user/reels`) or resolved.
+            targets: the targets, as text (`ins:example_user|reels`) or resolved.
             time: `--when`, as a `Range`; None for no limit.
             limit: at most this many posts per target, or targets per search; None for all.
             dry: plan what would be saved (`Planned` events), and write nothing.

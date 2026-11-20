@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 import flnd.engine.ctx
 import flnd.plugin
-from flnd.engine import jobs
+from flnd.engine import jobs, store
 from flnd.errors import Blocked, Changed, NetworkError, NotFound, PluginError, SiteError, UsageError
 from flnd.plugin import Document, File, Landed, Plugin, Post, Request, Response
 from flnkit import clock, net
@@ -1006,7 +1006,7 @@ def _placed(ctx: FakeCtx, route: flnd.plugin.Route, category: flnd.plugin.Catego
             extension = PurePosixPath(file.name or "").suffix
         else:
             extension = crawl.planned(file, _typed(ctx, file))[0]
-        values = {**post.fields, "plugin": plugin.code, "target": target.value,
+        values = {**post.fields, "plugin": plugin.code, "target": store.folder_name(target),
                   "category": category.name if category else "", "post": post.id,
                   "num": num, "count": len(files), "index": "" if len(files) == 1 else f"_{num}",
                   "extension": extension, "date": clock.day(post.date),

@@ -233,7 +233,7 @@ def _run_one(
     limit: int, undated: bool,
 ) -> CheckResult:
     """Execute one `dry=True` run for `(route, category)` and validate every planned file."""
-    named = f"{target}/{category}" if category else target
+    named = f"{target}|{category}" if category else target
     planned: list[Planned] = []
     errors: list[str] = []
     with _capture_placed(ask=not undated) as recorded:

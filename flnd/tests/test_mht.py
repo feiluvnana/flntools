@@ -285,7 +285,7 @@ class EngineTest(EngineCase):
         return [str(request.url).split("?")[0] for request in self.requests]
 
     def test_a_query_downloads_its_manga_and_a_second_run_skips_a_saved_chapter(self):
-        report = self.engine.download(["mht?genre:vanilla/all"], limit=1)
+        report = self.engine.download(["mht?genre:vanilla|all"], limit=1)
         self.assertTrue(report.ok, report)
         self.assertEqual(self.genre_calls, 1)
         self.assertTrue((self.folder / "chapters" / "001_First_Chapter" / "001.webp").exists())
@@ -293,7 +293,7 @@ class EngineTest(EngineCase):
         # The saved chapter's pages are not asked for again.
         del self.routes[f"{API}chapters/1001"]
         self.requests.clear()
-        report = self.engine.download(["mht?genre:vanilla/all"], limit=1)
+        report = self.engine.download(["mht?genre:vanilla|all"], limit=1)
         self.assertTrue(report.ok, report)
         self.assertEqual(self.genre_calls, 2)
         self.assertNotIn(f"{API}chapters/1001", self.asked())
@@ -301,7 +301,7 @@ class EngineTest(EngineCase):
     def test_a_cover_query_reuses_the_searchs_manga_without_asking_for_it(self):
         self.routes[f"{API}manga/advanced-search"] = _net.reply(
             200, json={"items": [MANGA], "next_cursor": None})
-        report = self.engine.download(["mht?genre:vanilla/cover"], limit=1)
+        report = self.engine.download(["mht?genre:vanilla|cover"], limit=1)
         self.assertTrue(report.ok, report)
         self.assertTrue((self.folder / "cover" / "cover.webp").exists())
         self.assertNotIn(f"{API}manga/70982", self.asked())
@@ -309,7 +309,7 @@ class EngineTest(EngineCase):
     def test_an_author_target_downloads_only_the_named_category(self):
         self.routes[f"{API}manga/advanced-search"] = _net.reply(
             200, json={"items": [MANGA], "next_cursor": None})
-        report = self.engine.download(["mht:author/7/chapters"])
+        report = self.engine.download(["mht:author/7|chapters"])
         self.assertTrue(report.ok, report)
         self.assertTrue((self.folder / "chapters" / "001_First_Chapter" / "001.webp").exists())
         self.assertFalse((self.folder / "cover").exists())

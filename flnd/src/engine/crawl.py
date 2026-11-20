@@ -486,7 +486,7 @@ def _file_values(
 ) -> dict[str, Any]:
     """The fields a folder, filename or key template of one file may name."""
     code = target.plugin if target is not None else source.code
-    target_val = target.value if target is not None else ""
+    target_val = store.folder_name(target) if target is not None else ""
     query_val = (options.query or "") if options is not None else ""
     # `{source}` is the older name of `{plugin}`, kept for templates written with it.
     return {

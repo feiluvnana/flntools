@@ -17,6 +17,7 @@ from unittest import mock
 
 from flnd.engine import store
 from flnd.errors import Changed, DiskError, NetworkError, NotFound, UsageError
+from flnd.plugin import Target
 from flnd.testing import fake_clock
 
 # Version 1 as a home made it: its schema text, then what its `_upgrade` added.
@@ -599,6 +600,76 @@ class SampleTest(unittest.TestCase):
         for thread in threads:
             thread.join()
         self.assertEqual(len(list((self.home / store.LOGS / "1" / "samples").iterdir())), 100)
+
+
+class RekeyTest(StoreCase):
+    """A single post was keyed `<code>:<id>`, and is `<code>:<kind>/<id>`: old rows follow."""
+
+    OLD = [("ins", "C1abc", "post"), ("twt", "1790", "post"), ("tik", "7301", "video"),
+           ("loi", "12", "post"), ("fbk", "123", "video"), ("fbk", "9", "photo"),
+           ("fbk", "42_7", "post"), ("fbk", "abc", "watch"), ("mht", "1001", "chapter"),
+           # A user of the same code keeps its key.
+           ("ins", "C1abd", "user")]
+
+    def old_home(self):
+        """A home as the last version left it: single posts keyed by their id."""
+        self.path.parent.mkdir(parents=True)
+        with sqlite3.connect(self.path) as sql:
+            for statement in store.STATEMENTS:
+                sql.execute(statement)
+            sql.execute("INSERT INTO meta VALUES ('version', ?)", (store.VERSION,))
+            sql.executemany(
+                "INSERT INTO targets (key, plugin, value, kind, categories, seen)"
+                " VALUES (?, ?, ?, ?, '[\"photo\"]', ?)",
+                [(f"{plugin}:{value}", plugin, value, kind,
+                  '["ins:C1abc", "ins:other"]' if plugin == "loi" else "[]")
+                 for plugin, value, kind in self.OLD])
+            sql.execute("INSERT INTO files (key, target, plugin, path) VALUES"
+                        " ('ins:C1abc_0', 'ins:C1abc', 'ins', 'media/ins/C1abc/a.jpg')")
+            sql.execute("INSERT INTO failures (key, target, class, message, at) VALUES"
+                        " ('ins:C1abc', 'ins:C1abc', 'Blocked', 'wait', 'a')")
+        sql.close()
+
+    def test_old_rows_move_to_their_written_form_and_users_stay(self):
+        self.old_home()
+        with self.open() as opened:
+            found = opened.targets()
+            self.assertEqual(sorted(found), [
+                "fbk:photo/9", "fbk:post/42_7", "fbk:video/123", "fbk:watch/abc", "ins:C1abd",
+                "ins:post/C1abc", "loi:post/12", "mht:chapter/1001", "tik:post/7301",
+                "twt:post/1790"])
+            self.assertEqual([(found[key].value, found[key].kind) for key in (
+                "tik:post/7301", "mht:chapter/1001", "ins:C1abd")],
+                [("post/7301", "post"), ("chapter/1001", "chapter"), ("C1abd", "user")])
+            self.assertEqual(found["loi:post/12"].seen, ["ins:post/C1abc", "ins:other"])
+            self.assertEqual(found["ins:post/C1abc"].categories, ("photo",))
+            self.assertEqual([row.target for row in opened.on_disk()], ["ins:post/C1abc"])
+        self.assertEqual(rows(self.path, "SELECT key, target FROM failures"),
+                         [("ins:post/C1abc", "ins:post/C1abc")])
+
+    def test_a_second_open_changes_nothing(self):
+        self.old_home()
+        self.open().close()
+        query = "SELECT key, value, kind, seen FROM targets ORDER BY key"
+        before = rows(self.path, query)
+        self.open().close()
+        self.assertEqual(rows(self.path, query), before)
+
+    def test_an_old_row_is_found_by_the_written_form_and_runs_as_its_route(self):
+        from fakes import Engine
+
+        from flnd.engine.plugins import PLUGINS
+        self.old_home()
+        engine = Engine(home=self.home, sources=PLUGINS)
+        for text, key in [("loi:post/12", "loi:post/12"), ("loi:12", "loi:post/12"),
+                          ("tik:7301234567890123456", "tik:post/7301234567890123456")]:
+            with self.subTest(text=text):
+                self.assertEqual(engine.chosen([text])[0].target.text, key)
+        # The rewritten row is the one the written form finds: its categories apply.
+        self.assertEqual(engine.chosen(["loi:post/12"])[0].categories, ("photo",))
+        recorded = engine._recorded(engine._rows())
+        for target in (Target("tik:post/7301", kind="post"), Target("loi:post/12", kind="post")):
+            self.assertIn(target, recorded)
 
 
 if __name__ == "__main__":

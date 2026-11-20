@@ -31,7 +31,8 @@ class AcceptedFormsTest(unittest.TestCase):
             ("instagram.com/example_user", user), ("https://m.instagram.com/example_user/reels/",
                                                    user),
             ("ins:example_user", Target("ins:example_user", kind="user")),
-            ("https://www.instagram.com/p/C1abcDEFghi/", Target("ins:C1abcDEFghi", kind="post")),
+            ("https://www.instagram.com/p/C1abcDEFghi/",
+             Target("ins:post/C1abcDEFghi", kind="post")),
         ])
 
     def test_fbk(self):
@@ -59,14 +60,14 @@ class AcceptedFormsTest(unittest.TestCase):
             ("twt:44196397", Target("twt:44196397", kind="user")),
             ("twt:1234567890123456789", Target("twt:1234567890123456789", kind="user")),
             ("https://x.com/example_handle/status/1790000000000000000",
-             Target("twt:1790000000000000000", kind="post")),
+             Target("twt:post/1790000000000000000", kind="post")),
             ("https://twitter.com/example_handle/status/1790000000000000000",
-             Target("twt:1790000000000000000", kind="post")),
+             Target("twt:post/1790000000000000000", kind="post")),
         ])
 
     def test_tik(self):
         user = Target("tik:example_creator", kind="user")
-        video = Target("tik:7301234567890123456", kind="video")
+        video = Target("tik:post/7301234567890123456", kind="post")
         self.check([
             ("tik:example_creator", user), ("tik:@example_creator", user),
             ("https://www.tiktok.com/@example_creator", user),
@@ -75,12 +76,12 @@ class AcceptedFormsTest(unittest.TestCase):
             ("https://www.tiktok.com/@example_creator/photo/7301234567890123456", video),
             # A number of 16 or more digits is a video id; a shorter one is a name.
             ("tik:7301234567890123456", video), ("tik:1234567890123456",
-                                                 Target("tik:1234567890123456", kind="video")),
+                                                 Target("tik:post/1234567890123456", kind="post")),
             ("tik:123456789012345", Target("tik:123456789012345", kind="user")),
         ])
 
     def test_loi(self):
-        post = Target("loi:5930", kind="post")
+        post = Target("loi:post/5930", kind="post")
         self.check([("loi:5930", post), ("https://loix.cc/lois/5930", post), ("loix.cc/lois/5930",
                                                                               post)])
 
@@ -114,7 +115,7 @@ class ShortLinkTest(unittest.TestCase):
             )
 
         self.assertEqual(read("https://vm.tiktok.com/ZMabc123/", follow),
-                         Target("tik:7301234567890123456", kind="video"))
+                         Target("tik:post/7301234567890123456", kind="post"))
         self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
 
     def test_other_links_are_not_followed(self):
@@ -128,7 +129,8 @@ class ShortLinkTest(unittest.TestCase):
         def follow(url):
             raise AssertionError("an fb.watch link is read by fbk's own route, never followed here")
 
-        self.assertEqual(read("https://fb.watch/abc/", follow), Target("fbk:abc", kind="watch"))
+        self.assertEqual(read("https://fb.watch/abc/", follow),
+                         Target("fbk:watch/abc", kind="watch"))
 
     def test_share_links_are_followed(self):
         self.assertEqual(
@@ -141,7 +143,7 @@ class ShortLinkTest(unittest.TestCase):
         self.assertEqual(
             read("https://vm.tiktok.com/ZMabc123/",
                  lambda url: "https://www.instagram.com/p/C1abcDEFghi/"),
-            Target("ins:C1abcDEFghi", kind="post"),
+            Target("ins:post/C1abcDEFghi", kind="post"),
         )
         with self.assertRaisesRegex(UsageError, "can't read"):
             read("https://vm.tiktok.com/ZMabc123/", lambda url: url)

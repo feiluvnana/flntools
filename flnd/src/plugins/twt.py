@@ -98,10 +98,10 @@ AUTHOR = ("core.user_results.result.core.screen_name"
           " || core.user_results.result.legacy.screen_name")
 # A tweet's links, read by the `post` route; `post` comes before `user`, so x.com/status/<id>
 # is never the user "status".
-TWEET_LINKS = tuple(
+TWEET_LINKS = ("twt:post/{tweet_id:\\d+}", *(
     f"{host}/{path}/{{tweet_id:\\d+}}"
     for host in ("x.com", "twitter.com") for path in ("*/status", "status", "i/web/status")
-)
+))
 
 
 class Timeline(NamedTuple):
@@ -186,7 +186,7 @@ class Twitter(Plugin):
 
     # -- Routes ------------------------------------------------------------------------------
 
-    @route(*TWEET_LINKS, single=True)
+    @route(*((pattern, "post/{tweet_id}") for pattern in TWEET_LINKS), single=True)
     async def post(self, ctx: Ctx, tweet_id: str) -> AsyncIterator[Post]:
         """One tweet by its link, such as `https://x.com/example_handle/status/1790`: its media.
 
@@ -195,6 +195,7 @@ class Twitter(Plugin):
         Raises:
             NotFound: the tweet is gone (404), or the API gives this login no tweet.
         """
+        tweet_id = tweet_id.removeprefix("post/")
         tweet = self.found.pop(tweet_id, None)
         if tweet is None:
             data = await self.graph.get(ctx, "TweetResultByRestId", {

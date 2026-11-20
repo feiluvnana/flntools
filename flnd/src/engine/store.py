@@ -28,7 +28,8 @@ from flnd.ui.log import LOGS, ui
 from flnkit import clock, db, files, text
 
 __all__ = ["AccountRow", "FailureRow", "FileRow", "RunRow", "State", "Store", "TargetRow",
-           "busy", "check", "erase", "open", "sample", "sweep", "target_folder"]
+           "busy", "check", "erase", "folder_name", "open", "sample", "sweep",
+           "target_folder"]
 
 # ---------------------------------------------------------------------------------------------
 # The schema
@@ -341,6 +342,8 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
         elif version != VERSION:
             raise UsageError(f"home schema {version!r} needs a newer flnd",
                              hint="upgrade flnd, or open the home with the flnd that wrote it")
+        if version is not None:
+            _rekey(sql)
         sql.execute("COMMIT")
     except BaseException:
         if sql.in_transaction:
@@ -407,6 +410,45 @@ def _migrate(sql: sqlite3.Connection, home: Path) -> None:
     for table in [*(f"v1_{name}" for name in REBUILT if name in tables), *V1_DROPPED]:
         sql.execute(f"DROP TABLE IF EXISTS {table}")
     sql.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (VERSION,))
+
+
+# A built-in single post's (plugin, kind) as an old home stored it, and its kind now: its key
+# was `<code>:<id>`, and is `<code>:<kind>/<id>`, so a post never clashes with a user's key.
+REKEYED = {("fbk", "video"): "video", ("fbk", "watch"): "watch", ("fbk", "photo"): "photo",
+           ("fbk", "post"): "post", ("ins", "post"): "post", ("twt", "post"): "post",
+           ("tik", "video"): "post", ("tik", "post"): "post", ("loi", "post"): "post",
+           ("mht", "chapter"): "chapter"}
+
+
+def _rekey(sql: sqlite3.Connection) -> None:
+    """Rewrite the rows of single posts keyed `<code>:<id>` to `<code>:<kind>/<id>`: the target,
+    its files' and failures' `target`, and the keys a search lists. A home with none is left
+    alone, so this runs on every open and does nothing after the first."""
+    kinds = sorted({kind for _, kind in REKEYED})
+    rows = sql.execute(f"SELECT key, plugin, value, kind FROM targets WHERE kind IN"
+                       f" ({', '.join('?' * len(kinds))})", kinds).fetchall()
+    moved: dict[str, str] = {}
+    for old, plugin, value, kind in rows:
+        new_kind = REKEYED.get((plugin, kind))
+        if new_kind is None or value.startswith(f"{new_kind}/"):
+            continue
+        new = f"{plugin}:{new_kind}/{value}"
+        moved[old] = new
+        if sql.execute("SELECT 1 FROM targets WHERE key = ?", (new,)).fetchone() is not None:
+            sql.execute("DELETE FROM targets WHERE key = ?", (old,))
+        else:
+            sql.execute("UPDATE targets SET key = ?, value = ?, kind = ? WHERE key = ?",
+                        (new, f"{new_kind}/{value}", new_kind, old))
+        sql.execute("UPDATE files SET target = ? WHERE target = ?", (new, old))
+        sql.execute("UPDATE failures SET target = ? WHERE target = ?", (new, old))
+        sql.execute("UPDATE OR REPLACE failures SET key = ? WHERE key = ?", (new, old))
+    if not moved:
+        return
+    for item, seen in sql.execute("SELECT key, seen FROM targets WHERE seen != '[]'").fetchall():
+        listed = json.loads(seen)
+        if any(found in moved for found in listed):
+            sql.execute("UPDATE targets SET seen = ? WHERE key = ?",
+                        (_json([moved.get(found, found) for found in listed]), item))
 
 
 def _columns(sql: sqlite3.Connection, table: str) -> list[str]:
@@ -1257,6 +1299,18 @@ LOGIN_URL = re.compile(r"login|logon|signin|sign_in|oauth|auth|session|token|pas
                        re.IGNORECASE)
 
 
+# The kinds of a single post, written `<kind>/<id>`: a folder is named by the id alone.
+POST_KINDS = ("post", "video", "photo", "watch")
+
+
+def folder_name(target: _Target) -> str:
+    """What names a target's folder and fills `{target}`: its value, without a single post's
+    `post/`, so `ins:post/C1abc` is filed in `media/ins/C1abc`."""
+    if target.kind in POST_KINDS:
+        return target.value.removeprefix(f"{target.kind}/")
+    return target.value
+
+
 def target_folder(home: Path, target: _Target) -> Path:
     """A target's folder: `<home>/media/<code>/<value>`, with the value made a safe name.
 
@@ -1272,7 +1326,7 @@ def target_folder(home: Path, target: _Target) -> Path:
         >>> target_folder(Path("home"), Target("ins:example_user", kind="user")).as_posix()
         'home/media/ins/example_user'
     """
-    return home / MEDIA / target.plugin / text.filename(target.value)
+    return home / MEDIA / target.plugin / text.filename(folder_name(target))
 
 
 def erase(home: Path, rows: Sequence[FileRow]) -> int:

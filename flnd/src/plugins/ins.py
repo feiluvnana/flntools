@@ -164,19 +164,20 @@ class Instagram(Plugin):
 
     # `post` comes before `user`, so instagram.com/p/<code> is never the user "p". A post's code is
     # base64url, so it takes `-` as well as `\w`.
-    @route(
+    @route(*((pattern, "post/{code}") for pattern in (
+        r"ins:post/{code:[\w-]+}",
         r"instagram.com/p/{code:[\w-]+}", r"instagram.com/reel/{code:[\w-]+}",
         r"instagram.com/reels/{code:[\w-]+}", r"instagram.com/tv/{code:[\w-]+}",
         r"instagram.com/*/p/{code:[\w-]+}", r"instagram.com/*/reel/{code:[\w-]+}",
         r"instagram.com/*/reels/{code:[\w-]+}", r"instagram.com/*/tv/{code:[\w-]+}",
-        single=True,
-    )
+    )), single=True)
     async def post(self, ctx: Ctx, code: str) -> AsyncIterator[Post]:
-        """One post or reel, from its page: `https://www.instagram.com/p/C1abcDEFghi/`.
+        """One post or reel: `ins:post/C1abcDEFghi`, or its page, `instagram.com/p/C1abcDEFghi`.
 
         Raises:
             NotFound: the page holds no post of that code, or one without files.
         """
+        code = code.removeprefix("post/")
         if account_id(ctx.cookies) is not None:
             media = await logged_in_post(ctx, code, self)
         elif self.post_query is not None:

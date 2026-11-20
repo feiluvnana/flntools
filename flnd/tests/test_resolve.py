@@ -26,14 +26,17 @@ BUILT_IN = {
         "routes": [
             {"name": "braced", "patterns": ["exm:b\\{{id:\\d+}\\}"]},
             {"name": "post", "single": True,
-             "patterns": ["exm:p/{code:[\\w-]+}", "example.com/p/{code:[\\w-]+}"]},
-            {"name": "album", "single": True, "patterns": ["exm:a/{id:\\d+}"],
+             "patterns": [["exm:post/{code:[\\w-]+}", "post/{code}"],
+                          ["example.com/p/{code:[\\w-]+}", "post/{code}"]]},
+            {"name": "album", "single": True, "patterns": [["exm:album/{id:\\d+}", "album/{id}"]],
              "categories": [{"name": "photo", "own": True}, {"name": "archive", "own": True}]},
             {"name": "permalink", "single": True, "patterns": [
+                ["exm:permalink/{user:\\d+}_{post:\\w+}", "permalink/{user}_{post}"],
                 ["example.com/permalink.php?story_fbid={post:\\w+}&id={user:\\d+}",
-                 "{user}_{post}"]]},
+                 "permalink/{user}_{post}"]]},
             {"name": "search", "patterns": ["exm?{words}"]},
             {"name": "list", "discovers": True, "patterns": ["exm:list/{list}"]},
+            {"name": "me", "discovers": True, "patterns": ["exm:{me:me}"]},
             {"name": "user", "patterns": ["exm:{user}", "example.com/{user}"],
              "categories": [{"name": "posts", "own": True}, {"name": "reels", "own": True},
                             {"name": "tagged", "own": False}]},
@@ -77,54 +80,71 @@ def N(*args, **kwargs):
 
 
 TABLE = [
-    # The plugin form, and its categories.
+    # The plugin form, and its categories after `|`.
     ("exm:example_user", R("exm", "example_user", "user", ("posts", "reels"))),
     ("  EXM :@example_user ", R("exm", "example_user", "user", ("posts", "reels"))),
-    ("exm:example_user/tagged", N("exm", "example_user", "user", ("tagged",))),
-    ("exm:example_user/reels, posts", N("exm", "example_user", "user", ("posts", "reels"))),
-    ("exm:example_user/all", N("exm", "example_user", "user", ("posts", "reels", "tagged"))),
+    ("exm:example_user|tagged", N("exm", "example_user", "user", ("tagged",))),
+    ("exm:example_user|reels, posts", N("exm", "example_user", "user", ("posts", "reels"))),
+    ("exm:example_user|all", N("exm", "example_user", "user", ("posts", "reels", "tagged"))),
     ("exm:example_creator", R("exm", "example_creator", "user", ("reels",))),
-    ("exm:example_creator/posts", N("exm", "example_creator", "user", ("posts",))),
-    ("exm:p/Abc-1", R("exm", "Abc-1", "post", ())),
-    ("exm:a/12", R("exm", "12", "album", ("photo", "archive"))),
-    ("exm:a/12/archive", N("exm", "12", "album", ("archive",))),
-    ("exm:list/example_handle/tagged", N("exm", "example_handle", "list", ("tagged",))),
+    ("exm:example_creator|posts", N("exm", "example_creator", "user", ("posts",))),
+    # A single post is `<kind>/<id>`, and its key is that text: it never clashes with a user's.
+    ("exm:post/Abc-1", R("exm", "post/Abc-1", "post", ())),
+    ("exm:post", R("exm", "post", "user", ("posts", "reels"))),
+    ("exm:album/12", R("exm", "album/12", "album", ("photo", "archive"))),
+    ("exm:album/12|archive", N("exm", "album/12", "album", ("archive",))),
+    ("exm:permalink/4_abc", R("exm", "permalink/4_abc", "permalink", ())),
+    ("exm:list/example_handle|tagged", N("exm", "example_handle", "list", ("tagged",))),
     ("exm:list/example_handle", R("exm", "example_handle", "list", ())),
     # Another route reads the whole text: no split for user `list`.
     ("exm:list/posts", R("exm", "posts", "list", ())),
-    # A discovering route reads the whole text before a split: `mht:author/7` is author `7`.
     ("exm:list/7", R("exm", "7", "list", ())),
     ("exm:b{12}", R("exm", "12", "braced", ())),
-    # A trailing `/` or `,` names nothing: the defaults.
-    ("exm:example_user/", R("exm", "example_user", "user", ("posts", "reels"))),
-    ("exm:example_user/reels,", N("exm", "example_user", "user", ("reels",))),
-    ("exm:example_creator/ , ", R("exm", "example_creator", "user", ("reels",))),
-    ("exm:p/Abc-1/", R("exm", "Abc-1", "post", ())),
-    ("exc:News/", R("exc", "News", "chat", ("photo", "video"))),
-    # A catch-all splits only when every token is a category.
+    # `me` is reserved after `exm:`; `|` after it names the categories its accounts take.
+    ("exm:me", R("exm", "me", "me", ())),
+    ("exm:me|posts", N("exm", "me", "me", ("posts",))),
+    # A trailing `|` or `,` names nothing: the defaults.
+    ("exm:example_user|", R("exm", "example_user", "user", ("posts", "reels"))),
+    ("exm:example_user|reels,", N("exm", "example_user", "user", ("reels",))),
+    ("exm:example_creator| , ", R("exm", "example_creator", "user", ("reels",))),
+    ("exm:post/Abc-1|", R("exm", "post/Abc-1", "post", ())),
+    ("exc:News|", R("exc", "News", "chat", ("photo", "video"))),
+    # A `/` is part of a catch-all's value; a `|` splits only when every token is a category.
     ("exc:News / Updates", R("exc", "News / Updates", "chat", ("photo", "video"))),
-    ("exc:News/video", N("exc", "News", "chat", ("video",))),
-    ("exc:News/video, Updates", R("exc", "News/video, Updates", "chat", ("photo", "video"))),
-    # Searches.
+    ("exc:News/video", R("exc", "News/video", "chat", ("photo", "video"))),
+    ("exc:News|video", N("exc", "News", "chat", ("video",))),
+    ("exc:News|video, Updates", R("exc", "News|video, Updates", "chat", ("photo", "video"))),
+    # Searches: the text after the last `|` is a list only when every name is a category of
+    # the plugin (or `all`); else the `|` and `/` stay in the query.
     ("exm?cats", R("exm", "cats", "search", (), query=True)),
-    ("exm?cats and dogs/reels", N("exm", "cats and dogs", "search", ("reels",), query=True)),
+    ("exm?cats and dogs|reels", N("exm", "cats and dogs", "search", ("reels",), query=True)),
     ("exm?dogs", R("exm", "dogs", "search", ("posts",), query=True)),
-    ("exm?cats/all", N("exm", "cats", "search", ("photo", "archive", "posts", "reels", "tagged"),
+    ("exm?cats|all", N("exm", "cats", "search", ("photo", "archive", "posts", "reels", "tagged"),
                        query=True)),
-    ("exm?cats/", R("exm", "cats", "search", (), query=True)),
-    # A query is free text: it splits only before a list of categories.
+    ("exm?cats|", R("exm", "cats", "search", (), query=True)),
+    ("exm?a|b|reels", N("exm", "a|b", "search", ("reels",), query=True)),
+    ("exm?a|b", R("exm", "a|b", "search", (), query=True)),
+    ("exm?cats|stories", R("exm", "cats|stories", "search", (), query=True)),
+    ("exm?cats|reels,stories", R("exm", "cats|reels,stories", "search", (), query=True)),
+    ("exm?cats/reels", R("exm", "cats/reels", "search", (), query=True)),
     ("exm?AC/DC", R("exm", "AC/DC", "search", (), query=True)),
     ("exm?url:example.com/x", R("exm", "url:example.com/x", "search", (), query=True)),
-    ("exm?cats/stories", R("exm", "cats/stories", "search", (), query=True)),
     # Links: hosts with prefixes dropped, value templates, built-ins before installed ones.
     ("https://m.example.com/example_user/", R("exm", "example_user", "user", ("posts", "reels"))),
     ("example.com/example_user", R("exm", "example_user", "user", ("posts", "reels"))),
-    ("https://www.example.com/p/Abc-1?x=1", R("exm", "Abc-1", "post", ())),
-    (LINK, R("exm", "4_abc", "permalink", ())),
+    # A link's own path is not a category list; `|` after a link is.
+    ("https://example.com/example_user/tagged", R("exm", "example_user", "user",
+                                                  ("posts", "reels"))),
+    ("https://m.example.com/example_user/|tagged,reels",
+     N("exm", "example_user", "user", ("reels", "tagged"))),
+    ("example.com/example_user|all", N("exm", "example_user", "user",
+                                       ("posts", "reels", "tagged"))),
+    ("https://www.example.com/p/Abc-1?x=1", R("exm", "post/Abc-1", "post", ())),
+    (LINK, R("exm", "permalink/4_abc", "permalink", ())),
     ("https://t.example/c/123", R("exc", "-100123", "private", ())),
     ("https://dup.example/x", R("aaa", "x", "page", ())),
     ("https://cdn.other.example/a/all", R("web", "https://cdn.other.example/a/all", "page", ())),
-    ("https://s.example/abc", R("exm", "Abc", "post", ())),
+    ("https://s.example/abc", R("exm", "post/Abc", "post", ())),
     # Repeated prefixes, domains that start with one, and look-alike hosts.
     ("https://www.m.example.com/example_user", R("exm", "example_user", "user",
                                                  ("posts", "reels"))),
@@ -145,7 +165,7 @@ TABLE = [
        link="https://example_user:pw@cdn.other.example/a.mp4?x=1")),
     ("web:https://:pw@cdn.other.example/a", R("web", "https://cdn.other.example/a", "page", (),
                                              link="https://:pw@cdn.other.example/a")),
-    ("https://example_user:pw@m.example.com/p/Abc-1", R("exm", "Abc-1", "post", ())),
+    ("https://example_user:pw@m.example.com/p/Abc-1", R("exm", "post/Abc-1", "post", ())),
     # Errors: the message, then the hint.
     ("", ("a target can't be empty", "")),
     ("example_user", ('which plugin is "example_user"? Write it as exm:example_user, '
@@ -159,11 +179,25 @@ TABLE = [
                              "web:cdn.other.example/a", "")),
     ("nop:example_user", ("no plugin named nop", "Plugins: exm, exc, exs, mde, aaa, bbb, web")),
     ("bad:example_user", ("no plugin named bad", None)),
-    ("exm:example_user/stories", ("exm has no category stories",
+    ("exm:example_user|stories", ("exm has no category stories",
                                   "Categories: posts, reels, tagged")),
-    ("exm:list/example_handle/stories", ("exm has no category stories", None)),
-    ("exm:p/Abc-1/posts", ("exm:Abc-1 is one post, with no categories", "")),
+    ("exm:list/example_handle|stories", ("exm has no category stories", None)),
+    ("exm:post/Abc-1|posts", ("exm:post/Abc-1 is one post, with no categories", "")),
+    # The old way, `<target>/<categories>`, is refused with the way to write it.
+    ("exm:example_user/tagged", ("exm:example_user/tagged: categories aren't written after a /",
+                                 'write the categories after |: "exm:example_user|tagged"')),
+    ("exm:example_user/reels, posts",
+     ("exm:example_user/reels, posts: categories aren't written after a /",
+      'write the categories after |: "exm:example_user|reels, posts"')),
+    ("exm:album/12/archive", ("exm:album/12/archive: categories aren't written after a /",
+                              'write the categories after |: "exm:album/12|archive"')),
+    ("exm:me/posts", ("exm:me/posts: categories aren't written after a /",
+                      'write the categories after |: "exm:me|posts"')),
+    # `|` after a link names categories of the plugin only; any other text stays in the link.
+    ("https://example.com/example_user|stories",
+     ("exm: can't read https://example.com/example_user|stories", None)),
     ("exm?  ", ("exm: the query is empty", "")),
+    ("exm?|reels", ("exm: the query is empty", "")),
     ("exs?cats", ("exs has no search", "Write it like exs:<user>")),
     ("exm:", ("exm: write a value after exm:", None)),
     # Nor part of a message.
@@ -172,7 +206,7 @@ TABLE = [
     ("https://example.com/explore", ("exm: explore pages aren't targets", "")),
     # A tie with a route (`example.com/{user}`) goes to the refusal; the first rule speaks.
     ("https://example.com/stories", ("exm: stories aren't targets", "")),
-    ("https://example.com/p/Abc-1/stories", R("exm", "Abc-1", "post", ())),
+    ("https://example.com/p/Abc-1/stories", R("exm", "post/Abc-1", "post", ())),
     ("https://t.example/joinchat/x",
      ("exc: can't read https://t.example/joinchat/x",
       "Write it like https://www.t.example/c/<chat>/, exc:<title>")),
@@ -211,13 +245,14 @@ class ResolveTest(unittest.TestCase):
                 if hint is not None:
                     self.assertEqual(caught.exception.hint, hint)
         # A short link is followed once, and what it leads to is never followed again.
-        self.assertEqual(followed, ["https://s.example/abc", "https://t.example/joinchat/x",
-                                    "https://s.example/loop"])
+        self.assertEqual(followed, ["https://s.example/abc",
+                                    "https://example.com/example_user|stories",
+                                    "https://t.example/joinchat/x", "https://s.example/loop"])
 
     def test_the_key_leaves_categories_out(self):
-        self.assertEqual(resolve("exm:example_user/tagged", manifest=MANIFEST, known={}).key,
+        self.assertEqual(resolve("exm:example_user|tagged", manifest=MANIFEST, known={}).key,
                          "exm:example_user")
-        self.assertEqual(resolve("exm?cats/reels", manifest=MANIFEST, known={}).key, "exm?cats")
+        self.assertEqual(resolve("exm?cats|reels", manifest=MANIFEST, known={}).key, "exm?cats")
 
     def test_a_malformed_entry_names_its_plugin_and_pattern(self):
         for patterns, message in MALFORMED:
@@ -236,13 +271,35 @@ class ResolveTest(unittest.TestCase):
 
     def test_the_built_ins_resolve_from_their_manifest(self):
         manifest = Manifest(_manifest.PLUGINS)
+        user = ("posts", "reels", "stories", "highlights", "profile")
         for text, expected in [
-            ("ins:example_user/tagged", N("ins", "example_user", "user", ("tagged",))),
-            ("loi:12", R("loi", "12", "post", ("archive", "photo"))),
-            ("mht?cats/cover", N("mht", "cats", "query", ("cover",), query=True)),
-            ("https://www.instagram.com/example_user/",
-             R("ins", "example_user", "user",
-               ("posts", "reels", "stories", "highlights", "profile"))),
+            ("ins:example_user|tagged", N("ins", "example_user", "user", ("tagged",))),
+            ("https://www.instagram.com/example_user/|tagged",
+             N("ins", "example_user", "user", ("tagged",))),
+            ("mht?cats|cover", N("mht", "cats", "query", ("cover",), query=True)),
+            ("https://www.instagram.com/example_user/", R("ins", "example_user", "user", user)),
+            # Every built-in's single post is `<kind>/<id>`, and so is its key.
+            ("ins:post/C1abc", R("ins", "post/C1abc", "post", ())),
+            ("instagram.com/reel/C1abc", R("ins", "post/C1abc", "post", ())),
+            ("ins:C1abc", R("ins", "C1abc", "user", user)),
+            ("ins:me", R("ins", "me", "me", ())),
+            ("twt:post/1790", R("twt", "post/1790", "post", ())),
+            ("https://x.com/example_handle/status/1790", R("twt", "post/1790", "post", ())),
+            ("tik:post/7301234567890123456", R("tik", "post/7301234567890123456", "post", ())),
+            ("tik:7301234567890123456", R("tik", "post/7301234567890123456", "post", ())),
+            ("loi:post/12", R("loi", "post/12", "post", ("archive", "photo"))),
+            ("loi:12", R("loi", "post/12", "post", ("archive", "photo"))),
+            ("loi:12|photo", N("loi", "post/12", "post", ("photo",))),
+            ("mht:chapter/1001", R("mht", "chapter/1001", "chapter", ())),
+            ("fbk:video/123", R("fbk", "video/123", "video", ())),
+            ("https://fb.com/reel/123", R("fbk", "video/123", "video", ())),
+            ("fbk:photo/123", R("fbk", "photo/123", "photo", ())),
+            ("fbk:post/42_7", R("fbk", "post/42_7", "post", ())),
+            ("https://www.facebook.com/story.php?story_fbid=7&id=42",
+             R("fbk", "post/42_7", "post", ())),
+            ("https://fb.watch/abc", R("fbk", "watch/abc", "watch", ())),
+            ("fbk:123", R("fbk", "123", "user", ("posts", "photos", "albums", "reels", "videos",
+                                                  "stories", "profile"))),
         ]:
             with self.subTest(text=text):
                 self.assertEqual(resolve(text, manifest=manifest, known={}), expected)
@@ -252,7 +309,7 @@ class ResolveTest(unittest.TestCase):
                 "from flnd.engine.resolve import Manifest, resolve\n"
                 "from flnd.plugins import _manifest\n"
                 "manifest = Manifest(_manifest.PLUGINS)\n"
-                "for text in ('ins:example_user/reels', 'twt?cats', "
+                "for text in ('ins:example_user|reels', 'twt?cats', "
                 "'https://www.instagram.com/example_user', 'https://nowhere.example/x'):\n"
                 "    try:\n"
                 "        resolve(text, manifest=manifest, known={})\n"
@@ -278,7 +335,7 @@ class MixedRunTest(LibraryCase):
         self.fl.add(example_source(self.listing, code="exq", search=route("exq?{words}")(search)))
 
     def test_a_search_and_a_user_with_categories_are_both_stored(self):
-        self.fl.get("exq?words/reels", "exq:example_user/posts").wait()
+        self.fl.get("exq?words|reels", "exq:example_user|posts").wait()
         with store.open(self.home) as db:
             rows = db.targets()
         self.assertEqual((rows["exq:words"].categories, rows["exq:example_user"].categories),

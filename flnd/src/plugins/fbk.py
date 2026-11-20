@@ -161,7 +161,7 @@ class Facebook(Plugin):
             if not re.fullmatch(r"\w+", story) or not owner.isdigit():
                 raise UsageError(f"fbk: a {page} link names its post by story_fbid= and id=; "
                                  "this one lacks one of them")
-            return Target(f"fbk:{owner}_{story}", kind="post")
+            return Target(f"fbk:post/{owner}_{story}", kind="post")
         if on_site and page in PHOTO_PAGES:
             fbid = (parse_qs(parts.query).get("fbid") or [""])[0]
             if not fbid.isdigit():
@@ -176,20 +176,21 @@ class Facebook(Plugin):
             return 0.0
         return None
 
-    @route(
+    @route(*((pattern, "video/{video}") for pattern in (
+        r"fbk:video/{video:\d+}",
         r"facebook.com/watch?v={video:\d+}", r"fb.com/watch?v={video:\d+}",
         r"facebook.com/*/videos/{video:\d+}", r"fb.com/*/videos/{video:\d+}",
         r"facebook.com/videos/{video:\d+}", r"fb.com/videos/{video:\d+}",
         r"facebook.com/reel/{video:\d+}", r"fb.com/reel/{video:\d+}",
         r"facebook.com/reels/{video:\d+}", r"fb.com/reels/{video:\d+}",
-        single=True,
-    )
+    )), single=True)
     async def video(self, ctx: Ctx, video: str) -> AsyncIterator[Post]:
-        """One video or reel, by its link: `https://www.facebook.com/watch/?v=<id>`."""
+        """One video or reel: `fbk:video/<id>`, or its link, `facebook.com/watch/?v=<id>`."""
+        video = video.removeprefix("video/")
         async for post in read_single(ctx, f"{SITE}/watch/?v={video}", wanted=video):
             yield post
 
-    @route(r"fb.watch/{code:[\w-]+}", single=True)
+    @route((r"fb.watch/{code:[\w-]+}", "watch/{code}"), single=True)
     async def watch(self, ctx: Ctx, code: str) -> AsyncIterator[Post]:
         """One video by its `fb.watch` short link, followed in the logged-in browser.
 
@@ -199,7 +200,7 @@ class Facebook(Plugin):
         Raises:
             NotFound: the link didn't lead to a video's page.
         """
-        link = f"https://fb.watch/{code}/"
+        link = f"https://fb.watch/{code.removeprefix('watch/')}/"
         video = video_id((await ctx.open(link)).url)
         if video is None:
             raise NotFound(f"fbk: {link} didn't lead to a video",
@@ -207,21 +208,24 @@ class Facebook(Plugin):
         async for post in read_single(ctx, f"{SITE}/watch/?v={video}", wanted=video):
             yield post
 
-    @route(
+    @route(*((pattern, "photo/{photo}") for pattern in (
+        r"fbk:photo/{photo:\d+}",
         r"facebook.com/photo.php?fbid={photo:\d+}", r"fb.com/photo.php?fbid={photo:\d+}",
         r"facebook.com/photo?fbid={photo:\d+}", r"fb.com/photo?fbid={photo:\d+}",
-        single=True,
-    )
+    )), single=True)
     async def photo(self, ctx: Ctx, photo: str) -> AsyncIterator[Post]:
-        """One photo, by its `photo.php?fbid=<id>` or `photo/?fbid=<id>` link."""
+        """One photo: `fbk:photo/<id>`, or its `photo.php?fbid=<id>` or `photo/?fbid=<id>` link."""
+        photo = photo.removeprefix("photo/")
         async for post in read_single(ctx, f"{SITE}/photo/?fbid={photo}", wanted=photo):
             yield post
 
     @route(
-        (r"facebook.com/permalink.php?story_fbid={post:\w+}&id={user:\d+}", "{user}_{post}"),
-        (r"fb.com/permalink.php?story_fbid={post:\w+}&id={user:\d+}", "{user}_{post}"),
-        (r"facebook.com/story.php?story_fbid={post:\w+}&id={user:\d+}", "{user}_{post}"),
-        (r"fb.com/story.php?story_fbid={post:\w+}&id={user:\d+}", "{user}_{post}"),
+        (r"fbk:post/{user:\d+}_{post:\w+}", "post/{user}_{post}"),
+        (r"facebook.com/permalink.php?story_fbid={post:\w+}&id={user:\d+}",
+         "post/{user}_{post}"),
+        (r"fb.com/permalink.php?story_fbid={post:\w+}&id={user:\d+}", "post/{user}_{post}"),
+        (r"facebook.com/story.php?story_fbid={post:\w+}&id={user:\d+}", "post/{user}_{post}"),
+        (r"fb.com/story.php?story_fbid={post:\w+}&id={user:\d+}", "post/{user}_{post}"),
         shown=f"{SITE}/permalink.php?story_fbid=<post>&id=<user>",
         single=True,
     )
@@ -229,8 +233,9 @@ class Facebook(Plugin):
         """One post's photos and videos its owner owns, by its permalink (`resolve`).
 
         Args:
-            post: `<owner id>_<story_fbid>`, as `resolve` made it.
+            post: `<owner id>_<story_fbid>`, as `resolve` made it, after `post/`.
         """
+        post = post.removeprefix("post/")
         owner, _, story = post.partition("_")
         url = f"{SITE}/permalink.php?story_fbid={story}&id={owner}"
         async for found in read_single(ctx, url, owner=owner):

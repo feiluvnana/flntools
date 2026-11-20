@@ -141,16 +141,17 @@ ROUTES = [
     ("https://x.com/example_handle?lang=en", ("user", "example_handle")),
     ("https://x.com/@example_handle", ("user", "example_handle")),
     ("https://x.com/example_handle/status/abc", ("user", "example_handle")),
-    ("https://x.com/example_handle/status/1790000000000000000/", ("post", "1790000000000000000")),
-    ("https://x.com/example_handle/status/1790?s=20", ("post", "1790")),
-    ("https://twitter.com/example_handle/status/1790/photo/1", ("post", "1790")),
-    ("https://www.twitter.com/example_handle/status/1790", ("post", "1790")),
-    ("twt:x.com/example_handle/status/1790", ("post", "1790")),
-    ("twt:twitter.com/example_handle/status/1790", ("post", "1790")),
-    ("https://x.com/status/1790", ("post", "1790")),
-    ("https://twitter.com/status/1790", ("post", "1790")),
-    ("https://x.com/i/web/status/1790", ("post", "1790")),
-    ("https://twitter.com/i/web/status/1790", ("post", "1790")),
+    ("https://x.com/example_handle/status/1790000000000000000/",
+     ("post", "post/1790000000000000000")),
+    ("https://x.com/example_handle/status/1790?s=20", ("post", "post/1790")),
+    ("https://twitter.com/example_handle/status/1790/photo/1", ("post", "post/1790")),
+    ("https://www.twitter.com/example_handle/status/1790", ("post", "post/1790")),
+    ("twt:x.com/example_handle/status/1790", ("post", "post/1790")),
+    ("twt:twitter.com/example_handle/status/1790", ("post", "post/1790")),
+    ("https://x.com/status/1790", ("post", "post/1790")),
+    ("https://twitter.com/status/1790", ("post", "post/1790")),
+    ("https://x.com/i/web/status/1790", ("post", "post/1790")),
+    ("https://twitter.com/i/web/status/1790", ("post", "post/1790")),
     *[(f"https://{host}/{path}", NOT_A_PROFILE) for host in ("x.com", "twitter.com") for path in (
         "home", "explore", "search?q=example", "settings", "notifications", "messages/1",
         "hashtag/tag", "i/flow/login", "intent/tweet", "compose/post", "login")],
@@ -326,7 +327,7 @@ class SearchTest(unittest.TestCase):
             "https://x.com/i/web/status/1", "https://x.com/i/web/status/3",
             "https://x.com/i/web/status/4"])
         self.assertEqual(ctx.seen.visited, [self.SEARCH])
-        self.assertEqual(Twitter.resolve(str(found[0])), Target("twt:1", kind="post"))
+        self.assertEqual(Twitter.resolve(str(found[0])), Target("twt:post/1", kind="post"))
         # The discovered tweet runs on the same instance: its files, and no API call.
         later = FakeCtx(plugin, str(found[0]))
         saved = collect(Twitter, str(found[0]), ctx=later)

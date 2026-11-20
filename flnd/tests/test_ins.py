@@ -200,9 +200,9 @@ class RoutesTest(unittest.TestCase):
             ("https://instagram.com/example_user/?hl=en", "user", "example_user"),
             ("https://m.instagram.com/example_user/reels/", "user", "example_user"),
             ("https://www.instagram.com/me/", "user", "me"),
-            ("https://www.instagram.com/p/C1a-bc_DEF/", "post", "C1a-bc_DEF"),
-            ("https://www.instagram.com/reel/C1abcDEFghi/?igsh=1", "post", "C1abcDEFghi"),
-            ("instagram.com/example_user/tv/C1abcDEFghi", "post", "C1abcDEFghi"),
+            ("https://www.instagram.com/p/C1a-bc_DEF/", "post", "post/C1a-bc_DEF"),
+            ("https://www.instagram.com/reel/C1abcDEFghi/?igsh=1", "post", "post/C1abcDEFghi"),
+            ("instagram.com/example_user/tv/C1abcDEFghi", "post", "post/C1abcDEFghi"),
             ("https://www.instagram.com/stories/example_user/31/", None, "story links"),
             ("https://www.instagram.com/accounts/login/", None, "that's not a profile"),
             ("https://www.instagram.com/direct/inbox/", None, "that's not a profile"),
@@ -860,10 +860,10 @@ class MeEngineTest(fakes.EngineCase):
 
     def test_a_dry_run_keeps_nothing_and_a_sync_finds_new_follows(self):
         engine = fakes.Engine(home=self.home, sources={"ins": Instagram})
-        dry = engine.download(["ins:me/posts"], dry=True)
+        dry = engine.download(["ins:me|posts"], dry=True)
         self.assertTrue(dry.ok, (dry, self.lines()))
         self.assertEqual(fakes.targets(self.home), {})
-        report = engine.download(["ins:me/posts"], sync=True)
+        report = engine.download(["ins:me|posts"], sync=True)
         self.assertTrue(report.ok, report)
         self.assertEqual([row.text for row in engine.tally.publish(force=True).targets],
                          ["ins:me", "ins:example_user"])

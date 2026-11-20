@@ -82,12 +82,17 @@ A target names what to download. Its whole grammar:
 
 ```text
 target     = text | link
-text       = <code>:<value>[/<categories>]      a user, a post id, a chat ...
-           | <code>?<query>[/<categories>]      a search
-link       = http(s)://<host>/<path>[?<query>]  a page on a site
-           | <host>/<path>                      when some plugin owns <host>
+text       = <code>:<value>[|<categories>]      a user, a post, a chat ...
+           | <code>?<query>[|<categories>]      a search
+link       = http(s)://<host>/<path>[?<query>][|<categories>]   a page on a site
+           | <host>/<path>[|<categories>]       when some plugin owns <host>
+value      = <name> | me | <kind>/<id>          a user, the accounts you follow, one post
 categories = all | <name>[,<name>...]
 ```
+
+`|` is the shell's pipe, so quote a target that has categories:
+`flnd get "ins:example_user|tagged"`. A single post is written `<code>:<kind>/<id>`
+(`ins:post/C1abc`, `fbk:video/123`); a user name never holds a `/`.
 
 How a target is read, in order:
 
@@ -100,24 +105,29 @@ How a target is read, in order:
    takes it. The first route that reads the link wins. A link a plugin lists as unsupported is
    refused with its reason, unless a route matches it with more literal path parts. Path parts
    after the ones a route names are ignored (`.../example_user/reels/` is the user), and so
-   are other query keys. A link never takes categories. One no route reads is followed once
-   with a HEAD request (a short link such as `vm.tiktok.com`), then read again.
-4. **`<code>:<value>`** is split at its last `/`. When a route reads the part before it and
-   that route has categories, the part after is the list of categories. When a different
-   route reads the whole text (`mht:chapter/5` is a chapter, not `chapter` with categories
-   `5`), the whole text wins. A route that reads any text (a Telegram title) splits only when
-   every word after the `/` is a category or `all`, so `tlg:News / Updates` stays whole. A
-   one-post route given a list is `<code>:<value> is one post, with no categories`.
+   are other query keys, so a link's own path is never a category list. One no route reads is
+   followed once with a HEAD request (a short link such as `vm.tiktok.com`), then read again.
+   The text after a link's last `|` is its categories when every word in it is `all` or a
+   category of the plugin that owns it (`instagram.com/example_user|tagged`); else it stays in
+   the link.
+4. **`<code>:<value>`** is split at its last `|`: the part after it is the list of categories.
+   A route that reads any text (a Telegram title) splits only when every word after the `|` is
+   a category or `all`, so `tlg:Fans|Lens` stays whole. A one-post route given a list is
+   `<code>:<kind>/<id> is one post, with no categories`. The old written form,
+   `<code>:<value>/<categories>`, is refused with the hint
+   `write the categories after |: "ins:example_user|tagged"`.
 5. **`<code>?<query>`** needs a plugin with a search route (`twt`, `mht`). The text after the
-   last `/` is categories only when every word in it is `all` or a category; else the whole text
-   is the query (`mht?AC/DC`, `twt?url:example.com/x`).
+   last `|` is categories only when every word in it is `all` or a category of that plugin;
+   else the whole text is the query (`mht?AC/DC`, `twt?a|b`, `twt?url:example.com/x`).
 6. **Categories** are split at `,`, trimmed, and empty ones dropped. Names are case-sensitive.
    `all` is every category of the route, opt-in ones too. The result is in the plugin's
    order, not the order typed. With no list, a target the home knows takes the categories it
    was followed with, and a new one takes the route's own (`own`) categories. A search passes
    its list to every target it finds. Naming categories replaces the stored ones.
 7. The code is matched in any case; the value is kept as typed. A target's key is
-   `<code>:<value>`, or `<code>?<query>`; categories are no part of it. A link's `user:pw@`
+   `<code>:<value>`, or `<code>?<query>`; categories are no part of it. A single post's value
+   starts with its kind, so its key is what you type (`ins:post/C1abc`) and never clashes with a
+   user's (`ins:C1abc`). A link's `user:pw@`
    is left out of every key, message and log line.
 
 Refusals, with the text printed (all `UsageError`, exit 2, before any request):
@@ -128,10 +138,12 @@ Refusals, with the text printed (all `UsageError`, exit 2, before any request):
 - `nope:x`: `no plugin named nope`; hint `Plugins: tik, fbk, ins, twt, loi, tlg, mht, web`
 - `ins:`: `ins: write a value after ins:`; hint `Write it like <every form of the plugin>`
 - `ins:%`: `ins: can't read '%'`; hint `Write it like <every form of the plugin>`
-- `ins:example_user/nope`: `ins has no category nope`; hint `Categories: posts, reels, tagged,
+- `ins:example_user|nope`: `ins has no category nope`; hint `Categories: posts, reels, tagged,
   reposts, stories, highlights, profile`
+- `ins:example_user/tagged`: `ins:example_user/tagged: categories aren't written after a /`;
+  hint `write the categories after |: "ins:example_user|tagged"`
 - `ins:example_user/posts/`: `ins: can't read 'example_user/posts/'`; hint `Write it like ...`
-- `tik:1234567890123456/all`: `tik:1234567890123456 is one post, with no categories`
+- `tik:post/1234567890123456|all`: `tik:post/1234567890123456 is one post, with no categories`
 - `tik?cats`: `tik has no search`; hint `Write it like ...`
 - `twt?`: `twt: the query is empty`
 - `https://x.com/home`: `twt: that's not a profile`
@@ -157,7 +169,7 @@ flnd get ins:example_user tik:example_user
 ### `me`, searches and `--limit`
 
 - `ins:me` is the only `me`. It lists every account the logged-in Instagram account follows and
-  gets each as its own `user` target (`ins:me/posts,stories` passes the list on to each). It
+  gets each as its own `user` target (`"ins:me|posts,stories"` passes the list on to each). It
   needs a login. `twt:me` is a user named `me`.
 - A search (`twt?<words>`, `mht?<words>`) finds targets, and each found target is got as its
   own. `--folder` collapses all of them into one folder. A followed search gets only the targets
@@ -178,6 +190,7 @@ what is in that place. Messages not shown say `<code>: can't read <text>` with t
 | Form | Route | Reads |
 | --- | --- | --- |
 | `ins:<user>`, `instagram.com/<user>` (a leading `@` is dropped) | `user` | the profile |
+| `ins:post/<code>` | `post` | one post |
 | `instagram.com/p/<code>`, `/reel/<code>`, `/reels/<code>`, `/tv/<code>` | `post` | one post |
 | `instagram.com/<user>/p/<code>` (and `reel`, `reels`, `tv`) | `post` | one post |
 | `ins:me` | `me` | every account the login follows |
@@ -192,6 +205,7 @@ profile`; `instagram.com/` alone, and a code with no value.
 | --- | --- | --- |
 | `twt:<user>`, `x.com/<user>` (any tab link, such as `/media`) | `user` | the profile |
 | `twt:<id>`, `x.com/i/user/<id>` (digits) | `user` | the profile with that id |
+| `twt:post/<id>` | `post` | one tweet |
 | `x.com/<user>/status/<id>`, `x.com/status/<id>`, `x.com/i/web/status/<id>` | `post` | one tweet |
 | `twt?<words>` | `search` | the Latest tab of a search |
 
@@ -202,9 +216,10 @@ Refused with `twt: that's not a profile`: `x.com/home`, `explore`, `search` (so
 **tik**
 
 - `tik:<user>`, `tiktok.com/@<user>`: the profile (route ``user``)
-- `tik:<id>` (16 digits or more): one video or photo post (route ``video``)
+- `tik:post/<id>`: one video or photo post (route ``post``); the old `tik:<id>` (16 digits or
+  more) reads too
 - `tiktok.com/@<user>/video/<id>`, `/photo/<id>`, `tiktok.com/video/<id>`, `/photo/<id>`: one post
-  (route ``video``)
+  (route ``post``)
 
 `tik:123` (under 16 digits) is a user. Refused: `tik?...` (`tik has no search`), `@@user`, any
 other `tiktok.com` link. A short link on a `tiktok.com` subdomain is followed once.
@@ -213,11 +228,13 @@ other `tiktok.com` link. A short link on a `tiktok.com` subdomain is followed on
 
 - `fbk:<user>`, `facebook.com/<user>`, `/@<user>`, `/profile.php?id=<id>`, `/people/.../<id>`: the
   profile or page (route ``user``)
-- `facebook.com/watch?v=<id>`, `/<page>/videos/<id>`, `/videos/<id>`, `/reel/<id>`, `/reels/<id>`:
-  one video or reel (route ``video``)
-- `fb.watch/<code>`: the video the short link leads to (route ``watch``)
-- `facebook.com/photo.php?fbid=<id>`, `/photo?fbid=<id>`: one photo (route ``photo``)
-- `facebook.com/permalink.php?story_fbid=<post>&id=<id>` (or `story.php`): one post (route ``post``)
+- `fbk:video/<id>`, `facebook.com/watch?v=<id>`, `/<page>/videos/<id>`, `/videos/<id>`,
+  `/reel/<id>`, `/reels/<id>`: one video or reel (route ``video``)
+- `fb.watch/<code>`: the video the short link leads to (route ``watch``, link only)
+- `fbk:photo/<id>`, `facebook.com/photo.php?fbid=<id>`, `/photo?fbid=<id>`: one photo (route
+  ``photo``)
+- `fbk:post/<owner id>_<story id>`, `facebook.com/permalink.php?story_fbid=<post>&id=<id>` (or
+  `story.php`): one post (route ``post``)
 
 A link's profile name never is one of `profile.php people share watch reel reels videos photo
 photo.php permalink.php story.php login login.php`. Refused with `fbk: this kind of link isn't
@@ -243,10 +260,10 @@ characters), `t.me/` alone, `web.telegram.org` links: `tlg: can't read <text>`.
 
 | Form | Route | Reads |
 | --- | --- | --- |
-| `loi:<id>`, `loix.cc/lois/<id>`, `moegoat.com/lois/<id>` (digits) | `post` | one post |
+| `loi:post/<id>`, `loix.cc/lois/<id>`, `moegoat.com/lois/<id>` (digits) | `post` | one post |
 
-Refused: `loi:abc`, `loix.cc/` alone. `loi:<id>/archive` and `/photo` are allowed: `post` is
-single but has categories.
+The old `loi:<id>` reads too. Refused: `loi:abc`, `loix.cc/` alone. `loi:post/<id>|archive` and
+`|photo` are allowed: `post` is single but has categories.
 
 **mht**
 
@@ -261,7 +278,7 @@ single but has categories.
 Query terms: plain words (title), `title:`, `author:`, `genre:` (repeatable), `-genre:`, `parody:`,
 `character:`, `chapters:<n>`. Quote values with spaces. Any other term, a `-` before a term but
 `genre`, a term with no value, a `chapters:` that is not a number, and an empty query are
-refused. `mht:chapter/5/chapters` is `mht:chapter/5 is one post, with no categories`.
+refused. `mht:chapter/5|chapters` is `mht:chapter/5 is one post, with no categories`.
 
 **web**
 
@@ -271,7 +288,7 @@ refused. `mht:chapter/5/chapters` is `mht:chapter/5 is one post, with no categor
 | `web:http(s)://...` | `page` | the same, even for a host another plugin owns |
 
 Refused: `web:example.com` is `web: can't read 'example.com'` (hint `Write it like web:<url>`);
-a trailing `/all` is `web:<link> is one post, with no categories`.
+a trailing `|all` is `web:<link> is one post, with no categories`.
 
 ## Dates
 
@@ -333,26 +350,31 @@ ones (other people's media) only when named or with `all`.
 | `mht` | `chapters cover` | none |
 | `web` | none | none |
 
+Write the list after `|`, and quote the target, since `|` is the shell's pipe:
+
 ```sh
-flnd get ins:example_user                  # the own categories
-flnd get ins:example_user/posts,reels      # these two
-flnd get ins:example_user/tagged           # only the opt-in one
-flnd get ins:example_user/all              # everything, opt-in too
+flnd get ins:example_user                    # the own categories
+flnd get "ins:example_user|posts,reels"      # these two
+flnd get "ins:example_user|tagged"           # only the opt-in one
+flnd get "ins:example_user|all"              # everything, opt-in too
+flnd get "instagram.com/example_user|tagged" # a link takes a list the same way
 ```
 
-- `flnd get <target>/<list>` follows the target with that list: later syncs take the same.
-- A single post has no categories (naming one is `<code>:<value> is one post, with no
-  categories`); `loi:<id>` is the exception. A link never takes any.
-- `ins:me/<list>`, `mht:author/<x>/<list>`, `mht?<q>/<list>` and `twt?<q>/<list>` pass the list on
-  to each target found. With no list, each takes its own.
+- `flnd get "<target>|<list>"` follows the target with that list: later syncs take the same.
+- The old `ins:example_user/tagged` is refused, with the hint to write it `|tagged`.
+- A single post has no categories (naming one is `<code>:<kind>/<id> is one post, with no
+  categories`); `loi:post/<id>` is the exception.
+- `"ins:me|<list>"`, `"mht:author/<x>|<list>"`, `"mht?<q>|<list>"` and `"twt?<q>|<list>"` pass the
+  list on to each target found. With no list, each takes its own.
 - A category that is not newest first (`tagged`, `stories`, `profile` ...) is read to its end on
   every run; only newest-first ones stop early ([Sync](#sync)).
 
 ## Folders
 
 Each target has a folder, `media/<code>/<value>/`, where `<value>` is the target's value made
-safe as a file name. Under it a file goes where its plugin's `folder` template puts it, named
-by its `filename` template, with the extension its content calls for:
+safe as a file name (a single post's `post/`, `video/`, `photo/` or `watch/` is left out:
+`ins:post/C1abc` is `media/ins/C1abc/`). Under it a file goes where its plugin's `folder`
+template puts it, named by its `filename` template, with the extension its content calls for:
 
 ```text
 media/ins/example_user/posts/2026-01-02_C1abc_0.jpg
@@ -1092,7 +1114,7 @@ class Demo(Plugin):
 ```python
 with flnd.open(home) as fl:
     fl.add(Demo)
-    preview = list(fl.get("dmo:example_user/all", when="2026-03", dry=True))
+    preview = list(fl.get("dmo:example_user|all", when="2026-03", dry=True))
     assert [(e.post, e.state) for e in preview] == [("p2", "new"), ("t1", "new")]
 ```
 
@@ -1154,13 +1176,13 @@ with flnd.open(home, again=True) as fl:
 other = tempfile.mkdtemp()
 with flnd.open(other) as fl:
     fl.add(Demo)
-    events = list(fl.get("dmo:example_user/all", folder="{target}/{date}"))
+    events = list(fl.get("dmo:example_user|all", folder="{target}/{date}"))
     paths = sorted(e.path.relative_to(pathlib.Path(other, "media", "dmo")).as_posix()
                    for e in events if isinstance(e, flnd.Saved))
     assert paths == ["example_user/2026-02-01/p1.txt", "example_user/2026-03-02/p2.txt",
                      "example_user/2026-03-05/t1.txt"]
     for call, said in [
-        (lambda: fl.get("dmo:example_user/stories"), "dmo has no category stories"),
+        (lambda: fl.get("dmo:example_user|stories"), "dmo has no category stories"),
         (lambda: fl.get("dmo:example_user", limit=0), "limit must be at least 1"),
         (lambda: fl.get("dmo:example_user", folder="../x"),
          "the call: folder is a template inside the target's folder, not this text"),

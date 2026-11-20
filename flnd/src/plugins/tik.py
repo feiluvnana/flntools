@@ -272,17 +272,19 @@ class TikTok(Plugin):
     key = "{post}_{idx}"
 
     # Before `user`, so a 16-digit id is never a user name; a link with no user is read too.
-    @route(r"tik:{id:\d{16,}}", r"tiktok.com/*/video/{id:\d+}", r"tiktok.com/*/photo/{id:\d+}",
-           r"tiktok.com/video/{id:\d+}", r"tiktok.com/photo/{id:\d+}", single=True)
-    async def video(self, ctx: Ctx, id: str) -> AsyncIterator[Post]:
-        """One video or photo post, by its id: `tik:7301234567890123456`.
+    @route(*((pattern, "post/{id}") for pattern in (
+        r"tik:post/{id:\d+}", r"tik:{id:\d{16,}}", r"tiktok.com/*/video/{id:\d+}",
+        r"tiktok.com/*/photo/{id:\d+}", r"tiktok.com/video/{id:\d+}",
+        r"tiktok.com/photo/{id:\d+}")), single=True)
+    async def post(self, ctx: Ctx, id: str) -> AsyncIterator[Post]:
+        """One video or photo post, by its id: `tik:post/7301234567890123456`.
 
         Raises:
             NotFound: the embed page answered 404 or 410: the post is gone.
             SiteError: it refused otherwise, a 401 or 403 included, since it is public.
             Changed: it holds no post.
         """
-        for post in await embed(ctx, id):
+        for post in await embed(ctx, id.removeprefix("post/")):
             yield post
 
     # The `@` is in the link's pattern, so `tiktok.com/@@example_creator` is refused.
