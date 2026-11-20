@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import PurePosixPath
@@ -62,6 +63,8 @@ SEARCH = "SearchTimeline"
 # Consecutive empty search pages with advancing Bottom cursors allowed before stopping.
 SEARCH_EMPTY = 3
 # Matches a `max_id:<digits>` operator in a search query as its own whitespace-delimited token.
+# How many of a search window's last tweets, in scroll order, set where the next window starts.
+SEARCH_TAIL = 5
 MAX_ID = re.compile(r"(?<!\S)max_id:\d+(?!\S)", re.IGNORECASE)
 # The flags sent before the web app's own are known: a refresh replaces them with each query's
 # `featureSwitches` and the values x.com's page gives them.
@@ -241,54 +244,51 @@ class Twitter(Plugin):
         `since:` and `until:`, so a search for a few days doesn't scroll through years.
         """
         seen: set[str] = set()
-        oldest_id: int | None = None
-        oldest_date: date | None = None
         window_query = query
         stalled = 0
         while True:
-            prev_oldest = oldest_id
-            window_seen = False
+            # The last tweets reached in scroll order: an old outlier early in a window must not
+            # set where the next one starts, so it is the oldest of these, not of all.
+            tail: deque[tuple[int, date | None]] = deque(maxlen=SEARCH_TAIL)
+            added = False
             words = " ".join([window_query, *range_operators(ctx.when)])
             url = "https://x.com/search?" + urlencode({
                 "q": words, "src": "typed_query", "f": "live"})
             try:
                 async for tweet, _ in self._scroll(ctx, url, SEARCH):
                     tweet_id = tweet_id_of(tweet)
-                    if not tweet_id or tweet_id in seen:
+                    if not tweet_id:
+                        continue
+                    if tweet_id.isdigit():
+                        posted = parse_date(dig(unwrap(tweet), "legacy.created_at"))
+                        tail.append((int(tweet_id), posted.astimezone(UTC).date()
+                                     if posted is not None else None))
+                    if tweet_id in seen:
                         continue
                     seen.add(tweet_id)
-                    window_seen = True
-                    if tweet_id.isdigit():
-                        tid = int(tweet_id)
-                        if oldest_id is None or tid < oldest_id:
-                            oldest_id = tid
-                            posted = parse_date(dig(unwrap(tweet), "legacy.created_at"))
-                            oldest_date = (posted.astimezone(UTC).date()
-                                           if posted is not None else None)
+                    added = True
                     if any(True for _ in tweet_posts(tweet, "posts", None, part="")):
                         self.found[tweet_id] = tweet
                         yield Target(f"https://x.com/i/web/status/{tweet_id}")
             except Blocked as error:
-                advanced = oldest_id is not None and (
-                    prev_oldest is None or oldest_id < prev_oldest)
-                progress = window_seen if prev_oldest is None else advanced
-                stalled = 0 if progress else stalled + 1
+                stalled = 0 if added else stalled + 1
                 if stalled > 3:
                     raise
                 await ctx.hold("rate limited", seconds=error.wait,
-                               bucket=SEARCH, reset=progress)
-                if advanced and oldest_id is not None and oldest_id > 1:
-                    window_query = with_max_id(query, oldest_id - 1)
+                               bucket=SEARCH, reset=added)
+                edge = min((entry[0] for entry in tail), default=0)
+                if added and edge > 1:
+                    window_query = with_max_id(query, edge - 1)
                 continue
             stalled = 0
-            advanced = oldest_id is not None and (
-                prev_oldest is None or oldest_id < prev_oldest)
-            if not advanced or oldest_id is None or oldest_id <= 1:
+            if not added or not tail:
                 break
-            if (ctx.when.since is not None and oldest_date is not None
-                    and oldest_date < ctx.when.since):
+            edge_id, edge_date = min(tail, key=lambda entry: entry[0])
+            if edge_id <= 1:
                 break
-            window_query = with_max_id(query, oldest_id - 1)
+            if ctx.when.since is not None and edge_date is not None and edge_date < ctx.when.since:
+                break
+            window_query = with_max_id(query, edge_id - 1)
 
     @route("twt:{me:me}", shown="twt:me", discovers=True)
     async def me(self, ctx: Ctx, me: str) -> AsyncIterator[Target]:

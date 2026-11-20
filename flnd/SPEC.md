@@ -1021,10 +1021,10 @@ up to 32.
 - **Filename:** `{date}_{post}_{n}` (`n` is `0`, `1`, ..., `q0` for a quoted tweet, `card`).
 - **Key:** `{post}_{n}` (`twt:<tweet id>_<n>`); `profile` keys by `{path}`.
 - **Search:** `twt?<words>` opens the Latest tab; X operators (`from:`, `filter:media`) work;
-  `--when` is sent as `since:`/`until:`. When X's cursor ends early (or a 429 cuts a window), a
-  `max_id:` window follows from the oldest of the window's last 5 tweets, so an old outlier
-  skips nothing; it ends when a window adds no new tweet; 3 empty pages in a row are passed; a 429 holds that bucket. Each tweet with files
-  is a `post` target in the search's `--folder`. Tagged: `twt?@example_handle -from:example_handle`.
+  `--when` is sent as `since:`/`until:`. When X's cursor ends early or a 429 cuts a window, a
+  `max_id:` window follows from the oldest of its last 5 tweets; a window with no new tweet ends
+  it; 3 empty pages pass; a 429 holds that bucket. Each tweet with files is a `post` target in the
+  search's `--folder`. Tagged: `twt?@example_handle -from:example_handle`.
 - **Login:** cookie `auth_token` (a logged-out browser lands on the login wall); API calls send
   `ct0` back as the CSRF token. `twt:me`: `Following` for the `twid` cookie's id, paged by `Bottom`;
   no login is `LoginError`, hint `log in: flnd auth login twt`. Query id and path: unconfirmed live.

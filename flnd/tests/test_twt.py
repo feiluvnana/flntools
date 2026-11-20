@@ -592,6 +592,76 @@ class SearchTest(unittest.TestCase):
             listed(plugin, stalled_ctx, "search", "example")
         self.assertEqual(len(stalled_ctx.seen.holds), 3)
 
+    def test_search_window_after_an_old_outlier_starts_at_the_tail_of_the_scroll(self):
+        plugin = Twitter()
+        w1 = self.search_url("example")
+        w2 = self.search_url("example max_id:939")
+        w3 = self.search_url("example max_id:919")
+        # Tweet 5 is an old item that X shows early in the window; it must not set the next one.
+        ids = ["1000", "5", "990", "980", "970", "960", "950", "940"]
+        pages = {
+            w1: FakePage(feeds=sent(self.RESPONSE, [
+                page(*[item(tweet(i, [photo("a" + i)])) for i in ids],
+                     cursor="c1", search=True),
+                page(cursor="c2", search=True),
+            ])),
+            w2: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("940", [photo("a940")])), item(tweet("930", [photo("b")])),
+                     item(tweet("920", [photo("c")])), cursor="c3", search=True),
+                page(cursor="c4", search=True),
+            ])),
+            w3: FakePage(feeds=sent(self.RESPONSE, [page(cursor="c5", search=True)])),
+        }
+        ctx = FakeCtx(plugin, "twt?example", pages=pages)
+        found = listed(plugin, ctx, "search", "example")
+        self.assertEqual([str(t).rsplit("/", 1)[1] for t in found], ids + ["930", "920"])
+        self.assertEqual(ctx.seen.visited, [w1, w2, w3])
+
+    def test_search_429_mid_window_carries_on_from_the_scroll_not_the_oldest_tweet(self):
+        plugin = Twitter()
+        w1 = self.search_url("example")
+        w2 = self.search_url("example max_id:449")
+        ids = ["500", "5", "490", "480", "470", "460", "450"]
+        reset = {"x-rate-limit-reset": str(int(FAKE_WALL) + 60)}
+        pages = {
+            w1: FakePage(feeds=[
+                Sent(self.RESPONSE, page(*[item(tweet(i, [photo("a" + i)])) for i in ids],
+                                         cursor="c1", search=True)),
+                Sent(self.RESPONSE, status=429, headers=reset, scroll=1),
+            ]),
+            w2: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("440", [photo("b")])), cursor="c2", search=True),
+                page(cursor="c3", search=True),
+            ])),
+            self.search_url("example max_id:439"): FakePage(
+                feeds=sent(self.RESPONSE, [page(cursor="c4", search=True)])),
+        }
+        ctx = FakeCtx(plugin, "twt?example", pages=pages)
+        found = listed(plugin, ctx, "search", "example")
+        self.assertEqual([str(t).rsplit("/", 1)[1] for t in found], ids + ["440"])
+        self.assertEqual(ctx.seen.visited[:2], [w1, w2])
+        self.assertEqual(len(ctx.seen.holds), 1)
+
+    def test_search_ends_when_a_window_adds_nothing_new(self):
+        plugin = Twitter()
+        w1 = self.search_url("example")
+        w2 = self.search_url("example max_id:9")
+        pages = {
+            w1: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("20", [photo("a")])), item(tweet("10", [photo("b")])),
+                     cursor="c1", search=True),
+                page(cursor="c2", search=True),
+            ])),
+            w2: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("10", [photo("b")])), cursor="c3", search=True),
+                page(cursor="c4", search=True),
+            ])),
+        }
+        ctx = FakeCtx(plugin, "twt?example", pages=pages)
+        found = listed(plugin, ctx, "search", "example")
+        self.assertEqual([str(t).rsplit("/", 1)[1] for t in found], ["20", "10"])
+        self.assertEqual(ctx.seen.visited, [w1, w2])
+
 
 class TimelineTest(unittest.TestCase):
     def test_grid_items_and_the_pinned_tweet_are_read_the_pinned_one_unordered(self):
