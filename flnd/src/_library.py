@@ -1,6 +1,6 @@
 """`Flnd` and `open`: the library a script uses, over the engine.
 
-COOKBOOK.md#python explains it."""
+SPEC.md#python explains it."""
 
 from __future__ import annotations
 
@@ -279,7 +279,7 @@ class Flnd:
         `fix=True` makes the history match the disk, and never deletes, moves or downloads a
         file: a missing file's row goes, and a file of the wrong size gets its row's size and
         hash from the disk. An unknown file is never adopted, so a home with one isn't `ok`,
-        fixed or not (COOKBOOK.md#check-and-repair).
+        fixed or not (SPEC.md#check-and-repair).
 
         Args:
             fix: also repair the history; False only reports.

@@ -1,6 +1,6 @@
 """Playlists: HLS (`.m3u8`) and segmented DASH (`.mpd`) read into segments, fetched at once.
 
-COOKBOOK.md#for-developers says where it sits in a transfer.
+SPEC.md#for-developers says where it sits in a transfer.
 """
 
 from __future__ import annotations

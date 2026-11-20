@@ -1,6 +1,6 @@
 """Accounts, switching, the sealed vault and the login methods.
 
-COOKBOOK.md#logins-and-accounts explains it.
+SPEC.md#logins-and-accounts explains it.
 """
 
 from __future__ import annotations

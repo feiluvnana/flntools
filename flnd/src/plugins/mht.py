@@ -1,5 +1,5 @@
 """mimihentai (mht): manga chapters and covers, one chapter by its link, and the manga an author,
-a genre or a search finds, from the site's public JSON API. See COOKBOOK.md#mht-mimihentai.
+a genre or a search finds, from the site's public JSON API. See SPEC.md#mht-mimihentai.
 """
 
 from __future__ import annotations

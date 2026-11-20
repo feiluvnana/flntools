@@ -1,6 +1,6 @@
 """The run's screen: a live block drawn from the run's `State` snapshot, and the end summary.
 
-COOKBOOK.md#commands-and-flags explains it.
+SPEC.md#commands-and-flags explains it.
 """
 
 from __future__ import annotations

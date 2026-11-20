@@ -1,6 +1,6 @@
 """What a run reports, and the rows the library reads.
 
-COOKBOOK.md#python explains it."""
+SPEC.md#python explains it."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ class Saved(msgspec.Struct, frozen=True, tag=True):
     date: datetime.date | None
     # The file's size in bytes, as it is now (after `--compress`, the compressed size).
     size: int
-    # Whether a retry brought it back: an earlier run failed on it (COOKBOOK.md#when-it-goes-wrong).
+    # Whether a retry brought it back: an earlier run failed on it (SPEC.md#when-it-goes-wrong).
     retried: bool = False
 
 

@@ -1,6 +1,6 @@
 """The Chrome extension's side in flnd: its native-messaging host, the relay, the client, install.
 
-COOKBOOK.md#the-chrome-extension explains it.
+SPEC.md#the-chrome-extension explains it.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from flnd.errors import UsageError
 
 # The host's name, as Chrome knows it from the host manifest `com.flnd.host.json`.
 NAME = "com.flnd.host"
-# The ops a run may send, as COOKBOOK.md#the-chrome-extension lists them; `hello` comes first.
+# The ops a run may send, as SPEC.md#the-chrome-extension lists them; `hello` comes first.
 OPS = ("hello", "cookies", "tabs.open", "tabs.list", "tabs.close", "capture.start",
        "capture.read", "capture.stop", "document", "click", "scroll", "evaluate", "storage",
        "screenshot", "media")

@@ -1,5 +1,5 @@
 // The functions flnd's extension runs inside a page, through chrome.scripting
-// (COOKBOOK.md#the-chrome-extension). Chrome copies each function's text into the page, so each one stands
+// (SPEC.md#the-chrome-extension). Chrome copies each function's text into the page, so each one stands
 // alone: nothing outside its own body is in scope there.
 
 // The page's HTML, as it is now.

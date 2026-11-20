@@ -1,4 +1,4 @@
-"""The Chrome extension backend for `Ctx`'s browser verbs; COOKBOOK.md#the-chrome-extension."""
+"""The Chrome extension backend for `Ctx`'s browser verbs; SPEC.md#the-chrome-extension."""
 
 from __future__ import annotations
 

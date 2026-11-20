@@ -1,6 +1,6 @@
 """The save: a post's files from their parts to their rows, then unpack, sidecar, `Saved`, exec.
 
-COOKBOOK.md#for-developers explains it.
+SPEC.md#for-developers explains it.
 """
 
 from __future__ import annotations

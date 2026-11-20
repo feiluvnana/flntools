@@ -1,6 +1,6 @@
 """The log lines' levels and scope, the folding of repeated warnings, and the run journal.
 
-COOKBOOK.md#commands-and-flags explains it.
+SPEC.md#commands-and-flags explains it.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """The built-in plugins on plugin API 2, one module per site.
 
-COOKBOOK.md#writing-a-plugin explains it."""
+SPEC.md#writing-a-plugin explains it."""
 
 from __future__ import annotations
 

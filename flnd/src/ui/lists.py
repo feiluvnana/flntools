@@ -1,6 +1,6 @@
 """The interactive lists: targets, accounts and plugins, inline under the prompt (Textual).
 
-COOKBOOK.md#commands-and-flags explains it.
+SPEC.md#commands-and-flags explains it.
 """
 
 from __future__ import annotations

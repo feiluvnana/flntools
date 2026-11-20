@@ -1,5 +1,5 @@
 """Instagram on plugin API 2: a profile's tabs, stories, highlights and picture, one post by its
-link, and the accounts the login follows, read from the pages. COOKBOOK.md#ins-instagram.
+link, and the accounts the login follows, read from the pages. SPEC.md#ins-instagram.
 """
 
 from __future__ import annotations

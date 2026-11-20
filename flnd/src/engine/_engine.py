@@ -1,5 +1,5 @@
 """`Engine`: every flnd command as a method, run on one loop, with the run's instance of each
-plugin and account. COOKBOOK.md#for-developers explains it.
+plugin and account. SPEC.md#for-developers explains it.
 """
 
 from __future__ import annotations
@@ -931,7 +931,7 @@ class Engine:
 
     def _started(self, named: str) -> int:
         """Open a command's `runs` row, after sweeping the month-old logs
-        (COOKBOOK.md#install-and-first-run)."""
+        (SPEC.md#install-and-first-run)."""
         store.sweep(self.home)
         with store.open(self.home) as db:
             return db.start(named)

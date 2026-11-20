@@ -87,7 +87,7 @@ class LibraryCase(EngineCase):
 
 
 class GetTest(LibraryCase):
-    """`get`, and each group of the library (COOKBOOK.md#python), as the commands use them."""
+    """`get`, and each group of the library (SPEC.md#python), as the commands use them."""
 
     def test_get_runs_and_follows_the_target(self):
         report = self.fl.get("exs:example_user").wait()

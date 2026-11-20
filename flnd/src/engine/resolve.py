@@ -1,6 +1,6 @@
 """The resolver: a target's text read into its plugin, value, kind and categories.
 
-COOKBOOK.md#targets explains it. It reads only the manifest, never a plugin module.
+SPEC.md#targets explains it. It reads only the manifest, never a plugin module.
 """
 
 from __future__ import annotations

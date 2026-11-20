@@ -1,6 +1,6 @@
 """The flnd command line, command by command: flags in, the library call it makes, lines out.
 
-Every command (COOKBOOK.md#commands-and-flags) runs here, on a pipe and (for the screens) on a
+Every command (SPEC.md#commands-and-flags) runs here, on a pipe and (for the screens) on a
 pyte terminal, with its exit code. `RunsCase` replaces the engine's `_Runner.run`, so a command's
 flags can be checked against what reaches the engine without a site; `RunTest` runs a whole
 `get` of an example plugin over a fake network. No network, no browser, no real site.

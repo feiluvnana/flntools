@@ -1,6 +1,6 @@
 """flnd's face of the one error hierarchy, over flnkit's classes.
 
-COOKBOOK.md#when-it-goes-wrong explains it."""
+SPEC.md#when-it-goes-wrong explains it."""
 
 from __future__ import annotations
 

@@ -26,7 +26,7 @@ api:      ; $(RUN) python tests/api_snapshot.py --write
 manifest: ; $(RUN) python tests/plugin_manifest.py --write
 bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
 # A hand check: throughput from one real CDN host at caps 8, 16, 24 and 32, from URLs kept
-# outside the repo: `make cdn-real ARGS="--urls ~/flnd-cdn.txt"` (COOKBOOK.md#for-developers).
+# outside the repo: `make cdn-real ARGS="--urls ~/flnd-cdn.txt"` (SPEC.md#for-developers).
 cdn-real: ; $(RUN) python tests/bench/cdn_real.py $(ARGS)
 # The reference of the three public modules: the library, the plugin API and the test kit.
 docs:     ; $(RUN) pdoc -d google flnd flnd.plugin flnd.testing -o build/docs
@@ -35,7 +35,7 @@ docs:     ; $(RUN) pdoc -d google flnd flnd.plugin flnd.testing -o build/docs
 # (`uv run flnd --home .try auth login ins chrome`); `make clean` removes it.
 try:      ; $(RUN) python -c "import flnd, sys; [print(e) for e in flnd.open('.try').get(*sys.argv[1:], dry=True)]" $(ARGS)
 # The real Chrome extension in Playwright's Chromium, every op against a local page, in a
-# temporary home (tests/ext.py; COOKBOOK.md#the-chrome-extension). Never part of `check`.
+# temporary home (tests/ext.py; SPEC.md#the-chrome-extension). Never part of `check`.
 ext:      ; $(RUN) python tests/ext.py $(ARGS)
 # The hand live check on the test accounts (`~/.config/flnd/live.toml`), never part of `check`:
 # `make live ARGS=ins`. Runs each route with `dry=True`, downloading nothing.

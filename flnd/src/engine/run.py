@@ -1,6 +1,6 @@
 """`Run`: one command on the run's loop, read as a stream of events; Ctrl-C's stages; `Tally`.
 
-COOKBOOK.md#python explains it, and COOKBOOK.md#for-developers its threads.
+SPEC.md#python explains it, and SPEC.md#for-developers its threads.
 """
 
 from __future__ import annotations

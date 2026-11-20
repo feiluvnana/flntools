@@ -1,6 +1,6 @@
 """Text helpers: safe file names, URLs and bodies without secrets, numbers.
 
-COOKBOOK.md#for-developers explains it."""
+SPEC.md#for-developers explains it."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 """The crawl: one target's listings on the run's loop, its smart sync and early stops, the Ledger.
 
-COOKBOOK.md#sync explains it.
+SPEC.md#sync explains it.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ __all__ = [
 
 class Retry(Enum):
     """What a target's run does with files earlier runs failed on
-    (COOKBOOK.md#when-it-goes-wrong)."""
+    (SPEC.md#when-it-goes-wrong)."""
 
     # List each of their posts again first, for those failed on at most `store.RETRIES` runs;
     # then the target's listings: every download and sync.

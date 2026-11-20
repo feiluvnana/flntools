@@ -28,6 +28,8 @@ Downloads, history and logins live in `./.flnd` (or `$FLND_HOME`, or `--home DIR
 
 ## More
 
-[COOKBOOK.md](COOKBOOK.md) says everything: targets, dates, categories, folders, sync, logins,
-errors, every command and flag, every setting, every plugin, the Python library, and how to
-write a plugin. Rules for changing the code are in [AGENTS.md](AGENTS.md).
+- [COOKBOOK.md](COOKBOOK.md): short recipes for the common uses.
+- [SPEC.md](SPEC.md): everything, with no gray area: targets, dates, categories, folders, sync,
+  logins, errors, every command and flag, every setting, every plugin, the Python library, and
+  how to write a plugin.
+- Rules for changing the code are in [AGENTS.md](AGENTS.md).

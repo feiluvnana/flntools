@@ -1,6 +1,6 @@
 """Getting data out of HTML and JSON: `parse` a page, `dig` a path.
 
-COOKBOOK.md#writing-a-plugin explains it."""
+SPEC.md#writing-a-plugin explains it."""
 
 from __future__ import annotations
 

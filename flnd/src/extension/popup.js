@@ -1,5 +1,5 @@
 // flnd's popup: asks flnd, through the service worker and the host, what this tab is
-// (COOKBOOK.md#the-chrome-extension).
+// (SPEC.md#the-chrome-extension).
 
 const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 

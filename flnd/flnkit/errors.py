@@ -1,6 +1,6 @@
 """The errors flnkit raises: one hierarchy under `Error`, plus `Stopped` for Ctrl-C.
 
-COOKBOOK.md#when-it-goes-wrong explains it, and flnd's own classes (`flnd.errors`).
+SPEC.md#when-it-goes-wrong explains it, and flnd's own classes (`flnd.errors`).
 """
 
 from __future__ import annotations

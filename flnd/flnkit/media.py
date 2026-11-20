@@ -1,6 +1,6 @@
 """Media: one ffmpeg join of a video stream and its audio stream into one file.
 
-COOKBOOK.md#for-developers says where it sits in a transfer.
+SPEC.md#for-developers says where it sits in a transfer.
 """
 
 from __future__ import annotations

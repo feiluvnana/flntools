@@ -1,6 +1,6 @@
 """The flnd command line: flags in, one library call, events out as lines.
 
-COOKBOOK.md#commands-and-flags explains it."""
+SPEC.md#commands-and-flags explains it."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 __all__ = ["exit_code", "main", "parser"]
 
-# The exit codes (COOKBOOK.md#when-it-goes-wrong). A cron job can tell "some files failed" (1)
+# The exit codes (SPEC.md#when-it-goes-wrong). A cron job can tell "some files failed" (1)
 # from "flnd itself stopped" (4).
 OK, FAILED, USAGE, LOGIN, BROKE, STOPPED = 0, 1, 2, 3, 4, 130
 # Each error class's exit code when it ends a command, by class name: the first of these an

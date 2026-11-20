@@ -246,7 +246,7 @@ HISTORY_REF = re.compile(
     r"|(?i:\bstep\s+\d+\b(?!:))"
     r"|(?i:\bfixes\s+#\d+\b)"
     r"|(?i:\b(?:as|was|as it was)\s+before\b|\bas it always did\b)"
-    r"|(?i:(?<!\w)(?!info\.md\b|COOKBOOK\.md\b)[A-Za-z0-9_-]+\.md\b)"
+    r"|(?i:(?<!\w)(?!info\.md\b|SPEC\.md\b|COOKBOOK\.md\b)[A-Za-z0-9_-]+\.md\b)"
     r"|(?<!#)\b[A-F]\d{1,2}\b"
 )
 

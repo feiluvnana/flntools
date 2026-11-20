@@ -1,18 +1,19 @@
-"""Keeps the docs in step with the code: docstrings, `COOKBOOK.md`, links, CLI flags, plugins.
+"""Keeps the docs in step with the code: docstrings, `SPEC.md`, `COOKBOOK.md`, links, CLI, plugins.
 
 AGENTS.md › Writing sets the rules this file checks. Each check is a test class below:
 
 1. `DocstringTest` reads every module of `flnd` with `ast` (nothing is imported) and lists each
    docstring gap: a module without a docstring, one longer than `MODULE_LINES` lines, one that
-   names no `COOKBOOK.md#<section>` or a section the page lacks, and a public name without a
+   names no `SPEC.md#<section>` or a section the page lacks, and a public name without a
    summary. Every docstring with `>>>` lines then runs as a doctest.
-2. `PageTest` runs every `python` block of `COOKBOOK.md`, in page order, in one namespace.
-3. `LinkTest` checks every relative link of the two pages: the file exists, and a `#fragment`
+2. `PageTest` runs every `python` block of `SPEC.md` and of `COOKBOOK.md`, in page order, one
+   namespace for each page.
+3. `LinkTest` checks every relative link of the three pages: the file exists, and a `#fragment`
    names one of its headings.
-4. `CliTest` checks that `COOKBOOK.md` names every command and every option the CLI parses, and
-   that each `flnd …` command line of the two pages parses with the CLI's own parser.
-5. `PluginTest` checks that each built-in plugin has a `COOKBOOK.md` section headed by its code.
-6. `SizeTest` keeps `README.md` and `COOKBOOK.md` within their limits.
+4. `CliTest` checks that `SPEC.md` names every command and every option the CLI parses, and
+   that each `flnd …` command line of the three pages parses with the CLI's own parser.
+5. `PluginTest` checks that each built-in plugin has a `SPEC.md` section headed by its code.
+6. `SizeTest` keeps `README.md`, `COOKBOOK.md` and `SPEC.md` within their limits.
 
 A gap fails `test_no_gap`, with one line per gap naming the module or the name and the rule it
 breaks, so new code is documented as it is written.
@@ -39,13 +40,11 @@ from test_packaging import ROOT
 
 # The packages whose modules must document themselves. `tests/` is for contributors.
 PACKAGES = ("src", "flnkit")
-COOKBOOK = ROOT / "COOKBOOK.md"
-README = ROOT / "README.md"
-PAGES = (README, COOKBOOK)
-# The longest a module docstring may be, in lines; the pages' longest, in lines.
-MODULE_LINES = 3
-README_LINES, COOKBOOK_LINES, LINE_CHARS = 40, 1515, 100
-SECTION = re.compile(r"COOKBOOK\.md#([\w-]+)")
+PAGES = README, COOKBOOK, SPEC = tuple(ROOT / n for n in ("README.md", "COOKBOOK.md", "SPEC.md"))
+# The longest a module docstring may be, in lines; each page's longest, in lines.
+MODULE_LINES, LINE_CHARS = 3, 100
+LIMITS = dict(zip(PAGES, (40, 250, 1500)))
+SECTION = re.compile(r"SPEC\.md#([\w-]+)")
 
 
 def public_names() -> dict[tuple[str, str], str]:
@@ -89,12 +88,12 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str], sections: set[st
     """Every docstring gap of one module, one line each.
 
     A module starts with a docstring of at most `MODULE_LINES` lines that names a real
-    `COOKBOOK.md#<section>`; a public name has a docstring whose first line sums it up.
+    `SPEC.md#<section>`; a public name has a docstring whose first line sums it up.
 
     Args:
         path: the module's file.
         public: the API snapshot's names, from `public_names`.
-        sections: the `#fragment` of every heading of `COOKBOOK.md`.
+        sections: the `#fragment` of every heading of `SPEC.md`.
 
     Returns:
         `<path>: <gap>` for the module, `<path>:<qualname>: <gap>` for a public name.
@@ -107,8 +106,8 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str], sections: set[st
     gaps = []
     named = SECTION.findall(doc)
     if not named:
-        gaps.append(f"{relative}: the module docstring names no COOKBOOK.md section")
-    gaps += [f"{relative}: COOKBOOK.md has no section #{name}" for name in named
+        gaps.append(f"{relative}: the module docstring names no SPEC.md section")
+    gaps += [f"{relative}: SPEC.md has no section #{name}" for name in named
              if name not in sections]
     if len(doc.splitlines()) > MODULE_LINES:
         gaps.append(f"{relative}: the module docstring is over {MODULE_LINES} lines")
@@ -129,7 +128,7 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str], sections: set[st
 
 def gaps() -> list[str]:
     """Every gap the code has, sorted: `test_no_gap` wants none."""
-    public, sections = public_names(), anchors(COOKBOOK)
+    public, sections = public_names(), anchors(SPEC)
     found = [gap for path in modules() for gap in module_gaps(path, public, sections)]
     # A property and its setter share a name, so the same gap can come twice; it is listed once.
     return sorted(set(found))
@@ -139,8 +138,8 @@ def rule(gap: str) -> str:
     """The rule of AGENTS.md › Writing that one gap breaks, for the failure message."""
     if gap.endswith("no module docstring"):
         return "a module starts with a docstring"
-    if "COOKBOOK.md" in gap:
-        return "a module docstring names the COOKBOOK.md#<section> that explains it"
+    if "SPEC.md" in gap:
+        return "a module docstring names the SPEC.md#<section> that explains it"
     if gap.endswith(f"over {MODULE_LINES} lines"):
         return f"a module docstring is 1 to {MODULE_LINES} lines"
     return "a public name has a docstring that sums it up"
@@ -199,26 +198,28 @@ def scratch() -> Iterator[Path]:
 
 
 class PageTest(unittest.TestCase):
-    """Every `python` block of `COOKBOOK.md` runs, so an example can't rot."""
+    """Every `python` block of `SPEC.md` and `COOKBOOK.md` runs, so an example can't rot."""
 
     def test_python_blocks_run(self) -> None:
-        # The blocks share one namespace, like a doctest session: a recipe builds a plugin in
-        # one block and uses it in the next. `tests/` is on the path for the fakes.
-        namespace: dict[str, object] = {"__name__": "docs_cookbook"}
-        for line, language, code in fenced_blocks(COOKBOOK):
-            if language != "python":
-                continue
-            with (self.subTest(line=line), scratch(), contextlib.redirect_stdout(io.StringIO())):
-                exec(compile(code, f"COOKBOOK.md:{line}", "exec"), namespace)
+        # A page's blocks share one namespace, like a doctest session: a recipe builds a plugin
+        # in one block and uses it in the next. `tests/` is on the path for the fakes.
+        for page in (COOKBOOK, SPEC):
+            namespace: dict[str, object] = {"__name__": "docs_page"}
+            for line, language, code in fenced_blocks(page):
+                if language != "python":
+                    continue
+                with (self.subTest(page=page.name, line=line), scratch(),
+                      contextlib.redirect_stdout(io.StringIO())):
+                    exec(compile(code, f"{page.name}:{line}", "exec"), namespace)
 
 
+FENCED = re.compile(r"^\s*(```+|~~~+).*?^\s*\1\s*$", re.M | re.S)
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
 
 def prose(text: str) -> str:
     """A page without its fenced blocks and inline code, where a `[x](y)` isn't a link."""
-    text = re.sub(r"^\s*(```+|~~~+).*?^\s*\1\s*$", "", text, flags=re.M | re.S)
-    return re.sub(r"`[^`\n]*`", "", text)
+    return re.sub(r"`[^`\n]*`", "", FENCED.sub("", text))
 
 
 def anchors(page: Path) -> set[str]:
@@ -229,7 +230,8 @@ def anchors(page: Path) -> set[str]:
     """
     seen: dict[str, int] = {}
     found: set[str] = set()
-    for heading in re.findall(r"^#{1,6}\s+(.+?)\s*#*$", prose(page.read_text("utf-8")), re.M):
+    text = FENCED.sub("", page.read_text("utf-8"))
+    for heading in re.findall(r"^#{1,6}\s+(.+?)\s*#*$", text, re.M):
         slug = re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
         count = seen.get(slug, 0)
         seen[slug] = count + 1
@@ -310,13 +312,11 @@ def commands(code: str) -> list[list[str]]:
 
 def parse_error(args: list[str]) -> str:
     """What the CLI's parser says about `flnd <args>`: "" when it parses."""
-    import contextlib as cl
-
     from flnd.cli import parser
 
     stderr = io.StringIO()
     try:
-        with cl.redirect_stderr(stderr), cl.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
             parser().parse_args(args)
     except SystemExit as stop:
         if stop.code:
@@ -325,13 +325,13 @@ def parse_error(args: list[str]) -> str:
 
 
 class CliTest(unittest.TestCase):
-    """The page names every command and option, and its command lines are true."""
+    """SPEC.md names every command and option, and every page's command lines are true."""
 
     def test_every_command_and_option_is_documented(self) -> None:
-        page = COOKBOOK.read_text(encoding="utf-8")
+        page = SPEC.read_text(encoding="utf-8")
         missing = [word for word in cli_words()
                    if not re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", page)]
-        self.assertFalse(missing, f"COOKBOOK.md doesn't mention: {', '.join(missing)}")
+        self.assertFalse(missing, f"SPEC.md doesn't mention: {', '.join(missing)}")
 
     def test_commands_parse(self) -> None:
         checked = 0
@@ -347,21 +347,21 @@ class CliTest(unittest.TestCase):
 
 
 class PluginTest(unittest.TestCase):
-    """Each built-in plugin has a `COOKBOOK.md` section headed by its code."""
+    """Each built-in plugin has a `SPEC.md` section headed by its code."""
 
     def test_one_section_per_plugin(self) -> None:
         from flnd.plugins import PLUGINS
 
-        text = prose(COOKBOOK.read_text(encoding="utf-8"))
+        text = prose(SPEC.read_text(encoding="utf-8"))
         sections = re.findall(r"^#{3}\s+([a-z]{3})\b", text, re.M)
         self.assertEqual(sorted(sections), sorted(PLUGINS))
 
 
 class SizeTest(unittest.TestCase):
-    """The two pages stay short: the README's and the cookbook's lines, and every line's width."""
+    """The pages stay within their line limits, and no line is wider than `LINE_CHARS`."""
 
     def test_limits(self) -> None:
-        for page, limit in ((README, README_LINES), (COOKBOOK, COOKBOOK_LINES)):
+        for page, limit in LIMITS.items():
             lines = page.read_text(encoding="utf-8").splitlines()
             self.assertLessEqual(len(lines), limit, f"{page.name} has {len(lines)} lines")
             wide = [number for number, line in enumerate(lines, 1) if len(line) > LINE_CHARS]

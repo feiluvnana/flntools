@@ -1,5 +1,5 @@
 """The Chrome extension's host, relay and client (src/engine/extension.py), against a fake
-extension that answers each op as background.js does; COOKBOOK.md#the-chrome-extension."""
+extension that answers each op as background.js does; SPEC.md#the-chrome-extension."""
 
 import asyncio
 import contextlib

@@ -1,5 +1,5 @@
 """Secrets sealed per account and name under a key file kept outside any home, and
-`digest`. COOKBOOK.md#logins-and-accounts explains it.
+`digest`. SPEC.md#logins-and-accounts explains it.
 """
 
 from __future__ import annotations

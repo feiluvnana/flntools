@@ -1,6 +1,6 @@
 """LOIBUS (loix.cc): one post's info, preview images and, for a VIP account, its archives.
 
-COOKBOOK.md#loi-loibus explains it: the signed API, the encrypted links and the daily VIP quota.
+SPEC.md#loi-loibus explains it: the signed API, the encrypted links and the daily VIP quota.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """A browser library: async Playwright, shared tabs, response capture, scrolling.
 
-COOKBOOK.md#for-developers explains it."""
+SPEC.md#for-developers explains it."""
 
 from __future__ import annotations
 

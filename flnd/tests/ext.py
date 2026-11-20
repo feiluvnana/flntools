@@ -2,7 +2,7 @@
 
 It installs the extension in a temporary HOME, serves a test page with tests/bench/server.py,
 starts Chromium with the extension loaded and its host registered in that profile, and runs
-every op of COOKBOOK.md#the-chrome-extension through the host. It needs
+every op of SPEC.md#the-chrome-extension through the host. It needs
 `playwright install chromium` and is never part of `make check`.
 """
 

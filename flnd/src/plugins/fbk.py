@@ -1,6 +1,6 @@
 """Facebook: a profile's tabs, stories and pictures, and one video, photo or post by its link.
 
-COOKBOOK.md#fbk-facebook explains it: the pages it reads, the quirks, the rules a change keeps.
+SPEC.md#fbk-facebook explains it: the pages it reads, the quirks, the rules a change keeps.
 """
 
 from __future__ import annotations
