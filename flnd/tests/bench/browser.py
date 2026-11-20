@@ -199,8 +199,10 @@ def warm_4(shared: _browser.RunBrowser, base: str) -> float:
     """The best of 3 times `Tabs.warm` took to start `WARM` warm tabs, in seconds."""
     fastest = float("inf")
     for attempt in range(1 if kit.SMOKE else 3):
+        scheduler = jobs.Scheduler()
+        scheduler.tabs = jobs.Pool(WARM + jobs.WARM_FREE + 1)
         tabs = _browser.Tabs(shared, _cookies.Jar([]), budget=jobs.Budget(
-            jobs.Scheduler(), "bench", None))
+            scheduler, "bench", None))
         try:
             # The target's own tab is opened before the clock starts.
             _ = tabs.page
