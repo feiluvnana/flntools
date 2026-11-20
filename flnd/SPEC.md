@@ -1359,10 +1359,10 @@ The contract:
 - `unsupported` (dict): `{pattern: reason}`: a link refused with the reason
 - `walls` (tuple): login-wall paths, matched as whole segments
 - `assets` (bool): its tabs load images, media and fonts; False (default) aborts those requests, so
-  the responses a plugin reads are unchanged. The built-ins set True until checked live
+  the responses a plugin reads are unchanged. Live-checked (2026-11-20): `fbk`, `ins`, `twt` block
 - `hidden` (bool): its tabs may be in a hidden window (False). The browser is hidden only while
   every plugin using it is; a handoff (a captcha) closes it and reopens it visible, same cookies
-  and tabs. A `browser` login is always visible. The built-ins stay False until checked live. A
+  and tabs. A `browser` login is always visible. Hidden after a live check: `fbk`, `ins`, `twt`. A
   hidden tab reads as a visible one: same user agent and client hints, a desktop screen and window,
   no software-GL name, and agreeing notification state (`tests/test_hidden.py`)
 - `@route(patterns, single=, discovers=, shown=, folder=, newest_first=)` (method): reads one kind

@@ -115,7 +115,7 @@ class Instagram(Plugin):
     domains = ("instagram.com",)
     api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
-    assets = True
+    hidden = True
     # Logged in when `sessionid` is there. Not required: a public profile shows something.
     login = cookies("sessionid", url=f"{SITE}/accounts/login/")
     browser = Browser.ANY
