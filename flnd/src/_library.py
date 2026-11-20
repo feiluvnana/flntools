@@ -132,7 +132,7 @@ class Flnd:
 
     def get(
         self, *targets: str | Target, limit: int | None = None, when: str | None = None,
-        dry: bool = False, folder: str | None = None,
+        dry: bool = False, folder: str | Mapping[str, str] | None = None,
         exec: Sequence[str] | None = None,
     ) -> Run:
         """Run the targets: get what they have that isn't saved, and follow them.
@@ -150,8 +150,13 @@ class Flnd:
                 `[defaults] when` in config.toml, which is every day unless it says otherwise.
             dry: plan instead: the run yields a `Planned` event per file and writes nothing.
             folder: a relative folder template under `media/<plugin>/` (`"example_handle/tagged"`,
-                `"{target}/{date}"`, `"{query}"`), overriding plugin, route, category and config
-                folder templates; None uses each target's own folder.
+                `"{target}/{date}"`, `"{query}"`), or a list of `<category>:<template>` entries
+                (`"posts:{target}/feed,*:{target}/other"`, `*` for every other category) or the
+                same as a mapping (`{"posts": "{target}/feed", "*": "{target}/other"}`). It
+                overrides plugin, route, category and config folder templates for the categories
+                it names; one it leaves out keeps its default place. None uses each target's
+                own folder. A search needs one that places every category, unless it has kept
+                its own.
             exec: a program and arguments run for each saved file, as `[defaults] exec` does
                 (`["cp", "{path}", "/backup"]`); None uses the user file's.
 
@@ -176,6 +181,7 @@ class Flnd:
         if limit is not None and limit < 1:
             raise UsageError("limit must be at least 1")
         if folder is not None:
+            folder = config.folder_spec(folder)
             config.check_folder(folder, self._sources())
         again = bool(self._again)
         if not targets and not (limit or dry or again or folder is not None):
@@ -184,8 +190,7 @@ class Flnd:
         if not named:
             return self._run("get", lambda engine: engine.run_sync((), time=span), exec=exec)
         resolved = self._checked(named)
-        if folder is not None:
-            config.check_folder(folder, self._sources(), resolved)
+        folder = self._engine().check_folder(folder, resolved, again=again)
         return self._run(f"get {_names(resolved)}", lambda engine: engine.run_download(
             resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again,
             folder=folder), exec=exec)

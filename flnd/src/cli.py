@@ -728,7 +728,9 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--dry", action="store_true",
                      help="list what would be saved, and save and write nothing")
     sub.add_argument("--folder", metavar="TEMPLATE",
-                     help="save under media/<plugin>/<TEMPLATE>/ instead of each target's folder")
+                     help="save under media/<plugin>/<TEMPLATE>/ instead of each target's folder; "
+                          "TEMPLATE is one, or a list like posts:{target}/feed,*:{target}/other; "
+                          "a search needs one")
     _again(sub)
     _exec(sub)
     sub.tail = _forms()

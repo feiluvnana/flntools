@@ -464,7 +464,7 @@ class SearchSkipTest(LibraryCase):
         source = example_source(listing, code="exq", search=route("exq?{words}")(search))
         engine = Engine(home=self.home, sources={"exq": source})
         engine.download(["exq:example_handle|all"])
-        engine.download(["exq?words|all"], sync=True)
+        engine.download(["exq?words|all"], sync=True, folder="{target}/{category}")
         # Two targets seen before, and a new one whose 3 files are saved already.
         found.append("exq:example_handle2")
         listing["example_handle2", "posts"] = ["p1", "p2", "p3"]
@@ -594,6 +594,101 @@ class ScriptTest(LibraryCase):
             self.fail("the block must not run")
         with self.assertRaises(flnd.LoginError):
             self.use(work, code="exr")
+
+
+class FolderListTest(LibraryCase):
+    """`folder=` as a list or a mapping by category, and a search's need of one."""
+
+    def media(self, code="exs"):
+        root = self.home / "media" / code
+        return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+
+    def test_each_category_goes_where_its_entry_says_and_a_left_out_one_keeps_its_place(self):
+        self.fl.get("exs:example_user|all", folder="posts:feed/{target}/{date}").wait()
+        self.assertEqual(self.media(), [
+            "example_user/reels/2026-03-01_r1.jpg",
+            "feed/example_user/2026-03-01/2026-03-01_p1.jpg",
+            "feed/example_user/2026-03-01/2026-03-01_p2.jpg"])
+
+    def test_a_star_takes_every_category_not_named_and_a_mapping_is_the_same(self):
+        self.fl.get("exs:example_user|all", folder={"posts": "p", "*": "other/{category}"}).wait()
+        self.assertEqual(self.media(), [
+            "other/reels/2026-03-01_r1.jpg", "p/2026-03-01_p1.jpg", "p/2026-03-01_p2.jpg"])
+
+    def test_a_config_list_names_categories_and_a_wrong_one_is_refused(self):
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.toml").write_text('[plugins.exs]\nfolder = "posts:a/{category}"\n',
+                                               encoding="utf-8")
+        self.fl.get("exs:example_user|all").wait()
+        self.assertEqual(self.media(), [
+            "example_user/a/posts/2026-03-01_p1.jpg", "example_user/a/posts/2026-03-01_p2.jpg",
+            "example_user/reels/2026-03-01_r1.jpg"])
+        (self.home / "config.toml").write_text('[plugins.exs]\nfolder = "posts:b,nope:c"\n',
+                                               encoding="utf-8")
+        with self.assertRaises(flnd.UsageError):
+            self.fl.get("exs:example_user")
+
+    def test_a_wrong_folder_list_is_refused_before_a_request(self):
+        for bad in ("posts:a,reels", "nope:a", "posts:a,posts:b", "posts:{nothere}"):
+            with self.subTest(bad=bad), self.assertRaises(flnd.UsageError):
+                self.fl.get("exs:example_user", folder=bad)
+        self.assertEqual(self.requests, [])
+
+
+class SearchFolderTest(LibraryCase):
+    """A search is refused without a folder that places every category, keeps the one it was
+    given, and is refused another unless `again`."""
+
+    def setUp(self):
+        super().setUp()
+        self.found = ["exq:example_user"]
+
+        async def search(self_, ctx, words):
+            for text in list(self.found):
+                yield Target(text)
+
+        self.fl.add(example_source(self.listing, code="exq",
+                                   search=route("exq?{words}")(search)))
+
+    def media(self):
+        root = self.home / "media" / "exq"
+        return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+
+    def test_a_search_without_a_folder_or_one_for_every_category_is_refused(self):
+        for folder, message in (
+            (None, "exq?words: a search needs --folder"),
+            ("posts:{query}/p", "exq?words: a search needs --folder to place every category"),
+        ):
+            with self.subTest(folder=folder), self.assertRaises(flnd.UsageError) as found:
+                self.fl.get("exq?words", folder=folder)
+            self.assertEqual(str(found.exception).split(" (")[0], message)
+        self.assertEqual((self.requests, self.fl.targets.list()), ([], []))
+        self.fl.get("exq?words|posts", folder="posts:{query}/p,*:{query}/o").wait()
+        self.assertEqual(self.media(), ["words/p/2026-03-01_p1.jpg", "words/p/2026-03-01_p2.jpg"])
+
+    def test_a_followed_search_keeps_its_folder_and_a_plain_sync_reuses_it(self):
+        self.fl.get("exq?words", folder="{query}/{category}").wait()
+        row = next(row for row in self.fl.targets if row.target.value == "words")
+        self.assertTrue(row.follow)
+        self.found.append("exq:example_creator")
+        self.listing["example_creator", "posts"] = ["c1"]
+        self.fl.get().wait()
+        self.assertIn("words/posts/2026-03-01_c1.jpg", self.media())
+        # It is not asked for a folder again, given or not.
+        self.fl.get("exq?words").wait()
+        self.fl.get("exq?words", folder="{query}/{category}").wait()
+
+    def test_another_folder_is_refused_for_a_followed_search_unless_again(self):
+        self.fl.get("exq?words", folder="one/{category}").wait()
+        with self.assertRaisesRegex(flnd.UsageError, "saved under --folder 'one/{category}'"):
+            self.fl.get("exq?words", folder="two/{category}")
+        with flnd.open(self.home, again=True) as again:
+            again.add(self.fl._plugin("exq"))
+            again.get("exq?words", folder="two/{category}").wait()
+        self.found.append("exq:example_creator")
+        self.listing["example_creator", "posts"] = ["c1"]
+        self.fl.get().wait()
+        self.assertIn("two/posts/2026-03-01_c1.jpg", self.media())
 
 
 if __name__ == "__main__":

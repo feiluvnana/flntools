@@ -31,7 +31,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
-from flnd.engine import jobs, plugins, save, store
+from flnd.engine import config, jobs, plugins, save, store
 from flnd.engine.ctx import Ctx, Listing, PluginRun, met_turn
 from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped, sink
 from flnd.errors import (
@@ -99,8 +99,9 @@ class Options:
     # The value as typed, with a link's `user:pw@` the target's value leaves out: what its
     # route reads. None reads the target's value. A target it finds never takes it.
     link: str | None = None
-    # Custom folder template under `media/<plugin>/`, overriding plugin, route, category and
-    # config folder templates; None uses each target's own folder.
+    # The call's folder value under `media/<plugin>/` (`config.folders`): one template or a
+    # list by category, overriding plugin, route, category and config folder templates for
+    # the categories it names; None uses each target's own folder.
     folder: str | None = None
 
 
@@ -459,6 +460,9 @@ def place(
         One `Placed` per file, in order.
     """
     folder = _folder_format(source, route, category, options)
+    # A category the folder value leaves out keeps its default place, under `{target}`; its
+    # history key still reads the path as the default place gives it.
+    fallback = _falls_back(category, options)
     filename, key = (_format(source, category, name) for name in ("filename", "key"))
     posted = day(post.date)
     placed: list[Placed] = []
@@ -477,7 +481,8 @@ def place(
             name = f"{PurePosixPath(name).stem}_{num}{PurePosixPath(name).suffix}"
             path = "/".join(part for part in (where, name) if part)
         used.add(path)
-        resolved_key = fill(key, {**values, "path": path}, safe=False) or path
+        kept = path.partition("/")[2] if fallback and values["target"] and "/" in path else path
+        resolved_key = fill(key, {**values, "path": kept}, safe=False) or kept
         placed.append(Placed(post, file, num, path, resolved_key, kind, values))
     return placed
 
@@ -2418,25 +2423,50 @@ def _sweep_folder(home: Path, target: Target, options: Options) -> Path | None:
     """The folder whose stale parts `download` sweeps; None skips sweeping the plugin root."""
     if options.folder is None:
         return store.target_folder(home, target)
-    prefix: list[str] = []
-    for segment in options.folder.split("/"):
-        if not segment or "{" in segment or "}" in segment:
-            break
-        cleaned = text.filename(segment)
-        if cleaned:
-            prefix.append(cleaned)
-    if not prefix:
+    table = _table(options.folder)
+    # A category the value leaves out is placed under `{target}`: nothing is common then.
+    templates = list(table.values()) if config.ANY in table else [*table.values(), "{target}"]
+    prefixes = []
+    for template in templates:
+        prefix: list[str] = []
+        for segment in template.split("/"):
+            if not segment or "{" in segment or "}" in segment:
+                break
+            cleaned = text.filename(segment)
+            if cleaned:
+                prefix.append(cleaned)
+        prefixes.append(prefix)
+    common = prefixes[0]
+    for prefix in prefixes[1:]:
+        common = common[:next((i for i, (a, b) in enumerate(zip(common, prefix)) if a != b),
+                              min(len(common), len(prefix)))]
+    if not common:
         return None
     root = home / store.MEDIA / target.plugin
-    return checked_dest(root, "/".join(prefix), check=True)
+    return checked_dest(root, "/".join(common), check=True)
+
+
+@functools.cache
+def _table(value: str) -> dict[str, str]:
+    """A folder value's templates by category (`config.folders`), parsed once."""
+    return config.folders(value)
+
+
+def _falls_back(category: Category | None, options: Options | None) -> bool:
+    """Whether a folder value names neither `category` nor `*`: it keeps its default place."""
+    if options is None or options.folder is None:
+        return False
+    table = _table(options.folder)
+    return (category.name if category is not None else "") not in table and config.ANY not in table
 
 
 def _folder_format(
     source: Plugin, route: Route | None, category: Category | None,
     options: Options | None = None,
 ) -> str:
-    """The folder template a file is placed by: `options.folder` if set, else its category's,
-    else its route's, else its source's.
+    """The folder template a file is placed by: the call's `options.folder` if it names the
+    category (or `*`), else the config's entry for it, its category's, its route's, its
+    source's. A category the call's value leaves out keeps that default place under `{target}`.
 
     Args:
         source: the file's source.
@@ -2447,15 +2477,32 @@ def _folder_format(
     Returns:
         The template, such as `{category}`.
     """
+    name = category.name if category is not None else ""
     if options is not None and options.folder is not None:
-        return options.folder
+        table = _table(options.folder)
+        found = table.get(name, table.get(config.ANY))
+        if found is not None:
+            return found
+    own = _plugin_folder(source, route, category)
+    if options is not None and options.folder is not None:
+        return f"{{target}}/{own}" if own else "{target}"
+    return own
+
+
+def _plugin_folder(source: Plugin, route: Route | None, category: Category | None) -> str:
+    """The folder the plugin's side places a category by: a config.toml entry naming it, else
+    its category's, its route's, the config's `*` or single template, else the class's."""
+    table = _table(source.folder)
+    name = category.name if category is not None else ""
+    if name in table:
+        return table[name]
     if category is not None and category.folder is not None:
         return category.folder
     if route is not None:
         route_folder = getattr(route, "folder", None)
         if route_folder is not None:
             return route_folder
-    return source.folder
+    return table.get(config.ANY, type(source).folder)
 
 
 def _format(source: Plugin, category: Category | None, name: str) -> str:

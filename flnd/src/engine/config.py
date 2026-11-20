@@ -14,7 +14,7 @@ import sys
 import tomllib
 import typing
 import urllib.parse
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -295,29 +295,125 @@ def template(label: str, key: str, value: str, fields: tuple[str, ...] | None) -
         raise bad(label, key, f"a template of the fields {known}", value)
 
 
-def check_folder(value: str, sources: Mapping[str, type],
-                 targets: Sequence[Any] = ()) -> None:
-    """Validate a `--folder` / `folder=` template against path safety and each target's plugin.
+ANY = "*"
+FOLDER_HINT = ('write one template ("{target}/{category}"), or a list of <category>:<template> '
+               'entries ("posts:{target}/feed,*:{target}/other"); * is every other category')
+# A category name has two characters or more, so `C:drive` stays a path.
+_ENTRY = re.compile(r"(?:\*|[\w-]{2,}):")
+_NAME = re.compile(r"\*|[\w-]{2,}")
 
-    Args:
-        value: the folder template.
-        sources: plugin classes by code, consulted only when plugin-specific fields are named.
-        targets: resolved targets (`Chosen` or `Target`); empty checks syntax and path safety.
+
+def _entries(value: str) -> list[str]:
+    """`value` split at the commas outside `{}`."""
+    parts, depth, start = [], 0, 0
+    for at, char in enumerate(value):
+        depth = max(0, depth + (char == "{") - (char == "}"))
+        if char == "," and not depth:
+            parts.append(value[start:at])
+            start = at + 1
+    return [*parts, value[start:]]
+
+
+def folders(value: str) -> dict[str, str]:
+    """A folder value as a table of templates by category name, `*` for the rest.
+
+    A value is one template (`{"*": value}`), or a comma list of `<category>:<template>` when
+    its first entry starts with `<category>:`. Commas inside `{}` don't split.
 
     Raises:
-        UsageError: `value` escapes `media/<plugin>/`, has bad braces, or names an unknown field.
+        UsageError: an entry of a list has no `<category>:`, or is empty, or a category (or
+            `*`) is named twice.
+
+    Example:
+        >>> folders("posts:{target}/feed,*:{target}/{category}")
+        {'posts': '{target}/feed', '*': '{target}/{category}'}
     """
-    template("the call", "folder", value, None)
-    used = text.fields(value)
-    if not (used - set(FIELDS)):
-        return
-    codes = dict.fromkeys(
-        item.target.plugin if hasattr(item, "target") else item.plugin for item in targets
-    )
-    for code in codes:
-        cls = sources.get(code)
-        fields = tuple(getattr(cls, "fields", ())) if cls is not None else None
-        template("the call", "folder", value, fields)
+    parts = _entries(value)
+    if not _ENTRY.match(parts[0]):
+        return {ANY: value}
+    table: dict[str, str] = {}
+    for part in parts:
+        name, colon, tpl = part.partition(":")
+        if not colon or not _NAME.fullmatch(name):
+            raise UsageError(f"folder {part!r} isn't <category>:<template>", hint=FOLDER_HINT)
+        if not tpl.strip():
+            raise UsageError(f"folder {name}: the template is empty", hint=FOLDER_HINT)
+        if name in table:
+            raise UsageError(f"folder {name}: named twice", hint=FOLDER_HINT)
+        table[name] = tpl
+    return table
+
+
+def _of(cls: type, name: str) -> Sequence[Any]:
+    """A plugin class's `categories`, `fields` or `routes`; empty for a class without them."""
+    return getattr(cls, name, ())
+
+
+def folder_spec(value: str | Mapping[str, str]) -> str:
+    """A `folder=` value as the one string every layer keeps: a mapping of templates by
+    category (`{"posts": "...", "*": "..."}`) becomes its comma list.
+
+    Raises:
+        UsageError: a mapping that is empty or whose entries don't read back as they were.
+    """
+    if isinstance(value, str):
+        return value
+    spec = ",".join(f"{name}:{tpl}" for name, tpl in value.items())
+    if not value or folders(spec) != dict(value):
+        raise UsageError("folder: a mapping is category names (or *) and templates, and a "
+                         "template has no comma outside {}", hint=FOLDER_HINT)
+    return spec
+
+
+def check_folder(value: str | None, sources: Mapping[str, type],
+                 targets: Sequence[Any] = (), *, stored: Collection[str] = ()) -> None:
+    """Validate a `--folder` / `folder=` value before any request: its templates' paths, its
+    categories and fields against each target's plugin, and a search's rule.
+
+    Args:
+        value: the folder value, one template or a list; None when none was given.
+        sources: plugin classes by code.
+        targets: resolved targets (`Chosen` or `Target`); empty checks the value alone.
+        stored: the keys of searches whose folder is kept: they need no `--folder` now.
+
+    Raises:
+        UsageError: a template escapes `media/<plugin>/`, has bad braces, is empty, names a
+            field its category's plugin doesn't declare, or a category no target's plugin has;
+            an entry is wrong (`folders`); or a search has no folder placing every category.
+    """
+    items = [item.target if hasattr(item, "target") else item for item in targets]
+    classes = {item.plugin: sources.get(item.plugin) for item in items}
+    if value is not None:
+        table = folders(value)
+        every = [cls for cls in (classes.values() if items else sources.values()) if cls]
+        known = tuple(dict.fromkeys(name for cls in every for name in _of(cls, "categories")))
+        for name, tpl in table.items():
+            if not tpl.strip():
+                raise UsageError("folder: the template is empty", hint=FOLDER_HINT)
+            if name != ANY and every and name not in known:
+                raise UsageError(f"folder {name}: no plugin of these targets has this category",
+                                 hint=f"Categories: {', '.join(known) or 'none'}")
+            shown = "folder" if ANY in table and len(table) == 1 else f"folder[{name}]"
+            template("the call", shown, tpl, None)
+            if text.fields(tpl) - set(FIELDS):
+                for cls in classes.values():
+                    if cls is None or (name != ANY and name not in _of(cls, "categories")):
+                        continue
+                    template("the call", shown, tpl, tuple(_of(cls, "fields")))
+    for item in items:
+        cls = classes[item.plugin]
+        if cls is None or not any(r.kind == item.kind and r.is_query
+                                  for r in _of(cls, "routes")):
+            continue
+        if value is None and f"{item.plugin}:{item.value}" in stored:
+            continue
+        shown = f"{item.plugin}?{item.value}"
+        if value is None:
+            raise UsageError(f"{shown}: a search needs --folder", hint='add --folder "{query}"')
+        if ANY not in table:
+            raise UsageError(f"{shown}: a search needs --folder to place every category",
+                             hint='end the list with *:<template>, as in --folder '
+                                  '"posts:{query}/posts,*:{query}/other"')
 
 
 def cut(name: str, limit: int = NAME_MAX) -> str:
@@ -501,8 +597,20 @@ def _plugin_keys(label: str, code: str, table: Mapping[str, Any],
     found = _keys(label, where, table, keys)
     fields = tuple(getattr(cls, "fields", ())) if cls is not None else None
     for name in ("folder", "filename"):
-        if f"{where}.{name}" in found:
-            template(label, f"{where}.{name}", found[f"{where}.{name}"], fields)
+        if f"{where}.{name}" not in found:
+            continue
+        value = found[f"{where}.{name}"]
+        if name == "folder" and isinstance(value, str) and value:
+            table = folders(value)
+            unknown = [entry for entry in table if entry != ANY and cls is not None
+                       and entry not in cls.categories]
+            if unknown:
+                raise bad(label, f"{where}.folder", f"a list of the categories "
+                          f"{', '.join(cls.categories)}", value)
+            for tpl in table.values():
+                template(label, f"{where}.folder", tpl, fields)
+        else:
+            template(label, f"{where}.{name}", value, fields)
     kind = getattr(getattr(cls, "browser", None), "name", None)
     if f"{where}.browser" in found and kind is not None and kind != "ANY":
         raise bad(label, f"{where}.browser", "set only for a plugin whose browser is ANY",

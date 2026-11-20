@@ -16,7 +16,7 @@ import msgspec
 from example_plugin import Example as CtxExample
 from fakes import Engine
 from test_ctx import CtxCase
-from test_library import LibraryCase
+from test_library import LibraryCase, example_source
 
 import flnd
 import flnd.plugin
@@ -492,6 +492,58 @@ class PrecedenceTest(LibraryCase):
         for valid in ("example_handle/tagged", "{target}/{date}", "{query}", "{title}"):
             with self.subTest(valid=valid):
                 config.check_folder(valid, PLUGINS, targets)
+
+    def test_a_folder_list_is_refused_before_any_request_for_each_wrong_entry(self):
+        source = example_source({}, code="exs", fields=("title",))
+        targets = [Target("exs:example_user", kind="user")]
+        for value, message in (
+            ("posts:{target}/a,b", r"folder 'b' isn't <category>:<template>"),
+            ("posts:{target}/a,{target}/b", r"folder '\{target\}/b' isn't <category>"),
+            ("posts:", r"folder posts: the template is empty"),
+            ("", r"folder: the template is empty"),
+            ("posts:a,posts:b", r"folder posts: named twice"),
+            ("*:a,reels:b,*:c", r"folder \*: named twice"),
+            ("nope:a", r"folder nope: no plugin of these targets has this category"),
+            ("posts:{nothere}", r"folder\[posts\] is a template of the fields"),
+            ("*:{nothere}", r"folder is a template of the fields"),
+            ("reels:a,*:{nothere}", r"folder\[\*\] is a template of the fields"),
+            ("posts:a,*:../b", r"folder\[\*\] is a template inside the target's folder"),
+            ("posts:a,reels:{bad", r"folder\[reels\] is a template whose braces"),
+        ):
+            with self.subTest(value=value), self.assertRaisesRegex(UsageError, message) as found:
+                config.check_folder(value, {"exs": source}, targets)
+            self.assertTrue(found.exception.hint)
+        self.assertEqual(
+            config.folders("posts:{target}/feed,reels:{date:%Y,%m},*:{target}/{category}"),
+            {"posts": "{target}/feed", "reels": "{date:%Y,%m}", "*": "{target}/{category}"})
+        for valid in ("posts:{target}/feed,reels:{title}/r,*:{target}/{category}", "reels:a",
+                      "{target}/a,b", "posts:{target}"):
+            with self.subTest(valid=valid):
+                config.check_folder(valid, {"exs": source}, targets)
+        # A list is the same as a mapping, and a comma outside braces can't be in a mapping.
+        self.assertEqual(config.folder_spec({"posts": "a", "*": "b/{category}"}),
+                         "posts:a,*:b/{category}")
+        for mapping in ({}, {"posts": "a,b"}, {"posts": ""}, {"a:b": "c"}):
+            with self.subTest(mapping=mapping), self.assertRaises(UsageError):
+                config.folder_spec(mapping)
+
+    def test_a_search_needs_a_folder_that_places_every_category(self):
+        async def search(self, ctx, words):
+            yield Target("exq:example_user")
+
+        source = example_source({}, code="exq", search=flnd.plugin.route("exq?{words}")(search))
+        targets = [Target("exq:words", kind="search"), Target("exq:example_user", kind="user")]
+        sources = {"exq": source}
+        for value, message in (
+            (None, r"exq\?words: a search needs --folder$"),
+            ("posts:{query}/posts", r"exq\?words: a search needs --folder to place every cat"),
+        ):
+            with self.subTest(value=value), self.assertRaisesRegex(UsageError, message):
+                config.check_folder(value, sources, targets)
+        for value in ("{query}", "posts:{query}/posts,*:{query}/other"):
+            config.check_folder(value, sources, targets)
+        config.check_folder(None, sources, targets, stored={"exq:words"})
+        config.check_folder(None, sources, targets[1:])
 
 
 if __name__ == "__main__":

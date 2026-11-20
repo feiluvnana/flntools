@@ -67,7 +67,8 @@ CREATE TABLE targets (
     complete TEXT NOT NULL DEFAULT '{}', cursors TEXT NOT NULL DEFAULT '{}',
     seen TEXT NOT NULL DEFAULT '[]', last_sync TEXT NOT NULL DEFAULT '',
     files INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
-    heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}', account TEXT
+    heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}', account TEXT,
+    folder TEXT
 ) WITHOUT ROWID;
 CREATE TABLE runs (
     id INTEGER PRIMARY KEY, command TEXT NOT NULL, started TEXT NOT NULL, ended TEXT,
@@ -130,7 +131,8 @@ ROW_SELECT = ("key, target, path, size, mtime, post_id, category, date, estimate
               " at, files, unpacked, folder, hash, sidecar")
 STEP_COLUMNS = frozenset({"path", "size", "mtime", "unpacked", "folder", "hash", "sidecar"})
 TARGET_COLUMNS = ("key", "plugin", "value", "kind", "follow", "categories", "query", "complete",
-                  "cursors", "seen", "last_sync", "files", "bytes", "heads", "gaps", "account")
+                  "cursors", "seen", "last_sync", "files", "bytes", "heads", "gaps", "account",
+                  "folder")
 FAILURE_SELECT = ("key, target, post_id, category, file, cursor, attempts, class, message, hint,"
                   " retryable, url, run, at")
 ACCOUNT_SELECT = "id, plugin, name, origin, at, is_default, status, held_until, expires"
@@ -213,6 +215,8 @@ class TargetRow(msgspec.Struct):
     gaps: dict[str, list[str]] = {}
     # The account that last worked for it, tried first next time.
     account: str | None = None
+    # For a followed search: the `--folder` its hits go to, which a plain sync reuses.
+    folder: str | None = None
 
 
 class FailureRow(msgspec.Struct):
@@ -346,6 +350,9 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
         if version and not sql.execute("SELECT 1 FROM meta WHERE key = 'keys'").fetchone():
             _rekey(sql)
             sql.execute("INSERT INTO meta VALUES ('keys', '2')")
+        if version and "folder" not in _columns(sql, "targets"):
+            # A home from before a followed search kept its folder gets the column once.
+            sql.execute("ALTER TABLE targets ADD COLUMN folder TEXT")
         sql.execute("COMMIT")
     except BaseException:
         if sql.in_transaction:
@@ -860,7 +867,8 @@ class Store:
         return _target_row(found) if found else None
 
     def record(self, target: _Target, *, follow: bool | None = None,
-               categories: Sequence[str] | None = None, query: str | None = None) -> None:
+               categories: Sequence[str] | None = None, query: str | None = None,
+               folder: str | None = None) -> None:
         """Remember a target of a run, keeping what earlier runs learned about it.
 
         Args:
@@ -869,6 +877,7 @@ class Store:
             categories: the categories to keep for later syncs (`all` keeps every one); None
                 keeps the stored ones.
             query: the search that found it; None keeps the stored one.
+            folder: a followed search's `--folder`; None keeps the stored one.
         """
         with self._db.transaction():
             old = self.target(key(target))
@@ -880,6 +889,8 @@ class Store:
                 row.categories = () if "all" in categories else tuple(categories)
             if query:
                 row.query = query
+            if folder is not None:
+                row.folder = folder
             row.last_sync = now()
             self._put(row)
 
@@ -974,7 +985,7 @@ class Store:
                        (row.key, row.plugin, row.value, row.kind, int(row.follow),
                         _json(list(row.categories)), row.query, _json(row.complete),
                         _json(row.cursors), _json(row.seen), row.last_sync, row.files,
-                        row.bytes, _json(row.heads), _json(row.gaps), row.account))
+                        row.bytes, _json(row.heads), _json(row.gaps), row.account, row.folder))
 
     # -- accounts and plugins' state --------------------------------------------------------
 
@@ -1130,10 +1141,11 @@ def _file_row(found: tuple[Any, ...]) -> FileRow:
 
 def _target_row(found: tuple[Any, ...]) -> TargetRow:
     (item, plugin, value, kind, follow, categories, query, complete, cursors, seen, last_sync,
-     count, size, heads, gaps, account) = found
+     count, size, heads, gaps, account, folder) = found
     return TargetRow(item, plugin, value, kind, bool(follow), tuple(json.loads(categories)),
                      query, json.loads(complete), json.loads(cursors), json.loads(seen),
-                     last_sync, count, size, json.loads(heads), json.loads(gaps), account)
+                     last_sync, count, size, json.loads(heads), json.loads(gaps), account,
+                     folder)
 
 
 def _failure_row(found: tuple[Any, ...]) -> FailureRow:

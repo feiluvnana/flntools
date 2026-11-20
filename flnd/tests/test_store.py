@@ -603,6 +603,31 @@ class SampleTest(unittest.TestCase):
         self.assertEqual(len(list((self.home / store.LOGS / "1" / "samples").iterdir())), 100)
 
 
+class FolderColumnTest(StoreCase):
+    """A followed search keeps its folder: an older home's `targets` gets the column once."""
+
+    def test_an_old_home_gets_the_column_once_and_keeps_its_rows(self):
+        self.path.parent.mkdir(parents=True)
+        with sqlite3.connect(self.path) as sql:
+            for statement in store.STATEMENTS:
+                sql.execute(statement)
+            sql.execute("INSERT INTO meta VALUES ('version', ?)", (store.VERSION,))
+            sql.execute("INSERT INTO meta VALUES ('keys', '2')")
+            sql.execute("INSERT INTO targets (key, plugin, value, kind, follow)"
+                        " VALUES ('twt:cats', 'twt', 'cats', 'search', 1)")
+            sql.execute("ALTER TABLE targets DROP COLUMN folder")
+        sql.close()
+        with self.open() as opened:
+            row = opened.targets()["twt:cats"]
+            self.assertEqual((row.follow, row.folder), (True, None))
+            opened.record(Target("twt:cats", kind="search"), folder="{query}")
+        with self.open() as opened:
+            self.assertEqual(opened.targets()["twt:cats"].folder, "{query}")
+            # A later record without a folder keeps it.
+            opened.record(Target("twt:cats", kind="search"))
+            self.assertEqual(opened.targets()["twt:cats"].folder, "{query}")
+
+
 class RekeyTest(StoreCase):
     """A single post was keyed `<code>:<id>`, and is `<code>:<kind>/<id>`: old rows follow."""
 

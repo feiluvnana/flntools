@@ -251,7 +251,7 @@ class Engine:
         sync: bool = False,
         again: bool = False,
         keep: bool = False,
-        folder: str | None = None,
+        folder: str | Mapping[str, str] | None = None,
     ) -> Results:
         """Download each target with its saved or given options and return a `Results`.
 
@@ -263,7 +263,8 @@ class Engine:
             sync: follow the targets, so `sync` takes them later.
             again: ignore saved cursors and the stop at saved posts.
             keep: whether to save each target's categories, for later syncs (`follow`).
-            folder: custom folder template under `media/<plugin>/`; None for each target's folder.
+            folder: a folder template under `media/<plugin>/`, or a list or mapping of them by
+                category (`config.folders`); None for each target's folder. A search needs one.
 
         Returns:
             One `TargetReport` per target, in order.
@@ -277,12 +278,13 @@ class Engine:
         if limit is not None and limit < 1:
             raise UsageError("--limit must be at least 1")
         if folder is not None:
-            config.check_folder(folder, self.sources)
+            config.check_folder(config.folder_spec(folder), self.sources)
         span = time or Range()
         # On a thread: a short link is followed with a request of its own.
         resolved = await asyncio.to_thread(self.chosen, targets)
-        if folder is not None:
-            await asyncio.to_thread(config.check_folder, folder, self.sources, resolved)
+        folder = await _off(self.check_folder, folder, resolved, again=again)
+        stored = {item: row.folder for item, row in (await _off(self._rows)).items()
+                  if row.folder}
         base = Options(
             since=span.since,
             until=span.until,
@@ -291,9 +293,11 @@ class Engine:
             stop_at_saved=sync and not again,
             folder=folder,
         )
-        chosen = [(found.target, replace(base, categories=found.categories,
-                                         link=found.link or None))
-                  for found in resolved]
+        chosen = [(found.target, replace(
+            base, categories=found.categories, link=found.link or None,
+            folder=stored.get(store.key(found.target)) if folder is None
+            and self._is_search(found.target) else folder))
+            for found in resolved]
         with stopping(self.stop) as stop:
             async with self._live():
                 if dry:
@@ -303,6 +307,30 @@ class Engine:
                     async with self._running(stop) as runner:
                         return await self._download(runner, chosen, span=span, sync=sync,
                                                     stop=stop, keep=keep)
+
+    def check_folder(self, folder: str | Mapping[str, str] | None,
+                     resolved: Sequence[Chosen], *, again: bool = False) -> str | None:
+        """Check a call's folder value against its targets before any request, and return it as
+        one string.
+
+        A search with no folder takes the one its row kept; one given a different folder than
+        its row kept is refused unless `again`.
+
+        Raises:
+            UsageError: the value is wrong (`config.check_folder`), or it moves a followed search.
+        """
+        spec = None if folder is None else config.folder_spec(folder)
+        stored = {item: row.folder for item, row in self._rows().items() if row.folder}
+        config.check_folder(spec, self.sources, resolved, stored=stored)
+        for found in resolved if spec is not None and not again else ():
+            old = stored.get(store.key(found.target))
+            if old is not None and old != spec:
+                raise UsageError(
+                    f"{found.target.plugin}?{found.target.value}: this search is saved under "
+                    f"--folder {old!r}, not {spec!r}",
+                    hint="add --again to use the new folder; files already saved stay where "
+                         "they are")
+        return spec
 
     async def run_sync(self, targets: Sequence[Target | str] = (), *,
                        time: Range | None = None) -> Results:
@@ -554,6 +582,14 @@ class Engine:
         """Whether `target`'s route discovers other targets (a search) rather than posts."""
         route = self._route(target)
         return route is not None and route.discovers
+
+    def _is_search(self, target: Target) -> bool:
+        """Whether `target` is a query (`<code>?<query>`, or a search link), which keeps a
+        folder."""
+        try:
+            return self._is_query_kind(target.plugin, target.kind)
+        except PluginError:
+            return False
 
     def _is_single(self, target: Target) -> bool:
         """Whether `target`'s route reads one post, which is never followed."""
@@ -870,6 +906,7 @@ class Engine:
         with store.open(self.home) as db, db.transaction():
             for target, options in chosen:
                 db.record(target, query=options.query,
+                          folder=options.folder if self._is_search(target) else None,
                           follow=None if follow is None else follow and not self._is_single(target),
                           categories=(options.categories or ()) if keep else None)
 
@@ -920,7 +957,8 @@ class Engine:
         for target, categories, link in targets:
             row = rows.get(store.key(target))
             planned.append((target, Options(categories=categories, link=link or None,
-                                            query=row.query if row else None)))
+                                            query=row.query if row else None,
+                                            folder=row.folder if row else None)))
         return planned
 
     def _one(self, text: str) -> Target:
@@ -1426,10 +1464,16 @@ async def _log_dry(
         return
     folder = crawl.target_root(run.settings.home, target, options)
     db = run.settings.db
+    shown: set[str] = set()
     async with contextlib.aclosing(crawl.plan(run, target, options)) as planned:
         async for placed in planned:
             ui.info("{target}: {path}", target=str(target), path=placed.path)
             dest = crawl.checked_dest(folder, placed.path, check=options.folder is not None)
+            if placed.post.category not in shown:
+                shown.add(placed.post.category)
+                ui.info("{target}: {category} goes to {folder}", target=str(target),
+                        category=placed.post.category or "(posts)",
+                        folder=dest.parent.relative_to(run.settings.home).as_posix())
             saved = await run.off(_planned_saved, db, f"{run.source.code}:{placed.key}", dest)
             await emit(Planned(target, placed.post.id, dest, "saved" if saved else "new"))
 

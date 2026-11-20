@@ -335,7 +335,8 @@ class MixedRunTest(LibraryCase):
         self.fl.add(example_source(self.listing, code="exq", search=route("exq?{words}")(search)))
 
     def test_a_search_and_a_user_with_categories_are_both_stored(self):
-        self.fl.get("exq?words|reels", "exq:example_user|posts").wait()
+        self.fl.get("exq?words|reels", "exq:example_user|posts",
+                    folder="{target}/{category}").wait()
         with store.open(self.home) as db:
             rows = db.targets()
         self.assertEqual((rows["exq:words"].categories, rows["exq:example_user"].categories),
@@ -351,7 +352,7 @@ class MixedRunTest(LibraryCase):
             return await real(run, target, tally, options, **kwargs)
 
         with mock.patch.object(crawl, "download", download):
-            self.fl.get("exq?words", "exq:example_user").wait()
+            self.fl.get("exq?words", "exq:example_user", folder="{target}/{category}").wait()
         self.assertIn(("exq:example_user", True), seen)
 
 

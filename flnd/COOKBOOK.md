@@ -171,9 +171,10 @@ flnd get ins:example_user tik:example_user
 - `ins:me` is the only `me`. It lists every account the logged-in Instagram account follows and
   gets each as its own `user` target (`"ins:me|posts,stories"` passes the list on to each). It
   needs a login. `twt:me` is a user named `me`.
-- A search (`twt?<words>`, `mht?<words>`) finds targets, and each found target is got as its
-  own. `--folder` collapses all of them into one folder. A followed search gets only the targets
-  it had not found before.
+- A search (`twt?<words>`, `mht?<words>`, `tik?<words>`, `loi?<words>`, or a search link) finds
+  targets, and each found target is got as its own. A search needs `--folder`, which puts all
+  its hits in one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search
+  gets only the targets it had not found before.
 - `--limit N` (at least 1) is at most N posts per target, or N targets per search or other
   discovering route (`ins:me`, `mht:author/...`, `mht:genre/...`). `--limit 0` is
   `limit must be at least 1`.
@@ -389,9 +390,11 @@ the second gets a link ([For developers](#for-developers)).
 
 ### `--folder`
 
-`--folder TEMPLATE` (library: `folder=`) replaces every folder template, the plugin's, route's,
-category's and `config.toml`'s, for the run. Files go in `media/<code>/<rendered>/<filename>`:
-the target's own folder is not added. Every target a search finds takes it too.
+`--folder VALUE` (library: `folder=`) replaces the folder templates, the plugin's, route's,
+category's and `config.toml`'s, for the categories it names, for the run. Files go in
+`media/<code>/<rendered>/<filename>`: the target's own folder is not added. Every target a
+search finds takes it too. `VALUE` is one template for every category, or a list that gives each
+category its own ([One folder per category](#one-folder-per-category)).
 
 ```sh
 flnd get twt:example_handle --folder=example_handle
@@ -403,7 +406,7 @@ flnd get ins:example_user --folder="{target}/{date:%Y-%m}"
 Grammar:
 
 ```text
-template = segment[/segment...]  |  ""      "" puts files straight in media/<code>/
+template = segment[/segment...]             not empty
 segment  = text and {field} / {field:format} / {field.attr} / {field[0]}; {{ and }} are braces
 ```
 
@@ -448,6 +451,89 @@ The field check runs once the targets are known, for each target's plugin. A tem
 passes the checks but would leave `media/<code>/` stops the run with `folder template escapes
 the plugin media folder`. The same rules check `[plugins.<code>] folder` in `config.toml`,
 where the message starts with the file and key (`.flnd/config.toml: plugins.ins.folder is ...`).
+
+### One folder per category
+
+A value is one template (as above), or a comma list of `<category>:<template>`, where `*` is
+every category the list doesn't name:
+
+```sh
+flnd get "ins:example_user|all" --folder="posts:{target}/feed,*:{target}/other"
+```
+
+```text
+value = template  |  entry[,entry...]       a list when the first entry starts with <category>:
+entry = <category>:<template>  |  *:<template>
+```
+
+- Commas inside `{}` don't split (`posts:{date:%Y,%m}` is one entry). A template with a comma
+  outside `{}` is a list entry, so a one-template value can't hold one after `<name>:`.
+- A category named in the list uses its template; any other uses `*:`; a category with neither
+  keeps its default place, `media/<code>/<value>/<the plugin's folder>`, so a list can move one
+  category and leave the rest. Its history keys are what they were.
+- Every template is rooted at `media/<code>/`, as one template is, and follows the rules and
+  fields above. `flnd get --dry` prints each category's rendered folder for its first post
+  (`ins:example_user: reels goes to media/ins/example_user/reels`).
+- `[plugins.<code>] folder` in `config.toml` takes the same string, and its templates are
+  under the target's folder, as a single one always was: `folder = "posts:{part}/a"` moves
+  `posts` and leaves the others. A named category there wins over the category's own `folder`;
+  `*` or one template is a default the category's and route's `folder` still win over. A
+  category the call's `--folder` names or covers with `*` ignores `config.toml`.
+- In the library, `folder=` also takes a mapping, `{"posts": "{target}/feed", "*": "..."}`; a
+  template in it can't hold a comma outside `{}`.
+
+Refused before any request (`UsageError`, exit 2), besides the template checks above, which name
+the entry as `folder[<category>]` (`the call: folder[posts] is a template of the fields ...`;
+`folder[*]` for `*`; `folder` when the value is one template):
+
+- `posts:a,b`: `folder 'b' isn't <category>:<template>`; hint: `write one template
+  ("{target}/{category}"), or a list of <category>:<template> entries ("posts:{target}/feed,
+  *:{target}/other"); * is every other category`. Every refusal below with "the same hint" says
+  this.
+- `posts:a,{x}/b`: `folder '{x}/b' isn't <category>:<template>`; the same hint
+- `posts:`: `folder posts: the template is empty`; the same hint
+- `""`: `folder: the template is empty`; the same hint
+- `posts:a,posts:b`: `folder posts: named twice`; the same hint
+- `*:a,*:b`: `folder *: named twice`; the same hint
+- `nope:a`: `folder nope: no plugin of these targets has this category`; hint `Categories: posts,
+  reels` (the categories of the targets' plugins)
+- `posts:{x}` (a field `posts`' plugin doesn't declare): `the call: folder[posts] is a template
+  of the fields <fields>, not this text`; hint `fix folder[posts] in the call, or remove it for
+  the default`
+
+A category name has two characters or more, so `C:drive` is still read as a path, and refused
+as one. The same checks run on `[plugins.<code>] folder`, with the file and key in front
+(`.flnd/config.toml: plugins.ins.folder is a list of the categories posts, reels, ..., not this
+text` for a category the plugin lacks).
+
+### A search needs a folder
+
+A search (`<plugin>?<query>`, or a search link) is refused before any request unless `--folder`
+(library: `folder=`) is given and places every category: one template, or a list with `*`.
+`config.toml`'s `folder` doesn't count. A search's hits all go there, not to their owners'
+folders.
+
+- `flnd get "twt?cats"`: `twt?cats: a search needs --folder`; hint `add --folder "{query}"`
+- `--folder "posts:{query}/posts"`: `twt?cats: a search needs --folder to place every
+  category`; hint `end the list with *:<template>, as in --folder
+  "posts:{query}/posts,*:{query}/other"`
+
+```sh
+flnd get "twt?cats" --folder="{query}"
+flnd get "twt?cats" --folder="posts:{query}/posts,*:{query}/other"
+```
+
+A followed search keeps its folder in its row, and `flnd get` with no target reuses it, as does
+naming the search again without a `--folder`. Giving it another `--folder` is refused unless
+`--again` is also given, which keeps the new one (files already saved stay where they are):
+
+```text
+twt?cats: this search is saved under --folder '{query}', not 'other'
+hint: add --again to use the new folder; files already saved stay where they are
+```
+
+A followed search from before it kept a folder has none, and syncs as it did. `ins:me` and
+`mht:author/...` are not searches, and need no folder.
 
 ### Names and keys in `config.toml`
 
@@ -732,7 +818,7 @@ standard input, else gets every followed target, or prints `nothing to sync` and
 | `--when WHEN` | `[defaults] when`, else every day | see [Dates](#dates) |
 | `--limit N` | none | at most N posts per target, or N targets per search; N at least 1 |
 | `--dry` | off | list what would be saved; write nothing |
-| `--folder TEMPLATE` | each target's folder | see [Folders](#folders) |
+| `--folder VALUE` | each target's folder | a template or a list ([Folders](#folders)) |
 | `--again` | off | list every post again; ask again for gone files |
 | `--exec CMD` | none | run CMD for each saved file, without a shell |
 

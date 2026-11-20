@@ -1548,7 +1548,7 @@ class QueryAndLimitDryTest(EngineCase):
             self.routes[f"{CDN}/{number}.jpg"] = _net.reply(200, content=str(number).encode())
         engine = Engine(home=self.home, sources={"srch": self._query_source(closed=closed)})
 
-        report = engine.download(["srch?action comedy|photo"], limit=4)
+        report = engine.download(["srch?action comedy|photo"], limit=4, folder="{target}/{category}")
         self.assertTrue(report.ok)
         self.assertEqual([r.target.value for r in report.targets], ["1", "2", "3", "4"])
         self.assertEqual(len(closed), 1)
@@ -1559,7 +1559,7 @@ class QueryAndLimitDryTest(EngineCase):
         self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
         engine = Engine(home=self.home, sources={"srch": self._query_source(closed=closed)})
         # --limit 1 on query route stops after 1 target and closes the generator.
-        report = engine.download(["srch?action|photo"], limit=1)
+        report = engine.download(["srch?action|photo"], limit=1, folder="{target}/{category}")
         self.assertEqual(len(report.targets), 1)
         self.assertEqual(closed, [True])
 
@@ -1570,14 +1570,15 @@ class QueryAndLimitDryTest(EngineCase):
             return await orig_download(run, target, board, options, **listed)
 
         with mock.patch("flnd.engine.crawl.download", spy):
-            engine.download(["srch:1|photo", "srch?action|photo"], limit=1, again=True)
+            engine.download(["srch:1|photo", "srch?action|photo"], limit=1, again=True,
+                            folder="{target}/{category}")
         self.assertTrue(seen_options)
         self.assertTrue(all(opt.again for opt in seen_options))
 
     def test_dry_run_on_query_and_normal_target_writes_nothing(self):
         engine = Engine(home=self.home, sources={"srch": self._query_source(closed=[])})
 
-        report = engine.download(["srch?action|photo"], limit=2, dry=True)
+        report = engine.download(["srch?action|photo"], limit=2, dry=True, folder="{target}/{category}")
         self.assertTrue(report.ok)
         output = "\n".join(self.lines())
         self.assertIn("srch:1", output)
@@ -1657,7 +1658,7 @@ class SyncedQueryTest(EngineCase):
         for n in range(1, 61):
             self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
         Engine(home=self.home, sources={"pgd": self._empty_source()}).download(
-            ["pgd?cats|photo"], sync=True)
+            ["pgd?cats|photo"], sync=True, folder="{target}/{category}")
         engine = Engine(home=self.home, sources={"pgd": src})
         written = [len(engine.sync().targets[0].written) for _ in range(3)]
         self.assertEqual(written, [25, 25, 10])
@@ -1671,7 +1672,7 @@ class SyncedQueryTest(EngineCase):
         # User already downloaded pgd:1 (not synced).
         engine.download(["pgd:1|photo"])
         Engine(home=self.home, sources={"pgd": self._empty_source()}).download(
-            ["pgd?cats|photo"], sync=True)
+            ["pgd?cats|photo"], sync=True, folder="{target}/{category}")
 
         self.requests.clear()
         report = engine.sync()
@@ -1683,7 +1684,7 @@ class SyncedQueryTest(EngineCase):
     def test_dry_lists_targets_and_marks_no_result_seen(self):
         src = self._paged_source([[1, 2]], closed=[], seen_pages=[])
         engine = Engine(home=self.home, sources={"pgd": src})
-        report = engine.download(["pgd?cats|photo"], dry=True, sync=True)
+        report = engine.download(["pgd?cats|photo"], dry=True, sync=True, folder="{target}/{category}")
         self.assertTrue(report.ok)
         self.assertFalse((self.home / _store.DB).exists())
 
@@ -1695,7 +1696,7 @@ class SyncedQueryTest(EngineCase):
         self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
         engine = Engine(home=self.home, sources={"pgd": src})
         # --limit 1 stops after page 0 and closes the generator without asking for page 1.
-        report = engine.download(["pgd?cats|photo"], limit=1, sync=True)
+        report = engine.download(["pgd?cats|photo"], limit=1, sync=True, folder="{target}/{category}")
         self.assertTrue(report.ok)
         self.assertEqual(seen_pages, [0])
         self.assertEqual(closed, [True])
@@ -1722,7 +1723,7 @@ class SyncedQueryTest(EngineCase):
         with mock.patch("flnd.engine.crawl.download", stop_on_second), \
                 mock.patch("flnd.engine._engine.stopping", capture_stopping), \
                 self.assertRaises(KeyboardInterrupt):
-            engine.download(["pgd?dogs|photo"], sync=True)
+            engine.download(["pgd?dogs|photo"], sync=True, folder="{target}/{category}")
         self.assertEqual(seen_pages, [0, 1])
         self.assertEqual(closed, [True])
         self.assertEqual(fakes.targets(self.home)["pgd:dogs"].seen, ["pgd:1"])
@@ -1731,7 +1732,7 @@ class SyncedQueryTest(EngineCase):
         src = self._paged_source([[1]], closed=[], seen_pages=[], fail_on="bad")
         self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
         Engine(home=self.home, sources={"pgd": self._empty_source()}).download(
-            ["pgd?bad|photo", "pgd?good|photo"], sync=True)
+            ["pgd?bad|photo", "pgd?good|photo"], sync=True, folder="{target}/{category}")
 
         report = Engine(home=self.home, sources={"pgd": src}).sync()
         self.assertFalse(report.ok)

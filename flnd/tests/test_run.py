@@ -380,7 +380,7 @@ class HttpTest(EngineCase):
             return await real_pause(seconds, stop=stop)
 
         with mock.patch.object(clock, "pause", yielding_pause):
-            report = engine.download(["qqq?cats", "bbb:example_user"])
+            report = engine.download(["qqq?cats", "bbb:example_user"], folder="{target}/{category}")
         self.assertFalse(report.ok)
         self.assertIsInstance(report.targets[0].error, Blocked)
         self.assertEqual(ran, [("other", 0.0)])
