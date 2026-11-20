@@ -20,10 +20,8 @@ Written 2026-11-20, after the Instagram and Twitter/X overhaul (251de85, 01bf5be
   `make test ARGS="-k 'ins or twt'"` and keep the count. After it, the same tests pass, and
   no existing assertion in `tests/test_ins.py` or `tests/test_twt.py` was deleted or weakened
   (Opus checks the diff of those two files line by line). A test may be moved, never dropped.
-- **Shorter code.** Every step reports its net code lines. A step that adds a feature keeps its
-  growth small. Step 7 shrinks the rest. The end goal: `CODE_LINES` in `tests/test_size.py`
-  at or below 36,000 (now 37,500), `TEST_LINES` at or below 28,500 (now 29,100), with all the
-  features below built.
+- **Size.** Every step reports its net code lines and keeps its growth small. No shrink step
+  (dropped by the user, 2026-11-20).
 - **Live checks** are done by hand on the test accounts after a step lands, never in tests.
   A site detail this plan marks "confirm live" is built against a faked answer first.
 - Push only when the user says.
@@ -390,15 +388,11 @@ so every later step updates the right page.
 - Opus reads both pages once, end to end: SPEC.md against "no gray area", COOKBOOK.md against
   "simple and common".
 
-## Step 7: shrink (sonnet, Opus picks the targets)
+## Step 7: last cookbook pass, then done (haiku, Opus reads)
 
-- Opus lists the ten largest functions and the code repeated across plugins, from `wc -l`
-  and `grep` only, and hands them over in one brief.
-- Likely wins: the hold loops now in the engine; per-plugin link-following (`fb.watch`, TikTok
-  short links, share links) as one `ctx` call; table tests in place of one-test-per-form;
-  docstrings that repeated the deleted pages.
-- No behaviour change; every test passes unchanged except moves. Lower `CODE_LINES` and
-  `TEST_LINES` to the new counts in the same commit.
+Replaces the shrink step (dropped by the user, 2026-11-20). After 5c and 5d: bring
+COOKBOOK.md (at most 250 lines) and SPEC.md (at most 1,500) in line with everything built,
+fix what the live checks found, and stop. Opus reads COOKBOOK.md end to end once.
 
 ## Decisions (all settled by the user, 2026-11-20)
 
