@@ -478,6 +478,74 @@ class FeedTest(CtxCase):
         self.assertGreaterEqual(self.now, 50.0)
         self.assertEqual(list(run.scheduler._holds), [("exm", None, "g")])
 
+    def stuck(self, step, **options):
+        """What a feed yields when each scroll step is `step` (an async function)."""
+        run, ctx = self.ctx()
+
+        async def scroller(page, **_):
+            return SimpleNamespace(step=step)
+
+        async def read():
+            async with ctx.feed("graphql", **options) as feed:
+                return await asyncio.wait_for(alist(feed), 5)
+
+        with mock.patch.object(Page, "scroller", scroller):
+            return self.call(run, read())
+
+    def test_a_feed_with_no_new_answer_for_the_stall_time_ends_with_a_warning(self):
+        """Steps that never reach the bottom and bring nothing (an overlay holds the page)."""
+        steps = []
+
+        async def step():
+            steps.append(self.now)
+            self.assertLess(len(steps), 1000, "the feed never gave up")
+            self.fake.advance(1.0)
+            return True
+
+        self.assertEqual(self.stuck(step), [])
+        self.assertEqual(len(steps), 60)
+        self.assertIn("exm:example_user: the list got no new answer in 1m; it ends here",
+                      self.lines()[-1])
+
+    def test_a_scroll_step_or_a_body_that_never_ends_is_given_up(self):
+        async def forever():
+            await asyncio.Event().wait()
+
+        with mock.patch.object(_browser, "STALL", 0.05):
+            self.assertEqual(self.stuck(forever), [])
+        run, ctx = self.ctx()
+
+        async def read():
+            async with ctx.feed("graphql", scroll=False) as feed:
+                for text in (forever, mock.AsyncMock(return_value='{"n": 2}')):
+                    self.raw.answer(SimpleNamespace(url=GRAPHQL, text=text))
+                return await asyncio.wait_for(alist(feed), 5)
+
+        with mock.patch.object(_browser, "READ", 0.05):
+            self.assertEqual(self.call(run, read()), [{"n": 2}])
+
+    def test_a_feed_listens_from_the_call_so_a_load_before_async_with_is_heard(self):
+        class Loading(FakeRaw):
+            async def goto(self, url, **options):
+                visit = await super().goto(url, **options)
+                await self.emit(GRAPHQL, json.dumps({"n": 1}))
+                return visit
+
+        self.raw = Loading([200])
+        run, ctx = self.ctx()
+
+        async def read():
+            feed = ctx.feed("graphql", scroll=False)
+            await ctx.open(PAGE)
+            async with feed:
+                return [item["n"] async for item in feed]
+
+        self.assertEqual(self.call(run, read()), [1])
+
+
+async def alist(feed):
+    return [item async for item in feed]
+
 
 class TabTest(CtxCase):
     def setUp(self):

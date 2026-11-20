@@ -56,6 +56,8 @@ SETTLE = 5.0
 CLICK_TIMEOUT = 10.0
 # Seconds a person gets to solve a captcha before it is held as a block.
 CAPTCHA_TIMEOUT = 60.0
+# The times the post list is read again after it stopped short under a captcha.
+REREADS = 3
 # The profile's data, server-rendered into the page: the script's id, and the keys to the user
 # under it. "webapp.user-detail" is one key with a dot in it, so a `dig` path can't name it.
 PAGE_DATA = "__UNIVERSAL_DATA_FOR_REHYDRATION__"
@@ -105,14 +107,15 @@ class Profile:
         self.url = f"{SITE}/@{name}"
         # The profile's own data (its `user` and `stats`); empty until the page is read.
         self.user: dict[str, Any] = {}
-        # The post list's pages answered, and the items they held.
-        self.answers = 0
+        # The items the post list held.
         self.found = 0
         self._shown = False
         self._scrolled = False
         self._posts: Any = None
         self._stories: Any = None
         self._stories_read = False
+        # The (id, idx) of each item queued, so a list read again gives each once.
+        self._seen: set[tuple[str, int]] = set()
         self._queues: dict[str, deque[dict[str, Any]]] = {"videos": deque(), "playlists": deque()}
 
     @property
@@ -145,7 +148,7 @@ class Profile:
             await self._show(ctx, posts=True)
             try:
                 feed = self._posts
-                while True:
+                for read in range(REREADS + 1):
                     ended = False
                     async with feed:
                         async for data in paged(ctx, feed, "videos", FEEDS["videos"], page_state):
@@ -154,10 +157,11 @@ class Profile:
                                 yield queue.popleft()
                             if ended:
                                 break
-                    if ended or self.answers or not has_captcha(await ctx.document()):
+                    if ended or read == REREADS or not has_captcha(await ctx.document()):
                         break
-                    # A captcha came over the grid as it scrolled, and the list gave nothing:
-                    # watch again, wait it out, and read the grid again (2026-11-11).
+                    # The list stopped short (quiet, or stalled) under a captcha that came over
+                    # the grid as it scrolled (2026-11-11): watch again, wait it out (a hidden
+                    # window is shown for it), and read the grid again.
                     feed = self._posts = _watch(ctx, "videos")
                     await self._clear(ctx)
             finally:
@@ -236,11 +240,11 @@ class Profile:
     def _take(self, ctx: Ctx, data: Any) -> bool:
         """Queue one post-list page's items for their owners; whether it says it is the last."""
         more = has_more(data)
-        if more is not None:
-            self.answers += 1
-        items = items_of(data, ctx.time.wall())
+        items = [item for item in items_of(data, ctx.time.wall())
+                 if (item["id"], item["idx"]) not in self._seen]
         self.found += len(items)
         for item in items:
+            self._seen.add((item["id"], item["idx"]))
             self._queues["playlists" if item["playlist"] else "videos"].append(item)
         return more is False
 

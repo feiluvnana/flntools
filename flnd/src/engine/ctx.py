@@ -386,6 +386,8 @@ class Ctx:
         self._paged = False
         self._request: Request | None = None
         self._opened = ""
+        # The feeds made, each listening from its call: `open` and `click` wait for them.
+        self._feeds: list[_Feed] = []
 
     @property
     def _who(self) -> str | None:
@@ -413,8 +415,20 @@ class Ctx:
         return self._tabs.idle
 
     def close(self) -> None:
-        """Give back the target's tabs; on a thread."""
+        """Stop the feeds still listening and give back the target's tabs; on a thread."""
+        feeds, self._feeds = self._feeds, []
+        for feed in feeds:
+            made, feed._feed, feed._done = feed._feed, None, True
+            if made is not None:
+                made.close()
         self._tabs.close()
+
+    async def _listened(self) -> None:
+        """Wait until every feed made so far listens."""
+        self._feeds = [feed for feed in self._feeds if not feed._done]
+        for feed in list(self._feeds):
+            if feed._opening is not None:
+                await feed._open()
 
     @contextlib.asynccontextmanager
     async def aside(self) -> AsyncIterator[None]:
@@ -581,6 +595,7 @@ class Ctx:
         """See `flnd.plugin.Ctx.open`: a warm tab loading `url` becomes the target's."""
         plugin = self._plugin
         self._opened = url
+        await self._listened()
         page, warm = await self._run.off(self._take, url)
         taken = self._tabs
 
@@ -624,9 +639,12 @@ class Ctx:
              lines: bool = False,
              cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None,
              resume: bool = False, bucket: str | None = None) -> _Feed:
-        """See `flnd.plugin.Ctx.feed`; it listens from `async with`, or its first item."""
-        return _Feed(self, match, scroll=scroll, lines=lines, cursor=cursor, resume=resume,
+        """See `flnd.plugin.Ctx.feed`; it listens from the call."""
+        made = _Feed(self, match, scroll=scroll, lines=lines, cursor=cursor, resume=resume,
                      bucket=bucket)
+        made.listen()
+        self._feeds.append(made)
+        return made
 
     def load(self, url: str, match: str | Any | Callable[[str], bool], *,
              scroll: bool = True, lines: bool = False,
@@ -650,6 +668,7 @@ class Ctx:
     async def click(self, css: str, *,
                     timeout: float = 10.0) -> None:  # noqa: ASYNC109 (the tab job's own limit)
         """See `flnd.plugin.Ctx.click`."""
+        await self._listened()
         await self._run.off(functools.partial(self._tabs.click, css, timeout=timeout))
 
     async def shown(self, css: str) -> bool:
@@ -845,6 +864,8 @@ class _Feed:
         self._ctx = ctx
         self._make = functools.partial(self._made, match, scroll, lines, cursor)
         self._feed: browser.Feed | None = None
+        # The feed being made on a thread, from `listen` until it is made.
+        self._opening: asyncio.Future[Any] | None = None
         self._done = False
         self._resume = Resume(bucket)
         self._on = resume
@@ -855,9 +876,21 @@ class _Feed:
             return chrome.ExtensionFeed(tabs, match, scroll=scroll, lines=lines, cursor=cursor)
         return browser.Feed(tabs, match, scroll=scroll, lines=lines, cursor=cursor)
 
+    def listen(self) -> None:
+        """Start making the feed, so it listens from now on; on the loop."""
+        if self._feed is None and self._opening is None and not self._done:
+            self._opening = asyncio.ensure_future(self._ctx._run.off(self._make))
+
     async def _open(self) -> browser.Feed:
         if self._feed is None:
-            self._feed = await self._ctx._run.off(self._make)
+            self.listen()
+            opening = self._opening
+            assert opening is not None
+            try:
+                self._feed = await opening
+            finally:
+                if self._opening is opening:
+                    self._opening = None
         return self._feed
 
     async def __aenter__(self) -> _Feed:
@@ -885,6 +918,10 @@ class _Feed:
                     await self._again(error)
                     continue
                 if item is _DONE:
+                    if getattr(feed, "stalled", False):
+                        ui.warn("{target}: the list got no new answer in {time}; it ends here",
+                                target=str(self._ctx._target),
+                                time=text.duration(browser.STALL))
                     await self.aclose()
                     raise StopAsyncIteration
                 if self._on and not self._resume.new(item):
@@ -910,6 +947,9 @@ class _Feed:
     async def aclose(self) -> None:
         """Stop listening; a second call does nothing."""
         self._done = True
+        opening, self._opening = self._opening, None
+        if self._feed is None and opening is not None:
+            self._feed = await opening
         if self._feed is not None:
             feed, self._feed = self._feed, None
             await self._ctx._run.off(feed.close)

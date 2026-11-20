@@ -22,7 +22,7 @@ import tempfile
 import threading
 import weakref
 from collections import Counter, deque
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -433,6 +433,13 @@ ASSET_TYPES = frozenset({"image", "media", "font", "stylesheet", "script", "mani
 BLOCKED_TYPES = frozenset({"image", "media", "font"})
 # The longest a feed that doesn't scroll waits for the network to go quiet, in seconds.
 QUIET = 10.0
+# Seconds a scrolling feed goes on with no new answer before it ends as stalled (`Feed.stalled`);
+# one scroll step that takes this long ends it too.
+STALL = 60.0
+# Seconds one read may take: a response's body, the page's HTML, a script's value.
+READ = 30.0
+# Seconds a tab waits for the browser while another target launches or reopens it.
+LAUNCH_WAIT = 300.0
 
 # Where Chrome keeps its profiles, relative to the home folder, on each platform.
 PROFILE_ROOTS = {
@@ -1319,7 +1326,9 @@ class Page:
         """Run a page read; if the page navigates meanwhile, wait for its load and read again."""
         for attempt in range(tries):
             try:
-                return await read()
+                return await asyncio.wait_for(read(), READ)
+            except TimeoutError:
+                raise WaitError(f"the page didn't answer in {READ:g} s: {what}") from None
             except _raw_error() as error:
                 if not _gone(error):
                     raise
@@ -1593,7 +1602,10 @@ class Capture:
             if req is not None and isinstance(getattr(req, "method", None), str) else None
         )
         try:
-            entry = (response.url, await response.text())
+            entry = (response.url, await asyncio.wait_for(response.text(), READ))
+        except TimeoutError:
+            _log.debug("responses: no body for {url} in {seconds:g} s", extra={"fields": {
+                "url": redact(response.url), "seconds": READ}})
         except _raw_error() as error:
             if status == 429:
                 entry = (response.url, "")
@@ -1781,9 +1793,7 @@ class RunBrowser:
         Returns:
             The tab, which scrolls by script.
         """
-        if self._launching is None:
-            self._launching = asyncio.Lock()
-        async with self._launching:
+        async with self._launch():
             wanted = self._headless if hidden is None else hidden
             if not wanted and any(window[1].headless for window in self._logins):
                 await self._reveal()
@@ -1798,10 +1808,30 @@ class RunBrowser:
                     self._logins.append(found)
                 await found[1].add_cookies(jar)
                 found[0].append(jar)
-        _, browser, idle = found
-        page = idle.pop() if idle else await browser.tab(by_script=True)
+            # Opened under the lock, so a reveal can't close the window under the new tab.
+            _, browser, idle = found
+            page = idle.pop() if idle else await browser.tab(by_script=True)
         await page.assets(assets)
         return page
+
+    @contextlib.asynccontextmanager
+    async def _launch(self) -> AsyncIterator[None]:
+        """Hold the launch lock, waiting at most `LAUNCH_WAIT` for it.
+
+        Raises:
+            NetworkError: another target's launch or reveal held it that long.
+        """
+        if self._launching is None:
+            self._launching = asyncio.Lock()
+        try:
+            await asyncio.wait_for(self._launching.acquire(), LAUNCH_WAIT)
+        except TimeoutError:
+            raise NetworkError(f"the browser didn't start in {LAUNCH_WAIT:g} s",
+                               retryable=True) from None
+        try:
+            yield
+        finally:
+            self._launching.release()
 
     async def reveal(self) -> None:
         """Close each hidden window and open it again visible, with its cookies and its tabs
@@ -1810,9 +1840,7 @@ class RunBrowser:
         Later windows open visible too. A tab's page state (a form, a scroll position) is lost;
         a tab another target is using fails the call it is in the middle of.
         """
-        if self._launching is None:
-            self._launching = asyncio.Lock()
-        async with self._launching:
+        async with self._launch():
             await self._reveal()
 
     async def _reveal(self) -> None:
@@ -2234,7 +2262,9 @@ class Feed:
     - the site said so: `cursor` read a page with no next one, or the same cursor came back more
       than `REPEATS` times (the site is answering the same page again);
     - or, for a feed without a cursor reader, or whose site never said, the bottom stayed quiet
-      (`WAIT`, then `IDLE`).
+      (`WAIT`, then `IDLE`);
+    - or no new answer came for `STALL` seconds of scrolling, or one step took that long: it
+      ends `stalled`.
     Without `scroll`, it waits once for the network to go quiet (up to `QUIET`), yields what
     came, and ends. Leaving `with`, or the end of the iteration, closes it.
 
@@ -2261,6 +2291,8 @@ class Feed:
             deque()
         )
         self.request: tuple[str, str, dict[str, str], str | None] | None = None
+        # Whether it ended because no new answer came for `STALL` seconds.
+        self.stalled = False
         tabs.push(self, scroll=scroll)
         self._page = tabs.page
         self._capture: Capture = tabs.run(self._page.capture(self._accepts))
@@ -2334,19 +2366,33 @@ class Feed:
             self.close()
 
     def _scroll_until_one(self) -> bool:
-        """Scroll step by step, one call to the loop each, until a body is waiting."""
+        """Scroll step by step, one call to the loop each, until a body is waiting, for at
+        most `STALL` seconds."""
+        began = clock.now()
         while not self._fill():
-            if not self._cursors.ended:
-                if self._scroller is None:
-                    self._scroller = self._tabs.run(self._page.scroller(
-                        style=self._tabs.scroll, watch=self._capture))
-                if self._tabs.run(self._scroller.step()):
-                    continue
-            # The end: the site said so, or the page went quiet. A body still being read is
-            # waited for, since it may be the last page.
-            self._tabs.run(self._capture.settle())
-            return self._fill()
-        return True
+            if self._cursors.ended:
+                break
+            if self._scroller is None:
+                self._scroller = self._tabs.run(self._page.scroller(
+                    style=self._tabs.scroll, watch=self._capture))
+            try:
+                went = self._tabs.run(asyncio.wait_for(self._scroller.step(), STALL))
+            except (TimeoutError, WaitError):
+                went = None
+            if went is False:
+                break
+            if went is None or clock.now() - began >= STALL:
+                self.stalled = True
+                break
+        else:
+            return True
+        # The end: the site said so, the page went quiet, or it stalled. A body still being
+        # read is waited for, since it may be the last page.
+        self._tabs.run(self._capture.settle())
+        if self._fill():
+            self.stalled = False
+            return True
+        return False
 
     def _arrived(self) -> Iterator[Any]:
         self._fill()

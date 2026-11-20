@@ -597,6 +597,30 @@ class CaptchaTest(unittest.TestCase):
         posts, raised = listed(ctx, "videos")
         self.assertEqual((len(posts), raised, ctx.seen.holds), (6, None, []))
 
+    def test_a_list_that_stops_short_under_a_captcha_hands_off_and_reads_on(self):
+        """Pages came, then the list went quiet under a captcha (in a hidden window the handoff
+        shows it): it is solved, the list read on, and an item heard again is given once."""
+        class Covered(FakeCtx):
+            handed = 0
+
+            async def document(self):
+                if self.seen.scrolls and not self.handed:
+                    return html.parse(CAPTCHA)
+                return await super().document()
+
+            async def handoff(self, message, *, until, timeout=None):  # noqa: ASYNC109
+                self.handed += 1
+                return await until()
+
+        first = {"hasMore": True, "cursor": "1", "itemList": POSTS["itemList"][:1]}
+        ctx = fake(profile_page(), [(FEEDS[0][0], first),
+                                    Sent(FEEDS[0][0], {**POSTS, "itemList": POSTS["itemList"][:2]},
+                                         scroll=2)], ctx=Covered)
+        posts, raised = listed(ctx, "videos")
+        self.assertEqual(([post.id for post in posts], raised, ctx.handed),
+                         (["7300000000000000001"], None, 1))
+        self.assertIn(("info", "videos: 2 found; the profile lists 2"), ctx.seen.logs)
+
 
 class PagedTest(unittest.TestCase):
     """The post list paged by the page's own `api/post/item_list/` request, in the page."""

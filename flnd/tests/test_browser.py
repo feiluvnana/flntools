@@ -948,6 +948,68 @@ class HiddenAskersTest(BrowserCase):
             run(shared.tab(site, hidden=True))
             self.assertEqual(len(made), 2)
 
+    def test_a_reveal_waits_for_a_tab_being_opened_and_a_stuck_launch_is_waited_for_so_long(self):
+        made = []
+
+        class Fake:
+            def __init__(self, headless):
+                self.headless, self.closed = headless, False
+                self.pages = __import__("weakref").WeakSet()
+
+            async def tab(self, *, by_script=False):
+                await asyncio.sleep(0)
+                page = _browser.Page(cast(Any, SimpleNamespace(
+                    url="", is_closed=lambda: False)), cast(Any, self))
+                self.pages.add(page)
+                return page
+
+            async def add_cookies(self, jar):
+                pass
+
+            async def cookies(self):
+                return _cookies.Jar([])
+
+            async def close(self):
+                self.closed = True
+
+        async def launch(**options):
+            made.append(Fake(options["headless"]))
+            return made[-1]
+
+        jar = _cookies.Jar([{"name": "a", "value": "1", "domain": ".one.example"}])
+        shared = _browser.RunBrowser(LOOP)
+
+        async def both():
+            return await asyncio.gather(shared.tab(jar, hidden=True), shared.reveal())
+
+        with mock.patch.object(_browser, "launch", launch):
+            page, _ = run(both())
+        # The reveal came while the tab was opening: the tab is in the new, visible window.
+        self.assertEqual([fake.closed for fake in made], [True, False])
+        self.assertIs(page.browser, made[1])
+
+        async def stuck(**options):
+            await asyncio.Event().wait()
+
+        shared = _browser.RunBrowser(LOOP)
+        with mock.patch.object(_browser, "launch", stuck), \
+                mock.patch.object(_browser, "LAUNCH_WAIT", 0.05):
+            first = asyncio.run_coroutine_threadsafe(shared.tab(jar), LOOP)
+            self.addCleanup(first.cancel)
+            with self.assertRaises(NetworkError) as caught:
+                run(asyncio.wait_for(shared.tab(jar), 5))
+        self.assertIn("the browser didn't start in 0.05 s", str(caught.exception))
+
+    def test_a_page_that_does_not_answer_a_read_fails_it(self):
+        async def forever():
+            await asyncio.Event().wait()
+
+        page = _browser.Page(cast(Any, SimpleNamespace(content=forever)), cast(Any, None))
+        with mock.patch.object(_browser, "READ", 0.05), \
+                self.assertRaises(_browser.WaitError) as caught:
+            run(asyncio.wait_for(page.content(), 5))
+        self.assertEqual(str(caught.exception), "the page didn't answer in 0.05 s: read the page")
+
 
 class MoveTest(BrowserCase):
     def test_a_moved_tab_keeps_its_captures_and_blocking_and_loads_its_page_again(self):

@@ -1021,8 +1021,9 @@ up to 32.
 - **Filename:** `{date}_{post}_{n}` (`n` is `0`, `1`, ..., `q0` for a quoted tweet, `card`).
 - **Key:** `{post}_{n}` (`twt:<tweet id>_<n>`); `profile` keys by `{path}`.
 - **Search:** `twt?<words>` opens the Latest tab; X operators (`from:`, `filter:media`) work;
-  `--when` is sent as `since:`/`until:`. When X's cursor ends early, a `max_id:<oldest id - 1>`
-  window follows; 3 empty pages in a row are passed; a 429 holds that bucket. Each tweet with files
+  `--when` is sent as `since:`/`until:`. When X's cursor ends early (or a 429 cuts a window), a
+  `max_id:` window follows from the oldest of the window's last 5 tweets, so an old outlier
+  skips nothing; it ends when a window adds no new tweet; 3 empty pages in a row are passed; a 429 holds that bucket. Each tweet with files
   is a `post` target in the search's `--folder`. Tagged: `twt?@example_handle -from:example_handle`.
 - **Login:** cookie `auth_token` (a logged-out browser lands on the login wall); API calls send
   `ct0` back as the CSRF token. `twt:me`: `Following` for the `twid` cookie's id, paged by `Bottom`;
@@ -1047,10 +1048,11 @@ up to 32.
 - **Filename:** `{date}_{post}_{idx}` (`idx` empty for a video; a photo's place from 1).
 - **Key:** `{post}_{idx}` (`tik:<id>`, `tik:<id>_<n>`); `profile` keys `profile/avatar_<id>.jpg`.
 - **Login:** cookies `sessionid` or `sid_tt` (optional).
-- **Limits and walls:** pace 0.2; no walls. A captcha gets 60 s in the browser window, then a block
-  hold; a fourth unsolved one fails the job. A 429 holds and carries on from the same cursor; an
-  empty page that says `hasMore` holds once, then ends with a warning. A walled post list fails
-  `videos` and `playlists` with `Hidden`.
+- **Limits and walls:** pace 0.2; no walls. A captcha gets 60 s in the browser window (a hidden one
+  is shown), then a block hold; a fourth unsolved one fails the job; a post list stopped short by
+  one is read again (3 times at most). A 429 holds and carries on from the same cursor; an empty
+  page that says `hasMore` holds once, then ends with a warning. A walled post list fails `videos`
+  and `playlists` with `Hidden`.
 - **Known gaps:** no such tab is logged; a tab deaf to the click for 10 s fails `Changed`; stories
   only as the page shows them on load.
 - **Saved as:** `media/tik/example_creator/videos/2026-01-02_1234567890123456789.mp4`,
@@ -1197,7 +1199,6 @@ from flnd.plugin import File, Plugin, Post, route
 
 home = tempfile.mkdtemp()
 
-
 def text_file(name, body):
     data = body.encode()
 
@@ -1206,7 +1207,6 @@ def text_file(name, body):
         await part.write(data[part.offset:part.end])
 
     return File(fetch=fetch, name=name)
-
 
 class Demo(Plugin):
     code, name, domains, api = "dmo", "Demo", ("demo.example.com",), 2
@@ -1320,7 +1320,6 @@ def write_cookies(filename):
                     ".instagram.com\tTRUE\t/\tTRUE\t2000000000\tsessionid\texample-value\n")
     return str(path)
 
-
 with flnd.open(home) as fl:
     a1 = fl.auth.login("ins", path=write_cookies("c1.txt"), name="example_user")
     a2 = fl.auth.login("ins", path=write_cookies("c2.txt"), name="example_creator")
@@ -1371,7 +1370,10 @@ The contract:
 - `@route.category(own=, url=, newest_first=, folder=, key=)` (method): one part of a route's target
 - `ctx.fetch`, `ctx.pages(req, cursor=, send=, resume=)`, `ctx.feed(..., resume=, bucket=)`,
   `ctx.open`, `ctx.pause`, `ctx.hold` (): the run's requests. `resume=True` holds a 429 through
-  `ctx.hold` and goes on from the last page or cursor; past the last round: `Blocked`
+  `ctx.hold` and goes on from the last page or cursor; past the last round: `Blocked`. A feed
+  listens from its call; a scrolling one ends after 60 s with no new answer, warning `<target>: the
+  list got no new answer in 1m; it ends here`. A page read gets 30 s (else `NetworkError`), a tab
+  300 s for another's browser launch
 - `sign(request, cookies)` (`def` hook): the request, signed, before each try
 - `connect(ctx)` (async context manager): once per run; `date(ctx, post)` (`async def` hook): a day
 - `blocked(response)` (`def` hook): seconds to hold, or None
@@ -1391,7 +1393,6 @@ from flnd.plugin import File, Plugin, Post, Request, cookies, route
 from flnd.testing import FakeCtx, Reply, check, collect
 
 API = "https://api.example.com"
-
 
 class Example(Plugin):
     """example.com: a user's photos, from its JSON API."""
