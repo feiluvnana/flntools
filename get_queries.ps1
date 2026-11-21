@@ -24,18 +24,18 @@ try {
     Write-Host ""
 
 $tasks = @(
-    # 1. Pyo Eunji
+    # 1. Pyo Eunji (Pyoapple)
     @{
         Number = 1
-        Name   = "Pyo Eunji - Profile"
-        Target = "twt:PyoEunjijapan"
+        Name   = "Pyo Eunji - Personal Profile"
+        Target = "twt:pyoapple"
         Folder = ""
     },
     @{
         Number = 2
-        Name   = "Pyo Eunji - Query"
-        Target = 'twt?(pyoapple OR @pyoapple OR #pyoapple OR "Eunji Pyoapple" OR PyoEunjijapan OR @PyoEunjijapan OR "Pyo Eunji" OR "Eunji Pyo" OR "Pyo Eun-ji" OR "Eun-ji Pyo" OR PyoEunji OR "表恩智" OR 표은지 OR "ピョ・ウンジ" OR "ピョウンジ" OR "DJ Henney" OR DJHenney OR "DJ 表恩智" OR "DJ 표은지") -from:PyoEunjijapan'
-        Folder = "PyoEunjijapan-query"
+        Name   = "Pyo Eunji - Japan Profile"
+        Target = "twt:PyoEunjijapan"
+        Folder = ""
     },
     # 2. Marina Nagasawa
     @{
@@ -47,7 +47,7 @@ $tasks = @(
     @{
         Number = 4
         Name   = "Marina Nagasawa - Query"
-        Target = 'twt?(長澤茉里奈 OR @nagasawa_marina OR "Marina Nagasawa" OR "Nagasawa Marina" OR #長澤茉里奈 OR "長澤まりな") -from:nagasawa_marina'
+        Target = 'twt?("長澤茉里奈" OR @nagasawa_marina OR "Marina Nagasawa" OR "Nagasawa Marina" OR #長澤茉里奈 OR "長澤まりな") -from:nagasawa_marina'
         Folder = "nagasawa_marina-query"
     },
     # 3. Utatane Sui
@@ -60,7 +60,7 @@ $tasks = @(
     @{
         Number = 6
         Name   = "Utatane Sui - Query"
-        Target = 'twt?(meidomusumemoe OR @meidomusumemoe OR "meido musume moe" OR うたたね翠 OR "うたたね 翠" OR "Utatane Sui" OR "Sui Utatane" OR #meidomusumemoe OR #うたたね翠) -from:meidomusumemoe'
+        Target = 'twt?(meidomusumemoe OR @meidomusumemoe OR "meido musume moe" OR "うたたね翠" OR "うたたね 翠" OR "Utatane Sui" OR "Sui Utatane" OR #meidomusumemoe OR #うたたね翠) -from:meidomusumemoe'
         Folder = "meidomusumemoe-query"
     },
     # 4. Iri
@@ -73,7 +73,7 @@ $tasks = @(
     @{
         Number = 8
         Name   = "Iri - Query"
-        Target = 'twt?(irisuare OR @irisuare OR "愛莉 irisuare" OR "irisuare 愛莉" OR #irisuare OR #愛莉) -from:irisuare'
+        Target = 'twt?(irisuare OR @irisuare OR "愛莉 irisuare" OR "irisuare 愛莉" OR #irisuare) -from:irisuare'
         Folder = "irisuare-query"
     },
     # 5. Hiina Nano
@@ -99,20 +99,26 @@ $tasks = @(
     @{
         Number = 12
         Name   = "Chunmomo - Query"
-        Target = 'twt?(chunmomo0127 OR @chunmomo0127 OR 蠢沫沫 OR chunmomo OR "chun momo" OR "Chunmomo cos" OR #蠢沫沫 OR #chunmomo OR #chunmomo0127) -from:chunmomo0127'
+        Target = 'twt?(chunmomo0127 OR @chunmomo0127 OR "蠢沫沫" OR chunmomo OR "chun momo" OR "Chunmomo cos" OR #蠢沫沫 OR #chunmomo OR #chunmomo0127) -from:chunmomo0127'
         Folder = "chunmomo0127-query"
     },
     # 7. Nyaromenia
     @{
         Number = 13
-        Name   = "Nyaromenia - Profile"
+        Name   = "Nyaromenia - Main Profile"
         Target = "twt:nyarome_cos"
         Folder = ""
     },
     @{
         Number = 14
+        Name   = "Nyaromenia - Personal Profile"
+        Target = "twt:nyaromenia"
+        Folder = ""
+    },
+    @{
+        Number = 15
         Name   = "Nyaromenia - Query"
-        Target = 'twt?(ニャロメニア OR @nyarome_cos OR @nyaromenia OR nyarome_cos OR nyaromenia OR "Nyarome Nia" OR "Nyaromenia" OR にゃろめにあ OR #ニャロメニア OR #nyarome_cos OR #nyaromenia) -from:nyarome_cos -from:nyaromenia'
+        Target = 'twt?("ニャロメニア" OR @nyarome_cos OR @nyaromenia OR nyarome_cos OR nyaromenia OR "Nyarome Nia" OR "Nyaromenia" OR "にゃろめにあ" OR #ニャロメニア OR #nyarome_cos OR #nyaromenia) -from:nyarome_cos -from:nyaromenia'
         Folder = "nyaromenia-query"
     }
 )
