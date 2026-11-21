@@ -1003,8 +1003,9 @@ up to 32.
 
 ### twt (Twitter/X)
 
-- **Reads:** a user's posts, Media tab, highlights, reposts, replies, avatar and banner; one tweet;
-  a search; the accounts you follow. Profile and tweets: GraphQL; timelines and searches: scrolled.
+- **Reads:** a user's posts, Media tab (both Videos on `/media` and Photos on `/media?filter=photo`
+  when X splits `/media`), highlights, reposts, replies, avatar and banner; one tweet; a search;
+  the accounts you follow. Profile and tweets: GraphQL; timelines and searches: scrolled.
 - **Categories:** `posts` NF, `media` NF, `highlights`, `replies` NF, `profile` (own); `reposts`
   (opt-in). Retweets are left out of every category but `reposts`; a tweet's files include the media
   of a tweet it quotes and its card image.
@@ -1019,9 +1020,13 @@ up to 32.
 - **Login:** cookie `auth_token` (a logged-out browser lands on the login wall); API calls send
   `ct0` back as the CSRF token.
 - **Limits and walls:** pace 0.2 per bucket (a 429 holds only its operation, and a timeline
-  goes on with `resume`); walls `/i/flow/login`, `/login`, `/account/access`. Sensitive-profile
-  warnings are dismissed automatically; a gated or protected profile with no visible timeline raises
-  `Hidden`. Query ids are refreshed from x.com's script on a 400 or 404, at most once a run.
+  reloads and continues); walls `/i/flow/login`, `/login`, `/account/access`. Sensitive-profile
+  warnings are dismissed automatically across tabs and 429 reloads; a gated or protected profile
+  with no visible timeline raises `Hidden`. A feed that stops before its cursor ends (or gets
+  0 responses or a GraphQL error without recovering) is left incomplete rather than marked
+  complete. A suspended login warns on profiles and fails `twt?` searches with `LoginError` (or
+  `NotFound` with a hint on 404). Query ids are refreshed from x.com's script on a 400 or 404, at
+  most once a run.
 - **Known gaps:** a single tweet has no browser fallback; a protected and a deleted tweet are both
   `NotFound`; video is MP4 only (streaming-only is skipped); text-only tweets save nothing.
 - **Saved as:** `media/twt/example_handle/posts/2026-01-02_1234567890_0.jpg`

@@ -12,6 +12,7 @@ from pathlib import PurePosixPath
 import no_profiles  # noqa: F401
 from fakes import filed
 
+from flnd.engine.ctx import Listing
 from flnd.errors import Blocked, Hidden, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import Range, Request, Target
 from flnd.plugins.twt import (
@@ -46,9 +47,10 @@ def video(name):
         {"content_type": "video/mp4", "bitrate": 9, "url": f"https://video.example/{name}.mp4"}]}}
 
 
-def tweet(tweet_id, media, *, author=USER_ID, reply_to=None, retweet=None, by=None):
+def tweet(tweet_id, media, *, author=USER_ID, reply_to=None, retweet=None, by=None,
+          created_at="Mon Nov 09 10:00:00 +0000 2026"):
     legacy = {"id_str": tweet_id, "user_id_str": author, "extended_entities": {"media": media},
-              "created_at": "Mon Nov 09 10:00:00 +0000 2026"}
+              "created_at": created_at}
     if reply_to:
         legacy["in_reply_to_status_id_str"] = reply_to
     if retweet:
@@ -853,6 +855,172 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual([f.post.id for f in saved], ["3", "2", "1"])
         self.assertEqual([b for _, _, b in ctx.seen.holds], ["UserOriginalsTimeline"])
 
+    def test_timeline_429_reload_redismisses_interstitial_and_survives_top_tweet(self):
+        from unittest import mock
+
+        button = '[data-testid="empty_state_button_text"]'
+        reset = {"x-rate-limit-reset": str(int(FAKE_WALL) + 60)}
+        link = f"{API}id/UserRepliesTimeline"
+        user = {"data": {"user": {
+            "result": {"rest_id": USER_ID,
+                       "profile_metadata": {"profile_interstitial_type": "sensitive_media"}}}}}
+        queue = [
+            FakePage(shown=[button], feeds=[
+                Sent(link, page(item(tweet("3", [photo("c")], reply_to="1")), cursor="c1"),
+                     click=button),
+                Sent(link, status=429, headers=reset, scroll=1),
+            ]),
+            FakePage(shown=[button], feeds=[
+                # New top tweet "4" + already-seen "3" on page 1, then all-seen page 2, then "2".
+                Sent(link, page(item(tweet("4", [photo("d")], reply_to="1")),
+                                item(tweet("3", [photo("c")], reply_to="1")), cursor="c2"),
+                     click=button),
+                Sent(link, page(item(tweet("3", [photo("c")], reply_to="1")), cursor="c3"),
+                     scroll=1),
+                Sent(link, page(item(tweet("2", [photo("b")], reply_to="1")), cursor="c4"),
+                     scroll=2),
+                Sent(link, page(cursor="c5"), scroll=3),
+            ]),
+        ]
+        ctx = fake(user=user, pages=tabs())
+        orig_open = ctx.open
+        orig_click = ctx.click
+
+        async def async_open(target_url):
+            if target_url == "https://x.com/example_handle/with_replies":
+                ctx._pages[target_url] = queue.pop(0)
+            return await orig_open(target_url)
+
+        async def async_click(css, **kw):
+            from dataclasses import replace
+
+            await orig_click(css, **kw)
+            if css == button:
+                ctx._tabs[-1].page = replace(
+                    ctx._tabs[-1].page,
+                    shown=['a[href$="/media"]', 'a[href$="/with_replies"]'],
+                )
+
+        with mock.patch.object(ctx, "open", side_effect=async_open), \
+             mock.patch.object(ctx, "click", side_effect=async_click):
+            saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["replies"])
+        self.assertEqual([f.post.id for f in saved], ["3", "4", "2"])
+        self.assertEqual(ctx.seen.logs.count(("info", "dismissed sensitive-content warning")), 2)
+
+    def test_media_split_videos_and_photos_and_zero_video_account(self):
+        v_link = f"{API}id/UserVideoTimeline"
+        p_link = f"{API}id/UserPhotoTimeline"
+        t_v1 = tweet("30", [video("v1")], created_at="Wed Nov 11 10:00:00 +0000 2026")
+        t_p1 = tweet("20", [photo("p1")], created_at="Tue Nov 10 10:00:00 +0000 2026")
+        t_v0 = tweet("10", [video("v0")], created_at="Mon Nov 09 10:00:00 +0000 2026")
+        t_both = tweet("15", [photo("p2"), video("v2")],
+                       created_at="Mon Nov 09 12:00:00 +0000 2026")
+        ctx = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle/media": FakePage(feeds=[
+                Sent(v_link, page(item(t_v1), cursor="vc1")),
+                Sent(v_link, page(item(t_both), item(t_v0), cursor="vc2"), scroll=1),
+                Sent(v_link, page(cursor="vc3"), scroll=2),
+            ]),
+            "https://x.com/example_handle/media?filter=photo": FakePage(feeds=[
+                Sent(p_link, page(item(t_p1), item(t_both), cursor="pc1")),
+                Sent(p_link, page(cursor="pc2"), scroll=1),
+            ]),
+        })
+        saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["media"])
+        self.assertEqual([f.post.id for f in saved], ["30", "20", "15", "15", "10"])
+        self.assertEqual([f.path for f in saved], [
+            "videos/2026-11-11_30_0.mp4",
+            "images/2026-11-10_20_0.jpg",
+            "images/2026-11-09_15_0.jpg",
+            "videos/2026-11-09_15_1.mp4",
+            "videos/2026-11-09_10_0.mp4",
+        ])
+
+        # Photo-only account: UserVideoTimeline returns 0 tweets, still visits ?filter=photo.
+        ctx2 = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle/media": FakePage(feeds=[
+                Sent(v_link, page(cursor="vc_empty")),
+            ]),
+            "https://x.com/example_handle/media?filter=photo": FakePage(feeds=[
+                Sent(p_link, page(item(t_p1), cursor="pc1")),
+                Sent(p_link, page(cursor="pc2"), scroll=1),
+            ]),
+        })
+        saved2 = collect(Twitter, "twt:example_handle", ctx=ctx2, categories=["media"])
+        self.assertEqual([f.post.id for f in saved2], ["20"])
+
+        # Direct UserPhotoTimeline on /media streams its photos without visiting ?filter=photo.
+        ctx3 = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle/media": FakePage(feeds=[
+                Sent(p_link, page(item(t_p1), cursor="pc1")),
+                Sent(p_link, page(cursor="pc2"), scroll=1),
+            ]),
+        })
+        saved3 = collect(Twitter, "twt:example_handle", ctx=ctx3, categories=["media"])
+        self.assertEqual([f.post.id for f in saved3], ["20"])
+        self.assertEqual(ctx3.seen.visited, ["https://x.com/example_handle/media"])
+
+        # Page-1 UserVideoTimeline GraphQL error on /media marks listing.stalled = True.
+        ctx4 = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle/media": FakePage(feeds=[
+                Sent(v_link, {"data": {}, "errors": [{"message": "Internal error", "code": 131}]}),
+            ]),
+        })
+        ctx4.listing = Listing(None)
+        saved4 = collect(Twitter, "twt:example_handle", ctx=ctx4, categories=["media"])
+        self.assertEqual(saved4, [])
+        self.assertTrue(ctx4.listing.stalled)
+        self.assertTrue(any(level == "warn" for level, _ in ctx4.seen.logs))
+
+    def test_interstitial_new_schema_waits_for_button(self):
+        from unittest import mock
+
+        button = '[data-testid="empty_state_button_text"]'
+        user = {"data": {"user": {
+            "result": {"rest_id": USER_ID,
+                       "profile_metadata": {"profile_interstitial_type": "sensitive_media"}}}}}
+        sent = Sent(f"{API}q/{TIMELINES['posts'].query}",
+                    page(item(tweet("1", [photo("a")]))), click=button)
+        ctx = fake(user=user, pages={
+            "https://x.com/example_handle": FakePage(feeds=[sent], shown=[button]),
+        })
+        waits = []
+        import flnd.plugins.twt as twt_mod
+        orig = twt_mod._dismiss_interstitial
+
+        async def spy(c, *, wait=False):
+            waits.append(wait)
+            return await orig(c, wait=wait)
+
+        with mock.patch.object(twt_mod, "_dismiss_interstitial", side_effect=spy):
+            saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved], ["1"])
+        self.assertEqual(waits, [True])
+
+    def test_graphql_error_or_zero_responses_marks_stalled_and_cursor_unset(self):
+        # 1. GraphQL error body without recovery marks listing.stalled and does not set cursor.
+        ctx = fake(pages=tabs(posts=[
+            page(item(tweet("2", [photo("a")])), cursor="c1"),
+            {"data": {}, "errors": [{"message": "Internal error", "code": 131}]},
+        ]))
+        ctx.listing = Listing(None)
+        saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved], ["2"])
+        self.assertTrue(ctx.listing.stalled)
+        self.assertIsNone(ctx.listing.cursor)
+        self.assertTrue(any(level == "warn" for level, _ in ctx.seen.logs))
+
+        # 2. Zero matching responses on an existing tab marks listing.stalled.
+        ctx2 = fake(pages=tabs())
+        ctx2.listing = Listing(None)
+        collect(Twitter, "twt:example_handle", ctx=ctx2, categories=["media"])
+        self.assertTrue(ctx2.listing.stalled)
+        self.assertTrue(any(level == "warn" for level, _ in ctx2.seen.logs))
+
 
 class MissingTabTest(unittest.TestCase):
     def test_a_tab_the_profile_lacks_redirects_to_it_and_ends_with_a_line(self):
@@ -911,6 +1079,64 @@ class MissingTabTest(unittest.TestCase):
         })
         with self.assertRaises(Hidden):
             collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+
+    def test_suspended_account_warns_once_on_profile_and_ignores_script_text(self):
+        script_only = FakePage(
+            html="<script>var msg = 'Your account is suspended';</script>",
+            feeds=[Sent(f"{API}q/{TIMELINES['posts'].query}", page(item(tweet("1", [photo("a")]))))],
+        )
+        ctx_clean = fake(pages={"https://x.com/example_handle": script_only})
+        collect(Twitter, "twt:example_handle", ctx=ctx_clean, categories=["posts"])
+        warn = ("warn", "this account is suspended; twt? searches will not work "
+                        "(log in with another account: flnd auth login twt)")
+        self.assertNotIn(warn, ctx_clean.seen.logs)
+
+        suspended = FakePage(
+            html='<div id="react-root"><span>Your account is suspended</span></div>',
+            feeds=[Sent(f"{API}q/{TIMELINES['posts'].query}", page(item(tweet("1", [photo("a")]))))],
+        )
+        ctx = fake(pages={
+            "https://x.com/example_handle": suspended,
+            "https://x.com/example_handle/media": suspended,
+        })
+        saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts", "media"])
+        self.assertEqual([found.path for found in saved], [f"posts/{DAY}_1_0.jpg"])
+        self.assertEqual(ctx.seen.logs.count(warn), 1)
+
+    def test_suspended_account_fails_search_with_login_error(self):
+        search_url = "https://x.com/search?q=cats&src=typed_query&f=live"
+        for page_obj in (
+            FakePage(shown=['[data-testid="suspendedAccountBanner"]']),
+            FakePage(html='<div id="react-root"><span>Your account is suspended</span></div>'),
+        ):
+            with self.subTest(page=page_obj):
+                ctx = fake(pages={search_url: page_obj})
+                with self.assertRaises(LoginError) as caught:
+                    collect(Twitter, "twt?cats", ctx=ctx)
+                self.assertIn("suspended", str(caught.exception))
+                self.assertIn("twt?", str(caught.exception))
+                self.assertEqual(caught.exception.hint,
+                                 "log in with another account: flnd auth login twt")
+
+    def test_search_404_raises_not_found_with_hint_or_login_error_when_suspended(self):
+        search_url = "https://x.com/search?q=cats&src=typed_query&f=live"
+        sent_404 = Sent(f"{API}q/SearchTimeline", status=404)
+        ctx = fake(pages={search_url: FakePage(feeds=[sent_404])})
+        with self.assertRaises(NotFound) as caught:
+            collect(Twitter, "twt?cats", ctx=ctx)
+        self.assertIn("twt?", str(caught.exception))
+        self.assertEqual(caught.exception.hint,
+                         "log in with another account: flnd auth login twt")
+
+        suspended = FakePage(
+            html='<div id="react-root"><span>Your account is suspended</span></div>',
+            feeds=[sent_404],
+        )
+        ctx_susp = fake(pages={search_url: suspended})
+        with self.assertRaises(LoginError) as caught_login:
+            collect(Twitter, "twt?cats", ctx=ctx_susp)
+        self.assertEqual(caught_login.exception.hint,
+                         "log in with another account: flnd auth login twt")
 
 
 class LoadTest(unittest.TestCase):

@@ -20,6 +20,7 @@ from flnd.plugin import (
     Ctx,
     File,
     Hidden,
+    LoginError,
     NetworkError,
     NotFound,
     Plugin,
@@ -51,6 +52,8 @@ QUERIES = {
     "UserByRestId": "mxaYWwt52eAb6OAzYHMVzg",
     "UserOriginalsTimeline": "ZFKu1DFS63hgrkLzR3Hsdw",
     "UserMedia": "iTSlWbsmD00dAE7Sk9xvIw",
+    "UserPhotoTimeline": "",
+    "UserVideoTimeline": "",
     "UserHighlightsTweets": "vukXwNm6argozncYmHqZDQ",
     "UserRepostsTimeline": "bWzOK-jDN4SYVcF6AQ22Qw",
     "UserRepliesTimeline": "fpl-c0_APDI3nZ1CeeBMbg",
@@ -186,6 +189,7 @@ class Twitter(Plugin):
         # tweets a search listed, by id, which `post` reads instead of asking the API.
         self.graph = Graph()
         self.found: dict[str, list[Post] | dict] = {}
+        self._suspended = False
 
     def sign(self, request: Request, cookies: Mapping[str, str]) -> Request:
         """Twitter's API headers on a request to `/i/api/`, with the current CSRF token."""
@@ -483,25 +487,89 @@ class Twitter(Plugin):
         timeline = TIMELINES[category]
         tab = profile["page"] + timeline.tab
         user = profile["user"] or {}
-        interstitial = bool(dig(user, "legacy.profile_interstitial_type"))
+        interstitial = bool(dig(
+            user, "profile_metadata.profile_interstitial_type || legacy.profile_interstitial_type"
+        ))
         yielded: set[str] = set()
-        async for tweet, pinned in self._scroll(
-            ctx, tab, timeline.query,
-            tab=category if timeline.tab else "",
-            handle=profile["handle"],
-            interstitial=interstitial,
-        ):
+
+        def emit(tweet: dict, pinned: bool) -> Iterator[Post]:
             tid = tweet_id_of(tweet)
             if tid and tid in yielded:
-                continue
+                return
             if tid:
                 yielded.add(tid)
             for post in tweet_posts(tweet, category, profile):
                 yield post.replace(pinned=True) if pinned else post
 
+        if category != "media":
+            async for tweet, pinned in self._scroll(
+                ctx, tab, timeline.query,
+                tab=category,
+                handle=profile["handle"],
+                interstitial=interstitial,
+            ):
+                for post in emit(tweet, pinned):
+                    yield post
+            return
+
+        # X split /media into Videos (/media -> UserVideoTimeline) and Photos
+        # (/media?filter=photo -> UserPhotoTimeline), while legacy/tests may send UserMedia.
+        matched: list[str] = []
+        meta: dict[str, Any] = {"matched": matched, "stop_after_one": False, "more": False}
+        held_videos: list[tuple[dict, bool]] = []
+        async for tweet, pinned in self._scroll(
+            ctx, tab, timeline.query,
+            tab=category,
+            handle=profile["handle"],
+            interstitial=interstitial,
+            match=_op_matcher(MEDIA_TIMELINES, meta),
+            meta=meta,
+        ):
+            if not meta["stop_after_one"]:
+                for post in emit(tweet, pinned):
+                    yield post
+            else:
+                held_videos.append((tweet, pinned))
+
+        if not meta["stop_after_one"]:
+            return
+
+        video_more = bool(meta.get("more"))
+        photo_url = f"{tab}?filter=photo"
+        async for tweet, pinned in self._scroll(
+            ctx, photo_url, "UserPhotoTimeline",
+            tab=category,
+            handle=profile["handle"],
+            interstitial=interstitial,
+            match=_op_matcher(PHOTO_TIMELINES),
+        ):
+            photo_date = _tweet_date(tweet)
+            while held_videos and _flush_video(held_videos[0][0], photo_date):
+                v_tweet, v_pinned = held_videos.pop(0)
+                for post in emit(v_tweet, v_pinned):
+                    yield post
+            for post in emit(tweet, pinned):
+                yield post
+
+        for v_tweet, v_pinned in held_videos:
+            for post in emit(v_tweet, v_pinned):
+                yield post
+
+        if video_more:
+            async for tweet, pinned in self._scroll(
+                ctx, tab, "UserVideoTimeline",
+                tab=category,
+                handle=profile["handle"],
+                interstitial=interstitial,
+            ):
+                for post in emit(tweet, pinned):
+                    yield post
+
     async def _scroll(
         self, ctx: Ctx, url: str, query: str, *,
         tab: str = "", handle: str = "", interstitial: bool = False,
+        match: Callable[[str], bool] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> AsyncIterator[tuple[dict, bool]]:
         """Open a tab and scroll it to its end, yielding each new tweet of `query`'s responses,
         and whether it is the pinned one.
@@ -518,70 +586,174 @@ class Twitter(Plugin):
             Blocked: the feed or page was rate limited (HTTP 429); a timeline's holds ran out.
         """
         seen: set[str] = set()
-        for attempt in range(2):
+        reloaded = False
+        got_new = False
+        interstitial_retried = False
+        while True:
             seen_cursors: set[str] = set()
             empty_pages = 0
             pages = 0
+            saw_error = False
             reader = _search_reader() if query == SEARCH else timeline_state
-            async with ctx.feed(f"/{query}", scroll=True, cursor=reader, resume=query != SEARCH,
-                                bucket=query) as responses:
-                landed = await ctx.open(url)
-                if landed.status >= 400:
-                    # A server error (a 503) may pass, so the engine's back-off tries it again.
-                    raise SiteError(f"twt: {url} answered HTTP {landed.status}",
-                                    status=landed.status, retryable=landed.status >= 500)
-                if query != SEARCH:
-                    await _dismiss_interstitial(ctx, wait=interstitial and attempt == 0)
-                last = urlsplit(landed.url).path.rstrip("/").rsplit("/", 1)[-1].lower()
-                if tab and (last != TIMELINES[tab].tab.strip("/")
-                            or tab in LINKED and not await _has_tab(ctx, tab)):
-                    ctx.log("info", "{tab}: this profile has no such tab", tab=tab)
-                    return
-                async for data in responses:
-                    pages += 1
-                    tweets, cursor, pinned = read_timeline_page(data)
-                    if not tweets and cursor is None and isinstance(data, dict):
-                        keys = ", ".join(sorted(str(k) for k in data)[:8])
-                        ctx.log("debug", "{query}: response had no timeline ({keys})",
-                                query=query, keys=keys)
-                    if getattr(ctx, "listing", None) is not None and cursor:
-                        ctx.listing.cursor = cursor
-                    # 2026-11-16: a tombstone has no id; it is never new, nor stands for a seen one.
-                    new = [tweet for tweet in tweets
-                           if (tid := tweet_id_of(tweet)) and tid not in seen]
-                    reloaded = getattr(ctx, "_reloaded", False)
-                    if not new:
-                        if cursor is None:
-                            if query == SEARCH and empty_pages > 0:
+            feed_match: str | Callable[[str], bool] = match if match is not None else f"/{query}"
+            try:
+                async with ctx.feed(feed_match, scroll=True, cursor=reader, resume=False,
+                                    bucket=query) as responses:
+                    landed = await ctx.open(url)
+                    if landed.status >= 400:
+                        # A server error (a 503) may pass, so the engine's back-off tries it again.
+                        raise SiteError(f"twt: {url} answered HTTP {landed.status}",
+                                        status=landed.status, retryable=landed.status >= 500)
+                    if query != SEARCH:
+                        if await _dismiss_interstitial(ctx, wait=interstitial):
+                            interstitial = True
+                    elif await _is_suspended(ctx):
+                        self._suspended = True
+                        raise LoginError(f"twt: {SUSPENDED_MSG}", hint=SUSPENDED_HINT)
+                    last = urlsplit(landed.url).path.rstrip("/").rsplit("/", 1)[-1].lower()
+                    if tab and TIMELINES[tab].tab and (
+                        last != TIMELINES[tab].tab.strip("/")
+                        or tab in LINKED and not await _has_tab(ctx, tab)
+                    ):
+                        ctx.log("info", "{tab}: this profile has no such tab", tab=tab)
+                        return
+                    try:
+                        async for data in responses:
+                            pages += 1
+                            tweets, cursor, pinned = read_timeline_page(data)
+                            if not tweets and cursor is None and isinstance(data, dict):
+                                errors = data.get("errors")
+                                if errors:
+                                    saw_error = True
+                                    ctx.log("warn", "{query}: timeline error ({summary})",
+                                            query=query, summary=_error_summary(errors))
+                                else:
+                                    keys = ", ".join(sorted(str(k) for k in data)[:8])
+                                    ctx.log("debug", "{query}: response had no timeline ({keys})",
+                                            query=query, keys=keys)
+                            elif tweets or cursor is not None:
+                                saw_error = False
+                            if meta is not None and (tweets or cursor is not None):
+                                meta["more"] = bool(tweets and cursor is not None)
+                            # 2026-11-16: a tombstone has no id; it is never new, nor stands for a
+                            # seen one.
+                            ids = [tid for tweet in tweets if (tid := tweet_id_of(tweet))]
+                            had_seen = any(tid in seen for tid in ids)
+                            new = [tweet for tweet in tweets
+                                   if (tid := tweet_id_of(tweet)) and tid not in seen]
+                            if not new:
+                                if (meta is not None and meta.get("stop_after_one")
+                                        and (tweets or cursor is not None)):
+                                    break
+                                if cursor is None:
+                                    if query == SEARCH and empty_pages > 0:
+                                        break
+                                    continue
+                                if cursor in seen_cursors:
+                                    break
+                                if query != SEARCH and not reloaded:
+                                    break
+                                empty_pages += 1
+                                seen_cursors.add(cursor)
+                                if query == SEARCH and empty_pages > SEARCH_EMPTY:
+                                    break
+                                if query != SEARCH and not tweets and empty_pages > SEARCH_EMPTY:
+                                    break
+                                continue
+                            if reloaded and not had_seen:
+                                reloaded = False
+                            empty_pages = 0
+                            if cursor is not None:
+                                seen_cursors.add(cursor)
+                            seen.update(tweet_id_of(tweet) for tweet in new)
+                            got_new = True
+                            for tweet in new:
+                                yield tweet, tweet_id_of(tweet) in pinned
+                            if meta is not None and meta.get("stop_after_one"):
                                 break
-                            continue
-                        if cursor in seen_cursors:
-                            break
-                        if query != SEARCH and not reloaded:
-                            break
-                        empty_pages += 1
-                        seen_cursors.add(cursor)
-                        if query == SEARCH and empty_pages > SEARCH_EMPTY:
-                            break
-                        if query != SEARCH and not tweets and empty_pages > SEARCH_EMPTY:
-                            break
-                        continue
-                    if reloaded:
-                        ctx._reloaded = False
-                    empty_pages = 0
-                    if cursor is not None:
-                        seen_cursors.add(cursor)
-                    seen.update(tweet_id_of(tweet) for tweet in new)
-                    for tweet in new:
-                        yield tweet, tweet_id_of(tweet) in pinned
+                    except NotFound as error:
+                        if query != SEARCH:
+                            raise
+                        if await _is_suspended(ctx):
+                            self._suspended = True
+                            raise LoginError(f"twt: {SUSPENDED_MSG}",
+                                             hint=SUSPENDED_HINT) from None
+                        raise NotFound(
+                            f"{error} (if {SUSPENDED_MSG})",
+                            hint=SUSPENDED_HINT,
+                        ) from None
+            except Blocked as error:
+                if query == SEARCH:
+                    raise
+                await ctx.hold("rate limited", seconds=error.wait, bucket=query, reset=got_new)
+                reloaded = True
+                got_new = False
+                continue
+            if query != SEARCH and not self._suspended and await _is_suspended(ctx):
+                self._suspended = True
+                ctx.log("warn", "{msg} ({hint})", msg=SUSPENDED_MSG, hint=SUSPENDED_HINT)
             if pages == 0 and query != SEARCH:
-                if attempt == 0 and await _dismiss_interstitial(ctx):
+                if not interstitial_retried and await _dismiss_interstitial(ctx):
+                    interstitial = True
+                    interstitial_retried = True
                     continue
                 if await ctx.shown(EMPTY_STATE) and not await ctx.shown(TAB_BAR):
                     raise Hidden(f"twt: @{handle or url} isn't visible (protected, gated, "
                                  "or unavailable)")
-                ctx.log("debug", "{query}: no matching responses arrived", query=query)
+                ctx.log("warn", "{query}: no matching responses arrived", query=query)
+            if query != SEARCH and (pages == 0 or saw_error):
+                if getattr(ctx, "listing", None) is not None:
+                    ctx.listing.stalled = True
             break
+
+
+MEDIA_TIMELINES = re.compile(r"/(UserMedia|UserVideoTimeline|UserPhotoTimeline)(?:\?|$)")
+PHOTO_TIMELINES = re.compile(r"/(UserPhotoTimeline|UserMedia)(?:\?|$)")
+
+
+def _op_matcher(
+    pattern: re.Pattern[str], meta: dict[str, Any] | None = None,
+) -> Callable[[str], bool]:
+    """Match a GraphQL timeline URL, recording matched operation names in `meta`."""
+    def check(response_url: str) -> bool:
+        found = pattern.search(response_url)
+        if found and meta is not None:
+            op = found.group(1)
+            matched = meta["matched"]
+            if op not in matched:
+                matched.append(op)
+            if op == "UserMedia":
+                meta["stop_after_one"] = False
+            elif op == "UserVideoTimeline" and "UserMedia" not in matched:
+                meta["stop_after_one"] = True
+        return found is not None
+    return check
+
+
+def _error_summary(errors: Any) -> str:
+    """Short, secret-free summary of GraphQL `errors` (codes and messages)."""
+    if not isinstance(errors, list):
+        return "unknown"
+    parts = []
+    for err in errors[:3]:
+        if isinstance(err, dict):
+            code = err.get("code")
+            msg = str(err.get("message") or "").splitlines()[0][:80]
+            parts.append(f"{code}: {msg}" if code is not None else (msg or "error"))
+    return "; ".join(parts) or "unknown"
+
+
+def _tweet_date(tweet: dict) -> datetime | None:
+    """A tweet's parsed `created_at` date, or None."""
+    return parse_date((unwrap(tweet).get("legacy") or {}).get("created_at"))
+
+
+def _flush_video(video_tweet: dict, photo_date: datetime | None) -> bool:
+    """Whether a held page-1 video tweet should be yielded before a photo tweet of `photo_date`."""
+    if photo_date is None:
+        return False
+    video_date = _tweet_date(video_tweet)
+    return video_date is None or video_date >= photo_date
 
 
 # The tabs linked in the profile's tab bar; X moves a missing one away after load (2026-11-20).
@@ -589,6 +761,25 @@ LINKED = {"media": "media", "highlights": "highlights", "replies": "with_replies
 TAB_BAR = 'a[href$="/media"]'
 INTERSTITIAL_BUTTON = '[data-testid="empty_state_button_text"]'
 EMPTY_STATE = '[data-testid="emptyState"]'
+SUSPENDED_BANNER = '[data-testid="suspendedAccountBanner"]'
+SUSPENDED_TEXT = "your account is suspended"
+SUSPENDED_MSG = "this account is suspended; twt? searches will not work"
+SUSPENDED_HINT = "log in with another account: flnd auth login twt"
+
+
+async def _is_suspended(ctx: Ctx) -> bool:
+    """Whether the open X page shows the viewer's own account is suspended."""
+    if await ctx.shown(SUSPENDED_BANNER):
+        return True
+    try:
+        doc = await ctx.document()
+    except NetworkError:
+        return False
+    # `#react-root` holds rendered UI without `<script>` bundles; fall back to `span`/`p`.
+    root = doc.first("#react-root")
+    if root is not None:
+        return SUSPENDED_TEXT in root.text.lower()
+    return any(SUSPENDED_TEXT in el.text.lower() for el in doc.css("span, p"))
 
 
 async def _dismiss_interstitial(ctx: Ctx, *, wait: bool = False) -> bool:

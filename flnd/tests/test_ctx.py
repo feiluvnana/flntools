@@ -550,6 +550,33 @@ class FeedTest(CtxCase):
         self.assertEqual(self.stuck_in(run, ctx, step), [])
         self.assertFalse(ctx.listing.stalled)
 
+    def test_a_cursor_feed_that_goes_quiet_before_its_cursor_ends_marks_stalled(self):
+        def cursor(page):
+            return (bool(page["next"]), page["next"]) if "next" in page else None
+
+        run, ctx = self.ctx()
+        ctx.listing = Listing(None)
+        self.raw = FeedRaw([[{"n": 1, "next": "c1"}]])
+
+        async def read():
+            async with ctx.feed("graphql", cursor=cursor) as feed:
+                return [item["n"] async for item in feed]
+
+        self.assertEqual(self.call(run, read()), [1])
+        self.assertTrue(ctx.listing.stalled)
+
+        # When the cursor itself ended (more=False), quiet bottom is not stalled.
+        run2, ctx2 = self.ctx()
+        ctx2.listing = Listing(None)
+        self.raw = FeedRaw([[{"n": 1, "next": None}]])
+
+        async def read_done():
+            async with ctx2.feed("graphql", cursor=cursor) as feed:
+                return [item["n"] async for item in feed]
+
+        self.assertEqual(self.call(run2, read_done()), [1])
+        self.assertFalse(ctx2.listing.stalled)
+
     def test_a_scroll_step_or_a_body_that_never_ends_is_given_up(self):
         async def forever():
             await asyncio.Event().wait()

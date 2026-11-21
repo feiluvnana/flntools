@@ -2532,6 +2532,8 @@ class Feed:
             except (TimeoutError, WaitError):
                 went = None
             if went is False:
+                if self._cursors.active and not self._cursors.ended:
+                    self.stalled = True
                 break
             if went is None or clock.now() - began >= STALL:
                 self.stalled = True
@@ -2640,6 +2642,7 @@ class Cursors:
     def __init__(self, reader: Reader | None):
         self._reader = reader
         self._seen: Counter[str] = Counter()
+        self.active = False
         self.ended = False
 
     def read(self, value: Any) -> None:
@@ -2653,6 +2656,7 @@ class Cursors:
         state = self._reader(value)
         if state is None:
             return
+        self.active = True
         more, cursor = state
         if not more:
             self.ended = True
