@@ -1502,5 +1502,42 @@ class FetchTest(PageCase):
                         caught.exception)
 
 
+class StealthHardeningTest(BrowserCase):
+    def test_stealth_patches_prototype_ignores_automation_and_unifies_gl_and_chrome(self):
+        self.assertIn("Navigator.prototype", _browser.HIDE_WEBDRIVER)
+        self.assertIn("0x9246", _browser.GL_SCRIPT)
+        self.assertIn("Reflect.apply(target, self, [0x9246])", _browser.GL_SCRIPT)
+        self.assertIn("window.chrome.runtime", _browser.HIDDEN_SCRIPT)
+
+        seen_launch = []
+
+        class FakeContext:
+            async def add_init_script(self, script):
+                pass
+
+            async def close(self):
+                pass
+
+        async def fake_open(pw, copy, channel, launch_options, context_options):
+            seen_launch.append(launch_options)
+            return FakeContext(), []
+
+        async def check():
+            from types import SimpleNamespace
+
+            pw = SimpleNamespace(chromium=SimpleNamespace(executable_path="chromium"))
+            await _browser._launch(pw, None, headless=True, stealth=True,
+                                   screen=_browser.Screen())
+            await _browser._launch(pw, None, headless=True, stealth=False,
+                                   screen=_browser.Screen())
+
+        with mock.patch.object(_browser, "_channel", return_value=None), \
+             mock.patch.object(_browser, "_open_context", side_effect=fake_open), \
+             mock.patch.object(_browser, "_headful_override", return_value=None):
+            run(check())
+        self.assertEqual(seen_launch[0].get("ignore_default_args"), ["--enable-automation"])
+        self.assertNotIn("ignore_default_args", seen_launch[1])
+
+
 if __name__ == "__main__":
     unittest.main()

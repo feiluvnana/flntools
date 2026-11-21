@@ -1106,7 +1106,7 @@ class Scheduler:
         """The hold of `key`, with one more block round counted."""
         hold = self._hold(key)
         now = clock.now()
-        if now - hold.last >= RESET:
+        if now - max(hold.last, hold.until) >= RESET:
             hold.rounds = 0
         hold.rounds += 1
         hold.last = now

@@ -687,7 +687,8 @@ class _CtxFeed:
         self._cursors = browser.Cursors(cursor)
         self._on = resume
         self._resume = flnd.engine.ctx.Resume(bucket)
-        self._waiting: deque[tuple[Any, Request | None]] = deque()
+        self._waiting: deque[tuple[Any, Request | None, Mapping[str, str]]] = deque()
+        self.headers: Mapping[str, str] = {}
         self._done = False
         tab.feeds.append(self)
 
@@ -695,15 +696,15 @@ class _CtxFeed:
               status: int = 200, headers: Mapping[str, str] | None = None) -> None:
         """Take one response if it matches and the feed is open."""
         if not self._done and self._matches(url):
-            if status == 429:
-                hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+            hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+            if status == 429 or (status >= 400 and data is None):
                 method = request.method if request is not None else "GET"
                 with clock.use(self._ctx._clock()):
                     error = net.refusal(net.Response(status, url, hdrs), method=method)
                 assert error is not None
-                self._waiting.append((error, request))
+                self._waiting.append((error, request, hdrs))
                 return
-            self._waiting.append((data, request))
+            self._waiting.append((data, request, hdrs))
             self._cursors.read(data)
 
     async def __aenter__(self) -> _CtxFeed:
@@ -723,7 +724,7 @@ class _CtxFeed:
         if not self._waiting:
             self.close()
             raise StopAsyncIteration
-        data, self._ctx._request = self._waiting.popleft()
+        data, self._ctx._request, self.headers = self._waiting.popleft()
         if isinstance(data, Blocked):
             if not self._on:
                 self.close()
@@ -734,6 +735,9 @@ class _CtxFeed:
                 self.close()
                 raise
             return await self.__anext__()
+        if isinstance(data, Exception):
+            self.close()
+            raise data
         if self._on and not self._resume.new(data):
             return await self.__anext__()
         return data

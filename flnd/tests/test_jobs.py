@@ -513,6 +513,16 @@ class RetryTest(unittest.TestCase):
 
         self.assertEqual(run(main), [30, 120, 30])
 
+    def test_long_hold_does_not_reset_block_rounds_before_600s_after_until(self):
+        async def main(scheduler, fake):
+            for _ in range(3):
+                await scheduler.run(job(work=raising(blocked(900), "ok")))
+            with self.assertRaises(errors.Blocked):
+                await scheduler.run(job(work=raising(blocked(900), "ok")))
+            return [s for s in fake.slept if s > 1]
+
+        self.assertEqual(run(main), [900, 900, 900])
+
     def test_a_clean_answer_ends_a_run_of_429s(self):
         async def main(scheduler, fake):
             await scheduler.run(job(work=raising(blocked(5, 429), blocked(5, 429), "ok")))

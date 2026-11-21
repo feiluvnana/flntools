@@ -1019,14 +1019,18 @@ up to 32.
   search's `--folder`. Tagged: `twt?@example_handle -from:example_handle`.
 - **Login:** cookie `auth_token` (a logged-out browser lands on the login wall); API calls send
   `ct0` back as the CSRF token.
-- **Limits and walls:** pace 0.2 per bucket (a 429 holds only its operation, and a timeline
-  reloads and continues); walls `/i/flow/login`, `/login`, `/account/access`. Sensitive-profile
-  warnings are dismissed automatically across tabs and 429 reloads; a gated or protected profile
-  with no visible timeline raises `Hidden`. A feed that stops before its cursor ends (or gets
-  0 responses or a GraphQL error without recovering) is left incomplete rather than marked
-  complete. A suspended login warns on profiles and fails `twt?` searches with `LoginError` (or
-  `NotFound` with a hint on 404). Query ids are refreshed from x.com's script on a 400 or 404, at
-  most once a run.
+- **Limits and walls:** pace 1.5 per bucket, CDN caps 4 (`pbs.twimg.com`, `video.twimg.com`),
+  with humanized per-page, inter-tab, and search-window pauses. Low `x-rate-limit-remaining`
+  headers pause on the open tab until `x-rate-limit-reset` and persist across runs; a 429 holds
+  only its operation and aborts if a reload makes no progress. Login walls: `/i/flow/login`,
+  `/login`; lock/challenge walls (`/account/access`, `/account/login_challenge`,
+  `/i/flow/consent_flow`, `/i/flow/verify`), suspended accounts, and GraphQL codes
+  `326`/`64`/`141`/`32`/`239` fail immediately with non-retryable `LoginError` (`226` fails with
+  non-retryable `Blocked`; `88` holds 15m). Sensitive-profile warnings are dismissed automatically
+  across tabs and 429 reloads; a gated or protected profile with no visible timeline raises
+  `Hidden`. A feed that stops before its cursor ends (or gets 0 responses or a GraphQL error without
+  recovering) is left incomplete rather than marked complete. Query ids are refreshed from
+  x.com's script on a 400 or 404, at most once a run.
 - **Known gaps:** a single tweet has no browser fallback; a protected and a deleted tweet are both
   `NotFound`; video is MP4 only (streaming-only is skipped); text-only tweets save nothing.
 - **Saved as:** `media/twt/example_handle/posts/2026-01-02_1234567890_0.jpg`

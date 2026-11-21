@@ -870,6 +870,7 @@ class _Feed:
         # The feed being made on a thread, from `listen` until it is made.
         self._opening: asyncio.Future[Any] | None = None
         self._done = False
+        self.headers: Mapping[str, str] = {}
         self._resume = Resume(bucket)
         self._on = resume
 
@@ -943,6 +944,7 @@ class _Feed:
                 raw = getattr(feed, "request", None)
                 self._ctx._request = (Request(raw[0], method=raw[1], headers=raw[2],
                                               body=raw[3]) if raw is not None else None)
+                self.headers: Mapping[str, str] = getattr(feed, "headers", {})
                 return item
         except BaseException:
             await self.aclose()

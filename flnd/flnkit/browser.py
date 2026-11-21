@@ -288,8 +288,11 @@ LAUNCH_ARGS = [
      "SpareRendererForSitePerProcess,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,"
      "QuickIntensiveWakeUpThrottlingAfterLoading"),
 ]
-# `navigator.webdriver` is removed rather than set to false, matching how an ordinary browser acts.
-HIDE_WEBDRIVER = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+# `navigator.webdriver` is removed on `Navigator.prototype`, matching how an ordinary browser acts.
+HIDE_WEBDRIVER = (
+    "Object.defineProperty(Navigator.prototype, 'webdriver', "
+    "{get: () => undefined, configurable: true})"
+)
 # Background tabs inside one shared window must still look visible and focused to site scripts.
 KEEP_VISIBLE = (
     "Object.defineProperties(Document.prototype, {"
@@ -319,8 +322,11 @@ GL_SCRIPT = """(() => {
   const patch = (proto) => {
     proto.getParameter = new Proxy(proto.getParameter, {apply(target, self, args) {
       const value = Reflect.apply(target, self, args);
-      if ((args[0] === 0x9245 || args[0] === 0x9246) && /SwiftShader/i.test(String(value))) {
-        return named[args[0] === 0x9245 ? 0 : 1];
+      if (args[0] === 0x9245 || args[0] === 0x9246) {
+        const renderer = args[0] === 0x9246 ? value : Reflect.apply(target, self, [0x9246]);
+        if (/SwiftShader|llvmpipe|Software/i.test(String(renderer))) {
+          return named[args[0] === 0x9245 ? 0 : 1];
+        }
       }
       return value;
     }});
@@ -338,12 +344,17 @@ HIDDEN_SCRIPT = """(() => {
     Object.defineProperty(target, name, {get, configurable: true});
   define(window, 'outerWidth', () => innerWidth);
   define(window, 'outerHeight', () => innerHeight + %(toolbar)d);
+  if (!window.chrome) window.chrome = {runtime: {}};
+  else if (!window.chrome.runtime) window.chrome.runtime = {};
   const named = %(named)s;
   const patch = (proto) => {
     proto.getParameter = new Proxy(proto.getParameter, {apply(target, self, args) {
       const value = Reflect.apply(target, self, args);
-      if ((args[0] === 0x9245 || args[0] === 0x9246) && /SwiftShader/i.test(String(value))) {
-        return named[args[0] === 0x9245 ? 0 : 1];
+      if (args[0] === 0x9245 || args[0] === 0x9246) {
+        const renderer = args[0] === 0x9246 ? value : Reflect.apply(target, self, [0x9246]);
+        if (/SwiftShader|llvmpipe|Software/i.test(String(renderer))) {
+          return named[args[0] === 0x9245 ? 0 : 1];
+        }
       }
       return value;
     }});
@@ -680,6 +691,8 @@ async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
                   stealth: bool, screen: Screen, assets: bool = True) -> Browser:
     """Launch a browser for `launch`, with or without a copied profile."""
     launch_options: dict[str, Any] = {"headless": headless, "args": list(LAUNCH_ARGS)}
+    if stealth:
+        launch_options["ignore_default_args"] = ["--enable-automation"]
     if not assets:
         launch_options["args"].append("--blink-settings=imagesEnabled=false")
     width, height = DEFAULT_VIEWPORT
@@ -1628,6 +1641,11 @@ def _lognormal(rng: random.Random, median: float) -> float:
     return median * min(math.exp(rng.gauss(0.0, SPREAD)), LONGEST)
 
 
+RATE_HEADERS = frozenset({
+    "x-rate-limit-limit", "x-rate-limit-remaining", "x-rate-limit-reset", "retry-after",
+})
+
+
 class Capture:
     """The bodies of the responses a tab receives that `accept` takes, in the order they came.
 
@@ -1704,8 +1722,12 @@ class Capture:
         raw_status = getattr(response, "status", 200)
         status = raw_status if isinstance(raw_status, int) else 200
         raw_headers = getattr(response, "headers", None) or {}
-        headers = ({str(k).lower(): str(v) for k, v in raw_headers.items()}
-                   if status >= 400 else {})
+        headers = (
+            {str(k).lower(): str(v) for k, v in raw_headers.items()}
+            if status >= 400
+            else {low: str(v) for k, v in raw_headers.items()
+                  if (low := str(k).lower()) in RATE_HEADERS}
+        )
         sent = None
         if self._requests:
             req = getattr(response, "request", None)
@@ -2438,6 +2460,7 @@ class Feed:
         self.request: tuple[str, str, dict[str, str], str | None] | None = None
         # Whether it ended because no new answer came for `STALL` seconds.
         self.stalled = False
+        self.headers: Mapping[str, str] = {}
         self._got_json = False
         self._last_error: Exception | None = None
         self._non_json_url: str | None = None
@@ -2554,7 +2577,7 @@ class Feed:
             if not self._waiting:
                 self._parse(*self._raw.popleft())
             while self._waiting:
-                value, self.request = self._waiting.popleft()
+                value, self.request, self.headers = self._waiting.popleft()
                 if isinstance(value, Blocked):
                     raise value
                 yield value
@@ -2573,12 +2596,13 @@ class Feed:
                request: tuple[str, str, dict[str, str], str | None] | None = None,
                status: int = 200, headers: Mapping[str, str] | None = None) -> None:
         """Parse `body`, or each line of it with `lines`, into `_waiting`, reading its cursor."""
+        kept_headers = headers or {}
         if status == 429:
             method = request[1] if request is not None else "GET"
-            error = net.refusal(net.Response(status, url, headers or {}, body.encode()),
+            error = net.refusal(net.Response(status, url, kept_headers, body.encode()),
                                 method=method)
             assert error is not None
-            self._waiting.append((error, request))
+            self._waiting.append((error, request, kept_headers))
             return
         pieces = [line for line in body.splitlines() if line.strip()] if self._lines else [body]
         decoded = False
@@ -2602,7 +2626,7 @@ class Feed:
             decoded = True
             self._got_json = True
             self._last_error = None
-            self._waiting.append((value, request))
+            self._waiting.append((value, request, kept_headers))
             self._cursors.read(value)
         if not decoded:
             if status >= 400:

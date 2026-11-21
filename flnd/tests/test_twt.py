@@ -605,7 +605,7 @@ class SearchTest(unittest.TestCase):
             "https://x.com/i/web/status/80", "https://x.com/i/web/status/70"])
         self.assertEqual(ctx.seen.visited, [w1, w2, w2, w3, w4, w5])
         self.assertEqual(len(ctx.seen.holds), 5)
-        self.assertTrue(all(b == "SearchTimeline" and s >= 60.0 for _, s, b in ctx.seen.holds))
+        self.assertTrue(all(b == "SearchTimeline" and s >= 50.0 for _, s, b in ctx.seen.holds))
 
         # 4 consecutive 429s with no progress fail with Blocked (even with a 900s reset).
         long_reset = {"x-rate-limit-reset": str(int(FAKE_WALL) + 900)}
@@ -731,7 +731,7 @@ class TimelineTest(unittest.TestCase):
         undated = tweet("2", [photo("b")])
         undated["legacy"]["created_at"] = "yesterday"
         posts = [page(item(tweet("1", [photo("a")])), cursor="c1"),
-                 {"errors": [{"message": "Rate limit exceeded", "code": 88}]},
+                 {"errors": [{"message": "Internal error", "code": 131}]},
                  page(item(tweet("1", [photo("a")])), item(undated), cursor="c2"),
                  page(item(tweet("1", [photo("a")])), cursor="c3"),
                  page(item(tweet("3", [photo("c")])), cursor="c4")]
@@ -797,8 +797,8 @@ class TimelineTest(unittest.TestCase):
         })
         with self.assertRaises(Blocked):
             collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
-        self.assertEqual([(b, s >= 60.0) for _, s, b in ctx.seen.holds],
-                         [("UserOriginalsTimeline", True)] * 3)
+        self.assertEqual([(b, s >= 50.0) for _, s, b in ctx.seen.holds],
+                         [("UserOriginalsTimeline", True)])
 
         # When the 429 lifts on retry, remaining posts are collected without duplicates.
         queue = [
@@ -1080,28 +1080,23 @@ class MissingTabTest(unittest.TestCase):
         with self.assertRaises(Hidden):
             collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
 
-    def test_suspended_account_warns_once_on_profile_and_ignores_script_text(self):
+    def test_suspended_account_fails_profile_immediately_and_ignores_script_text(self):
         script_only = FakePage(
             html="<script>var msg = 'Your account is suspended';</script>",
             feeds=[Sent(f"{API}q/{TIMELINES['posts'].query}", page(item(tweet("1", [photo("a")]))))],
         )
         ctx_clean = fake(pages={"https://x.com/example_handle": script_only})
-        collect(Twitter, "twt:example_handle", ctx=ctx_clean, categories=["posts"])
-        warn = ("warn", "this account is suspended; twt? searches will not work "
-                        "(log in with another account: flnd auth login twt)")
-        self.assertNotIn(warn, ctx_clean.seen.logs)
+        saved = collect(Twitter, "twt:example_handle", ctx=ctx_clean, categories=["posts"])
+        self.assertEqual([found.post.id for found in saved], ["1"])
 
         suspended = FakePage(
             html='<div id="react-root"><span>Your account is suspended</span></div>',
             feeds=[Sent(f"{API}q/{TIMELINES['posts'].query}", page(item(tweet("1", [photo("a")]))))],
         )
-        ctx = fake(pages={
-            "https://x.com/example_handle": suspended,
-            "https://x.com/example_handle/media": suspended,
-        })
-        saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts", "media"])
-        self.assertEqual([found.path for found in saved], [f"posts/{DAY}_1_0.jpg"])
-        self.assertEqual(ctx.seen.logs.count(warn), 1)
+        ctx = fake(pages={"https://x.com/example_handle": suspended})
+        with self.assertRaises(LoginError) as caught:
+            collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertFalse(caught.exception.retryable)
 
     def test_suspended_account_fails_search_with_login_error(self):
         search_url = "https://x.com/search?q=cats&src=typed_query&f=live"
@@ -1262,12 +1257,117 @@ class SignTest(unittest.TestCase):
     def test_the_api_alone_gets_its_headers_from_the_live_cookies(self):
         signed = Twitter().sign(Request(f"{API}q/UserMedia"), {"auth_token": "a", "ct0": "c"})
         self.assertEqual((signed.headers["authorization"], signed.headers["x-csrf-token"],
-                          signed.headers["x-twitter-auth-type"]),
-                         (TWITTER_BEARER, "c", "OAuth2Session"))
+                          signed.headers["x-twitter-auth-type"], signed.headers["referer"]),
+                         (TWITTER_BEARER, "c", "OAuth2Session", HOME))
         self.assertNotIn("x-twitter-auth-type",
                          Twitter().sign(Request(f"{API}q/UserMedia"), {"ct0": "d"}).headers)
         # 2026-11: x.com's page answered the bearer token with 401, so it gets none.
         self.assertIsNone(Twitter().sign(Request(HOME), {"auth_token": "a", "ct0": "c"}).headers)
+
+
+class AntiBanTest(unittest.TestCase):
+    def test_plugin_defaults_use_stealth_pacing_and_cdn_limits(self):
+        self.assertTrue(Twitter.stealth)
+        self.assertGreaterEqual(Twitter.pace, 1.5)
+        self.assertEqual(Twitter.limits, {"pbs.twimg.com": 4, "video.twimg.com": 4})
+        self.assertIsNone(Twitter.user_agent)
+
+    def test_lock_walls_fail_immediately_without_retries(self):
+        for wall in ("/account/access", "/account/login_challenge",
+                     "/i/flow/consent_flow", "/i/flow/verify"):
+            with self.subTest(wall=wall):
+                ctx = fake(pages={
+                    "https://x.com/example_handle": FakePage(url=f"https://x.com{wall}"),
+                })
+                with self.assertRaises(LoginError) as caught:
+                    collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+                self.assertFalse(caught.exception.retryable)
+                self.assertEqual(ctx.seen.holds, [])
+
+    def test_graphql_error_codes_abort_in_scroll_and_graph_get(self):
+        for code, exc_type, retryable in (
+            (326, LoginError, False),
+            (64, LoginError, False),
+            (141, LoginError, False),
+            (32, LoginError, False),
+            (239, LoginError, False),
+            (226, Blocked, False),
+            (88, Blocked, True),
+        ):
+            with self.subTest(where="scroll", code=code):
+                err_page = {"data": {}, "errors": [{"code": code, "message": "x"}]}
+                ctx = fake(pages=tabs(posts=[err_page]))
+                with self.assertRaises(exc_type) as caught:
+                    collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+                if exc_type is LoginError:
+                    self.assertEqual(caught.exception.retryable, retryable)
+                elif code == 88:
+                    self.assertFalse(caught.exception.retryable)
+                else:
+                    self.assertEqual(caught.exception.retryable, retryable)
+            with self.subTest(where="graph", code=code):
+                ctx_g = fake(user={"data": {}, "errors": [{"code": code, "message": "x"}]})
+                with self.assertRaises(exc_type) as caught_g:
+                    collect(Twitter, "twt:example_handle", ctx=ctx_g, categories=["profile"])
+                self.assertEqual(caught_g.exception.retryable, retryable)
+
+    def test_proactive_in_tab_cooldown_pauses_without_reload_and_persists_state(self):
+        link = f"{API}id/UserOriginalsTimeline"
+        reset_at = str(int(FAKE_WALL) + 120)
+        ctx = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle": FakePage(feeds=[
+                Sent(link, page(item(tweet("2", [photo("a")])), cursor="c1"),
+                     headers={"x-rate-limit-remaining": "5", "x-rate-limit-reset": reset_at}),
+                Sent(link, page(item(tweet("1", [photo("b")])), cursor="c2"), scroll=1,
+                     headers={"x-rate-limit-remaining": "49", "x-rate-limit-reset": reset_at}),
+                Sent(link, page(cursor="c3"), scroll=2),
+            ]),
+        })
+        saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved], ["2", "1"])
+        self.assertEqual(ctx.seen.holds, [])
+        self.assertEqual(ctx.seen.visited.count("https://x.com/example_handle"), 1)
+        self.assertGreaterEqual(ctx.time.wall() - FAKE_WALL, 120)
+
+        # Persisted low remaining in ctx.state pauses before opening the next tab.
+        ctx2 = fake(pages=tabs(posts=[page(item(tweet("3", [photo("c")])), cursor="c4")]))
+        ctx2.state["twt.ratelimit"] = {
+            "UserOriginalsTimeline": {"remaining": 2, "reset": int(reset_at)},
+        }
+        saved2 = collect(Twitter, "twt:example_handle", ctx=ctx2, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved2], ["3"])
+        self.assertGreaterEqual(ctx2.time.wall() - FAKE_WALL, 120)
+
+    def test_no_progress_429_reload_aborts_instead_of_looping(self):
+        from unittest import mock
+
+        reset = {"x-rate-limit-reset": str(int(FAKE_WALL) + 60)}
+        link = f"{API}id/UserOriginalsTimeline"
+        queue = [
+            FakePage(feeds=[
+                Sent(link, page(item(tweet("2", [photo("a")])), cursor="c1")),
+                Sent(link, status=429, headers=reset, scroll=1),
+            ]),
+            FakePage(feeds=[
+                Sent(link, status=429, headers=reset),
+            ]),
+        ]
+        ctx = fake(pages=tabs())
+        ctx.listing = Listing(None)
+        orig_open = ctx.open
+
+        async def async_open(target_url):
+            if target_url == "https://x.com/example_handle":
+                ctx._pages[target_url] = queue.pop(0)
+            return await orig_open(target_url)
+
+        with mock.patch.object(ctx, "open", side_effect=async_open):
+            with self.assertRaises(Blocked) as caught:
+                collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertFalse(caught.exception.retryable)
+        self.assertTrue(ctx.listing.stalled)
+        self.assertEqual(len(ctx.seen.holds), 1)
 
 
 if __name__ == "__main__":

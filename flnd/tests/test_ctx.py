@@ -80,14 +80,14 @@ class FakeRaw:
     async def unroute(self, pattern, handler):
         pass
 
-    async def emit(self, url, body):
+    async def emit(self, url, body, *, status=200, headers=None):
         """Deliver one response to the tab's listeners, and let their body reads finish."""
         async def text():
             self.reads += 1
             return body
 
-        self.answer(SimpleNamespace(url=url, request=SimpleNamespace(resource_type="xhr"),
-                                    text=text))
+        self.answer(SimpleNamespace(url=url, status=status, headers=headers or {},
+                                    request=SimpleNamespace(resource_type="xhr"), text=text))
         await asyncio.sleep(0)
 
     def answer(self, response):
@@ -576,6 +576,26 @@ class FeedTest(CtxCase):
 
         self.assertEqual(self.call(run2, read_done()), [1])
         self.assertFalse(ctx2.listing.stalled)
+
+    def test_feed_retains_rate_limit_headers_on_200_responses(self):
+        run, ctx = self.ctx()
+        self.raw = FeedRaw([])
+
+        async def read():
+            async with ctx.feed("graphql", scroll=False) as feed:
+                await self.raw.emit(
+                    GRAPHQL, '{"n": 1}',
+                    headers={"X-Rate-Limit-Remaining": "5", "X-Rate-Limit-Reset": "12345",
+                             "X-Other": "ignored"},
+                )
+                items = []
+                async for item in feed:
+                    items.append((item["n"], dict(feed.headers)))
+                return items
+
+        self.assertEqual(self.call(run, read()), [
+            (1, {"x-rate-limit-remaining": "5", "x-rate-limit-reset": "12345"}),
+        ])
 
     def test_a_scroll_step_or_a_body_that_never_ends_is_given_up(self):
         async def forever():

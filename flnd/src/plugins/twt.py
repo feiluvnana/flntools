@@ -5,6 +5,7 @@ and one tweet from X's GraphQL API, each operation in its own bucket. See SPEC.m
 from __future__ import annotations
 
 import json
+import random
 import re
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
@@ -33,11 +34,9 @@ from flnd.plugin import (
     cookies,
     dig,
     route,
+    wall,
 )
 
-# The user agent Twitter's API has always been sent: a desktop Chrome.
-CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-          "Chrome/128.0.0.0 Safari/537.36")
 # The web client's public bearer token: the same for everyone, sent by x.com's own script.
 TWITTER_BEARER = (
     "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D"
@@ -168,15 +167,13 @@ class Twitter(Plugin):
     }
     # Not required by the code, but X usually sends a logged-out browser to its login page.
     login = cookies("auth_token", url="https://x.com/i/flow/login")
-    # X's `x-rate-limit-*` headers hold each operation's bucket exactly at its limit, so the
-    # floor only spaces a burst.
-    pace = 0.2
+    # X's `x-rate-limit-*` headers hold each operation's bucket; pace and CDN caps avoid bursts.
+    pace = 1.5
+    limits = {"pbs.twimg.com": 4, "video.twimg.com": 4}
     browser = Browser.ANY
-    user_agent = CHROME
-    # This browser never hid navigator.webdriver, so stealth stays off.
-    stealth = False
-    # Where X sends a tab it won't show without a login, or for a locked account.
-    walls = ("/i/flow/login", "/login", "/account/access")
+    stealth = True
+    # Where X sends a tab it won't show without a login.
+    walls = ("/i/flow/login", "/login")
     # A post is one photo or video of a tweet, so a file is <date>_<tweet id>_<n> whatever the
     # tweet's media count; part is the category folder, images/videos for Media, "" for a tweet.
     folder = "{part}"
@@ -190,6 +187,7 @@ class Twitter(Plugin):
         self.graph = Graph()
         self.found: dict[str, list[Post] | dict] = {}
         self._suspended = False
+        self._tab_opened = False
 
     def sign(self, request: Request, cookies: Mapping[str, str]) -> Request:
         """Twitter's API headers on a request to `/i/api/`, with the current CSRF token."""
@@ -199,11 +197,14 @@ class Twitter(Plugin):
         headers = {
             **(request.headers or {}),
             "authorization": TWITTER_BEARER,
+            "referer": HOME,
             # The API checks that this equals the `ct0` cookie it also gets (double-submit CSRF).
             "x-csrf-token": cookies.get("ct0", ""),
             "x-twitter-active-user": "yes",
             "x-twitter-client-language": "en",
         }
+        if request.method != "GET":
+            headers["origin"] = HOME.rstrip("/")
         if "auth_token" in cookies:
             headers["x-twitter-auth-type"] = "OAuth2Session"
         return request.replace(headers=headers)
@@ -282,6 +283,8 @@ class Twitter(Plugin):
         tail: deque[tuple[int, date | None]] = deque(maxlen=SEARCH_TAIL)
         try:
             while True:
+                if window_query != query:
+                    await ctx.pause(random.uniform(4.0, 8.0), "pausing between search windows")
                 tail.clear()
                 added = False
                 words = " ".join([window_query, *range_operators(ctx.when)])
@@ -484,6 +487,9 @@ class Twitter(Plugin):
     async def _timeline(self, ctx: Ctx, profile: dict[str, Any],
                         category: str) -> AsyncIterator[Post]:
         """Scroll one timeline's tab to its end, yielding the posts its category keeps."""
+        if self._tab_opened:
+            await ctx.pause(random.uniform(2.0, 5.0), "pausing between profile tabs")
+        self._tab_opened = True
         timeline = TIMELINES[category]
         tab = profile["page"] + timeline.tab
         user = profile["user"] or {}
@@ -535,6 +541,7 @@ class Twitter(Plugin):
             return
 
         video_more = bool(meta.get("more"))
+        await ctx.pause(random.uniform(2.0, 5.0), "pausing between media views")
         photo_url = f"{tab}?filter=photo"
         async for tweet, pinned in self._scroll(
             ctx, photo_url, "UserPhotoTimeline",
@@ -556,6 +563,7 @@ class Twitter(Plugin):
                 yield post
 
         if video_more:
+            await ctx.pause(random.uniform(2.0, 5.0), "pausing between media views")
             async for tweet, pinned in self._scroll(
                 ctx, tab, "UserVideoTimeline",
                 tab=category,
@@ -588,6 +596,7 @@ class Twitter(Plugin):
         seen: set[str] = set()
         reloaded = False
         got_new = False
+        no_progress_reloads = 0
         interstitial_retried = False
         while True:
             seen_cursors: set[str] = set()
@@ -596,6 +605,7 @@ class Twitter(Plugin):
             saw_error = False
             reader = _search_reader() if query == SEARCH else timeline_state
             feed_match: str | Callable[[str], bool] = match if match is not None else f"/{query}"
+            await _wait_ratelimit(ctx, query)
             try:
                 async with ctx.feed(feed_match, scroll=True, cursor=reader, resume=False,
                                     bucket=query) as responses:
@@ -604,12 +614,18 @@ class Twitter(Plugin):
                         # A server error (a 503) may pass, so the engine's back-off tries it again.
                         raise SiteError(f"twt: {url} answered HTTP {landed.status}",
                                         status=landed.status, retryable=landed.status >= 500)
+                    if wall(landed.url, LOCK_WALLS) is not None:
+                        raise LoginError(
+                            "twt: account locked or verification required; unlock in browser",
+                            retryable=False,
+                        )
                     if query != SEARCH:
                         if await _dismiss_interstitial(ctx, wait=interstitial):
                             interstitial = True
-                    elif await _is_suspended(ctx):
+                    if await _is_suspended(ctx):
                         self._suspended = True
-                        raise LoginError(f"twt: {SUSPENDED_MSG}", hint=SUSPENDED_HINT)
+                        raise LoginError(f"twt: {SUSPENDED_MSG}", hint=SUSPENDED_HINT,
+                                         retryable=False)
                     last = urlsplit(landed.url).path.rstrip("/").rsplit("/", 1)[-1].lower()
                     if tab and TIMELINES[tab].tab and (
                         last != TIMELINES[tab].tab.strip("/")
@@ -620,7 +636,12 @@ class Twitter(Plugin):
                     try:
                         async for data in responses:
                             pages += 1
+                            rem, reset = _record_ratelimit(
+                                ctx, query, getattr(responses, "headers", {}),
+                            )
                             tweets, cursor, pinned = read_timeline_page(data)
+                            if isinstance(data, dict) and data.get("errors"):
+                                _raise_graphql_errors(data["errors"])
                             if not tweets and cursor is None and isinstance(data, dict):
                                 errors = data.get("errors")
                                 if errors:
@@ -659,6 +680,7 @@ class Twitter(Plugin):
                                     break
                                 if query != SEARCH and not tweets and empty_pages > SEARCH_EMPTY:
                                     break
+                                await _proactive_pause(ctx, query, rem, reset, pages)
                                 continue
                             if reloaded and not had_seen:
                                 reloaded = False
@@ -671,27 +693,42 @@ class Twitter(Plugin):
                                 yield tweet, tweet_id_of(tweet) in pinned
                             if meta is not None and meta.get("stop_after_one"):
                                 break
+                            await _proactive_pause(ctx, query, rem, reset, pages)
                     except NotFound as error:
                         if query != SEARCH:
                             raise
                         if await _is_suspended(ctx):
                             self._suspended = True
-                            raise LoginError(f"twt: {SUSPENDED_MSG}",
-                                             hint=SUSPENDED_HINT) from None
+                            raise LoginError(f"twt: {SUSPENDED_MSG}", hint=SUSPENDED_HINT,
+                                             retryable=False) from None
                         raise NotFound(
                             f"{error} (if {SUSPENDED_MSG})",
                             hint=SUSPENDED_HINT,
                         ) from None
             except Blocked as error:
-                if query == SEARCH:
+                if error.wait and error.wait > 0:
+                    _record_ratelimit(ctx, query, {
+                        "x-rate-limit-remaining": "0",
+                        "x-rate-limit-reset": str(int(ctx.time.wall() + error.wait)),
+                    })
+                if query == SEARCH or not error.retryable:
                     raise
+                if reloaded and not got_new:
+                    no_progress_reloads += 1
+                    if no_progress_reloads >= 1:
+                        if getattr(ctx, "listing", None) is not None:
+                            ctx.listing.stalled = True
+                        raise Blocked(f"{error} (no progress after reload)",
+                                      wait=error.wait, retryable=False) from None
+                else:
+                    no_progress_reloads = 0
                 await ctx.hold("rate limited", seconds=error.wait, bucket=query, reset=got_new)
                 reloaded = True
                 got_new = False
                 continue
-            if query != SEARCH and not self._suspended and await _is_suspended(ctx):
+            if await _is_suspended(ctx):
                 self._suspended = True
-                ctx.log("warn", "{msg} ({hint})", msg=SUSPENDED_MSG, hint=SUSPENDED_HINT)
+                raise LoginError(f"twt: {SUSPENDED_MSG}", hint=SUSPENDED_HINT, retryable=False)
             if pages == 0 and query != SEARCH:
                 if not interstitial_retried and await _dismiss_interstitial(ctx):
                     interstitial = True
@@ -709,6 +746,95 @@ class Twitter(Plugin):
 
 MEDIA_TIMELINES = re.compile(r"/(UserMedia|UserVideoTimeline|UserPhotoTimeline)(?:\?|$)")
 PHOTO_TIMELINES = re.compile(r"/(UserPhotoTimeline|UserMedia)(?:\?|$)")
+LOCK_WALLS = (
+    "/account/access",
+    "/account/login_challenge",
+    "/i/flow/consent_flow",
+    "/i/flow/verify",
+)
+RATELIMIT_KEY = "twt.ratelimit"
+LOW_REMAINING = 5
+
+
+def _parse_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_ratelimit(
+    ctx: Ctx, query: str, headers: Mapping[str, str],
+) -> tuple[int | None, int | None]:
+    """Persist `(remaining, reset)` for `query` from response headers."""
+    rem = _parse_int(headers.get("x-rate-limit-remaining"))
+    reset = _parse_int(headers.get("x-rate-limit-reset"))
+    if rem is not None and reset is not None:
+        table = dict(ctx.state.get(RATELIMIT_KEY) or {})
+        table[query] = {"remaining": rem, "reset": reset}
+        ctx.state[RATELIMIT_KEY] = table
+    return rem, reset
+
+
+async def _wait_ratelimit(ctx: Ctx, query: str) -> None:
+    """Pause before opening a tab if persisted state shows `query` is near exhaustion."""
+    table = ctx.state.get(RATELIMIT_KEY)
+    if not isinstance(table, dict):
+        return
+    entry = table.get(query)
+    if not isinstance(entry, dict):
+        return
+    rem = _parse_int(entry.get("remaining"))
+    reset = _parse_int(entry.get("reset"))
+    now = ctx.time.wall()
+    if rem is not None and rem <= LOW_REMAINING and reset is not None and reset > now:
+        wait = (reset - now) + random.uniform(15.0, 45.0)
+        ctx.log("info", "{query}: rate-limit window low ({rem} left); waiting {wait:.0f}s",
+                query=query, rem=rem, wait=wait)
+        await ctx.pause(wait, f"waiting for {query} rate-limit window to reset")
+
+
+async def _proactive_pause(
+    ctx: Ctx, query: str, rem: int | None, reset: int | None, pages: int,
+) -> None:
+    """Pause on the open tab when quota is low, plus humanized per-page jitter."""
+    if rem is not None and rem <= LOW_REMAINING and reset is not None:
+        now = ctx.time.wall()
+        if reset > now:
+            wait = (reset - now) + random.uniform(15.0, 45.0)
+            ctx.log("info", "{query}: rate-limit low ({rem} left); pausing {wait:.0f}s on tab",
+                    query=query, rem=rem, wait=wait)
+            await ctx.pause(wait, f"waiting for {query} rate-limit window to reset")
+            return
+    if pages % 20 == 0:
+        await ctx.pause(random.uniform(10.0, 20.0), "pausing between timeline pages")
+    elif rem is not None and rem < 30:
+        await ctx.pause(random.uniform(3.0, 6.0), "pacing timeline scroll")
+    else:
+        await ctx.pause(random.uniform(1.5, 3.5), "pacing timeline scroll")
+
+
+def _raise_graphql_errors(errors: Any) -> None:
+    """Abort immediately on GraphQL account lock, suspension, auth, or automation errors."""
+    if not isinstance(errors, list):
+        return
+    for err in errors:
+        if not isinstance(err, dict):
+            continue
+        code = err.get("code")
+        if code == 326:
+            raise LoginError("twt: account locked or verification required; unlock in browser",
+                             retryable=False)
+        if code in (64, 141):
+            raise LoginError(f"twt: {SUSPENDED_MSG}", hint=SUSPENDED_HINT, retryable=False)
+        if code in (32, 239):
+            raise LoginError("twt: session expired or invalid; log in again",
+                             hint=SUSPENDED_HINT, retryable=False)
+        if code == 226:
+            raise Blocked("twt: automated activity detected; stopping to protect account",
+                          retryable=False)
+        if code == 88:
+            raise Blocked("twt: rate limited by API (code 88)", wait=900.0)
 
 
 def _op_matcher(
@@ -885,7 +1011,10 @@ class Graph:
             "features": json.dumps(features, separators=(",", ":")),
         }
         # X limits each operation on its own (its `x-rate-limit-*` headers), so each is a bucket.
-        return (await ctx.fetch(Request(endpoint, params=params), bucket=query)).json
+        data = (await ctx.fetch(Request(endpoint, params=params), bucket=query)).json
+        if isinstance(data, dict) and data.get("errors"):
+            _raise_graphql_errors(data["errors"])
+        return data
 
     def _table(self, ctx: Ctx) -> dict[str, dict[str, Any]]:
         """The query table: what `state` kept from an earlier refresh, read on first use."""
