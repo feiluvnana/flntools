@@ -4,6 +4,7 @@ link, read from the pages. SPEC.md#thr-threads.
 
 from __future__ import annotations
 
+import random
 import re
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import aclosing
@@ -13,10 +14,12 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from flnd.plugin import (
+    Blocked,
     Browser,
     Changed,
     Ctx,
     File,
+    LoginError,
     NotFound,
     Plugin,
     Post,
@@ -30,6 +33,7 @@ from flnd.plugin import (
     meta,
     page_info,
     route,
+    wall,
 )
 
 SITE = "https://www.threads.com"
@@ -54,6 +58,25 @@ IMAGE_EXTENSIONS = {"jpg", "webp", "png", "heic"}
 USER_NAME = re.compile(r"[A-Za-z0-9._]{1,30}")
 NOT_A_PROFILE = "that's not a profile"
 LOGIN_HINT = "run flnd auth login thr"
+LOCK_WALLS = ("/challenge", "/accounts/suspended", "/accounts/disabled", "/consent")
+_FATAL_META = ("checkpoint_required", "challenge_required", "login_required", "consent_required")
+
+
+def _check_meta_error(data: Any) -> None:
+    """Abort immediately on Meta checkpoint, login, consent, or action-block JSON payloads."""
+    if not isinstance(data, dict):
+        return
+    msg = str(data.get("message", "")).lower()
+    err = str(data.get("error_type", "")).lower()
+    if (data.get("require_login") is True or data.get("checkpoint_url")
+            or data.get("challenge") or any(k in msg or k in err for k in _FATAL_META)):
+        raise LoginError(
+            "thr: account requires action or login; resolve in browser",
+            hint=LOGIN_HINT, retryable=False,
+        )
+    if (data.get("spam") is True or data.get("feedback_required") is True
+            or "feedback_required" in msg or "feedback_required" in err):
+        raise Blocked("thr: action blocked by Threads (feedback_required)", retryable=False)
 
 
 class Threads(Plugin):
@@ -70,7 +93,7 @@ class Threads(Plugin):
     browser = Browser.ANY
     # Started as Instagram's, the same stack; measure on a live run.
     pace = 2.0
-    walls = ("/login",)
+    walls = ("/login", "/accounts/login")
     filename = "{date}_{post}{index}"
     unsupported = {
         f"{host}/{path}": reason
@@ -100,8 +123,16 @@ class Threads(Plugin):
         return found
 
     def blocked(self, response: Response) -> float | None:
-        """A hold by the block rules for the "please wait" answer; None for the rest."""
-        return 0.0 if response.content[:1] == b"{" and throttled(_json(response)) else None
+        """Abort on lock walls or Meta error payloads; hold on "please wait"."""
+        found = wall(getattr(response, "url", ""), LOCK_WALLS)
+        if found is not None:
+            raise LoginError(
+                f"thr: account requires action ({found}); resolve in browser",
+                hint=LOGIN_HINT, retryable=False,
+            )
+        parsed = _json(response) if getattr(response, "content", b"")[:1] == b"{" else None
+        _check_meta_error(parsed)
+        return 0.0 if throttled(parsed) else None
 
     # `post` comes before `user`, so threads.com/@name/post/<code> is never the user "name".
     @route(*((pattern, "post/{code}") for pattern in (
@@ -224,17 +255,51 @@ class Profile(Mapping[str, Any]):
 async def results(ctx: Ctx, url: str, *, scroll: bool) -> AsyncIterator[Any]:
     """Each result of a page: the ones it embeds, then its feed's; a throttle holds.
 
-    A 429 holds through `resume`; the "please wait" answer holds here, and is never yielded.
+    A 429 holds and reloads once per progress; a no-progress 429 reload aborts with non-retryable
+    `Blocked` instead of looping infinitely.
     """
-    async with ctx.feed(FEED, scroll=scroll, cursor=TAB_PAGES, resume=True) as feed:
-        await ctx.open(url)
-        for result in meta(await ctx.document()):
-            yield result
-        async for result in feed:
-            if throttled(result):
-                await ctx.hold(THROTTLE_REASON)
-                continue
-            yield result
+    seen_codes: set[str] = set()
+    reloaded = False
+    got_new = False
+    while True:
+        try:
+            async with ctx.feed(FEED, scroll=scroll, cursor=TAB_PAGES, resume=False) as feed:
+                await ctx.open(url)
+                for result in meta(await ctx.document()):
+                    _check_meta_error(result)
+                    codes = [str(m.get("code") or "") for m in posts_of(result) if m.get("code")]
+                    if any(c not in seen_codes for c in codes) or (
+                        not scroll and not reloaded and isinstance(result, dict)
+                        and result.get("data")
+                    ):
+                        got_new = True
+                    seen_codes.update(codes)
+                    yield result
+                async for result in feed:
+                    _check_meta_error(result)
+                    if throttled(result):
+                        await ctx.hold(THROTTLE_REASON)
+                        continue
+                    codes = [str(m.get("code") or "") for m in posts_of(result) if m.get("code")]
+                    if any(c not in seen_codes for c in codes) or (
+                        not scroll and not reloaded and isinstance(result, dict)
+                        and result.get("data")
+                    ):
+                        got_new = True
+                    seen_codes.update(codes)
+                    yield result
+            break
+        except Blocked as error:
+            if not error.retryable:
+                raise
+            if reloaded and not got_new:
+                if getattr(ctx, "listing", None) is not None:
+                    ctx.listing.stalled = True
+                raise Blocked(f"{error} (no progress after reload)",
+                              wait=error.wait, retryable=False) from None
+            await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
+            reloaded = True
+            got_new = False
 
 
 async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
@@ -259,6 +324,7 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
             # The last page, embedded or scrolled: nothing more is asked for.
             if state is not None and not (state[0] and state[1]):
                 return
+            await ctx.pause(random.uniform(1.0, 2.5), "pausing between tab pages")
 
 
 # ---------------------------------------------------------------------------------------------

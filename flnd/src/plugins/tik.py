@@ -5,6 +5,7 @@ post from its public embed page over HTTP. SPEC.md#tik-tiktok explains it.
 from __future__ import annotations
 
 import datetime
+import random
 import re
 import sys
 from collections import deque
@@ -21,11 +22,13 @@ from flnd.plugin import (
     Document,
     File,
     Hidden,
+    LoginError,
     NetworkError,
     NotFound,
     Plugin,
     Post,
     Request,
+    Response,
     SiteError,
     Stream,
     Target,
@@ -33,12 +36,28 @@ from flnd.plugin import (
     cookies,
     dig,
     route,
+    wall,
 )
 
-# The user agent TikTok's embed page and CDN have always been sent: a desktop Chrome.
-TIKTOK_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-             "Chrome/128.0.0.0 Safari/537.36")
 SITE = "https://www.tiktok.com"
+LOCK_WALLS = ("/verify", "/account/suspended")
+AUTH_ERROR_CODES = frozenset({8, 2483})
+CAPTCHA_ERROR_CODES = frozenset({10000, 10201})
+
+
+def _check_tiktok_status(data: Any) -> None:
+    """Abort immediately on TikTok session-expired or captcha/risk status codes."""
+    if not isinstance(data, dict):
+        return
+    code = data.get("status_code") if "status_code" in data else data.get("statusCode")
+    if isinstance(code, str) and code.isdigit():
+        code = int(code)
+    if code in AUTH_ERROR_CODES:
+        raise LoginError(f"tik: session expired or invalid (status_code={code})",
+                         retryable=False)
+    if code in CAPTCHA_ERROR_CODES:
+        raise Blocked(f"tik: captcha or risk verification required (status_code={code})",
+                      retryable=False)
 # A captcha's containers (TikTok has used each of these ids and classes, seen 2026-11-11), and
 # the words it shows.
 CAPTCHA_CSS = ('#captcha-verify-container-main-page, #captcha_container, [id*="captcha-verify"], '
@@ -170,15 +189,38 @@ class Profile:
             await self._show(ctx, posts=True)
             try:
                 feed = self._posts
+                reloaded = False
+                got_new = False
                 for read in range(REREADS + 1):
                     ended = False
-                    async with feed:
-                        async for data in filled(ctx, feed, page_state):
-                            ended = self._take(ctx, data)
-                            while queue:
-                                yield queue.popleft()
-                            if ended:
-                                break
+                    while True:
+                        try:
+                            async with feed:
+                                async for data in filled(ctx, feed, page_state):
+                                    before = self.found
+                                    ended = self._take(ctx, data)
+                                    if self.found > before:
+                                        got_new = True
+                                    while queue:
+                                        yield queue.popleft()
+                                    if ended:
+                                        break
+                            break
+                        except Blocked as error:
+                            if not error.retryable:
+                                raise
+                            if reloaded and not got_new:
+                                if getattr(ctx, "listing", None) is not None:
+                                    ctx.listing.stalled = True
+                                raise Blocked(f"{error} (no progress after reload)",
+                                              wait=error.wait, retryable=False) from None
+                            await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
+                            reloaded = True
+                            got_new = False
+                            feed = self._posts = _watch(ctx, "videos")
+                            await ctx.open(self.url)
+                            await ctx.pause(SETTLE, "letting the profile settle")
+                            await self._clear(ctx)
                     if ended or read == REREADS or not has_captcha(await ctx.document()):
                         break
                     # The list stopped short (quiet, or stalled) under a captcha that came over
@@ -231,6 +273,7 @@ class Profile:
                 said = str(error).partition("\n")[0]
                 raise Changed(f"tik: {category}: the tab didn't open: {said}") from None
             async for data in feed:
+                _check_tiktok_status(data)
                 items = items_of(data, ctx.time.wall())
                 found += len(items)
                 for item in items:
@@ -304,11 +347,23 @@ class TikTok(Plugin):
     # Either cookie proves a login; none is needed, since public profiles are read without one.
     login = cookies("sessionid", "sid_tt", url="https://www.tiktok.com/login")
     # No known limit; TikTok's answer to heavy use is the captcha, which `Profile` holds for.
-    pace = 0.2
+    pace = 1.5
     browser = Browser.ANY
-    user_agent = TIKTOK_UA
     # No login wall is known: a logged-out visitor is shown the public profile.
     walls = ()
+
+    def blocked(self, response: Response) -> float | None:
+        """Abort immediately on lock/verify walls or TikTok auth/captcha status codes."""
+        found = wall(getattr(response, "url", ""), LOCK_WALLS)
+        if found is not None:
+            raise LoginError(f"tik: account verification or lock ({found}); resolve in browser",
+                             retryable=False)
+        if getattr(response, "content", b"")[:1] == b"{":
+            try:
+                _check_tiktok_status(response.json)
+            except Changed:
+                pass
+        return None
     unsupported = {
         f"tiktok.com/{path}": f"{why} aren't supported; give a user, a post or a search"
         for path, why in (("tag", "hashtag pages"), ("music", "sound pages"),
@@ -370,19 +425,36 @@ class TikTok(Plugin):
         """
         url = f"{SITE}/search/video?q={quote_plus(query)}"
         seen: set[str] = set()
-        feed = ctx.feed(SEARCH_API, scroll=True, cursor=search_state, resume=True)
-        await ctx.open(url)
-        await ctx.pause(SETTLE, "letting the search settle")
-        await wait_out(ctx, url)
-        async with feed:
-            async for data in filled(ctx, feed, search_state):
-                for found in dig(data, "item_list || itemList") or []:
-                    post_id = str(dig(found, "id") or "")
-                    if post_id and post_id not in seen:
-                        seen.add(post_id)
-                        yield Target(f"tik:post/{post_id}")
-                if not (search_state(data) or (False,))[0]:
-                    break
+        reloaded = False
+        got_new = False
+        while True:
+            feed = ctx.feed(SEARCH_API, scroll=True, cursor=search_state, resume=False)
+            await ctx.open(url)
+            await ctx.pause(SETTLE, "letting the search settle")
+            await wait_out(ctx, url)
+            try:
+                async with feed:
+                    async for data in filled(ctx, feed, search_state):
+                        for found in dig(data, "item_list || itemList") or []:
+                            post_id = str(dig(found, "id") or "")
+                            if post_id and post_id not in seen:
+                                seen.add(post_id)
+                                got_new = True
+                                yield Target(f"tik:post/{post_id}")
+                        if not (search_state(data) or (False,))[0]:
+                            break
+                break
+            except Blocked as error:
+                if not error.retryable:
+                    raise
+                if reloaded and not got_new:
+                    if getattr(ctx, "listing", None) is not None:
+                        ctx.listing.stalled = True
+                    raise Blocked(f"{error} (no progress after reload)",
+                                  wait=error.wait, retryable=False) from None
+                await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
+                reloaded = True
+                got_new = False
 
     # The `@` is in the link's pattern, so `tiktok.com/@@example_creator` is refused.
     @route("tik:{user}", r"tiktok.com/@{user:[\w.]+}", newest_first=False)
@@ -406,7 +478,9 @@ class TikTok(Plugin):
         if not profile.walled:
             return
         links = await profile.links(ctx)
-        for post_id in links:
+        for index, post_id in enumerate(links):
+            if index:
+                await ctx.pause(random.uniform(1.0, 2.5), "pausing between embed fetches")
             try:
                 posts = await embed(ctx, post_id)
             except Blocked:
@@ -499,7 +573,7 @@ def _matches(category: str) -> Callable[[str], bool]:
 
 def _watch(ctx: Ctx, category: str) -> Any:
     """A scrolling feed of `category`'s list, ended by its own `hasMore: false`."""
-    return ctx.feed(_matches(category), scroll=True, cursor=page_state, resume=True)
+    return ctx.feed(_matches(category), scroll=True, cursor=page_state, resume=False)
 
 
 async def filled(ctx: Ctx, feed: AsyncIterator[Any],
@@ -510,6 +584,7 @@ async def filled(ctx: Ctx, feed: AsyncIterator[Any],
     """
     came = retried = False
     async for data in feed:
+        _check_tiktok_status(data)
         more = (state(data) or (False,))[0]
         if more and not any(isinstance(v, list) and v for v in data.values()):
             if retried:
@@ -579,9 +654,9 @@ def post_of(ctx: Ctx, item: dict[str, Any], category: str) -> Post:
 
 
 def cdn_headers(cookies: Mapping[str, str]) -> dict[str, str]:
-    """The headers that keep the CDN from a 403: Referer, user agent and the session cookies,
+    """The headers that keep the CDN from a 403: Referer and the session cookies,
     each cookie only when it has a value (an empty `sessionid=` is no session)."""
-    headers = {"Referer": f"{SITE}/", "User-Agent": TIKTOK_UA}
+    headers = {"Referer": f"{SITE}/"}
     sent = [f"{name}={cookies[name]}" for name in CDN_COOKIES if cookies.get(name)]
     if sent:
         headers["Cookie"] = "; ".join(sent)

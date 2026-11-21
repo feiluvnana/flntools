@@ -977,8 +977,11 @@ up to 32.
 - **Filename:** `{date}_{post}{index}`; a story with music also saves `..._music.m4a`.
 - **Key:** `{post}_{num}` (`ins:C1abc_0`); `stories`, `highlights`, `profile` key by `{path}`.
 - **Login:** cookie `sessionid` (optional).
-- **Limits and walls:** pace 2.0; no host limits; walls `/accounts/login`, `/challenge`,
-  `/accounts/suspended`; "Please wait a few minutes" answers are blocks.
+- **Limits and walls:** pace 2.0; no host limits; wall `/accounts/login`. Lock/challenge walls
+  (`/challenge`, `/accounts/suspended`, `/accounts/disabled`, `/consent`) and Meta
+  checkpoint/login errors fail immediately with non-retryable `LoginError`; `feedback_required`/
+  `spam` fails with non-retryable `Blocked`; "Please wait a few minutes" answers are blocks.
+  API `LoginError` and `Blocked` responses never fall back to `in_page=True`.
 - **Known gaps:** story links are refused; only stories active now; a private post is `NotFound`,
   not `Hidden`; `tagged`, `stories`, `highlights`, `profile` are read in full on every run.
 - **Saved as:** `media/ins/example_user/posts/2026-01-02_Cexample123_0.jpg`,
@@ -996,8 +999,11 @@ up to 32.
   best MP4.
 - **Key:** `{post}_{num}` (`thr:C1abc_0`); `profile` keys by `{path}`.
 - **Login:** cookie `sessionid`, as Instagram's (optional).
-- **Limits and walls:** pace 2.0; wall `/login`; "Please wait a few minutes" answers are blocks;
-  429s hold and ask the same page again.
+- **Limits and walls:** pace 2.0; walls `/login`, `/accounts/login`. Lock/challenge walls
+  (`/challenge`, `/accounts/suspended`, `/accounts/disabled`, `/consent`) and Meta
+  checkpoint/login errors fail immediately with non-retryable `LoginError`; `feedback_required`/
+  `spam` fails with non-retryable `Blocked`; "Please wait a few minutes" answers are blocks.
+  429s hold and reload once per progress (no-progress reloads abort).
 - **Known gaps:** a post is opened by `/t/<code>`; only images and videos are saved.
 - **Saved as:** `media/thr/example_user/posts/2026-01-02_C1abc_0.jpg`
 
@@ -1046,11 +1052,13 @@ up to 32.
 - **Filename:** `{date}_{post}_{idx}` (`idx` empty for a video; a photo's place from 1).
 - **Key:** `{post}_{idx}` (`tik:<id>`, `tik:<id>_<n>`); `profile` keys `profile/avatar_<id>.jpg`.
 - **Login:** cookies `sessionid` or `sid_tt` (optional).
-- **Limits and walls:** pace 0.2; no walls. A captcha gets 60 s in the browser window (a hidden one
+- **Limits and walls:** pace 1.5; no login walls (`/verify` and `/account/suspended` fail
+  immediately with non-retryable `LoginError`, and status codes `8`/`2483` fail auth or
+  `10000`/`10201` fail captcha). A captcha gets 60 s in the browser window (a hidden one
   is shown), then a block hold; a fourth unsolved one fails the job; a post list stopped short by
-  one is read again (3 times at most). A 429 holds and the scroll goes on; an empty page that says
-  `hasMore` holds once, then ends with a warning. A walled post list fails `videos`
-  and `playlists` with `Hidden`.
+  one is read again (3 times at most). A 429 holds and reloads once per progress (re-waiting
+  captchas; no-progress reloads abort); an empty page that says `hasMore` holds once, then ends
+  with a warning. A walled post list fails `videos` and `playlists` with `Hidden`.
 - **Known gaps:** no such tab is logged; a tab deaf to the click for 10 s fails `Changed`; stories
   only as the page shows them on load.
 - **Saved as:** `media/tik/example_creator/videos/2026-01-02_1234567890123456789.mp4`,
@@ -1068,9 +1076,13 @@ up to 32.
   pictures `profile_<id>`, covers `cover_<id>`.
 - **Key:** `{post}` (`fbk:<id>`, so a photo in two tabs is saved once); `profile` keys `{path}`.
 - **Login:** cookies `c_user` or `xs` (optional, but a logged-out browser sees little).
-- **Limits and walls:** pace 0.2; walls `/login`, `/login.php`. A 429, a "temporarily blocked" page,
-  Comet's error line and GraphQL `errors` codes 1675004 and 368 (confirm live) hold, then carry on
-  from the same cursor. The CDN needs `Referer: https://www.facebook.com/`.
+- **Limits and walls:** pace 1.5; walls `/login`, `/login.php`. Checkpoint/lock walls
+  (`/checkpoint`, `/checkpoint/block`, `/two_step_verification`, `/account_disabled`, `/suspended`)
+  and fatal GraphQL auth codes (`190`, `459`, `1346003`, `1357001`, `1357004`) fail immediately
+  with non-retryable `LoginError`. A 429 holds and reloads once per progress (no-progress reloads
+  abort); a "temporarily blocked" page, Comet's error line and GraphQL `errors` codes 1675004 and
+  368 (confirm live) hold, then carry on from the same cursor. The CDN needs
+  `Referer: https://www.facebook.com/`.
 - **Known gaps:** `/photos /groups /events /stories /marketplace /hashtag` are refused; a page is
   told from a profile by the header's `__typename` (confirm live); stories are those active now;
   without a header `stories` and `profile` are skipped; undated photos take a neighbour's date.

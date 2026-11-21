@@ -28,7 +28,7 @@ from flnd.errors import (
     UsageError,
 )
 from flnd.plugin import Range, Target
-from flnd.plugins.tik import TIKTOK_UA, Profile, TikTok, best_video
+from flnd.plugins.tik import Profile, TikTok, best_video
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
 from flnkit import html
 
@@ -316,7 +316,7 @@ class EmbedTest(unittest.TestCase):
                 saved = collect(TikTok, f"tik:{VIDEO}", ctx=embedded(item, cookies=cookies))
                 headers = dict(saved[0].post.headers)
                 self.assertEqual(headers.pop("Cookie", None), sent)
-                self.assertEqual(headers, {"Referer": f"{API}/", "User-Agent": TIKTOK_UA})
+                self.assertEqual(headers, {"Referer": f"{API}/"})
         self.assertTrue(asyncio.run(TikTok.login.check(FakeCtx(TikTok, cookies={"sid_tt": "t"}))))
 
     def test_a_refused_embed_page_fails_the_post(self):
@@ -697,6 +697,61 @@ class BestVideoTest(unittest.TestCase):
         ]:
             with self.subTest(given=given):
                 self.assertEqual(best_video(given), expected)
+
+
+class AntiBanTest(unittest.TestCase):
+    def test_pace_user_agent_and_lock_walls_and_status_codes(self):
+        from flnd.errors import LoginError
+
+        self.assertGreaterEqual(TikTok.pace, 1.5)
+        self.assertIsNone(TikTok.user_agent)
+        for wall_path in ("/verify", "/account/suspended"):
+            with self.subTest(wall=wall_path):
+                ctx = FakeCtx(TikTok, "tik:example_creator", pages={
+                    PROFILE: FakePage(url=f"{API}{wall_path}"),
+                })
+                with self.assertRaises(LoginError) as caught:
+                    collect(TikTok, "tik:example_creator", ctx=ctx, categories=["videos"])
+                self.assertFalse(caught.exception.retryable)
+
+        for code, exc_type in ((8, LoginError), (2483, LoginError),
+                               (10000, Blocked), (10201, Blocked)):
+            with self.subTest(code=code):
+                ctx = FakeCtx(TikTok, "tik:example_creator", pages={
+                    PROFILE: FakePage(
+                        feeds=[Sent(f"{API}/api/post/item_list/", {"status_code": code})],
+                    ),
+                })
+                with self.assertRaises(exc_type) as caught:
+                    collect(TikTok, "tik:example_creator", ctx=ctx, categories=["videos"])
+                self.assertFalse(caught.exception.retryable)
+
+    def test_no_progress_429_reload_aborts_and_reruns_wait_out(self):
+        from unittest import mock
+
+        queue = [
+            FakePage(feeds=[
+                Sent(f"{API}/api/post/item_list/", {"itemList": [video("1", f"{CDN}/1.mp4")],
+                                                    "hasMore": True}),
+                Sent(f"{API}/api/post/item_list/", status=429, scroll=1),
+            ]),
+            FakePage(feeds=[
+                Sent(f"{API}/api/post/item_list/", status=429),
+            ]),
+        ]
+        ctx = FakeCtx(TikTok, "tik:example_creator", pages={})
+        orig_open = ctx.open
+
+        async def async_open(target_url):
+            if target_url == PROFILE:
+                ctx._pages[target_url] = queue.pop(0)
+            return await orig_open(target_url)
+
+        with mock.patch.object(ctx, "open", side_effect=async_open):
+            with self.assertRaises(Blocked) as caught:
+                collect(TikTok, "tik:example_creator", ctx=ctx, categories=["videos"])
+        self.assertFalse(caught.exception.retryable)
+        self.assertEqual(len(ctx.seen.holds), 1)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ link, and the accounts the login follows, read from the pages. SPEC.md#ins-insta
 
 from __future__ import annotations
 
+import random
 import re
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import aclosing
@@ -35,6 +36,7 @@ from flnd.plugin import (
     meta,
     page_info,
     route,
+    wall,
 )
 
 SITE = "https://www.instagram.com"
@@ -95,13 +97,34 @@ STORY_MUSIC = ("story_music_stickers[0].music_asset_info.progressive_download_ur
                "music_metadata.music_info.music_asset_info.progressive_download_url")
 USER_NAME = re.compile(r"[A-Za-z0-9._]{1,30}")
 LOGIN_HINT = "run flnd auth login ins"
+LOCK_WALLS = ("/challenge", "/accounts/suspended", "/accounts/disabled", "/consent")
+_FATAL_META = ("checkpoint_required", "challenge_required", "login_required", "consent_required")
+
+
+def _check_meta_error(data: Any) -> None:
+    """Abort immediately on Meta checkpoint, login, consent, or action-block JSON payloads."""
+    if not isinstance(data, dict):
+        return
+    msg = str(data.get("message", "")).lower()
+    err = str(data.get("error_type", "")).lower()
+    if (data.get("require_login") is True or data.get("checkpoint_url")
+            or data.get("challenge") or any(k in msg or k in err for k in _FATAL_META)):
+        raise LoginError(
+            "ins: account requires action or login; resolve in browser",
+            hint=LOGIN_HINT, retryable=False,
+        )
+    if (data.get("spam") is True or data.get("feedback_required") is True
+            or "feedback_required" in msg or "feedback_required" in err):
+        raise Blocked("ins: action blocked by Instagram (feedback_required)", retryable=False)
 
 
 async def _api_fetch(ctx: Ctx, request: str | Request) -> Response:
     """Fetch an API endpoint: direct HTTP first, falling back to in_page=True on error."""
     try:
         return await ctx.fetch(request, in_page=False)
-    except (LoginError, SiteError, NetworkError):
+    except (SiteError, NetworkError) as error:
+        if isinstance(error, Blocked):
+            raise
         return await ctx.fetch(request, in_page=True)
 
 
@@ -115,8 +138,8 @@ async def _api_pages(
         async for response in ctx.pages(request, cursor=cursor, send=send, in_page=False):
             yielded = True
             yield response
-    except (LoginError, SiteError, NetworkError):
-        if yielded:
+    except (SiteError, NetworkError) as error:
+        if yielded or isinstance(error, Blocked):
             raise
         async for response in ctx.pages(request, cursor=cursor, send=send, in_page=True):
             yield response
@@ -137,9 +160,9 @@ class Instagram(Plugin):
     # Instagram rate-limits bursts of `/p/<code>/` and GraphQL page requests; 2 s keeps a long
     # sync under the limit.
     pace = 2.0
-    # A throttled session is sent to the login wall or a challenge, which lifts after a wait;
-    # a suspended or locked account is sent to its own page (2026-11).
-    walls = ("/accounts/login", "/challenge", "/accounts/suspended")
+    # A throttled session is sent to the login wall, which lifts after a wait; lock/challenge
+    # walls abort immediately in `blocked()`.
+    walls = ("/accounts/login",)
     fields = ("album",)
     # The day, the code, and the file's number when the post has more than one: the names saved
     # files have always had.
@@ -187,8 +210,16 @@ class Instagram(Plugin):
         return request.replace(headers={**sent, **(request.headers or {})})
 
     def blocked(self, response: Response) -> float | None:
-        """A hold by the block rules for Instagram's "please wait" answer; None for the rest."""
-        return 0.0 if throttled(_json(response)) else None
+        """Abort on lock walls or Meta error payloads; hold on "please wait"."""
+        found = wall(getattr(response, "url", ""), LOCK_WALLS)
+        if found is not None:
+            raise LoginError(
+                f"ins: account requires action ({found}); resolve in browser",
+                hint=LOGIN_HINT, retryable=False,
+            )
+        parsed = _json(response)
+        _check_meta_error(parsed)
+        return 0.0 if throttled(parsed) else None
 
     # `post` comes before `user`, so instagram.com/p/<code> is never the user "p". A post's code is
     # base64url, so it takes `-` as well as `\w`.
@@ -261,7 +292,9 @@ class Instagram(Plugin):
     async def highlights(self, ctx: Ctx, profile: Profile) -> AsyncIterator[Post]:
         """Each highlight's stories, in a folder named by its title; keyed by path."""
         await profile.describe(ctx)
-        for highlight, title in profile.highlights:
+        for index, (highlight, title) in enumerate(profile.highlights):
+            if index:
+                await ctx.pause(random.uniform(1.0, 2.5), "pausing between highlights")
             url = f"{SITE}/stories/highlights/{highlight}/"
             for post in await story_page(ctx, url, f"highlights/{title}"):
                 yield post.replace(album=title)
@@ -283,7 +316,7 @@ def throttled(result: Any) -> bool:
 def _json(response: Response) -> Any:
     """A response's JSON object; None for any other body, which isn't parsed."""
     # Only a body that starts as an object can be the throttle answer; a page is never parsed.
-    if response.content[:1] != b"{":
+    if getattr(response, "content", b"")[:1] != b"{":
         return None
     try:
         return response.json
@@ -449,6 +482,8 @@ async def page_results(
                     embedded = False
                 else:
                     found.append(item)
+        for item in found:
+            _check_meta_error(item)
         if (enough is not None and enough(found)) or not any(map(throttled, found)):
             return found
         await ctx.hold(THROTTLE_REASON)
@@ -471,6 +506,7 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
         async for item in listing:
             ended = False
             for result in item if embedded else [item]:
+                _check_meta_error(result)
                 if throttled(result):
                     await ctx.hold(THROTTLE_REASON)
                     continue
@@ -479,10 +515,13 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
                     yield post
                 state = reader(result)
                 ended = ended or (state is not None and not (state[0] and state[1]))
+            was_embedded = embedded
             embedded = False
             # The last page, embedded or scrolled: nothing more is asked for.
             if ended:
                 return
+            if not was_embedded:
+                await ctx.pause(random.uniform(1.0, 2.5), "pausing between tab pages")
 
 
 def new_posts(ctx: Ctx, profile: Profile, result: Any, tab: str) -> Iterator[Post]:

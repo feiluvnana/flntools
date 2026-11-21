@@ -615,5 +615,61 @@ class WalkerTest(unittest.TestCase):
                          [None, (True, "c3"), (False, None)])
 
 
+class AntiBanTest(unittest.TestCase):
+    def test_pace_and_lock_walls_and_fatal_graphql_codes(self):
+        self.assertGreaterEqual(Facebook.pace, 1.5)
+        for wall_path in ("/checkpoint", "/checkpoint/block", "/two_step_verification",
+                          "/account_disabled", "/suspended"):
+            with self.subTest(wall=wall_path):
+                ctx = FakeCtx(Facebook, "fbk:example.page", pages={
+                    f"{SITE}/example.page": FakePage(url=f"{SITE}{wall_path}"),
+                })
+                with self.assertRaises(LoginError) as caught:
+                    collect(Facebook, "fbk:example.page", ctx=ctx, categories=["posts"])
+                self.assertFalse(caught.exception.retryable)
+
+        for code in ("190", "459", "1346003", "1357001", "1357004"):
+            with self.subTest(code=code):
+                ctx = FakeCtx(Facebook, "fbk:example.page", pages={
+                    f"{SITE}/example.page": FakePage(
+                        html=embedded({"data": {"user": {"id": "42"}}}),
+                        feeds=[Sent(GRAPHQL, {"errors": [{"code": int(code)}]}, scroll=1)],
+                    ),
+                })
+                with self.assertRaises(LoginError) as caught:
+                    collect(Facebook, "fbk:example.page", ctx=ctx, categories=["posts"])
+                self.assertFalse(caught.exception.retryable)
+
+    def test_no_progress_429_reload_aborts_instead_of_looping(self):
+        from unittest import mock
+
+        queue = [
+            FakePage(
+                html=embedded({"data": {"user": {"id": "42"}}}),
+                feeds=[
+                    Sent(GRAPHQL, {"data": [photo("1")]}),
+                    Sent(GRAPHQL, status=429, scroll=1),
+                ],
+            ),
+            FakePage(
+                html=embedded({"data": {"user": {"id": "42"}}}),
+                feeds=[Sent(GRAPHQL, status=429)],
+            ),
+        ]
+        ctx = FakeCtx(Facebook, "fbk:example.page", pages={})
+        orig_open = ctx.open
+
+        async def async_open(target_url):
+            if target_url == f"{SITE}/example.page":
+                ctx._pages[target_url] = queue.pop(0)
+            return await orig_open(target_url)
+
+        with mock.patch.object(ctx, "open", side_effect=async_open):
+            with self.assertRaises(Blocked) as caught:
+                collect(Facebook, "fbk:example.page", ctx=ctx, categories=["posts"])
+        self.assertFalse(caught.exception.retryable)
+        self.assertEqual(len(ctx.seen.holds), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

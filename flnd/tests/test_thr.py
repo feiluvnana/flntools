@@ -9,7 +9,7 @@ import unittest
 import fakes
 
 from flnd.engine.resolve import Manifest, resolve
-from flnd.errors import NotFound, UsageError
+from flnd.errors import Blocked, LoginError, NotFound, UsageError
 from flnd.plugin import Target
 from flnd.plugins import _manifest
 from flnd.plugins.thr import Threads
@@ -221,6 +221,81 @@ class PostTest(unittest.TestCase):
                 reply = fakes_response(body)
                 self.assertEqual(plugin.blocked(reply), held)
         self.assertIsNone(plugin.blocked(fakes_response("<html></html>")))
+
+
+class AntiBanTest(unittest.TestCase):
+    def test_lock_walls_and_meta_json_errors(self):
+        self.assertEqual(Threads.walls, ("/login", "/accounts/login"))
+        for wall_path in ("/challenge", "/accounts/suspended",
+                          "/accounts/disabled", "/consent"):
+            with self.subTest(wall=wall_path):
+                ctx = fake(pages={
+                    f"{SITE}/@example_creator": FakePage(url=f"{SITE}{wall_path}"),
+                })
+                with self.assertRaises(LoginError) as caught:
+                    run(categories=["posts"], ctx=ctx)
+                self.assertFalse(caught.exception.retryable)
+
+        for body, exc_type in (
+            ({"message": "checkpoint_required", "checkpoint_url": "/challenge"}, LoginError),
+            ({"message": "feedback_required", "spam": True}, Blocked),
+        ):
+            with self.subTest(body=body):
+                ctx = fake(pages={
+                    f"{SITE}/@example_creator": FakePage(
+                        embedded(tab(thread("P1"))),
+                        feeds=[Sent(GRAPHQL, body)],
+                    ),
+                })
+                with self.assertRaises(exc_type) as caught:
+                    run(categories=["posts"], ctx=ctx)
+                self.assertFalse(caught.exception.retryable)
+
+    def test_no_progress_429_reload_aborts_instead_of_looping(self):
+        from unittest import mock
+
+        queue = [
+            FakePage(
+                embedded(tab(thread("P1"))),
+                feeds=[Sent(GRAPHQL, status=429)],
+            ),
+            FakePage(
+                embedded(tab(thread("P1"))),
+                feeds=[Sent(GRAPHQL, status=429)],
+            ),
+        ]
+        ctx = fake(pages={})
+        orig_open = ctx.open
+
+        async def async_open(target_url):
+            if target_url == f"{SITE}/@example_creator":
+                ctx._pages[target_url] = queue.pop(0)
+            return await orig_open(target_url)
+
+        with mock.patch.object(ctx, "open", side_effect=async_open):
+            with self.assertRaises(Blocked) as caught:
+                run(categories=["posts"], ctx=ctx)
+        self.assertFalse(caught.exception.retryable)
+        self.assertEqual(len(ctx.seen.holds), 1)
+
+        # scroll=False (e.g. thr:post/<code>) also aborts on no-progress 429 reload.
+        post_queue = [
+            FakePage(embedded({"data": {"user": {"id": "1"}}}), feeds=[Sent(GRAPHQL, status=429)]),
+            FakePage(embedded({"data": {"user": {"id": "1"}}}), feeds=[Sent(GRAPHQL, status=429)]),
+        ]
+        ctx2 = fake(pages={})
+        orig_open2 = ctx2.open
+
+        async def async_open2(target_url):
+            if target_url == f"{SITE}/t/NONE":
+                ctx2._pages[target_url] = post_queue.pop(0)
+            return await orig_open2(target_url)
+
+        with mock.patch.object(ctx2, "open", side_effect=async_open2):
+            with self.assertRaises(Blocked) as caught2:
+                run("thr:post/NONE", ctx=ctx2)
+        self.assertFalse(caught2.exception.retryable)
+        self.assertEqual(len(ctx2.seen.holds), 1)
 
 
 def fakes_response(body):

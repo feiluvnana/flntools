@@ -14,7 +14,7 @@ from typing import Any
 
 import fakes
 
-from flnd.errors import NotFound, SiteError, UsageError
+from flnd.errors import Blocked, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import Range, Request, Target
 from flnd.plugins.ins import APP_ID, Instagram, best_file, code_pk, pk_stamp
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
@@ -250,7 +250,7 @@ class RoutesTest(unittest.TestCase):
         # S13: the API version is no longer shadowed by an API client on the instance.
         self.assertEqual((Instagram.api, Instagram().api), (2, 2))
         self.assertEqual(Instagram.pace, 2.0)
-        self.assertEqual(Instagram.walls, ("/accounts/login", "/challenge", "/accounts/suspended"))
+        self.assertEqual(Instagram.walls, ("/accounts/login",))
         route = next(known for known in Instagram.routes if known.kind == "user")
         self.assertEqual([c.name for c in route.categories if not c.own], ["tagged", "reposts"])
         self.assertEqual([c.link({"user": "example_user"}) for c in route.categories][:5], [
@@ -593,7 +593,7 @@ class TabTest(unittest.TestCase):
     def test_api_posts_falls_back_to_in_page_on_error(self):
         """Direct HTTP error on feed API falls back to in_page before falling back to tab."""
         feed_answers = [
-            Reply(status=403),
+            Reply(status=400),
             Reply({"items": [feed("P1", **image("https://cdn.example/p1.jpg"))],
                    "more_available": False}),
         ]
@@ -688,7 +688,7 @@ class PostTest(unittest.TestCase):
         """When direct HTTP gets an error (e.g. 403 / wall), media info falls back to in_page."""
         pk = code_pk("FALLBACK")
         answers = [
-            Reply(status=403),
+            Reply(status=400),
             Reply({"items": [{"code": "FALLBACK", "taken_at": STAMP,
                               **image("https://cdn.example/fb.jpg")}]}),
         ]
@@ -767,6 +767,47 @@ class PostTest(unittest.TestCase):
                 ctx = fake(routes={}, pages={f"{SITE}/p/SINGLE/": FakePage("", feeds=feeds)})
                 [found] = run(link, ctx=ctx)
                 self.assertEqual(fakes.filed(Instagram, link, found), folder)
+
+
+class AntiBanTest(unittest.TestCase):
+    def test_lock_walls_fail_immediately_without_retries(self):
+        for wall_path in ("/challenge", "/accounts/suspended",
+                          "/accounts/disabled", "/consent"):
+            with self.subTest(wall=wall_path):
+                ctx = fake(pages={
+                    f"{SITE}/example_creator/": FakePage(url=f"{SITE}{wall_path}"),
+                })
+                with self.assertRaises(LoginError) as caught:
+                    run(categories=["posts"], ctx=ctx)
+                self.assertFalse(caught.exception.retryable)
+
+    def test_meta_json_errors_abort_without_in_page_fallback(self):
+        pk = code_pk("C1abc-DEF_0")
+        for body, exc_type in (
+            ({"message": "checkpoint_required", "checkpoint_url": "/challenge/1"}, LoginError),
+            ({"message": "login_required", "require_login": True}, LoginError),
+            ({"message": "feedback_required", "spam": True}, Blocked),
+        ):
+            with self.subTest(body=body):
+                ctx = fake(
+                    cookies={"sessionid": "99%3As%3A1"},
+                    routes={f"{SITE}/api/v1/media/{pk}/info/": Reply(body, status=400)},
+                )
+                with self.assertRaises(exc_type) as caught:
+                    run(f"{SITE}/p/C1abc-DEF_0/", ctx=ctx)
+                self.assertFalse(caught.exception.retryable)
+                self.assertEqual([r[2]["in_page"] for r in ctx.seen.requests], [False])
+
+        # 401/403 LoginError and 429 Blocked on API must not fall back to in_page=True.
+        for status, exc_type in ((401, LoginError), (403, LoginError), (429, Blocked)):
+            with self.subTest(status=status):
+                ctx = fake(
+                    cookies={"sessionid": "99%3As%3A1"},
+                    routes={f"{SITE}/api/v1/media/{pk}/info/": Reply(status=status)},
+                )
+                with self.assertRaises(exc_type):
+                    run(f"{SITE}/p/C1abc-DEF_0/", ctx=ctx)
+                self.assertTrue(all(not r[2]["in_page"] for r in ctx.seen.requests))
 
 
 if __name__ == "__main__":

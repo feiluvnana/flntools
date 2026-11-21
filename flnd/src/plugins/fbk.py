@@ -12,9 +12,11 @@ from typing import Any, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
 from flnd.plugin import (
+    Blocked,
     Browser,
     Ctx,
     File,
+    LoginError,
     NotFound,
     Plugin,
     Post,
@@ -26,6 +28,7 @@ from flnd.plugin import (
     dig,
     meta,
     route,
+    wall,
 )
 
 SITE = "https://www.facebook.com"
@@ -43,6 +46,11 @@ USER_NAME = r"(?!(?:" + "|".join(NOT_NAMES) + r")$)[\w.]+"
 POST_LINK = re.compile(r"([A-Za-z0-9.]+)/posts/(\w+)")
 # The pages that name one post by `story_fbid=` and its owner's `id=`, which `resolve` reads.
 PERMALINKS = ("permalink.php", "story.php")
+LOCK_WALLS = (
+    "/checkpoint", "/checkpoint/block", "/two_step_verification",
+    "/account_disabled", "/suspended",
+)
+FATAL_AUTH_CODES = frozenset({"190", "459", "1346003", "1357001", "1357004"})
 # The pages that name one photo by `fbid=`, which the `photo` route reads.
 PHOTO_PAGES = ("photo.php", "photo")
 
@@ -142,8 +150,8 @@ class Facebook(Plugin):
     hidden = True
     # Not required: a logged-out browser gets what Facebook shows the public, which is little.
     login = cookies("c_user", "xs", url=f"{SITE}/login/")
-    # No published limit; the floor only keeps a burst slower than the other sites'.
-    pace = 0.2
+    # Rate-limited conservatively to avoid account checkpoints.
+    pace = 1.5
     browser = Browser.ANY
     walls = ("/login", "/login.php")
     # A file's folder is where it was found: `part` is its tab (or "videos" or "albums"),
@@ -202,8 +210,14 @@ class Facebook(Plugin):
         return super().resolve(text)
 
     def blocked(self, response: Response) -> float | None:
-        """Hold by the block rules for Facebook's block page, which embeds no results."""
-        text = response.text
+        """Abort on lock/checkpoint walls; hold on Facebook's block page."""
+        found = wall(getattr(response, "url", ""), LOCK_WALLS)
+        if found is not None:
+            raise LoginError(
+                f"fbk: account checkpoint or lock ({found}); resolve in browser",
+                retryable=False,
+            )
+        text = getattr(response, "text", "")
         if "__bbox" not in text and BLOCKED in text.lower():
             return 0.0
         return None
@@ -328,11 +342,34 @@ class Facebook(Plugin):
             for post in media_posts(result, "posts", seen=seen):
                 yield post
         del results
-        async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor(),
-                            resume=True) as lines:
-            async for line in unblocked(ctx, lines):
-                for post in media_posts(line, "posts", owner=profile["owner"], seen=seen):
-                    yield post
+        reloaded = False
+        got_new = False
+        seen_keys: set[str] = {f"m:{pid}" for pid in seen}
+        while True:
+            try:
+                async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor(),
+                                    resume=False) as lines:
+                    if reloaded:
+                        await ctx.open(profile["url"])
+                    async for line in unblocked(ctx, lines):
+                        keys = _line_keys(line)
+                        if any(k not in seen_keys for k in keys):
+                            got_new = True
+                        seen_keys.update(keys)
+                        for post in media_posts(line, "posts", owner=profile["owner"], seen=seen):
+                            yield post
+                break
+            except Blocked as error:
+                if not error.retryable:
+                    raise
+                if reloaded and not got_new:
+                    if getattr(ctx, "listing", None) is not None:
+                        ctx.listing.stalled = True
+                    raise Blocked(f"{error} (no progress after reload)",
+                                  wait=error.wait, retryable=False) from None
+                await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
+                reloaded = True
+                got_new = False
 
     @user.category(url="{photos_url}")
     async def photos(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Post]:
@@ -442,8 +479,16 @@ async def page_results(ctx: Ctx, url: str) -> list[Any] | None:
     """
     while True:
         landed = await ctx.open(url)
+        found = wall(landed.url, LOCK_WALLS)
+        if found is not None:
+            raise LoginError(
+                f"fbk: account checkpoint or lock ({found}); resolve in browser",
+                retryable=False,
+            )
         page = await ctx.document()
         results = [found for found in meta(page) if isinstance(found, dict) and "data" in found]
+        for result in results:
+            _check_graphql_errors(result)
         if results:
             return results
         if BLOCKED not in page.text.lower():
@@ -457,14 +502,62 @@ async def tab_results(ctx: Ctx, url: str, tab: str) -> AsyncIterator[Any]:
     Raises:
         SiteError: the page didn't load.
     """
-    async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor(), resume=True) as lines:
-        results = await page_results(ctx, url)
-        if results is None:
-            raise SiteError(f"fbk: {url} didn't load")
-        for result in results:
-            yield result
-        async for line in unblocked(ctx, lines):
-            yield line
+    seen_keys: set[str] = set()
+    reloaded = False
+    got_new = False
+    while True:
+        try:
+            async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor(),
+                                resume=False) as lines:
+                results = await page_results(ctx, url)
+                if results is None:
+                    raise SiteError(f"fbk: {url} didn't load")
+                for result in results:
+                    keys = _line_keys(result)
+                    if any(k not in seen_keys for k in keys):
+                        got_new = True
+                    seen_keys.update(keys)
+                    yield result
+                async for line in unblocked(ctx, lines):
+                    keys = _line_keys(line)
+                    if any(k not in seen_keys for k in keys):
+                        got_new = True
+                    seen_keys.update(keys)
+                    yield line
+            break
+        except Blocked as error:
+            if not error.retryable:
+                raise
+            if reloaded and not got_new:
+                if getattr(ctx, "listing", None) is not None:
+                    ctx.listing.stalled = True
+                raise Blocked(f"{error} (no progress after reload)",
+                              wait=error.wait, retryable=False) from None
+            await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
+            reloaded = True
+            got_new = False
+
+
+def _check_graphql_errors(line: Any) -> None:
+    """Abort immediately on fatal Facebook GraphQL auth or checkpoint error codes."""
+    errors = line.get("errors") if isinstance(line, dict) else None
+    if not isinstance(errors, list):
+        return
+    for error in errors:
+        if isinstance(error, dict) and (code := str(error.get("code"))) in FATAL_AUTH_CODES:
+            raise LoginError(
+                f"fbk: account auth/checkpoint error (code {code}); re-authenticate in browser",
+                retryable=False,
+            )
+
+
+def _line_keys(line: Any) -> list[str]:
+    """Stable item/album ids in a GraphQL line so noisy telemetry never counts as progress."""
+    if not isinstance(line, dict):
+        return []
+    keys = [f"m:{item.id}" for item in media_items(line)]
+    keys.extend(f"a:{aid}" for aid in album_links(line))
+    return keys
 
 
 def held(line: Any) -> bool:
@@ -478,6 +571,7 @@ def held(line: Any) -> bool:
 async def unblocked(ctx: Ctx, lines: AsyncIterator[Any]) -> AsyncIterator[Any]:
     """A feed's lines, holding for each one `held` names instead of yielding it."""
     async for line in lines:
+        _check_graphql_errors(line)
         if held(line):
             await ctx.hold(TEMPORARILY_BLOCKED)
         else:
