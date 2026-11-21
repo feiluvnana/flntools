@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import os
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -227,23 +230,98 @@ def day(value: object) -> datetime.date | None:
     return found
 
 
+_awake_depth: int = 0
+_awake_lock = threading.Lock()
+_awake_proc: subprocess.Popen[bytes] | None = None
+
+
 def keep_awake(enable: bool = True) -> None:
-    """Ask Windows to keep the system running (away mode) when screen turns off or locks."""
-    if sys.platform != "win32":
-        return
-    import ctypes
+    """Ask the OS to keep running (away/idle mode) while screen turns off or locks."""
+    global _awake_depth, _awake_proc
+    with _awake_lock:
+        if enable:
+            _awake_depth += 1
+            if _awake_depth > 1:
+                return
+        else:
+            if _awake_depth <= 0:
+                return
+            _awake_depth -= 1
+            if _awake_depth > 0:
+                return
 
-    es_continuous = 0x80000000
-    es_system_required = 0x00000001
-    es_awaymode_required = 0x00000040
+        if sys.platform == "win32":
+            import ctypes
 
-    flags = es_continuous
-    if enable:
-        flags |= es_system_required | es_awaymode_required
-        ret = ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint32(flags))
-        if ret == 0:
-            flags = es_continuous | es_system_required
-            ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint32(flags))
-    else:
-        ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint32(flags))
+            es_continuous = 0x80000000
+            es_system_required = 0x00000001
+            es_awaymode_required = 0x00000040
+
+            flags = es_continuous
+            if enable:
+                flags |= es_system_required | es_awaymode_required
+                ret = ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint32(flags))
+                if ret == 0:
+                    flags = es_continuous | es_system_required
+                    ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint32(flags))
+            else:
+                ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint32(flags))
+
+        elif sys.platform == "darwin":
+            if enable:
+                if shutil.which("caffeinate"):
+                    try:
+                        _awake_proc = subprocess.Popen(
+                            ["caffeinate", "-s", "-w", str(os.getpid())],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    except OSError:
+                        _awake_proc = None
+            elif _awake_proc is not None:
+                try:
+                    _awake_proc.terminate()
+                    _awake_proc.wait(timeout=1.0)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                _awake_proc = None
+
+        elif sys.platform.startswith("linux"):
+            if enable:
+                tool = shutil.which("systemd-inhibit")
+                args = None
+                if tool:
+                    args = [
+                        tool,
+                        "--what=idle:sleep",
+                        "--who=flnd",
+                        "--why=downloading",
+                        "sleep",
+                        "infinity",
+                    ]
+                elif shutil.which("gnome-session-inhibit"):
+                    args = [
+                        "gnome-session-inhibit",
+                        "--inhibit",
+                        "suspend:idle",
+                        "sleep",
+                        "infinity",
+                    ]
+                if args:
+                    try:
+                        _awake_proc = subprocess.Popen(
+                            args,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    except OSError:
+                        _awake_proc = None
+            elif _awake_proc is not None:
+                try:
+                    _awake_proc.terminate()
+                    _awake_proc.wait(timeout=1.0)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                _awake_proc = None
+
 

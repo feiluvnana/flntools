@@ -4,6 +4,7 @@ import contextvars
 import datetime
 import threading
 import unittest
+from unittest import mock
 
 from flnkit import clock as _time
 
@@ -28,9 +29,33 @@ class ClockTest(unittest.TestCase):
             _time.sleep(0.0, stop)
 
     def test_keep_awake(self):
-        # Calls the Win32 function on Windows or returns on other platforms without error.
+        # Calls the function; nested calls increment and decrement depth cleanly.
+        _time.keep_awake(True)
         _time.keep_awake(True)
         _time.keep_awake(False)
+        _time.keep_awake(False)
+
+    def test_keep_awake_darwin(self):
+        proc = mock.MagicMock()
+        with mock.patch("sys.platform", "darwin"), \
+                mock.patch("shutil.which", return_value="/usr/bin/caffeinate"), \
+                mock.patch("subprocess.Popen", return_value=proc) as popen:
+            _time.keep_awake(True)
+            self.assertTrue(popen.called)
+            self.assertEqual(popen.call_args[0][0][0], "caffeinate")
+            _time.keep_awake(False)
+            self.assertTrue(proc.terminate.called)
+
+    def test_keep_awake_linux(self):
+        proc = mock.MagicMock()
+        with mock.patch("sys.platform", "linux"), \
+                mock.patch("shutil.which", side_effect=lambda x: "/usr/bin/" + x), \
+                mock.patch("subprocess.Popen", return_value=proc) as popen:
+            _time.keep_awake(True)
+            self.assertTrue(popen.called)
+            self.assertEqual(popen.call_args[0][0][0], "/usr/bin/systemd-inhibit")
+            _time.keep_awake(False)
+            self.assertTrue(proc.terminate.called)
 
     def test_fake_advances_and_records_its_sleeps(self):
         fake = _time.Fake(10.0)
