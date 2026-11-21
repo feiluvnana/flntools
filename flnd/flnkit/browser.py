@@ -1667,6 +1667,7 @@ class Capture:
         # A lazy capture's responses, in the order they came.
         self._lazy = lazy
         self._kept: list[Response] = []
+        self._closed_metas: list[tuple[int, dict[str, str]]] = []
         # Each accepted response gets the next number; `_ready` holds the reads done out of turn.
         self._numbered = 0
         self._flushed = 0
@@ -1704,7 +1705,7 @@ class Capture:
         status = raw_status if isinstance(raw_status, int) else 200
         raw_headers = getattr(response, "headers", None) or {}
         headers = ({str(k).lower(): str(v) for k, v in raw_headers.items()}
-                   if status == 429 else {})
+                   if status >= 400 else {})
         sent = None
         if self._requests:
             req = getattr(response, "request", None)
@@ -1719,7 +1720,7 @@ class Capture:
             _log.debug("responses: no body for {url} in {seconds:g} s", extra={"fields": {
                 "url": redact(response.url), "seconds": READ}})
         except _raw_error() as error:
-            if status == 429:
+            if status == 429 or (status >= 400 and not _gone(error)):
                 entry = (response.url, "")
             # Chrome frees a page's response bodies when the page moves on, and a read that comes
             # after that finds nothing: expected, so it is skipped without a line. Any other
@@ -1771,10 +1772,22 @@ class Capture:
                     self._reads.add(asyncio.ensure_future(self._read(number, response)))
         await self.settle()
         left = list(self.items)
+        self._closed_metas = list(self._metas)
         self.items.clear()
         self.requests.clear()
         self._metas.clear()
         return left
+
+    async def _close_meta(
+        self, wanted: Callable[[str], bool] | None = None
+    ) -> list[tuple[str, str, int, dict[str, str]]]:
+        """`close`, paired with each response's `(status, headers)`."""
+        left = await self.close(wanted)
+        metas = self._closed_metas
+        return [
+            (url, body, *(metas[i] if i < len(metas) else (200, {})))
+            for i, (url, body) in enumerate(left)
+        ]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -2313,6 +2326,13 @@ class Tabs:
         capture = self._buffers.pop(tab, None)
         return [] if capture is None else self.run(capture.close(wanted))
 
+    def _take_buffer_meta(
+        self, tab: Page, wanted: Callable[[str], bool] | None = None
+    ) -> list[tuple[str, str, int, dict[str, str]]]:
+        """`take_buffer`, with each response's `(status, headers)` preserved."""
+        capture = self._buffers.pop(tab, None)
+        return [] if capture is None else self.run(capture._close_meta(wanted))
+
     def take_warm(self, url: str) -> tuple[bool, Visit | None]:
         """Switch to the warm tab loading `url`, if there is one, and warm the next queued URL.
 
@@ -2418,6 +2438,9 @@ class Feed:
         self.request: tuple[str, str, dict[str, str], str | None] | None = None
         # Whether it ended because no new answer came for `STALL` seconds.
         self.stalled = False
+        self._got_json = False
+        self._last_error: Exception | None = None
+        self._non_json_url: str | None = None
         tabs.push(self, scroll=scroll)
         self._page = tabs.page
         self._capture: Capture = tabs.run(self._page.capture(self._accepts, requests=requests))
@@ -2466,11 +2489,11 @@ class Feed:
         """
         if self._closed or page is self._page:
             return
-        for url, body in self._tabs.run(self._capture.close()):
-            self._raw.append((url, body, None, 200, {}))
+        for url, body, status, headers in self._tabs.run(self._capture._close_meta()):
+            self._raw.append((url, body, None, status, headers))
         self._page = page
-        for url, body in self._tabs.take_buffer(page, self._matches):
-            self._raw.append((url, body, None, 200, {}))
+        for url, body, status, headers in self._tabs._take_buffer_meta(page, self._matches):
+            self._raw.append((url, body, None, status, headers))
         self._capture = self._tabs.run(page.capture(self._accepts, requests=self._requests))
         self._scroller = None
 
@@ -2486,8 +2509,10 @@ class Feed:
                         pass
                     self._tabs.run(self._capture.settle())
                     yield from self._arrived()
+                    self._check_end()
                     return
                 if not self._scroll_until_one():
+                    self._check_end()
                     return
         finally:
             self.close()
@@ -2554,20 +2579,47 @@ class Feed:
             self._waiting.append((error, request))
             return
         pieces = [line for line in body.splitlines() if line.strip()] if self._lines else [body]
+        decoded = False
         for piece in pieces:
             try:
                 value = msgspec.json.decode(piece)
             # A piece that isn't JSON (an HTML error page, say) is skipped; the others still count.
             except (ValueError, msgspec.DecodeError):
+                redacted = redact(url)
                 _log.debug(
-                    "responses: skipped a body that is not JSON from {url}",
+                    "responses: skipped a body that is not JSON (HTTP {status}, {bytes} B) "
+                    "from {url}",
                     extra={"fields": {
-                        "url": redact(url),
+                        "url": redacted,
+                        "status": status,
+                        "bytes": len(piece),
                     }},
                 )
+                self._non_json_url = redacted
                 continue
+            decoded = True
+            self._got_json = True
+            self._last_error = None
             self._waiting.append((value, request))
             self._cursors.read(value)
+        if not decoded:
+            if status >= 400:
+                method = request[1] if request is not None else "GET"
+                self._last_error = net.refusal(
+                    net.Response(status, url, headers or {}, body.encode()),
+                    method=method,
+                )
+            elif not pieces:
+                self._non_json_url = redact(url)
+
+    def _check_end(self) -> None:
+        """Raise when the feed ended without a final cursor after HTTP or non-JSON errors."""
+        if self._cursors.ended:
+            return
+        if self._last_error is not None:
+            raise self._last_error
+        if not self._got_json and self._non_json_url is not None:
+            raise Changed(f"responses from {self._non_json_url} were not JSON")
 
 
 class Cursors:

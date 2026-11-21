@@ -19,6 +19,7 @@ from flnd.plugin import (
     Changed,
     Ctx,
     File,
+    Hidden,
     NetworkError,
     NotFound,
     Plugin,
@@ -481,9 +482,15 @@ class Twitter(Plugin):
         """Scroll one timeline's tab to its end, yielding the posts its category keeps."""
         timeline = TIMELINES[category]
         tab = profile["page"] + timeline.tab
+        user = profile["user"] or {}
+        interstitial = bool(dig(user, "legacy.profile_interstitial_type"))
         yielded: set[str] = set()
-        async for tweet, pinned in self._scroll(ctx, tab, timeline.query,
-                                                tab=category if timeline.tab else ""):
+        async for tweet, pinned in self._scroll(
+            ctx, tab, timeline.query,
+            tab=category if timeline.tab else "",
+            handle=profile["handle"],
+            interstitial=interstitial,
+        ):
             tid = tweet_id_of(tweet)
             if tid and tid in yielded:
                 continue
@@ -492,8 +499,10 @@ class Twitter(Plugin):
             for post in tweet_posts(tweet, category, profile):
                 yield post.replace(pinned=True) if pinned else post
 
-    async def _scroll(self, ctx: Ctx, url: str,
-                      query: str, *, tab: str = "") -> AsyncIterator[tuple[dict, bool]]:
+    async def _scroll(
+        self, ctx: Ctx, url: str, query: str, *,
+        tab: str = "", handle: str = "", interstitial: bool = False,
+    ) -> AsyncIterator[tuple[dict, bool]]:
         """Open a tab and scroll it to its end, yielding each new tweet of `query`'s responses,
         and whether it is the pinned one.
 
@@ -505,67 +514,107 @@ class Twitter(Plugin):
         Raises:
             SiteError: the tab didn't load (NotFound for a 404), so nothing is recorded complete.
             LoginError: the tab landed on one of `walls`.
+            Hidden: the profile is gated or protected with no visible timeline.
             Blocked: the feed or page was rate limited (HTTP 429); a timeline's holds ran out.
         """
         seen: set[str] = set()
-        seen_cursors: set[str] = set()
-        empty_pages = 0
-        reader = _search_reader() if query == SEARCH else timeline_state
-        async with ctx.feed(f"/{query}", scroll=True, cursor=reader, resume=query != SEARCH,
-                            bucket=query) as responses:
-            landed = await ctx.open(url)
-            if landed.status >= 400:
-                # A server error (a 503) may pass, so the engine's back-off tries it again.
-                raise SiteError(f"twt: {url} answered HTTP {landed.status}",
-                                status=landed.status, retryable=landed.status >= 500)
-            last = urlsplit(landed.url).path.rstrip("/").rsplit("/", 1)[-1].lower()
-            if tab and (last != TIMELINES[tab].tab.strip("/")
-                        or tab in LINKED and not await _has_tab(ctx, tab)):
-                ctx.log("info", "{tab}: this profile has no such tab", tab=tab)
-                return
-            async for data in responses:
-                tweets, cursor, pinned = read_timeline_page(data)
-                if getattr(ctx, "listing", None) is not None and cursor:
-                    ctx.listing.cursor = cursor
-                # 2026-11-16: a tombstone has no id; it is never new, nor stands for a seen one.
-                new = [tweet for tweet in tweets
-                       if (tid := tweet_id_of(tweet)) and tid not in seen]
-                reloaded = getattr(ctx, "_reloaded", False)
-                if not new:
-                    if cursor is None:
-                        if query == SEARCH and empty_pages > 0:
+        for attempt in range(2):
+            seen_cursors: set[str] = set()
+            empty_pages = 0
+            pages = 0
+            reader = _search_reader() if query == SEARCH else timeline_state
+            async with ctx.feed(f"/{query}", scroll=True, cursor=reader, resume=query != SEARCH,
+                                bucket=query) as responses:
+                landed = await ctx.open(url)
+                if landed.status >= 400:
+                    # A server error (a 503) may pass, so the engine's back-off tries it again.
+                    raise SiteError(f"twt: {url} answered HTTP {landed.status}",
+                                    status=landed.status, retryable=landed.status >= 500)
+                if query != SEARCH:
+                    await _dismiss_interstitial(ctx, wait=interstitial and attempt == 0)
+                last = urlsplit(landed.url).path.rstrip("/").rsplit("/", 1)[-1].lower()
+                if tab and (last != TIMELINES[tab].tab.strip("/")
+                            or tab in LINKED and not await _has_tab(ctx, tab)):
+                    ctx.log("info", "{tab}: this profile has no such tab", tab=tab)
+                    return
+                async for data in responses:
+                    pages += 1
+                    tweets, cursor, pinned = read_timeline_page(data)
+                    if not tweets and cursor is None and isinstance(data, dict):
+                        keys = ", ".join(sorted(str(k) for k in data)[:8])
+                        ctx.log("debug", "{query}: response had no timeline ({keys})",
+                                query=query, keys=keys)
+                    if getattr(ctx, "listing", None) is not None and cursor:
+                        ctx.listing.cursor = cursor
+                    # 2026-11-16: a tombstone has no id; it is never new, nor stands for a seen one.
+                    new = [tweet for tweet in tweets
+                           if (tid := tweet_id_of(tweet)) and tid not in seen]
+                    reloaded = getattr(ctx, "_reloaded", False)
+                    if not new:
+                        if cursor is None:
+                            if query == SEARCH and empty_pages > 0:
+                                break
+                            continue
+                        if cursor in seen_cursors:
+                            break
+                        if query != SEARCH and not reloaded:
+                            break
+                        empty_pages += 1
+                        seen_cursors.add(cursor)
+                        if query == SEARCH and empty_pages > SEARCH_EMPTY:
+                            break
+                        if query != SEARCH and not tweets and empty_pages > SEARCH_EMPTY:
                             break
                         continue
-                    if cursor in seen_cursors:
-                        break
-                    if query != SEARCH and not reloaded:
-                        break
-                    empty_pages += 1
-                    seen_cursors.add(cursor)
-                    if query == SEARCH and empty_pages > SEARCH_EMPTY:
-                        break
-                    if query != SEARCH and not tweets and empty_pages > SEARCH_EMPTY:
-                        break
+                    if reloaded:
+                        ctx._reloaded = False
+                    empty_pages = 0
+                    if cursor is not None:
+                        seen_cursors.add(cursor)
+                    seen.update(tweet_id_of(tweet) for tweet in new)
+                    for tweet in new:
+                        yield tweet, tweet_id_of(tweet) in pinned
+            if pages == 0 and query != SEARCH:
+                if attempt == 0 and await _dismiss_interstitial(ctx):
                     continue
-                if reloaded:
-                    ctx._reloaded = False
-                empty_pages = 0
-                if cursor is not None:
-                    seen_cursors.add(cursor)
-                seen.update(tweet_id_of(tweet) for tweet in new)
-                for tweet in new:
-                    yield tweet, tweet_id_of(tweet) in pinned
+                if await ctx.shown(EMPTY_STATE) and not await ctx.shown(TAB_BAR):
+                    raise Hidden(f"twt: @{handle or url} isn't visible (protected, gated, "
+                                 "or unavailable)")
+                ctx.log("debug", "{query}: no matching responses arrived", query=query)
+            break
 
 
 # The tabs linked in the profile's tab bar; X moves a missing one away after load (2026-11-20).
 LINKED = {"media": "media", "highlights": "highlights", "replies": "with_replies"}
+TAB_BAR = 'a[href$="/media"]'
+INTERSTITIAL_BUTTON = '[data-testid="empty_state_button_text"]'
+EMPTY_STATE = '[data-testid="emptyState"]'
+
+
+async def _dismiss_interstitial(ctx: Ctx, *, wait: bool = False) -> bool:
+    """Click through X's sensitive-profile warning if shown; whether it was dismissed."""
+    tries = 5 if wait else 1
+    for attempt in range(tries):
+        if await ctx.shown(TAB_BAR):
+            return False
+        if await ctx.shown(INTERSTITIAL_BUTTON):
+            try:
+                await ctx.click(INTERSTITIAL_BUTTON, timeout=5.0)
+            except NetworkError:
+                return False
+            ctx.log("info", "dismissed sensitive-content warning")
+            return True
+        if attempt + 1 < tries:
+            await ctx.pause(1, "waiting for the profile's warning button")
+    return False
 
 
 async def _has_tab(ctx: Ctx, tab: str) -> bool:
     """Whether the tab bar links `tab`, waiting up to 5 s for it (Media's link) to render."""
     for _ in range(5):
-        if await ctx.shown('a[href$="/media"]'):
+        if await ctx.shown(TAB_BAR):
             return await ctx.shown(f'a[href$="/{LINKED[tab]}"]')
+        await _dismiss_interstitial(ctx)
         await ctx.pause(1, "waiting for the profile's tab bar")
     return True
 

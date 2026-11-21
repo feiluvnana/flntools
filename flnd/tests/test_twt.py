@@ -12,7 +12,7 @@ from pathlib import PurePosixPath
 import no_profiles  # noqa: F401
 from fakes import filed
 
-from flnd.errors import Blocked, LoginError, NotFound, SiteError, UsageError
+from flnd.errors import Blocked, Hidden, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import Range, Request, Target
 from flnd.plugins.twt import (
     QUERIES,
@@ -892,6 +892,25 @@ class MissingTabTest(unittest.TestCase):
         ctx = fake(pages={f"{profile}/highlights": FakePage()})
         collect(Twitter, "twt:example_handle", ctx=ctx, categories=["highlights"])
         self.assertNotIn(("info", "highlights: this profile has no such tab"), ctx.seen.logs)
+
+    def test_sensitive_profile_warning_is_dismissed_and_saves_media(self):
+        button = '[data-testid="empty_state_button_text"]'
+        sent = Sent(
+            f"{API}q/{TIMELINES['posts'].query}",
+            page(item(tweet("1", [photo("a")]))),
+            click=button,
+        )
+        ctx = fake(pages={"https://x.com/example_handle": FakePage(feeds=[sent], shown=[button])})
+        saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertEqual([found.path for found in saved], [f"posts/{DAY}_1_0.jpg"])
+        self.assertIn(("info", "dismissed sensitive-content warning"), ctx.seen.logs)
+
+    def test_gated_profile_with_empty_state_raises_hidden(self):
+        ctx = fake(pages={
+            "https://x.com/example_handle": FakePage(shown=['[data-testid="emptyState"]']),
+        })
+        with self.assertRaises(Hidden):
+            collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
 
 
 class LoadTest(unittest.TestCase):

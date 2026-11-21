@@ -29,7 +29,7 @@ from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 
-from flnd.errors import Blocked, Changed, Error, NetworkError, SiteError, ToolError
+from flnd.errors import Blocked, Changed, Error, NetworkError, NotFound, SiteError, ToolError
 from flnd.ui.log import ui
 from flnkit import browser as _browser
 from flnkit import clock as _time
@@ -771,6 +771,61 @@ class FakeBrowserTest(BrowserCase):
             with self.assertRaises(Blocked) as caught:
                 next(feed)
         self.assertEqual((caught.exception.status, caught.exception.wait), (429, 61.0))
+
+    def test_feed_adopt_preserves_429_status_and_reset_header_from_warm_buffer(self):
+        raw_one = SimpleNamespace(on=lambda *args: None, remove_listener=lambda *args: None)
+        raw_two = SimpleNamespace(on=lambda *args: None, remove_listener=lambda *args: None)
+        page_one = _browser.Page(cast(Any, raw_one), cast(Any, None))
+        page_two = _browser.Page(cast(Any, raw_two), cast(Any, None))
+        buf_cap = run(page_two.capture(lambda r: "/graphql" in r.url, lazy=True))
+        tabs = SimpleNamespace(
+            page=page_one, scroll=_browser.FAST,
+            push=lambda *a, **kw: None, pop=lambda *a, **kw: None,
+            run=lambda coro: run(coro),
+            _take_buffer_meta=lambda tab, wanted=None: run(buf_cap._close_meta(wanted)),
+        )
+        with _time.use(_time.Fake()):
+            feed = _browser.Feed(cast(Any, tabs), "/graphql", scroll=False)
+            buf_cap.listener(cast(Any, SimpleNamespace(
+                url="https://site.test/api/graphql", status=429,
+                headers={"X-Rate-Limit-Reset": str(int(_time.FAKE_WALL) + 30)},
+                text=mock.AsyncMock(side_effect=_browser._raw_error()("No resource")),
+            )))
+            feed.adopt(page_two)
+            with self.assertRaises(Blocked) as caught:
+                next(feed)
+        self.assertEqual((caught.exception.status, caught.exception.wait), (429, 31.0))
+
+    def test_feed_raises_on_http_error_or_non_json_without_valid_json(self):
+        for status, body, exc_type in (
+            (404, "not found", NotFound),
+            (400, "", SiteError),
+            (503, "<html>busy</html>", SiteError),
+            (200, "<html>not json</html>", Changed),
+        ):
+            with self.subTest(status=status):
+                raw = SimpleNamespace(
+                    on=lambda *args: None, remove_listener=lambda *args: None,
+                    wait_for_load_state=mock.AsyncMock(),
+                )
+                page = _browser.Page(cast(Any, raw), cast(Any, None))
+                tabs = SimpleNamespace(
+                    page=page, scroll=_browser.FAST,
+                    push=lambda *a, **kw: None, pop=lambda *a, **kw: None,
+                    run=lambda coro: run(coro),
+                )
+                feed = _browser.Feed(cast(Any, tabs), "/graphql", scroll=False)
+
+                async def deliver(feed=feed, status=status, body=body):
+                    feed._capture.listener(SimpleNamespace(
+                        url="https://site.test/api/graphql", status=status, headers={},
+                        text=mock.AsyncMock(return_value=body),
+                    ))
+                    await feed._capture.settle()
+
+                run(deliver())
+                with self.assertRaises(exc_type):
+                    list(feed)
 
     def test_capture_request_metadata_is_opt_in(self):
         raw = SimpleNamespace(on=lambda *args: None, remove_listener=lambda *args: None)

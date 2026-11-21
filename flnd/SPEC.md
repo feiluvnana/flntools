@@ -1019,8 +1019,9 @@ up to 32.
 - **Login:** cookie `auth_token` (a logged-out browser lands on the login wall); API calls send
   `ct0` back as the CSRF token.
 - **Limits and walls:** pace 0.2 per bucket (a 429 holds only its operation, and a timeline
-  goes on with `resume`); walls `/i/flow/login`, `/login`, `/account/access`. Query ids are
-  refreshed from x.com's script on a 400 or 404, at most once a run.
+  goes on with `resume`); walls `/i/flow/login`, `/login`, `/account/access`. Sensitive-profile
+  warnings are dismissed automatically; a gated or protected profile with no visible timeline raises
+  `Hidden`. Query ids are refreshed from x.com's script on a 400 or 404, at most once a run.
 - **Known gaps:** a single tweet has no browser fallback; a protected and a deleted tweet are both
   `NotFound`; video is MP4 only (streaming-only is skipped); text-only tweets save nothing.
 - **Saved as:** `media/twt/example_handle/posts/2026-01-02_1234567890_0.jpg`
