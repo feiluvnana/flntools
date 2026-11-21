@@ -194,7 +194,7 @@ class View(forms.Owner):
             here = self.current()
             if here is None or here.fixed:
                 off.add("d")
-        pairs += [("/", "filter"), ("q", "quit")]
+        pairs += [("/", "filter"), ("esc", "quit")]
         return forms.hints(pairs, fancy, off=frozenset(off))
 
     # -- keys ---------------------------------------------------------------------------------
@@ -220,10 +220,11 @@ class View(forms.Owner):
             self.detail = bool(rows)
         elif char == "/":
             self.typing = True
-        elif key == "q":
-            return None
-        elif key == "escape":
-            self.query = ""
+        elif key in ("escape", "q"):
+            if self.query and key == "escape":
+                self.query = ""
+            else:
+                return None
         elif char == "d" and self.delete is not None:
             here = self.current()
             if here is not None and not here.fixed:

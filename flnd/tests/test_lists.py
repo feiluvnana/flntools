@@ -76,6 +76,7 @@ class ViewTest(unittest.TestCase):
     def test_q_quits_and_a_leaving_key_closes(self) -> None:
         view = self.view()
         self.assertIsNone(feed(view, "q"))
+        self.assertIsNone(feed(self.view(), "escape"))
         key, row = feed(view, "down", "a")
         self.assertEqual((key.char, row), ("a", "b"))
 
@@ -111,7 +112,7 @@ class ViewTest(unittest.TestCase):
         feed(view, "escape", "down", "down")
         self.assertTrue(drawn(view.view(False)).endswith(
             "  up/down move - enter details - f follow - x fail - a add - d delete - / filter"
-            " - q quit"))
+            " - esc quit"))
 
 
 class ListsTest(unittest.TestCase):
