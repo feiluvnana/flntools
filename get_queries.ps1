@@ -37,92 +37,98 @@ $tasks = @(
         Target = "twt:PyoEunjijapan"
         Folder = ""
     },
-    # 2. Marina Nagasawa
     @{
         Number = 3
+        Name   = "Pyo Eunji - Query"
+        Target = 'twt?(pyoapple OR @pyoapple OR PyoEunjijapan OR @PyoEunjijapan OR "Pyo Eunji" OR "Eunji Pyo" OR "표은지" OR "ピョ・ウンジ" OR "ピョウンジ" OR #pyoapple OR #PyoEunjijapan OR #표은지) -from:pyoapple -from:PyoEunjijapan'
+        Folder = "pyoapple-query"
+    },
+    # 2. Marina Nagasawa
+    @{
+        Number = 4
         Name   = "Marina Nagasawa - Profile"
         Target = "twt:nagasawa_marina"
         Folder = ""
     },
     @{
-        Number = 4
+        Number = 5
         Name   = "Marina Nagasawa - Query"
         Target = 'twt?("長澤茉里奈" OR @nagasawa_marina OR "Marina Nagasawa" OR "Nagasawa Marina" OR #長澤茉里奈 OR "長澤まりな" OR まりちゅう OR #まりちゅう) -from:nagasawa_marina'
         Folder = "nagasawa_marina-query"
     },
     # 3. Utatane Sui (Utatane Midori)
     @{
-        Number = 5
+        Number = 6
         Name   = "Utatane Sui - Main Profile"
         Target = "twt:meidomusumemoe"
         Folder = ""
     },
     @{
-        Number = 6
+        Number = 7
         Name   = "Utatane Sui - Sub Profile"
         Target = "twt:Utatane_sui_03"
         Folder = ""
     },
     @{
-        Number = 7
+        Number = 8
         Name   = "Utatane Sui - Query"
         Target = 'twt?(meidomusumemoe OR @meidomusumemoe OR Utatane_sui_03 OR @Utatane_sui_03 OR "meido musume moe" OR "うたたね翠" OR "うたたね 翠" OR "うたたねみどり" OR "うたたね みどり" OR "うたたねすい" OR "うたたね すい" OR "Utatane Sui" OR "Sui Utatane" OR "Utatane Midori" OR "Midori Utatane" OR #うたたね翠 OR #うたたねみどり OR #meidomusumemoe) -from:meidomusumemoe -from:Utatane_sui_03'
         Folder = "meidomusumemoe-query"
     },
     # 4. Iri
     @{
-        Number = 8
+        Number = 9
         Name   = "Iri - Profile"
         Target = "twt:irisuare"
         Folder = ""
     },
     @{
-        Number = 9
+        Number = 10
         Name   = "Iri - Query"
         Target = 'twt?(irisuare OR @irisuare OR "愛莉 irisuare" OR "irisuare 愛莉" OR #irisuare) -from:irisuare'
         Folder = "irisuare-query"
     },
     # 5. Hiina Nano
     @{
-        Number = 10
+        Number = 11
         Name   = "Hiina Nano - Profile"
         Target = "twt:nano_cats0923"
         Folder = ""
     },
     @{
-        Number = 11
+        Number = 12
         Name   = "Hiina Nano - Query"
         Target = 'twt?(nano_cats0923 OR @nano_cats0923 OR "雛なの" OR "ひいななの" OR "Hiina Nano" OR "Nano Hiina" OR "すてねこキャッツ" OR #雛なの OR #すてねこキャッツ OR #nano_cats0923) -from:nano_cats0923'
         Folder = "nano_cats0923-query"
     },
     # 6. Chunmomo
     @{
-        Number = 12
+        Number = 13
         Name   = "Chunmomo - Profile"
         Target = "twt:chunmomo0127"
         Folder = ""
     },
     @{
-        Number = 13
+        Number = 14
         Name   = "Chunmomo - Query"
         Target = 'twt?(chunmomo0127 OR @chunmomo0127 OR "蠢沫沫" OR chunmomo OR "chun momo" OR "Chunmomo cos" OR #蠢沫沫 OR #chunmomo OR #chunmomo0127) -from:chunmomo0127'
         Folder = "chunmomo0127-query"
     },
     # 7. Nyaromenia
     @{
-        Number = 14
+        Number = 15
         Name   = "Nyaromenia - Main Profile"
         Target = "twt:nyarome_cos"
         Folder = ""
     },
     @{
-        Number = 15
+        Number = 16
         Name   = "Nyaromenia - Personal Profile"
         Target = "twt:nyaromenia"
         Folder = ""
     },
     @{
-        Number = 16
+        Number = 17
         Name   = "Nyaromenia - Query"
         Target = 'twt?("ニャロメニア" OR @nyarome_cos OR @nyaromenia OR nyarome_cos OR nyaromenia OR "Nyarome Nia" OR "Nyaromenia" OR "にゃろめにあ" OR #ニャロメニア OR #nyarome_cos OR #nyaromenia) -from:nyarome_cos -from:nyaromenia'
         Folder = "nyaromenia-query"
@@ -142,11 +148,20 @@ foreach ($t in $tasks) {
         & flnd get $($t.Target)
     }
     
-    if ($LASTEXITCODE -ne 0) {
+    if ($LASTEXITCODE -eq 3) {
+        Write-Host "Account locked, suspended, or login failed (exit 3). Stopping batch!" `
+            -ForegroundColor Red
+        break
+    } elseif ($LASTEXITCODE -ne 0) {
         Write-Host "Warning: Step $($t.Number) finished with exit code $LASTEXITCODE" `
             -ForegroundColor Magenta
     } else {
         Write-Host "Completed: $($t.Name)" -ForegroundColor Green
+    }
+    if ($t.Number -lt $total) {
+        $delay = Get-Random -Minimum 45 -Maximum 90
+        Write-Host "Cooling down ${delay}s before next task..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $delay
     }
     Write-Host ""
 }
