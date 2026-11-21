@@ -34,7 +34,7 @@ $tasks = @(
     @{
         Number = 2
         Name   = "Pyo Eunji - Query"
-        Target = 'twt?(PyoEunjijapan OR @PyoEunjijapan OR "Pyo Eunji" OR "Eunji Pyo" OR PyoEunji OR 表恩智 OR 표은지 OR ピョ・ウンジ OR ピョウンジ OR #PyoEunjijapan OR #PyoEunji OR #表恩智 OR #표은지 OR #ピョ・ウンジ OR #ピョウンジ OR "DJ 表恩智" OR "DJ 표은지") -from:PyoEunjijapan'
+        Target = 'twt?(pyoapple OR @pyoapple OR #pyoapple OR "Eunji Pyoapple" OR PyoEunjijapan OR @PyoEunjijapan OR "Pyo Eunji" OR "Eunji Pyo" OR "Pyo Eun-ji" OR "Eun-ji Pyo" OR PyoEunji OR "表恩智" OR 표은지 OR "ピョ・ウンジ" OR "ピョウンジ" OR "DJ Henney" OR DJHenney OR "DJ 表恩智" OR "DJ 표은지") -from:PyoEunjijapan'
         Folder = "PyoEunjijapan-query"
     },
     # 2. Marina Nagasawa
