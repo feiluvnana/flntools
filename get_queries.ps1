@@ -73,7 +73,7 @@ $tasks = @(
     @{
         Number = 8
         Name   = "Iri - Query"
-        Target = 'twt?(irisuare OR @irisuare OR 愛莉 OR "愛莉 irisuare" OR "irisuare 愛莉" OR #irisuare OR #愛莉) -from:irisuare'
+        Target = 'twt?(irisuare OR @irisuare OR "愛莉 irisuare" OR "irisuare 愛莉" OR #irisuare OR #愛莉) -from:irisuare'
         Folder = "irisuare-query"
     },
     # 5. Hiina Nano
