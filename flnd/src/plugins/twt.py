@@ -19,7 +19,6 @@ from flnd.plugin import (
     Changed,
     Ctx,
     File,
-    LoginError,
     NetworkError,
     NotFound,
     Plugin,
@@ -55,8 +54,6 @@ QUERIES = {
     "UserRepostsTimeline": "bWzOK-jDN4SYVcF6AQ22Qw",
     "UserRepliesTimeline": "fpl-c0_APDI3nZ1CeeBMbg",
     "TweetResultByRestId": "U8lc5aomF5krJzZ9vJ9wxg",
-    # 2026-11-20, unconfirmed live: `twt:me`'s list, with the id remembered from older clients.
-    "Following": "iSicc7LrzWGBgDPL0tM_TQ",
 }
 # The operation whose responses carry a search's tweets; only the browser sends it.
 SEARCH = "SearchTimeline"
@@ -75,8 +72,6 @@ FEATURES = {"responsive_web_graphql_timeline_navigation_enabled": True,
 HOME = "https://x.com/"
 # A handle: 1 to 15 letters, digits or underscores (a user id is digits of any length).
 HANDLE = re.compile(r"\w{1,15}|\d+", re.ASCII)
-# Accounts per `Following` page, as the web client asks.
-FOLLOWING_COUNT = 100
 # The web app's main script, which x.com's page loads: it holds every operation's query id.
 MAIN_SCRIPT = re.compile(
     r"https://abs\.twimg\.com/responsive-web/client-web(?:-legacy)?/main\.[\w.-]+\.js"
@@ -368,43 +363,6 @@ class Twitter(Plugin):
                         ctx.state[state_key] = {"max_id": str(oldest - 1)}
                     except Exception:
                         pass
-
-    @route("twt:{me:me}", shown="twt:me", discovers=True)
-    async def me(self, ctx: Ctx, me: str) -> AsyncIterator[Target]:
-        """Every account the login follows, each as `twt:<screen name>`: `twt:me`, read from the
-        `Following` operation page by page. A 429 is held by the operation's bucket.
-
-        Raises:
-            LoginError: no login, or none that names its own account.
-            Changed: a page of the list without its timeline.
-        """
-        found = re.search(r"u(?:=|%3D)(\d+)", ctx.cookies.get("twid", ""))
-        if not ctx.cookies.get("auth_token") or found is None:
-            raise LoginError("twt: not logged in, so there is no account to read",
-                             hint="log in: flnd auth login twt")
-        variables: dict[str, Any] = {"userId": found[1], "count": FOLLOWING_COUNT,
-                                     "includePromotedContent": False}
-        seen: set[str] = set()
-        while True:
-            data = await self.graph.get(ctx, "Following", variables)
-            instructions = dig(data, "data.user.result.timeline.timeline.instructions")
-            if not isinstance(instructions, list):
-                raise Changed("twt:me: X's following list has no timeline")
-            cursor, new = None, 0
-            for entry, _ in timeline_entries(instructions):
-                content = entry.get("content") or entry.get("item") or {}
-                if content.get("cursorType") == "Bottom":
-                    cursor = content.get("value")
-                name = dig(content, "itemContent.user_results.result.core.screen_name"
-                           " || itemContent.user_results.result.legacy.screen_name")
-                if isinstance(name, str) and name not in seen:
-                    seen.add(name)
-                    new += 1
-                    yield Target(f"twt:{name}")
-            # The last page has a cursor but no new account, or none at all.
-            if not new or not cursor:
-                return
-            variables = {**variables, "cursor": cursor}
 
     @classmethod
     def resolve(cls, text: str) -> Target | None:

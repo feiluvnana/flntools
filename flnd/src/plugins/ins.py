@@ -77,8 +77,6 @@ APP_ID = "936619743392459"
 ASBD_ID = "129477"
 # The paths whose requests are API calls, which carry the web client's headers.
 API_PATHS = ("/api/", "/graphql")
-# Accounts asked for in one page of the friendships API, as the web client asks.
-FOLLOWING_COUNT = 100
 # Posts asked for in one page of the user feed API.
 FEED_COUNT = 33
 # A grid image within this share of the post's `original_width` is its full size, not a thumbnail.
@@ -175,7 +173,7 @@ class Instagram(Plugin):
         self.claim = "0"
         # Whether `/api/v1/feed/user/` was refused this run, falling back to tab scrolling.
         self.feed_refused = False
-        # `username -> user_id` cached from `ins:me` or `web_profile_info` for `api_posts`.
+        # `username -> user_id` cached from `web_profile_info` for `api_posts`.
         self.user_ids: dict[str, str] = {}
 
     def sign(self, request: Request, cookies: Mapping[str, str]) -> Request:
@@ -215,37 +213,6 @@ class Instagram(Plugin):
         if not post_files(media):
             raise NotFound(f"ins: post {code} has no files")
         yield post_of(media)
-
-    @route("ins:{me:me}", shown="ins:me", discovers=True)
-    async def me(self, ctx: Ctx, me: str) -> AsyncIterator[Target]:
-        """Every account the login follows, each as its own target: `ins:me`.
-
-        Raises:
-            LoginError: no login, so no account to read.
-            Changed: a page of the list without its `users`.
-        """
-        user_id = account_id(ctx.cookies)
-        if user_id is None:
-            raise LoginError("ins: not logged in, so there is no account to read",
-                             hint=LOGIN_HINT)
-        first = Request(f"{API}/friendships/{user_id}/following/",
-                        params={"count": FOLLOWING_COUNT})
-        async for response in _api_pages(ctx, first, cursor="next_max_id", send="max_id"):
-            # Instagram rotates this claim and expects it echoed back on the next calls.
-            self.claim = response.headers.get("x-ig-set-www-claim") or self.claim
-            data = response.json
-            users = data.get("users") if isinstance(data, dict) else None
-            if not isinstance(users, list):
-                raise Changed("ins:me: Instagram's following list has no users")
-            for user in users:
-                if not isinstance(user, dict):
-                    continue
-                username = user.get("username")
-                if isinstance(username, str) and username:
-                    uid = user.get("pk") or user.get("id")
-                    if uid and str(uid).isdigit():
-                        self.user_ids[username] = str(uid)
-                    yield Target(f"ins:{username}")
 
     @route("ins:{user}", "instagram.com/{user}")
     async def user(self, ctx: Ctx, user: str) -> Profile:

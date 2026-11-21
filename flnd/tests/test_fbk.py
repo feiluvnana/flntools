@@ -27,8 +27,8 @@ SITE = "https://www.facebook.com"
 GRAPHQL = f"{SITE}/api/graphql/"
 NOON = 1700049600
 DAY = "2023-11-15"
-USER, VIDEO, PHOTO, POST, WATCH, SHARE, ME = (
-    "user", "video", "photo", "post", "watch", "share", "me")
+USER, VIDEO, PHOTO, POST, WATCH, SHARE = (
+    "user", "video", "photo", "post", "watch", "share")
 
 # Every form fbk reads, and what it becomes: (kind, value), a refusal's text, or None (no
 # route reads it). The kinds and values are the history's keys: a change here is a migration.
@@ -54,7 +54,10 @@ ROUTES = [
     ("fbk:example.com/example.page", None),
     ("fbk:not a name", None),
     ("https://www.facebook.com/example.page/posts/123", (POST, "post/example.page_123")),
-    ("https://m.facebook.com/example.page/posts/pfbid0Abc/?x=1", (POST, "post/example.page_pfbid0Abc")),
+    (
+        "https://m.facebook.com/example.page/posts/pfbid0Abc/?x=1",
+        (POST, "post/example.page_pfbid0Abc"),
+    ),
     ("https://fb.com/100012345678901/posts/7", (POST, "post/100012345678901_7")),
     ("fbk:post/example.page_123", (POST, "post/example.page_123")),
     ("fbk:post/100012345678901_pfbid0Abc", (POST, "post/100012345678901_pfbid0Abc")),
@@ -68,7 +71,7 @@ ROUTES = [
     ("https://mbasic.facebook.com/photo.php?fbid=7", (PHOTO, "photo/7")),
     ("https://mbasic.facebook.com/example.page", (USER, "example.page")),
     ("https://m.facebook.com/share/r/1aBc", (SHARE, "share/r/1aBc")),
-    ("fbk:me", (ME, "me")),
+    ("fbk:me", (USER, "me")),
     ("https://www.facebook.com/share/x/1aBc", None),
     ("https://fb.com/example.page/posts", (USER, "example.page")),
     ("https://fb.com/photos/1", "photo lists aren't supported"),
@@ -521,7 +524,7 @@ class HardTargetTest(unittest.TestCase):
             "https://www.facebook.com/example.page/videos/some-title/22",
             "https://web.facebook.com/reel/6", "https://mbasic.facebook.com/photo.php?fbid=7",
             "https://www.facebook.com/share/p/1aBc", "https://www.facebook.com/share/r/1aBc",
-            "https://www.facebook.com/share/v/1aBc", "https://fb.watch/aBc-12/", "fbk:me",
+            "https://www.facebook.com/share/v/1aBc", "https://fb.watch/aBc-12/",
         ]:
             with self.subTest(link=link):
                 key = resolve(link, manifest=manifest, known={}).key
@@ -565,43 +568,6 @@ class HardTargetTest(unittest.TestCase):
                 self.assertEqual([s.key for s in saved], [] if typename == "Page" else ["71"])
                 self.assertEqual(("info", "tagged: this profile has no such tab") in ctx.seen.logs,
                                  typename == "Page")
-
-    def follows(self, cookies, *results):
-        plugin = Facebook()
-        pages = {f"{SITE}/me/following": page(*results)}
-        ctx = FakeCtx(plugin, "fbk:me", cookies=cookies, pages=pages)
-
-        async def listed():
-            found = []
-            try:
-                async for target in plugin.me(ctx, "me"):
-                    found.append(target)
-            except LoginError as error:
-                return found, error
-            return found, None
-
-        return asyncio.run(listed())
-
-    def test_me_lists_the_pages_and_people_the_login_follows(self):
-        def tile(url, kind):
-            return {"__typename": "TimelineAppCollectionItem", "url": url,
-                    "node": {"__typename": kind}}
-
-        result = {"data": {"node": {"items": [
-            tile(f"{SITE}/example.page", "Page"),
-            tile(f"{SITE}/profile.php?id=100012345678901", "User"),
-            tile(f"{SITE}/example.page/", "Page"),
-            tile(f"{SITE}/groups/x", "Group"),
-        ]}}}
-        found, error = self.follows({"c_user": "1", "xs": "x"}, result)
-        self.assertIsNone(error)
-        self.assertEqual(found, [Target("fbk:example.page"), Target("fbk:100012345678901")])
-
-    def test_me_without_a_login_is_a_login_error_with_a_hint(self):
-        found, error = self.follows({})
-        self.assertEqual(found, [])
-        self.assertIsInstance(error, LoginError)
-        self.assertEqual(error.hint, "log in: flnd auth login fbk")
 
 
 class DateTest(unittest.TestCase):

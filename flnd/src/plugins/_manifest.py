@@ -46,14 +46,6 @@ PLUGINS: dict[str, dict[str, object]] = {
                 'categories': [],
             },
             {
-                'name': 'me',
-                'single': False,
-                'discovers': True,
-                'shown': 'tik:me',
-                'patterns': ['tik:{me:me}'],
-                'categories': [],
-            },
-            {
                 'name': 'user',
                 'single': False,
                 'discovers': False,
@@ -83,7 +75,6 @@ PLUGINS: dict[str, dict[str, object]] = {
             'tik:post/<id>',
             'tik:<id>',
             'tik?<query>',
-            'tik:me',
             'tik:<user>',
             'https://www.tiktok.com/…/video/<id>/',
             'https://www.tiktok.com/…/photo/<id>/',
@@ -196,14 +187,6 @@ PLUGINS: dict[str, dict[str, object]] = {
                 'categories': [],
             },
             {
-                'name': 'me',
-                'single': False,
-                'discovers': True,
-                'shown': 'fbk:me',
-                'patterns': ['fbk:{me:me}'],
-                'categories': [],
-            },
-            {
                 'name': 'user',
                 'single': False,
                 'discovers': False,
@@ -277,7 +260,6 @@ PLUGINS: dict[str, dict[str, object]] = {
         'forms': [
             'fbk:video/<video>',
             'fbk:photo/<photo>',
-            'fbk:me',
             'fbk:<user>',
             'https://www.facebook.com/watch?v=<video>',
             'https://www.fb.com/watch?v=<video>',
@@ -351,14 +333,6 @@ PLUGINS: dict[str, dict[str, object]] = {
                 'categories': [],
             },
             {
-                'name': 'me',
-                'single': False,
-                'discovers': True,
-                'shown': 'ins:me',
-                'patterns': ['ins:{me:me}'],
-                'categories': [],
-            },
-            {
                 'name': 'user',
                 'single': False,
                 'discovers': False,
@@ -385,7 +359,6 @@ PLUGINS: dict[str, dict[str, object]] = {
         },
         'forms': [
             'ins:post/<code>',
-            'ins:me',
             'ins:<user>',
             'https://www.instagram.com/p/<code>/',
             'https://www.instagram.com/reel/<code>/',
@@ -524,14 +497,6 @@ PLUGINS: dict[str, dict[str, object]] = {
                 'categories': [],
             },
             {
-                'name': 'me',
-                'single': False,
-                'discovers': True,
-                'shown': 'twt:me',
-                'patterns': ['twt:{me:me}'],
-                'categories': [],
-            },
-            {
                 'name': 'user',
                 'single': False,
                 'discovers': False,
@@ -589,7 +554,6 @@ PLUGINS: dict[str, dict[str, object]] = {
         'forms': [
             'twt:post/<tweet_id>',
             'twt?<query>',
-            'twt:me',
             'twt:<user>',
             'https://www.x.com/…/status/<tweet_id>/',
             'https://www.x.com/status/<tweet_id>/',

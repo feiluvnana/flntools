@@ -289,7 +289,6 @@ class ResolveTest(unittest.TestCase):
             ("ins:post/C1abc", R("ins", "post/C1abc", "post", ())),
             ("instagram.com/reel/C1abc", R("ins", "post/C1abc", "post", ())),
             ("ins:C1abc", R("ins", "C1abc", "user", user)),
-            ("ins:me", R("ins", "me", "me", ())),
             ("twt:post/1790", R("twt", "post/1790", "post", ())),
             ("https://x.com/example_handle/status/1790", R("twt", "post/1790", "post", ())),
             ("tik:post/7301234567890123456", R("tik", "post/7301234567890123456", "post", ())),

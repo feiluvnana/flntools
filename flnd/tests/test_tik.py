@@ -21,7 +21,6 @@ from flnd.errors import (
     Blocked,
     Changed,
     Hidden,
-    LoginError,
     NetworkError,
     NotFound,
     PluginError,
@@ -236,7 +235,7 @@ class RoutesTest(unittest.TestCase):
             ("tik?cats", ("search", "cats")), ("tik?cats | dogs", ("search", "cats | dogs")),
             ("https://www.tiktok.com/search?q=cats", ("search", "cats")),
             ("https://www.tiktok.com/search/video?q=cat+dogs&lang=en", ("search", "cat dogs")),
-            ("tik:me", ("me", "me")),
+            ("tik:me", ("user", "me")),
             ("notiktok.com/@example_creator", None), ("tiktok.com.evil.example/@x", None),
         ]:
             with self.subTest(text=text):
@@ -256,8 +255,8 @@ class RoutesTest(unittest.TestCase):
                 TikTok.resolve(text)
 
     def test_the_declarations(self):
-        self.assertEqual([str(found) for found in check(TikTok)][:4], [
-            "tik:post/7301234567890123456", "tik?cats", "tik:me", "tik:example_creator"])
+        self.assertEqual([str(found) for found in check(TikTok)][:3], [
+            "tik:post/7301234567890123456", "tik?cats", "tik:example_creator"])
         user = next(known for known in TikTok.routes if known.kind == "user")
         self.assertEqual([(c.name, c.own, c.newest_first) for c in user.categories], [
             ("videos", True, True), ("stories", True, False), ("playlists", True, True),
@@ -566,29 +565,6 @@ class ShortLinkTest(unittest.TestCase):
         with self.assertRaises(NotFound) as caught:
             self.read(f"{API}/@example_creator")
         self.assertTrue(caught.exception.hint)
-
-
-class MeTest(unittest.TestCase):
-    def follows(self, cookies, *feeds):
-        plugin = TikTok()
-        ctx = FakeCtx(plugin, "tik:me", cookies=cookies, pages={
-            f"{API}/profile": FakePage(feeds=feeds, shown=['[data-e2e="following"]'])})
-        return listed_targets(plugin.me(ctx, "me"))
-
-    def test_the_accounts_the_login_follows(self):
-        answer = f"{API}/api/user/list/"
-        found, _ = self.follows(
-            {"sessionid": "s"},
-            Sent(answer, {"userList": [{"user": {"uniqueId": "example_user"}}], "hasMore": True},
-                 click='[data-e2e="following"]'),
-            Sent(answer, {"userList": [{"user": {"uniqueId": "example_creator"}}],
-                          "hasMore": False}, click='[data-e2e="following"]'))
-        self.assertEqual(found, [Target("tik:example_user"), Target("tik:example_creator")])
-
-    def test_no_login_is_a_login_error_with_a_hint(self):
-        found, error = self.follows({})
-        self.assertIsInstance(error, LoginError)
-        self.assertTrue(error.hint)
 
 
 class CaptchaTest(unittest.TestCase):

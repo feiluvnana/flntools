@@ -171,7 +171,7 @@ MORE_ROUTES = [
      ("search", "from:example_handle filter:media")),
     ("twt:123456789012345", ("user", "123456789012345")),
     ("twt:abcdefghijklmno", ("user", "abcdefghijklmno")),
-    ("twt:me", ("me", "me")),
+    ("twt:me", ("user", "me")),
     ("https://x.com/example_handle/status/1790/video/1", ("post", "post/1790")),
     ("https://mobile.x.com/example_handle/status/1790", ("post", "post/1790")),
     ("twt:post/1790", ("post", "post/1790")),
@@ -1011,34 +1011,6 @@ def following(*handles, cursor=None, legacy=()):
                         "content": {"cursorType": "Bottom", "value": cursor}})
     return Reply({"data": {"user": {"result": {"timeline": {"timeline": {"instructions": [
         {"type": "TimelineAddEntries", "entries": entries}]}}}}}})
-
-
-class MeTest(unittest.TestCase):
-    COOKIES = {"auth_token": "t", "ct0": "c", "twid": "u%3D42"}
-
-    def run_me(self, answers, cookies=None):
-        ctx = fake("twt:me", cookies=self.COOKIES if cookies is None else cookies,
-                   routes={url("Following"): lambda _: answers.pop(0)})
-        return listed(Twitter(), ctx, "me", "me"), ctx
-
-    def test_two_pages_are_followed_by_cursor_and_yield_each_handle(self):
-        found, ctx = self.run_me([following("a_1", cursor="c1"),
-                                  following("b_2", legacy=["c_3"], cursor="c2"), following()])
-        self.assertEqual([str(target) for target in found], ["twt:a_1", "twt:b_2", "twt:c_3"])
-        self.assertEqual(len(ctx.seen.requests), 3)
-        self.assertTrue(next(r for r in Twitter.routes if r.kind == "me").discovers)
-
-    def test_a_429_is_held_and_the_page_asked_again(self):
-        found, ctx = self.run_me([Reply(status=429, headers={"retry-after": "60"}),
-                                  following("a_1")])
-        self.assertEqual([str(target) for target in found], ["twt:a_1"])
-        self.assertEqual([bucket for _, _, bucket in ctx.seen.holds], ["Following"])
-
-    def test_no_login_is_refused_with_the_login_hint(self):
-        for cookies in ({}, {"ct0": "c"}, {"auth_token": "t"}):
-            with self.subTest(cookies=cookies), self.assertRaises(LoginError) as caught:
-                self.run_me([], cookies)
-            self.assertEqual(caught.exception.hint, "log in: flnd auth login twt")
 
 
 class SignTest(unittest.TestCase):

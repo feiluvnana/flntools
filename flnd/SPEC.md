@@ -160,18 +160,14 @@ library says `give at least one target` when a call ends with none.
 `flnd get` reads standard input when it is not a terminal: each line is a target (blank lines and
 `#` lines are skipped), after the command line's targets (`cat targets.txt | flnd get`).
 
-### `me`, searches and `--limit`
+### Searches and `--limit`
 
-- `ins:me`, `tik:me`, `fbk:me` and `twt:me` list every account the login follows (`fbk`: pages and
-  people, not friends), each its own `user` target (`"ins:me|posts,stories"` passes the list on to
-  each). They need a login. `tik:me` reads your Following list, `fbk:me` the `/me/following` page,
-  `twt:me` X's `Following` operation.
 - A search (`twt?<words>`, `mht?<words>`, `tik?<words>`, `loi?<words>`, or a search link) finds
   targets, and each found target is got as its own. A search needs `--folder`, which puts all its
   hits in one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search gets
   only the targets it had not found before.
 - `--limit N` (at least 1) is at most N posts per target, or N targets per search or other
-  discovering route (`ins:me`, `mht:author/...`, `mht:genre/...`). `--limit 0` is `limit must be at
+  discovering route (`mht:author/...`, `mht:genre/...`). `--limit 0` is `limit must be at
   least 1`.
 
 ### Accepted and refused forms by plugin
@@ -188,7 +184,6 @@ in that place. Messages not shown say `<code>: can't read <text>` with the hint 
 | `ins:<user>`, `instagram.com/<user>` (`@` dropped; `A-Za-z0-9._`, 1-30) | `user` | the profile |
 | `ins:post/<code>` | `post` | one post |
 | `instagram.com/p/<code>`, `/reel/`, `/reels/`, `/tv/`; also under `/<user>/` | `post` | one post |
-| `ins:me` | `me` | every account the login follows |
 
 Refused: a name past that rule is `ins: '<name>' isn't a user name; a user name is 1 to 30
 letters, digits, . or _`; `/stories/...` and `/stories/highlights/...` are `ins: story links aren't
@@ -214,7 +209,6 @@ search`; `/activity`, `/settings`, `/login`, other site pages: `thr: that's not 
 | `twt:<id>`, `x.com/i/user/<id>` (digits) | `user` | the profile with that id |
 | `twt:post/<id>`, `x.com/<user>/status/<id>`, `x.com/[i/web/]status/<id>` | `post` | one tweet |
 | `twt?<words>`, `x.com/search?q=<words>` (`f=` and the like ignored) | `search` | the Latest tab |
-| `twt:me` | `me` | the accounts the login follows |
 
 A handle is 1 to 15 letters, digits or `_` (digits of any length: an id); another is refused
 (`twt: 'x.com' isn't a handle`), as are `x.com/search` without `q=`, lists, communities and spaces
@@ -234,9 +228,6 @@ read), `intent`, `compose`, `login`; `x.com/` alone.
 - `tik?<words>`, `tiktok.com/search?q=<words>`, `tiktok.com/search/video?q=<words>`: a search (route
   ``search``). The Videos tab's `api/search/item/full/` is paged like a profile's, each hit found as
   `tik:post/<id>`, so `--limit N` is N posts. It needs `--folder`.
-- `tik:me`: the accounts the login follows, each as `tik:<uniqueId>` (route ``me``; needs a login,
-  else `LoginError` with the hint `log in: flnd auth login tik`), read from `api/user/list/` after
-  opening your Following list.
 
 `tik:123` (under 16 digits) is a user. Refused with `tik: <what> aren't supported; give a user, a
 post or a search`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pages),
@@ -246,8 +237,6 @@ post or a search`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pag
 
 - `fbk:<user>`, `facebook.com/<user>`, `/@<user>`, `/profile.php?id=<id>`, `/people/.../<id>`: a
   profile or page, one route (``user``); a tab it lacks (`tagged`) logs `no such tab`
-- `fbk:me`: the accounts the login follows, each `fbk:<name or id>` (``me``); no login is a
-  `LoginError`, hint `log in: flnd auth login fbk`
 - `fbk:video/<id>`, `facebook.com/watch?v=<id>`, `/videos/<id>`, `/<page>/videos/<id>` (or
   `.../<slug>/<id>`), `/reel/<id>`, `/reels/<id>`: one video or reel (``video``)
 - `fb.watch/<code>`, `facebook.com/share/p|r|v/<code>`: followed in the browser to the video or post
@@ -384,8 +373,8 @@ flnd get "instagram.com/example_user|tagged" # a link takes a list the same way
 - The old `ins:example_user/tagged` is refused, with the hint to write it `|tagged`.
 - A single post has no categories (naming one is `<code>:<kind>/<id> is one post, with no
   categories`); `loi:post/<id>` is the exception.
-- `"ins:me|<list>"`, `"mht:author/<x>|<list>"`, `"mht?<q>|<list>"` and `"twt?<q>|<list>"` pass the
-  list on to each target found. With no list, each takes its own.
+- `"mht:author/<x>|<list>"`, `"mht?<q>|<list>"` and `"twt?<q>|<list>"` pass the list on to each
+  target found. With no list, each takes its own.
 - A category that is not newest first (`tagged`, `stories`, `profile` ...) is read to its end on
   every run; only newest-first ones stop early ([Sync](#sync)).
 
@@ -572,8 +561,8 @@ twt?cats: this search is saved under --folder '{query}', not 'other'
 hint: add --again to use the new folder; files already saved stay where they are
 ```
 
-A followed search from before it kept a folder has none, and syncs as it did. `ins:me` and
-`mht:author/...` are not searches, and need no folder.
+A followed search from before it kept a folder has none, and syncs as it did. `mht:author/...` is
+not a search, and needs no folder.
 
 ### Names and keys in `config.toml`
 
@@ -803,7 +792,6 @@ Messages you will meet:
 - `<code>: the site refused the login (HTTP 403)`: the login expired or was revoked: log in again
 - `<home>/flnd.db: locked by another process, for 30s`: wait, or use another `--home`
 - `unexpected <Type>: ...`: a bug: run with `-v` and report it
-- `ins: not logged in, so there is no account to read`: `ins:me` needs a login
 
 `classify` gives an error without a hint flnd's: a login error about a target gets `run flnd auth
 login <code>`; a full or quota disk `free some space on that disk, or use another --home`; a
@@ -859,8 +847,8 @@ standard input, else gets every followed target, or prints `nothing to sync` and
 
 **`flnd target list`** the targets the home knows: files, size, last run, categories. On a terminal:
 arrows move, `/` filters, `enter` opens details, `f` follows or unfollows, `r` makes failed files
-retryable, `a` asks for a target and gets it, `d` forgets one after a confirmation, `esc` quits. On a
-pipe a plain table; `--json` one `Tracked` object each.
+retryable, `a` asks for a target and gets it, `d` forgets one after a confirmation, `esc` quits.
+On a pipe a plain table; `--json` one `Tracked` object each.
 
 **`flnd target clean <target...> [--media]`** forgets the targets (rows, files rows, failures,
 cursors, heads, gaps). An unknown target is a usage error. `--media` (default off) also deletes
@@ -980,16 +968,15 @@ up to 32.
 ### ins (Instagram)
 
 - **Reads:** a profile's posts, reels, tagged, reposts, stories, highlights and profile picture; one
-  post or reel by link; `ins:me`. Logged in, `posts`, `ins:me` and a post use the web API from
-  inside the tab; logged out, pages are opened. A 429 on a post's info holds and asks again; only
-  an unreadable answer opens that post's page. No captured request is replayed.
+  post or reel by link. Logged in, `posts` and a post use the web API from inside the tab;
+  logged out, pages are opened. A 429 on a post's info holds and asks again; only an unreadable
+  answer opens that post's page. No captured request is replayed.
 - **Categories:** `posts` NF, `reels` NF, `stories`, `highlights`, `profile` (own); `tagged`,
   `reposts` NF (opt-in). A pinned post does not count toward the stop for older posts.
 - **Folder:** `{category}`; `highlights/{album}` (a folder per highlight); `profile`.
 - **Filename:** `{date}_{post}{index}`; a story with music also saves `..._music.m4a`.
 - **Key:** `{post}_{num}` (`ins:C1abc_0`); `stories`, `highlights`, `profile` key by `{path}`.
-- **Login:** cookie `sessionid` (optional; `ins:me` needs it, and reads the account id from
-  `ds_user_id` or the start of `sessionid`).
+- **Login:** cookie `sessionid` (optional).
 - **Limits and walls:** pace 2.0; no host limits; walls `/accounts/login`, `/challenge`,
   `/accounts/suspended`; "Please wait a few minutes" answers are blocks.
 - **Known gaps:** story links are refused; only stories active now; a private post is `NotFound`,
@@ -1030,8 +1017,7 @@ up to 32.
   it; 3 empty pages pass; a 429 holds that bucket. Each tweet with files is a `post` target in the
   search's `--folder`. Tagged: `twt?@example_handle -from:example_handle`.
 - **Login:** cookie `auth_token` (a logged-out browser lands on the login wall); API calls send
-  `ct0` back as the CSRF token. `twt:me`: `Following` for the `twid` cookie's id, paged by `Bottom`;
-  no login is `LoginError`, hint `log in: flnd auth login twt`.
+  `ct0` back as the CSRF token.
 - **Limits and walls:** pace 0.2 per bucket (a 429 holds only its operation, and a timeline
   goes on with `resume`); walls `/i/flow/login`, `/login`, `/account/access`. Query ids are
   refreshed from x.com's script on a 400 or 404, at most once a run.
@@ -1042,7 +1028,7 @@ up to 32.
 ### tik (TikTok)
 
 - **Reads:** a profile in the browser, its lists scrolled to their end. One post from the embed
-  page; a search, short link and `tik:me` in the browser (see Targets).
+  page; a search and short link in the browser (see Targets).
 - **Categories:** `videos` NF, `stories`, `playlists` NF, `profile` (own); `reposts`, `liked`,
   `favorites` (opt-in; the last two only if public). `videos` and `playlists` share one scroll.
 - **Folder:** `{part}/{album}`: `part` is `videos` or `images` for a post, `albums` for a playlist

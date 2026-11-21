@@ -11,15 +11,13 @@ import unittest
 from collections.abc import Sequence
 from datetime import date
 from typing import Any
-from unittest import mock
 
 import fakes
 
-from flnd.errors import Changed, LoginError, NotFound, SiteError, UsageError
-from flnd.plugin import File, Post, Range, Request, Target
+from flnd.errors import NotFound, SiteError, UsageError
+from flnd.plugin import Range, Request, Target
 from flnd.plugins.ins import APP_ID, Instagram, best_file, code_pk, pk_stamp
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
-from flnkit import net as _net
 from flnkit.clock import day
 
 SITE = "https://www.instagram.com"
@@ -196,7 +194,7 @@ def listed(listing):
 class RoutesTest(unittest.TestCase):
     def test_every_form(self):
         forms = [
-            ("ins:me", "me", "me"), ("ins:example_user", "user", "example_user"),
+            ("ins:me", "user", "me"), ("ins:example_user", "user", "example_user"),
             ("ins:@example_user", "user", "example_user"),
             ("https://instagram.com/example_user/?hl=en", "user", "example_user"),
             ("https://m.instagram.com/example_user/reels/", "user", "example_user"),
@@ -258,7 +256,7 @@ class RoutesTest(unittest.TestCase):
         self.assertEqual([c.link({"user": "example_user"}) for c in route.categories][:5], [
             "", f"{SITE}/example_user/reels/", f"{SITE}/example_user/tagged/",
             f"{SITE}/example_user/reposts/", f"{SITE}/stories/example_user/"])
-        self.assertEqual(len(check(Instagram)), 4)
+        self.assertEqual(len(check(Instagram)), 3)
 
     def test_sign_adds_the_web_headers_only_to_api_calls(self):
         plugin = Instagram()
@@ -769,140 +767,6 @@ class PostTest(unittest.TestCase):
                 ctx = fake(routes={}, pages={f"{SITE}/p/SINGLE/": FakePage("", feeds=feeds)})
                 [found] = run(link, ctx=ctx)
                 self.assertEqual(fakes.filed(Instagram, link, found), folder)
-
-
-class MeTest(unittest.TestCase):
-    URL = f"{SITE}/api/v1/friendships/{{}}/following/"
-
-    def follows(self, cookies, routes=None):
-        """The targets `ins:me` yields on a FakeCtx with these cookies, and the ctx."""
-        plugin = Instagram()
-        ctx = FakeCtx(plugin, "ins:me", cookies=cookies, routes=routes)
-        return listed(plugin.me(ctx, "me")), ctx
-
-    def test_the_follows_page_by_page_from_the_tab(self):
-        answers = {None: Reply({"users": [{"username": "example_user"}], "next_max_id": "1"},
-                               headers={"x-ig-set-www-claim": "c1"}),
-                   "1": Reply({"users": [{"username": "example_creator"}]})}
-
-        def following(request):
-            return answers[(request.params or {}).get("max_id")]
-
-        for cookies, user_id in (({"sessionid": "s", "ds_user_id": "99"}, "99"),
-                                 ({"sessionid": "77%3Aabc%3A2"}, "77")):
-            with self.subTest(user_id=user_id):
-                found, ctx = self.follows(cookies, {self.URL.format(user_id): following})
-                self.assertEqual(found, [Target("ins:example_user"), Target("ins:example_creator")])
-                [first, second] = ctx.seen.requests
-                self.assertEqual((first[2]["params"], first[2]["in_page"]), ({"count": 100}, False))
-                self.assertEqual(second[2]["headers"]["X-IG-WWW-Claim"], "c1")
-
-    def test_follows_falls_back_to_in_page_on_error(self):
-        """When direct HTTP gets an error on follows, me() falls back to in_page."""
-        answers = [
-            Reply(status=403),
-            Reply({"users": [{"username": "example_creator"}]}),
-        ]
-        found, ctx = self.follows(
-            {"sessionid": "s", "ds_user_id": "99"},
-            {self.URL.format("99"): lambda req: answers.pop(0)},
-        )
-        self.assertEqual(found, [Target("ins:example_creator")])
-        self.assertEqual([r[2]["in_page"] for r in ctx.seen.requests], [False, True])
-
-    def test_no_login_or_an_odd_answer_raises(self):
-        with self.assertRaises(LoginError):
-            self.follows({"sessionid": "opaque"})
-        with self.assertRaises(Changed):
-            self.follows({"ds_user_id": "99"}, {self.URL.format("99"): Reply({"status": "ok"})})
-
-    def test_me_caches_user_ids_so_api_posts_skips_web_profile_info(self):
-        """`me()` caches `username -> user_id`, so `api_posts()` skips `web_profile_info`."""
-        plugin = Instagram()
-        routes = {
-            self.URL.format("99"): Reply({"users": [
-                {"username": "example_user", "pk": 4242},
-                {"username": "example_creator", "id": "6074"},
-            ]}),
-            f"{SITE}/api/v1/feed/user/4242/": Reply({
-                "items": [feed("P1", **image("https://cdn.example/p1.jpg"))],
-                "more_available": False,
-            }),
-        }
-        cookies = {"sessionid": "99%3As%3A1"}
-        me_ctx = FakeCtx(plugin, "ins:me", cookies=cookies, routes=routes)
-        self.assertEqual(listed(plugin.me(me_ctx, "me")),
-                         [Target("ins:example_user"), Target("ins:example_creator")])
-        self.assertEqual(plugin.user_ids, {"example_user": "4242", "example_creator": "6074"})
-        user_ctx = FakeCtx(plugin, "ins:example_user", cookies=cookies, routes=routes)
-        saved = collect(Instagram, "ins:example_user", ctx=user_ctx, categories=["posts"])
-        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"])
-        self.assertEqual(fetched(user_ctx), [f"{SITE}/api/v1/feed/user/4242/"])
-
-
-class InPage:
-    """The target's tab, as `ins:me`'s in-page calls reach it: answered by the case's `serve`."""
-
-    url = SITE
-
-    def __init__(self, case):
-        self.case = case
-
-    async def fetch(self, url, **options):
-        reply = self.case.serve(_net.Request("GET", _net.URL(url), {}, None))
-        return _net.Response(reply.status, url, {}, reply.body)
-
-class MeEngineTest(fakes.EngineCase):
-    """`ins:me` through the real engine: a target that finds the follows, recorded once."""
-
-    def setUp(self):
-        super().setUp()
-        self.follows = [{"users": [{"username": "example_user"}]},
-                        {"users": [{"username": "example_creator"},
-                                   {"username": "example_user"}]}]
-        self.routes[f"{SITE}/api/v1/friendships/99/following/"] = (
-            lambda request: _net.reply(200, json=self.follows[0]))
-        fakes.sign_in(self.home, "ins", [{"name": "sessionid", "value": "99:abc:1",
-                                    "domain": ".instagram.com", "path": "/"}])
-
-        async def read_tab(ctx, profile, tab):
-            code = "A1" if profile.user == "example_user" else "B1"
-            yield Post(code, [File(f"https://cdn.example/{code.lower()}.jpg")], date=day(STAMP))
-
-        async def nothing(*args, **options):
-            return []
-
-        # The tabs and the pages a sync's every category reads, so no browser opens.
-        self.enterContext(mock.patch("flnd.plugins.ins.read_tab", read_tab))
-        self.enterContext(mock.patch("flnd.plugins.ins.story_page", nothing))
-        self.enterContext(mock.patch("flnd.plugins.ins.page_results", nothing))
-        self.enterContext(mock.patch("flnd.engine.ctx.Ctx._page", lambda ctx: InPage(self)))
-
-    def saved(self, user, code):
-        return (self.target_dir("ins", user) / "posts" / f"{DAY}_{code}.jpg").exists()
-
-    def test_a_dry_run_keeps_nothing_and_a_sync_finds_new_follows(self):
-        engine = fakes.Engine(home=self.home, sources={"ins": Instagram})
-        dry = engine.download(["ins:me|posts"], dry=True)
-        self.assertTrue(dry.ok, (dry, self.lines()))
-        self.assertEqual(fakes.targets(self.home), {})
-        report = engine.download(["ins:me|posts"], sync=True)
-        self.assertTrue(report.ok, report)
-        self.assertEqual([row.text for row in engine.tally.publish(force=True).targets],
-                         ["ins:me", "ins:example_user"])
-        rows = fakes.targets(self.home)
-        self.assertEqual((list(rows), rows["ins:me"].seen), (["ins:me"], ["ins:example_user"]))
-        [listed] = engine.target_ls()
-        self.assertEqual((str(listed.target), listed.query, listed.seen), ("ins:me", True, 1))
-        self.assertTrue(self.saved("example_user", "A1"))
-        self.follows.pop(0)
-        report = engine.sync()
-        self.assertTrue(report.ok, report)
-        self.assertEqual([row.text for row in engine.tally.publish(force=True).targets],
-                         ["ins:me", "ins:example_creator"])
-        self.assertEqual([str(found.target) for found in report.targets], ["ins:me"])
-        self.assertEqual(list(fakes.targets(self.home)), ["ins:me"])
-        self.assertTrue(self.saved("example_creator", "B1"))
 
 
 if __name__ == "__main__":

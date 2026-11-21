@@ -15,7 +15,6 @@ from flnd.plugin import (
     Browser,
     Ctx,
     File,
-    LoginError,
     NotFound,
     Plugin,
     Post,
@@ -280,27 +279,6 @@ class Facebook(Plugin):
         owner, _, story = post.removeprefix("post/").partition("_")
         async for found in read_post(ctx, owner, story):
             yield found
-
-    # Before `user`, whose `fbk:{user}` would read `fbk:me` as a name.
-    @route("fbk:{me:me}", shown="fbk:me", discovers=True)
-    async def me(self, ctx: Ctx, me: str) -> AsyncIterator[Target]:
-        """The accounts the login follows, pages and people, each as `fbk:<name or id>`.
-
-        The logged-in following page is scrolled with the feed the tabs use. Confirm live: the
-        page (`/me/following`) and the shape of its tiles.
-
-        Raises:
-            LoginError: no login, so no account to read.
-        """
-        if "c_user" not in ctx.cookies:
-            raise LoginError("fbk: not logged in, so there is no account to read",
-                             hint="log in: flnd auth login fbk")
-        seen: set[str] = set()
-        async for result in tab_results(ctx, f"{SITE}/me/following", "following"):
-            for name in followed(result):
-                if name not in seen:
-                    seen.add(name)
-                    yield Target(f"fbk:{name}")
 
     @route(
         "fbk:{user}",
@@ -570,16 +548,6 @@ def read_post(ctx: Ctx, owner: str, story: str) -> AsyncIterator[Post]:
     url = (f"{SITE}/permalink.php?story_fbid={story}&id={owner}" if owner.isdigit()
            else f"{SITE}/{owner}/posts/{story}")
     return read_single(ctx, url, owner=owner, category="posts")
-
-
-def followed(result: Any) -> Iterator[str]:
-    """The name or id of each person or page a following page's result lists. Confirm live."""
-    for tile in dig(result, f"..[__typename={TILE}]"):
-        link = urlsplit(tile.get("url") or "")
-        if dig(tile, "node.__typename") in ("User", "Page"):
-            name = (parse_qs(link.query).get("id") or [link.path.strip("/").split("/")[0]])[0]
-            if name:
-                yield name
 
 
 def _place(url: str) -> tuple[str, str]:

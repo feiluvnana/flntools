@@ -21,7 +21,6 @@ from flnd.plugin import (
     Document,
     File,
     Hidden,
-    LoginError,
     NetworkError,
     NotFound,
     Plugin,
@@ -80,13 +79,8 @@ FEEDS = {
     "liked": ("/api/favorite/item_list",),
     "favorites": ("/api/user/collect/item_list",),
 }
-# The search page's answers, and the Following list's (both unconfirmed live, 2026-11-20).
+# The search page's answers (unconfirmed live, 2026-11-20).
 SEARCH_API = "/api/search/item/full/"
-FOLLOWING_API = "/api/user/list/"
-# The logged-in user's own profile (it redirects to `/@<name>`), and the click that opens its
-# Following list: unconfirmed live.
-OWN_PAGE = f"{SITE}/profile"
-FOLLOWING_TAB = '[data-e2e="following"]'
 # Each clicked tab's `data-e2e` name.
 TABS = {"reposts": "repost-tab", "liked": "liked-tab", "favorites": "favorites-tab"}
 
@@ -387,34 +381,6 @@ class TikTok(Plugin):
                     if post_id and post_id not in seen:
                         seen.add(post_id)
                         yield Target(f"tik:post/{post_id}")
-                if not (search_state(data) or (False,))[0]:
-                    break
-
-    @route("tik:{me:me}", shown="tik:me", discovers=True)
-    async def me(self, ctx: Ctx, me: str) -> AsyncIterator[Target]:
-        """Every account the login follows, each as `tik:<uniqueId>`: `tik:me`. The own
-        profile's Following list is opened in the logged-in browser, its answers read.
-
-        Raises:
-            LoginError: no login, so no account to read.
-            Changed: the profile has no Following list to open.
-        """
-        if not any(ctx.cookies.get(name) for name in ("sessionid", "sid_tt")):
-            raise LoginError("tik: not logged in, so there is no account to read",
-                             hint="log in: flnd auth login tik")
-        async with ctx.feed(FOLLOWING_API, scroll=True, cursor=search_state, resume=True) as feed:
-            await ctx.open(OWN_PAGE)
-            await ctx.pause(SETTLE, "letting the profile settle")
-            await wait_out(ctx, OWN_PAGE)
-            try:
-                await ctx.click(FOLLOWING_TAB, timeout=CLICK_TIMEOUT)
-            except NetworkError:
-                raise Changed("tik:me: the profile's Following list didn't open") from None
-            async for data in filled(ctx, feed, search_state):
-                for entry in dig(data, "userList || user_list") or []:
-                    name = dig(entry, "user.uniqueId || uniqueId")
-                    if name:
-                        yield Target(f"tik:{name}")
                 if not (search_state(data) or (False,))[0]:
                     break
 
