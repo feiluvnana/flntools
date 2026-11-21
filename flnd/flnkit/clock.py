@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -14,7 +15,9 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Protocol, TypeVar
 
-__all__ = ["Clock", "Fake", "current", "day", "now", "pause", "sleep", "use", "wall"]
+__all__ = [
+    "Clock", "Fake", "current", "day", "keep_awake", "now", "pause", "sleep", "use", "wall",
+]
 
 FAKE_WALL = 1767225600.0
 POLL = 0.1
@@ -222,3 +225,25 @@ def day(value: object) -> datetime.date | None:
     if found is None or not FIRST_YEAR <= found.year <= today.year + 1:
         return None
     return found
+
+
+def keep_awake(enable: bool = True) -> None:
+    """Ask Windows to keep the system running (away mode) when screen turns off or locks."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    es_continuous = 0x80000000
+    es_system_required = 0x00000001
+    es_awaymode_required = 0x00000040
+
+    flags = es_continuous
+    if enable:
+        flags |= es_system_required | es_awaymode_required
+        ret = ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint32(flags))
+        if ret == 0:
+            flags = es_continuous | es_system_required
+            ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint32(flags))
+    else:
+        ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint32(flags))
+

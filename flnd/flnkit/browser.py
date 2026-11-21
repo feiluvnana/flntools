@@ -285,7 +285,8 @@ LAUNCH_ARGS = [
     "--disk-cache-size=1", "--media-cache-size=1", "--js-flags=--max-old-space-size=512",
     ("--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,"
      "AcceptCHFrame,InterestFeedContentSuggestions,ProcessPerSiteUpToMainFrameThreshold,"
-     "SpareRendererForSitePerProcess"),
+     "SpareRendererForSitePerProcess,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,"
+     "QuickIntensiveWakeUpThrottlingAfterLoading"),
 ]
 # `navigator.webdriver` is removed rather than set to false, matching how an ordinary browser acts.
 HIDE_WEBDRIVER = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -296,6 +297,9 @@ KEEP_VISIBLE = (
     "hidden: {get: () => false, configurable: true}"
     "});"
     "Document.prototype.hasFocus = () => true;"
+    "window.addEventListener('visibilitychange', e => e.stopImmediatePropagation(), true);"
+    "document.addEventListener('visibilitychange', e => e.stopImmediatePropagation(), true);"
+    "window.addEventListener('blur', e => e.stopImmediatePropagation(), true);"
 )
 # What a browser reports as its screen: a desktop one, larger than its window. Playwright would
 # report the page's size, which no real screen is.

@@ -27,6 +27,11 @@ class ClockTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             _time.sleep(0.0, stop)
 
+    def test_keep_awake(self):
+        # Calls the Win32 function on Windows or returns on other platforms without error.
+        _time.keep_awake(True)
+        _time.keep_awake(False)
+
     def test_fake_advances_and_records_its_sleeps(self):
         fake = _time.Fake(10.0)
         self.assertFalse(hasattr(fake, "time"))

@@ -251,16 +251,20 @@ class Run:
 
     def _events_now(self) -> Generator[Event, None, None]:
         """The generator behind `__iter__`."""
-        self._start()
-        with self._interrupts():
-            while not self._over:
-                item = self._take()
-                if item is _END:
-                    self._over = True
-                    break
-                if item is not _IDLE:
-                    yield item
-        self._raise()
+        clock.keep_awake(True)
+        try:
+            self._start()
+            with self._interrupts():
+                while not self._over:
+                    item = self._take()
+                    if item is _END:
+                        self._over = True
+                        break
+                    if item is not _IDLE:
+                        yield item
+            self._raise()
+        finally:
+            clock.keep_awake(False)
 
     def __aiter__(self) -> AsyncIterator[Event]:
         """Start the run if needed, and yield its events without blocking the caller's loop."""
@@ -268,19 +272,23 @@ class Run:
 
     async def _events_async(self) -> AsyncIterator[Event]:
         """The async generator behind `__aiter__`: each event is taken on a helper thread."""
-        self._start()
+        clock.keep_awake(True)
         try:
-            while not self._over:
-                item = await asyncio.to_thread(self._take)
-                if item is _END:
-                    self._over = True
-                    break
-                if item is not _IDLE:
-                    yield item
-        except asyncio.CancelledError:
-            self.stop()
-            raise
-        self._raise()
+            self._start()
+            try:
+                while not self._over:
+                    item = await asyncio.to_thread(self._take)
+                    if item is _END:
+                        self._over = True
+                        break
+                    if item is not _IDLE:
+                        yield item
+            except asyncio.CancelledError:
+                self.stop()
+                raise
+            self._raise()
+        finally:
+            clock.keep_awake(False)
 
     def __await__(self) -> Generator[Any, None, Report]:
         """`await run` is `run.wait()` on a helper thread, so the caller's loop keeps going."""
@@ -305,17 +313,21 @@ class Run:
             >>> Run(lambda emit, stop: None, name="nothing").wait().ok
             True
         """
-        self._start()
-        with self._interrupts():
-            self._channel.close()
-            thread = self._thread
-            # A join with a timeout, in a loop, so Ctrl-C's handler runs while it waits.
-            while thread is not None and thread.is_alive():
-                thread.join(WAKE)
-                self._watch()
-            self._over = True
-        self._raise()
-        return self.report
+        clock.keep_awake(True)
+        try:
+            self._start()
+            with self._interrupts():
+                self._channel.close()
+                thread = self._thread
+                # A join with a timeout, in a loop, so Ctrl-C's handler runs while it waits.
+                while thread is not None and thread.is_alive():
+                    thread.join(WAKE)
+                    self._watch()
+                self._over = True
+            self._raise()
+            return self.report
+        finally:
+            clock.keep_awake(False)
 
     @property
     def state(self) -> State:
@@ -441,6 +453,7 @@ class Run:
 
     def _main(self) -> None:
         """The loop's thread: run the command, end what it left, then mark the end."""
+        clock.keep_awake(True)
         loop = self._loop = asyncio.new_event_loop()
         try:
             try:
@@ -449,7 +462,10 @@ class Run:
                 self._error = self._error or error
             loop.run_until_complete(_shut_down())
         finally:
-            loop.close()
+            try:
+                loop.close()
+            finally:
+                clock.keep_awake(False)
             # Every producer is on the loop, which is closed: nothing can come after this.
             self._channel.end()
 
