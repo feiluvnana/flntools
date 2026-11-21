@@ -47,76 +47,82 @@ $tasks = @(
     @{
         Number = 4
         Name   = "Marina Nagasawa - Query"
-        Target = 'twt?("長澤茉里奈" OR @nagasawa_marina OR "Marina Nagasawa" OR "Nagasawa Marina" OR #長澤茉里奈 OR "長澤まりな") -from:nagasawa_marina'
+        Target = 'twt?("長澤茉里奈" OR @nagasawa_marina OR "Marina Nagasawa" OR "Nagasawa Marina" OR #長澤茉里奈 OR "長澤まりな" OR まりちゅう OR #まりちゅう) -from:nagasawa_marina'
         Folder = "nagasawa_marina-query"
     },
-    # 3. Utatane Sui
+    # 3. Utatane Sui (Utatane Midori)
     @{
         Number = 5
-        Name   = "Utatane Sui - Profile"
+        Name   = "Utatane Sui - Main Profile"
         Target = "twt:meidomusumemoe"
         Folder = ""
     },
     @{
         Number = 6
+        Name   = "Utatane Sui - Sub Profile"
+        Target = "twt:Utatane_sui_03"
+        Folder = ""
+    },
+    @{
+        Number = 7
         Name   = "Utatane Sui - Query"
-        Target = 'twt?(meidomusumemoe OR @meidomusumemoe OR "meido musume moe" OR "うたたね翠" OR "うたたね 翠" OR "Utatane Sui" OR "Sui Utatane" OR #meidomusumemoe OR #うたたね翠) -from:meidomusumemoe'
+        Target = 'twt?(meidomusumemoe OR @meidomusumemoe OR Utatane_sui_03 OR @Utatane_sui_03 OR "meido musume moe" OR "うたたね翠" OR "うたたね 翠" OR "うたたねみどり" OR "うたたね みどり" OR "うたたねすい" OR "うたたね すい" OR "Utatane Sui" OR "Sui Utatane" OR "Utatane Midori" OR "Midori Utatane" OR #うたたね翠 OR #うたたねみどり OR #meidomusumemoe) -from:meidomusumemoe -from:Utatane_sui_03'
         Folder = "meidomusumemoe-query"
     },
     # 4. Iri
     @{
-        Number = 7
+        Number = 8
         Name   = "Iri - Profile"
         Target = "twt:irisuare"
         Folder = ""
     },
     @{
-        Number = 8
+        Number = 9
         Name   = "Iri - Query"
         Target = 'twt?(irisuare OR @irisuare OR "愛莉 irisuare" OR "irisuare 愛莉" OR #irisuare) -from:irisuare'
         Folder = "irisuare-query"
     },
     # 5. Hiina Nano
     @{
-        Number = 9
+        Number = 10
         Name   = "Hiina Nano - Profile"
         Target = "twt:nano_cats0923"
         Folder = ""
     },
     @{
-        Number = 10
+        Number = 11
         Name   = "Hiina Nano - Query"
         Target = 'twt?(nano_cats0923 OR @nano_cats0923 OR "雛なの" OR "ひいななの" OR "Hiina Nano" OR "Nano Hiina" OR "すてねこキャッツ" OR #雛なの OR #すてねこキャッツ OR #nano_cats0923) -from:nano_cats0923'
         Folder = "nano_cats0923-query"
     },
     # 6. Chunmomo
     @{
-        Number = 11
+        Number = 12
         Name   = "Chunmomo - Profile"
         Target = "twt:chunmomo0127"
         Folder = ""
     },
     @{
-        Number = 12
+        Number = 13
         Name   = "Chunmomo - Query"
         Target = 'twt?(chunmomo0127 OR @chunmomo0127 OR "蠢沫沫" OR chunmomo OR "chun momo" OR "Chunmomo cos" OR #蠢沫沫 OR #chunmomo OR #chunmomo0127) -from:chunmomo0127'
         Folder = "chunmomo0127-query"
     },
     # 7. Nyaromenia
     @{
-        Number = 13
+        Number = 14
         Name   = "Nyaromenia - Main Profile"
         Target = "twt:nyarome_cos"
         Folder = ""
     },
     @{
-        Number = 14
+        Number = 15
         Name   = "Nyaromenia - Personal Profile"
         Target = "twt:nyaromenia"
         Folder = ""
     },
     @{
-        Number = 15
+        Number = 16
         Name   = "Nyaromenia - Query"
         Target = 'twt?("ニャロメニア" OR @nyarome_cos OR @nyaromenia OR nyarome_cos OR nyaromenia OR "Nyarome Nia" OR "Nyaromenia" OR "にゃろめにあ" OR #ニャロメニア OR #nyarome_cos OR #nyaromenia) -from:nyarome_cos -from:nyaromenia'
         Folder = "nyaromenia-query"
