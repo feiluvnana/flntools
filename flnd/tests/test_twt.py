@@ -684,6 +684,26 @@ class SearchTest(unittest.TestCase):
         self.assertEqual([str(t).rsplit("/", 1)[1] for t in found], ["20", "10"])
         self.assertEqual(ctx.seen.visited, [w1, w2])
 
+    def test_search_resumes_from_saved_max_id(self):
+        plugin = Twitter()
+        w_resume = self.search_url("example max_id:500")
+        w_next = self.search_url("example max_id:449")
+        pages = {
+            w_resume: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("450", [photo("a")])), cursor="c1", search=True),
+                page(cursor="c2", search=True),
+            ])),
+            w_next: FakePage(feeds=sent(self.RESPONSE, [
+                page(cursor="c3", search=True),
+            ])),
+        }
+        ctx = FakeCtx(plugin, "twt?example", pages=pages)
+        ctx.state["search:example"] = {"max_id": "500"}
+        found = listed(plugin, ctx, "search", "example")
+        self.assertEqual([str(t) for t in found], ["https://x.com/i/web/status/450"])
+        self.assertEqual(ctx.seen.visited, [w_resume, w_next])
+        self.assertNotIn("search:example", ctx.state)
+
 
 class TimelineTest(unittest.TestCase):
     def test_grid_items_and_the_pinned_tweet_are_read_the_pinned_one_unordered(self):
@@ -802,6 +822,36 @@ class TimelineTest(unittest.TestCase):
             saved = collect(Twitter, "twt:example_handle", ctx=ctx2, categories=["posts"])
         self.assertEqual([f.post.id for f in saved], ["2", "1"])
         self.assertEqual([b for _, _, b in ctx2.seen.holds], ["UserOriginalsTimeline"])
+
+    def test_a_timeline_429_reload_with_seen_first_page_continues_to_new_tweets(self):
+        from unittest import mock
+
+        reset = {"x-rate-limit-reset": str(int(FAKE_WALL) + 60)}
+        link = f"{API}id/UserOriginalsTimeline"
+        queue = [
+            FakePage(feeds=[
+                Sent(link, page(item(tweet("3", [photo("c")])), cursor="c1")),
+                Sent(link, status=429, headers=reset, scroll=1),
+            ]),
+            FakePage(feeds=[
+                Sent(link, page(item(tweet("3", [photo("c")])), cursor="c2")),
+                Sent(link, page(item(tweet("2", [photo("b")])),
+                                item(tweet("1", [photo("a")])), cursor="c3")),
+                Sent(link, page(cursor="c4"), scroll=1),
+            ]),
+        ]
+        ctx = fake(pages=tabs())
+        orig_open = ctx.open
+
+        async def async_open(target_url):
+            if target_url == "https://x.com/example_handle":
+                ctx._pages[target_url] = queue.pop(0)
+            return await orig_open(target_url)
+
+        with mock.patch.object(ctx, "open", side_effect=async_open):
+            saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved], ["3", "2", "1"])
+        self.assertEqual([b for _, _, b in ctx.seen.holds], ["UserOriginalsTimeline"])
 
 
 class MissingTabTest(unittest.TestCase):

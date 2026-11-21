@@ -743,6 +743,7 @@ class _CtxFeed:
 
         self.close()
         await self._resume.hold(self._ctx, error)
+        self._ctx._reloaded = True
         self._waiting.clear()
         self._cursors = browser.Cursors(self._reader)
         self._done = False

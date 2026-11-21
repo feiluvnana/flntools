@@ -954,6 +954,7 @@ class _Feed:
         if feed is not None:
             await self._ctx._run.off(feed.close)
         await self._resume.hold(self._ctx, error)
+        self._ctx._reloaded = True
         await self._open()
         if self._ctx._opened:
             await self._ctx.open(self._ctx._opened)

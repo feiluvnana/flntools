@@ -251,64 +251,123 @@ class Twitter(Plugin):
         `since:` and `until:`, so a search for a few days doesn't scroll through years.
         """
         seen: set[str] = set()
-        window_query = query
         stalled = 0
         self.found.clear()
-        while True:
-            # The last tweets reached in scroll order: an old outlier early in a window must not
-            # set where the next one starts, so it is the oldest of these, not of all.
-            tail: deque[tuple[int, date | None]] = deque(maxlen=SEARCH_TAIL)
-            added = False
-            words = " ".join([window_query, *range_operators(ctx.when)])
-            url = "https://x.com/search?" + urlencode({
-                "q": words, "src": "typed_query", "f": "live"})
-            try:
-                async for tweet, _ in self._scroll(ctx, url, SEARCH):
-                    tweet_id = tweet_id_of(tweet)
-                    if not tweet_id:
-                        continue
-                    if tweet_id.isdigit():
-                        posted = parse_date(dig(unwrap(tweet), "legacy.created_at"))
-                        tail.append((int(tweet_id), posted.astimezone(UTC).date()
-                                     if posted is not None else None))
-                    if tweet_id in seen:
-                        continue
-                    seen.add(tweet_id)
-                    added = True
-                    category = "replies" if unwrap(tweet)["legacy"].get(
-                        "in_reply_to_status_id_str"
-                    ) else "posts"
-                    owner = dig(unwrap(tweet), AUTHOR)
-                    posts = [
-                        post.replace(owner=owner, category=category)
-                        for post in tweet_posts(
-                            tweet, "posts", None, part=category if owner else ""
-                        )
-                    ]
-                    if posts:
-                        if len(self.found) >= MAX_FOUND:
-                            self.found.pop(next(iter(self.found)), None)
-                        self.found[tweet_id] = posts
-                        yield Target(f"https://x.com/i/web/status/{tweet_id}")
-            except Blocked as error:
-                stalled = 0 if added else stalled + 1
-                if stalled > 3:
-                    raise
-                await ctx.hold("rate limited", seconds=error.wait,
-                               bucket=SEARCH, reset=added)
-                edge = min((entry[0] for entry in tail), default=0)
-                if added and edge > 1:
-                    window_query = with_max_id(query, edge - 1)
-                continue
-            stalled = 0
-            if not added or not tail:
-                break
-            edge_id, edge_date = min(tail, key=lambda entry: entry[0])
-            if edge_id <= 1:
-                break
-            if ctx.when.since is not None and edge_date is not None and edge_date < ctx.when.since:
-                break
-            window_query = with_max_id(query, edge_id - 1)
+
+        # Check for saved resumption cursor in db or state
+        db = getattr(getattr(ctx, "_run", None), "settings", None)
+        db = getattr(db, "db", None)
+        saved_max_id: str | None = None
+        state_key = f"search:{query}"
+        if not getattr(getattr(ctx, "_options", None), "again", False):
+            if db is not None:
+                row = db.target(f"{ctx.target.plugin}:{ctx.target.value}")
+                if row is not None:
+                    saved_max_id = row.cursors.get("max_id")
+            if not saved_max_id:
+                try:
+                    saved = ctx.state.get(state_key)
+                    if isinstance(saved, dict):
+                        saved_max_id = saved.get("max_id")
+                except Exception:
+                    pass
+
+        if saved_max_id:
+            window_query = with_max_id(query, int(saved_max_id))
+            ctx.log("info", "resuming search from max_id {max_id}", max_id=saved_max_id)
+        else:
+            window_query = query
+
+        completed = False
+        tail: deque[tuple[int, date | None]] = deque(maxlen=SEARCH_TAIL)
+        try:
+            while True:
+                tail.clear()
+                added = False
+                words = " ".join([window_query, *range_operators(ctx.when)])
+                url = "https://x.com/search?" + urlencode({
+                    "q": words, "src": "typed_query", "f": "live"})
+                try:
+                    async for tweet, _ in self._scroll(ctx, url, SEARCH):
+                        tweet_id = tweet_id_of(tweet)
+                        if not tweet_id:
+                            continue
+                        if tweet_id.isdigit():
+                            posted = parse_date(dig(unwrap(tweet), "legacy.created_at"))
+                            tail.append((int(tweet_id), posted.astimezone(UTC).date()
+                                         if posted is not None else None))
+                        if tweet_id in seen:
+                            continue
+                        seen.add(tweet_id)
+                        added = True
+                        category = "replies" if unwrap(tweet)["legacy"].get(
+                            "in_reply_to_status_id_str"
+                        ) else "posts"
+                        owner = dig(unwrap(tweet), AUTHOR)
+                        posts = [
+                            post.replace(owner=owner, category=category)
+                            for post in tweet_posts(
+                                tweet, "posts", None, part=category if owner else ""
+                            )
+                        ]
+                        if posts:
+                            if len(self.found) >= MAX_FOUND:
+                                self.found.pop(next(iter(self.found)), None)
+                            self.found[tweet_id] = posts
+                            yield Target(f"https://x.com/i/web/status/{tweet_id}")
+                except Blocked as error:
+                    stalled = 0 if added else stalled + 1
+                    if stalled > 3:
+                        raise
+                    await ctx.hold("rate limited", seconds=error.wait,
+                                   bucket=SEARCH, reset=added)
+                    edge = min((entry[0] for entry in tail), default=0)
+                    if added and edge > 1:
+                        window_query = with_max_id(query, edge - 1)
+                        if db is not None:
+                            db.progress(ctx.target, cursors={"max_id": str(edge - 1)}, complete=[])
+                        try:
+                            ctx.state[state_key] = {"max_id": str(edge - 1)}
+                        except Exception:
+                            pass
+                    continue
+                stalled = 0
+                if not added or not tail:
+                    completed = True
+                    break
+                edge_id, edge_date = min(tail, key=lambda entry: entry[0])
+                if edge_id <= 1:
+                    completed = True
+                    break
+                if (ctx.when.since is not None and edge_date is not None
+                        and edge_date < ctx.when.since):
+                    completed = True
+                    break
+                next_max_id = edge_id - 1
+                window_query = with_max_id(query, next_max_id)
+                if db is not None:
+                    db.progress(ctx.target, cursors={"max_id": str(next_max_id)}, complete=[])
+                try:
+                    ctx.state[state_key] = {"max_id": str(next_max_id)}
+                except Exception:
+                    pass
+        finally:
+            if completed:
+                if db is not None:
+                    db.progress(ctx.target, cursors={"max_id": None}, complete=["search"])
+                try:
+                    ctx.state.pop(state_key, None)
+                except Exception:
+                    pass
+            elif tail:
+                oldest = min((entry[0] for entry in tail), default=0)
+                if oldest > 1:
+                    if db is not None:
+                        db.progress(ctx.target, cursors={"max_id": str(oldest - 1)}, complete=[])
+                    try:
+                        ctx.state[state_key] = {"max_id": str(oldest - 1)}
+                    except Exception:
+                        pass
 
     @route("twt:{me:me}", shown="twt:me", discovers=True)
     async def me(self, ctx: Ctx, me: str) -> AsyncIterator[Target]:
@@ -508,21 +567,30 @@ class Twitter(Plugin):
                 return
             async for data in responses:
                 tweets, cursor, pinned = read_timeline_page(data)
+                if getattr(ctx, "listing", None) is not None and cursor:
+                    ctx.listing.cursor = cursor
                 # 2026-11-16: a tombstone has no id; it is never new, nor stands for a seen one.
                 new = [tweet for tweet in tweets
                        if (tid := tweet_id_of(tweet)) and tid not in seen]
+                reloaded = getattr(ctx, "_reloaded", False)
                 if not new:
                     if cursor is None:
                         if query == SEARCH and empty_pages > 0:
                             break
                         continue
-                    if query != SEARCH or cursor in seen_cursors:
+                    if cursor in seen_cursors:
+                        break
+                    if query != SEARCH and not reloaded:
                         break
                     empty_pages += 1
                     seen_cursors.add(cursor)
-                    if empty_pages > SEARCH_EMPTY:
+                    if query == SEARCH and empty_pages > SEARCH_EMPTY:
+                        break
+                    if query != SEARCH and not tweets and empty_pages > SEARCH_EMPTY:
                         break
                     continue
+                if reloaded:
+                    ctx._reloaded = False
                 empty_pages = 0
                 if cursor is not None:
                     seen_cursors.add(cursor)
