@@ -1220,7 +1220,7 @@ class MissingTabTest(unittest.TestCase):
     def test_search_404_raises_not_found_with_hint_or_login_error_when_suspended(self):
         search_url = "https://x.com/search?q=cats&src=typed_query&f=live"
         sent_404 = Sent(f"{API}q/SearchTimeline", status=404)
-        ctx = fake(pages={search_url: FakePage(feeds=[sent_404])})
+        ctx = fake(pages={search_url: FakePage(feeds=[sent_404]), "https://x.com/": FakePage()})
         with self.assertRaises(NotFound) as caught:
             collect(Twitter, "twt?cats", ctx=ctx)
         self.assertIn("twt?", str(caught.exception))
@@ -1236,6 +1236,16 @@ class MissingTabTest(unittest.TestCase):
             collect(Twitter, "twt?cats", ctx=ctx_susp)
         self.assertEqual(caught_login.exception.hint,
                          "log in with another account: flnd auth login twt")
+
+        # If SearchTimeline returns 404 without a banner on /search, probing home detects ban.
+        ctx_probe = fake(pages={
+            search_url: FakePage(feeds=[sent_404]),
+            "https://x.com/": FakePage(
+                html='<div id="react-root"><span>Your account is suspended</span></div>',
+            ),
+        })
+        with self.assertRaises(LoginError):
+            collect(Twitter, "twt?cats", ctx=ctx_probe)
 
 
 class LoadTest(unittest.TestCase):
@@ -1463,6 +1473,37 @@ class AntiBanTest(unittest.TestCase):
         self.assertEqual([str(t) for t in found], ["https://x.com/i/web/status/100"])
         # Waited past reset (>=120s + >=30s search buffer) plus >=15s between search windows.
         self.assertGreaterEqual(ctx.time.wall() - FAKE_WALL, 165)
+
+    def test_search_halts_and_preserves_max_id_after_reset_cap(self):
+        from unittest import mock
+        from urllib.parse import urlencode
+
+        plugin = Twitter()
+        ctx = fake()
+        orig_open = ctx.open
+
+        async def open_window(target_url):
+            step = ctx.seen.visited.count(target_url)
+            tid = str(500 - (len(ctx.seen.visited) - step) * 10)
+            hdr = {
+                "x-rate-limit-remaining": "10",
+                "x-rate-limit-reset": str(int(ctx.time.wall()) + 120),
+            }
+            ctx._pages[target_url] = FakePage(feeds=[
+                Sent(f"{API}q/SearchTimeline",
+                     page(item(tweet(tid, [photo(f"p{tid}")])), cursor=f"c{tid}", search=True),
+                     headers=hdr),
+            ])
+            return await orig_open(target_url)
+
+        expected_first = "https://x.com/search?" + urlencode(
+            {"q": "example", "src": "typed_query", "f": "live"})
+        with mock.patch.object(ctx, "open", side_effect=open_window), \
+                self.assertRaises(Blocked) as caught:
+            listed(plugin, ctx, "search", "example")
+        self.assertFalse(caught.exception.retryable)
+        self.assertEqual(ctx.seen.visited[0], expected_first)
+        self.assertEqual(ctx.state.get("search:example"), {"max_id": "469"})
 
     def test_no_progress_429_reload_aborts_instead_of_looping(self):
         from unittest import mock

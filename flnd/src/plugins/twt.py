@@ -290,6 +290,7 @@ class Twitter(Plugin):
 
         completed = False
         windows = 0
+        resets = 0
         tail: deque[tuple[int, date | None]] = deque(maxlen=SEARCH_TAIL)
         try:
             while True:
@@ -300,7 +301,7 @@ class Twitter(Plugin):
                     await ctx.pause(delay, "pausing between search windows")
                 tail.clear()
                 added = False
-                scroll_meta: dict[str, Any] = {}
+                scroll_meta: dict[str, Any] = {"resets": resets}
                 listing = getattr(ctx, "listing", None)
                 if listing is not None:
                     listing.stalled = False
@@ -336,6 +337,12 @@ class Twitter(Plugin):
                             self.found[tweet_id] = posts
                             yield Target(f"https://x.com/i/web/status/{tweet_id}")
                 except Blocked as error:
+                    resets = scroll_meta.get("resets", resets)
+                    if not error.retryable:
+                        raise
+                    if error.wait and error.wait >= 300:
+                        _check_search_resets(SEARCH, scroll_meta)
+                        resets = scroll_meta.get("resets", resets)
                     stalled = 0 if added else stalled + 1
                     if stalled > 3:
                         raise
@@ -351,6 +358,7 @@ class Twitter(Plugin):
                         except Exception:
                             pass
                     continue
+                resets = scroll_meta.get("resets", resets)
                 window_stalled = (bool(scroll_meta.get("saw_error"))
                                   or bool(getattr(listing, "stalled", False)))
                 if not added or not tail:
@@ -641,7 +649,7 @@ class Twitter(Plugin):
             saw_error = False
             reader = _search_reader() if query == SEARCH else timeline_state
             feed_match: str | Callable[[str], bool] = match if match is not None else f"/{query}"
-            await _wait_ratelimit(ctx, query)
+            await _wait_ratelimit(ctx, query, meta=meta)
             try:
                 async with ctx.feed(feed_match, scroll=True, cursor=reader, resume=False,
                                     bucket=query) as responses:
@@ -715,7 +723,7 @@ class Twitter(Plugin):
                                     break
                                 if query != SEARCH and not tweets and empty_pages > SEARCH_EMPTY:
                                     break
-                                await _proactive_pause(ctx, query, rem, reset, pages)
+                                await _proactive_pause(ctx, query, rem, reset, pages, meta=meta)
                                 continue
                             if reloaded and not had_seen:
                                 reloaded = False
@@ -728,11 +736,11 @@ class Twitter(Plugin):
                                 yield tweet, tweet_id_of(tweet) in pinned
                             if _video_page_done(meta, ids, cursor):
                                 break
-                            await _proactive_pause(ctx, query, rem, reset, pages)
+                            await _proactive_pause(ctx, query, rem, reset, pages, meta=meta)
                     except NotFound as error:
                         if query != SEARCH:
                             raise
-                        if await _is_suspended(ctx):
+                        if await _is_suspended(ctx) or await _search_404_restricted(ctx):
                             self._suspended = True
                             raise LoginError(f"twt: {SUSPENDED_MSG}", hint=SUSPENDED_HINT,
                                              retryable=False) from None
@@ -792,12 +800,28 @@ LOCK_WALLS = (
 )
 RATELIMIT_KEY = "twt.ratelimit"
 LOW_REMAINING = 15
+# Cap consecutive search rate-limit resets per session so backfills save max_id and rest.
+MAX_SEARCH_RESETS = 4
 
 
 def _reset_wait(query: str, reset: int, now: float) -> float:
     """How long to wait past a rate-limit reset, with a wider cushion for search."""
     extra = random.uniform(30.0, 90.0) if query == SEARCH else random.uniform(15.0, 45.0)
     return (reset - now) + extra
+
+
+def _check_search_resets(query: str, meta: dict[str, Any] | None) -> None:
+    """Track search rate-limit resets and halt safely once `MAX_SEARCH_RESETS` is hit."""
+    if query != SEARCH or meta is None:
+        return
+    resets = meta.get("resets", 0) + 1
+    meta["resets"] = resets
+    if resets >= MAX_SEARCH_RESETS:
+        raise Blocked(
+            f"twt: paused search after {MAX_SEARCH_RESETS} rate-limit resets to protect "
+            "account; rerun later to resume from saved max_id",
+            retryable=False,
+        )
 
 
 def _parse_int(value: Any) -> int | None:
@@ -820,7 +844,9 @@ def _record_ratelimit(
     return rem, reset
 
 
-async def _wait_ratelimit(ctx: Ctx, query: str) -> None:
+async def _wait_ratelimit(
+    ctx: Ctx, query: str, *, meta: dict[str, Any] | None = None,
+) -> None:
     """Pause before opening a tab if persisted state shows `query` is near exhaustion."""
     table = ctx.state.get(RATELIMIT_KEY)
     if not isinstance(table, dict):
@@ -832,6 +858,7 @@ async def _wait_ratelimit(ctx: Ctx, query: str) -> None:
     reset = _parse_int(entry.get("reset"))
     now = ctx.time.wall()
     if rem is not None and rem <= LOW_REMAINING and reset is not None and reset > now:
+        _check_search_resets(query, meta)
         wait = _reset_wait(query, reset, now)
         ctx.log("info", "{query}: rate-limit window low ({rem} left); waiting {wait:.0f}s",
                 query=query, rem=rem, wait=wait)
@@ -839,12 +866,14 @@ async def _wait_ratelimit(ctx: Ctx, query: str) -> None:
 
 
 async def _proactive_pause(
-    ctx: Ctx, query: str, rem: int | None, reset: int | None, pages: int,
+    ctx: Ctx, query: str, rem: int | None, reset: int | None, pages: int, *,
+    meta: dict[str, Any] | None = None,
 ) -> None:
     """Pause on the open tab when quota is low, plus humanized per-page jitter."""
     if rem is not None and rem <= LOW_REMAINING and reset is not None:
         now = ctx.time.wall()
         if reset > now:
+            _check_search_resets(query, meta)
             wait = _reset_wait(query, reset, now)
             ctx.log("info", "{query}: rate-limit low ({rem} left); pausing {wait:.0f}s on tab",
                     query=query, rem=rem, wait=wait)
@@ -956,6 +985,22 @@ SUSPENDED_BANNER = '[data-testid="suspendedAccountBanner"]'
 SUSPENDED_TEXT = "your account is suspended"
 SUSPENDED_MSG = "this account is suspended; twt? searches will not work"
 SUSPENDED_HINT = "log in with another account: flnd auth login twt"
+
+
+async def _search_404_restricted(ctx: Ctx) -> bool:
+    """Open `HOME` after a `SearchTimeline` 404 to check whether the account is restricted."""
+    try:
+        landed = await ctx.open(HOME)
+    except LoginError:
+        raise
+    except (NotFound, NetworkError, SiteError):
+        return False
+    if wall(landed.url, LOCK_WALLS) is not None:
+        raise LoginError(
+            "twt: account locked or verification required; unlock in browser",
+            retryable=False,
+        )
+    return await _is_suspended(ctx)
 
 
 async def _is_suspended(ctx: Ctx) -> bool:

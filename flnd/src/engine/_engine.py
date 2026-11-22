@@ -26,7 +26,16 @@ from flnd.engine.crawl import Options, RunShared, TargetReport
 from flnd.engine.ctx import Ctx, PluginRun, shared_browser
 from flnd.engine.events import Failed, Planned, sink
 from flnd.engine.run import Stop, Tally, stopping
-from flnd.errors import DiskError, Error, LoginError, NetworkError, PluginError, Stopped, UsageError
+from flnd.errors import (
+    Blocked,
+    DiskError,
+    Error,
+    LoginError,
+    NetworkError,
+    PluginError,
+    Stopped,
+    UsageError,
+)
 from flnd.plugin import Account, Browser, Plugin, Range, Target
 from flnd.ui.log import ui
 from flnkit import net, text
@@ -41,6 +50,14 @@ FOLLOW_DEPTH = 2
 # suddenly finds hundreds (a popular tag) is taken a slice per sync, never all at once.
 MAX_SYNC_NEW = 25
 SEEN_FLUSH = 10
+
+
+def _account_stop(error: Error | None) -> LoginError | Blocked | None:
+    """Return `error` if it means this account cannot continue (login refused or bot block)."""
+    if isinstance(error, LoginError) or (
+            isinstance(error, Blocked) and not error.retryable):
+        return error
+    return None
 
 
 def _query_sync_state(
@@ -725,6 +742,8 @@ class Engine:
         reports: list[TargetReport] = []
         await self._discover_and_run(runner, entry.run, target, options, reports, span=span,
                                      stop=stop)
+        if reports and (stopped := _account_stop(reports[0].error)) is not None:
+            entry.refused = stopped
         return reports
 
     async def _discover_and_run(
@@ -837,8 +856,11 @@ class Engine:
         if entry is None or failed is not None:
             assert failed is not None
             return failed
-        return await self._sync_query_run(runner, entry.run, target, options, row,
-                                          seen_keys, known_keys, stop)
+        report = await self._sync_query_run(runner, entry.run, target, options, row,
+                                            seen_keys, known_keys, stop)
+        if (stopped := _account_stop(report.error)) is not None:
+            entry.refused = stopped
+        return report
 
     async def _sync_query_run(
         self,
@@ -1171,8 +1193,8 @@ class _Entry:
     logged_in: bool = True
     # What broke it as it started (its `connect`, its login check); its targets fail with it.
     error: BaseException | None = None
-    # A login the site refused: its later targets would hit the same wall, so they fail with it.
-    refused: LoginError | None = None
+    # A login or account-protecting block the site raised: later targets fail with it.
+    refused: LoginError | Blocked | None = None
     # Set once its login is checked and its `connect` entered: what its other targets wait for.
     started: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -1312,7 +1334,7 @@ class _Runner:
             raise entry.error
         return entry.run
 
-    async def _refused(self, target: Target, login: LoginError) -> TargetReport:
+    async def _refused(self, target: Target, login: LoginError | Blocked) -> TargetReport:
         """A target whose plugin's login an earlier target had refused: it fails, unasked."""
 
         self.settings.tally.end(target, failed=True)
@@ -1405,8 +1427,8 @@ class _Runner:
                                                   options, listed=listed, turn=began)
         if refused is not None:
             return await self._refused(target, refused)
-        if isinstance(report.error, LoginError):
-            entry.refused = report.error
+        if (stopped := _account_stop(report.error)) is not None:
+            entry.refused = stopped
         # A full or refused disk stops the whole run: every later file would fail too.
         elif isinstance(report.error, DiskError):
             raise report.error

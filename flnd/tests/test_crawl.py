@@ -664,6 +664,29 @@ class FailureTest(JobCase):
         self.assertIsInstance(last.error, LoginError)
         self.assertEqual(self.files("err", "last"), [])
 
+    def test_non_retryable_blocked_stops_remaining_targets_on_same_account(self):
+        class BotStop(Plugin):
+            code, name, domains, api = "bsp", "BotStop", ("example.com",), 2
+            filename = "{date}_{post}{index}"
+            folder = ""
+            browser = Browser.ANY
+
+            @route("bsp:{user}", newest_first=False)
+            async def user(self, ctx, user):
+                if user == "flagged":
+                    raise Blocked("bsp: automated activity detected", retryable=False)
+                return user
+
+            @user.category(newest_first=False)
+            async def posts(self, ctx, user):
+                yield Post(user, [File(f"{CDN}/{user}.jpg")])
+
+        report = self.report(BotStop, targets=["bsp:flagged", "bsp:next"])
+        self.assertEqual([t.value for t in report.failed], ["flagged", "next"])
+        self.assertIs(report.targets[1].error, report.targets[0].error)
+        self.assertIsInstance(report.targets[1].error, Blocked)
+        self.assertEqual(self.listed(), set())
+
 
 class Cut:
     """A body that sends `data`, then drops the connection; or, given `gate`, waits on it after the
