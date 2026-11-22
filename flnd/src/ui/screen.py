@@ -9,7 +9,7 @@ import queue
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, Any
@@ -139,28 +139,51 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
     title = (f"flnd {command}{sep}{progress}{sep}"
              f"{int(shown_elapsed) // 60:02d}:{int(shown_elapsed) % 60:02d}")
     lines += [_line((title, "focus")), Text()]
-    # Each column as wide as its widest cell, up to its most.
-    widths = (
-        min(TARGET_CELLS, max([4, *(_cells(t.text) for t in state.targets)])),
-        min(CATEGORY_CELLS, max([10, *(_cells(" ".join(t.categories)) for t in state.targets)])),
-    )
-    lines.append(_line((_pad("target", 2 + widths[0]) + "  " + _pad("categories", widths[1])
-                        + "  " + "".join(_right(name, cells) for name, cells in COLUMNS), "dim")))
-    files = _files(state, at, fancy)
-    room = max(0, height - FRAME_LINES - (len(files) + 1 if files else 0)
-               - (state.resources is not None))
-    shown = _shown_targets(state.targets, room)
-    lines += [_target(row, widths, at, fancy) for row in shown]
-    if len(shown) < total and room > 0:
-        lines.append(_line((f"+ {total - len(shown)} targets", "dim")))
-    lines.append(Text())
-    if files:
-        lines += files + [Text()]
-    lines.append(_now(state, fancy))
-    if state.resources is not None:
-        lines.append(_use(state.resources, sep))
-    lines += [Text(), _foot(state, width, fancy)]
-    limit = max(0, width - 1)
+    limit = max(1, width - 1)
+    widths, cols = _target_layout(state.targets, limit)
+    header = _pad("target", 2 + widths[0]) + "  "
+    if widths[1]:
+        header += _pad("categories", widths[1]) + "  "
+    header += "".join(_right(name, cells) for name, cells in cols)
+    use_lines = 1 if state.resources is not None else 0
+    if height >= 10:
+        min_targets = min(total, 2 if height >= 12 else 1)
+        max_file_budget = max(0, height - FRAME_LINES - use_lines - min_targets)
+        files = _files(state, at, fancy, limit,
+                       max_rows=None if max_file_budget >= 99 else max(0, max_file_budget - 1))
+        if files and len(files) + 1 > max_file_budget:
+            files = []
+        room = max(0, height - FRAME_LINES - (len(files) + 1 if files else 0) - use_lines)
+        lines.append(_line((header, "dim")))
+        shown = _shown_targets(state.targets, room)
+        lines += [_target(row, widths, cols, at, fancy) for row in shown]
+        if len(shown) < total and room > 0:
+            lines.append(_line((f"+ {total - len(shown)} targets", "dim")))
+        lines.append(Text())
+        if files:
+            lines += files + [Text()]
+        lines.append(_now(state, fancy))
+        if state.resources is not None:
+            lines.append(_use(state.resources, sep))
+        lines += [Text(), _foot(state, width, fancy)]
+    elif height >= 4:
+        bottom = [_now(state, fancy), _foot(state, width, fancy)]
+        room = height - 2 - len(bottom)
+        shown = _shown_targets(state.targets, 2 if room == 1 and total > 1 else room)
+        lines = [_line((title, "focus")), _line((header, "dim"))]
+        lines += [_target(row, widths, cols, at, fancy) for row in shown]
+        if len(shown) < total and len(lines) + len(bottom) < height:
+            lines.append(_line((f"+ {total - len(shown)} targets", "dim")))
+        lines += bottom
+    elif height >= 2:
+        shown = _shown_targets(state.targets, height - 2)
+        lines = [_line((title, "focus"))]
+        lines += [_target(row, widths, cols, at, fancy) for row in shown]
+        lines.append(_foot(state, width, fancy))
+    else:
+        lines = [_line((title, "focus"))]
+    if len(lines) > height:
+        lines = lines[:height]
     for line in lines:
         line.truncate(limit)
     block = Text("\n").join(lines)
@@ -200,46 +223,106 @@ def _mark(phase: Phase, at: float, fancy: bool) -> tuple[str, str]:
     return theme.spinner(at, fancy), "focus"
 
 
-def _target(row: TargetState, widths: tuple[int, int], at: float, fancy: bool) -> Text:
+def _target_layout(targets: Sequence[TargetState],
+                   limit: int) -> tuple[tuple[int, int], tuple[tuple[str, int], ...]]:
+    tw = min(TARGET_CELLS, max([4, *(_cells(t.text) for t in targets)]))
+    cw = min(CATEGORY_CELLS, max([10, *(_cells(" ".join(t.categories)) for t in targets)]))
+    cols = list(COLUMNS)
+
+    def needed(w0: int, w1: int, active: list[tuple[str, int]]) -> int:
+        return 6 + w0 + (w1 + 2 if w1 else 0) + sum(w for _, w in active)
+
+    if needed(tw, cw, cols) <= limit:
+        return (tw, cw), tuple(cols)
+    if needed(tw, cw, cols) > limit:
+        cw = max(min(cw, 10), cw - (needed(tw, cw, cols) - limit))
+    if needed(tw, cw, cols) > limit:
+        tw = max(min(tw, 16), tw - (needed(tw, cw, cols) - limit))
+    if needed(tw, cw, cols) > limit:
+        cw = 0
+    for drop in ("skipped", "failed", "size", "speed"):
+        if needed(tw, cw, cols) <= limit:
+            break
+        cols = [c for c in cols if c[0] != drop]
+    if needed(tw, cw, cols) > limit:
+        tw = max(8, min(tw, limit - 6 - sum(w for _, w in cols)))
+    return (tw, cw), tuple(cols)
+
+
+def _target(row: TargetState, widths: tuple[int, int], cols: tuple[tuple[str, int], ...],
+            at: float, fancy: bool) -> Text:
     glyph, token = _mark(row.phase, at, fancy)
     none = theme.glyph("none", fancy)
     counted = row.found or row.saved or row.skipped or row.failed
-    cells = [f"{n:,}" if counted else none for n in (row.saved, row.skipped, row.failed)]
-    cells.append(size(row.bytes) if row.bytes else none)
     going = row.phase in (Phase.LISTING, Phase.DOWNLOADING)
-    cells.append(f"{size(row.speed)}/s" if going and row.speed else none)
-    return _line(
+    values = {
+        "saved": f"{row.saved:,}" if counted else none,
+        "skipped": f"{row.skipped:,}" if counted else none,
+        "failed": f"{row.failed:,}" if counted else none,
+        "size": size(row.bytes) if row.bytes else none,
+        "speed": f"{size(row.speed)}/s" if going and row.speed else none,
+    }
+    parts: list[tuple[str, str]] = [
         (glyph + " ", token),
         (_pad(middle(row.text, widths[0], fancy=fancy), widths[0]) + "  ", "text"),
-        (_pad(middle(" ".join(row.categories), widths[1], fancy=fancy), widths[1]) + "  ", "dim"),
-        ("".join(_right(cell, cells) for cell, (_, cells) in zip(cells, COLUMNS)), "text"),
-    )
+    ]
+    if widths[1]:
+        parts.append((_pad(middle(" ".join(row.categories), widths[1], fancy=fancy),
+                           widths[1]) + "  ", "dim"))
+    parts.append(("".join(_right(values[name], cells) for name, cells in cols), "text"))
+    return _line(*parts)
 
 
-def _files(state: State, at: float, fancy: bool) -> list[Text]:
+def _files(state: State, at: float, fancy: bool, limit: int = 99,
+           max_rows: int | None = None) -> list[Text]:
     """The rows of the files in flight, then `+ <n> more`."""
+    if limit >= 90:
+        path_cells, bar_cells = PATH_CELLS, BAR_CELLS
+        show_pct, show_size, show_speed = True, True, True
+    else:
+        show_speed = limit >= 42
+        show_size = limit >= 30
+        tail = (11 if show_size else 0) + (13 if show_speed else 0)
+        path_cells = PATH_CELLS if limit >= 72 else max(12, min(PATH_CELLS, limit - 20 - tail))
+        avail = limit - 4 - path_cells - 6 - tail
+        bar_cells = max(8, min(BAR_CELLS, avail)) if limit >= 56 and avail >= 8 else 0
+        show_pct = limit >= 36
+    total_rows = len(state.files) + (1 if state.more else 0)
+    if max_rows is not None and max_rows <= 0:
+        return []
+    if max_rows is not None and total_rows > max_rows:
+        shown_files = state.files[:max(0, max_rows - 1)]
+    else:
+        shown_files = state.files
+    hidden = (len(state.files) - len(shown_files)) + state.more
     rows = []
-    for file in state.files:
+    for file in shown_files:
         line = _line((theme.spinner(at, fancy) + " ", "focus"),
-                     (_pad(left(file.path, PATH_CELLS, fancy=fancy), PATH_CELLS) + "  ", "text"))
+                     (_pad(left(file.path, path_cells, fancy=fancy), path_cells) + "  ", "text"))
         if file.total:
             share = max(0.0, min(1.0, file.done / file.total))
-            filled = int(share * BAR_CELLS)
-            line.append(theme.glyph("full", fancy) * filled, style=theme.style("focus"))
-            if filled < BAR_CELLS:
-                rest = theme.glyph("head", fancy) + theme.glyph("rest", fancy) * (
-                    BAR_CELLS - filled - 1)
-                line.append(rest, style=theme.style("dim"))
-            line.append(_right(f"{int(share * 100)}%", 6), style=theme.style("text"))
+            if bar_cells:
+                filled = int(share * bar_cells)
+                line.append(theme.glyph("full", fancy) * filled, style=theme.style("focus"))
+                if filled < bar_cells:
+                    rest = theme.glyph("head", fancy) + theme.glyph("rest", fancy) * (
+                        bar_cells - filled - 1)
+                    line.append(rest, style=theme.style("dim"))
+            if show_pct:
+                line.append(_right(f"{int(share * 100)}%", 6), style=theme.style("text"))
             shown = size(file.total)
         else:
-            line.append(" " * (BAR_CELLS + 6))
+            if bar_cells or show_pct:
+                line.append(" " * (bar_cells + (6 if show_pct else 0)))
             shown = size(file.done)
         speed = f"{size(file.speed)}/s" if file.speed else theme.glyph("none", fancy)
-        line.append(_right(shown, 11) + _right(speed, 13), style=theme.style("text"))
+        tail_text = (_right(shown, 11) if show_size else "") + (
+            _right(speed, 13) if show_speed else "")
+        if tail_text:
+            line.append(tail_text, style=theme.style("text"))
         rows.append(line)
-    if state.more:
-        rows.append(_line((f"  + {state.more} more", "dim")))
+    if hidden:
+        rows.append(_line((f"  + {hidden} more", "dim")))
     return rows
 
 
@@ -271,8 +354,38 @@ def _foot(state: State, width: int, fancy: bool) -> Text:
     speed = f"{size(state.speed)}/s" if flying and state.speed else theme.glyph("none", fancy)
     counts = f"{speed}{sep}{state.saved:,} saved{sep}{state.failed:,} failed"
     keys = KEYS.replace(" · ", sep)
-    gap = max(2, width - _cells(INDENT + counts + keys) - 2)
-    return _line((counts, "text"), (" " * gap + keys, "dim"))
+    if width >= 100 or _cells(INDENT + counts + keys) + 4 <= width:
+        gap = max(2, width - _cells(INDENT + counts + keys) - 2)
+        return _line((counts, "text"), (" " * gap + keys, "dim"))
+    short_keys = "ctrl+c stop"
+    gap = width - _cells(INDENT + counts + short_keys) - 2
+    if gap >= 2:
+        return _line((counts, "text"), (" " * gap + short_keys, "dim"))
+    return _line((counts, "text"))
+
+
+def _reflowed_rows(widths: Sequence[int], width: int) -> int:
+    step = max(1, width)
+    return sum(max(1, (w - 1) // step + 1) if w > 0 else 1 for w in widths)
+
+
+def _clear_block(console: Any, up: int) -> None:
+    """Erase `up + 1` rows upward from the current cursor row, leaving cursor at column 0."""
+    from rich.control import Control
+    from rich.segment import ControlType
+
+    if console.legacy_windows:
+        steps: list[Any] = [ControlType.CARRIAGE_RETURN, (ControlType.ERASE_IN_LINE, 2)]
+        for _ in range(up):
+            steps.extend([(ControlType.CURSOR_UP, 1), (ControlType.ERASE_IN_LINE, 2)])
+        console.control(Control(*steps))
+        return
+    steps = [ControlType.CARRIAGE_RETURN]
+    if up:
+        steps.append((ControlType.CURSOR_UP, up))
+    console.control(Control(*steps))
+    console.file.write("\x1b[J")
+    console.file.flush()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -308,6 +421,8 @@ class Screen:
         self._console: Any = None
         self._drawn = -1
         self._at = clock.now()
+        self._last_size: tuple[int, int] | None = None
+        self._last_widths: list[int] = []
         # Held while a draw goes on, and while a question has the terminal (`paused`).
         self._turn = threading.Lock()
 
@@ -349,7 +464,7 @@ class Screen:
         from rich.live import Live
 
         block = Live(console=self._console, auto_refresh=False, transient=False,
-                     redirect_stdout=False, redirect_stderr=False)
+                     redirect_stdout=False, redirect_stderr=False, vertical_overflow="crop")
         block.start()
         return block
 
@@ -371,28 +486,87 @@ class Screen:
         block = self._block
         if block is None or not block.is_started:
             return
+        console = block.console
+        live_render = getattr(block, "_live_render", None)
+
+        def measure() -> tuple[int, int]:
+            w, h = console.size
+            return max(1, w), max(1, h)
+
+        def clear_if_changed(w: int, h: int) -> None:
+            if self._last_size is not None and (w, h) != self._last_size:
+                if self._last_widths:
+                    cols = w + int(bool(console.legacy_windows))
+                    up = max(0, min(_reflowed_rows(self._last_widths, cols), h) - 1)
+                    _clear_block(console, up)
+                if live_render is not None:
+                    live_render._shape = None
+                self._last_widths = []
+                self._last_size = (w, h)
+
+        width, height = measure()
+        clear_if_changed(width, height)
+
+        queued: list[Any] = []
         while True:
             try:
-                block.console.print(self._lines.get_nowait())
+                queued.append(self._lines.get_nowait())
             except queue.Empty:
                 break
+        if queued:
+            if live_render is not None and live_render._shape is not None:
+                _clear_block(console, max(0, live_render._shape[1] - 1))
+                live_render._shape = None
+                self._last_widths = []
+            hooks = getattr(console, "_render_hooks", None)
+            popped = bool(hooks and hooks[-1] is block)
+            if popped:
+                console.pop_render_hook()
+            try:
+                for line in queued:
+                    console.print(line)
+            finally:
+                if popped:
+                    console.push_render_hook(block)
+            width, height = measure()
+            self._last_size = (width, height)
+
         state = self._read()
         now = clock.now()
         if state.version != self._drawn:
             self._drawn = state.version
             self._at = now
         elapsed = state.elapsed + max(0.0, now - self._at)
-        console = block.console
-        try:
-            drawn = frame(state, command=self.command, width=console.width,
-                          height=max(1, console.height - 1),
-                          fancy=theme.unicode(self._stream), elapsed=elapsed)
-        except Exception as error:  # a bug in a frame must not end the run, nor tear its screen
-            from flnd.ui.log import ui
 
-            ui.record("error", f"the screen could not draw: {type(error).__name__}: {error}")
-            return
-        block.update(drawn, refresh=True)
+        drawn: Text | None = None
+        for _ in range(3):
+            try:
+                drawn = frame(state, command=self.command, width=width,
+                              height=max(1, height - 1),
+                              fancy=theme.unicode(self._stream), elapsed=elapsed)
+            except Exception as error:  # a bug in a frame must not end the run, nor tear its screen
+                from flnd.ui.log import ui
+
+                ui.record("error", f"the screen could not draw: {type(error).__name__}: {error}")
+                return
+            now_w, now_h = measure()
+            if (now_w, now_h) == (width, height):
+                break
+            width, height = now_w, now_h
+            clear_if_changed(width, height)
+        assert drawn is not None
+
+        orig_w, orig_h = console._width, console._height
+        try:
+            if orig_w is None:
+                console._width = width + int(bool(console.legacy_windows))
+            if orig_h is None:
+                console._height = height
+            block.update(drawn, refresh=True)
+        finally:
+            console._width, console._height = orig_w, orig_h
+        self._last_size = (width, height)
+        self._last_widths = [_cells(line) for line in drawn.plain.split("\n")]
 
 
 # The screen being drawn, for `paused`; None when there is none.
@@ -417,6 +591,8 @@ def paused() -> Iterator[None]:
         try:
             yield
         finally:
+            shown._last_size = None
+            shown._last_widths = []
             shown._block = shown._fresh()
             shown._drawn = -1
 

@@ -165,6 +165,35 @@ class FrameTest(unittest.TestCase):
         self.assertTrue(all(cell_len(line) <= 79 for line in lines))
         self.assertTrue(any("line1 line2" in line for line in lines))
 
+    def test_short_terminal_with_files_and_resources_never_exceeds_height(self) -> None:
+        files = tuple(
+            FileState("ins:example_user", f"posts/{n}.jpg", 50, 100, 10) for n in range(6)
+        )
+        state = msgspec.structs.replace(
+            MOCKUP, files=files, more=2,
+            resources=Resources(5, 312 << 20, 14.4, browser=3, browser_rss=200 << 20),
+        )
+        for h in (14, 12, 8, 5):
+            with self.subTest(height=h):
+                lines = screen.frame(state, command="get", width=100, height=h).plain.split("\n")
+                self.assertLessEqual(len(lines), h)
+                self.assertTrue(all(cell_len(line) <= 99 for line in lines))
+                self.assertTrue(any("twt:example_creator" in line for line in lines))
+                self.assertTrue(any("saved" in line for line in lines))
+
+    def test_narrow_terminal_adapts_columns_bars_and_footer_cleanly(self) -> None:
+        for w in (80, 60, 45, 30):
+            with self.subTest(width=w):
+                lines = screen.frame(MOCKUP, command="get", width=w, height=30).plain.split("\n")
+                self.assertTrue(all(cell_len(line) <= w - 1 for line in lines))
+                foot = lines[-1]
+                # Never chop "ctrl+c" mid-word.
+                self.assertFalse("ctrl+" in foot and "ctrl+c" not in foot)
+                if w == 60:
+                    self.assertTrue(any("%" in line for line in lines))
+                if w in (60, 80):
+                    self.assertTrue(any("saved" in line for line in lines))
+
 
 class ResourcesTest(unittest.TestCase):
     USE = Resources(5, 312 << 20, 14.4, browser=3, browser_rss=200 << 20, browser_cpu=9.0)
@@ -353,6 +382,117 @@ class ScreenTest(unittest.TestCase):
         question = next(n for n, row in enumerate(rows) if "Download Chromium?" in row)
         self.assertEqual(len(heads), 1, rows)
         self.assertGreater(heads[0], question)
+
+    def test_resize_shrink_and_grow_leaves_single_clean_block_in_pyte(self) -> None:
+        from flnd.ui import out
+
+        class ResizableTTY(_TTY):
+            def __init__(self, cols: int, rows: int) -> None:
+                super().__init__()
+                self.cols, self.rows = cols, rows
+
+            def size(self) -> tuple[int, int]:
+                return self.cols, self.rows
+
+        tty = ResizableTTY(100, 30)
+        version = [1]
+        shown = screen.Screen(
+            lambda: msgspec.structs.replace(MOCKUP, version=version[0]),
+            command="download", stream=tty, width=100, height=30,
+        )
+        term = pyte.Screen(100, 30)
+        stream = pyte.Stream(term)
+
+        def feed_new(offset: int) -> int:
+            buf = tty.getvalue()
+            chunk = buf[offset:]
+            stream.feed(chunk.replace("\n", "\r\n"))
+            return len(buf)
+
+        with mock.patch("shutil.get_terminal_size",
+                        side_effect=lambda *a: os.terminal_size(tty.size())):
+            shown.__enter__()
+            shown._done.set()
+            shown._thread.join()
+            try:
+                shown.tick()
+                pos = feed_new(0)
+
+                # Shrink width 100 -> 50, emit a warning above, and redraw.
+                tty.cols = 50
+                shown._console.width = 50
+                term.resize(30, 50)
+                version[0] += 1
+                out.warn("narrow warning")
+                shown.tick()
+                pos = feed_new(pos)
+
+                # Grow width 50 -> 110 and redraw.
+                tty.cols = 110
+                shown._console.width = 110
+                term.resize(30, 110)
+                version[0] += 1
+                shown.tick()
+                feed_new(pos)
+            finally:
+                shown.__exit__(None, None, None)
+
+        rows = [row.rstrip() for row in term.display]
+        heads = [n for n, row in enumerate(rows) if "flnd download" in row]
+        self.assertEqual(len(heads), 1, rows)
+        self.assertTrue(any("narrow warning" in row for row in rows[:heads[0]]), rows)
+
+    def test_resize_mid_tick_never_wraps_or_desyncs_cursor(self) -> None:
+        tty = _TTY()
+        shown = self.shown(lambda: MOCKUP, tty)
+        shown.tick()
+        orig_frame = screen.frame
+
+        def shrink_after_frame(*args, **kwargs):
+            res = orig_frame(*args, **kwargs)
+            if kwargs["width"] >= 99:
+                shown._console.width = 45
+            return res
+
+        pos = len(tty.getvalue())
+        with mock.patch.object(screen, "frame", side_effect=shrink_after_frame):
+            shown.tick()
+        chunk = tty.getvalue()[pos:]
+        self.assertEqual(shown._last_size, (44 if shown._console.legacy_windows else 45, 40))
+        self.assertLessEqual(max(shown._last_widths), 44)
+        self.assertEqual(chunk.count("flnd download"), 1, repr(chunk))
+
+    def test_queued_warnings_on_resize_do_not_draw_stale_wide_frame(self) -> None:
+        from flnd.ui import out
+
+        tty = _TTY()
+        shown = self.shown(lambda: MOCKUP, tty)
+        shown.tick()
+        pos = len(tty.getvalue())
+        shown._console.width = 45
+        out.warn("w1")
+        out.warn("w2")
+        shown.tick()
+        chunk = tty.getvalue()[pos:]
+        self.assertEqual(chunk.count("flnd download"), 1, repr(chunk))
+
+    def test_resize_reflow_accounts_for_legacy_windows_column_offset(self) -> None:
+        tty = _TTY()
+        shown = self.shown(lambda: MOCKUP, tty)
+        shown.tick()
+        # Simulate a line of width 50 on a 50-col legacy_windows console (size reports 49).
+        shown._last_widths = [50]
+        shown._console.width = 50
+        pos = len(tty.getvalue())
+        old_lw = shown._console.legacy_windows
+        shown._console.legacy_windows = True
+        try:
+            shown.tick()
+        finally:
+            shown._console.legacy_windows = old_lw
+        chunk = tty.getvalue()[pos:]
+        # With actual_cols = 49 + 1 = 50, a 50-cell line occupies 1 row -> up = 0 (no CURSOR_UP).
+        self.assertNotIn("\x1b[1A", chunk)
 
     def test_the_screen_reads_nothing_but_the_snapshot(self) -> None:
         tree = ast.parse(Path(screen.__file__).read_text(encoding="utf-8"))

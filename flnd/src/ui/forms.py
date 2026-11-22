@@ -357,10 +357,13 @@ def _app(owner: Any) -> Any:
     fancy = theme.unicode(sys.stdout)
 
     class View(Widget):
-        DEFAULT_CSS = "View { height: auto; }"
+        DEFAULT_CSS = "View { height: auto; width: 100%; }"
 
         def render(self) -> Any:
             return owner.view(fancy)
+
+        def on_resize(self) -> None:
+            self.refresh(layout=True)
 
     class Inline(App, inherit_bindings=False):
         CSS = "Screen:inline { border: none; height: auto; } Screen { background: ansi_default; }"
@@ -454,7 +457,7 @@ def _plain(owner: Any) -> Any:
     fd, stream = sys.stdin.fileno(), sys.stdout
     fancy = theme.unicode(stream)
     saved = termios.tcgetattr(fd)
-    drawn = 0
+    drawn: list[int] = []
     result: Any = PENDING
     try:
         # Raw: no echo, and Ctrl-C arrives as a key instead of a signal. TCSANOW keeps keys
@@ -483,19 +486,25 @@ def _plain(owner: Any) -> Any:
     return result
 
 
-def _frame(stream: Any, renderable: Any, drawn: int) -> int:
+def _frame(stream: Any, renderable: Any, drawn: list[int] | int = ()) -> list[int]:
     """Draw `renderable` over the `drawn` lines of the last frame (None: erase them)."""
     import io
     import shutil
 
     from rich.console import Console
+    from rich.text import Text
 
+    cols, rows_h = shutil.get_terminal_size()
+    cols, rows_h = max(1, cols), max(1, rows_h)
     if drawn:
-        stream.write(f"\x1b[{drawn - 1}A\r\x1b[J" if drawn > 1 else "\r\x1b[J")
+        widths = [1] * drawn if isinstance(drawn, int) else list(drawn)
+        visual = sum(max(1, (w - 1) // cols + 1) if w > 0 else 1 for w in widths)
+        up = max(0, min(visual, rows_h) - 1)
+        stream.write(f"\x1b[{up}A\r\x1b[J" if up > 0 else "\r\x1b[J")
     lines: list[str] = []
     if renderable is not None:
         console = Console(file=io.StringIO(), force_terminal=True, highlight=False,
-                          width=shutil.get_terminal_size().columns,
+                          width=cols,
                           color_system="auto" if theme.color(stream) else None)
         with console.capture() as captured:
             console.print(renderable)
@@ -503,7 +512,7 @@ def _frame(stream: Any, renderable: Any, drawn: int) -> int:
         # Raw mode doesn't turn a line break into a carriage return too.
         stream.write("\r\n".join(lines))
     stream.flush()
-    return len(lines)
+    return [Text.from_ansi(line).cell_len for line in lines]
 
 
 def _keys(fd: int) -> list[tuple[str, str | None]]:

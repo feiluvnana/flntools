@@ -190,6 +190,22 @@ class ListsTest(unittest.TestCase):
         with drive(("ctrl+c",)), self.assertRaises(Stopped):
             lists.plugins(lambda: PLUGINS, install=print, uninstall=print)
 
+    def test_narrow_terminal_and_wide_chars_fit_within_width(self) -> None:
+        from rich.cells import cell_len
+
+        wide_targets = [
+            *TARGETS,
+            TargetRow("twt:示例频道_示例频道_示例频道", True,
+                      ("posts", "media"), 10, 2048, 2 * H),
+        ]
+        view = View(
+            "Targets", lists.TARGET_COLUMNS,
+            lambda: [Row(n, lists._target(t, True)) for n, t in enumerate(wide_targets)],
+            (), None,
+        )
+        out = drawn(view.view(True), width=50)
+        self.assertTrue(all(cell_len(line) <= 50 for line in out.splitlines()), out)
+
 
 if __name__ == "__main__":
     unittest.main()

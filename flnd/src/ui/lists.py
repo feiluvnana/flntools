@@ -6,9 +6,11 @@ SPEC.md#commands-and-flags explains it.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from rich.cells import cell_len
 
 from flnd.errors import Error
 from flnd.ui import forms, out, theme
@@ -85,6 +87,44 @@ def show(title: str, columns: Sequence[Column], load: Callable[[], Sequence[Row]
         view.call(key, row)
 
 
+class _ResponsiveTable:
+    def __init__(self, columns: tuple[Column, ...], rows: list[Row],
+                 all_rows: Sequence[Row], here: Row | None, fancy: bool) -> None:
+        self.columns, self.rows, self.all_rows = columns, rows, all_rows
+        self.here, self.fancy = here, fancy
+
+    def __rich_console__(self, console: Any, options: Any) -> Iterator[Any]:
+        from rich.padding import Padding
+        from rich.table import Table
+        from rich.text import Text
+
+        widths = [
+            max(cell_len(col.title), *(cell_len(_words(row.cells[n])) for row in self.all_rows))
+            for n, col in enumerate(self.columns)
+        ]
+        widths[0] += 2
+        natural = 2 + sum(widths) + 3 * max(0, len(self.columns) - 1)
+        narrow = natural > options.max_width
+        grid = Table.grid(padding=(0, 2 if narrow else 3))
+        for col, width in zip(self.columns, widths):
+            if narrow:
+                grid.add_column(justify="right" if col.right else "left",
+                                no_wrap=True, overflow="ellipsis")
+            else:
+                grid.add_column(justify="right" if col.right else "left",
+                                no_wrap=True, min_width=width)
+        dim = theme.style("dim")
+        grid.add_row(Text.assemble("  ", Text(self.columns[0].title, style=dim)),
+                     *(Text(col.title, style=dim) for col in self.columns[1:]))
+        for row in self.rows:
+            on = row is self.here
+            cells = [_cell(cell, on) for cell in row.cells]
+            mark = Text(f"{theme.glyph('cursor', self.fancy)} " if on else "  ",
+                        style=theme.style("focus"))
+            grid.add_row(Text.assemble(mark, cells[0]), *cells[1:])
+        yield Padding(grid, (0, 0, 0, 2))
+
+
 class View(forms.Owner):
     """A list's state: its rows, cursor, filter, and whether a panel or a question is open."""
 
@@ -135,33 +175,12 @@ class View(forms.Owner):
         return Group(*parts)
 
     def table(self, rows: list[Row], fancy: bool) -> Any:
-        from rich.padding import Padding
-        from rich.table import Table
         from rich.text import Text
 
         if not rows:
             return Text("    nothing matches" if self.query else "    nothing here",
                         style=theme.style("dim"))
-        grid = Table.grid(padding=(0, 3))
-        # Widths from every row and title, so a filter doesn't move the columns.
-        widths = [max(len(column.title), *(len(_words(row.cells[n])) for row in self.rows))
-                  for n, column in enumerate(self.columns)]
-        widths[0] += 2
-        for column, width in zip(self.columns, widths):
-            grid.add_column(justify="right" if column.right else "left", no_wrap=True,
-                            min_width=width)
-        # The titles, as the pipe's table prints them, over the cursor's two cells.
-        dim = theme.style("dim")
-        grid.add_row(Text.assemble("  ", Text(self.columns[0].title, style=dim)),
-                     *(Text(column.title, style=dim) for column in self.columns[1:]))
-        here = self.current()
-        for row in rows:
-            on = row is here
-            cells = [_cell(cell, on) for cell in row.cells]
-            mark = Text(f"{theme.glyph('cursor', fancy)} " if on else "  ",
-                        style=theme.style("focus"))
-            grid.add_row(Text.assemble(mark, cells[0]), *cells[1:])
-        return Padding(grid, (0, 0, 0, 2))
+        return _ResponsiveTable(self.columns, rows, self.rows, self.current(), fancy)
 
     def panel(self, fancy: bool) -> Any:
         from rich.padding import Padding

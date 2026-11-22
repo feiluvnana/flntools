@@ -244,6 +244,32 @@ class NoTerminalTest(unittest.TestCase):
         self.assertEqual(forms.choose("Pick", ["a", "b"], default="b"), "b")
         self.show.assert_not_called()
 
+    def test_frame_computes_reflowed_rows_on_width_shrink_and_app_has_on_resize(self) -> None:
+        import os
+
+        from rich.text import Text
+
+        out = io.StringIO()
+        with mock.patch("shutil.get_terminal_size",
+                        return_value=os.terminal_size((40, 20))):
+            drawn = forms._frame(out, Text("x" * 50 + "\n" + "y" * 10), 0)
+        out.truncate(0)
+        out.seek(0)
+        # Shrink width to 20: 50-char line reflows to 3 rows + 1 row for 10-char line -> up=3.
+        with mock.patch("shutil.get_terminal_size",
+                        return_value=os.terminal_size((20, 20))):
+            forms._frame(out, None, drawn)
+        self.assertTrue(out.getvalue().startswith("\x1b[3A\r\x1b[J"), repr(out.getvalue()))
+
+        # Textual Inline View defines on_resize.
+        class DummyOwner:
+            def view(self, fancy):
+                return ""
+
+        app = forms._app(DummyOwner())
+        view_cls = next(iter(app.compose())).__class__
+        self.assertTrue(hasattr(view_cls, "on_resize"))
+
 
 if __name__ == "__main__":
     unittest.main()
