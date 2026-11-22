@@ -1424,7 +1424,7 @@ async def shared_browser(settings: RunShared) -> AsyncIterator[None]:
 # Each run's scheduler, by the run's browser, so every `RunShared` given that browser shares it.
 _SCHEDULERS: weakref.WeakKeyDictionary[browser.RunBrowser, jobs.Scheduler] = \
     weakref.WeakKeyDictionary()
-IDLE_TIMEOUT = 60.0
+IDLE_TIMEOUT = 20.0
 jobs.TABS, jobs.WARM_FREE = 6, 2
 _ACTIVE_TABS: weakref.WeakKeyDictionary[browser.RunBrowser, set[TargetTabs]] = \
     weakref.WeakKeyDictionary()

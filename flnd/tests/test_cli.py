@@ -858,5 +858,36 @@ class StoppingTest(unittest.TestCase):
         self.assertEqual(results, [(False, False)])
 
 
+class PriorityTest(unittest.TestCase):
+    def test_lower_priority_posix_and_windows(self):
+        from types import SimpleNamespace
+
+        from flnd import cli
+
+        calls = []
+
+        def fake_nice(inc):
+            calls.append(inc)
+            return 0 if inc == 0 else inc
+
+        for plat in ("darwin", "linux"):
+            calls.clear()
+            with mock.patch.object(cli.sys, "platform", plat), \
+                    mock.patch.object(cli.os, "nice", fake_nice, create=True):
+                cli._lower_priority()
+            self.assertEqual(calls, [0, 5])
+
+        set_calls = []
+        fake_kernel = SimpleNamespace(
+            GetCurrentProcess=lambda: 1,
+            GetPriorityClass=lambda h: 0x20,
+            SetPriorityClass=lambda h, level: set_calls.append(level),
+        )
+        with mock.patch.object(cli.sys, "platform", "win32"), \
+                mock.patch("ctypes.windll", SimpleNamespace(kernel32=fake_kernel), create=True):
+            cli._lower_priority()
+        self.assertEqual(set_calls, [0x4000])
+
+
 if __name__ == "__main__":
     unittest.main()

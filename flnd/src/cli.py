@@ -165,6 +165,28 @@ def _crashed(error: Exception, args: argparse.Namespace) -> int:
 # The commands: each docstring is the command's help
 # ---------------------------------------------------------------------------------------------
 
+def _lower_priority() -> None:
+    """Lower process priority for heavy runs on Windows, macOS and Linux."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetCurrentProcess()
+            if kernel32.GetPriorityClass(handle) in (0x20, 0x80, 0x100, 0x8000):
+                kernel32.SetPriorityClass(handle, 0x4000)
+        except Exception:
+            pass
+        return
+    if hasattr(os, "nice"):
+        try:
+            cur = os.nice(0)
+            if cur < 5:
+                os.nice(5 - cur)
+        except OSError:
+            pass
+
+
 def get(args: argparse.Namespace) -> int:
     """Get what the targets have, and follow them, so `flnd get` alone keeps them up to date.
 
@@ -183,6 +205,7 @@ def get(args: argparse.Namespace) -> int:
     Returns:
         The run's exit code.
     """
+    _lower_priority()
     command = _command(args)
     targets = _targets(args.targets)
     with _open(args) as fl:

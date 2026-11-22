@@ -1006,8 +1006,9 @@ class HiddenAskersTest(BrowserCase):
                 self.pages = __import__("weakref").WeakSet()
 
             async def tab(self, *, by_script=False):
-                page = _browser.Page(cast(Any, SimpleNamespace(
-                    url="", is_closed=lambda: False, goto=mock.AsyncMock())), cast(Any, self))
+                raw = SimpleNamespace(url="", is_closed=lambda: False, goto=mock.AsyncMock(),
+                                      route=mock.AsyncMock(), unroute=mock.AsyncMock())
+                page = _browser.Page(cast(Any, raw), cast(Any, self))
                 self.pages.add(page)
                 return page
 
@@ -1537,6 +1538,137 @@ class StealthHardeningTest(BrowserCase):
             run(check())
         self.assertEqual(seen_launch[0].get("ignore_default_args"), ["--enable-automation"])
         self.assertNotIn("ignore_default_args", seen_launch[1])
+
+
+class FootprintTest(BrowserCase):
+    def test_run_browser_passes_assets_and_reopens_when_assets_become_needed(self):
+        launched = []
+
+        class Fake:
+            def __init__(self, headless, assets):
+                self.headless, self.assets, self.closed, self.added = headless, assets, False, []
+                self.pages = __import__("weakref").WeakSet()
+
+            async def tab(self, *, by_script=False):
+                raw = SimpleNamespace(url="", is_closed=lambda: False, goto=mock.AsyncMock(),
+                                      route=mock.AsyncMock(), unroute=mock.AsyncMock())
+                page = _browser.Page(cast(Any, raw), cast(Any, self))
+                self.pages.add(page)
+                return page
+
+            async def add_cookies(self, jar):
+                self.added.extend(jar)
+
+            async def cookies(self):
+                return _cookies.Jar(self.added)
+
+            async def close(self):
+                self.closed = True
+
+        async def launch(**options):
+            launched.append(options["assets"])
+            return Fake(options["headless"], options["assets"])
+
+        one = _cookies.Jar([{"name": "a", "value": "1", "domain": ".one.example"}])
+        two = _cookies.Jar([{"name": "b", "value": "2", "domain": ".two.example"}])
+        shared = _browser.RunBrowser(LOOP)
+        with mock.patch.object(_browser, "launch", launch):
+            run(shared.tab(one, assets=False, hidden=True))
+            run(shared.tab(two, assets=True, hidden=True))
+        self.assertEqual(launched, [False, True])
+
+    def test_headless_shell_detected_across_platforms_and_used_when_headless(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in (
+                "chromium-1254/chrome-win64/chrome.exe",
+                "chromium-1254/chrome-mac-arm64/Google Chrome for Testing.app/"
+                "Contents/MacOS/Google Chrome for Testing",
+                "chromium-1254/chrome-linux/chrome",
+            ):
+                exe = root / rel
+                exe.parent.mkdir(parents=True, exist_ok=True)
+                exe.write_text("")
+                pw = SimpleNamespace(chromium=SimpleNamespace(executable_path=str(exe)))
+                self.assertFalse(_browser._headless_shell_installed(cast(Any, pw)))
+
+            shell = root / "chromium_headless_shell-1254" / "headless_shell"
+            shell.parent.mkdir(parents=True)
+            shell.write_text("")
+            for rel in (
+                "chromium-1254/chrome-win64/chrome.exe",
+                "chromium-1254/chrome-mac-arm64/Google Chrome for Testing.app/"
+                "Contents/MacOS/Google Chrome for Testing",
+                "chromium-1254/chrome-linux/chrome",
+            ):
+                pw = SimpleNamespace(chromium=SimpleNamespace(executable_path=str(root / rel)))
+                self.assertTrue(_browser._headless_shell_installed(cast(Any, pw)))
+
+            channels = []
+
+            class FakeRemote:
+                async def new_context(self, **options):
+                    return SimpleNamespace(close=mock.AsyncMock())
+
+                async def close(self):
+                    pass
+
+            async def fake_launch(*, channel=None, **options):
+                channels.append(channel)
+                return FakeRemote()
+
+            pw = SimpleNamespace(
+                chromium=SimpleNamespace(
+                    executable_path=str(root / "chromium-1254/chrome-linux/chrome"),
+                    launch=fake_launch,
+                ),
+                stop=mock.AsyncMock(),
+            )
+            with mock.patch.object(_browser, "_headful_ua", mock.AsyncMock(return_value="UA")), \
+                    mock.patch.object(_browser, "_lower_priority"):
+                run(_browser._open_context(
+                    cast(Any, pw), None, "chromium",
+                    {"headless": True, "args": []}, {},
+                ))
+            self.assertEqual(channels, [None])
+
+    def test_lower_priority_handles_windows_macos_and_linux(self):
+        import psutil
+
+        class FakeProc:
+            def __init__(self, name, level):
+                self._name, self._level = name, level
+                self.set_to = None
+
+            def name(self):
+                return self._name
+
+            def nice(self, value=None):
+                if value is None:
+                    return self._level
+                self.set_to = value
+                self._level = value
+                return None
+
+        chrome = FakeProc("chrome.exe", 0x20)
+        other = FakeProc("python.exe", 0x20)
+        me = SimpleNamespace(children=lambda recursive=True: [chrome, other])
+        with mock.patch.object(psutil, "Process", return_value=me), \
+                mock.patch.object(_browser.sys, "platform", "win32"), \
+                mock.patch.object(psutil, "BELOW_NORMAL_PRIORITY_CLASS", 0x4000, create=True), \
+                mock.patch.object(psutil, "NORMAL_PRIORITY_CLASS", 0x20, create=True):
+            _browser._lower_priority()
+        self.assertEqual((chrome.set_to, other.set_to), (0x4000, None))
+
+        for plat in ("darwin", "linux"):
+            helper = FakeProc("Google Chrome Helper", 0)
+            already = FakeProc("headless_shell", 15)
+            procs = [helper, already]
+            me = SimpleNamespace(children=lambda recursive=True, procs=procs: procs)
+            with mock.patch.object(psutil, "Process", return_value=me), \
+                    mock.patch.object(_browser.sys, "platform", plat):
+                _browser._lower_priority()
+            self.assertEqual((helper.set_to, already.set_to), (_browser.POSIX_NICE, None))
 
 
 if __name__ == "__main__":

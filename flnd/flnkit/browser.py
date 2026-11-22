@@ -282,12 +282,19 @@ LAUNCH_ARGS = [
     "--disable-sync", "--disable-translate", "--disable-client-side-phishing-detection",
     "--disable-component-update", "--disable-domain-reliability", "--mute-audio",
     "--disable-renderer-accessibility", "--autoplay-policy=user-gesture-required",
-    "--disk-cache-size=1", "--media-cache-size=1", "--js-flags=--max-old-space-size=512",
+    "--no-first-run", "--no-default-browser-check", "--metrics-recording-only",
+    "--disable-breakpad", "--disable-hang-monitor", "--disable-ipc-flooding-protection",
+    "--password-store=basic", "--use-mock-keychain", "--disable-dev-shm-usage",
+    "--disk-cache-size=1", "--media-cache-size=1", "--js-flags=--max-old-space-size=256",
     ("--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,"
      "AcceptCHFrame,InterestFeedContentSuggestions,ProcessPerSiteUpToMainFrameThreshold,"
      "SpareRendererForSitePerProcess,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,"
-     "QuickIntensiveWakeUpThrottlingAfterLoading"),
+     "QuickIntensiveWakeUpThrottlingAfterLoading,Prerender2,HeavyAdIntervention,"
+     "MediaSessionService,AutofillServerCommunication,CertificateTransparencyComponentUpdater"),
 ]
+# Browser process name substrings and POSIX niceness used to keep background tabs polite.
+BROWSER_PROCS = ("chrom", "headless", "firefox", "webkit", "msedge")
+POSIX_NICE = 10
 # `navigator.webdriver` is removed on `Navigator.prototype`, matching how an ordinary browser acts.
 HIDE_WEBDRIVER = (
     "Object.defineProperty(Navigator.prototype, 'webdriver', "
@@ -807,6 +814,49 @@ def _install_chromium(screen: Screen) -> None:
                             f"{installer.returncode}: {last}", hint=INSTALL_CHROME)
 
 
+def _headless_shell_installed(playwright: Playwright) -> bool:
+    """Whether Playwright's lighter `chromium-headless-shell` binary is present on disk."""
+    exe = Path(playwright.chromium.executable_path)
+    for parent in exe.parents:
+        if parent.name.startswith("chromium-"):
+            rev = parent.name.removeprefix("chromium-")
+            shell_dir = parent.parent / f"chromium_headless_shell-{rev}"
+            try:
+                return shell_dir.is_dir() and any(shell_dir.iterdir())
+            except OSError:
+                return False
+    return False
+
+
+def _lower_priority() -> None:
+    """Lower priority of browser child processes on Windows, macOS and Linux."""
+    try:
+        import psutil
+
+        children = psutil.Process().children(recursive=True)
+    except Exception:
+        return
+    for proc in children:
+        try:
+            name = proc.name().lower()
+            if not any(part in name for part in BROWSER_PROCS):
+                continue
+            if sys.platform == "win32":
+                below = getattr(psutil, "BELOW_NORMAL_PRIORITY_CLASS", None)
+                above = (
+                    getattr(psutil, "NORMAL_PRIORITY_CLASS", None),
+                    getattr(psutil, "ABOVE_NORMAL_PRIORITY_CLASS", None),
+                    getattr(psutil, "HIGH_PRIORITY_CLASS", None),
+                    getattr(psutil, "REALTIME_PRIORITY_CLASS", None),
+                )
+                if below is not None and proc.nice() in above:
+                    proc.nice(below)
+            elif proc.nice() < POSIX_NICE:
+                proc.nice(POSIX_NICE)
+        except Exception:
+            continue
+
+
 async def _open_context(playwright: Playwright, profile: Path | None, channel: str,
                         launch_options: dict[str, Any],
                         context_options: dict[str, Any]) -> tuple[BrowserContext, list]:
@@ -814,8 +864,13 @@ async def _open_context(playwright: Playwright, profile: Path | None, channel: s
     headless = launch_options["headless"]
     if profile is not None:
         refuse_profile(profile)
+    launch_channel: str | None = channel
+    if (headless and profile is None and channel == "chromium"
+            and _headless_shell_installed(playwright)):
+        launch_channel = None
     if profile is None:
-        remote = await playwright.chromium.launch(channel=channel, **launch_options)
+        remote = await playwright.chromium.launch(channel=launch_channel, **launch_options)
+        await asyncio.to_thread(_lower_priority)
         options = context_options
         if headless:
             options = {**options, "user_agent": await _headful_ua(playwright, channel, remote)}
@@ -823,14 +878,15 @@ async def _open_context(playwright: Playwright, profile: Path | None, channel: s
         return context, [context.close, remote.close, playwright.stop]
     args = launch_options["args"]
     if headless:
-        remote = await playwright.chromium.launch(channel=channel, headless=True)
+        remote = await playwright.chromium.launch(channel=launch_channel, headless=True)
         try:
             agent = await _headful_ua(playwright, channel, remote)
         finally:
             await remote.close()
         args = [*args, f"--user-agent={agent}"]
     context = await playwright.chromium.launch_persistent_context(
-        str(profile), channel=channel, **{**launch_options, "args": args}, **context_options)
+        str(profile), channel=launch_channel, **{**launch_options, "args": args}, **context_options)
+    await asyncio.to_thread(_lower_priority)
     return context, [context.close, playwright.stop]
 
 
@@ -995,6 +1051,7 @@ class Browser:
         self.pages: weakref.WeakSet[Page] = weakref.WeakSet()
         self._close_steps = close_steps
         self._closed = False
+        self._prioritized = False
 
     async def __aenter__(self) -> Browser:
         return self
@@ -1012,6 +1069,9 @@ class Browser:
             The tab.
         """
         raw = await self.raw.new_page()
+        if not self._prioritized:
+            self._prioritized = True
+            await asyncio.to_thread(_lower_priority)
         if self._override is not None:
             # The session stays open: an override lasts only as long as the session that set it.
             session = await self.raw.new_cdp_session(raw)
@@ -1951,11 +2011,15 @@ class RunBrowser:
                               if not any(_overlap(seen, jar) for seen in window[0])), None)
                 if found is None:
                     browser = await launch(stealth=self._stealth, headless=wanted,
-                                           screen=self.screen)
+                                           screen=self.screen, assets=assets)
                     found = ([], browser, [])
                     self._logins.append(found)
                 await found[1].add_cookies(jar)
                 found[0].append(jar)
+            if assets and not getattr(found[1], "assets", True):
+                index = self._logins.index(found)
+                await self._reopen(index, headless=found[1].headless, assets=True)
+                found = self._logins[index]
             # Opened under the lock, so a reveal can't close the window under the new tab.
             _, browser, idle = found
             page = idle.pop() if idle else await browser.tab(by_script=True)
@@ -1991,21 +2055,27 @@ class RunBrowser:
         async with self._launch():
             await self._reveal()
 
+    async def _reopen(self, index: int, *, headless: bool, assets: bool) -> None:
+        """Replace window `index` with a fresh one carrying its cookies and tabs."""
+        logins, old, idle = self._logins[index]
+        jar = await old.cookies()
+        tabs = [(page, page.raw.url) for page in list(old.pages)
+                if not page.raw.is_closed()]
+        await old.close()
+        new = await launch(stealth=self._stealth, headless=headless, screen=self.screen,
+                           assets=assets)
+        await new.add_cookies(jar)
+        for page, url in tabs:
+            await page.move(new, url)
+        self._logins[index] = (logins, new, idle)
+
     async def _reveal(self) -> None:
         """`reveal`, with the launch lock already held."""
         self._headless = False
-        for index, (logins, old, idle) in enumerate(self._logins):
+        for index, (_, old, _) in enumerate(self._logins):
             if not old.headless:
                 continue
-            jar = await old.cookies()
-            tabs = [(page, page.raw.url) for page in list(old.pages)
-                    if not page.raw.is_closed()]
-            await old.close()
-            new = await launch(stealth=self._stealth, headless=False, screen=self.screen)
-            await new.add_cookies(jar)
-            for page, url in tabs:
-                await page.move(new, url)
-            self._logins[index] = (logins, new, idle)
+            await self._reopen(index, headless=False, assets=getattr(old, "assets", True))
 
     async def release(self, pages: Iterable[Page]) -> None:
         """Take back a finished target's tabs: keep one open per window for its next target,
