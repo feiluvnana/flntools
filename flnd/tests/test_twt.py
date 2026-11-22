@@ -1443,6 +1443,27 @@ class AntiBanTest(unittest.TestCase):
         self.assertEqual([f.post.id for f in saved2], ["3"])
         self.assertGreaterEqual(ctx2.time.wall() - FAKE_WALL, 120)
 
+    def test_search_uses_gentler_rate_limit_cushion_and_window_pauses(self):
+        self.assertGreaterEqual(Twitter.pace, 2.0)
+        plugin = Twitter()
+        w1 = "https://x.com/search?q=example&src=typed_query&f=live"
+        w2 = "https://x.com/search?q=example+max_id%3A99&src=typed_query&f=live"
+        reset_at = str(int(FAKE_WALL) + 120)
+        ctx = fake(pages={
+            w1: FakePage(feeds=[
+                Sent(f"{API}q/SearchTimeline",
+                     page(item(tweet("100", [photo("a")])), cursor="c1", search=True),
+                     headers={"x-rate-limit-remaining": "15", "x-rate-limit-reset": reset_at}),
+            ]),
+            w2: FakePage(feeds=[
+                Sent(f"{API}q/SearchTimeline", page(cursor="c2", search=True)),
+            ]),
+        })
+        found = listed(plugin, ctx, "search", "example")
+        self.assertEqual([str(t) for t in found], ["https://x.com/i/web/status/100"])
+        # Waited past reset (>=120s + >=30s search buffer) plus >=15s between search windows.
+        self.assertGreaterEqual(ctx.time.wall() - FAKE_WALL, 165)
+
     def test_no_progress_429_reload_aborts_instead_of_looping(self):
         from unittest import mock
 

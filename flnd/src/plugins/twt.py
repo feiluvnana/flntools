@@ -168,7 +168,7 @@ class Twitter(Plugin):
     # Not required by the code, but X usually sends a logged-out browser to its login page.
     login = cookies("auth_token", url="https://x.com/i/flow/login")
     # X's `x-rate-limit-*` headers hold each operation's bucket; pace and CDN caps avoid bursts.
-    pace = 1.5
+    pace = 2.0
     limits = {"pbs.twimg.com": 4, "video.twimg.com": 4}
     browser = Browser.ANY
     stealth = True
@@ -289,11 +289,15 @@ class Twitter(Plugin):
             window_query = query
 
         completed = False
+        windows = 0
         tail: deque[tuple[int, date | None]] = deque(maxlen=SEARCH_TAIL)
         try:
             while True:
                 if window_query != query:
-                    await ctx.pause(random.uniform(4.0, 8.0), "pausing between search windows")
+                    windows += 1
+                    delay = (random.uniform(60.0, 120.0) if windows % 5 == 0
+                             else random.uniform(15.0, 30.0))
+                    await ctx.pause(delay, "pausing between search windows")
                 tail.clear()
                 added = False
                 scroll_meta: dict[str, Any] = {}
@@ -787,7 +791,13 @@ LOCK_WALLS = (
     "/i/flow/verify",
 )
 RATELIMIT_KEY = "twt.ratelimit"
-LOW_REMAINING = 5
+LOW_REMAINING = 15
+
+
+def _reset_wait(query: str, reset: int, now: float) -> float:
+    """How long to wait past a rate-limit reset, with a wider cushion for search."""
+    extra = random.uniform(30.0, 90.0) if query == SEARCH else random.uniform(15.0, 45.0)
+    return (reset - now) + extra
 
 
 def _parse_int(value: Any) -> int | None:
@@ -822,7 +832,7 @@ async def _wait_ratelimit(ctx: Ctx, query: str) -> None:
     reset = _parse_int(entry.get("reset"))
     now = ctx.time.wall()
     if rem is not None and rem <= LOW_REMAINING and reset is not None and reset > now:
-        wait = (reset - now) + random.uniform(15.0, 45.0)
+        wait = _reset_wait(query, reset, now)
         ctx.log("info", "{query}: rate-limit window low ({rem} left); waiting {wait:.0f}s",
                 query=query, rem=rem, wait=wait)
         await ctx.pause(wait, f"waiting for {query} rate-limit window to reset")
@@ -835,17 +845,22 @@ async def _proactive_pause(
     if rem is not None and rem <= LOW_REMAINING and reset is not None:
         now = ctx.time.wall()
         if reset > now:
-            wait = (reset - now) + random.uniform(15.0, 45.0)
+            wait = _reset_wait(query, reset, now)
             ctx.log("info", "{query}: rate-limit low ({rem} left); pausing {wait:.0f}s on tab",
                     query=query, rem=rem, wait=wait)
             await ctx.pause(wait, f"waiting for {query} rate-limit window to reset")
             return
-    if pages % 20 == 0:
-        await ctx.pause(random.uniform(10.0, 20.0), "pausing between timeline pages")
+    search = query == SEARCH
+    period = 10 if search else 20
+    if pages % period == 0:
+        delay = random.uniform(15.0, 30.0) if search else random.uniform(10.0, 20.0)
+        await ctx.pause(delay, "pausing between timeline pages")
     elif rem is not None and rem < 30:
-        await ctx.pause(random.uniform(3.0, 6.0), "pacing timeline scroll")
+        delay = random.uniform(5.0, 10.0) if search else random.uniform(3.0, 6.0)
+        await ctx.pause(delay, "pacing timeline scroll")
     else:
-        await ctx.pause(random.uniform(1.5, 3.5), "pacing timeline scroll")
+        delay = random.uniform(3.0, 6.0) if search else random.uniform(1.5, 3.5)
+        await ctx.pause(delay, "pacing timeline scroll")
 
 
 def _raise_graphql_errors(errors: Any) -> None:
