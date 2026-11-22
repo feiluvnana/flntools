@@ -296,6 +296,9 @@ class ResolveTest(unittest.TestCase):
             ("loi:post/12", R("loi", "post/12", "post", ("archive", "photo"))),
             ("loi:12", R("loi", "post/12", "post", ("archive", "photo"))),
             ("loi:12|photo", N("loi", "post/12", "post", ("photo",))),
+            ("loi:author/183", R("loi", "author/183", "author", ())),
+            ("loi:author/183|photo", N("loi", "author/183", "author", ("photo",))),
+            ("https://loix.cc/library/loier/183", R("loi", "author/183", "author", ())),
             ("mht:chapter/1001", R("mht", "chapter/1001", "chapter", ())),
             ("fbk:video/123", R("fbk", "video/123", "video", ())),
             ("https://fb.com/reel/123", R("fbk", "video/123", "video", ())),
@@ -350,6 +353,7 @@ class MixedRunTest(LibraryCase):
 
     def test_a_followed_user_stops_at_saved_posts_in_a_mixed_run(self):
         self.fl.get("exq:example_user").wait()
+        (self.home / "config.toml").write_text('[defaults]\nfresh = "0"\n', encoding="utf-8")
         seen = []
         real = crawl.download
 

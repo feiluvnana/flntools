@@ -545,6 +545,22 @@ class PrecedenceTest(LibraryCase):
         config.check_folder(None, sources, targets, stored={"exq:words"})
         config.check_folder(None, sources, targets[1:])
 
+    def test_fresh_and_timeout_durations(self):
+        self.assertEqual(config.duration_seconds("0"), 0.0)
+        self.assertEqual(config.duration_seconds("1d"), 86400.0)
+        self.assertEqual(config.duration_seconds("10m"), 600.0)
+        self.assertEqual(config.duration_seconds("2h"), 7200.0)
+        self.assertEqual(config.duration_seconds("30s"), 30.0)
+        self.assertEqual(config.duration_seconds("1w"), 7 * 86400.0)
+        for bad in ("", "10", "5x", "-1d"):
+            with self.subTest(bad=bad), self.assertRaises(UsageError):
+                config.duration_seconds(bad)
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.toml").write_text('[defaults]\nfresh = "12h"\ntimeout = "5m"\n',
+                                               encoding="utf-8")
+        found = config.read(self.home, user=None)
+        self.assertEqual((found.defaults.fresh, found.defaults.timeout), ("12h", "5m"))
+
 
 if __name__ == "__main__":
     unittest.main()

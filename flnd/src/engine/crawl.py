@@ -2490,12 +2490,14 @@ def target_root(home: Path, target: Target, options: Options | None = None,
 def _rooted(source: Plugin | None, target: Target | None, options: Options | None) -> bool:
     """Whether a single post (not a search's hit) is filed from `media/<plugin>/`: its route
     has no categories, or its folder starts with `{author}`."""
-    if source is None or target is None or target.kind not in store.POST_KINDS or (
-            options is not None and options.query):
+    if source is None or target is None or target.kind not in store.POST_KINDS:
         return False
     route = next((r for r in source.routes if r.kind == target.kind), None)
-    return route is not None and (
-        not route.categories or _plugin_folder(source, route, None).startswith("{author}"))
+    if route is None:
+        return False
+    if _plugin_folder(source, route, None).startswith("{author}"):
+        return True
+    return not route.categories and not (options is not None and options.query)
 
 
 def checked_dest(root: Path, relative: str, *, check: bool = False) -> Path:

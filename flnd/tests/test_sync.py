@@ -112,6 +112,7 @@ class FetchTest(SyncCase):
     def test_sync_takes_every_category(self):
         runs = []
         self.download(Options(categories=("posts",)))
+        (self.home / "config.toml").write_text('[defaults]\nfresh = "0"\n', encoding="utf-8")
         record = recorded(lambda chosen: runs.extend(options for _, options in chosen))
         with mock.patch.object(_Runner, "run", record):
             self.sync()
@@ -132,6 +133,7 @@ class SummaryTest(SyncCase):
         # History keys are per source, so aaa:b, saving the same names, finds them saved and
         # stays empty.
         self.download(texts=("aaa:a", "aaa:b"))
+        (self.home / "config.toml").write_text('[defaults]\nfresh = "0"\n', encoding="utf-8")
         gone = Site(self, **{"a.jpg": b"", "b.jpg": b""})
         self.requests.clear()
         self.dest.truncate(0)
@@ -203,6 +205,82 @@ class SyncOptInTest(SyncCase):
         self.assertEqual([info.target for info in self.engine().target_follow(["aaa:a"], on=False)],
                          [Target("aaa:a", kind="user")])
         self.assertEqual(self.plan(), [])
+
+
+class FreshAndTimeoutTest(SyncCase):
+    def test_fresh_skips_completed_categories_until_elapsed_or_again(self):
+        calls = []
+
+        class Dual(Plugin):
+            code, name, api = "dul", "Dual", 2
+
+            @route("dul:{user}")
+            async def user(self, ctx, user):
+                return user
+
+            @user.category
+            async def posts(self, ctx, user):
+                calls.append("posts")
+                yield Post("p1", [File(f"{CDN}/a.jpg", name="a.jpg")])
+
+            @user.category
+            async def reels(self, ctx, user):
+                calls.append("reels")
+                yield Post("r1", [File(f"{CDN}/b.jpg", name="b.jpg")])
+
+        # Complete `posts` only.
+        self.engine(Dual).download(["dul:u|posts"], sync=True)
+        self.assertEqual(calls, ["posts"])
+        # Requesting `posts` again within 1d is ignored completely.
+        calls.clear()
+        self.engine(Dual).download(["dul:u|posts"], sync=True)
+        self.assertEqual(calls, [])
+        # Requesting all categories skips `posts` and runs only `reels`.
+        self.engine(Dual).download(["dul:u"], sync=True)
+        self.assertEqual(calls, ["reels"])
+        # Now both are complete within 1d: requesting all is ignored completely.
+        calls.clear()
+        self.engine(Dual).download(["dul:u"], sync=True)
+        self.assertEqual(calls, [])
+        # `--again` bypasses freshness.
+        self.engine(Dual).download(["dul:u|posts"], again=True, sync=True)
+        self.assertEqual(calls, ["posts"])
+        # Setting `fresh = "0"` disables freshness.
+        (self.home / "config.toml").write_text('[defaults]\nfresh = "0"\n', encoding="utf-8")
+        calls.clear()
+        self.engine(Dual).download(["dul:u|posts"], sync=True)
+        self.assertEqual(calls, ["posts"])
+
+    def test_download_timeout_aborts_stalled_file(self):
+        import asyncio
+
+        from flnd.engine import jobs, save
+
+        async def run():
+            with _store.open(self.home) as db:
+                sched = jobs.Scheduler()
+                events = []
+
+                async def emit(ev):
+                    events.append(ev)
+
+                saver = save.Saver(db, sched, emit, timeout=0.05)
+
+                async def stall(*args, **kwargs):
+                    await asyncio.sleep(5)
+
+                item = save.Item(
+                    key="aaa:p1", target=Target("aaa:a", kind="user"), category="posts",
+                    post="p1", file=File(f"{CDN}/a.jpg", name="a.jpg"),
+                    dest=self.home / "a.jpg",
+                )
+                with mock.patch.object(saver, "_land", side_effect=stall):
+                    result = await saver._file(item, client=None, plugin="aaa")
+                return result
+
+        result = asyncio.run(run())
+        self.assertIsInstance(result, save._Failure)
+        self.assertIn("timed out", str(result.error))
 
 
 if __name__ == "__main__":

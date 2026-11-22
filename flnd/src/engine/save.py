@@ -28,7 +28,7 @@ from urllib.parse import urlsplit
 
 import msgspec
 
-from flnd.engine import jobs, store
+from flnd.engine import config, jobs, store
 from flnd.engine.events import BUSY, Failed, Saved, Skipped, sink
 from flnd.engine.jobs import Job, Kind
 from flnd.errors import (
@@ -479,7 +479,7 @@ class Saver:
                  emit: Callable[[Any], Awaitable[None]], *,
                  run: int | None = None, dedupe: bool = True, sidecars: bool = True,
                  exec: Sequence[str] | None = None, exec_timeout: float = 3600,
-                 stop: threading.Event | None = None, tally: Any = None,
+                 timeout: float = 600, stop: threading.Event | None = None, tally: Any = None,
                  sample: Callable[[Error], None] | None = None,
                  claims: Any = None) -> None:
         if exec is not None and (not isinstance(exec, (list, tuple)) or not exec
@@ -489,7 +489,7 @@ class Saver:
         self.store, self.scheduler, self.run = db, scheduler, run
         self.emit = sink(emit)
         self.dedupe, self.sidecars, self.exec, self.stop = dedupe, sidecars, exec, stop
-        self.exec_timeout = exec_timeout
+        self.exec_timeout, self.timeout = exec_timeout, timeout
         self.tally, self.sample = tally, sample
         self.claims = claims
         self.done = _Done()
@@ -556,7 +556,12 @@ class Saver:
         """One file into place and its row made; None when it was dropped, busy or had no URL."""
         flow = _Flow()
         try:
-            landed = await self._land(item, client, plugin, flow)
+            coro = self._land(item, client, plugin, flow)
+            landed = await (asyncio.wait_for(coro, timeout=self.timeout)
+                            if self.timeout > 0 else coro)
+        except TimeoutError:
+            error = NetworkError(f"{item.dest.name}: timed out after {int(self.timeout)}s")
+            return await self._failed(item, error, flow)
         except _Dropped:
             self._count(item, queued=-1)
             if self.claims is not None:
@@ -1176,7 +1181,8 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     claims = getattr(settings, "claims", None)
     saver = Saver(db, scheduler, settings.emit, run=settings.run, dedupe=defaults.dedupe,
                   sidecars=defaults.sidecars, exec=settings.exec or defaults.exec or None,
-                  exec_timeout=defaults.exec_timeout, stop=settings.stop.now,
+                  exec_timeout=defaults.exec_timeout,
+                  timeout=config.duration_seconds(defaults.timeout), stop=settings.stop.now,
                   tally=settings.tally, sample=lambda error: sampled(settings, error),
                   claims=claims)
     settings.saver = saver

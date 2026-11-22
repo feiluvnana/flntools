@@ -219,14 +219,25 @@ ROUTES = [
     ("https://mobile.loix.cc/lois/5930", "5930"), ("https://loix.cc/lois/5930/lois/7", "5930"),
     ("https://moegoat.com/lois/5930", "5930"), ("https://www.moegoat.com/lois/5930/", "5930"),
     ("https://loix.cc/lois/0", "0"),
-    ("loi:example_user", None), ("loi:abc", None), ("https://example.com/lois/5930", None),
+    ("loi:example_user", None), ("loi:abc", None), ("loi:author/abc", None),
+    ("https://example.com/lois/5930", None),
+]
+AUTHORS = [
+    ("loi:author/183", "183"),
+    ("https://loix.cc/library/loier/183", "183"),
+    ("https://www.loix.cc/library/loier/183/", "183"),
+    ("loix.cc/library/loier/183?tab=1", "183"),
+    ("https://moegoat.com/library/loier/183", "183"),
+    ("https://www.moegoat.com/library/loier/183/", "183"),
 ]
 SEARCHES = [
     ("loi?night city", "night city"), ("https://loix.cc/search?q=night+city", "night city"),
     ("https://www.moegoat.com/search?q=cats&page=2", "cats"),
 ]
 REFUSED = [
-    ("https://loix.cc/library/loier/7", "author and library pages"),
+    ("https://loix.cc/library", "library pages aren't supported"),
+    ("https://loix.cc/library/tag/7", "library pages aren't supported"),
+    ("https://loix.cc/library/loier/abc", "library pages aren't supported"),
     ("https://loix.cc/", "that page isn't supported"), ("loix.cc/5930", "that page isn't"),
     ("https://moegoat.com/vip", "that page isn't supported"),
     ("https://loix.cc/lois/", "that page isn't"), ("https://loix.cc/lois/abc", "that page isn't"),
@@ -242,7 +253,11 @@ class RoutesTest(unittest.TestCase):
                 self.assertEqual(found and (found.text, found.kind),
                                  value and (f"loi:post/{value}", "post"))
 
-    def test_searches_and_refused_pages(self):
+    def test_authors_searches_and_refused_pages(self):
+        for text, author_id in AUTHORS:
+            with self.subTest(text=text):
+                found = Loibus.resolve(text)
+                self.assertEqual((found.text, found.kind), (f"loi:author/{author_id}", "author"))
         for text, query in SEARCHES:
             with self.subTest(text=text):
                 found = Loibus.resolve(text)
@@ -483,8 +498,46 @@ class SearchTest(unittest.TestCase):
     def test_a_rate_answer_on_the_search_is_held_and_a_post_refusal_is_not(self):
         rate = _net.Response(200, f"{API}lois", {}, json.dumps(RATE).encode())
         self.assertEqual(Loibus().blocked(rate), 0.0)
+        author = _net.Response(200, f"{API}user/library/loier/id", {}, json.dumps(RATE).encode())
+        self.assertEqual(Loibus().blocked(author), 0.0)
         post = _net.Response(200, f"{API}lois/5930", {}, json.dumps(RATE).encode())
         self.assertIsNone(Loibus().blocked(post))
+
+
+class AuthorTest(unittest.TestCase):
+    def _ctx(self, *answers):
+        pages = iter(answers)
+        return fake(**{"user/library/loier/id": lambda request: Reply(next(pages))})
+
+    def _run(self, ctx, target="author/183"):
+        async def run():
+            return [item async for item in Loibus().author(ctx, target)]
+        return asyncio.run(run())
+
+    def test_pages_follow_pagination_and_dedupe(self):
+        page1 = {"data": [{"id": i} for i in range(1, 21)],
+                 "pagination": {"current_page": 1, "total_pages": 2}}
+        page2 = {"data": [{"id": 20}, {"id": 21}],
+                 "pagination": {"current_page": 2, "total_pages": 2}}
+        ctx = self._ctx(page1, page2)
+        found = self._run(ctx)
+        self.assertEqual([item.text for item in found], [f"loi:post/{i}" for i in range(1, 22)])
+        params = [options["params"] for _, _, options in ctx.seen.requests]
+        self.assertEqual(params, [
+            {"category_id": "183", "sort": "latest", "page": "1"},
+            {"category_id": "183", "sort": "latest", "page": "2"},
+        ])
+
+    def test_total_pages_stops_without_an_extra_request(self):
+        page1 = {"data": [{"id": i} for i in range(1, 21)],
+                 "pagination": {"current_page": 1, "total_pages": 1}}
+        ctx = self._ctx(page1)
+        self.assertEqual(len(self._run(ctx)), 20)
+        self.assertEqual(len(ctx.seen.requests), 1)
+
+    def test_empty_author_yields_nothing(self):
+        ctx = self._ctx({"data": [], "pagination": {"current_page": 1, "total_pages": 1}})
+        self.assertEqual(self._run(ctx), [])
 
 
 class RateTest(unittest.TestCase):
@@ -566,6 +619,63 @@ class EngineTest(EngineCase):
         self.run_engine(Loibus, targets=["loi:5930"], options=Options(categories=("all",)))
         self.assertTrue((self.folder / "info.md").is_file())
         self.assertEqual(self.failures(), [])
+
+    def test_an_author_discovers_and_downloads_its_posts(self):
+        self.routes[f"{API}user/library/loier/id"] = _net.reply(
+            200, json={"data": [{"id": 5930}], "pagination": {"current_page": 1, "total_pages": 1}})
+        self.run_engine(Loibus, targets=["loi:author/183"], options=Options(categories=("photo",)))
+        self.assertTrue((self.folder / "info.md").is_file())
+        self.assertEqual(self.failures(), [])
+
+    def test_an_author_ignores_already_completed_posts_without_spending_quota(self):
+        import flnd
+
+        self.routes[f"{API}{LINKS_PATH}"] = _net.reply(200, json={"data": {"sv_list": [
+            {"sv_name": "A", "sv_url": encrypt("https://one.example/set.zip")}]}})
+        self.routes["https://one.example/set.zip"] = _net.reply(200, content=SEVEN_ZIP)
+        self.routes[f"{API}user/library/loier/id"] = _net.reply(
+            200, json={"data": [{"id": 5930}], "pagination": {"current_page": 1, "total_pages": 1}})
+        with flnd.open(self.home) as fl:
+            # First download post 5930 directly.
+            fl.get("loi:5930").wait()
+            self.assertTrue((self.folder / "set.zip").is_file())
+            # Then run the whole author: post 5930 is already completed and must not touch links.
+            self.requests.clear()
+            fl.get("loi:author/183").wait()
+        asked_paths = [request.url.path for request in self.requests]
+        self.assertEqual(asked_paths, ["/api/user/library/loier/id"])
+
+    def test_a_quota_skipped_post_is_retried_next_day_while_completed_ones_are_ignored(self):
+        import flnd
+
+        post2 = {**POST, "id": 5931, "loi_title": "Day two set", "images": []}
+        self.routes[f"{API}lois/5931"] = _net.reply(200, json={"data": post2})
+        self.routes[f"{API}{LINKS_PATH}"] = _net.reply(200, json={"data": {"sv_list": [
+            {"sv_name": "A", "sv_url": encrypt("https://one.example/set1.zip")}]}})
+        self.routes[f"{API}user/loi/download_v6/5931"] = _net.reply(200, json={"data": {"sv_list": [
+            {"sv_name": "A", "sv_url": encrypt("https://one.example/set2.zip")}]}})
+        self.routes["https://one.example/set1.zip"] = _net.reply(200, content=SEVEN_ZIP)
+        self.routes["https://one.example/set2.zip"] = _net.reply(200, content=SEVEN_ZIP)
+        self.routes[f"{API}user/library/loier/id"] = _net.reply(
+            200, json={"data": [{"id": 5930}, {"id": 5931}],
+                       "pagination": {"current_page": 1, "total_pages": 1}})
+        folder2 = self.target_dir("loi", "") / "example_author/5931_Day_two_set"
+        with flnd.open(self.home) as fl:
+            # Day 1: quota allows only 1 post (5930); 5931's archive is skipped for quota.
+            with mock.patch.dict("flnd.plugins.loi.VIP_DAILY_LIMITS", {1: 1}):
+                fl.get("loi:author/183").wait()
+            self.assertTrue((self.folder / "set1.zip").is_file())
+            self.assertFalse((folder2 / "set2.zip").is_file())
+            # Day 2: quota resets; 5930 is ignored (no links request), 5931 downloads its archive.
+            self.requests.clear()
+            with mock.patch("flnd.plugins.loi._today", return_value="2099-01-02"), \
+                    mock.patch.dict("flnd.plugins.loi.VIP_DAILY_LIMITS", {1: 1}):
+                fl.get("loi:author/183").wait()
+        asked_paths = [request.url.path for request in self.requests]
+        self.assertNotIn(f"/api/{LINKS_PATH}", asked_paths)
+        self.assertNotIn("/api/lois/5930", asked_paths)
+        self.assertIn("/api/user/loi/download_v6/5931", asked_paths)
+        self.assertTrue((folder2 / "set2.zip").is_file())
 
 
 class LoginTest(EngineCase):

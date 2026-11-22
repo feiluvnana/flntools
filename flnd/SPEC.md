@@ -167,8 +167,8 @@ library says `give at least one target` when a call ends with none.
   hits in one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search gets
   only the targets it had not found before.
 - `--limit N` (at least 1) is at most N posts per target, or N targets per search or other
-  discovering route (`mht:author/...`, `mht:genre/...`). `--limit 0` is `limit must be at
-  least 1`.
+  discovering route (`mht:author/...`, `mht:genre/...`, `loi:author/...`). `--limit 0` is `limit
+  must be at least 1`.
 
 ### Accepted and refused forms by plugin
 
@@ -270,12 +270,14 @@ characters), `t.me/` alone, `web.telegram.org` links: `tlg: can't read <text>`.
 | Form | Route | Reads |
 | --- | --- | --- |
 | `loi:post/<id>`, `loix.cc/lois/<id>`, `moegoat.com/lois/<id>` (digits) | `post` | one post |
+| `loi:author/<id>`, `loix.cc/library/loier/<id>`, `moegoat.com/library/loier/<id>` (digits) | `author` | an author's posts |
 | `loi?<words>`, `loix.cc/search?q=<words>`, `moegoat.com/search?q=<words>` | `search` | a search |
 
-The old `loi:<id>` reads too. A search finds `loi:post/<id>` (`--limit N` is N posts) and needs
-`--folder`; its paging is unconfirmed live. Every other page of both domains is
-refused: `that page isn't supported; give a post or a search` (`/library...`: `author and library
-pages aren't supported; ...`). `loi:post/<id>|archive` and `|photo` are allowed.
+The old `loi:<id>` still reads as a post. Both `author` and `search` find `loi:post/<id>`
+(`--limit N` is N posts); a search needs `--folder`, an author does not, and a search's paging is
+unconfirmed live. Every other page of both domains is refused: `that page isn't supported; give a
+post, an author or a search` (`/library...`: `library pages aren't supported; ...`).
+`loi:post/<id>|archive` and `|photo` (and on `loi:author/<id>`) are allowed.
 
 **mht**
 
@@ -911,6 +913,8 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
 | `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
 | `switch` | bool | `false` | move a refused request to the plugin's next account |
+| `fresh` | text | `"1d"` | ignore categories marked complete within this duration (`"1d"`, `"12h"`, `"0"` off) |
+| `timeout` | text | `"10m"` | abort a stalled file download after this duration (`"10m"`, `"600s"`, `"0"` off) |
 
 `[plugins.<code>]` (one table per plugin):
 
@@ -1125,10 +1129,14 @@ up to 32.
   read once per run, counted per UTC day in the plugin's state; once it is used up `archive` skips
   the day's posts with a warning, and the run says how many were left for tomorrow. A 429 holds for
   its `Retry-After`; a JSON rate answer is a block hold.
+- **Author:** `loi:author/<id>` reads
+  `GET api/user/library/loier/id?category_id=<id>&sort=latest&page=<n>`: each page's `data` ids as
+  `loi:post/<id>`, ended by `pagination.total_pages` or a short page; rate answers are held like
+  the links'.
 - **Search:** `loi?<words>` reads `GET api/lois?keyword=<words>&page=<n>&page_size=20`: each page's
   `data.list` ids as `loi:post/<id>`, ended by a short page; rate answers are held like the links'.
-- **Known gaps:** no author or tag target; a post counts once its links are fetched; Baidu links
-  go to info.md only; an expired token reads as "no download links".
+- **Known gaps:** no tag target; a post counts once its links are fetched; Baidu links go to
+  info.md only; an expired token reads as "no download links".
 - **Saved as:** `media/loi/example_author/1234567890_Example_Title/info.md`
 
 ### mht (mimihentai)

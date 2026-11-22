@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime
 import functools
 import re
 from collections import ChainMap
@@ -38,7 +39,7 @@ from flnd.errors import (
 )
 from flnd.plugin import Account, Browser, Plugin, Range, Target
 from flnd.ui.log import ui
-from flnkit import net, text
+from flnkit import clock, net, text
 
 __all__ = ["Chosen", "Engine", "Results", "TargetInfo"]
 
@@ -58,6 +59,53 @@ def _account_stop(error: Error | None) -> LoginError | Blocked | None:
             isinstance(error, Blocked) and not error.retryable):
         return error
     return None
+
+
+def _complete_wall(stamp: str, last_sync: str) -> float | None:
+    """UTC Unix timestamp when a category completed, from `complete[cat]` and `last_sync`."""
+    text_val = last_sync if (last_sync and last_sync.startswith(stamp)) else stamp
+    try:
+        if "T" in text_val:
+            dt = datetime.datetime.fromisoformat(text_val.replace("Z", "+00:00"))
+        else:
+            dt = datetime.datetime.fromisoformat(f"{text_val}T00:00:00+00:00")
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.UTC)
+    return dt.timestamp()
+
+
+async def _child_done(
+    run: PluginRun,
+    db: store.Store | None,
+    child: Target,
+    categories: tuple[str, ...],
+    rows: Mapping[str, store.TargetRow],
+    failures: Mapping[str, tuple[bool, int, int]],
+) -> bool:
+    """Whether a discovered target is already completed in `db` for `categories`."""
+    if db is None or child.plugin != run.source.code:
+        return False
+    child_key = store.key(child)
+    child_row = rows.get(child_key)
+    if child_row is None or child_key in failures:
+        return False
+    kind = child.kind or child_row.kind
+    route = next((r for r in run.source.routes if r.kind == kind), None)
+    if route is None:
+        return False
+    open_cats = set(child_row.cursors) | set(child_row.gaps)
+    if not route.categories:
+        return route.kind in child_row.complete and route.kind not in open_cats
+    own = tuple(cat.name for cat in route.categories if cat.own)
+    wanted = own if (not categories or "all" in categories) else categories
+    if any(cat not in child_row.complete or cat in open_cats for cat in wanted):
+        return False
+    if route.single and child.plugin == "loi" and "archive" in wanted:
+        post_id = child.value.removeprefix(f"{route.kind}/")
+        return bool(await run.off(db.post_saved, child_key, post_id, "archive"))
+    return True
 
 
 def _query_sync_state(
@@ -433,9 +481,14 @@ class Engine:
         with stopping(self.stop) as stop:
             async with self._recording("get", [t for t, _ in chosen]), \
                     self._live(), self._running(stop) as runner:
-                results: dict[int, TargetReport] = {}
-                await self._sync_normal(runner, chosen, results, stop)
-                await self._sync_queries(runner, chosen, results, stop)
+                active, results = await self._prune_fresh(runner, chosen)
+                if active:
+                    active_chosen = [(t, o) for _, t, o in active]
+                    sub: dict[int, TargetReport] = {}
+                    await self._sync_normal(runner, active_chosen, sub, stop)
+                    await self._sync_queries(runner, active_chosen, sub, stop)
+                    for sub_i, (orig_i, _, _) in enumerate(active):
+                        results[orig_i] = sub[sub_i]
                 report = Results(tuple(results[i] for i in range(len(chosen))))
             return self._finish_report(report, stop)
 
@@ -522,6 +575,77 @@ class Engine:
         found = {store.key(info.target): info for info in self.target_ls()}
         return [found[key] for key in keys if key in found]
 
+    async def _prune_fresh(
+        self,
+        runner: _Runner,
+        chosen: Sequence[tuple[Target, Options]],
+    ) -> tuple[list[tuple[int, Target, Options]], dict[int, TargetReport]]:
+        """Drop targets or categories marked complete within `[defaults] fresh`."""
+        fresh_text = runner.settings.config.defaults.fresh
+        fresh_s = config.duration_seconds(fresh_text)
+        if fresh_s <= 0:
+            return [(i, t, o) for i, (t, o) in enumerate(chosen)], {}
+        rows = await _off(self._rows)
+        db = runner.settings.db
+        failures = await _off(db.target_failures) if db is not None else {}
+        now = clock.wall()
+        active: list[tuple[int, Target, Options]] = []
+        skipped: dict[int, TargetReport] = {}
+        for i, (target, options) in enumerate(chosen):
+            if options.again or options.since is not None or options.until is not None:
+                active.append((i, target, options))
+                continue
+            tkey = store.key(target)
+            row = rows.get(tkey)
+            route = self._route(target)
+            if row is None or route is None or tkey in failures:
+                active.append((i, target, options))
+                continue
+            open_cats = set(row.cursors) | set(row.gaps)
+            route_name = getattr(route, "name", None) or route.kind
+
+            def is_fresh(name: str, row: store.TargetRow = row,
+                         open_cats: set[str] = open_cats) -> bool:
+                stamp = row.complete.get(name)
+                if not stamp or name in open_cats:
+                    return False
+                done_at = _complete_wall(stamp, row.last_sync)
+                return done_at is not None and 0 <= now - done_at < fresh_s
+
+            if self._is_query(target) or not route.categories:
+                if is_fresh(route_name) and "" not in row.gaps:
+                    ui.info("{target}: complete; skipped (within {fresh})",
+                            target=target, fresh=fresh_text)
+                    skipped[i] = TargetReport(target, (), 0)
+                    continue
+                active.append((i, target, options))
+                continue
+            own = tuple(
+                cat[0] if isinstance(cat, tuple) else cat.name
+                for cat in route.categories
+                if (cat[1] if isinstance(cat, tuple) else cat.own)
+            )
+            wanted = own if (not options.categories or "all" in options.categories) else (
+                options.categories)
+            remaining: list[str] = []
+            for cat in wanted:
+                fresh = is_fresh(cat)
+                if (fresh and route.single and target.plugin == "loi"
+                        and cat == "archive" and db is not None):
+                    post_id = target.value.removeprefix(f"{route_name}/")
+                    fresh = await _off(db.post_saved, tkey, post_id, "archive")
+                if not fresh:
+                    remaining.append(cat)
+            if not remaining:
+                ui.info("{target}: complete; skipped (within {fresh})",
+                        target=target, fresh=fresh_text)
+                skipped[i] = TargetReport(target, (), 0)
+            elif len(remaining) < len(wanted):
+                active.append((i, target, replace(options, categories=tuple(remaining))))
+            else:
+                active.append((i, target, options))
+        return active, skipped
+
     async def _download(
         self,
         runner: _Runner,
@@ -533,9 +657,13 @@ class Engine:
         keep: bool = False,
     ) -> Results:
         """Download the targets, recording each in flnd.db first."""
+        active, skipped = await self._prune_fresh(runner, chosen)
+        if not active:
+            return self._finish_report(
+                Results(tuple(skipped[i] for i in range(len(chosen)))), stop)
         rows = await _off(self._rows)
         kept = []
-        for target, options in chosen:
+        for _, target, options in active:
             # A followed target stops at its saved posts, unless told to list them again.
             row = rows.get(store.key(target))
             followed = row is not None and row.follow and not options.again
@@ -543,7 +671,12 @@ class Engine:
                 options, stop_at_saved=options.stop_at_saved or followed)))
         await _off(self._record, kept, follow=sync, keep=keep)
         if not any(self._is_query(target) for target, _ in kept):
-            reports = await runner.run(kept)
+            run_reports = await runner.run(kept)
+            by_orig: dict[int, list[TargetReport]] = {
+                orig_i: [rep] for (orig_i, _, _), rep in zip(active, run_reports)
+            }
+            if len(run_reports) > len(active):
+                by_orig[active[-1][0]].extend(run_reports[len(active):])
         else:
             normal = [(i, item) for i, item in enumerate(kept) if not self._is_query(item[0])]
             queries = [(i, item) for i, item in enumerate(kept) if self._is_query(item[0])]
@@ -570,7 +703,13 @@ class Engine:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 raise
-            reports = [rep for i in range(len(kept)) for rep in by_slot[i]]
+            by_orig = {active[slot][0]: by_slot[slot] for slot in range(len(kept))}
+        reports: list[TargetReport] = []
+        for i in range(len(chosen)):
+            if i in skipped:
+                reports.append(skipped[i])
+            else:
+                reports.extend(by_orig[i])
         return self._finish_report(Results(tuple(reports)), stop)
 
     def _finish_report(self, report: Results, stop: Stop) -> Results:
@@ -785,11 +924,16 @@ class Engine:
         db = run.settings.db
         route = next(r for r in run.source.routes if r.kind == target.kind)
         row = await run.off(db.target, store.key(target)) if db is not None else None
+        known_rows = await _off(self._rows) if db is not None and not options.again else {}
+        known_failures = (
+            await run.off(db.target_failures) if db is not None and not options.again else {}
+        )
         state = _query_sync_state(route, row, run.config.stop_after, again=options.again)
         seen_batch: list[str] = []
         discover_failed = False
         caught_up = False
         cut_short = False
+        quota_skipped = False
         first_child: str | None = None
         seen_in_a_row = 0
         met_head = False
@@ -812,7 +956,17 @@ class Engine:
                     child_key = store.key(child)
                     if first_child is None and not state["resuming"]:
                         first_child = child_key
-                    if not options.again and child_key in state["seen"]:
+                    if not options.again and (
+                        child_key in state["seen"]
+                        or await _child_done(run, db, child, child_opts.categories,
+                                             known_rows, known_failures)
+                    ):
+                        if child_key not in state["seen"]:
+                            state["seen"].add(child_key)
+                            seen_batch.append(child_key)
+                            if db is not None and len(seen_batch) >= SEEN_FLUSH:
+                                await run.off(db.seen, target, seen_batch)
+                                seen_batch.clear()
                         seen_in_a_row += 1
                         if state["head"] is not None and child_key == state["head"]:
                             met_head = True
@@ -826,8 +980,11 @@ class Engine:
                         break
                     seen_in_a_row = 0
                     self.tally.add(child, planned)
+                    left_before = getattr(run.source, "_left", 0)
                     rep = await runner.target(child, child_opts)
-                    if rep.error is None:
+                    if getattr(run.source, "_left", 0) > left_before:
+                        quota_skipped = True
+                    elif rep.error is None:
                         state["seen"].add(child_key)
                         seen_batch.append(child_key)
                         if db is not None and len(seen_batch) >= SEEN_FLUSH:
@@ -857,7 +1014,7 @@ class Engine:
             if db is not None:
                 await _save_query_progress(
                     run, db, target, route.kind, state, first_child,
-                    caught_up=caught_up, cut_short=cut_short,
+                    caught_up=caught_up, cut_short=cut_short or quota_skipped,
                     failed=discover_failed or stop.soon.is_set(),
                 )
 
@@ -991,16 +1148,17 @@ class Engine:
                 seen_in_a_row = 0
                 new_count += 1
                 self.tally.add(child, planned)
+                left_before = getattr(run.source, "_left", 0)
                 rep = await runner.target(child, child_opts)
                 written.extend(rep.written)
                 skipped += rep.skipped
-                if rep.error is None:
+                if rep.error is None and getattr(run.source, "_left", 0) == left_before:
                     state["seen"].add(child_key)
                     seen_to_mark.append(child_key)
                     if db is not None and len(seen_to_mark) >= SEEN_FLUSH:
                         await run.off(db.seen, target, seen_to_mark)
                         seen_to_mark.clear()
-                else:
+                elif rep.error is not None:
                     child_failed = rep.error
         self.tally.end(target, failed=False)
         return skipped, child_failed

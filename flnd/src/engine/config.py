@@ -42,6 +42,9 @@ BROWSERS = ("chromium", "chrome")
 # A speed: `"0"` for off, or a number and a unit per second, in units of 1024 (as `text.size`).
 SPEED = re.compile(r"(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)/s", re.IGNORECASE)
 UNITS = {"b": 1, "kb": 1024, "mb": 1024 ** 2, "gb": 1024 ** 3}
+# A duration: `"0"` for off, or a number and unit (`s`, `m`, `h`, `d`, `w`).
+DURATION = re.compile(r"(\d+(?:\.\d+)?)\s*([smhdw])", re.IGNORECASE)
+DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
 WHEN_USAGE = ("when takes a year (2026), a month (2026-06), a day (2026-06-15), a range of "
               "those (2026-01..2026-03, 2026-01.., ..2026-03), or a span back from today "
               "(30d, 8w, 1y)")
@@ -74,6 +77,8 @@ class Defaults(msgspec.Struct, frozen=True):
     slowest: str = "0"
     height: int = 0
     switch: bool = False
+    fresh: str = "1d"
+    timeout: str = "10m"
 
 
 class PluginConfig(msgspec.Struct, frozen=True):
@@ -126,6 +131,21 @@ def _speed_ok(value: str) -> bool:
     return value.strip() == "0" or SPEED.fullmatch(value.strip()) is not None
 
 
+def duration_seconds(value: str) -> float:
+    """Parse a duration (`"1d"`, `"10m"`, `"30s"`, `"0"` for off) into seconds."""
+    cleaned = value.strip()
+    if cleaned == "0":
+        return 0.0
+    found = DURATION.fullmatch(cleaned)
+    if found is None:
+        raise UsageError(f"bad duration {value!r}; write e.g. \"1d\", \"10m\", \"30s\" or \"0\"")
+    return float(found.group(1)) * DURATION_SECONDS[found.group(2).lower()]
+
+
+def _duration_ok(value: str) -> bool:
+    return value.strip() == "0" or DURATION.fullmatch(value.strip()) is not None
+
+
 def _when_ok(value: str) -> bool:
     try:
         when(value)
@@ -156,6 +176,8 @@ DEFAULTS = {
     "slowest": Key(str, 'a speed such as "50 KB/s", or "0" for off', _speed_ok),
     "height": Key(int, "a whole number of pixels, 0 for the best", lambda value: value >= 0),
     "switch": Key(bool, "true or false"),
+    "fresh": Key(str, 'a duration such as "1d", "12h" or "30m", or "0" for off', _duration_ok),
+    "timeout": Key(str, 'a duration such as "10m", "600s" or "1h", or "0" for off', _duration_ok),
 }
 PLUGINS = {
     "pace": Key(float, "a number of seconds, 0 or more", lambda value: value >= 0),

@@ -1,4 +1,4 @@
-"""LOIBUS (loix.cc): one post's info, preview images and, for a VIP account, its archives.
+"""LOIBUS (loix.cc): posts, authors and searches: info, preview images and, for VIP, archives.
 
 SPEC.md#loi-loibus explains it: the signed API, the encrypted links and the daily VIP quota.
 """
@@ -41,6 +41,8 @@ LINKS = "user/loi/download_v6/"
 # The search request, under `API`, and its page size. Confirm live: the endpoint, its `keyword`
 # and `page` parameters and the answer's shape are built against a faked answer.
 SEARCH = "lois"
+# An author's posts, under `API` (seen 2026-11-23): `category_id`, `sort=latest` and `page`.
+AUTHOR = "user/library/loier/id"
 PAGE_SIZE = 20
 SITE = "https://loix.cc/"
 # The site's image servers and archive mirrors answer 403 without these (seen 2026-11-11); they
@@ -82,11 +84,11 @@ class Loibus(Plugin):
     api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
     assets = True
-    # A more literal route (a post, a search) wins over these catch-alls.
+    # A more literal route (a post, an author, a search) wins over these catch-alls.
     unsupported = {
-        **{f"{host}/library": "author and library pages aren't supported; give a post or a search"
+        **{f"{host}/library": "library pages aren't supported; give a post, an author or a search"
            for host in ("loix.cc", "moegoat.com")},
-        **{host: "that page isn't supported; give a post or a search"
+        **{host: "that page isn't supported; give a post, an author or a search"
            for host in ("loix.cc", "moegoat.com")},
     }
     # Without it: the info and images only, no archives.
@@ -128,20 +130,24 @@ class Loibus(Plugin):
         """
         first = Request(f"{API}{SEARCH}", params={"keyword": query, "page": "1",
                                                   "page_size": str(PAGE_SIZE)})
-        seen: set[str] = set()
-        page = 1
+        async for target in _list_posts(ctx, first):
+            yield target
 
-        def next_page(response: Response) -> str | None:
-            nonlocal page
-            page += 1
-            return str(page) if len(_hits(response)) >= PAGE_SIZE else None
+    @route(*((pattern, "author/{id}") for pattern in (
+        r"loi:author/{id:\d+}", r"loix.cc/library/loier/{id:\d+}",
+        r"moegoat.com/library/loier/{id:\d+}")), discovers=True, newest_first=False)
+    async def author(self, ctx: Ctx, id: str) -> AsyncIterator[Target]:
+        """An author's posts, such as `loi:author/183`, each as `loi:post/<id>`: the API's
+        list, paged by `page` until the last page or a short or empty one.
 
-        async for response in ctx.pages(first, cursor=next_page, send="page"):
-            for found in _hits(response):
-                post_id = str(found.get("id") or "")
-                if post_id and post_id not in seen:
-                    seen.add(post_id)
-                    yield Target(f"loi:post/{post_id}")
+        Raises:
+            Blocked: the API kept saying "slow down".
+        """
+        id = id.removeprefix("author/")
+        first = Request(f"{API}{AUTHOR}", params={"category_id": id, "sort": "latest",
+                                                  "page": "1"})
+        async for target in _list_posts(ctx, first):
+            yield target
 
     @route(*((pattern, "post/{id}") for pattern in (
         r"loi:post/{id:\d+}", r"loi:{id:\d+}", r"loix.cc/lois/{id:\d+}",
@@ -202,14 +208,15 @@ class Loibus(Plugin):
     def blocked(self, response: Response) -> float | None:
         """Hold (the engine's block round) on a rate limit the links answer states in its JSON.
 
-        Only the links and search answers are read: a post's own refusal ("请稍后再试") is
-        `NotFound` at once. A plain HTTP 429 is left to the engine's own 429 hold. A used-up
+        Only the links, search and author answers are read: a post's own refusal ("请稍后再试")
+        is `NotFound` at once. A plain HTTP 429 is left to the engine's own 429 hold. A used-up
         quota is no hold: the archive category skips the day's posts itself.
         """
         where = urlsplit(response.url)
+        path = where.path.rstrip("/")
         if (response.status == 429 or where.hostname != API_HOST
                 or not (where.path.startswith(f"/api/{LINKS}")
-                        or where.path.rstrip("/") == f"/api/{SEARCH}")):
+                        or path in (f"/api/{SEARCH}", f"/api/{AUTHOR}"))):
             return None
         try:
             body = response.json
@@ -323,6 +330,28 @@ def refusal(status: int, body: Any) -> Refusal | None:
     if failed and any(word in message for word in QUOTA_WORDS):
         return Refusal.QUOTA
     return None
+
+
+async def _list_posts(ctx: Ctx, first: Request) -> AsyncIterator[Target]:
+    """Every post id a paged API list gives, once each, as `loi:post/<id>`."""
+    seen: set[str] = set()
+    page = 1
+
+    def next_page(response: Response) -> str | None:
+        nonlocal page
+        page += 1
+        body = response.json
+        paging = body.get("pagination") if isinstance(body, dict) else None
+        if isinstance(paging, dict) and paging.get("total_pages") is not None:
+            return str(page) if page <= int(paging["total_pages"]) else None
+        return str(page) if len(_hits(response)) >= PAGE_SIZE else None
+
+    async for response in ctx.pages(first, cursor=next_page, send="page"):
+        for found in _hits(response):
+            post_id = str(found.get("id") or "")
+            if post_id and post_id not in seen:
+                seen.add(post_id)
+                yield Target(f"loi:post/{post_id}", kind="post")
 
 
 def _hits(response: Response) -> list[dict[str, Any]]:
