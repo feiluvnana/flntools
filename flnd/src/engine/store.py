@@ -868,6 +868,20 @@ class Store:
                              " GROUP BY target ORDER BY min(f.rowid)")
         return {target: bool(whole) for target, whole in found}
 
+    def target_failures(self) -> dict[str, tuple[bool, int, int]]:
+        """Each target's pending failures: `(whole_target, failed_files, exhausted_files)`."""
+        found = self._db.all(
+            "SELECT target, max(post_id = ''), sum(post_id != ''),"
+            f" sum(post_id != '' AND attempts > {RETRIES}) FROM failures f"
+            " WHERE f.class != 'NotFound' AND NOT EXISTS"
+            " (SELECT 1 FROM files WHERE files.key = f.key)"
+            " GROUP BY target"
+        )
+        return {
+            target: (bool(whole), int(files or 0), int(exhausted or 0))
+            for target, whole, files, exhausted in found
+        }
+
     def failures(self, run: int) -> list[FailureRow]:
         """The failures a run left that still stand, in the order they first failed."""
         found = self._db.all(f"SELECT {FAILURE_SELECT} FROM failures f WHERE f.run = ?"

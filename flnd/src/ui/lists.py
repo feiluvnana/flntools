@@ -18,15 +18,16 @@ from flnd.ui import forms, out, theme
 __all__ = ["AccountRow", "Column", "Key", "PluginRow", "Row", "TargetRow", "accounts", "plugins",
            "show", "targets"]
 
-Part = out.Part
+Part = out.Part | list[out.Part]
 
 
 @dataclass(frozen=True)
 class Column:
-    """A list's column: its title (the pipe's table header) and whether it is right-aligned."""
+    """A list's column: its title (pipe table header), alignment and optional wrapped width."""
 
     title: str
     right: bool = False
+    limit: int = 0
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class Row:
     key: Any
     cells: tuple[Part, ...]
     fixed: bool = False
+    details: tuple[tuple[str, Part], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,21 +100,35 @@ class _ResponsiveTable:
         from rich.table import Table
         from rich.text import Text
 
-        widths = [
+        naturals = [
             max(cell_len(col.title), *(cell_len(_words(row.cells[n])) for row in self.all_rows))
+            + (2 if n == 0 else 0)
             for n, col in enumerate(self.columns)
         ]
-        widths[0] += 2
-        natural = 2 + sum(widths) + 3 * max(0, len(self.columns) - 1)
+        caps = [col.limit + (2 if n == 0 else 0) if col.limit else 0
+                for n, col in enumerate(self.columns)]
+        widths = [min(nat, cap) if cap else nat for nat, cap in zip(naturals, caps)]
+        pad = 2 if (2 + sum(widths) + 3 * max(0, len(self.columns) - 1)) > options.max_width else 3
+        natural = 2 + sum(widths) + pad * max(0, len(self.columns) - 1)
         narrow = natural > options.max_width
-        grid = Table.grid(padding=(0, 2 if narrow else 3))
-        for col, width in zip(self.columns, widths):
-            if narrow:
-                grid.add_column(justify="right" if col.right else "left",
-                                no_wrap=True, overflow="ellipsis")
+        fixed_min = 2 + pad * max(0, len(self.columns) - 1) + sum(
+            width for col, width in zip(self.columns, widths) if not col.limit
+        )
+        shrink_all = narrow and fixed_min > options.max_width
+        grid = Table.grid(padding=(0, pad))
+        wrap_col0 = 0
+        for n, (col, width, nat, cap) in enumerate(zip(self.columns, widths, naturals, caps)):
+            justify = "right" if col.right else "left"
+            if shrink_all or (narrow and col.limit):
+                grid.add_column(justify=justify, no_wrap=False, overflow="fold")
+            elif cap and nat > cap:
+                if n == 0:
+                    wrap_col0 = width - 2
+                    grid.add_column(justify=justify, no_wrap=True, min_width=width)
+                else:
+                    grid.add_column(justify=justify, width=width, no_wrap=False, overflow="fold")
             else:
-                grid.add_column(justify="right" if col.right else "left",
-                                no_wrap=True, min_width=width)
+                grid.add_column(justify=justify, no_wrap=True, min_width=width)
         dim = theme.style("dim")
         grid.add_row(Text.assemble("  ", Text(self.columns[0].title, style=dim)),
                      *(Text(col.title, style=dim) for col in self.columns[1:]))
@@ -121,7 +137,14 @@ class _ResponsiveTable:
             cells = [_cell(cell, on) for cell in row.cells]
             mark = Text(f"{theme.glyph('cursor', self.fancy)} " if on else "  ",
                         style=theme.style("focus"))
-            grid.add_row(Text.assemble(mark, cells[0]), *cells[1:])
+            if wrap_col0:
+                lines = list(cells[0].wrap(console, wrap_col0, overflow="fold")) or [Text("")]
+                parts = [Text.assemble(mark, lines[0])]
+                parts.extend(Text.assemble("  ", part) for part in lines[1:])
+                first = Text("\n").join(parts)
+            else:
+                first = Text.assemble(mark, cells[0])
+            grid.add_row(first, *cells[1:])
         yield Padding(grid, (0, 0, 0, 2))
 
 
@@ -195,6 +218,8 @@ class View(forms.Owner):
         grid.add_column()
         for column, cell in zip(self.columns, row.cells):
             grid.add_row(column.title, _cell(cell, False))
+        for label, cell in row.details:
+            grid.add_row(label, _cell(cell, False))
         title = Text(_words(row.cells[0]), style=theme.style("bold focus"))
         drawn = Panel(grid, box=theme.box(), padding=theme.PADDING, title=title,
                       title_align="left", border_style=theme.style("dim"), expand=False)
@@ -225,8 +250,6 @@ class View(forms.Owner):
             return self.filter(key, char)
         self.message = ""
         if self.detail:
-            if key == "q":
-                return None
             if key in ("escape", "enter"):
                 self.detail = False
             return forms.PENDING
@@ -239,8 +262,8 @@ class View(forms.Owner):
             self.detail = bool(rows)
         elif char == "/":
             self.typing = True
-        elif key in ("escape", "q"):
-            if self.query and key == "escape":
+        elif key == "escape":
+            if self.query:
                 self.query = ""
             else:
                 return None
@@ -302,12 +325,16 @@ class View(forms.Owner):
 
 
 def _words(part: Part) -> str:
+    if isinstance(part, list):
+        return "".join(_words(item) for item in part)
     return out.clean(part if isinstance(part, str) else part[0])
 
 
 def _cell(part: Part, on: bool) -> Any:
     from rich.text import Text
 
+    if isinstance(part, list):
+        return Text.assemble(*(_cell(item, on) for item in part))
     if isinstance(part, str):
         return Text(out.clean(part), style=theme.style("focus" if on else "text"))
     return Text(out.clean(part[0]), style=theme.style(part[1]))
@@ -333,6 +360,11 @@ class TargetRow:
 
     Args:
         ago: seconds since its last run; None if it never ran.
+        status: download status (`"synced"`, `"partial"`, `"failed"`, `"retry"`, `"new"`).
+        failed: pending failed files count.
+        query: whether this target is a search query.
+        seen: discovered targets count for a search query.
+        pending: categories not yet completed for this target.
     """
 
     name: str
@@ -341,6 +373,11 @@ class TargetRow:
     files: int
     size: int
     ago: float | None
+    status: str = ""
+    failed: int = 0
+    query: bool = False
+    seen: int = 0
+    pending: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -377,7 +414,8 @@ class PluginRow:
     disabled: str = ""
 
 
-TARGET_COLUMNS = (Column("target"), Column("followed"), Column("categories"),
+TARGET_COLUMNS = (Column("target", limit=28), Column("followed"),
+                  Column("categories", limit=20), Column("status"),
                   Column("files", right=True), Column("size", right=True),
                   Column("last run", right=True))
 ACCOUNT_COLUMNS = (Column("plugin"), Column("name"), Column("default"), Column("origin"),
@@ -402,7 +440,8 @@ def targets(load: Callable[[], Sequence[TargetRow]], *, follow: Callable[[Target
     fancy = theme.unicode(sys.stdout)
 
     def rows() -> list[Row]:
-        return [Row(target, _target(target, fancy)) for target in load()]
+        return [Row(target, _target(target, fancy), details=_target_details(target))
+                for target in load()]
 
     def ask(_: Any) -> None:
         typed = forms.text("Target to get")
@@ -465,8 +504,62 @@ def _target(target: TargetRow, fancy: bool) -> tuple[Part, ...]:
     else:
         followed = (theme.glyph("unfollowed", fancy), "dim")
     size: Part = _size(target.size) if target.size else ("–", "dim")
-    return (target.name, followed, " ".join(target.categories), f"{target.files:,} files",
-            size, _ago(target.ago, "never"))
+    count = f"{target.seen:,} found" if target.query else f"{target.files:,} files"
+    return (target.name, followed, _target_categories(target), _target_status(target),
+            count, size, _ago(target.ago, "never"))
+
+
+def _target_categories(target: TargetRow) -> Part:
+    if not target.categories:
+        return ""
+    status = target.status or ("new" if target.ago is None and not target.files else "synced")
+    pending = set(target.pending)
+    parts: list[out.Part] = []
+    for i, cat in enumerate(target.categories):
+        if i:
+            parts.append(" ")
+        if status == "new":
+            style = "dim"
+        elif cat not in pending:
+            style = "good"
+        elif status == "failed" and not target.failed:
+            style = "bad"
+        else:
+            style = "warn"
+        parts.append((cat, style))
+    return parts
+
+
+def _target_status(target: TargetRow) -> Part:
+    status = target.status or ("new" if target.ago is None and not target.files else "synced")
+    total = len(target.categories)
+    done = total - len(target.pending)
+    progress = f"{done}/{total}" if total > 1 and target.pending else ""
+    if status == "retry":
+        label = f"{target.failed:,} retry" if target.failed else "retry"
+        return (f"{progress} · {label}" if progress else label, "bad")
+    if status == "failed":
+        if target.failed:
+            return (f"{progress} · {target.failed:,} failed" if progress
+                    else f"{target.failed:,} failed", "warn")
+        return ("failed", "bad")
+    if status == "partial":
+        return (f"{progress} done" if progress else "partial", "warn")
+    if status == "new":
+        return ("new", "dim")
+    if status == "synced":
+        return ("synced", "good")
+    return (status, "dim")
+
+
+def _target_details(target: TargetRow) -> tuple[tuple[str, Part], ...]:
+    if not target.categories or target.status in ("", "new") or not target.pending:
+        return ()
+    done = tuple(cat for cat in target.categories if cat not in target.pending)
+    return (
+        ("done", (", ".join(done), "good") if done else ("none", "dim")),
+        ("pending", (", ".join(target.pending), "warn")),
+    )
 
 
 def _account(account: AccountRow, fancy: bool) -> tuple[Part, ...]:

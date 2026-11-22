@@ -366,12 +366,14 @@ class RunTest(ExampleCase):
         self.assertEqual(code, 0)
         lines = out.splitlines()
         self.assertEqual(lines[0].split(),
-                         ["target", "followed", "categories", "files", "size", "last", "run"])
+                         ["target", "followed", "categories", "status", "files", "size",
+                          "last", "run"])
         followed = {line.split()[0]: "followed" in line for line in lines[1:]}
         self.assertEqual(followed, {"exs:example_user": True, "exs:9": False})
         rows = [json.loads(line) for line in self.run_app("--json", "target",
                                                           "list")[1].splitlines()]
         self.assertIn({"text": "exs:example_user", "kind": "user"}, [row["target"] for row in rows])
+        self.assertEqual(rows[0]["status"], "synced")
         code, out, _ = self.run_app("target", "clean", "exs:example_user", "--media")
         self.assertEqual((code, out), (0, "exs:example_user: forgotten with its files\n"))
         self.assertFalse(any(Path(".flnd/media").rglob("p1*")))
@@ -393,7 +395,8 @@ class RunTest(ExampleCase):
         self.pipe("")
         self.asked.clear()
         self.assertEqual(self.run_app("target", "clean", "exs:9")[0], 0)
-        self.assertEqual((self.asked, self.run_app("target", "list")[1].split()[6:]), ([], ["run"]))
+        self.assertEqual((self.asked, self.run_app("target", "list")[1].split()[7:]),
+                         ([], ["run"]))
 
 
 class WiringTest(ExampleCase):
@@ -416,8 +419,8 @@ class WiringTest(ExampleCase):
 
         def script(title, load, keys, delete):
             [row] = [each.key for each in load()]
-            self.assertEqual((title, row.name, row.followed, row.files),
-                             ("Targets", "exs:example_user", True, 3))
+            self.assertEqual((title, row.name, row.followed, row.files, row.status),
+                             ("Targets", "exs:example_user", True, 3, "synced"))
             keys["f"].run(row)
             self.assertFalse(load()[0].key.followed)
             keys["f"].run(load()[0].key)
@@ -430,6 +433,36 @@ class WiringTest(ExampleCase):
             self.assertEqual([each.key.name for each in load()], ["exs:9"])
 
         self.listed(script, "target", "list")
+
+    def test_target_list_reports_new_partial_failed_and_retry_statuses(self):
+        from flnd.plugin import Target
+
+        with _store.open(".flnd") as db:
+            db.follow(Target("exs:brand_new", kind="user"), True)
+            partial = Target("exs:cut_short", kind="user")
+            db.record(partial, follow=True)
+            db.progress(partial, cursors={"posts": "c1"}, complete=[])
+            failed = Target("exs:broken_file", kind="user")
+            db.record(failed, follow=True)
+            db.progress(failed, cursors={}, complete=["posts", "reels"])
+            db.fail(run=None, item="exs:p1", target="exs:broken_file",
+                    error=RuntimeError("boom"), post="p1", category="posts")
+            retry = Target("exs:needs_retry", kind="user")
+            db.record(retry, follow=True)
+            for _ in range(_store.RETRIES + 1):
+                db.fail(run=None, item="exs:p2", target="exs:needs_retry",
+                        error=RuntimeError("boom"), post="p2", category="posts")
+        rows = {
+            row["target"]["text"]: (row["status"], row["failed"], tuple(row["pending"]))
+            for row in (json.loads(line) for line in
+                        self.run_app("--json", "target", "list")[1].splitlines())
+        }
+        self.assertEqual(rows, {
+            "exs:brand_new": ("new", 0, ("posts", "reels")),
+            "exs:cut_short": ("partial", 0, ("posts", "reels")),
+            "exs:broken_file": ("failed", 1, ()),
+            "exs:needs_retry": ("retry", 1, ("posts", "reels")),
+        })
 
     def test_the_account_list_sets_the_default_and_logs_out(self):
         sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="one")
@@ -696,7 +729,8 @@ class ListsTest(FlndCase):
         self.assertEqual(self.run_app("status")[:2], (0, "no run yet\ndisk: 0 files: "
                                                          "history and disk agree\n"))
         self.assertEqual(self.run_app("target", "list")[1].split(),
-                         ["target", "followed", "categories", "files", "size", "last", "run"])
+                         ["target", "followed", "categories", "status", "files", "size",
+                          "last", "run"])
         self.assertEqual(self.run_app("auth", "list")[1].split(),
                          ["plugin", "name", "default", "origin", "status", "saved"])
         code, text, _ = self.run_app("config")

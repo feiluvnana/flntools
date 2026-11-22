@@ -846,7 +846,7 @@ standard input, else gets every followed target, or prints `nothing to sync` and
 | `--again` | off | list every post again; ask again for gone files |
 | `--exec CMD` | none | run CMD for each saved file, without a shell |
 
-**`flnd target list`** the targets the home knows: files, size, last run, categories. On a terminal:
+**`flnd target list`** the targets the home knows: status, files, size, last run, categories. On a terminal:
 arrows move, `/` filters, `enter` opens details, `f` follows or unfollows, `r` makes failed files
 retryable, `a` asks for a target and gets it, `d` forgets one after a confirmation, `esc` quits.
 On a pipe a plain table; `--json` one `Tracked` object each.

@@ -421,6 +421,12 @@ class Tracked(msgspec.Struct, frozen=True):
     query: bool = False
     # The account that last worked for it; None before one did.
     account: str | None = None
+    # Download status: "synced", "partial", "failed", "retry", or "new" ("" when unset).
+    status: str = ""
+    # Pending failed files (not NotFound and not saved since).
+    failed: int = 0
+    # Categories not yet completed (missing from complete, or with open cursors or gaps).
+    pending: tuple[str, ...] = ()
 
 
 class Failure(msgspec.Struct, frozen=True):

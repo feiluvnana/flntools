@@ -837,7 +837,8 @@ def _tracked(info: TargetInfo) -> Tracked:
     """A target's `TargetInfo` as the public `Tracked`."""
     return Tracked(info.target, follow=info.follow, at=info.at, files=info.files,
                    size=info.size, seen=info.seen, categories=info.categories,
-                   complete=info.complete, query=info.query, account=info.account)
+                   complete=info.complete, query=info.query, account=info.account,
+                   status=info.status, failed=info.failed, pending=info.pending)
 
 
 def _installed(cls: type[Plugin], *, origin: str | None = None, where: str | None = None,

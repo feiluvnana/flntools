@@ -243,8 +243,11 @@ def target_list(args: argparse.Namespace) -> int:
             return OK
 
         def load() -> list[lists.TargetRow]:
-            return [lists.TargetRow(str(row.target), row.follow, row.categories, row.files,
-                                    row.size, _ago(row.at)) for row in fl.targets]
+            return [lists.TargetRow(
+                str(row.target), row.follow, row.categories, row.files,
+                row.size, _ago(row.at), status=row.status, failed=row.failed,
+                query=row.query, seen=row.seen, pending=row.pending,
+            ) for row in fl.targets]
 
         def follow(row: lists.TargetRow) -> None:
             (fl.targets.unfollow if row.followed else fl.targets.follow)(row.name)

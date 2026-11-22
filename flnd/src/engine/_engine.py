@@ -143,6 +143,9 @@ class TargetInfo:
     complete: dict[str, str]
     query: bool
     account: str | None
+    status: str = ""
+    failed: int = 0
+    pending: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -444,7 +447,9 @@ class Engine:
         """
         with store.open(self.home) as db:
             rows = db.targets()
-            return [self._target_info(target, rows, db) for target in self._recorded(rows)
+            failures = db.target_failures()
+            return [self._target_info(target, rows, db, failures=failures)
+                    for target in self._recorded(rows)
                     if plugin is None or target.plugin == plugin]
 
     def target_follow(self, targets: Sequence[Target | str], *, on: bool) -> list[TargetInfo]:
@@ -614,19 +619,34 @@ class Engine:
                 raise KeyboardInterrupt
 
     def _target_info(
-        self, target: Target, rows: Mapping[str, store.TargetRow], db: store.Store,
+        self, target: Target, rows: Mapping[str, store.TargetRow], db: store.Store, *,
+        failures: Mapping[str, tuple[bool, int, int]] | None = None,
     ) -> TargetInfo:
         """A target's state and its saved files' count and bytes, from `flnd.db` alone."""
-        row = rows.get(store.key(target))
+        target_key = store.key(target)
+        row = rows.get(target_key)
         is_query = self._is_query(target)
         if is_query:
             files, size = 0, 0
         elif row is not None:
             files, size = row.files, row.bytes
         else:
-            files, size = db.count(store.key(target))
+            files, size = db.count(target_key)
         kept = row.categories if row is not None else ()
         categories = () if is_query else kept or tuple(self.sources[target.plugin].categories)
+        complete = dict(row.complete) if row is not None else {}
+        is_single = self._is_single(target)
+        open_cats = set(row.cursors) | set(row.gaps) if row is not None else set()
+        pending = (
+            tuple(cat for cat in categories if cat not in complete or cat in open_cats)
+            if not is_query and not is_single else ()
+        )
+        failure = (failures if failures is not None else db.target_failures()).get(
+            target_key, (False, 0, 0))
+        status, failed = _target_status(
+            row, target, categories, complete, pending=pending, files=files,
+            is_query=is_query, is_single=is_single, failure=failure,
+        )
         return TargetInfo(
             target=target,
             follow=row.follow if row is not None else False,
@@ -635,9 +655,12 @@ class Engine:
             size=size,
             seen=len(row.seen) if is_query and row is not None else 0,
             categories=categories,
-            complete=dict(row.complete) if row is not None else {},
+            complete=complete,
             query=is_query,
             account=row.account if row is not None else None,
+            status=status,
+            failed=failed,
+            pending=pending,
         )
 
     def _route(self, target: Target) -> Any:
@@ -1642,6 +1665,38 @@ def _accounts(db: store.Store, plugin: str) -> list[Account]:
 def _worked(db: store.Store) -> dict[str, str]:
     """The account that worked for each target, by key."""
     return {item: row.account for item, row in db.targets().items() if row.account}
+
+
+def _target_status(
+    row: store.TargetRow | None,
+    target: Target,
+    categories: tuple[str, ...],
+    complete: Mapping[str, str],
+    *,
+    pending: tuple[str, ...],
+    files: int,
+    is_query: bool,
+    is_single: bool,
+    failure: tuple[bool, int, int],
+) -> tuple[str, int]:
+    """Summary status and pending failed-file count for a tracked target."""
+    whole, failed, exhausted = failure
+    if whole:
+        return "failed", failed
+    if exhausted > 0:
+        return "retry", failed
+    if failed > 0:
+        return "failed", failed
+    at = row.last_sync if row is not None else ""
+    has_open = row is not None and (bool(row.cursors) or bool(row.gaps))
+    started = bool(complete or has_open or files or (row is not None and (row.heads or row.seen)))
+    if not started and (not at or not is_single):
+        return "new", 0
+    if has_open or pending:
+        return "partial", 0
+    if is_query:
+        return ("synced" if target.kind in complete else "partial"), 0
+    return "synced", 0
 
 
 def _planned(options: Options) -> tuple[str, ...]:

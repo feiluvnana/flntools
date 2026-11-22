@@ -96,7 +96,16 @@ def _console(stream: Any) -> Any:
                    highlight=False, markup=False, emoji=False, soft_wrap=True)
 
 
-def _text(parts: Sequence[Part], *, mark: str = "", fancy: bool = True) -> Any:
+def _append(text: Any, part: Any) -> None:
+    if isinstance(part, list):
+        for item in part:
+            _append(text, item)
+        return
+    words, spec = (part, "text") if isinstance(part, str) else part
+    text.append(clean(words), style=theme.style(spec))
+
+
+def _text(parts: Sequence[Any], *, mark: str = "", fancy: bool = True) -> Any:
     """Rich text made of `parts`, after the glyph `mark` in its kind's style."""
     from rich.text import Text
 
@@ -105,8 +114,7 @@ def _text(parts: Sequence[Part], *, mark: str = "", fancy: bool = True) -> Any:
         name, token = theme.MARKS[mark]
         text.append(theme.glyph(name, fancy) + " ", style=theme.style(f"bold {token}"))
     for part in parts:
-        words, spec = (part, "text") if isinstance(part, str) else part
-        text.append(clean(words), style=theme.style(spec))
+        _append(text, part)
     return text
 
 
@@ -392,7 +400,9 @@ def table(rows: Sequence[Sequence[Part]], columns: Sequence[str]) -> None:
     _print(grid, stream=stream, wrap=True)
 
 
-def _words(part: Part) -> str:
+def _words(part: Any) -> str:
+    if isinstance(part, list):
+        return "".join(_words(item) for item in part)
     return part if isinstance(part, str) else part[0]
 
 

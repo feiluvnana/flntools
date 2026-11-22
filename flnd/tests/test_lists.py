@@ -73,9 +73,13 @@ class ViewTest(unittest.TestCase):
         view.paste("twt")
         self.assertEqual([row.key for row in view.shown()], ["b"])
 
-    def test_q_quits_and_a_leaving_key_closes(self) -> None:
+    def test_esc_quits_and_a_leaving_key_closes(self) -> None:
         view = self.view()
-        self.assertIsNone(feed(view, "q"))
+        self.assertIs(feed(view, "q"), PENDING)
+        feed(view, "enter")
+        self.assertIs(feed(view, "q"), PENDING)
+        self.assertTrue(view.detail)
+        self.assertIs(feed(view, "escape"), PENDING)
         self.assertIsNone(feed(self.view(), "escape"))
         key, row = feed(view, "down", "a")
         self.assertEqual((key.char, row), ("a", "b"))
@@ -118,19 +122,19 @@ class ViewTest(unittest.TestCase):
 class ListsTest(unittest.TestCase):
     def test_the_three_lists_look_like_the_mockups(self) -> None:
         cases = [
-            ("targets", lists.TARGET_COLUMNS, [lists._target(t, True) for t in TARGETS], [
-                "  Targets · 3" + " " * 69 + "/ filter",
+            ("targets", 100, lists.TARGET_COLUMNS, [lists._target(t, True) for t in TARGETS], [
+                "  Targets · 3" + " " * 79 + "/ filter",
                 "",
-                "    target                followed     categories          files       size"
-                "   last run",
-                "  ❯ ins:example_user      ● followed   posts reels   1,620 files     2.1 GB"
-                "     2h ago",
-                "    twt:example_creator   ● followed   media            49 files   180.0 MB"
-                "     2h ago",
-                "    tik:example_handle    ○            videos            0 files          –"
-                "      never",
+                "    target                followed     categories    status         files"
+                "       size   last run",
+                "  ❯ ins:example_user      ● followed   posts reels   synced   1,620 files"
+                "     2.1 GB     2h ago",
+                "    twt:example_creator   ● followed   media         synced      49 files"
+                "   180.0 MB     2h ago",
+                "    tik:example_handle    ○            videos        new          0 files"
+                "          –      never",
             ]),
-            ("accounts", lists.ACCOUNT_COLUMNS, [lists._account(a, True) for a in ACCOUNTS], [
+            ("accounts", 90, lists.ACCOUNT_COLUMNS, [lists._account(a, True) for a in ACCOUNTS], [
                 "  Accounts · 3" + " " * 68 + "/ filter",
                 "",
                 "    plugin   name              default     origin    status"
@@ -143,11 +147,11 @@ class ListsTest(unittest.TestCase):
                 " 20d ago",
             ]),
         ]
-        for name, columns, cells, lines in cases:
+        for name, width, columns, cells, lines in cases:
             with self.subTest(name):
                 view = View(name.title(), columns, lambda c=cells: [Row(n, x) for n, x in
                                                                    enumerate(c)], (), None)
-                self.assertEqual(drawn(view.view(True), width=90).splitlines()[:6], lines)
+                self.assertEqual(drawn(view.view(True), width=width).splitlines()[:6], lines)
 
     def test_a_pipe_prints_a_plain_table(self) -> None:
         stdout = self.enterContext(mock.patch("sys.stdout", io.StringIO()))
@@ -167,14 +171,14 @@ class ListsTest(unittest.TestCase):
             return lambda row: calls.append((name, row))
 
         asked = mock.patch.object(forms, "text", wraps=forms.text)
-        with drive(("down", "f", "r", "a"), ("x", "enter"), ("d", "y", "q")), asked as text:
+        with drive(("down", "f", "r", "a"), ("x", "enter"), ("d", "y", "escape")), asked as text:
             lists.targets(lambda: TARGETS, follow=record("follow"), retry=record("retry"),
                           add=record("add"), delete=record("delete"))
         text.assert_called_once_with("Target to get")
-        with drive(("asterisk", "a"), ("q",)):
+        with drive(("asterisk", "a"), ("escape",)):
             lists.accounts(lambda: ACCOUNTS, default=record("default"), add=record("login"),
                            logout=record("logout"))
-        with drive(("d", "y", "down", "d", "y", "a"), ("escape",), ("q",)):
+        with drive(("d", "y", "down", "d", "y", "a"), ("escape",), ("escape",)):
             lists.plugins(lambda: PLUGINS, install=record("install"),
                           uninstall=record("uninstall"))
         self.assertEqual(calls, [
@@ -205,6 +209,69 @@ class ListsTest(unittest.TestCase):
         )
         out = drawn(view.view(True), width=50)
         self.assertTrue(all(cell_len(line) <= 50 for line in out.splitlines()), out)
+
+    def test_long_target_name_is_capped_and_statuses_show(self) -> None:
+        from rich.cells import cell_len
+
+        long_name = "web:https://example.com/some/very/long/gallery/slug/with_extra_tail"
+        rows = [
+            TargetRow(long_name, True, ("posts", "reels"), 12, 4096, 60, status="partial",
+                      pending=("reels",)),
+            TargetRow("ins:a", True, ("posts", "reels", "stories"), 3, 1024, 60, status="failed",
+                      failed=2, pending=("stories",)),
+            TargetRow("ins:b", True, ("posts",), 3, 1024, 60, status="retry", failed=2),
+            TargetRow("ins:c", False, ("posts",), 0, 0, 60, status="failed"),
+            TargetRow("tik?cats", True, (), 0, 0, 60, status="synced", query=True, seen=14),
+        ]
+        view = View(
+            "Targets", lists.TARGET_COLUMNS,
+            lambda: [Row(t, lists._target(t, True), details=lists._target_details(t))
+                     for t in rows], (), None,
+        )
+        out = drawn(view.view(True), width=110)
+        self.assertTrue(all(cell_len(line) <= 110 for line in out.splitlines()), out)
+        # Wrapped onto multiple lines instead of cutting text with ellipsis.
+        self.assertNotIn("…", out)
+        self.assertIn("❯ web:https://example.com/some", out)
+        self.assertIn("/very/long/gallery/slug/with", out)
+        self.assertIn("_extra_tail", out)
+        for text in ("1/2 done", "2/3 · 2 failed", "2 retry", "failed", "14 found", "synced"):
+            self.assertIn(text, out)
+        feed(view, "enter")
+        panel = drawn(view.view(True), width=110)
+        self.assertIn(long_name, panel)
+        self.assertIn("done", panel)
+        self.assertIn("pending", panel)
+        feed(view, "escape", "/", "g", "a", "l", "l", "e", "r", "y", "enter")
+        self.assertEqual(len(view.shown()), 1)
+
+    def test_target_categories_are_colored_by_completion(self) -> None:
+        from flnd.ui import out, theme
+
+        def styles(row: TargetRow) -> list[tuple[str, str]]:
+            text = lists._cell(lists._target(row, True)[2], True)
+            return [(text.plain[span.start:span.end], str(span.style))
+                    for span in text.spans]
+
+        partial = TargetRow("ins:u", True, ("posts", "reels"), 10, 1024, 60,
+                            status="partial", pending=("reels",))
+        self.assertEqual(styles(partial), [
+            ("posts", theme.style("good")), (" ", theme.style("focus")),
+            ("reels", theme.style("warn")),
+        ])
+        failed = TargetRow("ins:f", False, ("posts",), 0, 0, 60,
+                           status="failed", pending=("posts",))
+        self.assertEqual(styles(failed), [("posts", theme.style("bad"))])
+        new = TargetRow("tik:n", False, ("videos",), 0, 0, None, status="new")
+        self.assertEqual(styles(new), [("videos", theme.style("dim"))])
+        synced = TargetRow("ins:s", True, ("posts", "reels"), 10, 1024, 60, status="synced")
+        self.assertEqual(styles(synced), [
+            ("posts", theme.style("good")), (" ", theme.style("focus")),
+            ("reels", theme.style("good")),
+        ])
+        stdout = self.enterContext(mock.patch("sys.stdout", io.StringIO()))
+        out.table([lists._target(partial, True)], [c.title for c in lists.TARGET_COLUMNS])
+        self.assertIn("posts reels", stdout.getvalue())
 
 
 if __name__ == "__main__":
