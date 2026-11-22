@@ -172,6 +172,8 @@ class Owner:
 
     # Whether the last frame is an answer worth leaving on the terminal.
     answered = False
+    # The terminal's height in lines, set by the app or `_plain` before drawing; None when unknown.
+    height: int | None = None
 
     def view(self, fancy: bool) -> Any:
         raise NotImplementedError
@@ -360,9 +362,11 @@ def _app(owner: Any) -> Any:
         DEFAULT_CSS = "View { height: auto; width: 100%; }"
 
         def render(self) -> Any:
+            owner.height = self.app.size.height or None
             return owner.view(fancy)
 
         def on_resize(self) -> None:
+            owner.height = self.app.size.height or None
             self.refresh(layout=True)
 
     class Inline(App, inherit_bindings=False):
@@ -378,6 +382,7 @@ def _app(owner: Any) -> Any:
             if event.key == "ctrl+c":
                 self.exit(_STOP)
                 return
+            owner.height = self.size.height or None
             char = event.character if event.is_printable else None
             result = owner.press(event.key, char)
             self.query_one(View).refresh(layout=True)
@@ -443,9 +448,26 @@ def _looping() -> bool:
 
 # What a terminal sends for each key the owners know, beside printable text.
 _SEQUENCES = {"\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right", "\x1b[D": "left",
-              "\x1bOA": "up", "\x1bOB": "down", "\x1bOC": "right", "\x1bOD": "left"}
+              "\x1bOA": "up", "\x1bOB": "down", "\x1bOC": "right", "\x1bOD": "left",
+              "\x1b[5~": "pageup", "\x1b[6~": "pagedown", "\x1b[H": "home", "\x1b[F": "end"}
 _CONTROLS = {"\r": "enter", "\n": "enter", "\x7f": "backspace", "\x08": "backspace",
-             "\x03": "ctrl+c", "\x15": "ctrl+u", "\t": "tab", "\x1b": "escape"}
+             "\x03": "ctrl+c", "\x04": "ctrl+d", "\x15": "ctrl+u", "\t": "tab", "\x1b": "escape"}
+
+
+def _terminal_size() -> tuple[int, int]:
+    """Live terminal `(cols, rows)`, preferring `os.get_terminal_size` over stale env vars."""
+    import os
+    import shutil
+
+    for fd in (1, 2, 0):
+        try:
+            cols, rows = os.get_terminal_size(fd)
+        except (AttributeError, ValueError, OSError):
+            continue
+        if cols > 0 and rows > 0:
+            return cols, rows
+    cols, rows = shutil.get_terminal_size()
+    return max(1, cols), max(1, rows)
 
 
 def _plain(owner: Any) -> Any:
@@ -465,6 +487,7 @@ def _plain(owner: Any) -> Any:
         tty.setraw(fd, termios.TCSANOW)
         stream.write("\x1b[?25l")
         while result is PENDING:
+            owner.height = _terminal_size()[1]
             drawn = _frame(stream, owner.view(fancy), drawn)
             for key, char in _keys(fd):
                 if key == "ctrl+c":
@@ -489,12 +512,11 @@ def _plain(owner: Any) -> Any:
 def _frame(stream: Any, renderable: Any, drawn: list[int] | int = ()) -> list[int]:
     """Draw `renderable` over the `drawn` lines of the last frame (None: erase them)."""
     import io
-    import shutil
 
     from rich.console import Console
     from rich.text import Text
 
-    cols, rows_h = shutil.get_terminal_size()
+    cols, rows_h = _terminal_size()
     cols, rows_h = max(1, cols), max(1, rows_h)
     if drawn:
         widths = [1] * drawn if isinstance(drawn, int) else list(drawn)

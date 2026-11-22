@@ -158,6 +158,7 @@ class View(forms.Owner):
         self.delete = delete
         self.rows: list[Row] = list(load())
         self.at = 0
+        self.top = 0
         self.query = ""
         self.typing = False
         self.detail = False
@@ -197,13 +198,52 @@ class View(forms.Owner):
             parts.append(self.hints(fancy))
         return Group(*parts)
 
+    def _page_size(self, total: int) -> int:
+        """How many rows fit in the terminal; all of them when no height is known."""
+        if self.height is None:
+            return max(1, total)
+        # Header, blank, column titles, blank, hints, plus one spare line for the inline prompt.
+        chrome = 6 + (1 if self.message else 0) + (3 if self.asking is not None else 0)
+        raw = max(1, self.height - chrome)
+        return raw if total <= raw else max(1, raw - 2)
+
+    def _window(self, total: int) -> tuple[int, int]:
+        """The visible `[start, end)` slice of `total` rows, keeping `self.at` in view."""
+        if total <= 0:
+            self.at = self.top = 0
+            return 0, 0
+        self.at = max(0, min(self.at, total - 1))
+        size = self._page_size(total)
+        if total <= size:
+            self.top = 0
+            return 0, total
+        if self.at < self.top:
+            self.top = self.at
+        elif self.at >= self.top + size:
+            self.top = self.at - size + 1
+        self.top = max(0, min(self.top, total - size))
+        return self.top, min(total, self.top + size)
+
     def table(self, rows: list[Row], fancy: bool) -> Any:
+        from rich.console import Group
         from rich.text import Text
 
         if not rows:
             return Text("    nothing matches" if self.query else "    nothing here",
                         style=theme.style("dim"))
-        return _ResponsiveTable(self.columns, rows, self.rows, self.current(), fancy)
+        start, end = self._window(len(rows))
+        table = _ResponsiveTable(self.columns, rows[start:end], self.rows, self.current(), fancy)
+        if start == 0 and end == len(rows):
+            return table
+        dim = theme.style("dim")
+        more = theme.glyph("more", fancy)
+        parts: list[Any] = []
+        if start > 0:
+            parts.append(Text(f"    {more} {start} above", style=dim))
+        parts.append(table)
+        if end < len(rows):
+            parts.append(Text(f"    {more} {len(rows) - end} below", style=dim))
+        return Group(*parts)
 
     def panel(self, fancy: bool) -> Any:
         from rich.padding import Padding
@@ -258,6 +298,14 @@ class View(forms.Owner):
             self.at = max(min(self.at, len(rows) - 1) - 1, 0)
         elif key in ("down", "j"):
             self.at = min(self.at + 1, max(len(rows) - 1, 0))
+        elif key in ("pageup", "ctrl+u"):
+            self.at = max(min(self.at, len(rows) - 1) - self._page_size(len(rows)), 0)
+        elif key in ("pagedown", "ctrl+d"):
+            self.at = min(self.at + self._page_size(len(rows)), max(len(rows) - 1, 0))
+        elif key == "home":
+            self.at = 0
+        elif key == "end":
+            self.at = max(len(rows) - 1, 0)
         elif key == "enter":
             self.detail = bool(rows)
         elif char == "/":
@@ -281,7 +329,7 @@ class View(forms.Owner):
         # Only into the filter: pasted letters must never act as the list's keys.
         if self.typing and self.asking is None:
             self.query += " ".join(text.splitlines())
-            self.at = 0
+            self.at = self.top = 0
 
     def filter(self, key: str, char: str | None) -> Any:
         if key == "enter":
@@ -292,7 +340,7 @@ class View(forms.Owner):
             self.query = self.query[:-1]
         elif char:
             self.query += char
-        self.at = 0
+        self.at = self.top = 0
         return forms.PENDING
 
     def answer(self, key: str, char: str | None) -> Any:

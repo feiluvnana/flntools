@@ -118,6 +118,53 @@ class ViewTest(unittest.TestCase):
             "  up/down move - enter details - f follow - x fail - a add - d delete - / filter"
             " - esc quit"))
 
+    def test_a_long_list_scrolls_within_terminal_height(self) -> None:
+        rows = [Row(i, (f"ins:user_{i:02d}", str(i))) for i in range(25)]
+        view = View("Targets", (Column("name"), Column("n", right=True)), lambda: rows, (), None)
+        view.height = 12  # leaves 4 visible rows (12 - 6 chrome - 2 indicators)
+        first = drawn(view.view(True))
+        self.assertLessEqual(len(first.splitlines()), 12)
+        self.assertIn("❯ ins:user_00", first)
+        self.assertIn("ins:user_03", first)
+        self.assertNotIn("ins:user_04", first)
+        self.assertIn("… 21 below", first)
+        self.assertNotIn("above", first)
+
+        # Moving past the bottom scrolls the window down and keeps the cursor visible.
+        feed(view, "down", "down", "down", "down")
+        moved = drawn(view.view(True))
+        self.assertLessEqual(len(moved.splitlines()), 12)
+        self.assertIn("… 1 above", moved)
+        self.assertIn("❯ ins:user_04", moved)
+        self.assertNotIn("ins:user_00", moved)
+        self.assertIn("… 20 below", moved)
+
+        # Page down, end, home, and page up all keep the cursor in view.
+        feed(view, "pagedown")
+        self.assertEqual(view.at, 8)
+        self.assertIn("❯ ins:user_08", drawn(view.view(True)))
+        feed(view, "end")
+        bottom = drawn(view.view(True))
+        self.assertEqual(view.at, 24)
+        self.assertIn("❯ ins:user_24", bottom)
+        self.assertIn("… 21 above", bottom)
+        self.assertNotIn("below", bottom)
+        feed(view, "pageup")
+        self.assertEqual(view.at, 20)
+        feed(view, "home")
+        self.assertEqual(view.at, 0)
+        self.assertIn("❯ ins:user_00", drawn(view.view(True)))
+
+    def test_a_long_list_scrolls_through_textual_pilot(self) -> None:
+        self.enterContext(mock.patch("sys.stdin", Terminal("")))
+        self.enterContext(mock.patch("sys.stdout", Terminal("")))
+        rows = [TargetRow(f"ins:user_{i:02d}", True, ("posts",), i, 0, None) for i in range(30)]
+        picked: list[str] = []
+        with drive(("end", "f", "escape")):
+            lists.targets(lambda: rows, follow=lambda row: picked.append(row.name),
+                          retry=lambda _: None, add=lambda _: None, delete=lambda _: None)
+        self.assertEqual(picked, ["ins:user_29"])
+
 
 class ListsTest(unittest.TestCase):
     def test_the_three_lists_look_like_the_mockups(self) -> None:

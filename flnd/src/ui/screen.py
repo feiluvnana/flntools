@@ -5,6 +5,7 @@ SPEC.md#commands-and-flags explains it.
 
 from __future__ import annotations
 
+import os
 import queue
 import sys
 import threading
@@ -361,6 +362,31 @@ def _reflowed_rows(widths: Sequence[int], width: int) -> int:
     return sum(max(1, (w - 1) // step + 1) if w > 0 else 1 for w in widths)
 
 
+def _terminal_size(stream: Any, console: Any, fixed: tuple[int | None, int | None]
+                   ) -> tuple[int, int]:
+    """Live terminal `(width, height)`, bypassing stale `COLUMNS`/`LINES` env vars."""
+    if fixed != (None, None):
+        w, h = console.size
+        return max(1, w), max(1, h)
+    fds: list[int] = []
+    try:
+        fds.append(stream.fileno())
+    except (AttributeError, ValueError, OSError):
+        pass
+    for fd in (1, 2):
+        if fd not in fds:
+            fds.append(fd)
+    for fd in fds:
+        try:
+            w, h = os.get_terminal_size(fd)
+        except (AttributeError, ValueError, OSError):
+            continue
+        if w > 0 and h > 0:
+            return max(1, w - int(bool(console.legacy_windows))), max(1, h)
+    w, h = console.size
+    return max(1, w), max(1, h)
+
+
 def _clear_block(console: Any, up: int) -> None:
     """Erase `up + 1` rows upward from the current cursor row, leaving cursor at column 0."""
     from rich.control import Control
@@ -429,6 +455,10 @@ class Screen:
                                 height=height,
                                 color_system="truecolor" if theme.color(self._stream) else None,
                                 highlight=False, markup=False, emoji=False)
+        # Never lock onto startup `COLUMNS`/`LINES` env vars when tracking live terminal resizes.
+        if self._size == (None, None):
+            self._console._width = None
+            self._console._height = None
         self._block = self._fresh()
         global _drawing
         _drawing = self
@@ -484,8 +514,7 @@ class Screen:
         live_render = getattr(block, "_live_render", None)
 
         def measure() -> tuple[int, int]:
-            w, h = console.size
-            return max(1, w), max(1, h)
+            return _terminal_size(self._stream, console, self._size)
 
         def clear_if_changed(w: int, h: int) -> None:
             if self._last_size is not None and (w, h) != self._last_size:
@@ -564,9 +593,9 @@ class Screen:
 
         orig_w, orig_h = console._width, console._height
         try:
-            if orig_w is None:
+            if self._size[0] is None:
                 console._width = width + int(bool(console.legacy_windows))
-            if orig_h is None:
+            if self._size[1] is None:
                 console._height = height
             block.update(drawn, refresh=True)
         finally:

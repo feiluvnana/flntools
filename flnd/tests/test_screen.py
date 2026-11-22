@@ -521,6 +521,30 @@ class ScreenTest(unittest.TestCase):
             self.assertEqual(settled.count("flnd download"), 1, repr(settled))
             self.assertEqual(shown._last_size, (69 if shown._console.legacy_windows else 70, 40))
 
+    def test_resize_smaller_ignores_stale_columns_and_lines_env(self) -> None:
+        tty = _TTY()
+        live_size = [(120, 30)]
+        with mock.patch.dict(os.environ, {"COLUMNS": "120", "LINES": "30"}), \
+                mock.patch("os.get_terminal_size", side_effect=lambda *a: os.terminal_size(
+                    live_size[0])):
+            shown = screen.Screen(lambda: MOCKUP, command="download", stream=tty)
+            shown.__enter__()
+            shown._done.set()
+            shown._thread.join()
+            try:
+                shown.tick()
+                live_size[0] = (50, 12)
+                for _ in range(3):
+                    shown.tick()
+                self.assertEqual(
+                    shown._last_size,
+                    (49 if shown._console.legacy_windows else 50, 12),
+                )
+                self.assertLessEqual(max(shown._last_widths), 49)
+                self.assertLessEqual(len(shown._last_widths), 11)
+            finally:
+                shown.__exit__(None, None, None)
+
     def test_the_screen_reads_nothing_but_the_snapshot(self) -> None:
         tree = ast.parse(Path(screen.__file__).read_text(encoding="utf-8"))
         modules = {node.module for node in ast.walk(tree)
