@@ -718,5 +718,66 @@ class RekeyTest(StoreCase):
             self.assertIn(target, recorded)
 
 
+class TargetSeenTest(StoreCase):
+    def test_target_seen_auto_migration_and_incremental_o1_append(self):
+        # 1. Existing schema-2 home without target_seen auto-migrates from targets.seen JSON.
+        fresh = self.home / "fresh.db"
+        with store.Store(self.home) as s:
+            s.record(Target("twt:cats", kind="search"), query="cats")
+        sql = sqlite3.connect(self.path)
+        try:
+            fresh_sql = sqlite3.connect(fresh)
+            try:
+                fresh_sql.executescript(store.SCHEMA)
+                fresh_schema = fresh_sql.execute(
+                    "SELECT type, name, sql FROM sqlite_master "
+                    "WHERE sql IS NOT NULL ORDER BY name"
+                ).fetchall()
+            finally:
+                fresh_sql.close()
+            sql.execute("DROP INDEX IF EXISTS target_seen_ord")
+            sql.execute("DROP TABLE IF EXISTS target_seen")
+            sql.execute("UPDATE targets SET seen = ? WHERE key = ?",
+                        ('["twt:post/3", "twt:post/1", "twt:post/2"]', "twt:cats"))
+            sql.commit()
+        finally:
+            sql.close()
+
+        with store.Store(self.home) as opened:
+            row = opened.target("twt:cats")
+            self.assertEqual(row.seen, ["twt:post/3", "twt:post/1", "twt:post/2"])
+            self.assertEqual(opened.seen_keys("twt:cats"),
+                             {"twt:post/3", "twt:post/1", "twt:post/2"})
+        sql = sqlite3.connect(self.path)
+        try:
+            migrated_schema = sql.execute(
+                "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
+            ).fetchall()
+        finally:
+            sql.close()
+        self.assertEqual(migrated_schema, fresh_schema)
+
+        # 2. Incremental seen() appends O(1) without touching targets.seen JSON or progress().
+        q = Target("twt:dogs", kind="search")
+        with store.Store(self.home) as opened:
+            opened.record(q, query="dogs")
+            opened.progress(
+                q, cursors={"max_id": "99"}, complete=[], heads={"search": "twt:post/9"},
+            )
+            opened.seen(q, ["twt:post/9", "twt:post/8", "twt:post/9"])
+            opened.seen(q, ["twt:post/8", "twt:post/7"])
+            row = opened.target("twt:dogs")
+            self.assertEqual(row.seen, ["twt:post/9", "twt:post/8", "twt:post/7"])
+            self.assertEqual(row.cursors, {"max_id": "99"})
+            self.assertEqual(row.heads, {"search": "twt:post/9"})
+            # targets.seen column was not rewritten with the incremental appends.
+            self.assertEqual(rows(self.path, "SELECT seen FROM targets WHERE key = 'twt:dogs'"),
+                             [("[]",)])
+            opened.forget("twt:dogs")
+            self.assertEqual(
+                rows(self.path, "SELECT item FROM target_seen WHERE target = 'twt:dogs'"), [],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

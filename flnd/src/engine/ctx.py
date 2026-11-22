@@ -367,12 +367,13 @@ class Ctx:
     """
 
     def __init__(self, run: PluginRun, target: Target, *, when: Range = Range(),
-                 login: bool = False) -> None:
+                 login: bool = False, again: bool = False) -> None:
         self._run = run
         self._plugin: Plugin = run.source
         self._target = target
         self._when = when
         self._login = login
+        self._again = again
         self._tabs = TargetTabs(run)
         # The plugin's own keys of config.toml (`[plugins.<code>]`), else its defaults.
         configured = getattr(run.config, "settings", None)
@@ -1626,9 +1627,11 @@ class Listing:
         ('c42', False)
     """
 
-    def __init__(self, start: str | None = None, *, label: str = "") -> None:
+    def __init__(self, start: str | None = None, *, label: str = "",
+                 head: str | None = None) -> None:
         self.start = start
         self.label = label
+        self.head = head
         # The cursor of the page being read, for the crawl to save if the listing is cut short.
         self.cursor: str | None = start
         # Whether a `pages` call took this listing already; only the first one resumes.
@@ -1639,6 +1642,8 @@ class Listing:
         self.read = 0
         # Whether a feed of it ended on the stall guard: the list was cut short, not complete.
         self.stalled = False
+        # Whether a discovering query stopped early because it caught up to its head/seen.
+        self.caught_up = False
 
 
 class Resume:

@@ -70,6 +70,11 @@ CREATE TABLE targets (
     heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}', account TEXT,
     folder TEXT
 ) WITHOUT ROWID;
+CREATE TABLE target_seen (
+    target TEXT NOT NULL, item TEXT NOT NULL, ord INTEGER NOT NULL,
+    PRIMARY KEY (target, item)
+) WITHOUT ROWID;
+CREATE INDEX target_seen_ord ON target_seen (target, ord);
 CREATE TABLE runs (
     id INTEGER PRIMARY KEY, command TEXT NOT NULL, started TEXT NOT NULL, ended TEXT,
     saved INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0
@@ -353,6 +358,11 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
         if version and "folder" not in _columns(sql, "targets"):
             # A home from before a followed search kept its folder gets the column once.
             sql.execute("ALTER TABLE targets ADD COLUMN folder TEXT")
+        if version and "target_seen" not in _tables(sql):
+            for statement in STATEMENTS:
+                if "target_seen" in statement:
+                    sql.execute(statement)
+            _backfill_seen(sql)
         sql.execute("COMMIT")
     except BaseException:
         if sql.in_transaction:
@@ -415,6 +425,7 @@ def _migrate(sql: sqlite3.Connection, home: Path) -> None:
             _copy(sql, table, renames)
     if "targets" in tables:
         _copy_targets(sql)
+        _backfill_seen(sql)
     _accounts(sql, home, tables)
     for table in [*(f"v1_{name}" for name in REBUILT if name in tables), *V1_DROPPED]:
         sql.execute(f"DROP TABLE IF EXISTS {table}")
@@ -458,6 +469,30 @@ def _rekey(sql: sqlite3.Connection) -> None:
         if any(found in moved for found in listed):
             sql.execute("UPDATE targets SET seen = ? WHERE key = ?",
                         (_json([moved.get(found, found) for found in listed]), item))
+    if "target_seen" in _tables(sql):
+        for old, new in moved.items():
+            sql.execute("DELETE FROM target_seen WHERE target = ? AND item IN "
+                        "(SELECT item FROM target_seen WHERE target = ?)", (old, new))
+            sql.execute("UPDATE target_seen SET target = ? WHERE target = ?", (new, old))
+            sql.execute("DELETE FROM target_seen WHERE item = ? AND target IN "
+                        "(SELECT target FROM target_seen WHERE item = ?)", (old, new))
+            sql.execute("UPDATE target_seen SET item = ? WHERE item = ?", (new, old))
+
+
+def _backfill_seen(sql: sqlite3.Connection) -> None:
+    """Populate `target_seen` from legacy `targets.seen` JSON lists, preserving order."""
+    for tkey, raw in sql.execute("SELECT key, seen FROM targets WHERE seen != '[]'").fetchall():
+        try:
+            items = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(items, list):
+            continue
+        unique = list(dict.fromkeys(x for x in items if isinstance(x, str)))
+        sql.executemany(
+            "INSERT OR IGNORE INTO target_seen (target, item, ord) VALUES (?, ?, ?)",
+            [(tkey, item, i) for i, item in enumerate(unique)],
+        )
 
 
 def _columns(sql: sqlite3.Connection, table: str) -> list[str]:
@@ -864,13 +899,32 @@ class Store:
     def targets(self) -> dict[str, TargetRow]:
         """Every target the home knows, by key."""
         found = self._db.all(f"SELECT {', '.join(TARGET_COLUMNS)} FROM targets ORDER BY key")
-        return {row[0]: _target_row(row) for row in found}
+        rows_by_key = {row[0]: _target_row(row) for row in found}
+        seen_map: dict[str, list[str]] = {}
+        for tkey, item in self._db.all("SELECT target, item FROM target_seen ORDER BY target, ord"):
+            seen_map.setdefault(tkey, []).append(item)
+        for tkey, items in seen_map.items():
+            if tkey in rows_by_key:
+                rows_by_key[tkey].seen = items
+        return rows_by_key
 
     def target(self, item: str) -> TargetRow | None:
         """One target's row, by key; None when the home doesn't know it."""
         found = self._db.one(f"SELECT {', '.join(TARGET_COLUMNS)} FROM targets WHERE key = ?",
                              (item,))
-        return _target_row(found) if found else None
+        if not found:
+            return None
+        row = _target_row(found)
+        seen_rows = self._db.all("SELECT item FROM target_seen WHERE target = ? ORDER BY ord",
+                                 (item,))
+        if seen_rows:
+            row.seen = [r[0] for r in seen_rows]
+        return row
+
+    def seen_keys(self, item: str) -> set[str]:
+        """The set of seen child keys for `item`."""
+        return {r[0] for r in self._db.all("SELECT item FROM target_seen WHERE target = ?",
+                                           (item,))}
 
     def record(self, target: _Target, *, follow: bool | None = None,
                categories: Sequence[str] | None = None, query: str | None = None,
@@ -917,7 +971,7 @@ class Store:
         with self._db.transaction() as sql:
             gone = [_file_row(row) for row in sql.execute(
                 f"SELECT {ROW_SELECT} FROM files WHERE target = ? AND {ON_DISK}", (item,))]
-            for table in ("files", "failures", "targets"):
+            for table in ("files", "failures", "target_seen", "targets"):
                 sql.execute(f"DELETE FROM {table} WHERE "
                             f"{'key' if table == 'targets' else 'target'} = ?", (item,))
         return gone
@@ -933,15 +987,25 @@ class Store:
                                " AND class != 'NotFound'", (target, RETRIES)).rowcount
 
     def seen(self, target: _Target, found: Sequence[str]) -> None:
-        """Add the targets a search found to its row, in order, each once."""
+        """Add the targets a search found to `target_seen`, in order, each once."""
         if not found:
             return
-        with self._db.transaction():
-            row = self.target(key(target)) or TargetRow(
-                key(target), target.plugin, target.value, target.kind, follow=True,
-                last_sync=now())
-            row.seen = list(dict.fromkeys([*row.seen, *found]))
-            self._put(row)
+        unique = list(dict.fromkeys(found))
+        tkey = key(target)
+        with self._db.transaction() as sql:
+            sql.execute(
+                "INSERT OR IGNORE INTO targets (key, plugin, value, kind, follow, last_sync) "
+                "VALUES (?, ?, ?, ?, 1, ?)",
+                (tkey, target.plugin, target.value, target.kind, now()),
+            )
+            start = sql.execute(
+                "SELECT coalesce(max(ord), -1) + 1 FROM target_seen WHERE target = ?",
+                (tkey,),
+            ).fetchone()[0]
+            sql.executemany(
+                "INSERT OR IGNORE INTO target_seen (target, item, ord) VALUES (?, ?, ?)",
+                [(tkey, item, start + i) for i, item in enumerate(unique)],
+            )
 
     def progress(self, target: _Target, *, cursors: Mapping[str, str | None],
                  complete: Sequence[str], heads: Mapping[str, str] | None = None,

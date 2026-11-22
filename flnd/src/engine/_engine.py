@@ -40,6 +40,58 @@ FOLLOW_DEPTH = 2
 # Targets a search's sync downloads at most per run, among those it hadn't seen: a search that
 # suddenly finds hundreds (a popular tag) is taken a slice per sync, never all at once.
 MAX_SYNC_NEW = 25
+SEEN_FLUSH = 10
+
+
+def _query_sync_state(
+    route: Any, row: store.TargetRow | None, stop_after: int, *, again: bool,
+) -> dict[str, Any]:
+    """Compute smart-sync state for a discovering query route."""
+    seen = set() if again else set(row.seen if row is not None else ())
+    resuming = not again and row is not None and bool(row.cursors)
+    complete = not again and row is not None and route.kind in row.complete
+    gaps = [] if (again or row is None) else list(row.gaps.get(route.kind, ()))
+    head = None if (again or row is None) else row.heads.get(route.kind)
+    streak: int | None = stop_after
+    can_stop = route.newest_first and complete and not resuming
+    if can_stop and "" in gaps:
+        if head is not None:
+            streak = None
+        else:
+            can_stop = False
+    return {
+        "seen": seen, "resuming": resuming, "complete": complete,
+        "head": head, "streak": streak, "can_stop": can_stop,
+    }
+
+
+def _should_stop_query(state: dict[str, Any], met_head: bool, seen_in_a_row: int) -> bool:
+    """Whether a discovering query has caught up to earlier runs."""
+    if not state["can_stop"]:
+        return False
+    if met_head and seen_in_a_row >= crawl.HEAD_IN_A_ROW:
+        return True
+    streak = state["streak"]
+    return streak is not None and seen_in_a_row >= streak
+
+
+async def _save_query_progress(
+    run: PluginRun, db: store.Store, target: Target, kind: str,
+    state: dict[str, Any], first_child: str | None, *,
+    caught_up: bool, cut_short: bool, failed: bool,
+) -> None:
+    """Persist `heads`, `complete`, `cursors`, and `gaps` after a query discovery run."""
+    if not failed and (caught_up or not cut_short):
+        heads = ({kind: first_child}
+                 if not state["resuming"] and first_child is not None else None)
+        await run.off(functools.partial(
+            db.progress, target, cursors={kind: None, "max_id": None}, complete=[kind],
+            heads=heads, gaps={kind: []},
+        ))
+    elif state["complete"] and not caught_up and (cut_short or failed):
+        await run.off(functools.partial(
+            db.progress, target, cursors={}, complete=[], gaps={kind: [""]},
+        ))
 # Targets active at once in a run (listing, or with more files queued than their places), and
 # targets listing at once per plugin and account: one for a plugin that reads in the browser,
 # whose site sees one person, and `HTTP_AT_ONCE` for one that only sends requests.
@@ -686,24 +738,64 @@ class Engine:
         span: Range,
         stop: Stop,
     ) -> None:
-        """List a search's targets and download each as it comes, then keep what it saw."""
+        """List a search's targets and download each new one, short-circuiting when caught up."""
 
-        seen_keys: list[str] = []
+        db = run.settings.db
+        route = next(r for r in run.source.routes if r.kind == target.kind)
+        row = await run.off(db.target, store.key(target)) if db is not None else None
+        state = _query_sync_state(route, row, run.config.stop_after, again=options.again)
+        seen_batch: list[str] = []
         discover_failed = False
+        caught_up = False
+        cut_short = False
+        first_child: str | None = None
+        seen_in_a_row = 0
+        met_head = False
+        taken = 0
         child_opts = replace(options, limit=None, query=target.value, link=None)
         planned = _planned(child_opts)
         try:
             self.tally.start(target, target.kind)
-            async with contextlib.aclosing(crawl.discover(run, target, limit=options.limit,
-                                                          time_range=span)) as found:
+            listing = crawl.Listing(
+                None, label=f"{target}: {route.kind}",
+                head=state["head"] if state["can_stop"] else None,
+            )
+            async with contextlib.aclosing(crawl.discover(
+                run, target, limit=None, time_range=span, again=options.again,
+                head=listing.head, listing=listing,
+            )) as found:
                 async for child in found:
                     if stop.soon.is_set():
                         break
+                    child_key = store.key(child)
+                    if first_child is None and not state["resuming"]:
+                        first_child = child_key
+                    if not options.again and child_key in state["seen"]:
+                        seen_in_a_row += 1
+                        if state["head"] is not None and child_key == state["head"]:
+                            met_head = True
+                        if _should_stop_query(state, met_head, seen_in_a_row):
+                            caught_up = True
+                            listing.caught_up = True
+                            break
+                        continue
+                    if options.limit is not None and taken >= options.limit:
+                        cut_short = True
+                        break
+                    seen_in_a_row = 0
                     self.tally.add(child, planned)
                     rep = await runner.target(child, child_opts)
                     if rep.error is None:
-                        seen_keys.append(store.key(child))
+                        state["seen"].add(child_key)
+                        seen_batch.append(child_key)
+                        if db is not None and len(seen_batch) >= SEEN_FLUSH:
+                            await run.off(db.seen, target, seen_batch)
+                            seen_batch.clear()
                     reports.append(rep)
+                    taken += 1
+                    if options.limit is not None and taken >= options.limit:
+                        cut_short = True
+                        break
             self.tally.end(target, failed=stop.soon.is_set())
         except KeyboardInterrupt:
             discover_failed = True
@@ -718,8 +810,14 @@ class Engine:
         finally:
             if discover_failed:
                 self.tally.end(target, failed=True)
-            if seen_keys and run.settings.db is not None:
-                await run.off(run.settings.db.seen, target, seen_keys)
+            if seen_batch and db is not None:
+                await run.off(db.seen, target, seen_batch)
+            if db is not None:
+                await _save_query_progress(
+                    run, db, target, route.kind, state, first_child,
+                    caught_up=caught_up, cut_short=cut_short,
+                    failed=discover_failed or stop.soon.is_set(),
+                )
 
     async def _sync_query(
         self,
@@ -732,15 +830,15 @@ class Engine:
         """Sync one search: download the targets it finds that it hadn't seen before."""
         rows = await _off(self._rows)
         row = rows.get(store.key(target))
-        seen_keys = set(row.seen if row is not None else ())
-        known_keys = set(rows)
+        seen_keys = set() if options.again else set(row.seen if row is not None else ())
+        known_keys = set() if options.again else set(rows)
         self.tally.add(target, _planned(options))
         entry, failed = await runner.ready(target)
         if entry is None or failed is not None:
             assert failed is not None
             return failed
-        return await self._sync_query_run(runner, entry.run, target, options, seen_keys,
-                                          known_keys, stop)
+        return await self._sync_query_run(runner, entry.run, target, options, row,
+                                          seen_keys, known_keys, stop)
 
     async def _sync_query_run(
         self,
@@ -748,6 +846,7 @@ class Engine:
         run: PluginRun,
         target: Target,
         options: Options,
+        row: store.TargetRow | None,
         seen_keys: set[str],
         known_keys: set[str],
         stop: Stop,
@@ -756,10 +855,14 @@ class Engine:
 
         written: list[Path] = []
         skipped, child_failed, seen_to_mark, failed = 0, None, [], False
+        route = next(r for r in run.source.routes if r.kind == target.kind)
+        state = _query_sync_state(route, row, run.config.stop_after, again=options.again)
+        state["seen"] = seen_keys
+        outcome = {"caught_up": False, "cut_short": False, "first_child": None}
         try:
             skipped, child_failed = await self._sync_query_items(
-                runner, run, target, options, seen_keys, known_keys, stop, written,
-                seen_to_mark)
+                runner, run, target, options, state, known_keys, stop, written,
+                seen_to_mark, outcome)
         except KeyboardInterrupt:
             if not stop.soon.is_set() or stop.now.is_set():
                 raise
@@ -772,8 +875,15 @@ class Engine:
             return TargetReport(target, tuple(written), skipped, error=ended)
         finally:
             self.tally.end(target, failed=failed)
-            if seen_to_mark and run.settings.db is not None:
-                await run.off(run.settings.db.seen, target, seen_to_mark)
+            db = run.settings.db
+            if seen_to_mark and db is not None:
+                await run.off(db.seen, target, seen_to_mark)
+            if db is not None:
+                await _save_query_progress(
+                    run, db, target, route.kind, state, outcome["first_child"],
+                    caught_up=outcome["caught_up"], cut_short=outcome["cut_short"],
+                    failed=failed or stop.soon.is_set(),
+                )
         return TargetReport(target, tuple(written), skipped, error=child_failed)
 
     async def _sync_query_items(
@@ -782,36 +892,69 @@ class Engine:
         run: PluginRun,
         target: Target,
         options: Options,
-        seen_keys: set[str],
+        state: dict[str, Any],
         known_keys: set[str],
         stop: Stop,
         written: list[Path],
         seen_to_mark: list[str],
+        outcome: dict[str, Any],
     ) -> tuple[int, Error | Stopped | None]:
         """List a search's targets and download the new ones, at most `MAX_SYNC_NEW` of them."""
 
+        db = run.settings.db
         skipped, new_count, child_failed = 0, 0, None
+        seen_in_a_row, met_head = 0, False
         child_opts = replace(options, limit=None, query=target.value, link=None)
         planned = _planned(child_opts)
+        span = Range(options.since, options.until)
         self.tally.start(target, target.kind)
-        async with contextlib.aclosing(crawl.discover(run, target, time_range=Range())) as found:
+        listing = crawl.Listing(
+            None, label=f"{target}: {target.kind}",
+            head=state["head"] if state["can_stop"] else None,
+        )
+        async with contextlib.aclosing(crawl.discover(
+            run, target, time_range=span, again=options.again,
+            head=listing.head, listing=listing,
+        )) as found:
             async for child in found:
                 if stop.soon.is_set():
                     break
                 child_key = store.key(child)
-                if child_key in seen_keys or child_key in known_keys:
-                    # A target seen before is passed over: `skipped` counts files alone.
-                    seen_to_mark.append(child_key)
+                if outcome["first_child"] is None and not state["resuming"]:
+                    outcome["first_child"] = child_key
+                already = (not options.again) and (
+                    child_key in state["seen"] or child_key in known_keys
+                )
+                if already:
+                    if child_key not in state["seen"]:
+                        state["seen"].add(child_key)
+                        seen_to_mark.append(child_key)
+                        if db is not None and len(seen_to_mark) >= SEEN_FLUSH:
+                            await run.off(db.seen, target, seen_to_mark)
+                            seen_to_mark.clear()
+                    seen_in_a_row += 1
+                    if state["head"] is not None and child_key == state["head"]:
+                        met_head = True
+                    if _should_stop_query(state, met_head, seen_in_a_row):
+                        outcome["caught_up"] = True
+                        listing.caught_up = True
+                        break
                     continue
                 if new_count >= MAX_SYNC_NEW:
+                    outcome["cut_short"] = True
                     break
+                seen_in_a_row = 0
                 new_count += 1
                 self.tally.add(child, planned)
                 rep = await runner.target(child, child_opts)
                 written.extend(rep.written)
                 skipped += rep.skipped
                 if rep.error is None:
+                    state["seen"].add(child_key)
                     seen_to_mark.append(child_key)
+                    if db is not None and len(seen_to_mark) >= SEEN_FLUSH:
+                        await run.off(db.seen, target, seen_to_mark)
+                        seen_to_mark.clear()
                 else:
                     child_failed = rep.error
         self.tally.end(target, failed=False)

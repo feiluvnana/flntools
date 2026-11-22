@@ -381,9 +381,9 @@ async def _called(method: Callable[..., Any], *args: Any) -> Any:
 
 
 def _site(run: PluginRun, target: Target, since: datetime.date | None = None,
-          until: datetime.date | None = None) -> Ctx:
+          until: datetime.date | None = None, *, again: bool = False) -> Ctx:
     """The `Ctx` a target's route and categories act through."""
-    return Ctx(run, target, when=Range(since, until))
+    return Ctx(run, target, when=Range(since, until), again=again)
 
 
 def _say(target: Target, level: str, message: str, **fields: Any) -> None:
@@ -404,7 +404,7 @@ async def plan(run: PluginRun, target: Target, options: Options) -> AsyncIterato
     Yields:
         Each file's `Placed`: its path under the target's folder and its history key.
     """
-    site = _site(run, target, options.since, options.until)
+    site = _site(run, target, options.since, options.until, again=options.again)
     route = next(r for r in run.source.routes if r.kind == target.kind)
     categories = {c.name: c for r in run.source.routes for c in r.categories}
     taken = 0
@@ -1384,7 +1384,7 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
     sweep_dir = _sweep_folder(run.settings.home, target, options)
     sweeping = (asyncio.ensure_future(run.off(files.sweep, sweep_dir))
                 if sweep_dir is not None else None)
-    site = _site(run, target, options.since, options.until)
+    site = _site(run, target, options.since, options.until, again=options.again)
     ledger = Ledger(run, site, target, tally, options=options)
     downloads = Downloads(run, target, tally, swept=sweeping, site=site, ledger=ledger)
     work = _Work(ledger, downloads)
@@ -1821,6 +1821,7 @@ class _Work:
 
 async def discover(
     run: PluginRun, target: Target, *, limit: int | None = None, time_range: Range = Range(),
+    again: bool = False, head: str | None = None, listing: Listing | None = None,
 ) -> AsyncIterator[Target]:
     """The targets a search (or any route that yields targets) finds, each once, resolved.
 
@@ -1833,16 +1834,19 @@ async def discover(
         target: the search.
         limit: at most this many targets; None for all.
         time_range: `--when`, which the route's `Ctx` filters by.
+        again: whether `--again` was set.
+        head: the newest previously seen child key for short-circuiting.
 
     Yields:
         Each new target, resolved by the source that owns it.
     """
     route = next(r for r in run.source.routes if r.kind == target.kind)
-    site = _site(run, target, time_range.since, time_range.until)
+    site = _site(run, target, time_range.since, time_range.until, again=again)
     yielded: set[Target] = set()
     try:
         if _at_limit(run, yielded, limit):
             return
+        site.listing = listing or Listing(None, label=f"{target}: {route.kind}", head=head)
         context = await _context(run.source, route, site, target)
         async with contextlib.aclosing(_discovered(run, route, site, context,
                                                    Options())) as steps:
@@ -1857,6 +1861,7 @@ async def discover(
                 if _at_limit(run, yielded, limit):
                     return
     finally:
+        site.listing = None
         if not site._idle:
             await run.off(site.close)
 
@@ -2179,7 +2184,7 @@ async def _sync_one(
     if cursorless:
         stops = replace(stops, streak=None) if stops.head is not None else replace(stops,
                                                                                     sync=False)
-    listing = progress.listings[name] = Listing(None, label=label)
+    listing = progress.listings[name] = Listing(None, label=label, head=stops.head)
     work.ledger.tally.start(target, name, listing)
     # 1. The newest posts. A listing that raises (the site failed it) is cut short like any:
     # where it was is kept as a gap before the error goes on to fail the target.

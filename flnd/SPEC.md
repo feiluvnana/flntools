@@ -598,9 +598,10 @@ What a run skips and where it stops:
 - A gone file: a 404 or 410 records it `gone`; it is not asked for again unless `--again`
 - Failed files: each `get` of a target first retries that target's failed files, on at most 3 later
   runs per file; a post is listed again from its page's cursor for fresh links
-- Nothing new: a newest-first category keeps its head; a sync stops after the head and the post
-  after it, one request when the site pages by cursor (`Skipped`, reason `nothing new`)
-- Caught up: after 5 saved posts in a row (`[plugins.<code>] stop_after`)
+- Nothing new: a newest-first category or search keeps its head; a sync stops after the head and
+  the post after it, one request when the site pages by cursor (`Skipped`, reason `nothing new`)
+- Caught up: after 5 saved posts or seen search targets in a row (`[plugins.<code>] stop_after`);
+  a search records its head and incrementally flushes seen targets, and respects `--when` on sync
 - Older than `--when`: after 5 posts in a row older than its start
 - A cut-short run: a full download keeps its cursor and resumes there; a cut sync keeps a gap and
   the next sync jumps to it once it meets saved posts

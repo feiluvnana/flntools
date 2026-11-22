@@ -1369,6 +1369,89 @@ class AntiBanTest(unittest.TestCase):
         self.assertTrue(ctx.listing.stalled)
         self.assertEqual(len(ctx.seen.holds), 1)
 
+    def test_search_stops_at_head_id_and_again_ignores_saved_max_id_cursor(self):
+        plugin = Twitter()
+        w1 = "https://x.com/search?q=example&src=typed_query&f=live"
+        w2 = "https://x.com/search?q=example+max_id%3A99&src=typed_query&f=live"
+        t150 = tweet("150", [photo("a")])
+        t100 = tweet("100", [photo("b")])
+        ctx = fake(pages={
+            w1: FakePage(feeds=[
+                Sent(f"{API}q/SearchTimeline", page(item(t150), item(t100), cursor="c1",
+                                                    search=True)),
+                Sent(f"{API}q/SearchTimeline", page(cursor="c2", search=True), scroll=1),
+            ]),
+            w2: FakePage(feeds=[
+                Sent(f"{API}q/SearchTimeline", page(item(tweet("90", [photo("c")])), search=True)),
+            ]),
+        })
+        ctx.listing = Listing(None, head="twt:post/100")
+        found = listed(plugin, ctx, "search", "example")
+        self.assertEqual([str(t) for t in found], [
+            "https://x.com/i/web/status/150", "https://x.com/i/web/status/100",
+        ])
+        self.assertEqual(ctx.seen.visited, [w1])
+
+        # --again ignores saved max_id cursor in ctx.state.
+        w149 = "https://x.com/search?q=example+max_id%3A149&src=typed_query&f=live"
+        ctx2 = fake(pages={
+            w1: FakePage(feeds=[
+                Sent(f"{API}q/SearchTimeline", page(item(t150), cursor="c1", search=True)),
+                Sent(f"{API}q/SearchTimeline", page(cursor="c2", search=True), scroll=1),
+            ]),
+            w149: FakePage(feeds=[Sent(f"{API}q/SearchTimeline", page(search=True))]),
+        })
+        ctx2._again = True
+        ctx2.state["search:example"] = {"max_id": "50"}
+        found2 = listed(plugin, ctx2, "search", "example")
+        self.assertEqual([str(t) for t in found2], ["https://x.com/i/web/status/150"])
+        self.assertEqual(ctx2.seen.visited, [w1, w149])
+
+        # Closing search early with listing.caught_up=True clears max_id instead of saving it.
+        ctx3 = fake(pages={
+            w1: FakePage(feeds=[
+                Sent(f"{API}q/SearchTimeline", page(item(t150), item(t100), cursor="c1",
+                                                    search=True)),
+            ]),
+        })
+        ctx3.listing = Listing(None, head="twt:post/100")
+
+        async def close_caught_up():
+            gen = plugin.search(ctx3, "example")
+            try:
+                first = await anext(gen)
+                self.assertEqual(str(first), "https://x.com/i/web/status/150")
+                ctx3.state["search:example"] = {"max_id": "50"}
+                ctx3.listing.caught_up = True
+            finally:
+                await gen.aclose()
+
+        asyncio.run(close_caught_up())
+        self.assertNotIn("search:example", ctx3.state)
+
+    def test_split_media_sync_drains_all_new_video_pages_above_head(self):
+        v_link = f"{API}id/UserVideoTimeline"
+        p_link = f"{API}id/UserPhotoTimeline"
+        v30 = tweet("30", [video("v30")], created_at="Thu Nov 12 10:00:00 +0000 2026")
+        v25 = tweet("25", [video("v25")], created_at="Wed Nov 11 10:00:00 +0000 2026")
+        v20 = tweet("20", [video("v20")], created_at="Tue Nov 10 10:00:00 +0000 2026")
+        v10 = tweet("10", [video("v10")], created_at="Sun Nov 08 10:00:00 +0000 2026")
+        p12 = tweet("12", [photo("p12")], created_at="Mon Nov 09 10:00:00 +0000 2026")
+        ctx = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle/media": FakePage(feeds=[
+                Sent(v_link, page(item(v30), item(v25), cursor="vc1")),
+                Sent(v_link, page(item(v20), item(v10), cursor="vc2"), scroll=1),
+            ]),
+            "https://x.com/example_handle/media?filter=photo": FakePage(feeds=[
+                Sent(p_link, page(item(p12), cursor="pc1")),
+                Sent(p_link, page(cursor="pc2"), scroll=1),
+            ]),
+        })
+        ctx.listing = Listing(None, head="15")
+        saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["media"])
+        self.assertEqual([f.post.id for f in saved], ["30", "25", "20", "12", "10"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1911,6 +1911,99 @@ class FolderOptionTest(JobCase):
         ])
         self.assertFalse((self.home / _store.MEDIA).exists())
 
+    def test_query_short_circuits_on_head_and_stop_after_and_again_and_when(self):
+        from flnd.plugin import Range
+
+        pages = [[10, 9], [8, 7, 6, 5, 4], [3, 2, 1]]
+        closed, seen_pages, seen_when = [], [], []
+
+        class Paged(Plugin):
+            code, name, domains, api = "pgd", "Paged", ("pgd.example",), 2
+
+            @route(r"pgd:{id:\d+}", newest_first=False)
+            async def post(self, ctx, id):
+                return id
+
+            @post.category(newest_first=False)
+            async def photo(self, ctx, id):
+                yield Post(id, [File(f"{CDN}/{id}.jpg", name=f"{id}.jpg")])
+
+            @route("pgd?{query}")
+            async def query(self, ctx, query: str):
+                seen_when.append(ctx.when)
+                try:
+                    for page_num, ids in enumerate(pages):
+                        seen_pages.append(page_num)
+                        if query == "crash" and page_num == 1:
+                            raise RuntimeError("boom")
+                        for item_id in ids:
+                            yield Target(f"pgd:{item_id}", kind="post")
+                finally:
+                    closed.append(True)
+
+        for n in range(1, 13):
+            self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
+
+        # 1. Initial download runs all pages, sets head="pgd:10" and complete=["query"].
+        engine = Engine(home=self.home, sources={"pgd": Paged})
+        r1 = engine.download(["pgd?cats|photo"], sync=True, folder="{target}/{category}")
+        self.assertTrue(r1.ok)
+        self.assertEqual(seen_pages, [0, 1, 2])
+        row = fakes.targets(self.home)["pgd:cats"]
+        self.assertEqual(row.heads.get("query"), "pgd:10")
+        self.assertIn("query", row.complete)
+
+        # 2. Next run with 1 new item (11) before head (10, 9): short-circuits on page 0!
+        pages[0] = [11, 10, 9]
+        seen_pages.clear()
+        self.requests.clear()
+        r2 = engine.download(["pgd?cats|photo"], sync=True, folder="{target}/{category}")
+        self.assertTrue(r2.ok)
+        self.assertEqual(seen_pages, [0])
+        self.assertEqual([p.name for p in r2.targets[0].written], ["11.jpg"])
+        self.assertEqual(fakes.targets(self.home)["pgd:cats"].heads.get("query"), "pgd:11")
+
+        # 3. engine.sync() also short-circuits on page 0 and forwards --when.
+        pages[0] = [12, 11, 10]
+        seen_pages.clear()
+        seen_when.clear()
+        r3 = engine.sync(time=Range(date(2026, 1, 1), date(2026, 1, 2)))
+        self.assertTrue(r3.ok)
+        self.assertEqual(seen_pages, [0])
+        self.assertEqual(seen_when, [Range(date(2026, 1, 1), date(2026, 1, 2))])
+
+        # 4. --again bypasses seen_keys and short-circuiting and reads all pages.
+        seen_pages.clear()
+        r4 = engine.download(["pgd?cats|photo"], again=True, folder="{target}/{category}")
+        self.assertTrue(r4.ok)
+        self.assertEqual(seen_pages, [0, 1, 2])
+
+        # 5. Backward-compat: completed search with heads={} short-circuits on stop_after (5).
+        with _store.Store(self.home) as s:
+            s.progress(Target("pgd:cats", kind="query"), cursors={}, complete=["query"],
+                       heads={})
+        sql = sqlite3.connect(self.home / _store.DB)
+        try:
+            sql.execute("UPDATE targets SET heads = '{}' WHERE key = 'pgd:cats'")
+            sql.commit()
+        finally:
+            sql.close()
+        pages[0] = [12, 11]
+        seen_pages.clear()
+        r5 = engine.sync()
+        self.assertTrue(r5.ok)
+        self.assertEqual(seen_pages, [0, 1])  # 12,11 (2) + 8,7,6 (3) = 5 seen in a row!
+        self.assertEqual(fakes.targets(self.home)["pgd:cats"].heads.get("query"), "pgd:12")
+
+        # 6. Crash partway through (> SEEN_FLUSH=10) preserves already-flushed seen items.
+        pages_big = [list(range(1, 13)), [99]]
+        pages[:] = pages_big
+        for n in range(1, 13):
+            self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
+        r6 = engine.download(["pgd?crash|photo"], sync=True, folder="{target}/{category}")
+        self.assertFalse(r6.ok)
+        self.assertGreaterEqual(len(fakes.targets(self.home)["pgd:crash"].seen), 10)
+
 
 if __name__ == "__main__":
     unittest.main()

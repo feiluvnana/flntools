@@ -256,11 +256,12 @@ class Twitter(Plugin):
         self.found.clear()
 
         # Check for saved resumption cursor in db or state
+        again = bool(getattr(ctx, "_again", False))
         db = getattr(getattr(ctx, "_run", None), "settings", None)
         db = getattr(db, "db", None)
         saved_max_id: str | None = None
         state_key = f"search:{query}"
-        if not getattr(getattr(ctx, "_options", None), "again", False):
+        if not again:
             if db is not None:
                 row = db.target(f"{ctx.target.plugin}:{ctx.target.value}")
                 if row is not None:
@@ -272,6 +273,14 @@ class Twitter(Plugin):
                         saved_max_id = saved.get("max_id")
                 except Exception:
                     pass
+
+        head_id: int | None = None
+        if not again and not saved_max_id:
+            head_raw = getattr(getattr(ctx, "listing", None), "head", None)
+            if isinstance(head_raw, str):
+                tail_id = head_raw.rsplit("/", 1)[-1]
+                if tail_id.isdigit():
+                    head_id = int(tail_id)
 
         if saved_max_id:
             window_query = with_max_id(query, int(saved_max_id))
@@ -339,7 +348,7 @@ class Twitter(Plugin):
                     completed = True
                     break
                 edge_id, edge_date = min(tail, key=lambda entry: entry[0])
-                if edge_id <= 1:
+                if edge_id <= 1 or (head_id is not None and edge_id <= head_id):
                     completed = True
                     break
                 if (ctx.when.since is not None and edge_date is not None
@@ -355,7 +364,7 @@ class Twitter(Plugin):
                 except Exception:
                     pass
         finally:
-            if completed:
+            if completed or getattr(getattr(ctx, "listing", None), "caught_up", False):
                 if db is not None:
                     db.progress(ctx.target, cursors={"max_id": None}, complete=["search"])
                 try:
@@ -520,8 +529,13 @@ class Twitter(Plugin):
 
         # X split /media into Videos (/media -> UserVideoTimeline) and Photos
         # (/media?filter=photo -> UserPhotoTimeline), while legacy/tests may send UserMedia.
+        head_raw = getattr(getattr(ctx, "listing", None), "head", None)
+        head_id = int(head_raw) if isinstance(head_raw, str) and head_raw.isdigit() else None
         matched: list[str] = []
-        meta: dict[str, Any] = {"matched": matched, "stop_after_one": False, "more": False}
+        meta: dict[str, Any] = {
+            "matched": matched, "stop_after_one": False, "more": False,
+            "head_id": head_id, "reached_head": False,
+        }
         held_videos: list[tuple[dict, bool]] = []
         async for tweet, pinned in self._scroll(
             ctx, tab, timeline.query,
@@ -562,7 +576,7 @@ class Twitter(Plugin):
             for post in emit(v_tweet, v_pinned):
                 yield post
 
-        if video_more:
+        if video_more and not meta.get("reached_head"):
             await ctx.pause(random.uniform(2.0, 5.0), "pausing between media views")
             async for tweet, pinned in self._scroll(
                 ctx, tab, "UserVideoTimeline",
@@ -663,8 +677,7 @@ class Twitter(Plugin):
                             new = [tweet for tweet in tweets
                                    if (tid := tweet_id_of(tweet)) and tid not in seen]
                             if not new:
-                                if (meta is not None and meta.get("stop_after_one")
-                                        and (tweets or cursor is not None)):
+                                if _video_page_done(meta, ids, cursor):
                                     break
                                 if cursor is None:
                                     if query == SEARCH and empty_pages > 0:
@@ -691,7 +704,7 @@ class Twitter(Plugin):
                             got_new = True
                             for tweet in new:
                                 yield tweet, tweet_id_of(tweet) in pinned
-                            if meta is not None and meta.get("stop_after_one"):
+                            if _video_page_done(meta, ids, cursor):
                                 break
                             await _proactive_pause(ctx, query, rem, reset, pages)
                     except NotFound as error:
@@ -835,6 +848,22 @@ def _raise_graphql_errors(errors: Any) -> None:
                           retryable=False)
         if code == 88:
             raise Blocked("twt: rate limited by API (code 88)", wait=900.0)
+
+
+def _video_page_done(meta: dict[str, Any] | None, ids: list[str], cursor: str | None) -> bool:
+    """Whether split `/media` `UserVideoTimeline` has drained enough pages before photos."""
+    if meta is None or not meta.get("stop_after_one"):
+        return False
+    head_id = meta.get("head_id")
+    if head_id is None:
+        return True
+    if cursor is None:
+        meta["reached_head"] = True
+        return True
+    if any(int(tid) <= head_id for tid in ids if tid.isdigit()):
+        meta["reached_head"] = True
+        return True
+    return False
 
 
 def _op_matcher(
