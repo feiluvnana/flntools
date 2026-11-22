@@ -11,10 +11,11 @@ import unittest
 from collections.abc import Sequence
 from datetime import date
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 import fakes
 
-from flnd.errors import Blocked, LoginError, NotFound, SiteError, UsageError
+from flnd.errors import Blocked, Changed, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import Range, Request, Target
 from flnd.plugins.ins import APP_ID, Instagram, best_file, code_pk, pk_stamp
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
@@ -574,6 +575,41 @@ class TabTest(unittest.TestCase):
                          [f"posts/{DAY}_POL1.jpg", "profile/pic.jpg"])
         self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/POL1/"])
         self.assertEqual(fetched(ctx), [])
+
+    def test_tab_continues_via_captured_graphql_post_without_extra_scrolls(self):
+        """A captured paginated GraphQL POST (`after`) continues in-page, retrying 5xx."""
+        api_gql = f"{SITE}/api/graphql"
+        req1 = Request(api_gql, method="POST", body=urlencode({"doc_id": "1", "variables": "{}"}))
+        req2 = Request(api_gql, method="POST",
+                       headers={"x-fb-lsd": "lsd1", "cookie": "sessionid=secret"},
+                       body=urlencode({"doc_id": "2", "variables": '{"after":"c1"}'}))
+        p = [feed(f"P{i}", **image(f"https://cdn.example/p{i}.jpg")) for i in range(1, 5)]
+        page = FakePage("<html></html>", feeds=[
+            Sent(api_gql, grid(p[0], more="c1"), request=req1),
+            Sent(api_gql, grid(p[1], more="c2"), scroll=1, request=req2),
+            Sent(api_gql, grid(feed("LATE", **image("https://cdn.example/l.jpg")), more=""),
+                 scroll=2, request=req2)])
+        replies = [Reply(status=502),
+                   Reply(grid(p[2], more="c3"), headers={"x-ig-set-www-claim": "hmac.3"}),
+                   Reply(grid(p[3], more=""))]
+        seen = []
+
+        def answer(req):
+            seen.append(json.loads(dict(parse_qsl(req.body))["variables"])["after"])
+            return replies.pop(0)
+
+        ctx = fake(pages={f"{SITE}/example_creator/": page}, routes={api_gql: answer})
+        self.assertEqual([item.path for item in run(categories=["posts"], ctx=ctx)],
+                         [f"posts/{DAY}_P{i}.jpg" for i in range(1, 5)])
+        hdrs = {k.lower(): v for k, v in ctx.seen.requests[0][2]["headers"].items()}
+        self.assertEqual((ctx.seen.scrolls, seen, ctx._plugin.claim, hdrs["x-fb-lsd"],
+                          "cookie" in hdrs, all(r[2]["in_page"] for r in ctx.seen.requests)),
+                         (1, ["c2", "c2", "c3"], "hmac.3", "lsd1", False, True))
+        bad = FakePage(embedded(grid(p[0], more="c1")),
+                       feeds=[Sent(api_gql, grid(p[1], more="c2"), scroll=1, request=req2)])
+        with self.assertRaises(Changed):
+            run(categories=["posts"], ctx=fake(pages={f"{SITE}/example_creator/": bad},
+                                               routes={api_gql: Reply({"data": {}})}))
 
 
 class PostTest(unittest.TestCase):

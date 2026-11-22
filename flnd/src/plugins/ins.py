@@ -4,14 +4,15 @@ link, and the accounts the login follows, read from the pages. SPEC.md#ins-insta
 
 from __future__ import annotations
 
+import json
 import random
 import re
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import aclosing
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any
-from urllib.parse import unquote, urlsplit
+from typing import Any, NamedTuple
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
 
 from flnd.plugin import (
     Blocked,
@@ -89,6 +90,8 @@ ID_SHIFT = 23
 SHORTCODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 # What a GraphQL call's URL holds: the responses that carry a profile tab's or a post's data.
 GRAPHQL = "graphql"
+# Captured GraphQL request headers safe to send back in-page; `sign` sets the rest.
+QUERY_HEADERS = ("content-type", "x-fb-", "x-bloks-", "x-root-field-name")
 # Where a story's music is, in the two shapes Instagram sends it (as gallery-dl reads it): a music
 # sticker's asset, or the story's own music metadata.
 STORY_MUSIC = ("story_music_stickers[0].music_asset_info.progressive_download_url || "
@@ -406,19 +409,105 @@ async def page_results(
         await ctx.hold(THROTTLE_REASON, seconds=random.uniform(300.0, 600.0))
 
 
-async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
-    """The posts of one tab in its order, scrolling it until its `page_info` says it ended.
+class TabQuery(NamedTuple):
+    """A captured GraphQL tab query (`POST /api/graphql`), paged in-page via `variables.after`."""
 
-    A grid item that is the whole post comes with its files; any other is a lazy post, whose
-    files are its page's, read only once the engine wants it. Every result the page embeds is
-    read before the end is taken, as the profile's highlights may come after the last page.
+    url: str
+    headers: dict[str, str]
+    pairs: tuple[tuple[str, str], ...]
+    var_index: int
+    variables: dict[str, Any]
+
+
+def parse_tab_query(request: Request | None) -> TabQuery | None:
+    """Extract a replayable paginated `TabQuery` from a captured `/graphql` POST; None else."""
+    if (request is None or request.method != "POST" or not isinstance(request.body, str)
+            or GRAPHQL not in urlsplit(request.url).path):
+        return None
+    pairs = parse_qsl(request.body, keep_blank_values=True)
+    for idx, (key, raw) in enumerate(pairs):
+        if key != "variables":
+            continue
+        try:
+            variables = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(variables, dict) or "after" not in variables:
+            return None
+        headers = {k: v for k, v in (request.headers or {}).items()
+                   if k.lower().startswith(QUERY_HEADERS)}
+        if not any(k.lower() == "content-type" for k in headers):
+            headers["content-type"] = "application/x-www-form-urlencoded"
+        return TabQuery(request.url, headers, tuple(pairs), idx, variables)
+    return None
+
+
+async def _graphql_fetch(ctx: Ctx, query: TabQuery, cursor: str) -> Response:
+    """Send one read-only GraphQL POST in-page, retrying transient 5xx or network blips."""
+    pairs = list(query.pairs)
+    pairs[query.var_index] = ("variables", json.dumps({**query.variables, "after": cursor},
+                                                      separators=(",", ":")))
+    req = Request(query.url, method="POST", headers=query.headers, body=urlencode(pairs))
+    for attempt in range(3):
+        try:
+            return await ctx.fetch(req, in_page=True)
+        except (NetworkError, SiteError) as error:
+            transient = isinstance(error, NetworkError) or (error.status or 0) >= 500
+            if attempt == 2 or not transient or isinstance(error, (Blocked, LoginError)):
+                raise
+            await ctx.pause(5.0 * (attempt + 1), "retrying GraphQL page")
+    raise AssertionError("unreachable")
+
+
+async def _tab_pause(ctx: Ctx, page_num: int) -> None:
+    """Humanized pause between tab pages, with a longer break every 15 pages."""
+    delay = random.uniform(12.0, 25.0) if page_num % 15 == 0 else random.uniform(2.0, 5.0)
+    await ctx.pause(delay, "pausing between tab pages")
+
+
+async def _graphql_pages(
+    ctx: Ctx, profile: Profile, tab: str, query: TabQuery, cursor: str,
+    reader: Callable[[Any], tuple[bool, str | None] | None], counts: list[int],
+) -> AsyncIterator[Post]:
+    """Continue a profile tab past its first scrolled page via in-page GraphQL POSTs."""
+    seen = {cursor}
+    while cursor:
+        counts[0] += 1
+        counts[1] += 1
+        await _tab_pause(ctx, counts[0])
+        response = await _graphql_fetch(ctx, query, cursor)
+        if profile.plugin is not None:
+            claim = response.headers.get("x-ig-set-www-claim")
+            profile.plugin.claim = claim or profile.plugin.claim
+        result = response.json
+        _check_meta_error(result)
+        profile.note(result)
+        for post in new_posts(ctx, profile, result, tab):
+            yield post
+        state = reader(result)
+        if state is None:
+            raise Changed(f"ins: {tab} GraphQL page has no connection")
+        more, following = state
+        if not more or not following or following in seen:
+            return
+        seen.add(following)
+        cursor = following
+
+
+async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
+    """The posts of one tab in its order, until its `page_info` says it ended.
+
+    Scrolls until the tab sends a paginated GraphQL POST (`variables.after`), then continues via
+    in-page GraphQL POSTs so long tabs neither bloat the DOM nor stall on scroll.
 
     Raises:
         NotFound, LoginError: the tab's page didn't load.
     """
     reader = TAB_PAGES[tab]
     listing = ctx.load(f"{SITE}/{profile.user}/{TABS[tab]}", GRAPHQL, cursor=reader)
-    pages = 0
+    counts = [0, 0]
+    query: TabQuery | None = None
+    next_cursor: str | None = None
     try:
         async with aclosing(listing):
             embedded = True
@@ -433,20 +522,28 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
                     for post in new_posts(ctx, profile, result, tab):
                         yield post
                     state = reader(result)
-                    ended = ended or (state is not None and not (state[0] and state[1]))
-                was_embedded = embedded
-                embedded = False
-                # The last page, embedded or scrolled: nothing more is asked for.
+                    if state is not None:
+                        if not (state[0] and state[1]):
+                            ended = True
+                        else:
+                            next_cursor = state[1]
+                            if not embedded and query is None:
+                                query = parse_tab_query(ctx.request)
+                was_embedded, embedded = embedded, False
                 if ended:
                     return
                 if not was_embedded:
-                    pages += 1
-                    delay = (random.uniform(12.0, 25.0) if pages % 15 == 0
-                             else random.uniform(2.0, 5.0))
-                    await ctx.pause(delay, "pausing between tab pages")
+                    counts[0] += 1
+                if query is not None and next_cursor is not None:
+                    break
+                if not was_embedded:
+                    await _tab_pause(ctx, counts[0])
+        if query is not None and next_cursor is not None:
+            async for post in _graphql_pages(ctx, profile, tab, query, next_cursor, reader, counts):
+                yield post
     finally:
-        ctx.log("debug", "{user}: {tab}: read {pages} scrolled pages",
-                user=profile.user, tab=tab, pages=pages)
+        ctx.log("debug", "{user}: {tab}: read {scrolled} scrolled, {gql} graphql pages",
+                user=profile.user, tab=tab, scrolled=counts[0] - counts[1], gql=counts[1])
 
 
 def new_posts(ctx: Ctx, profile: Profile, result: Any, tab: str) -> Iterator[Post]:

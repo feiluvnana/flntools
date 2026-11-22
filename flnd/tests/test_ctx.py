@@ -584,19 +584,21 @@ class FeedTest(CtxCase):
 
         async def read():
             async with ctx.feed("graphql", scroll=False) as feed:
-                await self.raw.emit(
-                    GRAPHQL, '{"n": 1}',
+                req = SimpleNamespace(method="POST", headers={"x-fb-lsd": "lsd1"}, post_data="a=1")
+                self.raw.answer(SimpleNamespace(
+                    url=GRAPHQL, status=200, request=req,
                     headers={"X-Rate-Limit-Remaining": "5", "X-Rate-Limit-Reset": "12345",
                              "X-Other": "ignored"},
-                )
-                items = []
-                async for item in feed:
-                    items.append((item["n"], dict(feed.headers)))
-                return items
+                    text=mock.AsyncMock(return_value='{"n": 1}'),
+                ))
+                await asyncio.sleep(0)
+                return [(item["n"], dict(feed.headers), ctx.request) async for item in feed]
 
-        self.assertEqual(self.call(run, read()), [
-            (1, {"x-rate-limit-remaining": "5", "x-rate-limit-reset": "12345"}),
-        ])
+        [(n, hdrs, got)] = self.call(run, read())
+        self.assertEqual((n, hdrs), (1, {"x-rate-limit-remaining": "5",
+                                         "x-rate-limit-reset": "12345"}))
+        self.assertEqual((got.url, got.method, got.body, got.headers),
+                         (GRAPHQL, "POST", "a=1", {"x-fb-lsd": "lsd1"}))
 
     def test_a_scroll_step_or_a_body_that_never_ends_is_given_up(self):
         async def forever():

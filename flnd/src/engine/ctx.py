@@ -879,7 +879,7 @@ class _Feed:
         tabs = self._ctx._tabs.verbs()
         if isinstance(tabs, chrome.ExtensionTabs):
             return chrome.ExtensionFeed(tabs, match, scroll=scroll, lines=lines, cursor=cursor)
-        return browser.Feed(tabs, match, scroll=scroll, lines=lines, cursor=cursor)
+        return browser.Feed(tabs, match, scroll=scroll, lines=lines, cursor=cursor, requests=True)
 
     def listen(self) -> None:
         """Start making the feed, so it listens from now on; on the loop."""
