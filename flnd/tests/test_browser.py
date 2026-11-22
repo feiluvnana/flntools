@@ -1300,6 +1300,68 @@ class ScrollTimingTest(BrowserCase):
                 self.assertTrue(run(scroller.step()))
                 self.assertEqual(len(turns), waited)
 
+    def test_cursor_active_feed_nudges_and_waits_past_idle_up_to_stall(self):
+        class CursorRaw(FakeFeed):
+            def __init__(self, delay):
+                super().__init__(after=0.1, grows=0, bottom=True, dom=False)
+                self.delay = delay
+                self.delivered = 0
+                self.listeners = []
+
+            def on(self, event, fn):
+                self.listeners.append(fn)
+
+            def remove_listener(self, event, fn):
+                if fn in self.listeners:
+                    self.listeners.remove(fn)
+
+            async def emit(self, body, capture):
+                res = SimpleNamespace(
+                    url="https://site.test/api/graphql", status=200, headers={},
+                    text=mock.AsyncMock(return_value=body),
+                )
+                for fn in list(self.listeners):
+                    fn(res)
+                await capture.settle()
+
+            async def check_delayed(self, capture):
+                if self.delay is not None and self.delivered == 0 and self.clock.now >= self.delay:
+                    self.delivered = 1
+                    await self.emit('{"more": false}', capture)
+                    self.heard += 1
+                self.capture.count = self.heard
+
+            async def evaluate(self, expression, arg=None):
+                await self.check_delayed(self._feed_capture)
+                return await super().evaluate(expression, arg)
+
+            async def nap(self, seconds, news=None):
+                self.clock.advance(seconds)
+                await self.check_delayed(self._feed_capture)
+
+        for delay, expect_stalled, expect_count in ((10.0, False, 2), (None, True, 1)):
+            with self.subTest(delay=delay):
+                raw = CursorRaw(delay)
+                page = self.page(raw)
+                tabs = SimpleNamespace(
+                    page=page, scroll=_browser.FAST,
+                    push=lambda *a, **kw: None, pop=lambda *a, **kw: None,
+                    run=lambda coro: run(coro),
+                )
+                feed = _browser.Feed(
+                    cast(Any, tabs), "/graphql", scroll=True,
+                    cursor=lambda item: (item["more"], item.get("next")),
+                )
+                raw._feed_capture = feed._capture
+                run(raw.emit('{"more": true, "next": "c1"}', feed._capture))
+                items = list(feed)
+                self.assertEqual(len(items), expect_count)
+                self.assertEqual(feed.stalled, expect_stalled)
+                wheels = [call.args[1] for call in raw.mouse.wheel.call_args_list]
+                self.assertTrue(any(y < 0 for y in wheels), wheels)
+                if expect_stalled:
+                    self.assertGreaterEqual(raw.clock.now, _browser.STALL)
+
 
 class NoProfilesTest(unittest.TestCase):
     """The suite-wide guard (`tests/no_profiles.py`): no test reads or copies a real profile.

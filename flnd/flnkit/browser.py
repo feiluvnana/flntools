@@ -1620,6 +1620,21 @@ class _Scroller:
             return await turn(self._step)
         return await self._step()
 
+    async def nudge(self) -> None:
+        """Scroll up slightly and pause so a bottom-pinned feed can re-trigger loading."""
+        turn = self._page.turn
+        if self._style == HUMAN and turn is not None:
+            await turn(self._nudge)
+            return
+        await self._nudge()
+
+    async def _nudge(self) -> None:
+        self._quiet_since = None
+        area = await self._page._area(self._target)
+        await self._page._roll(-area[3] * 0.6, self._target, area, steps=1)
+        news = self._watch.news if self._watch is not None else None
+        await self._page._nap(min(1.0, self._idle), news)
+
     async def _step(self) -> bool:
         """`step`'s work, once it is this tab's turn: scroll, watch, and say whether to go on."""
         page, target, human = self._page, self._target, self._style == HUMAN
@@ -2620,14 +2635,27 @@ class Feed:
             if self._scroller is None:
                 self._scroller = self._tabs.run(self._page.scroller(
                     style=self._tabs.scroll, watch=self._capture))
+            left = STALL - (clock.now() - began)
+            if left <= 0:
+                self.stalled = True
+                break
             try:
-                went = self._tabs.run(asyncio.wait_for(self._scroller.step(), STALL))
+                went = self._tabs.run(asyncio.wait_for(self._scroller.step(), left))
             except (TimeoutError, WaitError):
                 went = None
             if went is False:
-                if self._cursors.active and not self._cursors.ended:
+                if not self._cursors.active or self._cursors.ended:
+                    break
+                if clock.now() - began >= STALL:
                     self.stalled = True
-                break
+                    break
+                try:
+                    self._tabs.run(asyncio.wait_for(
+                        self._scroller.nudge(), max(0.1, STALL - (clock.now() - began))))
+                except (TimeoutError, WaitError):
+                    self.stalled = True
+                    break
+                continue
             if went is None or clock.now() - began >= STALL:
                 self.stalled = True
                 break
