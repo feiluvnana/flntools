@@ -26,6 +26,8 @@ __all__ = ["Screen", "frame", "paused", "summary"]
 
 # Seconds between two screen redraws (10 fps).
 TICK = 1 / 10
+# Seconds to wait after a terminal size change stops before redrawing from `_run`.
+RESIZE_SETTLE = 0.2
 # The most cells a target, its categories and a file's path take, and a file's bar.
 TARGET_CELLS, CATEGORY_CELLS, PATH_CELLS, BAR_CELLS = 28, 14, 24, 30
 # The lines the block has beside its target and file rows: the header, the column titles, the
@@ -37,7 +39,6 @@ FAILURES_SHOWN = 10
 # Each column leaves at least 2 cells before its widest value (`999,999`, `1023.9 MB`,
 # `1023.9 KB/s`), so columns never touch.
 COLUMNS = (("saved", 8), ("skipped", 9), ("failed", 9), ("size", 11), ("speed", 13))
-KEYS = "ctrl+c stop · twice: stop now"
 INDENT = "  "
 
 
@@ -165,9 +166,9 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
         lines.append(_now(state, fancy))
         if state.resources is not None:
             lines.append(_use(state.resources, sep))
-        lines += [Text(), _foot(state, width, fancy)]
+        lines += [Text(), _foot(state, fancy)]
     elif height >= 4:
-        bottom = [_now(state, fancy), _foot(state, width, fancy)]
+        bottom = [_now(state, fancy), _foot(state, fancy)]
         room = height - 2 - len(bottom)
         shown = _shown_targets(state.targets, 2 if room == 1 and total > 1 else room)
         lines = [_line((title, "focus")), _line((header, "dim"))]
@@ -179,7 +180,7 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
         shown = _shown_targets(state.targets, height - 2)
         lines = [_line((title, "focus"))]
         lines += [_target(row, widths, cols, at, fancy) for row in shown]
-        lines.append(_foot(state, width, fancy))
+        lines.append(_foot(state, fancy))
     else:
         lines = [_line((title, "focus"))]
     if len(lines) > height:
@@ -346,22 +347,13 @@ def _use(use: Resources, sep: str) -> Text:
     return _line(("use  ", "dim"), (both, "text"))
 
 
-def _foot(state: State, width: int, fancy: bool) -> Text:
-    """The run's speed and counts, with the keys on the right."""
+def _foot(state: State, fancy: bool) -> Text:
+    """The run's speed and counts."""
     sep = f" {theme.glyph('sep', fancy)} "
     # Idle (nothing in flight), the speed of the last 3 s is no speed.
     flying = state.files or state.more
     speed = f"{size(state.speed)}/s" if flying and state.speed else theme.glyph("none", fancy)
-    counts = f"{speed}{sep}{state.saved:,} saved{sep}{state.failed:,} failed"
-    keys = KEYS.replace(" · ", sep)
-    if width >= 100 or _cells(INDENT + counts + keys) + 4 <= width:
-        gap = max(2, width - _cells(INDENT + counts + keys) - 2)
-        return _line((counts, "text"), (" " * gap + keys, "dim"))
-    short_keys = "ctrl+c stop"
-    gap = width - _cells(INDENT + counts + short_keys) - 2
-    if gap >= 2:
-        return _line((counts, "text"), (" " * gap + short_keys, "dim"))
-    return _line((counts, "text"))
+    return _line((f"{speed}{sep}{state.saved:,} saved{sep}{state.failed:,} failed", "text"))
 
 
 def _reflowed_rows(widths: Sequence[int], width: int) -> int:
@@ -423,6 +415,7 @@ class Screen:
         self._at = clock.now()
         self._last_size: tuple[int, int] | None = None
         self._last_widths: list[int] = []
+        self._resize_until = 0.0
         # Held while a draw goes on, and while a question has the terminal (`paused`).
         self._turn = threading.Lock()
 
@@ -471,7 +464,8 @@ class Screen:
     def _run(self) -> None:
         next_at = time.monotonic() + TICK
         while not self._done.wait(max(0.0, next_at - time.monotonic())):
-            self.tick()
+            with self._turn:
+                self._tick(debounce=True)
             next_at += TICK
             now = time.monotonic()
             if next_at < now:
@@ -482,7 +476,7 @@ class Screen:
         with self._turn:
             self._tick()
 
-    def _tick(self) -> None:
+    def _tick(self, *, debounce: bool = False) -> None:
         block = self._block
         if block is None or not block.is_started:
             return
@@ -503,6 +497,8 @@ class Screen:
                     live_render._shape = None
                 self._last_widths = []
                 self._last_size = (w, h)
+                if debounce:
+                    self._resize_until = time.monotonic() + RESIZE_SETTLE
 
         width, height = measure()
         clear_if_changed(width, height)
@@ -529,7 +525,12 @@ class Screen:
                 if popped:
                     console.push_render_hook(block)
             width, height = measure()
+            if debounce and self._last_size is not None and (width, height) != self._last_size:
+                self._resize_until = time.monotonic() + RESIZE_SETTLE
             self._last_size = (width, height)
+
+        if debounce and time.monotonic() < self._resize_until:
+            return
 
         state = self._read()
         now = clock.now()
@@ -555,6 +556,11 @@ class Screen:
             width, height = now_w, now_h
             clear_if_changed(width, height)
         assert drawn is not None
+        if debounce and self._size == (None, None):
+            now_w, now_h = measure()
+            if (now_w, now_h) != (width, height):
+                clear_if_changed(now_w, now_h)
+                return
 
         orig_w, orig_h = console._width, console._height
         try:
@@ -593,6 +599,7 @@ def paused() -> Iterator[None]:
         finally:
             shown._last_size = None
             shown._last_widths = []
+            shown._resize_until = 0.0
             shown._block = shown._fresh()
             shown._drawn = -1
 

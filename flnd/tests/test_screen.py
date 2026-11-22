@@ -86,8 +86,7 @@ class FrameTest(unittest.TestCase):
                          r"⠋ media/1290_2\.mp4 +━{18}╺━{11} +63% +38\.0 MB +12\.0 MB/s$")
         self.assertEqual(rows[7].strip(), "+ 4 more")
         self.assertTrue(rows[8].endswith("held 30 s: 429 from api.example.com (×3)"), rows[8])
-        self.assertRegex(rows[9], r"^  42\.0 MB/s · 449 saved · 1 failed +ctrl\+c stop · twice:"
-                                  r" stop now$")
+        self.assertEqual(rows[9], "  42.0 MB/s · 449 saved · 1 failed")
 
     def test_size_and_speed_never_touch(self) -> None:
         going = TargetState("ins:example_user", ("posts",), Phase.DOWNLOADING, found=2, saved=1,
@@ -187,8 +186,7 @@ class FrameTest(unittest.TestCase):
                 lines = screen.frame(MOCKUP, command="get", width=w, height=30).plain.split("\n")
                 self.assertTrue(all(cell_len(line) <= w - 1 for line in lines))
                 foot = lines[-1]
-                # Never chop "ctrl+c" mid-word.
-                self.assertFalse("ctrl+" in foot and "ctrl+c" not in foot)
+                self.assertNotIn("ctrl+c", foot)
                 if w == 60:
                     self.assertTrue(any("%" in line for line in lines))
                 if w in (60, 80):
@@ -493,6 +491,35 @@ class ScreenTest(unittest.TestCase):
         chunk = tty.getvalue()[pos:]
         # With actual_cols = 49 + 1 = 50, a 50-cell line occupies 1 row -> up = 0 (no CURSOR_UP).
         self.assertNotIn("\x1b[1A", chunk)
+
+    def test_resize_debounces_active_drag_and_draws_once_settled(self) -> None:
+        tty = _TTY()
+        shown = self.shown(lambda: MOCKUP, tty)
+        now = [0.0]
+        with mock.patch.object(screen.time, "monotonic", side_effect=lambda: now[0]):
+            shown._tick(debounce=True)
+            pos = len(tty.getvalue())
+
+            # Active drag: width changes repeatedly -> clear once, draw nothing until settled.
+            shown._console.width = 90
+            now[0] = 0.1
+            shown._tick(debounce=True)
+            drag_chunk_1 = tty.getvalue()[pos:]
+            self.assertEqual(drag_chunk_1.count("flnd download"), 0, repr(drag_chunk_1))
+
+            drag_pos = len(tty.getvalue())
+            for w, t in ((80, 0.2), (70, 0.3), (70, 0.4)):
+                shown._console.width = w
+                now[0] = t
+                shown._tick(debounce=True)
+            self.assertEqual(tty.getvalue()[drag_pos:], "")
+
+            # Once settled past RESIZE_SETTLE, one clean frame is drawn at width 70.
+            now[0] = 0.55
+            shown._tick(debounce=True)
+            settled = tty.getvalue()[drag_pos:]
+            self.assertEqual(settled.count("flnd download"), 1, repr(settled))
+            self.assertEqual(shown._last_size, (69 if shown._console.legacy_windows else 70, 40))
 
     def test_the_screen_reads_nothing_but_the_snapshot(self) -> None:
         tree = ast.parse(Path(screen.__file__).read_text(encoding="utf-8"))
