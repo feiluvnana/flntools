@@ -347,7 +347,7 @@ class TikTok(Plugin):
     # Either cookie proves a login; none is needed, since public profiles are read without one.
     login = cookies("sessionid", "sid_tt", url="https://www.tiktok.com/login")
     # No known limit; TikTok's answer to heavy use is the captcha, which `Profile` holds for.
-    pace = 1.5
+    pace = 2.0
     browser = Browser.ANY
     # No login wall is known: a logged-out visitor is shown the public profile.
     walls = ()
@@ -480,7 +480,7 @@ class TikTok(Plugin):
         links = await profile.links(ctx)
         for index, post_id in enumerate(links):
             if index:
-                await ctx.pause(random.uniform(1.0, 2.5), "pausing between embed fetches")
+                await ctx.pause(random.uniform(2.0, 4.5), "pausing between embed fetches")
             try:
                 posts = await embed(ctx, post_id)
             except Blocked:
@@ -583,11 +583,14 @@ async def filled(ctx: Ctx, feed: AsyncIterator[Any],
     That answer holds, once in a row, and the scroll goes on; a second one ends the list.
     """
     came = retried = False
+    pages = 0
     async for data in feed:
         _check_tiktok_status(data)
         more = (state(data) or (False,))[0]
         if more and not any(isinstance(v, list) and v for v in data.values()):
             if retried:
+                if getattr(ctx, "listing", None) is not None:
+                    ctx.listing.stalled = True
                 ctx.log("warn", "an empty page still says hasMore; the list ends here")
                 return
             retried = True
@@ -596,6 +599,11 @@ async def filled(ctx: Ctx, feed: AsyncIterator[Any],
             continue
         retried, came = False, True
         yield data
+        if more:
+            pages += 1
+            delay = (random.uniform(10.0, 20.0) if pages % 15 == 0
+                     else random.uniform(1.5, 3.5))
+            await ctx.pause(delay, "pacing feed scroll")
 
 
 async def embed(ctx: Ctx, post_id: str) -> list[Post]:

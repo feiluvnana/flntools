@@ -297,6 +297,15 @@ class AntiBanTest(unittest.TestCase):
         self.assertFalse(caught2.exception.retryable)
         self.assertEqual(len(ctx2.seen.holds), 1)
 
+    def test_please_wait_throttle_waits_conservatively(self):
+        pages = {**PAGES, f"{SITE}/@example_creator": FakePage(embedded(POSTS), feeds=[
+            Sent(GRAPHQL, THROTTLE, scroll=1), Sent(GRAPHQL, MORE, scroll=2)])}
+        ctx = fake(pages=pages)
+        saved = run(categories=["posts"], ctx=ctx)
+        self.assertTrue(saved)
+        self.assertEqual(len(ctx.seen.holds), 1)
+        self.assertGreaterEqual(ctx.seen.holds[0][1], 300.0)
+
 
 def fakes_response(body):
     data = json.dumps(body) if isinstance(body, dict) else body

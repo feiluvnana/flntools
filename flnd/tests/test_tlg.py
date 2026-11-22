@@ -440,9 +440,41 @@ class ListingTest(Case):
         ctx = self.ctx()
         self.assertEqual(self.ids(self.run_target(ctx=ctx, categories=["photo"])),
                          ["13", "12", "11"])
-        self.assertEqual(ctx.seen.holds, [("Telegram flood wait", 600, None)])
+        self.assertEqual(len(ctx.seen.holds), 1)
+        self.assertEqual(ctx.seen.holds[0][0], "Telegram flood wait")
+        self.assertGreaterEqual(ctx.seen.holds[0][1], 603)
         self.assertEqual([call[3] for call in self.telegram.calls if call[0] == "list"],
                          [0, 12])
+
+    def test_listing_cursor_saves_and_resumes_from_offset_id(self):
+        plugin = Telegram()
+        ctx = self.ctx()
+        listing = SimpleNamespace(cursor=None)
+        ctx.listing = listing
+        self.telegram.messages[1001] = [message(20, "photo"), message(10, "photo")]
+        self.telegram.calls.clear()
+
+        async def iterate():
+            async with plugin.connect(ctx):
+                profile = await plugin.chat(ctx, "examplechannel")
+                out = []
+                async for post in plugin.photo(ctx, profile):
+                    out.append(post.id)
+                    if post.id == "20":
+                        break
+                return out
+
+        self.assertEqual(asyncio.run(iterate()), ["20"])
+        self.assertEqual(listing.cursor, "20")
+        self.assertEqual(self.telegram.calls[-1][3], 0)
+
+        async def resume():
+            async with plugin.connect(ctx):
+                profile = await plugin.chat(ctx, "examplechannel")
+                return [p.id async for p in plugin.photo(ctx, profile)]
+
+        self.assertEqual(asyncio.run(resume()), ["10"])
+        self.assertEqual(self.telegram.calls[-1][3], 20)
 
     def test_the_client_sleeps_only_short_waits_and_is_closed_at_the_end(self):
         self.run_target()
@@ -518,7 +550,9 @@ class FetchTest(Case):
 
         with mock.patch.object(tlg, "REQUEST", 8):
             asyncio.run(parts())
-        self.assertEqual(ctx.seen.holds, [("Telegram flood wait", 300, None)])
+        self.assertEqual(len(ctx.seen.holds), 1)
+        self.assertEqual(ctx.seen.holds[0][0], "Telegram flood wait")
+        self.assertGreaterEqual(ctx.seen.holds[0][1], 303)
 
     def test_nothing_sent_is_a_network_error_to_try_again(self):
         file = self.files(message(21, "file", name="a.zip", content=bytes(8)))["21"]
@@ -880,7 +914,7 @@ class EngineDownloadTest(TelegramCase):
         self.telegram.errors["download_media"] = [FloodWaitError(None, capture=120)]
         self.assertEqual(self.download(), 1)
         self.assertTrue((self.folder / "photo" / "2026-01-05_11.jpg").is_file())
-        self.assertEqual(self.now, 120)
+        self.assertGreaterEqual(self.now, 123)
 
     def test_a_video_goes_on_from_where_a_flood_wait_or_a_drop_stopped_it(self):
         body = bytes(range(40))
@@ -981,6 +1015,24 @@ class EngineDownloadTest(TelegramCase):
             total = self.run_engine(Telegram, other, targets=["tlg:@examplechannel", "aaa:a"])
         self.assertEqual(total, 1)
         self.assertEqual(sorted(set(order)), ["aaa", "tlg"])
+
+    def test_extreme_flood_wait_and_ban_error_halt_session(self):
+        # 1. Extreme FloodWaitError (> MAX_FLOOD) halts non-retryably without waiting hours.
+        self.telegram.messages[1001] = [message(11, "photo")]
+        self.telegram.errors["download_media"] = [FloodWaitError(None, capture=3600)]
+        self.assertEqual(self.download(), 0)
+        self.assertLess(self.now, 100)
+
+        # 2. Fatal Telethon auth/ban RPCError becomes LoginError instead of NotFound.
+        class UserDeactivatedBanError(Exception):
+            pass
+
+        with mock.patch.object(FakeClient, "get_entity",
+                               side_effect=UserDeactivatedBanError("banned")):
+            self.events.clear()
+            self.assertEqual(self.download(), 0)
+            [ev] = [e for e in self.events if isinstance(e, Failed)]
+            self.assertIsInstance(ev.error, LoginError)
 
 
 if __name__ == "__main__":

@@ -670,6 +670,28 @@ class AntiBanTest(unittest.TestCase):
         self.assertFalse(caught.exception.retryable)
         self.assertEqual(len(ctx.seen.holds), 1)
 
+    def test_code_368_halts_immediately_and_rate_limit_waits_conservatively(self):
+        self.assertGreaterEqual(Facebook.pace, 2.0)
+        limited = {"errors": [{"code": 1675004, "message": "rate limited"}]}
+        pages = {
+            BASE: page(header(*TABS)),
+            f"{BASE}/photos_by": page(header(*TABS), photo("1"),
+                                      scroll=[[limited, photo("2")]]),
+        }
+        saved, ctx = run(categories=["photos"], pages=pages)
+        self.assertEqual([s.key for s in saved], ["1", "2"])
+        self.assertGreaterEqual(ctx.seen.holds[0][1], 300.0)
+
+        spam = {"errors": [{"code": 368, "message": "temporarily blocked"}]}
+        ctx_368 = FakeCtx(Facebook, "fbk:example.page", pages={
+            BASE: page(header(*TABS)),
+            f"{BASE}/photos_by": page(header(*TABS), scroll=[[spam]]),
+        })
+        with self.assertRaises(Blocked) as caught:
+            collect(Facebook, "fbk:example.page", ctx=ctx_368, categories=["photos"])
+        self.assertFalse(caught.exception.retryable)
+        self.assertEqual(ctx_368.seen.holds, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,12 +9,14 @@ import asyncio
 import datetime
 import functools
 import json
+import random
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
 from flnd.plugin import (
+    Blocked,
     Browser,
     Ctx,
     Error,
@@ -48,6 +50,20 @@ QR_CODES = 5
 # block round (at least 30 s) on a wait of a few seconds.
 FLOOD_SLEEP = 60
 FLOOD_WAIT = "Telegram flood wait"
+# Cap FloodWait seconds before holding; longer waits indicate severe abuse limits, so halt.
+MAX_FLOOD = 1800
+AUTH_RPC_ERRORS = frozenset({
+    "AuthKeyUnregisteredError", "AuthKeyDuplicatedError",
+    "SessionRevokedError", "UserDeactivatedBanError", "PhoneNumberBannedError",
+})
+
+
+def _check_auth_rpc(error: BaseException) -> None:
+    """Raise `LoginError` on banned/revoked Telethon sessions rather than masking them."""
+    name = type(error).__name__
+    if name in AUTH_RPC_ERRORS:
+        raise LoginError(f"tlg: {name}; check account or log in again",
+                         hint="flnd auth login tlg", retryable=False) from None
 # Telegram's server-side filter for each category, so it sends only those messages.
 FILTERS = {
     "photo": "InputMessagesFilterPhotos", "video": "InputMessagesFilterVideo",
@@ -213,10 +229,16 @@ class Telegram(Plugin):
 
     async def _flood(self, ctx: Ctx, error: Any) -> None:
         """Hold for a `FloodWaitError`, one hold per account however many calls met it."""
+        if error.seconds > MAX_FLOOD:
+            raise Blocked(
+                f"tlg: flood wait too long ({error.seconds}s); halting session to protect account",
+                wait=error.seconds, retryable=False,
+            )
         who = _who(ctx)
         waiting = self._waits.get(who)
         if waiting is None:
-            waiting = asyncio.ensure_future(ctx.hold(FLOOD_WAIT, seconds=error.seconds))
+            wait = error.seconds + random.uniform(3.0, 10.0)
+            waiting = asyncio.ensure_future(ctx.hold(FLOOD_WAIT, seconds=wait))
             self._waits[who] = waiting
             waiting.add_done_callback(lambda _: self._waits.pop(who, None))
         # Shielded: one waiter cancelled (a segment whose file failed) leaves the others' hold.
@@ -231,6 +253,9 @@ class Telegram(Plugin):
                 return await call()
             except FloodWaitError as error:
                 await self._flood(ctx, error)
+            except Exception as error:
+                _check_auth_rpc(error)
+                raise
 
     # -- Finding a chat ----------------------------------------------------------------------
 
@@ -244,7 +269,8 @@ class Telegram(Plugin):
                     ctx, lambda: client.get_entity(f"https://t.me/{value}")), value)
             except ChannelPrivateError:
                 raise _private(value) from None
-            except (ValueError, RPCError):
+            except (ValueError, RPCError) as error:
+                _check_auth_rpc(error)
                 raise NotFound(f"the invite {value!r} isn't one of your chats",
                                hint="join it first") from None
         entity = await self._cached(ctx, client, value)
@@ -268,7 +294,8 @@ class Telegram(Plugin):
         except ChannelPrivateError:
             raise _private(value) from None
         # A peer this account can no longer read is a miss: the lookup tells why.
-        except (TypeError, ValueError, RPCError):
+        except (TypeError, ValueError, RPCError) as error:
+            _check_auth_rpc(error)
             return None
         return _visible(entity, value) if _named(entity, value) else None
 
@@ -284,7 +311,8 @@ class Telegram(Plugin):
             except ChannelPrivateError:
                 raise _private(value) from None
             # A username nobody has may still be a title; an id may be among the chats.
-            except (ValueError, RPCError):
+            except (ValueError, RPCError) as error:
+                _check_auth_rpc(error)
                 pass
         dialogs = await self._flooded(ctx, client.get_dialogs)
         found = [dialog for dialog in dialogs
@@ -315,18 +343,25 @@ class Telegram(Plugin):
             before = datetime.datetime.combine(ctx.when.until + datetime.timedelta(days=1),
                                                datetime.time(), tzinfo=datetime.UTC)
         # `offset_id` takes the messages older than it; 0 is from the newest.
-        last = 0
+        listing = getattr(ctx, "listing", None)
+        start = getattr(listing, "cursor", None)
+        last = int(start) if isinstance(start, str) and start.isdigit() else 0
         while True:
             try:
                 async for message in client.iter_messages(
                         chat, filter=server_filter(kind), offset_date=before, offset_id=last):
                     last = message.id
+                    if listing is not None:
+                        listing.cursor = str(last)
                     yield self._post(ctx, client, message, profile)
                 return
             except FloodWaitError as error:
                 await self._flood(ctx, error)
             except ChannelPrivateError:
                 raise _private(profile["chat"]) from None
+            except Exception as error:
+                _check_auth_rpc(error)
+                raise
 
     def _post(self, ctx: Ctx, client: Any, message: Any, profile: Mapping[str, Any]) -> Post:
         """A message as a post: a document fetched in ranges, a photo whole."""
@@ -357,6 +392,9 @@ class Telegram(Plugin):
             except FloodWaitError as error:
                 await self._flood(ctx, error)
                 continue
+            except Exception as error:
+                _check_auth_rpc(error)
+                raise
             if at == start:
                 raise NetworkError(f"Telegram sent nothing from byte {at} of {document.size}",
                                    retryable=True)

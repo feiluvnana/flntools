@@ -809,6 +809,16 @@ class AntiBanTest(unittest.TestCase):
                     run(f"{SITE}/p/C1abc-DEF_0/", ctx=ctx)
                 self.assertTrue(all(not r[2]["in_page"] for r in ctx.seen.requests))
 
+    def test_please_wait_throttle_waits_conservatively(self):
+        single = {"data": {"xig_fetch_media": {"code": "SINGLE", "taken_at": STAMP,
+                                               **image("https://cdn.example/s.jpg")}}}
+        feeds = Loads([Sent(GRAPHQL, THROTTLE)], [Sent(GRAPHQL, single)])
+        ctx = fake(pages={f"{SITE}/p/SINGLE/": FakePage("<html></html>", feeds=feeds)})
+        saved = run(f"{SITE}/p/SINGLE/", ctx=ctx)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(len(ctx.seen.holds), 1)
+        self.assertGreaterEqual(ctx.seen.holds[0][1], 300.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -753,6 +753,22 @@ class AntiBanTest(unittest.TestCase):
         self.assertFalse(caught.exception.retryable)
         self.assertEqual(len(ctx.seen.holds), 1)
 
+    def test_empty_hasmore_stall_marks_listing_stalled_and_pace_is_conservative(self):
+        from flnd.engine.ctx import Listing
+
+        self.assertGreaterEqual(TikTok.pace, 2.0)
+        empty = {"hasMore": True, "cursor": "9", "itemList": []}
+        full = {"hasMore": True, "cursor": "2",
+                "itemList": [video("1", f"{CDN}/1", createTime=1700000000)]}
+        ctx = fake(feeds=[Sent(f"{API}/api/post/item_list/?count=2", full),
+                          Sent(f"{API}/api/post/item_list/?count=2", empty, scroll=1),
+                          Sent(f"{API}/api/post/item_list/?count=2", empty, scroll=2)])
+        ctx.listing = Listing(None)
+        posts, raised = listed(ctx, "videos")
+        self.assertIsNone(raised)
+        self.assertEqual([p.id for p in posts], ["1"])
+        self.assertTrue(ctx.listing.stalled)
+
 
 if __name__ == "__main__":
     unittest.main()

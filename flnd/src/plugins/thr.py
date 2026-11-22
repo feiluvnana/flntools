@@ -278,7 +278,7 @@ async def results(ctx: Ctx, url: str, *, scroll: bool) -> AsyncIterator[Any]:
                 async for result in feed:
                     _check_meta_error(result)
                     if throttled(result):
-                        await ctx.hold(THROTTLE_REASON)
+                        await ctx.hold(THROTTLE_REASON, seconds=random.uniform(300.0, 600.0))
                         continue
                     codes = [str(m.get("code") or "") for m in posts_of(result) if m.get("code")]
                     if any(c not in seen_codes for c in codes) or (
@@ -309,6 +309,7 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
         NotFound, LoginError: the tab's page didn't load.
     """
     own = profile.user.lower()
+    pages_seen = 0
     async with aclosing(results(ctx, f"{SITE}/@{profile.user}{TABS[tab]}", scroll=True)) as pages:
         async for result in pages:
             profile.note(result)
@@ -324,7 +325,10 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
             # The last page, embedded or scrolled: nothing more is asked for.
             if state is not None and not (state[0] and state[1]):
                 return
-            await ctx.pause(random.uniform(1.0, 2.5), "pausing between tab pages")
+            pages_seen += 1
+            delay = (random.uniform(12.0, 25.0) if pages_seen % 15 == 0
+                     else random.uniform(2.0, 5.0))
+            await ctx.pause(delay, "pausing between tab pages")
 
 
 # ---------------------------------------------------------------------------------------------

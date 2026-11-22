@@ -294,7 +294,7 @@ class Instagram(Plugin):
         await profile.describe(ctx)
         for index, (highlight, title) in enumerate(profile.highlights):
             if index:
-                await ctx.pause(random.uniform(1.0, 2.5), "pausing between highlights")
+                await ctx.pause(random.uniform(2.0, 5.0), "pausing between highlights")
             url = f"{SITE}/stories/highlights/{highlight}/"
             for post in await story_page(ctx, url, f"highlights/{title}"):
                 yield post.replace(album=title)
@@ -486,7 +486,7 @@ async def page_results(
             _check_meta_error(item)
         if (enough is not None and enough(found)) or not any(map(throttled, found)):
             return found
-        await ctx.hold(THROTTLE_REASON)
+        await ctx.hold(THROTTLE_REASON, seconds=random.uniform(300.0, 600.0))
 
 
 async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
@@ -503,12 +503,13 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
     listing = ctx.load(f"{SITE}/{profile.user}/{TABS[tab]}", GRAPHQL, cursor=reader)
     async with aclosing(listing):
         embedded = True
+        pages = 0
         async for item in listing:
             ended = False
             for result in item if embedded else [item]:
                 _check_meta_error(result)
                 if throttled(result):
-                    await ctx.hold(THROTTLE_REASON)
+                    await ctx.hold(THROTTLE_REASON, seconds=random.uniform(300.0, 600.0))
                     continue
                 profile.note(result)
                 for post in new_posts(ctx, profile, result, tab):
@@ -521,7 +522,10 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
             if ended:
                 return
             if not was_embedded:
-                await ctx.pause(random.uniform(1.0, 2.5), "pausing between tab pages")
+                pages += 1
+                delay = (random.uniform(12.0, 25.0) if pages % 15 == 0
+                         else random.uniform(2.0, 5.0))
+                await ctx.pause(delay, "pausing between tab pages")
 
 
 def new_posts(ctx: Ctx, profile: Profile, result: Any, tab: str) -> Iterator[Post]:

@@ -5,6 +5,7 @@ SPEC.md#fbk-facebook explains it: the pages it reads, the quirks, the rules a ch
 
 from __future__ import annotations
 
+import random
 import re
 import sys
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
@@ -151,7 +152,7 @@ class Facebook(Plugin):
     # Not required: a logged-out browser gets what Facebook shows the public, which is little.
     login = cookies("c_user", "xs", url=f"{SITE}/login/")
     # Rate-limited conservatively to avoid account checkpoints.
-    pace = 1.5
+    pace = 2.0
     browser = Browser.ANY
     walls = ("/login", "/login.php")
     # A file's folder is where it was found: `part` is its tab (or "videos" or "albums"),
@@ -358,6 +359,8 @@ class Facebook(Plugin):
                         seen_keys.update(keys)
                         for post in media_posts(line, "posts", owner=profile["owner"], seen=seen):
                             yield post
+                        if keys:
+                            await ctx.pause(random.uniform(2.0, 4.5), "pacing scroll pages")
                 break
             except Blocked as error:
                 if not error.retryable:
@@ -524,6 +527,8 @@ async def tab_results(ctx: Ctx, url: str, tab: str) -> AsyncIterator[Any]:
                         got_new = True
                     seen_keys.update(keys)
                     yield line
+                    if keys:
+                        await ctx.pause(random.uniform(2.0, 4.5), "pacing scroll pages")
             break
         except Blocked as error:
             if not error.retryable:
@@ -572,8 +577,12 @@ async def unblocked(ctx: Ctx, lines: AsyncIterator[Any]) -> AsyncIterator[Any]:
     """A feed's lines, holding for each one `held` names instead of yielding it."""
     async for line in lines:
         _check_graphql_errors(line)
+        errors = line.get("errors") if isinstance(line, dict) else None
+        if isinstance(errors, list) and any(
+                isinstance(e, dict) and str(e.get("code")) == "368" for e in errors):
+            raise Blocked(TEMPORARILY_BLOCKED, retryable=False)
         if held(line):
-            await ctx.hold(TEMPORARILY_BLOCKED)
+            await ctx.hold(TEMPORARILY_BLOCKED, seconds=random.uniform(300.0, 600.0))
         else:
             yield line
 
