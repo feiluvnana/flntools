@@ -296,11 +296,15 @@ class Twitter(Plugin):
                     await ctx.pause(random.uniform(4.0, 8.0), "pausing between search windows")
                 tail.clear()
                 added = False
+                scroll_meta: dict[str, Any] = {}
+                listing = getattr(ctx, "listing", None)
+                if listing is not None:
+                    listing.stalled = False
                 words = " ".join([window_query, *range_operators(ctx.when)])
                 url = "https://x.com/search?" + urlencode({
                     "q": words, "src": "typed_query", "f": "live"})
                 try:
-                    async for tweet, _ in self._scroll(ctx, url, SEARCH):
+                    async for tweet, _ in self._scroll(ctx, url, SEARCH, meta=scroll_meta):
                         tweet_id = tweet_id_of(tweet)
                         if not tweet_id:
                             continue
@@ -343,10 +347,24 @@ class Twitter(Plugin):
                         except Exception:
                             pass
                     continue
-                stalled = 0
+                window_stalled = (bool(scroll_meta.get("saw_error"))
+                                  or bool(getattr(listing, "stalled", False)))
                 if not added or not tail:
+                    if window_stalled:
+                        stalled += 1
+                        if stalled > 3:
+                            reason = ("timeline error" if scroll_meta.get("saw_error")
+                                      else "stalled before any tweets")
+                            raise SiteError(f"twt: search window {reason}", retryable=True)
+                        try:
+                            await ctx.hold("search interrupted", bucket=SEARCH, reset=False)
+                        except Blocked as error:
+                            raise SiteError(f"twt: search interrupted ({error})",
+                                            retryable=True) from error
+                        continue
                     completed = True
                     break
+                stalled = 0
                 edge_id, edge_date = min(tail, key=lambda entry: entry[0])
                 if edge_id <= 1 or (head_id is not None and edge_id <= head_id):
                     completed = True
@@ -751,9 +769,12 @@ class Twitter(Plugin):
                     raise Hidden(f"twt: @{handle or url} isn't visible (protected, gated, "
                                  "or unavailable)")
                 ctx.log("warn", "{query}: no matching responses arrived", query=query)
-            if query != SEARCH and (pages == 0 or saw_error):
+            if saw_error or (query != SEARCH and pages == 0):
                 if getattr(ctx, "listing", None) is not None:
                     ctx.listing.stalled = True
+            if meta is not None:
+                meta["saw_error"] = saw_error
+                meta["pages"] = pages
             break
 
 

@@ -706,6 +706,110 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(ctx.seen.visited, [w_resume, w_next])
         self.assertNotIn("search:example", ctx.state)
 
+    def test_search_retries_on_timeline_error_and_preserves_max_id_when_exhausted(self):
+        from unittest import mock
+
+        plugin = Twitter()
+        w1 = self.search_url("example")
+        w2 = self.search_url("example max_id:99")
+        w3 = self.search_url("example max_id:89")
+        err = {"errors": [{"message": "Internal server error", "code": 131}]}
+        queue = [
+            FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("100", [photo("a")])), cursor="c1", search=True),
+            ])),
+            FakePage(feeds=sent(self.RESPONSE, [err])),
+            FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("90", [photo("b")])), cursor="c2", search=True),
+            ])),
+            FakePage(feeds=sent(self.RESPONSE, [page(cursor="c3", search=True)])),
+        ]
+        ctx = FakeCtx(plugin, "twt?example")
+        orig_open = ctx.open
+
+        async def open_seq(target_url):
+            ctx._pages[target_url] = queue.pop(0)
+            return await orig_open(target_url)
+
+        with mock.patch.object(ctx, "open", side_effect=open_seq):
+            found = listed(plugin, ctx, "search", "example")
+        self.assertEqual([str(t).rsplit("/", 1)[1] for t in found], ["100", "90"])
+        self.assertEqual(ctx.seen.visited, [w1, w2, w2, w3])
+        self.assertNotIn("search:example", ctx.state)
+
+        # Persistent timeline errors on a new window fail with SiteError and keep max_id saved.
+        err_pages = [
+            FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("100", [photo("a")])), cursor="c1", search=True),
+            ])),
+            *(FakePage(feeds=sent(self.RESPONSE, [err])) for _ in range(4)),
+        ]
+        ctx2 = FakeCtx(plugin, "twt?example")
+        orig_open2 = ctx2.open
+
+        async def open_err(target_url):
+            ctx2._pages[target_url] = err_pages.pop(0)
+            return await orig_open2(target_url)
+
+        with mock.patch.object(ctx2, "open", side_effect=open_err), self.assertRaises(SiteError):
+            listed(plugin, ctx2, "search", "example")
+        self.assertEqual(ctx2.state.get("search:example"), {"max_id": "99"})
+        self.assertEqual(ctx2.seen.visited, [w1, w2, w2, w2, w2])
+
+    def test_search_does_not_complete_when_empty_window_stalls(self):
+        from unittest import mock
+
+        plugin = Twitter()
+        w1 = self.search_url("example")
+        w2 = self.search_url("example max_id:99")
+        w3 = self.search_url("example max_id:89")
+
+        # Stalling mid-window when tweets were already read still lets a clean next window finish.
+        ctx_mid = FakeCtx(plugin, "twt?example", pages={
+            w1: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("100", [photo("a")])), cursor="c1", search=True),
+            ])),
+            w2: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("90", [photo("b")])), cursor="c2", search=True),
+            ])),
+            w3: FakePage(feeds=sent(self.RESPONSE, [page(cursor="c3", search=True)])),
+        })
+        ctx_mid.listing = Listing(None)
+        orig_mid_open = ctx_mid.open
+
+        async def open_mid_stall(target_url):
+            res = await orig_mid_open(target_url)
+            if target_url == w1:
+                ctx_mid.listing.stalled = True
+            return res
+
+        with mock.patch.object(ctx_mid, "open", side_effect=open_mid_stall):
+            found = listed(plugin, ctx_mid, "search", "example")
+        self.assertEqual([str(t).rsplit("/", 1)[1] for t in found], ["100", "90"])
+        self.assertNotIn("search:example", ctx_mid.state)
+
+        # If a window stalls with 0 tweets on every retry, raise SiteError and preserve max_id.
+        ctx_empty = FakeCtx(plugin, "twt?example", pages={
+            w1: FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("100", [photo("a")])), cursor="c1", search=True),
+            ])),
+            w2: FakePage(feeds=sent(self.RESPONSE, [page(cursor="c2", search=True)])),
+        })
+        ctx_empty.listing = Listing(None)
+        orig_empty_open = ctx_empty.open
+
+        async def open_empty_stall(target_url):
+            res = await orig_empty_open(target_url)
+            if target_url == w2:
+                ctx_empty.listing.stalled = True
+            return res
+
+        with mock.patch.object(ctx_empty, "open", side_effect=open_empty_stall), \
+                self.assertRaises(SiteError):
+            listed(plugin, ctx_empty, "search", "example")
+        self.assertEqual(ctx_empty.state.get("search:example"), {"max_id": "99"})
+        self.assertEqual(ctx_empty.seen.visited, [w1, w2, w2, w2, w2])
+
 
 class TimelineTest(unittest.TestCase):
     def test_grid_items_and_the_pinned_tweet_are_read_the_pinned_one_unordered(self):
