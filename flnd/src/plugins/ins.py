@@ -79,8 +79,6 @@ APP_ID = "936619743392459"
 ASBD_ID = "129477"
 # The paths whose requests are API calls, which carry the web client's headers.
 API_PATHS = ("/api/", "/graphql")
-# Posts asked for in one page of the user feed API.
-FEED_COUNT = 33
 # A grid image within this share of the post's `original_width` is its full size, not a thumbnail.
 FULL_SIZE = 0.9
 # Instagram ids carry creation time: milliseconds since this moment (2011-08-24 21:07:01.721
@@ -126,23 +124,6 @@ async def _api_fetch(ctx: Ctx, request: str | Request) -> Response:
         if isinstance(error, Blocked):
             raise
         return await ctx.fetch(request, in_page=True)
-
-
-async def _api_pages(
-    ctx: Ctx, request: Request, *, cursor: str | Callable[[Any], str | None],
-    send: str | Callable[[str], Mapping[str, Any] | Request] = "cursor",
-) -> AsyncIterator[Response]:
-    """Iterate API pages: try direct HTTP first, falling back to in_page=True on initial failure."""
-    yielded = False
-    try:
-        async for response in ctx.pages(request, cursor=cursor, send=send, in_page=False):
-            yielded = True
-            yield response
-    except (SiteError, NetworkError) as error:
-        if yielded or isinstance(error, Blocked):
-            raise
-        async for response in ctx.pages(request, cursor=cursor, send=send, in_page=True):
-            yield response
 
 
 class Instagram(Plugin):
@@ -194,10 +175,6 @@ class Instagram(Plugin):
     def __init__(self) -> None:
         # The `X-IG-WWW-Claim` Instagram gave last, echoed on the next API calls (2026-11-12).
         self.claim = "0"
-        # Whether `/api/v1/feed/user/` was refused this run, falling back to tab scrolling.
-        self.feed_refused = False
-        # `username -> user_id` cached from `web_profile_info` for `api_posts`.
-        self.user_ids: dict[str, str] = {}
 
     def sign(self, request: Request, cookies: Mapping[str, str]) -> Request:
         """Add the web client's headers to an API call; a page's request is left as it is."""
@@ -257,10 +234,6 @@ class Instagram(Plugin):
     @user.category
     async def posts(self, ctx: Ctx, profile: Profile) -> AsyncIterator[Post]:
         """The posts grid, newest first (up to 3 pinned ones above), to its end."""
-        if account_id(ctx.cookies) is not None and not self.feed_refused:
-            async for post in api_posts(ctx, profile, self):
-                yield post
-            return
         async for post in read_tab(ctx, profile, "posts"):
             yield post
 
@@ -394,8 +367,6 @@ class Profile(Mapping[str, Any]):
             user_id = user.get("pk") or user.get("id")
             if user_id and str(user_id).isdigit() and self.id is None:
                 self.id = str(user_id)
-                if self.plugin is not None:
-                    self.plugin.user_ids[self.user] = self.id
             picture = (dig(user, "hd_profile_pic_url_info.url")
                        or user.get("profile_pic_url_hd")
                        or user.get("profile_pic_url"))
@@ -404,60 +375,6 @@ class Profile(Mapping[str, Any]):
             if not self.described and (picture or "hd_profile_pic_url_info" in user):
                 self.described = True
         self.highlights += [h for h in listed_highlights(result) if h not in self.highlights]
-
-
-async def api_posts(ctx: Ctx, profile: Profile, plugin: Instagram) -> AsyncIterator[Post]:
-    """Read `posts` via `/api/v1/feed/user/<id>/`, falling back to `read_tab` if refused."""
-    user_id = profile.id or plugin.user_ids.get(profile.user)
-    if user_id is not None:
-        profile.id = user_id
-    yielded = False
-    try:
-        if user_id is None:
-            info = await _api_fetch(
-                ctx, Request(f"{API}/users/web_profile_info/", params={"username": profile.user}))
-            plugin.claim = info.headers.get("x-ig-set-www-claim") or plugin.claim
-            user = dig(info.json, "data.user")
-            user_id = str(user["id"]) if isinstance(user, dict) and user.get("id") else None
-            if user_id is None:
-                raise Changed("ins: web_profile_info has no user id")
-            profile.id = user_id
-            plugin.user_ids[profile.user] = user_id
-            if profile.picture is None:
-                pic = (dig(user, "hd_profile_pic_url_info.url")
-                       or user.get("profile_pic_url_hd"))
-                if isinstance(pic, str):
-                    profile.picture = pic
-        first = Request(f"{API}/feed/user/{user_id}/", params={"count": FEED_COUNT})
-        async for response in _api_pages(ctx, first, cursor="next_max_id", send="max_id"):
-            plugin.claim = response.headers.get("x-ig-set-www-claim") or plugin.claim
-            data = response.json
-            items = data.get("items") if isinstance(data, dict) else None
-            if not isinstance(items, list):
-                raise Changed("ins: user feed has no items")
-            yielded = True
-            for media in items:
-                if not isinstance(media, dict):
-                    continue
-                code = post_name(media)
-                if not code or code in profile.listed["posts"]:
-                    continue
-                profile.listed["posts"].add(code)
-                pinned = is_pinned(media)
-                if media.get("taken_at") and post_files(media):
-                    yield post_of(media).replace(pinned=pinned)
-                elif _placeholder_post(media):
-                    continue
-                else:
-                    yield lazy_post(ctx, code, media_pk(media), plugin).replace(pinned=pinned)
-            if data.get("more_available") is False:
-                return
-    except (Changed, SiteError) as error:
-        if yielded or isinstance(error, (Blocked, LoginError)):
-            raise
-        plugin.feed_refused = True
-        async for post in read_tab(ctx, profile, "posts"):
-            yield post
 
 
 async def page_results(
@@ -501,31 +418,35 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
     """
     reader = TAB_PAGES[tab]
     listing = ctx.load(f"{SITE}/{profile.user}/{TABS[tab]}", GRAPHQL, cursor=reader)
-    async with aclosing(listing):
-        embedded = True
-        pages = 0
-        async for item in listing:
-            ended = False
-            for result in item if embedded else [item]:
-                _check_meta_error(result)
-                if throttled(result):
-                    await ctx.hold(THROTTLE_REASON, seconds=random.uniform(300.0, 600.0))
-                    continue
-                profile.note(result)
-                for post in new_posts(ctx, profile, result, tab):
-                    yield post
-                state = reader(result)
-                ended = ended or (state is not None and not (state[0] and state[1]))
-            was_embedded = embedded
-            embedded = False
-            # The last page, embedded or scrolled: nothing more is asked for.
-            if ended:
-                return
-            if not was_embedded:
-                pages += 1
-                delay = (random.uniform(12.0, 25.0) if pages % 15 == 0
-                         else random.uniform(2.0, 5.0))
-                await ctx.pause(delay, "pausing between tab pages")
+    pages = 0
+    try:
+        async with aclosing(listing):
+            embedded = True
+            async for item in listing:
+                ended = False
+                for result in item if embedded else [item]:
+                    _check_meta_error(result)
+                    if throttled(result):
+                        await ctx.hold(THROTTLE_REASON, seconds=random.uniform(300.0, 600.0))
+                        continue
+                    profile.note(result)
+                    for post in new_posts(ctx, profile, result, tab):
+                        yield post
+                    state = reader(result)
+                    ended = ended or (state is not None and not (state[0] and state[1]))
+                was_embedded = embedded
+                embedded = False
+                # The last page, embedded or scrolled: nothing more is asked for.
+                if ended:
+                    return
+                if not was_embedded:
+                    pages += 1
+                    delay = (random.uniform(12.0, 25.0) if pages % 15 == 0
+                             else random.uniform(2.0, 5.0))
+                    await ctx.pause(delay, "pausing between tab pages")
+    finally:
+        ctx.log("debug", "{user}: {tab}: read {pages} scrolled pages",
+                user=profile.user, tab=tab, pages=pages)
 
 
 def new_posts(ctx: Ctx, profile: Profile, result: Any, tab: str) -> Iterator[Post]:

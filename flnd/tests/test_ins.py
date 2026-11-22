@@ -459,18 +459,10 @@ class TabTest(unittest.TestCase):
             feed("NULL2", product_type="carousel_container", carousel_media=[null_img, null_img]),
             feed("P1", **image("https://cdn.example/p1.jpg")),
         ]
-        ctx = fake(
-            cookies={"sessionid": "99%3As%3A1"},
-            routes={
-                f"{SITE}/api/v1/users/web_profile_info/": Reply(
-                    {"data": {"user": {"id": "42"}}}),
-                f"{SITE}/api/v1/feed/user/42/": Reply({"items": items, "more_available": False}),
-            },
-        )
+        ctx = self.tab(embeds=[grid(*items, more="")], routes={})
         saved = run(categories=["posts"], ctx=ctx)
         self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"])
-        self.assertEqual(fetched(ctx), [
-            f"{SITE}/api/v1/users/web_profile_info/", f"{SITE}/api/v1/feed/user/42/"])
+        self.assertEqual(fetched(ctx), [])
 
     def test_a_tab_whose_embedded_page_is_its_last_is_not_scrolled(self):
         """Every embedded result is read, the highlights after the last grid page too; then
@@ -539,75 +531,23 @@ class TabTest(unittest.TestCase):
         self.assertEqual(found, (("https://cdn.example/1080.webm",), "webm",
                                  "https://cdn.example/a95.mp4"))
 
-    def test_logged_in_posts_reads_user_feed_api_without_opening_post_pages(self):
-        """When logged in, `posts` reads `/api/v1/feed/user/<id>/` with no `/p/*` loads."""
+    def test_logged_in_posts_scrolls_the_profile_tab_without_user_feed_api(self):
+        """Even when logged in, `posts` scrolls the profile tab instead of calling user feed API."""
         car = {"code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container",
                "taken_at": STAMP, "carousel_media": [
                    image("https://cdn.example/c0.jpg"),
                    {**video("https://cdn.example/c1.mp4"), "video_dash_manifest": MPD}]}
-        feed_pages = {
-            None: Reply({"items": [feed("P1", **image("https://cdn.example/p1.jpg"))],
-                         "more_available": True, "next_max_id": "m1"},
-                        headers={"x-ig-set-www-claim": "c1"}),
-            "m1": Reply({"items": [car], "more_available": False}),
-        }
-        ctx = fake(
+        ctx = self.tab(
+            grid(car, more=""),
+            embeds=[grid(feed("P1", **image("https://cdn.example/p1.jpg")), more="c1")],
             cookies={"sessionid": "99%3As%3A1"},
-            routes={
-                f"{SITE}/api/v1/users/web_profile_info/": Reply(
-                    {"data": {"user": {"id": "42"}}}),
-                f"{SITE}/api/v1/feed/user/42/": lambda req: feed_pages[
-                    (req.params or {}).get("max_id")],
-            },
+            routes={},
         )
         saved = run(categories=["posts"], ctx=ctx)
         self.assertEqual([item.path for item in saved], [
             f"posts/{DAY}_P1.jpg", f"posts/{DAY}_CAR_0.jpg", f"posts/{DAY}_CAR_1.mp4"])
-        self.assertEqual(ctx.seen.visited, [])
-        self.assertFalse(any("/p/" in url for url in fetched(ctx)))
-
-    def test_refused_user_feed_api_falls_back_to_tab_once(self):
-        """A non-JSON/refused user feed API falls back to scrolling the tab for the run."""
-        info_routes = {
-            f"{SITE}/api/v1/media/{PK['CAR']}/info/": Reply({"items": [{
-                "code": "CAR", "taken_at": STAMP, "carousel_media": [
-                    image("https://cdn.example/c0.jpg"),
-                    {**video("https://cdn.example/c1.mp4"), "video_dash_manifest": MPD}]}]}),
-            f"{SITE}/api/v1/media/{PK['R1']}/info/": Reply({"items": [{
-                "code": "R1", "taken_at": STAMP, **video("https://cdn.example/r1.mp4")}]}),
-            f"{SITE}/api/v1/media/{PK['NOFILE']}/info/": Reply({"items": [{
-                "code": "NOFILE", "taken_at": STAMP}]}),
-        }
-        ctx = fake(
-            cookies={"sessionid": "99%3As%3A1"},
-            routes={**info_routes,
-                    f"{SITE}/api/v1/users/web_profile_info/": Reply("<html></html>")},
-            pages=PAGES,
-        )
-        saved = collect(Instagram, "ins:example_creator", ctx=ctx, categories=["posts"])
-        self.assertTrue(any(item.path == f"posts/{DAY}_P1.jpg" for item in saved))
-        self.assertTrue(ctx._plugin.feed_refused)
-        self.assertIn(f"{SITE}/example_creator/", ctx.seen.visited)
-        self.assertFalse(any("/p/" in url for url in fetched(ctx)))
-
-    def test_api_posts_falls_back_to_in_page_on_error(self):
-        """Direct HTTP error on feed API falls back to in_page before falling back to tab."""
-        feed_answers = [
-            Reply(status=400),
-            Reply({"items": [feed("P1", **image("https://cdn.example/p1.jpg"))],
-                   "more_available": False}),
-        ]
-        ctx = fake(
-            cookies={"sessionid": "99%3As%3A1"},
-            routes={
-                f"{SITE}/api/v1/users/web_profile_info/": Reply({"data": {"user": {"id": "42"}}}),
-                f"{SITE}/api/v1/feed/user/42/": lambda req: feed_answers.pop(0),
-            },
-        )
-        saved = run(categories=["posts"], ctx=ctx)
-        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"])
-        feed_reqs = [r for r in ctx.seen.requests if "/feed/user/42/" in r[1]]
-        self.assertEqual([r[2]["in_page"] for r in feed_reqs], [False, True])
+        self.assertEqual(ctx.seen.visited, [f"{SITE}/example_creator/"])
+        self.assertEqual(fetched(ctx), [])
 
     def test_polaris_timeline_and_xig_polaris_media_embeds_are_read(self):
         """2026-11 public pages embed `xig_user_by_username` and `xig_polaris_media`."""
