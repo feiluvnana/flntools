@@ -272,6 +272,23 @@ class ErrorTest(ArchiveCase):
             _unpack.extract(archive)
         self.assert_nothing_extracted(archive)
 
+    def test_windows_dir_rename_permission_error_falls_back_to_file_move(self) -> None:
+        from unittest import mock
+
+        archive = self.zip_with({"a.txt": b"alpha", "sub/b.txt": b"beta"})
+        real_replace = _unpack._replace
+
+        def deny_stage_dir(src, dst):
+            if src.name.endswith(_unpack.STAGE):
+                raise PermissionError(5, "Access is denied", str(src), None, str(dst))
+            return real_replace(src, dst)
+
+        with mock.patch.object(_unpack, "WINDOWS", True), \
+                mock.patch.object(_unpack, "_replace", side_effect=deny_stage_dir):
+            dest = _unpack.extract(archive)
+        self.assertEqual((dest / "a.txt").read_bytes(), b"alpha")
+        self.assertEqual((dest / "sub" / "b.txt").read_bytes(), b"beta")
+
 
 if __name__ == "__main__":
     unittest.main()

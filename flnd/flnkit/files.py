@@ -1421,10 +1421,15 @@ def _verify(stage: Path, entries: list[Entry], name: str) -> None:
 def _place(stage: Path, dest: Path) -> None:
     """Move the verified stage to `dest`: one rename when `dest` is new, else file by file."""
     if not dest.exists():
-        os.replace(stage, dest)
-        return
+        try:
+            _replace(stage, dest)
+            return
+        except PermissionError:
+            if not WINDOWS:
+                raise
+            dest.mkdir(parents=True, exist_ok=True)
     for root, _, names in os.walk(stage):
         here = dest / Path(root).relative_to(stage)
         here.mkdir(parents=True, exist_ok=True)
         for name in names:
-            os.replace(Path(root, name), here / name)
+            _replace(Path(root, name), here / name)
