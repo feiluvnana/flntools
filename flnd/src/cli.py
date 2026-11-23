@@ -217,6 +217,23 @@ def get(args: argparse.Namespace) -> int:
         return _watch(fl, run, args)
 
 
+def sync(args: argparse.Namespace) -> int:
+    """Sync followed targets matching any glob pattern, or every followed target.
+
+    Each pattern is a case-insensitive glob (*, ?, [seq]) matched against followed targets
+    (ins:example_user, twt?words). With no pattern, every followed target is synced.
+    """
+    _lower_priority()
+    with _open(args) as fl:
+        run = fl.sync(*args.patterns, when=args.when, limit=args.limit, dry=args.dry)
+        if run.name == "sync":
+            from flnd.ui import out
+
+            out.line(("nothing to sync", "dim"))
+            return OK
+        return _watch(fl, run, args, "sync")
+
+
 def transform(args: argparse.Namespace) -> int:
     """Run a command over the files flnd saved, and replace each one with its result.
 
@@ -818,6 +835,17 @@ def parser() -> argparse.ArgumentParser:
                           "a search needs one")
     _again(sub)
     sub.tail = _forms()
+
+    sub = command(verbs, "sync", sync)
+    sub.add_argument("patterns", nargs="*", metavar="pattern",
+                     help="glob patterns matching followed targets (ins:*, *example*); "
+                          "none syncs every followed target")
+    _when(sub)
+    sub.add_argument("--limit", type=int, metavar="N",
+                     help="at most N posts per target, or N targets per search")
+    sub.add_argument("--dry", action="store_true",
+                     help="list what would be saved, and save and write nothing")
+    _again(sub)
 
     targets = group("target", "List the targets flnd knows, or forget some")
     command(targets, "list", target_list)

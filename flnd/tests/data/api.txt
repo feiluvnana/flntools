@@ -71,6 +71,7 @@ flnd.Flnd.home: attribute
 flnd.Flnd.plugin(code: str, *, account: str | None = None) -> AbstractAsyncContextManager[Ctx]
 flnd.Flnd.plugins: attribute
 flnd.Flnd.status: property -> Status | None
+flnd.Flnd.sync(*patterns: str, limit: int | None = None, when: str | None = None, dry: bool = False) -> Run
 flnd.Flnd.targets: attribute
 flnd.Flnd.transform(command: str, *targets: str | Target, on: Sequence[str], dry: bool = False, jobs: int | None = None) -> Run
 flnd.Flnd.transforms() -> list[Transform]

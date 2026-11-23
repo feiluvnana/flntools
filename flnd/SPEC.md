@@ -597,7 +597,9 @@ the same fields and checks. A category's own `folder` still wins over the plugin
 
 ## Sync
 
-`flnd get` follows each target that is not a single post, so `flnd get` alone keeps them current.
+`flnd get` follows each target that is not a single post, so `flnd get` alone (or `flnd sync`)
+keeps them current. `flnd sync <pattern>...` syncs only the followed targets whose name matches any
+glob pattern (`*`, `?`, `[seq]`, case-insensitive), such as `flnd sync "ins:*"`.
 What a run skips and where it stops:
 
 - A saved file: skipped: its row says saved and the file is there, or the file is on disk at its
@@ -879,6 +881,10 @@ standard input, else gets every followed target, or prints `nothing to sync` and
 | `--folder VALUE` | each target's folder | a template or a list ([Folders](#folders)) |
 | `--again` | off | list every post again; ask again for gone files |
 
+**`flnd sync [pattern...]`**: sync followed targets whose name matches any glob pattern (`*`, `?`,
+`[seq]`, case-insensitive), or every followed target when none is given. Prints `nothing to sync`
+and exits 0 when none matches. Takes `--when`, `--limit`, `--dry` and `--again`.
+
 **`flnd transform "<command>" --on=KINDS [target...]`**, **`flnd transform list`**: run a command
 over the saved files and replace each in place; **no undo**. See [Transform](#transform).
 
@@ -954,7 +960,7 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
 | `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
 | `switch` | bool | `false` | move a refused request to the plugin's next account |
-| `fresh` | text | `"1d"` | skip categories complete within this long (`"1d"`, `"12h"`, `"0"` off) |
+| `fresh` | text | `"2h"` | skip categories complete within this long (`"1d"`, `"12h"`, `"0"` off) |
 | `timeout` | text | `"10m"` | abort a stalled download after this (`"10m"`, `"600s"`, `"0"` off) |
 
 `[plugins.<code>]` (one table per plugin):
@@ -1225,6 +1231,7 @@ Every call, and the CLI command it matches:
 | --- | --- | --- |
 | `flnd.open(home=None, *, again=None)` | `Flnd`, a context manager | `--home`, `--again` |
 | `fl.get(*targets, when=, limit=, dry=, folder=)` | `Run`, not started | `flnd get` |
+| `fl.sync(*patterns, when=, limit=, dry=)` | `Run`, not started | `flnd sync` |
 | `fl.transform(command, *targets, on=, dry=, jobs=)` | `Run`, not started | `flnd transform` |
 | `fl.transforms()` | `list[Transform]` | `flnd transform list` |
 | `fl.targets` / `.list(plugin=None)` | `list[Tracked]` | `flnd target list` |

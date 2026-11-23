@@ -282,6 +282,67 @@ class GetTest(RunsCase):
         self.assertEqual(self.runs[0][1], [Target("tik:post/7301234567890123456", kind="post")])
 
 
+class SyncCommandTest(RunsCase):
+    def test_sync_matches_followed_targets_by_glob_patterns(self):
+        code, out, err = self.run_app("sync")
+        self.assertEqual((code, self.runs, out), (0, [], "nothing to sync\n"), err)
+
+        self.run_app("get", "ins:example_user|reels")
+        self.run_app("get", "ins:example_other")
+        self.run_app("get", "tik:example_creator")
+        self.run_app("get", "twt:a1")
+        # Unfollow one target so we verify sync skips unfollowed targets.
+        import flnd
+
+        with flnd.open() as fl:
+            fl.targets.unfollow("ins:example_other")
+
+        # No pattern syncs every followed target.
+        self.runs.clear()
+        code, _, err = self.run_app("sync")
+        self.assertEqual(code, 0, err)
+        self.assertEqual({str(t) for t in self.runs[0][1]},
+                         {"ins:example_user", "tik:example_creator", "twt:a1"})
+
+        # Glob `*` matches prefix/plugin (case-insensitive) and skips unfollowed targets.
+        self.runs.clear()
+        code, _, err = self.run_app("sync", "INS:*")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([str(t) for t in self.runs[0][1]], ["ins:example_user"])
+        self.assertTrue(list((Path(".flnd") / _store.LOGS).glob("*_sync.jsonl")))
+
+        # Multiple patterns with `*`, `?`, `[seq]` combine without duplicates.
+        self.runs.clear()
+        code, _, err = self.run_app("sync", "*creator*", "twt:a[0-9]", "tik:*")
+        self.assertEqual(code, 0, err)
+        self.assertEqual({str(t) for t in self.runs[0][1]},
+                         {"tik:example_creator", "twt:a1"})
+
+        # Flags (`--when`, `--limit`, `--again`) reach the engine.
+        self.runs.clear()
+        code, _, err = self.run_app("sync", "ins:*", "--when", "2026-01..2026-06",
+                                    "--limit", "5", "--again")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([str(t) for t in self.runs[0][1]], ["ins:example_user"])
+        self.assertEqual(self.runs[0][2], Options(
+            categories=("reels",), limit=5, again=True,
+            since=date(2026, 1, 1), until=date(2026, 6, 30),
+        ))
+
+        # No match prints `nothing to sync` and starts no run.
+        self.runs.clear()
+        code, out, err = self.run_app("sync", "nope:*")
+        self.assertEqual((code, self.runs, out), (0, [], "nothing to sync\n"), err)
+
+    def test_sync_usage_errors(self):
+        for argv in (("",), ("   ",), ("ins:*", "--limit", "0"), ("ins:*", "--when", "yesterday")):
+            with self.subTest(argv=argv):
+                code, _, err = self.run_app("sync", *argv)
+                self.assertEqual(code, 2, err)
+                self.assertNotIn("Traceback", err)
+        self.assertEqual(self.runs, [])
+
+
 class ExampleCase(FlndCase):
     """An example plugin, `exs`, on a fake network: the CDN answers from a fake transport."""
 

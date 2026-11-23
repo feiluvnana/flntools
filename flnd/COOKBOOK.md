@@ -76,10 +76,13 @@ Goal: keep a profile up to date.
 ```sh
 flnd get ins:example_user
 flnd get
+flnd sync "ins:*"
 ```
 
-A profile you get is followed. `flnd get` alone then gets what is new for every followed target,
-and stops at the posts it already has. `flnd target list` shows them, and `f` there unfollows.
+A profile you get is followed. `flnd get` alone (or `flnd sync`) then gets what is new for every
+followed target, and stops at the posts it already has. `flnd sync <pattern>` syncs only followed
+targets matching the glob (`*`, `?`, `[seq]`). `flnd target list` shows them, and `f` there
+unfollows.
 More: [Sync](SPEC.md#sync).
 
 ## A date window

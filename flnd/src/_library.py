@@ -5,6 +5,7 @@ SPEC.md#python explains it."""
 from __future__ import annotations
 
 import datetime
+import fnmatch
 import os
 import sys
 import threading
@@ -199,6 +200,46 @@ class Flnd:
         return self._run(f"get {_names(resolved)}", lambda engine: engine.run_download(
             resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again,
             folder=folder))
+
+    def sync(
+        self, *patterns: str, limit: int | None = None, when: str | None = None,
+        dry: bool = False,
+    ) -> Run:
+        """Sync followed targets matching any glob pattern, or every followed target.
+
+        Args:
+            patterns: case-insensitive globs (`*`, `?`, `[seq]`); none takes every followed one.
+            limit: at most this many posts per target, or targets per search; None for all.
+            when: the days to take posts from, as `get` reads it; None for `[defaults] when`.
+            dry: plan instead: the run yields a `Planned` event per file and writes nothing.
+
+        Returns:
+            The `Run`, not started yet: iterate it, or call `wait()`.
+
+        Raises:
+            UsageError: a pattern is empty, or `when`, `limit` or config.toml is wrong.
+
+        Example:
+            >>> import flnd
+            >>> with flnd.open("example-home") as fl:
+            ...     fl.sync("ins:*").wait().saved
+            0
+        """
+        span = self._when(when)
+        if limit is not None and limit < 1:
+            raise UsageError("limit must be at least 1")
+        cleaned = _patterns(patterns)
+        again = bool(self._again)
+        followed = [row.target for row in self.targets if row.follow]
+        matched = [t for t in followed if not cleaned or _matches(str(t), cleaned)]
+        if not matched:
+            return self._run("sync", lambda _engine: _empty())
+        resolved = self._checked(matched)
+        name = f"sync {_names(resolved)}"
+        if not (limit or dry or again):
+            return self._run(name, lambda engine: engine.run_sync(matched, time=span))
+        return self._run(name, lambda engine: engine.run_download(
+            resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again))
 
     @property
     def status(self) -> Status | None:
@@ -933,6 +974,24 @@ def _names(targets: Sequence[Chosen]) -> str:
     """The targets as a run's name shows them: the first two, then how many more."""
     shown = " ".join(str(found.target) for found in targets[:2])
     return shown if len(targets) <= 2 else f"{shown} and {len(targets) - 2} more"
+
+
+def _patterns(patterns: Sequence[str]) -> tuple[str, ...]:
+    """Validate and lower-case glob patterns for `Flnd.sync`."""
+    cleaned = [raw.strip().lower() for raw in patterns]
+    if any(not p for p in cleaned):
+        raise UsageError("a pattern can't be empty")
+    return tuple(cleaned)
+
+
+def _matches(name: str, patterns: Sequence[str]) -> bool:
+    """Whether `name` matches any lower-cased glob pattern."""
+    low = name.lower()
+    return any(fnmatch.fnmatchcase(low, pattern) for pattern in patterns)
+
+
+async def _empty() -> None:
+    return None
 
 
 def _failure(row: FailureRow) -> Failure:
