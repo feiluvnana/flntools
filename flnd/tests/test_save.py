@@ -15,7 +15,6 @@ import json
 import os
 import shutil
 import sqlite3
-import sys
 import tempfile
 import threading
 import time
@@ -31,7 +30,7 @@ from flnd.engine import jobs, store
 from flnd.engine.events import Failed, Saved, Skipped
 from flnd.engine.jobs import Kind
 from flnd.engine.save import Item, Saver
-from flnd.errors import DiskError, NotFound, UsageError
+from flnd.errors import DiskError, NotFound
 from flnd.plugin import File, Target
 from flnd.ui.log import ui
 from flnkit import clock, files, net
@@ -515,26 +514,6 @@ class FinishTest(SaveCase):
         writes = [one.split()[0] for one in statements if one.startswith(("BEGIN", "UPDATE"))]
         self.assertEqual(writes, ["BEGIN"])
 
-    def test_exec_runs_without_a_shell_and_a_failure_only_warns(self) -> None:
-        record = self.tmp / "got.json"
-        script = ("import json, os, sys; json.dump([sys.argv[1:], os.environ['FLND_POST']],"
-                  f" open({str(record)!r}, 'w')); sys.exit(len(sys.argv) > 3)")
-        name = "a b'; touch PWNED; $(touch PWNED2) {post}.jpg"
-        self.routes[f"{CDN}/x.jpg"] = JPEG
-        self.save(self.item(name, url=f"{CDN}/x.jpg"),
-                  exec=[sys.executable, "-c", script, "{path}", "post={post}"])
-        path = str(self.tmp / "media" / name)
-        self.assertEqual(json.loads(record.read_text()), [[path, "post=1"], "1"])
-        self.assertFalse(any(self.tmp.rglob("PWNED*")))
-        self.assertEqual(self.saved(), [Path(path)])
-        self.save(self.item(name, url=f"{CDN}/x.jpg"),
-                  exec=[sys.executable, "-c", script, "1", "2", "3"])
-        self.assertIn("exit 1", self.lines.getvalue())
-        for wrong in ("echo {path}", [], ["echo", 1]):
-            with self.subTest(wrong), self.assertRaises(UsageError):
-                Saver(self.store, self.jobs, self.events.append, exec=wrong)
-
-
 class EngineTest(EngineCase):
     """The save inside a run of the engine: what stops the run, and what each file ends as."""
 
@@ -673,22 +652,6 @@ class EngineTest(EngineCase):
                                return_value=mock.Mock(free=10 << 20)), \
                 self.assertRaisesRegex(DiskError, "not enough free space"):
             self.run_files(File(f"{CDN}/c.jpg", name="c.jpg", size=1 << 30))
-
-    def test_exec_comes_from_the_user_file_alone(self) -> None:
-        record = self.home.parent / "ran.txt"
-        script = f"import sys; open({str(record)!r}, 'a').write(sys.argv[1] + '\\n')"
-        user = self.home.parent / "user.toml"
-        command = json.dumps([sys.executable, "-c", script, "{path}"])
-        user.write_text(f'[defaults]\nexec = {command}\n')
-        self.routes.update({f"{CDN}/a.jpg": JPEG, f"{CDN}/b.jpg": JPEG + b"b"})
-        # A home's own `exec` is ignored, with a warning: only the user's file runs programs.
-        self.configure('[defaults]\nexec = ["false"]\n')
-        with mock.patch("flnd.engine.config.user_file", return_value=user):
-            self.run_files(File(f"{CDN}/a.jpg", name="a.jpg"))
-        self.configure("")
-        self.run_files(File(f"{CDN}/b.jpg", name="b.jpg"))
-        folder = self.target_dir("aaa", "example_user")
-        self.assertEqual(record.read_text().splitlines(), [str(folder / "a.jpg")])
 
     def test_four_files_are_hashed_at_once_on_four_threads(self) -> None:
         # K9: four new files meet four saved ones of their size; each thread's first hash waits

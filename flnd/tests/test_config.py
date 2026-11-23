@@ -72,7 +72,6 @@ class ReadTest(Case):
     def test_missing_files_are_every_default(self):
         found = config.read(self.home, user=self.user)
         self.assertEqual(found, Config(defaults=config.Defaults()))
-        self.assertEqual(found.defaults.exec_timeout, 3600)
         self.assertEqual(found.plugin("ins").stop_after, 5)
         self.assertEqual(found.origin("when"), Where.DEFAULT)
 
@@ -84,7 +83,6 @@ class ReadTest(Case):
             ('[defaults]\nrate = "20 MB/s"', "defaults.rate", "20 MB/s"),
             ('[defaults]\nslowest = "500 KB/s"', "defaults.slowest", "500 KB/s"),
             ("[defaults]\nheight = 720", "defaults.height", 720),
-            ("[defaults]\nexec_timeout = 0", "defaults.exec_timeout", 0),
             ("[defaults]\nswitch = true", "defaults.switch", True),
             ("[plugins.exm]\npace = 2", "plugins.exm.pace", 2.0),
             ('[plugins.exm]\nlimits = { "cdn.example.com" = 4 }', "plugins.exm.limits",
@@ -119,8 +117,7 @@ class ReadTest(Case):
         rows = [
             '[defaults]\ndedupe = "yes"', "[defaults]\nsidecars = 1", '[defaults]\nwhen = "soon"',
             '[defaults]\nwhen = "2026-03..2026-01"', '[defaults]\nrate = "fast"',
-            "[defaults]\nheight = -1", "[defaults]\nexec_timeout = -1",
-            '[defaults]\nexec_timeout = "9"',
+            "[defaults]\nheight = -1",
             '[defaults]\nheight = "720"', '[plugins.exm]\npace = "2"', "[plugins.exm]\npace = -1",
             '[plugins.exm]\nlimits = { "a" = 0 }', '[plugins.exm]\nproxy = "ftp://h:1"',
             '[plugins.exm]\nproxy = "http://h:99999"', '[plugins.exm]\nproxy = "http://h:1\\n"',
@@ -130,7 +127,6 @@ class ReadTest(Case):
             '[plugins.exm]\ntries = "x"', "[plugins]\nexm = 1", "defaults = 1",
         ]
         rows = [(text, "home") for text in rows]
-        rows += [('[defaults]\nexec = "echo"', "user"), ('[defaults]\nexec = [""]', "user")]
         for text, where in rows:
             with self.subTest(text):
                 with self.assertRaises(UsageError) as caught:
@@ -153,7 +149,6 @@ class ReadTest(Case):
             f'[plugins.exm]\nproxy = "http://u:{mark}@h:1" x',
             f'[plugins.exm]\nproxy = "http://u:\\q{mark}@h:1"',
             f'[plugins.exm]\nproxy = "http://u:{mark}@h:1',
-            f'[defaults]\nexec = ["{mark}"]',
         ]
         values = [
             ("plugins.exm.proxy", f"gopher://u:{mark}@h:1"), ("plugins.exm.proxy", url + "\n"),
@@ -167,8 +162,8 @@ class ReadTest(Case):
             ("plugins.exm.filename", f"{{{mark}"), ("plugins.exm.browser", mark),
             ("plugins.exm.tries", mark), ("plugins.exm.stop_after", [mark]),
             ("defaults.when", mark), ("defaults.rate", mark), ("defaults.slowest", f"1 {mark}/s"),
-            ("defaults.dedupe", mark), ("defaults.height", {"a": mark}), ("defaults.exec", mark),
-            ("defaults.exec", [""]), ("plugins.exm", url), ("plugins.proxy", url),
+            ("defaults.dedupe", mark), ("defaults.height", {"a": mark}),
+            ("plugins.exm", url), ("plugins.proxy", url),
         ]
         runs = [(text, lambda text=text: self.read(home=text)) for text in texts]
         for key, value in values:
@@ -222,24 +217,10 @@ class ReadTest(Case):
         self.assertEqual(found.origin("plugins.exm.switch"), Where.USER)
         self.assertEqual(found.plugin("exm").settings, Settings())
 
-    def test_exec_is_never_a_call_argument(self):
-        for key in ("exec", "defaults.exec"):
-            with self.subTest(key), self.assertRaises(UsageError) as caught:
-                config.read(self.home, user=self.user, given={key: ["notify"]})
-            self.assertIn("user file", str(caught.exception))
-
     def test_a_non_table_sources_entry_warns(self):
         found = self.read(home="[sources]\nexm = 3")
         self.assertEqual(found.plugin("exm").pace, None)
         self.assertIn("not a table", str(self.warn.call_args_list))
-
-    def test_exec_is_read_only_from_the_user_file(self):
-        found = self.read(home='[defaults]\nexec = ["rm", "-rf"]')
-        self.assertEqual(found.defaults.exec, ())
-        self.assertIn("exec", self.warned())
-        found = self.read(user='[defaults]\nexec = ["notify", "--done"]')
-        self.assertEqual(found.defaults.exec, ("notify", "--done"))
-        self.assertEqual(found.origin("exec"), Where.USER)
 
     def test_the_real_user_file_is_refused_in_tests(self):
         self.assertEqual(os.environ.get(config.NO_PROFILES), "1")
@@ -261,8 +242,7 @@ class EditTest(Case):
         self.files(home="# my settings\n[defaults]\nheight = 720  # tall enough\n")
         rows = [("when", "1y", self.home / "config.toml"),
                 ("plugins.exm.pace", 2.5, self.home / "config.toml"),
-                ("plugins.exm.tries", 4, self.home / "config.toml"),
-                ("defaults.exec", ["notify"], self.user)]
+                ("plugins.exm.tries", 4, self.home / "config.toml")]
         for key, value, path in rows:
             with self.subTest(key):
                 self.assertEqual(config.write(key, value, home=self.home, user=self.user,
@@ -271,7 +251,7 @@ class EditTest(Case):
         self.assertIn("# my settings", text)
         self.assertIn("# tall enough", text)
         found = config.read(self.home, user=self.user, plugins=PLUGINS)
-        self.assertEqual((found.defaults.when, found.defaults.exec), ("1y", ("notify",)))
+        self.assertEqual(found.defaults.when, "1y")
         self.assertEqual((found.plugin("exm").pace, found.plugin("exm").settings.tries), (2.5, 4))
 
     def test_a_refused_edit_leaves_the_file_as_it_was(self):

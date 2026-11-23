@@ -132,8 +132,6 @@ class RunShared:
     emit: Callable[[Any], Awaitable[None]] = field(default=sink(None), repr=False)
     # The run's save (`flnd.engine.save.Saver`), set by `save.attached`; None outside a run.
     saver: Any = field(default=None, repr=False)
-    # The caller's program per saved file (`--exec`), over the user file's.
-    exec: Sequence[str] | None = None
     # Resolves the text of a target a listing yielded, on any source (the engine's `resolve`);
     # None outside the engine, where a source reads only its own.
     resolve: Callable[[str], Target] | None = field(default=None, repr=False)

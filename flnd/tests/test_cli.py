@@ -698,7 +698,7 @@ class HelpTest(FlndCase):
         flat = " ".join(text.split())
         self.assertIn("tlg:<@username, chat title or id>, tlg:@<chat>, a link on t.me", flat)
         self.assertIn("|posts,reels,tagged", flat)
-        for flag in ("--when", "--limit", "--dry", "--again", "--exec", "--home", "--json"):
+        for flag in ("--when", "--limit", "--dry", "--again", "--home", "--json"):
             self.assertIn(flag, text)
         self.assertNotIn("Args:", text)
 

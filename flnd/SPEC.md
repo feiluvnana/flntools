@@ -621,31 +621,6 @@ unarchives an old post or a missing file comes back.
 `--dry` saves and writes nothing: it prints `found <target>` for each target a search finds, then
 `new <path>` or `saved <path>` for each file, and a count.
 
-`--exec CMD` runs CMD once for each saved file, one at a time, without a shell: CMD is split once
-like a POSIX shell (`shlex`) and run directly, and a file name from a site only fills a placeholder
-inside one argument.
-
-| Placeholder | Environment | Value |
-| --- | --- | --- |
-| `{path}` | `FLND_PATH` | the file's final path |
-| `{target}` | `FLND_TARGET` | the target it was saved for, `ins:example_user` |
-| `{post}` | `FLND_POST` | the post's id |
-
-```sh
-flnd get ins:example_user --exec 'cp {path} /Volumes/backup/'
-flnd get --exec 'sh -c "echo \"$FLND_PATH\" >> saved.txt"'
-```
-
-To use a shell's features call the shell yourself and read the environment. A mistake in CMD
-(`--exec: <error>: '<cmd>'`, `--exec needs a command`, `--exec: <program>: no such program`) is a
-usage error before anything is saved. The program's standard output is dropped, never kept; its
-standard error is read as it comes and only the last 4 KiB is kept, for the warning. A program that
-cannot start, exits non-zero (the warning shows the last line it wrote to standard error) or runs
-past `[defaults] exec_timeout` is a warning, and the run goes on. The program runs in its own
-process group, and the whole group is killed on the timeout and when the run stops (Ctrl-C).
-`[defaults] exec` in the user file runs a command for every get the same way; with both, `--exec`
-wins.
-
 Ctrl-C: the first stops listing and lets files in progress finish; the second, or a SIGTERM, stops
 at once and leaves `.part` files to resume (what still runs 2 s later is cancelled, and 5 s later
 the process quits); the third quits at once, exit 130.
@@ -851,7 +826,6 @@ standard input, else gets every followed target, or prints `nothing to sync` and
 | `--dry` | off | list what would be saved; write nothing |
 | `--folder VALUE` | each target's folder | a template or a list ([Folders](#folders)) |
 | `--again` | off | list every post again; ask again for gone files |
-| `--exec CMD` | none | run CMD for each saved file, without a shell |
 
 **`flnd target list`** the targets the home knows: status, files, size, last run, categories.
 On a terminal: arrows move, `/` filters, `enter` opens details, `f` follows or unfollows,
@@ -889,7 +863,7 @@ terminal `e` edits, `a` adds a key, `d` resets one; comments in the file stay. `
 
 What a run prints: on a terminal a live screen on standard error (a row per target, files in
 flight, the `now` line, and a `use` line read every 2 s with `psutil`: flnd's process tree, meaning
-itself, the browser's and a running `--exec` program, as count, resident memory and CPU % (100 is
+itself, the browser's and a running transform program, as count, resident memory and CPU % (100 is
 one core), then the browser's alone); on a pipe only the end summary, with no `use` line.
 `--json` gets each reading as a `Resources` event (`procs rss cpu browser browser_rss
 browser_cpu`). The end summary goes to standard output (`done in 4m 12s · 3 targets · 1,021 saved
@@ -913,8 +887,6 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it
 | `dedupe` | bool | `true` | hard-link a file whose bytes are saved already |
 | `sidecars` | bool | `false` | write `<file>.json` beside each file |
 | `when` | text | `""` | days a get takes, as `--when` writes them; also bounds a sync |
-| `exec` | list | none | program and arguments run per saved file; the **user file only** |
-| `exec_timeout` | int | `3600` | seconds an `exec` program may run before it is killed; 0 none |
 | `rate` | text | `"0"` | the run's speed limit (`"20 MB/s"`, `"500 KB/s"`; `"0"` off) |
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
 | `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
@@ -945,11 +917,9 @@ A plugin's own settings (its `Settings` struct) are keys of its table and reach 
   names up through the proxy; the URL may hold a user and password.
 - `pace` and `limits` win over the plugin's class. A host's cap still adapts under the file's
   number.
-- `exec` in a home's file is ignored with a warning; given in a call it is a usage error:
-  `defaults.exec is read only from the user file, not from a call`. `fl.get(exec=[...])` and
-  `--exec` hand a program to one run, over the file's.
-- Gone keys: `[defaults] again`, `[vault]`, `scroll` (unknown now); `dedupe = "link"` reads as
-  `true`, `"off"` as `false`, each with a warning.
+- Gone keys: `[defaults] again`, `exec` and `exec_timeout` (use `flnd transform`), `[vault]`,
+  `scroll` (unknown now); `dedupe = "link"` reads as `true`, `"off"` as `false`, each with a
+  warning.
 
 ```toml
 [defaults]
@@ -1191,7 +1161,7 @@ Every call, and the CLI command it matches:
 | Call | Returns | Same as |
 | --- | --- | --- |
 | `flnd.open(home=None, *, again=None)` | `Flnd`, a context manager | `--home`, `--again` |
-| `fl.get(*targets, when=, limit=, dry=, folder=, exec=)` | `Run`, not started | `flnd get` |
+| `fl.get(*targets, when=, limit=, dry=, folder=)` | `Run`, not started | `flnd get` |
 | `fl.targets` / `.list(plugin=None)` | `list[Tracked]` | `flnd target list` |
 | `fl.targets.follow(*t)`, `.unfollow(*t)`, `.retry(*t)` | `list[Tracked]` | `f`, `r` in the list |
 | `fl.targets.clean(*t, media=False)` | `list[Tracked]` | `flnd target clean` |

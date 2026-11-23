@@ -145,7 +145,7 @@ class Planned(msgspec.Struct, frozen=True, tag=True):
 
 class Resources(msgspec.Struct, frozen=True, tag=True):
     """What flnd's processes use, read every 2 s while a run goes: flnd itself and every process
-    below it (the browser's, a running `--exec` program), then the browser's alone.
+    below it (the browser's, a running transform program), then the browser's alone.
 
     Example:
         >>> use = Resources(procs=5, rss=300 << 20, cpu=12.5, browser=3, browser_rss=200 << 20)

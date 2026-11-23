@@ -18,7 +18,7 @@ BROWSER = ("chrom", "headless", "firefox", "webkit", "msedge")
 
 class Meter:
     """Reads flnd's process tree: itself and its children, whatever they run (the browser, an
-    `--exec` program). A process object lives across reads, since CPU % is the time used
+    transform program). A process object lives across reads, since CPU % is the time used
     since the last read of the same process; the first read of a process says 0.
 
     Example:

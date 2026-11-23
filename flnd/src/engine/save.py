@@ -1,4 +1,4 @@
-"""The save: a post's files from their parts to their rows, then unpack, sidecar, `Saved`, exec.
+"""The save: a post's files from their parts to their rows, then unpack, sidecar, `Saved`.
 
 SPEC.md#for-developers explains it.
 """
@@ -10,15 +10,10 @@ import datetime
 import email.utils
 import json
 import mimetypes
-import os
-import re
 import shutil
-import signal
 import stat
-import subprocess
 import sys
 import threading
-import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
@@ -60,10 +55,6 @@ EXPIRED = frozenset({403, 410})
 CANDIDATES = 8
 # A sidecar is its file's name with this after it: `9001.jpg.json`.
 SIDECAR = ".json"
-# `exec`'s placeholders, filled in one pass, so a value holding `{post}` stays literal.
-PLACEHOLDER = re.compile(r"\{(path|target|post)\}")
-# How much of a program's stderr is kept, for the warning's last line.
-EXEC_TAIL = 4096
 # The kind of an API 2 file named by a stem (5.3): its extension is what its bytes are, else
 # what its `Content-Type` names, else its URL's, else none; the planned name may hold the URL's.
 STEM = "stem"
@@ -456,8 +447,8 @@ class Saver:
     """A run's saves: each post's files through the nine stages, their rows one commit a post.
 
     Every step is a job of the run's scheduler: a file's transfer a `FILE` job (with its
-    mirrors), a DASH join a `MERGE` job, a hash a `HASH` job, an unpack an `UNPACK` job, a
-    program an `EXEC` job and a post's commit a `WRITE` job; blocking calls go to the threads
+    mirrors), a DASH join a `MERGE` job, a hash a `HASH` job, an unpack an `UNPACK` job and a
+    post's commit a `WRITE` job; blocking calls go to the threads
     of their kind (`Scheduler.on`). Used on the run's loop only.
 
     Args:
@@ -467,9 +458,6 @@ class Saver:
         run: the run's id in `runs`, for failures; None outside a run.
         dedupe: whether a file whose bytes are saved already becomes a hard link to them.
         sidecars: whether a file with `meta` gets `<name>.json`.
-        exec: the program and arguments to run after each saved file, from the user's own
-            config or `--exec`; None runs nothing.
-        exec_timeout: seconds a program may run before it is killed; 0 for no limit.
         stop: the run's second Ctrl-C, which a plugin's `fetch` function stops at when it
             next reports its progress; None never stops it.
         tally: the run's live counts (`flnd.engine.run.Tally`); None counts nothing.
@@ -479,18 +467,13 @@ class Saver:
     def __init__(self, db: store.Store, scheduler: jobs.Scheduler,
                  emit: Callable[[Any], Awaitable[None]], *,
                  run: int | None = None, dedupe: bool = True, sidecars: bool = True,
-                 exec: Sequence[str] | None = None, exec_timeout: float = 3600,
                  timeout: float = 600, stop: threading.Event | None = None, tally: Any = None,
                  sample: Callable[[Error], None] | None = None,
                  claims: Any = None) -> None:
-        if exec is not None and (not isinstance(exec, (list, tuple)) or not exec
-                                 or not all(isinstance(arg, str) for arg in exec)):
-            raise UsageError("exec must be a list: the program, then its arguments",
-                             hint='exec = ["echo", "{path}"]')
         self.store, self.scheduler, self.run = db, scheduler, run
         self.emit = sink(emit)
-        self.dedupe, self.sidecars, self.exec, self.stop = dedupe, sidecars, exec, stop
-        self.exec_timeout, self.timeout = exec_timeout, timeout
+        self.dedupe, self.sidecars, self.stop = dedupe, sidecars, stop
+        self.timeout = timeout
         self.tally, self.sample = tally, sample
         self.claims = claims
         self.done = _Done()
@@ -1109,7 +1092,7 @@ class Saver:
                 raise
         await self.scheduler.run(Job(kind=Kind.WRITE, work=work))
 
-    # -- stages 6 to 9: unpack, `Saved`, exec; the sidecar went before the commit -----------
+    # -- stages 6 to 8: unpack, `Saved`; the sidecar went before the commit -----------
 
     async def _finish(self, landed: _Landed, plugin: str) -> None:
         item, path = landed.item, landed.path
@@ -1120,16 +1103,8 @@ class Saver:
         self._count(item, downloading=-1, saved=1, bytes=landed.row.size)
         await self.emit(Saved(item.target, item.category, item.post, path, landed.day,
                               landed.row.size, retried=item.retried))
-        if self.exec:
-            argv = self.exec
-
-            async def work() -> None:
-                await self.scheduler.on(Kind.EXEC, _exec, argv, path, item.target, item.post,
-                                        self.exec_timeout, self.stop)
-            await self.scheduler.run(Job(kind=Kind.EXEC, work=work, plugin=plugin,
-                                         target=str(item.target)))
         if "extracted" in step:
-            # Deleted once the row holds what it made, and `exec` has had it.
+            # Deleted once the row holds what it made.
             with suppress(OSError):
                 path.unlink()
 
@@ -1164,8 +1139,7 @@ class Saver:
 async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     """Give a run's settings their save for the block (`settings.saver`), then close it.
 
-    The save reads `dedupe` and `sidecars` from the home's settings, and `exec` from the
-    user's file, the one it is read from (`config.settings`); it commits through a connection
+    The save reads `dedupe` and `sidecars` from the home's settings; it commits through a connection
     of its own to the home's `flnd.db`, and runs its jobs on the run's scheduler. It is
     closed on the run's loop before the loop and the database close. A run with no database,
     or a dry one, saves nothing.
@@ -1190,8 +1164,7 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     defaults = found.defaults
     claims = getattr(settings, "claims", None)
     saver = Saver(db, scheduler, settings.emit, run=settings.run, dedupe=defaults.dedupe,
-                  sidecars=defaults.sidecars, exec=settings.exec or defaults.exec or None,
-                  exec_timeout=defaults.exec_timeout,
+                  sidecars=defaults.sidecars,
                   timeout=config.duration_seconds(defaults.timeout), stop=settings.stop.now,
                   tally=settings.tally, sample=lambda error: sampled(settings, error),
                   claims=claims)
@@ -1207,10 +1180,9 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
 
 
 def _opened(settings: Any) -> tuple[Any, store.Store]:
-    """`attached`'s reads, off the loop: the home's settings (the run's, else read here, with
-    `exec` from the user's file alone), and the run's commit connection (`loop=True`: it waits
-    for no lock), made now; the config module is imported here too, since an import reads
-    files."""
+    """`attached`'s reads, off the loop: the home's settings (the run's, else read here), and
+    the run's commit connection (`loop=True`: it waits for no lock), made now; the config module
+    is imported here too, since an import reads files."""
     from flnd.engine import config
 
     found = getattr(settings, "config", None) or config.settings(settings.home)
@@ -1289,70 +1261,6 @@ def _extract(path: Path, password: str | None, here: bool) -> Path | list[Path]:
     if here:
         return files.extract_into(path, path.parent, password=password)
     return files.extract(path, password=password)
-
-
-def _exec(argv: Sequence[str], path: Path, target: Target, post: str, timeout: float,
-          stop: threading.Event | None) -> None:
-    """Run the user's program for a saved file, with no shell; a failure is a warning.
-
-    stdout is dropped and stderr keeps its last `EXEC_TAIL` bytes.
-    """
-    values = {"path": str(path), "target": str(target), "post": post}
-    filled = [PLACEHOLDER.sub(lambda found: values[found[1]], arg) for arg in argv]
-    env = {**os.environ, "FLND_PATH": values["path"], "FLND_TARGET": values["target"],
-           "FLND_POST": post}
-    # A group of its own, so the timeout and a stop kill what the program started too.
-    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
-             else {"start_new_session": True})
-    try:
-        proc = subprocess.Popen(filled, env=env, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, **group)
-    except OSError as error:
-        ui.warn("exec {program}: {error}", program=argv[0], error=error)
-        return
-    tail = bytearray()
-
-    def read() -> None:
-        while chunk := proc.stderr.read1(EXEC_TAIL):
-            tail[:] = (tail + chunk)[-EXEC_TAIL:]
-    reader = threading.Thread(target=read, daemon=True)
-    reader.start()
-    deadline = time.monotonic() + timeout if timeout else float("inf")
-    while (code := _wait(proc)) is None:
-        if stop is not None and stop.is_set():
-            _kill(proc)
-            raise Stopped("stopped while a program ran")
-        if time.monotonic() > deadline:
-            _kill(proc)
-            proc.wait()
-            ui.warn("exec {program}: killed after {seconds:g} s for {name}", program=argv[0],
-                    seconds=timeout, name=path.name)
-            return
-    reader.join(1)
-    if code:
-        said = tail.decode("utf-8", "replace").strip().splitlines()
-        ui.warn("exec {program}: exit {code} for {name}{said}", program=argv[0],
-                code=code, name=path.name, said=f": {said[-1]}" if said else "")
-
-
-def _wait(proc: subprocess.Popen[bytes]) -> int | None:
-    """The program's exit code, or None when it still runs after a tenth of a second."""
-    try:
-        return proc.wait(0.1)
-    except subprocess.TimeoutExpired:
-        return None
-
-
-def _kill(proc: subprocess.Popen[bytes]) -> None:
-    """Kill the program and everything it started."""
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            os.killpg(proc.pid, signal.SIGKILL)
-    except OSError:
-        proc.kill()
 
 
 def _place(held: files.Part, item: Item, received: Mapping[str, str]) -> None:

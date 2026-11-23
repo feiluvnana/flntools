@@ -71,8 +71,6 @@ class Defaults(msgspec.Struct, frozen=True):
     dedupe: bool = True
     sidecars: bool = False
     when: str = ""
-    exec: tuple[str, ...] = ()
-    exec_timeout: int = 3600
     rate: str = "0"
     slowest: str = "0"
     height: int = 0
@@ -169,9 +167,6 @@ DEFAULTS = {
     "dedupe": Key(bool, "true or false"),
     "sidecars": Key(bool, "true or false"),
     "when": Key(str, 'text such as "1y", "2026" or "2026-01..2026-03", or ""', _when_ok),
-    "exec": Key(tuple[str, ...], 'a list: a program and its arguments, ["<program>", ...]',
-                lambda value: all(value) and (not value or bool(value[0].strip()))),
-    "exec_timeout": Key(int, "a whole number of seconds, 0 for none", lambda value: value >= 0),
     "rate": Key(str, 'a speed such as "20 MB/s" or "500 KB/s", or "0" for off', _speed_ok),
     "slowest": Key(str, 'a speed such as "50 KB/s", or "0" for off', _speed_ok),
     "height": Key(int, "a whole number of pixels, 0 for the best", lambda value: value >= 0),
@@ -514,9 +509,6 @@ def read(home: Path, *, user: Path | None, plugins: Mapping[str, type] | None = 
     """
     plugins = {} if plugins is None else plugins
     called = _from_dotted(given or {})
-    if "exec" in called.get("defaults", {}):
-        raise UsageError("defaults.exec is read only from the user file, not from a call",
-                         hint=f"set it in {user or user_file()}")
     layers = [
         (Where.ARGUMENT, "the call", called),
         (Where.HOME, str(home / FILE), _load(home / FILE, Where.HOME)),
@@ -567,11 +559,6 @@ def _load(path: Path, origin: Where) -> dict[str, Any]:
                         path=str(path), code=code)
             elif isinstance(own, dict):
                 plugins[code] = {**table, **own}
-    defaults = data.get("defaults")
-    if origin is Where.HOME and isinstance(defaults, dict) and "exec" in defaults:
-        _warn("{path}: [defaults] exec is read only from the user file; it is ignored",
-                path=str(path))
-        del defaults["exec"]
     return data
 
 
@@ -714,7 +701,7 @@ def _plugin(code: str, values: Mapping[str, Any], cls: type | None,
 
 def write(key: str, value: Any, *, home: Path, user: Path,
           plugins: Mapping[str, type] | None = None) -> Path:
-    """Set one key: `exec` in the user file, any other in the home's; comments are kept.
+    """Set one key in the home's file; comments are kept.
 
     Args:
         key: a dotted name (`"defaults.when"`, `"plugins.ins.pace"`); a bare name is in
@@ -750,7 +737,7 @@ def _edit(key: str, value: Any, *, home: Path, user: Path,
     import tomlkit
 
     tables, name = _known(key, plugins)
-    path = user if tables == ["defaults"] and name == "exec" else home / FILE
+    path = home / FILE
     _guard(path)
     try:
         document = tomlkit.parse(path.read_text(encoding="utf-8"))

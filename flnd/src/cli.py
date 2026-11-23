@@ -195,10 +195,6 @@ def get(args: argparse.Namespace) -> int:
     input (one per line; blank lines and lines starting with # are skipped), every followed
     target is synced.
 
-    --exec CMD runs CMD once for each saved file, after every post-download step, with
-    no shell: {path}, {target} and {post} inside an argument become the file's values, which
-    are also in $FLND_PATH, $FLND_TARGET and $FLND_POST.
-
     Args:
         args: the parsed flags.
 
@@ -206,19 +202,18 @@ def get(args: argparse.Namespace) -> int:
         The run's exit code.
     """
     _lower_priority()
-    command = _command(args)
     targets = _targets(args.targets)
     with _open(args) as fl:
         if not targets and not any(row.follow for row in fl.targets):
             if args.folder is not None:
                 fl.get(when=args.when, limit=args.limit, dry=args.dry,
-                       folder=args.folder, exec=command).wait()
+                       folder=args.folder).wait()
             from flnd.ui import out
 
             out.line(("nothing to sync", "dim"))
             return OK
         run = fl.get(*targets, when=args.when, limit=args.limit, dry=args.dry,
-                     folder=args.folder, exec=command)
+                     folder=args.folder)
         return _watch(fl, run, args)
 
 
@@ -758,7 +753,6 @@ def parser() -> argparse.ArgumentParser:
                           "TEMPLATE is one, or a list like posts:{target}/feed,*:{target}/other; "
                           "a search needs one")
     _again(sub)
-    _exec(sub)
     sub.tail = _forms()
 
     targets = group("target", "List the targets flnd knows, or forget some")
@@ -828,12 +822,6 @@ def _again(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--again", action="store_true",
                      help="list every post again, and ask again for files the site said are "
                           "gone (404 or 410)")
-
-
-def _exec(sub: argparse.ArgumentParser) -> None:
-    sub.add_argument("--exec", metavar="CMD",
-                     help="run CMD for each saved file, without a shell; {path}, {target} and "
-                          "{post} become the file's")
 
 
 def _help(function: Callable[..., Any]) -> str:
@@ -1068,32 +1056,6 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace) -> int:
     if any(_login(failed.error) for failed in report.failed):
         return LOGIN
     return FAILED if report.failed else OK
-
-
-def _command(args: argparse.Namespace) -> list[str] | None:
-    """`--exec`'s command split once like a POSIX shell; None without `--exec`."""
-    import shlex
-    import shutil
-
-    import flnd
-
-    text = args.exec
-    if text is None:
-        return None
-    lexer = shlex.shlex(text, posix=True)
-    lexer.whitespace_split = True
-    if os.name == "nt":
-        lexer.escape = ""
-    try:
-        argv = list(lexer)
-    except ValueError as error:
-        raise flnd.UsageError(f"--exec: {error}: {text!r}") from None
-    if not argv:
-        raise flnd.UsageError("--exec needs a command", hint="--exec 'cp {path} /backup/'")
-    if shutil.which(argv[0]) is None:
-        raise flnd.UsageError(f"--exec: {argv[0]}: no such program",
-                              hint="give a program on PATH, or its full path")
-    return argv
 
 
 def _login(error: BaseException) -> bool:

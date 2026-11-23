@@ -124,21 +124,6 @@ account cannot make move on to the next, set `switch = true` under `[defaults]` 
 `config.toml` (`flnd config` edits it).
 More: [Logins and accounts](SPEC.md#logins-and-accounts), [Config](SPEC.md#config).
 
-## Run a program on every file
-
-Goal: do something with each saved file, such as shrink a video with ffmpeg.
-
-```sh
-flnd get ins:example_user --exec 'ffmpeg -n -i {path} -vf scale=-2:720 {path}.720.mp4'
-```
-
-`{path}`, `{target}` and `{post}` fill in each file's values, and the program runs once per
-file with no shell. A program that fails on a file is a warning, and the run goes on.
-More: [Sync](SPEC.md#sync).
-
-The run screen's `use` line counts flnd's processes (itself, the browser, your `--exec` program):
-how many, their memory and their CPU %, then the browser alone.
-
 ## Fix a failed run
 
 Goal: a run said some files failed, or the disk and the history disagree.

@@ -133,7 +133,6 @@ class Flnd:
     def get(
         self, *targets: str | Target, limit: int | None = None, when: str | None = None,
         dry: bool = False, folder: str | Mapping[str, str] | None = None,
-        exec: Sequence[str] | None = None,
     ) -> Run:
         """Run the targets: get what they have that isn't saved, and follow them.
 
@@ -157,14 +156,12 @@ class Flnd:
                 it names; one it leaves out keeps its default place. None uses each target's
                 own folder. A search needs one that places every category, unless it has kept
                 its own.
-            exec: a program and arguments run for each saved file, as `[defaults] exec` does
-                (`["cp", "{path}", "/backup"]`); None uses the user file's.
 
         Returns:
             The `Run`, not started yet: iterate it, or call `wait()`.
 
         Raises:
-            UsageError: a target, category, `when`, `limit`, `folder` or `exec` is wrong, or the
+            UsageError: a target, category, `when`, `limit`, or `folder` is wrong, or the
                 home's config.toml is.
 
         Example:
@@ -185,15 +182,15 @@ class Flnd:
             config.check_folder(folder, self._sources())
         again = bool(self._again)
         if not targets and not (limit or dry or again or folder is not None):
-            return self._run("get", lambda engine: engine.run_sync((), time=span), exec=exec)
+            return self._run("get", lambda engine: engine.run_sync((), time=span))
         named = list(targets) or [row.target for row in self.targets if row.follow]
         if not named:
-            return self._run("get", lambda engine: engine.run_sync((), time=span), exec=exec)
+            return self._run("get", lambda engine: engine.run_sync((), time=span))
         resolved = self._checked(named)
         folder = self._engine().check_folder(folder, resolved, again=again)
         return self._run(f"get {_names(resolved)}", lambda engine: engine.run_download(
             resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again,
-            folder=folder), exec=exec)
+            folder=folder))
 
     @property
     def status(self) -> Status | None:
@@ -422,13 +419,12 @@ class Flnd:
             raise UsageError("give at least one target")
         return resolved
 
-    def _run(self, name: str, command: Any, *, exec: Sequence[str] | None = None) -> Run:
+    def _run(self, name: str, command: Any) -> Run:
         """A `Run` whose loop makes this home's engine and awaits `command` with it."""
         from flnd.engine.run import Run
 
         async def work(emit: Any, stop: Any) -> None:
             engine = self._engine(emit, stop)
-            engine.exec = exec
             await command(engine)
 
         run = Run(work, name=name, closed=self._closed)
@@ -809,8 +805,7 @@ class Config(Mapping[str, Any]):
         return list(value) if isinstance(value, tuple) else value
 
     def set(self, key: str, value: Any) -> None:
-        """Set a key in `<home>/config.toml` (`defaults.exec`, in the user file), keeping the
-        file's comments.
+        """Set a key in `<home>/config.toml` keeping the file's comments.
 
         Raises:
             UsageError: the key isn't one flnd takes, or the value is one it doesn't take; the
