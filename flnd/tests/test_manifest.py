@@ -94,11 +94,11 @@ class BuiltInTest(unittest.TestCase):
 
     def test_declarations(self):
         rows = {  # code: (login cookies, pace, stealth, own User-Agent, host limits)
-            "tik": (("sessionid", "sid_tt"), 1.5, True, False, {}),
-            "fbk": (("c_user", "xs"), 1.5, True, False, {}),
+            "tik": (("sessionid", "sid_tt"), 2.0, True, False, {}),
+            "fbk": (("c_user", "xs"), 2.0, True, False, {}),
             "ins": (("sessionid",), 2.0, True, False, {}),
             "thr": (("sessionid",), 2.0, True, False, {}),
-            "twt": (("auth_token",), 1.5, True, False,
+            "twt": (("auth_token",), 2.0, True, False,
                     {"pbs.twimg.com": 4, "video.twimg.com": 4}),
             "loi": (("access-token",), 0.5, True, False, {}),
             "tlg": ((), 0.5, True, False, {"t.me": 3}),
