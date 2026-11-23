@@ -72,17 +72,6 @@ TEMPLATE_FIELDS = (
 )
 # The fields a `Post` may not set: the engine's own, so a plugin never overwrites one.
 RESERVED = frozenset(TEMPLATE_FIELDS) | {"id", "files", "headers", "listed", "pinned"}
-# Names of older plugin APIs, refused with how API 2 spells them.
-OLD_NAMES = {
-    "needs": 'login = cookies("<name>", url=...)',
-    "requires_login": 'login = cookies("<name>", url=..., required=True)',
-    "login_methods": "a Login subclass's `methods`",
-    "logged_in": "a Login subclass's `async check(ctx)`",
-    "concurrency": 'limits = {"<host>": <files at once>}',
-    "prepare": "sign(self, request, cookies)",
-    "scroll": "nothing: the engine scrolls every feed like a person",
-    "single_kinds": "@route(..., single=True) on each one-post route",
-}
 # The ways a cookie site's login is read: flnd's own window, a browser's store, a cookies.txt.
 COOKIE_METHODS = ("browser", "chrome", "file", "firefox", "safari")
 # Each optional hook: whether it is `async def`, and the parameters it takes.
@@ -1420,9 +1409,6 @@ def _check(cls: type[Plugin]) -> None:
     if not isinstance(code, str) or not CODE.fullmatch(code):
         raise PluginError(f"{cls.__name__}.code: {'missing' if code is None else repr(code)}; "
                           'set code = "exm": 2 to 16 lowercase letters and digits')
-    for old, spelled in OLD_NAMES.items():
-        if hasattr(cls, old):
-            raise PluginError(f"{code}.{old}: plugin API {API} spells it {spelled}")
     name = getattr(cls, "name", None)
     if not isinstance(name, str) or not name.strip():
         raise PluginError(f'{code}.name: set name = "Example", the site\'s name for help')

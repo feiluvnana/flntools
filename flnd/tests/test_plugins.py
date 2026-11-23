@@ -655,12 +655,8 @@ class LoadTest(ManagerCase):
 
     def test_another_api_is_disabled_with_its_hint(self):
         self.manager.install(self.write("src/exm.py"))
-        old = self.plugin(api=1).replace(
-            "    unsupported", '    needs = "sessionid"\n    single_kinds = ("post",)\n'
-            "    unsupported")
         cases = {3: (self.plugin(api=3), "it needs a newer flnd"),
-                 1: (old, 'needs becomes login = cookies("<name>", url=...); single_kinds '
-                          "becomes @route(..., single=True) on each one-post route")}
+                 1: (self.plugin(api=1), "see the writing-a-plugin page of flnd's docs")}
         for api, (text, hint) in cases.items():
             with self.subTest(api=api):
                 self.write("plugins/exm.py", text)

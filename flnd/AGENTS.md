@@ -69,7 +69,6 @@ src/                 the package flnd
   extension/       manifest.json background.js page.js popup.html popup.js
 flnkit/              the standalone package flnkit, imports nothing of flnd
   net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py media.py
-  stream.py
 ```
 
 The import rules, checked by `tests/test_layers.py` by reading every file's imports:

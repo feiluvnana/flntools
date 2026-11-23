@@ -110,7 +110,6 @@ class ExtensionTabs:
         self._warmed: dict[str, tuple[int, browser.Visit | None]] = {}
         self._pending: deque[str] = deque()
         self._feeds: list[tuple[Any, bool]] = []
-        self._buffers: dict[int, list[tuple[str, bytes]]] = {}
 
     def run(self, awaitable: Any) -> Any:
         return browser.run_on(self._loop, awaitable)
@@ -194,11 +193,6 @@ class ExtensionTabs:
             self.run(self._client.call("tabs.close", tab=old))
         if self._feeds:
             self._feeds[-1][0].adopt(tab)
-
-    def take_buffer(self, tab: int, matches: Callable[[str], bool]
-                      ) -> Iterable[tuple[str, bytes]]:
-        rows = self._buffers.pop(tab, [])
-        return [(url, body) for url, body in rows if matches(url)]
 
     def push(self, feed: Any, *, scroll: bool) -> None:
         pushed = scroll and any(scrolls for _, scrolls in self._feeds)

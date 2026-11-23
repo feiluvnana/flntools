@@ -23,7 +23,7 @@ from collections.abc import (
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.engine.ctx
@@ -32,9 +32,6 @@ from flnd.engine import jobs
 from flnd.errors import Blocked, Changed, NetworkError, NotFound, PluginError, SiteError, UsageError
 from flnd.plugin import Document, File, Landed, Plugin, Post, Request, Response
 from flnkit import clock, net
-
-if TYPE_CHECKING:
-    pass
 
 __all__ = [
     "Collected", "FakeCtx", "FakePage", "Reply", "Seen", "Sent", "check", "collect",

@@ -330,25 +330,6 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     "src/engine/run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
                               "flnd's own tests use it",
 }
-# Kit names built early, before the code that calls them: each counts as unused, whatever the
-# word search finds, until a module of src/ or flnkit/ calls it as `<module>.<name>`. Then
-# `test_built_early_is_not_called_yet` fails, so the entry goes when its caller lands.
-BUILT_EARLY: dict[str, str] = {
-    name: "built early; the engine's save calls it for File.stream"
-    for name in ("flnkit/stream.py:dash", "flnkit/stream.py:fetch_all", "flnkit/stream.py:hls",
-                 "flnkit/stream.py:pick")
-}
-
-
-def early_calls(entry: str) -> list[str]:
-    """The files of src/ and flnkit/, beside the name's own, that call it as `<module>.<name>`."""
-    path, name = entry.split(":", 1)
-    call = re.compile(rf"\b{re.escape(Path(path).stem)}\.{re.escape(name)}\b")
-    return sorted(str(other.relative_to(snapshot.ROOT)) for root in (FLND, FLNKIT)
-                  for other in root.rglob("*.py")
-                  if other != snapshot.ROOT / path and call.search(other.read_text("utf-8")))
-
-
 def registered(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """Whether a method is a source's route or category, which the framework finds by decorator."""
     for decorator in function.decorator_list:
@@ -488,21 +469,13 @@ class DeadNameTest(unittest.TestCase):
         cls.dead = dead_names()
 
     def test_no_dead_name(self):
-        new = sorted(self.dead - set(CALLED_FROM_OUTSIDE) - set(BUILT_EARLY))
+        new = sorted(self.dead - set(CALLED_FROM_OUTSIDE))
         self.assertEqual(new, [], "nothing in flnd/ uses these: delete them, and the tests that "
                          "only exercise them (AGENTS.md › Writing: plain over clever)")
 
     def test_no_stale_allowance(self):
         stale = sorted(set(CALLED_FROM_OUTSIDE) - self.dead)
         self.assertEqual(stale, [], "used now, or gone: delete these from CALLED_FROM_OUTSIDE")
-
-    def test_built_early_is_not_called_yet(self):
-        for entry in BUILT_EARLY:
-            with self.subTest(entry):
-                path, name = entry.split(":", 1)
-                defined = {qual for _, qual in definitions((snapshot.ROOT / path).read_text())}
-                self.assertIn(name, defined, "gone: delete it from BUILT_EARLY")
-                self.assertEqual(early_calls(entry), [], "called now: delete it from BUILT_EARLY")
 
     def test_the_search_sees_uses_and_ignores_mentions(self):
         source = ('"""Says `told` in the docstring."""\n'
