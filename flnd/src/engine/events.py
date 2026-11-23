@@ -21,7 +21,8 @@ from flnd.plugin import Account, Target
 __all__ = [
     "BUSY", "NOTHING_NEW", "RESUMING", "Account", "Checked", "Event", "Failed", "Failure",
     "FileState", "HoldState", "Installed", "Phase", "Planned", "Record", "Report", "Resources",
-    "Saved", "Skipped", "State", "Status", "TargetState", "Tracked", "encode", "sink",
+    "Saved", "Skipped", "State", "Status", "TargetState", "Tracked", "Transform", "encode",
+    "sink",
 ]
 
 # `Skipped.reason` for a listing a sync found nothing new in.
@@ -427,6 +428,28 @@ class Tracked(msgspec.Struct, frozen=True):
     failed: int = 0
     # Categories not yet completed (missing from complete, or with open cursors or gaps).
     pending: tuple[str, ...] = ()
+
+
+class Transform(msgspec.Struct, frozen=True):
+    """A saved transform (`flnd transform`): its command, when it first and last ran, and what
+    became of the files it ran on.
+
+    Example:
+        >>> row = Transform("ffmpeg -y -i {in} -crf 28 {out}", done=3)
+        >>> row.done, row.failed
+        (3, 0)
+    """
+
+    # The command as the person gave it: what makes a transform this one and no other.
+    command: str
+    # When it first and last ran, as ISO 8601 times.
+    first: str = ""
+    last: str = ""
+    # Files it replaced, files its latest run skipped (already its result), files it failed on
+    # and left as they were.
+    skipped: int = 0
+    done: int = 0
+    failed: int = 0
 
 
 class Failure(msgspec.Struct, frozen=True):

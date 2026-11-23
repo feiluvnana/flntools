@@ -14,7 +14,15 @@ from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from flnd.engine.events import Checked, Failure, Installed, Record, Status, Tracked
+from flnd.engine.events import (
+    Checked,
+    Failure,
+    Installed,
+    Record,
+    Status,
+    Tracked,
+    Transform,
+)
 from flnd.errors import PluginError, UsageError
 from flnd.plugin import Account
 
@@ -297,6 +305,70 @@ class Flnd:
 
         with store.open(self.home) as db:
             return store.check(self.home, db, fix=fix)
+
+    def transform(
+        self, command: str, *targets: str | Target, on: Sequence[str], dry: bool = False,
+        jobs: int | None = None,
+    ) -> Run:
+        """Run a command over saved files, and replace each one with its result.
+
+        It is `flnd transform`. The command is a template with `{in}` (a saved file) and
+        `{out}` (a temporary file beside it, with the same extension), split like a POSIX
+        shell and run with no shell. When it exits 0 and leaves `{out}` non-empty, `{out}`
+        replaces the file at once and whole; otherwise the file is untouched. **There is no
+        undo.** The history takes the new size and hash, so `check` accepts the file and a
+        sync never downloads it again. The command, as written, is saved as a transform: a
+        file already holding a result of the same command is skipped, so a run cut short is
+        simply run again.
+
+        The run yields `Saved` for a file replaced, `Skipped` for one already done, `Failed`
+        for one left as it was and, with `dry`, `Planned`.
+
+        Args:
+            command: for example `"ffmpeg -y -i {in} -crf 28 {out}"`.
+            targets: only these targets' files; none takes every target's.
+            on: the kinds of file to run it on: `"image"`, `"video"`, `"audio"`.
+            dry: plan only; nothing is run, replaced or written to the history.
+            jobs: files at once; None takes half the cores.
+
+        Returns:
+            The `Run`, not started yet: iterate it, or call `wait()`.
+
+        Raises:
+            UsageError: the command lacks `{in}` or `{out}` or names no program, `on` is empty
+                or has an unknown kind, `jobs` is under 1, or a target is wrong.
+
+        Example:
+            >>> import flnd
+            >>> with flnd.open("example-home") as fl:
+            ...     fl.transform("tool {in}", on=["video"])
+            Traceback (most recent call last):
+            ...
+            flnkit.errors.UsageError: transform: the command has no {out}: 'tool {in}'
+        """
+        from flnd.engine import transform
+
+        transform.split(command)
+        kinds = [on] if isinstance(on, str) else list(on)
+        if not kinds or any(kind not in KINDS for kind in kinds):
+            raise UsageError(f"on is some of {', '.join(KINDS)}, not {kinds!r}")
+        if jobs is not None and jobs < 1:
+            raise UsageError("jobs must be at least 1")
+        named = self._resolve(targets) if targets else []
+        return self._run("transform", lambda engine: engine.run_transform(
+            command, on=kinds, targets=named, dry=dry, parallel=jobs))
+
+    def transforms(self) -> list[Transform]:
+        """The saved transforms: each command with when it ran and its files done, skipped
+        and failed (`flnd transform list`).
+
+        Example:
+            >>> import flnd
+            >>> with flnd.open("example-home") as fl:
+            ...     fl.transforms()
+            []
+        """
+        return self._engine().transforms()
 
     def add(self, plugin: type[Plugin]) -> None:
         """Add a plugin for this `Flnd` alone: its targets resolve and get like a built-in's.

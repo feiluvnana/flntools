@@ -22,7 +22,7 @@ from typing import Any, Protocol
 
 import msgspec
 
-from flnd.engine.events import Checked, Record
+from flnd.engine.events import Checked, Record, Transform
 from flnd.errors import Changed, DiskError, NotFound, UsageError
 from flnd.ui.log import LOGS, ui
 from flnkit import clock, db, files, text
@@ -98,6 +98,16 @@ CREATE TABLE accounts (
     status TEXT NOT NULL DEFAULT 'ok',              -- ok | held | expired
     held_until TEXT, expires TEXT, UNIQUE (plugin, name)
 );
+CREATE TABLE transforms (
+    id INTEGER PRIMARY KEY, command TEXT NOT NULL UNIQUE, first TEXT NOT NULL,
+    last TEXT NOT NULL, skipped INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE transform_files (
+    transform INTEGER NOT NULL, path TEXT NOT NULL, key TEXT NOT NULL, before BLOB NOT NULL,
+    after BLOB, at TEXT NOT NULL, state TEXT NOT NULL,   -- pending | done | failed
+    PRIMARY KEY (transform, path)
+) WITHOUT ROWID;
+CREATE INDEX transform_after ON transform_files (transform, after);
 """
 # Executed one by one: `executescript` would commit the migration's transaction halfway.
 STATEMENTS = tuple(part for part in SCHEMA.split(";") if "CREATE" in part)
@@ -370,6 +380,11 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
                 if "target_seen" in statement:
                     sql.execute(statement)
             _backfill_seen(sql)
+        if version and "transforms" not in _tables(sql):
+            # A home from before `flnd transform` gets its two tables once.
+            for statement in STATEMENTS:
+                if "transform" in statement:
+                    sql.execute(statement)
         sql.execute("COMMIT")
     except BaseException:
         if sql.in_transaction:
@@ -835,6 +850,67 @@ class Store:
     def update(self, item: str, **fields: Any) -> None:
         """Set columns of one file's row (`STEP_COLUMNS`): unpack, sidecar, a hash."""
         self.change([(item, fields)])
+
+    # -- transforms (`flnd transform`) -------------------------------------------------------
+
+    def transform(self, command: str) -> int:
+        """The id of the transform saved as `command`, made now when it is new."""
+        with self._db.transaction() as sql:
+            sql.execute("INSERT INTO transforms (command, first, last) VALUES (?, ?, ?)"
+                        " ON CONFLICT (command) DO UPDATE SET last = excluded.last",
+                        (command, now(), now()))
+            found = sql.execute("SELECT id FROM transforms WHERE command = ?",
+                                (command,)).fetchone()
+        return int(found[0])
+
+    def transform_id(self, command: str) -> int | None:
+        """The id of the transform saved as `command`; None when there is none."""
+        found = self._db.one("SELECT id FROM transforms WHERE command = ?", (command,))
+        return int(found[0]) if found else None
+
+    def transform_seen(self, transform: int, digest: bytes, path: str) -> str | None:
+        """What this transform recorded for bytes of `digest`: None when it made none of them,
+        else the state ("pending" or "done") of its record, the one for `path` first."""
+        found = self._db.one("SELECT state FROM transform_files WHERE transform = ? AND after = ?"
+                             " ORDER BY path = ? DESC, state = 'done' DESC LIMIT 1",
+                             (transform, digest, path))
+        return found[0] if found else None
+
+    def transform_before(self, transform: int, path: str, before: bytes, after: bytes,
+                         item: str) -> None:
+        """Record, before the replace, what the file was and what it will be."""
+        self._db.write("INSERT OR REPLACE INTO transform_files VALUES (?, ?, ?, ?, ?, ?,"
+                       " 'pending')", (transform, path, item, before, after, now()))
+
+    def transform_done(self, transform: int, path: str, item: str, *, size: int, mtime: int,
+                       digest: bytes) -> None:
+        """The replace happened: the transform's row is done, and the file's own row (the one
+        whose path it is) takes the new size, modified time and hash, so `check` accepts it."""
+        with self._db.transaction() as sql:
+            sql.execute("UPDATE transform_files SET state = 'done', at = ? WHERE transform = ?"
+                        " AND path = ?", (now(), transform, path))
+            sql.execute("UPDATE files SET size = ?, mtime = ?, hash = ? WHERE key = ?"
+                        " AND path = ?", (size, mtime, digest, item, path))
+
+    def transform_failed(self, transform: int, path: str, item: str, before: bytes) -> None:
+        """The transform failed on a file, which stays as it was."""
+        self._db.write("INSERT OR REPLACE INTO transform_files VALUES (?, ?, ?, ?, NULL, ?,"
+                       " 'failed')", (transform, path, item, before, now()))
+
+    def transform_end(self, transform: int, *, skipped: int) -> None:
+        """A run of the transform ended, having skipped `skipped` files."""
+        self._db.write("UPDATE transforms SET last = ?, skipped = ? WHERE id = ?",
+                       (now(), skipped, transform))
+
+    def transforms(self) -> list[Transform]:
+        """Every saved transform, the oldest first, with its files done and failed."""
+        found = self._db.all(
+            "SELECT t.id, t.command, t.first, t.last, t.skipped,"
+            " (SELECT count(*) FROM transform_files f WHERE f.transform = t.id"
+            "  AND f.state = 'done'),"
+            " (SELECT count(*) FROM transform_files f WHERE f.transform = t.id"
+            "  AND f.state = 'failed') FROM transforms t ORDER BY t.id")
+        return [Transform(*row[1:]) for row in found]
 
     # -- failures and runs ------------------------------------------------------------------
 

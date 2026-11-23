@@ -217,6 +217,57 @@ def get(args: argparse.Namespace) -> int:
         return _watch(fl, run, args)
 
 
+def transform(args: argparse.Namespace) -> int:
+    """Run a command over the files flnd saved, and replace each one with its result.
+
+    flnd transform "<command>" --on=image,video [target ...] runs the command on every saved
+    file of those kinds (of the targets, when some are given). The command has {in}, a saved
+    file, and {out}, a temporary file beside it with the same extension; it is split like a
+    shell would and run with no shell. When it exits 0 and leaves {out} non-empty, {out}
+    replaces the file at once; else the file stays as it was. THERE IS NO UNDO: the original
+    is gone. The command is saved, and a file that already holds its result is skipped, so a
+    run that was cut short is run again with the same command. A different command is a new
+    transform. --dry lists the files and changes nothing; --jobs sets how many run at once.
+    flnd transform list shows the saved transforms.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0, or 1 when a file failed.
+    """
+    import flnd
+
+    words = args.words
+    if words == ["list"]:
+        return _transform_list(args)
+    if not args.on:
+        raise flnd.UsageError("transform needs --on", hint="--on=image,video,audio")
+    kinds = [kind for kind in args.on.split(",") if kind]
+    with _open(args) as fl:
+        run = fl.transform(words[0], *words[1:], on=kinds, dry=args.dry, jobs=args.jobs)
+        return _watch(fl, run, args, "transform")
+
+
+def _transform_list(args: argparse.Namespace) -> int:
+    """`flnd transform list`: each saved transform, one JSON object per line with --json."""
+    with _open(args) as fl:
+        rows = fl.transforms()
+    if args.json:
+        for row in rows:
+            _json(row)
+        return OK
+    if not rows:
+        from flnd.ui import out
+
+        out.line(("no transforms yet", "dim"))
+        return OK
+    _table(["command", "first run", "last run", "done", "skipped", "failed"],
+           [[row.command, row.first, row.last, f"{row.done:,}", f"{row.skipped:,}",
+             f"{row.failed:,}"] for row in rows])
+    return OK
+
+
 def target_list(args: argparse.Namespace) -> int:
     """Work in the targets this home knows: followed or not, files, size, last run.
 
@@ -676,6 +727,19 @@ class _Parser(argparse.ArgumentParser):
     """argparse, with its help and its errors printed by `flnd.ui.out`."""
 
     tail: Sequence[tuple[str, Sequence[Any]]] = ()
+    # Whether flags and positionals may mix (`transform CMD --on=video target`).
+    intermixed = False
+    _inside = False
+
+    def parse_known_args(self, args: Any = None, namespace: Any = None) -> Any:
+        """argparse's, reading flags between positionals too when `intermixed` is set."""
+        if not self.intermixed or self._inside:
+            return super().parse_known_args(args, namespace)
+        self._inside = True
+        try:
+            return self.parse_known_intermixed_args(args, namespace)
+        finally:
+            self._inside = False
 
     def print_help(self, file: Any = None) -> None:
         """Print the help in the theme; `file` is ignored, as the help goes to standard output."""
@@ -783,6 +847,18 @@ def parser() -> argparse.ArgumentParser:
     chrome = group("extension", "Connect Chrome to flnd, or remove it")
     command(chrome, "install", extension_install)
     command(chrome, "uninstall", extension_uninstall)
+
+    sub = command(verbs, "transform", transform)
+    sub.intermixed = True
+    sub.add_argument("words", nargs="+", metavar="command|list",
+                     help='the command, "ffmpeg -y -i {in} -crf 28 {out}", then the targets '
+                          "whose files it takes (none: every target); or the word list")
+    sub.add_argument("--on", metavar="KINDS",
+                     help="the kinds of file to run it on: image, video, audio, comma between")
+    sub.add_argument("--dry", action="store_true",
+                     help="list the files it would run on, and change nothing")
+    sub.add_argument("--jobs", type=int, metavar="N",
+                     help="files at once (default: half the cores)")
 
     command(verbs, "status", status)
     command(verbs, "config", config)
@@ -1022,7 +1098,7 @@ def _cell(index: int, text: str) -> tuple[str, str]:
 # Watching a run
 # ---------------------------------------------------------------------------------------------
 
-def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace) -> int:
+def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, name: str = "get") -> int:
     """Read a run's events into the chosen view, print its end, and return its exit code."""
     from contextlib import ExitStack, nullcontext
 
@@ -1030,9 +1106,9 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace) -> int:
     from flnd.ui.log import stamped, ui
     from flnd.ui.screen import Screen
 
-    name = "get"
     journal_path = stamped(fl.home, name, ".jsonl")
     view: _View = _Json() if args.json else _JournalView()
+    view.transforming = name == "transform"
     with ExitStack() as stack:
         try:
             journal = stack.enter_context(ui.file(journal_path))
@@ -1069,6 +1145,8 @@ class _View:
     """How a run shows: `show` each event as it comes, then `end` with the report."""
 
     journal: Any = None
+    # Whether the run is a `flnd transform`, whose summary says replaced and already done.
+    transforming = False
 
     def __enter__(self) -> _View:
         return self
@@ -1091,6 +1169,9 @@ class _View:
         if report.planned:
             out.line(("planned ", "bold focus"), (out.count(report.planned, "file"),
                                                  "bold focus"), ("; nothing was saved", "dim"))
+            return
+        if self.transforming:
+            screen.summary(report, state, words=("replaced", "already done"))
             return
         screen.summary(report, state)
 

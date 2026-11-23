@@ -671,6 +671,10 @@ class Scheduler:
         for pool in self._pools():
             pool.shutdown(wait=False)
 
+    def lane(self, kind: Kind, size: int) -> None:
+        """Set how many jobs of `kind` run at once; call it before any of them starts."""
+        self.pools[kind] = Pool(size)
+
     async def close(self) -> None:
         """End the threads, once the work on them is done, without blocking the loop."""
         loop = asyncio.get_running_loop()
