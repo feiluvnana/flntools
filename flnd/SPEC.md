@@ -84,7 +84,7 @@ text       = <code>:<value>[|<categories>]      a user, a post, a chat ...
            | <code>?<query>[|<categories>]      a search
 link       = http(s)://<host>/<path>[?<query>][|<categories>]   a page on a site
            | <host>/<path>[|<categories>]       when some plugin owns <host>
-value      = <name> | me | <kind>/<id>          a user, the accounts you follow, one post
+value      = <name> | <kind>/<id>               a user, one post
 categories = all | <name>[,<name>...]
 ```
 
@@ -270,7 +270,8 @@ characters), `t.me/` alone, `web.telegram.org` links: `tlg: can't read <text>`.
 | Form | Route | Reads |
 | --- | --- | --- |
 | `loi:post/<id>`, `loix.cc/lois/<id>`, `moegoat.com/lois/<id>` (digits) | `post` | one post |
-| `loi:author/<id>`, `loix.cc/library/loier/<id>`, `moegoat.com/library/loier/<id>` (digits) | `author` | an author's posts |
+| `loi:author/<id>` | `author` | an author's posts |
+| `loix.cc/library/loier/<id>`, `moegoat.com/library/loier/<id>` | `author` | the same |
 | `loi?<words>`, `loix.cc/search?q=<words>`, `moegoat.com/search?q=<words>` | `search` | a search |
 
 The old `loi:<id>` still reads as a post. Both `author` and `search` find `loi:post/<id>`
@@ -848,9 +849,10 @@ standard input, else gets every followed target, or prints `nothing to sync` and
 | `--again` | off | list every post again; ask again for gone files |
 | `--exec CMD` | none | run CMD for each saved file, without a shell |
 
-**`flnd target list`** the targets the home knows: status, files, size, last run, categories. On a terminal:
-arrows move, `/` filters, `enter` opens details, `f` follows or unfollows, `r` makes failed files
-retryable, `a` asks for a target and gets it, `d` forgets one after a confirmation, `esc` quits.
+**`flnd target list`** the targets the home knows: status, files, size, last run, categories.
+On a terminal: arrows move, `/` filters, `enter` opens details, `f` follows or unfollows,
+`r` makes failed files retryable, `a` asks for a target and gets it, `d` forgets one after a
+confirmation, `esc` quits.
 On a pipe a plain table; `--json` one `Tracked` object each.
 
 **`flnd target clean <target...> [--media]`** forgets the targets (rows, files rows, failures,
@@ -913,8 +915,8 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
 | `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
 | `switch` | bool | `false` | move a refused request to the plugin's next account |
-| `fresh` | text | `"1d"` | ignore categories marked complete within this duration (`"1d"`, `"12h"`, `"0"` off) |
-| `timeout` | text | `"10m"` | abort a stalled file download after this duration (`"10m"`, `"600s"`, `"0"` off) |
+| `fresh` | text | `"1d"` | skip categories complete within this long (`"1d"`, `"12h"`, `"0"` off) |
+| `timeout` | text | `"10m"` | abort a stalled download after this (`"10m"`, `"600s"`, `"0"` off) |
 
 `[plugins.<code>]` (one table per plugin):
 

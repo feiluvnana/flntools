@@ -54,7 +54,7 @@ flnd get "twt?example words" --folder="{query}"
 ```
 
 More: [A search needs a folder](SPEC.md#a-search-needs-a-folder),
-[`me`, searches and `--limit`](SPEC.md#me-searches-and---limit).
+[Searches and `--limit`](SPEC.md#searches-and---limit).
 
 ## Choose the folder
 
@@ -81,20 +81,6 @@ flnd get
 A profile you get is followed. `flnd get` alone then gets what is new for every followed target,
 and stops at the posts it already has. `flnd target list` shows them, and `f` there unfollows.
 More: [Sync](SPEC.md#sync).
-
-## The accounts you follow
-
-Goal: get everyone your own login follows.
-
-```sh
-flnd get ins:me
-flnd get "ins:me|posts,stories"
-flnd get tik:me fbk:me twt:me
-```
-
-`ins:me`, `tik:me`, `fbk:me` and `twt:me` list every account the login follows, each as its own
-target. They need a login. Add `--limit 20` to take only the first 20 accounts.
-More: [`me`, searches and `--limit`](SPEC.md#me-searches-and---limit).
 
 ## A date window
 
