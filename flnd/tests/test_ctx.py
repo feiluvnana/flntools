@@ -87,7 +87,8 @@ class FakeRaw:
             return body
 
         self.answer(SimpleNamespace(url=url, status=status, headers=headers or {},
-                                    request=SimpleNamespace(resource_type="xhr"), text=text))
+                                    request=SimpleNamespace(resource_type="xhr", method="GET", headers={},
+                                                                post_data=None), text=text))
         await asyncio.sleep(0)
 
     def answer(self, response):
@@ -365,6 +366,11 @@ class StubScroller:
         more = bool(self.raw.batches)
         await self.raw.deliver()
         return more
+
+    async def nudge(self):
+        """The scroll up a bottom-pinned feed gets to load again; nothing more arrives, so the
+        wait for it runs out."""
+        raise _browser.WaitError("nothing arrived")
 
 
 class FeedTest(CtxCase):
