@@ -465,8 +465,9 @@ class SearchSkipTest(LibraryCase):
         engine = Engine(home=self.home, sources={"exq": source})
         engine.download(["exq:example_handle|all"])
         engine.download(["exq?words|all"], sync=True, folder="{target}/{category}")
-        # Two targets seen before, and a new one whose 3 files are saved already.
-        found.append("exq:example_handle2")
+        # Two targets seen before, and a new one on top (a search lists newest first) whose
+        # 3 files are saved already.
+        found.insert(0, "exq:example_handle2")
         listing["example_handle2", "posts"] = ["p1", "p2", "p3"]
         [report] = engine.sync(["exq?words"]).targets
         self.assertEqual(report.skipped, 3)
