@@ -335,7 +335,7 @@ flnd.plugin.Error.hint: attribute
 flnd.plugin.Error.retryable: attribute
 flnd.plugin.Error.target: attribute
 flnd.plugin.Fetch: _CallableGenericAlias
-flnd.plugin.File(url: str | None = None, *, mirrors: Sequence[str] = (), fetch: Fetch | None = None, audio: str | None = None, name: str | None = None, size: int | None = None, password: str | None = None, ranged: bool = False)
+flnd.plugin.File(url: str | None = None, *, mirrors: Sequence[str] = (), fetch: Fetch | None = None, audio: str | None = None, name: str | None = None, size: int | None = None, password: str | None = None, unpack: str | None = None, ranged: bool = False)
 flnd.plugin.File.audio: field -> str | None
 flnd.plugin.File.content: field -> str | None
 flnd.plugin.File.dash(manifest: str | None, *, height: int | None = None) -> File | None
@@ -349,6 +349,7 @@ flnd.plugin.File.ranged: field -> bool
 flnd.plugin.File.size: field -> int | None
 flnd.plugin.File.stream(playlist: str, *, headers: Mapping[str, str] | None = None) -> File
 flnd.plugin.File.text(name: str, text: str) -> File
+flnd.plugin.File.unpack: field -> str | None
 flnd.plugin.File.url: field -> str | None
 flnd.plugin.Hidden(flnd.SiteError)
 flnd.plugin.Hidden.hint: attribute

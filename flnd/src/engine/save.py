@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import email.utils
+import json
 import mimetypes
 import os
 import re
@@ -20,7 +21,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
@@ -1112,9 +1113,10 @@ class Saver:
 
     async def _finish(self, landed: _Landed, plugin: str) -> None:
         item, path = landed.item, landed.path
+        step: dict[str, Any] = {}
         if item.file.password is not None or files.is_archive(path):
-            await self._write(self.store.update, item.key,
-                              **await self._unpack(item, path, plugin))
+            step = await self._unpack(item, path, plugin)
+            await self._write(self.store.update, item.key, **step)
         self._count(item, downloading=-1, saved=1, bytes=landed.row.size)
         await self.emit(Saved(item.target, item.category, item.post, path, landed.day,
                               landed.row.size, retried=item.retried))
@@ -1126,11 +1128,17 @@ class Saver:
                                         self.exec_timeout, self.stop)
             await self.scheduler.run(Job(kind=Kind.EXEC, work=work, plugin=plugin,
                                          target=str(item.target)))
+        if "extracted" in step:
+            # Deleted once the row holds what it made, and `exec` has had it.
+            with suppress(OSError):
+                path.unlink()
 
     async def _unpack(self, item: Item, path: Path, plugin: str) -> dict[str, Any]:
         """Extract an archive beside itself on the unpack lane; a failure keeps it, and warns."""
-        async def work() -> Path:
-            return await self.scheduler.on(Kind.UNPACK, _extract, path, item.file.password)
+        here = item.file.unpack == "here"
+
+        async def work() -> Path | list[Path]:
+            return await self.scheduler.on(Kind.UNPACK, _extract, path, item.file.password, here)
         try:
             folder = await self.scheduler.run(Job(kind=Kind.UNPACK, work=work, plugin=plugin,
                                                   target=str(item.target)))
@@ -1141,7 +1149,9 @@ class Saver:
             ui.warn("{name}: not extracted: {error}", name=path.name, error=error)
             return {"unpacked": "failed"}
         self.done.unpacked += 1
-        return {"unpacked": "extracted", "folder": str(folder)}
+        if not here:
+            return {"unpacked": "extracted", "folder": str(folder)}
+        return {"unpacked": "extracted", "extracted": json.dumps([str(one) for one in folder])}
 
     async def _call(self, call: Callable[..., T], *args: Any, **options: Any) -> T:
         """`call(*args)` on the scheduler's `CALL` threads, waited for to its end."""
@@ -1275,7 +1285,9 @@ def _digest(path: Path, size: int) -> bytes | None:
         return None
 
 
-def _extract(path: Path, password: str | None) -> Path:
+def _extract(path: Path, password: str | None, here: bool) -> Path | list[Path]:
+    if here:
+        return files.extract_into(path, path.parent, password=password)
     return files.extract(path, password=password)
 
 

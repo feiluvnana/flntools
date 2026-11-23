@@ -93,13 +93,14 @@ class Loibus(Plugin):
     }
     # Without it: the info and images only, no archives.
     login = cookies("access-token", url=SITE)
-    # `part` is "images" for the previews and empty otherwise.
-    folder = "{author}/{post} {title}/{part}"
+    # Everything sits in the post's folder: previews, info.md, the archives' files.
+    folder = "{author}/{post} {title}"
     fields = ("author", "title", "part")
     # Every file is named by its post (`File.name`), so this template is never used.
     filename = "{post}"
-    # The history key is the file's path, as it always was: a change downloads everything again.
-    key = "{path}"
+    # The history key is the file's old path, from when previews sat in an `images` folder
+    # (`part` is "images" for them, empty otherwise): a saved post never downloads again.
+    key = "{dir}/{part}/{file}"
 
     def __init__(self) -> None:
         # One instance per account per run (the crawl's rule), so these last the run.
@@ -237,7 +238,8 @@ class Loibus(Plugin):
         password = str(post["open_key"]) if post.get("open_key") else None
         return [
             File.text("info.md", info_md(post, links)),
-            *(File(mirrors=mirrors, name=name, password=password) for name, mirrors in archives),
+            *(File(mirrors=mirrors, name=name, password=password, unpack="here")
+              for name, mirrors in archives),
         ]
 
     async def _links(self, ctx: Ctx, post: dict[str, Any]) -> dict[str, Any] | None:
@@ -364,7 +366,7 @@ def _hits(response: Response) -> list[dict[str, Any]]:
 
 
 def fields_of(post: dict[str, Any], *, part: str = "") -> dict[str, Any]:
-    """Folder fields: `author` (`misc` when absent), `title` and `part`, raw."""
+    """Fields: `author` (`misc` when absent), `title` and `part` (only in the key), raw."""
     category = post.get("category") or {}
     return {"author": category.get("name") or "misc", "title": post["loi_title"], "part": part}
 

@@ -70,7 +70,7 @@ NASTY_LINKS = {"status": "success", "data": {"sv_list": [
     {"sv_name": "A", "sv_url": encrypt("https://one.example/extra.zip")},
     {"sv_name": "A", "sv_url": encrypt("https://one.example/")}], "bdp": "", "bdp_key": ""}}
 NASTY_FOLDER = "ex_ample/5930_Night_city_set"
-NASTY_IMAGES = [f"{NASTY_FOLDER}/images/{name}" for name in ("01.jpg", "02.png", "03.webp")]
+NASTY_IMAGES = [f"{NASTY_FOLDER}/{name}" for name in ("01.jpg", "02.png", "03.webp")]
 NASTY_ARCHIVES = [f"{NASTY_FOLDER}/{name}" for name in ("loi_abc.7z", "extra.zip", "archive.zip")]
 # More preview URLs and API 1's names for them: the extension as written, whatever its kind.
 PREVIEWS = [(f"https://images.example/{path}", name) for path, name in (
@@ -277,17 +277,19 @@ class RoutesTest(unittest.TestCase):
 
 class NamesTest(unittest.TestCase):
     def test_names_and_keys_are_those_of_api_1(self):
-        """The key is the path, and both are API 1's, so no saved file downloads again."""
+        """The key is the path API 1 gave (previews under `images/`), so nothing downloads again."""
         cases = {("all",): NASTY_ARCHIVES + NASTY_IMAGES, ("photo",): NASTY_IMAGES,
                  ("archive",): NASTY_ARCHIVES}
         for categories, expected in cases.items():
             with self.subTest(categories=categories):
                 files = saved(categories, post=NASTY, **{LINKS_PATH: NASTY_LINKS})
                 self.assertEqual(paths(files), expected)
-                self.assertEqual([item.key for item in files], [item.path for item in files])
+                self.assertEqual([item.key for item in files], [
+                    item.path.replace("/0", "/images/0") if item.path.endswith(
+                        (".jpg", ".png", ".webp")) else item.path for item in files])
                 self.assertEqual(list(texts(files)), [f"{NASTY_FOLDER}/info.md"])
         files = saved(("photo",), post={**POST, "images": [url for url, _ in PREVIEWS]})
-        self.assertEqual(paths(files), [f"{FOLDER}/images/{name}" for _, name in PREVIEWS])
+        self.assertEqual(paths(files), [f"{FOLDER}/{name}" for _, name in PREVIEWS])
 
     def test_a_post_without_an_author_is_misc(self):
         files = saved(("photo",), post={**POST, "category": None})
@@ -299,8 +301,8 @@ class RunTest(unittest.TestCase):
         ctx = fake(cookies={})
         files = saved(ctx=ctx)
         self.assertEqual([item.path for item in files], [f"{FOLDER}/info.md",
-                                                         f"{FOLDER}/images/01.jpg",
-                                                         f"{FOLDER}/images/02.png"])
+                                                         f"{FOLDER}/01.jpg",
+                                                         f"{FOLDER}/02.png"])
         self.assertEqual([item.url for item in files[1:]], POST["images"])
         self.assertEqual(asked(ctx), ["lois/5930"])
         self.assertEqual(warned(ctx), ["archives need a login; run flnd auth login loi"])
@@ -613,6 +615,39 @@ class EngineTest(EngineCase):
         [archive] = [request for request in self.requests if request.url.host == "one.example"]
         self.assertNotIn("authorization", archive.headers)
         self.assertNotIn("x-request-id", archive.headers)
+
+    def test_a_post_unpacks_into_its_folder_and_a_second_run_fetches_nothing(self):
+        import io
+        import zipfile
+
+        import flnd
+        from flnd.engine import store as _store
+
+        body = io.BytesIO()
+        with zipfile.ZipFile(body, "w") as archive:
+            archive.writestr("Set/data.bin", b"data")
+            archive.writestr("Set/info.md", b"theirs")
+        self.routes[f"{API}lois/5930"] = _net.reply(200, json={"data": {
+            **POST, "images": ["https://images.example/p.jpg"]}})
+        self.routes[f"{API}{LINKS_PATH}"] = _net.reply(200, json={"data": {"sv_list": [
+            {"sv_name": "A", "sv_url": encrypt("https://one.example/set.zip")}]}})
+        self.routes["https://one.example/set.zip"] = _net.reply(200, content=body.getvalue())
+        self.routes["https://images.example/p.jpg"] = _net.reply(
+            200, content=b"\xff\xd8\xff\xe0jpg")
+        with flnd.open(self.home) as fl:
+            fl.get("loi:5930").wait()
+            self.assertEqual(sorted(p.name for p in self.folder.iterdir()),
+                             ["01.jpg", "data.bin", "info (2).md", "info.md"])
+            self.assertFalse((self.folder / "images").exists())
+            self.requests.clear()
+            fl.get("loi:5930").wait()
+            self.assertEqual([r.url.host for r in self.requests
+                              if r.url.host != "api.moegoat.com"], [])
+        with _store.open(self.home) as db:
+            keys = {row.key for row in db.on_disk()}
+            self.assertIn(f"loi:{FOLDER}/images/01.jpg", keys)
+            self.assertIn(f"loi:{FOLDER}/set.zip", keys)
+            self.assertTrue(_store.check(self.home, db).ok)
 
     def test_a_403_on_links_is_soft(self):
         self.routes[f"{API}{LINKS_PATH}"] = _net.reply(403, json={"message": "VIP only"})

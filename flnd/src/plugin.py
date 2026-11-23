@@ -68,7 +68,7 @@ HOST = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])
 # The fields the engine fills for every file, which a template may use beside `fields`.
 TEMPLATE_FIELDS = (
     "plugin", "target", "category", "post", "num", "count", "index", "extension", "path",
-    "date", "query",
+    "date", "query", "dir", "file",
 )
 # The fields a `Post` may not set: the engine's own, so a plugin never overwrites one.
 RESERVED = frozenset(TEMPLATE_FIELDS) | {"id", "files", "headers", "listed", "pinned"}
@@ -397,6 +397,11 @@ class File:
             from the content type, else from the URL.
         size: its size in bytes, when the site says it.
         password: an archive's password: it is unpacked with it once saved.
+        unpack: where an archive goes once saved. None (the default) extracts it beside itself,
+            into a folder of its name, and keeps it. `"here"` extracts it into the post's
+            folder, lifts a lone top folder's contents up one level, never replaces a file
+            already there (a clash is saved as `name (2).ext`), and deletes the archive after a
+            successful extract; a failed extract keeps it.
         ranged: `fetch` can start and stop anywhere, so the engine may split it into parts.
 
     Raises:
@@ -411,6 +416,7 @@ class File:
     name: str | None
     size: int | None
     password: str | None
+    unpack: str | None
     ranged: bool
     # A text file's text, written as UTF-8.
     content: str | None
@@ -420,7 +426,8 @@ class File:
 
     def __init__(self, url: str | None = None, *, mirrors: Sequence[str] = (),
                  fetch: Fetch | None = None, audio: str | None = None, name: str | None = None,
-                 size: int | None = None, password: str | None = None, ranged: bool = False):
+                 size: int | None = None, password: str | None = None,
+                 unpack: str | None = None, ranged: bool = False):
         if isinstance(mirrors, str):
             raise PluginError("File(mirrors=...) takes a list of URLs, not one; "
                               "give one URL as File(url)")
@@ -441,10 +448,12 @@ class File:
         if ranged and fetch is None:
             raise PluginError("File(ranged=True) is for a fetch file; the engine splits a URL's "
                               "file itself")
+        if unpack not in (None, "here"):
+            raise PluginError(f"File(unpack=...) is \"here\" or None, not {unpack!r}")
         if size is not None and (not isinstance(size, int) or isinstance(size, bool) or size < 0):
             raise PluginError(f"File(size=...) is a whole number of bytes, not {size!r}")
         self._fill(url=url, mirrors=tuple(mirrors), fetch=fetch, audio=audio, name=name,
-                   size=size, password=password, ranged=ranged)
+                   size=size, password=password, unpack=unpack, ranged=ranged)
 
     def _fill(self, **values: Any) -> None:
         """Set every field, from its own constructors only: `values`, and the defaults."""

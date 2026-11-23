@@ -171,7 +171,7 @@ OLDER_IN_A_ROW = 5
 HEAD_IN_A_ROW = 2
 # Template fields known only once a post's files are listed: a key that names one can't be
 # built from the post alone, so a lazy post's files must be listed to tell if it is saved.
-LISTED_FIELDS = frozenset({"count", "index", "extension", "path"})
+LISTED_FIELDS = frozenset({"count", "index", "extension", "path", "dir", "file"})
 # The extension a video joined with its audio track gets, unless both are WebM.
 DASH_EXTENSION = ".mp4"
 # An API 2 `File.name`'s own extension, which it keeps, of up to 7 characters: `.png` in
@@ -494,7 +494,9 @@ def place(
             path = "/".join(part for part in (where, name) if part)
         used.add(path)
         kept = path.partition("/")[2] if fallback and values["target"] and "/" in path else path
-        resolved_key = fill(key, {**values, "path": kept}, safe=False) or kept
+        where_kept, _, file_kept = kept.rpartition("/")
+        resolved_key = fill(key, {**values, "path": kept, "dir": where_kept, "file": file_kept},
+                            safe=False) or kept
         placed.append(Placed(post, file, num, path, resolved_key, kind, values))
     return placed
 

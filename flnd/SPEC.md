@@ -453,6 +453,7 @@ segment  = text and {field} / {field:format} / {field.attr} / {field[0]}; {{ and
 | `date` | the post's day, `2026-01-02`; empty with none; takes a format, `{date:%Y-%m}` |
 | `num`, `count`, `index` | file number from 0, the post's file count, `_<num>` or empty |
 | `extension` | the file's extension, with its dot |
+| `dir`, `file` | `path`'s folder and its name |
 | `query` | a search's words; empty for any other target |
 | `path` | accepted, but only filled in `key` templates; empty in a folder |
 | plugin fields | each plugin's `fields`, listed below the table |
@@ -479,7 +480,8 @@ for `--folder`; the hint is `fix folder in the call, or remove it for the defaul
 - `a/{x`, `a/{}` (bad braces): `the call: folder is a template whose braces each hold one field
   name, not this text`
 - `{part}` on `ins` (a field its plugin lacks): `the call: folder is a template of the fields album,
-  category, count, date, extension, index, num, path, plugin, post, query, target, not this text`
+  category, count, date, dir, extension, file, index, num, path, plugin, post, query, target,
+  not this text`
 
 The field check runs once the targets are known, for each target's plugin. A template that passes
 the checks but would leave `media/<code>/` stops the run with `folder template escapes the plugin
@@ -589,7 +591,9 @@ the same fields and checks. A category's own `folder` still wins over the plugin
 - `[defaults] sidecars = true` writes `<file>.json` beside each file, with its post's source,
   target, post, category, date, url, caption, author, tags and the file's URL without its query.
 - Archives (`.zip .7z .rar .tar*`) are extracted beside themselves into a folder of their name, and
-  the archive stays.
+  the archive stays. `File(unpack="here")` instead extracts into the post's folder, lifts a lone top
+  folder's contents up one level, saves a clash with a file there as `name (2).ext` (nothing is
+  replaced), and deletes the archive once extracted (kept on failure); the row keeps the file list.
 
 ## Sync
 
@@ -1122,9 +1126,10 @@ up to 32.
   account, archives. HTTP to `api.moegoat.com`, signed as the site's script signs; links are AES.
 - **Categories:** `archive` NF (info.md with links, the archives) then `photo` NF (previews; info.md
   without links only when `archive` is not wanted), both own.
-- **Folder:** `{author}/{post} {title}/{part}`, from `media/loi/` (`author` is the post's category,
-  `misc` when none; `part` is `images` for previews). **Filename:** `01.jpg`, `02.jpg`, archives
-  keep their URL's name. **Key:** `{path}` (`loi:<path>`).
+- **Folder:** `{author}/{post} {title}`, from `media/loi/` (`author` is the post's category, `misc`
+  when none); previews (`01.jpg`), info.md and an archive's files all sit in it, the archive is
+  unpacked there (`unpack="here"`) and deleted. **Key:** `{dir}/{part}/{file}` (`part` is `images`
+  for previews): the path from before previews left `images/`, so saved posts stay saved.
 - **Login:** cookie `access-token` (optional; a Bearer token). Archives need a VIP account; without
   one `archive` warns and writes info.md without links.
 - **Limits and walls:** pace 0.5. Daily archive quota by VIP level: 15, 25, 40, 60 (SVIP doubles),

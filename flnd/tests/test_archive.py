@@ -197,6 +197,54 @@ class ExtractTest(ArchiveCase):
                          b"alpha")
 
 
+class IntoTest(ArchiveCase):
+    def post(self) -> Path:
+        post = self.root / "post"
+        post.mkdir()
+        return post
+
+    def names(self, post: Path) -> list[str]:
+        return sorted(p.relative_to(post).as_posix() for p in post.rglob("*") if p.is_file())
+
+    def test_a_lone_top_folder_is_lifted_into_the_post_folder(self) -> None:
+        post = self.post()
+        archive = self.zip_with({"set/a.txt": b"a", "set/sub/b.txt": b"b"}, name="post/set.zip")
+        placed = _unpack.extract_into(archive, post)
+        self.assertEqual(self.names(post), ["a.txt", "set.zip", "sub/b.txt"])
+        self.assertEqual(sorted(p.name for p in placed), ["a.txt", "b.txt"])
+        self.assertEqual([p.name for p in self.root.iterdir()], ["post"])
+
+    def test_without_a_lone_root_the_files_land_as_they_are(self) -> None:
+        post = self.post()
+        archive = self.zip_with({"a.txt": b"a", "dir/b.txt": b"b"}, name="post/set.zip")
+        _unpack.extract_into(archive, post)
+        self.assertEqual(self.names(post), ["a.txt", "dir/b.txt", "set.zip"])
+        archive = self.zip_with({"one/a.txt": b"a", "two.txt": b"2"}, name="post/two.zip")
+        _unpack.extract_into(archive, post)
+        self.assertTrue((post / "one" / "a.txt").is_file())
+
+    def test_a_clash_never_replaces_a_file_and_takes_a_free_name(self) -> None:
+        post = self.post()
+        (post / "info.md").write_text("mine")
+        (post / "01.jpg").write_bytes(b"preview")
+        (post / "01 (2).jpg").write_bytes(b"other")
+        archive = self.zip_with({"top/info.md": b"theirs", "top/01.jpg": b"x"}, name="post/s.zip")
+        placed = _unpack.extract_into(archive, post)
+        self.assertEqual((post / "info.md").read_text(), "mine")
+        self.assertEqual((post / "01.jpg").read_bytes(), b"preview")
+        self.assertEqual((post / "info (2).md").read_text(), "theirs")
+        self.assertEqual((post / "01 (3).jpg").read_bytes(), b"x")
+        self.assertEqual(sorted(p.name for p in placed), ["01 (3).jpg", "info (2).md"])
+
+    def test_an_unsafe_archive_is_refused_and_leaves_the_folder_alone(self) -> None:
+        post = self.post()
+        archive = self.zip_with({"../evil.txt": b"x"}, name="post/s.zip")
+        with self.assertRaises(SiteError):
+            _unpack.extract_into(archive, post)
+        self.assertEqual(self.names(post), ["s.zip"])
+        self.assertFalse((self.root / "evil.txt").exists())
+
+
 class SafetyTest(ArchiveCase):
     def assert_refused(self, archive: Path, **options) -> None:
         with self.assertRaises(SiteError):

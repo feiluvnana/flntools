@@ -50,7 +50,7 @@ CREATE TABLE files (
     size INTEGER NOT NULL DEFAULT 0, mtime INTEGER, date TEXT,
     estimated INTEGER NOT NULL DEFAULT 0, kind TEXT, files INTEGER, hash BLOB,
     state TEXT NOT NULL DEFAULT 'saved',            -- saved | gone | link
-    unpacked TEXT NOT NULL DEFAULT '', folder TEXT, sidecar TEXT,
+    unpacked TEXT NOT NULL DEFAULT '', folder TEXT, sidecar TEXT, extracted TEXT,
     at TEXT NOT NULL DEFAULT ''
 ) WITHOUT ROWID;
 CREATE INDEX files_post ON files (target, post_id);
@@ -133,8 +133,9 @@ INSERT_FILE = (f"INSERT OR REPLACE INTO files ({', '.join(FILE_COLUMNS)}) "
                f"VALUES ({', '.join('?' * len(FILE_COLUMNS))})")
 # The columns `FileRow` reads, in its order.
 ROW_SELECT = ("key, target, path, size, mtime, post_id, category, date, estimated, kind, state,"
-              " at, files, unpacked, folder, hash, sidecar")
-STEP_COLUMNS = frozenset({"path", "size", "mtime", "unpacked", "folder", "hash", "sidecar"})
+              " at, files, unpacked, folder, hash, sidecar, extracted")
+STEP_COLUMNS = frozenset({"path", "size", "mtime", "unpacked", "folder", "hash", "sidecar",
+                          "extracted"})
 TARGET_COLUMNS = ("key", "plugin", "value", "kind", "follow", "categories", "query", "complete",
                   "cursors", "seen", "last_sync", "files", "bytes", "heads", "gaps", "account",
                   "folder")
@@ -180,6 +181,9 @@ class FileRow(msgspec.Struct):
     # The SHA-256 of its bytes; None until a file of the same size made it worth hashing.
     hash: bytes | None = None
     sidecar: str | None = None
+    # For an archive extracted into its post's folder and deleted: the files it made, as a
+    # JSON list of paths; None otherwise.
+    extracted: str | None = None
 
     @property
     def plugin(self) -> str:
@@ -358,6 +362,9 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
         if version and "folder" not in _columns(sql, "targets"):
             # A home from before a followed search kept its folder gets the column once.
             sql.execute("ALTER TABLE targets ADD COLUMN folder TEXT")
+        if version and "extracted" not in _columns(sql, "files"):
+            # A home from before an archive could be extracted into its post's folder.
+            sql.execute("ALTER TABLE files ADD COLUMN extracted TEXT")
         if version and "target_seen" not in _tables(sql):
             for statement in STATEMENTS:
                 if "target_seen" in statement:
@@ -1218,9 +1225,9 @@ def _file_values(row: FileRow) -> tuple[Any, ...]:
 
 def _file_row(found: tuple[Any, ...]) -> FileRow:
     (item, target, path, size, mtime, post, category, date, estimated, kind, state, at, count,
-     unpacked, folder, digest, sidecar) = found
+     unpacked, folder, digest, sidecar, extracted) = found
     return FileRow(item, target, path, size, mtime, post, category, date, bool(estimated), kind,
-                   state, at, count, unpacked, folder, digest, sidecar)
+                   state, at, count, unpacked, folder, digest, sidecar, extracted)
 
 
 def _target_row(found: tuple[Any, ...]) -> TargetRow:
@@ -1309,11 +1316,14 @@ def _look(row: FileRow, seen: _Seen, missing: list[FileRow],
         seen.folders.add(_norm(row.folder))
     if row.sidecar:
         seen.paths.add(_norm(row.sidecar))
+    made = _made(row)
+    seen.paths.update(_norm(name) for name in made)
     path = Path(row.path)
     try:
         found = path.stat()
     except FileNotFoundError:
-        extracted = row.unpacked == "extracted" and row.folder and Path(row.folder).is_dir()
+        extracted = row.unpacked == "extracted" and (
+            (row.folder and Path(row.folder).is_dir()) or any(map(os.path.lexists, made)))
         if not extracted:
             missing.append(row)
         return
@@ -1323,6 +1333,11 @@ def _look(row: FileRow, seen: _Seen, missing: list[FileRow],
     seen.inodes.add((found.st_dev, found.st_ino))
     if row.state == SAVED and found.st_size != row.size:
         resized.append((row, found))
+
+
+def _made(row: FileRow) -> list[str]:
+    """The files an archive made in its post's folder (`FileRow.extracted`)."""
+    return json.loads(row.extracted) if row.extracted else []
 
 
 def _unknown(media: Path, seen: _Seen) -> list[Path]:
@@ -1442,6 +1457,11 @@ def erase(home: Path, rows: Sequence[FileRow]) -> int:
             if path is not None and path.is_file() and path.resolve().is_relative_to(media):
                 if name == row.path and row.state == SAVED:
                     freed += path.stat().st_size
+                path.unlink()
+                parents.add(path.parent)
+        for name in _made(row):
+            path = Path(name)
+            if path.is_file() and path.resolve().is_relative_to(media):
                 path.unlink()
                 parents.add(path.parent)
         folder = Path(row.folder) if row.folder else None

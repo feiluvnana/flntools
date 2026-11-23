@@ -90,6 +90,29 @@ class FindTest(CheckCase):
             self.assertTrue(self.check().ok)
 
 
+    def test_a_deleted_archive_is_not_missing_and_the_files_it_made_are_not_unknown(self):
+        self.engine().download(["aaa:a|all"])
+        folder = self.target_dir("aaa", "a")
+        made = [folder / "one.txt", folder / "sub" / "two.txt"]
+        (folder / "sub").mkdir()
+        for path in made:
+            path.write_text("x")
+        with _store.open(self.home) as db:
+            db.update("aaa:a.jpg", unpacked="extracted",
+                      extracted=json.dumps([str(path) for path in made]))
+        with self.aged():
+            self.assertTrue(self.check().ok)
+        self.path("a").unlink()
+        with self.aged():
+            self.assertTrue(self.check().ok)
+        made[0].unlink()
+        with self.aged():
+            self.assertTrue(self.check().ok)
+        made[1].unlink()
+        with self.aged():
+            self.assertEqual([r.key for r in self.check().missing], ["aaa:a.jpg"])
+
+
 class FixTest(CheckCase):
     def test_fix_makes_the_history_match_the_disk_and_touches_no_file(self):
         self.saved_two()

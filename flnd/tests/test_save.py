@@ -482,6 +482,26 @@ class FinishTest(SaveCase):
         for folder, in self.rows("folder"):
             self.assertTrue((Path(folder) / "inside.txt").is_file())
 
+    def test_a_here_archive_is_unpacked_into_its_folder_and_deleted_once_extracted(self) -> None:
+        body = io.BytesIO()
+        with zipfile.ZipFile(body, "w") as archive:
+            archive.writestr("top/inside.txt", "in")
+        self.routes[f"{CDN}/a.zip"] = body.getvalue()
+        self.routes[f"{CDN}/bad.zip"] = b"PK\x03\x04 not an archive"
+        self.save(self.item("a.zip", kind=None, file=File(f"{CDN}/a.zip", unpack="here")),
+                  self.item("bad.zip", kind=None, file=File(f"{CDN}/bad.zip", unpack="here")))
+        media = self.tmp / "media"
+        self.assertFalse((media / "a.zip").exists())
+        self.assertEqual((media / "inside.txt").read_text(), "in")
+        self.assertTrue((media / "bad.zip").is_file())
+        rows = dict(self.rows("key, unpacked"))
+        self.assertEqual(rows, {"ins:a.zip": "extracted", "ins:bad.zip": "failed"})
+        [(made,)] = self.sql.execute(
+            "SELECT extracted FROM files WHERE key = 'ins:a.zip'").fetchall()
+        self.assertEqual(json.loads(made), [str(media / "inside.txt")])
+        self.assertEqual(self.sql.execute(
+            "SELECT extracted FROM files WHERE key = 'ins:bad.zip'").fetchone(), (None,))
+
     def test_a_sidecar_holds_the_posts_fields_and_its_row_the_posts_commit(self) -> None:
         statements: list[str] = []
         self.sql.set_trace_callback(statements.append)

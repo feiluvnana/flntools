@@ -1170,10 +1170,41 @@ def extract(path: Path, *, password: str | None = None, limits: Limits = Limits(
         MissingError: it needs 7-Zip, and `7zz` is not on PATH.
         DiskError: the disk refused a write.
     """
+    _unpack(path, folder(path), password, limits, lift=False, keep=False)
+    return folder(path)
+
+
+def extract_into(path: Path, dest: Path, *, password: str | None = None,
+                 limits: Limits = Limits()) -> list[Path]:
+    """Extract `path` straight into the existing folder `dest`, never replacing a file in it.
+
+    Same safety as `extract`. When the archive holds one lone top folder, its contents are
+    placed in `dest` instead of the folder itself. A file whose name is taken in `dest` (by an
+    earlier file, or by one of the archive's) is placed as `name (2).ext`, `name (3).ext`, ...
+
+    Args:
+        path: the archive.
+        dest: the folder to fill; made when missing.
+        password: its password, from the source; None tries without one.
+        limits: the bounds a zip bomb would pass.
+
+    Returns:
+        The files placed, in `dest`.
+
+    Raises:
+        SiteError: as for `extract`.
+        MissingError: it needs 7-Zip, and `7zz` is not on PATH.
+        DiskError: the disk refused a write.
+    """
+    return _unpack(path, dest, password, limits, lift=True, keep=True)
+
+
+def _unpack(path: Path, dest: Path, password: str | None, limits: Limits, *, lift: bool,
+            keep: bool) -> list[Path]:
+    """The steps of `extract`: detect, list and check, stage, verify, place."""
     kind = _detect(path)
     entries = _entries(path, kind, password=password)
     _check_limits(entries, path.stat().st_size, limits)
-    dest = folder(path)
     stage = dest.with_name(f".{dest.name}{STAGE}")
     for entry in entries:
         _safe_dest(stage, entry.name)
@@ -1188,10 +1219,18 @@ def extract(path: Path, *, password: str | None = None, limits: Limits = Limits(
         else:
             _unpack_7z(path, stage, password=password)
         _verify(stage, entries, path.name)
-        _place(stage, dest)
+        return _place(_lone(stage) if lift else stage, dest, keep=keep)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
-    return dest
+
+
+def _lone(stage: Path) -> Path:
+    """`stage`, or the one folder it holds alone."""
+    with os.scandir(stage) as listing:
+        found = list(listing)
+    if len(found) == 1 and found[0].is_dir(follow_symlinks=False):
+        return Path(found[0].path)
+    return stage
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1418,18 +1457,38 @@ def _verify(stage: Path, entries: list[Entry], name: str) -> None:
             raise SiteError(f"{name}: {entry.name!r} came out {size} bytes, not {entry.size}")
 
 
-def _place(stage: Path, dest: Path) -> None:
-    """Move the verified stage to `dest`: one rename when `dest` is new, else file by file."""
-    if not dest.exists():
+def _place(stage: Path, dest: Path, *, keep: bool = False) -> list[Path]:
+    """Move the verified stage to `dest`: one rename when `dest` is new, else file by file.
+
+    With `keep`, a file never replaces one in `dest`: it takes a free `name (2).ext`.
+
+    Returns:
+        The files placed with `keep`; empty without it, which nobody reads.
+    """
+    if not keep and not dest.exists():
         try:
             _replace(stage, dest)
-            return
+            return []
         except PermissionError:
             if not WINDOWS:
                 raise
             dest.mkdir(parents=True, exist_ok=True)
+    placed: list[Path] = []
     for root, _, names in os.walk(stage):
         here = dest / Path(root).relative_to(stage)
         here.mkdir(parents=True, exist_ok=True)
         for name in names:
-            _replace(Path(root, name), here / name)
+            target = _free(here / name) if keep else here / name
+            _replace(Path(root, name), target)
+            placed.append(target)
+    return placed
+
+
+def _free(target: Path) -> Path:
+    """`target`, or `stem (2).ext`, `stem (3).ext`, ... the first name nothing has."""
+    if not os.path.lexists(target):
+        return target
+    count = 2
+    while os.path.lexists(found := target.with_name(f"{target.stem} ({count}){target.suffix}")):
+        count += 1
+    return found

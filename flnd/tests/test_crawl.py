@@ -47,8 +47,8 @@ from flnkit import files as files_module
 from flnkit import net as _net
 
 # The keys of a history row, as a run writes it today.
-ROW_KEYS = ["at", "category", "date", "estimated", "files", "folder", "hash", "key", "kind",
-            "mtime", "path", "post_id", "sidecar", "size", "state", "target", "unpacked"]
+ROW_KEYS = ["at", "category", "date", "estimated", "extracted", "files", "folder", "hash", "key",
+            "kind", "mtime", "path", "post_id", "sidecar", "size", "state", "target", "unpacked"]
 
 
 def feed(code, *listings, newest_first=False, **declared):
