@@ -71,7 +71,7 @@ class Case(unittest.TestCase):
 class ReadTest(Case):
     def test_missing_files_are_every_default(self):
         found = config.read(self.home, user=self.user)
-        self.assertEqual(found, Config())
+        self.assertEqual(found, Config(defaults=config.Defaults()))
         self.assertEqual(found.defaults.exec_timeout, 3600)
         self.assertEqual(found.plugin("ins").stop_after, 5)
         self.assertEqual(found.origin("when"), Where.DEFAULT)

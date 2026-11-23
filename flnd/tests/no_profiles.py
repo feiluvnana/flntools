@@ -19,7 +19,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from flnd.engine import auth, plugins
+from flnd.engine import auth, config, plugins
 from flnkit.cookies import NO_PROFILES
 
 os.environ[NO_PROFILES] = "1"
@@ -27,3 +27,12 @@ os.environ.setdefault(
     plugins.VARIABLE, str(Path(__file__).resolve().parent / "data" / "no-plugins"))
 # The vault's key, in a folder of the run's own, never `~/.config/flnd/key`.
 auth.KEYFILE = Path(tempfile.mkdtemp(prefix="flnd-key-")) / "key"
+
+
+class _NoCooldown(config.Defaults, frozen=True):
+    fresh: str = "0"
+
+
+# A run straight after a complete one still lists, as most tests expect; a test of the `fresh`
+# cooldown writes `fresh = "1d"` to its config.toml.
+config.Defaults = _NoCooldown

@@ -210,6 +210,8 @@ class SyncOptInTest(SyncCase):
 class FreshAndTimeoutTest(SyncCase):
     def test_fresh_skips_completed_categories_until_elapsed_or_again(self):
         calls = []
+        (self.home / "config.toml").parent.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.toml").write_text('[defaults]\nfresh = "1d"\n', encoding="utf-8")
 
         class Dual(Plugin):
             code, name, api = "dul", "Dual", 2
