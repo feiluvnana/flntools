@@ -96,17 +96,17 @@ class GroupsTest(EngineCase):
                         targets=["bbb:1", "bbb:2", "aaa:1"])
         self.assertEqual(seen, [True])
 
-    def test_the_run_lists_16_targets_at_once_whatever_its_cores(self):
+    def test_the_run_lists_its_active_targets_at_once_whatever_its_cores(self):
         entered, running, peak = [], [0], [0]
-        # Sixteen listings wait for each other: the run's `ACTIVE`.
-        together = asyncio.Barrier(16)
+        # `ACTIVE` listings wait for each other.
+        together = asyncio.Barrier(jobs.ACTIVE)
 
         async def files(ctx, context):
             entered.append(ctx.target)
             running[0] += 1
             peak[0] = max(peak[0], running[0])
             try:
-                if len(entered) <= 16:
+                if len(entered) <= jobs.ACTIVE:
                     await met(together)
                 for _ in range(20):
                     await asyncio.sleep(0)
@@ -119,7 +119,7 @@ class GroupsTest(EngineCase):
         self.enterContext(mock.patch.object(jobs.os, "cpu_count", return_value=2))
         self.run_engine(*sources, targets=[f"{source.code}:{n}" for source in sources
                                            for n in range(4)])
-        self.assertEqual((len(entered), peak[0]), (24, 16))
+        self.assertEqual((len(entered), peak[0]), (24, jobs.ACTIVE))
 
     def test_two_targets_of_one_file_save_it_once_and_a_target_named_twice_runs_once(self):
         listed = []

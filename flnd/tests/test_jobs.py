@@ -88,9 +88,10 @@ class PoolTest(unittest.TestCase):
         rows = {  # name: (jobs, options, most at once)
             "merge lane": ([job(Kind.MERGE) for _ in range(9)], {}, 4),
             "exec lane": ([job(Kind.EXEC) for _ in range(3)], {}, 1),
-            "tab budget": (tabs(9), {}, 2),
+            "tab budget": (tabs(9), {}, jobs.TABS),
             "scrolling tabs of one account": (tabs(5, scroll=True), {}, 2),
-            "scrolling tabs of two accounts": (tabs(6, 2, scroll=True), {}, 2),
+            "scrolling tabs of two accounts": (
+                tabs(6, 2, scroll=True), {}, min(jobs.TABS, 2 * jobs.SCROLLING)),
             "a host's cap starts at 8": ([job(Kind.FILE) for _ in range(20)], {}, 8),
             "a host's own limit": (
                 [job(Kind.FILE, host="cdn.example.com") for _ in range(9)],
@@ -123,7 +124,7 @@ class PoolTest(unittest.TestCase):
                 await gate.wait()
 
             tasks = [asyncio.ensure_future(scheduler.run(job(Kind.TAB, work=work)))
-                     for _ in range(2)]
+                     for _ in range(jobs.TABS - jobs.WARM_FREE + 1)]
             for _ in range(2):
                 await asyncio.sleep(0)
             seen.append(scheduler.warm)
@@ -131,7 +132,8 @@ class PoolTest(unittest.TestCase):
             await asyncio.gather(*tasks)
             return seen
 
-        self.assertEqual(run(main), [True, False, False])
+        free = jobs.TABS - jobs.WARM_FREE
+        self.assertEqual(run(main), [True] * free + [False, False])
 
     def test_exec_runs_in_the_order_files_were_saved(self):
         async def main(scheduler, fake):
