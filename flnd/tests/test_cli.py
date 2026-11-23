@@ -333,7 +333,9 @@ class RunTest(ExampleCase):
 
     def test_the_run_draws_its_screen_on_a_pyte_terminal(self):
         self.dest = Terminal()
-        code, _, err = self.run_app("get", "exs:example_user")
+        # The screen reads the live terminal's size, not `COLUMNS`: this one is 120 by 40.
+        with mock.patch("os.get_terminal_size", return_value=os.terminal_size((120, 40))):
+            code, _, err = self.run_app("get", "exs:example_user")
         self.assertEqual(code, 0)
         term = pyte.Screen(120, 40)
         pyte.Stream(term).feed(err.replace("\n", "\r\n"))
