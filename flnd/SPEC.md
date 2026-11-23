@@ -1507,7 +1507,9 @@ trust), or `fl.add(Example)` for one script. A built-in is `src/plugins/<code>.p
 `flnd.plugin` and the standard library (an SDK inside a function), with tests on `FakeCtx`, `make
 manifest` run after any change to domains, routes or categories, and a section in this page.
 `flnd.plugin.API` is 2; a plugin of another API is refused (`exm needs plugin API 3; this flnd has
-2`, hint `update flnd`; `exm was written for plugin API 1; this flnd has 2`).
+2`, hint `update flnd`; `exm was written for plugin API 1; this flnd has 2`). Dropped names are
+refused with their new spelling: `needs`, `requires_login`, `login_methods`, `logged_in`,
+`concurrency`, `prepare`, `scroll`, `single_kinds` (see `OLD_NAMES` in `src/plugin.py`).
 
 ## For developers
 
@@ -1515,7 +1517,7 @@ Rules for changing the code are in `AGENTS.md`. The shape:
 
 ```text
 flnkit/   standalone toolkit, imports nothing of flnd: net browser files html dig text clock
-          db cookies vault media errors
+          db cookies vault media stream errors
 src/      the package flnd
   _library.py cli.py errors.py plugin.py testing.py
   engine/  run meter jobs crawl save resolve plugins auth extension store config

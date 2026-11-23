@@ -110,6 +110,13 @@
       "target": 2.5,
       "gate": "P14: a hasher pool"
     },
+    "net.hls_200": {
+      "unit": "x",
+      "better": "higher",
+      "baseline": 7.477,
+      "target": 6,
+      "gate": "P16: HLS segments at once"
+    },
     "disk.part_write": {
       "unit": "us",
       "better": "lower",

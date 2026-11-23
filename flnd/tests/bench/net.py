@@ -26,7 +26,11 @@ Steps:
    20 MB/s, as flnd's throughput over that of one plain connection (`http.client`, 64 MiB);
 7. `big_4_at_once`: four downloads of a 256 MiB file at once, each then hashed (SHA-256) as
    dedupe hashes a file of a size already saved, a `HASH` job, as their throughput over that
-   of one alone.
+   of one alone;
+8. `hls_200`: a playlist of 200 segments of 64 KiB, each answered 40 ms late (`/late/`), as
+   the time of fetching them serially over one plain connection divided by flnd's time: the
+   playlist read by `flnkit.stream.hls` and its segments fetched 8 at once by `fetch_all`
+   into one part, written in order (`hls_at_once`).
 
 Each run starts with an empty output folder, so every file is written fresh.
 """
@@ -54,6 +58,7 @@ from flnd.plugin import File, Target
 from flnd.ui.log import ui
 from flnkit import files as _files
 from flnkit import net as _net
+from flnkit import stream as _stream
 
 BIG = kit.size(1 << 30, 1 << 20)
 # The big file is written in pieces of this size, so making it never holds 1 GiB in memory.
@@ -68,8 +73,9 @@ PROBE = 0.005
 FAST_COPIES = 4
 # Step 6: how much one plain connection reads to measure the server's cap.
 REFERENCE = min(64 << 20, BIG)
-# Step 7: the file downloaded four times at once.
+# Steps 7 and 8: the file downloaded four times at once, and the playlist's segments.
 QUARTER, AT_ONCE_BIG = kit.size(256 << 20, 1 << 20), 4
+SEGMENT, SEGMENTS = 64 * 1024, kit.size(200, 4)
 
 
 def make_data(folder: Path) -> None:
@@ -89,6 +95,13 @@ def make_data(folder: Path) -> None:
     for n in range(SLOW_FILES):
         (folder / f"m{n}.bin").write_bytes(medium)
     (folder / "q.bin").write_bytes(os.urandom(QUARTER))
+    segment = os.urandom(SEGMENT)
+    for n in range(SEGMENTS):
+        (folder / f"seg{n}.ts").write_bytes(segment)
+    lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:2"]
+    for n in range(SEGMENTS):
+        lines += ["#EXTINF:2.0,", f"seg{n}.ts"]
+    (folder / "hls.m3u8").write_text("\n".join([*lines, "#EXT-X-ENDLIST", ""]))
 
 
 class _Kept:
@@ -186,6 +199,21 @@ def plain(base: str, paths: list[str], *, span: str | None = None) -> float:
     return time.perf_counter() - start
 
 
+async def hls_at_once(client: Capped, url: str, dest: Path) -> None:
+    """Download a playlist with `flnkit.stream`: its segments `AT_ONCE` at a time, in order."""
+    playlist = _stream.hls((await client.client.fetch(url)).text, url)
+
+    async def get(segment: str, span: tuple[int, int] | None) -> bytes:
+        headers = {"Range": f"bytes={span[0]}-{span[1] - 1}"} if span else None
+        return (await client.client.fetch(segment, headers=headers)).content
+
+    with _files.part(dest, resume=True) as held:
+        async def write(data: bytes) -> None:
+            held.write(data)
+
+        await _stream.fetch_all(playlist.segments, get, write, at_once=AT_ONCE)
+
+
 async def raced(fast: Capped, slow: Capped, fast_urls: list[str],
                 slow_urls: list[str], out: Path, slow_out: Path) -> float:
     """Download `fast_urls` while `slow_urls` go to the throttled folder; return the fast time.
@@ -271,7 +299,7 @@ def two_disks(report: kit.Report, loop: Loop, clients: tuple[Capped, Capped],
 
 def segments_and_disks(report: kit.Report, loop: Loop, base: str, scratch: Path,
                        empty: Any) -> None:
-    """Time steps 5 to 7: two disks, the per-connection cap, four big files."""
+    """Time steps 5 to 8: two disks, the per-connection cap, four big files, the playlist."""
     out, slow_out = scratch / "out", scratch / "slow"
     session = _net.Session(handles=jobs.PAGES + AT_ONCE)
     second = _net.Session(handles=jobs.PAGES + AT_ONCE)
@@ -294,6 +322,12 @@ def segments_and_disks(report: kit.Report, loop: Loop, base: str, scratch: Path,
     report.add("big_4_at_once", (AT_ONCE_BIG * QUARTER / four) / (QUARTER / single), "x",
                better="higher")
 
+    paths = [f"/late/seg{n}.ts" for n in range(SEGMENTS)]
+    serial = plain(base, paths)
+    empty()
+    took = kit.best(lambda: loop.run(hls_at_once(capped, f"{base}/late/hls.m3u8", out / "v.ts")),
+                    runs=1)
+    report.add("hls_200", serial / took, "x", better="higher")
     loop.run(session.close())
     loop.run(second.close())
 

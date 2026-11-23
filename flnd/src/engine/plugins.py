@@ -24,7 +24,7 @@ from typing import Any
 
 from flnd.engine import resolve
 from flnd.errors import PluginError, UsageError
-from flnd.plugin import API, CODE, Plugin
+from flnd.plugin import API, CODE, OLD_NAMES, Plugin
 from flnd.plugins import _manifest
 from flnd.ui.log import ui
 from flnkit import clock, files
@@ -685,9 +685,19 @@ def _api(paths: list[Path], code: str, shown: Path, root: Path) -> None:
         raise PluginError(f"{code} is written for plugin API {max(values)}; this flnd has {API}",
                           hint="it needs a newer flnd")
     if min(values) < API:
+        used = sorted({old for cls in classes for node in _scope(cls) for old in OLD_NAMES
+                       if _sets(node, old)})
+        hint = "; ".join(f"{old} becomes {OLD_NAMES[old]}" for old in used) or (
+            "see the writing-a-plugin page of flnd's docs")
         raise PluginError(f"{code} is written for plugin API {min(values)}; this flnd has "
-                          f"{API}", hint="see the writing-a-plugin page of flnd's docs")
+                          f"{API}", hint=hint)
 
+
+def _sets(node: ast.AST, name: str) -> bool:
+    """Whether a node of a class body defines or sets `name`."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return node.name == name
+    return isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store)
 
 
 # ---------------------------------------------------------------------------------------------
