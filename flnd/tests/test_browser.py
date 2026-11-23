@@ -71,8 +71,10 @@ def chromium_installed() -> bool:
         return Path(playwright.chromium.executable_path).is_file()
 
 
-HAS_CHROMIUM = chromium_installed()
-needs_chromium = unittest.skipUnless(HAS_CHROMIUM, "Chromium is not installed")
+# A real Chromium opens windows (its Dock icon bounces on macOS), so only `make test-browser`
+# (FLND_TEST_BROWSER=1) launches one.
+HAS_CHROMIUM = os.environ.get("FLND_TEST_BROWSER") == "1" and chromium_installed()
+needs_chromium = unittest.skipUnless(HAS_CHROMIUM, "needs make test-browser and Chromium")
 PLATFORM = sys.platform if sys.platform in ("darwin", "win32") else "linux"
 
 # Items are 300px tall and come five at a time when the page is scrolled to its end.

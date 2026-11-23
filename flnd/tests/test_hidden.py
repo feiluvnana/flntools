@@ -54,6 +54,7 @@ class Page(BaseHTTPRequestHandler):
         pass
 
 
+@unittest.skipUnless(os.environ.get("FLND_TEST_BROWSER") == "1", "needs make test-browser")
 class HiddenTest(unittest.TestCase):
     def setUp(self):
         self.loop = asyncio.new_event_loop()

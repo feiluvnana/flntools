@@ -18,6 +18,10 @@ setup:    ; $(UV) sync --python $(PY) --all-extras
 # coroutine never awaited is an error, so a missed `await` fails its test.
 test: export FLND_TEST_NO_PROFILES = 1
 test:     ; $(RUN) python -W "error:coroutine:RuntimeWarning" -m unittest discover -s tests $(ARGS)
+# The tests that launch a real Chromium (windows open), never part of `check`.
+test-browser: export FLND_TEST_NO_PROFILES = 1
+test-browser: export FLND_TEST_BROWSER = 1
+test-browser: ; $(RUN) python -m unittest tests.test_browser tests.test_hidden $(ARGS)
 lint:     ; $(RUN) ruff check src flnkit tests
 check: lint test
 api:      ; $(RUN) python tests/api_snapshot.py --write
