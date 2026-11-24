@@ -10,6 +10,7 @@ import datetime
 import email.utils
 import json
 import mimetypes
+import re
 import shutil
 import stat
 import sys
@@ -58,6 +59,8 @@ SIDECAR = ".json"
 # The kind of an API 2 file named by a stem (5.3): its extension is what its bytes are, else
 # what its `Content-Type` names, else its URL's, else none; the planned name may hold the URL's.
 STEM = "stem"
+# A leading `YYYY-MM-DD_` prefix put in front of a name by `{date}_` filename templates.
+LEADING_DAY = re.compile(r"\d{4}-\d\d-\d\d_")
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,7 @@ class Item:
         account: the account it is fetched with; None for the plugin's default.
         count: how many files the post has, on its first file's row only; None otherwise.
         estimated: whether `day` was taken from the posts around it.
+        dated_name: whether the name uses `{date}_` and may take `Last-Modified`.
         meta: its sidecar's fields; None writes no sidecar.
         cursor: the page its post was listed on, kept with a failure for its retry.
         retried: whether an earlier run failed on it.
@@ -100,6 +104,7 @@ class Item:
     account: str | None = None
     count: int | None = None
     estimated: bool = False
+    dated_name: bool = False
     meta: Mapping[str, Any] | None = None
     cursor: str | None = None
     retried: bool = False
@@ -157,8 +162,9 @@ class _Split:
         # took its last snapshot.
         self._keeper: asyncio.Task[None] | None = None
         self._dirty = False
-        # Whether a sidecar of the part's segments is on disk.
+        # Whether a sidecar of the part's segments is on disk, and whether this resumed one.
         self._kept = False
+        self.resumed = False
 
     def end(self) -> int | None:
         """Where the first transfer stops: its segment's end; None while it is one transfer."""
@@ -484,8 +490,9 @@ class Saver:
         self._turns: dict[Target, asyncio.Event] = {}
         # Concurrency slot semaphore per target, limiting open parts to scheduler places.
         self._slots: dict[Target, asyncio.Semaphore] = {}
-        # Each ranged fetch file's segments, by its first transfer's job (`_ranged`).
+        # Each ranged fetch or segmented file's segments, by its first transfer's job.
         self._fetching: dict[Job[Any], _Fetching] = {}
+        self._splitting: dict[Job[Any], _Split] = {}
 
     async def post(self, items: Sequence[Item], *, client: net.Client,
                    plugin: str) -> dict[str, Path]:
@@ -611,11 +618,13 @@ class Saver:
             if fresh is None or not _sources(fresh) or fresh.content is not None:
                 raise
             saved = await self._transfer(item, fresh, client, plugin, received, flow)
-        dated = item.day or served_day(received.get("last-modified"))
+        served = served_day(received.get("last-modified"))
+        dated = served if (item.day is None or item.estimated) and served is not None else item.day
+        still_estimated = bool(item.estimated and served is None)
         row = store.FileRow(
             item.key, store.key(item.target), str(saved.path), saved.size, saved.mtime,
             post_id=item.post, category=item.category,
-            date=item.day.isoformat() if item.day else None, estimated=item.estimated,
+            date=dated.isoformat() if dated else None, estimated=still_estimated,
             kind=files.kind_of(saved.path.name), at=store.now(), files=item.count,
             hash=saved.hash)
         landed = _Landed(item, saved.path, dated, row)
@@ -664,9 +673,7 @@ class Saver:
                     # back its places: a small file holds its host's cap for its transfer alone.
                     if item.kind is not None:
                         await self._call(_place, held, item, received)
-                    if held.mtime is None:
-                        served = served_day(received.get("last-modified"))
-                        held.mtime = noon(served) if served is not None else None
+                    _apply_served_day(held, item, received)
             finally:
                 slot.release()
         finally:
@@ -693,68 +700,95 @@ class Saver:
     async def _mirrors(self, item: Item, mirrors: Sequence[str | Fetch], held: files.Part,
                        client: net.Client, plugin: str, received: dict[str, str], flow: _Flow,
                        turn: tuple[asyncio.Event | None, asyncio.Event]) -> None:
-        """Fill the open part from each mirror in turn, as one `FILE` job, which the scheduler
-        tries again as its policy says. Each mirror but the last is checked in the job, so a
-        web page there moves on to the next."""
-        job = self._file_job(item, plugin, mirrors[0], _nothing)
-        sink = _Bytes(job, self.scheduler.slowest)
-        # One meter for every try, so a try that resumes counts only what it adds; its writes go
-        # to the thread of the device the file is on.
-        meter = self._meter(sink, item.dest)
-
-        async def work() -> None:
-            self._start(item, flow)
-            sink.flight, sink.speed = self._fly(item), jobs.Speed()
-            try:
-                for number, mirror in enumerate(mirrors, start=1):
-                    try:
-                        if number == 1 and isinstance(mirror, str):
-                            urls = [one for one in mirrors if isinstance(one, str)]
-                            answered = await self._segmented(item, urls, held, client, meter,
-                                                             job)
-                        else:
-                            answered = await self._mirror(item, mirror, held, client, meter,
-                                                          job)
-                        received.update(answered)
-                        if item.kind is not None and number < len(mirrors):
-                            await self._call(_place, held, item, received)
-                        return
-                    except Exception as error:
-                        if number == len(mirrors) or _final(error):
-                            raise
-                        ui.warn("mirror {n} failed: {error}; trying the next", n=number,
-                                error=error)
-                        # The next mirror may serve other bytes: it starts from an empty part.
-                        await self._call(held.reset)
-            except Exception as error:
-                if isinstance(error, Error):
-                    raise
-                # A plugin's `fetch` function raises what it meets (a dropped connection):
-                # the scheduler's policy reads it as flnd's error for it.
-                raise classify(error) from error
-            finally:
-                if sink.flight is not None:
-                    sink.flight.land()
-
-        job.work = work
+        """Fill the open part from each mirror in turn, each as a `FILE` job whose segments
+        finish outside the job so a host cap or target pool can never deadlock on them."""
         before, mine = turn
         try:
             if before is not None:
                 await before.wait()
-            running = self.scheduler.run(job)
-            # Set before the job queues, which it does at once, ahead of the next file's.
-            mine.set()
-            await running
-            fetching = self._fetching.get(job)
-            if fetching is not None:
-                # The other segments' jobs, waited for here, past this file's own job, which
-                # holds no place of its host meanwhile.
-                await fetching.finish()
+            for number, mirror in enumerate(mirrors, start=1):
+                try:
+                    await self._one_mirror(item, mirror, number, mirrors, held, client, plugin,
+                                           received, flow, mine)
+                    if item.kind is not None and number < len(mirrors):
+                        await self._call(_place, held, item, received)
+                    return
+                except Exception as error:
+                    if number == len(mirrors) or _final(error):
+                        raise
+                    ui.warn("mirror {n} failed: {error}; trying the next", n=number, error=error)
+                    # The next mirror may serve other bytes: it starts from an empty part.
+                    await self._call(held.reset)
         finally:
             mine.set()
-            fetching = self._fetching.pop(job, None)
-            if fetching is not None:
-                await fetching.cancel()
+
+    async def _one_mirror(self, item: Item, mirror: str | Fetch, number: int,
+                          mirrors: Sequence[str | Fetch], held: files.Part, client: net.Client,
+                          plugin: str, received: dict[str, str], flow: _Flow,
+                          mine: asyncio.Event) -> None:
+        """Run one mirror's `FILE` job, then finish any segments after its places are released."""
+        while True:
+            job = self._file_job(item, plugin, mirror, _nothing)
+            sink = _Bytes(job, self.scheduler.slowest)
+            meter = self._meter(sink, item.dest)
+
+            async def work(job: Job[Any] = job, sink: _Bytes = sink,
+                           meter: net.Meter = meter) -> None:
+                self._start(item, flow)
+                sink.flight, sink.speed = self._fly(item), jobs.Speed()
+                try:
+                    if number == 1 and isinstance(mirror, str):
+                        urls = [one for one in mirrors if isinstance(one, str)]
+                        answered = await self._segmented(item, urls, held, client, meter, job)
+                    else:
+                        answered = await self._mirror(item, mirror, held, client, meter, job)
+                    received.update(answered)
+                except Exception as error:
+                    if isinstance(error, Error):
+                        raise
+                    raise classify(error) from error
+                finally:
+                    if (sink.flight is not None and job not in self._splitting
+                            and job not in self._fetching):
+                        sink.flight.land()
+
+            job.work = work
+            try:
+                running = self.scheduler.run(job)
+                # Set before the job queues, which it does at once, ahead of the next file's.
+                mine.set()
+                await running
+                split = self._splitting.get(job)
+                if split is not None:
+                    try:
+                        # The other segments' jobs, waited for here, past this file's own job,
+                        # which holds no place of its host or target meanwhile.
+                        await split.finish()
+                    except _Mismatch:
+                        self._splitting.pop(job, None)
+                        await split.cancel()
+                        if not split.resumed:
+                            raise
+                        # Another file under the same name now: it comes whole.
+                        await self._call(held.reset)
+                        continue
+                    self._splitting.pop(job, None)
+                    if split.plan is not None and len(split.plan.parts) > 1:
+                        held.note(segments=None, size=None, last_modified=None)
+                fetching = self._fetching.get(job)
+                if fetching is not None:
+                    await fetching.finish()
+                    self._fetching.pop(job, None)
+                return
+            finally:
+                split = self._splitting.pop(job, None)
+                if split is not None:
+                    await split.cancel()
+                fetching = self._fetching.pop(job, None)
+                if fetching is not None:
+                    await fetching.cancel()
+                if sink.flight is not None:
+                    sink.flight.land()
 
     async def _segmented(self, item: Item, urls: Sequence[str], held: files.Part,
                          client: net.Client, meter: net.Meter,
@@ -762,11 +796,7 @@ class Saver:
         """The first URL into the part, split into segments while its host has room (6.2)."""
         plan = jobs.Segments.of(held.meta) if held.size and held.meta.get("segments") else None
         if plan is not None:
-            try:
-                return await self._resume(item, urls, held, client, plan, job)
-            except _Mismatch:
-                # Another file under the same name now: it comes whole.
-                await self._call(held.reset)
+            return self._resume(item, urls, held, client, plan, job)
         split = _Split(self, item, urls, held, client, job)
 
         def opened(status: int, headers: Mapping[str, str], start: int,
@@ -787,30 +817,26 @@ class Saver:
                        etag=held.meta.get("etag") if held.size else None)
             answered = await client.fill(urls[0], held, headers=item.headers, progress=meter,
                                          until=split.end)
-            await split.finish()
         except BaseException:
             await split.cancel()
             raise
         finally:
             meter.opened = meter.wrote = None
-        if split.plan is not None and len(split.plan.parts) > 1:
-            held.note(segments=None, size=None, last_modified=None)
+        if split._tasks:
+            self._splitting[job] = split
         return answered
 
-    async def _resume(self, item: Item, urls: Sequence[str], held: files.Part,
-                      client: net.Client, plan: jobs.Segments, job: Job[Any]) -> Mapping[str, str]:
-        """Go on with each segment a part's sidecar kept, every one a `FILE` job of its own."""
+    def _resume(self, item: Item, urls: Sequence[str], held: files.Part,
+                client: net.Client, plan: jobs.Segments, job: Job[Any]) -> Mapping[str, str]:
+        """Start each unfinished segment a part's sidecar kept; `_one_mirror` waits outside."""
         split = _Split(self, item, urls, held, client, job)
         split.plan = plan
-        try:
-            for part in plan.parts:
-                if part.left:
-                    split.start(part)
-            await split.finish()
-        except BaseException:
-            await split.cancel()
-            raise
-        held.note(segments=None, size=None, last_modified=None)
+        split._kept = True
+        split.resumed = True
+        for part in plan.parts:
+            if part.left:
+                split.start(part)
+        self._splitting[job] = split
         return {"etag": plan.etag, "last-modified": plan.last_modified} if plan.last_modified \
             else {"etag": plan.etag}
 
@@ -1261,6 +1287,24 @@ def _extract(path: Path, password: str | None, here: bool) -> Path | list[Path]:
     if here:
         return files.extract_into(path, path.parent, password=password)
     return files.extract(path, password=password)
+
+
+def _apply_served_day(held: files.Part, item: Item, received: Mapping[str, str]) -> None:
+    """Date an undated or estimated file from HTTP `Last-Modified`, updating its `{date}_` name."""
+    if item.day is not None and not item.estimated:
+        return
+    served = served_day(received.get("last-modified"))
+    if served is None:
+        return
+    held.mtime = noon(served)
+    if not item.dated_name:
+        return
+    name = held.dest.name
+    leading = LEADING_DAY.match(name)
+    if item.estimated and leading:
+        name = name[leading.end():]
+    if not LEADING_DAY.match(name):
+        held.dest = held.dest.with_name(f"{served.isoformat()}_{name}")
 
 
 def _place(held: files.Part, item: Item, received: Mapping[str, str]) -> None:

@@ -775,7 +775,11 @@ class Ledger:
             if found is not None and found[0]:
                 holder = Path(found[0])
             if holder is not None:
-                self._link(dest.with_suffix(holder.suffix), holder, category, item_key)
+                target_dest = dest.with_suffix(holder.suffix)
+                if ((found_day := LEADING_DAY.match(holder.name)) is not None
+                        and not LEADING_DAY.match(target_dest.name)):
+                    target_dest = target_dest.with_name(f"{found_day[0]}{target_dest.name}")
+                self._link(target_dest, holder, category, item_key)
             self.tally.count(self.target, category, later=-1)
         self._later = []
 
@@ -1262,11 +1266,16 @@ class Downloads:
         placed = queued.placed
         post = placed.post
         count = placed.values.get("count", 1)
+        category = (
+            self._ledger._categories.get(post.category) if self._ledger is not None else None
+        )
+        filename_tpl = _format(self.source, category, "filename")
+        dated_name = placed.file.name is None and filename_tpl.startswith("{date}_")
         return save.Item(
             queued.key, self.target, post.id, post.category, placed.file, queued.dest,
             kind=placed.kind, day=day(post.date), headers=post.headers,
             count=count if placed.num == 0 and isinstance(count, int) and count > 1 else None,
-            estimated=queued.estimated,
+            estimated=queued.estimated, dated_name=dated_name,
             meta=(_metadata(self.source, self.target, placed)
                   if saver is not None and saver.sidecars else None),
             cursor=queued.cursor, retried=queued.retried,

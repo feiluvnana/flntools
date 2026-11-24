@@ -116,6 +116,30 @@ class StagesTest(SaveCase):
                 self.assertEqual(self.saved()[-1], path)
         self.assertEqual(list((self.tmp / "media").glob("*.part")), [])
 
+    def test_last_modified_dates_undated_and_estimated_dated_names(self) -> None:
+        hdrs = {"Last-Modified": "Tue, 17 Mar 2026 08:00:00 GMT"}
+        self.routes[f"{CDN}/u.jpg"] = net.reply(200, content=JPEG, headers=hdrs)
+        self.routes[f"{CDN}/e.jpg"] = net.reply(200, content=JPEG, headers=hdrs)
+        self.routes[f"{CDN}/s.jpg"] = net.reply(200, content=JPEG, headers=hdrs)
+        self.routes[f"{CDN}/p.jpg"] = net.reply(200, content=JPEG, headers=hdrs)
+        self.save(
+            self.item("u.jpg", day=None, dated_name=True),
+            self.item("2026-08-31_e.jpg", url=f"{CDN}/e.jpg", day=datetime(2026, 8, 31).date(),
+                      estimated=True, dated_name=True),
+            self.item("2026-03-17_s.jpg", url=f"{CDN}/s.jpg", day=datetime(2026, 3, 17).date(),
+                      estimated=True, dated_name=True),
+            self.item("p.jpg", day=None, dated_name=False),
+        )
+        names = sorted(p.name for p in (self.tmp / "media").iterdir())
+        self.assertEqual(names, ["2026-03-17_e.jpg", "2026-03-17_s.jpg", "2026-03-17_u.jpg",
+                                 "p.jpg"])
+        rows = {k: (Path(p).name, d, e)
+                for k, p, d, e in self.rows("key, path, date, estimated")}
+        self.assertEqual(rows["ins:u.jpg"], ("2026-03-17_u.jpg", "2026-03-17", 0))
+        self.assertEqual(rows["ins:2026-08-31_e.jpg"], ("2026-03-17_e.jpg", "2026-03-17", 0))
+        self.assertEqual(rows["ins:2026-03-17_s.jpg"], ("2026-03-17_s.jpg", "2026-03-17", 0))
+        self.assertEqual(rows["ins:p.jpg"], ("p.jpg", "2026-03-17", 0))
+
     def test_a_web_page_fails_the_file_and_keeps_no_part(self) -> None:
         self.routes[f"{CDN}/a.jpg"] = b"<!doctype html><title>log in</title>"
         self.save(self.item("a.jpg"))
@@ -775,6 +799,72 @@ class RealSchedulerTest(SaveCase):
                          ["Saved", "Saved", "Skipped"])
         self.assertIsNone(self.jobs._stop)
         self.assertEqual(len(ran), 2)
+
+    def test_a_split_segment_retry_never_deadlocks_when_host_cap_drops_to_one(self) -> None:
+        # Regression: a segmented download whose host cap halves to 1 after a segment error
+        # must not deadlock waiting for the segment while holding the host's only cap place.
+        body = os.urandom(24 << 20)
+        failed = False
+
+        def answer(request):
+            nonlocal failed
+            span = request.headers.get("range", "bytes=0-")
+            first, _, last = span.removeprefix("bytes=").partition("-")
+            start, end = int(first), int(last) + 1 if last else len(body)
+            piece = body[start:end]
+
+            def chunks():
+                nonlocal failed
+                for at in range(0, len(piece), 256 << 10):
+                    if start > 0 and not failed and at >= (512 << 10):
+                        failed = True
+                        # Simulate an overloaded host halving the cap down to 1 before retry.
+                        cap = self.jobs.limits.cap("cdn.example.com")
+                        cap.value = 1
+                        raise ConnectionResetError("reset")
+                    self.clock.advance(0.25)
+                    yield piece[at:at + (256 << 10)]
+
+            headers = {"etag": '"v1"', "accept-ranges": "bytes"}
+            if start or end < len(body):
+                headers["content-range"] = f"bytes {start}-{end - 1}/{len(body)}"
+                return net.reply(206, headers=headers, chunks=chunks())
+            return net.reply(200, headers={**headers, "content-length": str(len(body))},
+                             chunks=chunks())
+
+        self.routes[f"{CDN}/big.mp4"] = answer
+        with mock.patch.object(jobs, "NETWORK_WAITS", (0.01,)):
+            self.save(self.item("big.mp4", kind=None), timeout=1.5)
+        self.assertTrue(failed, "segment 1 never triggered the reset")
+        self.assertEqual([type(event) for event in self.events], [Saved])
+        self.assertEqual((self.tmp / "media" / "big.mp4").read_bytes(), body)
+
+    def test_resuming_segmented_part_never_deadlocks_at_cap_one(self) -> None:
+        body = os.urandom(24 << 20)
+        dest = self.tmp / "media" / "resumed.mp4"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = dest.with_name(dest.name + ".part")
+        part.write_bytes(body[:12 << 20] + b"\x00" * (12 << 20))
+        side = dest.with_name(dest.name + ".part.json")
+        side.write_text(json.dumps({
+            "etag": '"v1"', "last_modified": "", "size": len(body),
+            "segments": [[0, 12 << 20, 12 << 20], [12 << 20, len(body), 0]],
+        }))
+
+        def answer(request):
+            span = request.headers.get("range", "bytes=0-")
+            first, _, last = span.removeprefix("bytes=").partition("-")
+            start, end = int(first), int(last) + 1 if last else len(body)
+            return net.reply(206, content=body[start:end], headers={
+                "etag": '"v1"', "accept-ranges": "bytes",
+                "content-range": f"bytes {start}-{end - 1}/{len(body)}",
+            })
+
+        self.routes[f"{CDN}/resumed.mp4"] = answer
+        self.jobs.limits.cap("cdn.example.com").value = 1
+        self.save(self.item("resumed.mp4", kind=None), timeout=1.5)
+        self.assertEqual([type(event) for event in self.events], [Saved])
+        self.assertEqual(dest.read_bytes(), body)
 
 
 if __name__ == "__main__":
