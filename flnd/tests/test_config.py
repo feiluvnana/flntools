@@ -526,10 +526,7 @@ class PrecedenceTest(LibraryCase):
         config.check_folder(None, sources, targets[1:])
 
     def test_fresh_and_timeout_durations(self):
-        # `no_profiles` sets `fresh = "0"` on a subclass for tests; check the real Defaults too.
-        real = config.Defaults.__bases__[0] if config.Defaults.__name__ == "_NoCooldown" else (
-            config.Defaults)
-        self.assertEqual(real().fresh, "2h")
+        self.assertEqual(config.Defaults().fresh, "0")
         self.assertEqual(config.duration_seconds("0"), 0.0)
         self.assertEqual(config.duration_seconds("1d"), 86400.0)
         self.assertEqual(config.duration_seconds("10m"), 600.0)

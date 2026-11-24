@@ -1628,10 +1628,13 @@ class Listing:
     """
 
     def __init__(self, start: str | None = None, *, label: str = "",
-                 head: str | None = None) -> None:
+                 head: str | None = None, sync: bool = False) -> None:
         self.start = start
         self.label = label
         self.head = head
+        self.sync = sync
+        # Files queued while reading this listing (`crawl._queue_listed`).
+        self.queued = 0
         # The cursor of the page being read, for the crawl to save if the listing is cut short.
         self.cursor: str | None = start
         # Whether a `pages` call took this listing already; only the first one resumes.

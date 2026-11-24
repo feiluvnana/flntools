@@ -28,7 +28,7 @@ from flnd.engine import save
 from flnd.engine import store as _store
 from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped, encode
 from flnd.errors import Changed
-from flnd.plugin import File, Plugin, Post, route
+from flnd.plugin import File, Plugin, Post, Range, route
 from flnd.ui.log import ui
 from flnkit import net as _net
 
@@ -136,6 +136,84 @@ class NothingNewTest(FeedCase):
             report = fl.get().wait()
         # A listing with nothing new is no file skipped.
         self.assertEqual((report.unchanged, report.skipped, report.saved), (1, 2, 0))
+
+    def test_sync_and_get_check_non_newest_first_and_shortcircuit_posts(self):
+        stories = ["s1"]
+
+        async def info(plugin, ctx, user):
+            for sid in stories:
+                yield Post(sid, [File(f"{CDN}/{sid}.jpg")], date=DAY)
+
+        self.source = self.feed_source(info=info)
+        self.engine = Engine(home=self.home, sources={"fed": self.source}, emit=self.events.append)
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.toml").write_text('[defaults]\nfresh = "2h"\n', encoding="utf-8")
+        self.assertTrue(self.download().ok)
+        self.assertIn("s1", self.saved())
+
+        # Even within `fresh = "2h"`, `sync` still checks `info` (`stories`) while `posts` stops.
+        stories.append("s2")
+        self.assertTrue(self.sync().ok)
+        self.assertEqual(self.pages(), [None])
+        self.assertIn("s2", self.saved())
+
+        # Default `get` (`fresh = "0"`) also checks new `info` (`stories`) and stops on `posts`.
+        (self.home / "config.toml").write_text("", encoding="utf-8")
+        stories.append("s3")
+        self.requests.clear()
+        self.assertTrue(self.download().ok)
+        self.assertEqual(self.pages(), [None])
+        self.assertIn("s3", self.saved())
+
+        # `--again` bypasses short-circuiting and lists every page of `posts`.
+        self.requests.clear()
+        self.assertTrue(
+            self.engine.download(["fed:example_user|all"], sync=True, again=True).ok)
+        self.assertEqual(self.pages(), [None, "p3", "p6"])
+
+    def test_when_since_stop_leaves_no_stale_cursor_or_gap(self):
+        dates = {"p1": datetime.date(2026, 1, 10)}
+        for n in range(2, 10):
+            dates[f"p{n}"] = datetime.date(2025, 12, 1)
+
+        async def posts(plugin, ctx, user):
+            async for response in ctx.pages(f"{API}/feed", cursor="next", send="after"):
+                for pid in response.json["ids"]:
+                    yield Post(pid, [File(f"{CDN}/{pid}.jpg")], date=dates[pid])
+
+        async def user(plugin, ctx, user):
+            return user
+
+        listed = route("fed:{user}", newest_first=False)(user)
+        listed.category(newest_first=True)(posts)
+        self.source = type("DatedFeed", (Plugin,), {
+            "code": "fed", "name": "Feed", "domains": ("example.com",), "api": 2,
+            "key": "{post}", "filename": "{post}", "user": listed, "posts": posts,
+        })
+        self.engine = Engine(home=self.home, sources={"fed": self.source}, emit=self.events.append)
+
+        # Initial `--when` run (`_list_one`): clears the resume cursor and stays incomplete.
+        report = self.engine.download(["fed:example_user|all"], sync=True, time=Range(since=DAY))
+        self.assertTrue(report.ok)
+        self.assertEqual(self.saved(), ["p1"])
+        row = self.row()
+        self.assertNotIn("posts", row.complete)
+        self.assertFalse(row.cursors.get("posts"))
+
+        # Next full `get` starts from newest (`None`), gets p2..p9, and marks complete.
+        self.requests.clear()
+        self.assertTrue(self.download().ok)
+        self.assertEqual(self.pages(), [None, "p3", "p6"])
+        self.assertEqual(self.saved(), sorted(self.posts))
+        self.assertEqual(self.row().heads, {"posts": "p1"})
+
+        # `sync` with `--when` on a complete target leaves no fake gap; next sync short-circuits.
+        self.requests.clear()
+        self.assertTrue(self.engine.sync(["fed:example_user"], time=Range(since=DAY)).ok)
+        self.assertEqual(self.row().gaps, {})
+        self.assertEqual(self.row().heads, {"posts": "p1"})
+        self.assertTrue(self.sync().ok)
+        self.assertEqual(self.pages(), [None])
 
 
 # ---------------------------------------------------------------------------------------------

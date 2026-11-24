@@ -100,6 +100,7 @@ USER_NAME = re.compile(r"[A-Za-z0-9._]{1,30}")
 LOGIN_HINT = "run flnd auth login ins"
 LOCK_WALLS = ("/challenge", "/accounts/suspended", "/accounts/disabled", "/consent")
 _FATAL_META = ("checkpoint_required", "challenge_required", "login_required", "consent_required")
+HIGHLIGHT_STOP = 2
 
 
 def _check_meta_error(data: Any) -> None:
@@ -268,12 +269,24 @@ class Instagram(Plugin):
     async def highlights(self, ctx: Ctx, profile: Profile) -> AsyncIterator[Post]:
         """Each highlight's stories, in a folder named by its title; keyed by path."""
         await profile.describe(ctx)
+        listing = getattr(ctx, "listing", None)
+        sync = bool(getattr(listing, "sync", False))
+        unchanged = 0
         for index, (highlight, title) in enumerate(profile.highlights):
             if index:
                 await ctx.pause(random.uniform(2.0, 5.0), "pausing between highlights")
             url = f"{SITE}/stories/highlights/{highlight}/"
-            for post in await story_page(ctx, url, f"highlights/{title}"):
+            before = getattr(listing, "queued", 0)
+            stories = await story_page(ctx, url, f"highlights/{title}")
+            for post in stories:
                 yield post.replace(album=title)
+            if sync and stories:
+                if getattr(listing, "queued", 0) > before:
+                    unchanged = 0
+                else:
+                    unchanged += 1
+                    if unchanged >= HIGHLIGHT_STOP:
+                        return
 
     @user.category(newest_first=False, folder="profile", key="{path}")
     async def profile(self, ctx: Ctx, profile: Profile) -> AsyncIterator[Post]:
@@ -513,6 +526,7 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
             embedded = True
             async for item in listing:
                 ended = False
+                tab_page = False
                 for result in item if embedded else [item]:
                     _check_meta_error(result)
                     if throttled(result):
@@ -523,6 +537,7 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
                         yield post
                     state = reader(result)
                     if state is not None:
+                        tab_page = True
                         if not (state[0] and state[1]):
                             ended = True
                         else:
@@ -532,11 +547,11 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
                 was_embedded, embedded = embedded, False
                 if ended:
                     return
-                if not was_embedded:
+                if not was_embedded and tab_page:
                     counts[0] += 1
                 if query is not None and next_cursor is not None:
                     break
-                if not was_embedded:
+                if not was_embedded and tab_page:
                     await _tab_pause(ctx, counts[0])
         if query is not None and next_cursor is not None:
             async for post in _graphql_pages(ctx, profile, tab, query, next_cursor, reader, counts):

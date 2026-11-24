@@ -136,7 +136,7 @@ class Loibus(Plugin):
 
     @route(*((pattern, "author/{id}") for pattern in (
         r"loi:author/{id:\d+}", r"loix.cc/library/loier/{id:\d+}",
-        r"moegoat.com/library/loier/{id:\d+}")), discovers=True, newest_first=False)
+        r"moegoat.com/library/loier/{id:\d+}")), discovers=True)
     async def author(self, ctx: Ctx, id: str) -> AsyncIterator[Target]:
         """An author's posts, such as `loi:author/183`, each as `loi:post/<id>`: the API's
         list, paged by `page` until the last page or a short or empty one.

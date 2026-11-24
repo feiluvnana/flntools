@@ -599,8 +599,10 @@ the same fields and checks. A category's own `folder` still wins over the plugin
 
 `flnd get` follows each target that is not a single post, so `flnd get` alone (or `flnd sync`)
 keeps them current. `flnd sync <pattern>...` syncs only the followed targets whose name matches any
-glob pattern (`*`, `?`, `[seq]`, case-insensitive), such as `flnd sync "ins:*"`.
-What a run skips and where it stops:
+glob pattern (`*`, `?`, `[seq]`, case-insensitive), such as `flnd sync "ins:*"`. Both `get` and
+`sync` always check followed targets for new content even after they are complete (so
+non-newest-first categories like stories still check on every run), while newest-first feeds stop
+early. What a run skips and where it stops:
 
 - A saved file: skipped: its row says saved and the file is there, or the file is on disk at its
   planned path
@@ -960,7 +962,7 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
 | `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
 | `switch` | bool | `false` | move a refused request to the plugin's next account |
-| `fresh` | text | `"2h"` | skip categories complete within this long (`"1d"`, `"12h"`, `"0"` off) |
+| `fresh` | text | `"0"` | in `get`, skip complete categories within this long (`"1d"`, `"0"` off) |
 | `timeout` | text | `"10m"` | abort a stalled download after this (`"10m"`, `"600s"`, `"0"` off) |
 
 `[plugins.<code>]` (one table per plugin):
@@ -1033,7 +1035,8 @@ up to 32.
   `spam` fails with non-retryable `Blocked`; "Please wait a few minutes" answers are blocks.
   API `LoginError` and `Blocked` responses never fall back to `in_page=True`.
 - **Known gaps:** story links are refused; only stories active now; a private post is `NotFound`,
-  not `Hidden`; `tagged`, `stories`, `highlights`, `profile` are read in full on every run.
+  not `Hidden`; `tagged`, `stories`, `profile` are read in full on every run; once complete,
+  `highlights` stops after 2 unchanged albums unless `--again`.
 - **Saved as:** `media/ins/example_user/posts/2026-01-02_Cexample123_0.jpg`,
   `media/ins/example_user/highlights/Travel/2026-01-02_1234567890.mp4`
 

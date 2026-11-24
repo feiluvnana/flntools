@@ -1673,6 +1673,7 @@ class _Kept:
                  span: Range) -> None:
         self.category, self.newest_first, self.time = category, newest_first, span
         self.ran_out = False
+        self.stopped_at_since = False
         # The targets the listing yielded, in order, each as the source wrote it.
         self.linked: list[Target] = []
         # The newest post listed, by its day (the first one, while none has a day): the head a
@@ -1726,6 +1727,7 @@ class _Kept:
                 older += post.id != last
                 last = post.id
                 if older >= OLDER_IN_A_ROW:
+                    self.stopped_at_since = True
                     return
         self.ran_out = True
 
@@ -1897,10 +1899,11 @@ class _Stops:
 
 
 async def _queue_all(
-    work: _Work, kept: _Kept, *, stops: _Stops = _Stops(), limit: int | None = None
+    work: _Work, kept: _Kept, *, stops: _Stops = _Stops(), limit: int | None = None,
+    listing: Listing | None = None,
 ) -> tuple[Ended, int]:
     """Queue kept posts, then release held undated posts."""
-    ended, taken = await _queue_listed(work, kept, stops=stops, limit=limit)
+    ended, taken = await _queue_listed(work, kept, stops=stops, limit=limit, listing=listing)
     if ended is Ended.STOPPED:
         return ended, taken
     for post in await work.ledger.release():
@@ -1915,7 +1918,8 @@ async def _queue_all(
 
 
 async def _queue_listed(
-    work: _Work, kept: _Kept, *, stops: _Stops, limit: int | None = None
+    work: _Work, kept: _Kept, *, stops: _Stops, limit: int | None = None,
+    listing: Listing | None = None,
 ) -> tuple[Ended, int]:
     """Queue each post in `kept` until stopped, `limit`, or a sync caught up (`_Stops`)."""
     saved_in_a_row = 0
@@ -1946,6 +1950,8 @@ async def _queue_listed(
                 continue
             taken += 1
             kept.queued += outcome is Outcome.QUEUED
+            if listing is not None and outcome is Outcome.QUEUED:
+                listing.queued += 1
             saved_in_a_row = saved_in_a_row + 1 if outcome is Outcome.SAVED else 0
             met_head = met_head or (stops.head is not None and post.id == stops.head)
             # `--limit` is checked as the next post comes, not here: the next may be another part
@@ -2141,7 +2147,8 @@ async def _list_one(
         return await _sync_one(work, run, site, target, options, progress, name=name,
                                items=items, stops=stops, remaining=remaining)
     start = progress.started.get(name) if newest_first else None
-    listing = progress.listings[name] = Listing(start, label=f"{target}: {name or target.kind}")
+    listing = progress.listings[name] = Listing(
+        start, label=f"{target}: {name or target.kind}", sync=name in progress.listed)
     work.ledger.tally.start(target, name, listing)
     if start:
         ui.info("{target}: {name}: going on where an interrupted run stopped",
@@ -2151,6 +2158,8 @@ async def _list_one(
         work, run, site, target,
         lambda: _listed(work, run, site, name, newest_first, items, listing,
                         stops, options, remaining))
+    if ended is Ended.CUT and kept.stopped_at_since:
+        listing.cursor = None
     if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP):
         progress.complete.append(name)
         if not start and kept.newest is not None:
@@ -2184,7 +2193,7 @@ async def _sync_one(
     if cursorless:
         stops = replace(stops, streak=None) if stops.head is not None else replace(stops,
                                                                                     sync=False)
-    listing = progress.listings[name] = Listing(None, label=label, head=stops.head)
+    listing = progress.listings[name] = Listing(None, label=label, head=stops.head, sync=True)
     work.ledger.tally.start(target, name, listing)
     # 1. The newest posts. A listing that raises (the site failed it) is cut short like any:
     # where it was is kept as a gap before the error goes on to fail the target.
@@ -2197,8 +2206,11 @@ async def _sync_one(
         progress.gaps[name] = list(dict.fromkeys([listing.cursor or "", *gaps]))
         raise
     queued = kept.queued
-    left: list[str]
-    if ended is Ended.RAN_OUT or (ended is Ended.CAUGHT_UP and cursorless):
+    if ended is Ended.CUT and kept.stopped_at_since:
+        listing.cursor = None
+        ended = Ended.RAN_OUT
+        left = list(gaps)
+    elif ended is Ended.RAN_OUT or (ended is Ended.CAUGHT_UP and cursorless):
         left = []
     elif ended is Ended.CAUGHT_UP:
         # 2. Into each gap, newest first.
@@ -2346,7 +2358,7 @@ async def _listed(
     try:
         kept = _Kept(await items(), name, newest_first=newest_first,
                      span=Range(options.since, options.until))
-        ended, taken = await _queue_all(work, kept, stops=stops, limit=remaining)
+        ended, taken = await _queue_all(work, kept, stops=stops, limit=remaining, listing=listing)
         if ended is Ended.RAN_OUT and listing.stalled:
             # A feed the stall guard ended is cut short, so the category is not complete.
             ended = Ended.CUT

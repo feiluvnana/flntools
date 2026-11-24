@@ -268,7 +268,8 @@ class RoutesTest(unittest.TestCase):
 
     def test_the_class(self):
         check(Loibus)
-        post = Loibus.routes[-1]
+        author, post = Loibus.routes[1], Loibus.routes[-1]
+        self.assertTrue(author.newest_first)
         self.assertTrue(post.single)
         self.assertEqual([(c.name, c.own) for c in post.categories],
                          [("archive", True), ("photo", True)])

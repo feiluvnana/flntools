@@ -480,14 +480,9 @@ class Engine:
         with stopping(self.stop) as stop:
             async with self._recording("get", [t for t, _ in chosen]), \
                     self._live(), self._running(stop) as runner:
-                active, results = await self._prune_fresh(runner, chosen)
-                if active:
-                    active_chosen = [(t, o) for _, t, o in active]
-                    sub: dict[int, TargetReport] = {}
-                    await self._sync_normal(runner, active_chosen, sub, stop)
-                    await self._sync_queries(runner, active_chosen, sub, stop)
-                    for sub_i, (orig_i, _, _) in enumerate(active):
-                        results[orig_i] = sub[sub_i]
+                results: dict[int, TargetReport] = {}
+                await self._sync_normal(runner, chosen, results, stop)
+                await self._sync_queries(runner, chosen, results, stop)
                 report = Results(tuple(results[i] for i in range(len(chosen))))
             return self._finish_report(report, stop)
 

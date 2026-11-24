@@ -15,9 +15,10 @@ from urllib.parse import parse_qsl, urlencode
 
 import fakes
 
+from flnd.engine.ctx import Listing
 from flnd.errors import Blocked, Changed, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import Range, Request, Target
-from flnd.plugins.ins import APP_ID, Instagram, best_file, code_pk, pk_stamp
+from flnd.plugins.ins import APP_ID, Instagram, Profile, best_file, code_pk, pk_stamp
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
 from flnkit.clock import day
 
@@ -794,6 +795,58 @@ class AntiBanTest(unittest.TestCase):
         self.assertEqual(len(saved), 1)
         self.assertEqual(len(ctx.seen.holds), 1)
         self.assertGreaterEqual(ctx.seen.holds[0][1], 300.0)
+
+    def test_non_tab_graphql_responses_do_not_pause_or_count_as_pages(self):
+        feeds = [
+            Sent(GRAPHQL, PROFILE),
+            Sent(GRAPHQL, HIGHLIGHTS),
+            Sent(GRAPHQL, grid(feed("P1", **image("https://cdn.example/p1.jpg")), more="")),
+        ]
+        ctx = fake(pages={f"{SITE}/example_creator/": FakePage("<html></html>", feeds=feeds)})
+        before = ctx.time.now()
+        saved = run(categories=["posts"], ctx=ctx)
+        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"])
+        self.assertEqual(ctx.time.now(), before)
+        self.assertIn(("debug", "example_creator: posts: read 0 scrolled, 0 graphql pages"),
+                      ctx.seen.logs)
+
+    def test_highlights_short_circuits_after_two_unchanged_albums_on_sync(self):
+        tray = {"data": {"highlights": {"edges": [
+            {"node": {"id": f"highlight:{hid}", "title": f"H{n}"}}
+            for n, hid in enumerate((9001, 9002, 9003), 1)]}}}
+        pages = {
+            f"{SITE}/example_creator/": embedded(PROFILE, tray),
+            **{f"{SITE}/stories/highlights/{hid}/": story_page(
+                {"id": str(5000 + hid), "taken_at": STAMP, **image("https://cdn.example/h.jpg")})
+               for hid in (9001, 9002, 9003)},
+        }
+
+        async def collect_highlights(ctx, *, queue_first=False):
+            profile = Profile("example_creator")
+            out = []
+            async for post in Instagram().highlights(ctx, profile):
+                out.append(post.id)
+                if queue_first and post.id == "14001":
+                    ctx.listing.queued += 1
+            return out
+
+        # Initial / `--again` run (`sync=False`) opens every highlight.
+        ctx_all = fake(pages=pages)
+        self.assertEqual(asyncio.run(collect_highlights(ctx_all)), ["14001", "14002", "14003"])
+
+        # Complete sync (`sync=True`) with no new queued files stops after 2 highlights.
+        ctx_sync = fake(pages=pages)
+        ctx_sync.listing = Listing(sync=True)
+        self.assertEqual(asyncio.run(collect_highlights(ctx_sync)), ["14001", "14002"])
+        self.assertNotIn(f"{SITE}/stories/highlights/9003/", ctx_sync.seen.visited)
+
+        # A new story in the first highlight resets the streak, checking 2 more then stopping.
+        ctx_reset = fake(pages=pages)
+        ctx_reset.listing = Listing(sync=True)
+        self.assertEqual(
+            asyncio.run(collect_highlights(ctx_reset, queue_first=True)),
+            ["14001", "14002", "14003"],
+        )
 
 
 if __name__ == "__main__":

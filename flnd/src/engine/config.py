@@ -75,7 +75,7 @@ class Defaults(msgspec.Struct, frozen=True):
     slowest: str = "0"
     height: int = 0
     switch: bool = False
-    fresh: str = "2h"
+    fresh: str = "0"
     timeout: str = "10m"
 
 
