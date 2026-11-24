@@ -18,6 +18,7 @@ from flnd.plugin import (
     Ctx,
     File,
     LoginError,
+    NetworkError,
     NotFound,
     Plugin,
     Post,
@@ -93,8 +94,22 @@ VIDEO_URLS = (
 PHOTO_URL = "viewer_image.uri || large_share_image.uri || photo_image.uri || image.uri"
 # 2026-11-11: a grid tile holds a small copy of a photo its inner node has in full.
 TILE = "TimelineAppCollectionItem"
-# The header's cover and pictures are the profile category's, not any tab's.
-NOT_MEDIA = {"profile_header_renderer"}
+# Exact media types whose inner trees carry thumbnails/previews, not separate photos.
+VIDEO_TYPES = frozenset({"Video", "Reel"})
+# The header's cover and pictures are the profile category's; video thumbnails, sidebar tiles
+# and delegate cover photos are not tab media.
+NOT_MEDIA = {
+    "profile_header_renderer", "preferred_thumbnail", "profile_tile_sections", "cover_photo",
+}
+# Containers whose `page_info` belongs to the profile chrome/sidebar, never a scrolled tab.
+NON_TAB_PAGE_INFO = {"profile_tile_sections", "timeline_nav_app_sections", "viewer"}
+# Locale-independent selector for the Featured Highlights carousel's next-page button.
+HIGHLIGHT_NEXT = (
+    'div:has(> :nth-child(1) a[href*="source=profile_highlight"],'
+    ' > :nth-child(2) a[href*="source=profile_highlight"])'
+    ' > :nth-child(3):last-child > div:only-child > [role="button"]:only-child'
+)
+MAX_HIGHLIGHT_CLICKS = 20
 # Date fields in order of preference; `posted_on` takes the first that holds a Unix time.
 TIMESTAMPS = ("creation_time", "publish_time", "post_timestamp", "timestamp", "created_time")
 # The Comet GraphQL endpoint's responses carry the feed.
@@ -335,29 +350,32 @@ class Facebook(Plugin):
     async def posts(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Post]:
         """The profile's own posts: the page's photos and videos, then its scroll's."""
         seen: set[str] = set()
-        # Not filtered by owner: the header that names the owner came from the same results.
+        dates = profile.get("dates") if isinstance(profile, dict) else None
         results = profile.pop("results", ()) if isinstance(profile, dict) else profile.get(
             "results", ()
         )
         for result in results:
-            for post in media_posts(result, "posts", seen=seen):
+            for post in media_posts(result, "posts", owner=profile["owner"], seen=seen,
+                                    dates=dates):
                 yield post
         del results
-        reloaded = False
+        reloads = 0
         got_new = False
         seen_keys: set[str] = {f"m:{pid}" for pid in seen}
         while True:
             try:
-                async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor(),
+                async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor("posts"),
                                     resume=False) as lines:
-                    if reloaded:
+                    if reloads:
                         await ctx.open(profile["url"])
                     async for line in unblocked(ctx, lines):
+                        collect_highlights(line, profile)
                         keys = _line_keys(line)
                         if any(k not in seen_keys for k in keys):
                             got_new = True
                         seen_keys.update(keys)
-                        for post in media_posts(line, "posts", owner=profile["owner"], seen=seen):
+                        for post in media_posts(line, "posts", owner=profile["owner"], seen=seen,
+                                                dates=dates):
                             yield post
                         if keys:
                             await ctx.pause(random.uniform(2.0, 4.5), "pacing scroll pages")
@@ -365,14 +383,48 @@ class Facebook(Plugin):
             except Blocked as error:
                 if not error.retryable:
                     raise
-                if reloaded and not got_new:
+                if (reloads > 0 and not got_new) or reloads >= 6:
                     if getattr(ctx, "listing", None) is not None:
                         ctx.listing.stalled = True
                     raise Blocked(f"{error} (no progress after reload)",
                                   wait=error.wait, retryable=False) from None
                 await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
-                reloaded = True
+                reloads += 1
                 got_new = False
+        if isinstance(profile, dict):
+            profile["posts_scrolled"] = True
+
+    @user.category(folder="highlights/{album}", key="{path}")
+    async def highlights(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Post]:
+        """The profile's featured highlights, each in `highlights/<title>/`; keyed by path.
+
+        Raises:
+            SiteError: a highlight's page didn't load.
+        """
+        if not profile["header"]:
+            ctx.log("warn", "the profile header wasn't found; its highlights are skipped")
+            return
+        if (not profile.get("highlights_seen") and not profile.get("highlights")
+                and not profile.get("posts_scrolled")):
+            await _load_highlight_tiles(ctx, profile)
+        if profile.get("highlights_more"):
+            await _more_highlights(ctx, profile)
+        listed = dict(profile.get("highlights") or {})
+        if not listed:
+            ctx.log("info", "highlights: this profile has no highlights")
+            return
+        urls = [f"{SITE}/stories/{hid}/?source=profile_highlight" for hid in listed]
+        await ctx.warm(urls)
+        for index, ((hid, title), url) in enumerate(zip(listed.items(), urls, strict=True)):
+            if index:
+                await ctx.pause(random.uniform(1.5, 3.5), "pacing highlight pages")
+            results = await page_results(ctx, url)
+            if results is None:
+                raise SiteError(f"fbk: the highlight {url} didn't load")
+            cards = _story_cards(results)
+            for item in cards:
+                yield post_of(item, "highlights", album=title)
+            ctx.log("info", "highlights: {n} in {title} ({id})", n=len(cards), title=title, id=hid)
 
     @user.category(url="{photos_url}")
     async def photos(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Post]:
@@ -394,6 +446,7 @@ class Facebook(Plugin):
         `albums/<title>/`. The albums' pages load in warm tabs while the first is read.
         """
         url, owner = profile["albums_url"], profile["owner"]
+        dates = profile.get("dates") if isinstance(profile, dict) else None
         if not url:
             ctx.log("info", "albums: this profile has no such tab")
             return
@@ -401,12 +454,14 @@ class Facebook(Plugin):
         async for result in tab_results(ctx, url, "albums"):
             if isinstance(result, dict):
                 listed.update(album_links(result))
-            for post in media_posts(result, "albums", owner=owner):
+            for post in media_posts(result, "albums", owner=owner, dates=dates):
                 yield post
         await ctx.warm(list(listed))
-        for album, title in listed.items():
+        for index, (album, title) in enumerate(listed.items()):
+            if index:
+                await ctx.pause(random.uniform(1.5, 3.5), "pacing album pages")
             async for result in tab_results(ctx, album, "album"):
-                for post in media_posts(result, "albums", album=title, owner=owner):
+                for post in media_posts(result, "albums", album=title, owner=owner, dates=dates):
                     yield post
 
     @user.category(url="{reels_url}")
@@ -437,21 +492,16 @@ class Facebook(Plugin):
         # loading in warm tabs while the first is read.
         urls = [f"{SITE}/stories/{bucket}/" for bucket in profile["buckets"]]
         await ctx.warm(urls)
-        for url in urls:
+        for index, url in enumerate(urls):
+            if index:
+                await ctx.pause(random.uniform(1.5, 3.5), "pacing story pages")
             results = await page_results(ctx, url)
             if results is None:
                 raise SiteError(f"fbk: the story bucket {url} didn't load")
-            cards = [card for result in results for card in dig(result, STORY_CARDS)
-                     if isinstance(card, dict)]
-            for card in cards:
-                stamp = posted_on(card)
-                for media in dig(card, "attachments[].media"):
-                    if not isinstance(media, dict):
-                        continue
-                    item = video_item(media, stamp) or photo_item(media, stamp)
-                    if item is not None:
-                        yield post_of(item, "stories")
-            ctx.log("info", "stories: {n} in {url}", n=len(cards), url=url)
+            items = _story_cards(results)
+            for item in items:
+                yield post_of(item, "stories")
+            ctx.log("info", "stories: {n} in {url}", n=len(items), url=url)
 
     # Keyed by its path, so a new picture is a new file; the name, extension included, is
     # pinned so that key stays today's.
@@ -506,11 +556,11 @@ async def tab_results(ctx: Ctx, url: str, tab: str) -> AsyncIterator[Any]:
         SiteError: the page didn't load.
     """
     seen_keys: set[str] = set()
-    reloaded = False
+    reloads = 0
     got_new = False
     while True:
         try:
-            async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor(),
+            async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor(tab),
                                 resume=False) as lines:
                 results = await page_results(ctx, url)
                 if results is None:
@@ -533,13 +583,13 @@ async def tab_results(ctx: Ctx, url: str, tab: str) -> AsyncIterator[Any]:
         except Blocked as error:
             if not error.retryable:
                 raise
-            if reloaded and not got_new:
+            if (reloads > 0 and not got_new) or reloads >= 6:
                 if getattr(ctx, "listing", None) is not None:
                     ctx.listing.stalled = True
                 raise Blocked(f"{error} (no progress after reload)",
                               wait=error.wait, retryable=False) from None
             await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
-            reloaded = True
+            reloads += 1
             got_new = False
 
 
@@ -594,8 +644,9 @@ async def read_tab(ctx: Ctx, profile: Mapping[str, Any], category: str) -> Async
         ctx.log("info", "{tab}: this profile has no such tab", tab=category)
         return
     seen: set[str] = set()
+    dates = profile.get("dates") if isinstance(profile, dict) else None
     async for result in tab_results(ctx, url, category):
-        for post in media_posts(result, category, owner=profile["owner"], seen=seen):
+        for post in media_posts(result, category, owner=profile["owner"], seen=seen, dates=dates):
             yield post
 
 
@@ -611,7 +662,7 @@ async def read_single(ctx: Ctx, url: str, *, wanted: str | None = None, owner: s
     """
     async with ctx.feed(FEED, scroll=False, lines=True) as arrived:
         results = await page_results(ctx, url)
-        early = [line async for line in arrived] if results is not None else []
+        early = [line async for line in unblocked(ctx, arrived)] if results is not None else []
     seen: set[str] = set()
     found = [item for result in [*(results or []), *early]
              for item in media_items(result, seen=seen, owner=owner)
@@ -693,23 +744,120 @@ def profile_of(url: str, results: list[Any], early: list[Any]) -> dict[str, Any]
         `url`; `results` (the page's and its first load's, the posts tab's first batch);
         `header` (whether it was found; a page's has no `tagged` tab); `owner` (the profile's
         id, which keeps other accounts' media out of its tabs; None keeps all); `pictures` as
-        (kind, URL, id); `buckets` (story bucket ids); and `<tab>_url` per tab, "" when the
+        (kind, URL, id); `buckets` (story bucket ids); `highlights` ({id: title}); `dates`
+        (media id -> timestamp shared across categories); and `<tab>_url` per tab, "" when the
         header lacks it. Without a header every tab is tried at its first path.
     """
     header = next((found for result in results if (found := read_header(result)) is not None),
                   None)
     paths = header["paths"] if header else set()
-    profile = {
+    profile: dict[str, Any] = {
         "url": url, "results": [*results, *early], "header": header is not None,
         "owner": header["id"] if header else None,
         "pictures": header["pictures"] if header else [],
         "buckets": header["buckets"] if header else [],
+        "highlights": {}, "highlights_more": False, "highlights_seen": False,
+        "dates": {},
     }
+    for result in profile["results"]:
+        collect_highlights(result, profile)
     for tab in TABS:
         path = None if header and header["page"] and tab.category == "tagged" else (
             tab_path(tab, paths))
         profile[f"{tab.category}_url"] = f"{url}/{path}" if path else ""
     return profile
+
+
+def collect_highlights(result: Any, profile: Mapping[str, Any]) -> int:
+    """Record any `StoryHighlightContainer` entries and pagination flag from `result`."""
+    if not isinstance(result, dict) or not isinstance(profile, dict):
+        return 0
+    if dig(result, "data.node.profile_tile_sections") or dig(
+            result, "data.user.profile_tile_sections"):
+        profile["highlights_seen"] = True
+    found = profile.setdefault("highlights", {})
+    before = len(found)
+    for node in dig(result, "..[__typename=StoryHighlightContainer]"):
+        if isinstance(node, dict) and node.get("id"):
+            hid = str(node["id"])
+            title = str(node.get("name") or "highlight")
+            found.setdefault(hid, title)
+    # Check both initial carousel view and paginated `ProfileTileView` responses.
+    views = (dig(result, "..[__typename=ProfileTileViewFeaturedHighlightsRenderer].view")
+             or [])
+    node_view = dig(result, "data.node")
+    if isinstance(node_view, dict) and node_view.get("__typename") == "ProfileTileView":
+        views = [*views, node_view]
+    for view in views:
+        if not isinstance(view, dict):
+            continue
+        profile["highlights_seen"] = True
+        info = dig(view, "profile_tile_items.page_info")
+        total = dig(view, "all_featured_highlights.count")
+        has_more = bool(isinstance(info, dict) and info.get("has_next_page"))
+        if isinstance(total, int) and len(found) < total:
+            has_more = True
+        profile["highlights_more"] = has_more
+    return len(found) - before
+
+
+async def _load_highlight_tiles(ctx: Ctx, profile: Mapping[str, Any]) -> None:
+    """Scroll slightly on the profile page so lazy-loaded `profile_tile_sections` arrives."""
+    seen_timeline = 0
+
+    def done(line: Any) -> tuple[bool, str | None] | None:
+        nonlocal seen_timeline
+        if isinstance(line, dict):
+            if dig(line, "data.node.profile_tile_sections"):
+                return (False, None)
+            if "timeline_list_feed_units" in (line.get("path") or ()):
+                seen_timeline += 1
+                if seen_timeline >= 2:
+                    return (False, None)
+        return None
+
+    async with ctx.feed(FEED, scroll=True, lines=True, cursor=done, resume=False) as lines:
+        async for line in unblocked(ctx, lines):
+            collect_highlights(line, profile)
+            if profile.get("highlights_seen"):
+                break
+
+
+async def _more_highlights(ctx: Ctx, profile: Mapping[str, Any]) -> None:
+    """Click the Featured Highlights carousel's next button until every highlight is listed."""
+    for step in range(MAX_HIGHLIGHT_CLICKS):
+        if not profile.get("highlights_more") or not await ctx.shown(HIGHLIGHT_NEXT):
+            break
+        if step:
+            await ctx.pause(random.uniform(1.0, 2.5), "pacing highlight carousel")
+        added = 0
+        try:
+            async with ctx.feed(FEED, scroll=False, lines=True) as lines:
+                await ctx.click(HIGHLIGHT_NEXT, timeout=5.0)
+                async for line in unblocked(ctx, lines):
+                    added += collect_highlights(line, profile)
+        except (Blocked, LoginError):
+            raise
+        except (NetworkError, SiteError):
+            break
+        if not added:
+            break
+
+
+def _story_cards(results: list[Any]) -> list[Item]:
+    """Every photo and video from a story or highlight bucket's `STORY_CARDS`."""
+    items: list[Item] = []
+    cards = [card for result in results for card in dig(result, STORY_CARDS)
+             if isinstance(card, dict)]
+    for card in cards:
+        stamp = posted_on(card)
+        for media in dig(card, "attachments[].media"):
+            if not isinstance(media, dict):
+                continue
+            item = video_item(media, stamp) or photo_item(media, stamp)
+            if item is not None:
+                items.append(item)
+    return items
 
 
 def tab_path(tab: Tab, paths: set[str]) -> str | None:
@@ -755,29 +903,58 @@ def read_header(result: Any) -> dict[str, Any] | None:
 # Paging
 # ---------------------------------------------------------------------------------------------
 
-def next_page(line: Any) -> tuple[bool, str | None] | None:
+def _read_page_info(info: Any) -> tuple[bool, str | None] | None:
+    """Parse one `page_info` dict as `(has_next_page, end_cursor)`."""
+    if isinstance(info, dict) and ("end_cursor" in info or "has_next_page" in info):
+        cursor = info.get("end_cursor")
+        return bool(info.get("has_next_page") and cursor), str(cursor) if cursor else None
+    return None
+
+
+def next_page(line: Any, *, tab: str | None = None) -> tuple[bool, str | None] | None:
     """A result line's `(has a next page, cursor)`, or None when it says nothing about paging.
 
     The shallowest `page_info` at most `PAGE_INFO_DEPTH` objects under `data`, never inside a
-    list, counts; a comment list's sits deeper. `flnd.plugin.page_info` reads one fixed path,
-    which the tab's isn't.
+    list or `NON_TAB_PAGE_INFO` (sidebar/chrome), counts; a comment list's sits deeper. On
+    `posts`, only `timeline_list_feed_units` (or bare `data.page_info`) counts.
     """
-    level = [line.get("data")] if isinstance(line, dict) else []
+    if not isinstance(line, dict):
+        return None
+    data = line.get("data")
+    if not isinstance(data, dict):
+        return None
+    if tab == "posts":
+        path = line.get("path")
+        if isinstance(path, list):
+            if "timeline_list_feed_units" not in path:
+                return None
+            return _read_page_info(data.get("page_info"))
+        for container in (
+            data.get("timeline_list_feed_units"),
+            dig(data, "user.timeline_list_feed_units"),
+            dig(data, "node.timeline_list_feed_units"),
+        ):
+            if isinstance(container, dict) and (found := _read_page_info(
+                    container.get("page_info"))) is not None:
+                return found
+        return _read_page_info(data.get("page_info"))
+    level = [data]
     for _ in range(PAGE_INFO_DEPTH + 1):
         nested = []
         for node in level:
             if not isinstance(node, dict):
                 continue
-            info = node.get("page_info")
-            if isinstance(info, dict) and ("end_cursor" in info or "has_next_page" in info):
-                cursor = info.get("end_cursor")
-                return bool(info.get("has_next_page") and cursor), str(cursor) if cursor else None
-            nested += [value for value in node.values() if isinstance(value, dict)]
+            if (found := _read_page_info(node.get("page_info"))) is not None:
+                return found
+            nested += [
+                value for key, value in node.items()
+                if isinstance(value, dict) and key not in NON_TAB_PAGE_INFO
+            ]
         level = nested
     return None
 
 
-def tab_cursor() -> Callable[[Any], tuple[bool, str | None] | None]:
+def tab_cursor(tab: str | None = None) -> Callable[[Any], tuple[bool, str | None] | None]:
     """A cursor reader for one scrolled tab: `next_page`, but a last page ends the feed only
     after some page said there was a next one.
 
@@ -788,7 +965,7 @@ def tab_cursor() -> Callable[[Any], tuple[bool, str | None] | None]:
 
     def read(line: Any) -> tuple[bool, str | None] | None:
         nonlocal seen_more
-        state = next_page(line)
+        state = next_page(line, tab=tab)
         if state is None:
             return None
         if state[0]:
@@ -824,21 +1001,31 @@ class Item(NamedTuple):
 
 
 def media_posts(result: Any, tab: str, *, album: str | None = None, owner: str | None = None,
-                seen: set[str] | None = None) -> Iterator[Post]:
+                seen: set[str] | None = None,
+                dates: dict[str, Any] | None = None) -> Iterator[Post]:
     """Each photo and video of `owner` in one result of a tab, filed where it belongs.
 
     A photo that names its album goes under `albums/<album>/`, and a video found in a tab
-    other than reels or videos under `videos/`.
+    other than reels or videos under `videos/`. Known timestamps are shared via `dates` so
+    later tabs (such as `photos`) inherit dates learned from `posts`.
 
     Args:
         tab: the category of the tab being read.
         album: the album being read, which files every media under it.
         owner: the profile's id or name: media another account owns is left out. None keeps all.
         seen: the ids already yielded across one tab; None starts a set for this result.
+        dates: mutable map of media id -> timestamp shared across a profile's categories.
     """
     if not isinstance(result, dict):
         return
     for item in media_items(result, seen=seen, owner=owner):
+        if tab == "reels" and item.kind != "video":
+            continue
+        if dates is not None:
+            if item.date:
+                dates[item.id] = item.date
+            elif item.id in dates:
+                item = item._replace(date=dates[item.id])
         if item.album or album:
             part, title = "albums", item.album or album
         elif item.kind == "video" and tab not in ("reels", "videos"):
@@ -884,13 +1071,25 @@ def album_links(data: Any) -> dict[str, str]:
     }
 
 
+def _other_actor(data: dict, owner: str | None) -> bool:
+    """Whether `data` is an attached/shared story whose `actors` exclude numeric `owner`."""
+    if not (owner and owner.isdigit()):
+        return False
+    actors = data.get("actors")
+    if not isinstance(actors, list) or not actors:
+        return False
+    ids = [str(actor["id"]) for actor in actors if isinstance(actor, dict) and actor.get("id")]
+    return bool(ids) and owner not in ids
+
+
 def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
                 owner: str | None = None) -> Iterator[Item]:
     """Every photo and video in a result, each once, dated by its nearest dated node.
 
     A video's node isn't searched further (its thumbnails are no photos), nor is the profile
-    header. 2026-11-11: other accounts' media (a comment's photo) shows in a profile's tabs,
-    so media whose owner id isn't `owner` is left out.
+    header or sidebar tile strip. 2026-11-11: other accounts' media (a comment's photo or a
+    shared post's `attached_story`) shows in a profile's tabs, so media owned by another
+    account is left out.
 
     Args:
         stamp: the date of the nearest dated node above `data`.
@@ -902,7 +1101,7 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
         for value in data:
             yield from media_items(value, stamp, seen, owner=owner)
         return
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or _other_actor(data, owner):
         return
     stamp = posted_on(data) or stamp
     item = video_item(data, stamp) or photo_item(data, stamp)
@@ -912,21 +1111,29 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
     if item is not None and item.id not in seen and not (owner and theirs and theirs != owner):
         seen.add(item.id)
         yield item._replace(owner=named or owned_by)
-    if item is not None and item.kind == "video":
+    typename = data.get("__typename", "")
+    if (item is not None and item.kind == "video") or typename in VIDEO_TYPES:
         return
     for key, value in data.items():
-        if key not in NOT_MEDIA:
-            yield from media_items(value, stamp, seen, owner=owner)
+        if key in NOT_MEDIA:
+            continue
+        if key == "attached_story" and owner and owner.isdigit():
+            actors = value.get("actors") if isinstance(value, dict) else None
+            ids = ([str(a["id"]) for a in actors if isinstance(a, dict) and a.get("id")]
+                   if isinstance(actors, list) else [])
+            if owner not in ids:
+                continue
+        yield from media_items(value, stamp, seen, owner=owner)
 
 
 def video_item(node: dict, stamp: Any) -> Item | None:
     """A video node's best file: its DASH streams, else its progressive files and URLs as
     mirrors, HD first; None for a node that isn't a video or has no id or no file."""
     typename = node.get("__typename", "")
-    if not ("Video" in typename or "Reel" in typename or "progressive_urls" in node):
+    if not (typename in VIDEO_TYPES or "progressive_urls" in node):
         return None
     video = str(node.get("id") or node.get("video_id") or "")
-    reel = "Reel" in typename
+    reel = typename == "Reel"
     if video and (joined := File.dash(dig(node, MANIFEST))) is not None:
         return Item(video, joined.url or "", "video", stamp, audio=joined.audio, reel=reel)
     progressive = [entry for entry in dig(node, PROGRESSIVE) or [] if isinstance(entry, dict)]
@@ -942,10 +1149,11 @@ def video_item(node: dict, stamp: Any) -> Item | None:
 def photo_item(node: dict, stamp: Any) -> Item | None:
     """A photo node's largest image, with its album's name; None for a grid tile, a node that
     isn't a photo, or one with no id or no image URL."""
-    if node.get("__typename") == TILE:
+    typename = node.get("__typename", "")
+    if typename == TILE or typename in VIDEO_TYPES:
         return None
     has_image = isinstance(node.get("image"), dict) and "uri" in node["image"]
-    if not ("Photo" in node.get("__typename", "") or has_image
+    if not ("Photo" in typename or has_image
             or any(key in node for key in ("large_share_image", "viewer_image", "photo_image"))):
         return None
     photo = str(node.get("id") or node.get("photo_id") or node.get("legacy_photo_id") or "")

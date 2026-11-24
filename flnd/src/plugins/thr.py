@@ -47,7 +47,13 @@ POSTS = ("data.mediaData.edges[].node.thread_items[].post"
          " || data.data.edges[].node.thread_items[].post"
          " || data.containing_thread.thread_items[].post"
          " || data.data.containing_thread.thread_items[].post")
-TAB_PAGES = page_info("data.mediaData.page_info")
+_MEDIA_PAGES = page_info("data.mediaData.page_info")
+_DATA_PAGES = page_info("data.data.page_info")
+
+
+def TAB_PAGES(result: Any) -> tuple[bool, str | None] | None:
+    """Pagination cursor from either `data.mediaData.page_info` or `data.data.page_info`."""
+    return _MEDIA_PAGES(result) or _DATA_PAGES(result)
 # The user a profile result describes, and the picture sizes it lists (confirm live).
 USER = "data.user || data.xdt_user_by_username"
 PICTURE = "hd_profile_pic_versions"
@@ -259,7 +265,7 @@ async def results(ctx: Ctx, url: str, *, scroll: bool) -> AsyncIterator[Any]:
     `Blocked` instead of looping infinitely.
     """
     seen_codes: set[str] = set()
-    reloaded = False
+    reloads = 0
     got_new = False
     while True:
         try:
@@ -267,9 +273,12 @@ async def results(ctx: Ctx, url: str, *, scroll: bool) -> AsyncIterator[Any]:
                 await ctx.open(url)
                 for result in meta(await ctx.document()):
                     _check_meta_error(result)
+                    if throttled(result):
+                        await ctx.hold(THROTTLE_REASON, seconds=random.uniform(300.0, 600.0))
+                        continue
                     codes = [str(m.get("code") or "") for m in posts_of(result) if m.get("code")]
                     if any(c not in seen_codes for c in codes) or (
-                        not scroll and not reloaded and isinstance(result, dict)
+                        not scroll and not reloads and isinstance(result, dict)
                         and result.get("data")
                     ):
                         got_new = True
@@ -282,7 +291,7 @@ async def results(ctx: Ctx, url: str, *, scroll: bool) -> AsyncIterator[Any]:
                         continue
                     codes = [str(m.get("code") or "") for m in posts_of(result) if m.get("code")]
                     if any(c not in seen_codes for c in codes) or (
-                        not scroll and not reloaded and isinstance(result, dict)
+                        not scroll and not reloads and isinstance(result, dict)
                         and result.get("data")
                     ):
                         got_new = True
@@ -292,13 +301,13 @@ async def results(ctx: Ctx, url: str, *, scroll: bool) -> AsyncIterator[Any]:
         except Blocked as error:
             if not error.retryable:
                 raise
-            if reloaded and not got_new:
+            if (reloads > 0 and not got_new) or reloads >= 6:
                 if getattr(ctx, "listing", None) is not None:
                     ctx.listing.stalled = True
                 raise Blocked(f"{error} (no progress after reload)",
                               wait=error.wait, retryable=False) from None
             await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
-            reloaded = True
+            reloads += 1
             got_new = False
 
 
@@ -325,10 +334,11 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
             # The last page, embedded or scrolled: nothing more is asked for.
             if state is not None and not (state[0] and state[1]):
                 return
-            pages_seen += 1
-            delay = (random.uniform(12.0, 25.0) if pages_seen % 15 == 0
-                     else random.uniform(2.0, 5.0))
-            await ctx.pause(delay, "pausing between tab pages")
+            if state is not None:
+                pages_seen += 1
+                delay = (random.uniform(12.0, 25.0) if pages_seen % 15 == 0
+                         else random.uniform(2.0, 5.0))
+                await ctx.pause(delay, "pausing between tab pages")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -362,6 +372,8 @@ def files_of(media: dict) -> list[File]:
 
 def utc_day(value: Any) -> str | None:
     """The UTC day of `taken_at` (Unix seconds) as `YYYY-MM-DD`; None without one."""
+    if isinstance(value, str) and value.isdigit():
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return None
     try:

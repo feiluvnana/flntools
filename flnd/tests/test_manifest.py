@@ -100,7 +100,7 @@ class BuiltInTest(unittest.TestCase):
             "thr": (("sessionid",), 2.0, True, False, {}),
             "twt": (("auth_token",), 2.0, True, False,
                     {"pbs.twimg.com": 4, "video.twimg.com": 4}),
-            "loi": (("access-token",), 0.5, True, False, {}),
+            "loi": (("access-token",), 1.5, True, False, {"api.moegoat.com": 2}),
             "tlg": ((), 0.5, True, False, {"t.me": 3}),
             "mht": ((), 0.5, True, False, {}),
             "web": ((), 0.5, True, False, {}),
@@ -118,7 +118,7 @@ class BuiltInTest(unittest.TestCase):
         # Without --only a target gets every category; a single post's route is its kind.
         rows = {
             "tik": ("videos stories playlists reposts liked favorites profile", "post short"),
-            "fbk": ("posts photos tagged albums reels videos stories profile",
+            "fbk": ("posts highlights photos tagged albums reels videos stories profile",
                     "video watch share photo post"),
             "ins": ("posts reels tagged reposts stories highlights profile", "post"),
             "thr": ("posts replies reposts profile", "post"),

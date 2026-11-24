@@ -394,15 +394,16 @@ class SearchTest(unittest.TestCase):
     def test_search_stores_extracted_posts_and_caps_lru(self):
         plugin = Twitter()
         # Putting tweet "1" as the oldest tweet ends the search without opening another window.
-        lots = [item(tweet(str(i), [photo("p")])) for i in range(75, 0, -1)]
+        total = 265
+        lots = [item(tweet(str(i), [photo("p")])) for i in range(total, 0, -1)]
         ctx = FakeCtx(plugin, "twt?lots", pages={self.search_url("lots"): FakePage(
             feeds=sent(self.RESPONSE, [page(*lots, cursor="end", search=True)]))})
         found = listed(plugin, ctx, "search", "lots")
-        self.assertEqual(len(found), 75)
-        self.assertLessEqual(len(plugin.found), 64)
+        self.assertEqual(len(found), total)
+        self.assertLessEqual(len(plugin.found), 256)
         first_key = next(iter(plugin.found))
         self.assertIsInstance(plugin.found[first_key], list)
-        self.assertNotIn("75", plugin.found)
+        self.assertNotIn(str(total), plugin.found)
         self.assertIn("1", plugin.found)
         # Starting a new search clears prior cache.
         ctx2 = FakeCtx(plugin, "twt?small", pages={self.search_url("small"): FakePage(
@@ -1503,7 +1504,7 @@ class AntiBanTest(unittest.TestCase):
             listed(plugin, ctx, "search", "example")
         self.assertFalse(caught.exception.retryable)
         self.assertEqual(ctx.seen.visited[0], expected_first)
-        self.assertEqual(ctx.state.get("search:example"), {"max_id": "469"})
+        self.assertEqual(ctx.state.get("search:example"), {"max_id": "489"})
 
     def test_no_progress_429_reload_aborts_instead_of_looping(self):
         from unittest import mock

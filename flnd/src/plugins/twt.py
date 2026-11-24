@@ -67,7 +67,7 @@ SEARCH_EMPTY = 3
 SEARCH_TAIL = 5
 MAX_ID = re.compile(r"(?<!\S)max_id:\d+(?!\S)", re.IGNORECASE)
 # The search tweets held by id for `post` to read instead of asking the API.
-MAX_FOUND = 64
+MAX_FOUND = 256
 # The flags sent before the web app's own are known: a refresh replaces them with each query's
 # `featureSwitches` and the values x.com's page gives them.
 FEATURES = {"responsive_web_graphql_timeline_navigation_enabled": True,
@@ -795,13 +795,15 @@ PHOTO_TIMELINES = re.compile(r"/(UserPhotoTimeline|UserMedia)(?:\?|$)")
 LOCK_WALLS = (
     "/account/access",
     "/account/login_challenge",
+    "/account/suspended",
+    "/i/flow/arkose",
     "/i/flow/consent_flow",
     "/i/flow/verify",
 )
 RATELIMIT_KEY = "twt.ratelimit"
 LOW_REMAINING = 15
 # Cap consecutive search rate-limit resets per session so backfills save max_id and rest.
-MAX_SEARCH_RESETS = 4
+MAX_SEARCH_RESETS = 2
 
 
 def _reset_wait(query: str, reset: int, now: float) -> float:
@@ -905,11 +907,14 @@ def _raise_graphql_errors(errors: Any) -> None:
                              retryable=False)
         if code in (64, 141):
             raise LoginError(f"twt: {SUSPENDED_MSG}", hint=SUSPENDED_HINT, retryable=False)
-        if code in (32, 239):
+        if code in (32, 239, 353):
             raise LoginError("twt: session expired or invalid; log in again",
                              hint=SUSPENDED_HINT, retryable=False)
         if code == 226:
             raise Blocked("twt: automated activity detected; stopping to protect account",
+                          retryable=False)
+        if code == 344:
+            raise Blocked("twt: daily API limit reached (code 344); stopping to protect account",
                           retryable=False)
         if code == 88:
             raise Blocked("twt: rate limited by API (code 88)", wait=900.0)
@@ -1121,7 +1126,10 @@ class Graph:
             "features": json.dumps(features, separators=(",", ":")),
         }
         # X limits each operation on its own (its `x-rate-limit-*` headers), so each is a bucket.
-        data = (await ctx.fetch(Request(endpoint, params=params), bucket=query)).json
+        await _wait_ratelimit(ctx, query)
+        response = await ctx.fetch(Request(endpoint, params=params), bucket=query)
+        _record_ratelimit(ctx, query, response.headers)
+        data = response.json
         if isinstance(data, dict) and data.get("errors"):
             _raise_graphql_errors(data["errors"])
         return data

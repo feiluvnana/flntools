@@ -356,7 +356,7 @@ A category is one part of a target that can be got alone. Each plugin's list is 
 | `thr` | `posts replies profile` | `reposts` |
 | `twt` | `posts media highlights replies profile` | `reposts` |
 | `tik` | `videos stories playlists profile` | `reposts liked favorites` |
-| `fbk` | `posts photos albums reels videos stories profile` | `tagged` |
+| `fbk` | `posts highlights photos albums reels videos stories profile` | `tagged` |
 | `tlg` | `photo video file` | none |
 | `loi` | `archive photo` | none |
 | `mht` | `chapters cover` | none |
@@ -1122,12 +1122,15 @@ up to 32.
 - **Reads:** a profile or page in the browser, and one video, reel, photo or post by link (a
   `fb.watch` or `/share/` link is opened to find where it lands). A tab is scrolled until its
   `page_info` says it ends; nothing is replayed.
-- **Categories:** every tab is read to its end each run. `posts`, `photos`, `albums`, `reels`,
-  `videos`, `stories`, `profile` (own); `tagged` (opt-in). A video found in another tab goes to
-  `videos`, a photo naming its album to `albums/<album>`; others' media is left out.
-- **Folder:** `{part}/{album}`; `profile` for `profile`. **Filename:** `{date}_{post}`; profile
-  pictures `profile_<id>`, covers `cover_<id>`.
-- **Key:** `{post}` (`fbk:<id>`, so a photo in two tabs is saved once); `profile` keys `{path}`.
+- **Categories:** every tab is read to its end each run. `posts`, `highlights`, `photos`, `albums`,
+  `reels`, `videos`, `stories`, `profile` (own); `tagged` (opt-in). A video found in another tab
+  goes to `videos`, a photo naming its album to `albums/<album>`; others' media (including shared
+  posts) and sidebar preview tiles are left out.
+- **Folder:** `{part}/{album}`; `highlights/{album}` for `highlights`; `profile` for `profile`.
+  **Filename:** `{date}_{post}` (an undated photo takes its date from `posts` or HTTP
+  `Last-Modified`); profile pictures `profile_<id>`, covers `cover_<id>`.
+- **Key:** `{post}` (`fbk:<id>`, so a photo in two tabs is saved once); `highlights` and `profile`
+  key `{path}`.
 - **Login:** cookies `c_user` or `xs` (optional, but a logged-out browser sees little).
 - **Limits and walls:** pace 1.5; walls `/login`, `/login.php`. Checkpoint/lock walls
   (`/checkpoint`, `/checkpoint/block`, `/two_step_verification`, `/account_disabled`, `/suspended`)

@@ -189,7 +189,7 @@ class Profile:
             await self._show(ctx, posts=True)
             try:
                 feed = self._posts
-                reloaded = False
+                reloads = 0
                 got_new = False
                 for read in range(REREADS + 1):
                     ended = False
@@ -209,13 +209,13 @@ class Profile:
                         except Blocked as error:
                             if not error.retryable:
                                 raise
-                            if reloaded and not got_new:
+                            if (reloads > 0 and not got_new) or reloads >= 6:
                                 if getattr(ctx, "listing", None) is not None:
                                     ctx.listing.stalled = True
                                 raise Blocked(f"{error} (no progress after reload)",
                                               wait=error.wait, retryable=False) from None
                             await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
-                            reloaded = True
+                            reloads += 1
                             got_new = False
                             feed = self._posts = _watch(ctx, "videos")
                             await ctx.open(self.url)
@@ -249,6 +249,7 @@ class Profile:
         feed, self._stories, self._stories_read = self._stories, None, True
         async with feed:
             async for data in feed:
+                _check_tiktok_status(data)
                 for item in items_of(data, ctx.time.wall()):
                     yield item
 
@@ -272,8 +273,7 @@ class Profile:
             except NetworkError as error:
                 said = str(error).partition("\n")[0]
                 raise Changed(f"tik: {category}: the tab didn't open: {said}") from None
-            async for data in feed:
-                _check_tiktok_status(data)
+            async for data in filled(ctx, feed, page_state):
                 items = items_of(data, ctx.time.wall())
                 found += len(items)
                 for item in items:
@@ -425,7 +425,7 @@ class TikTok(Plugin):
         """
         url = f"{SITE}/search/video?q={quote_plus(query)}"
         seen: set[str] = set()
-        reloaded = False
+        reloads = 0
         got_new = False
         while True:
             feed = ctx.feed(SEARCH_API, scroll=True, cursor=search_state, resume=False)
@@ -447,13 +447,13 @@ class TikTok(Plugin):
             except Blocked as error:
                 if not error.retryable:
                     raise
-                if reloaded and not got_new:
+                if (reloads > 0 and not got_new) or reloads >= 6:
                     if getattr(ctx, "listing", None) is not None:
                         ctx.listing.stalled = True
                     raise Blocked(f"{error} (no progress after reload)",
                                   wait=error.wait, retryable=False) from None
                 await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
-                reloaded = True
+                reloads += 1
                 got_new = False
 
     # The `@` is in the link's pattern, so `tiktok.com/@@example_creator` is refused.

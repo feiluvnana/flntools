@@ -14,6 +14,7 @@ from flnd.errors import Blocked, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import Plugin, Range, Target
 from flnd.plugins import _manifest
 from flnd.plugins.fbk import (
+    HIGHLIGHT_NEXT,
     TEMPORARILY_BLOCKED,
     Facebook,
     media_items,
@@ -199,7 +200,7 @@ BUCKET = {"data": {"bucket": {"unified_stories_with_notes": {"edges": [
 ]}}}}
 TABS = ("photos_by", "photos_of", "photos_albums", "reels_tab", "videos_by")
 # A profile with every kind of file fbk saves. The profile page's first load and its scroll are
-# both read by `posts`; only the scroll's lines are filtered by the header's owner id.
+# both read by `posts`, and both are filtered by the header's owner id.
 PAGES = {
     BASE: page(header(*TABS, user_id="42"), photo("51"), video("52"), photo("53", stamp=0),
                photo("54", "https://cdn.example/w.png?stp=dst-webp"),
@@ -221,8 +222,7 @@ PAIRS = [
     ("albums/2023-11-15_81.jpg", "81"), ("albums/Home_1/92.jpg", "92"),
     ("albums/Summer_2026/2023-11-15_61.jpg", "61"), ("albums/Trip/2023-11-15_91.jpg", "91"),
     ("photos/2023-11-15_62.jpg", "62"), ("photos/2023-11-15_63.jpg", "63"),
-    ("posts/2023-11-15_51.jpg", "51"), ("posts/2023-11-15_55.jpg", "55"),
-    ("posts/2023-11-15_56.jpg", "56"), ("posts/2023-11-15_58.jpg", "58"), ("posts/53.jpg", "53"),
+    ("posts/2023-11-15_51.jpg", "51"), ("posts/2023-11-15_58.jpg", "58"), ("posts/53.jpg", "53"),
     ("profile/cover_12.png", "profile/cover_12.png"),
     ("profile/profile_11.jpg", "profile/profile_11.jpg"),
     ("reels/2023-11-15_22.mp4", "22"), ("reels/2023-11-15_24.mp4", "24"),
@@ -285,8 +285,8 @@ class ProfileTest(unittest.TestCase):
 
     def test_each_category_opens_only_its_pages(self):
         cases = [
-            # 57 is another account's, in the scroll: left out; 55 and 56 came with the page.
-            (["posts"], [BASE], ["51", "52", "53", "54", "55", "56", "58"]),
+            # 55, 56 and 57 are another account's: left out on both initial load and scroll.
+            (["posts"], [BASE], ["51", "52", "53", "54", "58"]),
             (["tagged"], [BASE, f"{BASE}/photos_of"], ["71"]),
             (["albums"], [BASE, f"{BASE}/photos_albums", ALBUMS["Trip"], ALBUMS["Home: 1"]],
              ["81", "91", "62", "92"]),  # 93 is another account's
@@ -328,7 +328,7 @@ class ProfileTest(unittest.TestCase):
         made = {category.name: category for category in route.categories}
         shown = profile_of(BASE, [header("photos", "reels_tab")], [])
         self.assertEqual({name: made[name].link(shown) for name in made}, {
-            "posts": "", "photos": f"{BASE}/photos", "tagged": "", "albums": "",
+            "posts": "", "highlights": "", "photos": f"{BASE}/photos", "tagged": "", "albums": "",
             "reels": f"{BASE}/reels_tab", "videos": "", "stories": "", "profile": ""})
 
     def test_a_pictures_name_and_key_take_the_format_the_cdn_sends(self):
@@ -588,10 +588,15 @@ class WalkerTest(unittest.TestCase):
     def test_what_is_left_out(self):
         thumb = {**video_node("22"), "preferred_thumbnail": {
             "id": "23", "image": {"uri": "https://cdn.example/t.jpg"}}}
+        preview_reel = {"__typename": "Reel", "id": "24",
+                        "image": {"uri": "https://cdn.example/r.jpg"},
+                        "preferred_thumbnail": {
+                            "id": "25", "image": {"uri": "https://cdn.example/rt.jpg"}}}
         tile = {"__typename": "TimelineAppCollectionItem", "id": "YXBw",
                 "image": {"uri": "https://cdn.example/small.jpg"}, "node": photo("21")["data"]}
         cases = [
             ("a video's thumbnails", {"data": thumb}, None, ["22"]),
+            ("a preview reel without video urls", {"data": preview_reel}, None, []),
             ("a grid tile, for the photo inside", {"data": {"edges": [{"node": tile}]}}, None,
              ["21"]),
             ("the header", header("photos"), None, []),
@@ -613,6 +618,114 @@ class WalkerTest(unittest.TestCase):
         # 2026-11, live: the Tiles feed's "no next page" first says nothing about the tab.
         self.assertEqual([read(info("")), read(info("c3")), read(info(""))],
                          [None, (True, "c3"), (False, None)])
+        # Sidebar / chrome page_info never ends a tab or posts timeline.
+        tiles_pi = {"data": {"node": {"profile_tile_sections": {
+            "page_info": {"has_next_page": False, "end_cursor": "photos"}}}}}
+        viewer_pi = {"data": {"viewer": {"actor": {"profiles": {
+            "page_info": {"has_next_page": False, "end_cursor": None}}}}}}
+        nav_pi = {"data": {"user": {"timeline_nav_app_sections": {
+            "page_info": {"has_next_page": False, "end_cursor": "x"}}}}}
+        self.assertIsNone(next_page(tiles_pi))
+        self.assertIsNone(next_page(viewer_pi))
+        self.assertIsNone(next_page(nav_pi))
+        tl_more = {"data": {"page_info": {"has_next_page": True, "end_cursor": "c1"}},
+                   "path": ["node", "timeline_list_feed_units"]}
+        tl_end = {"data": {"page_info": {"has_next_page": False, "end_cursor": None}},
+                  "path": ["node", "timeline_list_feed_units"]}
+        posts_read = tab_cursor("posts")
+        self.assertEqual([posts_read(tl_more), posts_read(tiles_pi), posts_read(tl_end)],
+                         [(True, "c1"), None, (False, None)])
+
+    def test_video_style_wrappers_walked_and_sidebar_shared_posts_filtered(self):
+        # Video nested under Comet *Video*StyleRenderer must be extracted, not skipped.
+        wrapped = {"data": {"node": {
+            "__typename": "Story", "creation_time": NOON, "actors": [{"id": "42"}],
+            "attachments": [{"styles": {
+                "__typename": "StoryAttachmentUnifiedLightweightVideoStyleRenderer",
+                "attachment": {"media": {**video_node("77"), "owner": {"id": "42"}}},
+            }}],
+        }}}
+        self.assertEqual([it.id for it in media_items(wrapped, owner="42")], ["77"])
+        # Sidebar tiles, delegate cover_photo, and shared attached_story of another actor are out.
+        noisy = {"data": {"node": {
+            "profile_tile_sections": {"edges": [photo("88")]},
+            "delegate_page": {"cover_photo": {"photo": photo("89")["data"]["node"]}},
+            "attached_story": {"actors": [{"id": "999"}], "media": photo("90")["data"]["node"]},
+            "comet_sections": {"attached_story": {"media": photo("91")["data"]["node"]}},
+        }}}
+        self.assertEqual([it.id for it in media_items(noisy, owner="42")], [])
+        # Reels tab skips stray images.
+        saved, _ = run(categories=["reels"], pages={
+            BASE: page(header(*TABS, user_id="42")),
+            f"{BASE}/reels_tab": page(video("22"), photo("99")),
+        })
+        self.assertEqual([s.key for s in saved], ["22"])
+
+    def test_highlights_paginate_and_posts_cross_reference_dates_to_photos(self):
+        hl_tile = {"data": {"node": {"profile_tile_sections": {"edges": [{"node": {
+            "profile_tile_views": {"nodes": [{"view_style_renderer": {
+                "__typename": "ProfileTileViewFeaturedHighlightsRenderer",
+                "view": {
+                    "all_featured_highlights": {"count": 2},
+                    "profile_tile_items": {
+                        "edges": [{"node": {"node": {
+                            "__typename": "StoryHighlightContainer",
+                            "id": "101", "name": "Trip 2026",
+                        }}}],
+                        "page_info": {"has_next_page": True, "end_cursor": "c1"},
+                    },
+                },
+            }}]},
+        }}]}}}}
+        hl_more = {"data": {"node": {
+            "__typename": "ProfileTileView",
+            "profile_tile_items": {
+                "edges": [{"node": {"node": {
+                    "__typename": "StoryHighlightContainer",
+                    "id": "102", "name": "Work",
+                }}}],
+                "page_info": {"has_next_page": False, "end_cursor": None},
+            },
+        }}}
+        hl1_bucket = {"data": {"bucket": {"unified_stories_with_notes": {"edges": [
+            {"node": {"creation_time": NOON, "attachments": [{"media": video_node("201")}]}},
+        ]}}}}
+        hl2_bucket = {"data": {"bucket": {"unified_stories_with_notes": {"edges": [
+            {"node": {"creation_time": NOON, "attachments": [{"media": {
+                "__typename": "Photo", "id": "202", "image": {"uri": "https://cdn.example/h.jpg"},
+            }}]}},
+        ]}}}}
+        base_page = FakePage(
+            embedded(header(*TABS, user_id="42"), photo("501", stamp=NOON), hl_tile),
+            shown=[HIGHLIGHT_NEXT],
+            feeds=[Sent(GRAPHQL, hl_more, click=HIGHLIGHT_NEXT)],
+        )
+        pages = {
+            BASE: base_page,
+            f"{SITE}/stories/101/?source=profile_highlight": page(hl1_bucket),
+            f"{SITE}/stories/102/?source=profile_highlight": page(hl2_bucket),
+            f"{BASE}/photos_by": page(photo("501", stamp=0)),
+        }
+        saved, _ = run(categories=["posts", "highlights"], pages=pages)
+        paths = sorted((s.path, s.key) for s in saved)
+        self.assertEqual(paths, [
+            ("highlights/Trip_2026/2023-11-15_201.mp4",
+             "highlights/Trip_2026/2023-11-15_201.mp4"),
+            ("highlights/Work/2023-11-15_202.jpg",
+             "highlights/Work/2023-11-15_202.jpg"),
+            ("posts/2023-11-15_501.jpg", "501"),
+        ])
+        # Verify dates learned in posts carry over to undated photos on the same profile.
+        prof = profile_of(BASE, [header(*TABS, user_id="42"), photo("501", stamp=NOON)], [])
+        ctx = FakeCtx(Facebook, pages={f"{BASE}/photos_by": page(photo("501", stamp=0))})
+
+        async def run_both():
+            fb = Facebook()
+            _ = [p async for p in fb.posts(ctx, prof)]
+            return [p async for p in fb.photos(ctx, prof)]
+
+        photo_posts = asyncio.run(run_both())
+        self.assertEqual([(p.id, p.date) for p in photo_posts], [("501", NOON)])
 
 
 class AntiBanTest(unittest.TestCase):

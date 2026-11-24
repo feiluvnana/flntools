@@ -10,6 +10,7 @@ import binascii
 import contextlib
 import functools
 import hashlib
+import random
 import secrets
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
@@ -23,6 +24,7 @@ from flnd.plugin import (
     Ctx,
     Error,
     File,
+    LoginError,
     NotFound,
     Plugin,
     Post,
@@ -93,6 +95,8 @@ class Loibus(Plugin):
     }
     # Without it: the info and images only, no archives.
     login = cookies("access-token", url=SITE)
+    pace = 1.5
+    limits = {"api.moegoat.com": 2}
     # Everything sits in the post's folder: previews, info.md, the archives' files.
     folder = "{author}/{post} {title}"
     fields = ("author", "title", "part")
@@ -303,12 +307,17 @@ async def _daily_limit(ctx: Ctx) -> int | None:
 
 
 async def _answer(ctx: Ctx, url: str) -> tuple[int, Any]:
-    """A request's status and JSON (None when it isn't JSON): the site explains refusals in JSON."""
+    """A request's status and JSON (None when it isn't JSON); aborts on HTTP/JSON 401."""
     response = await ctx.fetch(Request(url, check=False))
     try:
-        return response.status, response.json
+        body = response.json
     except Changed:
-        return response.status, None
+        body = None
+    code = str(body.get("code") or "") if isinstance(body, dict) else ""
+    if response.status == 401 or code == "401":
+        raise LoginError("loi: session expired or invalid; log in again",
+                         hint="run flnd auth login loi", retryable=False)
+    return response.status, body
 
 
 def refusal(status: int, body: Any) -> Refusal | None:
@@ -348,7 +357,11 @@ async def _list_posts(ctx: Ctx, first: Request) -> AsyncIterator[Target]:
             return str(page) if page <= int(paging["total_pages"]) else None
         return str(page) if len(_hits(response)) >= PAGE_SIZE else None
 
+    pages = 0
     async for response in ctx.pages(first, cursor=next_page, send="page"):
+        if pages:
+            await ctx.pause(random.uniform(1.0, 2.5), "pacing search pages")
+        pages += 1
         for found in _hits(response):
             post_id = str(found.get("id") or "")
             if post_id and post_id not in seen:

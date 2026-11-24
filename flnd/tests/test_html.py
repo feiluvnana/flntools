@@ -35,8 +35,8 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(_html.parse("").css("p"), [])
         self.assertEqual(_html.parse("<p>a<p>b").css("p")[1].text, "b")
 
-    def test_over_64_mb_is_refused_as_changed(self):
-        self.assertEqual(_html.MAX_SIZE, 64 * 1024 * 1024)
+    def test_over_256_mb_is_refused_as_changed(self):
+        self.assertEqual(_html.MAX_SIZE, 256 * 1024 * 1024)
         with mock.patch.object(_html, "MAX_SIZE", 8):
             self.assertEqual(_html.parse("<p>a</p>").first("p").text, "a")
             for source in ("<p>ab</p>", b"<p>ab</p>"):

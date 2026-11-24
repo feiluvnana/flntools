@@ -53,17 +53,21 @@ FLOOD_WAIT = "Telegram flood wait"
 # Cap FloodWait seconds before holding; longer waits indicate severe abuse limits, so halt.
 MAX_FLOOD = 1800
 AUTH_RPC_ERRORS = frozenset({
-    "AuthKeyUnregisteredError", "AuthKeyDuplicatedError",
-    "SessionRevokedError", "UserDeactivatedBanError", "PhoneNumberBannedError",
+    "AuthKeyUnregisteredError", "AuthKeyDuplicatedError", "AuthKeyInvalidError",
+    "SessionRevokedError", "SessionExpiredError",
+    "UserDeactivatedError", "UserDeactivatedBanError", "PhoneNumberBannedError",
 })
 
 
 def _check_auth_rpc(error: BaseException) -> None:
-    """Raise `LoginError` on banned/revoked Telethon sessions rather than masking them."""
+    """Raise `LoginError` or `Blocked` on fatal Telethon account/spam RPC errors."""
     name = type(error).__name__
     if name in AUTH_RPC_ERRORS:
         raise LoginError(f"tlg: {name}; check account or log in again",
                          hint="flnd auth login tlg", retryable=False) from None
+    if name == "PeerFloodError":
+        raise Blocked("tlg: PeerFloodError; account restricted by Telegram, halting session",
+                      retryable=False) from None
 # Telegram's server-side filter for each category, so it sends only those messages.
 FILTERS = {
     "photo": "InputMessagesFilterPhotos", "video": "InputMessagesFilterVideo",

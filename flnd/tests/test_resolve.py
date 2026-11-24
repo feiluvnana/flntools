@@ -307,8 +307,8 @@ class ResolveTest(unittest.TestCase):
             ("https://www.facebook.com/story.php?story_fbid=7&id=42",
              R("fbk", "post/42_7", "post", ())),
             ("https://fb.watch/abc", R("fbk", "watch/abc", "watch", ())),
-            ("fbk:123", R("fbk", "123", "user", ("posts", "photos", "albums", "reels", "videos",
-                                                  "stories", "profile"))),
+            ("fbk:123", R("fbk", "123", "user", ("posts", "highlights", "photos", "albums",
+                                                  "reels", "videos", "stories", "profile"))),
         ]:
             with self.subTest(text=text):
                 self.assertEqual(resolve(text, manifest=manifest, known={}), expected)

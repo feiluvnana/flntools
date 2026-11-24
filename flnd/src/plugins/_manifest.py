@@ -209,6 +209,7 @@ PLUGINS: dict[str, dict[str, object]] = {
                 ],
                 'categories': [
                     {'name': 'posts', 'own': True},
+                    {'name': 'highlights', 'own': True},
                     {'name': 'photos', 'own': True},
                     {'name': 'tagged', 'own': False},
                     {'name': 'albums', 'own': True},
@@ -298,6 +299,7 @@ PLUGINS: dict[str, dict[str, object]] = {
         ],
         'categories': [
             'posts',
+            'highlights',
             'photos',
             'tagged',
             'albums',

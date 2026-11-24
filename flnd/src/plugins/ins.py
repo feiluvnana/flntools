@@ -98,9 +98,13 @@ STORY_MUSIC = ("story_music_stickers[0].music_asset_info.progressive_download_ur
                "music_metadata.music_info.music_asset_info.progressive_download_url")
 USER_NAME = re.compile(r"[A-Za-z0-9._]{1,30}")
 LOGIN_HINT = "run flnd auth login ins"
-LOCK_WALLS = ("/challenge", "/accounts/suspended", "/accounts/disabled", "/consent")
+LOCK_WALLS = (
+    "/challenge", "/accounts/suspended", "/accounts/disabled",
+    "/consent", "/accounts/two_factor", "/auth_platform",
+)
 _FATAL_META = ("checkpoint_required", "challenge_required", "login_required", "consent_required")
 HIGHLIGHT_STOP = 2
+MAX_RELOADS = 6
 
 
 def _check_meta_error(data: Any) -> None:
@@ -468,7 +472,7 @@ async def _graphql_fetch(ctx: Ctx, query: TabQuery, cursor: str) -> Response:
             transient = isinstance(error, NetworkError) or (error.status or 0) >= 500
             if attempt == 2 or not transient or isinstance(error, (Blocked, LoginError)):
                 raise
-            await ctx.pause(5.0 * (attempt + 1), "retrying GraphQL page")
+            await ctx.pause(random.uniform(3.0, 7.0) * (attempt + 1), "retrying GraphQL page")
     raise AssertionError("unreachable")
 
 
@@ -517,42 +521,60 @@ async def read_tab(ctx: Ctx, profile: Profile, tab: str) -> AsyncIterator[Post]:
         NotFound, LoginError: the tab's page didn't load.
     """
     reader = TAB_PAGES[tab]
-    listing = ctx.load(f"{SITE}/{profile.user}/{TABS[tab]}", GRAPHQL, cursor=reader)
+    url = f"{SITE}/{profile.user}/{TABS[tab]}"
     counts = [0, 0]
     query: TabQuery | None = None
     next_cursor: str | None = None
+    reloads = 0
     try:
-        async with aclosing(listing):
-            embedded = True
-            async for item in listing:
-                ended = False
-                tab_page = False
-                for result in item if embedded else [item]:
-                    _check_meta_error(result)
-                    if throttled(result):
-                        await ctx.hold(THROTTLE_REASON, seconds=random.uniform(300.0, 600.0))
-                        continue
-                    profile.note(result)
-                    for post in new_posts(ctx, profile, result, tab):
-                        yield post
-                    state = reader(result)
-                    if state is not None:
-                        tab_page = True
-                        if not (state[0] and state[1]):
-                            ended = True
-                        else:
-                            next_cursor = state[1]
-                            if not embedded and query is None:
-                                query = parse_tab_query(ctx.request)
-                was_embedded, embedded = embedded, False
-                if ended:
-                    return
-                if not was_embedded and tab_page:
-                    counts[0] += 1
-                if query is not None and next_cursor is not None:
-                    break
-                if not was_embedded and tab_page:
-                    await _tab_pause(ctx, counts[0])
+        while True:
+            got_new = False
+            listing = ctx.load(url, GRAPHQL, cursor=reader)
+            try:
+                async with aclosing(listing):
+                    embedded = True
+                    async for item in listing:
+                        ended = False
+                        tab_page = False
+                        for result in item if embedded else [item]:
+                            _check_meta_error(result)
+                            if throttled(result):
+                                await ctx.hold(THROTTLE_REASON,
+                                               seconds=random.uniform(300.0, 600.0))
+                                continue
+                            profile.note(result)
+                            for post in new_posts(ctx, profile, result, tab):
+                                got_new = True
+                                yield post
+                            state = reader(result)
+                            if state is not None:
+                                tab_page = True
+                                if not (state[0] and state[1]):
+                                    ended = True
+                                else:
+                                    next_cursor = state[1]
+                                    if not embedded and query is None:
+                                        query = parse_tab_query(ctx.request)
+                        was_embedded, embedded = embedded, False
+                        if ended:
+                            return
+                        if not was_embedded and tab_page:
+                            counts[0] += 1
+                        if query is not None and next_cursor is not None:
+                            break
+                        if not was_embedded and tab_page:
+                            await _tab_pause(ctx, counts[0])
+                break
+            except Blocked as error:
+                if not error.retryable:
+                    raise
+                if (reloads > 0 and not got_new) or reloads >= MAX_RELOADS:
+                    if getattr(ctx, "listing", None) is not None:
+                        ctx.listing.stalled = True
+                    raise Blocked(f"{error} (no progress after reload)",
+                                  wait=error.wait, retryable=False) from None
+                await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
+                reloads += 1
         if query is not None and next_cursor is not None:
             async for post in _graphql_pages(ctx, profile, tab, query, next_cursor, reader, counts):
                 yield post
@@ -671,12 +693,19 @@ async def story_page(ctx: Ctx, url: str, where: str) -> list[Post]:
     Raises:
         SiteError: the page didn't load.
     """
-    landed = await ctx.open(url)
-    if landed.status >= 400:
-        # Raised, not skipped: a page that ended here would be recorded complete.
-        raise SiteError(f"{where}: the page didn't load (HTTP {landed.status})",
-                        status=landed.status)
-    stories = [story for result in meta(await ctx.document()) for story in story_items(result)]
+    while True:
+        landed = await ctx.open(url)
+        if landed.status >= 400:
+            # Raised, not skipped: a page that ended here would be recorded complete.
+            raise SiteError(f"{where}: the page didn't load (HTTP {landed.status})",
+                            status=landed.status)
+        found = list(meta(await ctx.document()))
+        for result in found:
+            _check_meta_error(result)
+        stories = [story for result in found for story in story_items(result)]
+        if stories or not any(map(throttled, found)):
+            break
+        await ctx.hold(THROTTLE_REASON, seconds=random.uniform(300.0, 600.0))
     ctx.log("info", "{where}: {n} {unit}", where=where, n=len(stories),
             unit="story" if len(stories) == 1 else "stories")
     return [post for story in stories if (post := story_post(story)) is not None]

@@ -16,10 +16,10 @@ if TYPE_CHECKING:
 __all__ = ["Document", "Element", "dig", "parse"]
 
 WHITESPACE = re.compile(r"\s+")
-# The largest text `parse` reads: 64 MiB. The biggest page flnd reads (a TikTok or Facebook page
-# with its embedded JSON) is a few MB, so this is far above any real page and still small enough
-# to parse in memory. Counted in bytes for bytes, in characters for text.
-MAX_SIZE = 64 * 1024 * 1024
+# The largest text `parse` reads: 256 MiB. A Facebook highlight page with 50+ video cards
+# embeds ~100 MB of hydration JSON, so this stays above real pages while still bounding memory.
+# Counted in bytes for bytes, in characters for text.
+MAX_SIZE = 256 * 1024 * 1024
 # The tags whose text a reader never sees.
 HIDDEN = ["script", "style"]
 JSON_BLOCKS = 'script[type="application/json"]'
@@ -42,7 +42,7 @@ def parse(text: str | bytes) -> Document:
         The parsed page.
 
     Raises:
-        Changed: the text is over 64 MiB.
+        Changed: the text is over 256 MiB.
 
     Example:
         >>> page = parse("<h1> Example <b>User</b></h1><a href='/video/1'>one</a>")
