@@ -285,7 +285,7 @@ LAUNCH_ARGS = [
     "--no-first-run", "--no-default-browser-check", "--metrics-recording-only",
     "--disable-breakpad", "--disable-hang-monitor", "--disable-ipc-flooding-protection",
     "--password-store=basic", "--use-mock-keychain", "--disable-dev-shm-usage",
-    "--disk-cache-size=1", "--media-cache-size=1", "--js-flags=--max-old-space-size=256",
+    "--disk-cache-size=1", "--media-cache-size=1", "--js-flags=--max-old-space-size=1024",
     ("--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,"
      "AcceptCHFrame,InterestFeedContentSuggestions,ProcessPerSiteUpToMainFrameThreshold,"
      "SpareRendererForSitePerProcess,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,"
