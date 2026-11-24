@@ -127,19 +127,6 @@ account cannot make move on to the next, set `switch = true` under `[defaults]` 
 `config.toml` (`flnd config` edits it).
 More: [Logins and accounts](SPEC.md#logins-and-accounts), [Config](SPEC.md#config).
 
-## Shrink the videos you saved
-
-Goal: re-encode saved videos in place with ffmpeg, safely.
-
-```sh
-flnd transform "ffmpeg -y -i {in} -crf 28 {out}" --on=video --dry
-flnd transform "ffmpeg -y -i {in} -crf 28 {out}" --on=video
-```
-
-The first line lists the files; the second replaces each with ffmpeg's result, **for good**.
-Stop it with Ctrl-C and run the same line again: files already done are skipped. A different
-command is a new transform. More: [Transform](SPEC.md#transform).
-
 ## Fix a failed run
 
 Goal: a run said some files failed, or the disk and the history disagree.

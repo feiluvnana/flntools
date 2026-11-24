@@ -637,20 +637,18 @@ def paused() -> Iterator[None]:
 # The end summary
 # ---------------------------------------------------------------------------------------------
 
-def summary(report: Report, state: State, *,
-            words: tuple[str, str] = ("saved", "already saved")) -> None:
+def summary(report: Report, state: State) -> None:
     """Print the run's end: the counts on standard output, then the failures on standard error.
 
     Args:
         report: the run's report.
         state: its last snapshot, for the time it took and its targets.
-        words: what the saved and the skipped files are called.
     """
     fancy = theme.unicode(sys.stdout)
     sep = f" {theme.glyph('sep', fancy)} "
-    saved = f"{report.saved:,} {words[0]}" + (f" ({size(report.bytes)})" if report.bytes else "")
+    saved = f"{report.saved:,} saved" + (f" ({size(report.bytes)})" if report.bytes else "")
     counts = sep.join([f"done in {duration(state.elapsed)}", count(len(state.targets), "target"),
-                       saved, f"{report.skipped:,} {words[1]}",
+                       saved, f"{report.skipped:,} already saved",
                        f"{len(report.failed):,} failed"])
     out.line(*_marked("error" if report.failed else "ok", fancy), counts)
     if not report.failed:

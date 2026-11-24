@@ -657,14 +657,6 @@ def _leave(held: Part) -> None:
             _end(held)
 
 
-def swap(source: Path, dest: Path) -> None:
-    """Atomically put `source` in the place of `dest`: `os.replace`, with Windows' retries.
-
-    `dest` is the old file or the new one, never half of either.
-    """
-    _replace(source, dest)
-
-
 def _replace(source: Path, dest: Path) -> None:
     """`os.replace`, retried for about a second while Windows holds `dest` (an indexer)."""
     for attempt in range(1, REPLACE_TRIES + 1):

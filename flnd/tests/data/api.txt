@@ -73,8 +73,6 @@ flnd.Flnd.plugins: attribute
 flnd.Flnd.status: property -> Status | None
 flnd.Flnd.sync(*patterns: str, limit: int | None = None, when: str | None = None, dry: bool = False) -> Run
 flnd.Flnd.targets: attribute
-flnd.Flnd.transform(command: str, *targets: str | Target, on: Sequence[str], dry: bool = False, jobs: int | None = None) -> Run
-flnd.Flnd.transforms() -> list[Transform]
 flnd.Hidden(flnd.SiteError)
 flnd.Hidden.hint: attribute
 flnd.Hidden.response: attribute
@@ -234,13 +232,6 @@ flnd.Tracked.seen: attribute -> int
 flnd.Tracked.size: attribute -> int
 flnd.Tracked.status: attribute -> str
 flnd.Tracked.target: attribute -> Target
-flnd.Transform(command: str, first: str = '', last: str = '', skipped: int = 0, done: int = 0, failed: int = 0)
-flnd.Transform.command: attribute -> str
-flnd.Transform.done: attribute -> int
-flnd.Transform.failed: attribute -> int
-flnd.Transform.first: attribute -> str
-flnd.Transform.last: attribute -> str
-flnd.Transform.skipped: attribute -> int
 flnd.UsageError(flnd.Error)
 flnd.UsageError.hint: attribute
 flnd.UsageError.retryable: attribute

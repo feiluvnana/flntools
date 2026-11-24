@@ -8,7 +8,6 @@ import asyncio
 import contextlib
 import datetime
 import functools
-import os
 import re
 from collections import ChainMap
 from collections.abc import (
@@ -23,7 +22,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
 
 import flnd.engine.resolve
-from flnd.engine import auth, config, crawl, ctx, jobs, plugins, save, store, transform
+from flnd.engine import auth, config, crawl, ctx, jobs, plugins, save, store
 from flnd.engine.crawl import Options, RunShared, TargetReport
 from flnd.engine.ctx import Ctx, PluginRun, shared_browser
 from flnd.engine.events import Failed, Planned, sink
@@ -485,48 +484,6 @@ class Engine:
                 await self._sync_queries(runner, chosen, results, stop)
                 report = Results(tuple(results[i] for i in range(len(chosen))))
             return self._finish_report(report, stop)
-
-    async def run_transform(self, command: str, *, on: Sequence[str],
-                            targets: Sequence[Target | str] = (), dry: bool = False,
-                            parallel: int | None = None) -> None:
-        """Run a command over the saved files of the wanted kinds, replacing each in place
-        (SPEC.md#transform).
-
-        Args:
-            command: the command, with `{in}` and `{out}`; it is saved as given.
-            on: the kinds of file to run it on: "image", "video" or "audio".
-            targets: only these targets' files; every target's when empty.
-            dry: plan only: a `Planned` event per file, and nothing written, not even the
-                transform's row.
-            parallel: files at once; None takes half the cores.
-
-        Raises:
-            UsageError: the command or a target is wrong.
-            Stopped: Ctrl-C killed a program.
-        """
-        argv = transform.split(command)
-        resolved = await asyncio.to_thread(self._known, targets) if targets else []
-        workers = parallel or max(1, (os.cpu_count() or 2) // 2)
-        with stopping(self.stop) as stop:
-            async with self._live(), self._running(stop, dry=dry):
-                assert self._db is not None and self._scheduler is not None
-                rows = await _off(self._db.on_disk)
-                known = {store.key(t): t for t in self._recorded(await _off(self._rows))}
-                only = {store.key(t) for t in resolved} if resolved else None
-                found = await _off(transform.items, rows, known, on, only)
-                if not found:
-                    ui.info("nothing to transform")
-                await transform.run(
-                    db=self._db, scheduler=self._scheduler, argv=argv, command=command,
-                    found=found, dry=dry, workers=workers, stop=stop, emit=self.emit,
-                    tally=self.tally)
-
-    def transforms(self) -> list[store.TransformRow]:
-        """Every saved transform, with the files it did, skipped and failed."""
-        if self._db is not None:
-            return self._db.transforms()
-        with store.open(self.home) as db:
-            return db.transforms()
 
     def target_ls(self, *, plugin: str | None = None) -> list[TargetInfo]:
         """Every target `flnd.db` has a row for, with its state and saved files.

@@ -632,58 +632,6 @@ the process quits); the third quits at once, exit 130.
 Two runs may share a home: a part is its own lock, and a file another run is saving is skipped as
 `busy`.
 
-## Transform
-
-`flnd transform "<command>" --on=image,video [target...] [--dry] [--jobs N]` runs a command over
-the files flnd saved and replaces each one with the command's result. **It changes your files in
-place and cannot be undone: the original is gone once its replacement is in.** Try it with
-`--dry`, or on a copy of the home, first.
-
-```sh
-flnd transform "ffmpeg -y -i {in} -crf 28 {out}" --on=video
-flnd transform "magick {in} -resize 50% {out}" --on=image ins:example_user
-flnd transform list
-```
-
-- **Which files.** The files in the home's history (its `flnd.db` rows, links and the files an
-  archive made included) whose kind is one of `--on`: `image`, `video` or `audio`, by the file's
-  name, else by its first bytes. Targets narrow it; none takes every target. `--on` is needed.
-- **The command.** It must hold `{in}` (the saved file) and `{out}` (a temporary file in the same
-  folder, with the same extension). It is split once like a POSIX shell (`shlex`) and run
-  directly, with no shell, so a file name from a site only fills a placeholder inside one
-  argument. A text with no `{in}` or `{out}`, or naming no program, is a usage error before
-  anything runs. Standard output is dropped; the last line of standard error goes in a failure.
-- **Replacing.** Only when the program exits 0 and leaves `{out}` non-empty, `{out}` takes the
-  file's mode and modified time and replaces the file with one atomic rename (`os.replace`, with
-  Windows' retries). Otherwise the file is untouched and `{out}` removed. A crash or a power cut
-  leaves the old file or the new one, never a half file; a leftover `.<name>.flnd.<ext>` beside
-  a file is a temporary from a killed run.
-- **The history.** The file's row takes the new size, modified time and hash, so `flnd status`'s
-  check accepts it and a sync never downloads it again (a sync keys by the post's file, not its
-  bytes). A file an archive made keeps its place in the archive's list; its path is the same.
-- **A transform is its command text.** The text as given is saved in the home, with, for each
-  file it replaced, the file's path and key, its hash before, its hash after, and the time. A
-  different text, even a different spacing, is a new transform. Before a file is run, its hash
-  is looked up: if this transform made a file with that hash, the file is skipped (`Skipped`,
-  reason `done`). So a run that was cut short (Ctrl-C, a crash, a power cut) is run again with
-  the same command and does only what is left, and a finished transform is not applied twice.
-  A failed file is recorded as failed and tried again by the next run.
-- **`--dry`** hashes the files and prints `new <path>` for what would run and `saved <path>` for
-  what the transform made already; nothing is run, written or recorded.
-- **`--jobs N`** files at once, on the run's scheduler; the default is half the cores, at least 1.
-  Each program runs in its own process group.
-- **Ctrl-C:** the first starts no more files and lets the running ones finish; the second kills
-  the programs, removes their temporaries and ends the run, exit 130.
-- **The end:** `done in 9s · 1 target · 12 replaced · 3 already done · 0 failed`; a failure shows
-  its message below, and the exit code is 1 when a file failed. Events go to
-  `log/<time>_transform.jsonl`; `--json` prints them as JSON lines.
-
-`flnd transform list` shows each saved transform: its command, when it first and last ran, and how
-many files it did, skipped (in its last run) and failed (now). `--json` prints one `Transform`
-object each. In Python, `fl.transform(command, *targets, on=, dry=, jobs=)` returns a `Run` whose
-events are `Saved` (a file replaced), `Skipped`, `Failed` and, with `dry`, `Planned`; and
-`fl.transforms()` returns the list.
-
 ## Logins and accounts
 
 `flnd auth login <plugin> [method] [path]` logs an account in. A method is one of the plugin's own
@@ -887,17 +835,6 @@ standard input, else gets every followed target, or prints `nothing to sync` and
 `[seq]`, case-insensitive), or every followed target when none is given. Prints `nothing to sync`
 and exits 0 when none matches. Takes `--when`, `--limit`, `--dry` and `--again`.
 
-**`flnd transform "<command>" --on=KINDS [target...]`**, **`flnd transform list`**: run a command
-over the saved files and replace each in place; **no undo**. See [Transform](#transform).
-
-| Flag | Default | What it does |
-| --- | --- | --- |
-| `command` | | the command, with `{in}` and `{out}`; or the word `list` |
-| `target...` | every target | only these targets' files |
-| `--on KINDS` | | `image`, `video`, `audio`, comma between; needed |
-| `--dry` | off | list what would run; change and record nothing |
-| `--jobs N` | half the cores | files at once; N at least 1 |
-
 **`flnd target list`** the targets the home knows: status, files, size, last run, categories.
 On a terminal: arrows move, `/` filters, `enter` opens details, `f` follows or unfollows,
 `r` makes failed files retryable, `a` asks for a target and gets it, `d` forgets one after a
@@ -934,7 +871,7 @@ terminal `e` edits, `a` adds a key, `d` resets one; comments in the file stay. `
 
 What a run prints: on a terminal a live screen on standard error (a row per target, files in
 flight, the `now` line, and a `use` line read every 2 s with `psutil`: flnd's process tree, meaning
-itself, the browser's and a running transform program, as count, resident memory and CPU % (100 is
+itself, the browser's and ffmpeg, as count, resident memory and CPU % (100 is
 one core), then the browser's alone); on a pipe only the end summary, with no `use` line.
 `--json` gets each reading as a `Resources` event (`procs rss cpu browser browser_rss
 browser_cpu`). The end summary goes to standard output (`done in 4m 12s · 3 targets · 1,021 saved
@@ -988,7 +925,7 @@ A plugin's own settings (its `Settings` struct) are keys of its table and reach 
   names up through the proxy; the URL may hold a user and password.
 - `pace` and `limits` win over the plugin's class. A host's cap still adapts under the file's
   number.
-- Gone keys: `[defaults] again`, `exec` and `exec_timeout` (use `flnd transform`), `[vault]`,
+- Gone keys: `[defaults] again`, `exec` and `exec_timeout`, `[vault]`,
   `scroll` (unknown now); `dedupe = "link"` reads as `true`, `"off"` as `false`, each with a
   warning.
 
@@ -1238,8 +1175,6 @@ Every call, and the CLI command it matches:
 | `flnd.open(home=None, *, again=None)` | `Flnd`, a context manager | `--home`, `--again` |
 | `fl.get(*targets, when=, limit=, dry=, folder=)` | `Run`, not started | `flnd get` |
 | `fl.sync(*patterns, when=, limit=, dry=)` | `Run`, not started | `flnd sync` |
-| `fl.transform(command, *targets, on=, dry=, jobs=)` | `Run`, not started | `flnd transform` |
-| `fl.transforms()` | `list[Transform]` | `flnd transform list` |
 | `fl.targets` / `.list(plugin=None)` | `list[Tracked]` | `flnd target list` |
 | `fl.targets.follow(*t)`, `.unfollow(*t)`, `.retry(*t)` | `list[Tracked]` | `f`, `r` in the list |
 | `fl.targets.clean(*t, media=False)` | `list[Tracked]` | `flnd target clean` |

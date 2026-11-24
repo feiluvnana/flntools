@@ -66,10 +66,6 @@ class Engine(_engine.Engine):
         """`run_sync`, driven here."""
         return drive(self.run_sync(targets, time=time))
 
-    def transform(self, command, **options):
-        """`run_transform`, driven here."""
-        return drive(self.run_transform(command, **options))
-
 
 def sign_in(home, code: str, jar=None, *, name: str = "default", origin: str = "file",
             **secrets: str) -> plugin.Account:

@@ -43,7 +43,7 @@ PACKAGES = ("src", "flnkit")
 PAGES = README, COOKBOOK, SPEC = tuple(ROOT / n for n in ("README.md", "COOKBOOK.md", "SPEC.md"))
 # The longest a module docstring may be, in lines; each page's longest, in lines.
 MODULE_LINES, LINE_CHARS = 3, 100
-LIMITS = dict(zip(PAGES, (40, 250, 1600)))
+LIMITS = dict(zip(PAGES, (40, 250, 1550)))
 SECTION = re.compile(r"SPEC\.md#([\w-]+)")
 
 
