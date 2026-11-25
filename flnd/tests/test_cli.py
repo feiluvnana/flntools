@@ -58,9 +58,9 @@ from flnd.errors import (
     UsageError,
 )
 from flnd.plugin import Target
-from flnd.ui import out
 from flnd.ui.log import ui
 from flnkit import net as _net
+from flnkit.ui import out
 
 NETSCAPE = (
     "# Netscape HTTP Cookie File\n"
@@ -115,7 +115,7 @@ class FlndCase(unittest.TestCase):
             self.asked.append(title)
             return self.sure
 
-        self.enterContext(mock.patch("flnd.ui.forms.confirm", confirm))
+        self.enterContext(mock.patch("flnkit.ui.forms.confirm", confirm))
         # The logins folder, outside the home, as `~/.config/flnd/logins` is.
         self.enterContext(mock.patch.object(_auth, "LOGINS", Path(self.tmp.name) / "logins"))
 
@@ -545,8 +545,8 @@ class FormsTest(ExampleCase):
         def select(title, options, **_):
             raise AssertionError(f"no menu for a cookie site: {title}")
 
-        with mock.patch("flnd.ui.forms.select", select), \
-                mock.patch("flnd.ui.forms.text", return_value=str(self.cookie_file(NETSCAPE))):
+        with mock.patch("flnkit.ui.forms.select", select), \
+                mock.patch("flnkit.ui.forms.text", return_value=str(self.cookie_file(NETSCAPE))):
             code, text, err = self.run_app("auth", "login", "twt")
         self.assertEqual(code, 0, err)
         self.assertRegex(text, r"^twt: logged in \(ok\)")

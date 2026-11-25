@@ -1,4 +1,4 @@
-"""Every line flnd prints: lines, folded warnings, errors with their hint, tables and the help.
+"""Lines, folded warnings, errors with their hint, tables and the help.
 
 SPEC.md#commands-and-flags explains it.
 """
@@ -14,10 +14,10 @@ from collections.abc import Callable, Sequence
 from functools import lru_cache
 from typing import Any
 
-from flnd.ui import theme
+from flnkit.ui import theme
 
 __all__ = ["FOLD", "Folds", "above", "clean", "close", "error", "fill", "help", "line", "names",
-           "plain", "styled", "table", "warn"]
+           "on_close", "on_error", "plain", "styled", "table", "warn"]
 
 # A part of a line: text in the body colour, or (text, style), the style made of theme tokens
 # and Rich attributes ("bold bad").
@@ -304,16 +304,32 @@ def _warn(text: str, times: int) -> None:
     _print(styled("warn", clean(text), fancy=theme.unicode(stream), times=times), stream=stream)
 
 
+_on_error: Callable[[BaseException], Any] | None = None
+_closers: list[Callable[[], None]] = []
+
+
+def on_error(fn: Callable[[BaseException], Any] | None) -> None:
+    """Register a classifier called on a `flnkit.errors.Error` before `error` prints it."""
+    global _on_error
+    _on_error = fn
+
+
+def on_close(fn: Callable[[], None]) -> None:
+    """Register a drain callback invoked by `close(drain=True)`."""
+    if fn not in _closers:
+        _closers.append(fn)
+
+
 def error(error: BaseException) -> None:
     """Print an error on standard error: `✗ <message>`, then `  hint  <hint>` on its own line.
 
-    A `flnd.Error` with no hint gets flnd's first (`flnd.errors.classify`), so an error flnkit
-    raised says which flnd command to run.
+    When an `on_error` hook is registered, a `flnkit.errors.Error` is passed to it first so
+    tool-specific hints can be attached.
     """
-    from flnd.errors import Error, classify
+    from flnkit.errors import Error
 
-    if isinstance(error, Error):
-        classify(error)
+    if _on_error is not None and isinstance(error, Error):
+        _on_error(error)
     line((str(error), "bad"), mark="error", err=True)
     hint = str(getattr(error, "hint", "") or "")
     if hint:
@@ -321,7 +337,7 @@ def error(error: BaseException) -> None:
 
 
 def close(*, cursor: bool = False, drain: bool = True) -> None:
-    """Print the warnings still folded, `flnd.ui.log`'s too, and flush both streams.
+    """Print the warnings still folded, registered closers too, and flush both streams.
 
     Args:
         cursor: also show the cursor again on a terminal, which a live view may have hidden.
@@ -331,9 +347,8 @@ def close(*, cursor: bool = False, drain: bool = True) -> None:
     if drain:
         for text, times in _folds.drain():
             _warn(text, times)
-        log = sys.modules.get("flnd.ui.log")
-        if log is not None:
-            log.ui.drain()
+        for fn in list(_closers):
+            fn()
     for stream in (sys.stdout, sys.stderr):
         try:
             if cursor and stream is not None and stream.isatty():

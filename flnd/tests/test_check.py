@@ -139,7 +139,7 @@ class LibraryAndCliTest(CheckCase):
         out = io.StringIO()
         # A terminal would be asked to repair; the test never asks.
         with redirect_stdout(out), redirect_stderr(io.StringIO()), self.aged(), \
-                mock.patch("flnd.ui.forms.confirm", return_value=False):
+                mock.patch("flnkit.ui.forms.confirm", return_value=False):
             code = cli.main(["--home", str(self.home), *argv, "status"])
         return code, out.getvalue()
 

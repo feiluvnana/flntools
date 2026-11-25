@@ -620,7 +620,7 @@ def quit_now() -> None:
        hold the exit up; parts already on disk stay, and the next run resumes them, as after a
        second Ctrl-C.
     """
-    from flnd.ui import out
+    from flnkit.ui import out
 
     for undo in reversed(list(_RESTORERS)):
         try:

@@ -18,9 +18,9 @@ from flnd import cli, plugin
 from flnd.engine import events as _events
 from flnd.engine import run as _run
 from flnd.errors import UsageError
-from flnd.ui import out, theme
 from flnd.ui.log import ui
 from flnkit import clock as _time
+from flnkit.ui import out, theme
 
 
 class UICase(unittest.TestCase):
@@ -248,8 +248,8 @@ class LineTest(OutCase):
 # second Ctrl-C does (`warn`), or drains every fold, as a third one's `out.close()` does.
 _FOLD_PROBE = """
 import signal, sys
-from flnd.ui import out
 from flnd.ui.log import ui
+from flnkit.ui import out
 class Seen(dict):
     def get(self, *args):
         if not getattr(Seen, "fired", False):
@@ -452,7 +452,7 @@ class FoldTest(OutCase):
     def test_warnings_outside_any_scope_keep_their_count(self) -> None:
         warn = ("from flnd.ui.log import ui\n"
                 "ui.warn('cookie sid was rejected')\nui.warn('cookie sid was rejected')\n")
-        closed = warn + "from flnd.ui import out\nout.close()\nimport os\nos._exit(0)\n"
+        closed = warn + "from flnkit.ui import out\nout.close()\nimport os\nos._exit(0)\n"
         for name, code in (("out.close", closed), ("exit", warn)):
             with self.subTest(name):
                 done = _child(code)

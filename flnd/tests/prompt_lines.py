@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest import mock
 
-from flnd.ui import forms
+from flnkit.ui import forms
 
 
 def select_from_lines(*lines: str) -> mock._patch:

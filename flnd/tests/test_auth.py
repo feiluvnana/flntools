@@ -205,7 +205,7 @@ class LoginTest(AuthCase):
             ctx.secrets["session"] = "s"
 
         plugin = make_plugin("aaa", login=own_login(start))
-        with mock.patch("flnd.ui.forms.ask", return_value="1") as asked:
+        with mock.patch("flnkit.ui.forms.ask", return_value="1") as asked:
             for tty, interactive in ((False, True), (True, False), (True, True)):
                 with mock.patch.object(sys.stdin, "isatty", return_value=tty):
                     auth.login(self.home, plugin(), "qr", interactive=interactive)

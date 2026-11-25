@@ -676,7 +676,7 @@ class EngineLoginTest(TelegramCase):
             return next(given)
 
         with mock.patch("sys.stdin.isatty", return_value=tty), \
-                mock.patch("flnd.ui.forms.ask", ask):
+                mock.patch("flnkit.ui.forms.ask", ask):
             auth.login(self.home, Telegram(), method, interactive=True)
 
     def assert_logged_in(self):

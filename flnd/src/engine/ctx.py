@@ -41,9 +41,9 @@ from flnd.errors import (
     UsageError,
 )
 from flnd.plugin import Landed, Plugin, Range, Request, Target
-from flnd.ui import forms
 from flnd.ui.log import ui
 from flnkit import browser, clock, net, text
+from flnkit.ui import forms
 
 if TYPE_CHECKING:
     from flnd.engine.crawl import RunShared

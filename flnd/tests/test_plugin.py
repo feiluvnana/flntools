@@ -945,7 +945,7 @@ class ReadsTest(CtxCase):
 
     def test_ask_runs_off_the_loop(self):
         from flnd.engine.ctx import Ctx
-        from flnd.ui import forms
+        from flnkit.ui import forms
 
         run, _ = self.ctx()
         run.settings.interactive = True

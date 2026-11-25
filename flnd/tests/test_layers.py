@@ -28,9 +28,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# The package flnd lives in src/; the standalone package flnkit beside it (AGENTS.md › Layout).
+# The package flnd lives in src/; the standalone package flnkit at repo root (AGENTS.md › Layout).
 FLND = ROOT / "src"
-FLNKIT = ROOT / "flnkit"
+FLNKIT = ROOT.parent / "flnkit" / "flnkit"
 
 # Imports a rule forbids that stay for now: (importer, imported) -> the step that removes them.
 # An importer or an import ending in ".*" covers every module under it.
@@ -43,9 +43,10 @@ OWN = ("flnd", "flnkit")
 
 def module_name(path: Path) -> str:
     """`src/plugins/ins.py` as `flnd.plugins.ins`; a package's `__init__.py` as the package."""
-    parts = path.relative_to(ROOT).with_suffix("").parts
-    if parts[0] == "src":
-        parts = ("flnd", *parts[1:])
+    if path.is_relative_to(FLND):
+        parts = ("flnd", *path.relative_to(FLND).with_suffix("").parts)
+    else:
+        parts = ("flnkit", *path.relative_to(FLNKIT).with_suffix("").parts)
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
@@ -165,7 +166,7 @@ def allowed(importer: str, imported: str) -> bool:
     if importer == "flnd.cli":
         return (imported in ("flnd", "flnd.plugins", "flnd._library", "flnd.engine.events",
                              "flnd.engine.run")
-                or under(imported, "flnd.ui"))
+                or under(imported, "flnd.ui", "flnkit.ui"))
     if importer == "flnd.__main__":
         return imported == "flnd.cli"
     raise AssertionError(f"{importer} is in no layer of AGENTS.md › Layout")

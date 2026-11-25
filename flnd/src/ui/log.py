@@ -21,8 +21,8 @@ import msgspec
 from rich.console import Console as RichConsole
 from rich.text import Text
 
-from flnd.ui import out, theme
 from flnkit import clock, text
+from flnkit.ui import out, theme
 
 # Under the home: run journals, crash reports and samples.
 LOGS = Path("log")
@@ -445,6 +445,7 @@ ui = UI()
 log = ui
 # A script that warns outside any scope still sees each warning's count, when Python exits.
 atexit.register(ui.drain)
+out.on_close(ui.drain)
 
 
 class _KitLines(logging.Handler):

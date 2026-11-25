@@ -1,4 +1,4 @@
-"""The theme: every colour and glyph flnd draws with, and when to drop colour or Unicode.
+"""The theme: every colour and glyph the UI draws with, and when to drop colour or Unicode.
 
 SPEC.md#commands-and-flags explains it.
 """
@@ -12,7 +12,7 @@ from typing import Any
 __all__ = ["GLYPHS", "MARKS", "PADDING", "SPINNER", "TOKENS", "box", "color", "glyph",
            "spinner", "style", "tty", "unicode"]
 
-# The colour of each token: the only colours flnd writes.
+# The colour of each token: the only colours the UI writes.
 TOKENS: dict[str, str] = {
     "text": "#D0D0D0",   # body text
     "dim": "#767676",    # hints, keys, borders, zeros

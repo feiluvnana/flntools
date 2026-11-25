@@ -290,7 +290,7 @@ class ScreenTest(unittest.TestCase):
             "  details  flnd status"])
 
     def test_a_question_asked_during_a_run_stays_on_the_screen(self) -> None:
-        from flnd.ui import forms
+        from flnkit.ui import forms
 
         tty, version = _TTY(), [1]
         shown = self.shown(lambda: msgspec.structs.replace(MOCKUP, version=version[0]), tty)
@@ -313,7 +313,7 @@ class ScreenTest(unittest.TestCase):
         self.assertGreater(heads[0], question)
 
     def test_resize_shrink_and_grow_leaves_single_clean_block_in_pyte(self) -> None:
-        from flnd.ui import out
+        from flnkit.ui import out
 
         class ResizableTTY(_TTY):
             def __init__(self, cols: int, rows: int) -> None:
@@ -392,7 +392,7 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(chunk.count("flnd download"), 1, repr(chunk))
 
     def test_queued_warnings_on_resize_do_not_draw_stale_wide_frame(self) -> None:
-        from flnd.ui import out
+        from flnkit.ui import out
 
         tty = _TTY()
         shown = self.shown(lambda: MOCKUP, tty)

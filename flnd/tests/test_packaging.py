@@ -26,13 +26,13 @@ class WheelTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             copy, out_dir = Path(temp) / "project", Path(temp) / "dist"
             ignore = shutil.ignore_patterns("__pycache__")
-            for name in ("src", "flnkit"):
+            for name in ("src",):
                 shutil.copytree(ROOT / name, copy / name, ignore=ignore)
             for name in ("pyproject.toml", "setup.py", "README.md"):
                 shutil.copy2(ROOT / name, copy / name)
             subprocess.run(
-                ["uv", "build", "--wheel", "--out-dir", str(out_dir), str(copy)], check=True,
-                capture_output=True,
+                ["uv", "build", "--wheel", "--out-dir", str(out_dir), str(copy)],
+                check=True, capture_output=True,
             )
             # setup.py moves the egg-info into build/, out of the project folder.
             self.assertFalse((copy / "flntools.egg-info").exists())
@@ -42,7 +42,6 @@ class WheelTest(unittest.TestCase):
         self.assertIn("flnd/py.typed", data_files())
         self.assertEqual([name for name in data_files() if name not in names], [],
                          "map these in [tool.setuptools.package-data] in pyproject.toml")
-        self.assertTrue(any(name.startswith("flnkit/") for name in names))
 
 
 def run_python(code: str) -> subprocess.CompletedProcess:
@@ -76,7 +75,7 @@ class ListedPackagesTest(unittest.TestCase):
         # ships only the packages it is given, so a missing one is silently left out.
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         listed = set(project["tool"]["setuptools"]["packages"])
-        folders = {"flnd": ROOT / "src", "flnkit": ROOT / "flnkit"}
+        folders = {"flnd": ROOT / "src"}
         expected = set()
         for name, folder in folders.items():
             for init in folder.rglob("__init__.py"):
@@ -96,7 +95,7 @@ class EditableTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         flnd_file, flnkit_file = (Path(line).resolve() for line in result.stdout.split("\n")[:2])
         self.assertTrue(flnd_file.is_relative_to(ROOT / "src"), flnd_file)
-        self.assertTrue(flnkit_file.is_relative_to(ROOT / "flnkit"), flnkit_file)
+        self.assertTrue(flnkit_file.is_relative_to(ROOT.parent / "flnkit" / "flnkit"), flnkit_file)
 
 
 # What only a command may load: the engine, the network, the browser and the screen. `import

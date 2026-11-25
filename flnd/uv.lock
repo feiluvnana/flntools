@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -286,18 +286,39 @@ wheels = [
 ]
 
 [[package]]
+name = "flnkit"
+version = "0.1.0"
+source = { editable = "../flnkit" }
+
+[package.optional-dependencies]
+ui = [
+    { name = "rich" },
+]
+web = [
+    { name = "curl-cffi" },
+    { name = "playwright" },
+    { name = "selectolax" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "curl-cffi", marker = "extra == 'web'", specifier = ">=0.17,<0.18" },
+    { name = "playwright", marker = "extra == 'web'", specifier = "==1.65.*" },
+    { name = "rich", marker = "extra == 'ui'" },
+    { name = "selectolax", marker = "extra == 'web'", specifier = ">=0.3.27" },
+]
+provides-extras = ["ui", "web"]
+
+[[package]]
 name = "flntools"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptg" },
     { name = "cryptography" },
-    { name = "curl-cffi" },
+    { name = "flnkit", extra = ["ui", "web"] },
     { name = "msgspec" },
-    { name = "playwright" },
     { name = "qrcode" },
-    { name = "rich" },
-    { name = "selectolax" },
     { name = "telethon" },
 ]
 
@@ -312,12 +333,9 @@ dev = [
 requires-dist = [
     { name = "cryptg", specifier = ">=0.5" },
     { name = "cryptography", specifier = ">=42" },
-    { name = "curl-cffi", specifier = ">=0.17,<0.18" },
+    { name = "flnkit", extras = ["ui", "web"], editable = "../flnkit" },
     { name = "msgspec" },
-    { name = "playwright", specifier = "==1.65.*" },
     { name = "qrcode", specifier = ">=7.4" },
-    { name = "rich" },
-    { name = "selectolax", specifier = ">=0.3.27" },
     { name = "telethon", specifier = ">=1.36" },
 ]
 

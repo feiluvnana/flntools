@@ -9,31 +9,28 @@ description = "Dead simple media downloader for TikTok, Facebook, Instagram, and
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    # The HTTP client: libcurl with Chrome's TLS and HTTP/2 fingerprint, on the run's asyncio loop.
-    # Pinned to 0.17: flnkit/net.py sets up curl_cffi's handles itself, from its internals.
-    "curl_cffi>=0.17,<0.18",
-    "playwright==1.65.*",
-    # HTML parsing: lexbor's C parser and CSS engine, imported only by `flnkit/html.py`.
-    "selectolax>=0.3.27",
+    # Shared toolkit (core, Rich terminal UI, and curl_cffi/playwright/selectolax web stack).
+    "flnkit[ui,web]",
     # AES for loi's archive links (src/plugins/loi.py).
     "cryptography>=42",
     "telethon>=1.36",
     "cryptg>=0.5",
     "qrcode>=7.4",
-    "rich",
     "msgspec",
 ]
+
+[tool.uv.sources]
+flnkit = { path = "../flnkit", editable = true }
 
 [project.scripts]
 flnd = "flnd.cli:main"
 
 [tool.setuptools]
-# src/ installs as the package flnd; flnkit/ ships beside it (AGENTS.md › Layout). Setuptools
-# maps the folder src/ to the name flnd, which hatchling's dev mode cannot do (it rejects such
-# a rewrite).
+# src/ installs as the package flnd (AGENTS.md › Layout). Setuptools maps the folder src/ to
+# the name flnd, which hatchling's dev mode cannot do (it rejects such a rewrite).
 # setup.py only moves the egg-info into build/, as no pyproject setting can.
-packages = ["flnd", "flnd.engine", "flnd.ui", "flnd.plugins", "flnkit"]
-package-dir = {"flnd" = "src", "flnkit" = "flnkit"}
+packages = ["flnd", "flnd.engine", "flnd.ui", "flnd.plugins"]
+package-dir = {"flnd" = "src"}
 
 [tool.setuptools.package-data]
 flnd = ["py.typed"]

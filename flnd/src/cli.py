@@ -51,8 +51,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns:
         The exit code: the command's own exit code, or the exit code mapped from an error.
     """
-    from flnd.ui import out
+    from flnkit.ui import out
 
+    out.on_error(errors.classify)
     try:
         return _main(argv)
     finally:
@@ -60,7 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _main(argv: Sequence[str] | None) -> int:
-    from flnd.ui import out
+    from flnkit.ui import out
 
     try:
         args = parser().parse_args(argv)
@@ -134,7 +135,8 @@ def _crashed(error: Exception, args: argparse.Namespace) -> int:
     """
     import traceback
 
-    from flnd.ui import log, out
+    from flnd.ui import log
+    from flnkit.ui import out
 
     trace = "".join(traceback.format_exception(error))
     first = (str(error).strip().splitlines() or [""])[0]
@@ -196,7 +198,7 @@ def get(args: argparse.Namespace) -> int:
             if args.folder is not None:
                 fl.get(when=args.when, limit=args.limit, dry=args.dry,
                        folder=args.folder).wait()
-            from flnd.ui import out
+            from flnkit.ui import out
 
             out.line(("nothing to sync", "dim"))
             return OK
@@ -215,7 +217,7 @@ def sync(args: argparse.Namespace) -> int:
     with _open(args) as fl:
         run = fl.sync(*args.patterns, when=args.when, limit=args.limit, dry=args.dry)
         if run.name == "sync":
-            from flnd.ui import out
+            from flnkit.ui import out
 
             out.line(("nothing to sync", "dim"))
             return OK
@@ -231,7 +233,7 @@ def target_list(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd.ui import out
+    from flnkit.ui import out
 
     with _open(args) as fl:
         rows = list(fl.targets)
@@ -323,7 +325,7 @@ def target_clean(args: argparse.Namespace) -> int:
 
 def _sure(fl: _library.Flnd, args: argparse.Namespace) -> bool:
     """Ask "Forget 2 targets and delete 1.2 GB?" of a terminal; a pipe isn't asked."""
-    from flnd.ui import forms, out
+    from flnkit.ui import forms, out
 
     named = {str(each) for each in args.targets}
     size = sum(row.size for row in fl.targets if str(row.target) in named)
@@ -342,7 +344,7 @@ def auth_list(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd.ui import out
+    from flnkit.ui import out
 
     with _open(args) as fl:
         rows = list(fl.auth)
@@ -384,7 +386,7 @@ def auth_logout(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd.ui import forms
+    from flnkit.ui import forms
 
     with _open(args) as fl:
         if not forms.confirm(f"Log out of {args.plugin}?"):
@@ -410,7 +412,7 @@ def status(args: argparse.Namespace) -> int:
     Returns:
         0 when all is well, else 1.
     """
-    from flnd.ui import forms, out
+    from flnkit.ui import forms, out
 
     with _open(args) as fl:
         found = fl.status
@@ -445,7 +447,7 @@ def config(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd.ui import out
+    from flnkit.ui import out
 
     with _open(args) as fl:
         _table(("key", "value", "default", "from"),
@@ -466,7 +468,7 @@ def _show(value: Any) -> str:
 
 def _last(found: Any) -> None:
     """Print the last run and its failures, grouped by target."""
-    from flnd.ui import out
+    from flnkit.ui import out
 
     ended = f", ended {found.ended[11:19]}" if found.ended else ", never ended"
     out.line(("last run: ", "bold focus"), (found.command, "bold"),
@@ -490,7 +492,7 @@ def _last(found: Any) -> None:
 
 def _disk(found: Any) -> None:
     """Print how the disk compares to the history."""
-    from flnd.ui import out
+    from flnkit.ui import out
 
     problems = [f"{len(found.missing)} missing"] if found.missing else []
     if found.unknown:
@@ -512,7 +514,7 @@ def _disk(found: Any) -> None:
 # ---------------------------------------------------------------------------------------------
 
 class _Parser(argparse.ArgumentParser):
-    """argparse, with its help and its errors printed by `flnd.ui.out`."""
+    """argparse, with its help and its errors printed by `flnkit.ui.out`."""
 
     # Rows to end the help with, or a function making them when the help is printed.
     tail: Sequence[tuple[str, Sequence[Any]]] | Callable[[], Sequence[tuple[str, Sequence[Any]]]]
@@ -520,14 +522,14 @@ class _Parser(argparse.ArgumentParser):
 
     def print_help(self, file: Any = None) -> None:
         """Print the help in the theme; `file` is ignored, as the help goes to standard output."""
-        from flnd.ui import out
+        from flnkit.ui import out
 
         out.help(self, tail=self.tail() if callable(self.tail) else self.tail)
 
     def error(self, message: str) -> Any:
         """A mistake in the flags: print it as any usage error is, with the help to read, and
         exit 2."""
-        from flnd.ui import out
+        from flnkit.ui import out
 
         out.error(errors.UsageError(f"{self.prog}: {message}",
                                   hint=f"{self.prog} -h lists what it takes"))
@@ -543,7 +545,7 @@ class _Version(argparse.Action):
         self.version = version
 
     def __call__(self, parser: argparse.ArgumentParser, *args: Any) -> None:
-        from flnd.ui import out
+        from flnkit.ui import out
 
         out.plain(self.version)
         parser.exit()
@@ -727,7 +729,7 @@ def _targets(given: Sequence[str]) -> list[str]:
 def _how(args: argparse.Namespace) -> tuple[str, str | None]:
     """The method and the cookie file of a login: a cookie plugin's HOW is its file (asked in a
     terminal when left out), any other's is its method, the first it has by default."""
-    from flnd.ui import forms
+    from flnkit.ui import forms
 
     code = args.plugin
     ways = _methods(code)
@@ -759,7 +761,7 @@ def _ago(at: str) -> str:
 
 def _line(text: str) -> None:
     """Print one result as styled `text`: "head: tail" with the head in focus."""
-    from flnd.ui import out
+    from flnkit.ui import out
 
     head, colon, tail = text.partition(": ")
     if not colon:
@@ -770,7 +772,7 @@ def _line(text: str) -> None:
 
 def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
     """Print rows as a table: the first column in focus, and each state in its colour."""
-    from flnd.ui import out
+    from flnkit.ui import out
 
     out.table([[_cell(index, str(cell)) for index, cell in enumerate(row)] for row in rows],
               header)
@@ -856,7 +858,8 @@ class _View:
             report: the run's `Report`.
             state: its last snapshot (`run.state`).
         """
-        from flnd.ui import out, screen
+        from flnd.ui import screen
+        from flnkit.ui import out
 
         if report.planned:
             out.line(("planned ", "bold focus"), (out.count(report.planned, "file"),
@@ -874,7 +877,7 @@ class _JournalView(_View):
         Args:
             event: the event to record and potentially display.
         """
-        from flnd.ui import out
+        from flnkit.ui import out
 
         name = type(event).__name__
         if self.journal is not None:

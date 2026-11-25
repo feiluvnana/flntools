@@ -16,9 +16,9 @@ import unittest
 from contextlib import contextmanager
 from unittest import mock
 
-from flnd.errors import Stopped, UsageError
-from flnd.ui import forms
-from flnd.ui.forms import PENDING, Option
+from flnkit.errors import Stopped, UsageError
+from flnkit.ui import forms
+from flnkit.ui.forms import PENDING, Option
 
 
 class Terminal(io.StringIO):

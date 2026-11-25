@@ -10,10 +10,10 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any, NamedTuple
 
-from flnd.errors import Stopped, UsageError
-from flnd.ui import theme
+from flnkit.errors import Stopped, UsageError
+from flnkit.ui import theme
 
-__all__ = ["Option", "ask", "choose", "confirm", "interactive", "select", "text"]
+__all__ = ["Option", "ask", "choose", "confirm", "interactive", "on_pause", "select", "text"]
 
 
 class Option(NamedTuple):
@@ -529,12 +529,20 @@ def _keys(fd: int) -> list[tuple[str, str | None]]:
     return keys
 
 
+_pause: Callable[[], Any] | None = None
+
+
+def on_pause(ctx: Callable[[], Any] | None) -> None:
+    """Register a context manager factory that pauses a live display while a form runs."""
+    global _pause
+    _pause = ctx
+
+
 @contextmanager
 def _paused() -> Iterator[None]:
-    """Hold the run's screen while a question uses the terminal; nothing when none is drawn."""
-    screen = sys.modules.get("flnd.ui.screen")
-    if screen is None:
+    """Hold any live display while a question uses the terminal; nothing when none is drawn."""
+    if _pause is None:
         yield
         return
-    with screen.paused():
+    with _pause():
         yield

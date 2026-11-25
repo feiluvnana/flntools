@@ -19,9 +19,9 @@ from rich.cells import cell_len
 from rich.text import Text
 
 from flnd.engine.events import Failed, Phase, Report, State, TargetState
-from flnd.ui import out, theme
 from flnkit import clock
 from flnkit.text import count, duration, size
+from flnkit.ui import forms, out, theme
 
 __all__ = ["Screen", "frame", "paused", "summary"]
 
@@ -677,3 +677,6 @@ def under(path: Path | str, target: Any) -> str:
         if parts[at] == "media" and parts[at + 1] == target.plugin:
             return "/".join(parts[at + 3:])
     return Path(path).name
+
+
+forms.on_pause(lambda: paused())

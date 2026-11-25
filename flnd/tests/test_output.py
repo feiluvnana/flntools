@@ -15,8 +15,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
-FLNKIT = ROOT / "flnkit"
+FLNKIT = ROOT.parent / "flnkit" / "flnkit"
 UI = SRC / "ui"
+KIT_UI = FLNKIT / "ui"
 STREAMS = {"stdout", "stderr", "__stdout__", "__stderr__"}
 WRITES = {"write", "flush", "writelines"}
 
@@ -60,9 +61,9 @@ def writes(source: str) -> list[str]:
 class OutputTest(unittest.TestCase):
     def test_only_ui_writes_to_the_terminal(self) -> None:
         for path in sorted([*SRC.rglob("*.py"), *FLNKIT.rglob("*.py")]):
-            if UI in path.parents:
+            if UI in path.parents or KIT_UI in path.parents:
                 continue
-            with self.subTest(str(path.relative_to(ROOT))):
+            with self.subTest(str(path.relative_to(ROOT.parent))):
                 self.assertEqual(writes(path.read_text(encoding="utf-8")), [])
 
     def test_the_search_finds_writes_and_ignores_reads(self) -> None:

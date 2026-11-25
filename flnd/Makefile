@@ -22,7 +22,7 @@ test:     ; $(RUN) python -W "error:coroutine:RuntimeWarning" -m unittest discov
 test-browser: export FLND_TEST_NO_PROFILES = 1
 test-browser: export FLND_TEST_BROWSER = 1
 test-browser: ; $(RUN) python -m unittest tests.test_browser tests.test_hidden $(ARGS)
-lint:     ; $(RUN) ruff check src flnkit tests
+lint:     ; $(RUN) ruff check src ../flnkit/flnkit tests
 check: lint test
 bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
 # Lists, live, what a get would save, without saving anything, in a scratch home `.try`:

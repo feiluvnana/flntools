@@ -21,8 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT_PACKAGES = ("flnd", "flnkit")
-# Each package's folder: flnd is the folder src/, flnkit its own (AGENTS.md › Layout).
-PACKAGE_DIRS = {"flnd": ROOT / "src", "flnkit": ROOT / "flnkit"}
+# Each package's folder: flnd is src/, flnkit sits at the repo root (AGENTS.md › Layout).
+PACKAGE_DIRS = {"flnd": ROOT / "src", "flnkit": ROOT.parent / "flnkit" / "flnkit"}
 
 
 HISTORY_REF = re.compile(
@@ -128,13 +128,25 @@ BUILT_EARLY: dict[str, str] = {
 }
 
 
+def _rel(path: Path) -> str:
+    if path.is_relative_to(FLND):
+        return f"src/{path.relative_to(FLND).as_posix()}"
+    return f"flnkit/{path.relative_to(FLNKIT).as_posix()}"
+
+
+def _resolve(entry_path: str) -> Path:
+    if entry_path.startswith("flnkit/"):
+        return FLNKIT / entry_path.removeprefix("flnkit/")
+    return ROOT / entry_path
+
+
 def early_calls(entry: str) -> list[str]:
     """The files of src/ and flnkit/, beside the name's own, that call it as `<module>.<name>`."""
     path, name = entry.split(":", 1)
     call = re.compile(rf"\b{re.escape(Path(path).stem)}\.{re.escape(name)}\b")
-    return sorted(str(other.relative_to(ROOT)) for root in (FLND, FLNKIT)
+    return sorted(_rel(other) for root in (FLND, FLNKIT)
                   for other in root.rglob("*.py")
-                  if other != ROOT / path and call.search(other.read_text("utf-8")))
+                  if other != _resolve(path) and call.search(other.read_text("utf-8")))
 
 
 def registered(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -231,7 +243,7 @@ def dead_names() -> set[str]:
     found: set[str] = set()
     for path in sorted({path for pattern in PRIVATE for root in (FLND, FLNKIT)
                         for path in root.glob(pattern)}):
-        relative = path.relative_to(ROOT).as_posix()
+        relative = _rel(path)
         for name, qual in definitions(path.read_text(encoding="utf-8")):
             if name not in used:
                 found.add(f"{relative}:{qual}")
@@ -258,7 +270,7 @@ class DeadNameTest(unittest.TestCase):
         for entry in BUILT_EARLY:
             with self.subTest(entry):
                 path, name = entry.split(":", 1)
-                defined = {qual for _, qual in definitions((ROOT / path).read_text())}
+                defined = {qual for _, qual in definitions(_resolve(path).read_text())}
                 self.assertIn(name, defined, "gone: delete it from BUILT_EARLY")
                 self.assertEqual(early_calls(entry), [], "called now: delete it from BUILT_EARLY")
 
@@ -284,7 +296,7 @@ class DeadNameTest(unittest.TestCase):
 
 def _source_files() -> list[str]:
     return sorted(
-        path.relative_to(ROOT).as_posix()
+        _rel(path)
         for pkg in PROJECT_PACKAGES
         for path in PACKAGE_DIRS[pkg].rglob("*.py")
     )
@@ -294,19 +306,19 @@ class ReadableTest(unittest.TestCase):
     def test_no_plan_or_history_references_in_code(self):
         for path in _source_files():
             with self.subTest(path):
-                text = (ROOT / path).read_text(encoding="utf-8")
+                text = _resolve(path).read_text(encoding="utf-8")
                 self.assertEqual(history_breaches(text), [])
 
     def test_no_flnd_import_aliases(self):
         for path in sorted([*FLND.rglob("*.py"), *FLNKIT.rglob("*.py")]):
-            rel = path.relative_to(ROOT).as_posix()
+            rel = _rel(path)
             with self.subTest(rel):
                 self.assertEqual(flnd_import_aliases(path.read_text(encoding="utf-8")), [])
 
     def test_lines_are_at_most_100_characters(self):
         for path in _source_files():
             with self.subTest(path):
-                text = (ROOT / path).read_text(encoding="utf-8")
+                text = _resolve(path).read_text(encoding="utf-8")
                 self.assertEqual(line_length_breaches(text), [])
 
     def test_history_and_alias_checks_catch_breaches(self):
