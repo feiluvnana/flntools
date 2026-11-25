@@ -1,20 +1,19 @@
-"""`Flnd` and `open`: the library a script uses, over the engine.
+"""`Flnd` and `open`: the facade the CLI uses, over the engine.
 
 SPEC.md#for-developers explains it."""
 
 from __future__ import annotations
 
-import datetime
 import fnmatch
 import os
 import threading
 import weakref
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from flnd.engine.events import Checked, Failure, Record, Status, Tracked
+from flnd.engine.events import Checked, Failure, Status, Tracked
 from flnd.errors import UsageError
 from flnd.plugin import LoggedIn
 from flnkit import files
@@ -23,15 +22,13 @@ if TYPE_CHECKING:
     from flnd.engine._engine import Chosen, Engine, TargetInfo
     from flnd.engine.run import Run
     from flnd.engine.store import FailureRow
-    from flnd.plugin import Ctx, Plugin, Target
+    from flnd.plugin import Plugin, Target
 
 __all__ = ["Flnd", "open"]
 
 # The home when none is given: `$FLND_HOME`, else `.flnd` in the current folder.
 HOME_VARIABLE = "FLND_HOME"
 DEFAULT_HOME = ".flnd"
-# The kinds `files(kind=...)` filters by.
-KINDS = ("image", "video", "audio")
 
 
 def open(home: str | os.PathLike[str] | None = None, *, again: bool | None = None) -> Flnd:
@@ -254,53 +251,6 @@ class Flnd:
     # Files and checks
     # -----------------------------------------------------------------------------------------
 
-    def files(
-        self, *, target: str | Target | None = None, kind: str | None = None,
-        since: datetime.date | str | None = None,
-    ) -> list[Record]:
-        """The saved files, read from the home's `flnd.db`, oldest saved first.
-
-        Args:
-            target: only this target's files; None for every target.
-            kind: only `"image"`, `"video"` or `"audio"` files; None for all.
-            since: only posts from this day on, a date or written as `when` writes one end
-                (`"2026"`, `"2026-01"`, `"2026-01-15"`); a file whose post has no date
-                counts by the day it was saved. None for every day.
-
-        Returns:
-            One `Record` per saved file.
-
-        Raises:
-            UsageError: `target`, `kind` or `since` is wrong.
-
-        Example:
-            >>> with open("example-home") as fl:
-            ...     fl.files(kind="video")
-            []
-        """
-        if kind is not None and kind not in KINDS:
-            raise UsageError(f"kind is one of {', '.join(KINDS)}, not {kind!r}")
-        from flnd.engine import config, store
-
-        if isinstance(since, datetime.date):
-            first: datetime.date | None = since
-        else:
-            first = None if since is None else config.when(since).since
-        owner = None
-        if target is not None:
-            [resolved] = self._resolve([target])
-            owner = store.key(resolved)
-        with store.open(self.home) as db:
-            rows = db.records(target=owner, kind=kind)
-        found = []
-        for row in rows:
-            record = Record(row.key, Path(row.path), row.size, post=row.post_id,
-                            category=row.category, date=row.day, at=row.at)
-            if first is not None and (_day(record) or first) < first:
-                continue
-            found.append(record)
-        return found
-
     def check(self, *, fix: bool = False) -> Checked:
         """Compare the history with the disk: files missing, unknown, or of the wrong size.
 
@@ -329,37 +279,6 @@ class Flnd:
 
         with self._locked() if fix else nullcontext(), store.open(self.home) as db:
             return store.check(self.home, db, fix=fix)
-
-    def plugin(self, code: str) -> AbstractAsyncContextManager[Ctx]:
-        """Use a plugin in a script, on the caller's running event loop.
-
-        It opens the home's store and the plugin's login, starts a scheduler on the caller's
-        loop (so retries, holds and walls work as in a run), and gives the plugin's `Ctx`.
-        Leaving the block writes the changed cookies and the plugin's state back and closes it
-        all, an error included. Only async code can use it; there is no thread.
-
-        Args:
-            code: the plugin's code (`"ins"`).
-
-        Returns:
-            An async context manager of the plugin's `Ctx`.
-
-        Raises:
-            UsageError: `code` is no plugin's code, or the home's config.toml is wrong.
-            LoginError: the plugin needs a login it lacks.
-
-        Example:
-            >>> import asyncio, flnd
-            >>> async def main():
-            ...     with open("example-home") as fl:
-            ...         async with fl.plugin("nope"):
-            ...             pass
-            >>> asyncio.run(main())  # doctest: +ELLIPSIS
-            Traceback (most recent call last):
-            ...
-            flnkit.errors.UsageError: unknown plugin 'nope'. Plugins: ...
-        """
-        return self._engine().script(code)
 
     # -----------------------------------------------------------------------------------------
     # Helpers
@@ -707,13 +626,3 @@ def _failure(row: FailureRow) -> Failure:
                                    retryable=row.retryable),
                    post=row.post, path=Path(row.file) if row.file else None,
                    attempts=row.attempts, url=row.url, at=row.at)
-
-
-def _day(record: Record) -> datetime.date | None:
-    """The day a record counts by for `since`: its post's, else the day it was saved."""
-    if record.date is not None:
-        return record.date
-    try:
-        return datetime.datetime.fromisoformat(record.at).date() if record.at else None
-    except ValueError:
-        return None

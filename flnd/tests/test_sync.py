@@ -118,15 +118,6 @@ class FetchTest(SyncCase):
         self.assertEqual(runs, [Options(stop_at_saved=True)])
 
 
-class HistoryTest(SyncCase):
-    def test_a_sync_never_reads_every_saved_file(self):
-        """Fix 12: repair, compress and the tally each scanned the whole history, per target."""
-        self.download(texts=("aaa:a", "aaa:b", "aaa:c"))
-        with mock.patch.object(_store.Store, "records", side_effect=AssertionError("a full scan")):
-            lines = self.sync()
-        self.assertEqual(len(lines), 3)
-
-
 class SummaryTest(SyncCase):
     def test_one_line_per_target(self):
         # History keys are per source, so aaa:b, saving the same names, finds them saved and

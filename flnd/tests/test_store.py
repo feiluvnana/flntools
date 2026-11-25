@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from fakes import records
 from plugin_kit import fake_clock
 
 from flnd.engine import store
@@ -459,7 +460,7 @@ class FilesTest(StoreCase):
     def test_reading_a_new_home_creates_nothing(self):
         with store.open(self.home / "new") as opened:
             self.assertIsNone(opened.known("aaa:x"))
-            self.assertEqual((opened.targets(), opened.records(),
+            self.assertEqual((opened.targets(), records(opened),
                               opened.pending("aaa:example_user"), dict(opened.state("aaa"))),
                              ({}, [], [], {}))
         self.assertFalse((self.home / "new").exists())
@@ -495,7 +496,7 @@ class FilesTest(StoreCase):
         opened.redate("aaa:1", path, datetime.date(2026, 1, 4))
         self.assertEqual(opened.day("aaa:1"), datetime.date(2026, 1, 4))
         self.assertEqual(opened.undated("aaa:example_user"), [])
-        [saved] = opened.records()
+        [saved] = records(opened)
         self.assertEqual((saved.path, saved.size, saved.estimated, saved.day),
                          (str(path), 5, False, datetime.date(2026, 1, 4)))
 
@@ -503,9 +504,9 @@ class FilesTest(StoreCase):
         opened = self.open()
         opened.save([row("aaa:1", kind="image"), row("aaa:2", post="p2", kind="video")])
         opened.save([store.FileRow("bbb:1", "bbb:other", "/m/b.jpg", kind="image")])
-        self.assertEqual([found.key for found in opened.records(target="aaa:example_user")],
+        self.assertEqual([found.key for found in records(opened, target="aaa:example_user")],
                          ["aaa:1", "aaa:2"])
-        self.assertEqual(sorted(found.key for found in opened.records(kind="image")),
+        self.assertEqual(sorted(found.key for found in records(opened, kind="image")),
                          ["aaa:1", "bbb:1"])
         rows = [store.FileRow(f"ccc:{n:06d}", "ccc:example_user", f"/m/{n}.jpg", n,
                               post_id=str(n)) for n in range(100_000)]
@@ -518,7 +519,7 @@ class FilesTest(StoreCase):
         opened = self.open()
         opened.save([row("aaa:1")])
         opened.update("aaa:1", unpacked="extracted", folder="/m/set")
-        [saved] = opened.records()
+        [saved] = records(opened)
         self.assertEqual((saved.unpacked, saved.folder), ("extracted", "/m/set"))
         with self.assertRaises(ValueError):
             opened.update("aaa:1", target="aaa:other")
@@ -537,7 +538,7 @@ class FailuresTest(StoreCase):
         self.assertEqual(opened.known("aaa:1"), ("/m/1.jpg", "gone", None))
         self.assertEqual((opened.pending("aaa:example_user"),
                           opened.pending("aaa:example_user", every=True), opened.failed(),
-                          opened.records()), ([], [], {}, []))
+                          records(opened)), ([], [], {}, []))
 
     def test_a_failure_keeps_what_a_retry_lists_again_never_a_url_to_reuse(self):
         opened = self.open()

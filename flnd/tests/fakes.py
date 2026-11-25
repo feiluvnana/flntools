@@ -97,10 +97,22 @@ def history(home) -> dict[str, dict[str, Any]]:
 
 
     with _store.open(Path(home)) as db:
-        rows = {row.key: msgspec.structs.asdict(row) for row in db.records()}
+        rows = {row.key: msgspec.structs.asdict(row) for row in records(db)}
         for item, row in rows.items():
             row["files"] = db.files_of_post(item)
     return rows
+
+
+def records(db, *, target: str | None = None, kind: str | None = None) -> list:
+    """The saved files of an open store, oldest saved first, as `FileRow`s."""
+    where, args = ["state = 'saved'"], []
+    for column, value in (("target", target), ("kind", kind)):
+        if value is not None:
+            where.append(f"{column} = ?")
+            args.append(value)
+    found = db._db.all(f"SELECT {_store.ROW_SELECT} FROM files WHERE {' AND '.join(where)}"
+                       " ORDER BY at, key", tuple(args))
+    return [_store._file_row(row) for row in found]
 
 
 def targets(home) -> dict[str, Any]:

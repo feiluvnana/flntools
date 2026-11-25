@@ -602,7 +602,7 @@ class Engine:
         failure = (failures if failures is not None else db.target_failures()).get(
             target_key, (False, 0, 0))
         status, failed = _target_status(
-            row, target, categories, complete, pending=pending, files=files,
+            row, target, complete, pending=pending, files=files,
             is_query=is_query, is_single=is_single, failure=failure,
         )
         return TargetInfo(
@@ -1014,32 +1014,6 @@ class Engine:
             if opened_here:
                 self._db = None
                 await _off(db.close)
-
-    @contextlib.asynccontextmanager
-    async def script(self, code: str) -> AsyncIterator[Ctx]:
-        """A plugin's `Ctx` for a script, on the caller's running loop.
-
-        It opens what a run opens (the home's database, the scheduler with its holds and walls,
-        the plugin's instance, its login check and its `connect` hook), and on the way out
-        writes the cookies and the state back and closes it all, an error included. Nothing
-        stops it but its caller: there is no Ctrl-C handler.
-
-        Args:
-            code: the plugin's code.
-
-        Raises:
-            UsageError: no such plugin, or the home's config.toml has a value it doesn't take.
-            LoginError: a login the plugin needs.
-        """
-        if code not in self.sources:
-            raise UsageError(f"unknown plugin {code!r}. Plugins: {', '.join(self.sources)}")
-        async with self._running(Stop()) as runner:
-            entry = await runner.entry(code)
-            if entry.error is not None:
-                raise entry.error
-            if not entry.logged_in and _required(entry.run.source):
-                raise crawl.logged_out(Target(f"{code}:", kind=auth.LOGIN))
-            yield _plugin_ctx(entry.run)
 
     def _recorded(self, rows: Mapping[str, store.TargetRow]) -> list[Target]:
         """The targets of `flnd.db`'s rows, rebuilt from each row's source, kind and value."""
@@ -1562,7 +1536,6 @@ async def _carried_call(call: Callable[..., Awaitable[T]], *args: Any) -> tuple[
 def _target_status(
     row: store.TargetRow | None,
     target: Target,
-    categories: tuple[str, ...],
     complete: Mapping[str, str],
     *,
     pending: tuple[str, ...],

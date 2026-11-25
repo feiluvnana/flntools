@@ -19,7 +19,7 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
-from fakes import CDN, Engine, EngineCase, drive, login_cookies, make_plugin, noise, sign_in
+from fakes import CDN, Engine, EngineCase, login_cookies, make_plugin, noise, records
 
 from flnd import _library, errors, plugin
 from flnd.engine import events as _events
@@ -93,6 +93,11 @@ class LibraryCase(EngineCase):
 
     def saved(self, events):
         return sorted(event.post for event in events if isinstance(event, _events.Saved))
+
+    def saved_rows(self, **where):
+        """The saved files of the home, read from its database."""
+        with _store.open(self.home) as db:
+            return records(db, **where)
 
 
 class GetTest(LibraryCase):
@@ -177,7 +182,7 @@ class GetTest(LibraryCase):
         self.fl.get("exs:example_user").wait()
         [forgotten] = self.fl.targets.clean("exs:example_user")
         self.assertEqual(forgotten.files, 3)
-        self.assertEqual((list(self.fl.targets), self.fl.files()), ([], []))
+        self.assertEqual((list(self.fl.targets), self.saved_rows()), ([], []))
         self.assertTrue(any((self.home / "media").rglob("*.jpg")))
         self.fl.get("exs:example_user").wait()
         self.fl.targets.clean("exs:example_user", media=True)
@@ -471,26 +476,13 @@ class FollowTest(LibraryCase):
         self.assertEqual(self.saved(self.fl.get("exs:example_user")), [])
         self.assertEqual(self.saved(self.fl.get("exs:example_user|all")), ["p0", "p1", "p2"])
         self.assertEqual(self.saved(self.fl.get()), [])
-        self.assertEqual(len(self.fl.files(target="exs:example_user")), 5)
+        self.assertEqual(len(self.saved_rows(target="exs:example_user")), 5)
 
 
 class ReadsTest(LibraryCase):
-    def test_files_by_target_kind_and_since(self):
-        self.fl.get("exs:example_user").wait()
-        self.fl.get("exs:p/9").wait()
-        records = self.fl.files()
-        self.assertEqual(sorted(record.post for record in records), ["9", "p1", "p2", "r1"])
-        mine = self.fl.files(target="exs:example_user", kind="image", since="2026-03")
-        self.assertEqual(sorted(record.post for record in mine), ["p1", "p2", "r1"])
-        self.assertEqual(self.fl.files(since="2026-04"), [])
-        self.assertEqual(self.fl.files(kind="video"), [])
-        self.assertTrue(all(record.path.is_file() for record in records))
-        with self.assertRaises(errors.UsageError):
-            self.fl.files(kind="photo")
-
     def test_a_new_home_reads_empty_and_stays_unwritten(self):
         with _library.open(self.home / "new") as fl:
-            self.assertEqual((list(fl.targets), fl.files()), ([], []))
+            self.assertEqual(list(fl.targets), [])
             self.assertEqual(fl.get().wait(), _events.Report())
         self.assertFalse((self.home / "new" / "media").exists())
 
@@ -501,70 +493,6 @@ class ReadsTest(LibraryCase):
             self.assertEqual(_library.Flnd().home, Path("~/example-home").expanduser())
         with mock.patch.dict("os.environ", {}, clear=True):
             self.assertEqual(_library.open().home, Path(".flnd"))
-
-
-class ScriptTest(LibraryCase):
-    """`fl.plugin(code)`: a plugin's `Ctx` for a script, on the caller's loop."""
-
-    API = "https://exc.example/api"
-
-    def setUp(self):
-        super().setUp()
-        self.enterContext(registered(example_source({}, code="exc", login=login_cookies("sid"))))
-        sign_in("exc", [{"name": "sid", "value": "v-one", "domain": ".exc.example",
-                         "path": "/"}])
-
-    def use(self, work, *, code="exc"):
-        async def script():
-            async with self.fl.plugin(code) as ctx:
-                return await work(ctx)
-        return drive(script())
-
-    def test_it_fetches_with_the_plugins_cookies(self):
-        async def work(ctx):
-            return (await ctx.fetch(f"{self.API}/me")).status
-        self.assertEqual(self.use(work), 200)
-        self.assertIn("v-one", self.requests[-1].headers.get("cookie", ""))
-
-    def test_retries_and_holds_work_as_in_a_run(self):
-        answers = [_net.reply(503), _net.reply(200, content=b"ok")]
-        self.routes[f"{self.API}/me"] = lambda request: answers.pop(0)
-
-        async def work(ctx):
-            return (await ctx.fetch(f"{self.API}/me")).status
-        self.assertEqual(self.use(work), 200)
-        self.assertEqual(len(self.requests), 2)
-        # The retry waited on the fake clock, not the real one.
-        self.assertGreater(self.now, 0)
-
-    def test_state_and_cookies_are_written_back_on_exit_and_after_an_error(self):
-        from flnd.engine import auth
-
-        async def work(ctx):
-            ctx.state["seen"] = 3
-            raise ValueError("example")
-        with mock.patch.object(auth, "write_back", wraps=auth.write_back) as back:
-            with self.assertRaises(ValueError):
-                self.use(work)
-        self.assertEqual(back.call_args.args[0], "exc")
-
-        async def read(ctx):
-            return ctx.state.get("seen")
-        self.assertEqual(self.use(read), 3)
-
-    def test_a_missing_plugin_says_what_to_do(self):
-        async def work(ctx):
-            self.fail("the block must not run")
-        with self.assertRaises(errors.UsageError):
-            self.use(work, code="nope")
-
-    def test_a_plugin_that_needs_a_login_it_lacks_raises_login_error(self):
-        self.enterContext(registered(example_source({}, code="exr", login=login_cookies("sid", required=True))))
-
-        async def work(ctx):
-            self.fail("the block must not run")
-        with self.assertRaises(errors.LoginError):
-            self.use(work, code="exr")
 
 
 class FolderListTest(LibraryCase):

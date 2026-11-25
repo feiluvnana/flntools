@@ -640,24 +640,6 @@ class Store:
         self._db.write("UPDATE files SET path = ?, date = ?, estimated = 0, size = ?, mtime = ?"
                        " WHERE key = ?", (str(path), day.isoformat(), size, mtime, item))
 
-    def records(self, *, target: str | None = None, kind: str | None = None) -> list[FileRow]:
-        """The saved files, oldest saved first.
-
-        Args:
-            target: only this target's files (its key); None for all.
-            kind: only "image", "video" or "audio" files; None for all.
-        """
-        where, args = ["state = 'saved'"], []
-        if target is not None:
-            where.append("target = ?")
-            args.append(target)
-        if kind is not None:
-            where.append("kind = ?")
-            args.append(kind)
-        found = self._db.all(f"SELECT {ROW_SELECT} FROM files WHERE {' AND '.join(where)}"
-                             " ORDER BY at, key", tuple(args))
-        return [_file_row(row) for row in found]
-
     def row(self, item: str) -> FileRow | None:
         """A file's whole row, in whatever state; None when the home has none."""
         found = self._db.one(f"SELECT {ROW_SELECT} FROM files WHERE key = ?", (item,))

@@ -68,7 +68,8 @@ def history(report: kit.Report, scratch: Path) -> None:
             lambda: [db.known(k) is not None for k in probes]) / PROBES * 1e6, "us")
         # One target's rows: every tenth file, 10,000 rows.
         report.add("prefix_scan_10k",
-                   kit.best(lambda: db.records(target="ins:example_user0")) * 1e3, "ms")
+                   kit.best(lambda: db._db.all(
+                       "SELECT key FROM files WHERE target = ?", ("ins:example_user0",))) * 1e3, "ms")
         # `size` is a column now, so SQL filters it; the name stays for the comparison.
         report.add("filter_json", kit.best(lambda: db._db.all(
             "SELECT key FROM files WHERE size = ?", (5,))) * 1e3, "ms")
