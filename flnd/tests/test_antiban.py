@@ -7,9 +7,10 @@ import importlib
 import json
 import unittest
 
+from plugin_kit import FakeCtx, FakePage, Reply, Sent, collect
+
 from flnd.errors import Blocked, LoginError
 from flnd.plugins import fbk, ins, loi, thr, tik, tlg, twt
-from flnd.testing import FakeCtx, FakePage, Reply, Sent, collect
 
 PLUGINS = {
     "twt": twt.Twitter, "ins": ins.Instagram, "fbk": fbk.Facebook,

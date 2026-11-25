@@ -15,6 +15,7 @@ from unittest import mock
 import msgspec
 from example_plugin import Example as CtxExample
 from fakes import Engine
+from plugin_kit import fake_clock
 from test_ctx import CtxCase
 from test_library import LibraryCase, example_source
 
@@ -24,7 +25,6 @@ from flnd.engine import config
 from flnd.engine.config import Config, Where
 from flnd.errors import UsageError
 from flnd.plugin import Range, Target
-from flnd.testing import fake_clock
 from flnkit import clock
 
 

@@ -10,10 +10,12 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
+from flnd import __version__, errors
 from flnd.plugins import TABLE
 
 if TYPE_CHECKING:
-    import flnd
+    from flnd import _library
+    from flnd.engine.run import Run
 
 __all__ = ["exit_code", "main", "parser"]
 
@@ -72,13 +74,12 @@ def _main(argv: Sequence[str] | None) -> int:
     try:
         return args.command(args)
     except KeyboardInterrupt:
-        # `flnd.Stopped` is one: Ctrl-C during a run, which the run already stopped cleanly.
+        # `errors.Stopped` is one: Ctrl-C during a run, which the run already stopped cleanly.
         out.line(("stopped", "warn"), err=True)
         return STOPPED
     except Exception as error:
-        import flnd
 
-        if isinstance(error, flnd.Error):
+        if isinstance(error, errors.Error):
             _report(error, as_json=args.json)
             return exit_code(error)
         return _crashed(error, args)
@@ -92,20 +93,18 @@ def exit_code(error: BaseException | None) -> int:
 
     Returns:
         0 if the command succeeded, else the code of the first class in `CODES` the error is an
-        instance of: 130 for `flnd.Stopped`, 2, 3, 4 or 1 for a `flnd.Error`, and 4 for anything
-        else.
+        instance of: 130 for `errors.Stopped`, 2, 3, 4 or 1 for an `errors.Error`, and 4 for
+        anything else.
 
     Example:
-        >>> import flnd
-        >>> exit_code(flnd.LoginError("ins: not logged in")), exit_code(flnd.Blocked("wait"))
+        >>> exit_code(errors.LoginError("ins: not logged in")), exit_code(errors.Blocked("wait"))
         (3, 1)
     """
     if error is None:
         return OK
-    import flnd
 
     for name, code in CODES:
-        if isinstance(error, getattr(flnd, name)):
+        if isinstance(error, getattr(errors, name)):
             return code
     return BROKE
 
@@ -145,7 +144,6 @@ def _crashed(error: Exception, args: argparse.Namespace) -> int:
     """
     import traceback
 
-    import flnd
     from flnd.ui import log, out
 
     trace = "".join(traceback.format_exception(error))
@@ -154,10 +152,10 @@ def _crashed(error: Exception, args: argparse.Namespace) -> int:
     if not args.verbose:
         path = log.crash(args.home or os.environ.get("FLND_HOME") or ".flnd", trace)
         if path is not None:
-            out.error(flnd.Error(line, hint=f"details in {path}"))
+            out.error(errors.Error(line, hint=f"details in {path}"))
             return BROKE
     out.plain(trace, err=True)
-    out.error(flnd.Error(line))
+    out.error(errors.Error(line))
     return BROKE
 
 
@@ -294,7 +292,7 @@ def target_clean(args: argparse.Namespace) -> int:
     return OK
 
 
-def _sure(fl: flnd.Flnd, args: argparse.Namespace) -> bool:
+def _sure(fl: _library.Flnd, args: argparse.Namespace) -> bool:
     """Ask "Forget 2 targets and delete 1.2 GB?" of a terminal; a pipe isn't asked."""
     from flnd.ui import forms, out
 
@@ -549,10 +547,9 @@ class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> Any:
         """A mistake in the flags: print it as any usage error is, with the help to read, and
         exit 2."""
-        import flnd
         from flnd.ui import out
 
-        out.error(flnd.UsageError(f"{self.prog}: {message}",
+        out.error(errors.UsageError(f"{self.prog}: {message}",
                                   hint=f"{self.prog} -h lists what it takes"))
         self.exit(USAGE)
 
@@ -581,11 +578,10 @@ def parser() -> argparse.ArgumentParser:
     Returns:
         The parser; `parse_args` sets `command` to the command's function.
     """
-    import flnd
 
     top = _Parser(prog="flnd", description="download whole accounts from the web",
                   parents=[_globals()])
-    top.add_argument("-V", "--version", action=_Version, version=f"flnd {flnd.__version__}")
+    top.add_argument("-V", "--version", action=_Version, version=f"flnd {__version__}")
     top.tail = [("plugins", [" ".join(entry.code for entry in TABLE)]),
                 ("", [("a plugin's targets: flnd get -h", "dim")])]
     verbs = top.add_subparsers(title="commands", metavar="<command>")
@@ -727,11 +723,11 @@ def _forms() -> list[tuple[str, list[Any]]]:
 # Helpers of the commands
 # ---------------------------------------------------------------------------------------------
 
-def _open(args: argparse.Namespace) -> flnd.Flnd:
+def _open(args: argparse.Namespace) -> _library.Flnd:
     """The library over `--home`; the caller uses it in a `with`."""
-    import flnd
+    from flnd import _library
 
-    return flnd.open(args.home, again=True if getattr(args, "again", False) else None)
+    return _library.open(args.home, again=True if getattr(args, "again", False) else None)
 
 
 def _targets(given: Sequence[str]) -> list[str]:
@@ -746,19 +742,19 @@ def _targets(given: Sequence[str]) -> list[str]:
 def _how(args: argparse.Namespace) -> tuple[str, str | None]:
     """The method and the cookie file of a login: a cookie plugin's HOW is its file (asked in a
     terminal when left out), any other's is its method, the first it has by default."""
-    import flnd
     from flnd.ui import forms
 
     code = args.plugin
     ways = _methods(code)
     if not ways:
-        raise flnd.UsageError(f"unknown plugin {code!r}", hint="flnd --help lists the plugins")
+        raise errors.UsageError(f"unknown plugin {code!r}", hint="flnd --help lists the plugins")
     if ways != ("file",):
         return args.how or ways[0], None
     if args.how:
         return "file", args.how
     if args.json or not forms.interactive():
-        raise flnd.UsageError(f"{code}: which cookie file?", hint=f"flnd auth login {code} <file>")
+        raise errors.UsageError(f"{code}: which cookie file?",
+                                hint=f"flnd auth login {code} <file>")
     return "file", (forms.text("Cookie file") or "").strip()
 
 
@@ -820,11 +816,10 @@ def _cell(index: int, text: str) -> tuple[str, str]:
 # Watching a run
 # ---------------------------------------------------------------------------------------------
 
-def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, name: str = "get") -> int:
+def _watch(fl: _library.Flnd, run: Run, args: argparse.Namespace, name: str = "get") -> int:
     """Read a run's events into the chosen view, print its end, and return its exit code."""
     from contextlib import ExitStack, nullcontext
 
-    import flnd
     from flnd.ui.log import stamped, ui
     from flnd.ui.screen import Screen
 
@@ -839,7 +834,7 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, name: str = "
         stack.enter_context(view)
         stack.enter_context(ui.scope(level="debug" if args.verbose else "warn"))
         if journal is not None:
-            journal.write({"type": "Start", "command": name, "version": flnd.__version__})
+            journal.write({"type": "Start", "command": name, "version": __version__})
         # The screen ends before the summary: its last frame stays above it.
         with nullcontext() if args.json else Screen(lambda: run.state, command=name):
             for event in run:
@@ -856,10 +851,9 @@ def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, name: str = "
 
 
 def _login(error: BaseException) -> bool:
-    """Whether `error` is a `flnd.LoginError`: a login the target needs, exit code 3."""
-    import flnd
+    """Whether `error` is a `errors.LoginError`: a login the target needs, exit code 3."""
 
-    return isinstance(error, flnd.LoginError)
+    return isinstance(error, errors.LoginError)
 
 
 class _View:
@@ -880,7 +874,7 @@ class _View:
         """Show the run's end summary (`flnd.ui.screen.summary`); a dry run's planned files.
 
         Args:
-            report: the run's `flnd.Report`.
+            report: the run's `Report`.
             state: its last snapshot (`run.state`).
         """
         from flnd.ui import out, screen

@@ -17,8 +17,6 @@ These rules are for anyone who changes flnd: how to check, lay out, name, write 
   and runs Python with `-W "error:coroutine:RuntimeWarning"`, so a never-awaited coroutine
   fails its test.
 - `make lint` runs ruff alone.
-- `make api` regenerates the public surface snapshot (`tests/data/api.txt`). After any public
-  change, read its diff: it is the review of that change.
 - `make bench` runs the offline benchmarks in `tests/bench/`. `make bench ARGS=--gate` fails on
   a regression over 15% against `tests/bench/gates.json`. Run the benchmarks before a speed
   change, to get the "before" numbers. Run `ARGS=--gate` on any change that touches speed,
@@ -26,7 +24,7 @@ These rules are for anyone who changes flnd: how to check, lay out, name, write 
   `SPEC.md#for-developers`.
 - `make check PY=3.11` runs on the oldest Python that `requires-python` allows. Run it before
   a release.
-- `make docs` builds the API reference into `build/docs/`. `make dist` builds a one-file binary.
+- `make dist` builds a one-file binary.
 - `make clean` removes `build`, `dist` and `.try`.
 - **On Windows**, install make with `winget install ezwinports.make`, or use the one that comes
   with Git for Windows. Each Makefile recipe is one `uv` command you can also type yourself.
@@ -43,13 +41,12 @@ and `flnkit/`, a standalone package imported as `flnkit`. Its tree:
 
 ```text
 src/                 the package flnd
-  __init__.py      public names, each loaded on first use
+  __init__.py      the version
   __main__.py      python -m flnd
   _library.py      open, Flnd, and the groups Targets, Auth, Config
   cli.py           the commands
   errors.py        the one error hierarchy
-  plugin.py        what a plugin declares and gets (public)
-  testing.py       the plugin test kit (public)
+  plugin.py        what a plugin declares and gets
   engine/
     run.py         Run, the loop's thread, the event channel, Ctrl-C, the journal
     events.py      the events, Report, State, and the rows the reads return
@@ -78,11 +75,11 @@ The import rules, checked by `tests/test_layers.py` by reading every file's impo
    `src/plugin.py`. `src/engine/events.py` imports only `src/errors.py`, `src/plugin.py`,
    `flnkit`, `msgspec` and the standard library.
 4. `src/plugin.py` imports only `flnkit`, `src/errors.py` and the standard library.
-   `src/testing.py` imports `flnd`, `src/plugin.py`, `src/engine/*` and `flnkit`.
    `src/_library.py` imports `src/engine/*`, `flnkit`, `src/errors.py` and `src/plugin.py`.
 5. `src/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
    (`telethon`, `qrcode`), imported inside a function.
-6. `src/cli.py` imports only `flnd`, `src/ui/*` and the table, `src/plugins/__init__.py`.
+6. `src/cli.py` imports only `flnd` (its version), `src/ui/*`, `src/plugins/__init__.py`,
+   `flnd._library`, `flnd.errors`, `flnd.engine.events` and `flnd.engine.run` (the run's type).
 7. `src/__init__.py` imports nothing at import time beyond the standard library.
 
 Also: `flnkit/` never imports `src/engine/`, `src/ui/` or `src/plugins/`, and `src/ui/` never
@@ -111,9 +108,7 @@ imports `src/plugins/`.
   handles a site, never `source`. `retry` is the verb; `hint` is the advice on an error;
   `hold` is a timed wait; `Record` is a saved file's row.
 - At most 5 options, and they are keyword-only.
-- A resource is a context manager (`with flnd.open(home) as fl:`).
 - No aliases.
-- `tests/test_names.py` checks the public surface. Its allowlist may only shrink.
 
 ## Errors
 - Every error is a `flnd.Error` subclass from the one hierarchy: `flnkit/errors.py` defines
@@ -157,8 +152,9 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
   modules) stay.
 
 ## Dead code
-- The dead-name, docstring and API-snapshot checks cover all of `src/` and `flnkit/`. Remove
-  code they flag.
+- The dead-name check (`tests/test_code.py`) covers all of `src/` and `flnkit/`. Remove code it
+  flags. A name only tests call is dead, unless it is listed in `CALLED_FROM_OUTSIDE` with who
+  calls it.
 
 ## Dependencies
 - Each dependency has a reason beside it in `pyproject.toml`.

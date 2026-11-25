@@ -15,10 +15,11 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-import flnd
+from plugin_kit import fake_clock
+
+from flnd import errors
 from flnd.engine.events import Failed, Saved
 from flnd.plugin import Target
-from flnd.testing import fake_clock
 from flnd.ui.log import UI, Journal
 from flnkit import clock as _time
 
@@ -123,7 +124,7 @@ class JournalTest(unittest.TestCase):
 
     def test_writes_paths_and_errors_as_data(self) -> None:
         target = Target("ins:example_user", kind="user")
-        error = flnd.LoginError("not logged in", hint="run flnd auth login ins chrome")
+        error = errors.LoginError("not logged in", hint="run flnd auth login ins chrome")
         with UI().file(self.journal_path) as j:
             j.write(Saved(target, "posts", "9001", Path("media/9001.jpg"), date(2026, 1, 2), 5))
             j.write(Failed(target, error))

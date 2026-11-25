@@ -8,6 +8,7 @@ import unittest
 from types import SimpleNamespace
 
 import fakes  # noqa: F401  (refuses real profiles; fails a coroutine never awaited)
+from plugin_kit import FakeCtx, FakePage, Reply, Sent, check, collect
 
 from flnd.engine.plugins import PLUGINS
 from flnd.engine.resolve import Manifest, resolve
@@ -22,7 +23,6 @@ from flnd.plugins.fbk import (
     profile_of,
     tab_cursor,
 )
-from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
 
 SITE = "https://www.facebook.com"
 GRAPHQL = f"{SITE}/api/graphql/"

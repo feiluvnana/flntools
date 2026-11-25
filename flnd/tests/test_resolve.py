@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from fakes import Engine, EngineCase, noise
-from test_library import LibraryCase, example_source
+from test_library import LibraryCase, example_source, registered
 
 from flnd.engine import crawl, store
 from flnd.engine.plugins import PLUGINS, domains
@@ -333,7 +333,8 @@ class MixedRunTest(LibraryCase):
         async def search(self, ctx, words):
             yield Target("exq:example_creator")
 
-        self.fl.add(example_source(self.listing, code="exq", search=route("exq?{words}")(search)))
+        source = example_source(self.listing, code="exq", search=route("exq?{words}")(search))
+        self.enterContext(registered(source))
 
     def test_a_search_and_a_user_with_categories_are_both_stored(self):
         self.fl.get("exq?words|reels", "exq:example_user|posts",

@@ -4,8 +4,8 @@ AGENTS.md › Writing sets the rules this file checks. Each check is a test clas
 
 1. `DocstringTest` reads every module of `flnd` with `ast` (nothing is imported) and lists each
    docstring gap: a module without a docstring, one longer than `MODULE_LINES` lines, one that
-   names no `SPEC.md#<section>` or a section the page lacks, and a public name without a
-   summary. Every docstring with `>>>` lines then runs as a doctest.
+   names no `SPEC.md#<section>` or a section the page lacks. Every docstring with `>>>` lines
+   then runs as a doctest, and so does `tests/plugin_kit.py`.
 2. `PageTest` runs every `python` block of `SPEC.md` and of `COOKBOOK.md`, in page order, one
    namespace for each page.
 3. `LinkTest` checks every relative link of the three pages: the file exists, and a `#fragment`
@@ -25,7 +25,6 @@ import ast
 import contextlib
 import doctest
 import importlib
-import inspect
 import io
 import os
 import re
@@ -35,7 +34,6 @@ import unittest
 from collections.abc import Iterator
 from pathlib import Path
 
-import api_snapshot
 from test_packaging import ROOT
 
 # The packages whose modules must document themselves. `tests/` is for contributors.
@@ -45,30 +43,6 @@ PAGES = README, COOKBOOK, SPEC = tuple(ROOT / n for n in ("README.md", "COOKBOOK
 MODULE_LINES, LINE_CHARS = 3, 100
 LIMITS = dict(zip(PAGES, (40, 250, 1550)))
 SECTION = re.compile(r"SPEC\.md#([\w-]+)")
-
-
-def public_names() -> dict[tuple[str, str], str]:
-    """The public functions, methods, classes, errors and properties, by where they are defined.
-
-    "Public" means listed in the API snapshot (`make api`).
-
-    Returns:
-        `{(path, qualname): kind}`: the file's path relative to the root, with `/`; the
-        `__qualname__`; and the snapshot's kind.
-    """
-    found: dict[tuple[str, str], str] = {}
-    for name in api_snapshot.api_names():
-        if name.kind not in ("function", "method", "class", "error", "property"):
-            continue
-        obj = name.obj.fget if isinstance(name.obj, property) else name.obj
-        obj = inspect.unwrap(obj) if callable(obj) else obj
-        try:
-            path = Path(inspect.getsourcefile(obj) or "").resolve()
-        except TypeError:  # a builtin, which has no source
-            continue
-        if path.is_relative_to(ROOT) and hasattr(obj, "__qualname__"):
-            found[path.relative_to(ROOT).as_posix(), obj.__qualname__] = name.kind
-    return found
 
 
 def dotted(path: Path) -> str:
@@ -84,19 +58,18 @@ def modules() -> list[Path]:
     return sorted(path for package in PACKAGES for path in (ROOT / package).rglob("*.py"))
 
 
-def module_gaps(path: Path, public: dict[tuple[str, str], str], sections: set[str]) -> list[str]:
+def module_gaps(path: Path, sections: set[str]) -> list[str]:
     """Every docstring gap of one module, one line each.
 
     A module starts with a docstring of at most `MODULE_LINES` lines that names a real
-    `SPEC.md#<section>`; a public name has a docstring whose first line sums it up.
+    `SPEC.md#<section>`.
 
     Args:
         path: the module's file.
-        public: the API snapshot's names, from `public_names`.
         sections: the `#fragment` of every heading of `SPEC.md`.
 
     Returns:
-        `<path>: <gap>` for the module, `<path>:<qualname>: <gap>` for a public name.
+        `<path>: <gap>` for each gap of the module.
     """
     relative = path.relative_to(ROOT).as_posix()
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
@@ -112,24 +85,13 @@ def module_gaps(path: Path, public: dict[tuple[str, str], str], sections: set[st
     if len(doc.splitlines()) > MODULE_LINES:
         gaps.append(f"{relative}: the module docstring is over {MODULE_LINES} lines")
 
-    def walk(body: list[ast.stmt], prefix: str) -> None:
-        for node in body:
-            if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            name = prefix + node.name
-            if (relative, name) in public and not (ast.get_docstring(node) or "").strip():
-                gaps.append(f"{relative}:{name}: no summary")
-            if isinstance(node, ast.ClassDef):
-                walk(node.body, name + ".")
-
-    walk(tree.body, "")
     return gaps
 
 
 def gaps() -> list[str]:
     """Every gap the code has, sorted: `test_no_gap` wants none."""
-    public, sections = public_names(), anchors(SPEC)
-    found = [gap for path in modules() for gap in module_gaps(path, public, sections)]
+    sections = anchors(SPEC)
+    found = [gap for path in modules() for gap in module_gaps(path, sections)]
     # A property and its setter share a name, so the same gap can come twice; it is listed once.
     return sorted(set(found))
 
@@ -142,7 +104,7 @@ def rule(gap: str) -> str:
         return "a module docstring names the SPEC.md#<section> that explains it"
     if gap.endswith(f"over {MODULE_LINES} lines"):
         return f"a module docstring is 1 to {MODULE_LINES} lines"
-    return "a public name has a docstring that sums it up"
+    return "a docstring is written for the module"
 
 
 class DocstringTest(unittest.TestCase):
@@ -156,10 +118,11 @@ class DocstringTest(unittest.TestCase):
     def test_examples_run(self) -> None:
         """Every docstring with `>>>` lines runs as a doctest, in a scratch folder."""
         finder, runner = doctest.DocTestFinder(), doctest.DocTestRunner(verbose=False)
-        for path in modules():
+        kit = ROOT / "tests" / "plugin_kit.py"
+        for path in [*modules(), kit]:
             if ">>>" not in path.read_text(encoding="utf-8"):
                 continue
-            name = dotted(path)
+            name = path.stem if path == kit else dotted(path)
             module = importlib.import_module(name)
             with scratch():
                 for test in finder.find(module, name):

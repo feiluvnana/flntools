@@ -30,7 +30,6 @@ from fakes import (
     vaulted,
 )
 
-from flnd import Blocked, LoginError, Target, UsageError
 from flnd.engine import crawl as job
 from flnd.engine import jobs
 from flnd.engine import run as _run
@@ -38,8 +37,8 @@ from flnd.engine import store as _store
 from flnd.engine._engine import Results, _Runner
 from flnd.engine.crawl import Options, TargetReport
 from flnd.engine.events import Failed, Skipped
-from flnd.errors import Error, SiteError
-from flnd.plugin import Browser, File, Plugin, Post, Request, route
+from flnd.errors import Blocked, Error, LoginError, SiteError, UsageError
+from flnd.plugin import Browser, File, Plugin, Post, Request, Target, route
 from flnd.ui.log import ui
 from flnkit import browser as _browser
 from flnkit import clock

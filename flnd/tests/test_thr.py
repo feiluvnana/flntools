@@ -7,13 +7,13 @@ import json
 import unittest
 
 import fakes
+from plugin_kit import FakeCtx, FakePage, Sent, check, collect
 
 from flnd.engine.plugins import PLUGINS
 from flnd.engine.resolve import Manifest, resolve
 from flnd.errors import Blocked, LoginError, NotFound, UsageError
 from flnd.plugin import Target
 from flnd.plugins.thr import Threads
-from flnd.testing import FakeCtx, FakePage, Sent, check, collect
 from flnkit import net as _net
 
 SITE = "https://www.threads.com"

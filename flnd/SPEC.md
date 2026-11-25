@@ -9,8 +9,8 @@ item of a site with its **files**, and the **home** is the folder where flnd kee
 Sections: [Install and first run](#install-and-first-run) · [Targets](#targets) ·
 [Dates](#dates) · [Categories](#categories) · [Folders](#folders) · [Sync](#sync) ·
 [Logins](#logins) · [When it goes wrong](#when-it-goes-wrong) · [Commands and
-flags](#commands-and-flags) · [Config](#config) · [Plugins](#plugins) · [Python](#python) ·
-[Writing a plugin](#writing-a-plugin) · [For developers](#for-developers)
+flags](#commands-and-flags) · [Config](#config) · [Plugins](#plugins) ·
+[For developers](#for-developers)
 
 ## Install and first run
 
@@ -697,7 +697,8 @@ bug prints `✗ flnd hit a bug: <error>` and `hint  details in <home>/log/crash-
 `-v` prints the traceback instead). With `--json` every error is also one line, `{"type": "Error",
 "error": {"class", "message", "hint"}}`.
 
-Every error is a `flnd.Error` with `str(e)` (one line, no secret), `hint`, `target` and `retryable`.
+Every error is one of the classes below, with `str(e)` (one line, no secret), `hint`, `target`
+and `retryable`.
 Exit codes go by class, never by name.
 
 ```text
@@ -1118,297 +1119,6 @@ up to 32.
   be read; only Open Graph tags and `<video>` are read; files are undated; a page may point at a
   private address and it is fetched.
 
-## Python
-
-A script uses flnd through one object: `flnd.open(home)` gives a `Flnd`, and its methods and groups
-are the CLI's commands. Every `python` block on this page runs offline in the docs test, in one
-shared namespace, page order. Nothing is written until a call saves something. `import flnd` loads
-only the package's entry file; each name loads its module on first use.
-
-Every call, and the CLI command it matches:
-
-| Call | Returns | Same as |
-| --- | --- | --- |
-| `flnd.open(home=None, *, again=None)` | `Flnd`, a context manager | `--home`, `--again` |
-| `fl.get(*targets, when=, limit=, dry=, folder=)` | `Run`, not started | `flnd get` |
-| `fl.sync(*patterns, when=, limit=, dry=)` | `Run`, not started | `flnd sync` |
-| `fl.targets` / `.list(plugin=None)` | `list[Tracked]` | `flnd target list` |
-| `fl.targets.follow(*t)`, `.unfollow(*t)`, `.retry(*t)` | `list[Tracked]` | `f`, `r` in the list |
-| `fl.targets.clean(*t, media=False)` | `list[Tracked]` | `flnd target clean` |
-| `fl.files(target=None, kind=None, since=None)` | `list[Record]` | reads `flnd.db` |
-| `fl.auth` | logins, `LoggedIn` each | `flnd auth list` |
-| `fl.auth.login(plugin, *, method=None, path=None)` | `LoggedIn` | `flnd auth login` |
-| `fl.auth.logout(plugin)` | `LoggedIn` | `flnd auth logout` |
-| `fl.add(PluginClass)` | | a plugin for this `Flnd` alone |
-| `async with fl.plugin(code) as ctx` | the plugin's `Ctx` | a script's own loop |
-| `fl.status` | `Status` or None | `flnd status` |
-| `fl.check(*, fix=False)` | `Checked` | `flnd status` repair |
-| `fl.config` (dotted names), `.where(k)`, `.default(k)`, `.set(k, v)`, `.unset(k)` | | `config` |
-| `fl.close()` | | leaving the `with` stops every run |
-
-Options are keyword-only. Left as None, `when` takes `[defaults] when`. A mistake raises
-`flnd.UsageError` at the call, before the run exists.
-
-### Setup: a scratch home and an offline plugin
-
-```python
-import datetime
-import pathlib
-import tempfile
-
-import flnd
-from flnd.plugin import File, Plugin, Post, route
-
-home = tempfile.mkdtemp()
-
-def text_file(name, body):
-    data = body.encode()
-    async def fetch(part):
-        part.total(len(data))
-        await part.write(data[part.offset:part.end])
-    return File(fetch=fetch, name=name)
-
-class Demo(Plugin):
-    code, name, domains, api = "dmo", "Demo", ("demo.example.com",), 2
-
-    @route("dmo:{user}")
-    async def user(self, ctx, user):
-        return user
-
-    @user.category
-    async def posts(self, ctx, user):
-        yield Post("p2", [text_file("p2.txt", "newer")], date=datetime.date(2026, 3, 2))
-        yield Post("p1", [text_file("p1.txt", "older")], date=datetime.date(2026, 2, 1))
-
-    @user.category(own=False, newest_first=False)
-    async def tagged(self, ctx, user):
-        yield Post("t1", [text_file("t1.txt", "tagged")], date=datetime.date(2026, 3, 5))
-```
-
-### Dry run with a date window and categories
-
-`Planned` events say what a run would save; `all` takes the opt-in `tagged` too.
-
-```python
-with flnd.open(home) as fl:
-    fl.add(Demo)
-    preview = list(fl.get("dmo:example_user|all", when="2026-03", dry=True))
-    assert [(e.post, e.state) for e in preview] == [("p2", "new"), ("t1", "new")]
-```
-
-### Stream events and read the report
-
-Iterating a `Run` starts it and yields each event: `Saved` (target, category, post, path, date,
-size, retried), `Skipped` (reason `saved`, `nothing new` or `busy`), `Failed` (target, error, and
-for a file post and path), `Planned` (state `new` or `saved`), `Resources` (every 2 s).
-`run.wait()` returns the `Report` (`saved skipped bytes planned failed stopped retried resumed
-unchanged`, and `ok`). `run.state` is a live snapshot (`State`, `TargetState`, `FileState`,
-`HoldState`, `Phase`); `run.stop()` stops as a first Ctrl-C does; `async for` and `await run` work
-from asyncio.
-
-```python
-with flnd.open(home) as fl:
-    fl.add(Demo)
-    saved = []
-    run = fl.get("dmo:example_user")
-    for event in run:
-        match event:
-            case flnd.Saved(path=path, post=post):
-                saved.append((post, path.name))
-            case flnd.Failed(error=error):
-                raise RuntimeError(f"{error} ({error.hint})")
-    assert sorted(saved) == [("p1", "p1.txt"), ("p2", "p2.txt")]
-    assert run.report.ok and run.report.saved == 2
-```
-
-### Sync and `again=True`
-
-```python
-with flnd.open(home) as fl:
-    fl.add(Demo)
-    assert fl.get().wait().saved == 0          # a sync of what is followed: nothing new
-
-with flnd.open(home, again=True) as fl:
-    fl.add(Demo)
-    assert fl.get("dmo:example_user").wait().skipped == 2     # lists every post again
-```
-
-### Check, repair, re-fetch, reset retries
-
-```python
-with flnd.open(home) as fl:
-    fl.add(Demo)
-    first = fl.files(target="dmo:example_user")[0]
-    first.path.unlink()
-    assert not fl.check().ok and len(fl.check().missing) == 1
-    assert fl.check(fix=True).fixed == 1
-    fl.targets.retry("dmo:example_user")
-
-with flnd.open(home, again=True) as fl:
-    fl.add(Demo)
-    assert fl.get("dmo:example_user").wait().saved == 1
-```
-
-### Folder and mistakes
-
-```python
-other = tempfile.mkdtemp()
-with flnd.open(other) as fl:
-    fl.add(Demo)
-    events = list(fl.get("dmo:example_user|all", folder="{target}/{date}"))
-    paths = sorted(e.path.relative_to(pathlib.Path(other, "media", "dmo")).as_posix()
-                   for e in events if isinstance(e, flnd.Saved))
-    assert paths == ["example_user/2026-02-01/p1.txt", "example_user/2026-03-02/p2.txt",
-                     "example_user/2026-03-05/t1.txt"]
-    for call, said in [
-        (lambda: fl.get("dmo:example_user|stories"), "dmo has no category stories"),
-        (lambda: fl.get("dmo:example_user", limit=0), "limit must be at least 1"),
-        (lambda: fl.get("dmo:example_user", folder="../x"),
-         "the call: folder is a template inside the target's folder, not this text"),
-    ]:
-        try:
-            call()
-        except flnd.UsageError as error:
-            assert str(error) == said
-```
-
-### Logins and settings
-
-```python
-def write_cookies(filename):
-    path = pathlib.Path(home, filename)
-    path.write_text("# Netscape HTTP Cookie File\n"
-                    ".instagram.com\tTRUE\t/\tTRUE\t2000000000\tsessionid\texample-value\n")
-    return str(path)
-
-with flnd.open(home) as fl:
-    first = fl.auth.login("ins", path=write_cookies("c1.txt"))
-    again = fl.auth.login("ins", path=write_cookies("c2.txt"))
-    assert (first.plugin, again.file) == ("ins", first.file)
-    assert [row.plugin for row in fl.auth] == ["ins"]
-    fl.auth.logout("ins")
-    fl.config.set("plugins.ins.pace", 3.0)
-    assert fl.config["plugins.ins.pace"] == 3.0
-```
-
-`fl.auth.login("ins", method="file", path="cookies.txt")` reads a cookie file the same
-way. An error that stops a whole run (a full disk) is raised when the run is read; one file's or
-one target's failure is a `Failed` event and the run goes on. Events hold data, never live objects,
-and the one exception is
-`Failed.error`, the `flnd.Error`.
-
-## Writing a plugin
-
-A plugin is one class for one site: which targets it reads, and the posts each has. flnd does the
-pacing, retries, downloading, naming, dating, skipping, early stops, resuming, progress and logins.
-The plugin API is `flnd.plugin`; `flnd.testing` tests it; `tests/example_plugin.py` is a bigger
-example and `src/plugins/` holds real ones.
-
-The contract:
-
-- `code` (text): 2 to 16 lowercase letters or digits, a letter first: `exm:<user>`
-- `name` (text): the site's name
-- `domains` (tuple): the plugin's hosts and subdomains; requests to them are paced, signed, with
-  cookies
-- `login` (`cookies(...)` or a `Login`): `cookies("token", url=..., required=False)`; none means no
-  login
-- `pace` (float): least seconds between page requests of a bucket (0.5)
-- `limits` (dict): files at once per host; caps adapt up to 32
-- `folder`, `filename`, `key` (templates): where, what name, and the history key
-  ([Folders](#folders))
-- `fields` (tuple): post fields the templates may use
-- `unsupported` (dict): `{pattern: reason}`: a link refused with the reason
-- `walls` (tuple): login-wall paths, matched as whole segments
-- `assets` (bool): its tabs load images, media and fonts; False (default) aborts those requests, so
-  the responses a plugin reads are unchanged. Blocked (live-checked): `fbk` `ins` `thr` `tik` `twt`
-- `hidden` (bool): its tabs may be in a hidden window (False). The browser is hidden only while
-  every plugin using it is; a handoff (a captcha) closes it and reopens it visible, same cookies
-  and tabs. Hidden: `fbk` `ins` `thr` `tik` `twt`. A
-  hidden tab reads as a visible one: same user agent and client hints, a desktop screen and window,
-  no software-GL name, and agreeing notification state (`tests/test_hidden.py`)
-- `@route(patterns, single=, discovers=, shown=, folder=, newest_first=)` (method): reads one kind
-  of target; a `single` route's `Post(owner=, category=)` file it in the owner's folder ([A single
-  post](#a-single-post))
-- `@route.category(own=, url=, newest_first=, folder=, key=)` (method): one part of a route's target
-- `ctx.fetch`, `ctx.pages(req, cursor=, send=, resume=)`, `ctx.feed(..., resume=, bucket=)`,
-  `ctx.open`, `ctx.pause`, `ctx.hold` (): the run's requests. `resume=True` holds a 429 through
-  `ctx.hold` and goes on from the last page or cursor; past the last round: `Blocked`. A feed
-  listens from its call; a scrolling one ends after 60 s with no new answer, warning `<target>: the
-  list got no new answer in 1m; it ends here`. A page read gets 30 s (else `NetworkError`), a tab
-  300 s for another's browser launch
-- `sign(request, cookies)` (`def` hook): the request, signed, before each try
-- `connect(ctx)` (async context manager): once per run; `date(ctx, post)` (`async def` hook): a day
-- `blocked(response)` (`def` hook): seconds to hold, or None
-- `refresh(ctx, post)` (`async def` hook): a link expired: the post, fresh
-- `resolve(text)` (classmethod hook): text no pattern can say: a `Target` or None
-
-A pattern is `exm:{user}` (after the code), `exm?{words}` (a search), `example.com/p/{id}` (a link)
-or `example.com/watch?v={id}`. `{name}` matches a user name (a leading `@` dropped), `{id:\d+}`
-gives a regex, `*` matches one path segment. A `[pattern, template]` pair builds the value from
-several placeholders. Routes are tried in declaration order; the first match wins, so a narrow route
-comes before a catch-all. A malformed pattern or a category declared twice raises `PluginError`
-when the class is made; `tests/test_plugins.py` checks the declarations of the built-ins.
-
-```python
-from flnd.plugin import File, Plugin, Post, Request, cookies, route
-from flnd.testing import FakeCtx, Reply, check, collect
-
-API = "https://api.example.com"
-
-class Example(Plugin):
-    """example.com: a user's photos, from its JSON API."""
-
-    code, name, domains, api = "exm", "Example", ("example.com",), 2
-    login = cookies("token", url="https://www.example.com/login")
-    filename = "{date}_{post}{index}"
-
-    @route("exm:{user}", "example.com/{user}")
-    async def user(self, ctx, user):
-        """A profile: `exm:example_user`, or `https://www.example.com/example_user/`."""
-        return (await ctx.fetch(f"{API}/users/{user}")).json
-
-    @user.category
-    async def posts(self, ctx, profile):
-        """The profile's posts, newest first, page by page."""
-        async for page in ctx.pages(f"{API}/users/{profile['id']}/posts", cursor="next"):
-            for item in page.json["items"]:
-                yield Post(item["id"], [File(url) for url in item["urls"]], date=item["time"])
-
-    def sign(self, request, cookies):
-        if not cookies.get("token"):
-            return request
-        return request.replace(headers={**(request.headers or {}),
-                                        "Authorization": f"Bearer {cookies['token']}"})
-```
-
-### The test kit
-
-`collect(plugin, target, ctx=, categories=, limit=)` runs a plugin on a `FakeCtx` that answers each
-request from `routes` (a URL to a `Reply`, or a function of the `Request`), runs the route and its
-categories as the engine would, and lists each file with its path, key and day. Pace, holds, block
-rounds, wall waits and retries are the engine's, on a fake clock; `ctx.seen.requests` and
-`ctx.seen.holds` record what happened. `check(Plugin)` re-checks the class and resolves every
-example target in its routes' docstrings.
-
-```python
-ctx = FakeCtx(Example, cookies={"token": "example-token"}, routes={
-    f"{API}/users/example_user": Reply({"id": "42"}),
-    f"{API}/users/42/posts": Reply({"items": [
-        {"id": "p1", "time": "2026-01-02",
-         "urls": ["https://cdn.example.com/p1.jpg", "https://cdn.example.com/p1.mp4"]}]}),
-})
-files = collect(Example, "exm:example_user", ctx=ctx)
-assert [f.path for f in files] == ["posts/2026-01-02_p1_0.jpg", "posts/2026-01-02_p1_1.mp4"]
-assert [f.key for f in files] == ["p1_0", "p1_1"]
-assert ctx.seen.requests[0][2]["headers"] == {"Authorization": "Bearer example-token"}
-assert [str(found) for found in check(Example)] == ["exm:example_user", "exm:example_user"]
-```
-
-To ship it: `fl.add(Example)` for one script. A built-in is `src/plugins/<code>.py` importing only
-`flnd.plugin` and the standard library (an SDK inside a function), with tests on `FakeCtx`, an
-entry in `TABLE` of `src/plugins/__init__.py` (code, module, class, domains; `web` stays last,
-and `tests/test_plugins.py` checks the entry against the class), and a section in this page.
-
 ## For developers
 
 Rules for changing the code are in `AGENTS.md`. The shape:
@@ -1417,7 +1127,7 @@ Rules for changing the code are in `AGENTS.md`. The shape:
 flnkit/   standalone toolkit, imports nothing of flnd: net browser files html dig text clock
           db cookies media stream errors
 src/      the package flnd
-  _library.py cli.py errors.py plugin.py testing.py
+  _library.py cli.py errors.py plugin.py
   engine/  run meter jobs crawl save resolve plugins auth store config
   ui/      theme out screen lists forms (imports only flnkit, ui, events, errors)
   plugins/ the built-ins, importing only flnd.plugin and the standard library
@@ -1441,9 +1151,8 @@ Read it with any SQLite tool.
 | --- | --- |
 | `make check` | ruff (`make lint` alone), then every test; green at every commit |
 | `make test ARGS="-k fetch"` | the tests, or some (`FLND_TEST_NO_PROFILES=1`) |
-| `make api` | regenerate `tests/data/api.txt` (read its diff) |
 | `make bench` | offline benchmarks; `ARGS=--gate` fails on a 15% slowdown, `--record` rebases |
-| `make docs`, `dist`, `setup`, `clean` | API reference; a binary; sync `.venv`; remove builds |
+| `make dist`, `setup`, `clean` | a binary; sync `.venv`; remove builds |
 | `make try ARGS="ins:example_user"` | list, live, what a get would save (scratch home `.try`) |
 | `make ext`, `make live`, `make cdn-real` | hand checks, never part of `check` |
 
@@ -1451,3 +1160,12 @@ Read it with any SQLite tool.
 against a loopback server and scratch folders; `make check` runs each in smoke mode only. Run them
 before a speed change, and `--gate` before its commit. The `browser` group also reports `heavy_*`
 and `lean_*` (Chrome's peak MiB and CPU seconds on a page of 300 images), via `ps`, not on Windows.
+
+### Adding a built-in plugin
+
+A built-in is one module of `src/plugins/`, named by its code, that imports only `flnd.plugin` and
+the standard library (its SDK inside a function). Add a row to `TABLE` in `src/plugins/__init__.py`
+(code, module, class, domains), so `--help` and the link resolver find it without importing it.
+Its tests run on `tests/plugin_kit.py`: `FakeCtx` stands in for the run's context, `FakePage` and
+`Reply` for pages and answers, and `collect` runs a route to its posts. Then give it a section under
+[Plugins](#plugins), headed by its code.

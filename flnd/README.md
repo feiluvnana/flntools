@@ -1,7 +1,7 @@
 # flnd
 
 flnd downloads photos, videos and files from the sites you follow, and keeps them up to date.
-It is a Python library with a thin command line on top, and new sites are added as plugins.
+It is a command line, and new sites are added as built-in plugins.
 Built in: Instagram (`ins`), TikTok (`tik`), Twitter/X (`twt`), Facebook (`fbk`), Threads
 (`thr`), Telegram (`tlg`), LOIBUS (`loi`), mimihentai (`mht`), and `web` for any other link.
 
@@ -31,6 +31,5 @@ Downloads and history live in `./.flnd` (or `$FLND_HOME`, or `--home DIR`); logi
 
 - [COOKBOOK.md](COOKBOOK.md): short recipes for the common uses.
 - [SPEC.md](SPEC.md): everything, with no gray area: targets, dates, categories, folders, sync,
-  logins, errors, every command and flag, every setting, every plugin, the Python library, and
-  how to write a plugin.
+  logins, errors, every command and flag, every setting and every plugin.
 - Rules for changing the code are in [AGENTS.md](AGENTS.md).

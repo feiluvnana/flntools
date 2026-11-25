@@ -1,6 +1,6 @@
 """The engine's `Ctx` for one target of a run, and a plugin's run: its session, tabs, listings.
 
-SPEC.md#for-developers explains it; `flnd.testing.FakeCtx` answers the same way from fakes.
+SPEC.md#for-developers explains it; `kit.FakeCtx` answers the same way from fakes.
 """
 
 from __future__ import annotations

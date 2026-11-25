@@ -26,8 +26,9 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
-import flnd
+from flnd import _library
 from flnd.engine import crawl
 from flnd.engine.events import Failed, Planned, Saved
 from flnd.engine.plugins import PLUGINS
@@ -227,7 +228,7 @@ def _validate_recorded(code: str, item: _Recorded, *, undated: bool) -> list[str
 
 
 def _run_one(
-    fl: flnd.Flnd, code: str, route: str, category: str, target: str, *,
+    fl: _library.Flnd, code: str, route: str, category: str, target: str, *,
     limit: int, undated: bool,
 ) -> CheckResult:
     """Execute one `dry=True` run for `(route, category)` and validate every planned file."""
@@ -301,9 +302,8 @@ def run_checks(
             if missing_route not in section and not only_route:
                 notes.append(f"{code}.{missing_route}: skipped (not in live.toml)")
 
-        with flnd.open(plugin_home) as fl:
-            for cls in plugins:
-                fl.add(cls)
+        with mock.patch.dict(PLUGINS, {cls.code: cls for cls in plugins}), \
+                _library.open(plugin_home) as fl:
             for route in configured_routes:
                 targets = _string_list(section[route], f"[{code}].{route}")
                 cats = routes[route]

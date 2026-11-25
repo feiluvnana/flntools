@@ -1,4 +1,4 @@
-"""The public test kit, `flnd.testing`: what a plugin's own tests are written with.
+"""The plugin test kit, `tests/plugin_kit.py`: what a plugin's own tests are written with.
 
 Its docstrings' examples run in tests/test_docs.py; these cover what they don't: `check` over
 every built-in plugin, and the fake clock. One test per behaviour the kit promises: `FakeCtx`
@@ -13,11 +13,11 @@ import unittest
 from unittest import mock
 
 import no_profiles  # noqa: F401
+from plugin_kit import FakeCtx, FakePage, Reply, Sent, check, collect, fake_clock
 
 from flnd import plugin as v2
 from flnd.engine.plugins import PLUGINS
 from flnd.errors import Blocked, LoginError, NotFound, PluginError, SiteError, UsageError
-from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect, fake_clock
 from flnkit import clock as _time
 
 

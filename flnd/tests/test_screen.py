@@ -24,7 +24,8 @@ import pyte
 from rich.cells import cell_len
 from rich.console import Console
 
-import flnd
+from flnd import errors
+from flnd.engine import events
 from flnd.engine import run as job
 from flnd.engine.events import FileState, HoldState, Phase, Resources, State, TargetState
 from flnd.plugin import Target
@@ -337,11 +338,11 @@ class ScreenTest(unittest.TestCase):
     def test_a_pipe_gets_no_block_and_then_the_summary(self) -> None:
         stdout, stderr = io.StringIO(), io.StringIO()
         target = MOCKUP.targets[1].text
-        failed = flnd.Failed(Target(target, kind="user"), flnd.NotFound(
+        failed = events.Failed(Target(target, kind="user"), errors.NotFound(
             "the site answered 404: the file is gone",
             hint="nothing to do; flnd won't ask for it again"),
             post="1290", path=Path("home/media/twt/example_creator/media/1290_2.mp4"))
-        report = flnd.Report(saved=1021, bytes=3400 * MB, skipped=1220, failed=(failed,))
+        report = events.Report(saved=1021, bytes=3400 * MB, skipped=1220, failed=(failed,))
         with redirect_stdout(stdout), redirect_stderr(stderr):
             with screen.Screen(lambda: MOCKUP, command="download"):
                 pass

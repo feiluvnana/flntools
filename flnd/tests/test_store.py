@@ -16,10 +16,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from plugin_kit import fake_clock
+
 from flnd.engine import store
 from flnd.errors import Changed, DiskError, NetworkError, NotFound, UsageError
 from flnd.plugin import Target
-from flnd.testing import fake_clock
 from flnd.ui.log import ui
 
 # Version 1 as a home made it: its schema text, then what its `_upgrade` added.

@@ -20,8 +20,9 @@ from unittest import mock
 
 import fakes
 from fakes import CDN, Engine, EngineCase, login_cookies
+from test_library import registered
 
-import flnd
+from flnd import _library, errors
 from flnd import cli as flnd_cli
 from flnd.engine import crawl as job
 from flnd.engine import save
@@ -131,8 +132,8 @@ class NothingNewTest(FeedCase):
 
     def test_the_library_reports_it(self):
         self.download()
-        with flnd.open(self.home) as fl:
-            fl.add(self.source)
+        with _library.open(self.home) as fl:
+            self.enterContext(registered(self.source))
             report = fl.get().wait()
         # A listing with nothing new is no file skipped.
         self.assertEqual((report.unchanged, report.skipped, report.saved), (1, 2, 0))
@@ -288,7 +289,7 @@ class GapTest(FeedCase):
         async def posts(self, ctx, user):
             for post_id in test.posts:
                 if post_id == cut["at"]:
-                    raise flnd.SiteError("the feed stopped answering")
+                    raise errors.SiteError("the feed stopped answering")
                 listed.append(post_id)
                 yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=DAY)
 
@@ -345,7 +346,7 @@ class RetryTest(FeedCase):
         self.assertIn("p8", self.saved())
         [saved] = [event for event in self.events if isinstance(event, Saved)]
         self.assertEqual((saved.post, saved.retried), ("p8", True))
-        with flnd.open(self.home) as fl:
+        with _library.open(self.home) as fl:
             self.assertEqual(fl.status.failures, ())
 
     def test_a_retry_lists_the_post_again_for_a_fresh_url_never_the_stored_one(self):
@@ -359,7 +360,7 @@ class RetryTest(FeedCase):
         self.assertEqual([dict(request.url.params)["sig"] for request in self.asked("p8")],
                          ["s2"])
         self.assertIn("p8", self.saved())
-        with flnd.open(self.home) as fl:
+        with _library.open(self.home) as fl:
             self.assertEqual(fl.status.failures, ())
 
     def test_a_gone_file_is_never_retried(self):
@@ -382,13 +383,13 @@ class RetryTest(FeedCase):
 
     def test_status_shows_the_last_runs_failures(self):
         self.download()
-        with flnd.open(self.home) as fl:
+        with _library.open(self.home) as fl:
             status = fl.status
         self.assertEqual((status.command, status.saved), ("get fed:example_user", 8))
         [failure] = status.failures
         self.assertEqual((failure.target, failure.post, failure.attempts, failure.url),
                          ("fed:example_user", "p8", 1, f"{CDN}/p8.jpg"))
-        self.assertIsInstance(failure.error, flnd.SiteError)
+        self.assertIsInstance(failure.error, errors.SiteError)
         self.assertTrue(failure.path.name.startswith("p8"))
 
     def failures_row(self):

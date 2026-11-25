@@ -17,8 +17,8 @@ from unittest import mock
 
 from test_chain import ChainCase
 
-import flnd
-from flnd import cli
+from flnd import _library, cli, errors
+from flnd.engine import events
 from flnd.engine import store as _store
 
 
@@ -133,7 +133,7 @@ class FixTest(CheckCase):
     def test_fix_refuses_when_media_is_missing(self):
         self.saved_two()
         shutil.rmtree(self.home / _store.MEDIA)
-        with self.aged(), self.assertRaises(flnd.DiskError):
+        with self.aged(), self.assertRaises(errors.DiskError):
             self.check(fix=True)
 
 
@@ -148,9 +148,9 @@ class LibraryAndCliTest(CheckCase):
 
     def test_the_library_returns_a_checked(self):
         self.saved_two()
-        with flnd.open(self.home) as fl, self.aged():
+        with _library.open(self.home) as fl, self.aged():
             found = fl.check()
-        self.assertIsInstance(found, flnd.Checked)
+        self.assertIsInstance(found, events.Checked)
         self.assertTrue(found.ok)
 
     def test_status_says_how_the_disk_compares_and_exits_1_until_it_agrees(self):
@@ -160,7 +160,7 @@ class LibraryAndCliTest(CheckCase):
         code, out = self.run_cli()
         self.assertEqual(code, 1)
         self.assertIn("disk: 2 files: 1 missing", out)
-        with flnd.open(self.home) as fl, self.aged():
+        with _library.open(self.home) as fl, self.aged():
             fl.check(fix=True)
         self.assertEqual(self.run_cli()[0], 0)
 

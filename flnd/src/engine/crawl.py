@@ -317,8 +317,9 @@ async def posts(source: Plugin, site: Ctx, target: Target,
                 options: Options) -> AsyncIterator[Post]:
     """Every post of `target`'s route, or of each wanted category, that `--when` keeps.
 
-    It is the plain listing, with none of the crawl's stops at saved posts: `flnd.testing` and
-    a plan use it. The route is called once, and each category gets what it returned.
+    It is the plain listing, with none of the crawl's stops at saved posts:
+    `tests/plugin_kit.py` and a plan use it. The route is called once, and each category
+    gets what it returned.
 
     Args:
         source: the target's source.

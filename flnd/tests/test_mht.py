@@ -6,10 +6,10 @@ import unittest
 
 import no_profiles  # noqa: F401
 from fakes import Engine, EngineCase
+from plugin_kit import FakeCtx, Reply, check, collect
 
 from flnd.plugin import NotFound, Range, Target, UsageError
 from flnd.plugins.mht import API, Mimi, format_order
-from flnd.testing import FakeCtx, Reply, check, collect
 from flnkit import net as _net
 from flnkit.files import sniff
 

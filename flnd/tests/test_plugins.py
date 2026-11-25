@@ -69,20 +69,20 @@ class LoaderTest(unittest.TestCase):
         self.assertEqual(loaded_after(base + "PLUGINS['ins']"), ["flnd.plugins.ins"])
 
     def test_resolving_a_code_imports_that_plugin_alone(self):
-        code = ("import flnd\n"
-                "with flnd.open('example-home') as fl:\n"
+        code = ("from flnd import _library\n"
+                "with _library.open('example-home') as fl:\n"
                 "    fl._resolve(['ins:example_user'])")
         self.assertEqual(loaded_after(code), ["flnd.plugins.ins"])
 
     def test_resolving_a_link_imports_the_plugin_of_its_domain_alone(self):
-        code = ("import flnd\n"
-                "with flnd.open('example-home') as fl:\n"
+        code = ("from flnd import _library\n"
+                "with _library.open('example-home') as fl:\n"
                 "    fl._resolve(['https://www.tiktok.com/@example_user'])")
         self.assertEqual(loaded_after(code), ["flnd.plugins.tik"])
 
     def test_a_link_no_plugin_owns_imports_web_alone(self):
-        code = ("import flnd\n"
-                "with flnd.open('example-home') as fl:\n"
+        code = ("from flnd import _library\n"
+                "with _library.open('example-home') as fl:\n"
                 "    fl._resolve(['https://example.com/page'])")
         self.assertEqual(loaded_after(code), ["flnd.plugins.web"])
 

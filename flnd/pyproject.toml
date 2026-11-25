@@ -47,9 +47,9 @@ package-dir = {"flnd" = "src", "flnkit" = "flnkit"}
 flnd = ["py.typed"]
 
 [dependency-groups]
-# The tools `make` runs: ruff for `make lint` and pdoc for `make docs`; pyte draws a terminal in
+# The tools `make` runs: ruff for `make lint`; pyte draws a terminal in
 # the screen's tests.
-dev = ["ruff>=0.14", "pdoc>=15", "pyte>=0.8"]
+dev = ["ruff>=0.14", "pyte>=0.8"]
 # Only `make dist` needs PyInstaller; its recipe adds this group with `uv run --group dist`.
 dist = ["pyinstaller>=6"]
 

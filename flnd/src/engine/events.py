@@ -1,6 +1,6 @@
 """What a run reports, and the rows the library reads.
 
-SPEC.md#python explains it."""
+SPEC.md#for-developers explains it."""
 
 from __future__ import annotations
 
@@ -102,10 +102,10 @@ class Failed(msgspec.Struct, frozen=True, tag=True):
     site refused) has neither: `error` says why it ended.
 
     Example:
-        >>> import flnd
+        >>> from flnd.errors import LoginError
         >>> from flnd.plugin import Target
         >>> event = Failed(Target("ins:example_user", kind="user"),
-        ...                flnd.LoginError("not logged in", hint="run flnd auth login ins chrome"))
+        ...                LoginError("not logged in", hint="run flnd auth login ins chrome"))
         >>> event.error.hint
         'run flnd auth login ins chrome'
     """
@@ -400,8 +400,9 @@ class Failure(msgspec.Struct, frozen=True):
     and how many runs failed it.
 
     Example:
-        >>> import flnd, pathlib
-        >>> failure = Failure("ins:example_user", flnd.NetworkError("connection reset"),
+        >>> import pathlib
+        >>> from flnd.errors import NetworkError
+        >>> failure = Failure("ins:example_user", NetworkError("connection reset"),
         ...                   post="9001", path=pathlib.Path("media/ins/example_user/9001.jpg"))
         >>> type(failure.error).__name__, failure.attempts
         ('NetworkError', 1)

@@ -12,7 +12,9 @@ from unittest import mock
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 from fakes import EngineCase, sign_in, vaulted
+from plugin_kit import FakeCtx, Reply, check, collect, fake_clock
 
+from flnd import _library
 from flnd.engine import auth as _auth
 from flnd.engine.crawl import Options
 from flnd.errors import Blocked, NotFound, SiteError, UsageError
@@ -28,7 +30,6 @@ from flnd.plugins.loi import (
     refusal,
     signature,
 )
-from flnd.testing import FakeCtx, Reply, check, collect, fake_clock
 from flnkit import cookies as _cookies
 from flnkit import errors as _errors
 from flnkit import net as _net
@@ -621,7 +622,6 @@ class EngineTest(EngineCase):
         import io
         import zipfile
 
-        import flnd
         from flnd.engine import store as _store
 
         body = io.BytesIO()
@@ -635,7 +635,7 @@ class EngineTest(EngineCase):
         self.routes["https://one.example/set.zip"] = _net.reply(200, content=body.getvalue())
         self.routes["https://images.example/p.jpg"] = _net.reply(
             200, content=b"\xff\xd8\xff\xe0jpg")
-        with flnd.open(self.home) as fl:
+        with _library.open(self.home) as fl:
             fl.get("loi:5930").wait()
             self.assertEqual(sorted(p.name for p in self.folder.iterdir()),
                              ["01.jpg", "data.bin", "info (2).md", "info.md"])
@@ -664,14 +664,13 @@ class EngineTest(EngineCase):
         self.assertEqual(self.failures(), [])
 
     def test_an_author_ignores_already_completed_posts_without_spending_quota(self):
-        import flnd
 
         self.routes[f"{API}{LINKS_PATH}"] = _net.reply(200, json={"data": {"sv_list": [
             {"sv_name": "A", "sv_url": encrypt("https://one.example/set.zip")}]}})
         self.routes["https://one.example/set.zip"] = _net.reply(200, content=SEVEN_ZIP)
         self.routes[f"{API}user/library/loier/id"] = _net.reply(
             200, json={"data": [{"id": 5930}], "pagination": {"current_page": 1, "total_pages": 1}})
-        with flnd.open(self.home) as fl:
+        with _library.open(self.home) as fl:
             # First download post 5930 directly.
             fl.get("loi:5930").wait()
             self.assertTrue((self.folder / "set.zip").is_file())
@@ -682,7 +681,6 @@ class EngineTest(EngineCase):
         self.assertEqual(asked_paths, ["/api/user/library/loier/id"])
 
     def test_a_quota_skipped_post_is_retried_next_day_while_completed_ones_are_ignored(self):
-        import flnd
 
         post2 = {**POST, "id": 5931, "loi_title": "Day two set", "images": []}
         self.routes[f"{API}lois/5931"] = _net.reply(200, json={"data": post2})
@@ -696,7 +694,7 @@ class EngineTest(EngineCase):
             200, json={"data": [{"id": 5930}, {"id": 5931}],
                        "pagination": {"current_page": 1, "total_pages": 1}})
         folder2 = self.target_dir("loi", "") / "example_author/5931_Day_two_set"
-        with flnd.open(self.home) as fl:
+        with _library.open(self.home) as fl:
             # Day 1: quota allows only 1 post (5930); 5931's archive is skipped for quota.
             with mock.patch.dict("flnd.plugins.loi.VIP_DAILY_LIMITS", {1: 1}):
                 fl.get("loi:author/183").wait()

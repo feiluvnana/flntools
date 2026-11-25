@@ -1,7 +1,7 @@
 """Telegram on plugin API 2: targets, chats, listings, downloads and logins, on a fake Telethon.
 
 `FakeTelegram` stands in for Telegram's side (chats, messages, files, a login's answers); the
-plugin runs for real on `flnd.testing.FakeCtx`. `NamesTest` pins every file name and key against
+plugin runs for real on `kit.FakeCtx`. `NamesTest` pins every file name and key against
 tests/data/tlg_names.json, so the port renames no saved file.
 """
 
@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from fakes import EngineCase, make_plugin, sign_in, vaulted
+from plugin_kit import FakeCtx, check, collect
 from telethon.errors import (
     ChannelPrivateError,
     FloodWaitError,
@@ -37,7 +38,6 @@ from flnd.engine.events import Failed
 from flnd.plugin import Hidden, LoginError, NetworkError, NotFound, Part, Range, UsageError
 from flnd.plugins import tlg
 from flnd.plugins.tlg import FLOOD_SLEEP, Telegram, half_blocks
-from flnd.testing import FakeCtx, check, collect
 from flnkit import text as _text
 
 DAY = datetime.date(2026, 1, 5)

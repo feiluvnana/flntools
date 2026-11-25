@@ -2,7 +2,7 @@
 # shell globbing, so it runs the same from bash, zsh, PowerShell and cmd, and anyone without make
 # can type it by hand. uv creates and syncs `.venv` from `uv.lock` on first use.
 #
-#   make setup                 the environment, with the dev tools (ruff, pdoc)
+#   make setup                 the environment, with the dev tools (ruff)
 #   make check                 lint, then every test: green before every commit
 #   make test ARGS="-k fetch"  the tests, or some of them (unittest's own options)
 #   make check PY=3.11         the same on the oldest Python `requires-python` promises
@@ -24,17 +24,14 @@ test-browser: export FLND_TEST_BROWSER = 1
 test-browser: ; $(RUN) python -m unittest tests.test_browser tests.test_hidden $(ARGS)
 lint:     ; $(RUN) ruff check src flnkit tests
 check: lint test
-api:      ; $(RUN) python tests/api_snapshot.py --write
 bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
 # A hand check: throughput from one real CDN host at caps 8, 16, 24 and 32, from URLs kept
 # outside the repo: `make cdn-real ARGS="--urls ~/flnd-cdn.txt"` (SPEC.md#for-developers).
 cdn-real: ; $(RUN) python tests/bench/cdn_real.py $(ARGS)
-# The reference of the three public modules: the library, the plugin API and the test kit.
-docs:     ; $(RUN) pdoc -d google flnd flnd.plugin flnd.testing -o build/docs
 # Lists, live, what a get would save, without saving anything, in a scratch home `.try`:
 # `make try ARGS="ins:example_user/reels"`. Log in there first for a site that needs it
 # (`uv run flnd --home .try auth login ins cookies.txt`); `make clean` removes it.
-try:      ; $(RUN) python -c "import flnd, sys; [print(e) for e in flnd.open('.try').get(*sys.argv[1:], dry=True)]" $(ARGS)
+try:      ; $(RUN) flnd --home .try get --dry $(ARGS)
 # The hand live check on the test accounts (`~/.config/flnd/live.toml`), never part of `check`:
 # `make live ARGS=ins`. Runs each route with `dry=True`, downloading nothing.
 live:     ; $(RUN) python tests/live.py $(ARGS)
@@ -42,4 +39,4 @@ live:     ; $(RUN) python tests/live.py $(ARGS)
 dist:     ; $(RUN) --group dist python tests/dist.py
 clean:    ; $(RUN) python -c \
 	    "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
-.PHONY: setup test lint check api cdn-real docs try live dist clean
+.PHONY: setup test lint check cdn-real try live dist clean

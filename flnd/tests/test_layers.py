@@ -12,11 +12,11 @@ The rules:
 3. `src/engine/*` imports `src/engine/*`, `flnkit`, `src/ui/*`, `src/errors.py` and `src/plugin.py`;
    `src/engine/events.py` only `src/errors.py`, `src/plugin.py`, `flnkit` and `msgspec`.
 4. `src/plugin.py` imports only `flnkit`, `src/errors.py` and the standard library;
-   `src/testing.py` imports `flnd`, `src/plugin.py`, `src/engine/*` and `flnkit`;
    `src/_library.py` imports `src/engine/*`, `flnkit`, `src/errors.py` and `src/plugin.py`.
 5. `src/plugins/*` imports from flnd only `flnd.plugin`, and a third-party SDK only inside a
    function; the table, `src/plugins/__init__.py`, imports none.
-6. `src/cli.py` imports only `flnd`, `src/ui/*` and the table, `flnd.plugins`.
+6. `src/cli.py` imports only `flnd` (for its version), `src/ui/*`, the table `flnd.plugins`,
+   the library facade `flnd._library`, the errors, the engine's events and run type.
 7. `src/__init__.py` imports nothing at import time beyond the standard library.
 And nothing imports `flnd.cli` but `src/__main__.py`, which is how `python -m flnd` starts it.
 What can't follow a rule yet is in `EXEMPT`, each entry with the step that removes it.
@@ -142,7 +142,7 @@ def allowed(importer: str, imported: str) -> bool:
     if importer == "flnd.errors":
         return imported == "flnkit.errors"
     if imported == "flnd.errors" and not under(importer, "flnd.plugins"):
-        return importer != "flnd.cli"
+        return True
     if under(importer, "flnd.ui"):
         return under(imported, "flnd.ui", "flnkit") or imported == "flnd.engine.events"
     if importer == "flnd.engine.events":
@@ -155,8 +155,6 @@ def allowed(importer: str, imported: str) -> bool:
         return under(imported, "flnd.engine", "flnkit", "flnd.ui") or imported == "flnd.plugin"
     if importer == "flnd.plugin":
         return under(imported, "flnkit")
-    if importer == "flnd.testing":
-        return imported in ("flnd", "flnd.plugin") or under(imported, "flnd.engine", "flnkit")
     if importer == "flnd._library":
         return under(imported, "flnd.engine", "flnkit") or imported == "flnd.plugin"
     if importer == "flnd.plugins":
@@ -165,7 +163,9 @@ def allowed(importer: str, imported: str) -> bool:
     if under(importer, "flnd.plugins"):
         return imported == "flnd.plugin"
     if importer == "flnd.cli":
-        return imported in ("flnd", "flnd.plugins") or under(imported, "flnd.ui")
+        return (imported in ("flnd", "flnd.plugins", "flnd._library", "flnd.engine.events",
+                             "flnd.engine.run")
+                or under(imported, "flnd.ui"))
     if importer == "flnd.__main__":
         return imported == "flnd.cli"
     raise AssertionError(f"{importer} is in no layer of AGENTS.md › Layout")

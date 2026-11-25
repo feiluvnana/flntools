@@ -16,6 +16,7 @@ from unittest import mock
 
 import no_profiles  # noqa: F401
 from fakes import filed
+from plugin_kit import FakeCtx, FakePage, Reply, Sent, check, collect
 
 from flnd.errors import (
     Blocked,
@@ -29,7 +30,6 @@ from flnd.errors import (
 )
 from flnd.plugin import Range, Target
 from flnd.plugins.tik import Profile, TikTok, best_video
-from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
 from flnkit import html
 
 API = "https://www.tiktok.com"

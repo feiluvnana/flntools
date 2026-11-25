@@ -1,6 +1,6 @@
 """`Flnd` and `open`: the library a script uses, over the engine.
 
-SPEC.md#python explains it."""
+SPEC.md#for-developers explains it."""
 
 from __future__ import annotations
 
@@ -49,8 +49,7 @@ def open(home: str | os.PathLike[str] | None = None, *, again: bool | None = Non
         The `Flnd` of that home, to use in a `with` block.
 
     Example:
-        >>> import flnd
-        >>> with flnd.open("example-home") as fl:
+        >>> with open("example-home") as fl:
         ...     fl.targets.list()
         []
     """
@@ -69,8 +68,7 @@ class Flnd:
         again: as `open` reads it.
 
     Example:
-        >>> import flnd
-        >>> with flnd.Flnd("example-home") as fl:
+        >>> with Flnd("example-home") as fl:
         ...     fl.home.name
         'example-home'
     """
@@ -88,7 +86,6 @@ class Flnd:
         self.config = Config(self)
         # Whether `get` asks again for everything.
         self._again = again
-        self._added: dict[str, type[Plugin]] = {}
         self._runs: weakref.WeakSet[Run] = weakref.WeakSet()
         self._closed = threading.Event()
 
@@ -108,8 +105,7 @@ class Flnd:
         harmless.
 
         Example:
-            >>> import flnd
-            >>> fl = flnd.open("example-home")
+            >>> fl = open("example-home")
             >>> fl.close()
         """
         self._closed.set()
@@ -161,8 +157,7 @@ class Flnd:
                 home's config.toml is.
 
         Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:  # doctest: +ELLIPSIS
+            >>> with open("example-home") as fl:  # doctest: +ELLIPSIS
             ...     fl.get("ins:example_user", when="tomorrow")
             Traceback (most recent call last):
             ...
@@ -207,8 +202,7 @@ class Flnd:
             UsageError: a pattern is empty, or `when`, `limit` or config.toml is wrong.
 
         Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
+            >>> with open("example-home") as fl:
             ...     fl.sync("ins:*").wait().saved
             0
         """
@@ -238,8 +232,7 @@ class Flnd:
             The `Status`; None when the home has never downloaded.
 
         Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
+            >>> with open("example-home") as fl:
             ...     fl.status is None
             True
         """
@@ -277,8 +270,7 @@ class Flnd:
             UsageError: `target`, `kind` or `since` is wrong.
 
         Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
+            >>> with open("example-home") as fl:
             ...     fl.files(kind="video")
             []
         """
@@ -324,8 +316,7 @@ class Flnd:
             DiskError: the media folder can't be read, or `flnd.db` written.
 
         Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
+            >>> with open("example-home") as fl:
             ...     fl.check().ok
             True
         """
@@ -333,40 +324,6 @@ class Flnd:
 
         with store.open(self.home) as db:
             return store.check(self.home, db, fix=fix)
-
-    def add(self, plugin: type[Plugin]) -> None:
-        """Add a plugin for this `Flnd` alone: its targets resolve and get like a built-in's.
-
-        It comes after the built-ins, so a code one of them has is refused, never replaced.
-
-        Args:
-            plugin: the `flnd.plugin.Plugin` subclass.
-
-        Raises:
-            UsageError: it isn't one, or its code is taken.
-
-        Example:
-            >>> import flnd
-            >>> from flnd.plugin import Plugin, Post, route
-            >>> class Example(Plugin):
-            ...     code, name, domains, api = "exa", "Example", ("example.com",), 2
-            ...     @route("exa:{user}")
-            ...     async def user(self, ctx, user):
-            ...         yield Post("p1")
-            >>> with flnd.open("example-home") as fl:
-            ...     fl.add(Example)
-            ...     fl.targets.list(plugin="exa")
-            []
-        """
-        from flnd.plugin import Plugin
-
-        if not (isinstance(plugin, type) and issubclass(plugin, Plugin)):
-            raise UsageError("add takes a flnd.plugin.Plugin subclass")
-        if plugin.code in self._sources():
-            taken = self._sources()[plugin.code]
-            raise UsageError(f"{plugin.code}: the code is taken by {taken.__module__}."
-                             f"{taken.__qualname__}", hint="give the class another code")
-        self._added[plugin.code] = plugin
 
     def plugin(self, code: str) -> AbstractAsyncContextManager[Ctx]:
         """Use a plugin in a script, on the caller's running event loop.
@@ -389,7 +346,7 @@ class Flnd:
         Example:
             >>> import asyncio, flnd
             >>> async def main():
-            ...     with flnd.open("example-home") as fl:
+            ...     with open("example-home") as fl:
             ...         async with fl.plugin("nope"):
             ...             pass
             >>> asyncio.run(main())  # doctest: +ELLIPSIS
@@ -404,15 +361,13 @@ class Flnd:
     # -----------------------------------------------------------------------------------------
 
     def _sources(self) -> Mapping[str, type[Plugin]]:
-        """The built-in plugins, then the ones `add` added."""
-        from collections import ChainMap
-
+        """The built-in plugins, by code."""
         from flnd.engine.plugins import PLUGINS
 
-        return ChainMap(self._added, PLUGINS)
+        return PLUGINS
 
     def _plugin(self, code: str) -> type[Plugin]:
-        """The plugin of a code, built-in or added."""
+        """The plugin of a code, built-in."""
         sources = self._sources()
         if code not in sources:
             raise UsageError(f"unknown plugin {code!r}. Plugins: {', '.join(sources)}")
@@ -575,8 +530,7 @@ class Auth:
             LoginError: the cookie file has no login for the site, or its login expired.
 
         Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:  # doctest: +ELLIPSIS
+            >>> with open("example-home") as fl:  # doctest: +ELLIPSIS
             ...     fl.auth.login("ins", method="netscape")
             Traceback (most recent call last):
             ...
@@ -611,8 +565,7 @@ class Auth:
             UsageError: `plugin` is no plugin's code, or isn't logged in.
 
         Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:  # doctest: +ELLIPSIS
+            >>> with open("example-home") as fl:  # doctest: +ELLIPSIS
             ...     fl.auth.logout("nope")
             Traceback (most recent call last):
             ...
@@ -706,7 +659,7 @@ class Config(Mapping[str, Any]):
 
 
 def _tracked(info: TargetInfo) -> Tracked:
-    """A target's `TargetInfo` as the public `Tracked`."""
+    """A target's `TargetInfo` as a `Tracked`."""
     return Tracked(info.target, follow=info.follow, at=info.at, files=info.files,
                    size=info.size, seen=info.seen, categories=info.categories,
                    complete=info.complete, query=info.query,

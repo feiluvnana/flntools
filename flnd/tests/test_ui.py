@@ -14,8 +14,8 @@ from unittest import mock
 
 from rich.console import Console as RichConsole
 
-import flnd
-from flnd import cli
+from flnd import cli, plugin
+from flnd.engine import events as _events
 from flnd.engine import run as _run
 from flnd.errors import UsageError
 from flnd.ui import out, theme
@@ -319,12 +319,12 @@ class FoldTest(OutCase):
         def events():
             for post in ("1", "2"):
                 ui.warn("429 from api.example.com")
-                yield flnd.Skipped(flnd.Target("ins:example_user", kind="user"), "posts", post)
+                yield _events.Skipped(plugin.Target("ins:example_user", kind="user"), "posts", post)
 
         run = mock.MagicMock()
         run.__iter__.return_value = events()
-        run.report = flnd.Report(skipped=2)
-        run.state = flnd.State()
+        run.report = _events.Report(skipped=2)
+        run.state = _events.State()
         args = mock.Mock(json=False, verbose=False)
         home = self.enterContext(tempfile.TemporaryDirectory())
         self.assertEqual(cli._watch(mock.Mock(home=Path(home)), run, args), 0)

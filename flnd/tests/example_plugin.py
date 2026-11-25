@@ -2,9 +2,9 @@
 plugin starts from.
 
 It is run, not only read: tests/test_crawl.py drives it through the real engine on
-`flnkit.net.fake`, and tests/test_plugin.py through `flnd.testing.collect` on `FIXTURES`.
+`flnkit.net.fake`, and tests/test_plugin.py through `kit.collect` on `FIXTURES`.
 Copy it to start a plugin: keep its shape and replace the site's knowledge (its URLs and JSON
-paths). SPEC.md#writing-a-plugin walks through it.
+paths). SPEC.md#for-developers walks through it.
 
 What the made-up site gives, and the quirks a real one has that this one copies:
   - a JSON API on api.example.com that wants the login's `token` cookie as a Bearer header,

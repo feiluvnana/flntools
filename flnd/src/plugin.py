@@ -1,6 +1,6 @@
 """What a plugin declares, the types it yields and reads, `Ctx`, and its helpers.
 
-SPEC.md#writing-a-plugin explains it.
+SPEC.md#for-developers explains it.
 """
 
 from __future__ import annotations
@@ -1484,7 +1484,7 @@ def _number(value: str | None) -> int:
 def wall(url: str, walls: Sequence[str]) -> str | None:
     """The wall `url` lands on, matched by whole path segments; None for none.
 
-    The engine and `flnd.testing.FakeCtx` both ask it, for where `open` landed and where a
+    The engine and `kit.FakeCtx` both ask it, for where `open` landed and where a
     `fetch` was redirected.
 
     A path `p` lands on the wall `w` when `p == w` or `p` starts with `w + "/"`, a trailing

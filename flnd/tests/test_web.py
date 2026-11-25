@@ -8,10 +8,10 @@ import unittest
 import warnings
 
 import no_profiles  # noqa: F401
+from plugin_kit import FakeCtx, Reply, check, collect
 
 from flnd.plugin import NotFound, Target
 from flnd.plugins.web import Web, name_of
-from flnd.testing import FakeCtx, Reply, check, collect
 
 SITE = "https://example.com"
 CDN = "https://cdn.example.com"

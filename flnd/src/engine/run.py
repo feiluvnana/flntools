@@ -1,6 +1,6 @@
 """`Run`: one command on the run's loop, read as a stream of events; Ctrl-C's stages; `Tally`.
 
-SPEC.md#python explains it, and SPEC.md#for-developers its threads.
+SPEC.md#for-developers explains it, and SPEC.md#for-developers its threads.
 """
 
 from __future__ import annotations
@@ -446,7 +446,7 @@ class Run:
                 from flnd.errors import UsageError
 
                 raise UsageError(f"can't start {self.name}: its Flnd is closed",
-                                 hint="start runs inside `with flnd.open(home) as fl:`")
+                                 hint="a run starts through Flnd.get or the CLI")
             self._thread = threading.Thread(target=self._context.run, args=(self._main,),
                                             name="flnd-loop", daemon=True)
         self._thread.start()

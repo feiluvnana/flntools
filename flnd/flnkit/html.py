@@ -1,6 +1,6 @@
 """Getting data out of HTML and JSON: `parse` a page, `dig` a path.
 
-SPEC.md#writing-a-plugin explains it."""
+SPEC.md#for-developers explains it."""
 
 from __future__ import annotations
 

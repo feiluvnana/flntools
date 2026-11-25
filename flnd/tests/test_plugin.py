@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 
 from fakes import Engine, EngineCase
+from plugin_kit import FakeCtx, Reply, collect
 from test_ctx import CtxCase as RunCase
 from test_ctx import FakeRaw
 
@@ -49,7 +50,6 @@ from flnd.plugin import (
     route,
     wall,
 )
-from flnd.testing import FakeCtx, Reply, collect
 from flnkit import dig as kit_dig
 from flnkit import html
 from flnkit import net as _net

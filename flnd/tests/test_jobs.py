@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from plugin_kit import fake_clock
+
 from flnd import errors
 from flnd.engine import jobs
 from flnd.engine.jobs import (
@@ -26,7 +28,6 @@ from flnd.engine.jobs import (
     Speed,
 )
 from flnd.engine.run import Tally
-from flnd.testing import fake_clock
 from flnkit import clock, files
 
 MIB = 1 << 20

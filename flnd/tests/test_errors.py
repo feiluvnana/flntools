@@ -25,7 +25,7 @@ from unittest import mock
 from fakes import EngineCase, download, fetch, login_cookies, make_plugin
 from test_cli import FlndCase
 
-import flnd
+from flnd import _library, errors
 from flnd.engine import crawl as job
 from flnd.engine.plugins import PLUGINS
 from flnd.errors import (
@@ -88,7 +88,7 @@ class ClassesTest(HttpCase):
         for kind in ALL:
             with self.subTest(kind.__name__):
                 self.assertTrue(issubclass(kind, Error))
-                self.assertIs(getattr(flnd, kind.__name__), kind)
+                self.assertIs(getattr(errors, kind.__name__), kind)
                 # No builtin base but Exception: `except ValueError` never catches one by accident.
                 for builtin in (ValueError, RuntimeError, OSError, TypeError, KeyError):
                     self.assertFalse(issubclass(kind, builtin), builtin.__name__)
@@ -104,11 +104,11 @@ class ClassesTest(HttpCase):
         self.assertEqual((plain.hint, plain.target, plain.retryable), ("", None, False))
 
     def test_usage_error(self):
-        with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
+        with self.assertRaises(UsageError), _library.open("unused-home") as fl:
             fl.get("nosuchsource:example_user")
-        with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
+        with self.assertRaises(UsageError), _library.open("unused-home") as fl:
             fl.get("ins:example_user", when="yesterday")
-        with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
+        with self.assertRaises(UsageError), _library.open("unused-home") as fl:
             fl.auth.logout("nosuchsource")
 
     def test_login_error(self):
@@ -397,11 +397,9 @@ class SplitTest(unittest.TestCase):
         for name in kit.__all__:
             with self.subTest(name):
                 self.assertIs(getattr(flnd_errors, name), getattr(kit, name))
-                if name != "disk":
-                    self.assertIs(getattr(flnd, name), getattr(kit, name))
                 if hasattr(flnd_plugin, name):
                     self.assertIs(getattr(flnd_plugin, name), getattr(kit, name))
-        self.assertIs(flnd.LoginError, kit.LoginError)
+        self.assertIs(errors.LoginError, kit.LoginError)
 
     def test_each_class_names_the_module_it_is_defined_in(self):
         for name in KIT:
@@ -411,7 +409,7 @@ class SplitTest(unittest.TestCase):
         self.assertTrue(issubclass(PluginError, kit.Error))
 
     def test_except_flnd_error_catches_what_flnkit_raises(self):
-        with self.assertRaises(flnd.Error):
+        with self.assertRaises(errors.Error):
             raise kit.Changed("new shape")
 
     def test_the_exit_code_goes_by_class(self):
@@ -423,7 +421,7 @@ class SplitTest(unittest.TestCase):
         class Refused(kit.LoginError):  # a subclass of the real one
             pass
 
-        class Own(flnd.Error):
+        class Own(errors.Error):
             pass
 
         cases = [(kit.Stopped(), 130), (kit.UsageError("x"), 2), (kit.LoginError("x"), 3),

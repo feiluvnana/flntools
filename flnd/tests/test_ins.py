@@ -14,12 +14,12 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode
 
 import fakes
+from plugin_kit import FakeCtx, FakePage, Reply, Sent, check, collect
 
 from flnd.engine.ctx import Listing
 from flnd.errors import Blocked, Changed, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import Range, Request, Target
 from flnd.plugins.ins import APP_ID, Instagram, Profile, best_file, code_pk, pk_stamp
-from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect
 from flnkit.clock import day
 
 SITE = "https://www.instagram.com"

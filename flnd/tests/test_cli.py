@@ -35,7 +35,7 @@ from fakes import (
 from prompt_lines import select_from_lines
 from test_library import example_source
 
-from flnd import Blocked, Target
+from flnd import _library
 from flnd import cli as flnd_cli
 from flnd.engine import auth as _auth
 from flnd.engine import run as _run
@@ -44,6 +44,7 @@ from flnd.engine._engine import _Runner
 from flnd.engine.crawl import Options, TargetReport
 from flnd.engine.plugins import PLUGINS
 from flnd.errors import (
+    Blocked,
     Changed,
     DiskError,
     Error,
@@ -56,6 +57,7 @@ from flnd.errors import (
     ToolError,
     UsageError,
 )
+from flnd.plugin import Target
 from flnd.ui import out
 from flnd.ui.log import ui
 from flnkit import net as _net
@@ -286,9 +288,8 @@ class SyncCommandTest(RunsCase):
         self.run_app("get", "tik:example_creator")
         self.run_app("get", "twt:a1")
         # Unfollow one target so we verify sync skips unfollowed targets.
-        import flnd
 
-        with flnd.open() as fl:
+        with _library.open() as fl:
             fl.targets.unfollow("ins:example_other")
 
         # No pattern syncs every followed target.
@@ -826,9 +827,8 @@ class AuthTest(FlndCase):
 
 def _flnd_auth_rows():
     """The logins `flnd auth list` shows, read through the library over `./.flnd`."""
-    import flnd
 
-    with flnd.open(".flnd") as fl:
+    with _library.open(".flnd") as fl:
         return list(fl.auth)
 
 

@@ -1,6 +1,6 @@
 """Walk parsed JSON by a path: `dig(data, path)`.
 
-SPEC.md#writing-a-plugin explains it.
+SPEC.md#for-developers explains it.
 """
 
 from __future__ import annotations

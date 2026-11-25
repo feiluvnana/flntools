@@ -121,14 +121,8 @@ class LazyImportTest(unittest.TestCase):
         self.assertEqual({name for name in loaded if name.startswith("flnd")}, {"flnd"})
         self.assertEqual(loaded & HEAVY, set())
 
-    def test_the_library_names_load_no_engine_network_or_browser(self):
-        code = ("import flnd\n"
-                "flnd.open, flnd.Run, flnd.Saved, flnd.Report, flnd.Error, flnd.Target")
-        loaded = loaded_after(code)
-        self.assertEqual(loaded & (HEAVY - {"rich", "msgspec"}), set())
-
     def test_run_loads_no_engine_but_its_own(self):
-        shown = ("import sys\nimport flnd\nflnd.Run\n"
+        shown = ("import sys\nimport flnd.engine.run\n"
                  "print(' '.join(sorted(name for name in sys.modules\n"
                  "                      if name.startswith(('flnd.engine.', 'flnkit.')))))")
         result = run_python(shown)
@@ -138,16 +132,6 @@ class LazyImportTest(unittest.TestCase):
                          {"flnd.engine.events", "flnd.engine.run"})
         self.assertEqual(loaded & {"flnkit.net", "flnkit.browser", "flnkit.cookies"}, set())
 
-    def test_every_public_name_resolves_and_is_listed(self):
-        import flnd
-
-        homes = set(vars(flnd)["_HOMES"])
-        self.assertEqual(set(flnd.__all__), homes | {"__version__"})
-        for name in flnd.__all__:
-            with self.subTest(name=name):
-                self.assertIsNotNone(getattr(flnd, name))
-        with self.assertRaises(AttributeError):
-            flnd.Engine  # noqa: B018 - the engine is no public name
 
 
 class MissingDependencyTest(unittest.TestCase):
@@ -160,11 +144,6 @@ class MissingDependencyTest(unittest.TestCase):
                 "except ImportError as error:\n    print(error)")
         self.assertEqual(run_python(code).stdout.strip(),
                          "flnkit.net needs curl_cffi: pip install curl_cffi")
-
-    def test_a_name_loads_its_module_on_first_use(self):
-        code = ("import sys, flnd\nbefore = 'flnd._library' in sys.modules\n"
-                "print(before, flnd.open.__module__, 'open' in dir(flnd))")
-        self.assertEqual(run_python(code).stdout.strip(), "False flnd._library True")
 
     def test_missing_selectolax_names_the_package_to_install(self):
         # `flnkit.html` imports selectolax on its first parse, so that is where it is missed.
