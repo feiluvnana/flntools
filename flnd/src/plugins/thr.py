@@ -94,7 +94,7 @@ class Threads(Plugin):
     # Images, media and fonts load until a live check shows its pages work without them.
     hidden = True
     # Threads uses the Instagram login: logged in when `sessionid` is there (confirm live).
-    login = cookies("sessionid", url=f"{SITE}/login")
+    login = cookies("sessionid")
     browser = Browser.ANY
     # Started as Instagram's, the same stack; measure on a live run.
     pace = 2.0

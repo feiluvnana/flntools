@@ -53,7 +53,7 @@ class Gallery(v2.Plugin):
     walls = ("/accounts/login",)
     fields = ("album",)
     folder = "{category}/{album}"
-    login = v2.cookies("sessionid", url="https://www.example.com/accounts/login/")
+    login = v2.cookies("sessionid")
 
     class Settings(v2.Settings):
         """Its config keys.

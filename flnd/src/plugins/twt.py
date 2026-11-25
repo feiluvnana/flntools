@@ -165,7 +165,7 @@ class Twitter(Plugin):
         for path in paths
     }
     # Not required by the code, but X usually sends a logged-out browser to its login page.
-    login = cookies("auth_token", url="https://x.com/i/flow/login")
+    login = cookies("auth_token")
     # X's `x-rate-limit-*` headers hold each operation's bucket; pace and CDN caps avoid bursts.
     pace = 2.0
     limits = {"pbs.twimg.com": 4, "video.twimg.com": 4}

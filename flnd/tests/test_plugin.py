@@ -82,7 +82,7 @@ class Example(Plugin):
     code = "exm"
     name = "Example"
     domains = ("example.com",)
-    login = cookies("sessionid", url="https://www.example.com/accounts/login/")
+    login = cookies("sessionid")
     browser = Browser.ANY
     walls = ("/accounts/login", "/challenge")
     unsupported = {"example.com/stories/*": "stories aren't kept"}
@@ -493,17 +493,15 @@ class HooksTest(unittest.TestCase):
         class Jar:
             cookies = {"sid": "1"}
 
-        login = cookies("sid", "token", url="https://www.example.com/login")
+        login = cookies("sid", "token")
         self.assertEqual((login.names, login.required, "file" in login.methods),
                          (("sid", "token"), False, True))
         self.assertTrue(run(login.check(Jar())))
         self.assertFalse(run(Login().check(Jar())))
         with self.assertRaisesRegex(UsageError, "phone: cookies are read"):
             run(login.start(Jar(), "phone"))
-        for names, url, message in (((), "https://x.example.com", r"takes the cookie names"),
-                                    (("sid",), "http://x.example.com", r"an https URL")):
-            with self.subTest(message), self.assertRaisesRegex(PluginError, message):
-                cookies(*names, url=url)
+        with self.assertRaisesRegex(PluginError, r"takes the cookie names"):
+            cookies()
 
     def test_settings_subclasses_are_frozen_keyword_only_dataclasses(self):
         class Own(Settings):

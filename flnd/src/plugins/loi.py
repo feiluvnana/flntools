@@ -93,7 +93,7 @@ class Loibus(Plugin):
            for host in ("loix.cc", "moegoat.com")},
     }
     # Without it: the info and images only, no archives.
-    login = cookies("access-token", url=SITE)
+    login = cookies("access-token")
     pace = 1.5
     limits = {"api.moegoat.com": 2}
     # Everything sits in the post's folder: previews, info.md, the archives' files.

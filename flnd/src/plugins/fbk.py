@@ -164,7 +164,7 @@ class Facebook(Plugin):
     # Images, media and fonts load until a live check shows its pages work without them.
     hidden = True
     # Not required: a logged-out browser gets what Facebook shows the public, which is little.
-    login = cookies("c_user", "xs", url=f"{SITE}/login/")
+    login = cookies("c_user", "xs")
     # Rate-limited conservatively to avoid account checkpoints.
     pace = 2.0
     browser = Browser.ANY

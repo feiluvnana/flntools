@@ -44,7 +44,7 @@ class Example(Plugin):
     domains = ("example.com",)
     api = 2
     # Logged in when this cookie is there.
-    login = cookies("token", url="https://www.example.com/login")
+    login = cookies("token")
     # A post's category, and an album's title when it has one: "posts", "albums/<title>".
     folder = "{category}/{album}"
     fields = ("album",)

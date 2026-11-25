@@ -859,8 +859,6 @@ class Login:
     methods: ClassVar[tuple[str, ...]] = ()
     # The cookies, any one of which proves a login; empty for a login that keeps none.
     names: tuple[str, ...] = ()
-    # The login page.
-    url: str = ""
 
     def __init__(self, *, required: bool = True) -> None:
         self.required = required
@@ -883,24 +881,20 @@ class Cookies(Login):
 
     Args:
         *names: the cookies, any one of which proves a login.
-        url: the site's login page.
         required: whether the plugin can list nothing without it.
 
     Raises:
-        PluginError: no cookie names, or `url` isn't an https URL.
+        PluginError: no cookie names.
     """
 
     methods: ClassVar[tuple[str, ...]] = COOKIE_METHODS
 
-    def __init__(self, *names: str, url: str, required: bool = False) -> None:
+    def __init__(self, *names: str, required: bool = False) -> None:
         super().__init__(required=required)
         if not names or not all(isinstance(name, str) and name for name in names):
             raise PluginError('cookies() takes the cookie names that prove a login: '
-                              'cookies("sessionid", url=...)')
-        if not isinstance(url, str) or not url.startswith("https://"):
-            raise PluginError(f"cookies(url=...) is the site's login page, an https URL, "
-                              f"not {url!r}")
-        self.names, self.url = tuple(names), url
+                              'cookies("sessionid")')
+        self.names = tuple(names)
 
     async def start(self, ctx: Ctx, method: str) -> None:
         """Never called: the engine reads a cookie login itself.
@@ -911,15 +905,14 @@ class Cookies(Login):
         raise UsageError(f"{method}: cookies are read from a cookies.txt file")
 
 
-def cookies(*names: str, url: str, required: bool = False) -> Cookies:
+def cookies(*names: str, required: bool = False) -> Cookies:
     """The login of a cookie site: logged in when one of these cookies is set.
 
     Args:
         *names: the cookies, any one of which proves a login.
-        url: the site's login page.
         required: whether the plugin can list nothing without them.
     """
-    return Cookies(*names, url=url, required=required)
+    return Cookies(*names, required=required)
 
 
 # ---------------------------------------------------------------------------------------------

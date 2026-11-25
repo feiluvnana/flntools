@@ -344,7 +344,7 @@ class TikTok(Plugin):
     # Images, media and fonts load until a live check shows its pages work without them.
     hidden = True
     # Either cookie proves a login; none is needed, since public profiles are read without one.
-    login = cookies("sessionid", "sid_tt", url="https://www.tiktok.com/login")
+    login = cookies("sessionid", "sid_tt")
     # No known limit; TikTok's answer to heavy use is the captcha, which `Profile` holds for.
     pace = 2.0
     browser = Browser.ANY
