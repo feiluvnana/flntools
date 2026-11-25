@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import functools
-import inspect
 import json as jsonlib
 import re
 from collections import deque
@@ -192,7 +191,7 @@ class FakeCtx:
       as a checked `fetch` does. What the page sends (`Sent`) goes to the tab's feeds
       listening then: as it loads, on a `click`, or on a feed's scroll.
     - `ask` pops `answers`: one of `choices` when it has any; `UsageError` when they run out.
-    - `extension` and `storage` read their fakes; with no `extension`, `UsageError`.
+    - `storage` reads its fake.
     - `state` takes JSON values only, and `secrets` may be written only in `Login.start`.
 
     Every hold is recorded in `seen.holds`.
@@ -208,8 +207,6 @@ class FakeCtx:
         answers: what `ask` answers, in order.
         state: the plugin's saved state, shared by contexts given the same dict.
         storage: the `localStorage` that `storage` reads.
-        extension: the browser extension's answers, by op: a value, or a function of the
-            op's arguments giving it; None is no extension connected.
         settings: the plugin's `Settings` fields that differ from their defaults.
 
     Raises:
@@ -223,7 +220,6 @@ class FakeCtx:
                  when: flnd.plugin.Range = flnd.plugin.Range(), answers: Sequence[str] = (),
                  state: MutableMapping[str, Any] | None = None,
                  storage: Mapping[str, str] | None = None,
-                 extension: Mapping[str, Any] | None = None,
                  settings: Mapping[str, Any] | None = None) -> None:
         if isinstance(plugin, type) and issubclass(plugin, Plugin):
             plugin = plugin()
@@ -242,7 +238,6 @@ class FakeCtx:
         self._state = flnd.engine.ctx.JsonState(state if state is not None else {})
         self._secrets = _secrets(plugin)
         self._storage = MappingProxyType(dict(storage or {}))
-        self._extension = extension
         try:
             self._settings = type(plugin).Settings(**dict(settings or {}))
         except TypeError as error:
@@ -457,24 +452,6 @@ class FakeCtx:
                       timeout: float | None = None) -> bool:  # noqa: ASYNC109 (a person's)
         """Ask nobody: whether `until` says the step is done already."""
         return bool(await until())
-
-    async def extension(self, op: str, **args: Any) -> Any:
-        """The `extension` fake's answer to `op`: its value, or its function of `args`.
-
-        Raises:
-            UsageError: no `extension` was given, or it has no `op`.
-        """
-        if self._extension is None:
-            raise UsageError(f"{self._plugin.code}: the extension isn't connected",
-                             hint="flnd extension install")
-        if op not in self._extension:
-            raise UsageError(f"{self._plugin.code}: the fake extension has no op {op!r}")
-        answer = self._extension[op]
-        if callable(answer):
-            answer = answer(**args)
-            if inspect.isawaitable(answer):
-                answer = await answer
-        return answer
 
     async def storage(self, origin: str) -> Mapping[str, str]:
         """The `storage` fake, read-only, whatever the origin."""

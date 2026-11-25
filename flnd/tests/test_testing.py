@@ -385,16 +385,10 @@ class FakeCtxTest(unittest.TestCase):
         run(signed.login.start(ctx, "code"))
         self.assertEqual(dict(ctx.secrets), {"code": "123456", "kept": "1"})
 
-    def test_extension_and_storage_read_their_fakes(self):
-        ctx = fake(extension={"title": "Hi", "evaluate": lambda js: len(js)},
-                   storage={"session": "s"})
-        self.assertEqual((run(ctx.extension("title")), run(ctx.extension("evaluate", js="1+1"))),
-                         ("Hi", 3))
+    def test_storage_reads_its_fake(self):
+        ctx = fake(storage={"session": "s"})
         self.assertEqual(dict(run(ctx.storage("https://www.example.com"))), {"session": "s"})
         self.assertEqual(dict(run(fake().storage("https://www.example.com"))), {})
-        with self.assertRaises(UsageError) as caught:
-            run(fake().extension("title"))
-        self.assertEqual(caught.exception.hint, "flnd extension install")
 
     def test_shown_is_true_for_the_selectors_the_page_declares_shown(self):
         page = FakePage('<b class="a"></b><b class="b"></b>', shown=[".a"])

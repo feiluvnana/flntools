@@ -2,7 +2,6 @@
 
 import asyncio
 import base64
-import contextlib
 import datetime
 import itertools
 import json
@@ -715,7 +714,7 @@ class EngineTest(EngineCase):
 
 
 class LoginTest(EngineCase):
-    def test_a_cookie_file_or_the_browser_keeps_loix_cc_and_needs_the_token(self):
+    def test_a_cookie_file_keeps_loix_cc_and_needs_the_token(self):
         def jar(*names):
             own = [{"name": name, "value": "v", "domain": "loix.cc", "path": "/"}
                    for name in names]
@@ -727,25 +726,14 @@ class LoginTest(EngineCase):
         for method, names, said in [
             ("file", ("access-token", "user-level"), None),
             ("file", ("user-level",), "no access-token for loix.cc in cookies.txt"),
-            ("chrome", ("access-token",), None),
-            ("chrome", (), "no access-token for loix.cc in Chrome"),
         ]:
-            # The browser's store is faked; the file is a real one.
-            def chrome_patch(want):
-                async def from_chrome(_domains):
-                    return jar(*want)
-
-                return mock.patch("flnd.engine.chrome.extension_cookies", side_effect=from_chrome)
-
-            with self.subTest(method=method, names=names), \
-                    chrome_patch(names) if method == "chrome" else contextlib.nullcontext():
+            with self.subTest(method=method, names=names):
                 jar(*names).save(path)
                 if said is not None:
                     with self.assertRaisesRegex(_vault.LoginError, said):
                         _auth.login(self.home, Loibus(), method, path=path)
                     continue
-                _auth.login(self.home, Loibus(), method,
-                            path=path if method == "file" else None)
+                _auth.login(self.home, Loibus(), method, path=path)
                 self.assertEqual({cookie["domain"] for cookie in vaulted(self.home, "loi")[0]},
                                  {".loix.cc"})
 

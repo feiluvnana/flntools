@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def data_files() -> list[str]:
-    """Every file of src/ that isn't Python, as the wheel names it: `flnd/extension/popup.js`."""
+    """Every file of src/ that isn't Python, as the wheel names it: `flnd/py.typed`."""
     found = [path for path in (ROOT / "src").rglob("*")
              if path.is_file() and path.suffix not in (".py", ".pyc")
              and "__pycache__" not in path.parts]
@@ -21,8 +21,7 @@ def data_files() -> list[str]:
 class WheelTest(unittest.TestCase):
     @unittest.skipIf(shutil.which("uv") is None, "uv is not installed")
     def test_wheel_ships_every_data_file(self):
-        # A folder of data (the Chrome extension) ships only when pyproject.toml maps
-        # it. The build runs on a clean copy, since setuptools reuses build/lib, where a file
+        # A folder of data ships only when pyproject.toml maps it. The build runs on a clean copy, since setuptools reuses build/lib, where a file
         # from an older build would hide a missing mapping.
         with tempfile.TemporaryDirectory() as temp:
             copy, out_dir = Path(temp) / "project", Path(temp) / "dist"
@@ -40,7 +39,7 @@ class WheelTest(unittest.TestCase):
             wheel = next(out_dir.glob("*.whl"))
             with zipfile.ZipFile(wheel) as archive:
                 names = set(archive.namelist())
-        self.assertIn("flnd/extension/manifest.json", data_files())
+        self.assertIn("flnd/py.typed", data_files())
         self.assertEqual([name for name in data_files() if name not in names], [],
                          "map these in [tool.setuptools.package-data] in pyproject.toml")
         self.assertTrue(any(name.startswith("flnkit/") for name in names))
@@ -114,7 +113,6 @@ class BundleTest(unittest.TestCase):
         script = (ROOT / "tests" / "dist.py").read_text(encoding="utf-8")
         self.assertIn('"--collect-submodules", "flnd"', script)
         self.assertIn('"--collect-submodules", "flnkit"', script)
-        self.assertIn("flnd/extension", script)
 
 
 class LazyImportTest(unittest.TestCase):

@@ -1,7 +1,7 @@
 """The plugin manifest: what `src/plugins/_manifest.py` holds, made from the built-in plugins.
 
-    make manifest                            # write src/plugins/_manifest.py and the extension's
-    uv run python tests/plugin_manifest.py   # print the first instead
+    make manifest                            # write src/plugins/_manifest.py
+    uv run python tests/plugin_manifest.py   # print it instead
 
 The manifest lets `flnd --help`, `flnd sources` and target resolution know each built-in plugin
 (its code, name, domains, routes, target forms and categories) without importing it: importing
@@ -16,22 +16,18 @@ How the file is made:
    categories and login methods): nothing to import.
 3. `render` writes them as a Python module whose only name is `PLUGINS`, formatted the same on
    every OS and every Python from 3.11.
-4. `extension` sets the `host_permissions` of `src/extension/manifest.json` to the built-ins'
-   domains, so Chrome lets the extension read them (SPEC.md#writing-a-plugin).
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib
-import json
 import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "src" / "plugins" / "_manifest.py"
-EXTENSION = ROOT / "src" / "extension" / "manifest.json"
 
 HEADER = '''"""Every built-in plugin, as plain data: read by `flnd --help`.
 
@@ -100,23 +96,14 @@ def _literal(value: Any, indent: int, start: int = 0) -> str:
     return "[\n" + "\n".join(items) + "\n" + " " * indent + "]"
 
 
-def extension() -> str:
-    """The text of `src/extension/manifest.json`, its `host_permissions` the built-ins' domains."""
-    manifest = json.loads(EXTENSION.read_text(encoding="utf-8"))
-    domains = dict.fromkeys(domain for entry in entries().values() for domain in entry["domains"])
-    manifest["host_permissions"] = [f"*://*.{domain}/*" for domain in domains]
-    return json.dumps(manifest, indent=2) + "\n"
-
-
 def main(argv: list[str] | None = None) -> None:
-    """Print the manifest, or write it and the extension's with `--write`."""
+    """Print the manifest, or write it with `--write`."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--write", action="store_true", help=f"write {MANIFEST.name}")
     args = parser.parse_args(argv)
     text = render()
     if args.write:
         MANIFEST.write_text(text, encoding="utf-8", newline="\n")
-        EXTENSION.write_text(extension(), encoding="utf-8", newline="\n")
     else:
         sys.stdout.write(text)
 

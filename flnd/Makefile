@@ -38,9 +38,6 @@ docs:     ; $(RUN) pdoc -d google flnd flnd.plugin flnd.testing -o build/docs
 # `make try ARGS="ins:example_user/reels"`. Log in there first for a site that needs it
 # (`uv run flnd --home .try auth login ins chrome`); `make clean` removes it.
 try:      ; $(RUN) python -c "import flnd, sys; [print(e) for e in flnd.open('.try').get(*sys.argv[1:], dry=True)]" $(ARGS)
-# The real Chrome extension in Playwright's Chromium, every op against a local page, in a
-# temporary home (tests/ext.py; SPEC.md#the-chrome-extension). Never part of `check`.
-ext:      ; $(RUN) python tests/ext.py $(ARGS)
 # The hand live check on the test accounts (`~/.config/flnd/live.toml`), never part of `check`:
 # `make live ARGS=ins`. Runs each route with `dry=True`, downloading nothing.
 live:     ; $(RUN) python tests/live.py $(ARGS)
@@ -48,4 +45,4 @@ live:     ; $(RUN) python tests/live.py $(ARGS)
 dist:     ; $(RUN) --group dist python tests/dist.py
 clean:    ; $(RUN) python -c \
 	    "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
-.PHONY: setup test lint check api manifest cdn-real docs try ext live dist clean
+.PHONY: setup test lint check api manifest cdn-real docs try live dist clean

@@ -51,13 +51,7 @@ class BrowserTestCase(unittest.TestCase):
         self.enterContext(mock.patch.object(_cookies, "_PLATFORM", self.platform))
 
 
-class ChromiumRemovedTest(unittest.TestCase):
-    def test_chromium_names_point_to_the_extension(self):
-        for name in ("chrome", "chromium", "edge", "brave"):
-            with self.subTest(name), self.assertRaises(UsageError) as caught:
-                _cookies.load(name)
-            self.assertIn("extension", str(caught.exception))
-
+class UnknownBrowserTest(unittest.TestCase):
     def test_an_unknown_browser_raises(self):
         with self.assertRaises(UsageError):
             _cookies.load("opera", profile="Default")

@@ -19,8 +19,6 @@ from typing import Any
 from flnkit import browser
 from flnkit.errors import LoginError, UsageError
 
-_REMOVED = frozenset({"chrome", "chromium", "edge", "brave"})
-
 _log = logging.getLogger(__name__)
 
 __all__ = ["BROWSERS", "Jar", "load", "parse_binarycookies"]
@@ -145,11 +143,6 @@ def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
     """
     if isinstance(source, str):
         lower = source.lower()
-        if lower in _REMOVED:
-            raise UsageError(
-                f"{lower}'s cookies are read through the downloader's Chrome extension",
-                hint="use the chrome login, not cookies.load",
-            )
         if lower in BROWSERS:
             if lower == "firefox":
                 return Jar(_load_firefox(profile), error=LoginError)

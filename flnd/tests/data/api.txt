@@ -64,7 +64,6 @@ flnd.Flnd.auth: attribute
 flnd.Flnd.check(*, fix: bool = False) -> Checked
 flnd.Flnd.close() -> None
 flnd.Flnd.config: attribute
-flnd.Flnd.extension: attribute
 flnd.Flnd.files(*, target: str | Target | None = None, kind: str | None = None, since: datetime.date | str | None = None) -> list[Record]
 flnd.Flnd.get(*targets: str | Target, limit: int | None = None, when: str | None = None, dry: bool = False, folder: str | Mapping[str, str] | None = None) -> Run
 flnd.Flnd.home: attribute
@@ -259,7 +258,6 @@ flnd.plugin.Blocked.target: attribute
 flnd.plugin.Blocked.wait: attribute
 flnd.plugin.Browser(*values)
 flnd.plugin.Browser.ANY: attribute -> Browser
-flnd.plugin.Browser.CHROME: attribute -> Browser
 flnd.plugin.Browser.NONE: attribute -> Browser
 flnd.plugin.Category(function: Callable[..., Any], *, own: bool = True, url: str | None = None, newest_first: bool = True, folder: str | None = None, key: str | None = None)
 flnd.plugin.Category.folder: attribute
@@ -295,7 +293,6 @@ flnd.plugin.Ctx.call(fn: Callable[..., T], *args: Any) -> T
 flnd.plugin.Ctx.click(css: str, *, timeout: float = 10.0) -> None
 flnd.plugin.Ctx.cookies: property -> Mapping[str, str]
 flnd.plugin.Ctx.document() -> Document
-flnd.plugin.Ctx.extension(op: str, **args: Any) -> Any
 flnd.plugin.Ctx.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None, resume: bool = False, bucket: str | None = None) -> AsyncIterator[Any]
 flnd.plugin.Ctx.fetch(request: str | Request, *, bucket: str | None = None, in_page: bool = False) -> Response
 flnd.plugin.Ctx.handoff(message: str, *, until: Callable[[], Awaitable[bool]], timeout: float | None = None) -> bool
@@ -501,14 +498,13 @@ flnd.testing.Collected.key: field -> str
 flnd.testing.Collected.path: field -> str
 flnd.testing.Collected.post: field -> Post
 flnd.testing.Collected.url: field -> Any
-flnd.testing.FakeCtx(plugin: type[Plugin] | Plugin, target: str | flnd.plugin.Target = '', *, routes: Mapping[str, Reply | Callable[[Request], Any]] | None = None, pages: Mapping[str, FakePage | str] | None = None, account: str | None = None, cookies: Mapping[str, str] | None = None, when: flnd.plugin.Range = Range(since=None, until=None), answers: Sequence[str] = (), state: MutableMapping[str, Any] | None = None, storage: Mapping[str, str] | None = None, extension: Mapping[str, Any] | None = None, settings: Mapping[str, Any] | None = None)
+flnd.testing.FakeCtx(plugin: type[Plugin] | Plugin, target: str | flnd.plugin.Target = '', *, routes: Mapping[str, Reply | Callable[[Request], Any]] | None = None, pages: Mapping[str, FakePage | str] | None = None, account: str | None = None, cookies: Mapping[str, str] | None = None, when: flnd.plugin.Range = Range(since=None, until=None), answers: Sequence[str] = (), state: MutableMapping[str, Any] | None = None, storage: Mapping[str, str] | None = None, settings: Mapping[str, Any] | None = None)
 flnd.testing.FakeCtx.account: property -> flnd.plugin.Account | None
 flnd.testing.FakeCtx.ask(message: str, *, secret: bool = False, description: str = '', choices: Sequence[str] = ()) -> str
 flnd.testing.FakeCtx.call(fn: Callable[..., T], *args: Any) -> T
 flnd.testing.FakeCtx.click(css: str, *, timeout: float = 10.0) -> None
 flnd.testing.FakeCtx.cookies: property -> Mapping[str, str]
 flnd.testing.FakeCtx.document() -> Document
-flnd.testing.FakeCtx.extension(op: str, **args: Any) -> Any
 flnd.testing.FakeCtx.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = True, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None, resume: bool = False, bucket: str | None = None) -> AsyncIterator[Any]
 flnd.testing.FakeCtx.fetch(request: str | Request, *, bucket: str | None = None, in_page: bool = False) -> Response
 flnd.testing.FakeCtx.handoff(message: str, *, until: Callable[[], Awaitable[bool]], timeout: float | None = None) -> bool

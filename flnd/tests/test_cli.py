@@ -636,7 +636,6 @@ class FormsTest(ExampleCase):
         title, options = shown[0]
         self.assertEqual(title, "Log in to Twitter/X")
         self.assertIn(("From a cookie file", "a cookies.txt you exported"), options)
-        self.assertIn(("From your Chrome", "through the extension"), options)
         self.assertRegex(text, r"^twt: logged in as ")
 
 
@@ -747,7 +746,7 @@ class HelpTest(FlndCase):
         self.assertEqual(code, 0)
         self.assertIn("flnd 0.2.0 - download whole accounts from the web", text)
         for verb in ("get ", "target list|clean", "auth list|login|logout",
-                     "plugin list|install|uninstall", "extension install|uninstall", "status",
+                     "plugin list|install|uninstall", "status",
                      "config"):
             self.assertIn(f"  {verb}", text)
         self.assertIn("tik fbk ins thr twt loi tlg mht", text)
@@ -765,8 +764,7 @@ class HelpTest(FlndCase):
 
     def test_a_group_lists_its_commands(self):
         for group, names in (("target", ("list", "clean")), ("auth", ("list", "login", "logout")),
-                             ("plugin", ("list", "install", "uninstall")),
-                             ("extension", ("install", "uninstall"))):
+                             ("plugin", ("list", "install", "uninstall"))):
             with self.subTest(group):
                 code, text, _ = self.run_app(group)
                 self.assertEqual(code, 0)

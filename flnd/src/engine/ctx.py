@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 import flnd.plugin
-from flnd.engine import auth, chrome, config, jobs, store
+from flnd.engine import auth, config, jobs, store
 from flnd.engine.config import PluginConfig
 from flnd.errors import (
     Blocked,
@@ -702,25 +702,11 @@ class Ctx:
         """
         await self._run.off(self._tabs.warm, list(urls))
 
-    async def extension(self, op: str, **args: Any) -> Any:
-        """See `flnd.plugin.Ctx.extension`: one op through the run's extension client."""
-        async def work() -> Any:
-            return await chrome.client(self._run).call(op, **args)
-
-        return await self._job("", work)
-
     async def storage(self, origin: str) -> Mapping[str, str]:
         """See `flnd.plugin.Ctx.storage`: the origin's local storage in the user's Chrome."""
-        if not chrome.uses_chrome(self._plugin, self._run.config):
-            found = await self._run.off(functools.partial(browser.local_storage, origin,
-                                                            profile="Default"))
-            return MappingProxyType(dict(found or {}))
-
-        async def work() -> Mapping[str, str]:
-            value = await chrome.client(self._run).call("storage", origin=origin)
-            return MappingProxyType(dict(value or {}))
-
-        return await self._job(origin, work)
+        found = await self._run.off(functools.partial(browser.local_storage, origin,
+                                                        profile="Default"))
+        return MappingProxyType(dict(found or {}))
 
     # -- waits, threads, people -----------------------------------------------------------
 
@@ -877,8 +863,6 @@ class _Feed:
 
     def _made(self, match: Any, scroll: bool, lines: bool, cursor: Any) -> Any:
         tabs = self._ctx._tabs.verbs()
-        if isinstance(tabs, chrome.ExtensionTabs):
-            return chrome.ExtensionFeed(tabs, match, scroll=scroll, lines=lines, cursor=cursor)
         return browser.Feed(tabs, match, scroll=scroll, lines=lines, cursor=cursor, requests=True)
 
     def listen(self) -> None:
@@ -921,9 +905,8 @@ class _Feed:
         try:
             while True:
                 feed = await self._open()
-                step = chrome.next_block if isinstance(feed, chrome.ExtensionFeed) else next
                 try:
-                    item = await self._ctx._run.off(step, feed, _DONE)
+                    item = await self._ctx._run.off(next, feed, _DONE)
                 except Blocked as error:
                     if not self._on:
                         raise
@@ -1543,8 +1526,6 @@ class TargetTabs:
         account = self._run.account
         budget = jobs.Budget(self._run.scheduler, self._source.code,
                              account.name if account is not None else None)
-        if chrome.uses_chrome(self._source, settings):
-            return chrome.ExtensionTabs(self._run, scroll=browser.HUMAN, budget=budget)
         return browser.Tabs(self._shared, self._run.jar, scroll=browser.HUMAN, budget=budget,
                             assets=self._source.assets, hidden=self._source.hidden)
 
@@ -1557,8 +1538,6 @@ class TargetTabs:
         """Its account's browser's cookies, or none when this target never opened a tab."""
         if self._tabs is None or self._shared is None or not self._shared.launched:
             return []
-        if isinstance(self._tabs, chrome.ExtensionTabs):
-            return list(self._tabs.run(chrome.session_cookies(self._run)))
         return list(self._tabs.run(self._shared.cookies(self._run.jar)))
 
     def document(self) -> Document:

@@ -53,7 +53,7 @@ ACCOUNT = "account"
 WINDOW_WAIT = 600.0
 WINDOW_POLL = 1.0
 # The browsers whose cookie stores a login reads, by method, with the names people know.
-BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "safari": "Safari"}
+BROWSERS = {"firefox": "Firefox", "safari": "Safari"}
 TABLE = ("CREATE TABLE IF NOT EXISTS secrets (account INTEGER NOT NULL, name TEXT NOT NULL,"
          " sealed BLOB NOT NULL, PRIMARY KEY (account, name)) WITHOUT ROWID")
 # The name a version-1 home's one account per plugin takes.
@@ -436,18 +436,6 @@ def _read_jar(plugin: Plugin, own: Cookies, method: str, *, path: Path | str | N
         except (OSError, ValueError, Error) as error:
             raise LoginError(f"{plugin.code}: can't read {where}: {error}") from None
         origin = where.name
-    elif method == "chrome":
-        origin = BROWSERS.get(method, method)
-        from flnd.engine import chrome
-
-        try:
-            jar = asyncio.run(chrome.extension_cookies(plugin.domains))
-        except UsageError:
-            raise
-        except (OSError, RuntimeError, ValueError, ImportError, Error) as error:
-            raise LoginError(f"{plugin.code}: can't read {origin}'s cookies: {error}",
-                             hint=getattr(error, "hint", "") or "flnd extension install"
-                             ) from None
     else:
         origin = BROWSERS.get(method, method)
         try:

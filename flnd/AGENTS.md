@@ -45,7 +45,7 @@ and `flnkit/`, a standalone package imported as `flnkit`. Its tree:
 src/                 the package flnd
   __init__.py      public names, each loaded on first use
   __main__.py      python -m flnd
-  _library.py      open, Flnd, and the groups Targets, Auth, Plugins, Extension, Config
+  _library.py      open, Flnd, and the groups Targets, Auth, Plugins, Config
   cli.py           the commands
   errors.py        the one error hierarchy
   plugin.py        plugin API 2 (public)
@@ -59,14 +59,12 @@ src/                 the package flnd
     resolve.py     target text -> (plugin, Target, categories)
     plugins.py     the plugin manager
     auth.py        accounts, switching, the sealed vault, login methods
-    extension.py   the native-messaging host, the protocol, the relay
     store.py       flnd.db: schema, migrations, rows, check and repair
     config.py      config.toml: structs, reading, editing
   ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
     theme.py out.py screen.py lists.py forms.py
   plugins/         built-ins, importing only flnd.plugin and the standard library
     __init__.py _manifest.py fbk.py ins.py loi.py mht.py thr.py tik.py tlg.py twt.py web.py
-  extension/       manifest.json background.js page.js popup.html popup.js
 flnkit/              the standalone package flnkit, imports nothing of flnd
   net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py media.py
   stream.py

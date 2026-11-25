@@ -19,7 +19,7 @@ uv tool install -e ./flnd
 ## Use
 
 ```sh
-flnd auth login ins chrome        # use your Chrome login for Instagram
+flnd auth login ins file cookies.txt   # log in to Instagram with a cookie file
 flnd get ins:example_user         # its own content: posts, reels, stories, ...
 flnd get                          # what is new for every target you have followed
 ```

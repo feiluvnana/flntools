@@ -349,7 +349,7 @@ def auth_list(args: argparse.Namespace) -> int:
 def auth_login(args: argparse.Namespace) -> int:
     """Log an account of a plugin in, and save the login encrypted in the home.
 
-    METHOD is a browser to read the site's cookies from (chrome, firefox, or safari on macOS),
+    METHOD is a browser to read the site's cookies from (firefox, or safari on macOS),
     browser (a window of flnd's Chromium), file (a cookies.txt or JSON export, with its PATH), or
     the plugin's own way (tlg: qr, phone). Left out in a terminal, it is asked.
 
@@ -469,41 +469,6 @@ def plugin_uninstall(args: argparse.Namespace) -> int:
     return OK
 
 
-def extension_install(args: argparse.Namespace) -> int:
-    """Connect Chrome to flnd.
-
-    It copies flnd's extension to ~/.config/flnd/extension/unpacked, writes its host for every
-    Chromium browser found, prints the three steps that load it in Chrome, and waits up to 10
-    minutes for it to connect. The popup acts on this home.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        0.
-    """
-    with _open(args) as fl:
-        fl.extension.install()
-    return OK
-
-
-def extension_uninstall(args: argparse.Namespace) -> int:
-    """Remove flnd's Chrome extension, its token and its host.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        0.
-    """
-    from flnd.ui import out
-
-    with _open(args) as fl:
-        for path in fl.extension.uninstall():
-            out.line(("removed ", "dim"), str(path))
-    return OK
-
-
 def status(args: argparse.Namespace) -> int:
     """Show the last run, its failures by target, the accounts that need care, and the disk.
 
@@ -610,12 +575,6 @@ def _typed(text: str, like: Any) -> Any:
     if like is None and text.lower() in ("true", "false"):
         return text.lower() == "true"
     return "" if text == "-" else text
-
-
-def host(args: argparse.Namespace) -> int:
-    """Serve flnd's Chrome extension on standard input and output; Chrome starts it."""
-    with _open(args) as fl:
-        return fl.extension.host(args.origin)
 
 
 def _show(value: Any) -> str:
@@ -808,19 +767,8 @@ def parser() -> argparse.ArgumentParser:
     sub = command(plugins, "uninstall", plugin_uninstall)
     sub.add_argument("code", help="the plugin's code")
 
-    chrome = group("extension", "Connect Chrome to flnd, or remove it")
-    command(chrome, "install", extension_install)
-    command(chrome, "uninstall", extension_uninstall)
-
     command(verbs, "status", status)
     command(verbs, "config", config)
-
-    # Hidden from the help: Chrome starts it, with the extension's origin (and, on Windows,
-    # --parent-window).
-    sub = verbs.add_parser("host", add_help=False)
-    sub.set_defaults(command=host)
-    sub.add_argument("origin", nargs="?")
-    sub.add_argument("--parent-window", help=argparse.SUPPRESS)
     return top
 
 
@@ -956,7 +904,6 @@ def _way(way: str) -> Any:
     from flnd.ui import forms
 
     words = {"browser": ("In a browser window", "flnd opens Chromium; log in as usual"),
-             "chrome": ("From your Chrome", "through the extension"),
              "file": ("From a cookie file", "a cookies.txt you exported"),
              "qr": ("With a QR code", "scan it in the app"),
              "phone": ("With your phone number", "a code comes by message")}

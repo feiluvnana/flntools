@@ -49,11 +49,6 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(text, plugin_manifest.render(),
                          "src/plugins/_manifest.py is stale: run make manifest")
 
-    def test_the_extension_may_read_every_built_in_domain(self):
-        text = plugin_manifest.EXTENSION.read_text(encoding="utf-8")
-        self.assertEqual(text, plugin_manifest.extension(),
-                         "src/extension/manifest.json is stale: run make manifest")
-
     def test_the_registry_lists_the_built_in_plugins_in_order(self):
         codes = ["tik", "fbk", "ins", "thr", "twt", "loi", "tlg", "mht", "web"]
         self.assertEqual(list(built_in()), codes)

@@ -65,7 +65,7 @@ def drawn(renderable: object, width: int = 100) -> str:
 
 
 HOW = [Option("In a browser window", "browser", "flnd opens Chromium; log in as usual"),
-       Option("From your Chrome", "chrome", "through the extension"),
+       Option("With a QR code", "qr", "scan it in the app"),
        Option("From a cookie file", "file", "a cookies.txt you exported")]
 
 
@@ -98,13 +98,13 @@ class FieldTest(unittest.TestCase):
         self.assertEqual(drawn(field.view(True)), "\n".join([
             "  ┃ How?",
             "  ┃ ❯ In a browser window   flnd opens Chromium; log in as usual",
-            "  ┃   From your Chrome      through the extension",
+            "  ┃   With a QR code        scan it in the app",
             "  ┃   From a cookie file    a cookies.txt you exported",
             "",
             "  ↑↓ choose · enter confirm · esc back",
         ]))
         feed(field, "down", "enter")
-        self.assertEqual(drawn(field.view(False)), "  | How?\n  | From your Chrome")
+        self.assertEqual(drawn(field.view(False)), "  | How?\n  | With a QR code")
 
     def test_a_secret_shows_bullets(self) -> None:
         field = forms._Text("Password", secret=True, default="")
@@ -119,11 +119,11 @@ class AskTest(unittest.TestCase):
 
     def test_the_app_carries_keys_in_and_the_answer_out(self) -> None:
         with drive(("down", "enter"), ("x", "enter"), ("n",)):
-            self.assertEqual(forms.select("How?", HOW), "chrome")
+            self.assertEqual(forms.select("How?", HOW), "qr")
             self.assertEqual(forms.text("Account"), "x")
             self.assertFalse(forms.confirm("Go on?"))
         # Each answer stays on the terminal.
-        self.assertEqual(self.stdout.getvalue(), "  | How?\n  | From your Chrome\n"
+        self.assertEqual(self.stdout.getvalue(), "  | How?\n  | With a QR code\n"
                          "  | Account\n  | > x\n  | Go on?\n  | No\n")
 
     def test_ctrl_c_and_esc_leave_nothing_behind(self) -> None:
@@ -210,7 +210,7 @@ class WorkerThreadTest(unittest.TestCase):
 
         before = modes()
         cases = [("confirm", lambda: forms.confirm("Go on?", default=False), b"y", True),
-                 ("select", lambda: forms.select("How?", HOW), b"\x1b[B\r", "chrome"),
+                 ("select", lambda: forms.select("How?", HOW), b"\x1b[B\r", "qr"),
                  ("text", lambda: forms.text("Account"), b"ab\x7fc\r", "ac"),
                  ("esc", lambda: forms.text("Account"), b"\x1b", None)]
         for name, ask, keys, answer in cases:

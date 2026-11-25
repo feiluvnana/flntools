@@ -210,7 +210,7 @@ class DeclarationTest(unittest.TestCase):
             ("pace", lambda: plugin(pace=-1), r"exm\.pace"),
             ("pace", lambda: plugin(pace=True), r"exm\.pace"),
             ("limits", lambda: plugin(limits={"cdn.example.com": 0}), r"exm\.limits"),
-            ("browser", lambda: plugin(browser="chrome"), r"exm\.browser.*Browser\.CHROME"),
+            ("browser", lambda: plugin(browser="chrome"), r"exm\.browser.*Browser\.ANY"),
             ("stealth", lambda: plugin(stealth=1), r"exm\.stealth"),
             ("assets", lambda: plugin(assets=1), r"exm\.assets"),
             ("hidden", lambda: plugin(hidden=1), r"exm\.hidden"),
@@ -636,7 +636,7 @@ class HooksTest(unittest.TestCase):
             cookies = {"sid": "1"}
 
         login = cookies("sid", "token", url="https://www.example.com/login")
-        self.assertEqual((login.names, login.required, "chrome" in login.methods),
+        self.assertEqual((login.names, login.required, "file" in login.methods),
                          (("sid", "token"), False, True))
         self.assertTrue(run(login.check(Jar())))
         self.assertIsNone(run(login.whoami(Jar())))
@@ -673,7 +673,7 @@ class HooksTest(unittest.TestCase):
         members = {name for name in vars(Ctx) if not name.startswith("_")}
         self.assertEqual(members, {
             "fetch", "pages", "open", "feed", "load", "document", "warm", "click", "shown",
-            "handoff", "extension", "storage", "pause", "hold", "call", "ask", "log", "target",
+            "handoff", "storage", "pause", "hold", "call", "ask", "log", "target",
             "when", "time", "settings", "account", "cookies", "state", "secrets", "request"})
         self.assertEqual(str(inspect.signature(Ctx.pages)),
                          "(self, request: 'str | Request', *, cursor: 'str | Callable[[Response], "

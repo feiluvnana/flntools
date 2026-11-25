@@ -84,7 +84,7 @@ OLD_NAMES = {
     "single_kinds": "@route(..., single=True) on each one-post route",
 }
 # The ways a cookie site's login is read: flnd's own window, a browser's store, a cookies.txt.
-COOKIE_METHODS = ("browser", "chrome", "file", "firefox", "safari")
+COOKIE_METHODS = ("browser", "file", "firefox", "safari")
 # Each optional hook: whether it is `async def`, and the parameters it takes.
 HOOKS = {
     "sign": (False, ("self", "request", "cookies")),
@@ -977,8 +977,6 @@ class Browser(enum.Enum):
     NONE = "none"
     # flnd's Chromium, or the user's Chrome; Chromium by default.
     ANY = "any"
-    # The user's Chrome, through the extension.
-    CHROME = "chrome"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1130,14 +1128,6 @@ class Ctx(Protocol):
 
         Returns:
             True when `until` came true; False when `timeout` passed first.
-        """
-        ...
-
-    async def extension(self, op: str, **args: Any) -> Any:
-        """Run one operation of flnd's browser extension in the user's Chrome; a tab job.
-
-        Raises:
-            UsageError: the extension isn't connected; its hint says how to install it.
         """
         ...
 
@@ -1475,8 +1465,7 @@ def _check_values(cls: type[Plugin], code: str) -> None:
         raise PluginError(f'{code}.limits: {cls.limits!r}; set {{"<host>": <files at once>}}, '
                           "each a whole number above 0")
     if not isinstance(cls.browser, Browser):
-        raise PluginError(f"{code}.browser: {cls.browser!r}; set Browser.NONE, Browser.ANY or "
-                          "Browser.CHROME")
+        raise PluginError(f"{code}.browser: {cls.browser!r}; set Browser.NONE or Browser.ANY")
     if not isinstance(cls.stealth, bool):
         raise PluginError(f"{code}.stealth: {cls.stealth!r}; set True or False")
     for name in ("assets", "hidden"):

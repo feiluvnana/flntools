@@ -39,7 +39,7 @@ zip and tar are read by Python. flnd finds each program on your PATH, never down
 First run:
 
 ```sh
-flnd auth login ins chrome        # use your Chrome login for Instagram
+flnd auth login ins file cookies.txt   # log in to Instagram with a cookie file
 flnd get ins:example_user         # its own content: posts, reels, stories, ...
 flnd status                       # the last run, its failures, accounts, the disk
 ```
@@ -639,7 +639,6 @@ Two runs may share a home: a part is its own lock, and a file another run is sav
 
 - `browser`: opens flnd's Chromium at the site's login page; log in, and the window closes once a
   login cookie is set (waits up to 10 minutes; closing it gives up)
-- `chrome`: reads the site's cookies from your Chrome through the extension
 - `file <path>`: reads a Netscape `cookies.txt` or a JSON cookie export (a path alone means `file`)
 - `firefox`: reads the cookies from your Firefox
 - `safari`: macOS only; needs Full Disk Access for the terminal
@@ -684,25 +683,6 @@ never inside a home: a key file in a home is refused, so a copied home carries n
 gone, reading says `the vault's key is gone` (hint: log in again); rows are kept and open again when
 the key returns, and the run marks the account `expired`. A cookie's value is never printed, logged
 or put in an error: messages name the file, line, browser or cookie name.
-
-### The Chrome extension
-
-The extension lets flnd use the browser you are logged in with: read cookies, open tabs, read their
-pages and answers, click and scroll. It works in Chrome, Chromium, Edge and Brave.
-
-- `flnd extension install` copies it to `~/.config/flnd/extension/unpacked/`, writes the
-  native-messaging host for every Chromium browser found, prints three steps (open
-  `chrome://extensions`, turn on Developer mode, Load unpacked on that folder), and waits up to 10
-  minutes for it to connect. `flnd extension uninstall` removes the folder and the hosts.
-- `flnd host` is hidden: Chrome starts it with the extension's origin and it refuses any other. It
-  relays between Chrome (native messages) and flnd's runs (a socket, a named pipe on Windows) under
-  a secret kept outside the extension.
-- The extension reads only the domains the built-in plugins own, which `make manifest` writes into
-  its permissions; a site it may not read is a `UsageError` with a hint to allow it in the popup.
-  The popup lists a tab's media and sends a target to `get` or `follow`.
-- Ops: `hello cookies tabs.open tabs.list tabs.close capture.start capture.read capture.stop
-  document click scroll evaluate storage screenshot media`. Not connected, a tab says `flnd's Chrome
-  extension isn't connected`, hint `flnd extension install`.
 
 ## When it goes wrong
 
@@ -858,16 +838,12 @@ plugin (`<code> is built in; it can't be uninstalled`, `no plugin named <code> i
 accounts and targets stay. Plugins load from `$FLND_PLUGINS`, else `~/.config/flnd/plugins/`, never
 from a home.
 
-**`flnd extension install | uninstall`**: see [The Chrome extension](#the-chrome-extension).
-
 **`flnd status`**: see [check and repair](#check-and-repair). `--json` prints one `{"type":
 "Status", "status", "accounts", "disk"}`.
 
 **`flnd config`** lists each key, value, default and origin (`home`, `user`, `default`). On a
 terminal `e` edits, `a` adds a key, `d` resets one; comments in the file stay. `--json` prints one
 `Setting` per key.
-
-**`flnd host [origin] [--parent-window ...]`**: hidden; Chrome starts it for the extension.
 
 What a run prints: on a terminal a live screen on standard error (a row per target, files in
 flight, the `now` line, and a `use` line read every 2 s with `psutil`: flnd's process tree, meaning
@@ -948,7 +924,7 @@ refusals are in [Targets](#targets). Each section lists categories (`own` ones a
 file name and history key templates, login, limits and walls, and known gaps. Everything here is the
 code's own declaration; `folder` is under `media/<code>/<value>/`.
 
-Shared by every cookie login: methods `browser chrome file firefox safari`; the cookies of the
+Shared by every cookie login: methods `browser file firefox safari`; the cookies of the
 plugin's domains are kept; a run warns when the login cookie expires within 3 days. Walls and blocks
 are held 30 s, 2 min, 8 min by the engine; the fourth block in a row fails the target. Pace is the
 least seconds between two page requests of one account; each CDN host's files go 8 at once, adapting
@@ -1183,7 +1159,6 @@ Every call, and the CLI command it matches:
 | `fl.auth.login(plugin, *, method=None, path=None, name=None)` | `Account` | `flnd auth login` |
 | `fl.auth.logout(plugin, name=None)`, `.default(plugin, name)` | `Account` | `flnd auth logout` |
 | `fl.plugins`, `.install(path)`, `.uninstall(code)` | `Installed` | `flnd plugin ...` |
-| `fl.extension.install()`, `.uninstall()`, `.connected`, `.version` | | `flnd extension ...` |
 | `fl.add(PluginClass)` | | a plugin for this `Flnd` alone |
 | `async with fl.plugin(code, account=None) as ctx` | the plugin's `Ctx` | a script's own loop |
 | `fl.status` | `Status` or None | `flnd status` |
@@ -1336,7 +1311,7 @@ with flnd.open(home) as fl:
     assert fl.config["plugins.ins.switch"] is True
 ```
 
-`fl.auth.login("ins", method="chrome")` reads a browser's cookies the same way. An error that stops
+`fl.auth.login("ins", method="firefox")` reads a browser's cookies the same way. An error that stops
 a whole run (a full disk) is raised when the run is read; one file's or one target's failure is a
 `Failed` event and the run goes on. Events hold data, never live objects, and the one exception is
 `Failed.error`, the `flnd.Error`.
@@ -1468,10 +1443,9 @@ flnkit/   standalone toolkit, imports nothing of flnd: net browser files html di
           db cookies vault media stream errors
 src/      the package flnd
   _library.py cli.py errors.py plugin.py testing.py
-  engine/  run meter jobs crawl save resolve plugins auth extension store config
+  engine/  run meter jobs crawl save resolve plugins auth store config
   ui/      theme out screen lists forms (imports only flnkit, ui, events, errors)
   plugins/ the built-ins, importing only flnd.plugin and the standard library
-  extension/ the Chrome extension
 ```
 
 `tests/test_layers.py` checks the import rules. A run has one asyncio loop on its own thread; plugin

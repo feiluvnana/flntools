@@ -87,8 +87,6 @@ class Flnd:
         self.auth = Auth(self)
         # The plugins: built-in, installed, added: install, uninstall.
         self.plugins = Plugins(self)
-        # Chrome's extension: install, uninstall, connected, version.
-        self.extension = Extension(self)
         # The settings of `config.toml`: read, set, unset.
         self.config = Config(self)
         # Whether `get` asks again for everything.
@@ -571,8 +569,8 @@ class Auth:
 
         Args:
             plugin: the plugin's code (`"ins"`).
-            method: one of the plugin's login methods: a browser (`"chrome"`, `"firefox"`,
-                ...), `"browser"` for a window of flnd's Chromium at the site's login page,
+            method: one of the plugin's login methods: a browser (`"firefox"`,
+                `"safari"`), `"browser"` for a window of flnd's Chromium at the site's login page,
                 `"file"` for a cookies.txt or JSON export (with `path`), or the plugin's own
                 (`"qr"`, `"phone"` for tlg). None takes the only one the plugin has, or `"file"`
                 when `path` is given.
@@ -734,57 +732,6 @@ class Plugins:
             PLUGINS.flush(mgr)
         assert found is not None
         return found
-
-
-class Extension:
-    """flnd's Chrome extension: install it, and ask whether it is connected.
-
-    Reached as `Flnd.extension`.
-    """
-
-    def __init__(self, owner: Flnd) -> None:
-        self._owner = owner
-
-    def install(self) -> None:
-        """Copy the extension, write its host for every Chromium browser found, say how to
-        load it in Chrome, and wait up to 10 minutes for it to connect. The popup acts on this
-        home. The extension asks for the installed plugins' domains itself, from its popup.
-        """
-        from flnd.engine import extension
-
-        extension.install(home=self._owner.home.absolute())
-
-    def uninstall(self) -> list[Path]:
-        """Remove the extension, its token and its host manifests.
-
-        Returns:
-            What was removed.
-        """
-        from flnd.engine import extension
-
-        return extension.uninstall()
-
-    def host(self, origin: str | None) -> int:
-        """Serve the extension on standard input and output: Chrome starts it as `flnd host`.
-
-        Raises:
-            UsageError: Chrome named another extension, or `install` hasn't written the token.
-        """
-        from flnd.engine import extension
-
-        return extension.host(origin)
-
-    @property
-    def version(self) -> str | None:
-        """The connected extension's version; None when it isn't connected."""
-        from flnd.engine import extension
-
-        return extension.probe()
-
-    @property
-    def connected(self) -> bool:
-        """Whether the extension answers now."""
-        return self.version is not None
 
 
 class Config(Mapping[str, Any]):

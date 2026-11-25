@@ -17,7 +17,7 @@ from typing import Any
 from flnd.ui import theme
 
 __all__ = ["FOLD", "Folds", "above", "clean", "close", "error", "fill", "help", "line", "names",
-           "plain", "spin", "styled", "table", "warn"]
+           "plain", "styled", "table", "warn"]
 
 # A part of a line: text in the body colour, or (text, style), the style made of theme tokens
 # and Rich attributes ("bold bad").
@@ -200,22 +200,6 @@ def json(value: Any) -> None:
     if text.startswith("{") and not text.startswith('{"type"'):
         text = f'{{"type":"{type(value).__name__}"' + ("," + text[1:] if text != "{}" else "}")
     plain(text)
-
-
-def spin(text: str, *, at: float | None) -> None:
-    """Draw the spinner's frame at `at` seconds, then `text`, over the line, on a terminal.
-
-    `at=None` clears the line. A pipe gets nothing: the lines around the wait say it all.
-    """
-    stream = sys.stdout
-    if not theme.tty(stream):
-        return
-    stream.write("\r\x1b[2K")
-    if at is not None:
-        fancy = theme.unicode(stream)
-        frame = _text([(theme.spinner(at, fancy) + " ", "focus"), (text, "dim")], fancy=fancy)
-        _console(stream).print(frame, end="")
-    _flush(stream)
 
 
 def styled(kind: str, text: str, *, fancy: bool, times: int = 1) -> Any:
