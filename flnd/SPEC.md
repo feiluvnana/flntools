@@ -579,15 +579,13 @@ filename = "{post}_{n}"            # drops the leading date
 the same fields and checks. A category's own `folder` still wins over the plugin's. The history key
 (`key`) is the plugin's and cannot be set.
 
-### Parts, dedupe, sidecars
+### Parts and dedupe
 
 - Every file is written as `<name>.part` and renamed once whole, so a real name is a whole file. A
   stopped download resumes from its part (`Range`, with an `If-Range` validator). Parts nothing
   touched for 7 days are swept when a run starts on the target.
-- `[defaults] dedupe = true` (default): a file whose bytes a saved file has becomes a hard link to
-  it. A file system that cannot link keeps both copies and warns once.
-- `[defaults] sidecars = true` writes `<file>.json` beside each file, with its post's source,
-  target, post, category, date, url, caption, author, tags and the file's URL without its query.
+- A file whose bytes a saved file has becomes a hard link to it. A file system that cannot link
+  keeps both copies and warns once.
 - Archives (`.zip .7z .rar .tar*`) are extracted beside themselves into a folder of their name, and
   the archive stays. `File(unpack="here")` instead extracts into the post's folder, lifts a lone top
   folder's contents up one level, saves a clash with a file there as `name (2).ext` (nothing is
@@ -774,12 +772,13 @@ and the disk against the history. `check` compares the rows with the disk:
 - **wrong size**: the repair takes size, time and hash from the disk.
 - **unknown**: a file under `media/` with no row. Reported, never changed, so the exit stays 1.
 
-Never unknown: parts, hidden files, symlinks, hard links of known files, sidecars, extracted archive
+Never unknown: parts, hidden files, symlinks, hard links of known files, extracted archive
 folders, and files renamed into place in the last minute. On a terminal `flnd status` asks `Repair 2
 rows? (y/N)`; `flnd status --fix` repairs without asking. It never deletes, moves or downloads a
-file. Failure kinds: `network blocked site changed login disk tool bug usage gone error`. A home
-of an older version migrates on first open, after copying `metadata/flnd.v1.db` (or
-`flnd.v2.db`).
+file. Failure kinds: `network blocked site changed login disk tool bug usage gone error`.
+
+A version-2 home migrates on first open, after copying `metadata/flnd.v2.db`; a version-1 home
+is refused with `<home> is from an old flnd; start a new home`.
 
 ## Commands and flags
 
@@ -821,7 +820,7 @@ A target that is wrong, or that a command needs known and the home doesn't know,
 
 **`flnd target clean <target...> [--media]`** forgets the targets (rows, files rows, failures,
 cursors, heads, gaps). An unknown target is a usage error. `--media` (default off) also deletes
-their recorded files, sidecars, links, extracted folders and the folders left empty; files no row
+their recorded files, links, extracted folders and the folders left empty; files no row
 names are never deleted. A terminal is asked first.
 
 **`flnd auth list | login <plugin> [file] | logout <plugin>`**: see [Logins](#logins).
@@ -846,19 +845,14 @@ go to `log/<time>_get.jsonl`.
 `%APPDATA%\flnd\config.toml`), hold optional settings. A bad value stops the command with a usage
 error naming the file, the key and what it takes, never the value: `config.toml: plugins.ins.pace is
 a number of seconds, 0 or more, not this text`. An unknown key or table is a warning, said once, and
-ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` shows every key.
+ignored. A key an older flnd had gets `<file>: <key> is gone`. `flnd config` shows every key.
 
 `[defaults]`:
 
 | Key | Type | Default | What it does |
 | --- | --- | --- | --- |
-| `dedupe` | bool | `true` | hard-link a file whose bytes are saved already |
-| `sidecars` | bool | `false` | write `<file>.json` beside each file |
 | `when` | text | `""` | days a get takes, as `--when` writes them; also bounds a sync |
-| `rate` | text | `"0"` | the run's speed limit (`"20 MB/s"`, `"500 KB/s"`; `"0"` off) |
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
-| `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
-| `fresh` | text | `"0"` | in `get`, skip complete categories within this long (`"1d"`, `"0"` off) |
 | `timeout` | text | `"10m"` | abort a stalled download after this (`"10m"`, `"600s"`, `"0"` off) |
 
 `[plugins.<code>]` (one table per plugin):
@@ -869,22 +863,21 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` shows ev
 | `limits` | table | the plugin's | `"<host>" = n` files at once (n at least 1), merged over its |
 | `proxy` | text | none | `http://`, `https://`, `socks5://` or `socks5h://` with host and port |
 | `stop_after` | int | `5` | saved posts in a row that end a newest-first sync; at least 1 |
-| `browser` | text | none | `"chromium"` or `"chrome"`, for an `ANY` browser plugin; unread |
 | `folder` | text | the plugin's | folder template ([Folders](#folders)) |
 | `filename` | text | the plugin's | file name template |
 
 A plugin's own settings (its `Settings` struct) are keys of its table and reach it as
 `ctx.settings`. Notes:
 
-- `rate` is one byte bucket for the run, a second deep. Before a file of known size starts its disk
-  needs room for it, the bytes due from files in flight, and 64 MiB; else `DiskError`.
+- Before a file of known size starts its disk needs room for it, the bytes due from files in
+  flight, and 64 MiB; else `DiskError`.
 - `proxy` carries every request and download of the plugin's HTTP session, not the browser, so
   plugins that open pages (ins, tik, fbk, twt) load them directly and warn once. `socks5h://` looks
   names up through the proxy; the URL may hold a user and password.
 - `pace` and `limits` win over the plugin's class. A host's cap still adapts under the file's
   number.
-- Gone keys: `[defaults] again`, `exec` and `exec_timeout`, `[vault]`, `switch`, `scroll`
-  (unknown now); `dedupe = "link"` reads as `true`, `"off"` as `false`, each with a warning.
+- Gone keys, each warned as `<file>: <key> is gone`: `height`, `browser`, `rate`, `fresh`,
+  `sidecars`, `dedupe`, `switch`, `again`, `exec`, `exec_timeout`, `vault`, `scroll`.
 
 ```toml
 [defaults]

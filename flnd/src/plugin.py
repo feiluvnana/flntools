@@ -494,7 +494,7 @@ class Post:
             under `media/<code>/<owner>/`. None: the post's id names the folder.
         category: its category by the site's data (`posts`, `reels`); read only on a `single`
             route, with an `owner`.
-        **fields: the site's own fields (`caption`, `title`, ...), for templates and sidecars.
+        **fields: the site's own fields (`caption`, `title`, ...), for templates.
 
     Raises:
         PluginError: no id, a field the engine sets, `files` holding something not a `File`,

@@ -1,4 +1,4 @@
-"""The save: a post's files from their parts to their rows, then unpack, sidecar, `Saved`.
+"""The save: a post's files from their parts to their rows, then unpack, `Saved`.
 
 SPEC.md#for-developers explains it.
 """
@@ -22,8 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
-
-import msgspec
 
 from flnd.engine import config, jobs, store
 from flnd.engine.events import BUSY, Failed, Saved, Skipped, sink
@@ -54,8 +52,6 @@ NOT_MEDIA_HINT = "it is usually a login wall: run flnd auth login {code}, then t
 EXPIRED = frozenset({403, 410})
 # How many saved files of the same size dedupe hashes at most, to compare with a new one.
 CANDIDATES = 8
-# A sidecar is its file's name with this after it: `9001.jpg.json`.
-SIDECAR = ".json"
 # The kind of an API 2 file named by a stem (5.3): its extension is what its bytes are, else
 # what its `Content-Type` names, else its URL's, else none; the planned name may hold the URL's.
 STEM = "stem"
@@ -80,7 +76,6 @@ class Item:
         count: how many files the post has, on its first file's row only; None otherwise.
         estimated: whether `day` was taken from the posts around it.
         dated_name: whether the name uses `{date}_` and may take `Last-Modified`.
-        meta: its sidecar's fields; None writes no sidecar.
         cursor: the page its post was listed on, kept with a failure for its retry.
         retried: whether an earlier run failed on it.
         refresh: asks the post for its files again when the link expired; None for none.
@@ -103,7 +98,6 @@ class Item:
     count: int | None = None
     estimated: bool = False
     dated_name: bool = False
-    meta: Mapping[str, Any] | None = None
     cursor: str | None = None
     retried: bool = False
     refresh: Callable[[], Awaitable[File | None]] | None = None
@@ -461,7 +455,6 @@ class Saver:
         emit: where `Saved`, `Skipped` and `Failed` go; what it gives is awaited.
         run: the run's id in `runs`, for failures; None outside a run.
         dedupe: whether a file whose bytes are saved already becomes a hard link to them.
-        sidecars: whether a file with `meta` gets `<name>.json`.
         stop: the run's second Ctrl-C, which a plugin's `fetch` function stops at when it
             next reports its progress; None never stops it.
         tally: the run's live counts (`flnd.engine.run.Tally`); None counts nothing.
@@ -470,13 +463,13 @@ class Saver:
 
     def __init__(self, db: store.Store, scheduler: jobs.Scheduler,
                  emit: Callable[[Any], Awaitable[None]], *,
-                 run: int | None = None, dedupe: bool = True, sidecars: bool = True,
+                 run: int | None = None, dedupe: bool = True,
                  timeout: float = 600, stop: threading.Event | None = None, tally: Any = None,
                  sample: Callable[[Error], None] | None = None,
                  claims: Any = None) -> None:
         self.store, self.scheduler, self.run = db, scheduler, run
         self.emit = sink(emit)
-        self.dedupe, self.sidecars, self.stop = dedupe, sidecars, stop
+        self.dedupe, self.stop = dedupe, stop
         self.timeout = timeout
         self.tally, self.sample = tally, sample
         self.claims = claims
@@ -628,15 +621,6 @@ class Saver:
         landed = _Landed(item, saved.path, dated, row)
         if self.dedupe:
             await self._dedupe(landed, plugin)
-        if self.sidecars and item.meta is not None:
-            # Written before the post's commit, so its row names it in the same transaction.
-            side = saved.path.with_name(saved.path.name + SIDECAR)
-            body = msgspec.json.format(msgspec.json.encode(item.meta, enc_hook=str), indent=2)
-            try:
-                await self._call(files.write, side, body + b"\n")
-                row.sidecar = str(side)
-            except DiskError as error:
-                ui.warn("{name}: no sidecar: {error}", name=saved.path.name, error=error)
         return landed
 
     async def _transfer(self, item: Item, file: File, client: net.Client, plugin: str,
@@ -971,12 +955,9 @@ class Saver:
                    path=item.dest, priority=0 if item.retried else None)
 
     def _meter(self, sink: _Bytes, dest: Path, *, at: int = 0) -> net.Meter:
-        """A transfer's meter: its writes on the thread of `dest`'s device, each chunk under
-        the run's `rate` when it has one; `at` is where a segment starts."""
-        meter = net.Meter(sink, write=self._writer(dest), at=at)
-        if self.scheduler.rate.rate:
-            meter.pace = self.scheduler.rate.take
-        return meter
+        """A transfer's meter: its writes on the thread of `dest`'s device; `at` is where a
+        segment starts."""
+        return net.Meter(sink, write=self._writer(dest), at=at)
 
     def _writer(self, dest: Path) -> net.Write:
         """What writes a transfer's pieces: the `WRITE` thread of `dest`'s device."""
@@ -1116,7 +1097,7 @@ class Saver:
                 raise
         await self.scheduler.run(Job(kind=Kind.WRITE, work=work))
 
-    # -- stages 6 to 8: unpack, `Saved`; the sidecar went before the commit -----------
+    # -- stages 6 to 8: unpack, `Saved` -----------
 
     async def _finish(self, landed: _Landed, plugin: str) -> None:
         item, path = landed.item, landed.path
@@ -1163,10 +1144,9 @@ class Saver:
 async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     """Give a run's settings their save for the block (`settings.saver`), then close it.
 
-    The save reads `dedupe` and `sidecars` from the home's settings; it commits through a connection
-    of its own to the home's `flnd.db`, and runs its jobs on the run's scheduler. It is
-    closed on the run's loop before the loop and the database close. A run with no database,
-    or a dry one, saves nothing.
+    The save commits through a connection of its own to the home's `flnd.db`, and runs its
+    jobs on the run's scheduler. It is closed on the run's loop before the loop and the
+    database close. A run with no database, or a dry one, saves nothing.
 
     Args:
         settings: the run's `RunShared`, inside `ctx.shared_browser`.
@@ -1187,8 +1167,7 @@ async def attached(settings: Any) -> AsyncIterator[Saver | None]:
     found, db = await asyncio.to_thread(_opened, settings)
     defaults = found.defaults
     claims = getattr(settings, "claims", None)
-    saver = Saver(db, scheduler, settings.emit, run=settings.run, dedupe=defaults.dedupe,
-                  sidecars=defaults.sidecars,
+    saver = Saver(db, scheduler, settings.emit, run=settings.run,
                   timeout=config.duration_seconds(defaults.timeout), stop=settings.stop.now,
                   tally=settings.tally, sample=lambda error: sampled(settings, error),
                   claims=claims)

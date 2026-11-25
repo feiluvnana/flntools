@@ -1,4 +1,4 @@
-"""src/engine/store.py: `flnd.db` schema 3, the migrations of a version-1 and a version-2 home,
+"""src/engine/store.py: `flnd.db` schema 3, the migration of a version-2 home, the refusal of a version-1 one,
 its pragmas, the busy signal, and `check`.
 """
 
@@ -6,7 +6,6 @@ import datetime
 import io
 import os
 import sqlite3
-import subprocess
 import sys
 import tempfile
 import threading
@@ -23,94 +22,13 @@ from flnd.errors import Changed, DiskError, NetworkError, NotFound, UsageError
 from flnd.plugin import Target
 from flnd.ui.log import ui
 
-# Version 1 as a home made it: its schema text, then what its `_upgrade` added.
+# Version 1 as a home made it: only what tells it from a newer one, a `meta` without a version.
 V1 = """
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS files (
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE files (
     key TEXT PRIMARY KEY, target TEXT NOT NULL, source TEXT NOT NULL,
-    post_id TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '', path TEXT NOT NULL,
-    size INTEGER NOT NULL DEFAULT 0, mtime INTEGER, date TEXT,
-    estimated INTEGER NOT NULL DEFAULT 0, kind TEXT, files INTEGER, hash BLOB,
-    state TEXT NOT NULL DEFAULT 'saved', shrink TEXT NOT NULL DEFAULT '',
-    unpacked TEXT NOT NULL DEFAULT '', folder TEXT, before INTEGER, format TEXT, tools TEXT,
-    sidecar TEXT,
-    at TEXT NOT NULL DEFAULT ''
+    post_id TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '', path TEXT NOT NULL
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS files_post ON files (target, post_id);
-CREATE INDEX IF NOT EXISTS files_hash ON files (hash) WHERE hash IS NOT NULL;
-CREATE INDEX IF NOT EXISTS files_undated ON files (target)
-    WHERE state = 'saved' AND (date IS NULL OR estimated);
-CREATE VIEW IF NOT EXISTS posts AS
-    SELECT target, post_id, min(category) AS category, max(date) AS date,
-           max(count(*), coalesce(max(files), 1)) AS files, max(at) AS at
-    FROM files WHERE state = 'saved' GROUP BY target, post_id;
-CREATE TABLE IF NOT EXISTS targets (
-    key TEXT PRIMARY KEY, source TEXT NOT NULL, value TEXT NOT NULL, kind TEXT NOT NULL,
-    follow INTEGER NOT NULL DEFAULT 0, options TEXT NOT NULL DEFAULT '{}', query TEXT,
-    complete TEXT NOT NULL DEFAULT '{}', cursors TEXT NOT NULL DEFAULT '{}',
-    seen TEXT NOT NULL DEFAULT '[]', last_sync TEXT NOT NULL DEFAULT '',
-    files INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
-    heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}'
-) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS runs (
-    id INTEGER PRIMARY KEY, command TEXT NOT NULL, started TEXT NOT NULL, ended TEXT,
-    saved INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS failures (
-    run INTEGER, key TEXT NOT NULL, target TEXT NOT NULL, post_id TEXT NOT NULL DEFAULT '',
-    category TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',
-    url TEXT NOT NULL DEFAULT '', class TEXT NOT NULL, message TEXT NOT NULL,
-    hint TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 1, at TEXT NOT NULL,
-    cursor TEXT
-);
-CREATE INDEX IF NOT EXISTS failures_target ON failures (target, key);
-CREATE INDEX IF NOT EXISTS failures_run ON failures (run);
-CREATE TABLE IF NOT EXISTS state (
-    source TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (source, key)
-) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS logins (
-    source TEXT PRIMARY KEY, origin TEXT NOT NULL DEFAULT '', at TEXT NOT NULL DEFAULT ''
-) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS probes (
-    path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER, data TEXT NOT NULL
-) WITHOUT ROWID;
-ALTER TABLE failures ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0;
-CREATE UNIQUE INDEX IF NOT EXISTS failures_key ON failures (key);
-INSERT INTO meta VALUES ('version', '1');
-INSERT INTO files (key, target, source, post_id, category, path, size, mtime, date, estimated,
-                   kind, files, hash, state, shrink, before, format, tools, at) VALUES
-    ('ins:1_0', 'ins:example_user', 'ins', '1', 'posts', 'media/ins/example_user/1_0.jpg', 10,
-     5, '2026-01-02', 0, 'image', 2, x'aa', 'saved', 'compressed', 20, 'jpg', 'jpegli',
-     '2026-01-02T00:00:00+00:00'),
-    ('ins:1_1', 'ins:example_user', 'ins', '1', 'posts', 'media/ins/example_user/1_1.mp4', 30,
-     6, NULL, 1, 'video', NULL, NULL, 'saved', '', NULL, NULL, NULL, '2026-01-03T00:00:00+00:00'),
-    ('ins:1_0@reels', 'ins:example_user', 'ins', '1', 'reels', 'media/ins/example_user/r.jpg',
-     10, 5, '2026-01-02', 0, 'image', NULL, x'aa', 'link', '', NULL, NULL, NULL, ''),
-    ('twt:9', 'twt:example_creator', 'twt', '9', '', 'media/twt/example_creator/9.png', 0,
-     NULL, NULL, 0, 'image', NULL, NULL, 'gone', '', NULL, NULL, NULL, '');
-INSERT INTO targets (key, source, value, kind, follow, options, query, complete, cursors, seen,
-                     last_sync, files, bytes, heads, gaps) VALUES
-    ('ins:example_user', 'ins', 'example_user', 'user', 1, '{"only": ["posts", "reels"]}',
-     NULL, '{"posts": "2026-01-02"}', '{"reels": "c1"}', '[]', '2026-01-03', 2, 40,
-     '{"posts": "1"}', '{"reels": ["c0", ""]}'),
-    ('ins:cats', 'ins', 'cats', 'query', 1, '{"categories": ["reels"]}', 'cats', '{}', '{}',
-     '["ins:example_user"]', '', 0, 0, '{}', '{}'),
-    ('twt:example_creator', 'twt', 'example_creator', 'user', 0, '{}', NULL, '{}', '{}', '[]',
-     '', 0, 0, '{}', '{}'),
-    ('tik:example_handle', 'tik', 'example_handle', 'user', 0, 'not json', NULL, '{}', '{}',
-     '[]', '', 0, 0, '{}', '{}');
-INSERT INTO runs VALUES (4, 'sync', '2026-01-03T00:00:00+00:00', NULL, 2, 1);
-INSERT INTO failures (run, key, target, post_id, category, file, url, class, message, hint,
-                      attempts, at, cursor, retryable) VALUES
-    (4, 'ins:2_0', 'ins:example_user', '2', 'posts', 'media/ins/example_user/2_0.jpg',
-     'https://example.com/2.jpg', 'NetworkError', 'reset', '', 2, '2026-01-03', 'c1', 1),
-    (4, 'ins:example_user', 'ins:example_user', '', '', '', '', 'Blocked', 'wait', 'later', 1,
-     '2026-01-03', NULL, 0);
-INSERT INTO state VALUES ('tlg', 'offset', '12'), ('ins', 'pace', '{"s": 2}');
-INSERT INTO logins VALUES ('ins', 'Chrome', '2026-01-01T00:00:00+00:00'),
-                          ('twt', 'example_cookies.txt', '2026-01-01T00:00:00+00:00'),
-                          ('tlg', 'qr', '2026-01-01T00:00:00+00:00');
-INSERT INTO probes VALUES ('media/ins/example_user/1_1.mp4', 30, 6, '{}');
 """
 
 
@@ -215,110 +133,25 @@ class StoreCase(unittest.TestCase):
         self.addCleanup(opened.close)
         return opened
 
-    def v1(self, slots=("ins", "loi")):
-        """A version-1 home, with a `secret.db` holding a slot per code of `slots`."""
+    def v1(self):
+        """A version-1 home: its tables, and no version."""
         self.path.parent.mkdir(parents=True)
         with sqlite3.connect(self.path) as sql:
             sql.executescript(V1)
         sql.close()
-        if not slots:
-            return
-        with sqlite3.connect(self.home / store.SECRETS) as sql:
-            sql.execute("CREATE TABLE secrets (slot TEXT NOT NULL, name TEXT NOT NULL,"
-                        " value TEXT NOT NULL, PRIMARY KEY (slot, name)) WITHOUT ROWID")
-            sql.executemany("INSERT INTO secrets VALUES (?, 'cookies', '[]')",
-                            [(slot,) for slot in slots])
-        sql.close()
 
 
 class MigrationTest(StoreCase):
-    def test_every_row_of_a_version_1_home_moves_to_schema_3(self):
+    def test_a_version_1_home_is_refused_and_left_as_it_is(self):
         self.v1()
-        with self.open() as opened:
-            self.assertEqual(rows(self.path, "SELECT * FROM meta ORDER BY key"),
-                             [("keys", "2"), ("logins", "told"), ("version", "3")])
-            files = {row.key: row for row in opened.on_disk()}
-            self.assertEqual(sorted(files), ["ins:1_0", "ins:1_0@reels", "ins:1_1"])
-            self.assertEqual((files["ins:1_0"].plugin, files["ins:1_0"].hash,
-                              files["ins:1_0"].files, files["ins:1_1"].estimated),
-                             ("ins", b"\xaa", 2, True))
-            self.assertEqual(opened.known("twt:9"),
-                             ("media/twt/example_creator/9.png", "gone", None))
-            self.assertEqual(rows(self.path, "SELECT plugin, count(*) FROM files GROUP BY 1"),
-                             [("ins", 3), ("twt", 1)])
-            self.assertEqual(rows(self.path, "SELECT post_id, files FROM posts"), [("1", 2)])
-            targets = opened.targets()
-            self.assertEqual({item: row.categories for item, row in targets.items()},
-                             {"ins:example_user": ("posts", "reels"), "ins:cats": ("reels",),
-                              "twt:example_creator": (), "tik:example_handle": ()})
-            user = targets["ins:example_user"]
-            self.assertEqual((user.plugin, user.follow, user.complete, user.cursors, user.heads,
-                              user.gaps, user.files, user.bytes),
-                             ("ins", True, {"posts": "2026-01-02"}, {"reels": "c1"},
-                              {"posts": "1"}, {"reels": ["c0", ""]}, 2, 40))
-            self.assertEqual((targets["ins:cats"].query, targets["ins:cats"].seen),
-                             ("cats", ["ins:example_user"]))
-            self.assertEqual(opened.last_run(),
-                             store.RunRow(4, "sync", "2026-01-03T00:00:00+00:00", "", 2, 1))
-            self.assertEqual([(row.key, row.cursor, row.attempts, row.retryable)
-                              for row in opened.failures(4)],
-                             [("ins:2_0", "c1", 2, True), ("ins:example_user", None, 1, False)])
-            self.assertEqual(opened.failed(), {"ins:example_user": True})
-            self.assertEqual((dict(opened.state("tlg")), dict(opened.state("ins"))),
-                             ({"offset": 12}, {"pace": {"s": 2}}))
-            self.assertNotIn("accounts", {name for _, name, *_ in schema(self.path)})
-        with store.open(self.home / "fresh") as fresh:
-            fresh.state("x")["y"] = 1
-        self.assertEqual(schema(self.path), schema(fresh.path))
-
-    def test_a_version_1_home_is_kept_whole_beside_it_once(self):
-        self.v1(slots=())
-        before = rows(self.path, "SELECT * FROM files ORDER BY key")
-        self.open().close()
-        backup = self.home / store.BACKUP
-        self.assertEqual((rows(backup, "SELECT * FROM meta"),
-                          rows(backup, "SELECT * FROM files ORDER BY key")),
-                         ([("version", "1")], before))
-        made = backup.stat().st_mtime_ns
-        self.open().close()
-        self.assertEqual(backup.stat().st_mtime_ns, made)
-
-    def test_a_crash_in_the_migration_leaves_a_home_that_opens_and_migrates(self):
-        self.v1()
-        code = ("import os, sys\n"
-                "from pathlib import Path\n"
-                "from unittest import mock\n"
-                "from flnd.engine import store\n"
-                "with mock.patch.object(store, '_copy_targets', lambda sql: os._exit(9)):\n"
-                "    store.open(Path(sys.argv[1]))\n")
-        done = subprocess.run([sys.executable, "-c", code, str(self.home)], check=False)
-        self.assertEqual(done.returncode, 9)
-        self.assertEqual(rows(self.path, "SELECT * FROM meta"), [("version", "1")])
-        with self.open() as opened:
-            self.assertEqual((rows(self.path, "SELECT * FROM meta ORDER BY key"),
-                              len(opened.on_disk()), len(opened.targets())),
-                             ([("keys", "2"), ("logins", "told"), ("version", "3")], 3, 4))
-
-    def test_a_failure_from_before_retryable_was_recorded_is_not_retryable(self):
-        self.v1(slots=())
-        with sqlite3.connect(self.path) as sql:
-            sql.execute("ALTER TABLE failures DROP COLUMN retryable")
-        sql.close()
-        self.assertEqual([row.retryable for row in self.open().failures(4)], [False, False])
-
-    def test_a_key_that_failed_twice_keeps_its_latest_failure(self):
-        self.v1(slots=())
-        with sqlite3.connect(self.path) as sql:
-            sql.executescript(
-                "DROP INDEX failures_key; INSERT INTO failures (run, key, target, class, message,"
-                " at) VALUES (4, 'ins:3_0', 'ins:example_user', 'NetworkError', 'first', 'a'),"
-                " (4, 'ins:3_0', 'ins:example_user', 'NetworkError', 'latest', 'b')")
-        sql.close()
-        found = [row.message for row in self.open().failures(4) if row.key == "ins:3_0"]
-        self.assertEqual(found, ["latest"])
+        before = schema(self.path)
+        with self.assertRaisesRegex(UsageError, "is from an old flnd; start a new home"):
+            store.open(self.home)
+        self.assertEqual(schema(self.path), before)
+        self.assertFalse((self.home / store.METADATA / "flnd.v1.db").exists())
 
     def test_a_second_open_changes_nothing(self):
-        self.v1()
+        self.v2()
         self.open().close()
         before = (schema(self.path), rows(self.path, "SELECT * FROM files ORDER BY key"),
                   rows(self.path, "SELECT * FROM meta ORDER BY key"))
@@ -395,7 +228,7 @@ class MigrationTest(StoreCase):
                                 " VALUES ('a:1', 'a:b', 'a', 'p')"}
         for name, change in cases.items():
             with self.subTest(name):
-                self.v1(slots=())
+                self.v1()
                 with sqlite3.connect(self.path) as sql:
                     sql.executescript("DELETE FROM files; DELETE FROM meta;" + change)
                 sql.close()

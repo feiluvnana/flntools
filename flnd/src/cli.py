@@ -302,7 +302,7 @@ def target_retry(args: argparse.Namespace) -> int:
 def target_clean(args: argparse.Namespace) -> int:
     """Forget targets: their rows, files rows, failures, cursors, heads and gaps.
 
-    --media also deletes their recorded files, sidecars, links, extracted folders and the
+    --media also deletes their recorded files, links, extracted folders and the
     folders left empty. Files under media/ that nothing recorded are never deleted.
 
     Args:
@@ -615,7 +615,7 @@ def parser() -> argparse.ArgumentParser:
     sub = command(targets, "clean", target_clean)
     sub.add_argument("targets", nargs="+", metavar="target", help="the targets to forget")
     sub.add_argument("--media", action="store_true",
-                     help="also delete their files, sidecars, links and extracted folders")
+                     help="also delete their files, links and extracted folders")
 
     logins = group("auth", "List the logins, log in to a plugin or out of one")
     command(logins, "list", auth_list)

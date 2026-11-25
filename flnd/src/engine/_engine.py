@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import datetime
 import functools
 from collections.abc import (
     AsyncIterator,
@@ -37,7 +36,7 @@ from flnd.errors import (
 )
 from flnd.plugin import Browser, Plugin, Range, Target
 from flnd.ui.log import ui
-from flnkit import clock, net, text
+from flnkit import net, text
 
 __all__ = ["Chosen", "Engine", "Results", "TargetInfo"]
 
@@ -57,21 +56,6 @@ def _plugin_stop(error: Error | None) -> LoginError | Blocked | None:
             isinstance(error, Blocked) and not error.retryable):
         return error
     return None
-
-
-def _complete_wall(stamp: str, last_sync: str) -> float | None:
-    """UTC Unix timestamp when a category completed, from `complete[cat]` and `last_sync`."""
-    text_val = last_sync if (last_sync and last_sync.startswith(stamp)) else stamp
-    try:
-        if "T" in text_val:
-            dt = datetime.datetime.fromisoformat(text_val.replace("Z", "+00:00"))
-        else:
-            dt = datetime.datetime.fromisoformat(f"{text_val}T00:00:00+00:00")
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.UTC)
-    return dt.timestamp()
 
 
 async def _child_done(
@@ -476,7 +460,7 @@ class Engine:
                      ) -> list[TargetInfo]:
         """Forget known targets: their rows, files rows, failures, cursors, heads and gaps.
 
-        With `media`, their recorded files, sidecars, links and extracted folders go too, and
+        With `media`, their recorded files, links and extracted folders go too, and
         the folders left empty. Files under `media/` no row names stay.
 
         Returns:
@@ -509,77 +493,6 @@ class Engine:
         found = {store.key(info.target): info for info in self.target_ls()}
         return [found[key] for key in keys if key in found]
 
-    async def _prune_fresh(
-        self,
-        runner: _Runner,
-        chosen: Sequence[tuple[Target, Options]],
-    ) -> tuple[list[tuple[int, Target, Options]], dict[int, TargetReport]]:
-        """Drop targets or categories marked complete within `[defaults] fresh`."""
-        fresh_text = runner.settings.config.defaults.fresh
-        fresh_s = config.duration_seconds(fresh_text)
-        if fresh_s <= 0:
-            return [(i, t, o) for i, (t, o) in enumerate(chosen)], {}
-        rows = await _off(self._rows)
-        db = runner.settings.db
-        failures = await _off(db.target_failures) if db is not None else {}
-        now = clock.wall()
-        active: list[tuple[int, Target, Options]] = []
-        skipped: dict[int, TargetReport] = {}
-        for i, (target, options) in enumerate(chosen):
-            if options.again or options.since is not None or options.until is not None:
-                active.append((i, target, options))
-                continue
-            tkey = store.key(target)
-            row = rows.get(tkey)
-            route = self._route(target)
-            if row is None or route is None or tkey in failures:
-                active.append((i, target, options))
-                continue
-            open_cats = set(row.cursors) | set(row.gaps)
-            route_name = getattr(route, "name", None) or route.kind
-
-            def is_fresh(name: str, row: store.TargetRow = row,
-                         open_cats: set[str] = open_cats) -> bool:
-                stamp = row.complete.get(name)
-                if not stamp or name in open_cats:
-                    return False
-                done_at = _complete_wall(stamp, row.last_sync)
-                return done_at is not None and 0 <= now - done_at < fresh_s
-
-            if self._is_query(target) or not route.categories:
-                if is_fresh(route_name) and "" not in row.gaps:
-                    ui.info("{target}: complete; skipped (within {fresh})",
-                            target=target, fresh=fresh_text)
-                    skipped[i] = TargetReport(target, (), 0)
-                    continue
-                active.append((i, target, options))
-                continue
-            own = tuple(
-                cat[0] if isinstance(cat, tuple) else cat.name
-                for cat in route.categories
-                if (cat[1] if isinstance(cat, tuple) else cat.own)
-            )
-            wanted = own if (not options.categories or "all" in options.categories) else (
-                options.categories)
-            remaining: list[str] = []
-            for cat in wanted:
-                fresh = is_fresh(cat)
-                if (fresh and route.single and target.plugin == "loi"
-                        and cat == "archive" and db is not None):
-                    post_id = target.value.removeprefix(f"{route_name}/")
-                    fresh = await _off(db.post_saved, tkey, post_id, "archive")
-                if not fresh:
-                    remaining.append(cat)
-            if not remaining:
-                ui.info("{target}: complete; skipped (within {fresh})",
-                        target=target, fresh=fresh_text)
-                skipped[i] = TargetReport(target, (), 0)
-            elif len(remaining) < len(wanted):
-                active.append((i, target, replace(options, categories=tuple(remaining))))
-            else:
-                active.append((i, target, options))
-        return active, skipped
-
     async def _download(
         self,
         runner: _Runner,
@@ -591,13 +504,9 @@ class Engine:
         keep: bool = False,
     ) -> Results:
         """Download the targets, recording each in flnd.db first."""
-        active, skipped = await self._prune_fresh(runner, chosen)
-        if not active:
-            return self._finish_report(
-                Results(tuple(skipped[i] for i in range(len(chosen)))), stop)
         rows = await _off(self._rows)
         kept = []
-        for _, target, options in active:
+        for target, options in chosen:
             # A followed target stops at its saved posts, unless told to list them again.
             row = rows.get(store.key(target))
             followed = row is not None and row.follow and not options.again
@@ -607,10 +516,10 @@ class Engine:
         if not any(self._is_query(target) for target, _ in kept):
             run_reports = await runner.run(kept)
             by_orig: dict[int, list[TargetReport]] = {
-                orig_i: [rep] for (orig_i, _, _), rep in zip(active, run_reports)
+                i: [rep] for i, rep in enumerate(run_reports[:len(kept)])
             }
-            if len(run_reports) > len(active):
-                by_orig[active[-1][0]].extend(run_reports[len(active):])
+            if len(run_reports) > len(kept):
+                by_orig[len(kept) - 1].extend(run_reports[len(kept):])
         else:
             normal = [(i, item) for i, item in enumerate(kept) if not self._is_query(item[0])]
             queries = [(i, item) for i, item in enumerate(kept) if self._is_query(item[0])]
@@ -637,13 +546,10 @@ class Engine:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 raise
-            by_orig = {active[slot][0]: by_slot[slot] for slot in range(len(kept))}
+            by_orig = {slot: by_slot[slot] for slot in range(len(kept))}
         reports: list[TargetReport] = []
         for i in range(len(chosen)):
-            if i in skipped:
-                reports.append(skipped[i])
-            else:
-                reports.extend(by_orig[i])
+            reports.extend(by_orig[i])
         return self._finish_report(Results(tuple(reports)), stop)
 
     def _finish_report(self, report: Results, stop: Stop) -> Results:

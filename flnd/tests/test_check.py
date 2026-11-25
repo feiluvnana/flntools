@@ -63,7 +63,6 @@ class FindTest(CheckCase):
         self.assertFalse(found.ok)
 
     def test_what_flnd_keeps_beside_its_files_is_never_unknown(self):
-        self.config("[defaults]\nsidecars = true\n")
         self.engine().download(["aaa:a|all"])
         folder = self.target_dir("aaa", "a")
         (folder / ".DS_Store").write_bytes(b"finder")

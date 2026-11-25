@@ -481,7 +481,7 @@ class Targets:
 
         Args:
             targets: the targets to forget.
-            media: also delete their recorded files, sidecars, links, extracted folders and the
+            media: also delete their recorded files, links, extracted folders and the
                 folders left empty. Files under `media/` that no row names are never deleted.
 
         Returns:

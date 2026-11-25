@@ -38,7 +38,9 @@ NAME_MAX = 255
 # A file name's extension, kept whole when a name is cut: a dot and up to 16 word characters.
 EXTENSION = re.compile(r"\.\w{1,16}$")
 PROXIES = ("http", "https", "socks5", "socks5h")
-BROWSERS = ("chromium", "chrome")
+# The keys an old config.toml may still hold; each gets one warning.
+GONE = frozenset({"height", "browser", "rate", "fresh", "sidecars", "dedupe", "switch", "again",
+                  "exec", "exec_timeout", "vault", "scroll"})
 # A speed: `"0"` for off, or a number and a unit per second, in units of 1024 (as `text.size`).
 SPEED = re.compile(r"(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)/s", re.IGNORECASE)
 UNITS = {"b": 1, "kb": 1024, "mb": 1024 ** 2, "gb": 1024 ** 3}
@@ -68,13 +70,8 @@ class Where(enum.StrEnum):
 class Defaults(msgspec.Struct, frozen=True):
     """The `[defaults]` table (SPEC.md#config)."""
 
-    dedupe: bool = True
-    sidecars: bool = False
     when: str = ""
-    rate: str = "0"
     slowest: str = "0"
-    height: int = 0
-    fresh: str = "0"
     timeout: str = "10m"
 
 
@@ -85,7 +82,6 @@ class PluginConfig(msgspec.Struct, frozen=True):
     limits: dict[str, int] = msgspec.field(default_factory=dict)
     proxy: str | None = None
     stop_after: int = 5
-    browser: str | None = None
     folder: str | None = None
     filename: str | None = None
     # The plugin's own `Settings` struct, or None for a plugin flnd wasn't given.
@@ -162,13 +158,8 @@ def _proxy_ok(value: str) -> bool:
 
 
 DEFAULTS = {
-    "dedupe": Key(bool, "true or false"),
-    "sidecars": Key(bool, "true or false"),
     "when": Key(str, 'text such as "1y", "2026" or "2026-01..2026-03", or ""', _when_ok),
-    "rate": Key(str, 'a speed such as "20 MB/s" or "500 KB/s", or "0" for off', _speed_ok),
     "slowest": Key(str, 'a speed such as "50 KB/s", or "0" for off', _speed_ok),
-    "height": Key(int, "a whole number of pixels, 0 for the best", lambda value: value >= 0),
-    "fresh": Key(str, 'a duration such as "1d", "12h" or "30m", or "0" for off', _duration_ok),
     "timeout": Key(str, 'a duration such as "10m", "600s" or "1h", or "0" for off', _duration_ok),
 }
 PLUGINS = {
@@ -178,7 +169,6 @@ PLUGINS = {
     "proxy": Key(str, " or ".join(f'"{scheme}://<host>:<port>"' for scheme in PROXIES),
                  _proxy_ok),
     "stop_after": Key(int, "a whole number of at least 1", lambda value: value >= 1),
-    "browser": Key(str, '"chromium" or "chrome"', lambda value: value in BROWSERS),
     "folder": Key(str, "a template"),
     "filename": Key(str, "a template"),
 }
@@ -266,7 +256,7 @@ def _period(value: str) -> tuple[datetime.date, datetime.date]:
 
 
 def speed(value: str) -> int:
-    """Bytes per second of a `rate` or `slowest` value; 0 for off."""
+    """Bytes per second of a `slowest` value; 0 for off."""
     found = SPEED.fullmatch(value.strip())
     return 0 if found is None else int(float(found[1]) * UNITS[found[2].lower()])
 
@@ -501,7 +491,7 @@ def read(home: Path, *, user: Path | None, plugins: Mapping[str, type] | None = 
     Args:
         home: the home folder; its `config.toml` may be missing.
         user: the user file (`user_file()` outside tests); it may be missing; None reads none.
-        plugins: the plugin classes by code, whose `fields`, `Settings` and `browser` check
+        plugins: the plugin classes by code, whose `fields` and `Settings` check
             their tables; a code not here has only the engine's keys. Only a plain `dict`'s
             codes all resolve; another mapping is asked only for the codes a file names.
         given: values for one call, by dotted name (`"when"`, `"plugins.ins.pace"`).
@@ -532,7 +522,7 @@ def read(home: Path, *, user: Path | None, plugins: Mapping[str, type] | None = 
 
 
 def _load(path: Path, origin: Where) -> dict[str, Any]:
-    """One file's tables, `[sources.*]` read as `[plugins.*]`; `{}` when it is missing."""
+    """One file's tables; `{}` when it is missing."""
     guard(path)
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -545,19 +535,6 @@ def _load(path: Path, origin: Where) -> dict[str, Any]:
                          hint="fix the file, or move it away") from None
     except tomllib.TOMLDecodeError as error:
         raise _syntax(path, error) from None
-    old = data.pop("sources", None)
-    if old is not None and not isinstance(old, dict):
-        _warn("{path}: sources is not a table; it is ignored", path=str(path))
-    if isinstance(old, dict):
-        _warn("{path}: [sources.<code>] is now [plugins.<code>]; rename it", path=str(path))
-        plugins = data.setdefault("plugins", {})
-        for code, table in old.items():
-            own = plugins.get(code, {}) if isinstance(plugins, dict) else None
-            if not isinstance(table, dict):
-                _warn("{path}: [sources] {code} is not a table; it is ignored",
-                        path=str(path), code=code)
-            elif isinstance(own, dict):
-                plugins[code] = {**table, **own}
     return data
 
 
@@ -619,10 +596,6 @@ def _plugin_keys(label: str, code: str, table: Mapping[str, Any],
                 template(label, f"{where}.folder", tpl, fields)
         else:
             template(label, f"{where}.{name}", value, fields)
-    kind = getattr(getattr(cls, "browser", None), "name", None)
-    if f"{where}.browser" in found and kind is not None and kind != "ANY":
-        raise bad(label, f"{where}.browser", "set only for a plugin whose browser is ANY",
-                  found[f"{where}.browser"])
     return found
 
 
@@ -631,18 +604,12 @@ def _keys(label: str, where: str, table: Mapping[str, Any],
     found = {}
     for name, value in table.items():
         if name in keys:
-            found[f"{where}.{name}"] = _value(label, f"{where}.{name}", keys[name], value)
+            found[f"{where}.{name}"] = _checked(label, f"{where}.{name}", keys[name], value)
+        elif name in GONE:
+            _warn("{label}: {name} is gone", label=label, name=name)
         else:
             _unknown(label, f"[{where}] {name}")
     return found
-
-
-def _value(label: str, key: str, spec: Key, value: Any) -> Any:
-    if key == "defaults.dedupe" and value in ("link", "off"):
-        _warn('{label}: dedupe = "{value}" is now dedupe = {flag}', label=label, value=value,
-                flag="true" if value == "link" else "false")
-        return value == "link"
-    return _checked(label, key, spec, value)
 
 
 def _table(label: str, name: str, value: Any) -> None:

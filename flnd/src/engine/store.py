@@ -1,4 +1,4 @@
-"""`flnd.db`, schema 3: its tables, the migrations from versions 1 and 2, its rows and queries, and
+"""`flnd.db`, schema 3: its tables, the migration from version 2, its rows and queries, and
 `check`, which compares the rows with the disk and repairs them. SPEC.md#for-developers
 explains it.
 """
@@ -38,8 +38,7 @@ __all__ = ["FailureRow", "FileRow", "RunRow", "State", "Store", "TargetRow",
 MEDIA, METADATA = Path("media"), Path("metadata")
 DB = METADATA / "flnd.db"
 SECRETS = METADATA / "secret.db"
-# Where a version-1 or version-2 `flnd.db` is copied, whole, before its migration.
-BACKUP = METADATA / "flnd.v1.db"
+# Where a version-2 `flnd.db` is copied, whole, before its migration.
 BACKUP_V2 = METADATA / "flnd.v2.db"
 VERSION = "3"
 # What a migrated home that still has a `secret.db` is told, once.
@@ -97,16 +96,6 @@ CREATE TABLE state (plugin TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL
 """
 # Executed one by one: `executescript` would commit the migration's transaction halfway.
 STATEMENTS = tuple(part for part in SCHEMA.split(";") if "CREATE" in part)
-
-# The tables version 1 had that schema 3 rebuilds, with each new column's old name.
-REBUILT = {"meta": {}, "files": {"plugin": "source"}, "targets": {"plugin": "source"},
-           "runs": {}, "failures": {}, "state": {"plugin": "source"}}
-V1_DROPPED = ("logins", "probes")
-# A column an old version-1 table lacks, whose version-1 default isn't schema 3's: a failure
-# from before `retryable` was recorded wasn't retryable.
-V1_DEFAULTS = {("failures", "retryable"): "0"}
-V1_INDEXES = ("files_post", "files_hash", "files_undated", "failures_target", "failures_run",
-              "failures_key")
 
 # The loop's connection waits for no lock (a busy commit is queued again); any other waits 30 s.
 LOOP_BUSY_MS, OTHER_BUSY_MS = 0, 30_000
@@ -280,11 +269,11 @@ def busy(error: BaseException) -> bool:
 
 
 # ---------------------------------------------------------------------------------------------
-# Opening, and the migrations from versions 1 and 2
+# Opening, and the migration from version 2
 # ---------------------------------------------------------------------------------------------
 
 def open(home: Path, *, loop: bool = False) -> Store:
-    """Open a home's `flnd.db`, migrating a version-1 or version-2 file in place.
+    """Open a home's `flnd.db`, migrating a version-2 file in place.
 
     A home without `flnd.db` is left untouched until the first write.
 
@@ -313,8 +302,10 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
     sql.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
     sql.execute(f"PRAGMA wal_autocheckpoint = {0 if loop else OTHER_CHECKPOINT_PAGES}")
     old = _version(sql)
-    if old in ("1", "2"):
-        _backup(sql, home / (BACKUP if old == "1" else BACKUP_V2), old)
+    if old == "1":
+        raise UsageError(f"{home} is from an old flnd; start a new home")
+    if old == "2":
+        _backup(sql, home / BACKUP_V2, old)
     notice = False
     sql.execute("BEGIN IMMEDIATE")
     try:
@@ -324,14 +315,12 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
                 sql.execute(statement)
             sql.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
             sql.execute("INSERT INTO meta VALUES ('keys', '2')")
-        elif version == "1":
-            _migrate(sql)
         elif version == "2":
             _drop_accounts(sql)
         elif version != VERSION:
             raise UsageError(f"home schema {version!r} needs a newer flnd",
                              hint="upgrade flnd, or open the home with the flnd that wrote it")
-        if version in ("1", "2") and (home / SECRETS).is_file():
+        if version == "2" and (home / SECRETS).is_file():
             # An old home's sealed logins are left alone, and its person is told once.
             sql.execute("INSERT OR REPLACE INTO meta VALUES ('logins', 'told')")
             notice = True
@@ -410,28 +399,6 @@ def _drop_accounts(sql: sqlite3.Connection) -> None:
     sql.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (VERSION,))
 
 
-def _migrate(sql: sqlite3.Connection) -> None:
-    """Rebuild a version-1 file's tables as schema 3, in the caller's transaction."""
-    tables = _tables(sql)
-    sql.execute("DROP VIEW IF EXISTS posts")
-    for index in V1_INDEXES:
-        sql.execute(f"DROP INDEX IF EXISTS {index}")
-    for table in REBUILT:
-        if table in tables:
-            sql.execute(f"ALTER TABLE {table} RENAME TO v1_{table}")
-    for statement in STATEMENTS:
-        sql.execute(statement)
-    for table, renames in REBUILT.items():
-        if table in tables and table != "targets":
-            _copy(sql, table, renames)
-    if "targets" in tables:
-        _copy_targets(sql)
-        _backfill_seen(sql)
-    for table in [*(f"v1_{name}" for name in REBUILT if name in tables), *V1_DROPPED]:
-        sql.execute(f"DROP TABLE IF EXISTS {table}")
-    sql.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (VERSION,))
-
-
 # A built-in single post's (plugin, kind) as an old home stored it, and its kind now: its key
 # was `<code>:<id>`, and is `<code>:<kind>/<id>`, so a post never clashes with a user's key.
 REKEYED = {("fbk", "video"): "video", ("fbk", "watch"): "watch", ("fbk", "photo"): "photo",
@@ -497,43 +464,6 @@ def _backfill_seen(sql: sqlite3.Connection) -> None:
 
 def _columns(sql: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in sql.execute(f"PRAGMA table_info({table})")]
-
-
-def _copy(sql: sqlite3.Connection, table: str, renames: Mapping[str, str]) -> None:
-    """Fill a new table from `v1_<table>`, by column; a column the old one lacks takes its
-    version-1 default (`V1_DEFAULTS`, else schema 3's), and one the new one lacks is dropped."""
-    old = set(_columns(sql, f"v1_{table}"))
-    pairs = [(new, renames.get(new, new)) for new in _columns(sql, table)]
-    pairs = [(new, was if was in old else V1_DEFAULTS[table, new]) for new, was in pairs
-             if was in old or (table, new) in V1_DEFAULTS]
-    into, picked = ", ".join(new for new, _ in pairs), ", ".join(was for _, was in pairs)
-    # A failure is one row per key: an old table may hold several; the latest wins.
-    latest = (" WHERE rowid IN (SELECT max(rowid) FROM v1_failures GROUP BY key) ORDER BY rowid"
-              if table == "failures" else "")
-    sql.execute(f"INSERT INTO {table} ({into}) SELECT {picked} FROM v1_{table}{latest}")
-
-
-def _copy_targets(sql: sqlite3.Connection) -> None:
-    """Fill `targets` from `v1_targets`; its `options` JSON becomes the `categories` list."""
-    old = set(_columns(sql, "v1_targets"))
-    kept = [name for name in TARGET_COLUMNS if name in old and name != "plugin"]
-    found = sql.execute(f"SELECT source, options, {', '.join(kept)} FROM v1_targets").fetchall()
-    sql.executemany(
-        f"INSERT INTO targets (plugin, categories, {', '.join(kept)})"
-        f" VALUES (?, ?, {', '.join('?' * len(kept))})",
-        [(source, _json(_categories(options)), *rest) for source, options, *rest in found])
-
-
-def _categories(options: str) -> list[str]:
-    """A version-1 target's categories: its options' `only` list, else `categories`, else []."""
-    try:
-        settings = json.loads(options)
-    except (TypeError, ValueError):
-        return []
-    if not isinstance(settings, dict):
-        return []
-    names = settings.get("only") or settings.get("categories") or []
-    return [name for name in names if isinstance(name, str)] if isinstance(names, list) else []
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1212,8 +1142,6 @@ def _look(row: FileRow, seen: _Seen, missing: list[FileRow],
     """Stat one row's file, noting it in `seen`, and in `missing` or `resized` when wrong."""
     if row.folder:
         seen.folders.add(_norm(row.folder))
-    if row.sidecar:
-        seen.paths.add(_norm(row.sidecar))
     made = _made(row)
     seen.paths.update(_norm(name) for name in made)
     path = Path(row.path)
@@ -1341,7 +1269,7 @@ def target_folder(home: Path, target: _Target) -> Path:
 
 
 def erase(home: Path, rows: Sequence[FileRow]) -> int:
-    """Delete the files the rows name: each file, its sidecar and extracted folder, and the
+    """Delete the files the rows name: each file and extracted folder, and the
     folders under `media/` this leaves empty.
 
     Returns:
@@ -1350,13 +1278,12 @@ def erase(home: Path, rows: Sequence[FileRow]) -> int:
     media = (home / MEDIA).resolve()
     freed, parents = 0, set()
     for row in rows:
-        for name in (row.path, row.sidecar):
-            path = Path(name) if name else None
-            if path is not None and path.is_file() and path.resolve().is_relative_to(media):
-                if name == row.path and row.state == SAVED:
-                    freed += path.stat().st_size
-                path.unlink()
-                parents.add(path.parent)
+        path = Path(row.path) if row.path else None
+        if path is not None and path.is_file() and path.resolve().is_relative_to(media):
+            if row.state == SAVED:
+                freed += path.stat().st_size
+            path.unlink()
+            parents.add(path.parent)
         for name in _made(row):
             path = Path(name)
             if path.is_file() and path.resolve().is_relative_to(media):

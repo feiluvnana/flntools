@@ -117,7 +117,7 @@ class Capped:
         self.scheduler = jobs.Scheduler(limits={"127.0.0.1": at_once, "localhost": at_once})
         self.saver = save.Saver(_Kept(), self.scheduler,
                                 lambda event: None,  # type: ignore[arg-type]
-                                dedupe=False, sidecars=False)
+                                dedupe=False)
         self.target = Target("bnc:example_user", kind="user")
 
 

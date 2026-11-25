@@ -1177,7 +1177,7 @@ class Downloads:
         if not await self._room():
             return False
         saver = self.settings.saver
-        items = [self._item(queued, saver) for queued in todo]
+        items = [self._item(queued) for queued in todo]
         for queued in todo:
             self.tally.count(self.target, queued.placed.post.category, queued=1)
         self._pending += len(todo)
@@ -1244,7 +1244,7 @@ class Downloads:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(self._changed.wait(), WAKE)
 
-    def _item(self, queued: _Queued, saver: Any) -> save.Item:
+    def _item(self, queued: _Queued) -> save.Item:
         """The save's `Item` for a queued file."""
         placed = queued.placed
         post = placed.post
@@ -1259,8 +1259,6 @@ class Downloads:
             kind=placed.kind, day=day(post.date), headers=post.headers,
             count=count if placed.num == 0 and isinstance(count, int) and count > 1 else None,
             estimated=queued.estimated, dated_name=dated_name,
-            meta=(_metadata(self.source, self.target, placed)
-                  if saver is not None and saver.sidecars else None),
             cursor=queued.cursor, retried=queued.retried,
             refresh=(lambda: self._fresh(queued)) if self._refreshes(post) else None,
             label=placed.path, dropped=lambda: self._dropped(queued),
@@ -1602,28 +1600,6 @@ def _redated(
         return dest
     path.rename(dest)
     return dest
-
-
-def _metadata(source: Plugin, target: Target, placed: Placed) -> dict[str, Any]:
-    """What a saved file's sidecar holds: its post's caption, author, tags, day and link."""
-    post = placed.post
-    fields = dict(post.fields)
-
-    def first(*names: str) -> Any:
-        return next((fields[name] for name in names if fields.get(name)), None)
-
-    posted = day(post.date)
-    url = placed.file.url if isinstance(placed.file.url, str) else None
-    return {
-        "source": source.code, "target": str(target), "post": post.id,
-        "category": post.category, "date": posted.isoformat() if posted else None,
-        "url": first("url", "link", "permalink"),
-        "file": text.redact(url) if url else None,
-        "caption": first("caption", "text", "description", "title"),
-        "author": first("author", "user", "username", "owner", "channel"),
-        "tags": first("tags", "hashtags"),
-        "fields": fields,
-    }
 
 
 def _set_mtime(path: Path, dated: datetime.date) -> None:

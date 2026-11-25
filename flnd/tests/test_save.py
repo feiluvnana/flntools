@@ -525,18 +525,6 @@ class FinishTest(SaveCase):
         self.assertEqual(self.sql.execute(
             "SELECT extracted FROM files WHERE key = 'ins:bad.zip'").fetchone(), (None,))
 
-    def test_a_sidecar_holds_the_posts_fields_and_its_row_the_posts_commit(self) -> None:
-        statements: list[str] = []
-        self.sql.set_trace_callback(statements.append)
-        self.routes.update({f"{CDN}/a.jpg": JPEG, f"{CDN}/b.jpg": PNG})
-        meta = {"post": "1", "caption": "hello", "day": DAY}
-        self.save(self.item("a.jpg", meta=meta), self.item("b.jpg", meta=meta))
-        side = self.tmp / "media" / "a.jpg.json"
-        self.assertEqual(json.loads(side.read_text()),
-                         {"post": "1", "caption": "hello", "day": "2026-05-01"})
-        self.assertEqual(self.rows("sidecar"), [(str(side),), (str(side.with_name("b.png.json")),)])
-        writes = [one.split()[0] for one in statements if one.startswith(("BEGIN", "UPDATE"))]
-        self.assertEqual(writes, ["BEGIN"])
 
 class EngineTest(EngineCase):
     """The save inside a run of the engine: what stops the run, and what each file ends as."""
@@ -643,14 +631,8 @@ class EngineTest(EngineCase):
         self.home.mkdir(parents=True, exist_ok=True)
         (self.home / "config.toml").write_text(text, encoding="utf-8")
 
-    def test_rate_slowest_and_free_space_from_the_config(self) -> None:
+    def test_slowest_and_free_space_from_the_config(self) -> None:
         body = b"\xff\xd8\xff" + bytes(999_997)
-        self.routes[f"{CDN}/a.jpg"] = body
-        self.configure('[defaults]\nrate = "100 KB/s"\n')
-        self.run_files(File(f"{CDN}/a.jpg", name="a.jpg"))
-        # A second's worth (100 KiB) goes at once; the rest waits about 8.8 s on the run's clock.
-        self.assertGreaterEqual(self.now, 8.5)
-
         sent, requests = iter([body[:1000], body[1000:]]), []
 
         def slow(request):
@@ -776,9 +758,9 @@ def probe(case) -> list[float]:
 
 
 class RealSchedulerTest(SaveCase):
-    """The save on the scheduler's pools and retry rule: a busy part, a flaky join, a sidecar."""
+    """The save on the scheduler's pools and retry rule: a busy part and a flaky join."""
 
-    def test_a_busy_part_a_flaky_join_and_a_sidecar(self) -> None:
+    def test_a_busy_part_and_a_flaky_join(self) -> None:
         self.routes.update({f"{CDN}/a.jpg": JPEG, f"{CDN}/b.jpg": PNG,
                             f"{CDN}/v.mp4": b"V" * 9, f"{CDN}/au.mp4": b"A" * 9})
         ran: list = []
@@ -793,7 +775,7 @@ class RealSchedulerTest(SaveCase):
         dash = File(f"{CDN}/v.mp4", audio=f"{CDN}/au.mp4")
         with files.part(self.tmp / "media" / "a.jpg", resume=True), \
                 files.fake({"ffmpeg": ffmpeg}):
-            self.save(self.item("a.jpg"), self.item("b.jpg", meta={"post": "1"}),
+            self.save(self.item("a.jpg"), self.item("b.jpg"),
                       self.item("v.mp4", file=dash, kind=None))
         self.assertEqual(sorted(type(event).__name__ for event in self.events),
                          ["Saved", "Saved", "Skipped"])

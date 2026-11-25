@@ -8,7 +8,6 @@ photos.
 from __future__ import annotations
 
 import errno
-import json
 import os
 from pathlib import Path
 from unittest import mock
@@ -71,14 +70,6 @@ class DedupeTest(ChainCase):
         self.assertEqual(rows["aaa:b.jpg"].mtime, b.st_mtime_ns)
         self.assertIn("1 file already saved elsewhere, linked", self.dest.getvalue())
 
-    def test_dedupe_off_keeps_both_copies(self):
-        self.config('[defaults]\ndedupe = "off"\n')
-        engine = self.engine()
-        engine.download(["aaa:a|all"])
-        engine.download(["aaa:b|all"])
-        self.assertFalse(os.path.samestat(self.path("a").stat(), self.path("b").stat()))
-        self.assertEqual(self.path("b").read_bytes(), self.body)
-
     def test_a_file_system_without_hard_links_keeps_both_with_one_warning(self):
         engine = self.engine()
         engine.download(["aaa:a|all"])
@@ -122,7 +113,7 @@ class LinkRowTest(ChainCase):
 
         return Tabs
 
-class SidecarTest(ChainCase):
+class ConfigTest(ChainCase):
     def source_with_fields(self):
         class Captioned(Plugin):
             code, name, domains, key = "cap", "Captions", ("example.com",), "{post}_{num}"
@@ -141,29 +132,15 @@ class SidecarTest(ChainCase):
 
         return Captioned
 
-    def test_sidecars_are_off_by_default(self):
+    def test_no_file_gets_a_json_sidecar(self):
         self.engine(self.source_with_fields()).download(["cap:example_user|all"])
         folder = self.target_dir("cap", "example_user")
         self.assertEqual([path.name for path in folder.rglob("*.json")], [])
 
-    def test_a_sidecar_holds_the_post_beside_its_file(self):
-        self.config("[defaults]\nsidecars = true\n")
-        self.engine(self.source_with_fields()).download(["cap:example_user|all"])
-        [side] = list(self.target_dir("cap", "example_user").rglob("*.json"))
-        data = json.loads(side.read_text(encoding="utf-8"))
-        self.assertEqual(side.name, "2026-01-02_P1.jpg.json")
-        self.assertEqual(
-            {name: data[name] for name in ("source", "target", "post", "date", "caption",
-                                           "author", "tags", "url", "file")},
-            {"source": "cap", "target": "cap:example_user", "post": "P1", "date": "2026-01-02",
-             "caption": "a day out", "author": "example_user", "tags": ["beach"],
-             "url": "https://example.com/p/P1", "file": f"{CDN}/a.jpg"})
-        self.assertEqual(self.rows()["cap:P1_0"].sidecar, str(side))
-
     def test_a_broken_config_is_a_usage_error(self):
         from flnd.errors import UsageError
 
-        for text in ("[defaults]\nsidecars = 1\n", '[defaults]\ndedupe = "skip"\n', "[defaults"):
+        for text in ("[defaults]\nwhen = 1\n", '[defaults]\ntimeout = "soon"\n', "[defaults"):
             with self.subTest(text=text):
                 self.config(text)
                 with self.assertRaises(UsageError):

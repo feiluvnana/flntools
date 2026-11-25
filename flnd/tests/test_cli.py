@@ -697,7 +697,7 @@ class ListsTest(FlndCase):
         self.assertRegex(text, r"defaults\.when +- +- +default")
         self.assertRegex(text.splitlines()[-1], r"^edit .*config\.toml for this home, or .*config\.toml "
                                                 r"for every home$")
-        self.assertEqual(text.splitlines()[1].split()[0], "defaults.dedupe")
+        self.assertEqual(text.splitlines()[1].split()[0], "defaults.when")
         self.assertFalse((Path(".flnd") / _store.DB).exists())
 
 

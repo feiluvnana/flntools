@@ -77,12 +77,8 @@ class ReadTest(Case):
 
     def test_each_key_takes_its_type(self):
         rows = [
-            ("[defaults]\ndedupe = false", "defaults.dedupe", False),
-            ("[defaults]\nsidecars = true", "defaults.sidecars", True),
             ('[defaults]\nwhen = "2026-01..2026-03"', "defaults.when", "2026-01..2026-03"),
-            ('[defaults]\nrate = "20 MB/s"', "defaults.rate", "20 MB/s"),
             ('[defaults]\nslowest = "500 KB/s"', "defaults.slowest", "500 KB/s"),
-            ("[defaults]\nheight = 720", "defaults.height", 720),
             ("[plugins.exm]\npace = 2", "plugins.exm.pace", 2.0),
             ('[plugins.exm]\nlimits = { "cdn.example.com" = 4 }', "plugins.exm.limits",
              {"cdn.example.com": 4}),
@@ -113,14 +109,12 @@ class ReadTest(Case):
 
     def test_a_wrong_value_names_the_key(self):
         rows = [
-            '[defaults]\ndedupe = "yes"', "[defaults]\nsidecars = 1", '[defaults]\nwhen = "soon"',
-            '[defaults]\nwhen = "2026-03..2026-01"', '[defaults]\nrate = "fast"',
-            "[defaults]\nheight = -1",
-            '[defaults]\nheight = "720"', '[plugins.exm]\npace = "2"', "[plugins.exm]\npace = -1",
+            '[defaults]\nwhen = "soon"', '[defaults]\nwhen = "2026-03..2026-01"',
+            '[defaults]\nslowest = "fast"', '[defaults]\ntimeout = 5', '[plugins.exm]\npace = "2"', "[plugins.exm]\npace = -1",
             '[plugins.exm]\nlimits = { "a" = 0 }', '[plugins.exm]\nproxy = "ftp://h:1"',
             '[plugins.exm]\nproxy = "http://h:99999"', '[plugins.exm]\nproxy = "http://h:1\\n"',
             "[plugins.exm]\nstop_after = 0",
-            '[plugins.exm]\nbrowser = "chrome"', '[plugins.exm]\nfolder = "../out"',
+            '[plugins.exm]\nfolder = "../out"',
             '[plugins.exm]\nfilename = "{nope}"', '[plugins.exm]\nfilename = "{post"',
             '[plugins.exm]\ntries = "x"', "[plugins]\nexm = 1", "defaults = 1",
         ]
@@ -138,12 +132,11 @@ class ReadTest(Case):
         mark = "SECRETMARK123"
         url = f"http://u:{mark}@h:1"
         texts = [
-            f'plugins = "{url}"', f'defaults = "{url}"', f'sources = "{url}"',
+            f'plugins = "{url}"', f'defaults = "{url}"',
             f'proxy = "{url}"', f'[plugins]\nproxy = "{url}"', f'[plugins]\nexm = "{url}"',
-            f'[sources]\nexm = "{url}"', f'[sources]\nproxy = "{url}"',
             f'[defaults]\nproxy = "{url}"', f'[defaults]\nagain = "{mark}"',
             f'[vault]\nkey = "{mark}"', f'[plugins.exm]\nscroll = "{mark}"',
-            f'[plugins.zzz]\nodd = "{mark}"', f'[sources.exm]\nproxy = "ftp://u:{mark}@h:1"',
+            f'[plugins.zzz]\nodd = "{mark}"',
             f'[plugins.exm]\nproxy = "http://u:{mark}@h:1" x',
             f'[plugins.exm]\nproxy = "http://u:\\q{mark}@h:1"',
             f'[plugins.exm]\nproxy = "http://u:{mark}@h:1',
@@ -157,10 +150,10 @@ class ReadTest(Case):
             ("plugins.exm.proxy", {"u": mark}), ("plugins.exm.pace", mark),
             ("plugins.exm.limits", {f"u:{mark}@h": 0}), ("plugins.exm.limits", mark),
             ("plugins.exm.folder", f"../{mark}"), ("plugins.exm.filename", f"{{{mark}}}"),
-            ("plugins.exm.filename", f"{{{mark}"), ("plugins.exm.browser", mark),
+            ("plugins.exm.filename", f"{{{mark}"),
             ("plugins.exm.tries", mark), ("plugins.exm.stop_after", [mark]),
-            ("defaults.when", mark), ("defaults.rate", mark), ("defaults.slowest", f"1 {mark}/s"),
-            ("defaults.dedupe", mark), ("defaults.height", {"a": mark}),
+            ("defaults.when", mark), ("defaults.slowest", f"1 {mark}/s"),
+            ("defaults.timeout", {"a": mark}),
             ("plugins.exm", url), ("plugins.proxy", url),
         ]
         runs = [(text, lambda text=text: self.read(home=text)) for text in texts]
@@ -179,32 +172,24 @@ class ReadTest(Case):
                 self.assertNotIn(mark, shown + self.warned())
 
     def test_unknown_keys_and_gone_keys_warn(self):
-        found = self.read(home="[defaults]\nagain = true\n[vault]\nkey = 'file'\n"
-                               "[plugins.exm]\nscroll = 'fast'\n[plugins.zzz]\nodd = 1")
+        found = self.read(home="[defaults]\nagain = true\nrate = '1 MB/s'\n[vault]\nkey = 'file'\n"
+                               "[plugins.exm]\nbrowser = 'chrome'\n[plugins.zzz]\nodd = 1\n"
+                               "[sources.exm]\npace = 3")
         self.assertEqual(found.defaults, config.Defaults())
-        for setting in ("[defaults] again", "[vault]", "[plugins.exm] scroll",
-                        "[plugins.zzz] odd"):
+        self.assertIsNone(found.plugin("exm").pace)
+        gone = [call.kwargs["name"] for call in self.warn.call_args_list
+                if call.args == ("{label}: {name} is gone",)]
+        self.assertEqual(gone, ["again", "rate", "browser"])
+        for setting in ("[vault]", "[plugins.zzz] odd", "[sources]"):
             self.assertIn(setting, self.warned())
-
-    def test_dedupe_words_are_warned_and_mapped(self):
-        for word, flag in (("link", True), ("off", False)):
-            with self.subTest(word):
-                self.assertIs(self.read(home=f'[defaults]\ndedupe = "{word}"').defaults.dedupe,
-                              flag)
-                self.assertIn("dedupe", self.warned())
-
-    def test_sources_tables_read_as_plugins_with_a_warning(self):
-        found = self.read(home="[sources.exm]\npace = 3\nstop_after = 2\n"
-                               "[plugins.exm]\nstop_after = 7")
-        self.assertEqual((found.plugin("exm").pace, found.plugin("exm").stop_after), (3.0, 7))
-        self.assertIn("rename", self.warned())
+        self.assertIn(str(self.home / "config.toml"), self.warned())
 
     def test_resolution_order_and_where(self):
-        found = self.read(home="[defaults]\nheight = 720\nsidecars = true",
-                          user="[defaults]\nheight = 480\nwhen = '1y'\n[plugins.exm]\npace = 2",
-                          sidecars=False)
-        rows = [("sidecars", False, Where.ARGUMENT), ("height", 720, Where.HOME),
-                ("when", "1y", Where.USER), ("rate", "0", Where.DEFAULT)]
+        found = self.read(home="[defaults]\ntimeout = '5m'\nslowest = '1 KB/s'",
+                          user="[defaults]\ntimeout = '1m'\nwhen = '1y'\n[plugins.exm]\npace = 2",
+                          slowest="2 KB/s")
+        rows = [("slowest", "2 KB/s", Where.ARGUMENT), ("timeout", "5m", Where.HOME),
+                ("when", "1y", Where.USER)]
         for key, value, where in rows:
             with self.subTest(key):
                 self.assertEqual(getattr(found.defaults, key), value)
@@ -212,11 +197,6 @@ class ReadTest(Case):
         self.assertEqual(found.plugin("exm").pace, 2.0)
         self.assertEqual(found.origin("plugins.exm.pace"), Where.USER)
         self.assertEqual(found.plugin("exm").settings, Settings())
-
-    def test_a_non_table_sources_entry_warns(self):
-        found = self.read(home="[sources]\nexm = 3")
-        self.assertEqual(found.plugin("exm").pace, None)
-        self.assertIn("not a table", str(self.warn.call_args_list))
 
     def test_the_real_user_file_is_refused_in_tests(self):
         self.assertEqual(os.environ.get(config.NO_PROFILES), "1")
@@ -466,8 +446,7 @@ class PrecedenceTest(LibraryCase):
         config.check_folder(None, sources, targets, stored={"exq:words"})
         config.check_folder(None, sources, targets[1:])
 
-    def test_fresh_and_timeout_durations(self):
-        self.assertEqual(config.Defaults().fresh, "0")
+    def test_timeout_durations(self):
         self.assertEqual(config.duration_seconds("0"), 0.0)
         self.assertEqual(config.duration_seconds("1d"), 86400.0)
         self.assertEqual(config.duration_seconds("10m"), 600.0)
@@ -478,10 +457,10 @@ class PrecedenceTest(LibraryCase):
             with self.subTest(bad=bad), self.assertRaises(UsageError):
                 config.duration_seconds(bad)
         self.home.mkdir(parents=True, exist_ok=True)
-        (self.home / "config.toml").write_text('[defaults]\nfresh = "12h"\ntimeout = "5m"\n',
+        (self.home / "config.toml").write_text('[defaults]\ntimeout = "5m"\n',
                                                encoding="utf-8")
         found = config.read(self.home, user=None)
-        self.assertEqual((found.defaults.fresh, found.defaults.timeout), ("12h", "5m"))
+        self.assertEqual(found.defaults.timeout, "5m")
 
 
 if __name__ == "__main__":

@@ -21,7 +21,6 @@ from flnd.engine.jobs import (
     Job,
     Kind,
     Pool,
-    Rate,
     Scheduler,
     Segment,
     Segments,
@@ -75,7 +74,7 @@ class PoolTest(unittest.TestCase):
     def test_each_pools_numbers(self):
         rows = [  # (cores, kind, places)
             (8, Kind.CALL, 8), (64, Kind.CALL, 8), (8, Kind.HASH, 4), (8, Kind.UNPACK, 1),
-            (8, Kind.MERGE, 4), (1, Kind.MERGE, 1), (8, Kind.EXEC, 1),
+            (8, Kind.MERGE, 4), (1, Kind.MERGE, 1),
         ]
         for cpus, kind, size in rows:
             with self.subTest(cpus=cpus, kind=kind):
@@ -87,7 +86,6 @@ class PoolTest(unittest.TestCase):
 
         rows = {  # name: (jobs, options, most at once)
             "merge lane": ([job(Kind.MERGE) for _ in range(9)], {}, 4),
-            "exec lane": ([job(Kind.EXEC) for _ in range(3)], {}, 1),
             "tab budget": (tabs(9), {}, jobs.TABS),
             "scrolling tabs of one plugin": (tabs(5, scroll=True), {}, 2),
             "scrolling tabs of two plugins": (
@@ -135,21 +133,6 @@ class PoolTest(unittest.TestCase):
         free = jobs.TABS - jobs.WARM_FREE
         self.assertEqual(run(main), [True] * free + [False, False])
 
-    def test_exec_runs_in_the_order_files_were_saved(self):
-        async def main(scheduler, fake):
-            order = []
-
-            def work(n):
-                async def done():
-                    order.append(n)
-                    await asyncio.sleep(0)
-                return done
-
-            await asyncio.gather(*[scheduler.run(job(Kind.EXEC, work=work(n))) for n in range(6)])
-            return order
-
-        self.assertEqual(run(main), list(range(6)))
-
     def test_a_tab_waiting_to_scroll_holds_no_tab(self):
         async def main(scheduler, fake):
             scheduler.tabs = Pool(6)
@@ -173,25 +156,6 @@ class PoolTest(unittest.TestCase):
 
         self.assertEqual(run(main), [3])
 
-    def test_a_retried_exec_keeps_the_order_of_the_saves(self):
-        async def main(scheduler, fake):
-            calls = []
-
-            def work(n, outcomes):
-                async def done():
-                    calls.append(n)
-                    await asyncio.sleep(0)
-                    if outcomes:
-                        raise outcomes.pop(0)
-                return done
-
-            made = [job(Kind.EXEC, work=work(n, [network()] if n == 1 else []))
-                    for n in range(3)]
-            await asyncio.gather(*[scheduler.run(each) for each in made])
-            return calls, [each.priority for each in made]
-
-        self.assertEqual(run(main), ([0, 1, 1, 2], [3, 3, 3]))
-
     def test_closing_waits_for_the_threads_off_the_loop(self):
         async def main():
             scheduler = Scheduler()
@@ -214,7 +178,7 @@ class PoolTest(unittest.TestCase):
 
     def test_kinds_take_their_priorities(self):
         expected = {Kind.PAGE: 1, Kind.TAB: 1, Kind.FILE: 2, Kind.HASH: 3, Kind.UNPACK: 3,
-                    Kind.MERGE: 3, Kind.EXEC: 3}
+                    Kind.MERGE: 3}
         for kind, priority in expected.items():
             with self.subTest(kind):
                 self.assertEqual(job(kind).priority, priority)
@@ -819,28 +783,7 @@ class SegmentTest(unittest.TestCase):
         self.assertIsNone(Segments.of({"etag": '"v1"'}))
 
 
-class RateTest(unittest.TestCase):
-    def test_one_byte_bucket_holds_at_most_a_second(self):
-        async def main():
-            rate = Rate(MIB)
-            await rate.take(MIB)
-            first = clock.now()
-            await rate.take(2 * MIB)
-            return first, clock.now()
-
-        with fake_clock():
-            self.assertEqual(asyncio.run(main()), (0.0, 2.0))
-
-    def test_a_file_job_waits_for_the_bytes_owed(self):
-        async def main(scheduler, fake):
-            await scheduler.rate.take(3 * MIB)
-            begun = clock.now()
-            await scheduler.run(job(Kind.FILE, work=raising("ok")))
-            return begun, clock.now()
-
-        self.assertEqual(run(main, rate=MIB), (2.0, 2.0))
-        self.assertEqual(run(main, rate=0), (0.0, 0.0))
-
+class SpeedTest(unittest.TestCase):
     def test_slowest_averages_the_last_30_s(self):
         rows = [  # (name, bytes each second for each second, slowest, below)
             ("under 30 s is never slow", [10] * 29, 100, False),

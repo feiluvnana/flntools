@@ -29,7 +29,7 @@ from flnd.ui.log import ui
 from flnkit import clock, files, text
 
 __all__ = ["Bucket", "Budget", "Busy", "Cap", "Hold", "Job", "Kind", "Limits", "Pool",
-           "Rate", "Scheduler", "Segment", "Segments", "Speed"]
+           "Scheduler", "Segment", "Segments", "Speed"]
 
 T = TypeVar("T")
 
@@ -109,7 +109,7 @@ SPREAD = 8
 SUSPENDED_POLL = 0.1
 
 # ---------------------------------------------------------------------------------------------
-# The numbers of segments, `slowest` and `rate`
+# The numbers of segments, and `slowest`
 # ---------------------------------------------------------------------------------------------
 
 # The smallest file that may be split, the smallest range left that is split in half, and the
@@ -136,18 +136,17 @@ class Kind(Enum):
     HASH = "hash"
     UNPACK = "unpack"
     MERGE = "merge"
-    EXEC = "exec"
     WRITE = "write"
 
 
 # Kinds with threads of their own, which their work reaches through `Scheduler.on`.
-THREADED = frozenset({Kind.CALL, Kind.HASH, Kind.UNPACK, Kind.EXEC, Kind.WRITE})
+THREADED = frozenset({Kind.CALL, Kind.HASH, Kind.UNPACK, Kind.WRITE})
 # The kinds a plugin's hold (a wall, a block of the plugin) keeps waiting; a bucket's hold
 # keeps only that bucket's pages waiting.
 PLUGIN_HELD = frozenset({Kind.PAGE, Kind.TAB, Kind.CALL})
 # Lower runs first: 0 is a retried failure.
 PRIORITY = {Kind.PAGE: 1, Kind.TAB: 1, Kind.FILE: 2, Kind.CALL: 2, Kind.WRITE: 2,
-            Kind.HASH: 3, Kind.UNPACK: 3, Kind.MERGE: 3, Kind.EXEC: 3}
+            Kind.HASH: 3, Kind.UNPACK: 3, Kind.MERGE: 3}
 
 
 @dataclass(eq=False, kw_only=True)
@@ -463,30 +462,6 @@ class Limits:
         return MOST
 
 
-class Rate:
-    """One byte bucket for every `FILE` job of a run: `rate` bytes a second, 1 s deep.
-
-    Args:
-        rate: bytes a second; 0 limits nothing.
-    """
-
-    def __init__(self, rate: float) -> None:
-        self.rate = max(0.0, rate)
-        self._bytes = self.rate
-        self._at: float | None = None
-
-    async def take(self, size: int) -> None:
-        """Wait until `size` more bytes may move; 0 waits only for the bytes owed."""
-        if not self.rate:
-            return
-        now = clock.now()
-        at = now if self._at is None else self._at
-        self._bytes = min(self.rate, self._bytes + (now - at) * self.rate) - size
-        self._at = now
-        if self._bytes < 0:
-            await clock.pause(-self._bytes / self.rate)
-
-
 class Speed:
     """A transfer's bytes over time, for `slowest`: the average over the last `SLOW_WINDOW` s."""
 
@@ -611,7 +586,6 @@ class Scheduler:
     Args:
         pace: seconds between two page requests of one bucket, by plugin; `PACE` otherwise.
         limits: the most transfers at once to a host, by host name.
-        rate: bytes a second for every `FILE` job together; 0 is no limit.
         slowest: bytes a second a transfer may average over 30 s; 0 is off.
         stop: the run's stop (`flnd.engine.run.Stop`): its first Ctrl-C ends the waits of a
             listing's jobs (`PAGE`, `TAB`, `CALL`), its second every other's, and while it is
@@ -619,18 +593,17 @@ class Scheduler:
     """
 
     def __init__(self, *, pace: Mapping[str, float] | None = None,
-                 limits: Mapping[str, int] | None = None, rate: float = 0.0,
+                 limits: Mapping[str, int] | None = None,
                  slowest: float = 0.0, stop: Any = None, tally: Any = None) -> None:
         cpus = os.cpu_count() or 1
         self.stop = stop
         self.tally = tally
         self.pace = dict(pace or {})
         self.limits = Limits(limits)
-        self.rate = Rate(rate)
         self.slowest = slowest
         self.tabs = Pool(TABS)
         sizes = {Kind.CALL: min(8, cpus + 2), Kind.HASH: min(4, cpus), Kind.UNPACK: 1,
-                 Kind.MERGE: max(1, cpus // 2), Kind.EXEC: 1}
+                 Kind.MERGE: max(1, cpus // 2)}
         self.pools = {kind: Pool(size) for kind, size in sizes.items()}
         self._threads: dict[Kind, ThreadPoolExecutor] = {}
         self._listings: ThreadPoolExecutor | None = None
@@ -751,10 +724,6 @@ class Scheduler:
         Raises:
             Error: the policy gave up on it; the one that stopped the run, for every job after.
         """
-        if job.kind is Kind.EXEC:
-            # A retry stays in the lane, so the programs still run in the order of the saves.
-            async with self.pools[Kind.EXEC].place(_priority(job)):
-                return await self._tries(job)
         return await self._tries(job)
 
     async def _tries(self, job: Job[T]) -> T:
@@ -813,8 +782,8 @@ class Scheduler:
             gate = self._scrolls.setdefault(job.plugin, Pool(SCROLLING))
             async with gate.place(priority), self.tabs.place(priority):
                 return await self._work(job)
-        if job.kind in (Kind.WRITE, Kind.EXEC):
-            # A write's device thread orders the writes; an exec job holds its lane in `run`.
+        if job.kind is Kind.WRITE:
+            # A write's device thread orders the writes.
             return await self._work(job)
         async with self.pools[job.kind].place(priority):
             return await self._work(job)
@@ -862,7 +831,6 @@ class Scheduler:
             cap = self.limits.cap(job.host)
             round = await cap.take()
             try:
-                await self.rate.take(0)
                 began = clock.now()
                 with self._flying(job):
                     try:
@@ -1111,9 +1079,8 @@ class Scheduler:
 
 
 def _retried(job: Job[T]) -> Job[T]:
-    """A job tried again goes first; an exec job keeps its place in the order of the saves."""
-    if job.kind is not Kind.EXEC:
-        job.priority = 0
+    """A job tried again goes first."""
+    job.priority = 0
     return job
 
 
