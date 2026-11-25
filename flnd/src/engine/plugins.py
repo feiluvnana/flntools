@@ -70,7 +70,7 @@ def folder() -> Path:
     chosen = os.environ.get(VARIABLE)
     if chosen:
         return Path(chosen).expanduser()
-    from flnkit.cookies import NO_PROFILES
+    from flnd.engine.config import NO_PROFILES
 
     if os.environ.get(NO_PROFILES):
         raise RuntimeError(f"{NO_PROFILES} is set: set ${VARIABLE} to a test's folder")

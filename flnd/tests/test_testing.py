@@ -3,7 +3,7 @@
 Its docstrings' examples run in tests/test_docs.py; these cover what they don't: `check` over
 every built-in plugin, and the fake clock. One test per behaviour the kit promises: `FakeCtx`
 has exactly `Ctx`'s members, signs, blocks, holds, fails to open, walls, keeps a cursor through
-a 429, and has a 401, an extension and storage; `collect` and `check` on a plugin.
+a 429, and has a 401; `collect` and `check` on a plugin.
 """
 
 import asyncio
@@ -384,11 +384,6 @@ class FakeCtxTest(unittest.TestCase):
         ctx = FakeCtx(signed, answers=["123456"])
         run(signed.login.start(ctx, "code"))
         self.assertEqual(dict(ctx.secrets), {"code": "123456", "kept": "1"})
-
-    def test_storage_reads_its_fake(self):
-        ctx = fake(storage={"session": "s"})
-        self.assertEqual(dict(run(ctx.storage("https://www.example.com"))), {"session": "s"})
-        self.assertEqual(dict(run(fake().storage("https://www.example.com"))), {})
 
     def test_shown_is_true_for_the_selectors_the_page_declares_shown(self):
         page = FakePage('<b class="a"></b><b class="b"></b>', shown=[".a"])

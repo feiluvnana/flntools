@@ -36,7 +36,7 @@ cdn-real: ; $(RUN) python tests/bench/cdn_real.py $(ARGS)
 docs:     ; $(RUN) pdoc -d google flnd flnd.plugin flnd.testing -o build/docs
 # Lists, live, what a get would save, without saving anything, in a scratch home `.try`:
 # `make try ARGS="ins:example_user/reels"`. Log in there first for a site that needs it
-# (`uv run flnd --home .try auth login ins chrome`); `make clean` removes it.
+# (`uv run flnd --home .try auth login ins cookies.txt`); `make clean` removes it.
 try:      ; $(RUN) python -c "import flnd, sys; [print(e) for e in flnd.open('.try').get(*sys.argv[1:], dry=True)]" $(ARGS)
 # The hand live check on the test accounts (`~/.config/flnd/live.toml`), never part of `check`:
 # `make live ARGS=ins`. Runs each route with `dry=True`, downloading nothing.

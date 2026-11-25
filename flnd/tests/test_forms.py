@@ -64,7 +64,7 @@ def drawn(renderable: object, width: int = 100) -> str:
     return "\n".join(line.rstrip() for line in captured.get().splitlines())
 
 
-HOW = [Option("In a browser window", "browser", "flnd opens Chromium; log in as usual"),
+HOW = [Option("With your phone number", "phone", "a code comes by message"),
        Option("With a QR code", "qr", "scan it in the app"),
        Option("From a cookie file", "file", "a cookies.txt you exported")]
 
@@ -72,7 +72,7 @@ HOW = [Option("In a browser window", "browser", "flnd opens Chromium; log in as 
 class FieldTest(unittest.TestCase):
     def test_each_field_answers_its_keys(self) -> None:
         cases = [
-            ("first", forms._Select("How?", forms._options(HOW), 0), ["enter"], "browser"),
+            ("first", forms._Select("How?", forms._options(HOW), 0), ["enter"], "phone"),
             ("down", forms._Select("How?", forms._options(HOW), 0), ["down", "j", "enter"], "file"),
             ("wraps", forms._Select("How?", forms._options(HOW), 0), ["up", "enter"], "file"),
             ("back", forms._Select("How?", forms._options(HOW), 0), ["escape"], None),
@@ -97,9 +97,9 @@ class FieldTest(unittest.TestCase):
         field = forms._Select("How?", forms._options(HOW), 0)
         self.assertEqual(drawn(field.view(True)), "\n".join([
             "  ┃ How?",
-            "  ┃ ❯ In a browser window   flnd opens Chromium; log in as usual",
-            "  ┃   With a QR code        scan it in the app",
-            "  ┃   From a cookie file    a cookies.txt you exported",
+            "  ┃ ❯ With your phone number   a code comes by message",
+            "  ┃   With a QR code           scan it in the app",
+            "  ┃   From a cookie file       a cookies.txt you exported",
             "",
             "  ↑↓ choose · enter confirm · esc back",
         ]))

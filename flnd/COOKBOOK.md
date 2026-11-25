@@ -119,8 +119,8 @@ flnd auth login ins file cookies.txt
 flnd auth list
 ```
 
-A method is `browser`, `file <path>`, `firefox`,
-`safari`, or, for Telegram, `qr` and `phone`. Log in again as another account to keep both.
+A method is `file <path>`, or, for Telegram, `qr` and `phone`. Log in again as another
+account to keep both.
 `flnd auth list` shows them, and `d` on a terminal logs one out. To let a request the first
 account cannot make move on to the next, set `switch = true` under `[defaults]` in
 `config.toml` (`flnd config` edits it).

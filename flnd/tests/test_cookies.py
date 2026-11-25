@@ -5,7 +5,6 @@ Profiles are fixture databases under a fake home; no real profile is ever read.
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -23,84 +22,6 @@ EXPIRES = 1_893_456_000
 DOMAINS = ["instagram.com", ".instagram.com", "www.instagram.com", "WWW.Instagram.COM",
            "notinstagram.com", "instagram.com.evil.net"]
 MATCHING = {"instagram.com", ".instagram.com", "www.instagram.com", "WWW.Instagram.COM"}
-
-
-FIREFOX_INSERT = ("INSERT INTO moz_cookies (host, name, value, path, expiry, isSecure, isHttpOnly,"
-                  " sameSite)")
-
-
-def make_firefox_db(path, rows):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.execute(
-        "CREATE TABLE moz_cookies (id INTEGER PRIMARY KEY, host TEXT, name TEXT, value TEXT,"
-        " path TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, sameSite INTEGER)")
-    connection.executemany(FIREFOX_INSERT + " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
-    connection.commit()
-    connection.close()
-
-
-class BrowserTestCase(unittest.TestCase):
-    """Points the home folder at a temp dir."""
-
-    platform = "darwin"
-
-    def setUp(self):
-        self.home = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.enterContext(mock.patch("pathlib.Path.home", return_value=self.home))
-        self.enterContext(mock.patch.object(_cookies, "_PLATFORM", self.platform))
-
-
-class UnknownBrowserTest(unittest.TestCase):
-    def test_an_unknown_browser_raises(self):
-        with self.assertRaises(UsageError):
-            _cookies.load("opera", profile="Default")
-
-
-class FirefoxTest(BrowserTestCase):
-    platform = "linux"
-
-    def test_default_profile_and_domain_filter(self):
-        root = self.home / ".mozilla/firefox"
-        root.mkdir(parents=True)
-        (root / "profiles.ini").write_text(
-            "[Profile1]\nName=other\nIsRelative=1\nPath=other.x\n\n"
-            "[Profile0]\nName=main\nIsRelative=1\nPath=main.default\nDefault=1\n")
-        make_firefox_db(root / "main.default/cookies.sqlite",
-                        [(domain, f"f{index}", f"v{index}", "/", EXPIRES, 1, 0, 1)
-                         for index, domain in enumerate(DOMAINS)])
-        make_firefox_db(root / "other.x/cookies.sqlite",
-                        [("instagram.com", "wrong", "no", "/", 0, 0, 0, 0)])
-        jar = _cookies.load("firefox").filter(domains="instagram.com")
-        self.assertEqual({cookie["domain"] for cookie in jar}, MATCHING)
-        self.assertNotIn("wrong", jar)
-        self.assertEqual(jar.list[0], {"name": "f0", "value": "v0", "domain": "instagram.com",
-                                       "path": "/", "expires": EXPIRES, "secure": True,
-                                       "httpOnly": False, "sameSite": "Lax"})
-
-    def test_install_section_wins_and_milliseconds(self):
-        root = self.home / "Library/Application Support/Firefox"
-        root.mkdir(parents=True)
-        (root / "profiles.ini").write_text(
-            "[Profile0]\nPath=Profiles/old\nDefault=1\n\n"
-            "[Install4F96D1932A9F858E]\nDefault=Profiles/new\nLocked=1\n")
-        make_firefox_db(root / "Profiles/new/cookies.sqlite",
-                        [("a.example", "n", "v", "/", EXPIRES * 1000, 0, 1, 0)])
-        with mock.patch.object(_cookies, "_PLATFORM", "darwin"):
-            jar = _cookies.load("firefox").list
-        self.assertEqual((jar[0]["expires"], jar[0]["httpOnly"], jar[0]["sameSite"]),
-                         (EXPIRES, True, "None"))
-
-    def test_named_profile_on_windows_and_a_missing_profiles_ini(self):
-        with self.assertRaises(FileNotFoundError):
-            _cookies.load("firefox")
-        root = self.home / "AppData/Roaming/Mozilla/Firefox"
-        make_firefox_db(root / "Profiles/work/cookies.sqlite",
-                        [("a.example", "n", "v", "/", 0, 0, 0, 2)])
-        with mock.patch.object(_cookies, "_PLATFORM", "win32"), \
-                mock.patch.dict(os.environ, {"APPDATA": str(root.parents[1])}):
-            jar = _cookies.load("firefox", profile="work").list
-        self.assertEqual((jar[0]["expires"], jar[0]["sameSite"]), (-1, "Strict"))
 
 
 class FileTestCase(unittest.TestCase):
@@ -187,18 +108,6 @@ class LoadTest(FileTestCase):
                     self.assertRaisesRegex(LoginError, "over.txt"):
                 _cookies.load(over)
         self.assertEqual(_cookies.MAX_SIZE, 16 * 1024 * 1024)
-
-    def test_sqlite_backup_reads_open_wal_db(self):
-        db = self.folder / "cookies.sqlite"
-        make_firefox_db(db, [("a.example", "old", "1", "/", 0, 0, 0, 0)])
-        conn = sqlite3.connect(db)
-        self.addCleanup(conn.close)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(FIREFOX_INSERT + " VALUES ('a.example', 'live', '2', '/', 0, 0, 0, 0)")
-        conn.commit()
-        with _cookies._open_copy(db) as copy:
-            names = [r[0] for r in copy.execute("SELECT name FROM moz_cookies").fetchall()]
-        self.assertEqual(names, ["old", "live"])
 
 
 def cookie(name, value="v", domain=".example.com", path="/", expires=-1):

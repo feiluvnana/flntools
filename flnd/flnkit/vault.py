@@ -169,7 +169,7 @@ KEY_GONE = "the vault's key is gone"
 KEY_WAIT = 2.0
 # How often a short key file is read again while waiting, in seconds.
 KEY_POLL = 0.01
-# The variable flnd's test suite sets (as `flnkit.cookies.NO_PROFILES` reads it): while it is
+# The variable flnd's test suite sets (`tests/no_profiles.py`): while it is
 # set, the real key folder is refused, so no test can touch it.
 NO_PROFILES = "FLND_TEST_NO_PROFILES"
 

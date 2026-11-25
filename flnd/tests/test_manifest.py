@@ -100,7 +100,7 @@ class BuiltInTest(unittest.TestCase):
             "mht": ((), 0.5, True, False, {}),
             "web": ((), 0.5, True, False, {}),
         }
-        logins = {"tlg": ("browser", "qr", "phone"), "mht": None, "web": None}
+        logins = {"tlg": ("qr", "phone"), "mht": None, "web": None}
         for code, plugin in built_in().items():
             with self.subTest(plugin=code):
                 self.assertEqual((tuple(getattr(plugin.login, "names", ())), plugin.pace,

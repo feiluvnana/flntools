@@ -1,4 +1,4 @@
-"""`flnkit.browser`: `launch`, the profile copy, the Chromium offer, `Page`, `Capture`, scrolling.
+"""`flnkit.browser`: `launch`, the Chromium offer, `Page`, `Capture`, scrolling.
 
 Every coroutine runs on one loop on a thread of its own for the module (`run`). Profile and
 Chromium tests
@@ -13,8 +13,6 @@ import json
 import os
 import random
 import re
-import shutil
-import stat
 import sys
 import tempfile
 import threading
@@ -27,7 +25,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
-import no_profiles  # noqa: F401  (refuses real browser profiles)
+import no_profiles  # noqa: F401  (the suite guard)
 
 from flnd.errors import Blocked, Changed, Error, NetworkError, NotFound, SiteError, ToolError
 from flnd.ui.log import ui
@@ -192,24 +190,7 @@ def starts(playwright):
     return start
 
 
-class ProfileCopyTest(BrowserCase):
-    """`launch(profile=<name>)`: the copy, which holds the logins, never stays in the
-    temp folder."""
-
-    def setUp(self):
-        super().setUp()
-        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.home, self.temp = folder / "home", folder / "temp"
-        root = self.home / _browser.PROFILE_ROOTS[PLATFORM]
-        (root / "Default").mkdir(parents=True)
-        (root / "Default" / "Preferences").write_text("{}")
-        self.temp.mkdir()
-        self.enterContext(mock.patch.object(Path, "home", return_value=self.home))
-        self.enterContext(mock.patch.object(tempfile, "tempdir", str(self.temp)))
-
-    def copies(self) -> list[Path]:
-        return list(self.temp.glob("flnd-chrome-*"))
-
+class MissingPlaywrightTest(BrowserCase):
     def test_without_playwright_launch_names_its_install(self):
         with mock.patch.dict(sys.modules, {"playwright": None, "playwright.async_api": None}):
             sys.modules.pop("flnkit.browser", None)
@@ -220,66 +201,6 @@ class ProfileCopyTest(BrowserCase):
             finally:
                 sys.modules["flnkit.browser"] = _browser
 
-    def test_a_name_is_copied_privately_into_chrome_and_deleted_on_close(self):
-        launches = []
-
-        async def open_context(playwright, profile, channel, launch_options, context_options):
-            profile = Path(profile)
-            launches.append((profile, channel, launch_options["args"][-1],
-                             stat.S_IMODE(profile.stat().st_mode),
-                             (profile / "Default" / "Preferences").is_file()))
-            return FakeContext(), [playwright.stop]
-
-        self.patch_launch(starts(FakePlaywright()), open_context)
-        chrome = run(_browser.launch(profile="Default"))
-        (copy, channel, last_arg, mode, has_preferences), = launches
-        self.assertEqual((channel, last_arg, has_preferences),
-                         ("chrome", "--profile-directory=Default", True))
-        self.assertTrue(copy.is_relative_to(self.temp))
-        if sys.platform != "win32":
-            self.assertEqual(mode, 0o700)  # no other user of the machine can read its logins
-        self.assertEqual(self.copies(), [copy])
-        run(chrome.close())
-        self.assertEqual(self.copies(), [])
-
-    def test_a_bad_or_unknown_name_raises_before_playwright_starts(self):
-        with mock.patch.object(_browser, "_start_playwright") as start:
-            for profile in ("", "./Default", "profiles/Default", "/tmp/profile", ".", ".."):
-                with self.subTest(profile=profile), self.assertRaises(ValueError):
-                    run(_browser.launch(profile=profile))
-            with self.assertRaisesRegex(FileNotFoundError, "no Chrome profile named 'Profile 9'"):
-                run(_browser.launch(profile="Profile 9"))
-        start.assert_not_called()
-        self.assertEqual(self.copies(), [])
-
-    def test_the_copy_is_deleted_whatever_fails(self):
-        def raising(error):
-            async def fail(*args):
-                raise error
-
-            return fail
-
-        errors = [("start", ImportError("no playwright")), ("start", KeyboardInterrupt()),
-                  ("open", KeyboardInterrupt()), ("open", RuntimeError(_browser.NEEDS_CHROME)),
-                  ("copy", OSError("disk full")), ("copy", KeyboardInterrupt())]
-        for where, error in errors:
-            with self.subTest(where=where, error=error), contextlib.ExitStack() as stack:
-                playwright = FakePlaywright()
-                stack.enter_context(mock.patch.object(
-                    _browser, "_start_playwright",
-                    raising(error) if where == "start" else starts(playwright)))
-                stack.enter_context(mock.patch.object(_browser, "_open_context", raising(error)))
-                if where == "copy":
-                    copytree = stack.enter_context(
-                        mock.patch.object(shutil, "copytree", side_effect=error))
-                with self.assertRaises(type(error)):
-                    run(_browser.launch(profile="Default"))
-                self.assertEqual(self.copies(), [])
-                if where == "open":
-                    self.assertEqual(playwright.stops, 1)
-                if where == "copy":
-                    # Started inside the private temp folder, so the empty glob means deleted.
-                    self.assertTrue(Path(copytree.call_args.args[1]).is_relative_to(self.temp))
 
 
 class FakeInstaller:
@@ -312,7 +233,7 @@ class ChromeOnlyTest(BrowserCase):
         self.playwright = FakePlaywright(str(self.chromium))
         self.installs, self.launched = [], []
 
-        async def open_context(playwright, profile, channel, launch_options, context_options):
+        async def open_context(playwright, channel, launch_options, context_options):
             self.launched.append(channel)
             return FakeContext(), [playwright.stop]
 
@@ -487,32 +408,6 @@ class LaunchTest(BrowserCase):
         self.assertIsNone(webdriver)
         # Incognito: the next browser starts with no cookies; without stealth `webdriver` shows.
         self.assertEqual(run(second()), (0, False))
-
-    def test_an_installed_profile_is_copied_and_deleted(self):
-        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        root = home / _browser.PROFILE_ROOTS[PLATFORM]
-        (root / "Profile 1" / "Cache").mkdir(parents=True)
-        (root / "Profile 1" / "Preferences").write_text("{}")
-        (root / "Profile 1" / "Cache" / "big").write_text("cache")
-        (root / "Local State").write_text("{}")
-        temp = home / "temp"
-        temp.mkdir()
-
-        async def check():
-            async with await _browser.launch(headless=True, profile="Profile 1") as chrome:
-                copy, = temp.glob("flnd-chrome-*")
-                self.assertTrue((copy / "Default" / "Preferences").is_file())
-                self.assertTrue((copy / "Local State").is_file())
-                # Chromium makes its own Cache once it runs; the profile's wasn't copied into it.
-                self.assertFalse((copy / "Default" / "Cache" / "big").exists())
-                self.assertEqual((await chrome.tab()).url, "about:blank")
-            return copy
-
-        # The bundled Chromium stands in for real Chrome.
-        with mock.patch.object(Path, "home", return_value=home), \
-                mock.patch.object(tempfile, "tempdir", str(temp)), \
-                mock.patch.object(_browser, "PROFILE_CHANNEL", "chromium"):
-            self.assertFalse(run(check()).exists())
 
 
 @needs_chromium
@@ -1364,36 +1259,6 @@ class ScrollTimingTest(BrowserCase):
                     self.assertGreaterEqual(raw.clock.now, _browser.STALL)
 
 
-class NoProfilesTest(unittest.TestCase):
-    """The suite-wide guard (`tests/no_profiles.py`): no test reads or copies a real profile.
-
-    The real home is left as it is, so each call would reach real profiles; the reads are also
-    faked to fail, so even a broken guard reads nothing.
-    """
-
-    def setUp(self):
-        self.assertTrue(os.environ.get(_cookies.NO_PROFILES), "the guard is off under the suite")
-        never = AssertionError("a real profile was about to be read")
-        for target, name in ((shutil, "copytree"), (_cookies, "_open_copy"),
-                             (_browser, "_start_playwright")):
-            self.enterContext(mock.patch.object(target, name, side_effect=never))
-
-    def test_a_real_profile_is_neither_copied_launched_nor_read(self):
-        with self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
-            run(_browser.launch(profile="Default", headless=True))
-        with self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
-            run(_browser._open_context(cast(Any, None), _cookies.home() / "profile",
-                                       "chrome", {"headless": True, "args": []}, {}))
-        with self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
-            _cookies.load("firefox")
-
-    def test_a_temporary_home_is_allowed_and_the_guard_is_off_without_the_variable(self):
-        with tempfile.TemporaryDirectory() as folder:
-            _cookies.refuse_profile(Path(folder) / "Default")
-        with mock.patch.dict(os.environ, {_cookies.NO_PROFILES: ""}):
-            _cookies.refuse_profile(_cookies.home() / "Default")
-
-
 class RunOnTest(unittest.TestCase):
     def test_run_from_the_loop_itself_raises_and_a_ctrl_c_comes_back_as_it_was(self):
         async def inner():
@@ -1580,7 +1445,7 @@ class StealthHardeningTest(BrowserCase):
             async def close(self):
                 pass
 
-        async def fake_open(pw, copy, channel, launch_options, context_options):
+        async def fake_open(pw, channel, launch_options, context_options):
             seen_launch.append(launch_options)
             return FakeContext(), []
 
@@ -1588,9 +1453,9 @@ class StealthHardeningTest(BrowserCase):
             from types import SimpleNamespace
 
             pw = SimpleNamespace(chromium=SimpleNamespace(executable_path="chromium"))
-            await _browser._launch(pw, None, headless=True, stealth=True,
+            await _browser._launch(pw, headless=True, stealth=True,
                                    screen=_browser.Screen())
-            await _browser._launch(pw, None, headless=True, stealth=False,
+            await _browser._launch(pw, headless=True, stealth=False,
                                    screen=_browser.Screen())
 
         with mock.patch.object(_browser, "_channel", return_value=None), \
@@ -1688,7 +1553,7 @@ class FootprintTest(BrowserCase):
             with mock.patch.object(_browser, "_headful_ua", mock.AsyncMock(return_value="UA")), \
                     mock.patch.object(_browser, "_lower_priority"):
                 run(_browser._open_context(
-                    cast(Any, pw), None, "chromium",
+                    cast(Any, pw), "chromium",
                     {"headless": True, "args": []}, {},
                 ))
             self.assertEqual(channels, [None])

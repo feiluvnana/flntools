@@ -35,7 +35,7 @@ from flnd.engine.crawl import Options
 from flnd.engine.events import Failed
 from flnd.plugin import Hidden, LoginError, NetworkError, NotFound, Part, Range, UsageError
 from flnd.plugins import tlg
-from flnd.plugins.tlg import FLOOD_SLEEP, Telegram, from_web_storage, half_blocks
+from flnd.plugins.tlg import FLOOD_SLEEP, Telegram, half_blocks
 from flnd.testing import FakeCtx, check, collect
 from flnkit import text as _text
 
@@ -61,13 +61,6 @@ def message(number, kind, *, day=DAY, name=None, content=b"media"):
                                                             content=content)
     return SimpleNamespace(id=number, date=when, kind=kind, file=file, content=content,
                            document=document)
-
-
-def web_storage(dc=2, key=bytes(range(256)), *, quoted=True):
-    """Telegram Web's local storage: JSON values, as both its web clients write them."""
-    value = json.dumps if quoted else str
-    return {"dc": value(dc), f"dc{dc}_auth_key": value(key.hex()),
-            "user_auth": json.dumps({"dcID": dc, "id": "1"}), "tt-global-state": "{}"}
 
 
 def decode_session(string):
@@ -220,11 +213,12 @@ class Case(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def ctx(self, *, logged_in=True, account="example_user", state=None, **options):
-        """A context whose account logged in, as the engine's would, from Telegram Web."""
-        ctx = FakeCtx(Telegram, account=account, state=state, answers=CREDENTIALS.values(),
-                      storage=web_storage(), **options)
+        """A context whose account logged in by phone, as a first login does."""
+        ctx = FakeCtx(Telegram, account=account, state=state,
+                      answers=(*CREDENTIALS.values(), "+15550100", "12345"), **options)
         if logged_in:
-            asyncio.run(Telegram.login.start(ctx, "browser"))
+            self.telegram.authorized = False
+            asyncio.run(Telegram.login.start(ctx, "phone"))
         return ctx
 
     def run_target(self, text="tlg:@examplechannel", ctx=None, **options):
@@ -275,7 +269,7 @@ class DeclarationsTest(unittest.TestCase):
         self.assertEqual((Telegram.folder, Telegram.key, dict(Telegram.limits)),
                          ("{chat}/{category}", "{chat_id}:{post}", {"t.me": 3}))
         self.assertEqual((Telegram.login.methods, Telegram.login.required),
-                         (("browser", "qr", "phone"), True))
+                         (("qr", "phone"), True))
         (chat,) = Telegram.routes
         self.assertEqual([(c.name, c.own, c.newest_first) for c in chat.categories],
                          [("photo", True, True), ("video", True, True), ("file", True, True)])
@@ -573,10 +567,10 @@ class FetchTest(Case):
 # ---------------------------------------------------------------------------------------------
 
 class LoginTest(Case):
-    def log_in(self, method, *answers, asked=True, storage=None):
+    def log_in(self, method, *answers, asked=True):
         """Log in by `method`; `asked` answers the API pair first, as a first login asks it."""
         credentials = tuple(CREDENTIALS.values()) if asked else ()
-        self.last = ctx = FakeCtx(Telegram, answers=(*credentials, *answers), storage=storage)
+        self.last = ctx = FakeCtx(Telegram, answers=(*credentials, *answers))
         asyncio.run(Telegram.login.start(ctx, method))
         return ctx
 
@@ -634,15 +628,6 @@ class LoginTest(Case):
         with self.assertRaisesRegex(LoginError, "Telegram refused the login"):
             self.log_in("phone", "+15550100", "99999")
 
-    def test_browser_from_telegram_web(self):
-        ctx = self.log_in("browser", storage=web_storage(2))
-        self.assertEqual(decode_session(ctx.secrets["session"])[:3], (2, "149.154.167.51", 443))
-        self.telegram.authorized = False
-        with self.assertRaisesRegex(LoginError, "Telegram Web's login no longer works"):
-            self.log_in("browser", storage=web_storage(2))
-        with self.assertRaisesRegex(LoginError, "not logged in to Telegram Web"):
-            self.log_in("browser", storage={})
-
     def test_check_and_whoami(self):
         ctx = self.ctx(logged_in=False)
         self.assertEqual(asyncio.run(Telegram.login.check(ctx)), False)
@@ -651,14 +636,7 @@ class LoginTest(Case):
         self.assertEqual(asyncio.run(Telegram.login.check(ctx)), True)
         self.assertEqual(asyncio.run(Telegram.login.whoami(ctx)), "example_user")
 
-    def test_web_storage_and_the_qr_drawing(self):
-        for quoted in (True, False):
-            with self.subTest(quoted=quoted):
-                self.assertEqual(decode_session(from_web_storage(web_storage(4, quoted=quoted))),
-                                 (4, "149.154.167.91", 443, bytes(range(256))))
-        for storage in ({}, {"dc": "2"}, {**web_storage(), "dc2_auth_key": json.dumps("x")}):
-            with self.subTest(storage=list(storage)), self.assertRaises(LoginError):
-                from_web_storage(storage)
+    def test_the_qr_drawing(self):
         matrix = [[False, True, False], [False, False, True], [True, True, False]]
         self.assertEqual(half_blocks(matrix), "█▄▀\n▄▄█")
 
@@ -768,29 +746,6 @@ class EngineLoginTest(TelegramCase):
                     self.log_in(method, *CREDENTIALS.values(), *answers)
                 self.assertEqual(stored(self.home), {})
 
-    def test_browser_from_telegram_web(self):
-        table = [(False, web_storage(2), "Telegram Web's login no longer works"),
-                 (True, {}, "not logged in to Telegram Web"),
-                 (True, web_storage(2), None)]
-        for authorized, storage, error in table:
-            with self.subTest(error=error):
-                store(self.home, **CREDENTIALS)
-                self.fresh(authorized=authorized)
-
-                async def read(ctx, storage=storage):
-                    return storage
-
-                with mock.patch.object(tlg, "read_telegram_web", read):
-                    if error is not None:
-                        with self.assertRaisesRegex(LoginError, error):
-                            self.log_in("browser")
-                        self.assertEqual(stored(self.home), CREDENTIALS)
-                        continue
-                    self.log_in("browser")
-                session = stored(self.home)["session"]
-                self.assertEqual(decode_session(session)[:3], (2, "149.154.167.51", 443))
-                self.assertIn("* tlg: logged in as Example User", self.lines())
-
     def test_without_a_terminal_a_first_login_asks_nobody(self):
         for method in Telegram.login.methods:
             with self.subTest(method=method), \
@@ -811,7 +766,7 @@ class LoginCommandTest(FlndCase):
 
         async def start(ctx, method):
             methods.append(method)
-            if method == "browser":
+            if method == "phone":
                 raise LoginError("tlg: no QR code was scanned", hint="flnd auth login tlg qr")
             ctx.secrets["session"] = "s"
 
@@ -823,11 +778,11 @@ class LoginCommandTest(FlndCase):
                 mock.patch.object(Telegram.login, "whoami", whoami):
             code, _, err = self.run_app("auth", "login", "tlg", "qr")
             self.assertEqual(code, 0, err)
-            with select_from_lines("3"):
+            with select_from_lines("1"):
                 code, _, err = self.run_app("auth", "login", "tlg")
             self.assertEqual(code, 0, err)
-            code, _, err = self.run_app("auth", "login", "tlg", "browser")
-        self.assertEqual(methods, ["qr", "phone", "browser"])
+            code, _, err = self.run_app("auth", "login", "tlg", "phone")
+        self.assertEqual(methods, ["qr", "qr", "phone"])
         self.assertEqual(code, 3)
         self.assertIn("x tlg: no QR code was scanned", err)
 

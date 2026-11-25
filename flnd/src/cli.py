@@ -349,9 +349,8 @@ def auth_list(args: argparse.Namespace) -> int:
 def auth_login(args: argparse.Namespace) -> int:
     """Log an account of a plugin in, and save the login encrypted in the home.
 
-    METHOD is a browser to read the site's cookies from (firefox, or safari on macOS),
-    browser (a window of flnd's Chromium), file (a cookies.txt or JSON export, with its PATH), or
-    the plugin's own way (tlg: qr, phone). Left out in a terminal, it is asked.
+    METHOD is file (a cookies.txt or JSON export, with its PATH), or the plugin's own way
+    (tlg: qr, phone). Left out in a terminal, it is asked.
 
     Args:
         args: the parsed flags.
@@ -754,7 +753,7 @@ def parser() -> argparse.ArgumentParser:
     sub = command(accounts, "login", auth_login)
     sub.add_argument("plugin", help="the plugin's code (ins)")
     sub.add_argument("method", nargs="?",
-                     help="a browser, browser, file, or the plugin's own way (qr, phone)")
+                     help="file, or the plugin's own way (qr, phone)")
     sub.add_argument("path", nargs="?", help="the cookie file's path, for file")
     sub = command(accounts, "logout", auth_logout)
     sub.add_argument("plugin", help="the plugin's code (ins)")
@@ -885,10 +884,14 @@ def _ask_how(args: argparse.Namespace, code: str | None = None,
             raise flnd.UsageError(f"unknown plugin {code!r}",
                                   hint="flnd plugin list shows the plugins")
         ways = tuple(found.logins)
+    cookie_only = ways == ("file",)
     if args.json or not forms.interactive():
-        raise flnd.UsageError(f"{code}: how to log in?",
-                              hint=f"flnd auth login {code} <method>, a method of "
-                                   f"{', '.join(ways)}")
+        hint = (f"flnd auth login {code} <cookies.txt>" if cookie_only else
+                f"flnd auth login {code} <method>, a method of {', '.join(ways)}")
+        raise flnd.UsageError(f"{code}: how to log in?", hint=hint)
+    if cookie_only:
+        # A cookie site has one way, so the menu is skipped: ask for the file's path.
+        return "file", (forms.text("Cookie file") or "").strip()
     name = _names().get(code, code)
     picked = forms.select(f"Log in to {name}", [_way(way) for way in ways])
     if picked is None:
@@ -903,8 +906,7 @@ def _way(way: str) -> Any:
     """One way to log in as the login form words it."""
     from flnd.ui import forms
 
-    words = {"browser": ("In a browser window", "flnd opens Chromium; log in as usual"),
-             "file": ("From a cookie file", "a cookies.txt you exported"),
+    words = {"file": ("From a cookie file", "a cookies.txt you exported"),
              "qr": ("With a QR code", "scan it in the app"),
              "phone": ("With your phone number", "a code comes by message")}
     label, note = words.get(way, (f"From your {way.title()}", "reads its cookies"))

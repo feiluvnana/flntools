@@ -702,12 +702,6 @@ class Ctx:
         """
         await self._run.off(self._tabs.warm, list(urls))
 
-    async def storage(self, origin: str) -> Mapping[str, str]:
-        """See `flnd.plugin.Ctx.storage`: the origin's local storage in the user's Chrome."""
-        found = await self._run.off(functools.partial(browser.local_storage, origin,
-                                                        profile="Default"))
-        return MappingProxyType(dict(found or {}))
-
     # -- waits, threads, people -----------------------------------------------------------
 
     async def pause(self, seconds: float, reason: str) -> None:

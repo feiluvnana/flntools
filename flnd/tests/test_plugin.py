@@ -146,11 +146,6 @@ class DeclarationTest(unittest.TestCase):
             def check(self, ctx):
                 return True
 
-        class Pageless(Login):
-            methods = ("browser",)
-
-            async def start(self, ctx, method): ...
-
         class Undescribed(Settings):
             """No attributes here."""
 
@@ -204,7 +199,6 @@ class DeclarationTest(unittest.TestCase):
             ("route", lambda: plugin(user=None), r"exm: no route"),
             ("login", lambda: plugin(login="sessionid"), r"exm\.login: set login"),
             ("login", lambda: plugin(login=Login()), r"exm\.login\.methods: set the ways"),
-            ("login", lambda: plugin(login=Pageless()), r"exm\.login\.url: the browser method"),
             ("login", lambda: plugin(login=NoStart()), r"exm\.login\.start: implement"),
             ("login", lambda: plugin(login=SyncCheck()), r"exm\.login\.check: make it async"),
             ("pace", lambda: plugin(pace=-1), r"exm\.pace"),
@@ -673,7 +667,7 @@ class HooksTest(unittest.TestCase):
         members = {name for name in vars(Ctx) if not name.startswith("_")}
         self.assertEqual(members, {
             "fetch", "pages", "open", "feed", "load", "document", "warm", "click", "shown",
-            "handoff", "storage", "pause", "hold", "call", "ask", "log", "target",
+            "handoff", "pause", "hold", "call", "ask", "log", "target",
             "when", "time", "settings", "account", "cookies", "state", "secrets", "request"})
         self.assertEqual(str(inspect.signature(Ctx.pages)),
                          "(self, request: 'str | Request', *, cursor: 'str | Callable[[Response], "

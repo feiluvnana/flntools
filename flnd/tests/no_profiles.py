@@ -1,9 +1,8 @@
-"""Importing this keeps every test away from real browser profiles and the real plugin folder.
+"""Importing this keeps every test away from the real key file, the real cache and the real plugin
+folder.
 
-It sets `FLND_TEST_NO_PROFILES`, which `flnkit.cookies.refuse_profile` reads: while it is set,
-`flnkit.cookies` (reading a browser's cookies) and `flnkit.browser` (copying a Chrome profile, or
-launching Chrome on one) refuse any profile inside the real home folder, before anything is read.
-A test that needs a profile fakes the home folder in a temporary folder instead.
+It sets `FLND_TEST_NO_PROFILES`, which `flnkit.browser` and `flnkit.vault` read: while it is set,
+the browser's cache goes to a temporary folder and the vault refuses the real key file.
 
 It also points `FLND_PLUGINS` (`flnd.engine.plugins.folder`) at a folder that doesn't exist,
 unless it is set already, so a plugin the person running the tests has installed in
@@ -20,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 from flnd.engine import auth, plugins
-from flnkit.cookies import NO_PROFILES
+from flnkit.browser import NO_PROFILES
 
 os.environ[NO_PROFILES] = "1"
 os.environ.setdefault(

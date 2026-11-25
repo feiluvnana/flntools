@@ -307,7 +307,6 @@ flnd.plugin.Ctx.secrets: property -> MutableMapping[str, str]
 flnd.plugin.Ctx.settings: property -> Settings
 flnd.plugin.Ctx.shown(css: str) -> bool
 flnd.plugin.Ctx.state: property -> MutableMapping[str, Any]
-flnd.plugin.Ctx.storage(origin: str) -> Mapping[str, str]
 flnd.plugin.Ctx.target: property -> Target
 flnd.plugin.Ctx.time: property -> Clock
 flnd.plugin.Ctx.warm(urls: Sequence[str]) -> None
@@ -498,7 +497,7 @@ flnd.testing.Collected.key: field -> str
 flnd.testing.Collected.path: field -> str
 flnd.testing.Collected.post: field -> Post
 flnd.testing.Collected.url: field -> Any
-flnd.testing.FakeCtx(plugin: type[Plugin] | Plugin, target: str | flnd.plugin.Target = '', *, routes: Mapping[str, Reply | Callable[[Request], Any]] | None = None, pages: Mapping[str, FakePage | str] | None = None, account: str | None = None, cookies: Mapping[str, str] | None = None, when: flnd.plugin.Range = Range(since=None, until=None), answers: Sequence[str] = (), state: MutableMapping[str, Any] | None = None, storage: Mapping[str, str] | None = None, settings: Mapping[str, Any] | None = None)
+flnd.testing.FakeCtx(plugin: type[Plugin] | Plugin, target: str | flnd.plugin.Target = '', *, routes: Mapping[str, Reply | Callable[[Request], Any]] | None = None, pages: Mapping[str, FakePage | str] | None = None, account: str | None = None, cookies: Mapping[str, str] | None = None, when: flnd.plugin.Range = Range(since=None, until=None), answers: Sequence[str] = (), state: MutableMapping[str, Any] | None = None, settings: Mapping[str, Any] | None = None)
 flnd.testing.FakeCtx.account: property -> flnd.plugin.Account | None
 flnd.testing.FakeCtx.ask(message: str, *, secret: bool = False, description: str = '', choices: Sequence[str] = ()) -> str
 flnd.testing.FakeCtx.call(fn: Callable[..., T], *args: Any) -> T
@@ -520,7 +519,6 @@ flnd.testing.FakeCtx.seen: attribute -> Seen
 flnd.testing.FakeCtx.settings: property -> flnd.plugin.Settings
 flnd.testing.FakeCtx.shown(css: str) -> bool
 flnd.testing.FakeCtx.state: property -> MutableMapping[str, Any]
-flnd.testing.FakeCtx.storage(origin: str) -> Mapping[str, str]
 flnd.testing.FakeCtx.target: property -> flnd.plugin.Target
 flnd.testing.FakeCtx.time: property -> flnd.plugin.Clock
 flnd.testing.FakeCtx.warm(urls: Sequence[str]) -> None

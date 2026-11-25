@@ -635,13 +635,10 @@ Two runs may share a home: a part is its own lock, and a file another run is sav
 ## Logins and accounts
 
 `flnd auth login <plugin> [method] [path]` logs an account in. A method is one of the plugin's own
-(`flnd auth login <plugin>` with none, on a terminal, shows a menu):
+(`flnd auth login <plugin>` with none, on a terminal, asks for the cookie file's path, or shows
+a menu for Telegram):
 
-- `browser`: opens flnd's Chromium at the site's login page; log in, and the window closes once a
-  login cookie is set (waits up to 10 minutes; closing it gives up)
 - `file <path>`: reads a Netscape `cookies.txt` or a JSON cookie export (a path alone means `file`)
-- `firefox`: reads the cookies from your Firefox
-- `safari`: macOS only; needs Full Disk Access for the terminal
 - `qr`, `phone`: Telegram only: a QR code to scan, or your number and the code Telegram sends
 
 Only the cookies of the plugin's domains are kept, and the login is refused unless one of the
@@ -924,7 +921,7 @@ refusals are in [Targets](#targets). Each section lists categories (`own` ones a
 file name and history key templates, login, limits and walls, and known gaps. Everything here is the
 code's own declaration; `folder` is under `media/<code>/<value>/`.
 
-Shared by every cookie login: methods `browser file firefox safari`; the cookies of the
+Shared by every cookie login: method `file`, a cookie file's path; the cookies of the
 plugin's domains are kept; a run warns when the login cookie expires within 3 days. Walls and blocks
 are held 30 s, 2 min, 8 min by the engine; the fourth block in a row fails the target. Pace is the
 least seconds between two page requests of one account; each CDN host's files go 8 at once, adapting
@@ -1067,8 +1064,8 @@ up to 32.
 - **Folder:** `{chat}/{category}`; `chat` is the title, a person's name, else username or id.
 - **Filename:** the plugin's: `<date>_<message id>` then `_<original name>` or the extension.
 - **Key:** `{chat_id}:{post}` (`tlg:<chat id>:<message id>`).
-- **Login:** a Telegram session, required. Methods `browser` (reads Telegram Web's login from
-  Chrome's `Default` profile), `qr`, `phone`; asks once for `api_id` and `api_hash` from
+- **Login:** a Telegram session, required. Methods `qr`, `phone`; asks once for `api_id` and
+  `api_hash` from
   `my.telegram.org`. Without one: `tlg: not logged in`; a revoked session: `tlg: the saved login no
   longer works`.
 - **Limits and walls:** `limits = {"t.me": 3}`; pace does not apply. A flood wait up to 60 s is
@@ -1311,9 +1308,10 @@ with flnd.open(home) as fl:
     assert fl.config["plugins.ins.switch"] is True
 ```
 
-`fl.auth.login("ins", method="firefox")` reads a browser's cookies the same way. An error that stops
-a whole run (a full disk) is raised when the run is read; one file's or one target's failure is a
-`Failed` event and the run goes on. Events hold data, never live objects, and the one exception is
+`fl.auth.login("ins", method="file", path="cookies.txt")` reads a cookie file the same
+way. An error that stops a whole run (a full disk) is raised when the run is read; one file's or
+one target's failure is a `Failed` event and the run goes on. Events hold data, never live objects,
+and the one exception is
 `Failed.error`, the `flnd.Error`.
 
 ## Writing a plugin
@@ -1342,7 +1340,7 @@ The contract:
   the responses a plugin reads are unchanged. Blocked (live-checked): `fbk` `ins` `thr` `tik` `twt`
 - `hidden` (bool): its tabs may be in a hidden window (False). The browser is hidden only while
   every plugin using it is; a handoff (a captcha) closes it and reopens it visible, same cookies
-  and tabs. A `browser` login is always visible. Hidden: `fbk` `ins` `thr` `tik` `twt`. A
+  and tabs. Hidden: `fbk` `ins` `thr` `tik` `twt`. A
   hidden tab reads as a visible one: same user agent and client hints, a desktop screen and window,
   no software-GL name, and agreeing notification state (`tests/test_hidden.py`)
 - `@route(patterns, single=, discovers=, shown=, folder=, newest_first=)` (method): reads one kind

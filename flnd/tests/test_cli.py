@@ -530,8 +530,7 @@ class WiringTest(ExampleCase):
     def test_the_account_list_sets_the_default_and_logs_out(self):
         sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="one")
         sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="two")
-        self.answer(str(list(PLUGINS["ins"].login.methods).index("file") + 1),
-                    str(self.cookie_file(NETSCAPE)))
+        self.answer(str(self.cookie_file(NETSCAPE)))
 
         def script(title, load, keys, delete):
             def defaults():
@@ -622,20 +621,14 @@ class FormsTest(ExampleCase):
             self.assertEqual(self.run_app("config")[0], 0)
         self.assertIn("height = 720", Path(".flnd/config.toml").read_text(encoding="utf-8"))
 
-    def test_the_login_form_words_each_way_and_asks_the_path_of_a_file(self):
-        shown = []
-
+    def test_a_cookie_site_asks_its_file_without_a_menu(self):
         def select(title, options, **_):
-            shown.append((title, [(option.label, option.note) for option in options]))
-            return "file"
+            raise AssertionError(f"no menu for a cookie site: {title}")
 
         with mock.patch("flnd.ui.forms.select", select), \
                 mock.patch("flnd.ui.forms.text", return_value=str(self.cookie_file(NETSCAPE))):
             code, text, err = self.run_app("auth", "login", "twt")
         self.assertEqual(code, 0, err)
-        title, options = shown[0]
-        self.assertEqual(title, "Log in to Twitter/X")
-        self.assertIn(("From a cookie file", "a cookies.txt you exported"), options)
         self.assertRegex(text, r"^twt: logged in as ")
 
 
@@ -891,15 +884,14 @@ class AuthTest(FlndCase):
 
     def test_the_way_is_asked_on_a_terminal_and_never_on_a_pipe_or_with_json(self):
         path = self.cookie_file(NETSCAPE)
-        ways = list(PLUGINS["twt"].login.methods)
-        self.answer(str(ways.index("file") + 1), str(path))
+        self.answer(str(path))
         code, text, err = self.run_app("auth", "login", "twt")
         self.assertEqual(code, 0, err)
         self.assertRegex(text, r"^twt: logged in as \w+ \(file\)\n$")
         self.pipe("")
         code, _, err = self.run_app("auth", "login", "ins")
         self.assertEqual(code, 2)
-        self.assertIn("flnd auth login ins <method>", err)
+        self.assertIn("flnd auth login ins <cookies.txt>", err)
         self.answer("1")
         self.assertEqual(self.run_app("auth", "login", "ins", "--json")[0], 2)
 

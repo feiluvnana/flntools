@@ -83,8 +83,8 @@ OLD_NAMES = {
     "scroll": "nothing: the engine scrolls every feed like a person",
     "single_kinds": "@route(..., single=True) on each one-post route",
 }
-# The ways a cookie site's login is read: flnd's own window, a browser's store, a cookies.txt.
-COOKIE_METHODS = ("browser", "file", "firefox", "safari")
+# The ways a cookie site's login is read: a cookies.txt file, given by its path.
+COOKIE_METHODS = ("file",)
 # Each optional hook: whether it is `async def`, and the parameters it takes.
 HOOKS = {
     "sign": (False, ("self", "request", "cookies")),
@@ -167,7 +167,7 @@ class Account:
         id: its row's id.
         plugin: the plugin's code.
         name: its name on the site (`Login.whoami`), or the name it was given.
-        origin: where its login came from: a browser, a file, a method of the plugin's login.
+        origin: where its login came from: a cookie file's name, or a method of the plugin's login.
         at: when it logged in, as ISO 8601 UTC.
         is_default: whether runs use it when none is named.
         status: "ok", "held" (a block holds it) or "expired" (the site logged it out).
@@ -899,7 +899,7 @@ class Login:
     methods: ClassVar[tuple[str, ...]] = ()
     # The cookies, any one of which proves a login; empty for a login that keeps none.
     names: tuple[str, ...] = ()
-    # The login page, for the `browser` method.
+    # The login page.
     url: str = ""
 
     def __init__(self, *, required: bool = True) -> None:
@@ -927,7 +927,7 @@ class Cookies(Login):
 
     Args:
         *names: the cookies, any one of which proves a login.
-        url: the site's login page, opened by the `browser` method.
+        url: the site's login page.
         required: whether the plugin can list nothing without it.
 
     Raises:
@@ -952,7 +952,7 @@ class Cookies(Login):
         Raises:
             UsageError: always.
         """
-        raise UsageError(f"{method}: cookies are read from a browser or a cookies.txt file")
+        raise UsageError(f"{method}: cookies are read from a cookies.txt file")
 
 
 def cookies(*names: str, url: str, required: bool = False) -> Cookies:
@@ -1129,10 +1129,6 @@ class Ctx(Protocol):
         Returns:
             True when `until` came true; False when `timeout` passed first.
         """
-        ...
-
-    async def storage(self, origin: str) -> Mapping[str, str]:
-        """`origin`'s `localStorage` in the user's browser, such as a web app's session."""
         ...
 
     async def pause(self, seconds: float, reason: str) -> None:
@@ -1493,7 +1489,7 @@ def _check_values(cls: type[Plugin], code: str) -> None:
 
 
 def _check_login(login: object, code: str) -> None:
-    """Check `login`: None, or a `Login` with methods, async hooks and a page for `browser`."""
+    """Check `login`: None, or a `Login` with methods, names and async hooks."""
     if login is None:
         return
     if not isinstance(login, Login):
@@ -1505,9 +1501,6 @@ def _check_login(login: object, code: str) -> None:
         raise PluginError(f'{code}.login.methods: set the ways it logs in, as ("qr", "phone")')
     if not isinstance(login.names, tuple) or not all(isinstance(n, str) for n in login.names):
         raise PluginError(f'{code}.login.names: set the cookie names, as ("sessionid",)')
-    if "browser" in methods and not str(login.url).startswith("https://"):
-        raise PluginError(f"{code}.login.url: the browser method opens the login page; set "
-                          "url to its https URL")
     if type(login).start is Login.start:
         raise PluginError(f"{code}.login.start: implement async def start(self, ctx, method)")
     for hook in ("start", "check", "whoami"):

@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import functools
-import json
 import random
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -34,13 +33,6 @@ from flnd.plugin import (
     route,
 )
 
-TELEGRAM_WEB = "https://web.telegram.org/"
-# Telegram's production data centers, as every client ships them, and the port Telethon uses.
-DATA_CENTERS = {
-    1: "149.154.175.53", 2: "149.154.167.51", 3: "149.154.175.100", 4: "149.154.167.91",
-    5: "91.108.56.130",
-}
-PORT = 443
 # A Telegram username: 4 to 32 characters, starting with a letter.
 USERNAME = r"[A-Za-z]\w{3,31}"
 # A QR login token lasts about 30 seconds; this many are shown before giving up.
@@ -89,25 +81,21 @@ HALF_BLOCKS = {(True, True): "█", (True, False): "▀", (False, True): "▄", 
 class TelegramLogin(Login):
     """Telegram's own login: a Telethon session, kept with the API pair in the account's secrets.
 
-    `browser` turns Telegram Web's login into a session and adds no device; `qr` and `phone`
-    log in a new device named flnd. The first login asks for the `api_id` and `api_hash`.
+    `qr` and `phone` log in a new device named flnd. The first login asks for the `api_id` and
+    `api_hash`.
     """
 
-    methods = ("browser", "qr", "phone")
-    # Where `browser` reads the login from; it opens no window of its own.
-    url = TELEGRAM_WEB
+    methods = ("qr", "phone")
 
     async def start(self, ctx: Ctx, method: str) -> None:
         """Log in by `method`, and keep the session, the `api_id` and the `api_hash`.
 
         Raises:
-            LoginError: Telegram refused, no QR code was scanned, or Telegram Web isn't
-                logged in.
+            LoginError: Telegram refused or no QR code was scanned.
             UsageError: a question has nobody to answer it (no terminal).
         """
         api_id, api_hash = await credentials(ctx)
-        start = from_web_storage(await read_telegram_web(ctx)) if method == "browser" else ""
-        string, name = await log_in(ctx, method, start, api_id, api_hash)
+        string, name = await log_in(ctx, method, api_id, api_hash)
         ctx.secrets.update(session=string, api_id=str(api_id), api_hash=api_hash)
         ctx.log("info", "logged in as {name}", name=name)
 
@@ -515,20 +503,18 @@ async def credentials(ctx: Ctx) -> tuple[int, str]:
     return int(api_id), api_hash.strip()
 
 
-async def log_in(ctx: Ctx, method: str, start: str, api_id: int,
-                 api_hash: str) -> tuple[str, str]:
-    """Log a client in by `method`, from the session `start` ("" for a new device).
+async def log_in(ctx: Ctx, method: str, api_id: int, api_hash: str) -> tuple[str, str]:
+    """Log a new client in by `method` (`qr` or `phone`), on a new device.
 
     Returns:
         The session string to store, and the account's name to show.
 
     Raises:
-        LoginError: Telegram refused (a wrong code, a revoked Telegram Web key), or no QR code
-            was scanned.
+        LoginError: Telegram refused (a wrong code), or no QR code was scanned.
     """
     from telethon.errors import RPCError
 
-    client = _client(start, api_id, api_hash)
+    client = _client("", api_id, api_hash)
     await client.connect()
     try:
         if method == "qr":
@@ -537,8 +523,7 @@ async def log_in(ctx: Ctx, method: str, start: str, api_id: int,
             await by_phone(ctx, client)
         me = await client.get_me()
         if me is None:
-            raise LoginError("tlg: Telegram Web's login no longer works",
-                             hint="log in at web.telegram.org again")
+            raise LoginError("tlg: the login didn't work", hint="flnd auth login tlg qr")
         return client.session.save(), display_name(me)
     # Telegram's refusal is shown as a login error; any other error reaches the caller.
     except RPCError as error:
@@ -590,53 +575,6 @@ async def two_step(ctx: Ctx, client: Any) -> None:
     await client.sign_in(password=await ctx.ask("Two-step verification password", secret=True))
 
 
-async def read_telegram_web(ctx: Ctx) -> Mapping[str, str]:
-    """Telegram Web's local storage in the browser.
-
-    Raises:
-        LoginError: the browser or the page couldn't be read.
-    """
-    try:
-        return await ctx.storage(TELEGRAM_WEB)
-    except UsageError:
-        raise
-    except (Error, OSError, RuntimeError, ValueError) as error:
-        raise LoginError(f"tlg: can't read Telegram Web in the browser: {error}",
-                         hint="flnd auth login tlg qr") from None
-
-
-def from_web_storage(storage: Mapping[str, str]) -> str:
-    """A Telethon session string from Telegram Web's local storage.
-
-    Telegram Web keeps, as JSON values (seen 2026-11-11, in both its A and K clients), the
-    account's data center in `user_auth.dcID` (or `dc`), and a 256-byte auth key per data
-    center, as hex, under `dc<n>_auth_key`.
-
-    Raises:
-        LoginError: the storage holds no usable login.
-    """
-    from telethon.crypto import AuthKey
-    from telethon.sessions import StringSession
-
-    values = {name: _json_or_text(value) for name, value in storage.items()}
-    user = values.get("user_auth")
-    dc = (user.get("dcID") if isinstance(user, dict) else None) or values.get("dc")
-    key = values.get(f"dc{dc}_auth_key")
-    try:
-        auth_key = bytes.fromhex(key) if isinstance(key, str) and user else b""
-    # A key that isn't hex is treated as absent, which is the not-logged-in error below.
-    except ValueError:
-        auth_key = b""
-    # A Telegram auth key is 256 bytes (2048 bits); any other length is not a key.
-    if len(auth_key) != 256 or str(dc) not in map(str, DATA_CENTERS):
-        raise LoginError("tlg: not logged in to Telegram Web",
-                         hint="log in at web.telegram.org first, or flnd auth login tlg qr")
-    session = StringSession()
-    session.set_dc(int(str(dc)), DATA_CENTERS[int(str(dc))], PORT)
-    session.auth_key = AuthKey(auth_key)
-    return session.save()
-
-
 def draw_qr(text: str) -> str:
     """`text` as a QR code in Unicode half blocks, with a quiet border of 2 modules."""
     import qrcode
@@ -656,13 +594,6 @@ def half_blocks(matrix: Sequence[Sequence[bool]]) -> str:
     return "\n".join(
         "".join(HALF_BLOCKS[pair] for pair in zip(top, bottom)) for top, bottom in lines
     )
-
-
-def _json_or_text(value: str) -> Any:
-    try:
-        return json.loads(value)
-    except ValueError:
-        return value
 
 
 def _version() -> str:

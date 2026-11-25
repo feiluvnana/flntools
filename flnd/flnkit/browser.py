@@ -15,7 +15,6 @@ import math
 import os
 import random
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,7 +26,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Union
-from urllib.parse import urlsplit
 
 import msgspec
 
@@ -77,45 +75,6 @@ class _Bar:
     def fail(self) -> None:
         """Mark the row failed; the default screen has nothing to mark."""
 
-
-def _real_home() -> Path:
-    """The home folder of the account running flnd, which a changed `$HOME` does not move."""
-    if sys.platform == "win32":
-        return Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
-    try:
-        import pwd
-        return Path(pwd.getpwuid(os.getuid()).pw_dir)
-    except (ImportError, AttributeError):
-        return Path.home()
-
-
-def refuse_profile(folder: Path | str | None = None) -> None:
-    """Raise when a test would read the real browser profile under the home folder.
-
-    Does nothing unless `FLND_TEST_NO_PROFILES` is set. A folder inside the temp directory
-    is always allowed.
-
-    Args:
-        folder: the folder a test is about to read or copy; None lets it pass.
-
-    Raises:
-        RuntimeError: the folder is inside the real home folder, outside the temp directory.
-    """
-    if not os.environ.get(NO_PROFILES) or folder is None:
-        return
-    import tempfile
-
-    resolved = Path(folder).resolve()
-    try:
-        candidates = (os.environ.get("TEMP"), os.environ.get("TMP"), tempfile.gettempdir())
-        if any(c and resolved.is_relative_to(Path(c).resolve()) for c in candidates):
-            return
-    except (ValueError, OSError):
-        pass
-    real_home = _real_home().resolve()
-    if resolved.is_relative_to(real_home):
-        raise RuntimeError(f"{NO_PROFILES} is set: a test may not read or copy the real browser "
-                           f"profile {folder}; fake the home folder or the browser instead")
 
 def _belongs(domain: str, to: str) -> bool:
     domain, to = domain.lstrip(".").lower(), to.lstrip(".").lower()
@@ -262,8 +221,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "FAST", "HUMAN", "Browser", "Capture", "Feed", "Jar", "Match", "Page", "Reader",
-    "Cursors", "RunBrowser", "Tabs", "Visit", "WaitError", "launch", "local_storage", "matcher",
-    "run_on",
+    "Cursors", "RunBrowser", "Tabs", "Visit", "WaitError", "launch", "matcher", "run_on",
 ]
 
 # ---------------------------------------------------------------------------------------------
@@ -487,14 +445,6 @@ READ = 30.0
 # Seconds a tab waits for the browser while another target launches or reopens it.
 LAUNCH_WAIT = 300.0
 
-# Where Chrome keeps its profiles, relative to the home folder, on each platform.
-PROFILE_ROOTS = {
-    "darwin": "Library/Application Support/Google/Chrome",
-    "linux": ".config/google-chrome",
-    "win32": "AppData/Local/Google/Chrome/User Data",
-}
-# A copy of an installed profile opens only in Chrome: its cookies are sealed with Chrome's key.
-PROFILE_CHANNEL = "chrome"
 # Where Playwright's `chrome` channel finds Google Chrome: the same paths as its registry
 # (`_createChromiumChannel` in the driver, Playwright 1.65). On Windows each is tried under
 # %LOCALAPPDATA%, %PROGRAMFILES% and %PROGRAMFILES(X86)%, as Playwright does.
@@ -512,8 +462,6 @@ INSTALL_CHROME = "install Google Chrome, or run in a terminal and accept Chromiu
 # Playwright's installer prints a line such as "|■■■■      |  20% of 167.3 MiB" every few
 # percent when its output isn't a terminal; the number is the progress row's.
 INSTALL_PERCENT = re.compile(r"(\d+)% of")
-# Caches are big and Chrome rebuilds them, so a profile copy leaves them out.
-SKIP_IN_PROFILE = shutil.ignore_patterns("Cache", "Code Cache", "GPUCache", "Service Worker")
 # What a feed takes as its match: a substring of the URL, a regex searched in it, or a predicate.
 Match = Union[str, "re.Pattern[str]", Callable[[str], bool]]
 # What a feed takes as its cursor reader: given one parsed body, `(more, cursor)` when the body is
@@ -592,8 +540,7 @@ class Visit:
 # Launching
 # ---------------------------------------------------------------------------------------------
 
-async def launch(*, profile: str | None = None, headless: bool = False,
-                 stealth: bool = True, screen: Screen | None = None,
+async def launch(*, headless: bool = False, stealth: bool = True, screen: Screen | None = None,
                  assets: bool = True) -> Browser:
     """Launch Chrome, or Playwright's Chromium, and return it as a `Browser`. Runs on the loop.
 
@@ -601,8 +548,6 @@ async def launch(*, profile: str | None = None, headless: bool = False,
         tab = await chrome.tab()
 
     Args:
-        profile: the name of an installed Chrome profile ("Default") to open a private copy of,
-            for its logins; None opens a fresh incognito browser.
         headless: hide the window. A visible one (the default) lets a person solve a captcha.
         stealth: hide `navigator.webdriver`, which sites read to tell automation apart.
         screen: where the offer to download Chromium is asked and its progress shown; None
@@ -610,28 +555,19 @@ async def launch(*, profile: str | None = None, headless: bool = False,
         assets: load images, media and fonts; False disables image loading natively.
 
     Returns:
-        The browser, which `Browser.close` closes, deleting the profile copy.
+        The browser, which `Browser.close` closes.
 
     Raises:
-        FileNotFoundError: Chrome has no profile of that name.
         ToolError: no Chrome, and Chromium's download was declined or failed.
         ImportError: Playwright isn't installed.
     """
-    # Copied before Playwright starts, so a misspelt name fails at once. From here the copy holds
-    # the profile's logins, so it is deleted however this ends without a launched browser.
-    copy = await asyncio.to_thread(_copy_profile, profile) if profile is not None else None
+    playwright = await _start_playwright()
     try:
-        playwright = await _start_playwright()
-        try:
-            return await _launch(playwright, copy, headless=headless, stealth=stealth,
-                                 screen=screen or Screen(), assets=assets)
-        # Any exception, Ctrl-C included, stops Playwright's driver before it goes on up.
-        except BaseException:
-            await playwright.stop()
-            raise
+        return await _launch(playwright, headless=headless, stealth=stealth,
+                             screen=screen or Screen(), assets=assets)
+    # Any exception, Ctrl-C included, stops Playwright's driver before it goes on up.
     except BaseException:
-        if copy is not None:
-            shutil.rmtree(copy, ignore_errors=True)
+        await playwright.stop()
         raise
 
 
@@ -644,59 +580,9 @@ async def _start_playwright() -> Playwright:
     return await async_playwright().start()
 
 
-def _profile_root() -> Path:
-    """The folder that holds Google Chrome's profiles on this platform."""
-    # Any platform other than macOS and Windows gets the Linux path, the one Chrome uses there.
-    key = sys.platform if sys.platform in ("darwin", "win32") else "linux"
-    return Path.home() / PROFILE_ROOTS[key]
-
-
-def _copy_profile(name: str) -> Path:
-    """Copy the installed Chrome profile `name` to a new private temporary folder, as its `Default`.
-
-    Args:
-        name: the profile's folder name under Chrome's profile root, such as "Default".
-
-    Returns:
-        The new folder, which holds the copy as `Default` and Chrome's `Local State` beside it.
-
-    Raises:
-        FileNotFoundError: Chrome has no profile of that name.
-        ValueError: `name` is empty or a path, not a name.
-
-    A copy that fails half way is deleted before the error goes on.
-    """
-    if not name or any(sep in name for sep in {"/", os.sep, os.altsep} - {None}) \
-            or name in (".", ".."):
-        raise ValueError(
-            f"profile must be a Chrome profile's name, such as 'Default', not {name!r}"
-        )
-    root = _profile_root()
-    # Under the test suite a real profile, which holds logins, is refused before anything reads it.
-    refuse_profile(root / name)
-    if not (root / name).is_dir():
-        raise FileNotFoundError(f"no Chrome profile named {name!r} in {root}")
-    # mkdtemp makes the folder with mode 0700, so on a shared machine no other user can read the
-    # copy, which holds logins. Windows ignores the mode; the user's temp folder is private there.
-    copy = Path(tempfile.mkdtemp(prefix="flnd-chrome-"))
-    try:
-        # Whatever its name, the copy holds the profile as Default, and _launch opens Default.
-        shutil.copytree(
-            root / name, copy / "Default", ignore=SKIP_IN_PROFILE, ignore_dangling_symlinks=True
-        )
-        if (root / "Local State").is_file():
-            shutil.copy2(root / "Local State", copy / "Local State")
-    # Any exception, Ctrl-C included, deletes the half-made copy before it goes on up: nothing
-    # else knows of it yet, and it may already hold the profile's logins.
-    except BaseException:
-        shutil.rmtree(copy, ignore_errors=True)
-        raise
-    return copy
-
-
-async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
-                  stealth: bool, screen: Screen, assets: bool = True) -> Browser:
-    """Launch a browser for `launch`, with or without a copied profile."""
+async def _launch(playwright: Playwright, *, headless: bool, stealth: bool, screen: Screen,
+                  assets: bool = True) -> Browser:
+    """Launch a browser for `launch`."""
     launch_options: dict[str, Any] = {"headless": headless, "args": list(LAUNCH_ARGS)}
     if stealth:
         launch_options["ignore_default_args"] = ["--enable-automation"]
@@ -704,17 +590,11 @@ async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
         launch_options["args"].append("--blink-settings=imagesEnabled=false")
     width, height = DEFAULT_VIEWPORT
     context_options: dict[str, Any] = {"viewport": {"width": width, "height": height}}
-    if copy is not None:
-        # A copy of Chrome's profile opens only in Chrome, so it never asks to download Chromium.
-        channel = PROFILE_CHANNEL
-        # `_copy_profile` always stores the copy as `Default`, whatever the profile was called.
-        launch_options["args"].append("--profile-directory=Default")
-    else:
-        # It may ask a person and download Chromium: off the loop, so nothing else stalls.
-        channel = await asyncio.to_thread(_channel, playwright, screen)
+    # It may ask a person and download Chromium: off the loop, so nothing else stalls.
+    channel = await asyncio.to_thread(_channel, playwright, screen)
     context_options["screen"] = dict(SCREEN)
     context, close_steps = await _open_context(
-        playwright, copy, channel, launch_options, context_options
+        playwright, channel, launch_options, context_options
     )
     if stealth:
         await context.add_init_script(HIDE_WEBDRIVER)
@@ -724,9 +604,6 @@ async def _launch(playwright: Playwright, copy: Path | None, *, headless: bool,
     if headless:
         await context.add_init_script(hidden_script())
         override = await _headful_override(playwright, channel)
-    if copy is not None:
-        # Removed after Chrome has closed, or Chrome would still be writing into it.
-        close_steps.append(lambda: shutil.rmtree(copy, ignore_errors=True))
     return Browser(context, close_steps=close_steps, headless=headless, override=override,
                    assets=assets)
 
@@ -857,37 +734,20 @@ def _lower_priority() -> None:
             continue
 
 
-async def _open_context(playwright: Playwright, profile: Path | None, channel: str,
-                        launch_options: dict[str, Any],
+async def _open_context(playwright: Playwright, channel: str, launch_options: dict[str, Any],
                         context_options: dict[str, Any]) -> tuple[BrowserContext, list]:
-    """Launch the browser with or without a profile folder, returning `(context, close_steps)`."""
+    """Launch the browser in a fresh incognito context, returning `(context, close_steps)`."""
     headless = launch_options["headless"]
-    if profile is not None:
-        refuse_profile(profile)
     launch_channel: str | None = channel
-    if (headless and profile is None and channel == "chromium"
-            and _headless_shell_installed(playwright)):
+    if headless and channel == "chromium" and _headless_shell_installed(playwright):
         launch_channel = None
-    if profile is None:
-        remote = await playwright.chromium.launch(channel=launch_channel, **launch_options)
-        await asyncio.to_thread(_lower_priority)
-        options = context_options
-        if headless:
-            options = {**options, "user_agent": await _headful_ua(playwright, channel, remote)}
-        context = await remote.new_context(**options)
-        return context, [context.close, remote.close, playwright.stop]
-    args = launch_options["args"]
-    if headless:
-        remote = await playwright.chromium.launch(channel=launch_channel, headless=True)
-        try:
-            agent = await _headful_ua(playwright, channel, remote)
-        finally:
-            await remote.close()
-        args = [*args, f"--user-agent={agent}"]
-    context = await playwright.chromium.launch_persistent_context(
-        str(profile), channel=launch_channel, **{**launch_options, "args": args}, **context_options)
+    remote = await playwright.chromium.launch(channel=launch_channel, **launch_options)
     await asyncio.to_thread(_lower_priority)
-    return context, [context.close, playwright.stop]
+    options = context_options
+    if headless:
+        options = {**options, "user_agent": await _headful_ua(playwright, channel, remote)}
+    context = await remote.new_context(**options)
+    return context, [context.close, remote.close, playwright.stop]
 
 
 def _executable_key(playwright: Playwright, channel: str) -> str | None:
@@ -1033,8 +893,8 @@ class Browser:
 
     Args:
         context: Playwright's browser context, which holds the tabs and the cookies.
-        close_steps: what `close` runs, in order: the context, the browser, Playwright's driver,
-            and the deletion of a profile copy. Each may be a coroutine function.
+        close_steps: what `close` runs, in order: the context, the browser and Playwright's
+            driver. Each may be a coroutine function.
         headless: whether the window is hidden, which a handoff to a person reopens visible.
         override: for a hidden browser, the parameters of `Emulation.setUserAgentOverride` that
             each new tab is given (see `_headful_override`).
@@ -2786,49 +2646,6 @@ class Cursors:
         if cursor is not None:
             self._seen[cursor] += 1
             self.ended = self._seen[cursor] > 1 + REPEATS
-
-
-# ---------------------------------------------------------------------------------------------
-# A page's local storage, for a login
-# ---------------------------------------------------------------------------------------------
-
-def local_storage(url: str, *, profile: str = "Default") -> dict[str, str] | None:
-    """Open `url` in a hidden copy of a Chrome profile, and read the page's local storage.
-
-        storage = local_storage("https://web.telegram.org/k/")
-
-    For a login that reads a web app's saved session (Telegram's). It runs outside any run, on a
-    thread with no loop of its own, so it starts a loop and closes it, with the browser and the
-    profile copy, before returning.
-
-    Args:
-        url: the page.
-        profile: the installed Chrome profile to copy, with its logins.
-
-    Returns:
-        `localStorage` as `{key: value}`, or None when the tab didn't land on `url`'s host (no
-        network, or the site sent it elsewhere), which is not read then.
-
-    Raises:
-        NetworkError: the page couldn't be read (it navigated away or closed meanwhile).
-        FileNotFoundError: Chrome has no such profile.
-        ToolError: Chrome isn't installed.
-    """
-    return asyncio.run(_local_storage(url, profile))
-
-
-async def _local_storage(url: str, profile: str) -> dict[str, str] | None:
-    """`local_storage`'s work, on its loop."""
-    async with await launch(profile=profile, headless=True) as chrome:
-        page = await chrome.tab()
-        await page.goto(url, idle=True)
-        if urlsplit(page.url).hostname != urlsplit(url).hostname:
-            return None
-        try:
-            return await page.raw.evaluate("Object.assign({}, localStorage)")
-        except _raw_error() as error:
-            where = redact(url)
-            raise NetworkError(f"could not read {where}: {_first_line(error)}") from None
 
 
 # ---------------------------------------------------------------------------------------------

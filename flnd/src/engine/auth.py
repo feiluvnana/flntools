@@ -5,7 +5,6 @@ SPEC.md#logins-and-accounts explains it.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import dataclasses
 import datetime
@@ -13,7 +12,6 @@ import itertools
 import json
 import os
 import sqlite3
-import threading
 import weakref
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from http.cookiejar import Cookie
@@ -28,14 +26,12 @@ from flnd.errors import (
     Hidden,
     LoginError,
     NotFound,
-    Stopped,
-    ToolError,
     UsageError,
 )
 from flnd.plugin import Account, Cookies, Plugin, Target
 from flnd.ui import forms
 from flnd.ui.log import ui
-from flnkit import browser, clock, cookies, db, text, vault
+from flnkit import clock, cookies, db, vault
 
 __all__ = ["Switcher", "Vault", "account", "default", "expiring", "fix_domains", "load",
            "logged_in", "login", "logout", "pick", "seal_plaintext", "secrets", "settle",
@@ -49,11 +45,6 @@ COOKIES = "cookies"
 LOGINS = frozenset({COOKIES, "session"})
 # The kind of the pseudo-target a plugin's account `Ctx` acts for.
 ACCOUNT = "account"
-# How long the `browser` method waits for a login in its window, and how often it looks.
-WINDOW_WAIT = 600.0
-WINDOW_POLL = 1.0
-# The browsers whose cookie stores a login reads, by method, with the names people know.
-BROWSERS = {"firefox": "Firefox", "safari": "Safari"}
 TABLE = ("CREATE TABLE IF NOT EXISTS secrets (account INTEGER NOT NULL, name TEXT NOT NULL,"
          " sealed BLOB NOT NULL, PRIMARY KEY (account, name)) WITHOUT ROWID")
 # The name a version-1 home's one account per plugin takes.
@@ -331,8 +322,7 @@ def _refresh(cookie: dict[str, Any], fresh: list[Cookie]) -> str | None:
 # ---------------------------------------------------------------------------------------------
 
 def login(home: Path, plugin: Plugin, method: str, *, path: Path | str | None = None,
-          profile: str | None = None, interactive: bool = False,
-          name: str | None = None) -> Account:
+          interactive: bool = False, name: str | None = None) -> Account:
     """Log an account of `plugin` in by `method`, check it, and seal it in the vault.
 
     A cookie login reads its jar by the method; any other runs the plugin's `Login.start`,
@@ -347,7 +337,6 @@ def login(home: Path, plugin: Plugin, method: str, *, path: Path | str | None = 
         plugin: the plugin, made from its class.
         method: one of its login's `methods`.
         path: the cookie file, for `file`.
-        profile: the browser's profile, for a browser's cookie store.
         interactive: whether the login may ask in the terminal: the plugin's own steps, and the
             account's name.
         name: the account's name, asked for and looked up nowhere else.
@@ -365,7 +354,7 @@ def login(home: Path, plugin: Plugin, method: str, *, path: Path | str | None = 
     with store.open(home) as db:
         first = next((row for row in db.accounts(plugin.code) if row.default), None)
     if isinstance(own, Cookies):
-        jar = _read_jar(plugin, own, method, path=path, profile=profile)
+        jar = _read_jar(plugin, own, path=path)
     elif first is not None and (home / store.SECRETS).is_file():
         # A stored API key isn't asked for again.
         with contextlib.suppress(LoginError), secrets(home, first.id) as saved:
@@ -418,70 +407,20 @@ def _signed_in(home: Path, plugin: Plugin, method: str, jar: cookies.Jar,
                 opened.save_state()
 
 
-def _read_jar(plugin: Plugin, own: Cookies, method: str, *, path: Path | str | None,
-             profile: str | None) -> cookies.Jar:
-    """The plugin's cookies by a cookie method, on its domains only."""
-    if method == "browser":
-        from flnd.engine import run
-
-        origin = "the browser window"
-        with run.stopping() as stop:
-            jar = asyncio.run(_window(plugin, own, stop.soon))
-    elif method == "file":
-        if path is None:
-            raise UsageError(f"{plugin.code}: a file login needs the cookie file's path")
-        where = Path(path).expanduser()
-        try:
-            jar = cookies.load(where)
-        except (OSError, ValueError, Error) as error:
-            raise LoginError(f"{plugin.code}: can't read {where}: {error}") from None
-        origin = where.name
-    else:
-        origin = BROWSERS.get(method, method)
-        try:
-            jar = cookies.load(method, profile=profile)
-        except UsageError:
-            raise
-        except (OSError, RuntimeError, ValueError, ImportError, Error) as error:
-            raise LoginError(f"{plugin.code}: can't read {origin}'s cookies: {error}",
-                             hint=getattr(error, "hint", "") or "try a cookie file instead"
-                             ) from None
+def _read_jar(plugin: Plugin, own: Cookies, *, path: Path | str | None) -> cookies.Jar:
+    """The plugin's cookies from its cookie file, on its domains only."""
+    if path is None:
+        raise UsageError(f"{plugin.code}: a file login needs the cookie file's path")
+    where = Path(path).expanduser()
+    try:
+        jar = cookies.load(where)
+    except (OSError, ValueError, Error) as error:
+        raise LoginError(f"{plugin.code}: can't read {where}: {error}") from None
     jar = fix_domains(jar.filter(domains=plugin.domains))
     if not any(name in jar for name in own.names):
         raise LoginError(f"{plugin.code}: no {' or '.join(own.names)} for {plugin.domains[0]} "
-                         f"in {origin}; log in there first")
+                         f"in {where.name}; log in there first")
     return jar
-
-
-async def _window(plugin: Plugin, own: Cookies, stop: threading.Event) -> cookies.Jar:
-    """Open flnd's Chromium, visible, at the login page; then read its cookies every
-    `WINDOW_POLL` seconds until one of `own.names` is set on the plugin's domains, and close it.
-
-    Raises:
-        LoginError: the window was closed first, or `WINDOW_WAIT` passed.
-        ToolError: Playwright isn't installed.
-        Stopped: Ctrl-C.
-    """
-    try:
-        window = await browser.launch(headless=False)
-    except ImportError as error:
-        raise ToolError(str(error), hint="pip install playwright") from None
-    try:
-        await (await window.tab()).goto(own.url)
-        ends = clock.now() + WINDOW_WAIT
-        while True:
-            jar = (await window.cookies()).filter(domains=plugin.domains)
-            if any(name in jar for name in own.names):
-                return jar
-            if not window.raw.pages:
-                raise LoginError(f"{plugin.code}: the window was closed before the login")
-            if clock.now() >= ends:
-                raise LoginError(f"{plugin.code}: no login in the window in "
-                                 f"{text.duration(WINDOW_WAIT)}")
-            if not await clock.pause(WINDOW_POLL, stop=stop):
-                raise Stopped(f"{plugin.code}: the login was stopped")
-    finally:
-        await window.close()
 
 
 def _asked_name(db: store.Store, code: str, found: str | None) -> str:

@@ -569,10 +569,9 @@ class Auth:
 
         Args:
             plugin: the plugin's code (`"ins"`).
-            method: one of the plugin's login methods: a browser (`"firefox"`,
-                `"safari"`), `"browser"` for a window of flnd's Chromium at the site's login page,
-                `"file"` for a cookies.txt or JSON export (with `path`), or the plugin's own
-                (`"qr"`, `"phone"` for tlg). None takes the only one the plugin has, or `"file"`
+            method: one of the plugin's login methods: `"file"` for a cookies.txt or JSON
+                export (with `path`), or the plugin's own (`"qr"`, `"phone"` for tlg). None
+                takes the only one the plugin has, or `"file"`
                 when `path` is given.
             path: the cookie file, for `"file"`.
             name: the account's name. None, on a terminal, asks for it (offering the site's own
@@ -586,7 +585,7 @@ class Auth:
         Raises:
             UsageError: `plugin` or `method` is wrong, or the plugin has several methods and
                 none was named.
-            LoginError: the browser has no login for the site, or the site refused it.
+            LoginError: the cookie file has no login for the site, or the site refused it.
 
         Example:
             >>> import flnd

@@ -191,7 +191,6 @@ class FakeCtx:
       as a checked `fetch` does. What the page sends (`Sent`) goes to the tab's feeds
       listening then: as it loads, on a `click`, or on a feed's scroll.
     - `ask` pops `answers`: one of `choices` when it has any; `UsageError` when they run out.
-    - `storage` reads its fake.
     - `state` takes JSON values only, and `secrets` may be written only in `Login.start`.
 
     Every hold is recorded in `seen.holds`.
@@ -206,7 +205,6 @@ class FakeCtx:
         when: the run's `when`.
         answers: what `ask` answers, in order.
         state: the plugin's saved state, shared by contexts given the same dict.
-        storage: the `localStorage` that `storage` reads.
         settings: the plugin's `Settings` fields that differ from their defaults.
 
     Raises:
@@ -219,7 +217,6 @@ class FakeCtx:
                  account: str | None = None, cookies: Mapping[str, str] | None = None,
                  when: flnd.plugin.Range = flnd.plugin.Range(), answers: Sequence[str] = (),
                  state: MutableMapping[str, Any] | None = None,
-                 storage: Mapping[str, str] | None = None,
                  settings: Mapping[str, Any] | None = None) -> None:
         if isinstance(plugin, type) and issubclass(plugin, Plugin):
             plugin = plugin()
@@ -237,7 +234,6 @@ class FakeCtx:
         self._answers = deque(answers)
         self._state = flnd.engine.ctx.JsonState(state if state is not None else {})
         self._secrets = _secrets(plugin)
-        self._storage = MappingProxyType(dict(storage or {}))
         try:
             self._settings = type(plugin).Settings(**dict(settings or {}))
         except TypeError as error:
@@ -452,10 +448,6 @@ class FakeCtx:
                       timeout: float | None = None) -> bool:  # noqa: ASYNC109 (a person's)
         """Ask nobody: whether `until` says the step is done already."""
         return bool(await until())
-
-    async def storage(self, origin: str) -> Mapping[str, str]:
-        """The `storage` fake, read-only, whatever the origin."""
-        return self._storage
 
     # -- Waits, threads, people --------------------------------------------------------------
 

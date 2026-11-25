@@ -34,8 +34,8 @@ These rules are for anyone who changes flnd: how to check, lay out, name, write 
 ## Privacy
 - Use only example handles in code, tests and docs: `example_user`, `example_creator`,
   `example_handle`, `example.page`, `examplechannel`, and the domain `example.com`.
-- `FLND_TEST_NO_PROFILES=1` (set by `make test`) makes the tests refuse real browser profiles,
-  the real OS keychain and `~/.config/flnd/`.
+- `FLND_TEST_NO_PROFILES=1` (set by `make test`) makes the tests refuse the real key file and
+  the real user config in `~/.config/flnd/`, and keeps the browser's cache out of the real home.
 
 ## Layout
 Two packages sit side by side in this folder: `src/`, which installs as the package `flnd`,
