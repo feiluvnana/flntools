@@ -1,7 +1,7 @@
 # flnd spec
 
 Everything about flnd on one page: what each command takes, what each site's plugin reads, what each
-refusal says, and how to script it. The words, once: a **target** is what you ask for
+refusal says. The words, once: a **target** is what you ask for
 (`ins:example_user`), a **plugin** is the code for one site, a **route** is the part of a plugin
 that reads one kind of target, a **category** is one part of a target (`reels`), a **post** is one
 item of a site with its **files**, and the **home** is the folder where flnd keeps all of it.
@@ -71,7 +71,7 @@ run that downloads: entries older than 30 days go.
 | `LANG`, `LC_ALL` | a terminal that is not UTF-8 gets `v x * - >` for the glyphs |
 | `APPDATA` | on Windows, the user folder (`%APPDATA%\flnd\`) instead of `~/.config/flnd/` |
 
-A setting resolves in this order: a flag or library argument for one call, the home's `config.toml`,
+A setting resolves in this order: a flag for one call, the home's `config.toml`,
 the user file (`~/.config/flnd/config.toml`), the default.
 
 ## Targets
@@ -152,8 +152,7 @@ Refusals, with the text printed (all `UsageError`, exit 2, before any request):
 - `example.com/x` (no plugin owns it): `which plugin is "example.com/x"? ...`
 
 A link that a short link led to adds ` (from <what you typed>)` to `can't read`. A mistake in
-`--when`, `--limit` or `--folder` is a `UsageError` too ([Dates](#dates), [Folders](#folders)). The
-library says `give at least one target` when a call ends with none.
+`--when`, `--limit` or `--folder` is a `UsageError` too ([Dates](#dates), [Folders](#folders)).
 
 ### Reading from standard input
 
@@ -424,7 +423,7 @@ so a post saved by link is skipped, and found in place, when its profile is sync
 
 ### `--folder`
 
-`--folder VALUE` (library: `folder=`) replaces the folder templates, the plugin's, route's,
+`--folder VALUE` replaces the folder templates, the plugin's, route's,
 category's and `config.toml`'s, for the categories it names, for the run. Files go in
 `media/<code>/<rendered>/<filename>`: the target's own folder is not added. Every target a search
 finds takes it too. `VALUE` is one template for every category, or a list that gives each category
@@ -515,8 +514,6 @@ entry = <category>:<template>  |  *:<template>
   the others. A named category there wins over the category's own `folder`; `*` or one template is a
   default the category's and route's `folder` still win over. A category the call's `--folder` names
   or covers with `*` ignores `config.toml`.
-- In the library, `folder=` also takes a mapping, `{"posts": "{target}/feed", "*": "..."}`; a
-  template in it can't hold a comma outside `{}`.
 
 Refused before any request (`UsageError`, exit 2), besides the template checks above, which name the
 entry as `folder[<category>]` (`the call: folder[posts] is a template of the fields ...`;
@@ -545,7 +542,7 @@ text` for a category the plugin lacks).
 ### A search needs a folder
 
 A search (`<plugin>?<query>`, or a search link) is refused before any request unless `--folder`
-(library: `folder=`) is given and places every category: one template, or a list with `*`.
+is given and places every category: one template, or a list with `*`.
 `config.toml`'s `folder` doesn't count. A search's hits all go there, not to their owners' folders.
 
 - `flnd get "twt?cats"`: `twt?cats: a search needs --folder`; hint `add --folder "{query}"`
@@ -798,8 +795,8 @@ start a new home`.
 
 ## Commands and flags
 
-`flnd --help` lists every command and the plugins' codes; `flnd get --help` adds a row per plugin
-with its targets and categories. Help imports no plugin. Global flags go before or after the
+`flnd --help` lists every command and the plugins' codes, importing no plugin; `flnd get --help`
+adds a row per plugin with its targets and categories. Global flags go before or after the
 command.
 
 | Global flag | Default | What it does |
@@ -1137,7 +1134,7 @@ flnkit/   standalone toolkit, imports nothing of flnd: net browser files html di
 src/      the package flnd
   _library.py cli.py errors.py plugin.py
   engine/  run jobs crawl save resolve plugins auth store config
-  ui/      theme out screen lists forms (imports only flnkit, ui, events, errors)
+  ui/      theme out screen forms log (imports only flnkit, ui, events, errors)
   plugins/ the built-ins, importing only flnd.plugin and the standard library
 ```
 
@@ -1162,7 +1159,7 @@ Read it with any SQLite tool.
 | `make bench` | offline benchmarks; `ARGS=--gate` fails on a 15% slowdown, `--record` rebases |
 | `make setup`, `clean` | sync `.venv`; remove builds |
 | `make try ARGS="ins:example_user"` | list, live, what a get would save (scratch home `.try`) |
-| `make ext`, `make live` | hand checks, never part of `check` |
+| `make live`, `make test-browser` | hand checks, never part of `check` |
 
 **Benchmarks** (`tests/bench/`, groups `startup ui net disk db walk cpu e2e browser`) run offline
 against a loopback server and scratch folders; `make check` runs each in smoke mode only. Run them

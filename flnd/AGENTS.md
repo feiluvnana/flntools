@@ -47,6 +47,8 @@ src/                 the package flnd
   errors.py        the one error hierarchy
   plugin.py        what a plugin declares and gets
   engine/
+    _engine.py     Engine: the commands' work over a home
+    ctx.py         the Ctx a plugin gets, and a plugin's run (cookies, session, tabs)
     run.py         Run, the loop's thread, the event channel, Ctrl-C, the journal
     events.py      the events, Report, State, and the rows the reads return
     jobs.py        the scheduler: Job, pools, priorities, retry policy, holds, segments, lanes
@@ -56,14 +58,14 @@ src/                 the package flnd
     plugins.py     the plugin loader: a code to its class, imported on first use
     auth.py        the logins folder, login steps, cookie write-back
     store.py       flnd.db: schema, migrations, rows, check and repair
-    config.py      config.toml: structs, reading, editing
+    config.py      config.toml: structs and reading
   ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
-    theme.py out.py screen.py forms.py
+    theme.py out.py screen.py forms.py log.py
   plugins/         built-ins, importing only flnd.plugin and the standard library
     __init__.py (the table) fbk.py ins.py loi.py mht.py thr.py tik.py tlg.py twt.py web.py
 flnkit/              the standalone package flnkit, imports nothing of flnd
   net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py media.py
-  stream.py
+  stream.py errors.py
 ```
 
 The import rules, checked by `tests/test_layers.py` by reading every file's imports:
@@ -97,7 +99,7 @@ imports `src/plugins/`.
 - Debug output goes to the journal only.
 
 ## Flags
-- Add a flag only when the target, the config and the library are all wrong for the choice.
+- Add a flag only when the target and the config are both wrong for the choice.
 
 ## Naming
 - Short names.
@@ -110,7 +112,7 @@ imports `src/plugins/`.
 - No aliases.
 
 ## Errors
-- Every error is a `flnd.Error` subclass from the one hierarchy: `flnkit/errors.py` defines
+- Every error is a `flnd.errors.Error` subclass from the one hierarchy: `flnkit/errors.py` defines
   what the kit raises, and `src/errors.py` re-exports it and adds flnd's own classes, hints
   and `classify`:
 
@@ -136,7 +138,7 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
   escape becomes a `PluginError`.
 - `errors.disk(OSError)` is the one disk mapper.
 - A user error never shows a traceback.
-- `Stopped` derives from `KeyboardInterrupt`, never from `flnd.Error`.
+- `Stopped` derives from `KeyboardInterrupt`, never from `flnd.errors.Error`.
 
 ## Bugs
 - Write the failing test first, and run it against the unfixed code. It must fail there.
@@ -157,7 +159,7 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 
 ## Dependencies
 - Each dependency has a reason beside it in `pyproject.toml`.
-- The planned set is curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode,
+- The set is curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode,
   rich and msgspec.
 
 ## Size

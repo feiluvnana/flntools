@@ -13,7 +13,7 @@ dependencies = [
     # Pinned to 0.17: flnkit/net.py sets up curl_cffi's handles itself, from its internals.
     "curl_cffi>=0.17,<0.18",
     "playwright==1.65.*",
-    # HTML parsing: lexbor's C parser and CSS engine, imported only by `flnd._html`.
+    # HTML parsing: lexbor's C parser and CSS engine, imported only by `flnkit/html.py`.
     "selectolax>=0.3.27",
     # AES for loi's archive links (src/plugins/loi.py).
     "cryptography>=42",

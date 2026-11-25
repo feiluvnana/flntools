@@ -177,7 +177,11 @@ Each step is one or a few commits. The commit messages are the ones to use.
 Record: line counts, `make check` time, `make bench` numbers, `flnd --help` time,
 `flnd get --help` time. Keep them in this file under "Numbers".
 
+Done on main: 6b79ff2.
+
 ### Step 1. Remove the Chrome extension (low-cost model)
+
+Done on main: db3343e.
 
 `refactor:remove the chrome extension and its host`
 
@@ -191,6 +195,8 @@ Record: line counts, `make check` time, `make bench` numbers, `flnd --help` time
   that pointed to that section.
 
 ### Step 2. Cookie files are the only cookie login (low-cost model)
+
+Done on main: 081741c.
 
 `refactor:log in with a cookie file only`
 
@@ -208,6 +214,8 @@ Record: line counts, `make check` time, `make bench` numbers, `flnd --help` time
   removed method tests in `tests/test_auth.py`, `tests/test_browser.py` and `tests/test_cookies.py`.
 
 ### Step 3. One login per plugin, no vault (default model, reviewed)
+
+Done on main: 755d2c0.
 
 `feat:keep one cookie file per plugin in the logins folder`, then
 `refactor:remove the vault and account switching`
@@ -230,6 +238,8 @@ Record: line counts, `make check` time, `make bench` numbers, `flnd --help` time
 
 ### Step 4. Built-in plugins only, zero startup regression (default model, reviewed)
 
+Done on main: 56e2993.
+
 `refactor:load only the built-in plugins`
 
 - `src/plugins/__init__.py`: replace `_manifest.py` with a ~20-line static registry table of the 9
@@ -251,6 +261,8 @@ Record: line counts, `make check` time, `make bench` numbers, `flnd --help` time
 
 ### Step 5. No public Python API (low-cost model)
 
+Done on main: ffb8ee7.
+
 `refactor:make the cli the only interface`
 
 - `src/__init__.py` keeps `__version__` and nothing else public; `src/testing.py` moves to
@@ -271,6 +283,8 @@ Record: line counts, `make check` time, `make bench` numbers, `flnd --help` time
 - AGENTS.md: drop the rules about the public surface, `test_names` and `make api`.
 
 ### Step 6. Plain output, Huh-look prompts without Textual (sonnet)
+
+Done on main: 52f805b, d78aba2.
 
 `refactor:replace the interactive lists with plain tables and subcommands`, then
 `refactor:remove json output and the use line`
@@ -301,6 +315,8 @@ Record: line counts, `make check` time, `make bench` numbers, `flnd --help` time
 
 ### Step 7. Config and file cuts (low-cost model)
 
+Done on main: ec8864a, 3daadba.
+
 `refactor:remove unused and rarely used settings`, then `refactor:drop dedupe and file hashes`
 
 - Delete the keys `height`, `browser`, `rate`, `fresh`, `sidecars`, `dedupe`, and the code each
@@ -321,6 +337,8 @@ Record: line counts, `make check` time, `make bench` numbers, `flnd --help` time
   `tests/bench/gates.json` so `make check` and `make bench` stay green.
 
 ### Step 8. One writer per home (default model, reviewed, bench-gated)
+
+Done on main: d3f3642.
 
 `refactor:allow one writer per home and drop part locks`
 
@@ -344,25 +362,28 @@ Record: line counts, `make check` time, `make bench` numbers, `flnd --help` time
 
 ### Step 9. One sync rule (default model, reviewed)
 
+Done on main: e93b5a8.
+
 `refactor:stop a sync at the head id or an older timestamp`
 
-Today a newest-first listing stops at its head, or after 5 saved posts in a row (`stop_after`),
-or at a gap left by a cut-short sync. New rule, one only:
+Before, a newest-first listing stopped at its head, after 5 saved posts in a row (`stop_after`),
+or at a gap left by a cut-short sync. As built, one rule:
 
-- First, audit every newest-first route and category across all 9 plugins:
-  - Confirm each newest-first `Post` listing provides a monotonic post date/timestamp and marks
-    pinned posts (`pinned=True`, including `thr` if Threads supports pins).
-  - Mark `ins.reposts` and `thr.reposts` as `newest_first=False` (like `twt.reposts`), because a
-    repost carries the original post's old date, not the repost time.
-- Each newest-first `Post` listing keeps a head: `{"id": post_id, "ts": timestamp_or_day}`.
-  - A sync stops at the first non-pinned post where **`post.id == head.id`** (and already saved)
-    **or `post_ts < head_ts` (strictly older)** — never `<=`, so multiple posts on the same day
-    (or same second) are never silently skipped, while a deleted head still stops cleanly!
-  - Existing homes whose `heads` only store a bare `post_id` string keep working via the ID match
-    until the next sync writes `{"id": ..., "ts": ...}`.
+- Ins and thr reposts are read to the end (`newest_first=False`, like twt's): a repost carries
+  the original post's old time, not the repost time.
+- A newest-first category keeps a head, `{"id": post_id, "ts": time_or_day}`: the newest post of
+  the completed pass by time (ties: the first seen; a post marked `pinned` is left out; when no
+  post has a time, the first post's id).
+- A post is old when its id is the head's, or its time is strictly older than the head's (never
+  equal, so posts of the head's second or day are never skipped). A post with no time is never
+  old by time.
+- A sync stops after 4 old posts in a row. A new post resets the count, and a pinned post is
+  skipped. The count of 4 is above every site's pin limit, so pins that are not marked never
+  stop a sync early.
+- A head with no time (an older home kept the bare id) takes the time of the head post when the
+  pass meets it.
 - Newest-first discovering routes (`twt?query`, `loi:author/{id}`) yield `Target`s with no dates:
-  they keep ID-based head matching (`child_key == head_id`) and keep `ctx.listing.head` so
-  `twt.py` still stops X search windows early without burning rate limits.
+  they keep ID-based head matching (`child_key == head_id`) and keep `ctx.listing.head`.
 - The head moves only when a pass reaches the old head or the end. A cut-short sync leaves the
   head where it was, so the next sync reads down to it again; saved files are skipped without a
   request.
@@ -375,6 +396,8 @@ or at a gap left by a cut-short sync. New rule, one only:
   deleted head, a pinned post, discovering query heads, `--when`, `--again`.
 
 ### Step 10. Small cuts (low-cost model)
+
+Done on main: 9dcffb8, 0e13c7b.
 
 `refactor:remove the chromium download and the one-file build`
 
