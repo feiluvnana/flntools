@@ -373,13 +373,6 @@ class RunTest(ExampleCase):
         code, out, _ = self.run_app("get", "exs:example_user")
         self.assertRegex(out.splitlines()[-1], r" - 0 saved - 3 already saved - 0 failed$")
 
-    def test_json_lines(self):
-        code, out, _ = self.run_app("--json", "get", "exs:example_user|reels")
-        self.assertEqual(code, 0)
-        rows = [json.loads(line) for line in out.splitlines()]
-        self.assertEqual([row["post"] for row in rows if row["type"] == "Saved"], ["r1"])
-        self.assertEqual((rows[-1]["type"], rows[-1]["saved"]), ("Report", 1))
-
     def test_dry_plans_and_writes_nothing(self):
         code, out, _ = self.run_app("get", "exs:example_user", "--dry")
         self.assertEqual(code, 0)
@@ -412,10 +405,6 @@ class RunTest(ExampleCase):
         self.assertRegex(lines[0], r"^last run: get exs:example_user, .+: 2 saved, 1 failed$")
         self.assertIn("  exs:example_user  1 failure (site): ", lines[1])
         self.assertEqual(lines[-1], "disk: 2 files: history and disk agree")
-        status = json.loads(self.run_app("--json", "status")[1])
-        self.assertEqual((status["type"], status["status"]["saved"]), ("Status", 2))
-        [failure] = status["status"]["failures"]
-        self.assertEqual((failure["post"], failure["error"]["class"]), ("bad", "SiteError"))
 
     def test_the_target_commands(self):
         self.run_app("get", "exs:example_user")
@@ -428,10 +417,7 @@ class RunTest(ExampleCase):
                           "last", "run"])
         followed = {line.split()[0]: "followed" in line for line in lines[1:]}
         self.assertEqual(followed, {"exs:example_user": True, "exs:9": False})
-        rows = [json.loads(line) for line in self.run_app("--json", "target",
-                                                          "list")[1].splitlines()]
-        self.assertIn({"text": "exs:example_user", "kind": "user"}, [row["target"] for row in rows])
-        self.assertEqual(rows[0]["status"], "synced")
+        self.assertIn("synced", lines[1])
         code, out, _ = self.run_app("target", "clean", "exs:example_user", "--media")
         self.assertEqual((code, out), (0, "exs:example_user: forgotten with its files\n"))
         self.assertFalse(any(Path(".flnd/media").rglob("p1*")))
@@ -485,7 +471,7 @@ class RunTest(ExampleCase):
         code, text, _ = self.run_app("target", "clean", "exs:example_user", "--media")
         self.assertEqual((code, text), (0, "kept: nothing was forgotten\n"))
         self.assertRegex(self.asked[-1], r"^Forget 1 target and delete [\d.]+ B\?$")
-        self.assertEqual(len(self.run_app("--json", "target", "list")[1].splitlines()), 2)
+        self.assertEqual(len(self.run_app("target", "list")[1].splitlines()), 3)
         self.sure = True
         self.assertEqual(self.run_app("target", "clean", "exs:example_user")[0], 0)
         self.assertEqual(self.asked[-1], "Forget 1 target?")
@@ -668,8 +654,10 @@ class HelpTest(FlndCase):
         flat = " ".join(text.split())
         self.assertIn("tlg:<@username, chat title or id>, tlg:@<chat>, a link on t.me", flat)
         self.assertIn("|posts,reels,tagged", flat)
-        for flag in ("--when", "--limit", "--dry", "--again", "--home", "--json"):
+        for flag in ("--when", "--limit", "--dry", "--again", "--home"):
             self.assertIn(flag, text)
+        self.assertNotIn("--json", text)
+        self.assertEqual(self.run_app("--json", "status")[0], 2)
         self.assertNotIn("Args:", text)
 
     def test_a_group_lists_its_commands(self):
@@ -709,8 +697,7 @@ class ListsTest(FlndCase):
         self.assertRegex(text, r"defaults\.when +- +- +default")
         self.assertRegex(text.splitlines()[-1], r"^edit .*config\.toml for this home, or .*config\.toml "
                                                 r"for every home$")
-        rows = [json.loads(line) for line in self.run_app("--json", "config")[1].splitlines()]
-        self.assertEqual(rows[0]["key"], "defaults.dedupe")
+        self.assertEqual(text.splitlines()[1].split()[0], "defaults.dedupe")
         self.assertFalse((Path(".flnd") / _store.DB).exists())
 
 
@@ -739,10 +726,6 @@ class AuthTest(FlndCase):
         self.assertEqual(code, 0)
         self.assertRegex(text, r"ins +expired +\S*ins\.txt")
         self.assertRegex(text, r"tlg +ok +\S*tlg\.json")
-        rows = [json.loads(line) for line in self.run_app("--json", "auth", "list")[1]
-                .splitlines()]
-        self.assertEqual([(row["plugin"], row["status"]) for row in rows],
-                         [("ins", "expired"), ("tlg", "ok")])
         self.assertNotIn("secret-val", text)
         self.assertEqual(self.run_app("auth", "logout", "ins")[1], "ins: logged out\n")
         self.assertEqual(vaulted("ins")[0].list, [])
@@ -779,7 +762,7 @@ class AuthTest(FlndCase):
         self.assertIn("ins: the login in cookies.txt has expired", err)
         self.assertIn("export a fresh cookie file", err)
 
-    def test_the_file_is_asked_on_a_terminal_and_never_on_a_pipe_or_with_json(self):
+    def test_the_file_is_asked_on_a_terminal_and_never_on_a_pipe(self):
         path = self.cookie_file(NETSCAPE)
         self.answer(str(path))
         code, text, err = self.run_app("auth", "login", "twt")
@@ -789,8 +772,6 @@ class AuthTest(FlndCase):
         code, _, err = self.run_app("auth", "login", "ins")
         self.assertEqual(code, 2)
         self.assertIn("flnd auth login ins <file>", err)
-        self.answer("1")
-        self.assertEqual(self.run_app("auth", "login", "ins", "--json")[0], 2)
 
 
 def _flnd_auth_rows():

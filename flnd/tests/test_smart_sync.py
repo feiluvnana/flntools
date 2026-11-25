@@ -27,7 +27,7 @@ from flnd import cli as flnd_cli
 from flnd.engine import crawl as job
 from flnd.engine import save
 from flnd.engine import store as _store
-from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped, encode
+from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped
 from flnd.errors import Changed
 from flnd.plugin import File, Plugin, Post, Range, route
 from flnd.ui.log import ui
@@ -488,10 +488,10 @@ class SecretsTest(FeedCase):
         self.download()
         self.sync()
         outputs = {"log": self.dest.getvalue()}
-        outputs["events"] = "\n".join(encode(event).decode() for event in self.events)
+        outputs["events"] = "\n".join(repr(event) for event in self.events)
         outputs["messages"] = "\n".join(f"{event.error} {event.error.hint}" for event in self.events
                                         if hasattr(event, "error"))
-        for argv in (["status"], ["--json", "status"]):
+        for argv in (["status"],):
             out = io.StringIO()
             with redirect_stdout(out):
                 flnd_cli.main(["--home", str(self.home), *argv])

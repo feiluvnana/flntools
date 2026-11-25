@@ -656,7 +656,7 @@ Refusals:
 - a way the plugin lacks: `<code> logs in by <methods>, not '<method>'`
 - a plugin with no login (`mht`, `web`): `<code> needs no login`
 - no readable file: `<code>: a file login needs the path of a cookie file`, hint `flnd auth login
-  <code> <file>`; on a pipe or with `--json`, `<code>: which cookie file?`
+  <code> <file>`; on a pipe, `<code>: which cookie file?`
 - no login cookie: `<code>: no login cookie (<names>) in <file>`, hint `export the cookies from a
   browser where you are logged in`
 - every login cookie expired: `<code>: the login in <file> has expired`, hint `export a fresh
@@ -665,7 +665,7 @@ Refusals:
 Using it:
 
 - `flnd auth list`: one row per plugin with a login: plugin, status (`ok`, `expires in 2 days`,
-  `expired`) and its file. A plain table; `--json` one row each.
+  `expired`) and its file. A plain table.
 - `flnd auth logout <plugin>`: deletes its files. A terminal is asked first.
 - **A run** reads `logins/<code>.txt`, and warns when a login cookie has expired or expires within
   3 days. When the site refreshes a cookie the file already holds, the run writes it back to the
@@ -694,8 +694,7 @@ Exit codes:
 A mistake you can fix prints `✗ <message>` then `  hint  <what to do>`, never a traceback. A flag
 mistake is `✗ flnd: unrecognized arguments: --nope` with the hint `flnd -h lists what it takes`. A
 bug prints `✗ flnd hit a bug: <error>` and `hint  details in <home>/log/crash-<time>.txt` (exit 4;
-`-v` prints the traceback instead). With `--json` every error is also one line, `{"type": "Error",
-"error": {"class", "message", "hint"}}`.
+`-v` prints the traceback instead).
 
 Every error is one of the classes below, with `str(e)` (one line, no secret), `hint`, `target`
 and `retryable`.
@@ -792,7 +791,6 @@ command.
 | --- | --- | --- |
 | `--home DIR` | `$FLND_HOME`, else `./.flnd` | the home |
 | `-v`, `--verbose` | off | show debug lines and a bug's traceback |
-| `--json` | off | print events and rows as JSON lines (each has a `type`); never asks |
 | `-h`, `--help` | | print help for flnd or the command |
 | `-V`, `--version` | | print `flnd <version>` |
 
@@ -813,7 +811,7 @@ standard input, else gets every followed target, or prints `nothing to sync` and
 and exits 0 when none matches. Takes `--when`, `--limit`, `--dry` and `--again`.
 
 **`flnd target list`** the targets the home knows, as a table: followed, categories, status,
-files, size, last run; `--json` one `Tracked` object each.
+files, size, last run.
 
 **`flnd target follow <target...>`** follows known or new targets, so `get` and `sync` take them;
 nothing is downloaded. **`flnd target unfollow <target...>`** stops following known targets; their
@@ -829,23 +827,18 @@ names are never deleted. A terminal is asked first.
 **`flnd auth list | login <plugin> [file] | logout <plugin>`**: see [Logins](#logins).
 
 **`flnd status [--fix]`**: see [check and repair](#check-and-repair). `--fix` repairs the history
-rows of missing or resized files without asking. `--json` prints one `{"type":
-"Status", "status", "logins", "disk"}`.
+rows of missing or resized files without asking.
 
 **`flnd config`** prints each key, value, default and origin (`home`, `user`, `default`), then the
 two files to edit by hand: this home's `config.toml`, and the user file for every home.
-`--json` prints one `Setting` per key.
 
 What a run prints: on a terminal a live screen on standard error (a row per target, files in
-flight, the `now` line, and a `use` line read every 2 s with `psutil`: flnd's process tree, meaning
-itself, the browser's and ffmpeg, as count, resident memory and CPU % (100 is
-one core), then the browser's alone); on a pipe only the end summary, with no `use` line.
-`--json` gets each reading as a `Resources` event (`procs rss cpu browser browser_rss
-browser_cpu`). The end summary goes to standard output (`done in 4m 12s · 3 targets · 1,021 saved
-(3.3 GB) · 1,220 already saved · 1 failed`, starting with `✓` when nothing failed); up to 10
-failures follow on standard error, each with its message and hint, then `details  flnd status`.
-Warnings repeated within 10 s fold into one line, `text (x2)`. Text from a site is stripped of
-control codes before it is printed. Each run's events go to `log/<time>_get.jsonl`.
+flight, the `now` line); on a pipe only the end summary. The end summary goes to standard output
+(`done in 4m 12s · 3 targets · 1,021 saved (3.3 GB) · 1,220 already saved · 1 failed`, starting
+with `✓` when nothing failed); up to 10 failures follow on standard error, each with its message
+and hint, then `details  flnd status`. Warnings repeated within 10 s fold into one line,
+`text (x2)`. Text from a site is stripped of control codes before it is printed. Each run's events
+go to `log/<time>_get.jsonl`.
 
 ## Config
 
@@ -1133,7 +1126,7 @@ flnkit/   standalone toolkit, imports nothing of flnd: net browser files html di
           db cookies media stream errors
 src/      the package flnd
   _library.py cli.py errors.py plugin.py
-  engine/  run meter jobs crawl save resolve plugins auth store config
+  engine/  run jobs crawl save resolve plugins auth store config
   ui/      theme out screen lists forms (imports only flnkit, ui, events, errors)
   plugins/ the built-ins, importing only flnd.plugin and the standard library
 ```
@@ -1165,6 +1158,10 @@ Read it with any SQLite tool.
 against a loopback server and scratch folders; `make check` runs each in smoke mode only. Run them
 before a speed change, and `--gate` before its commit. The `browser` group also reports `heavy_*`
 and `lean_*` (Chrome's peak MiB and CPU seconds on a page of 300 images), via `ps`, not on Windows.
+
+flnd lowers its own priority at the start of `get` and `sync` (`os.nice`, or `SetPriorityClass` on
+Windows), and its child processes, the browser's among them, inherit it. On Windows that
+inheritance is unverified.
 
 ### Adding a built-in plugin
 

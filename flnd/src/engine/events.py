@@ -20,8 +20,8 @@ from flnd.plugin import Target
 
 __all__ = [
     "BUSY", "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure",
-    "FileState", "HoldState", "Phase", "Planned", "Record", "Report", "Resources",
-    "Saved", "Skipped", "State", "Status", "TargetState", "Tracked", "encode", "sink",
+    "FileState", "HoldState", "Phase", "Planned", "Record", "Report",
+    "Saved", "Skipped", "State", "Status", "TargetState", "Tracked", "sink",
 ]
 
 # `Skipped.reason` for a listing a sync found nothing new in.
@@ -142,29 +142,8 @@ class Planned(msgspec.Struct, frozen=True, tag=True):
     state: str
 
 
-
-class Resources(msgspec.Struct, frozen=True, tag=True):
-    """What flnd's processes use, read every 2 s while a run goes: flnd itself and every process
-    below it (the browser's, ffmpeg), then the browser's alone.
-
-    Example:
-        >>> use = Resources(procs=5, rss=300 << 20, cpu=12.5, browser=3, browser_rss=200 << 20)
-        >>> use.procs, use.browser_cpu
-        (5, 0.0)
-    """
-
-    # Processes, bytes of resident memory, and CPU percent (100 is one core's worth).
-    procs: int
-    rss: int
-    cpu: float
-    # The same for the browser's processes alone.
-    browser: int = 0
-    browser_rss: int = 0
-    browser_cpu: float = 0.0
-
-
 # Any event a run yields, for a `match` or an annotation.
-Event = Saved | Skipped | Failed | Planned | Resources
+Event = Saved | Skipped | Failed | Planned
 
 
 # ---------------------------------------------------------------------------------------------
@@ -279,8 +258,6 @@ class State(msgspec.Struct, frozen=True):
     failed: int = 0
     bytes: int = 0
     speed: float = 0.0
-    # The newest reading of flnd's processes; None before the first.
-    resources: Resources | None = None
 
 # ---------------------------------------------------------------------------------------------
 # The report and the reads
@@ -478,33 +455,6 @@ class Checked(msgspec.Struct, frozen=True):
 # ---------------------------------------------------------------------------------------------
 # JSON
 # ---------------------------------------------------------------------------------------------
-
-def encode(value: Any) -> bytes:
-    """One event, report or row as JSON: a path as text, an error as its class, message, hint.
-
-    Args:
-        value: anything from this module, or a list of them.
-
-    Returns:
-        The JSON, as UTF-8 bytes. An event carries its class's name in `"type"`.
-
-    Example:
-        >>> from flnd.plugin import Target
-        >>> encode(Skipped(Target("ins:example_user", kind="user"), "posts", "9001"))[:16]
-        b'{"type":"Skipped'
-    """
-    return msgspec.json.encode(value, enc_hook=_plain)
-
-
-def _plain(value: Any) -> Any:
-    """What `encode` writes for a value msgspec can't: a path, an error."""
-    if isinstance(value, Path):
-        return value.as_posix()
-    if isinstance(value, BaseException):
-        return {"class": type(value).__name__, "message": str(value),
-                "hint": getattr(value, "hint", "")}
-    raise NotImplementedError(f"can't encode {type(value).__name__}")
-
 
 def sink(emit: Callable[[Any], Any] | None) -> Callable[[Any], Awaitable[None]]:
     """`emit` as a coroutine function the loop awaits: `Run._emit` as it is, a plain function

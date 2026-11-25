@@ -18,7 +18,7 @@ from typing import IO, Any
 from rich.cells import cell_len
 from rich.text import Text
 
-from flnd.engine.events import Failed, Phase, Report, Resources, State, TargetState
+from flnd.engine.events import Failed, Phase, Report, State, TargetState
 from flnd.ui import out, theme
 from flnkit import clock
 from flnkit.text import count, duration, size
@@ -147,15 +147,14 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
     if widths[1]:
         header += _pad("categories", widths[1]) + "  "
     header += "".join(_right(name, cells) for name, cells in cols)
-    use_lines = 1 if state.resources is not None else 0
     if height >= 10:
         min_targets = min(total, 2 if height >= 12 else 1)
-        max_file_budget = max(0, height - FRAME_LINES - use_lines - min_targets)
+        max_file_budget = max(0, height - FRAME_LINES - min_targets)
         files = _files(state, at, fancy, limit,
                        max_rows=None if max_file_budget >= 99 else max(0, max_file_budget - 1))
         if files and len(files) + 1 > max_file_budget:
             files = []
-        room = max(0, height - FRAME_LINES - (len(files) + 1 if files else 0) - use_lines)
+        room = max(0, height - FRAME_LINES - (len(files) + 1 if files else 0))
         lines.append(_line((header, "dim")))
         shown = _shown_targets(state.targets, room)
         lines += [_target(row, widths, cols, at, fancy) for row in shown]
@@ -165,8 +164,6 @@ def frame(state: State, *, command: str, width: int, height: int, fancy: bool = 
         if files:
             lines += files + [Text()]
         lines.append(_now(state, fancy))
-        if state.resources is not None:
-            lines.append(_use(state.resources, sep))
         lines += [Text(), _foot(state, fancy)]
     elif height >= 4:
         bottom = [_now(state, fancy), _foot(state, fancy)]
@@ -334,18 +331,6 @@ def _now(state: State, fancy: bool) -> Text:
     if state.holds and state.holds[-1].count > 1:
         text += f" ({theme.glyph('times', fancy)}{state.holds[-1].count})"
     return _line(("now  ", "dim"), (text, "warn" if state.holds else "text"))
-
-
-def _use(use: Resources, sep: str) -> Text:
-    """`use  flnd 5 processes · 312.0 MB · 14% · browser 3 processes · 200.0 MB · 9%`."""
-    def part(name: str, procs: int, rss: int, cpu: float) -> str:
-        found = count(procs, "process", plural="processes")
-        return sep.join([f"{name} {found}", size(rss), f"{cpu:.0f}%"])
-
-    both = part("flnd", use.procs, use.rss, use.cpu)
-    if use.browser:
-        both += sep + part("browser", use.browser, use.browser_rss, use.browser_cpu)
-    return _line(("use  ", "dim"), (both, "text"))
 
 
 def _foot(state: State, fancy: bool) -> Text:

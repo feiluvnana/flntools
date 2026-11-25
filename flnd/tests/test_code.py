@@ -114,6 +114,7 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
     "flnkit/files.py:fake": "answers every file read in a block from handlers; the tests use it",
     "flnkit/clock.py:Fake": "a clock that moves only when slept on; tests/plugin_kit.py's "
                             "fake_clock is its only caller",
+    "flnkit/clock.py:use": "makes a clock the active one inside a block; the tests use it",
 }
 
 

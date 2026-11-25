@@ -1099,13 +1099,8 @@ class Engine:
         """Count one command afresh, publishing its snapshots while it runs (`run.state`)."""
         self.tally = Tally(self._shown)
         self._scheduler = None
-        async with self.tally.publishing(self.emit, self._off_loop):
+        async with self.tally.publishing():
             yield
-
-    async def _off_loop(self, fn: Callable[[], T]) -> T | None:
-        """`fn()` on a `CALL` thread of the command's scheduler; None before it has one."""
-        scheduler = self._scheduler
-        return None if scheduler is None else await scheduler.on(jobs.Kind.CALL, fn)
 
     @contextlib.asynccontextmanager
     async def _running(self, stop: Stop, *, dry: bool = False) -> AsyncIterator[_Runner]:

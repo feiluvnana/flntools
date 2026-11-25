@@ -22,9 +22,6 @@ dependencies = [
     "qrcode>=7.4",
     "rich",
     "msgspec",
-    # Reads flnd's process tree (count, memory, CPU %) for the run screen's `use` line, on all
-    # three systems, which the standard library cannot do (`src/engine/meter.py`).
-    "psutil>=5.9",
 ]
 
 [project.scripts]
@@ -42,9 +39,9 @@ package-dir = {"flnd" = "src", "flnkit" = "flnkit"}
 flnd = ["py.typed"]
 
 [dependency-groups]
-# The tools `make` runs: ruff for `make lint`; pyte draws a terminal in
-# the screen's tests.
-dev = ["ruff>=0.14", "pyte>=0.8"]
+# The tools `make` runs: ruff for `make lint`; pyte draws a terminal in the screen's tests;
+# psutil reads process memory for `tests/bench/mem.py`.
+dev = ["ruff>=0.14", "pyte>=0.8", "psutil>=5.9"]
 # Only `make dist` needs PyInstaller; its recipe adds this group with `uv run --group dist`.
 dist = ["pyinstaller>=6"]
 

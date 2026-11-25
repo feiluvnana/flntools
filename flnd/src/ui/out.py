@@ -191,17 +191,6 @@ def size(n: int) -> str:
     return text.size(n)
 
 
-def json(value: Any) -> None:
-    """Print one event, report or row as one line of JSON (`flnd.engine.events.encode`), with
-    its class's name in `"type"` when it has none."""
-    from flnd.engine.events import encode
-
-    text = encode(value).decode()
-    if text.startswith("{") and not text.startswith('{"type"'):
-        text = f'{{"type":"{type(value).__name__}"' + ("," + text[1:] if text != "{}" else "}")
-    plain(text)
-
-
 def styled(kind: str, text: str, *, fancy: bool, times: int = 1) -> Any:
     """A log line of `kind` (debug, info, ok, warn, error): its glyph, then `text`.
 

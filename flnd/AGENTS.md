@@ -159,7 +159,7 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 ## Dependencies
 - Each dependency has a reason beside it in `pyproject.toml`.
 - The planned set is curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode,
-  rich, msgspec and psutil.
+  rich and msgspec.
 
 ## Size
 - The limits live in `tests/test_size.py`: `CODE_LINES` for `src/` and `flnkit/`, and

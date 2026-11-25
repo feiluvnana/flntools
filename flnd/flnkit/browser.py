@@ -250,9 +250,6 @@ LAUNCH_ARGS = [
      "QuickIntensiveWakeUpThrottlingAfterLoading,Prerender2,HeavyAdIntervention,"
      "MediaSessionService,AutofillServerCommunication,CertificateTransparencyComponentUpdater"),
 ]
-# Browser process name substrings and POSIX niceness used to keep background tabs polite.
-BROWSER_PROCS = ("chrom", "headless", "firefox", "webkit", "msedge")
-POSIX_NICE = 10
 # `navigator.webdriver` is removed on `Navigator.prototype`, matching how an ordinary browser acts.
 HIDE_WEBDRIVER = (
     "Object.defineProperty(Navigator.prototype, 'webdriver', "
@@ -705,35 +702,6 @@ def _headless_shell_installed(playwright: Playwright) -> bool:
     return False
 
 
-def _lower_priority() -> None:
-    """Lower priority of browser child processes on Windows, macOS and Linux."""
-    try:
-        import psutil
-
-        children = psutil.Process().children(recursive=True)
-    except Exception:
-        return
-    for proc in children:
-        try:
-            name = proc.name().lower()
-            if not any(part in name for part in BROWSER_PROCS):
-                continue
-            if sys.platform == "win32":
-                below = getattr(psutil, "BELOW_NORMAL_PRIORITY_CLASS", None)
-                above = (
-                    getattr(psutil, "NORMAL_PRIORITY_CLASS", None),
-                    getattr(psutil, "ABOVE_NORMAL_PRIORITY_CLASS", None),
-                    getattr(psutil, "HIGH_PRIORITY_CLASS", None),
-                    getattr(psutil, "REALTIME_PRIORITY_CLASS", None),
-                )
-                if below is not None and proc.nice() in above:
-                    proc.nice(below)
-            elif proc.nice() < POSIX_NICE:
-                proc.nice(POSIX_NICE)
-        except Exception:
-            continue
-
-
 async def _open_context(playwright: Playwright, channel: str, launch_options: dict[str, Any],
                         context_options: dict[str, Any]) -> tuple[BrowserContext, list]:
     """Launch the browser in a fresh incognito context, returning `(context, close_steps)`."""
@@ -742,7 +710,6 @@ async def _open_context(playwright: Playwright, channel: str, launch_options: di
     if headless and channel == "chromium" and _headless_shell_installed(playwright):
         launch_channel = None
     remote = await playwright.chromium.launch(channel=launch_channel, **launch_options)
-    await asyncio.to_thread(_lower_priority)
     options = context_options
     if headless:
         options = {**options, "user_agent": await _headful_ua(playwright, channel, remote)}
@@ -911,7 +878,6 @@ class Browser:
         self.pages: weakref.WeakSet[Page] = weakref.WeakSet()
         self._close_steps = close_steps
         self._closed = False
-        self._prioritized = False
 
     async def __aenter__(self) -> Browser:
         return self
@@ -929,9 +895,6 @@ class Browser:
             The tab.
         """
         raw = await self.raw.new_page()
-        if not self._prioritized:
-            self._prioritized = True
-            await asyncio.to_thread(_lower_priority)
         if self._override is not None:
             # The session stays open: an override lasts only as long as the session that set it.
             session = await self.raw.new_cdp_session(raw)

@@ -29,7 +29,6 @@ from flnd.engine.events import (
     Phase,
     Planned,
     Report,
-    Resources,
     Saved,
     Skipped,
     State,
@@ -701,8 +700,6 @@ TICK = 1 / 10
 SPEED_WINDOW = 3.0
 # The files in flight a snapshot names; `State.more` counts the rest.
 FILES_SHOWN = 6
-# Seconds between two readings of flnd's processes (`flnd.engine.meter`).
-RESOURCES_EVERY = 2.0
 
 
 class _Rate:
@@ -805,8 +802,6 @@ class Tally:
         self._started = clock.now()
         self._version = 0
         self._last: State | None = None
-        # The newest reading of flnd's processes, shown on the snapshot.
-        self._resources: Resources | None = None
 
     # -- what the run counts ------------------------------------------------------------------
 
@@ -953,16 +948,8 @@ class Tally:
         return state
 
     @contextlib.asynccontextmanager
-    async def publishing(
-        self, events: Callable[[Any], Awaitable[None]] | None = None,
-        off: Callable[[Callable[[], Resources]], Awaitable[Resources | None]] | None = None,
-    ) -> AsyncIterator[Tally]:
+    async def publishing(self) -> AsyncIterator[Tally]:
         """Publish a snapshot every `TICK` seconds from the loop, then a last one.
-
-        Args:
-            events: the run's event sink; given with `off`, flnd's processes are read every
-                `RESOURCES_EVERY` seconds, shown on the snapshot and sent as `Resources` events.
-            off: runs a blocking read on the scheduler's thread; gives None while it has none.
 
         Yields:
             This tally.
@@ -974,33 +961,14 @@ class Tally:
                 await asyncio.sleep(TICK)
                 self.publish()
 
-        async def watch(events: Callable[[Any], Awaitable[None]], off: Any) -> None:
-            from flnd.engine.meter import Meter
-
-            meter, primed = Meter(), False
-            while True:
-                await asyncio.sleep(RESOURCES_EVERY)
-                use = await off(meter.read)
-                # The first read only sets the CPU baselines.
-                if use is None or not primed:
-                    primed = primed or use is not None
-                    continue
-                with self._lock:
-                    self._resources = use
-                await events(use)
-
         loop = asyncio.get_running_loop()
-        tasks = [loop.create_task(tick())]
-        if events is not None and off is not None:
-            tasks.append(loop.create_task(watch(events, off)))
+        task = loop.create_task(tick())
         try:
             yield self
         finally:
-            for task in tasks:
-                task.cancel()
-            for task in tasks:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
             self.publish(force=True)
 
     def _state(self, now: float) -> State:
@@ -1026,7 +994,6 @@ class Tally:
             saved=sum(t.saved for t in targets), skipped=sum(t.skipped for t in targets),
             failed=sum(t.failed for t in targets), bytes=sum(t.bytes for t in targets),
             speed=self._rate.at(now, self._received + sum(flying.values())),
-            resources=self._resources,
         )
 
     @staticmethod

@@ -23,7 +23,6 @@ from fakes import CDN, Engine, EngineCase, drive, login_cookies, make_plugin, no
 from flnd import _library, errors, plugin
 from flnd.engine import events as _events
 from flnd.engine import jobs as jobs_module
-from flnd.engine.events import encode
 from flnd.engine.plugins import PLUGINS
 from flnd.plugin import File, Plugin, Post, Target, route
 from flnkit import net as _net
@@ -411,16 +410,6 @@ class EventsTest(LibraryCase):
         self.assertEqual((failed.target.plugin, failed.post, failed.path),
                          ("exl", "", None))
         self.assertFalse(report.ok)
-
-    def test_events_encode_to_json(self):
-        events = list(self.fl.get("exs:example_user|reels"))
-        lines = [encode(event) for event in events]
-        self.assertTrue(any(line.startswith(b'{"type":"Saved"') for line in lines))
-        self.assertIn(b'"path":"', lines[-1])
-        login = _events.Failed(plugin.Target("exs:example_user", kind="user"),
-                            errors.LoginError("not logged in", hint="log in"))
-        self.assertIn(b'"error":{"class":"LoginError","message":"not logged in","hint":"log in"}',
-                      encode(login))
 
     def test_events_are_frozen(self):
         [event, *_] = [event for event in self.fl.get("exs:example_user")

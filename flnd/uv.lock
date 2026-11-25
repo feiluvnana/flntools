@@ -304,7 +304,6 @@ dependencies = [
     { name = "curl-cffi" },
     { name = "msgspec" },
     { name = "playwright" },
-    { name = "psutil" },
     { name = "qrcode" },
     { name = "rich" },
     { name = "selectolax" },
@@ -313,6 +312,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "psutil" },
     { name = "pyte" },
     { name = "ruff" },
 ]
@@ -327,7 +327,6 @@ requires-dist = [
     { name = "curl-cffi", specifier = ">=0.17,<0.18" },
     { name = "msgspec" },
     { name = "playwright", specifier = "==1.65.*" },
-    { name = "psutil", specifier = ">=5.9" },
     { name = "qrcode", specifier = ">=7.4" },
     { name = "rich" },
     { name = "selectolax", specifier = ">=0.3.27" },
@@ -336,6 +335,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "psutil", specifier = ">=5.9" },
     { name = "pyte", specifier = ">=0.8" },
     { name = "ruff", specifier = ">=0.14" },
 ]

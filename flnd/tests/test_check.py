@@ -178,15 +178,6 @@ class LibraryAndCliTest(CheckCase):
         lost.unlink()
         self.assertEqual(self.run_cli()[0], 0)
 
-    def test_json_prints_one_status_object_with_the_disk_in_it(self):
-        self.saved_two()
-        self.path("a").unlink()
-        code, out = self.run_cli("--json")
-        [line] = out.splitlines()
-        found = json.loads(line)
-        self.assertEqual((code, found["type"], found["disk"]["files"]), (1, "Status", 2))
-        self.assertEqual([record["key"] for record in found["disk"]["missing"]], ["aaa:a.jpg"])
-
 
 if __name__ == "__main__":
     import unittest

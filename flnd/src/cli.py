@@ -80,7 +80,7 @@ def _main(argv: Sequence[str] | None) -> int:
     except Exception as error:
 
         if isinstance(error, errors.Error):
-            _report(error, as_json=args.json)
+            out.error(error)
             return exit_code(error)
         return _crashed(error, args)
 
@@ -111,21 +111,11 @@ def exit_code(error: BaseException | None) -> int:
 
 def _settle(args: argparse.Namespace) -> None:
     """Give each global flag left out its default."""
-    for name, default in (("home", None), ("verbose", False), ("json", False)):
+    for name, default in (("home", None), ("verbose", False)):
         if not hasattr(args, name):
             setattr(args, name, default)
     if not hasattr(args, "command"):
         args.command = None
-
-
-def _report(error: Any, *, as_json: bool = False) -> None:
-    """Print an error a person can act on: its message, then its hint; never a traceback."""
-    from flnd.ui import out
-
-    # `out.error` first: it gives the error flnd's hint when it has none, which the JSON shows.
-    out.error(error)
-    if as_json:
-        out.json({"type": "Error", "error": error})
 
 
 def _crashed(error: Exception, args: argparse.Namespace) -> int:
@@ -245,15 +235,11 @@ def target_list(args: argparse.Namespace) -> int:
 
     with _open(args) as fl:
         rows = list(fl.targets)
-    if args.json:
-        for row in rows:
-            _json(row)
-    else:
-        _table(("target", "followed", "categories", "status", "files", "size", "last run"),
-               [(str(row.target), "followed" if row.follow else "-", " ".join(row.categories),
-                 _status(row), f"{row.seen:,} found" if row.query else f"{row.files:,} files",
-                 out.size(row.size) if row.size else "-", _ago(row.at))
-                for row in rows])
+    _table(("target", "followed", "categories", "status", "files", "size", "last run"),
+           [(str(row.target), "followed" if row.follow else "-", " ".join(row.categories),
+             _status(row), f"{row.seen:,} found" if row.query else f"{row.files:,} files",
+             out.size(row.size) if row.size else "-", _ago(row.at))
+            for row in rows])
     return OK
 
 
@@ -275,7 +261,7 @@ def target_follow(args: argparse.Namespace) -> int:
     with _open(args) as fl:
         done = fl.targets.follow(*args.targets)
     for row in done:
-        _line(args, row, f"{row.target}: followed")
+        _line(f"{row.target}: followed")
     return OK
 
 
@@ -291,7 +277,7 @@ def target_unfollow(args: argparse.Namespace) -> int:
     with _open(args) as fl:
         done = fl.targets.unfollow(*args.targets)
     for row in done:
-        _line(args, row, f"{row.target}: unfollowed")
+        _line(f"{row.target}: unfollowed")
     return OK
 
 
@@ -309,7 +295,7 @@ def target_retry(args: argparse.Namespace) -> int:
     with _open(args) as fl:
         done = fl.targets.retry(*args.targets)
     for row in done:
-        _line(args, row, f"{row.target}: failed files will be retried")
+        _line(f"{row.target}: failed files will be retried")
     return OK
 
 
@@ -326,12 +312,12 @@ def target_clean(args: argparse.Namespace) -> int:
         0.
     """
     with _open(args) as fl:
-        if not args.json and not _sure(fl, args):
-            _line(args, None, "kept: nothing was forgotten")
+        if not _sure(fl, args):
+            _line("kept: nothing was forgotten")
             return OK
         forgotten = fl.targets.clean(*args.targets, media=args.media)
     for row in forgotten:
-        _line(args, row, f"{row.target}: forgotten" + (" with its files" if args.media else ""))
+        _line(f"{row.target}: forgotten" + (" with its files" if args.media else ""))
     return OK
 
 
@@ -360,10 +346,7 @@ def auth_list(args: argparse.Namespace) -> int:
 
     with _open(args) as fl:
         rows = list(fl.auth)
-    if args.json:
-        for row in rows:
-            _json(row)
-    elif not rows:
+    if not rows:
         out.line(("no logins", "dim"))
     else:
         _table(("plugin", "status", "file"), [(row.plugin, row.status, row.file) for row in rows])
@@ -383,13 +366,12 @@ def auth_login(args: argparse.Namespace) -> int:
         0.
 
     Raises:
-        UsageError: the cookie file is left out where nobody can be asked (no terminal, or
-            --json).
+        UsageError: the cookie file is left out where nobody can be asked (no terminal).
     """
     method, path = _how(args)
     with _open(args) as fl:
         done = fl.auth.login(args.plugin, method=method, path=path)
-    _line(args, done, f"{done.plugin}: logged in ({done.status})")
+    _line(f"{done.plugin}: logged in ({done.status})")
     return OK
 
 
@@ -405,11 +387,11 @@ def auth_logout(args: argparse.Namespace) -> int:
     from flnd.ui import forms
 
     with _open(args) as fl:
-        if not args.json and not forms.confirm(f"Log out of {args.plugin}?"):
-            _line(args, None, "kept: nobody was logged out")
+        if not forms.confirm(f"Log out of {args.plugin}?"):
+            _line("kept: nobody was logged out")
             return OK
         gone = fl.auth.logout(args.plugin)
-    _line(args, gone, f"{gone.plugin}: logged out")
+    _line(f"{gone.plugin}: logged out")
     return OK
 
 
@@ -417,8 +399,7 @@ def status(args: argparse.Namespace) -> int:
     """Show the last run, its failures by target, the logins that need care, and the disk.
 
     A failure a later run saved is left out. A failed file is retried by itself at the start of
-    its target's next 3 gets; `flnd target retry` asks for it again after that. With --json,
-    one JSON object: the run's command and times, what it saved, and its failures.
+    its target's next 3 gets; `flnd target retry` asks for it again after that.
 
     --fix repairs the history rows whose file is missing or the wrong size, without asking; on a
     terminal, `flnd status` alone offers to.
@@ -436,10 +417,6 @@ def status(args: argparse.Namespace) -> int:
         logins = [row for row in fl.auth if row.status != "ok"]
         checked = fl.check(fix=args.fix)
     well = (found is None or not found.failures) and not logins and checked.ok
-    if args.json:
-        out.json({"type": "Status", "status": found, "logins": logins,
-                  "disk": checked})
-        return OK if well else FAILED
     if found is None:
         out.line(("no run yet", "dim"))
     else:
@@ -471,11 +448,6 @@ def config(args: argparse.Namespace) -> int:
     from flnd.ui import out
 
     with _open(args) as fl:
-        if args.json:
-            for key in fl.config:
-                out.json({"type": "Setting", "key": key, "value": fl.config[key],
-                          "default": fl.config.default(key), "from": fl.config.where(key)})
-            return OK
         _table(("key", "value", "default", "from"),
                [(key, _show(fl.config[key]), _show(fl.config.default(key)), fl.config.where(key))
                 for key in fl.config])
@@ -670,8 +642,6 @@ def _globals() -> argparse.ArgumentParser:
                             "(default: $FLND_HOME, else ./.flnd)")
     group.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS,
                        help="show flnd's debug lines, and a bug's traceback")
-    group.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
-                       help="print events and rows as JSON lines and never asks")
     return shared
 
 
@@ -767,7 +737,7 @@ def _how(args: argparse.Namespace) -> tuple[str, str | None]:
         return args.how or ways[0], None
     if args.how:
         return "file", args.how
-    if args.json or not forms.interactive():
+    if not forms.interactive():
         raise errors.UsageError(f"{code}: which cookie file?",
                                 hint=f"flnd auth login {code} <file>")
     return "file", (forms.text("Cookie file") or "").strip()
@@ -787,25 +757,15 @@ def _ago(at: str) -> str:
     return "just now"
 
 
-def _line(args: argparse.Namespace, value: Any, text: str) -> None:
-    """Print one result: as JSON with `--json`, else as styled `text`."""
+def _line(text: str) -> None:
+    """Print one result as styled `text`: "head: tail" with the head in focus."""
     from flnd.ui import out
 
-    if args.json:
-        _json(value)
-        return
     head, colon, tail = text.partition(": ")
     if not colon:
         out.line(text)
         return
     out.line((head, "bold focus"), (colon, "dim"), tail)
-
-
-def _json(value: Any) -> None:
-    """Print one value (an event, a row, or a plain dict) as one line of JSON on standard output."""
-    from flnd.ui import out
-
-    out.json(value)
 
 
 def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
@@ -837,13 +797,13 @@ def _cell(index: int, text: str) -> tuple[str, str]:
 
 def _watch(fl: _library.Flnd, run: Run, args: argparse.Namespace, name: str = "get") -> int:
     """Read a run's events into the chosen view, print its end, and return its exit code."""
-    from contextlib import ExitStack, nullcontext
+    from contextlib import ExitStack
 
     from flnd.ui.log import stamped, ui
     from flnd.ui.screen import Screen
 
     journal_path = stamped(fl.home, name, ".jsonl")
-    view: _View = _Json() if args.json else _JournalView()
+    view = _JournalView()
     with ExitStack() as stack:
         try:
             journal = stack.enter_context(ui.file(journal_path))
@@ -855,7 +815,7 @@ def _watch(fl: _library.Flnd, run: Run, args: argparse.Namespace, name: str = "g
         if journal is not None:
             journal.write({"type": "Start", "command": name, "version": __version__})
         # The screen ends before the summary: its last frame stays above it.
-        with nullcontext() if args.json else Screen(lambda: run.state, command=name):
+        with Screen(lambda: run.state, command=name):
             for event in run:
                 view.show(event)
             report = run.report
@@ -927,22 +887,6 @@ class _JournalView(_View):
         folder, filename = os.path.split(_shown(event.path))
         out.line((f"{event.state} ", "bold focus" if event.state == "new" else "dim"),
                  ((folder + os.sep) if folder else "", "dim"), filename)
-
-
-class _Json(_View):
-    """Each event as one JSON object per line, then the report as `{"type": "Report", ...}`."""
-
-    def show(self, event: Any) -> None:
-        _json(event)
-
-    def end(self, report: Any, state: Any) -> None:
-        """Write the finished run's report as a JSON object on its own line.
-
-        Args:
-            report: the run's report to encode.
-            state: its last snapshot, which the JSON lines leave out.
-        """
-        _json(report)
 
 
 # Each error class's word in a failure line, by class name; the first class in an error's MRO

@@ -1550,51 +1550,12 @@ class FootprintTest(BrowserCase):
                 ),
                 stop=mock.AsyncMock(),
             )
-            with mock.patch.object(_browser, "_headful_ua", mock.AsyncMock(return_value="UA")), \
-                    mock.patch.object(_browser, "_lower_priority"):
+            with mock.patch.object(_browser, "_headful_ua", mock.AsyncMock(return_value="UA")):
                 run(_browser._open_context(
                     cast(Any, pw), "chromium",
                     {"headless": True, "args": []}, {},
                 ))
             self.assertEqual(channels, [None])
-
-    def test_lower_priority_handles_windows_macos_and_linux(self):
-        import psutil
-
-        class FakeProc:
-            def __init__(self, name, level):
-                self._name, self._level = name, level
-                self.set_to = None
-
-            def name(self):
-                return self._name
-
-            def nice(self, value=None):
-                if value is None:
-                    return self._level
-                self.set_to = value
-                self._level = value
-                return None
-
-        chrome = FakeProc("chrome.exe", 0x20)
-        other = FakeProc("python.exe", 0x20)
-        me = SimpleNamespace(children=lambda recursive=True: [chrome, other])
-        with mock.patch.object(psutil, "Process", return_value=me), \
-                mock.patch.object(_browser.sys, "platform", "win32"), \
-                mock.patch.object(psutil, "BELOW_NORMAL_PRIORITY_CLASS", 0x4000, create=True), \
-                mock.patch.object(psutil, "NORMAL_PRIORITY_CLASS", 0x20, create=True):
-            _browser._lower_priority()
-        self.assertEqual((chrome.set_to, other.set_to), (0x4000, None))
-
-        for plat in ("darwin", "linux"):
-            helper = FakeProc("Google Chrome Helper", 0)
-            already = FakeProc("headless_shell", 15)
-            procs = [helper, already]
-            me = SimpleNamespace(children=lambda recursive=True, procs=procs: procs)
-            with mock.patch.object(psutil, "Process", return_value=me), \
-                    mock.patch.object(_browser.sys, "platform", plat):
-                _browser._lower_priority()
-            self.assertEqual((helper.set_to, already.set_to), (_browser.POSIX_NICE, None))
 
 
 if __name__ == "__main__":

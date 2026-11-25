@@ -6,9 +6,7 @@ The block is drawn into pyte, a terminal emulator, and read back as the cells a 
 from __future__ import annotations
 
 import ast
-import asyncio
 import io
-import json
 import os
 import subprocess
 import sys
@@ -27,7 +25,7 @@ from rich.console import Console
 from flnd import errors
 from flnd.engine import events
 from flnd.engine import run as job
-from flnd.engine.events import FileState, HoldState, Phase, Resources, State, TargetState
+from flnd.engine.events import FileState, HoldState, Phase, State, TargetState
 from flnd.plugin import Target
 from flnd.ui import screen
 from flnd.ui.log import ui
@@ -165,14 +163,11 @@ class FrameTest(unittest.TestCase):
         self.assertTrue(all(cell_len(line) <= 79 for line in lines))
         self.assertTrue(any("line1 line2" in line for line in lines))
 
-    def test_short_terminal_with_files_and_resources_never_exceeds_height(self) -> None:
+    def test_short_terminal_with_files_never_exceeds_height(self) -> None:
         files = tuple(
             FileState("ins:example_user", f"posts/{n}.jpg", 50, 100, 10) for n in range(6)
         )
-        state = msgspec.structs.replace(
-            MOCKUP, files=files, more=2,
-            resources=Resources(5, 312 << 20, 14.4, browser=3, browser_rss=200 << 20),
-        )
+        state = msgspec.structs.replace(MOCKUP, files=files, more=2)
         for h in (14, 12, 8, 5):
             with self.subTest(height=h):
                 lines = screen.frame(state, command="get", width=100, height=h).plain.split("\n")
@@ -192,67 +187,6 @@ class FrameTest(unittest.TestCase):
                     self.assertTrue(any("%" in line for line in lines))
                 if w in (60, 80):
                     self.assertTrue(any("saved" in line for line in lines))
-
-
-class ResourcesTest(unittest.TestCase):
-    USE = Resources(5, 312 << 20, 14.4, browser=3, browser_rss=200 << 20, browser_cpu=9.0)
-
-    def test_the_line_shows_flnd_and_the_browser_when_there_is_a_reading(self) -> None:
-        rows = draw(msgspec.structs.replace(MOCKUP, resources=self.USE))
-        self.assertIn("  use  flnd 5 processes · 312.0 MB · 14% · browser 3 processes · "
-                      "200.0 MB · 9%", rows)
-        self.assertFalse([row for row in draw(MOCKUP) if row.startswith("  use ")])
-
-    def test_a_reading_is_sent_as_an_event_and_shown_on_the_snapshot(self) -> None:
-        sent: list = []
-
-        async def go() -> State:
-            got = asyncio.Event()
-
-            async def events(event) -> None:
-                sent.append(event)
-                got.set()
-
-            async def off(fn):
-                return fn()
-
-            tally = job.Tally()
-            async with tally.publishing(events, off):
-                await got.wait()
-                return tally.publish(force=True)
-
-        with mock.patch.object(job, "RESOURCES_EVERY", 0.01), \
-                mock.patch("flnd.engine.meter.Meter.read", return_value=self.USE):
-            state = asyncio.run(go())
-        self.assertEqual((sent[0], state.resources), (self.USE, self.USE))
-
-    def test_json_gets_the_event_and_a_plain_log_prints_nothing(self) -> None:
-        from flnd import cli
-
-        out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
-            cli._JournalView().show(self.USE)
-        self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
-        with redirect_stdout(out):
-            cli._Json().show(self.USE)
-        row = json.loads(out.getvalue())
-        self.assertEqual((row["type"], row["procs"], row["browser"]), ("Resources", 5, 3))
-
-    def test_the_meter_counts_the_process_and_the_browser_among_its_children(self) -> None:
-        from flnd.engine.meter import Meter
-
-        def fake(pid: int, name: str, rss: int, cpu: float) -> mock.Mock:
-            proc = mock.MagicMock(pid=pid)
-            proc.name.return_value = name
-            proc.memory_info.return_value.rss = rss
-            proc.cpu_percent.return_value = cpu
-            return proc
-
-        root = fake(1, "python", 100, 5.0)
-        root.children.return_value = [fake(2, "node", 10, 1.0), fake(3, "Chromium Helper", 50, 2.0)]
-        with mock.patch("psutil.Process", return_value=root):
-            use = Meter().read()
-        self.assertEqual(use, Resources(3, 160, 8.0, 1, 50, 2.0))
 
 
 class TallyTest(unittest.TestCase):
