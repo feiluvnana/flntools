@@ -501,8 +501,8 @@ def read(home: Path, *, user: Path | None, plugins: Mapping[str, type] | None = 
     called = _from_dotted(given or {})
     layers = [
         (Where.ARGUMENT, "the call", called),
-        (Where.HOME, str(home / FILE), _load(home / FILE, Where.HOME)),
-        *([(Where.USER, str(user), _load(user, Where.USER))] if user is not None else []),
+        (Where.HOME, str(home / FILE), _load(home / FILE)),
+        *([(Where.USER, str(user), _load(user))] if user is not None else []),
     ]
     values: dict[str, Any] = {}
     where: dict[str, Where] = {}
@@ -515,11 +515,11 @@ def read(home: Path, *, user: Path | None, plugins: Mapping[str, type] | None = 
         codes |= set(data.get("plugins", {}))
     defaults = Defaults(**{key.removeprefix("defaults."): value for key, value in values.items()
                            if key.startswith("defaults.")})
-    resolved = {code: _plugin(code, values, plugins.get(code), defaults) for code in codes}
+    resolved = {code: _plugin(code, values, plugins.get(code)) for code in codes}
     return Config(defaults=defaults, plugins=resolved, where=where)
 
 
-def _load(path: Path, origin: Where) -> dict[str, Any]:
+def _load(path: Path) -> dict[str, Any]:
     """One file's tables; `{}` when it is missing."""
     guard(path)
     try:
@@ -646,8 +646,7 @@ def _type_name(kind: Any) -> str:
     return getattr(kind, "__name__", None) or str(kind)
 
 
-def _plugin(code: str, values: Mapping[str, Any], cls: type | None,
-            defaults: Defaults) -> PluginConfig:
+def _plugin(code: str, values: Mapping[str, Any], cls: type | None) -> PluginConfig:
     prefix = f"plugins.{code}."
     own = {key.removeprefix(prefix): value for key, value in values.items()
            if key.startswith(prefix)}

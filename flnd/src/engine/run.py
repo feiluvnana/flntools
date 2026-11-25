@@ -71,11 +71,10 @@ _RESTORERS: list[Callable[[], None]] = []
 
 
 class Stop:
-    """A run's two-stage stop state: `soon` stops listing, `now` cancels what is in flight;
-    and `suspended`, which holds new jobs until it is cleared.
+    """A run's two-stage stop state: `soon` stops listing, `now` cancels what is in flight.
 
     The engine, the crawl and the scheduler all watch the same `Stop`. Who sets it:
-    `stopping`'s Ctrl-C handler, `Run.stop()`, `Run.suspend()`, or a test.
+    `stopping`'s Ctrl-C handler, `Run.stop()`, or a test.
 
     Example:
         >>> stop = Stop()
@@ -87,7 +86,6 @@ class Stop:
     def __init__(self) -> None:
         self.soon = threading.Event()
         self.now = threading.Event()
-        self.suspended = threading.Event()
 
     @property
     def stage(self) -> str:
@@ -346,30 +344,6 @@ class Run:
                           stopped=self._asked, retried=self._retried, resumed=self._resumed,
                           unchanged=self._unchanged)
 
-    def suspend(self) -> None:
-        """Hold the run: no new job starts until `resume()`.
-
-        The jobs already running go on. A stop still works while suspended, and ends the
-        suspension. Suspending twice is the same as once.
-
-        Example:
-            >>> run = Run(lambda emit, stop: None, name="nothing")
-            >>> run.suspend()
-            >>> run.resume()
-        """
-        self._stop.suspended.set()
-
-    def resume(self) -> None:
-        """Let a suspended run go on where it was; nothing for a run that isn't suspended.
-
-        Example:
-            >>> run = Run(lambda emit, stop: None, name="nothing")
-            >>> run.resume()
-            >>> run.wait().ok
-            True
-        """
-        self._stop.suspended.clear()
-
     def stop(self) -> None:
         """Ask the run to stop gracefully, as a first Ctrl-C does.
 
@@ -389,8 +363,6 @@ class Run:
                 # Nothing to stop: the run is over before it began, and won't warn when dropped.
                 self._over = True
         self._stop.soon.set()
-        # A suspended run would never get to its stop.
-        self._stop.suspended.clear()
 
     def __repr__(self) -> str:
         if self._thread is None:
@@ -589,8 +561,6 @@ def stopping(state: Stop | None = None) -> Iterator[Stop]:
         return
 
     def handle(signum: int, _frame: Any) -> None:
-        # A suspended run would never get to its stop: Ctrl-C ends the suspension too.
-        state.suspended.clear()
         if state.now.is_set():
             quit_now()
         elif state.soon.is_set() or signum == signal.SIGTERM:

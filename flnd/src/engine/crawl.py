@@ -1992,7 +1992,7 @@ async def _read(
     if not route.categories:
         method = getattr(run.source, route.kind)
         listings = [_Listed("", route.newest_first,
-                            _caller(run, method, site, options.link or target.value))]
+                            _caller(method, site, options.link or target.value))]
     else:
         categories = wanted(route, options)
         if not categories:
@@ -2000,7 +2000,7 @@ async def _read(
         context = await _taking(
             turn, run, lambda: _context(run.source, route, site, target, options.link))
         listings = [_Listed(category.name, category.newest_first,
-                            _caller(run, getattr(run.source, category.name), site, context))
+                            _caller(getattr(run.source, category.name), site, context))
                     for category in categories]
     if turn is not None:
         turn.release()
@@ -2079,8 +2079,7 @@ async def _taking(turn: Turn | None, run: PluginRun,
     return found
 
 
-def _caller(run: PluginRun, method: Callable[..., Any],
-            *args: Any) -> Callable[[], Awaitable[Any]]:
+def _caller(method: Callable[..., Any], *args: Any) -> Callable[[], Awaitable[Any]]:
     """What calls a category's method with `args` (`_called`), each time."""
     return lambda: _called(method, *args)
 
@@ -2116,8 +2115,8 @@ async def _list_one(
                 target=str(target), name=name or target.kind)
         await run.settings.emit(RESUMING)
     try:
-        ended, taken, kept = await _listed(work, run, site, name, newest_first, items, listing,
-                                           stops, options, remaining)
+        ended, taken, kept = await _listed(work, site, name, newest_first, items, listing, stops,
+                                           options, remaining)
     except BaseException:
         _keep_top(progress, name, listing, newest_first and not start)
         raise
@@ -2138,7 +2137,7 @@ async def _list_one(
                      name=name or target.kind)
             down = stops.syncing()
             ended, extra, newest = await _listed(
-                work, run, site, name, True, items, Listing(head=down.id, sync=True), down,
+                work, site, name, True, items, Listing(head=down.id, sync=True), down,
                 options, rest)
             taken += extra
             if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and newest.head is not None:
@@ -2165,7 +2164,7 @@ async def _sync_one(
         None, label=f"{target}: {name or target.kind}", head=stops.id, sync=True)
     work.ledger.tally.start(target, name, listing)
     try:
-        ended, taken, kept = await _listed(work, run, site, name, True, items, listing, stops,
+        ended, taken, kept = await _listed(work, site, name, True, items, listing, stops,
                                            options, remaining)
     finally:
         # A cut sync keeps no cursor: the next one starts from the newest.
@@ -2270,7 +2269,7 @@ async def _lost(
 
 
 async def _listed(
-    work: _Work, run: PluginRun, site: Ctx, name: str, newest_first: bool,
+    work: _Work, site: Ctx, name: str, newest_first: bool,
     items: Callable[[], Awaitable[Any]], listing: Listing, stops: _Stops, options: Options,
     remaining: int | None,
 ) -> tuple[Ended, int, _Kept]:

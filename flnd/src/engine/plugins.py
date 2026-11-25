@@ -5,7 +5,6 @@ SPEC.md#for-developers explains it."""
 from __future__ import annotations
 
 import importlib
-from collections import ChainMap
 from collections.abc import Iterator, Mapping, MutableMapping
 
 from flnd.plugin import Plugin
@@ -53,10 +52,6 @@ class Registry(MutableMapping[str, "type[Plugin]"]):
     def __contains__(self, code: object) -> bool:
         return code in self._codes
 
-    def copy(self) -> dict[str, type[Plugin]]:
-        """Every plugin as a plain dictionary, importing those not loaded yet."""
-        return dict(self.items())
-
     def domains(self, code: str) -> tuple[str, ...]:
         """The domains of a plugin, from its class when it is loaded, else from the table."""
         if code in self._loaded:
@@ -68,11 +63,7 @@ PLUGINS = Registry()
 
 
 def domains(sources: Mapping[str, type[Plugin]], code: str) -> tuple[str, ...]:
-    """The domains of `code` in `sources`, a `Registry` or a chain with one, importing no
-    plugin the registry has not loaded."""
-    maps = sources.maps if isinstance(sources, ChainMap) else [sources]
-    for found in maps:
-        if code in found:
-            return found.domains(code) if isinstance(found, Registry) else tuple(
-                found[code].domains)
-    return ()
+    """The domains of `code` in `sources`, importing no plugin a `Registry` has not loaded."""
+    if isinstance(sources, Registry):
+        return sources.domains(code)
+    return tuple(sources[code].domains) if code in sources else ()

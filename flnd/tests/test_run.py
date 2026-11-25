@@ -457,7 +457,7 @@ class ChannelTest(unittest.TestCase):
 
 
 class PacingTest(EngineCase):
-    """A run read by a script: a slow reader paces it, and `suspend` holds every new job."""
+    """A run read by a slow reader is paced by it."""
 
     def setUp(self):
         super().setUp()
@@ -507,20 +507,6 @@ class PacingTest(EngineCase):
         self.assertLess(len(self.listed), 20)
         self.assertEqual(len(list(reading)), 19)
         self.assertEqual(len(self.listed), 20)
-
-    def test_a_suspended_run_starts_no_job_until_it_resumes(self):
-        run = self.run_of()
-        run.suspend()
-        got = []
-        reader = threading.Thread(target=lambda: got.extend(run), daemon=True)
-        reader.start()
-        self.addCleanup(reader.join, 10)
-        time.sleep(0.3)
-        # A listing on the loop that asks nothing isn't a job; none of its files' jobs starts.
-        self.assertEqual(self.requests, [])
-        run.resume()
-        reader.join(10)
-        self.assertEqual(run.report.saved, 20)
 
 
 class CtrlCTest(unittest.TestCase):

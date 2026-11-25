@@ -104,9 +104,6 @@ HOLD = 100
 # their most at once (`Limits.handles`).
 PAGES = 4
 SPREAD = 8
-# How often, in seconds, a job held by a suspended run looks again: a person's key, waited out
-# in real time even under a test's fake clock.
-SUSPENDED_POLL = 0.1
 
 # ---------------------------------------------------------------------------------------------
 # The numbers of segments, and `slowest`
@@ -587,8 +584,8 @@ class Scheduler:
         limits: the most transfers at once to a host, by host name.
         slowest: bytes a second a transfer may average over 30 s; 0 is off.
         stop: the run's stop (`flnd.engine.run.Stop`): its first Ctrl-C ends the waits of a
-            listing's jobs (`PAGE`, `TAB`, `CALL`), its second every other's, and while it is
-            `suspended` no job starts; None never stops.
+            listing's jobs (`PAGE`, `TAB`, `CALL`), its second every other's; None never
+            stops.
     """
 
     def __init__(self, *, pace: Mapping[str, float] | None = None,
@@ -742,12 +739,6 @@ class Scheduler:
 
     async def _work(self, job: Job[T]) -> T:
         """Run the work, once every pool is held, unless the run stopped while it waited."""
-        suspended = getattr(self.stop, "suspended", None)
-        while suspended is not None and suspended.is_set():
-            halt = self._halt(job)
-            if halt is not None and halt.is_set():
-                raise errors.Stopped("stopped while suspended")
-            await asyncio.sleep(SUSPENDED_POLL)
         if self._stop is not None:
             raise self._stop
         return await job.work()
