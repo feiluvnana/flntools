@@ -61,7 +61,7 @@ def derive_key(
 
 
 def hash_password(password: str) -> tuple[str, str]:
-    """Return `(salt_hex, hash_hex)` for verifying Level 2 `--pass` locks."""
+    """Return `(salt_hex, hash_hex)` for verifying password-locked items."""
     salt = os.urandom(16)
     digest = derive_key(password.encode("utf-8"), salt)
     return salt.hex(), digest.hex()
@@ -204,8 +204,8 @@ class _DecryptStream(io.RawIOBase):
         except InvalidTag as exc:
             if self._index == 0:
                 raise errors.AuthError(
-                    "wrong password or keyfile",
-                    hint="check the password or --keyfile and try again",
+                    "wrong password",
+                    hint="check the password and try again",
                 ) from exc
             raise errors.CorruptHeaderError("vault chunk failed authentication") from exc
         self._index += 1
@@ -527,13 +527,15 @@ def hide(
 def locate(orig_path: Path, entry: Any = None) -> tuple[Path, Path | None] | None:
     """Locate a vanished vault for `orig_path` (from `entry` or deterministic path)."""
     if entry is not None:
+        if entry.level != "vault":
+            return None
         vf = Path(entry.hidden_path)
         wrap_str = entry.meta.get("wrapper", "")
         wrap = Path(wrap_str) if wrap_str else None
-        if vf.exists():
+        if vf.is_file():
             return vf, wrap
     vf, wrap = _vault_location(orig_path)
-    if vf.exists():
+    if vf.is_file():
         return vf, wrap
     return None
 

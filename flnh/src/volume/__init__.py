@@ -50,8 +50,8 @@ def _decode_meta(raw: bytes, secret: bytes) -> dict[str, Any]:
         plain = AESGCM(key).decrypt(nonce, ct, VOL_MAGIC + salt)
     except InvalidTag as exc:
         raise errors.AuthError(
-            "wrong password or keyfile",
-            hint="check the password or --keyfile and try again",
+            "wrong password",
+            hint="check the password and try again",
         ) from exc
     try:
         return dict(json.loads(plain.decode("utf-8")))
@@ -114,7 +114,7 @@ def hide(
         if d.is_system_disk():
             raise errors.SafetyError(
                 f"refusing OS/boot/swap disk: {d.system_disk_reason()}",
-                hint="use --level vault on OS or system drives",
+                hint="use --vault on OS or system drives",
             )
         vol_disk.check_filesystem(d.fs_type)
         scheme, parts, raw_table = table.read_table(d)
@@ -167,7 +167,7 @@ def hide(
             raise errors.DiskError(
                 f"not enough free shrinkable space ({avail} bytes free, "
                 f"{shrink_sectors * sector_size} bytes needed)",
-                hint="free space on the drive or use --level vault",
+                hint="free space on the drive or use --vault",
             )
         new_sector_count = part.sector_count - shrink_sectors
         if new_sector_count <= 0:

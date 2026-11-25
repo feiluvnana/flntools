@@ -115,7 +115,7 @@ class SafetyGuardsTest(unittest.TestCase):
             self.addCleanup(fat_disk.close)
             with self.assertRaises(errors.UnsupportedError) as caught:
                 volume.hide(folder, b"pw", disk=fat_disk)
-            self.assertIn("--level vault", caught.exception.hint)
+            self.assertIn("--vault", caught.exception.hint)
 
         busy_disk = vol_disk.FileDisk.create_mbr(
             self.root / "busy.img", 8 * 1024 * 1024, busy=True

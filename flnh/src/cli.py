@@ -22,16 +22,6 @@ CODES = (
     ("SafetyError", BROKE),
     ("Error", FAILED),
 )
-LEVEL_MAP = {
-    "1": "flag",
-    "flag": "flag",
-    "2": "lock",
-    "lock": "lock",
-    "3": "vault",
-    "vault": "vault",
-    "4": "volume",
-    "volume": "volume",
-}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -74,22 +64,13 @@ def exit_code(error: BaseException | None) -> int:
     return BROKE
 
 
-def _read_secret_bytes(args: argparse.Namespace, *, confirm_new: bool) -> tuple[bytes, bool]:
-    """Read secret bytes from `--keyfile`, `--pass-stdin`, or masked terminal prompt."""
-    keyfile = getattr(args, "keyfile", None)
-    if keyfile:
-        kf = Path(keyfile)
-        if not kf.is_file():
-            raise errors.UsageError(f"keyfile not found: {kf}")
-        data = kf.read_bytes()
-        if not data:
-            raise errors.UsageError(f"keyfile is empty: {kf}")
-        return data, True
-    if getattr(args, "pass_stdin", False):
+def _read_password(*, confirm_new: bool) -> bytes:
+    """Read a password from piped stdin or masked terminal prompt."""
+    if not forms.interactive():
         line = sys.stdin.readline().rstrip("\r\n")
         if not line:
-            raise errors.UsageError("empty password from standard input")
-        return line.encode("utf-8"), False
+            raise errors.UsageError("password required (pipe via stdin or run in a terminal)")
+        return line.encode("utf-8")
     pw = forms.text("Password", secret=True)
     if pw is None:
         raise errors.Stopped("cancelled")
@@ -101,44 +82,23 @@ def _read_secret_bytes(args: argparse.Namespace, *, confirm_new: bool) -> tuple[
             raise errors.Stopped("cancelled")
         if pw != again:
             raise errors.UsageError("passwords do not match")
-    return pw.encode("utf-8"), False
-
-
-def _resolve_level(args: argparse.Namespace) -> str:
-    raw = getattr(args, "level", None)
-    has_secret = bool(args.use_pass or args.pass_stdin or args.keyfile)
-    if raw is None:
-        return "vault" if has_secret else "flag"
-    return LEVEL_MAP[raw]
+    return pw.encode("utf-8")
 
 
 def _hide_cmd(args: argparse.Namespace) -> int:
-    """Hide a folder or file at the chosen level (`flag`, `lock`, `vault`, or `volume`)."""
-    level = _resolve_level(args)
+    """Hide a folder or file (`flag` by default, or `--lock`, `--vault`, `--volume`)."""
+    level: str = args.level
     target = Path(args.path)
-    has_secret = bool(args.use_pass or args.pass_stdin or args.keyfile)
-    if level == "flag" and has_secret:
-        raise errors.UsageError(
-            "--pass and --keyfile are not used with --level flag",
-            hint="omit --level (defaults to vault with --pass) or use --level lock|vault|volume",
-        )
-    if level == "lock" and args.keyfile:
-        raise errors.UsageError(
-            "--keyfile requires --level vault or volume",
-            hint="use --pass with --level lock",
-        )
     if not target.exists() and not target.is_symlink():
         raise errors.UsageError(f"path not found: {target}")
 
-    track = not args.no_track
-    password: str | None = None
-    secret = b""
-    is_keyfile = False
-    if level in ("vault", "volume"):
-        secret, is_keyfile = _read_secret_bytes(args, confirm_new=True)
-    elif level == "lock" and has_secret:
-        pw_bytes, _ = _read_secret_bytes(args, confirm_new=True)
-        password = pw_bytes.decode("utf-8")
+    if level == "volume" and not args.yes and not forms.interactive():
+        raise errors.UsageError(
+            "--volume requires confirmation",
+            hint="run in a terminal or pass --yes",
+        )
+
+    secret = _read_password(confirm_new=True) if level in ("vault", "volume") else b""
 
     if level == "volume":
         size_est = vault.tree_size(target)
@@ -146,41 +106,32 @@ def _hide_cmd(args: argparse.Namespace) -> int:
             ("volume ", "bold focus"),
             f"{target} ({text.size(size_est)}) will be encrypted and moved to a hidden tail",
         )
-        if not args.yes:
-            if not forms.interactive():
-                raise errors.UsageError(
-                    "level 4 (volume) requires confirmation",
-                    hint="run in a terminal or pass --yes",
-                )
-            if not forms.confirm("Shrink partition and hide volume?", default=False):
-                out.line(("cancelled: nothing changed", "dim"))
-                return OK
+        if not args.yes and not forms.confirm("Shrink partition and hide volume?", default=False):
+            out.line(("cancelled: nothing changed", "dim"))
+            return OK
 
     item_id = vault.item_id(target.name)
     if level in ("flag", "lock"):
-        res = os_hide.hide(target, level=level, password=password, track=track)
+        res = os_hide.hide(target, level=level)
     elif level == "vault":
-        res = vault.hide(target, secret, is_keyfile=is_keyfile)
+        res = vault.hide(target, secret)
     else:
-        backup_path = None
-        if not args.no_backup:
-            backup_path = state.backups_dir() / f"{item_id}-{int(clock.wall())}.flnh"
-        res = volume.hide(target, secret, is_keyfile=is_keyfile, backup_path=backup_path)
+        backup_path = state.backups_dir() / f"{item_id}-{int(clock.wall())}.flnh"
+        res = volume.hide(target, secret, backup_path=backup_path)
 
-    if track:
-        with state.Store() as store:
-            store.add(
-                state.Entry(
-                    id=item_id,
-                    orig_path=state.norm_path(target),
-                    kind=res["kind"],
-                    level=level,
-                    hidden_path=res["hidden_path"],
-                    meta=res["meta"],
-                    size_bytes=res["size_bytes"],
-                    hidden_at=clock.wall(),
-                )
+    with state.Store() as store:
+        store.add(
+            state.Entry(
+                id=item_id,
+                orig_path=state.norm_path(target),
+                kind=res["kind"],
+                level=level,
+                hidden_path=res["hidden_path"],
+                meta=res["meta"],
+                size_bytes=res["size_bytes"],
+                hidden_at=clock.wall(),
             )
+        )
     out.line(("hidden ", "bold good"), f"{target} ", (f"[{level}]", "dim"), mark="ok")
     return OK
 
@@ -229,19 +180,21 @@ def _show_cmd(args: argparse.Namespace) -> int:
 
         backup_path = Path(args.backup) if args.backup else None
         detected_level = ""
+
+        def _get_pw() -> str:
+            return _read_password(confirm_new=False).decode("utf-8")
+
         if backup_path is not None or (entry is not None and entry.level == "volume"):
-            secret, _ = _read_secret_bytes(args, confirm_new=False)
+            secret = _read_password(confirm_new=False)
             volume.show(target, secret, entry=entry, backup_path=backup_path)
             detected_level = "volume"
+        elif entry is not None and entry.level in ("flag", "lock"):
+            _, detected_level = os_hide.show(target, entry=entry, get_password=_get_pw)
         elif vault.locate(target, entry) is not None:
-            secret, _ = _read_secret_bytes(args, confirm_new=False)
+            secret = _read_password(confirm_new=False)
             vault.show(target, secret, entry=entry)
             detected_level = "vault"
         elif os_hide.detect(target, entry) is not None:
-            def _get_pw() -> str:
-                sec, _ = _read_secret_bytes(args, confirm_new=False)
-                return sec.decode("utf-8")
-
             _, detected_level = os_hide.show(target, entry=entry, get_password=_get_pw)
         else:
             raise errors.UsageError(
@@ -302,40 +255,34 @@ def parser() -> argparse.ArgumentParser:
 
     hide_p = cmd("hide", _hide_cmd, "Make a folder or file vanish")
     hide_p.add_argument("path", help="folder or file to hide")
-    hide_p.add_argument(
-        "-l",
-        "--level",
-        choices=list(LEVEL_MAP),
-        default=None,
-        help="hiding level: flag (1), lock (2), vault (3), or volume (4)",
+    mode = hide_p.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--lock",
+        action="store_const",
+        dest="level",
+        const="lock",
+        help="vanish and deny opening or listing (ACL / chmod)",
     )
-    hide_p.add_argument(
-        "--pass",
-        dest="use_pass",
-        action="store_true",
-        help="prompt for a password (defaults level to vault)",
+    mode.add_argument(
+        "--vault",
+        action="store_const",
+        dest="level",
+        const="vault",
+        help="vanish into a password-encrypted vault",
     )
-    hide_p.add_argument(
-        "--pass-stdin",
-        action="store_true",
-        help="read password from standard input",
+    mode.add_argument(
+        "--volume",
+        action="store_const",
+        dest="level",
+        const="volume",
+        help="encrypted vault + hide size from drive space",
     )
-    hide_p.add_argument("--keyfile", metavar="FILE", help="encrypt with a keyfile")
-    hide_p.add_argument(
-        "--no-track",
-        action="store_true",
-        help="do not record this item in local state",
-    )
-    hide_p.add_argument(
-        "--no-backup",
-        action="store_true",
-        help="skip saving a level 4 partition backup file",
-    )
+    hide_p.set_defaults(level="flag")
     hide_p.add_argument(
         "-y",
         "--yes",
         action="store_true",
-        help="confirm level 4 volume shrink without prompting",
+        help="confirm --volume shrink without prompting",
     )
 
     show_p = cmd("show", _show_cmd, "Restore a hidden folder or file")
@@ -346,20 +293,8 @@ def parser() -> argparse.ArgumentParser:
         help="list tracked hidden items without restoring",
     )
     show_p.add_argument(
-        "--pass-stdin",
-        action="store_true",
-        help="read password from standard input",
-    )
-    show_p.add_argument("--keyfile", metavar="FILE", help="unlock with a keyfile")
-    show_p.add_argument(
         "--backup",
         metavar="FILE",
-        help="recover level 4 volume using a saved partition backup",
-    )
-    show_p.add_argument(
-        "-y",
-        "--yes",
-        action="store_true",
-        help="confirm non-interactively",
+        help="recover a --volume using a saved partition backup",
     )
     return top

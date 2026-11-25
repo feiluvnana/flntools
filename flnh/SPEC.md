@@ -8,21 +8,19 @@ while remaining cleanly reversible through `flnh show`.
 Only two commands exist: `flnh hide` and `flnh show`.
 
 - `flnh hide <path>`:
-  - `-l`, `--level`: `flag|lock|vault|volume` (or `1|2|3|4`). Default is `flag`, or `vault`
-    when `--pass`, `--pass-stdin`, or `--keyfile` is given without `--level`.
-  - `--pass`: prompt interactively (twice) for a password.
-  - `--pass-stdin`: read password line from standard input.
-  - `--keyfile FILE`: use raw bytes of `FILE` as the secret (Levels 3 & 4).
-  - `--no-track`: skip recording the hidden item in `state.db`.
-  - `--no-backup`: skip writing a Level 4 partition backup file.
-  - `-y`, `--yes`: confirm Level 4 volume resize non-interactively.
+  - Default (no mode flag): Level 1 (`flag`, instant vanish).
+  - `--lock`: Level 2 (`lock`, vanish + ACL/`chmod` lock).
+  - `--vault`: Level 3 (`vault`, vanish into a password-encrypted vault).
+  - `--volume`: Level 4 (`volume`, encrypted vault + hide size from drive space).
+  - `-y`, `--yes`: confirm `--volume` resize non-interactively.
+  - Passwords for `--vault` / `--volume` are read via masked prompt in a terminal, or one line
+    from stdin when piped.
 - `flnh show [path]`:
   - With `path`: auto-detects level and restores `path`.
   - Without `path`: opens a `flnkit.ui.forms.select` picker in a terminal, or prints the table
     off a terminal.
   - `--list`: prints tracked hidden items and exits `0`.
-  - `--pass-stdin`, `--keyfile FILE`: supply secret without prompting.
-  - `--backup FILE`: recover a Level 4 volume from a saved partition backup.
+  - `--backup FILE`: recover a `--volume` from a saved partition backup.
 
 Exit codes: `0` success, `1` operational error (`BusyError`, `CorruptHeaderError`,
 `UnsupportedError`), `2` `UsageError`, `3` `AuthError`, `4` `DiskError` / `PermissionError` /
@@ -46,7 +44,7 @@ with `0700`/`0600` permissions on Unix. Level 4 partition backups go to `<home>/
   - Windows: saves original NTFS DACL SDDL and applies `D:P(D;OICI;0x1000A9;;;WD)(A;;WDACRC;;;OW)`.
   - macOS: saves original mode/flags, applies `chmod 000` and `UF_IMMUTABLE`.
   - Linux: saves original mode and applies `chmod 000`.
-  - Optional `--pass` stores a salted scrypt hash verified before unlocking.
+  - Optional per-item password hash is verified before unlocking when present.
 
 ## Level 3 (`vault`)
 
@@ -63,7 +61,7 @@ Streams a PAX tar archive through `FLNHV1` chunked AES-256-GCM (key derived with
 ## Level 4 (`volume`)
 
 Requires Admin/root, a non-OS/non-boot/non-swap disk, and `ntfs`, `ext4`, or `apfs` (FAT32/exFAT
-are refused with `UnsupportedError` suggesting `--level vault`).
+are refused with `UnsupportedError` suggesting `--vault`).
 
 1. Packs and verifies the encrypted `FLNHV1` vault.
 2. Shrinks the filesystem (`FSCTL_SHRINK_VOLUME`, `resize2fs`, or `diskutil apfs resizeContainer`).

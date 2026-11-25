@@ -25,7 +25,7 @@ def check_filesystem(fs_type: str) -> None:
     if normalized not in SUPPORTED_FS:
         raise errors.UnsupportedError(
             f"level 4 (volume) does not support filesystem {fs_type or 'unknown'!r}",
-            hint="use --level vault instead (works on FAT32, exFAT, and any filesystem)",
+            hint="use --vault instead (works on FAT32, exFAT, and any filesystem)",
         )
 
 
