@@ -13,12 +13,11 @@ Shared repository rules (commits, privacy, ruff, line length <= 100, models) liv
 - `src/cli.py`: `hide` and `show` commands via `flnkit.ui`.
 - `src/errors.py`: `flnkit.errors` re-exports + `flnh` subclasses.
 - `src/state.py`: local tracking DB via `flnkit.db`.
-- `src/vault.py`: Level 3 streaming AES-256-GCM + scrypt vault.
+- `src/pack.py`: streaming tar packer/unpacker for Level 3 (`--volume`).
 - `src/os_hide/`: Level 1 (`flag`) and Level 2 (`lock`) per OS (`win32`, `darwin`, `linux`).
-- `src/volume/`: Level 4 (`volume`) MBR/GPT table, `Disk` / `FileDisk`, OS backends.
+- `src/volume/`: Level 3 (`--volume`) MBR/GPT table, `Disk` / `FileDisk`, OS backends.
 
 ## Safety & privacy
 - Never execute shell strings (`shell=True` is forbidden); pass argument lists only.
-- Never log or write passwords or keyfile contents.
-- Never delete plaintext before verified write (Levels 3 & 4).
+- Never delete plaintext before verified write (`--volume`).
 - Never touch OS/boot/swap disks or run destructive disk operations in unit tests.

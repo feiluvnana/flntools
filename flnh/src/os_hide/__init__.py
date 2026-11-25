@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -24,29 +23,18 @@ def _backend() -> Any:
     return linux
 
 
-def hide(
-    path: Path,
-    *,
-    level: str,
-    password: str | None = None,
-    track: bool = True,
-) -> dict[str, Any]:
+def hide(path: Path, *, level: str) -> dict[str, Any]:
     """Apply Level 1 (`flag`) or Level 2 (`lock`) to `path`."""
     if not path.exists() and not path.is_symlink():
         raise errors.UsageError(f"path not found: {path}")
     if path.parent == path:
         raise errors.SafetyError(f"refusing to hide root path: {path}")
-    return _backend().hide(path, level=level, password=password, track=track)
+    return _backend().hide(path, level=level)
 
 
-def show(
-    orig_path: Path,
-    *,
-    entry: Any = None,
-    get_password: Callable[[], str] | None = None,
-) -> tuple[Path, str]:
+def show(orig_path: Path, *, entry: Any = None) -> tuple[Path, str]:
     """Restore a Level 1 or Level 2 hidden path, returning `(restored_path, level)`."""
-    return _backend().show(orig_path, entry=entry, get_password=get_password)
+    return _backend().show(orig_path, entry=entry)
 
 
 def detect(orig_path: Path, entry: Any = None) -> dict[str, Any] | None:

@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import os
 import stat
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from flnh import errors, vault
+from flnh import errors, pack
 from flnkit import files
 
 
@@ -46,7 +45,7 @@ def _dot_name(orig_path: Path) -> Path:
 
 
 def _sidecar_path(orig_path: Path) -> Path:
-    return orig_path.parent / f".flnh.{vault.item_id(orig_path.name)}.meta"
+    return orig_path.parent / f".flnh.{pack.item_id(orig_path.name)}.meta"
 
 
 def _write_sidecar(orig_path: Path, data: dict[str, Any]) -> Path:
@@ -86,13 +85,7 @@ def detect(orig_path: Path, entry: Any = None) -> dict[str, Any] | None:
     return None
 
 
-def hide(
-    path: Path,
-    *,
-    level: str,
-    password: str | None = None,
-    track: bool = True,
-) -> dict[str, Any]:
+def hide(path: Path, *, level: str) -> dict[str, Any]:
     """Hide `path` on Linux using leading `.` + `.hidden`, plus `chmod 000` for `lock`."""
     dest = _dot_name(path)
     if dest != path and dest.exists():
@@ -109,7 +102,7 @@ def hide(
 
     st = path.lstat()
     kind = "file" if path.is_file() and not path.is_symlink() else "dir"
-    size_bytes = vault.tree_size(path)
+    size_bytes = pack.tree_size(path)
     orig_mode = stat.S_IMODE(st.st_mode)
     meta: dict[str, Any] = {
         "kind": kind,
@@ -118,17 +111,11 @@ def hide(
         "renamed": dest != path,
         "orig_mode": orig_mode,
     }
-    if level == "lock" and password is not None:
-        salt_hex, hash_hex = vault.hash_password(password)
-        meta["pass_salt"] = salt_hex
-        meta["pass_hash"] = hash_hex
-
     if dest != path:
         os.replace(path, dest)
     add_dot_hidden(path.parent, dest.name)
     if level == "lock":
-        if not track or password is not None:
-            _write_sidecar(path, meta)
+        _write_sidecar(path, meta)
         os.chmod(dest, 0o000)
 
     return {
@@ -139,12 +126,7 @@ def hide(
     }
 
 
-def show(
-    orig_path: Path,
-    *,
-    entry: Any = None,
-    get_password: Callable[[], str] | None = None,
-) -> tuple[Path, str]:
+def show(orig_path: Path, *, entry: Any = None) -> tuple[Path, str]:
     """Restore a Linux Level 1 or Level 2 hidden path."""
     found = detect(orig_path, entry=entry)
     if found is None:
@@ -164,14 +146,6 @@ def show(
         or mode == 0
         or meta.get("level") == "lock"
     )
-
-    if meta.get("pass_hash") and meta.get("pass_salt"):
-        if get_password is None:
-            raise errors.AuthError("password required to unlock this item")
-        pw = get_password()
-        if not vault.verify_password(pw, meta["pass_salt"], meta["pass_hash"]):
-            raise errors.AuthError("wrong password", hint="check the password and try again")
-
     if is_locked:
         default_mode = 0o644 if target.is_file() else 0o755
         os.chmod(target, int(meta.get("orig_mode", default_mode)))

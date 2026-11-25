@@ -1,26 +1,25 @@
-"""Level 4 (`volume`) engine: shrink + stash in hidden tail / expand + restore."""
+"""Level 3 (`--volume`) engine: shrink + raw tail stash / expand + restore."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
-import os
 import struct
 import tempfile
+import zlib
 from pathlib import Path
 from typing import Any
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-from flnh import errors, state, vault
+from flnh import errors, pack, state
 from flnh.volume import disk as vol_disk
 from flnh.volume import table
 
-VOL_MAGIC = b"FLNHVOL1"
-VOL_HDR_FMT = ">8s32s12sI"
+VOL_MAGIC = b"FLNHVOL2"
+VOL_HDR_FMT = ">8s32sI"
 VOL_HDR_SIZE = struct.calcsize(VOL_HDR_FMT)
+STREAM_CHUNK = 1024 * 1024
 
 
 def _pad_sectors(data: bytes, sector_size: int) -> bytes:
@@ -28,35 +27,26 @@ def _pad_sectors(data: bytes, sector_size: int) -> bytes:
     return data if rem == 0 else data + b"\x00" * (sector_size - rem)
 
 
-def _encode_meta(payload: dict[str, Any], secret: bytes, sector_size: int) -> bytes:
-    salt = os.urandom(32)
-    nonce = os.urandom(12)
-    key = vault.derive_key(secret, salt)
-    plain = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    ct = AESGCM(key).encrypt(nonce, plain, VOL_MAGIC + salt)
-    hdr = struct.pack(VOL_HDR_FMT, VOL_MAGIC, salt, nonce, len(ct))
-    return _pad_sectors(hdr + ct, sector_size)
+def _encode_meta(payload: dict[str, Any], sector_size: int) -> bytes:
+    json_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(json_bytes).digest()
+    hdr = struct.pack(VOL_HDR_FMT, VOL_MAGIC, digest, len(json_bytes))
+    return _pad_sectors(hdr + json_bytes, sector_size)
 
 
-def _decode_meta(raw: bytes, secret: bytes) -> dict[str, Any]:
+def _decode_meta(raw: bytes) -> dict[str, Any]:
     if len(raw) < VOL_HDR_SIZE or raw[:8] != VOL_MAGIC:
-        raise errors.CorruptHeaderError("missing or invalid level 4 tail header")
-    magic, salt, nonce, ct_len = struct.unpack_from(VOL_HDR_FMT, raw, 0)
-    if magic != VOL_MAGIC or ct_len < 16 or VOL_HDR_SIZE + ct_len > len(raw):
-        raise errors.CorruptHeaderError("corrupt level 4 tail header geometry")
-    ct = raw[VOL_HDR_SIZE : VOL_HDR_SIZE + ct_len]
-    key = vault.derive_key(secret, salt)
+        raise errors.CorruptHeaderError("missing or invalid volume tail header")
+    magic, digest, json_len = struct.unpack_from(VOL_HDR_FMT, raw, 0)
+    if magic != VOL_MAGIC or json_len == 0 or VOL_HDR_SIZE + json_len > len(raw):
+        raise errors.CorruptHeaderError("corrupt volume tail header geometry")
+    json_bytes = raw[VOL_HDR_SIZE : VOL_HDR_SIZE + json_len]
+    if not hmac.compare_digest(hashlib.sha256(json_bytes).digest(), digest):
+        raise errors.CorruptHeaderError("volume tail header checksum mismatch")
     try:
-        plain = AESGCM(key).decrypt(nonce, ct, VOL_MAGIC + salt)
-    except InvalidTag as exc:
-        raise errors.AuthError(
-            "wrong password",
-            hint="check the password and try again",
-        ) from exc
-    try:
-        return dict(json.loads(plain.decode("utf-8")))
+        return dict(json.loads(json_bytes.decode("utf-8")))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise errors.CorruptHeaderError("corrupt level 4 tail metadata payload") from exc
+        raise errors.CorruptHeaderError("corrupt volume tail metadata payload") from exc
 
 
 def _target_partition(parts: list[table.Partition], part_index: int) -> table.Partition:
@@ -92,17 +82,71 @@ def _write_table_gpt(
     table.read_table(d)
 
 
+def _stream_file_to_sectors(d: vol_disk.Disk, src_file: Path, start_lba: int) -> None:
+    sector_size = d.sector_size
+    chunk_bytes = max(sector_size, (STREAM_CHUNK // sector_size) * sector_size)
+    lba = start_lba
+    with open(src_file, "rb") as f:
+        while True:
+            chunk = f.read(chunk_bytes)
+            if not chunk:
+                break
+            padded = _pad_sectors(chunk, sector_size)
+            d.write_sectors(lba, padded)
+            lba += len(padded) // sector_size
+
+
+def _hash_sectors(d: vol_disk.Disk, start_lba: int, byte_size: int) -> str:
+    sector_size = d.sector_size
+    chunk_sectors = max(1, STREAM_CHUNK // sector_size)
+    hasher = hashlib.sha256()
+    remaining = byte_size
+    lba = start_lba
+    while remaining > 0:
+        need_sectors = (remaining + sector_size - 1) // sector_size
+        take_sectors = min(chunk_sectors, need_sectors)
+        raw = d.read_sectors(lba, take_sectors)
+        take_bytes = min(len(raw), remaining)
+        hasher.update(raw[:take_bytes])
+        remaining -= take_bytes
+        lba += take_sectors
+    return hasher.hexdigest()
+
+
+def _stream_sectors_to_file(
+    d: vol_disk.Disk,
+    start_lba: int,
+    byte_size: int,
+    dest_file: Path,
+) -> str:
+    sector_size = d.sector_size
+    chunk_sectors = max(1, STREAM_CHUNK // sector_size)
+    hasher = hashlib.sha256()
+    remaining = byte_size
+    lba = start_lba
+    with open(dest_file, "wb") as out:
+        while remaining > 0:
+            need_sectors = (remaining + sector_size - 1) // sector_size
+            take_sectors = min(chunk_sectors, need_sectors)
+            raw = d.read_sectors(lba, take_sectors)
+            take_bytes = min(len(raw), remaining)
+            piece = raw[:take_bytes]
+            hasher.update(piece)
+            out.write(piece)
+            remaining -= take_bytes
+            lba += take_sectors
+    return hasher.hexdigest()
+
+
 def hide(
     path: Path,
-    secret: bytes,
     *,
     disk: vol_disk.Disk | None = None,
     part_index: int | None = None,
-    is_keyfile: bool = False,
     backup_path: Path | None = None,
     align_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Pack `path` into an encrypted vault, shrink the volume, and stash in the tail."""
+    """Pack `path`, shrink the volume, and stash it behind the partition boundary."""
     if not path.exists():
         raise errors.UsageError(f"path not found: {path}")
     if path.parent == path:
@@ -114,7 +158,7 @@ def hide(
         if d.is_system_disk():
             raise errors.SafetyError(
                 f"refusing OS/boot/swap disk: {d.system_disk_reason()}",
-                hint="use --vault on OS or system drives",
+                hint="use flnh hide or --lock on OS or system drives",
             )
         vol_disk.check_filesystem(d.fs_type)
         scheme, parts, raw_table = table.read_table(d)
@@ -123,107 +167,102 @@ def hide(
         if scheme == "gpt" and part.type_id.upper() in table.SYSTEM_GPT_GUIDS:
             raise errors.SafetyError(f"refusing protected system partition ({part.type_id})")
 
-        orig_size = vault.tree_size(path)
-        kind = "file" if path.is_file() and not path.is_symlink() else "dir"
+        orig_size = pack.tree_size(path)
+        sector_size = d.sector_size
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_vault = Path(tmp_dir) / "data.flnh"
-            vault_size, vault_sha256 = vault.pack_to_file(
-                path, tmp_vault, secret, is_keyfile=is_keyfile
-            )
-            vault_raw = tmp_vault.read_bytes()
+            tmp_tar = Path(tmp_dir) / "data.tar"
+            archive_size, archive_sha256, kind = pack.pack_to_file(path, tmp_tar)
+            archive_sectors = (archive_size + sector_size - 1) // sector_size
 
-        sector_size = d.sector_size
-        vault_sectors = (vault_size + sector_size - 1) // sector_size
+            prelim_meta = {
+                "orig_path": state.norm_path(path),
+                "kind": kind,
+                "archive_size": archive_size,
+                "archive_sha256": archive_sha256,
+                "part_index": part.index,
+                "scheme": scheme,
+                "orig_sector_count": part.sector_count,
+                "new_sector_count": 0,
+                "tail_lba": 0,
+                "meta_lba": 0,
+                "meta_sectors": 0,
+                "tail_sectors": 0,
+                "orig_mbr_b64": base64.b64encode(raw_table["mbr"]).decode("ascii"),
+                "orig_gpt_hdr_b64": base64.b64encode(raw_table.get("hdr", b"")).decode("ascii"),
+                "orig_gpt_entries_b64": base64.b64encode(
+                    raw_table.get("entries", b"")
+                ).decode("ascii"),
+            }
+            est_meta = _encode_meta(prelim_meta, sector_size)
+            meta_sectors = (len(est_meta) // sector_size) + 1
+            needed_sectors = archive_sectors + meta_sectors
+            if align_bytes is None:
+                align_bytes = sector_size if isinstance(d, vol_disk.FileDisk) else 1024 * 1024
+            align_sectors = max(1, align_bytes // sector_size)
+            shrink_sectors = (
+                (needed_sectors + align_sectors - 1) // align_sectors
+            ) * align_sectors
 
-        prelim_meta = {
-            "orig_path": state.norm_path(path),
-            "kind": kind,
-            "vault_size": vault_size,
-            "vault_sha256": vault_sha256,
-            "part_index": part.index,
-            "scheme": scheme,
-            "orig_sector_count": part.sector_count,
-            "new_sector_count": 0,
-            "tail_lba": 0,
-            "meta_lba": 0,
-            "meta_sectors": 0,
-            "tail_sectors": 0,
-            "orig_mbr_b64": base64.b64encode(raw_table["mbr"]).decode("ascii"),
-            "orig_gpt_hdr_b64": base64.b64encode(raw_table.get("hdr", b"")).decode("ascii"),
-            "orig_gpt_entries_b64": base64.b64encode(raw_table.get("entries", b"")).decode("ascii"),
-        }
-        # Measure conservative meta size first, then finalize exact coordinates.
-        est_meta = _encode_meta(prelim_meta, secret, sector_size)
-        meta_sectors = (len(est_meta) // sector_size) + 1
-        needed_sectors = vault_sectors + meta_sectors
-        if align_bytes is None:
-            align_bytes = sector_size if isinstance(d, vol_disk.FileDisk) else 1024 * 1024
-        align_sectors = max(1, align_bytes // sector_size)
-        shrink_sectors = ((needed_sectors + align_sectors - 1) // align_sectors) * align_sectors
+            avail = d.max_shrink_bytes(part.index)
+            if shrink_sectors * sector_size > avail:
+                raise errors.DiskError(
+                    f"not enough free shrinkable space ({avail} bytes free, "
+                    f"{shrink_sectors * sector_size} bytes needed)",
+                    hint="free space on the drive or use flnh hide / --lock",
+                )
+            new_sector_count = part.sector_count - shrink_sectors
+            if new_sector_count <= 0:
+                raise errors.DiskError("cannot shrink partition below 1 sector")
 
-        avail = d.max_shrink_bytes(part.index)
-        if shrink_sectors * sector_size > avail:
-            raise errors.DiskError(
-                f"not enough free shrinkable space ({avail} bytes free, "
-                f"{shrink_sectors * sector_size} bytes needed)",
-                hint="free space on the drive or use --vault",
-            )
-        new_sector_count = part.sector_count - shrink_sectors
-        if new_sector_count <= 0:
-            raise errors.DiskError("cannot shrink partition below 1 sector")
+            tail_lba = part.start_lba + new_sector_count
+            meta_lba = tail_lba + shrink_sectors - meta_sectors
 
-        tail_lba = part.start_lba + new_sector_count
-        meta_lba = tail_lba + shrink_sectors - meta_sectors
+            prelim_meta["new_sector_count"] = new_sector_count
+            prelim_meta["tail_lba"] = tail_lba
+            prelim_meta["meta_lba"] = meta_lba
+            prelim_meta["meta_sectors"] = meta_sectors
+            prelim_meta["tail_sectors"] = shrink_sectors
+            meta_blob = _encode_meta(prelim_meta, sector_size)
+            if len(meta_blob) > meta_sectors * sector_size:
+                raise errors.DiskError("tail metadata exceeded reserved sectors")
+            meta_blob = meta_blob.ljust(meta_sectors * sector_size, b"\x00")
 
-        prelim_meta["new_sector_count"] = new_sector_count
-        prelim_meta["tail_lba"] = tail_lba
-        prelim_meta["meta_lba"] = meta_lba
-        prelim_meta["meta_sectors"] = meta_sectors
-        prelim_meta["tail_sectors"] = shrink_sectors
-        meta_blob = _encode_meta(prelim_meta, secret, sector_size)
-        if len(meta_blob) > meta_sectors * sector_size:
-            raise errors.DiskError("tail metadata exceeded reserved sectors")
-        meta_blob = meta_blob.ljust(meta_sectors * sector_size, b"\x00")
+            backup_payload = {
+                "orig_path": prelim_meta["orig_path"],
+                "device_id": d.device_id,
+                "scheme": scheme,
+                "part_index": part.index,
+                "orig_sector_count": part.sector_count,
+                "new_sector_count": new_sector_count,
+                "tail_lba": tail_lba,
+                "meta_lba": meta_lba,
+                "meta_sectors": meta_sectors,
+                "orig_mbr_b64": prelim_meta["orig_mbr_b64"],
+                "orig_gpt_hdr_b64": prelim_meta["orig_gpt_hdr_b64"],
+                "orig_gpt_entries_b64": prelim_meta["orig_gpt_entries_b64"],
+            }
+            if backup_path is not None:
+                table.save_backup(backup_path, backup_payload)
 
-        backup_payload = {
-            "orig_path": prelim_meta["orig_path"],
-            "device_id": d.device_id,
-            "scheme": scheme,
-            "part_index": part.index,
-            "orig_sector_count": part.sector_count,
-            "new_sector_count": new_sector_count,
-            "tail_lba": tail_lba,
-            "meta_lba": meta_lba,
-            "meta_sectors": meta_sectors,
-            "orig_mbr_b64": prelim_meta["orig_mbr_b64"],
-            "orig_gpt_hdr_b64": prelim_meta["orig_gpt_hdr_b64"],
-            "orig_gpt_entries_b64": prelim_meta["orig_gpt_entries_b64"],
-        }
-        if backup_path is not None:
-            table.save_backup(backup_path, backup_payload)
+            orig_fs_bytes = part.sector_count * sector_size
+            new_fs_bytes = new_sector_count * sector_size
+            d.shrink_fs(part.index, new_fs_bytes)
 
-        orig_fs_bytes = part.sector_count * sector_size
-        new_fs_bytes = new_sector_count * sector_size
-        d.shrink_fs(part.index, new_fs_bytes)
-
-        vault_padded = _pad_sectors(vault_raw, sector_size)
-        try:
-            d.write_sectors(tail_lba, vault_padded)
-            d.write_sectors(meta_lba, meta_blob)
-            read_vault = d.read_sectors(tail_lba, vault_sectors)[:vault_size]
-            read_meta = d.read_sectors(meta_lba, meta_sectors)
-            if (
-                hashlib.sha256(read_vault).hexdigest() != vault_sha256
-                or read_meta != meta_blob
-            ):
-                raise errors.DiskError("tail sector read-back verification failed")
-        except BaseException:
             try:
-                d.expand_fs(part.index, orig_fs_bytes)
+                _stream_file_to_sectors(d, tmp_tar, tail_lba)
+                d.write_sectors(meta_lba, meta_blob)
+                if (
+                    _hash_sectors(d, tail_lba, archive_size) != archive_sha256
+                    or d.read_sectors(meta_lba, meta_sectors) != meta_blob
+                ):
+                    raise errors.DiskError("tail sector read-back verification failed")
             except BaseException:
-                pass
-            raise
+                try:
+                    d.expand_fs(part.index, orig_fs_bytes)
+                except BaseException:
+                    pass
+                raise
 
         if scheme == "mbr":
             new_mbr = table.update_mbr_partition(raw_table["mbr"], part.index, new_sector_count)
@@ -239,7 +278,7 @@ def hide(
             _write_table_gpt(d, raw_table["info"], pri_hdr, entries_raw, bak_hdr)
 
         d.refresh()
-        vault.delete_plaintext(path)
+        pack.delete_plaintext(path)
 
         return {
             "kind": kind,
@@ -253,8 +292,8 @@ def hide(
                 "tail_sectors": shrink_sectors,
                 "meta_lba": meta_lba,
                 "meta_sectors": meta_sectors,
-                "vault_size": vault_size,
-                "vault_sha256": vault_sha256,
+                "archive_size": archive_size,
+                "archive_sha256": archive_sha256,
                 "backup_path": str(backup_path) if backup_path is not None else "",
             },
         }
@@ -275,20 +314,19 @@ def _scan_tail_meta(d: vol_disk.Disk, part_index: int) -> tuple[int, int]:
     for lba in range(limit, start - 1, -1):
         sec = d.read_sectors(lba, 1)
         if sec[:8] == VOL_MAGIC:
-            _magic, _salt, _nonce, ct_len = struct.unpack_from(VOL_HDR_FMT, sec, 0)
-            total_bytes = VOL_HDR_SIZE + ct_len
+            _magic, _digest, json_len = struct.unpack_from(VOL_HDR_FMT, sec, 0)
+            total_bytes = VOL_HDR_SIZE + json_len
             sectors = (total_bytes + d.sector_size - 1) // d.sector_size
             if lba + sectors - 1 <= limit:
                 return lba, sectors
     raise errors.CorruptHeaderError(
-        "no level 4 hidden tail found on disk",
+        "no hidden volume tail found on disk",
         hint="pass --backup <file> if you have a saved partition backup",
     )
 
 
 def show(
     orig_path: Path,
-    secret: bytes,
     *,
     disk: vol_disk.Disk | None = None,
     entry: Any = None,
@@ -306,8 +344,6 @@ def show(
     d = vol_disk.open_disk(orig_path.parent) if disk is None else disk
     try:
         idx = part_index if part_index is not None else getattr(d, "part_index", 1)
-        meta_lba: int | None = None
-        meta_sectors: int | None = None
         backup_data: dict[str, Any] | None = None
 
         if backup_path is not None:
@@ -323,27 +359,23 @@ def show(
             meta_lba, meta_sectors = _scan_tail_meta(d, idx)
 
         raw_meta = d.read_sectors(meta_lba, meta_sectors)
-        meta = _decode_meta(raw_meta, secret)
+        meta = _decode_meta(raw_meta)
 
-        vault_size = int(meta["vault_size"])
-        vault_sha256 = str(meta["vault_sha256"])
+        archive_size = int(meta["archive_size"])
+        archive_sha256 = str(meta["archive_sha256"])
         tail_lba = int(meta["tail_lba"])
-        vault_sectors = (vault_size + d.sector_size - 1) // d.sector_size
-        vault_bytes = d.read_sectors(tail_lba, vault_sectors)[:vault_size]
-        if hashlib.sha256(vault_bytes).hexdigest() != vault_sha256:
-            raise errors.CorruptHeaderError("hidden vault checksum mismatch in disk tail")
+        kind = str(meta["kind"])
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_vault = Path(tmp_dir) / "restore.flnh"
-            tmp_vault.write_bytes(vault_bytes)
-            vault.verify_vault(tmp_vault, secret)
+            tmp_tar = Path(tmp_dir) / "restore.tar"
+            got_sha = _stream_sectors_to_file(d, tail_lba, archive_size, tmp_tar)
+            if got_sha != archive_sha256:
+                raise errors.CorruptHeaderError("hidden archive checksum mismatch in disk tail")
 
             scheme = str(meta["scheme"])
             orig_sectors = int(meta["orig_sector_count"])
             if scheme == "mbr":
-                orig_mbr = base64.b64decode(
-                    (backup_data or meta)["orig_mbr_b64"]
-                )
+                orig_mbr = base64.b64decode((backup_data or meta)["orig_mbr_b64"])
                 _write_table_mbr(d, orig_mbr)
             else:
                 _cur_scheme, _parts, cur_raw = table.read_table(d)
@@ -352,7 +384,6 @@ def show(
                 info = cur_raw["info"]
                 alt_lba = int(info["alternate_lba"])
                 hdr_size = struct.unpack_from("<I", orig_pri, 12)[0]
-                import zlib
 
                 bak = bytearray(orig_pri)
                 struct.pack_into("<QQ", bak, 24, alt_lba, 1)
@@ -363,9 +394,8 @@ def show(
 
             d.refresh()
             d.expand_fs(int(meta["part_index"]), orig_sectors * d.sector_size)
-            vault.unpack_from_file(tmp_vault, orig_path, secret)
+            pack.unpack_from_file(tmp_tar, orig_path, kind=kind)
 
-        # Wipe tail header sectors only after successful restoration.
         d.write_sectors(meta_lba, b"\x00" * (meta_sectors * d.sector_size))
         return orig_path
     finally:

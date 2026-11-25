@@ -5,7 +5,6 @@ from __future__ import annotations
 from flnkit.errors import DiskError, Error, Stopped, UsageError, disk
 
 __all__ = [
-    "AuthError",
     "BusyError",
     "CorruptHeaderError",
     "DiskError",
@@ -31,12 +30,8 @@ class BusyError(Error):
     """Volume or target is in use and cannot be locked or unmounted."""
 
 
-class AuthError(Error):
-    """Wrong password or keyfile."""
-
-
 class CorruptHeaderError(Error):
-    """Vault, partition table, or tail header is corrupt or tampered."""
+    """Archive, partition table, or tail header is corrupt or tampered."""
 
 
 class UnsupportedError(Error):

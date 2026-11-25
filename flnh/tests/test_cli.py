@@ -1,4 +1,4 @@
-"""CLI tests for `flnh`: commands, exit codes, prompts, tracking, and confirmation."""
+"""CLI tests for `flnh`: commands, exit codes, tracking, picker, and confirmation."""
 
 from __future__ import annotations
 
@@ -55,7 +55,6 @@ class CLITest(unittest.TestCase):
         self.assertEqual(cli.exit_code(None), 0)
         self.assertEqual(cli.exit_code(errors.BusyError("busy")), 1)
         self.assertEqual(cli.exit_code(errors.UsageError("bad")), 2)
-        self.assertEqual(cli.exit_code(errors.AuthError("auth")), 3)
         self.assertEqual(cli.exit_code(errors.SafetyError("os")), 4)
         self.assertEqual(cli.exit_code(errors.PermissionError("perm")), 4)
         self.assertEqual(cli.exit_code(errors.DiskError("disk")), 4)
@@ -64,51 +63,10 @@ class CLITest(unittest.TestCase):
     def test_mutually_exclusive_modes_refuse(self) -> None:
         folder = self.root / "docs"
         folder.mkdir()
-        code, _, _ = self.run_cli("hide", str(folder), "--lock", "--vault")
+        code, _, _ = self.run_cli("hide", str(folder), "--lock", "--volume")
         self.assertEqual(code, 2)
 
-    def test_vault_interactive_prompt_list_and_picker(self) -> None:
-        folder = self.root / "docs"
-        folder.mkdir()
-        (folder / "a.txt").write_text("hello", encoding="utf-8")
-
-        with mock.patch.object(forms, "text", side_effect=["pw123", "pw123"]):
-            code, out, err = self.run_cli("hide", str(folder), "--vault", tty=True)
-        self.assertEqual(code, 0, err)
-        self.assertIn("[vault]", out)
-        self.assertFalse(folder.exists())
-
-        code, out, _ = self.run_cli("show", "--list")
-        self.assertEqual(code, 0)
-        self.assertIn("docs", out)
-        self.assertIn("vault", out)
-
-        with (
-            mock.patch.object(forms, "select", side_effect=lambda _t, opts: opts[0].value),
-            mock.patch.object(forms, "text", return_value="pw123"),
-        ):
-            code, out, err = self.run_cli("show", tty=True)
-        self.assertEqual(code, 0, err)
-        self.assertIn("[vault]", out)
-        self.assertEqual((folder / "a.txt").read_text(encoding="utf-8"), "hello")
-
-    def test_vault_piped_password_and_wrong_password(self) -> None:
-        f1 = self.root / "f1.txt"
-        f1.write_text("one", encoding="utf-8")
-        code, _, err = self.run_cli("hide", str(f1), "--vault", stdin_text="pw\n")
-        self.assertEqual(code, 0, err)
-        self.assertFalse(f1.exists())
-        with state.Store() as store:
-            self.assertEqual(len(store.all()), 1)
-
-        code, _, _ = self.run_cli("show", str(f1), stdin_text="wrong\n")
-        self.assertEqual(code, 3)
-
-        code, _, err = self.run_cli("show", str(f1), stdin_text="pw\n")
-        self.assertEqual(code, 0, err)
-        self.assertEqual(f1.read_text(encoding="utf-8"), "one")
-
-    def test_flag_and_lock_hide_and_show_never_prompt_for_password(self) -> None:
+    def test_flag_and_lock_hide_list_and_picker_without_prompts(self) -> None:
         doc = self.root / "plain.txt"
         doc.write_text("flag-file", encoding="utf-8")
         folder = self.root / "plain_dir"
@@ -116,37 +74,45 @@ class CLITest(unittest.TestCase):
         (folder / "x.txt").write_text("lock-dir", encoding="utf-8")
 
         with mock.patch.object(
-            forms, "text", side_effect=AssertionError("unexpected password prompt")
+            forms, "text", side_effect=AssertionError("unexpected prompt")
         ):
             code, out, err = self.run_cli("hide", str(doc))
             self.assertEqual(code, 0, err)
             self.assertIn("[flag]", out)
+
+            code, out, err = self.run_cli("hide", str(folder), "--lock")
+            self.assertEqual(code, 0, err)
+            self.assertIn("[lock]", out)
+
+            code, out, _ = self.run_cli("show", "--list")
+            self.assertEqual(code, 0)
+            self.assertIn("plain.txt", out)
+            self.assertIn("plain_dir", out)
+
             code, out, err = self.run_cli("show", str(doc))
             self.assertEqual(code, 0, err)
             self.assertIn("[flag]", out)
             self.assertEqual(doc.read_text(encoding="utf-8"), "flag-file")
 
-            code, out, err = self.run_cli("hide", str(folder), "--lock")
-            self.assertEqual(code, 0, err)
-            self.assertIn("[lock]", out)
-            code, out, err = self.run_cli("show", str(folder))
+            with mock.patch.object(forms, "select", side_effect=lambda _t, opts: opts[0].value):
+                code, out, err = self.run_cli("show", tty=True)
             self.assertEqual(code, 0, err)
             self.assertIn("[lock]", out)
             self.assertEqual((folder / "x.txt").read_text(encoding="utf-8"), "lock-dir")
+
+        with state.Store() as store:
+            self.assertEqual(store.all(), [])
 
     def test_volume_confirmation_off_tty_and_cancel(self) -> None:
         folder = self.root / "vol_dir"
         folder.mkdir()
         (folder / "x.txt").write_text("v", encoding="utf-8")
 
-        code, _, err = self.run_cli("hide", str(folder), "--volume", stdin_text="pw\n")
+        code, _, err = self.run_cli("hide", str(folder), "--volume")
         self.assertEqual(code, 2)
         self.assertIn("--yes", err)
 
-        with (
-            mock.patch.object(forms, "text", side_effect=["pw", "pw"]),
-            mock.patch.object(forms, "confirm", return_value=False),
-        ):
+        with mock.patch.object(forms, "confirm", return_value=False):
             code, out, _ = self.run_cli("hide", str(folder), "--volume", tty=True)
         self.assertEqual(code, 0)
         self.assertIn("cancelled", out)

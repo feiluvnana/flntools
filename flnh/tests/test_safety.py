@@ -106,7 +106,7 @@ class SafetyGuardsTest(unittest.TestCase):
         )
         self.addCleanup(sys_disk.close)
         with self.assertRaises(errors.SafetyError):
-            volume.hide(folder, b"pw", disk=sys_disk)
+            volume.hide(folder, disk=sys_disk)
 
         for fs in ("exfat", "fat32", "vfat"):
             fat_disk = vol_disk.FileDisk.create_mbr(
@@ -114,15 +114,15 @@ class SafetyGuardsTest(unittest.TestCase):
             )
             self.addCleanup(fat_disk.close)
             with self.assertRaises(errors.UnsupportedError) as caught:
-                volume.hide(folder, b"pw", disk=fat_disk)
-            self.assertIn("--vault", caught.exception.hint)
+                volume.hide(folder, disk=fat_disk)
+            self.assertIn("--volume needs NTFS", caught.exception.hint)
 
         busy_disk = vol_disk.FileDisk.create_mbr(
             self.root / "busy.img", 8 * 1024 * 1024, busy=True
         )
         self.addCleanup(busy_disk.close)
         with self.assertRaises(errors.BusyError):
-            volume.hide(folder, b"pw", disk=busy_disk)
+            volume.hide(folder, disk=busy_disk)
         self.assertTrue((folder / "f.txt").exists())
 
 

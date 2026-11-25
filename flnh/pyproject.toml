@@ -11,8 +11,6 @@ requires-python = ">=3.11"
 dependencies = [
     # Shared core toolkit (atomic files, SQLite DB, errors, clock, Rich terminal UI).
     "flnkit[ui]",
-    # AES-256-GCM authenticated encryption and scrypt KDF for vaults and locked passwords.
-    "cryptography>=42",
 ]
 
 [project.scripts]

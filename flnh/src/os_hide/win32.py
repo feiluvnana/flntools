@@ -7,12 +7,11 @@ import ctypes
 import json
 import os
 import shutil
-from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
-from flnh import errors, vault
+from flnh import errors, pack
 from flnkit import files
 
 CLSID = "{21EC2020-3AEA-1069-A2DD-08002B30309D}"
@@ -207,7 +206,7 @@ def set_sddl(path: Path, sddl: str) -> None:
 
 def clsid_path(orig_path: Path) -> Path:
     """Return the deterministic vanished Control Panel CLSID path for `orig_path`."""
-    return orig_path.parent / f"Control Panel.{vault.item_id(orig_path.name)}.{CLSID}"
+    return orig_path.parent / f"Control Panel.{pack.item_id(orig_path.name)}.{CLSID}"
 
 
 def _write_meta(folder: Path, data: dict[str, Any]) -> None:
@@ -238,13 +237,7 @@ def detect(orig_path: Path, entry: Any = None) -> dict[str, Any] | None:
     return None
 
 
-def hide(
-    path: Path,
-    *,
-    level: str,
-    password: str | None = None,
-    track: bool = True,
-) -> dict[str, Any]:
+def hide(path: Path, *, level: str) -> dict[str, Any]:
     """Hide `path` on Windows using CLSID + `+h +s`, plus NTFS SDDL for `lock`."""
     dest = clsid_path(path)
     if dest.exists():
@@ -254,7 +247,7 @@ def hide(
         )
     is_file = path.is_file() and not path.is_symlink()
     kind = "file" if is_file else "dir"
-    size_bytes = vault.tree_size(path)
+    size_bytes = pack.tree_size(path)
     orig_sddl = get_sddl(path) if level == "lock" else ""
 
     meta: dict[str, Any] = {
@@ -264,10 +257,6 @@ def hide(
     }
     if level == "lock":
         meta["sddl"] = orig_sddl
-        if password is not None:
-            salt_hex, hash_hex = vault.hash_password(password)
-            meta["pass_salt"] = salt_hex
-            meta["pass_hash"] = hash_hex
 
     if is_file:
         dest.mkdir(parents=True, exist_ok=False)
@@ -310,12 +299,7 @@ def hide(
     }
 
 
-def show(
-    orig_path: Path,
-    *,
-    entry: Any = None,
-    get_password: Callable[[], str] | None = None,
-) -> tuple[Path, str]:
+def show(orig_path: Path, *, entry: Any = None) -> tuple[Path, str]:
     """Unhide a Windows Level 1 or Level 2 item back to `orig_path`."""
     if orig_path.exists() or orig_path.is_symlink():
         raise errors.UsageError(f"destination already exists: {orig_path}")
@@ -332,7 +316,7 @@ def show(
         "(d;" in cur_lower and ";;;wd)" in cur_lower
     )
 
-    # If locked, unlock DACL temporarily only if needed to read metadata, re-locking on AuthError.
+    # Temporarily grant owner access only if needed to read untracked metadata.
     meta: dict[str, Any] = dict(entry.meta) if entry is not None else {}
     if is_locked and not meta:
         set_sddl(target, UNLOCK_TEMP_SDDL)
@@ -343,25 +327,6 @@ def show(
             raise
     elif not is_locked and not meta:
         meta = _read_meta(target) or {}
-
-    if meta.get("pass_hash") and meta.get("pass_salt"):
-        if get_password is None:
-            if is_locked:
-                set_sddl(target, LOCK_SDDL)
-            raise errors.AuthError("password required to unlock this item")
-        try:
-            pw = get_password()
-        except BaseException:
-            if is_locked:
-                set_sddl(target, LOCK_SDDL)
-            raise
-        if not vault.verify_password(pw, meta["pass_salt"], meta["pass_hash"]):
-            if is_locked:
-                set_sddl(target, LOCK_SDDL)
-            raise errors.AuthError(
-                "wrong password",
-                hint="check the password and try again",
-            )
 
     level = str(meta.get("level") or ("lock" if is_locked else "flag"))
     if is_locked:

@@ -1,4 +1,4 @@
-"""Tests for Level 4 (`volume`): MBR/GPT parsing, CRC32, shrink/restore, and recovery."""
+"""Tests for Level 3 (`--volume`): MBR/GPT parsing, CRC32, shrink/restore, and recovery."""
 
 from __future__ import annotations
 
@@ -47,7 +47,6 @@ class TableTest(unittest.TestCase):
         self.assertEqual(shrunk_parts[0].sector_count, 40_000)
         self.assertEqual(len(new_bak), 512)
 
-        # Corrupt primary header CRC32
         bad_pri = bytearray(new_pri)
         bad_pri[48] ^= 0x01
         sectors[1] = bytes(bad_pri)
@@ -73,7 +72,7 @@ class VolumeRoundTripTest(unittest.TestCase):
     def _sample_folder(self, name: str = "hidden_media") -> Path:
         folder = self.root / name
         folder.mkdir()
-        (folder / "doc.txt").write_text("volume-secret-payload", encoding="utf-8")
+        (folder / "doc.txt").write_text("volume-payload", encoding="utf-8")
         (folder / "blob.bin").write_bytes(b"Z" * 16_384)
         return folder
 
@@ -85,7 +84,7 @@ class VolumeRoundTripTest(unittest.TestCase):
         folder = self._sample_folder()
         bak = self.root / "mbr.bak"
 
-        res = volume.hide(folder, b"volpass", disk=d, backup_path=bak)
+        res = volume.hide(folder, disk=d, backup_path=bak)
         self.assertFalse(folder.exists())
         self.assertTrue(d.refreshed)
         self.assertLess(d.fs_bytes, orig_fs)
@@ -94,18 +93,12 @@ class VolumeRoundTripTest(unittest.TestCase):
         self.assertEqual(parts[0].sector_count * d.sector_size, d.fs_bytes)
         self.assertTrue(bak.is_file())
 
-        # Wrong password leaves partition table and fs_bytes untouched.
-        with self.assertRaises(errors.AuthError):
-            volume.show(folder, b"badpass", disk=d)
-        self.assertEqual(table.read_table(d)[1][0].sector_count * d.sector_size, d.fs_bytes)
-
         # Recover without state entry and without backup (tail scan).
-        volume.show(folder, b"volpass", disk=d)
+        volume.show(folder, disk=d)
         self.assertEqual(d.fs_bytes, orig_fs)
         self.assertEqual(table.read_table(d)[1][0].sector_count * d.sector_size, orig_fs)
-        self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-secret-payload")
+        self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
         self.assertEqual((folder / "blob.bin").read_bytes(), b"Z" * 16_384)
-        # Tail header sectors wiped after restore.
         meta_lba = res["meta"]["meta_lba"]
         self.assertFalse(d.read_sectors(meta_lba, 1).startswith(volume.VOL_MAGIC))
 
@@ -117,22 +110,21 @@ class VolumeRoundTripTest(unittest.TestCase):
         folder = self._sample_folder("gpt_secret")
         bak = self.root / "gpt.bak"
 
-        res = volume.hide(folder, b"gptpass", disk=d, backup_path=bak)
+        res = volume.hide(folder, disk=d, backup_path=bak)
         self.assertFalse(folder.exists())
         scheme, parts, raw = table.read_table(d)
         self.assertEqual(scheme, "gpt")
         self.assertLess(parts[0].sector_count * d.sector_size, orig_fs)
-        # Backup GPT header at last LBA must stay intact and valid.
         bak_hdr = d.read_sectors(d.total_sectors - 1, 1)
         self.assertTrue(bak_hdr.startswith(table.GPT_SIG))
         self.assertLessEqual(res["meta"]["meta_lba"], raw["info"]["last_usable_lba"])
 
-        volume.show(folder, b"gptpass", disk=d, backup_path=bak)
+        volume.show(folder, disk=d, backup_path=bak)
         self.assertEqual(d.fs_bytes, orig_fs)
         self.assertEqual(table.read_table(d)[1][0].sector_count * d.sector_size, orig_fs)
-        self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-secret-payload")
+        self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
 
-    def test_readback_verify_failure_rolls_back_and_keeps_plaintext(self) -> None:
+    def test_tampered_tail_header_refused_and_readback_failure_rolls_back(self) -> None:
         img = self.root / "fail.img"
         d = vol_disk.FileDisk.create_mbr(img, 8 * 1024 * 1024, fs_type="ntfs")
         self.addCleanup(d.close)
@@ -142,10 +134,18 @@ class VolumeRoundTripTest(unittest.TestCase):
 
         d.corrupt_next_write = True
         with self.assertRaises(errors.DiskError):
-            volume.hide(folder, b"pw", disk=d)
+            volume.hide(folder, disk=d)
         self.assertTrue((folder / "doc.txt").exists())
         self.assertEqual(d.fs_bytes, orig_fs)
         self.assertEqual(table.read_table(d)[1][0].sector_count, orig_sectors)
+
+        res = volume.hide(folder, disk=d)
+        meta_lba = res["meta"]["meta_lba"]
+        tampered = bytearray(d.read_sectors(meta_lba, 1))
+        tampered[volume.VOL_HDR_SIZE] ^= 0xFF
+        d.write_sectors(meta_lba, bytes(tampered))
+        with self.assertRaises(errors.CorruptHeaderError):
+            volume.show(folder, disk=d)
 
 
 if __name__ == "__main__":

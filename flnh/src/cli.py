@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from flnh import __version__, errors, os_hide, state, vault, volume
+from flnh import __version__, errors, os_hide, pack, state, volume
 from flnkit import clock, text
 from flnkit.ui import forms, out
 
-OK, FAILED, USAGE, AUTH, BROKE, STOPPED = 0, 1, 2, 3, 4, 130
+OK, FAILED, USAGE, BROKE, STOPPED = 0, 1, 2, 4, 130
 CODES = (
     ("Stopped", STOPPED),
     ("UsageError", USAGE),
-    ("AuthError", AUTH),
     ("DiskError", BROKE),
     ("PermissionError", BROKE),
     ("SafetyError", BROKE),
@@ -64,60 +62,35 @@ def exit_code(error: BaseException | None) -> int:
     return BROKE
 
 
-def _read_password(*, confirm_new: bool) -> bytes:
-    """Read a password from piped stdin or masked terminal prompt."""
-    if not forms.interactive():
-        line = sys.stdin.readline().rstrip("\r\n")
-        if not line:
-            raise errors.UsageError("password required (pipe via stdin or run in a terminal)")
-        return line.encode("utf-8")
-    pw = forms.text("Password", secret=True)
-    if pw is None:
-        raise errors.Stopped("cancelled")
-    if not pw:
-        raise errors.UsageError("password cannot be empty")
-    if confirm_new:
-        again = forms.text("Confirm password", secret=True)
-        if again is None:
-            raise errors.Stopped("cancelled")
-        if pw != again:
-            raise errors.UsageError("passwords do not match")
-    return pw.encode("utf-8")
-
-
 def _hide_cmd(args: argparse.Namespace) -> int:
-    """Hide a folder or file (`flag` by default, or `--lock`, `--vault`, `--volume`)."""
+    """Hide a folder or file (`flag` by default, or `--lock`, `--volume`)."""
     level: str = args.level
     target = Path(args.path)
     if not target.exists() and not target.is_symlink():
         raise errors.UsageError(f"path not found: {target}")
 
-    if level == "volume" and not args.yes and not forms.interactive():
-        raise errors.UsageError(
-            "--volume requires confirmation",
-            hint="run in a terminal or pass --yes",
-        )
-
-    secret = _read_password(confirm_new=True) if level in ("vault", "volume") else b""
-
     if level == "volume":
-        size_est = vault.tree_size(target)
+        size_est = pack.tree_size(target)
         out.line(
             ("volume ", "bold focus"),
-            f"{target} ({text.size(size_est)}) will be encrypted and moved to a hidden tail",
+            f"{target} ({text.size(size_est)}) will be moved behind the partition boundary",
         )
-        if not args.yes and not forms.confirm("Shrink partition and hide volume?", default=False):
-            out.line(("cancelled: nothing changed", "dim"))
-            return OK
+        if not args.yes:
+            if not forms.interactive():
+                raise errors.UsageError(
+                    "--volume requires confirmation",
+                    hint="run in a terminal or pass --yes",
+                )
+            if not forms.confirm("Shrink partition and hide volume?", default=False):
+                out.line(("cancelled: nothing changed", "dim"))
+                return OK
 
-    item_id = vault.item_id(target.name)
+    item_id = pack.item_id(target.name)
     if level in ("flag", "lock"):
         res = os_hide.hide(target, level=level)
-    elif level == "vault":
-        res = vault.hide(target, secret)
     else:
         backup_path = state.backups_dir() / f"{item_id}-{int(clock.wall())}.flnh"
-        res = volume.hide(target, secret, backup_path=backup_path)
+        res = volume.hide(target, backup_path=backup_path)
 
     with state.Store() as store:
         store.add(
@@ -180,22 +153,13 @@ def _show_cmd(args: argparse.Namespace) -> int:
 
         backup_path = Path(args.backup) if args.backup else None
         detected_level = ""
-
-        def _get_pw() -> str:
-            return _read_password(confirm_new=False).decode("utf-8")
-
         if backup_path is not None or (entry is not None and entry.level == "volume"):
-            secret = _read_password(confirm_new=False)
-            volume.show(target, secret, entry=entry, backup_path=backup_path)
+            volume.show(target, entry=entry, backup_path=backup_path)
             detected_level = "volume"
         elif entry is not None and entry.level in ("flag", "lock"):
-            _, detected_level = os_hide.show(target, entry=entry, get_password=_get_pw)
-        elif vault.locate(target, entry) is not None:
-            secret = _read_password(confirm_new=False)
-            vault.show(target, secret, entry=entry)
-            detected_level = "vault"
+            _, detected_level = os_hide.show(target, entry=entry)
         elif os_hide.detect(target, entry) is not None:
-            _, detected_level = os_hide.show(target, entry=entry, get_password=_get_pw)
+            _, detected_level = os_hide.show(target, entry=entry)
         else:
             raise errors.UsageError(
                 f"no hidden item found for: {target}",
@@ -264,18 +228,11 @@ def parser() -> argparse.ArgumentParser:
         help="vanish and deny opening or listing (ACL / chmod)",
     )
     mode.add_argument(
-        "--vault",
-        action="store_const",
-        dest="level",
-        const="vault",
-        help="vanish into a password-encrypted vault",
-    )
-    mode.add_argument(
         "--volume",
         action="store_const",
         dest="level",
         const="volume",
-        help="encrypted vault + hide size from drive space",
+        help="hide behind partition boundary so used space matches visible files",
     )
     hide_p.set_defaults(level="flag")
     hide_p.add_argument(

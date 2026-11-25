@@ -62,27 +62,20 @@ class CurrentOSHideTest(unittest.TestCase):
         self.assertEqual((a / "a.txt").read_text(encoding="utf-8"), "A")
         self.assertEqual((b / "b.txt").read_text(encoding="utf-8"), "B")
 
-    def test_level2_lock_denies_access_and_checks_password(self) -> None:
+    def test_level2_lock_denies_access_and_restores(self) -> None:
         folder = self.root / "locked_box"
         folder.mkdir()
         secret = folder / "key.txt"
         secret.write_text("vault-key", encoding="utf-8")
 
-        res = os_hide.hide(folder, level="lock", password="correct-horse", track=False)
+        res = os_hide.hide(folder, level="lock")
         self.assertFalse(folder.exists())
         hidden = Path(res["hidden_path"])
         if sys.platform == "win32" or os.geteuid() != 0:
             with self.assertRaises(PermissionError):
                 list(hidden.iterdir())
 
-        with self.assertRaises(errors.AuthError):
-            os_hide.show(folder, get_password=lambda: "wrong-pass")
-        self.assertFalse(folder.exists())
-        if sys.platform == "win32" or os.geteuid() != 0:
-            with self.assertRaises(PermissionError):
-                list(hidden.iterdir())
-
-        restored, lvl = os_hide.show(folder, get_password=lambda: "correct-horse")
+        restored, lvl = os_hide.show(folder)
         self.assertEqual((restored, lvl), (folder, "lock"))
         self.assertEqual((folder / "key.txt").read_text(encoding="utf-8"), "vault-key")
         self.assertFalse((folder / ".flnh.meta").exists())
@@ -90,12 +83,12 @@ class CurrentOSHideTest(unittest.TestCase):
     def test_level2_lock_single_file(self) -> None:
         doc = self.root / "id.txt"
         doc.write_text("passport", encoding="utf-8")
-        res = os_hide.hide(doc, level="lock", password="pw", track=False)
+        res = os_hide.hide(doc, level="lock")
         self.assertFalse(doc.exists())
         if sys.platform == "win32" or os.geteuid() != 0:
             with self.assertRaises(PermissionError):
                 list(Path(res["hidden_path"]).iterdir())
-        os_hide.show(doc, get_password=lambda: "pw")
+        os_hide.show(doc)
         self.assertEqual(doc.read_text(encoding="utf-8"), "passport")
 
     def test_idempotent_refusals(self) -> None:
@@ -132,8 +125,8 @@ class LinuxBackendTest(unittest.TestCase):
         self.assertTrue(folder.is_dir())
         self.assertEqual(dot_hidden.read_text(encoding="utf-8").splitlines(), ["preexisting"])
 
-    def test_lock_chmod_and_pass_with_cleanup(self) -> None:
-        folder = self.root / "vault_dir"
+    def test_lock_chmod_and_cleanup(self) -> None:
+        folder = self.root / "lock_dir"
         folder.mkdir()
         (folder / "x.txt").write_text("secret", encoding="utf-8")
 
@@ -146,11 +139,9 @@ class LinuxBackendTest(unittest.TestCase):
                 orig_chmod(p, mode)
 
         with mock.patch("os.chmod", side_effect=fake_chmod):
-            res = linux.hide(folder, level="lock", password="pw", track=False)
+            res = linux.hide(folder, level="lock")
             self.assertIn(0o000, modes)
-            with self.assertRaises(errors.AuthError):
-                linux.show(folder, get_password=lambda: "bad")
-            _, lvl = linux.show(folder, get_password=lambda: "pw")
+            _, lvl = linux.show(folder)
             self.assertEqual(lvl, "lock")
         self.assertTrue(folder.is_dir())
         self.assertFalse((self.root / ".hidden").exists())
@@ -188,12 +179,10 @@ class DarwinBackendTest(unittest.TestCase):
             mock.patch.object(Path, "lstat", fake_lstat),
             mock.patch("os.chmod"),
         ):
-            darwin.hide(folder, level="lock", password="macpw", track=False)
+            darwin.hide(folder, level="lock")
             self.assertTrue(flags_map[str(folder)] & darwin.UF_HIDDEN)
             self.assertTrue(flags_map[str(folder)] & darwin.UF_IMMUTABLE)
-            with self.assertRaises(errors.AuthError):
-                darwin.show(folder, get_password=lambda: "nope")
-            restored, lvl = darwin.show(folder, get_password=lambda: "macpw")
+            restored, lvl = darwin.show(folder)
             self.assertEqual((restored, lvl), (folder, "lock"))
             self.assertEqual(flags_map[str(folder)], 0)
             self.assertFalse(any(p.name.startswith(".flnh.") for p in self.root.iterdir()))
