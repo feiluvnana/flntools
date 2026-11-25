@@ -356,8 +356,6 @@ class ScreenTest(unittest.TestCase):
             "  details  flnd status"])
 
     def test_a_question_asked_during_a_run_stays_on_the_screen(self) -> None:
-        from types import SimpleNamespace
-
         from flnd.ui import forms
 
         tty, version = _TTY(), [1]
@@ -365,9 +363,7 @@ class ScreenTest(unittest.TestCase):
         shown.tick()
         with redirect_stdout(tty), redirect_stderr(tty), \
                 mock.patch.object(forms, "interactive", return_value=True), \
-                mock.patch.object(forms, "_app", lambda owner: SimpleNamespace(
-                    return_value=owner.finish(True))), \
-                mock.patch.object(forms, "_show", lambda app: None):
+                mock.patch.object(forms, "_plain", lambda owner: owner.finish(True)):
             self.assertTrue(forms.confirm("Download Chromium?"))
         for _ in range(3):
             version[0] += 1

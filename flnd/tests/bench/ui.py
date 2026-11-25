@@ -1,4 +1,4 @@
-"""Benchmark group `ui`: what the run's screen costs, and how fast a full-screen view opens.
+"""Benchmark group `ui`: what the run's screen costs.
 
 The screen is `src/ui/screen.py`'s `Screen`, drawing the run's snapshot (`run.state`, made by
 `flnd.engine.run.Tally`) of 20 targets and 6 files in flight. Its output goes to a counting sink
@@ -8,18 +8,11 @@ What it times:
 1. `overhead`: 100,000 file events through a `flnd.engine.run.Run`, each a `Tally.count` and
    an event to the reader, with the screen on versus off, as the percentage the screen adds;
 2. `idle_bytes`: the bytes the screen writes in 5 s while nothing changes;
-3. `frame`: one draw of that screen, 120 columns by 60 lines, from a new snapshot;
-4. `open`: from a fresh interpreter's start to the first frame of `target list`'s list
-   (`src/ui/lists.py`, Textual inline) in a pseudo-terminal; P17's goal is 250 ms.
+3. `frame`: one draw of that screen, 120 columns by 60 lines, from a new snapshot.
 """
 
 from __future__ import annotations
 
-import os
-import select
-import statistics
-import subprocess
-import sys
 import threading
 import time
 from contextlib import ExitStack
@@ -154,54 +147,12 @@ def frame(report: kit.Report) -> None:
     screen.__exit__(None, None, None)
 
 
-LIST = """
-from flnd.ui import lists
-rows = [lists.TargetRow(f"ins:example_user_{n}", True, ("posts",), n, n << 20, 60.0)
-        for n in range(3)]
-lists.targets(lambda: rows, follow=print, retry=print, add=print, delete=print)
-"""
-
-
-def first_frame() -> float:
-    """Seconds from starting the list's process to its title on the terminal; it is then killed."""
-    import pty
-
-    main, child = pty.openpty()
-    start = time.perf_counter()
-    env = {**os.environ, "TERM": "xterm-256color", "COLUMNS": "100", "LINES": "30"}
-    process = subprocess.Popen([sys.executable, "-c", LIST], stdin=child, stdout=child,
-                               stderr=child, env=env)
-    os.close(child)
-    seen, took = b"", float("inf")
-    try:
-        while select.select([main], [], [], 10)[0]:
-            seen += os.read(main, 65536)
-            if b"Targets" in seen:
-                took = time.perf_counter() - start
-                break
-    finally:
-        process.kill()
-        process.wait()
-        os.close(main)
-    return took
-
-
-def open_list(report: kit.Report) -> None:
-    """Time step 4: the median of 15 starts, as `kit.median_wall` takes for a process."""
-    if os.name == "nt":
-        report.skip("no pseudo-terminal on Windows")
-        return
-    took = [first_frame() for _ in range(1 if kit.SMOKE else 15)]
-    report.add("open", statistics.median(took) * 1e3, "ms")
-
-
 def main() -> None:
     """Run every step and emit the report."""
     report = kit.Report("ui")
     overhead(report)
     idle_bytes(report)
     frame(report)
-    open_list(report)
     report.emit()
 
 

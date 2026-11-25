@@ -59,7 +59,7 @@ src/                 the package flnd
     store.py       flnd.db: schema, migrations, rows, check and repair
     config.py      config.toml: structs, reading, editing
   ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
-    theme.py out.py screen.py lists.py forms.py
+    theme.py out.py screen.py forms.py
   plugins/         built-ins, importing only flnd.plugin and the standard library
     __init__.py (the table) fbk.py ins.py loi.py mht.py thr.py tik.py tlg.py twt.py web.py
 flnkit/              the standalone package flnkit, imports nothing of flnd
@@ -159,7 +159,7 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 ## Dependencies
 - Each dependency has a reason beside it in `pyproject.toml`.
 - The planned set is curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode,
-  rich, msgspec, tomlkit, textual and psutil. Textual stays only if `ui.open` is at most 250 ms.
+  rich, msgspec and psutil.
 
 ## Size
 - The limits live in `tests/test_size.py`: `CODE_LINES` for `src/` and `flnkit/`, and

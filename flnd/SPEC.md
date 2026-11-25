@@ -743,7 +743,7 @@ Any other `Error` exits 1. What the engine does, by cause:
 - an exception in a listing (`PluginError`): the target fails with the bug hint
 
 Failing means: a file is counted failed, written to `failures`, and retried at the start of its
-target's next runs (at most 3 later runs; after that press `r` on the target in `flnd target list`);
+target's next runs (at most 3 later runs; after that run `flnd target retry <target>`);
 a target whose listing fails prints its error and hint and the other targets run; a usage mistake
 stops the command before anything is fetched.
 
@@ -777,9 +777,10 @@ and the disk against the history. `check` compares the rows with the disk:
 
 Never unknown: parts, hidden files, symlinks, hard links of known files, sidecars, extracted archive
 folders, and files renamed into place in the last minute. On a terminal `flnd status` asks `Repair 2
-rows? (y/N)`; a yes is `fl.check(fix=True)`. It never deletes, moves or downloads a file. Failure
-kinds: `network blocked site changed login disk tool bug usage gone error`. A home of an older
-version migrates on first open, after copying `metadata/flnd.v1.db` (or `flnd.v2.db`).
+rows? (y/N)`; `flnd status --fix` repairs without asking. It never deletes, moves or downloads a
+file. Failure kinds: `network blocked site changed login disk tool bug usage gone error`. A home
+of an older version migrates on first open, after copying `metadata/flnd.v1.db` (or
+`flnd.v2.db`).
 
 ## Commands and flags
 
@@ -811,11 +812,14 @@ standard input, else gets every followed target, or prints `nothing to sync` and
 `[seq]`, case-insensitive), or every followed target when none is given. Prints `nothing to sync`
 and exits 0 when none matches. Takes `--when`, `--limit`, `--dry` and `--again`.
 
-**`flnd target list`** the targets the home knows: status, files, size, last run, categories.
-On a terminal: arrows move, `/` filters, `enter` opens details, `f` follows or unfollows,
-`r` makes failed files retryable, `a` asks for a target and gets it, `d` forgets one after a
-confirmation, `esc` quits.
-On a pipe a plain table; `--json` one `Tracked` object each.
+**`flnd target list`** the targets the home knows, as a table: followed, categories, status,
+files, size, last run; `--json` one `Tracked` object each.
+
+**`flnd target follow <target...>`** follows known or new targets, so `get` and `sync` take them;
+nothing is downloaded. **`flnd target unfollow <target...>`** stops following known targets; their
+files and history stay. **`flnd target retry <target...>`** makes the failed files of known targets
+retryable, so their next `get` tries them again (a file the site said is gone is never retried).
+A target that is wrong, or that a command needs known and the home doesn't know, is a usage error.
 
 **`flnd target clean <target...> [--media]`** forgets the targets (rows, files rows, failures,
 cursors, heads, gaps). An unknown target is a usage error. `--media` (default off) also deletes
@@ -824,12 +828,13 @@ names are never deleted. A terminal is asked first.
 
 **`flnd auth list | login <plugin> [file] | logout <plugin>`**: see [Logins](#logins).
 
-**`flnd status`**: see [check and repair](#check-and-repair). `--json` prints one `{"type":
+**`flnd status [--fix]`**: see [check and repair](#check-and-repair). `--fix` repairs the history
+rows of missing or resized files without asking. `--json` prints one `{"type":
 "Status", "status", "logins", "disk"}`.
 
-**`flnd config`** lists each key, value, default and origin (`home`, `user`, `default`). On a
-terminal `e` edits, `a` adds a key, `d` resets one; comments in the file stay. `--json` prints one
-`Setting` per key.
+**`flnd config`** prints each key, value, default and origin (`home`, `user`, `default`), then the
+two files to edit by hand: this home's `config.toml`, and the user file for every home.
+`--json` prints one `Setting` per key.
 
 What a run prints: on a terminal a live screen on standard error (a row per target, files in
 flight, the `now` line, and a `use` line read every 2 s with `psutil`: flnd's process tree, meaning
@@ -848,7 +853,7 @@ control codes before it is printed. Each run's events go to `log/<time>_get.json
 `%APPDATA%\flnd\config.toml`), hold optional settings. A bad value stops the command with a usage
 error naming the file, the key and what it takes, never the value: `config.toml: plugins.ins.pace is
 a number of seconds, 0 or more, not this text`. An unknown key or table is a warning, said once, and
-ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it.
+ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` shows every key.
 
 `[defaults]`:
 

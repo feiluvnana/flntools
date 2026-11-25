@@ -24,7 +24,7 @@ import msgspec
 from flnd.errors import UsageError
 from flnd.plugin import Range
 from flnd.ui.log import ui
-from flnkit import clock, files, text
+from flnkit import clock, text
 
 FILE = "config.toml"
 # While set (make test sets it), the real user file is refused, so a test never reads or writes
@@ -693,81 +693,8 @@ def _plugin(code: str, values: Mapping[str, Any], cls: type | None,
 
 
 # ---------------------------------------------------------------------------------------------
-# Editing
+# Names
 # ---------------------------------------------------------------------------------------------
-
-
-def write(key: str, value: Any, *, home: Path, user: Path,
-          plugins: Mapping[str, type] | None = None) -> Path:
-    """Set one key in the home's file; comments are kept.
-
-    Args:
-        key: a dotted name (`"defaults.when"`, `"plugins.ins.pace"`); a bare name is in
-            `[defaults]`.
-        value: the TOML value.
-        home: the home folder.
-        user: the user file.
-        plugins: the plugin classes by code, as `read` takes them.
-
-    Returns:
-        The file written.
-
-    Raises:
-        UsageError: the key isn't one flnd takes, or the value is one it doesn't take; the file
-            is left as it was.
-    """
-    return _edit(key, value, home=home, user=user, plugins=plugins or {})
-
-
-def unset(key: str, *, home: Path, user: Path,
-          plugins: Mapping[str, type] | None = None) -> Path:
-    """Remove one key from its file, so it takes the next file's value or the default.
-
-    Args:
-        plugins: the plugin classes by code, as `read` takes them, so a plugin's own key is
-            known.
-    """
-    return _edit(key, None, home=home, user=user, plugins=plugins or {})
-
-
-def _edit(key: str, value: Any, *, home: Path, user: Path,
-          plugins: Mapping[str, type]) -> Path:
-    import tomlkit
-
-    tables, name = _known(key, plugins)
-    path = home / FILE
-    guard(path)
-    try:
-        document = tomlkit.parse(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        document = tomlkit.document()
-    except UnicodeDecodeError:
-        raise UsageError(f"{path}: not UTF-8 text", hint="save it as UTF-8") from None
-    except OSError as error:
-        raise UsageError(f"{path}: {error.strerror}",
-                         hint="fix the file, or move it away") from None
-    except Exception as error:  # tomlkit's parse errors share no base but Exception
-        raise _syntax(path, error) from None
-    if value is None:
-        _remove(path, document, tables, name)
-    else:
-        place = document
-        for i, table in enumerate(tables):
-            if table not in place:
-                place[table] = tomlkit.table(is_super_table=i < len(tables) - 1)
-            place = place[table]
-            _table(str(path), ".".join(tables[: i + 1]), place)
-        try:
-            place[name] = value
-        except (TypeError, ValueError):  # tomlkit's ConvertError is a TypeError and ValueError
-            raise UsageError(f"{key}: a {type(value).__name__} isn't a TOML value",
-                             hint="give text, a number, true or false, a list or a table") \
-                from None
-    content = tomlkit.dumps(document)
-    origin = Where.USER if path == user else Where.HOME
-    _checked_layer(str(path), _without_exec(tomllib.loads(content), origin), plugins)
-    files.write(path, content)
-    return path
 
 
 def _known(key: str, plugins: Mapping[str, type]) -> tuple[list[str], str]:
@@ -781,23 +708,3 @@ def _known(key: str, plugins: Mapping[str, type]) -> tuple[list[str], str]:
             return parts[:2], name
     raise UsageError(f"{key} is not a setting flnd knows",
                      hint="see SPEC.md#config for every key of config.toml")
-
-
-def _without_exec(data: dict[str, Any], origin: Where) -> dict[str, Any]:
-    defaults = data.get("defaults")
-    if origin is Where.HOME and isinstance(defaults, dict):
-        defaults.pop("exec", None)
-    return data
-
-
-def _remove(path: Path, document: Any, tables: list[str], name: str) -> None:
-    places = [document]
-    for table in tables:
-        if table not in places[-1]:
-            return
-        places.append(places[-1][table])
-        _table(str(path), ".".join(tables[: len(places) - 1]), places[-1])
-    places[-1].pop(name, None)
-    for parent, table in zip(reversed(places[:-1]), reversed(tables), strict=True):
-        if len(parent[table]) == 0:
-            del parent[table]

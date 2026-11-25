@@ -440,57 +440,19 @@ class RunTest(ExampleCase):
         self.assertIn("not a known target", err)
         self.assertEqual(self.run_app("target", "clean")[0], 2)
 
-    def test_a_terminal_is_asked_before_a_forget_and_a_pipe_is_not(self):
-        self.run_app("get", "exs:example_user", "exs:p/9")
-        self.sure = False
-        code, text, _ = self.run_app("target", "clean", "exs:example_user", "--media")
-        self.assertEqual((code, text), (0, "kept: nothing was forgotten\n"))
-        self.assertRegex(self.asked[-1], r"^Forget 1 target and delete [\d.]+ B\?$")
-        self.assertEqual(len(self.run_app("--json", "target", "list")[1].splitlines()), 2)
-        self.sure = True
-        self.assertEqual(self.run_app("target", "clean", "exs:example_user")[0], 0)
-        self.assertEqual(self.asked[-1], "Forget 1 target?")
-        self.pipe("")
-        self.asked.clear()
-        self.assertEqual(self.run_app("target", "clean", "exs:9")[0], 0)
-        self.assertEqual((self.asked, self.run_app("target", "list")[1].split()[7:]),
-                         ([], ["run"]))
-
-
-class WiringTest(ExampleCase):
-    """On a terminal each list gets its rows and keys from the library (`flnd.ui.lists`)."""
-
-    def listed(self, script, *argv):
-        """Run `flnd <argv>` with `lists.show` replaced by `script(title, load, keys, delete)`,
-        which runs while the home is open, as the real list would."""
-        from flnd.ui import lists
-
-        def show(title, columns, load, *, keys=(), delete=None):
-            script(title, load, {key.char: key for key in keys}, delete)
-
-        with mock.patch.object(lists, "show", show):
-            code, _, err = self.run_app(*argv)
-        self.assertEqual(code, 0, err)
-
-    def test_the_target_list_follows_retries_adds_and_forgets(self):
+    def test_follow_unfollow_and_retry_name_their_targets(self):
         self.run_app("get", "exs:example_user")
-
-        def script(title, load, keys, delete):
-            [row] = [each.key for each in load()]
-            self.assertEqual((title, row.name, row.followed, row.files, row.status),
-                             ("Targets", "exs:example_user", True, 3, "synced"))
-            keys["f"].run(row)
-            self.assertFalse(load()[0].key.followed)
-            keys["f"].run(load()[0].key)
-            self.assertTrue(load()[0].key.followed)
-            keys["r"].run(row)
-            with mock.patch("flnd.ui.forms.text", return_value="exs:p/9"):
-                keys["a"].run(None)
-            self.assertEqual(len(load()), 2)
-            delete.run(row)
-            self.assertEqual([each.key.name for each in load()], ["exs:9"])
-
-        self.listed(script, "target", "list")
+        self.assertEqual(self.run_app("target", "unfollow", "exs:example_user")[:2],
+                         (0, "exs:example_user: unfollowed\n"))
+        self.assertIn("-", self.run_app("target", "list")[1].splitlines()[1].split()[1])
+        self.assertEqual(self.run_app("target", "follow", "exs:example_user")[:2],
+                         (0, "exs:example_user: followed\n"))
+        self.assertIn("followed", self.run_app("target", "list")[1].splitlines()[1])
+        self.assertEqual(self.run_app("target", "retry", "exs:example_user")[:2],
+                         (0, "exs:example_user: failed files will be retried\n"))
+        for verb in ("follow", "unfollow", "retry"):
+            with self.subTest(verb):
+                self.assertEqual(self.run_app("target", verb)[0], 2)
 
     def test_target_list_reports_new_partial_failed_and_retry_statuses(self):
         from flnd.plugin import Target
@@ -510,21 +472,32 @@ class WiringTest(ExampleCase):
             for _ in range(_store.RETRIES + 1):
                 db.fail(run=None, item="exs:p2", target="exs:needs_retry",
                         error=RuntimeError("boom"), post="p2", category="posts")
-        rows = {
-            row["target"]["text"]: (row["status"], row["failed"], tuple(row["pending"]))
-            for row in (json.loads(line) for line in
-                        self.run_app("--json", "target", "list")[1].splitlines())
-        }
-        self.assertEqual(rows, {
-            "exs:brand_new": ("new", 0, ("posts", "reels")),
-            "exs:cut_short": ("partial", 0, ("posts", "reels")),
-            "exs:broken_file": ("failed", 1, ()),
-            "exs:needs_retry": ("retry", 1, ("posts", "reels")),
-        })
+        rows = {line.split()[0]: line for line in
+                self.run_app("target", "list")[1].splitlines()[1:]}
+        for name, state in (("brand_new", "new"), ("cut_short", "partial"),
+                            ("broken_file", "1 failed"), ("needs_retry", "1 retry")):
+            with self.subTest(name):
+                self.assertIn(state, rows[f"exs:{name}"])
+
+    def test_a_terminal_is_asked_before_a_forget_and_a_pipe_is_not(self):
+        self.run_app("get", "exs:example_user", "exs:p/9")
+        self.sure = False
+        code, text, _ = self.run_app("target", "clean", "exs:example_user", "--media")
+        self.assertEqual((code, text), (0, "kept: nothing was forgotten\n"))
+        self.assertRegex(self.asked[-1], r"^Forget 1 target and delete [\d.]+ B\?$")
+        self.assertEqual(len(self.run_app("--json", "target", "list")[1].splitlines()), 2)
+        self.sure = True
+        self.assertEqual(self.run_app("target", "clean", "exs:example_user")[0], 0)
+        self.assertEqual(self.asked[-1], "Forget 1 target?")
+        self.pipe("")
+        self.asked.clear()
+        self.assertEqual(self.run_app("target", "clean", "exs:9")[0], 0)
+        self.assertEqual((self.asked, self.run_app("target", "list")[1].split()[7:]),
+                         ([], ["run"]))
 
 
 class FormsTest(ExampleCase):
-    """What a terminal is asked, in forms (`flnd.ui.forms`): status's repair, config, the login."""
+    """What a terminal is asked, in forms (`flnd.ui.forms`): status's repair, the login."""
 
     def test_status_offers_to_repair_the_rows_a_terminal_can_and_a_pipe_cannot(self):
         import time
@@ -551,28 +524,20 @@ class FormsTest(ExampleCase):
                              "the history now matches the disk")
             self.assertEqual(self.run_app("status")[0], 0)
 
-    def test_config_edits_adds_and_resets_a_setting_in_forms(self):
-        def script(title, load, keys, delete):
-            self.assertEqual(title, "Settings")
-            with mock.patch("flnd.ui.forms.text", return_value="30d"):
-                keys["e"].run("defaults.when")
-            with mock.patch("flnd.ui.forms.text", side_effect=["defaults.height", "720"]):
-                keys["a"].run(None)
-            with mock.patch("flnd.ui.forms.text", return_value="true"):
-                keys["e"].run("defaults.sidecars")
-            rows = {row.key: row.cells for row in load()}
-            self.assertEqual(rows["defaults.when"], ("defaults.when", "30d", "-", "home"))
-            self.assertEqual(rows["defaults.height"][1], "720")
-            self.assertEqual(rows["defaults.sidecars"][1:], ("true", "false", "home"))
-            delete.run("defaults.when")
-            self.assertEqual({row.key: row.cells[3] for row in load()}["defaults.when"], "default")
+    def test_status_fix_repairs_without_asking(self):
+        import time
 
-        from flnd.ui import lists
-
-        with mock.patch.object(lists, "show", lambda *a, **k: script(*a[:1], a[2], *[
-                {key.char: key for key in k["keys"]}, k["delete"]])):
-            self.assertEqual(self.run_app("config")[0], 0)
-        self.assertIn("height = 720", Path(".flnd/config.toml").read_text(encoding="utf-8"))
+        self.run_app("get", "exs:example_user")
+        next(Path(".flnd/media").rglob("*p1*")).unlink()
+        aged = mock.patch("flnd.engine.store.time.time",
+                          return_value=time.time() + 2 * _store.SETTLING)
+        with aged:
+            self.sure = False
+            code, text, _ = self.run_app("status", "--fix")
+            self.assertEqual((code, self.asked), (0, []))
+            self.assertEqual(text.splitlines()[-1], "disk: 3 files: repaired 1 missing; "
+                             "the history now matches the disk")
+            self.assertEqual(self.run_app("status")[0], 0)
 
     def test_a_cookie_site_asks_its_file_without_a_menu(self):
         def select(title, options, **_):
@@ -691,7 +656,8 @@ class HelpTest(FlndCase):
         code, text, _ = self.run_app("--help")
         self.assertEqual(code, 0)
         self.assertIn("flnd 0.2.0 - download whole accounts from the web", text)
-        for verb in ("get ", "target list|clean", "auth list|login|logout", "status", "config"):
+        for verb in ("get ", "target list|follow|unfollow|retry|clean", "auth list|login|logout",
+                     "status", "config"):
             self.assertIn(f"  {verb}", text)
         self.assertIn("tik fbk ins thr twt loi tlg mht", text)
         self.assertEqual(self.run_app()[1], text)
@@ -707,7 +673,7 @@ class HelpTest(FlndCase):
         self.assertNotIn("Args:", text)
 
     def test_a_group_lists_its_commands(self):
-        for group, names in (("target", ("list", "clean")),
+        for group, names in (("target", ("list", "follow", "unfollow", "retry", "clean")),
                              ("auth", ("list", "login", "logout"))):
             with self.subTest(group):
                 code, text, _ = self.run_app(group)
@@ -741,6 +707,8 @@ class ListsTest(FlndCase):
         self.assertEqual(code, 0)
         self.assertEqual(text.splitlines()[0].split(), ["key", "value", "default", "from"])
         self.assertRegex(text, r"defaults\.when +- +- +default")
+        self.assertRegex(text.splitlines()[-1], r"^edit .*config\.toml for this home, or .*config\.toml "
+                                                r"for every home$")
         rows = [json.loads(line) for line in self.run_app("--json", "config")[1].splitlines()]
         self.assertEqual(rows[0]["key"], "defaults.dedupe")
         self.assertFalse((Path(".flnd") / _store.DB).exists())

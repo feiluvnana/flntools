@@ -1,15 +1,16 @@
 """The forms of `flnd.ui.forms`: each field's keys, Ctrl-C, and the answers without a terminal.
 
-The fields are fed keys directly, which is fast; a few cases go through Textual's pilot, to
-check the app that carries them: keys in, the answer out, Ctrl-C as `Stopped`.
+The fields are fed keys directly, which is fast; the rest drive `_plain` with fake keys and
+a fake terminal size: keys in, the answer out, Ctrl-C as `Stopped`. A pseudo-terminal checks
+the real raw mode, and a fake `msvcrt` the Windows keys.
 """
 
 from __future__ import annotations
 
-import asyncio
 import io
 import os
 import select
+import sys
 import threading
 import unittest
 from contextlib import contextmanager
@@ -37,21 +38,20 @@ def feed(owner: forms.Owner, *keys: str) -> object:
     return said
 
 
-def drive(*runs: tuple[str, ...]) -> mock._patch:
-    """Run each app that opens next through Textual's pilot, pressing the next of `runs`."""
-    pending = list(runs)
+@contextmanager
+def drive(*runs: tuple[str, ...]):
+    """Answer each question that opens next with the next of `runs`: key names (`enter`, `down`,
+    `ctrl+c`, or one character), given to `_plain` through its raw-mode reader."""
+    pending = [list(run) for run in runs]
 
-    def show(app) -> None:
+    @contextmanager
+    def raw():
         keys = pending.pop(0)
+        yield lambda: [(key, key if len(key) == 1 else None) for key in [keys.pop(0)]]
 
-        async def go() -> None:
-            async with app.run_test(size=(100, 24)) as pilot:
-                await pilot.press(*keys)
-                await pilot.pause()
-
-        asyncio.run(go())
-
-    return mock.patch.object(forms, "_show", side_effect=show)
+    with mock.patch.object(forms, "_raw", raw), \
+            mock.patch.object(forms, "_terminal_size", return_value=(100, 24)):
+        yield
 
 
 def drawn(renderable: object, width: int = 100) -> str:
@@ -117,21 +117,30 @@ class AskTest(unittest.TestCase):
         self.enterContext(mock.patch("sys.stdin", Terminal("")))
         self.stdout = self.enterContext(mock.patch("sys.stdout", io.StringIO()))
 
-    def test_the_app_carries_keys_in_and_the_answer_out(self) -> None:
+    def test_keys_come_in_and_the_answer_goes_out(self) -> None:
         with drive(("down", "enter"), ("x", "enter"), ("n",)):
             self.assertEqual(forms.select("How?", HOW), "qr")
             self.assertEqual(forms.text("Account"), "x")
             self.assertFalse(forms.confirm("Go on?"))
-        # Each answer stays on the terminal.
-        self.assertEqual(self.stdout.getvalue(), "  | How?\n  | With a QR code\n"
-                         "  | Account\n  | > x\n  | Go on?\n  | No\n")
+        # Each answer stays on the terminal, after its frame was erased and the cursor came back.
+        shown = self.stdout.getvalue()
+        for answer in ("  | How?\n  | With a QR code\n", "  | Account\n  | > x\n",
+                       "  | Go on?\n  | No\n"):
+            self.assertIn("\x1b[?25h" + answer, shown)
+
+    def test_a_secret_stays_masked_on_the_terminal(self) -> None:
+        with drive(("a", "b", "enter")):
+            self.assertEqual(forms.text("Password", secret=True), "ab")
+        self.assertTrue(self.stdout.getvalue().endswith("  | Password\n  | > **\n"))
 
     def test_ctrl_c_and_esc_leave_nothing_behind(self) -> None:
-        with drive(("ctrl+c",), ("escape",)):
+        with drive(("ctrl+c",), ("escape",), ("escape",)):
             with self.assertRaises(Stopped):
                 forms.select("How?", HOW)
             self.assertIsNone(forms.text("Account"))
-        self.assertEqual(self.stdout.getvalue(), "")
+            self.assertFalse(forms.confirm("Go on?"))
+        self.assertTrue(self.stdout.getvalue().endswith("\x1b[?25h"))
+        self.assertNotIn("\n", self.stdout.getvalue().rsplit("\x1b[J", 1)[-1])
 
     def test_a_paste_types_into_a_text_field(self) -> None:
         field = forms._Text("Account", secret=False, default="")
@@ -160,14 +169,38 @@ class AskTest(unittest.TestCase):
             events.append("release")
 
         with mock.patch.object(screen, "paused", hold), \
-                mock.patch.object(forms, "_show", lambda app: events.append("asked")):
+                mock.patch.object(forms, "_plain", lambda owner: events.append("asked")):
             forms.confirm("Go on?")
         self.assertEqual(events, ["hold", "asked", "release"])
 
 
+class WindowsKeysTest(unittest.TestCase):
+    """The Windows console's keys, read from `msvcrt.getwch()`, come out as the terminal's."""
+
+    def read(self, *chars: str) -> list[tuple[str, str | None]]:
+        fake = mock.Mock(getwch=mock.Mock(side_effect=list(chars)))
+        with mock.patch.dict(sys.modules, {"msvcrt": fake}):
+            return forms._wkeys()
+
+    def test_keys_are_named_as_on_a_terminal(self) -> None:
+        cases = [(("\r",), "enter"), (("\x08",), "backspace"), (("\x03",), "ctrl+c"),
+                 (("\x1b",), "escape"), (("\x00", "H"), "up"), (("\xe0", "P"), "down"),
+                 (("\xe0", "K"), "left"), (("\xe0", "M"), "right"), (("\xe0", "G"), "home"),
+                 (("\xe0", "O"), "end"), (("\x00", "I"), "pageup"), (("\xe0", "Q"), "pagedown")]
+        for chars, key in cases:
+            with self.subTest(key):
+                self.assertEqual(self.read(*chars), [(key, None)])
+        self.assertEqual(self.read("a"), [("a", "a")])
+        self.assertEqual(self.read("\xe0", "S"), [])
+
+    def test_raw_gives_the_windows_reader(self) -> None:
+        with mock.patch.object(sys, "platform", "win32"), forms._raw() as read:
+            self.assertIs(read, forms._wkeys)
+
+
 @unittest.skipIf(os.name == "nt", "no pseudo-terminal on Windows")
 class WorkerThreadTest(unittest.TestCase):
-    """Off the main thread (the browser's question) a plain prompt stands in for Textual."""
+    """The real raw mode, on a pseudo-terminal, from a worker thread too (the browser's question)."""
 
     def setUp(self) -> None:
         import pty
@@ -226,7 +259,7 @@ class WorkerThreadTest(unittest.TestCase):
 class NoTerminalTest(unittest.TestCase):
     def setUp(self) -> None:
         self.enterContext(mock.patch("sys.stdin", io.StringIO("")))
-        self.show = self.enterContext(mock.patch.object(forms, "_show"))
+        self.plain = self.enterContext(mock.patch.object(forms, "_plain"))
 
     def test_select_and_text_name_what_was_needed(self) -> None:
         for name, call in [("select", lambda: forms.select("Which account?", ["a"])),
@@ -242,11 +275,9 @@ class NoTerminalTest(unittest.TestCase):
         self.assertFalse(forms.confirm("Open a browser?", default=False))
         self.assertEqual(forms.ask("Name", default="example_user"), "example_user")
         self.assertEqual(forms.choose("Pick", ["a", "b"], default="b"), "b")
-        self.show.assert_not_called()
+        self.plain.assert_not_called()
 
-    def test_frame_computes_reflowed_rows_on_width_shrink_and_app_has_on_resize(self) -> None:
-        import os
-
+    def test_frame_computes_reflowed_rows_on_width_shrink(self) -> None:
         from rich.text import Text
 
         out = io.StringIO()
@@ -260,15 +291,6 @@ class NoTerminalTest(unittest.TestCase):
                         return_value=os.terminal_size((20, 20))):
             forms._frame(out, None, drawn)
         self.assertTrue(out.getvalue().startswith("\x1b[3A\r\x1b[J"), repr(out.getvalue()))
-
-        # Textual Inline View defines on_resize.
-        class DummyOwner:
-            def view(self, fancy):
-                return ""
-
-        app = forms._app(DummyOwner())
-        view_cls = next(iter(app.compose())).__class__
-        self.assertTrue(hasattr(view_cls, "on_resize"))
 
 
 if __name__ == "__main__":

@@ -200,15 +200,11 @@ class GetTest(LibraryCase):
             with self.subTest(), self.assertRaises(errors.UsageError):
                 call()
 
-    def test_config_reads_sets_and_unsets(self):
+    def test_config_reads_each_key_with_its_default_and_origin(self):
         self.assertEqual((self.fl.config["when"], self.fl.config.where("when")), ("", "default"))
-        self.fl.config.set("defaults.when", "30d")
-        self.assertEqual((self.fl.config["defaults.when"], self.fl.config.where("when")),
-                         ("30d", "home"))
-        self.fl.config.unset("when")
-        self.assertEqual(self.fl.config["when"], "")
+        self.assertEqual(self.fl.config.default("when"), "")
         with self.assertRaises(errors.UsageError):
-            self.fl.config.set("nope", 1)
+            self.fl.config["nope"]
 
 
 class RunTest(LibraryCase):

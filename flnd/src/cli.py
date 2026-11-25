@@ -233,10 +233,7 @@ def sync(args: argparse.Namespace) -> int:
 
 
 def target_list(args: argparse.Namespace) -> int:
-    """Work in the targets this home knows: followed or not, files, size, last run.
-
-    On a terminal it is a list: f follows or unfollows the target under the cursor, r makes its
-    failed files retryable, a gets a target, d forgets one. On a pipe it is a plain table.
+    """List the targets this home knows: followed or not, status, files, size, last run.
 
     Args:
         args: the parsed flags.
@@ -244,29 +241,75 @@ def target_list(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd.ui import lists
+    from flnd.ui import out
 
     with _open(args) as fl:
-        if args.json:
-            for row in fl.targets:
-                _json(row)
-            return OK
+        rows = list(fl.targets)
+    if args.json:
+        for row in rows:
+            _json(row)
+    else:
+        _table(("target", "followed", "categories", "status", "files", "size", "last run"),
+               [(str(row.target), "followed" if row.follow else "-", " ".join(row.categories),
+                 _status(row), f"{row.seen:,} found" if row.query else f"{row.files:,} files",
+                 out.size(row.size) if row.size else "-", _ago(row.at))
+                for row in rows])
+    return OK
 
-        def load() -> list[lists.TargetRow]:
-            return [lists.TargetRow(
-                str(row.target), row.follow, row.categories, row.files,
-                row.size, _ago(row.at), status=row.status, failed=row.failed,
-                query=row.query, seen=row.seen, pending=row.pending,
-            ) for row in fl.targets]
 
-        def follow(row: lists.TargetRow) -> None:
-            (fl.targets.unfollow if row.followed else fl.targets.follow)(row.name)
+def _status(row: Any) -> str:
+    """A target's download state: "synced", "partial", "new", or "3 failed" and "3 retry"."""
+    state = row.status or ("new" if not row.at and not row.files else "synced")
+    return f"{row.failed:,} {state}" if state in ("failed", "retry") and row.failed else state
 
-        def add(text: str) -> None:
-            _watch(fl, fl.get(text), args)
 
-        lists.targets(load, follow=follow, retry=lambda row: fl.targets.retry(row.name),
-                      add=add, delete=lambda row: fl.targets.clean(row.name))
+def target_follow(args: argparse.Namespace) -> int:
+    """Follow targets, so `flnd get` and `flnd sync` take them; nothing is downloaded.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0.
+    """
+    with _open(args) as fl:
+        done = fl.targets.follow(*args.targets)
+    for row in done:
+        _line(args, row, f"{row.target}: followed")
+    return OK
+
+
+def target_unfollow(args: argparse.Namespace) -> int:
+    """Stop following known targets; their files and history stay.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0.
+    """
+    with _open(args) as fl:
+        done = fl.targets.unfollow(*args.targets)
+    for row in done:
+        _line(args, row, f"{row.target}: unfollowed")
+    return OK
+
+
+def target_retry(args: argparse.Namespace) -> int:
+    """Make known targets' failed files retryable: their next get tries them again.
+
+    A file the site said is gone (404 or 410) is never retried.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0.
+    """
+    with _open(args) as fl:
+        done = fl.targets.retry(*args.targets)
+    for row in done:
+        _line(args, row, f"{row.target}: failed files will be retried")
     return OK
 
 
@@ -374,8 +417,11 @@ def status(args: argparse.Namespace) -> int:
     """Show the last run, its failures by target, the logins that need care, and the disk.
 
     A failure a later run saved is left out. A failed file is retried by itself at the start of
-    its target's next 3 gets; `flnd target list`'s r asks for it again after that. With --json,
+    its target's next 3 gets; `flnd target retry` asks for it again after that. With --json,
     one JSON object: the run's command and times, what it saved, and its failures.
+
+    --fix repairs the history rows whose file is missing or the wrong size, without asking; on a
+    terminal, `flnd status` alone offers to.
 
     Args:
         args: the parsed flags.
@@ -388,7 +434,7 @@ def status(args: argparse.Namespace) -> int:
     with _open(args) as fl:
         found = fl.status
         logins = [row for row in fl.auth if row.status != "ok"]
-        checked = fl.check()
+        checked = fl.check(fix=args.fix)
     well = (found is None or not found.failures) and not logins and checked.ok
     if args.json:
         out.json({"type": "Status", "status": found, "logins": logins,
@@ -412,10 +458,9 @@ def status(args: argparse.Namespace) -> int:
 
 
 def config(args: argparse.Namespace) -> int:
-    """Work in every setting of config.toml: its value, its default and where it comes from.
+    """Show every setting of config.toml: its value, its default and where it comes from.
 
-    On a terminal it is a list: e edits the value under the cursor in a form, a sets another
-    key, d resets one to its default. On a pipe it is a plain table.
+    Edit the settings by hand, in the home's file or in the user's file.
 
     Args:
         args: the parsed flags.
@@ -423,58 +468,21 @@ def config(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd.ui import forms, lists
+    from flnd.ui import out
 
     with _open(args) as fl:
         if args.json:
-            from flnd.ui import out
-
             for key in fl.config:
                 out.json({"type": "Setting", "key": key, "value": fl.config[key],
                           "default": fl.config.default(key), "from": fl.config.where(key)})
             return OK
-
-        def load() -> list[lists.Row]:
-            return [lists.Row(key, (key, _show(fl.config[key]), _show(fl.config.default(key)),
-                                    fl.config.where(key))) for key in fl.config]
-
-        def edit(key: str | None) -> None:
-            if key is None:
-                return
-            typed = forms.text(f"{key} = ", default=_show(fl.config[key]))
-            if typed is not None:
-                fl.config.set(key, _typed(typed, fl.config.default(key)))
-
-        def add(_: str | None) -> None:
-            key = forms.text("Setting (defaults.when, plugins.ins.pace)")
-            if key:
-                edit(key.strip())
-
-        columns = (lists.Column("key"), lists.Column("value"), lists.Column("default"),
-                   lists.Column("from"))
-        lists.show("Settings", columns, load,
-                   keys=(lists.Key("e", "edit", edit, leave=True),
-                         lists.Key("a", "add", add, leave=True)),
-                   delete=lists.Key("d", "reset", lambda key: fl.config.unset(key)))
+        _table(("key", "value", "default", "from"),
+               [(key, _show(fl.config[key]), _show(fl.config.default(key)), fl.config.where(key))
+                for key in fl.config])
+        home, user = fl.config.files
+    out.line(("edit ", "dim"), (str(home), "bold focus"), (" for this home, or ", "dim"),
+             (str(user), "bold focus"), (" for every home", "dim"))
     return OK
-
-
-def _typed(text: str, like: Any) -> Any:
-    """What a form's text means for a setting that defaults to `like`: a bool, a number, a
-    list or table written as JSON, else the text itself."""
-    import json
-
-    text = text.strip()
-    if isinstance(like, bool):
-        return text.lower() in ("true", "yes", "on", "1")
-    if isinstance(like, (int, float, list, dict)) or text[:1] in "[{":
-        try:
-            return json.loads(text)
-        except ValueError:
-            return text
-    if like is None and text.lower() in ("true", "false"):
-        return text.lower() == "true"
-    return "" if text == "-" else text
 
 
 def _show(value: Any) -> str:
@@ -625,8 +633,13 @@ def parser() -> argparse.ArgumentParser:
                      help="list what would be saved, and save and write nothing")
     _again(sub)
 
-    targets = group("target", "List the targets flnd knows, or forget some")
+    targets = group("target", "List the targets flnd knows, follow, unfollow, retry or forget some")
     command(targets, "list", target_list)
+    for name, function in (("follow", target_follow), ("unfollow", target_unfollow),
+                           ("retry", target_retry)):
+        sub = command(targets, name, function)
+        sub.add_argument("targets", nargs="+", metavar="target",
+                         help="the targets, as `flnd target list` shows them")
     sub = command(targets, "clean", target_clean)
     sub.add_argument("targets", nargs="+", metavar="target", help="the targets to forget")
     sub.add_argument("--media", action="store_true",
@@ -641,7 +654,9 @@ def parser() -> argparse.ArgumentParser:
     sub = command(logins, "logout", auth_logout)
     sub.add_argument("plugin", help="the plugin's code (ins)")
 
-    command(verbs, "status", status)
+    sub = command(verbs, "status", status)
+    sub.add_argument("--fix", action="store_true",
+                     help="repair the history rows of missing or resized files, without asking")
     command(verbs, "config", config)
     return top
 
@@ -758,14 +773,18 @@ def _how(args: argparse.Namespace) -> tuple[str, str | None]:
     return "file", (forms.text("Cookie file") or "").strip()
 
 
-def _ago(at: str) -> float | None:
-    """Seconds since an ISO 8601 time; None for none."""
+def _ago(at: str) -> str:
+    """`2h ago`: the largest whole unit since an ISO 8601 time; "never" for none."""
     import datetime
 
     if not at:
-        return None
-    then = datetime.datetime.fromisoformat(at)
-    return (datetime.datetime.now(datetime.UTC) - then).total_seconds()
+        return "never"
+    seconds = (datetime.datetime.now(datetime.UTC) - datetime.datetime.fromisoformat(at)
+               ).total_seconds()
+    for unit, length in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= length:
+            return f"{int(seconds // length)}{unit} ago"
+    return "just now"
 
 
 def _line(args: argparse.Namespace, value: Any, text: str) -> None:

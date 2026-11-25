@@ -56,13 +56,6 @@
       "target": 0,
       "gate": "P7: the screen from a snapshot"
     },
-    "ui.open": {
-      "unit": "ms",
-      "better": "lower",
-      "baseline": 84.0507,
-      "target": 250,
-      "gate": "P17: lists and forms open fast"
-    },
     "net.big_rate": {
       "unit": "GiB/s",
       "better": "higher",

@@ -82,7 +82,7 @@ class Flnd:
         self.targets = Targets(self)
         # The logins: iterate, login, logout.
         self.auth = Auth(self)
-        # The settings of `config.toml`: read, set, unset.
+        # The settings of `config.toml`: read.
         self.config = Config(self)
         # Whether `get` asks again for everything.
         self._again = again
@@ -615,6 +615,13 @@ class Config(Mapping[str, Any]):
     def __len__(self) -> int:
         return sum(1 for _ in self)
 
+    @property
+    def files(self) -> tuple[Path, Path]:
+        """The files that set it: this home's `config.toml`, then the user's, for every home."""
+        from flnd.engine import config
+
+        return self._owner.home / config.FILE, config.user_file()
+
     def where(self, key: str) -> str:
         """Where a key's value comes from: `"home"`, `"user"`, `"argument"` or `"default"`."""
         return str(self._read().origin(key))
@@ -633,29 +640,6 @@ class Config(Mapping[str, Any]):
         else:
             value = getattr(config.PluginConfig(), name, None)
         return list(value) if isinstance(value, tuple) else value
-
-    def set(self, key: str, value: Any) -> None:
-        """Set a key in `<home>/config.toml` keeping the file's comments.
-
-        Raises:
-            UsageError: the key isn't one flnd takes, or the value is one it doesn't take; the
-                file is left as it was.
-        """
-        from flnd.engine import config
-
-        config.write(key, value, home=self._owner.home, user=config.user_file(),
-                     plugins=self._owner._sources())
-
-    def unset(self, key: str) -> None:
-        """Remove a key from its file, so it takes the next file's value or the default.
-
-        Raises:
-            UsageError: flnd takes no such setting.
-        """
-        from flnd.engine import config
-
-        config.unset(key, home=self._owner.home, user=config.user_file(),
-                     plugins=self._owner._sources())
 
 
 def _tracked(info: TargetInfo) -> Tracked:

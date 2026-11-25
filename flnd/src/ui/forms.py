@@ -1,4 +1,4 @@
-"""Questions in the terminal, in Huh's look: a pick, a line of text, a yes or no (Textual, inline).
+"""Questions in the terminal, in Huh's look: a pick, a line of text, a yes or no.
 
 SPEC.md#commands-and-flags explains it.
 """
@@ -6,8 +6,7 @@ SPEC.md#commands-and-flags explains it.
 from __future__ import annotations
 
 import sys
-import threading
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any, NamedTuple
 
@@ -168,11 +167,11 @@ def hints(pairs: Sequence[tuple[str, str]], fancy: bool, *, off: frozenset[str] 
 
 
 class Owner:
-    """What the app draws and feeds: `view` is a Rich renderable, `press` PENDING or the end."""
+    """What `_plain` draws and feeds: `view` is a Rich renderable, `press` PENDING or the end."""
 
     # Whether the last frame is an answer worth leaving on the terminal.
     answered = False
-    # The terminal's height in lines, set by the app or `_plain` before drawing; None when unknown.
+    # The terminal's height in lines, set by `_plain` before drawing; None when unknown.
     height: int | None = None
 
     def view(self, fancy: bool) -> Any:
@@ -347,60 +346,8 @@ class _Confirm(Field):
         return PENDING
 
 
-# ---------------------------------------------------------------------------------------------
-# The inline app: draws an owner (a field, or a list) under the prompt and feeds it keys.
-# ---------------------------------------------------------------------------------------------
-
-def _app(owner: Any) -> Any:
-    """The Textual app that shows `owner` until it answers; its `return_value` is the answer."""
-    from textual.app import App
-    from textual.widget import Widget
-
-    fancy = theme.unicode(sys.stdout)
-
-    class View(Widget):
-        DEFAULT_CSS = "View { height: auto; width: 100%; }"
-
-        def render(self) -> Any:
-            owner.height = self.app.size.height or None
-            return owner.view(fancy)
-
-        def on_resize(self) -> None:
-            owner.height = self.app.size.height or None
-            self.refresh(layout=True)
-
-    class Inline(App, inherit_bindings=False):
-        CSS = "Screen:inline { border: none; height: auto; } Screen { background: ansi_default; }"
-        ENABLE_COMMAND_PALETTE = False
-
-        def compose(self) -> Any:
-            yield View()
-
-        def on_key(self, event: Any) -> None:
-            event.stop()
-            event.prevent_default()
-            if event.key == "ctrl+c":
-                self.exit(_STOP)
-                return
-            owner.height = self.size.height or None
-            char = event.character if event.is_printable else None
-            result = owner.press(event.key, char)
-            self.query_one(View).refresh(layout=True)
-            if result is not PENDING:
-                self.exit(result)
-
-        def on_paste(self, event: Any) -> None:
-            owner.paste(event.text)
-            self.query_one(View).refresh(layout=True)
-
-    return Inline(ansi_color=True)
-
-
 def run(owner: Any, *, keep: bool) -> Any:
     """Show `owner` under the prompt until it answers, and return the answer.
-
-    Textual draws it on the main thread. Off it (Textual sets signal handlers, which only the
-    main thread may) or inside a running loop, a plain drawing with raw key input stands in.
 
     Args:
         keep: leave the answer on the terminal (a form's); esc and Ctrl-C always clear it.
@@ -409,12 +356,7 @@ def run(owner: Any, *, keep: bool) -> Any:
         Stopped: Ctrl-C.
     """
     with _paused():
-        if threading.current_thread() is threading.main_thread() and not _looping():
-            app = _app(owner)
-            _show(app)
-            result = app.return_value
-        else:
-            result = _plain(owner)
+        result = _plain(owner)
         # Printed while a run's screen is still off the terminal, so it draws again below.
         if result is not _STOP and keep and owner.answered:
             from rich.console import Console
@@ -427,23 +369,8 @@ def run(owner: Any, *, keep: bool) -> Any:
     return result
 
 
-def _show(app: Any) -> None:
-    """Run `app` under the prompt, cleared on exit. Tests replace it with Textual's pilot."""
-    app.run(inline=True, mouse=False)
-
-
-def _looping() -> bool:
-    import asyncio
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
-
-
 # ---------------------------------------------------------------------------------------------
-# The plain stand-in: the same owner drawn with Rich, keys read raw from standard input.
+# The terminal: an owner drawn with Rich, keys read raw from standard input.
 # ---------------------------------------------------------------------------------------------
 
 # What a terminal sends for each key the owners know, beside printable text.
@@ -452,6 +379,23 @@ _SEQUENCES = {"\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right", "\x1b[D": "le
               "\x1b[5~": "pageup", "\x1b[6~": "pagedown", "\x1b[H": "home", "\x1b[F": "end"}
 _CONTROLS = {"\r": "enter", "\n": "enter", "\x7f": "backspace", "\x08": "backspace",
              "\x03": "ctrl+c", "\x04": "ctrl+d", "\x15": "ctrl+u", "\t": "tab", "\x1b": "escape"}
+
+
+# Windows sends \x00 or \xe0, then one of these, for a special key.
+_WINDOWS = {"H": "up", "P": "down", "K": "left", "M": "right", "G": "home", "O": "end",
+            "I": "pageup", "Q": "pagedown"}
+
+
+def _wkeys() -> list[tuple[str, str | None]]:
+    """The next key from the Windows console, as `_keys` names it."""
+    import msvcrt
+
+    char = msvcrt.getwch()
+    if char in ("\x00", "\xe0"):
+        return [(_WINDOWS[code], None)] if (code := msvcrt.getwch()) in _WINDOWS else []
+    if char in _CONTROLS:
+        return [(_CONTROLS[char], None)]
+    return [(char, char if char.isprintable() else None)]
 
 
 def _terminal_size() -> tuple[int, int]:
@@ -471,42 +415,55 @@ def _terminal_size() -> tuple[int, int]:
 
 
 def _plain(owner: Any) -> Any:
-    """Show `owner` without Textual until it answers; its frame is cleared at the end."""
+    """Show `owner` until it answers; its frame is cleared at the end."""
+    stream = sys.stdout
+    fancy = theme.unicode(stream)
+    drawn: list[int] = []
+    result: Any = PENDING
+    with _raw() as read:
+        try:
+            stream.write("\x1b[?25l")
+            while result is PENDING:
+                owner.height = _terminal_size()[1]
+                drawn = _frame(stream, owner.view(fancy), drawn)
+                for key, char in read():
+                    if key == "ctrl+c":
+                        result = _STOP
+                    elif key == "paste":
+                        owner.paste(char)
+                    else:
+                        result = owner.press(key, char)
+                    if result is not PENDING:
+                        break
+        finally:
+            _frame(stream, None, drawn)
+            stream.write("\x1b[?25h")
+            stream.flush()
+    return result
+
+
+@contextmanager
+def _raw() -> Iterator[Callable[[], list[tuple[str, str | None]]]]:
+    """Put the terminal in raw mode (no echo; Ctrl-C arrives as a key, not a signal), and give
+    the function that reads the next keys; the terminal's modes are restored at the end."""
+    if sys.platform == "win32":
+        yield _wkeys
+        return
     import select
     import termios
     import tty
 
-    fd, stream = sys.stdin.fileno(), sys.stdout
-    fancy = theme.unicode(stream)
+    fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
-    drawn: list[int] = []
-    result: Any = PENDING
     try:
-        # Raw: no echo, and Ctrl-C arrives as a key instead of a signal. TCSANOW keeps keys
-        # typed ahead, which the default TCSAFLUSH would drop.
+        # TCSANOW keeps keys typed ahead, which the default TCSAFLUSH would drop.
         tty.setraw(fd, termios.TCSANOW)
-        stream.write("\x1b[?25l")
-        while result is PENDING:
-            owner.height = _terminal_size()[1]
-            drawn = _frame(stream, owner.view(fancy), drawn)
-            for key, char in _keys(fd):
-                if key == "ctrl+c":
-                    result = _STOP
-                elif key == "paste":
-                    owner.paste(char)
-                else:
-                    result = owner.press(key, char)
-                if result is not PENDING:
-                    break
+        yield lambda: _keys(fd)
     finally:
-        _frame(stream, None, drawn)
-        stream.write("\x1b[?25h")
-        stream.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
         # Back in canonical mode, macOS marks the input PENDIN until it is next polled: poll it
         # now, so the terminal's modes read exactly as they were.
         select.select([fd], [], [], 0)
-    return result
 
 
 def _frame(stream: Any, renderable: Any, drawn: list[int] | int = ()) -> list[int]:

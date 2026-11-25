@@ -167,8 +167,6 @@ class ReadTest(Case):
         for key, value in values:
             runs.append((key, lambda key=key, value=value: config.read(
                 self.home, user=self.user, plugins=PLUGINS, given={key: value})))
-            runs.append((key, lambda key=key, value=value: config.write(
-                key, value, home=self.home, user=self.user, plugins=PLUGINS)))
         for name, run in runs:
             with self.subTest(name):
                 self.warn.reset_mock()
@@ -233,61 +231,6 @@ class ReadTest(Case):
             real = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config/flnd/config.toml"
             with self.assertRaises(RuntimeError):
                 config.read(self.home, user=real)
-
-
-class EditTest(Case):
-    def test_write_keeps_comments_and_goes_to_the_right_file(self):
-        self.files(home="# my settings\n[defaults]\nheight = 720  # tall enough\n")
-        rows = [("when", "1y", self.home / "config.toml"),
-                ("plugins.exm.pace", 2.5, self.home / "config.toml"),
-                ("plugins.exm.tries", 4, self.home / "config.toml")]
-        for key, value, path in rows:
-            with self.subTest(key):
-                self.assertEqual(config.write(key, value, home=self.home, user=self.user,
-                                              plugins=PLUGINS), path)
-        text = (self.home / "config.toml").read_text(encoding="utf-8")
-        self.assertIn("# my settings", text)
-        self.assertIn("# tall enough", text)
-        found = config.read(self.home, user=self.user, plugins=PLUGINS)
-        self.assertEqual(found.defaults.when, "1y")
-        self.assertEqual((found.plugin("exm").pace, found.plugin("exm").settings.tries), (2.5, 4))
-
-    def test_a_refused_edit_leaves_the_file_as_it_was(self):
-        self.files(home="[defaults]\nheight = 720\n")
-        before = (self.home / "config.toml").read_text(encoding="utf-8")
-        for key, value in (("height", "tall"), ("nope", 1), ("plugins.exm.nope", 1),
-                           ("plugins.exm.folder", "/abs"), ("when", object()), ("when", {1})):
-            with self.subTest(key), self.assertRaises(UsageError):
-                config.write(key, value, home=self.home, user=self.user, plugins=PLUGINS)
-        self.assertEqual((self.home / "config.toml").read_text(encoding="utf-8"), before)
-        # A file a key repeats in is refused by its line, never its text.
-        self.files(home='[defaults]\nwhen = "1y"\nwhen = "2y"\n')
-        with self.assertRaisesRegex(UsageError, "not valid TOML"):
-            config.write("dedupe", True, home=self.home, user=self.user)
-
-    def test_a_write_is_atomic(self):
-        self.files(home="[defaults]\nheight = 720\n")
-        with mock.patch.object(config.files, "write", side_effect=OSError("disk full")):
-            with self.assertRaises(OSError):
-                config.write("height", 480, home=self.home, user=self.user)
-        self.assertEqual((self.home / "config.toml").read_text(encoding="utf-8"),
-                         "[defaults]\nheight = 720\n")
-        config.write("height", 480, home=self.home, user=self.user)
-        self.assertEqual(sorted(p.name for p in self.home.iterdir()), ["config.toml"])
-
-    def test_unset_removes_a_plugins_own_key(self):
-        config.write("plugins.exm.tries", 7, home=self.home, user=self.user, plugins=PLUGINS)
-        config.unset("plugins.exm.tries", home=self.home, user=self.user, plugins=PLUGINS)
-        found = config.read(self.home, user=self.user, plugins=PLUGINS)
-        self.assertEqual(found.plugin("exm").settings.tries, 3)
-        self.assertEqual(found.origin("plugins.exm.tries"), Where.DEFAULT)
-
-    def test_unset_removes_the_key_and_empty_tables(self):
-        self.files(home="[defaults]\nheight = 720\n[plugins.exm]\npace = 2\n")
-        config.unset("plugins.exm.pace", home=self.home, user=self.user)
-        config.unset("when", home=self.home, user=self.user)
-        self.assertEqual((self.home / "config.toml").read_text(encoding="utf-8"),
-                         "[defaults]\nheight = 720\n")
 
 
 class NameTest(unittest.TestCase):
