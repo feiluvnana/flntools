@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
+import os
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from flnh import __version__, errors, os_hide, pack, state, volume
+from flnh import __version__, elevate, errors, os_hide, pack, state, volume
 from flnkit import clock, text
 from flnkit.ui import forms, out
 
@@ -32,13 +36,36 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _main(argv: Sequence[str] | None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    elevated_spec: str | None = None
+    if len(raw) >= 2 and raw[0] == "--_elevated":
+        elevated_spec, raw = raw[1], raw[2:]
     try:
-        args = parser().parse_args(argv)
+        args = parser().parse_args(raw)
     except SystemExit as stop:
         return stop.code if isinstance(stop.code, int) else USAGE
     if not getattr(args, "command", None):
         parser().print_help()
         return OK
+    if elevated_spec:
+        spec = json.loads(Path(elevated_spec).read_text(encoding="utf-8"))
+        os.environ[elevate.ELEVATED_ENV] = "1"
+        os.environ["FLNH_HOME"] = str(spec["home"])
+        os.environ["NO_COLOR"] = "1"
+        with (
+            open(spec["out"], "w", encoding="utf-8") as out_f,
+            open(spec["err"], "w", encoding="utf-8") as err_f,
+            contextlib.redirect_stdout(out_f),
+            contextlib.redirect_stderr(err_f),
+        ):
+            try:
+                return _run_command(args)
+            finally:
+                out.close()
+    return _run_command(args)
+
+
+def _run_command(args: argparse.Namespace) -> int:
     try:
         return int(args.command(args))
     except KeyboardInterrupt:
@@ -84,6 +111,10 @@ def _hide_cmd(args: argparse.Namespace) -> int:
             if not forms.confirm("Shrink partition and hide volume?", default=False):
                 out.line(("cancelled: nothing changed", "dim"))
                 return OK
+        if not elevate.is_admin():
+            if elevate.can_elevate():
+                return elevate.run_elevated(["hide", str(target.resolve()), "--volume", "--yes"])
+            raise elevate.permission_error("--volume")
 
     item_id = pack.item_id(target.name)
     if level in ("flag", "lock"):
@@ -154,6 +185,14 @@ def _show_cmd(args: argparse.Namespace) -> int:
         backup_path = Path(args.backup) if args.backup else None
         detected_level = ""
         if backup_path is not None or (entry is not None and entry.level == "volume"):
+            if not elevate.is_admin():
+                if elevate.can_elevate():
+                    sub_argv = ["show", state.norm_path(target)]
+                    if backup_path is not None:
+                        sub_argv += ["--backup", str(backup_path.resolve())]
+                    store.close()
+                    return elevate.run_elevated(sub_argv)
+                raise elevate.permission_error("--volume restore")
             volume.show(target, entry=entry, backup_path=backup_path)
             detected_level = "volume"
         elif entry is not None and entry.level in ("flag", "lock"):

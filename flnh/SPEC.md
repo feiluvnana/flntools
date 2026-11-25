@@ -45,7 +45,9 @@ with `0700`/`0600` permissions on Unix. `--volume` partition backups go to `<hom
 ## Level 3 (`--volume`)
 
 Requires Admin/root, a non-OS/non-boot/non-swap disk, and `ntfs`, `ext4`, or `apfs` (FAT32/exFAT
-are refused with `UnsupportedError` suggesting `flnh hide` or `--lock`).
+are refused with `UnsupportedError` suggesting `flnh hide` or `--lock`). When run interactively as a
+standard user, `--volume` (and `flnh show` on a volume) prompts for OS elevation (UAC on Windows,
+`sudo` on macOS/Linux); non-interactive runs without privileges fail with `PermissionError`.
 
 1. Streams `path` into an uncompressed PAX tar archive (`1 MiB` buffer) while computing SHA-256.
 2. Shrinks the filesystem (`FSCTL_SHRINK_VOLUME`, `resize2fs`, or `diskutil apfs resizeContainer`).

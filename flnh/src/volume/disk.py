@@ -298,7 +298,7 @@ class Win32Disk:
         shell32 = ctypes.WinDLL("shell32", use_last_error=True)
         if not shell32.IsUserAnAdmin():
             raise errors.PermissionError(
-                "level 4 (volume) requires Administrator privileges",
+                "--volume requires Administrator privileges",
                 hint="re-run from an elevated Administrator terminal",
             )
         drive = os.path.splitdrive(str(path.resolve()))[0]
@@ -529,7 +529,7 @@ class LinuxDisk:
     def __init__(self, path: Path) -> None:
         if os.geteuid() != 0:  # type: ignore[attr-defined]
             raise errors.PermissionError(
-                "level 4 (volume) requires root privileges",
+                "--volume requires root privileges",
                 hint="re-run with sudo",
             )
         res = _run(["findmnt", "-no", "SOURCE,FSTYPE,TARGET", "-T", str(path)])
@@ -616,7 +616,7 @@ class DarwinDisk:
     def __init__(self, path: Path) -> None:
         if os.geteuid() != 0:  # type: ignore[attr-defined]
             raise errors.PermissionError(
-                "level 4 (volume) requires root privileges",
+                "--volume requires root privileges",
                 hint="re-run with sudo",
             )
         info = self._diskutil_plist(str(path))

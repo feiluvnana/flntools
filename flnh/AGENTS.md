@@ -11,6 +11,7 @@ Shared repository rules (commits, privacy, ruff, line length <= 100, models) liv
 ## Layout
 - `src/__init__.py`: `__version__` only (no public Python library API).
 - `src/cli.py`: `hide` and `show` commands via `flnkit.ui`.
+- `src/elevate.py`: automatic UAC / `sudo` elevation for `--volume`.
 - `src/errors.py`: `flnkit.errors` re-exports + `flnh` subclasses.
 - `src/state.py`: local tracking DB via `flnkit.db`.
 - `src/pack.py`: streaming tar packer/unpacker for Level 3 (`--volume`).
