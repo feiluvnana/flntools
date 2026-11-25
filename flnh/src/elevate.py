@@ -125,6 +125,9 @@ def _run_win32_uac(argv: Sequence[str]) -> int:
             "prog_fancy": "1" if theme.unicode(sys.stderr) else "0",
         }
         req_file.write_text(json.dumps(spec), encoding="utf-8")
+        out_file.write_text("", encoding="utf-8")
+        err_file.write_text("", encoding="utf-8")
+        prog_file.write_text("", encoding="utf-8")
 
         params = subprocess.list2cmdline(["-m", "flnh", "--_elevated", str(req_file), *argv])
         sei = _SHELLEXECUTEINFOW()

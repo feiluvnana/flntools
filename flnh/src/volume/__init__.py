@@ -391,16 +391,24 @@ def hide(
         _emit(on_progress, "shrinking")
         d.shrink_fs(part.index, new_fs_bytes)
 
+        manages_table = bool(getattr(d, "manages_table", False))
         try:
-            if scheme == "mbr":
-                new_mbr = table.update_mbr_partition(orig_mbr, part.index, new_sector_count)
-                _write_table_mbr(d, new_mbr)
+            if manages_table:
+                _, shrunk_parts, _ = table.read_table(d)
+                shrunk_part = _target_partition(shrunk_parts, part.index)
+                if shrunk_part.end_lba >= tail_lba:
+                    raise errors.DiskError("partition did not shrink enough for hidden tail")
+                new_sector_count = shrunk_part.sector_count
             else:
-                pri_hdr, entries_raw, bak_hdr, _ = table.update_gpt_partition(
-                    orig_pri, orig_entries, part.index, new_sector_count, sector_size
-                )
-                _write_table_gpt(d, raw_table["info"], pri_hdr, entries_raw, bak_hdr)
-            d.refresh()
+                if scheme == "mbr":
+                    new_mbr = table.update_mbr_partition(orig_mbr, part.index, new_sector_count)
+                    _write_table_mbr(d, new_mbr)
+                else:
+                    pri_hdr, entries_raw, bak_hdr, _ = table.update_gpt_partition(
+                        orig_pri, orig_entries, part.index, new_sector_count, sector_size
+                    )
+                    _write_table_gpt(d, raw_table["info"], pri_hdr, entries_raw, bak_hdr)
+                d.refresh()
 
             _emit(on_progress, "writing", 0, est_archive_size)
             write_cb = _stage_cb(on_progress, "writing", est_archive_size)
@@ -432,8 +440,9 @@ def hide(
                 raise errors.DiskError("tail sector read-back verification failed")
         except BaseException:
             try:
-                _restore_table(d, scheme, orig_mbr, orig_pri, orig_entries)
-                d.refresh()
+                if not manages_table:
+                    _restore_table(d, scheme, orig_mbr, orig_pri, orig_entries)
+                    d.refresh()
                 d.expand_fs(part.index, orig_fs_bytes)
             except BaseException:
                 pass
@@ -484,6 +493,24 @@ def _scan_tail_meta(d: vol_disk.Disk, part_index: int) -> tuple[int, int]:
         "no hidden volume tail found on disk",
         hint="pass --backup <file> if you have a saved partition backup",
     )
+
+
+def _expand_after_show(
+    d: vol_disk.Disk,
+    *,
+    scheme: str,
+    orig_mbr: bytes,
+    orig_pri: bytes,
+    orig_entries: bytes,
+    part_index: int,
+    orig_fs_bytes: int,
+) -> None:
+    if getattr(d, "manages_table", False):
+        d.expand_fs(part_index, orig_fs_bytes)
+        return
+    _restore_table(d, scheme, orig_mbr, orig_pri, orig_entries)
+    d.refresh()
+    d.expand_fs(part_index, orig_fs_bytes)
 
 
 def show(
@@ -543,13 +570,22 @@ def show(
         free = shutil.disk_usage(orig_path.parent).free
         _emit(on_progress, "restoring", 0, archive_size)
         restore_cb = _stage_cb(on_progress, "restoring", archive_size)
+        part_idx = int(meta["part_index"])
+        orig_fs_bytes = orig_sectors * d.sector_size
         if free >= archive_size + 1024 * 1024:
             reader = _SectorStreamReader(d, tail_lba, archive_size, on_bytes=restore_cb)
             pack.unpack_from_stream(reader, orig_path, kind=kind)
+            d.write_sectors(meta_lba, b"\x00" * (meta_sectors * d.sector_size))
             _emit(on_progress, "expanding")
-            _restore_table(d, scheme, orig_mbr, orig_pri, orig_entries)
-            d.refresh()
-            d.expand_fs(int(meta["part_index"]), orig_sectors * d.sector_size)
+            _expand_after_show(
+                d,
+                scheme=scheme,
+                orig_mbr=orig_mbr,
+                orig_pri=orig_pri,
+                orig_entries=orig_entries,
+                part_index=part_idx,
+                orig_fs_bytes=orig_fs_bytes,
+            )
         else:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_tar = Path(tmp_dir) / "restore.tar"
@@ -558,13 +594,19 @@ def show(
                 )
                 if actual != archive_sha256:
                     raise errors.CorruptHeaderError("hidden archive checksum mismatch in disk tail")
+                d.write_sectors(meta_lba, b"\x00" * (meta_sectors * d.sector_size))
                 _emit(on_progress, "expanding")
-                _restore_table(d, scheme, orig_mbr, orig_pri, orig_entries)
-                d.refresh()
-                d.expand_fs(int(meta["part_index"]), orig_sectors * d.sector_size)
+                _expand_after_show(
+                    d,
+                    scheme=scheme,
+                    orig_mbr=orig_mbr,
+                    orig_pri=orig_pri,
+                    orig_entries=orig_entries,
+                    part_index=part_idx,
+                    orig_fs_bytes=orig_fs_bytes,
+                )
                 pack.unpack_from_file(tmp_tar, orig_path, kind=kind)
 
-        d.write_sectors(meta_lba, b"\x00" * (meta_sectors * d.sector_size))
         return orig_path
     finally:
         if owns_disk:

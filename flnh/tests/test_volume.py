@@ -171,13 +171,77 @@ class VolumeRoundTripTest(unittest.TestCase):
         self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
 
     def test_win32_shrink_ioctl_and_struct_layout(self) -> None:
-        self.assertEqual(vol_disk.FSCTL_SHRINK_VOLUME, 0x00090238)
+        self.assertEqual(vol_disk.FSCTL_SHRINK_VOLUME, 0x000901B0)
         prep = vol_disk.pack_shrink_info(1, 12345)
         self.assertEqual(len(prep), 24)
         req, flags, sectors = struct.unpack("<I4xQq", prep)
         self.assertEqual((req, flags, sectors), (1, 0, 12345))
         commit = vol_disk.pack_shrink_info(2, 12345)
         self.assertEqual(struct.unpack("<I4xQq", commit), (2, 0, 0))
+
+    def test_win32_ps_resize_and_manages_table_order(self) -> None:
+        fake_win = object.__new__(vol_disk.Win32Disk)
+        fake_win.drive = "E:"
+        fake_win.device_id = "\\\\.\\PhysicalDrive1"
+        fake_win._lock_handle = None
+        fake_win._raw_handle = 100
+        fake_win._k32 = mock.MagicMock()
+        fake_win._open_handle = mock.MagicMock(return_value=101)
+        fake_win._unlock_volume = mock.MagicMock()
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str]) -> mock.Mock:
+            calls.append(cmd)
+            if "Write-Output" in cmd[-1]:
+                return mock.Mock(returncode=0, stdout="123456789\n", stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(vol_disk, "_run", side_effect=fake_run):
+            self.assertEqual(fake_win.max_shrink_bytes(1), 123456789)
+            fake_win.shrink_fs(1, 500_000_000)
+            fake_win.expand_fs(1, 600_000_000)
+
+        self.assertEqual(len(calls), 3)
+        self.assertIn("Resize-Partition -DriveLetter E -Size 499998720", calls[1][-1])
+        self.assertIn("Get-PartitionSupportedSize -DriveLetter E", calls[2][-1])
+        fake_win._k32.CloseHandle.assert_any_call(100)
+        self.assertEqual(fake_win._raw_handle, 101)
+
+        img = self.root / "managed.img"
+        d = vol_disk.FileDisk.create_gpt(img, 8 * 1024 * 1024, fs_type="ntfs")
+        self.addCleanup(d.close)
+        d.manages_table = True  # type: ignore[misc]
+        events: list[str] = []
+        orig_shrink = d.shrink_fs
+        orig_expand = d.expand_fs
+        orig_write = d.write_sectors
+
+        def managed_shrink(idx: int, new_bytes: int) -> None:
+            orig_shrink(idx, new_bytes)
+            _, _, raw = table.read_table(d)
+            pri, entries, bak, _ = table.update_gpt_partition(
+                raw["hdr"], raw["entries"], idx, new_bytes // d.sector_size, d.sector_size
+            )
+            volume._write_table_gpt(d, raw["info"], pri, entries, bak)
+
+        def tracked_write(lba: int, data: bytes) -> None:
+            if set(data) == {0}:
+                events.append("zero_meta")
+            orig_write(lba, data)
+
+        def tracked_expand(idx: int, new_bytes: int) -> None:
+            events.append("expand_fs")
+            orig_expand(idx, new_bytes)
+
+        d.shrink_fs = managed_shrink  # type: ignore[method-assign]
+        d.write_sectors = tracked_write  # type: ignore[method-assign]
+        d.expand_fs = tracked_expand  # type: ignore[method-assign]
+        folder = self._sample_folder("managed")
+        volume.hide(folder, disk=d)
+        volume.show(folder, disk=d)
+        self.assertEqual(events, ["zero_meta", "expand_fs"])
+        self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
 
     def test_volume_progress_stages_and_monotonic_counts(self) -> None:
         img = self.root / "prog.img"

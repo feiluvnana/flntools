@@ -21,7 +21,7 @@ WIN_SYSTEM_ENTRIES = frozenset({"windows", "pagefile.sys", "hiberfil.sys", "swap
 FSCTL_LOCK_VOLUME = 0x00090018
 FSCTL_DISMOUNT_VOLUME = 0x00090020
 FSCTL_EXTEND_VOLUME = 0x000900F0
-FSCTL_SHRINK_VOLUME = 0x00090238
+FSCTL_SHRINK_VOLUME = 0x000901B0
 
 
 def pack_shrink_info(request_type: int, new_sectors: int = 0) -> bytes:
@@ -102,6 +102,7 @@ class Disk(Protocol):
     total_sectors: int
     device_id: str
     fs_type: str
+    manages_table: bool
 
     def is_system_disk(self) -> bool: ...
 
@@ -124,6 +125,8 @@ class Disk(Protocol):
 
 class FileDisk:
     """Sparse-file disk image implementing `Disk` for unit tests."""
+
+    manages_table = False
 
     def __init__(
         self,
@@ -299,7 +302,9 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 class Win32Disk:
-    """Windows physical drive + NTFS shrink/extend backend via Win32 ioctls."""
+    """Windows physical drive + NTFS online resize backend via Storage APIs."""
+
+    manages_table = True
 
     def __init__(self, path: Path) -> None:
         from ctypes import wintypes
@@ -528,59 +533,69 @@ class Win32Disk:
             self._k32.CloseHandle(self._lock_handle)
             self._lock_handle = None
 
+    def _close_raw(self) -> None:
+        self._unlock_volume()
+        if self._raw_handle:
+            self._k32.CloseHandle(self._raw_handle)
+            self._raw_handle = None
+
+    def _reopen_raw(self) -> None:
+        if not self._raw_handle:
+            self._raw_handle = self._open_handle(self.device_id, write=True)
+
+    def _drive_letter(self) -> str:
+        letter = self.drive.rstrip("\\").rstrip(":").upper()
+        if len(letter) != 1 or not ("A" <= letter <= "Z"):
+            raise errors.UnsupportedError(f"invalid Windows drive letter: {self.drive}")
+        return letter
+
+    def _ps_resize(self, new_bytes: int, *, clamp_max: bool) -> None:
+        letter = self._drive_letter()
+        target = max(4096, (int(new_bytes) // 4096) * 4096)
+        if clamp_max:
+            script = (
+                f"$m=(Get-PartitionSupportedSize -DriveLetter {letter} -ErrorAction Stop)"
+                f".SizeMax; $t=[Math]::Min([UInt64]{target},[UInt64]$m); "
+                f"Resize-Partition -DriveLetter {letter} -Size $t -ErrorAction Stop"
+            )
+        else:
+            script = f"Resize-Partition -DriveLetter {letter} -Size {target} -ErrorAction Stop"
+        res = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script])
+        if res.returncode != 0:
+            msg = (res.stderr or res.stdout or f"exit code {res.returncode}").strip()
+            raise errors.DiskError(
+                f"partition resize failed on {self.drive}: {msg}",
+                hint="close open files on that drive or free more contiguous space",
+            )
+
     def max_shrink_bytes(self, part_index: int) -> int:
+        letter = self._drive_letter()
+        script = (
+            f"$p=Get-Partition -DriveLetter {letter} -ErrorAction Stop; "
+            f"$s=Get-PartitionSupportedSize -DriveLetter {letter} -ErrorAction Stop; "
+            "Write-Output ([Math]::Max(0, [Int64]($p.Size - $s.SizeMin)))"
+        )
+        res = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script])
+        if res.returncode == 0:
+            out = res.stdout.strip().splitlines()
+            if out and out[-1].strip().isdigit():
+                return int(out[-1].strip())
         _total, _used, free = shutil.disk_usage(self.drive + "\\")
         return free
 
     def shrink_fs(self, part_index: int, new_bytes: int) -> None:
-        h = self._open_handle(f"\\\\.\\{self.drive}", write=True)
-        sectors = new_bytes // self.sector_size
-        prepared = False
+        self._close_raw()
         try:
-            ret = ctypes.c_ulong()
-            prep = ctypes.create_string_buffer(pack_shrink_info(1, sectors))
-            if not self._k32.DeviceIoControl(
-                h, FSCTL_SHRINK_VOLUME, prep, len(prep), None, 0, ctypes.byref(ret), None
-            ):
-                err = ctypes.get_last_error()
-                raise errors.disk(OSError(err, ctypes.FormatError(err)), self.drive)
-            prepared = True
-            commit = ctypes.create_string_buffer(pack_shrink_info(2))
-            if not self._k32.DeviceIoControl(
-                h, FSCTL_SHRINK_VOLUME, commit, len(commit), None, 0, ctypes.byref(ret), None
-            ):
-                err = ctypes.get_last_error()
-                raise errors.disk(OSError(err, ctypes.FormatError(err)), self.drive)
-        except BaseException:
-            if prepared:
-                abort = ctypes.create_string_buffer(pack_shrink_info(3))
-                self._k32.DeviceIoControl(
-                    h,
-                    FSCTL_SHRINK_VOLUME,
-                    abort,
-                    len(abort),
-                    None,
-                    0,
-                    ctypes.byref(ctypes.c_ulong()),
-                    None,
-                )
-            raise
+            self._ps_resize(new_bytes, clamp_max=False)
         finally:
-            self._k32.CloseHandle(h)
+            self._reopen_raw()
 
     def expand_fs(self, part_index: int, new_bytes: int) -> None:
-        self._unlock_volume()
-        h = self._open_handle(f"\\\\.\\{self.drive}", write=True)
+        self._close_raw()
         try:
-            sectors = ctypes.c_uint64(new_bytes // self.sector_size)
-            ret = ctypes.c_ulong()
-            if not self._k32.DeviceIoControl(
-                h, FSCTL_EXTEND_VOLUME, ctypes.byref(sectors), 8, None, 0, ctypes.byref(ret), None
-            ):
-                err = ctypes.get_last_error()
-                raise errors.disk(OSError(err, ctypes.FormatError(err)), self.drive)
+            self._ps_resize(new_bytes, clamp_max=True)
         finally:
-            self._k32.CloseHandle(h)
+            self._reopen_raw()
 
     def refresh(self) -> None:
         ioctl_disk_update_properties = 0x70140
@@ -606,6 +621,8 @@ class Win32Disk:
 
 class LinuxDisk:
     """Linux block device + ext4 resize2fs backend."""
+
+    manages_table = False
 
     def __init__(self, path: Path) -> None:
         if os.geteuid() != 0:  # type: ignore[attr-defined]
@@ -693,6 +710,8 @@ class LinuxDisk:
 
 class DarwinDisk:
     """macOS raw disk + APFS resizeContainer backend."""
+
+    manages_table = False
 
     def __init__(self, path: Path) -> None:
         if os.geteuid() != 0:  # type: ignore[attr-defined]

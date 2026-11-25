@@ -239,6 +239,47 @@ class CLITest(unittest.TestCase):
             else:
                 os.environ[elevate.PROG_FANCY_ENV] = old_fancy
 
+    def test_uac_precreates_ipc_files_and_relays_progress(self) -> None:
+        if sys.platform != "win32":
+            return
+        uac_dir = self.root / "uac_ipc"
+        uac_dir.mkdir()
+        tmp_cm = mock.MagicMock()
+        tmp_cm.__enter__.return_value = str(uac_dir)
+        tmp_cm.__exit__.return_value = False
+
+        class FakeSEI(elevate._SHELLEXECUTEINFOW):
+            def __init__(self) -> None:
+                super().__init__()
+                self.hProcess = 1
+
+        fake_shell = mock.MagicMock()
+        fake_k32 = mock.MagicMock()
+        fake_k32.WaitForSingleObject.side_effect = [elevate.WAIT_TIMEOUT, 0]
+
+        def fake_exec(_ptr: object) -> int:
+            for name in ("req.json", "stdout.txt", "stderr.txt", "progress.txt"):
+                self.assertTrue((uac_dir / name).is_file(), f"missing pre-created {name}")
+            (uac_dir / "progress.txt").write_text("writing tail 50%", encoding="utf-8")
+            (uac_dir / "stdout.txt").write_text("hidden done\n", encoding="utf-8")
+            return 1
+
+        fake_shell.ShellExecuteExW.side_effect = fake_exec
+        out_buf, err_buf = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(tempfile, "TemporaryDirectory", return_value=tmp_cm),
+            mock.patch.object(elevate, "_SHELLEXECUTEINFOW", FakeSEI),
+            mock.patch.object(elevate.theme, "tty", return_value=True),
+            mock.patch.object(ctypes, "WinDLL", side_effect=[fake_shell, fake_k32]),
+            redirect_stdout(out_buf),
+            redirect_stderr(err_buf),
+        ):
+            elevate._run_win32_uac(["hide", "E:\\x", "--volume", "--yes"])
+
+        self.assertEqual(fake_k32.WaitForSingleObject.call_count, 2)
+        self.assertIn("writing tail 50%", err_buf.getvalue())
+        self.assertIn("hidden done", out_buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
