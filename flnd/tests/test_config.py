@@ -65,7 +65,8 @@ class Case(unittest.TestCase):
         return config.read(self.home, user=self.user, plugins=PLUGINS, given=given)
 
     def warned(self):
-        return " ".join(str(call.kwargs) + str(call.args) for call in self.warn.call_args_list)
+        return " ".join(call.args[0].format(**call.kwargs) if call.args else ""
+                        for call in self.warn.call_args_list)
 
 
 class ReadTest(Case):
@@ -168,16 +169,15 @@ class ReadTest(Case):
                     shown = str(error) + (error.hint or "")
                 self.assertNotIn(mark, shown + self.warned())
 
-    def test_unknown_keys_and_gone_keys_warn(self):
+    def test_unknown_keys_warn(self):
         found = self.read(home="[defaults]\nagain = true\nrate = '1 MB/s'\n[vault]\nkey = 'file'\n"
                                "[plugins.exm]\nbrowser = 'chrome'\nstop_after = 5\n"
                                "[plugins.zzz]\nodd = 1\n[sources.exm]\npace = 3")
         self.assertEqual(found.defaults, config.Defaults())
         self.assertIsNone(found.plugin("exm").pace)
-        gone = [call.kwargs["name"] for call in self.warn.call_args_list
-                if call.args == ("{label}: {name} is gone",)]
-        self.assertEqual(gone, ["again", "rate", "browser", "stop_after"])
-        for setting in ("[vault]", "[plugins.zzz] odd", "[sources]"):
+        for setting in ("[defaults] again", "[defaults] rate", "[vault]",
+                        "[plugins.exm] browser", "[plugins.exm] stop_after",
+                        "[plugins.zzz] odd", "[sources]"):
             self.assertIn(setting, self.warned())
         self.assertIn(str(self.home / "config.toml"), self.warned())
 

@@ -38,9 +38,6 @@ NAME_MAX = 255
 # A file name's extension, kept whole when a name is cut: a dot and up to 16 word characters.
 EXTENSION = re.compile(r"\.\w{1,16}$")
 PROXIES = ("http", "https", "socks5", "socks5h")
-# The keys an old config.toml may still hold; each gets one warning.
-GONE = frozenset({"height", "browser", "rate", "fresh", "sidecars", "dedupe", "switch", "again",
-                  "exec", "exec_timeout", "vault", "scroll", "stop_after"})
 # A speed: `"0"` for off, or a number and a unit per second, in units of 1024 (as `text.size`).
 SPEED = re.compile(r"(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)/s", re.IGNORECASE)
 UNITS = {"b": 1, "kb": 1024, "mb": 1024 ** 2, "gb": 1024 ** 3}
@@ -603,8 +600,6 @@ def _keys(label: str, where: str, table: Mapping[str, Any],
     for name, value in table.items():
         if name in keys:
             found[f"{where}.{name}"] = _checked(label, f"{where}.{name}", keys[name], value)
-        elif name in GONE:
-            _warn("{label}: {name} is gone", label=label, name=name)
         else:
             _unknown(label, f"[{where}] {name}")
     return found

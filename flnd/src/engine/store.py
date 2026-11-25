@@ -1,6 +1,5 @@
-"""`flnd.db`, schema 5: its tables, the migrations from versions 2, 3 and 4, its rows and queries,
-and `check`, which compares the rows with the disk and repairs them. SPEC.md#for-developers
-explains it.
+"""`flnd.db`, schema 5: its tables, its rows and queries, and `check`, which compares the rows with
+the disk and repairs them. SPEC.md#for-developers explains it.
 """
 
 from __future__ import annotations
@@ -37,14 +36,7 @@ __all__ = ["FailureRow", "FileRow", "RunRow", "State", "Store", "TargetRow",
 
 MEDIA, METADATA = Path("media"), Path("metadata")
 DB = METADATA / "flnd.db"
-SECRETS = METADATA / "secret.db"
-# Where a version-2, version-3 or version-4 `flnd.db` is copied, whole, before its migration.
-BACKUP_V2 = METADATA / "flnd.v2.db"
-BACKUP_V3 = METADATA / "flnd.v3.db"
-BACKUP_V4 = METADATA / "flnd.v4.db"
 VERSION = "5"
-# What a migrated home that still has a `secret.db` is told, once.
-LOGINS_NOTICE = "logins are cookie files now: flnd auth login <code> <file>"
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '5'
@@ -93,7 +85,7 @@ CREATE UNIQUE INDEX failures_key ON failures (key);
 CREATE TABLE state (plugin TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
                     PRIMARY KEY (plugin, key)) WITHOUT ROWID;
 """
-# Executed one by one: `executescript` would commit the migration's transaction halfway.
+# Executed one by one: `executescript` would commit the setup transaction halfway.
 STATEMENTS = tuple(part for part in SCHEMA.split(";") if "CREATE" in part)
 
 # The loop's connection waits for no lock (a busy commit is queued again); any other waits 30 s.
@@ -263,11 +255,11 @@ def busy(error: BaseException) -> bool:
 
 
 # ---------------------------------------------------------------------------------------------
-# Opening, and the migration from version 2
+# Opening
 # ---------------------------------------------------------------------------------------------
 
 def open(home: Path, *, loop: bool = False) -> Store:
-    """Open a home's `flnd.db`, migrating a version-2 file in place.
+    """Open a home's `flnd.db`.
 
     A home without `flnd.db` is left untouched until the first write.
 
@@ -277,7 +269,7 @@ def open(home: Path, *, loop: bool = False) -> Store:
             and never checkpoints by itself. False for any other (30 s for a lock).
 
     Raises:
-        UsageError: the file is of a later schema, or of none with files in it.
+        UsageError: the file is of an older or later schema, or of none with files in it.
         DiskError: `flnd.db` can't be read or written.
     """
     store = Store(home, loop=loop)
@@ -291,16 +283,10 @@ def open(home: Path, *, loop: bool = False) -> Store:
 
 
 def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
-    """Set the pragmas, then make schema 5 or migrate an older one, in one transaction."""
+    """Set the pragmas, then make schema 5 or check an existing home, in one transaction."""
     sql.execute(f"PRAGMA busy_timeout = {OTHER_BUSY_MS}")
     sql.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
     sql.execute(f"PRAGMA wal_autocheckpoint = {0 if loop else OTHER_CHECKPOINT_PAGES}")
-    old = _version(sql)
-    if old == "1":
-        raise UsageError(f"{home} is from an old flnd; start a new home")
-    if old in ("2", "3", "4"):
-        _backup(sql, home / {"2": BACKUP_V2, "3": BACKUP_V3, "4": BACKUP_V4}[old], old)
-    notice = False
     sql.execute("BEGIN IMMEDIATE")
     try:
         version = _version(sql)
@@ -308,66 +294,18 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
             for statement in STATEMENTS:
                 sql.execute(statement)
             sql.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
-            sql.execute("INSERT INTO meta VALUES ('keys', '2')")
-        elif version in ("2", "3", "4"):
-            if version == "2":
-                _drop_accounts(sql)
-            if version in ("2", "3"):
-                _drop_hashes(sql)
-            sql.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (VERSION,))
         elif version != VERSION:
+            if version.isdigit() and int(version) < int(VERSION):
+                raise UsageError(f"{home} is from an old flnd; start a new home")
             raise UsageError(f"home schema {version!r} needs a newer flnd",
                              hint="upgrade flnd, or open the home with the flnd that wrote it")
-        if version == "2" and (home / SECRETS).is_file():
-            # An old home's sealed logins are left alone, and its person is told once.
-            sql.execute("INSERT OR REPLACE INTO meta VALUES ('logins', 'told')")
-            notice = True
-        if version and not sql.execute("SELECT 1 FROM meta WHERE key = 'keys'").fetchone():
-            _rekey(sql)
-            sql.execute("INSERT INTO meta VALUES ('keys', '2')")
-        if version and "folder" not in _columns(sql, "targets"):
-            # A home from before a followed search kept its folder gets the column once.
-            sql.execute("ALTER TABLE targets ADD COLUMN folder TEXT")
-        if version and "extracted" not in _columns(sql, "files"):
-            # A home from before an archive could be extracted into its post's folder.
-            sql.execute("ALTER TABLE files ADD COLUMN extracted TEXT")
-        if version and "target_seen" not in _tables(sql):
-            for statement in STATEMENTS:
-                if "target_seen" in statement:
-                    sql.execute(statement)
-        if version and "seen" in _columns(sql, "targets"):
-            # `target_seen` replaced `targets.seen`: keep what only the old column holds.
-            _backfill_seen(sql)
-            sql.execute("ALTER TABLE targets DROP COLUMN seen")
-        if version and "gaps" in _columns(sql, "targets"):
-            sql.execute("ALTER TABLE targets DROP COLUMN gaps")
         sql.execute("COMMIT")
     except BaseException:
         if sql.in_transaction:
             sql.execute("ROLLBACK")
         raise
-    if notice:
-        ui.warn(LOGINS_NOTICE)
     if loop:
         sql.execute(f"PRAGMA busy_timeout = {LOOP_BUSY_MS}")
-
-
-def _backup(sql: sqlite3.Connection, path: Path, version: str) -> None:
-    """Copy an old file to `path` with SQLite's online backup, unless a copy is there."""
-    if path.is_file():
-        return
-    part = path.with_name(f"{path.name}.part")
-    try:
-        copy = sqlite3.connect(part)
-        try:
-            sql.backup(copy)
-        finally:
-            copy.close()
-        os.replace(part, path)
-    except (OSError, sqlite3.Error) as error:
-        part.unlink(missing_ok=True)
-        raise DiskError(f"{path}: can't keep a copy of version {version} before migrating: {error}",
-                        hint="free some disk space, then run flnd again") from error
 
 
 def _version(sql: sqlite3.Connection) -> str | None:
@@ -387,95 +325,6 @@ def _version(sql: sqlite3.Connection) -> str | None:
 
 def _tables(sql: sqlite3.Connection) -> set[str]:
     return {name for (name,) in sql.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-
-
-def _drop_accounts(sql: sqlite3.Connection) -> None:
-    """Migrate a version-2 file to 3: no `accounts` table, no `targets.account` column, in the
-    caller's transaction; the caller sets the version."""
-    sql.execute("DROP TABLE IF EXISTS accounts")
-    if "account" in _columns(sql, "targets"):
-        for _, index, *_, origin, _ in sql.execute("PRAGMA index_list(targets)").fetchall():
-            if origin == "c" and "account" in [
-                    row[2] for row in sql.execute(f"PRAGMA index_info({index})")]:
-                sql.execute(f"DROP INDEX {index}")
-        sql.execute("ALTER TABLE targets DROP COLUMN account")
-
-
-def _drop_hashes(sql: sqlite3.Connection) -> None:
-    """Migrate a version-3 file to 4: no file hashes, no sidecar column, and no index on
-    either, in the caller's transaction (SQLite drops no column an index names)."""
-    sql.execute("DROP INDEX IF EXISTS files_hash")
-    sql.execute("DROP INDEX IF EXISTS files_size")
-    for column in ("hash", "sidecar"):
-        if column in _columns(sql, "files"):
-            sql.execute(f"ALTER TABLE files DROP COLUMN {column}")
-
-
-# A built-in single post's (plugin, kind) as an old home stored it, and its kind now: its key
-# was `<code>:<id>`, and is `<code>:<kind>/<id>`, so a post never clashes with a user's key.
-REKEYED = {("fbk", "video"): "video", ("fbk", "watch"): "watch", ("fbk", "photo"): "photo",
-           ("fbk", "post"): "post", ("ins", "post"): "post", ("twt", "post"): "post",
-           ("tik", "video"): "post", ("tik", "post"): "post", ("loi", "post"): "post",
-           ("mht", "chapter"): "chapter"}
-
-
-def _rekey(sql: sqlite3.Connection) -> None:
-    """Rewrite the rows of single posts keyed `<code>:<id>` to `<code>:<kind>/<id>`: the target,
-    its files' and failures' `target`, and the keys a search lists. A home with none is left
-    alone. It runs once per home: `meta` keeps a `keys` row afterwards."""
-    kinds = sorted({kind for _, kind in REKEYED})
-    rows = sql.execute(f"SELECT key, plugin, value, kind FROM targets WHERE kind IN"
-                       f" ({', '.join('?' * len(kinds))})", kinds).fetchall()
-    moved: dict[str, str] = {}
-    for old, plugin, value, kind in rows:
-        new_kind = REKEYED.get((plugin, kind))
-        if new_kind is None or value.startswith(f"{new_kind}/"):
-            continue
-        new = f"{plugin}:{new_kind}/{value}"
-        moved[old] = new
-        if sql.execute("SELECT 1 FROM targets WHERE key = ?", (new,)).fetchone() is not None:
-            sql.execute("DELETE FROM targets WHERE key = ?", (old,))
-        else:
-            sql.execute("UPDATE targets SET key = ?, value = ?, kind = ? WHERE key = ?",
-                        (new, f"{new_kind}/{value}", new_kind, old))
-        sql.execute("UPDATE files SET target = ? WHERE target = ?", (new, old))
-        sql.execute("UPDATE failures SET target = ? WHERE target = ?", (new, old))
-        sql.execute("UPDATE OR REPLACE failures SET key = ? WHERE key = ?", (new, old))
-    if not moved:
-        return
-    for item, seen in sql.execute("SELECT key, seen FROM targets WHERE seen != '[]'").fetchall():
-        listed = json.loads(seen)
-        if any(found in moved for found in listed):
-            sql.execute("UPDATE targets SET seen = ? WHERE key = ?",
-                        (_json([moved.get(found, found) for found in listed]), item))
-    if "target_seen" in _tables(sql):
-        for old, new in moved.items():
-            sql.execute("DELETE FROM target_seen WHERE target = ? AND item IN "
-                        "(SELECT item FROM target_seen WHERE target = ?)", (old, new))
-            sql.execute("UPDATE target_seen SET target = ? WHERE target = ?", (new, old))
-            sql.execute("DELETE FROM target_seen WHERE item = ? AND target IN "
-                        "(SELECT target FROM target_seen WHERE item = ?)", (old, new))
-            sql.execute("UPDATE target_seen SET item = ? WHERE item = ?", (new, old))
-
-
-def _backfill_seen(sql: sqlite3.Connection) -> None:
-    """Populate `target_seen` from legacy `targets.seen` JSON lists, preserving order."""
-    for tkey, raw in sql.execute("SELECT key, seen FROM targets WHERE seen != '[]'").fetchall():
-        try:
-            items = json.loads(raw)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(items, list):
-            continue
-        unique = list(dict.fromkeys(x for x in items if isinstance(x, str)))
-        sql.executemany(
-            "INSERT OR IGNORE INTO target_seen (target, item, ord) VALUES (?, ?, ?)",
-            [(tkey, item, i) for i, item in enumerate(unique)],
-        )
-
-
-def _columns(sql: sqlite3.Connection, table: str) -> list[str]:
-    return [row[1] for row in sql.execute(f"PRAGMA table_info({table})")]
 
 
 # ---------------------------------------------------------------------------------------------

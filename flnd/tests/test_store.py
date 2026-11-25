@@ -1,5 +1,5 @@
-"""src/engine/store.py: `flnd.db` schema 5, the migration of version-2, -3 and -4 homes, the
-refusal of a version-1 one, its pragmas, the busy signal, and `check`.
+"""src/engine/store.py: `flnd.db` schema 5, old and newer schema refusal, its pragmas, the busy
+signal, and `check`.
 """
 
 import datetime
@@ -33,101 +33,10 @@ CREATE TABLE files (
 """
 
 
-# Version 2 as a home made it: its schema text, with `accounts`, `targets.account`, and
-# the file hashes and sidecars version 4 drops.
-V2_SCHEMA = """
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '2'
-CREATE TABLE files (
-    key TEXT PRIMARY KEY, target TEXT NOT NULL, plugin TEXT NOT NULL,
-    post_id TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '', path TEXT NOT NULL,
-    size INTEGER NOT NULL DEFAULT 0, mtime INTEGER, date TEXT,
-    estimated INTEGER NOT NULL DEFAULT 0, kind TEXT, files INTEGER, hash BLOB,
-    state TEXT NOT NULL DEFAULT 'saved',            -- saved | gone | link
-    unpacked TEXT NOT NULL DEFAULT '', folder TEXT, sidecar TEXT, extracted TEXT,
-    at TEXT NOT NULL DEFAULT ''
-) WITHOUT ROWID;
-CREATE INDEX files_post ON files (target, post_id);
-CREATE INDEX files_size ON files (size) WHERE state = 'saved';
-CREATE INDEX files_hash ON files (hash) WHERE hash IS NOT NULL;
-CREATE INDEX files_undated ON files (target) WHERE state = 'saved' AND (date IS NULL OR estimated);
-CREATE VIEW posts AS
-    SELECT target, post_id, min(category) AS category, max(date) AS date,
-           max(count(*), coalesce(max(files), 1)) AS files, max(at) AS at
-    FROM files WHERE state = 'saved' GROUP BY target, post_id;
-CREATE TABLE targets (
-    key TEXT PRIMARY KEY, plugin TEXT NOT NULL, value TEXT NOT NULL, kind TEXT NOT NULL,
-    follow INTEGER NOT NULL DEFAULT 0, categories TEXT NOT NULL DEFAULT '[]', query TEXT,
-    complete TEXT NOT NULL DEFAULT '{}', cursors TEXT NOT NULL DEFAULT '{}',
-    seen TEXT NOT NULL DEFAULT '[]', last_sync TEXT NOT NULL DEFAULT '',
-    files INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
-    heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}', account TEXT,
-    folder TEXT
-) WITHOUT ROWID;
-CREATE TABLE target_seen (
-    target TEXT NOT NULL, item TEXT NOT NULL, ord INTEGER NOT NULL,
-    PRIMARY KEY (target, item)
-) WITHOUT ROWID;
-CREATE INDEX target_seen_ord ON target_seen (target, ord);
-CREATE TABLE runs (
-    id INTEGER PRIMARY KEY, command TEXT NOT NULL, started TEXT NOT NULL, ended TEXT,
-    saved INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE failures (
-    run INTEGER, key TEXT NOT NULL, target TEXT NOT NULL, post_id TEXT NOT NULL DEFAULT '',
-    category TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',
-    url TEXT NOT NULL DEFAULT '', class TEXT NOT NULL, message TEXT NOT NULL,
-    hint TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 1, at TEXT NOT NULL,
-    cursor TEXT, retryable INTEGER NOT NULL DEFAULT 1
-);
-CREATE INDEX failures_target ON failures (target, key);
-CREATE INDEX failures_run ON failures (run);
-CREATE UNIQUE INDEX failures_key ON failures (key);
-CREATE TABLE state (plugin TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
-                    PRIMARY KEY (plugin, key)) WITHOUT ROWID;
-CREATE TABLE accounts (
-    id INTEGER PRIMARY KEY, plugin TEXT NOT NULL, name TEXT NOT NULL,
-    origin TEXT NOT NULL,                           -- browser | chrome | file | … | qr | phone
-    at TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'ok',              -- ok | held | expired
-    held_until TEXT, expires TEXT, UNIQUE (plugin, name)
-);
-"""
-
-
-# Version 3 as a home made it: version 2 without `accounts` and `targets.account`.
-V3_SCHEMA = (V2_SCHEMA.split("CREATE TABLE accounts")[0].replace("version = '2'", "version = '3'")
-             .replace(" account TEXT,", ""))
-
-
-# Version 4 as a home made it: today's schema with the `targets.seen` copy and `targets.gaps`
-# that version 5 drops.
-V4_SCHEMA = (store.SCHEMA.replace("version = '5'", "version = '4'")
-             .replace("    last_sync TEXT NOT NULL DEFAULT '',",
-                      "    seen TEXT NOT NULL DEFAULT '[]', last_sync TEXT NOT NULL DEFAULT '',")
-             .replace("heads TEXT NOT NULL DEFAULT '{}', folder TEXT",
-                      "heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}',\n"
-                      "    folder TEXT"))
-assert "gaps" in V4_SCHEMA and "seen TEXT" in V4_SCHEMA
-
-# What a migration keeps of a file's row, as every version holds it.
-FILES = "SELECT key, target, plugin, post_id, category, path, size FROM files ORDER BY key"
-
-
 def schema(path):
     """A database file's schema, as SQLite keeps it."""
     with sqlite3.connect(path) as sql:
         found = sorted(sql.execute("SELECT type, name, tbl_name, sql FROM sqlite_master"))
-    sql.close()
-    return found
-
-
-def columns(path):
-    """Each table's column names, and the names of the other objects, as SQLite keeps them."""
-    with sqlite3.connect(path) as sql:
-        found = {name: [row[1] for row in sql.execute(f"PRAGMA table_info({name})")]
-                 for (name,) in sql.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-        found["."] = sorted(name for (name,) in sql.execute(
-            "SELECT name FROM sqlite_master WHERE type != 'table'"))
     sql.close()
     return found
 
@@ -162,185 +71,30 @@ class StoreCase(unittest.TestCase):
         sql.close()
 
 
-class MigrationTest(StoreCase):
-    def test_a_version_1_home_is_refused_and_left_as_it_is(self):
-        self.v1()
-        before = schema(self.path)
-        with self.assertRaisesRegex(UsageError, "is from an old flnd; start a new home"):
-            store.open(self.home)
-        self.assertEqual(schema(self.path), before)
-        self.assertFalse((self.home / store.METADATA / "flnd.v1.db").exists())
+class SchemaTest(StoreCase):
+    def test_an_old_home_is_refused_and_left_as_it_is(self):
+        for version in (None, "2", "3", "4"):
+            with self.subTest(version=version):
+                self.v1()
+                if version is not None:
+                    with sqlite3.connect(self.path) as sql:
+                        sql.execute("INSERT INTO meta VALUES ('version', ?)", (version,))
+                    sql.close()
+                before = schema(self.path)
+                with self.assertRaisesRegex(UsageError, "is from an old flnd; start a new home"):
+                    store.open(self.home)
+                self.assertEqual(schema(self.path), before)
+                self.path.unlink()
+                self.path.parent.rmdir()
 
     def test_a_second_open_changes_nothing(self):
-        self.v2()
-        self.open().close()
+        with self.open() as opened:
+            opened.save([store.FileRow("ins:1", "ins:example_user", "media/ins/1.jpg", 10)])
         before = (schema(self.path), rows(self.path, "SELECT * FROM files ORDER BY key"),
                   rows(self.path, "SELECT * FROM meta ORDER BY key"))
         self.open().close()
         self.assertEqual((schema(self.path), rows(self.path, "SELECT * FROM files ORDER BY key"),
                           rows(self.path, "SELECT * FROM meta ORDER BY key")), before)
-
-    def v2(self, secrets=True):
-        """A version-2 home, made by the old schema text, with an account and a target that
-        remembers it; and a sealed `secret.db` of the vault."""
-        self.path.parent.mkdir(parents=True)
-        with sqlite3.connect(self.path) as sql:
-            sql.executescript(V2_SCHEMA)
-            sql.executescript(
-                "INSERT INTO meta VALUES ('version', '2'), ('keys', '2');"
-                "INSERT INTO targets (key, plugin, value, kind, follow, account, heads, gaps,"
-                " seen) VALUES ('ins:example_user', 'ins', 'example_user', 'user', 1,"
-                " 'example_handle', '{\"posts\": \"p1\"}', '{\"posts\": [\"\"]}',"
-                " '[\"ins:post/1\"]');"
-                "INSERT INTO files (key, target, plugin, post_id, category, path, size) VALUES"
-                " ('ins:1', 'ins:example_user', 'ins', '1', 'posts', 'media/ins/1.jpg', 10);"
-                "INSERT INTO accounts (plugin, name, origin, at, is_default) VALUES"
-                " ('ins', 'example_handle', 'file', '2026-01-01', 1);")
-        sql.close()
-        if secrets:
-            (self.home / store.SECRETS).write_bytes(b"sealed")
-
-    def v3(self):
-        """A version-3 home, made by the old schema text, with a file that has a hash and a
-        sidecar."""
-        self.path.parent.mkdir(parents=True)
-        with sqlite3.connect(self.path) as sql:
-            sql.executescript(V3_SCHEMA)
-            sql.executescript(
-                "INSERT INTO meta VALUES ('version', '3'), ('keys', '2');"
-                "INSERT INTO files (key, target, plugin, post_id, category, path, size, hash,"
-                " sidecar) VALUES ('ins:1', 'ins:example_user', 'ins', '1', 'posts',"
-                " 'media/ins/1.jpg', 10, x'aa', 'media/ins/1.jpg.json');")
-        sql.close()
-
-    def v4(self):
-        """A version-4 home, made by the old schema text: a followed target with a head, a cursor
-        and a gap, a search with the targets it saw (in `target_seen` and in the old copy)."""
-        self.path.parent.mkdir(parents=True)
-        with sqlite3.connect(self.path) as sql:
-            sql.executescript(V4_SCHEMA)
-            sql.executescript(
-                "INSERT INTO meta VALUES ('version', '4'), ('keys', '2');"
-                "INSERT INTO targets (key, plugin, value, kind, follow, complete, cursors, heads,"
-                " gaps, seen) VALUES ('ins:example_user', 'ins', 'example_user', 'user', 1,"
-                " '{\"posts\": \"2026-01-02\"}', '{\"reels\": \"c9\"}',"
-                " '{\"posts\": \"p1\"}', '{\"posts\": [\"c3\"]}', '[]');"
-                "INSERT INTO targets (key, plugin, value, kind, follow, query, heads, seen) VALUES"
-                " ('twt:example_search', 'twt', 'example_search', 'search', 1, 'example_search',"
-                " '{\"search\": \"twt:post/9\"}', '[\"twt:post/9\", \"twt:post/8\"]');"
-                "INSERT INTO target_seen VALUES ('twt:example_search', 'twt:post/9', 0),"
-                " ('twt:example_search', 'twt:post/8', 1);"
-                "INSERT INTO files (key, target, plugin, post_id, category, path, size) VALUES"
-                " ('ins:1', 'ins:example_user', 'ins', '1', 'posts', 'media/ins/1.jpg', 10);")
-        sql.close()
-
-    def test_a_version_4_home_loses_its_seen_copy_and_its_gaps_and_keeps_the_rest(self):
-        self.v4()
-        before = rows(self.path, FILES)
-        with self.open() as opened:
-            found = opened.targets()
-            user, search = found["ins:example_user"], found["twt:example_search"]
-            self.assertEqual((user.follow, user.complete, user.cursors, user.heads),
-                             (True, {"posts": "2026-01-02"}, {"reels": "c9"}, {"posts": "p1"}))
-            self.assertEqual((search.query, search.heads, search.seen),
-                             ("example_search", {"search": "twt:post/9"},
-                              ["twt:post/9", "twt:post/8"]))
-        self.assertEqual(rows(self.path, "SELECT value FROM meta WHERE key = 'version'"),
-                         [("5",)])
-        self.assertEqual(rows(self.path, FILES), before)
-        self.assertFalse({"seen", "gaps"} & set(columns(self.path)["targets"]))
-        with store.open(self.home / "fresh") as fresh:
-            fresh.state("x")["y"] = 1
-        self.assertEqual(columns(self.path), columns(fresh.path))
-        backup = self.home / store.BACKUP_V4
-        self.assertEqual(rows(backup, "SELECT gaps FROM targets WHERE key = 'ins:example_user'"),
-                         [('{"posts": ["c3"]}',)])
-        self.assertEqual(rows(backup, "SELECT value FROM meta WHERE key = 'version'"), [("4",)])
-        self.assertEqual([(self.home / name).exists()
-                          for name in (store.BACKUP_V2, store.BACKUP_V3)], [False, False])
-
-    def test_a_version_4_seen_copy_that_target_seen_lacks_is_kept(self):
-        self.v4()
-        with sqlite3.connect(self.path) as sql:
-            sql.execute("DELETE FROM target_seen")
-        sql.close()
-        with self.open() as opened:
-            self.assertEqual(opened.target("twt:example_search").seen,
-                             ["twt:post/9", "twt:post/8"])
-
-    def test_a_version_3_home_loses_its_hashes_and_keeps_the_rest(self):
-        self.v3()
-        before = rows(self.path, FILES)
-        self.open().close()
-        self.assertEqual(rows(self.path, "SELECT value FROM meta WHERE key = 'version'"),
-                         [("5",)])
-        self.assertEqual(rows(self.path, FILES), before)
-        names = {name for _, name, *_ in schema(self.path)}
-        self.assertFalse({"files_hash", "files_size"} & names)
-        with store.open(self.home / "fresh") as fresh:
-            fresh.state("x")["y"] = 1
-        self.assertEqual(columns(self.path), columns(fresh.path))
-        backup = self.home / store.BACKUP_V3
-        self.assertEqual(rows(backup, "SELECT hash, sidecar FROM files"),
-                         [(b"\xaa", "media/ins/1.jpg.json")])
-        self.assertEqual(rows(backup, "SELECT value FROM meta WHERE key = 'version'"), [("3",)])
-        self.assertFalse((self.home / store.BACKUP_V2).exists())
-
-    def test_a_version_3_home_without_a_sidecar_column_still_migrates(self):
-        self.v3()
-        with sqlite3.connect(self.path) as sql:
-            sql.execute("ALTER TABLE files DROP COLUMN sidecar")
-        sql.close()
-        self.open().close()
-        self.assertEqual(rows(self.path, FILES), [("ins:1", "ins:example_user", "ins", "1",
-                                                   "posts", "media/ins/1.jpg", 10)])
-
-    def test_a_version_2_home_loses_its_accounts_and_keeps_the_rest(self):
-        self.v2()
-        before = rows(self.path, FILES)
-        with self.open() as opened:
-            self.assertEqual(rows(self.path, "SELECT key, value FROM meta ORDER BY key"),
-                             [("keys", "2"), ("logins", "told"), ("version", "5")])
-            target = opened.targets()["ins:example_user"]
-            self.assertEqual((target.plugin, target.follow), ("ins", True))
-            self.assertEqual((target.heads, target.seen), ({"posts": "p1"}, ["ins:post/1"]))
-            self.assertEqual(rows(self.path, FILES), before)
-        names = {name for _, name, *_ in schema(self.path)}
-        self.assertNotIn("accounts", names)
-        self.assertNotIn("account", [row[1] for row in rows(
-            self.path, "PRAGMA table_info(targets)")])
-        with store.open(self.home / "fresh") as fresh:
-            fresh.state("x")["y"] = 1
-        self.assertEqual(columns(self.path), columns(fresh.path))
-        # The old file is kept whole beside it, once; the old vault is left alone.
-        backup = self.home / store.BACKUP_V2
-        self.assertEqual(rows(backup, "SELECT plugin, name FROM accounts"),
-                         [("ins", "example_handle")])
-        self.assertEqual(rows(backup, "SELECT value FROM meta WHERE key = 'version'"), [("2",)])
-        self.assertFalse((self.home / store.BACKUP_V3).exists())
-        self.assertEqual((self.home / store.SECRETS).read_bytes(), b"sealed")
-
-    def test_an_index_on_the_account_column_is_dropped_first(self):
-        self.v2(secrets=False)
-        with sqlite3.connect(self.path) as sql:
-            sql.execute("CREATE INDEX targets_account ON targets (account)")
-        sql.close()
-        self.open().close()
-        self.assertNotIn("targets_account", {name for _, name, *_ in schema(self.path)})
-
-    def test_a_home_with_a_vault_is_told_once_how_to_log_in_again(self):
-        self.v2()
-        self.open().close()
-        self.open().close()
-        self.assertEqual(self.said.getvalue().count("logins are cookie files now"), 1)
-        self.assertIn("flnd auth login <code> <file>", self.said.getvalue())
-
-    def test_a_home_without_a_vault_is_told_nothing(self):
-        self.v2(secrets=False)
-        self.open().close()
-        self.assertEqual(self.said.getvalue(), "")
-        self.assertEqual(rows(self.path, "SELECT key FROM meta ORDER BY key"),
-                         [("keys",), ("version",)])
 
     def test_a_home_flnd_cannot_read_is_refused(self):
         cases = {"newer": "INSERT INTO meta VALUES ('version', '6')",
@@ -674,22 +428,10 @@ class SampleTest(unittest.TestCase):
 
 
 class FolderColumnTest(StoreCase):
-    """A followed search keeps its folder: an older home's `targets` gets the column once."""
+    """A followed search keeps its folder across records."""
 
-    def test_an_old_home_gets_the_column_once_and_keeps_its_rows(self):
-        self.path.parent.mkdir(parents=True)
-        with sqlite3.connect(self.path) as sql:
-            for statement in store.STATEMENTS:
-                sql.execute(statement)
-            sql.execute("INSERT INTO meta VALUES ('version', ?)", (store.VERSION,))
-            sql.execute("INSERT INTO meta VALUES ('keys', '2')")
-            sql.execute("INSERT INTO targets (key, plugin, value, kind, follow)"
-                        " VALUES ('twt:cats', 'twt', 'cats', 'search', 1)")
-            sql.execute("ALTER TABLE targets DROP COLUMN folder")
-        sql.close()
+    def test_a_search_keeps_its_folder_across_records(self):
         with self.open() as opened:
-            row = opened.targets()["twt:cats"]
-            self.assertEqual((row.follow, row.folder), (True, None))
             opened.record(Target("twt:cats", kind="search"), folder="{query}")
         with self.open() as opened:
             self.assertEqual(opened.targets()["twt:cats"].folder, "{query}")
@@ -698,131 +440,8 @@ class FolderColumnTest(StoreCase):
             self.assertEqual(opened.targets()["twt:cats"].folder, "{query}")
 
 
-class RekeyTest(StoreCase):
-    """A single post was keyed `<code>:<id>`, and is `<code>:<kind>/<id>`: old rows follow."""
-
-    OLD = [("ins", "C1abc", "post"), ("twt", "1790", "post"), ("tik", "7301", "video"),
-           ("loi", "12", "post"), ("fbk", "123", "video"), ("fbk", "9", "photo"),
-           ("fbk", "42_7", "post"), ("fbk", "abc", "watch"), ("mht", "1001", "chapter"),
-           # A user of the same code keeps its key.
-           ("ins", "C1abd", "user")]
-
-    def old_home(self):
-        """A home as the last version left it: single posts keyed by their id."""
-        self.path.parent.mkdir(parents=True)
-        with sqlite3.connect(self.path) as sql:
-            sql.executescript(V4_SCHEMA)
-            sql.execute("INSERT INTO meta VALUES ('version', '4')")
-            sql.executemany(
-                "INSERT INTO targets (key, plugin, value, kind, categories, seen)"
-                " VALUES (?, ?, ?, ?, '[\"photo\"]', ?)",
-                [(f"{plugin}:{value}", plugin, value, kind,
-                  '["ins:C1abc", "ins:other"]' if plugin == "loi" else "[]")
-                 for plugin, value, kind in self.OLD])
-            sql.execute("INSERT INTO files (key, target, plugin, path) VALUES"
-                        " ('ins:C1abc_0', 'ins:C1abc', 'ins', 'media/ins/C1abc/a.jpg')")
-            sql.execute("INSERT INTO failures (key, target, class, message, at) VALUES"
-                        " ('ins:C1abc', 'ins:C1abc', 'Blocked', 'wait', 'a')")
-        sql.close()
-
-    def test_old_rows_move_to_their_written_form_and_users_stay(self):
-        self.old_home()
-        with self.open() as opened:
-            found = opened.targets()
-            self.assertEqual(sorted(found), [
-                "fbk:photo/9", "fbk:post/42_7", "fbk:video/123", "fbk:watch/abc", "ins:C1abd",
-                "ins:post/C1abc", "loi:post/12", "mht:chapter/1001", "tik:post/7301",
-                "twt:post/1790"])
-            self.assertEqual([(found[key].value, found[key].kind) for key in (
-                "tik:post/7301", "mht:chapter/1001", "ins:C1abd")],
-                [("post/7301", "post"), ("chapter/1001", "chapter"), ("C1abd", "user")])
-            self.assertEqual(found["loi:post/12"].seen, ["ins:post/C1abc", "ins:other"])
-            self.assertEqual(found["ins:post/C1abc"].categories, ("photo",))
-            self.assertEqual([row.target for row in opened.on_disk()], ["ins:post/C1abc"])
-        self.assertEqual(rows(self.path, "SELECT key, target FROM failures"),
-                         [("ins:post/C1abc", "ins:post/C1abc")])
-
-    def test_a_second_open_changes_nothing(self):
-        self.old_home()
-        self.open().close()
-        query = ("SELECT key, value, kind, (SELECT group_concat(item) FROM target_seen WHERE"
-                 " target = key) FROM targets ORDER BY key")
-        before = rows(self.path, query)
-        self.open().close()
-        self.assertEqual(rows(self.path, query), before)
-
-    def test_the_rewrite_runs_once_per_home(self):
-        self.old_home()
-        with mock.patch.object(store, "_rekey", wraps=store._rekey) as rekey:
-            self.open().close()
-            self.open().close()
-        self.assertEqual(rekey.call_count, 1)
-        # A new home is made with the row, so it never runs.
-        self.path.unlink()
-        with mock.patch.object(store, "_rekey") as rekey:
-            self.open().close()
-            with store.Store(self.home) as s: s.record(Target("ins:example_user", kind="user"))
-            self.open().close()
-        self.assertEqual(rekey.call_count, 0)
-
-    def test_an_old_row_is_found_by_the_written_form_and_runs_as_its_route(self):
-        from fakes import Engine
-
-        from flnd.engine.plugins import PLUGINS
-        self.old_home()
-        engine = Engine(home=self.home, sources=PLUGINS)
-        for text, key in [("loi:post/12", "loi:post/12"), ("loi:12", "loi:post/12"),
-                          ("tik:7301234567890123456", "tik:post/7301234567890123456")]:
-            with self.subTest(text=text):
-                self.assertEqual(engine.chosen([text])[0].target.text, key)
-        # The rewritten row is the one the written form finds: its categories apply.
-        self.assertEqual(engine.chosen(["loi:post/12"])[0].categories, ("photo",))
-        recorded = engine._recorded(engine._rows())
-        for target in (Target("tik:post/7301", kind="post"), Target("loi:post/12", kind="post")):
-            self.assertIn(target, recorded)
-
-
 class TargetSeenTest(StoreCase):
-    def test_target_seen_auto_migration_and_incremental_o1_append(self):
-        # 1. Existing schema-2 home without target_seen auto-migrates from targets.seen JSON.
-        fresh = self.home / "fresh.db"
-        with store.Store(self.home) as s:
-            s.record(Target("twt:cats", kind="search"), query="cats")
-        sql = sqlite3.connect(self.path)
-        try:
-            fresh_sql = sqlite3.connect(fresh)
-            try:
-                fresh_sql.executescript(store.SCHEMA)
-                fresh_schema = fresh_sql.execute(
-                    "SELECT type, name, sql FROM sqlite_master "
-                    "WHERE sql IS NOT NULL ORDER BY name"
-                ).fetchall()
-            finally:
-                fresh_sql.close()
-            sql.execute("DROP INDEX IF EXISTS target_seen_ord")
-            sql.execute("DROP TABLE IF EXISTS target_seen")
-            sql.execute("ALTER TABLE targets ADD COLUMN seen TEXT NOT NULL DEFAULT '[]'")
-            sql.execute("UPDATE targets SET seen = ? WHERE key = ?",
-                        ('["twt:post/3", "twt:post/1", "twt:post/2"]', "twt:cats"))
-            sql.commit()
-        finally:
-            sql.close()
-
-        with store.Store(self.home) as opened:
-            row = opened.target("twt:cats")
-            self.assertEqual(row.seen, ["twt:post/3", "twt:post/1", "twt:post/2"])
-            self.assertEqual(opened.seen_keys("twt:cats"),
-                             {"twt:post/3", "twt:post/1", "twt:post/2"})
-        sql = sqlite3.connect(self.path)
-        try:
-            migrated_schema = sql.execute(
-                "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
-            ).fetchall()
-        finally:
-            sql.close()
-        self.assertEqual(migrated_schema, fresh_schema)
-
-        # 2. Incremental seen() appends O(1) without touching progress().
+    def test_incremental_o1_append_and_forget(self):
         q = Target("twt:dogs", kind="search")
         with store.Store(self.home) as opened:
             opened.record(q, query="dogs")

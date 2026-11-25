@@ -57,7 +57,7 @@ src/                 the package flnd
     resolve.py     target text -> (plugin, Target, categories)
     plugins.py     the plugin loader: a code to its class, imported on first use
     auth.py        the logins folder, login steps, cookie write-back
-    store.py       flnd.db: schema, migrations, rows, check and repair
+    store.py       flnd.db: schema, rows, check and repair
     config.py      config.toml: structs and reading
   ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
     theme.py out.py screen.py forms.py log.py

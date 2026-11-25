@@ -686,8 +686,6 @@ Using it:
   with the hint `export a fresh cookie file, then flnd auth login <code> <file>`. Nothing is
   marked: the next run tries again.
 - **Holds.** A block holds the plugin, not a login: 30 s, 2 min, 8 min, then the target fails.
-- An old home's `metadata/secret.db` is left alone and ignored; the first run that finds one says
-  `logins are cookie files now: flnd auth login <code> <file>`, once.
 
 ## When it goes wrong
 
@@ -789,9 +787,7 @@ folders, and files renamed into place in the last minute. On a terminal `flnd st
 rows? (y/N)`; `flnd status --fix` repairs without asking. It never deletes, moves or downloads a
 file. Failure kinds: `network blocked site changed login disk tool bug usage gone error`.
 
-A version-2, version-3 or version-4 home migrates on first open, after copying `metadata/flnd.v2.db`
-(or `flnd.v3.db`, `flnd.v4.db`); a version-1 home is refused with `<home> is from an old flnd;
-start a new home`.
+A home from an older schema is refused with `<home> is from an old flnd; start a new home`.
 
 ## Commands and flags
 
@@ -858,7 +854,7 @@ go to `log/<time>_get.jsonl`.
 `%APPDATA%\flnd\config.toml`), hold optional settings. A bad value stops the command with a usage
 error naming the file, the key and what it takes, never the value: `config.toml: plugins.ins.pace is
 a number of seconds, 0 or more, not this text`. An unknown key or table is a warning, said once, and
-ignored. A key an older flnd had gets `<file>: <key> is gone`. `flnd config` shows every key.
+ignored. `flnd config` shows every key.
 
 `[defaults]`:
 
@@ -888,8 +884,6 @@ A plugin's own settings (its `Settings` struct) are keys of its table and reach 
   names up through the proxy; the URL may hold a user and password.
 - `pace` and `limits` win over the plugin's class. A host's cap still adapts under the file's
   number.
-- Gone keys, each warned as `<file>: <key> is gone`: `height`, `browser`, `rate`, `fresh`,
-  `sidecars`, `dedupe`, `switch`, `again`, `exec`, `exec_timeout`, `vault`, `scroll`, `stop_after`.
 
 ```toml
 [defaults]
