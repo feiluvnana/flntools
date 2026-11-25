@@ -30,8 +30,8 @@ ROWS = kit.size(100_000, 1000)
 PROBES = kit.size(10_000, 100)
 COMMIT_ROWS = kit.size(50_000, 1000)
 FILES = ("CREATE TABLE files (key TEXT PRIMARY KEY, target TEXT, post_id TEXT, path TEXT,"
-         " size INT, mtime REAL, hash BLOB)")
-INSERT = "INSERT INTO files VALUES (?,?,?,?,?,?,?)"
+         " size INT, mtime REAL)")
+INSERT = "INSERT INTO files VALUES (?,?,?,?,?,?)"
 
 
 def files(n: int, *, post_files: int = 1) -> _store.FileRow:
@@ -81,9 +81,8 @@ def commits(report: kit.Report, scratch: Path) -> None:
         report: where the numbers go.
         scratch: a folder for the database files.
     """
-    hash_ = os.urandom(32)
     rows = [(f"ins:example_user/{n}", "ins:example_user", str(n // 2), f"/m/{n}.jpg", 102400,
-             1.0, hash_) for n in range(COMMIT_ROWS)]
+             1.0) for n in range(COMMIT_ROWS)]
     # The connection of the current run: `fresh` replaces it before each run, untimed.
     current: list[sqlite3.Connection] = []
 

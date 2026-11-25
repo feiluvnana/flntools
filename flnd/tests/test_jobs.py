@@ -73,7 +73,7 @@ def job(kind: Kind = Kind.PAGE, **fields) -> Job:
 class PoolTest(unittest.TestCase):
     def test_each_pools_numbers(self):
         rows = [  # (cores, kind, places)
-            (8, Kind.CALL, 8), (64, Kind.CALL, 8), (8, Kind.HASH, 4), (8, Kind.UNPACK, 1),
+            (8, Kind.CALL, 8), (64, Kind.CALL, 8), (8, Kind.UNPACK, 1),
             (8, Kind.MERGE, 4), (1, Kind.MERGE, 1),
         ]
         for cpus, kind, size in rows:
@@ -177,7 +177,7 @@ class PoolTest(unittest.TestCase):
         self.assertEqual(closed, {})
 
     def test_kinds_take_their_priorities(self):
-        expected = {Kind.PAGE: 1, Kind.TAB: 1, Kind.FILE: 2, Kind.HASH: 3, Kind.UNPACK: 3,
+        expected = {Kind.PAGE: 1, Kind.TAB: 1, Kind.FILE: 2, Kind.UNPACK: 3,
                     Kind.MERGE: 3}
         for kind, priority in expected.items():
             with self.subTest(kind):
@@ -202,23 +202,6 @@ class PoolTest(unittest.TestCase):
 
         self.assertEqual(asyncio.run(main()),
                          ["retry", "page1", "page2", "file1", "file2", "step"])
-
-    def test_four_files_hashed_at_once_use_four_threads(self):
-        """K9: one hasher thread made four hashes wait in turn."""
-        barrier = threading.Barrier(4, timeout=2)
-
-        def digest():
-            barrier.wait()
-            return threading.get_ident()
-
-        async def main(scheduler, fake):
-            async def work():
-                return await scheduler.on(Kind.HASH, digest)
-
-            return await asyncio.gather(*[scheduler.run(job(Kind.HASH, work=work))
-                                          for _ in range(4)])
-
-        self.assertEqual(len(set(run(main, cpus=4))), 4)
 
     def test_each_device_writes_on_one_thread_of_its_own(self):
         devices = {"a": 1, "b": 1, "c": 2}
@@ -354,7 +337,7 @@ class RetryTest(unittest.TestCase):
                 (retryable(files.RunError("ffmpeg failed")), "ok"), {"kind": Kind.MERGE}, "ok",
                 [1.0]),
             "any retryable error backs off, in any kind": (
-                (errors.Error("busy", retryable=True), "ok"), {"kind": Kind.HASH}, "ok", [1.0]),
+                (errors.Error("busy", retryable=True), "ok"), {"kind": Kind.UNPACK}, "ok", [1.0]),
             "a missing tool is never retried": (
                 (retryable(files.MissingError("ffmpeg isn't installed")), "ok"), {},
                 files.MissingError, []),

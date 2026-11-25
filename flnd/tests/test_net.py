@@ -479,35 +479,6 @@ class DownloadTest(NetCase):
         self.assertEqual(len(threads), 3)
         self.assertTrue(all(name.startswith("flnd-writer") for name in threads), threads)
 
-    def test_a_large_body_is_hashed_as_it_is_written_without_reading_back(self):
-        import hashlib
-
-        body = bytes(range(256)) * (10 * _net.BUFFER // 256 // 4)
-        threads: list[str] = []
-        real = _files.Part.feed
-
-        def feed(held, data):
-            threads.append(threading.current_thread().name)
-            return real(held, data)
-
-        async def fill():
-            session = _net.Session()
-            try:
-                with _files.part(self.dest, resume=True, digest=True) as held:
-                    await _net.Client(session).fill(FILE, held)
-            finally:
-                await session.close()
-            return held.saved
-
-        route = lambda request: _net.reply(200, headers={"content-length": str(len(body))},
-                                           chunks=(body[at:at + 65536]
-                                                   for at in range(0, len(body), 65536)))
-        with _net.fake({FILE: route}), mock.patch.object(_files.Part, "feed", feed), \
-                mock.patch("flnkit.files._digest_fd", side_effect=AssertionError("read back")):
-            saved = asyncio.run(fill())
-        self.assertEqual(saved.hash, hashlib.sha256(body).digest())
-        self.assertIn("flnd-writer", " ".join(threads))
-
     def test_resumes_a_partial_part_with_a_range(self):
         self.stage.write_bytes(BODY[:6])
         sink = Sink()

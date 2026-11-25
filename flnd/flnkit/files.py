@@ -51,16 +51,11 @@ KEEP_AGE = 7 * 86_400
 SETTLE_AGE = 3_600
 # A hidden stage file an old flnd may still have left beside a download.
 OLD_STAGE = ".stage"
-# What may sit beside a part: its sidecar, a hard link being made (`link`), and an old stage's
+# What may sit beside a part: its sidecar, an old flnd's hard link being made, and an old stage's
 # `.info` sidecar and lock file.
 SIDES = (SIDE, ".link", ".info", ".lock")
-# Writes reach the disk this many bytes at a time; a digest reads a file back the same way.
+# Writes reach the disk this many bytes at a time.
 BUFFER = 128 << 10
-# Errnos that mean this file system (or this pair of folders) can't hard-link: FAT and exFAT
-# (EPERM, ENOTSUP), two volumes (EXDEV), or a file at its file system's link limit (EMLINK).
-NO_LINKS = {errno.EPERM, errno.EXDEV, errno.EMLINK, errno.EOPNOTSUPP,
-            getattr(errno, "ENOTSUP", errno.EOPNOTSUPP), errno.ENOSYS}
-
 if WINDOWS:
     import msvcrt
 else:
@@ -76,13 +71,11 @@ class Saved:
     """Where a part landed, and the size and modified time (ns) it had there.
 
     The history row takes `size` and `mtime` from here, so nothing stats the file again.
-    `hash` is the SHA-256 of its bytes (32 bytes) for a part opened with `digest=True`, else None.
     """
 
     path: Path
     size: int
     mtime: int
-    hash: bytes | None = None
 
 
 class Part:
@@ -109,20 +102,14 @@ class Part:
         fd: its open, locked descriptor, which the part now owns.
         size: how many bytes it held when opened.
         resume: whether it is a download's, kept on failure (see `part`).
-        digest: whether `saved` gets the SHA-256 of what landed.
     """
 
-    def __init__(self, dest: Path, path: Path, fd: int, size: int, *, resume: bool,
-                 digest: bool = False) -> None:
+    def __init__(self, dest: Path, path: Path, fd: int, size: int, *, resume: bool) -> None:
         self.dest, self.path, self.fd, self.size = dest, path, fd, size
         self.mtime: float | None = None
         self.saved: Saved | None = None
         self.side = False
         self._resume = resume
-        self._digest = digest
-        # The running SHA-256 of what `write` appended, while it covers the part from byte 0:
-        # None once the bytes came another way, and `_land` reads the part back instead.
-        self._sha: Any = hashlib.sha256() if digest and not size else None
         self._buffer: io.BufferedRandom | None = None
         self._meta: dict[str, Any] | None = None
         self._noted = False
@@ -190,8 +177,7 @@ class Part:
             self.side = True
 
     def write(self, data: bytes) -> None:
-        """Append `data` after the part's bytes, through a 128 KiB buffer, hashing it when the
-        part hashes (`digest`).
+        """Append `data` after the part's bytes, through a 128 KiB buffer.
 
         Args:
             data: the bytes, which reach the file through the buffer, or at once for a piece
@@ -202,18 +188,6 @@ class Part:
             self._buffer.seek(self.size)
         self._buffer.write(data)
         self.size += len(data)
-        self.feed(data)
-
-    def feed(self, data: bytes) -> None:
-        """Add appended bytes to the part's running SHA-256.
-
-        Args:
-            data: the bytes just appended, in the order they are appended.
-        """
-        sha = self._sha
-        if sha is not None:
-            # hashlib lets go of the GIL for a chunk this size, so other downloads go on.
-            sha.update(data)
 
     def write_at(self, offset: int, data: bytes) -> None:
         """Write `data` at `offset`, unbuffered; safe from several threads at once.
@@ -225,7 +199,6 @@ class Part:
             data: the bytes.
         """
         with self._at:
-            self._sha = None
             view = memoryview(data)
             if hasattr(os, "pwrite"):
                 # The descriptor's own position stays where `write` appends.
@@ -254,7 +227,6 @@ class Part:
         os.ftruncate(self.fd, 0)
         self.size = 0
         self._meta, self._noted, self._dropped = {}, self.side, False
-        self._sha = hashlib.sha256() if self._digest else None
 
     def cut(self, size: int) -> None:
         """Keep only the first bytes (a segmented download that failed part way).
@@ -265,7 +237,6 @@ class Part:
         self.flush()
         os.ftruncate(self.fd, size)
         self.size = size
-        self._sha = None
         if self._buffer is not None:
             self._buffer.seek(size)
 
@@ -281,8 +252,7 @@ class Part:
 
 
 @contextmanager
-def part(dest: str | os.PathLike[str], *, resume: bool = False,
-         digest: bool = False) -> Iterator[Part]:
+def part(dest: str | os.PathLike[str], *, resume: bool = False) -> Iterator[Part]:
     """Open and lock `<dest>.part`, yield it, and rename it onto `dest` on a clean exit.
 
     The two kinds of caller differ in three ways, all set by `resume`:
@@ -294,7 +264,6 @@ def part(dest: str | os.PathLike[str], *, resume: bool = False,
     Args:
         dest: the file to write; its folder is made when missing.
         resume: True for a download, as above.
-        digest: also give the SHA-256 of what lands, in `Part.saved.hash`.
 
     Yields:
         The locked `Part`. After a clean exit, `Part.saved` says where it landed.
@@ -312,7 +281,7 @@ def part(dest: str | os.PathLike[str], *, resume: bool = False,
             size = 0
     except OSError as error:
         raise disk(error, path) from error
-    held = Part(target, path, fd, size, resume=resume, digest=digest)
+    held = Part(target, path, fd, size, resume=resume)
     try:
         yield held
     except BaseException:
@@ -362,79 +331,6 @@ def walk(folder: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
     for entry in _scan(folder):
         if not _temporary(entry.name):
             yield entry
-
-
-def digest(path: str | os.PathLike[str]) -> bytes:
-    """The SHA-256 of a file's bytes, read 1 MiB at a time.
-
-    Args:
-        path: the file.
-
-    Returns:
-        The 32-byte digest.
-
-    Raises:
-        DiskError: the file can't be read.
-
-    Example:
-        >>> import tempfile
-        >>> path = write(Path(tempfile.mkdtemp()) / "a.txt", "abc")
-        >>> digest(path).hex()[:16]
-        'ba7816bf8f01cfea'
-    """
-    try:
-        fd = os.open(path, os.O_RDONLY | BINARY)
-    except OSError as error:
-        raise disk(error, Path(path)) from error
-    try:
-        return _digest_fd(fd)
-    except OSError as error:
-        raise disk(error, Path(path)) from error
-    finally:
-        os.close(fd)
-
-
-def link(source: str | os.PathLike[str], dest: str | os.PathLike[str]) -> bool:
-    """Make `dest` a hard link to `source`, replacing whatever `dest` was, atomically.
-
-    The link is made beside `dest` under a temporary name, then renamed onto it, so a reader
-    sees the old file or the new one, never neither. Where the file system can't link (FAT,
-    exFAT, two volumes, a file at its link limit), nothing changes and False comes back: the
-    caller keeps both copies.
-
-    Args:
-        source: the file to link to.
-        dest: the name to give it; its folder must exist. An existing file there is replaced.
-
-    Returns:
-        True when `dest` is now `source`'s file; False when this file system can't link.
-
-    Raises:
-        DiskError: the disk refused for another reason (no permission, no space).
-
-    Example:
-        >>> import tempfile
-        >>> folder = Path(tempfile.mkdtemp())
-        >>> one = write(folder / "one.jpg", b"same")
-        >>> link(one, folder / "two.jpg"), (folder / "two.jpg").stat().st_nlink
-        (True, 2)
-    """
-    target = Path(dest)
-    # `<dest>.part.link`: a sweep's temporary name, so one a crash leaves is cleared like a part.
-    temporary = _part_path(target).with_suffix(PART + ".link")
-    _unlink(temporary)
-    try:
-        os.link(source, temporary)
-    except OSError as error:
-        if error.errno in NO_LINKS:
-            return False
-        raise disk(error, target) from error
-    try:
-        _replace(temporary, target)
-    except OSError as error:
-        _unlink(temporary)
-        raise disk(error, target) from error
-    return True
 
 
 def sweep(folder: str | os.PathLike[str]) -> int:
@@ -593,11 +489,6 @@ def _land(held: Part) -> None:
         stamp = int(held.mtime * 1e9)
         os.utime(held.path if WINDOWS else held.fd, ns=(stamp, stamp))
     found = os.fstat(held.fd)
-    hashed = None
-    if held._digest:
-        # The running digest when it covers every byte; else the part is read back once.
-        whole = held._sha is not None and held.size == found.st_size
-        hashed = held._sha.digest() if whole else _digest_fd(held.fd)
     if WINDOWS:
         _end(held)
         _replace(held.path, held.dest)
@@ -606,26 +497,9 @@ def _land(held: Part) -> None:
             os.replace(held.path, held.dest)
         finally:
             _end(held)
-    held.saved = Saved(held.dest, found.st_size, found.st_mtime_ns, hashed)
+    held.saved = Saved(held.dest, found.st_size, found.st_mtime_ns)
     if held.side:
         _unlink(os.fspath(held.side_path))
-
-
-def _digest_fd(fd: int) -> bytes:
-    """The SHA-256 of an open file's bytes from its start."""
-    sha = hashlib.sha256()
-    offset = 0
-    while True:
-        if WINDOWS:
-            # Windows has no `pread`.
-            os.lseek(fd, offset, os.SEEK_SET)
-            chunk = os.read(fd, BUFFER)
-        else:
-            chunk = os.pread(fd, BUFFER, offset)
-        if not chunk:
-            return sha.digest()
-        sha.update(chunk)
-        offset += len(chunk)
 
 
 def _leave(held: Part) -> None:

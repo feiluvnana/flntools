@@ -32,7 +32,8 @@ CREATE TABLE files (
 """
 
 
-# Version 2 as a home made it: its schema text, with `accounts` and `targets.account`.
+# Version 2 as a home made it: its schema text, with `accounts`, `targets.account`, and
+# the file hashes and sidecars version 4 drops.
 V2_SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '2'
 CREATE TABLE files (
@@ -90,6 +91,15 @@ CREATE TABLE accounts (
     held_until TEXT, expires TEXT, UNIQUE (plugin, name)
 );
 """
+
+
+# Version 3 as a home made it: version 2 without `accounts` and `targets.account`.
+V3_SCHEMA = (V2_SCHEMA.split("CREATE TABLE accounts")[0].replace("version = '2'", "version = '3'")
+             .replace(" account TEXT,", ""))
+
+
+# What a migration keeps of a file's row, as every version holds it.
+FILES = "SELECT key, target, plugin, post_id, category, path, size FROM files ORDER BY key"
 
 
 def schema(path):
@@ -177,15 +187,55 @@ class MigrationTest(StoreCase):
         if secrets:
             (self.home / store.SECRETS).write_bytes(b"sealed")
 
+    def v3(self):
+        """A version-3 home, made by the old schema text, with a file that has a hash and a
+        sidecar."""
+        self.path.parent.mkdir(parents=True)
+        with sqlite3.connect(self.path) as sql:
+            sql.executescript(V3_SCHEMA)
+            sql.executescript(
+                "INSERT INTO meta VALUES ('version', '3'), ('keys', '2');"
+                "INSERT INTO files (key, target, plugin, post_id, category, path, size, hash,"
+                " sidecar) VALUES ('ins:1', 'ins:example_user', 'ins', '1', 'posts',"
+                " 'media/ins/1.jpg', 10, x'aa', 'media/ins/1.jpg.json');")
+        sql.close()
+
+    def test_a_version_3_home_loses_its_hashes_and_keeps_the_rest(self):
+        self.v3()
+        before = rows(self.path, FILES)
+        self.open().close()
+        self.assertEqual(rows(self.path, "SELECT value FROM meta WHERE key = 'version'"),
+                         [("4",)])
+        self.assertEqual(rows(self.path, FILES), before)
+        names = {name for _, name, *_ in schema(self.path)}
+        self.assertFalse({"files_hash", "files_size"} & names)
+        with store.open(self.home / "fresh") as fresh:
+            fresh.state("x")["y"] = 1
+        self.assertEqual(columns(self.path), columns(fresh.path))
+        backup = self.home / store.BACKUP_V3
+        self.assertEqual(rows(backup, "SELECT hash, sidecar FROM files"),
+                         [(b"\xaa", "media/ins/1.jpg.json")])
+        self.assertEqual(rows(backup, "SELECT value FROM meta WHERE key = 'version'"), [("3",)])
+        self.assertFalse((self.home / store.BACKUP_V2).exists())
+
+    def test_a_version_3_home_without_a_sidecar_column_still_migrates(self):
+        self.v3()
+        with sqlite3.connect(self.path) as sql:
+            sql.execute("ALTER TABLE files DROP COLUMN sidecar")
+        sql.close()
+        self.open().close()
+        self.assertEqual(rows(self.path, FILES), [("ins:1", "ins:example_user", "ins", "1",
+                                                   "posts", "media/ins/1.jpg", 10)])
+
     def test_a_version_2_home_loses_its_accounts_and_keeps_the_rest(self):
         self.v2()
-        before = rows(self.path, "SELECT * FROM files")
+        before = rows(self.path, FILES)
         with self.open() as opened:
             self.assertEqual(rows(self.path, "SELECT key, value FROM meta ORDER BY key"),
-                             [("keys", "2"), ("logins", "told"), ("version", "3")])
+                             [("keys", "2"), ("logins", "told"), ("version", "4")])
             target = opened.targets()["ins:example_user"]
             self.assertEqual((target.plugin, target.follow), ("ins", True))
-            self.assertEqual(rows(self.path, "SELECT * FROM files"), before)
+            self.assertEqual(rows(self.path, FILES), before)
         names = {name for _, name, *_ in schema(self.path)}
         self.assertNotIn("accounts", names)
         self.assertNotIn("account", [row[1] for row in rows(
@@ -198,6 +248,7 @@ class MigrationTest(StoreCase):
         self.assertEqual(rows(backup, "SELECT plugin, name FROM accounts"),
                          [("ins", "example_handle")])
         self.assertEqual(rows(backup, "SELECT value FROM meta WHERE key = 'version'"), [("2",)])
+        self.assertFalse((self.home / store.BACKUP_V3).exists())
         self.assertEqual((self.home / store.SECRETS).read_bytes(), b"sealed")
 
     def test_an_index_on_the_account_column_is_dropped_first(self):
@@ -223,7 +274,7 @@ class MigrationTest(StoreCase):
                          [("keys",), ("version",)])
 
     def test_a_home_flnd_cannot_read_is_refused(self):
-        cases = {"newer": "INSERT INTO meta VALUES ('version', '4')",
+        cases = {"newer": "INSERT INTO meta VALUES ('version', '5')",
                  "unversioned": "DELETE FROM meta; INSERT INTO files (key, target, source, path)"
                                 " VALUES ('a:1', 'a:b', 'a', 'p')"}
         for name, change in cases.items():
@@ -316,17 +367,6 @@ class PragmaTest(StoreCase):
 
 
 class RowsTest(StoreCase):
-    def test_dedupe_finds_saved_files_of_the_same_size(self):
-        opened = self.open()
-        opened.save([store.FileRow("a:1", "a:b", "p1", 5), store.FileRow("a:2", "a:b", "p2", 5),
-                     store.FileRow("a:3", "a:b", "p3", 6)])
-        opened.fail(run=None, item="a:4", target="a:b", error=NotFound("gone"), file="p4")
-        self.assertEqual([row.key for row in opened.twins(besides="a:1", size=5)], ["a:2"])
-        self.assertEqual(opened.twins(besides="a:1", size=0), [])
-        for wrong in ({}, {"size": 5, "digest": b"x"}):
-            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
-                opened.twins(besides="a:1", **wrong)
-
     def test_a_target_keeps_its_categories(self):
         opened = self.open()
         user = SimpleNamespace(plugin="ins", value="example_user", kind="user")

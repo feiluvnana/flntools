@@ -1,4 +1,4 @@
-"""The chain's own steps (`flnd.engine.steps`): hashing, dedupe, the sidecar, and
+"""The chain's own steps (`flnd.engine.steps`): the links between category folders, and
 `Saved` at the end.
 
 Every run fakes the network (`flnkit.net.reply` routes, from `test_engine`) and uses synthetic
@@ -7,10 +7,7 @@ photos.
 
 from __future__ import annotations
 
-import errno
-import os
 from pathlib import Path
-from unittest import mock
 
 from fakes import CDN, Engine, EngineCase, make_plugin, noise
 
@@ -56,37 +53,6 @@ class ChainCase(EngineCase):
     def saved(self) -> list[Saved]:
         return [event for event in self.events if isinstance(event, Saved)]
 
-
-class DedupeTest(ChainCase):
-    def test_the_same_bytes_under_another_target_become_a_hard_link(self):
-        engine = self.engine()
-        engine.download(["aaa:a|all"])
-        engine.download(["aaa:b|all"])
-        a, b = self.path("a").stat(), self.path("b").stat()
-        self.assertTrue(os.path.samestat(a, b))
-        self.assertEqual(a.st_nlink, 2)
-        rows = self.rows()
-        self.assertEqual(rows["aaa:a.jpg"].hash, rows["aaa:b.jpg"].hash)
-        self.assertEqual(rows["aaa:b.jpg"].mtime, b.st_mtime_ns)
-        self.assertIn("1 file already saved elsewhere, linked", self.dest.getvalue())
-
-    def test_a_file_system_without_hard_links_keeps_both_with_one_warning(self):
-        engine = self.engine()
-        engine.download(["aaa:a|all"])
-        refused = OSError(errno.EXDEV, "Cross-device link")
-        with mock.patch("os.link", side_effect=refused):
-            engine.download(["aaa:b|all", "aaa:c|all"])
-        for name in ("b", "c"):
-            self.assertEqual(self.path(name).read_bytes(), self.body)
-            self.assertEqual(self.path(name).stat().st_nlink, 1)
-        self.assertEqual(self.dest.getvalue().count("can't hard-link"), 1)
-
-    def test_a_changed_holder_is_not_linked_to(self):
-        engine = self.engine()
-        engine.download(["aaa:a|all"])
-        self.path("a").write_bytes(b"edited by hand")
-        engine.download(["aaa:b|all"])
-        self.assertEqual(self.path("b").read_bytes(), self.body)
 
 class LinkRowTest(ChainCase):
     """The ledger's link across category folders: a row of its own, and never left dangling."""

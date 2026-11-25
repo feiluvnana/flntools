@@ -52,7 +52,7 @@ src/                 the package flnd
     events.py      the events, Report, State, and the rows the reads return
     jobs.py        the scheduler: Job, pools, priorities, retry policy, holds, segments, lanes
     crawl.py       one target: listing, smart sync, early stops, the Ledger
-    save.py        a file job: transfer, dedupe, unpack, the commit
+    save.py        a file job: transfer, unpack, the commit
     resolve.py     target text -> (plugin, Target, categories)
     plugins.py     the plugin loader: a code to its class, imported on first use
     auth.py        the logins folder, login steps, cookie write-back

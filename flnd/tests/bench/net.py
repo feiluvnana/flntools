@@ -24,8 +24,7 @@ Steps:
    two disks only if it looks the device up through `os.stat`;
 6. `per_conn_limit`: the 1 GiB file from `/capped/`, where the server sends each connection at
    20 MB/s, as flnd's throughput over that of one plain connection (`http.client`, 64 MiB);
-7. `big_4_at_once`: four downloads of a 256 MiB file at once, each then hashed (SHA-256) as
-   dedupe hashes a file of a size already saved, a `HASH` job, as their throughput over that
+7. `big_4_at_once`: four downloads of a 256 MiB file at once, as their throughput over that
    of one alone;
 8. `hls_200`: a playlist of 200 segments of 64 KiB, each answered 40 ms late (`/late/`), as
    the time of fetching them serially over one plain connection divided by flnd's time: the
@@ -110,9 +109,6 @@ class _Kept:
     path = Path("flnd.db")
     due = False
 
-    def twins(self, **asked: Any) -> list[Any]:
-        return []
-
     def commit(self, *args: Any, **options: Any) -> None:
         pass
 
@@ -127,15 +123,11 @@ class Capped:
     """A target's saves on a scheduler of its own, held to `at_once` transfers per host (a
     limit at or under the cap's start fixes it there)."""
 
-    def __init__(self, session: _net.Session, at_once: int, *, name: str = "example_user",
-                 hashed: bool = False) -> None:
-        # Whether each file (all `QUARTER` bytes) is hashed once it lands, as dedupe hashes one
-        # of a size saved before.
-        self.hashed = hashed
+    def __init__(self, session: _net.Session, at_once: int, *,
+                 name: str = "example_user") -> None:
         self.client = _net.Client(session)
         self.scheduler = jobs.Scheduler(limits={"127.0.0.1": at_once, "localhost": at_once})
-        self.saver = save.Saver(_Kept(), self.scheduler, lambda event: None,  # type: ignore[arg-type]
-                                dedupe=False)
+        self.saver = save.Saver(_Kept(), self.scheduler, lambda event: None)  # type: ignore[arg-type]
         self.target = Target(f"bnc:{name}", kind="user")
 
 
@@ -144,8 +136,6 @@ async def fill(client: Capped, url: str, dest: Path) -> None:
     landed off the loop, filled by the client. No progress row: that is the UI's cost (`cpu`)."""
     item = save.Item(f"bnc:{dest.name}", client.target, dest.name, "", File(url), dest)
     await client.saver.post([item], client=client.client, plugin="bnc")
-    if client.hashed:
-        await client.saver._hash(dest, QUARTER, "bnc")
 
 
 async def many(client: Capped, urls: list[str], out: Path) -> None:
@@ -315,10 +305,9 @@ def segments_and_disks(report: kit.Report, loop: Loop, base: str, scratch: Path,
                     runs=1)
     report.add("per_conn_limit", (BIG / took) / (REFERENCE / one), "x", better="higher")
 
-    hashed = Capped(session, AT_ONCE, hashed=True)
-    single = kit.best(lambda: loop.run(fill(hashed, f"{base}/q.bin", out / "q")), before=empty)
+    single = kit.best(lambda: loop.run(fill(capped, f"{base}/q.bin", out / "q")), before=empty)
     quads = [f"{base}/q.bin?{n}" for n in range(AT_ONCE_BIG)]
-    four = kit.best(lambda: loop.run(many(hashed, quads, out)), before=empty)
+    four = kit.best(lambda: loop.run(many(capped, quads, out)), before=empty)
     report.add("big_4_at_once", (AT_ONCE_BIG * QUARTER / four) / (QUARTER / single), "x",
                better="higher")
 

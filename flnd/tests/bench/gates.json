@@ -99,9 +99,9 @@
     "net.big_4_at_once": {
       "unit": "x",
       "better": "higher",
-      "baseline": 1.76,
-      "target": 2.5,
-      "gate": "P14: a hasher pool"
+      "baseline": 1.18,
+      "target": 1,
+      "gate": "P14: big files at once"
     },
     "net.hls_200": {
       "unit": "x",

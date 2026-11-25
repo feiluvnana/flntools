@@ -96,9 +96,6 @@ class _Kept:
     path = Path("flnd.db")
     due = False
 
-    def twins(self, **asked: Any) -> list[Any]:
-        return []
-
     def commit(self, *args: Any, **options: Any) -> None:
         pass
 
@@ -116,8 +113,7 @@ class Capped:
         self.client = _net.Client(session)
         self.scheduler = jobs.Scheduler(limits={"127.0.0.1": at_once, "localhost": at_once})
         self.saver = save.Saver(_Kept(), self.scheduler,
-                                lambda event: None,  # type: ignore[arg-type]
-                                dedupe=False)
+                                lambda event: None)  # type: ignore[arg-type]
         self.target = Target("bnc:example_user", kind="user")
 
 

@@ -133,20 +133,19 @@ class Kind(Enum):
     FILE = "file"
     TAB = "tab"
     CALL = "call"
-    HASH = "hash"
     UNPACK = "unpack"
     MERGE = "merge"
     WRITE = "write"
 
 
 # Kinds with threads of their own, which their work reaches through `Scheduler.on`.
-THREADED = frozenset({Kind.CALL, Kind.HASH, Kind.UNPACK, Kind.WRITE})
+THREADED = frozenset({Kind.CALL, Kind.UNPACK, Kind.WRITE})
 # The kinds a plugin's hold (a wall, a block of the plugin) keeps waiting; a bucket's hold
 # keeps only that bucket's pages waiting.
 PLUGIN_HELD = frozenset({Kind.PAGE, Kind.TAB, Kind.CALL})
 # Lower runs first: 0 is a retried failure.
 PRIORITY = {Kind.PAGE: 1, Kind.TAB: 1, Kind.FILE: 2, Kind.CALL: 2, Kind.WRITE: 2,
-            Kind.HASH: 3, Kind.UNPACK: 3, Kind.MERGE: 3}
+            Kind.UNPACK: 3, Kind.MERGE: 3}
 
 
 @dataclass(eq=False, kw_only=True)
@@ -602,7 +601,7 @@ class Scheduler:
         self.limits = Limits(limits)
         self.slowest = slowest
         self.tabs = Pool(TABS)
-        sizes = {Kind.CALL: min(8, cpus + 2), Kind.HASH: min(4, cpus), Kind.UNPACK: 1,
+        sizes = {Kind.CALL: min(8, cpus + 2), Kind.UNPACK: 1,
                  Kind.MERGE: max(1, cpus // 2)}
         self.pools = {kind: Pool(size) for kind, size in sizes.items()}
         self._threads: dict[Kind, ThreadPoolExecutor] = {}
@@ -792,9 +791,8 @@ class Scheduler:
                  path: Path | None = None) -> T:
         """Run blocking `work(*args)` on a thread of `kind`, from inside a job of that kind.
 
-        The kind's pool has already let the job start, so a `HASH` job gets one of the
-        hasher's `os.cpu_count()` threads at once. A `WRITE` goes to the one thread of the
-        device `path` is on.
+        The kind's pool has already let the job start, so an `UNPACK` job gets its thread at
+        once. A `WRITE` goes to the one thread of the device `path` is on.
 
         Raises:
             ValueError: `kind` has no threads.

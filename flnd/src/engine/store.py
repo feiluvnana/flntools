@@ -1,4 +1,4 @@
-"""`flnd.db`, schema 3: its tables, the migration from version 2, its rows and queries, and
+"""`flnd.db`, schema 4: its tables, the migrations from versions 2 and 3, its rows and queries, and
 `check`, which compares the rows with the disk and repairs them. SPEC.md#for-developers
 explains it.
 """
@@ -38,26 +38,25 @@ __all__ = ["FailureRow", "FileRow", "RunRow", "State", "Store", "TargetRow",
 MEDIA, METADATA = Path("media"), Path("metadata")
 DB = METADATA / "flnd.db"
 SECRETS = METADATA / "secret.db"
-# Where a version-2 `flnd.db` is copied, whole, before its migration.
+# Where a version-2 or version-3 `flnd.db` is copied, whole, before its migration.
 BACKUP_V2 = METADATA / "flnd.v2.db"
-VERSION = "3"
+BACKUP_V3 = METADATA / "flnd.v3.db"
+VERSION = "4"
 # What a migrated home that still has a `secret.db` is told, once.
 LOGINS_NOTICE = "logins are cookie files now: flnd auth login <code> <file>"
 
 SCHEMA = """
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '3'
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '4'
 CREATE TABLE files (
     key TEXT PRIMARY KEY, target TEXT NOT NULL, plugin TEXT NOT NULL,
     post_id TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '', path TEXT NOT NULL,
     size INTEGER NOT NULL DEFAULT 0, mtime INTEGER, date TEXT,
-    estimated INTEGER NOT NULL DEFAULT 0, kind TEXT, files INTEGER, hash BLOB,
+    estimated INTEGER NOT NULL DEFAULT 0, kind TEXT, files INTEGER,
     state TEXT NOT NULL DEFAULT 'saved',            -- saved | gone | link
-    unpacked TEXT NOT NULL DEFAULT '', folder TEXT, sidecar TEXT, extracted TEXT,
+    unpacked TEXT NOT NULL DEFAULT '', folder TEXT, extracted TEXT,
     at TEXT NOT NULL DEFAULT ''
 ) WITHOUT ROWID;
 CREATE INDEX files_post ON files (target, post_id);
-CREATE INDEX files_size ON files (size) WHERE state = 'saved';
-CREATE INDEX files_hash ON files (hash) WHERE hash IS NOT NULL;
 CREATE INDEX files_undated ON files (target) WHERE state = 'saved' AND (date IS NULL OR estimated);
 CREATE VIEW posts AS
     SELECT target, post_id, min(category) AS category, max(date) AS date,
@@ -113,14 +112,13 @@ ON_DISK = "state IN ('saved', 'link')"
 ONE_STATEMENT = 500
 
 FILE_COLUMNS = ("key", "target", "plugin", "post_id", "category", "path", "size", "mtime",
-                "date", "estimated", "kind", "state", "at", "files", "hash", "sidecar")
+                "date", "estimated", "kind", "state", "at", "files")
 INSERT_FILE = (f"INSERT OR REPLACE INTO files ({', '.join(FILE_COLUMNS)}) "
                f"VALUES ({', '.join('?' * len(FILE_COLUMNS))})")
 # The columns `FileRow` reads, in its order.
 ROW_SELECT = ("key, target, path, size, mtime, post_id, category, date, estimated, kind, state,"
-              " at, files, unpacked, folder, hash, sidecar, extracted")
-STEP_COLUMNS = frozenset({"path", "size", "mtime", "unpacked", "folder", "hash", "sidecar",
-                          "extracted"})
+              " at, files, unpacked, folder, extracted")
+STEP_COLUMNS = frozenset({"path", "size", "mtime", "unpacked", "folder", "extracted"})
 TARGET_COLUMNS = ("key", "plugin", "value", "kind", "follow", "categories", "query", "complete",
                   "cursors", "seen", "last_sync", "files", "bytes", "heads", "gaps", "folder")
 FAILURE_SELECT = ("key, target, post_id, category, file, cursor, attempts, class, message, hint,"
@@ -156,9 +154,6 @@ class FileRow(msgspec.Struct):
     # For an archive: "", "extracted" or "failed"; and the folder it was extracted to.
     unpacked: str = ""
     folder: str | None = None
-    # The SHA-256 of its bytes; None until a file of the same size made it worth hashing.
-    hash: bytes | None = None
-    sidecar: str | None = None
     # For an archive extracted into its post's folder and deleted: the files it made, as a
     # JSON list of paths; None otherwise.
     extracted: str | None = None
@@ -297,15 +292,15 @@ def open(home: Path, *, loop: bool = False) -> Store:
 
 
 def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
-    """Set the pragmas, then make schema 3 or migrate an older one, in one transaction."""
+    """Set the pragmas, then make schema 4 or migrate an older one, in one transaction."""
     sql.execute(f"PRAGMA busy_timeout = {OTHER_BUSY_MS}")
     sql.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
     sql.execute(f"PRAGMA wal_autocheckpoint = {0 if loop else OTHER_CHECKPOINT_PAGES}")
     old = _version(sql)
     if old == "1":
         raise UsageError(f"{home} is from an old flnd; start a new home")
-    if old == "2":
-        _backup(sql, home / BACKUP_V2, old)
+    if old in ("2", "3"):
+        _backup(sql, home / (BACKUP_V2 if old == "2" else BACKUP_V3), old)
     notice = False
     sql.execute("BEGIN IMMEDIATE")
     try:
@@ -315,8 +310,11 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
                 sql.execute(statement)
             sql.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
             sql.execute("INSERT INTO meta VALUES ('keys', '2')")
-        elif version == "2":
-            _drop_accounts(sql)
+        elif version in ("2", "3"):
+            if version == "2":
+                _drop_accounts(sql)
+            _drop_hashes(sql)
+            sql.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (VERSION,))
         elif version != VERSION:
             raise UsageError(f"home schema {version!r} needs a newer flnd",
                              hint="upgrade flnd, or open the home with the flnd that wrote it")
@@ -388,7 +386,7 @@ def _tables(sql: sqlite3.Connection) -> set[str]:
 
 def _drop_accounts(sql: sqlite3.Connection) -> None:
     """Migrate a version-2 file to 3: no `accounts` table, no `targets.account` column, in the
-    caller's transaction."""
+    caller's transaction; the caller sets the version."""
     sql.execute("DROP TABLE IF EXISTS accounts")
     if "account" in _columns(sql, "targets"):
         for _, index, *_, origin, _ in sql.execute("PRAGMA index_list(targets)").fetchall():
@@ -396,7 +394,16 @@ def _drop_accounts(sql: sqlite3.Connection) -> None:
                     row[2] for row in sql.execute(f"PRAGMA index_info({index})")]:
                 sql.execute(f"DROP INDEX {index}")
         sql.execute("ALTER TABLE targets DROP COLUMN account")
-    sql.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (VERSION,))
+
+
+def _drop_hashes(sql: sqlite3.Connection) -> None:
+    """Migrate a version-3 file to 4: no file hashes, no sidecar column, and no index on
+    either, in the caller's transaction (SQLite drops no column an index names)."""
+    sql.execute("DROP INDEX IF EXISTS files_hash")
+    sql.execute("DROP INDEX IF EXISTS files_size")
+    for column in ("hash", "sidecar"):
+        if column in _columns(sql, "files"):
+            sql.execute(f"ALTER TABLE files DROP COLUMN {column}")
 
 
 # A built-in single post's (plugin, kind) as an old home stored it, and its kind now: its key
@@ -592,14 +599,13 @@ class Store:
                     sql.execute(_insert_files(len(part)), _values(part))
         self._rows += len(rows)
 
-    def commit(self, rows: Sequence[FileRow], *, hashes: Mapping[str, bytes] | None = None,
+    def commit(self, rows: Sequence[FileRow], *,
                failures: Sequence[Mapping[str, Any]] = (), run: int | None = None) -> None:
-        """Write a post's rows, the hashes dedupe found and its files' failures, in one
-        transaction: the save's commit, on the loop.
+        """Write a post's rows and its files' failures in one transaction: the save's commit,
+        on the loop.
 
         Args:
             rows: the post's files that landed.
-            hashes: other saved files' SHA-256, by key, that dedupe read on the way.
             failures: each failed file's `fail` arguments, without `run`.
             run: the run's id, for the failures.
 
@@ -612,8 +618,6 @@ class Store:
             for start in range(0, len(rows), ONE_STATEMENT):
                 part = rows[start:start + ONE_STATEMENT]
                 sql.execute(_insert_files(len(part)), _values(part))
-            sql.executemany("UPDATE files SET hash = ? WHERE key = ?",
-                            [(digest, item) for item, digest in (hashes or {}).items()])
             for failure in failures:
                 _fail(sql, run=run, at=at, **failure)
         self._rows += len(rows)
@@ -654,35 +658,13 @@ class Store:
         found = self._db.one(f"SELECT {ROW_SELECT} FROM files WHERE key = ?", (item,))
         return _file_row(found) if found else None
 
-    def twins(self, *, besides: str, digest: bytes | None = None, size: int | None = None,
-              limit: int = -1) -> list[FileRow]:
-        """The files that may hold the same bytes as `besides`, at most `limit` (-1 for all).
-
-        Args:
-            digest: the files on disk (saved or links) with this SHA-256.
-            size: the saved files of this size, through `files_size`: what dedupe hashes
-                against.
-
-        Raises:
-            ValueError: neither `digest` nor `size` is given, or both are: a bug in the caller.
-        """
-        if (digest is None) == (size is None):
-            raise ValueError("twins needs one of digest and size")
-        if digest is not None:
-            query, value = f"hash = ? AND {ON_DISK}", digest
-        else:
-            query, value = "size = ? AND state = 'saved'", size
-        found = self._db.all(f"SELECT {ROW_SELECT} FROM files WHERE {query} AND key != ?"
-                             " LIMIT ?", (value, besides, limit))
-        return [_file_row(row) for row in found]
-
     def link(self, holder: str, path: Path, category: str) -> None:
         """Record a second name of a saved file in another category's folder, keyed
         `<holder>@<category>`; nothing when the holder has no row."""
         self._db.write(
             "INSERT OR REPLACE INTO files (key, target, plugin, post_id, category, path, size,"
-            " mtime, date, estimated, kind, state, at, hash) SELECT ?, target, plugin, post_id,"
-            " ?, ?, size, mtime, date, estimated, kind, ?, ?, hash FROM files WHERE key = ?",
+            " mtime, date, estimated, kind, state, at) SELECT ?, target, plugin, post_id,"
+            " ?, ?, size, mtime, date, estimated, kind, ?, ? FROM files WHERE key = ?",
             (f"{holder}@{category}", category, str(path), LINK, now(), holder))
 
     def on_disk(self) -> list[FileRow]:
@@ -716,7 +698,7 @@ class Store:
                                 (*fields.values(), item))
 
     def update(self, item: str, **fields: Any) -> None:
-        """Set columns of one file's row (`STEP_COLUMNS`): unpack, sidecar, a hash."""
+        """Set columns of one file's row (`STEP_COLUMNS`): unpack."""
         self.change([(item, fields)])
 
     # -- failures and runs ------------------------------------------------------------------
@@ -1053,15 +1035,14 @@ def _values(rows: Sequence[FileRow]) -> tuple[Any, ...]:
 
 def _file_values(row: FileRow) -> tuple[Any, ...]:
     return (row.key, row.target, row.plugin, row.post_id, row.category, row.path, row.size,
-            row.mtime, row.date, int(row.estimated), row.kind, row.state, row.at, row.files,
-            row.hash, row.sidecar)
+            row.mtime, row.date, int(row.estimated), row.kind, row.state, row.at, row.files)
 
 
 def _file_row(found: tuple[Any, ...]) -> FileRow:
     (item, target, path, size, mtime, post, category, date, estimated, kind, state, at, count,
-     unpacked, folder, digest, sidecar, extracted) = found
+     unpacked, folder, extracted) = found
     return FileRow(item, target, path, size, mtime, post, category, date, bool(estimated), kind,
-                   state, at, count, unpacked, folder, digest, sidecar, extracted)
+                   state, at, count, unpacked, folder, extracted)
 
 
 def _target_row(found: tuple[Any, ...]) -> TargetRow:
@@ -1207,12 +1188,12 @@ def _inside(name: str, folders: set[str]) -> bool:
 
 def _fix(store: Store, missing: list[FileRow],
          resized: list[tuple[FileRow, os.stat_result]]) -> None:
-    """Drop missing rows, and take resized files' size, time and hash from the disk."""
+    """Drop missing rows, and take resized files' size and time from the disk."""
     if missing:
         store.drop([row.key for row in missing])
     if resized:
-        store.change([(row.key, {"size": found.st_size, "mtime": found.st_mtime_ns,
-                                 "hash": files.digest(row.path)}) for row, found in resized])
+        store.change([(row.key, {"size": found.st_size, "mtime": found.st_mtime_ns})
+                      for row, found in resized])
 
 
 def _record(row: FileRow) -> Record:

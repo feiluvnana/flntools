@@ -12,13 +12,12 @@ import json
 import mimetypes
 import re
 import shutil
-import stat
 import sys
 import threading
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
@@ -50,8 +49,6 @@ SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}
 NOT_MEDIA_HINT = "it is usually a login wall: run flnd auth login {code}, then try again"
 # A lazy post's link that answers one of these has expired: its post is asked for a fresh one.
 EXPIRED = frozenset({403, 410})
-# How many saved files of the same size dedupe hashes at most, to compare with a new one.
-CANDIDATES = 8
 # The kind of an API 2 file named by a stem (5.3): its extension is what its bytes are, else
 # what its `Content-Type` names, else its URL's, else none; the planned name may hold the URL's.
 STEM = "stem"
@@ -114,8 +111,6 @@ class _Landed:
     path: Path
     day: datetime.date | None
     row: store.FileRow
-    # Hashes worked out for saved files of the same size, stored with the post's rows.
-    hashes: dict[str, bytes] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -438,23 +433,21 @@ class _Done:
 
     unpacked: int = 0
     unpack_failed: int = 0
-    linked: int = 0
 
 
 class Saver:
-    """A run's saves: each post's files through the nine stages, their rows one commit a post.
+    """A run's saves: each post's files through the eight stages, their rows one commit a post.
 
     Every step is a job of the run's scheduler: a file's transfer a `FILE` job (with its
-    mirrors), a DASH join a `MERGE` job, a hash a `HASH` job, an unpack an `UNPACK` job and a
-    post's commit a `WRITE` job; blocking calls go to the threads
-    of their kind (`Scheduler.on`). Used on the run's loop only.
+    mirrors), a DASH join a `MERGE` job, an unpack an `UNPACK` job and a post's commit a
+    `WRITE` job; blocking calls go to the threads of their kind (`Scheduler.on`). Used on the
+    run's loop only.
 
     Args:
         store: the run's flnd.db.
         scheduler: the run's scheduler.
         emit: where `Saved`, `Skipped` and `Failed` go; what it gives is awaited.
         run: the run's id in `runs`, for failures; None outside a run.
-        dedupe: whether a file whose bytes are saved already becomes a hard link to them.
         stop: the run's second Ctrl-C, which a plugin's `fetch` function stops at when it
             next reports its progress; None never stops it.
         tally: the run's live counts (`flnd.engine.run.Tally`); None counts nothing.
@@ -463,19 +456,17 @@ class Saver:
 
     def __init__(self, db: store.Store, scheduler: jobs.Scheduler,
                  emit: Callable[[Any], Awaitable[None]], *,
-                 run: int | None = None, dedupe: bool = True,
+                 run: int | None = None,
                  timeout: float = 600, stop: threading.Event | None = None, tally: Any = None,
                  sample: Callable[[Error], None] | None = None,
                  claims: Any = None) -> None:
         self.store, self.scheduler, self.run = db, scheduler, run
         self.emit = sink(emit)
-        self.dedupe, self.stop = dedupe, stop
+        self.stop = stop
         self.timeout = timeout
         self.tally, self.sample = tally, sample
         self.claims = claims
         self.done = _Done()
-        # The pairs of devices (saved file's, new file's) found unable to hard-link.
-        self._unlinkable: set[tuple[int, int]] = set()
         self._checkpoints: set[asyncio.Task[Any]] = set()
         # Each target's last file to join the scheduler's queue (`_turn`).
         self._turns: dict[Target, asyncio.Event] = {}
@@ -526,12 +517,10 @@ class Saver:
             parts.append(f"{text.count(done.unpacked, 'archive')} extracted")
         if done.unpack_failed:
             parts.append(f"{done.unpack_failed} not extracted")
-        if done.linked:
-            parts.append(f"{text.count(done.linked, 'file')} already saved elsewhere, linked")
         if parts:
             (ui.warn if done.unpack_failed else ui.ok)("Media: {line}", line="; ".join(parts))
 
-    # -- stages 1 to 4: the part, the transfer, the content check, dedupe ---------------------
+    # -- stages 1 to 3: the part, the transfer, the content check -------------------------
 
     async def _file(self, item: Item, client: net.Client,
                     plugin: str) -> _Landed | _Failure | None:
@@ -616,12 +605,8 @@ class Saver:
             item.key, store.key(item.target), str(saved.path), saved.size, saved.mtime,
             post_id=item.post, category=item.category,
             date=dated.isoformat() if dated else None, estimated=still_estimated,
-            kind=files.kind_of(saved.path.name), at=store.now(), files=item.count,
-            hash=saved.hash)
-        landed = _Landed(item, saved.path, dated, row)
-        if self.dedupe:
-            await self._dedupe(landed, plugin)
-        return landed
+            kind=files.kind_of(saved.path.name), at=store.now(), files=item.count)
+        return _Landed(item, saved.path, dated, row)
 
     async def _transfer(self, item: Item, file: File, client: net.Client, plugin: str,
                         received: dict[str, str], flow: _Flow) -> files.Saved:
@@ -1019,62 +1004,15 @@ class Saver:
                                         path=dest)
             raise
 
-    async def _dedupe(self, landed: _Landed, plugin: str) -> None:
-        """Link the file to a saved one with the same bytes, among those of its size."""
-        row = landed.row
-        # One indexed read on the loop, on the store's one connection, which no thread shares.
-        found = [(twin.key, twin.path, twin.hash) for twin in
-                 self.store.twins(besides=row.key, size=row.size, limit=CANDIDATES)]
-        if not found:
-            return
-        path = Path(row.path)
-        unhashed = [(key, Path(where)) for key, where, digest in found if digest is None]
-        mine = [] if row.hash is not None else [self._hash(path, row.size, plugin)]
-        digests = _raised(await _all(*mine, *(self._hash(where, row.size, plugin)
-                                              for _, where in unhashed)))
-        if mine:
-            row.hash = digests.pop(0)
-        for (key, _), digest in zip(unhashed, digests, strict=True):
-            if digest is not None:
-                landed.hashes[key] = digest
-        hashes = {key: digest for key, _, digest in found if digest is not None}
-        hashes.update(landed.hashes)
-        twins = [Path(where) for key, where, _ in found
-                 if row.hash is not None and hashes.get(key) == row.hash]
-        for twin in twins:
-            if twin == path:
-                continue
-            mtime, pair = await self._call(_link, twin, path, row.size,
-                                           frozenset(self._unlinkable))
-            if mtime == _NO_LINKS:
-                # Two targets' files may meet the same pair at once: one warning for it.
-                if pair not in self._unlinkable:
-                    self._unlinkable.add(pair)
-                    ui.warn("{folder} can't hard-link to {other}, so the same file saved twice"
-                            " is kept twice", folder=path.parent, other=twin.parent)
-                return
-            if mtime is not None:
-                # One file now, with the saved one's modified time.
-                row.mtime = mtime
-                self.done.linked += 1
-                return
-
-    async def _hash(self, path: Path, size: int, plugin: str) -> bytes | None:
-        """The SHA-256 of a file on a hasher thread; None when it isn't on disk at `size`."""
-        async def work() -> bytes | None:
-            return await self.scheduler.on(Kind.HASH, _digest, path, size)
-        return await self.scheduler.run(Job(kind=Kind.HASH, work=work, plugin=plugin, size=size))
-
-    # -- stage 5: the commit ------------------------------------------------------------------
+    # -- stage 4: the commit ------------------------------------------------------------------
 
     async def _commit(self, landed: Sequence[_Landed], failures: Sequence[_Failure]) -> None:
         """A post's rows in one transaction on the loop, as a `WRITE` job: a lock held
         elsewhere puts it back in the scheduler's queue (`jobs.Busy`), so the loop never
         stalls."""
         rows = [one.row for one in landed]
-        hashes = {key: digest for one in landed for key, digest in one.hashes.items()}
         failed = [_failed_row(one) for one in failures]
-        await self._write(self.store.commit, rows, hashes=hashes, failures=failed, run=self.run)
+        await self._write(self.store.commit, rows, failures=failed, run=self.run)
         if self.claims is not None:
             for one in landed:
                 self.claims.release(one.item.dest, one.item.key)
@@ -1097,7 +1035,7 @@ class Saver:
                 raise
         await self.scheduler.run(Job(kind=Kind.WRITE, work=work))
 
-    # -- stages 6 to 8: unpack, `Saved` -----------
+    # -- stages 5 to 7: unpack, `Saved` -----------
 
     async def _finish(self, landed: _Landed, plugin: str) -> None:
         item, path = landed.item, landed.path
@@ -1217,10 +1155,6 @@ def sampled(settings: Any, error: BaseException) -> None:
 # The blocking steps, each run on a thread
 
 
-# `_link`'s answer when the file system can't hard-link at all.
-_NO_LINKS = -1
-
-
 async def _nothing() -> None:
     """A job's work until its own is set."""
 
@@ -1229,35 +1163,6 @@ def _final(error: BaseException) -> bool:
     """Whether a mirror's failure ends the file at once: it stops the run, or it is a 429,
     which the scheduler waits out on the same mirror."""
     return jobs.stops(error) or getattr(error, "status", None) == 429
-
-
-def _link(twin: Path, path: Path, size: int,
-          unlinkable: frozenset[tuple[int, int]]) -> tuple[int | None, tuple[int, int]]:
-    """Make `path` a hard link to `twin` when `twin` is still that size."""
-    try:
-        found = twin.lstat()
-        pair = (found.st_dev, path.stat().st_dev)
-    except OSError:
-        return None, (0, 0)
-    if found.st_size != size or not stat.S_ISREG(found.st_mode):
-        return None, pair
-    if pair in unlinkable:
-        return None, pair
-    try:
-        linked = files.link(twin, path)
-    except DiskError as error:
-        ui.debug("{name}: not linked: {error}", name=path.name, error=error)
-        return None, pair
-    return (found.st_mtime_ns if linked else _NO_LINKS), pair
-
-
-def _digest(path: Path, size: int) -> bytes | None:
-    try:
-        if path.stat().st_size != size:
-            return None
-        return files.digest(path)
-    except (OSError, DiskError):
-        return None
 
 
 def _extract(path: Path, password: str | None, here: bool) -> Path | list[Path]:

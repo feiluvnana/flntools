@@ -47,8 +47,8 @@ from flnkit import files as files_module
 from flnkit import net as _net
 
 # The keys of a history row, as a run writes it today.
-ROW_KEYS = ["at", "category", "date", "estimated", "extracted", "files", "folder", "hash", "key",
-            "kind", "mtime", "path", "post_id", "sidecar", "size", "state", "target", "unpacked"]
+ROW_KEYS = ["at", "category", "date", "estimated", "extracted", "files", "folder", "key",
+            "kind", "mtime", "path", "post_id", "size", "state", "target", "unpacked"]
 
 
 def feed(code, *listings, newest_first=False, **declared):
@@ -1027,9 +1027,9 @@ class OnDiskTest(JobCase):
         self.assertEqual(self.run_engine(source, targets=["aaa:example_user"]), 0)
         self.assertEqual(self.fetched(f"{CDN}/a.jpg"), [])
         row = self.history()["aaa:a.jpg"]
-        self.assertEqual((row["size"], row["hash"], row["post_id"]),
+        self.assertEqual((row["size"], row["post_id"]),
                          ((self.target_dir("aaa", "example_user") / "a.jpg").stat().st_size,
-                          None, "a.jpg"))
+                          "a.jpg"))
         self.assertEqual([event.reason for event in self.events if isinstance(event, Skipped)],
                          ["saved"])
 

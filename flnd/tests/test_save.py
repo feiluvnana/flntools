@@ -9,7 +9,6 @@ import asyncio
 import builtins
 import contextlib
 import errno
-import hashlib
 import io
 import json
 import os
@@ -92,7 +91,7 @@ class SaveCase(unittest.TestCase):
         asyncio.run(post())
         return saver
 
-    def rows(self, columns="key, path, size, date, hash") -> list[tuple]:
+    def rows(self, columns="key, path, size, date") -> list[tuple]:
         return self.sql.execute(f"SELECT {columns} FROM files ORDER BY key").fetchall()
 
     def saved(self) -> list[Path]:
@@ -381,37 +380,6 @@ class SegmentTest(SaveCase):
         self.assertEqual((self.tmp / "media" / "c.bin").read_bytes(), body)
 
 
-class DedupeTest(SaveCase):
-    def test_a_file_is_hashed_only_when_a_saved_one_has_its_size(self) -> None:
-        # (saved file's bytes, new file's bytes, links work, linked)
-        cases = [("no size match", b"xxxxx", JPEG, True, False),
-                 ("same size, other bytes", b"\xff\xd8\xffzzzzzzzz", JPEG, True, False),
-                 ("same bytes", JPEG, JPEG, True, True),
-                 ("same bytes, no hard links", JPEG, JPEG, False, False)]
-        for number, (label, old, new, links, linked) in enumerate(cases):
-            with self.subTest(label):
-                self.sql.execute("DELETE FROM files")
-                held = self.tmp / f"held{number}.jpg"
-                held.write_bytes(old)
-                self.store.commit([store.FileRow(f"ins:held{number}", "ins:example_user",
-                                                str(held), len(old))])
-                self.routes[f"{CDN}/{number}.jpg"] = new
-                self.jobs.kinds.clear()
-                link = files.link if links else (lambda *paths: False)
-                with mock.patch.object(files, "link", link):
-                    self.save(self.item(f"{number}.jpg"))
-                path = self.tmp / "media" / f"{number}.jpg"
-                self.assertEqual(path.read_bytes(), new)
-                self.assertEqual(os.path.samefile(path, held), linked)
-                hashes = dict(self.rows("key, hash"))
-                sized = len(old) == len(new)
-                # A file is hashed only when a saved one has its size, and then both are.
-                self.assertEqual(self.jobs.kinds.count(Kind.HASH), 2 if sized else 0)
-                self.assertEqual(hashes[f"ins:{number}.jpg"] is not None, sized)
-                self.assertEqual(hashes[f"ins:held{number}"] is not None, sized)
-        self.assertEqual(self.lines.getvalue().count("can't hard-link"), 1)
-
-
 class CommitTest(SaveCase):
     def test_a_posts_rows_go_in_one_transaction(self) -> None:
         statements: list[str] = []
@@ -658,39 +626,6 @@ class EngineTest(EngineCase):
                                return_value=mock.Mock(free=10 << 20)), \
                 self.assertRaisesRegex(DiskError, "not enough free space"):
             self.run_files(File(f"{CDN}/c.jpg", name="c.jpg", size=1 << 30))
-
-    def test_four_files_are_hashed_at_once_on_four_threads(self) -> None:
-        # K9: four new files meet four saved ones of their size; each thread's first hash waits
-        # for three others, which one hasher thread for the whole process never gives.
-        for n in range(8):
-            self.routes[f"{CDN}/{n}.bin"] = bytes([n]) * 64
-        self.run_files(*(File(f"{CDN}/{n}.bin", name=f"{n}.bin") for n in range(4)))
-        threads: set[str] = set()
-        met = threading.Barrier(4, timeout=5)
-        real = hashlib.sha256
-
-        def sha256(*args):
-            made = real(*args)
-            if args:
-                return made
-
-            class Waits:
-                def update(self, data):
-                    name = threading.current_thread().name
-                    if name not in threads:
-                        threads.add(name)
-                        met.wait()
-                    made.update(data)
-
-                def digest(self):
-                    return made.digest()
-
-            return Waits()
-
-        with mock.patch.object(files.hashlib, "sha256", sha256), \
-                mock.patch.object(jobs.os, "cpu_count", return_value=8):
-            self.run_files(*(File(f"{CDN}/{n}.bin", name=f"{n}.bin") for n in range(4, 8)))
-        self.assertGreaterEqual(len(threads), 4, threads)
 
     def test_a_write_lock_held_elsewhere_never_stalls_the_loop(self) -> None:
         # E18: another process holds flnd.db's write lock for half a second while a post

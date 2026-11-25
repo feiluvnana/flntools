@@ -303,7 +303,7 @@ class Flnd:
         It reads every row and walks the home's `media/` folder once; nothing is fetched.
         `fix=True` makes the history match the disk, and never deletes, moves or downloads a
         file: a missing file's row goes, and a file of the wrong size gets its row's size and
-        hash from the disk. An unknown file is never adopted, so a home with one isn't `ok`,
+        time from the disk. An unknown file is never adopted, so a home with one isn't `ok`,
         fixed or not (SPEC.md#check-and-repair).
 
         Args:

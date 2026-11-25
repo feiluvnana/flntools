@@ -579,13 +579,11 @@ filename = "{post}_{n}"            # drops the leading date
 the same fields and checks. A category's own `folder` still wins over the plugin's. The history key
 (`key`) is the plugin's and cannot be set.
 
-### Parts and dedupe
+### Parts
 
 - Every file is written as `<name>.part` and renamed once whole, so a real name is a whole file. A
   stopped download resumes from its part (`Range`, with an `If-Range` validator). Parts nothing
   touched for 7 days are swept when a run starts on the target.
-- A file whose bytes a saved file has becomes a hard link to it. A file system that cannot link
-  keeps both copies and warns once.
 - Archives (`.zip .7z .rar .tar*`) are extracted beside themselves into a folder of their name, and
   the archive stays. `File(unpack="here")` instead extracts into the post's folder, lifts a lone top
   folder's contents up one level, saves a clash with a file there as `name (2).ext` (nothing is
@@ -769,7 +767,7 @@ and the disk against the history. `check` compares the rows with the disk:
 
 - **missing**: a row's file is gone. A repair removes the row; `flnd get <target> --again` then
   fetches it.
-- **wrong size**: the repair takes size, time and hash from the disk.
+- **wrong size**: the repair takes size and time from the disk.
 - **unknown**: a file under `media/` with no row. Reported, never changed, so the exit stays 1.
 
 Never unknown: parts, hidden files, symlinks, hard links of known files, extracted archive
@@ -777,8 +775,8 @@ folders, and files renamed into place in the last minute. On a terminal `flnd st
 rows? (y/N)`; `flnd status --fix` repairs without asking. It never deletes, moves or downloads a
 file. Failure kinds: `network blocked site changed login disk tool bug usage gone error`.
 
-A version-2 home migrates on first open, after copying `metadata/flnd.v2.db`; a version-1 home
-is refused with `<home> is from an old flnd; start a new home`.
+A version-2 or version-3 home migrates on first open, after copying `metadata/flnd.v2.db` (or
+`flnd.v3.db`); a version-1 home is refused with `<home> is from an old flnd; start a new home`.
 
 ## Commands and flags
 
@@ -1127,8 +1125,8 @@ src/      the package flnd
 `tests/test_layers.py` checks the import rules. A run has one asyncio loop on its own thread; plugin
 code is async; only `engine/jobs.py` retries, sleeps and picks threads; a commit is one per post.
 
-**The home's files.** `flnd.db` is SQLite in WAL mode, schema version 3: `files` (a row per file,
-key `<code>:<key>`, with target, post, category, path, size, date, hash, state `saved`, `gone` or
+**The home's files.** `flnd.db` is SQLite in WAL mode, schema version 4: `files` (a row per file,
+key `<code>:<key>`, with target, post, category, path, size, date, state `saved`, `gone` or
 `link`), `posts` (a view of `files`), `targets` (follow, categories, cursors, heads, gaps, `seen`),
 `runs`, `failures` (class, message, hint, attempts, redacted URL), `state` (a plugin's
 own values). One transaction per post; a file's row is written after
