@@ -14,13 +14,15 @@ from pathlib import Path
 from typing import Any
 
 from flnh import errors, state
-from flnkit.ui import forms, out
+from flnkit.ui import forms, out, theme
 
 ELEVATED_ENV = "FLNH_ELEVATED"
+PROG_ENV = "FLNH_ELEVATED_PROG"
+PROG_FANCY_ENV = "FLNH_ELEVATED_FANCY"
 SEE_MASK_NOCLOSEPROCESS = 0x00000040
 SW_HIDE = 0
 ERROR_CANCELLED = 1223
-INFINITE = 0xFFFFFFFF
+WAIT_TIMEOUT = 0x00000102
 
 
 def is_admin() -> bool:
@@ -83,6 +85,20 @@ class _SHELLEXECUTEINFOW(ctypes.Structure):
     ]
 
 
+def _relay_progress(prog_file: Path, last_prog: str) -> str:
+    if not prog_file.is_file():
+        return last_prog
+    try:
+        cur = prog_file.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return last_prog
+    if cur and cur != last_prog:
+        sys.stderr.write(f"\r\x1b[K{cur}")
+        sys.stderr.flush()
+        return cur
+    return last_prog
+
+
 def _run_win32_uac(argv: Sequence[str]) -> int:
     shell32 = ctypes.WinDLL("shell32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -100,10 +116,13 @@ def _run_win32_uac(argv: Sequence[str]) -> int:
         req_file = tmp / "req.json"
         out_file = tmp / "stdout.txt"
         err_file = tmp / "stderr.txt"
+        prog_file = tmp / "progress.txt"
         spec: dict[str, Any] = {
             "home": str(state.home()),
             "out": str(out_file),
             "err": str(err_file),
+            "prog": str(prog_file),
+            "prog_fancy": "1" if theme.unicode(sys.stderr) else "0",
         }
         req_file.write_text(json.dumps(spec), encoding="utf-8")
 
@@ -114,7 +133,7 @@ def _run_win32_uac(argv: Sequence[str]) -> int:
         sei.lpVerb = "runas"
         sei.lpFile = sys.executable
         sei.lpParameters = params
-        sei.lpDirectory = os.getcwd()
+        sei.lpDirectory = tempfile.gettempdir()
         sei.nShow = SW_HIDE
 
         if not shell32.ShellExecuteExW(ctypes.byref(sei)):
@@ -127,11 +146,18 @@ def _run_win32_uac(argv: Sequence[str]) -> int:
             raise errors.disk(OSError(err, ctypes.FormatError(err)))
 
         code = wintypes.DWORD(1)
+        last_prog = ""
+        show_prog = theme.tty(sys.stderr)
         try:
             if sei.hProcess:
-                kernel32.WaitForSingleObject(sei.hProcess, INFINITE)
+                while kernel32.WaitForSingleObject(sei.hProcess, 150) == WAIT_TIMEOUT:
+                    if show_prog:
+                        last_prog = _relay_progress(prog_file, last_prog)
                 kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(code))
         finally:
+            if last_prog:
+                sys.stderr.write("\r\x1b[K")
+                sys.stderr.flush()
             if sei.hProcess:
                 kernel32.CloseHandle(sei.hProcess)
 

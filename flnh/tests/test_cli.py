@@ -207,6 +207,38 @@ class CLITest(unittest.TestCase):
         self.assertEqual(args[0:2], ["sudo", "env"])
         self.assertIn(f"{elevate.ELEVATED_ENV}=1", args)
 
+    def test_progress_formatting_and_elevated_prog_file(self) -> None:
+        indet = cli.format_progress("shrinking", 0, 0, 0.0, fancy=False)
+        self.assertEqual(indet, "  shrinking volume...")
+
+        line = cli.format_progress("writing", 50 * 1024 * 1024, 100 * 1024 * 1024, 2.0, fancy=False)
+        self.assertIn("writing tail", line)
+        self.assertIn("50%", line)
+        self.assertIn("/s", line)
+        self.assertIn("eta 2.0s", line)
+
+        prog_f = self.root / "prog.txt"
+        old_env = os.environ.get(elevate.PROG_ENV)
+        old_fancy = os.environ.get(elevate.PROG_FANCY_ENV)
+        try:
+            os.environ[elevate.PROG_ENV] = str(prog_f)
+            os.environ[elevate.PROG_FANCY_ENV] = "0"
+            with cli._Progress(min_interval=0.0) as prog:
+                prog.update("writing", 512, 1024)
+                written = prog_f.read_text(encoding="utf-8")
+                self.assertIn("50%", written)
+                self.assertIn("========", written)
+            self.assertEqual(prog_f.read_text(encoding="utf-8"), "")
+        finally:
+            if old_env is None:
+                os.environ.pop(elevate.PROG_ENV, None)
+            else:
+                os.environ[elevate.PROG_ENV] = old_env
+            if old_fancy is None:
+                os.environ.pop(elevate.PROG_FANCY_ENV, None)
+            else:
+                os.environ[elevate.PROG_FANCY_ENV] = old_fancy
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,9 +13,17 @@ from typing import Any
 
 from flnh import __version__, elevate, errors, os_hide, pack, state, volume
 from flnkit import clock, text
-from flnkit.ui import forms, out
+from flnkit.ui import forms, out, theme
 
 OK, FAILED, USAGE, BROKE, STOPPED = 0, 1, 2, 4, 130
+_STAGE_LABELS = {
+    "shrinking": "shrinking volume",
+    "writing": "writing tail",
+    "verifying": "verifying tail",
+    "cleaning": "cleaning source",
+    "restoring": "restoring data",
+    "expanding": "expanding volume",
+}
 CODES = (
     ("Stopped", STOPPED),
     ("UsageError", USAGE),
@@ -52,6 +60,10 @@ def _main(argv: Sequence[str] | None) -> int:
         os.environ[elevate.ELEVATED_ENV] = "1"
         os.environ["FLNH_HOME"] = str(spec["home"])
         os.environ["NO_COLOR"] = "1"
+        if spec.get("prog"):
+            os.environ[elevate.PROG_ENV] = str(spec["prog"])
+        if spec.get("prog_fancy") is not None:
+            os.environ[elevate.PROG_FANCY_ENV] = str(spec["prog_fancy"])
         with (
             open(spec["out"], "w", encoding="utf-8") as out_f,
             open(spec["err"], "w", encoding="utf-8") as err_f,
@@ -77,6 +89,83 @@ def _run_command(args: argparse.Namespace) -> int:
             return exit_code(error)
         out.error(errors.Error(f"flnh hit a bug: {type(error).__name__}: {error}"))
         return BROKE
+
+
+def format_progress(
+    stage: str, done: int, total: int, elapsed: float, *, fancy: bool = True
+) -> str:
+    """Format one human-readable volume progress bar line."""
+    label = _STAGE_LABELS.get(stage, stage)
+    if total <= 0:
+        return f"  {label}..."
+    clamped = min(done, total)
+    pct = min(100, (clamped * 100) // total)
+    filled = round(16 * clamped / total)
+    bar = theme.glyph("full", fancy) * filled + theme.glyph("empty", fancy) * (16 - filled)
+    extra = ""
+    if elapsed >= 0.25 and clamped > 0:
+        rate = clamped / elapsed
+        extra = f" · {text.size(rate)}/s"
+        if clamped < total and rate > 0:
+            extra += f" · eta {text.duration((total - clamped) / rate)}"
+    return f"  {label} {bar} {pct:3d}% ({text.size(clamped)} / {text.size(total)}){extra}"
+
+
+class _Progress:
+    """Throttled single-line progress reporter for TTY stderr or elevated UAC IPC."""
+
+    def __init__(self, *, min_interval: float = 0.15) -> None:
+        prog_env = os.environ.get(elevate.PROG_ENV, "")
+        self._prog_file = Path(prog_env) if prog_env else None
+        self._is_tty = theme.tty(sys.stderr)
+        if self._prog_file is not None:
+            self._fancy = os.environ.get(elevate.PROG_FANCY_ENV, "1") == "1"
+        else:
+            self._fancy = theme.unicode(sys.stderr)
+        self._min_interval = min_interval
+        self._stage = ""
+        self._stage_start = 0.0
+        self._last_emit = -min_interval
+        self._shown = False
+
+    def update(self, stage: str, done: int, total: int) -> None:
+        now = clock.now()
+        stage_changed = stage != self._stage
+        finished = total > 0 and done >= total
+        if stage_changed:
+            self._stage = stage
+            self._stage_start = now
+        elif not finished and now - self._last_emit < self._min_interval:
+            return
+        elapsed = now - self._stage_start
+        line = format_progress(stage, done, total, elapsed, fancy=self._fancy)
+        self._last_emit = now
+        if self._prog_file is not None:
+            try:
+                self._prog_file.write_text(line, encoding="utf-8")
+            except OSError:
+                pass
+        elif self._is_tty:
+            sys.stderr.write(f"\r\x1b[K{line}")
+            sys.stderr.flush()
+            self._shown = True
+
+    def close(self) -> None:
+        if self._prog_file is not None:
+            try:
+                self._prog_file.write_text("", encoding="utf-8")
+            except OSError:
+                pass
+        elif self._shown:
+            sys.stderr.write("\r\x1b[K")
+            sys.stderr.flush()
+            self._shown = False
+
+    def __enter__(self) -> _Progress:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
 def exit_code(error: BaseException | None) -> int:
@@ -121,7 +210,8 @@ def _hide_cmd(args: argparse.Namespace) -> int:
         res = os_hide.hide(target, level=level)
     else:
         backup_path = state.backups_dir() / f"{item_id}-{int(clock.wall())}.flnh"
-        res = volume.hide(target, backup_path=backup_path)
+        with _Progress() as prog:
+            res = volume.hide(target, backup_path=backup_path, on_progress=prog.update)
 
     with state.Store() as store:
         store.add(
@@ -193,7 +283,8 @@ def _show_cmd(args: argparse.Namespace) -> int:
                     store.close()
                     return elevate.run_elevated(sub_argv)
                 raise elevate.permission_error("--volume restore")
-            volume.show(target, entry=entry, backup_path=backup_path)
+            with _Progress() as prog:
+                volume.show(target, entry=entry, backup_path=backup_path, on_progress=prog.update)
             detected_level = "volume"
         elif entry is not None and entry.level in ("flag", "lock"):
             _, detected_level = os_hide.show(target, entry=entry)

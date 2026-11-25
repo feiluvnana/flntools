@@ -36,6 +36,30 @@ def tree_size(path: Path) -> int:
     return total
 
 
+def estimate_tar_size(source: Path) -> int:
+    """Upper-bound PAX tar byte size for `source` without reading file payloads."""
+    if source.is_file() or source.is_symlink():
+        st = source.lstat()
+        blocks = ((st.st_size + 511) // 512) * 512 if stat.S_ISREG(st.st_mode) else 0
+        return blocks + 2048 + tarfile.RECORDSIZE + 64 * 1024
+    total = 2048
+    for root, dirs, filenames in os.walk(source):
+        for name in dirs:
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, source).encode("utf-8", errors="replace")
+            total += 2048 + len(rel)
+        for name in filenames:
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, source).encode("utf-8", errors="replace")
+            try:
+                st = os.lstat(full)
+                blocks = ((st.st_size + 511) // 512) * 512 if stat.S_ISREG(st.st_mode) else 0
+            except OSError:
+                blocks = 0
+            total += blocks + 2048 + len(rel)
+    return total + tarfile.RECORDSIZE + 64 * 1024
+
+
 def delete_plaintext(path: Path) -> None:
     """Delete the original plaintext file or directory after verified write."""
     if path.is_symlink() or path.is_file():
@@ -45,40 +69,50 @@ def delete_plaintext(path: Path) -> None:
 
 
 class _HashingWriter:
-    """Writable file wrapper computing SHA-256 in one streaming pass."""
+    """Writable stream wrapper computing byte count and SHA-256 in one pass."""
 
     def __init__(self, inner: IO[bytes], hasher: Any) -> None:
         self._inner = inner
         self._hasher = hasher
+        self.bytes_written = 0
 
     def write(self, data: Any) -> int:
         view = memoryview(data)
         self._hasher.update(view)
-        return self._inner.write(view)
+        n = self._inner.write(view)
+        self.bytes_written += n
+        return n
 
     def flush(self) -> None:
         self._inner.flush()
 
 
-def pack_to_file(source: Path, dest: Path) -> tuple[int, str, str]:
-    """Stream `source` as an uncompressed PAX tar into `dest`.
+def pack_to_stream(source: Path, dest_stream: IO[bytes]) -> tuple[int, str, str]:
+    """Stream `source` as an uncompressed PAX tar into `dest_stream`.
 
     Returns `(archive_size_bytes, sha256_hex, kind)` where `kind` is `'file'` or `'dir'`.
     """
     is_file = source.is_file() and not source.is_symlink()
     kind = "file" if is_file else "dir"
     hasher = hashlib.sha256()
+    hw = _HashingWriter(dest_stream, hasher)
+    with tarfile.open(
+        fileobj=hw, mode="w|", format=tarfile.PAX_FORMAT, bufsize=TAR_BUFSIZE
+    ) as tar:
+        tar.add(source, arcname="payload" if is_file else ".", recursive=not is_file)
+    hw.flush()
+    return hw.bytes_written, hasher.hexdigest(), kind
+
+
+def pack_to_file(source: Path, dest: Path) -> tuple[int, str, str]:
+    """Stream `source` as an uncompressed PAX tar into `dest`."""
     with files.part(dest) as held:
         with os.fdopen(held.fd, "wb", closefd=False) as raw:
-            hw = _HashingWriter(raw, hasher)
-            with tarfile.open(
-                fileobj=hw, mode="w|", format=tarfile.PAX_FORMAT, bufsize=TAR_BUFSIZE
-            ) as tar:
-                tar.add(source, arcname="payload" if is_file else ".", recursive=not is_file)
+            size, sha256, kind = pack_to_stream(source, raw)
             raw.flush()
             os.fsync(held.fd)
         held.size = dest.parent.joinpath(held.path.name).stat().st_size
-    return dest.stat().st_size, hasher.hexdigest(), kind
+    return size, sha256, kind
 
 
 def _safe_member_path(root: Path, name: str) -> Path:
@@ -97,26 +131,31 @@ def _safe_member_path(root: Path, name: str) -> Path:
     return target
 
 
-def unpack_from_file(archive_path: Path, dest: Path, *, kind: str) -> None:
-    """Atomically extract `archive_path` to `dest` (`kind` is `'file'` or `'dir'`)."""
+def unpack_from_stream(stream: IO[bytes], dest: Path, *, kind: str) -> None:
+    """Atomically extract tar `stream` to `dest` (`kind` is `'file'` or `'dir'`)."""
     if dest.exists() or dest.is_symlink():
         raise errors.UsageError(
             f"destination already exists: {dest}",
             hint="move or delete the existing path before running flnh show",
         )
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "file":
+        _extract_single_file(stream, dest)
+        return
+    stage = dest.parent / f".flnh-tmp-{secrets.token_hex(6)}"
+    stage.mkdir(parents=True, exist_ok=False)
+    try:
+        _extract_dir(stream, stage)
+        os.replace(stage, dest)
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+
+
+def unpack_from_file(archive_path: Path, dest: Path, *, kind: str) -> None:
+    """Atomically extract `archive_path` to `dest` (`kind` is `'file'` or `'dir'`)."""
     with open(archive_path, "rb") as f:
-        if kind == "file":
-            _extract_single_file(f, dest)
-            return
-        stage = dest.parent / f".flnh-tmp-{secrets.token_hex(6)}"
-        stage.mkdir(parents=True, exist_ok=False)
-        try:
-            _extract_dir(f, stage)
-            os.replace(stage, dest)
-        except BaseException:
-            shutil.rmtree(stage, ignore_errors=True)
-            raise
+        unpack_from_stream(f, dest, kind=kind)
 
 
 def _extract_single_file(stream: IO[bytes], dest: Path) -> None:

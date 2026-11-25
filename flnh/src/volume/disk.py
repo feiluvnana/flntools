@@ -18,6 +18,17 @@ from flnh.volume import table
 SUPPORTED_FS = frozenset({"ntfs", "ext4", "apfs"})
 WIN_SYSTEM_ENTRIES = frozenset({"windows", "pagefile.sys", "hiberfil.sys", "swapfile.sys"})
 
+FSCTL_LOCK_VOLUME = 0x00090018
+FSCTL_DISMOUNT_VOLUME = 0x00090020
+FSCTL_EXTEND_VOLUME = 0x000900F0
+FSCTL_SHRINK_VOLUME = 0x00090238
+
+
+def pack_shrink_info(request_type: int, new_sectors: int = 0) -> bytes:
+    """Pack Win32 `SHRINK_VOLUME_INFORMATION` (`ShrinkRequestType`, `Flags=0`, `NewSectors`)."""
+    sectors = new_sectors if request_type == 1 else 0
+    return struct.pack("<I4xQq", request_type, 0, sectors)
+
 
 def check_filesystem(fs_type: str) -> None:
     """Refuse filesystems that cannot be shrunk in-place (such as FAT32/exFAT)."""
@@ -340,6 +351,29 @@ class Win32Disk:
         self._k32.CreateFileW.restype = wintypes.HANDLE
         self._k32.CloseHandle.argtypes = [wintypes.HANDLE]
         self._k32.CloseHandle.restype = wintypes.BOOL
+        self._k32.SetFilePointerEx.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int64,
+            ctypes.POINTER(ctypes.c_int64),
+            wintypes.DWORD,
+        ]
+        self._k32.SetFilePointerEx.restype = wintypes.BOOL
+        self._k32.ReadFile.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        self._k32.ReadFile.restype = wintypes.BOOL
+        self._k32.WriteFile.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        self._k32.WriteFile.restype = wintypes.BOOL
 
         fs_buf = ctypes.create_unicode_buffer(64)
         if not self._k32.GetVolumeInformationW(
@@ -351,6 +385,7 @@ class Win32Disk:
         self.disk_number, self.part_index = self._device_number()
         self.device_id = f"\\\\.\\PhysicalDrive{self.disk_number}"
         self.sector_size, self.total_sectors = self._geometry()
+        self._lock_handle: Any = None
         self._raw_handle = self._open_handle(self.device_id, write=True)
 
     def _open_handle(self, device: str, *, write: bool) -> Any:
@@ -429,9 +464,9 @@ class Win32Disk:
     def read_sectors(self, lba: int, count: int) -> bytes:
         buf = (ctypes.c_ubyte * (count * self.sector_size))()
         offset = lba * self.sector_size
-        lo = ctypes.c_long(offset & 0xFFFFFFFF)
-        hi = ctypes.c_long(offset >> 32)
-        self._k32.SetFilePointer(self._raw_handle, lo, ctypes.byref(hi), 0)
+        if not self._k32.SetFilePointerEx(self._raw_handle, offset, None, 0):
+            err = ctypes.get_last_error()
+            raise errors.disk(OSError(err, ctypes.FormatError(err)), self.device_id)
         read_n = ctypes.c_ulong()
         if not self._k32.ReadFile(
             self._raw_handle, buf, count * self.sector_size, ctypes.byref(read_n), None
@@ -445,58 +480,102 @@ class Win32Disk:
             raise errors.DiskError("unaligned sector write")
         buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
         offset = lba * self.sector_size
-        lo = ctypes.c_long(offset & 0xFFFFFFFF)
-        hi = ctypes.c_long(offset >> 32)
-        self._k32.SetFilePointer(self._raw_handle, lo, ctypes.byref(hi), 0)
+        if not self._k32.SetFilePointerEx(self._raw_handle, offset, None, 0):
+            err = ctypes.get_last_error()
+            raise errors.disk(OSError(err, ctypes.FormatError(err)), self.device_id)
         written = ctypes.c_ulong()
         if not self._k32.WriteFile(
             self._raw_handle, buf, len(data), ctypes.byref(written), None
         ):
             err = ctypes.get_last_error()
+            if err == 5 and self._lock_handle is None:
+                self._lock_volume()
+                if not self._k32.SetFilePointerEx(self._raw_handle, offset, None, 0):
+                    seek_err = ctypes.get_last_error()
+                    raise errors.disk(
+                        OSError(seek_err, ctypes.FormatError(seek_err)), self.device_id
+                    )
+                if self._k32.WriteFile(
+                    self._raw_handle, buf, len(data), ctypes.byref(written), None
+                ):
+                    return
+                err = ctypes.get_last_error()
             raise errors.disk(OSError(err, ctypes.FormatError(err)), self.device_id)
+
+    def _lock_volume(self) -> None:
+        if self._lock_handle is not None:
+            return
+        h = self._open_handle(f"\\\\.\\{self.drive}", write=True)
+        ret = ctypes.c_ulong()
+        if not self._k32.DeviceIoControl(
+            h, FSCTL_LOCK_VOLUME, None, 0, None, 0, ctypes.byref(ret), None
+        ):
+            self._k32.CloseHandle(h)
+            raise errors.BusyError(
+                f"volume {self.drive} has open handles",
+                hint=f"cd to another drive and close Explorer windows on {self.drive}, then retry",
+            )
+        if not self._k32.DeviceIoControl(
+            h, FSCTL_DISMOUNT_VOLUME, None, 0, None, 0, ctypes.byref(ret), None
+        ):
+            err = ctypes.get_last_error()
+            self._k32.CloseHandle(h)
+            raise errors.disk(OSError(err, ctypes.FormatError(err)), self.drive)
+        self._lock_handle = h
+
+    def _unlock_volume(self) -> None:
+        if self._lock_handle is not None:
+            self._k32.CloseHandle(self._lock_handle)
+            self._lock_handle = None
 
     def max_shrink_bytes(self, part_index: int) -> int:
         _total, _used, free = shutil.disk_usage(self.drive + "\\")
         return free
 
     def shrink_fs(self, part_index: int, new_bytes: int) -> None:
-        fsctl_lock_volume = 0x90018
-        fsctl_dismount_volume = 0x90020
-        fsctl_shrink_volume = 0x9023C
         h = self._open_handle(f"\\\\.\\{self.drive}", write=True)
+        sectors = new_bytes // self.sector_size
+        prepared = False
         try:
             ret = ctypes.c_ulong()
+            prep = ctypes.create_string_buffer(pack_shrink_info(1, sectors))
             if not self._k32.DeviceIoControl(
-                h, fsctl_lock_volume, None, 0, None, 0, ctypes.byref(ret), None
+                h, FSCTL_SHRINK_VOLUME, prep, len(prep), None, 0, ctypes.byref(ret), None
             ):
-                raise errors.BusyError(
-                    f"volume {self.drive} has open handles",
-                    hint="close files or Explorer windows on the drive and try again",
+                err = ctypes.get_last_error()
+                raise errors.disk(OSError(err, ctypes.FormatError(err)), self.drive)
+            prepared = True
+            commit = ctypes.create_string_buffer(pack_shrink_info(2))
+            if not self._k32.DeviceIoControl(
+                h, FSCTL_SHRINK_VOLUME, commit, len(commit), None, 0, ctypes.byref(ret), None
+            ):
+                err = ctypes.get_last_error()
+                raise errors.disk(OSError(err, ctypes.FormatError(err)), self.drive)
+        except BaseException:
+            if prepared:
+                abort = ctypes.create_string_buffer(pack_shrink_info(3))
+                self._k32.DeviceIoControl(
+                    h,
+                    FSCTL_SHRINK_VOLUME,
+                    abort,
+                    len(abort),
+                    None,
+                    0,
+                    ctypes.byref(ctypes.c_ulong()),
+                    None,
                 )
-            # SHRINK_VOLUME_INFORMATION: ShrinkRequestType=1 (Prepare), NewNumberOfSectors, Flags
-            sectors = new_bytes // self.sector_size
-            for req_type in (1, 2):  # Prepare, then Commit
-                inp = struct.pack("<I4xQQ", req_type, sectors, 0)
-                buf = ctypes.create_string_buffer(inp)
-                if not self._k32.DeviceIoControl(
-                    h, fsctl_shrink_volume, buf, len(inp), None, 0, ctypes.byref(ret), None
-                ):
-                    err = ctypes.get_last_error()
-                    raise errors.disk(OSError(err, ctypes.FormatError(err)), self.drive)
-            self._k32.DeviceIoControl(
-                h, fsctl_dismount_volume, None, 0, None, 0, ctypes.byref(ret), None
-            )
+            raise
         finally:
             self._k32.CloseHandle(h)
 
     def expand_fs(self, part_index: int, new_bytes: int) -> None:
-        fsctl_extend_volume = 0x900F0
+        self._unlock_volume()
         h = self._open_handle(f"\\\\.\\{self.drive}", write=True)
         try:
             sectors = ctypes.c_uint64(new_bytes // self.sector_size)
             ret = ctypes.c_ulong()
             if not self._k32.DeviceIoControl(
-                h, fsctl_extend_volume, ctypes.byref(sectors), 8, None, 0, ctypes.byref(ret), None
+                h, FSCTL_EXTEND_VOLUME, ctypes.byref(sectors), 8, None, 0, ctypes.byref(ret), None
             ):
                 err = ctypes.get_last_error()
                 raise errors.disk(OSError(err, ctypes.FormatError(err)), self.drive)
@@ -516,8 +595,10 @@ class Win32Disk:
             ctypes.byref(ret),
             None,
         )
+        self._unlock_volume()
 
     def close(self) -> None:
+        self._unlock_volume()
         if self._raw_handle:
             self._k32.CloseHandle(self._raw_handle)
             self._raw_handle = None

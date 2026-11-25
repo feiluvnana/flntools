@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import shutil
+import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from flnh import errors, volume
 from flnh.volume import disk as vol_disk
@@ -132,8 +135,10 @@ class VolumeRoundTripTest(unittest.TestCase):
         orig_sectors = table.read_table(d)[1][0].sector_count
         folder = self._sample_folder("untouched")
 
-        d.corrupt_next_write = True
-        with self.assertRaises(errors.DiskError):
+        with (
+            mock.patch.object(volume, "_hash_sectors", return_value="0" * 64),
+            self.assertRaises(errors.DiskError),
+        ):
             volume.hide(folder, disk=d)
         self.assertTrue((folder / "doc.txt").exists())
         self.assertEqual(d.fs_bytes, orig_fs)
@@ -146,6 +151,60 @@ class VolumeRoundTripTest(unittest.TestCase):
         d.write_sectors(meta_lba, bytes(tampered))
         with self.assertRaises(errors.CorruptHeaderError):
             volume.show(folder, disk=d)
+
+    def test_zero_temp_dir_for_streaming_and_low_space_fallback(self) -> None:
+        img = self.root / "stream.img"
+        d = vol_disk.FileDisk.create_mbr(img, 8 * 1024 * 1024, fs_type="ntfs")
+        self.addCleanup(d.close)
+        folder = self._sample_folder("streamed")
+
+        with mock.patch.object(
+            tempfile, "TemporaryDirectory", side_effect=AssertionError("unexpected temp dir")
+        ):
+            volume.hide(folder, disk=d)
+            volume.show(folder, disk=d)
+        self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
+
+        volume.hide(folder, disk=d)
+        with mock.patch.object(shutil, "disk_usage", return_value=mock.Mock(free=0)):
+            volume.show(folder, disk=d)
+        self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
+
+    def test_win32_shrink_ioctl_and_struct_layout(self) -> None:
+        self.assertEqual(vol_disk.FSCTL_SHRINK_VOLUME, 0x00090238)
+        prep = vol_disk.pack_shrink_info(1, 12345)
+        self.assertEqual(len(prep), 24)
+        req, flags, sectors = struct.unpack("<I4xQq", prep)
+        self.assertEqual((req, flags, sectors), (1, 0, 12345))
+        commit = vol_disk.pack_shrink_info(2, 12345)
+        self.assertEqual(struct.unpack("<I4xQq", commit), (2, 0, 0))
+
+    def test_volume_progress_stages_and_monotonic_counts(self) -> None:
+        img = self.root / "prog.img"
+        d = vol_disk.FileDisk.create_mbr(img, 8 * 1024 * 1024, fs_type="ntfs")
+        self.addCleanup(d.close)
+        folder = self._sample_folder("big")
+        (folder / "blob.bin").write_bytes(b"X" * (1200 * 1024))
+
+        hide_events: list[tuple[str, int, int]] = []
+        volume.hide(folder, disk=d, on_progress=lambda s, a, b: hide_events.append((s, a, b)))
+        hide_stages = [s for s, _, _ in hide_events]
+        self.assertIn("shrinking", hide_stages)
+        self.assertIn("writing", hide_stages)
+        self.assertIn("verifying", hide_stages)
+        self.assertIn("cleaning", hide_stages)
+        writing = [(a, b) for s, a, b in hide_events if s == "writing"]
+        self.assertEqual(writing[-1][0], writing[-1][1])
+        self.assertEqual([a for a, _ in writing], sorted(a for a, _ in writing))
+
+        show_events: list[tuple[str, int, int]] = []
+        volume.show(folder, disk=d, on_progress=lambda s, a, b: show_events.append((s, a, b)))
+        show_stages = [s for s, _, _ in show_events]
+        self.assertIn("verifying", show_stages)
+        self.assertIn("restoring", show_stages)
+        self.assertIn("expanding", show_stages)
+        restoring = [(a, b) for s, a, b in show_events if s == "restoring"]
+        self.assertEqual(restoring[-1][0], restoring[-1][1])
 
 
 if __name__ == "__main__":
