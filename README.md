@@ -8,4 +8,9 @@ A monorepo; each project lives in its own folder.
 
 Each project folder is its own uv project: run `make` inside it.
 
-To run flnd from anywhere: `uv tool install -e ./flnd` (from the repository root).
+To run from anywhere (from the repository root):
+
+```sh
+uv tool install -e ./flnd
+uv tool install -e ./flnh
+```

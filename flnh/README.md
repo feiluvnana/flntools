@@ -2,6 +2,16 @@
 
 Make folders and files vanish in plain sight across Windows, macOS, and Linux.
 
+## Install
+
+`flnh` needs [uv](https://docs.astral.sh/uv/) and Python 3.11 or newer.
+
+```sh
+git clone https://github.com/feiluvnana/flntools
+cd flntools
+uv tool install -e ./flnh
+```
+
 ## Commands
 
 Only two commands exist: `flnh hide` and `flnh show`.
