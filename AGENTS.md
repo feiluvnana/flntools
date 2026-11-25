@@ -1,8 +1,8 @@
 # Agent guidelines
 
-These rules are for anyone, person or agent, who changes this repository. It holds one project,
-`flnd/` (the downloader). Each project keeps its own rules in `<project>/AGENTS.md`, and runs
-its commands inside its own folder.
+These rules are for anyone, person or agent, who changes this repository. It holds `flnd/`
+(the downloader), `flnh/` (the folder/file hider), and the shared `flnkit/` package. Each project
+keeps its own rules in `<project>/AGENTS.md`, and runs its commands inside its own folder.
 
 ## Commits
 - Every message has the form `<action>:<summary>`.

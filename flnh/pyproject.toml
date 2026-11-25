@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flnh"
+version = "0.1.0"
+description = "Make folders and files vanish in plain sight across Windows, macOS, and Linux"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Shared core toolkit (atomic files, SQLite DB, errors, clock, Rich terminal UI).
+    "flnkit[ui]",
+    # AES-256-GCM authenticated encryption and scrypt KDF for vaults and locked passwords.
+    "cryptography>=42",
+]
+
+[project.scripts]
+flnh = "flnh.cli:main"
+
+[tool.setuptools]
+packages = ["flnh", "flnh.os_hide", "flnh.volume"]
+package-dir = {"flnh" = "src"}
+
+[dependency-groups]
+# Ruff is the one linter (`make lint` / `make check`).
+dev = ["ruff>=0.14"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.uv.sources]
+flnkit = { path = "../flnkit", editable = true }
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["F", "E9", "B", "UP", "I", "ASYNC", "RUF006"]
+ignore = ["B905"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["flnh", "flnkit"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B018"]
