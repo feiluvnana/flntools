@@ -1,8 +1,8 @@
 # Agent guidelines
 
-These rules are for anyone, person or agent, who changes this repository. It holds two projects:
-`flnd/` (the downloader) and `flni/` (the game). Each project keeps its own rules in
-`<project>/AGENTS.md`, and runs its commands inside its own folder.
+These rules are for anyone, person or agent, who changes this repository. It holds one project,
+`flnd/` (the downloader). Each project keeps its own rules in `<project>/AGENTS.md`, and runs
+its commands inside its own folder.
 
 ## Commits
 - Every message has the form `<action>:<summary>`.
