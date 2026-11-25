@@ -256,9 +256,9 @@ class Instagram(Plugin):
         async for post in read_tab(ctx, profile, "tagged"):
             yield post
 
-    @user.category(own=False, url=f"{SITE}/{{user}}/reposts/")
+    @user.category(own=False, url=f"{SITE}/{{user}}/reposts/", newest_first=False)
     async def reposts(self, ctx: Ctx, profile: Profile) -> AsyncIterator[Post]:
-        """The posts the profile reposted, newest first."""
+        """The posts the profile reposted, latest repost first (each post has its own date)."""
         async for post in read_tab(ctx, profile, "reposts"):
             yield post
 

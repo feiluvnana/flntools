@@ -914,7 +914,8 @@ up to 32.
   GraphQL POST (`variables.after`) is captured, then continue in-page (or keep scrolling). A 429 on
   a post's info holds and asks again; only an unreadable answer opens that post's page.
 - **Categories:** `posts` NF, `reels` NF, `stories`, `highlights`, `profile` (own); `tagged`,
-  `reposts` NF (opt-in). A pinned post does not count toward the stop for older posts.
+  `reposts` (opt-in). A pinned post does not count toward the stop for older posts. A repost
+  carries the original post's date, so `reposts` is read to its end.
 - **Folder:** `{category}`; `highlights/{album}` (a folder per highlight); `profile`.
 - **Filename:** `{date}_{post}{index}`; a story with music also saves `..._music.m4a`.
 - **Key:** `{post}_{num}` (`ins:C1abc_0`); `stories`, `highlights`, `profile` key by `{path}`.
@@ -934,8 +935,9 @@ up to 32.
 
 - **Reads:** a profile's posts, replies, reposts and picture; one post by link: the page's embedded
   data, then its GraphQL feed scrolled to its end. No `me`, no search. Unconfirmed live.
-- **Categories:** `posts` NF, `replies` NF, `profile` (own); `reposts` NF (opt-in). Only a post of
-  the profile's own is kept in `posts` and `replies`; a post without files is skipped.
+- **Categories:** `posts` NF, `replies` NF, `profile` (own); `reposts` (opt-in). A repost carries
+  the original post's date, so `reposts` is read to its end. Only a post of the profile's own is
+  kept in `posts` and `replies`; a post without files is skipped.
 - **Folder:** `{category}`; `profile`. A single post goes in its owner's folder, as a reply (its
   `reply_to_author` set) under `replies`, else `posts`.
 - **Filename:** `{date}_{post}{index}`; a carousel or video post saves each file, a video as its

@@ -256,6 +256,10 @@ class RoutesTest(unittest.TestCase):
         self.assertEqual([c.link({"user": "example_user"}) for c in route.categories][:5], [
             "", f"{SITE}/example_user/reels/", f"{SITE}/example_user/tagged/",
             f"{SITE}/example_user/reposts/", f"{SITE}/stories/example_user/"])
+        # A repost carries the original post's date, so its tab is not read as newest first.
+        self.assertEqual([(c.name, c.newest_first) for c in route.categories],
+                         [("posts", True), ("reels", True), ("tagged", False), ("reposts", False),
+                          ("stories", False), ("highlights", False), ("profile", False)])
         self.assertEqual(len(check(Instagram)), 3)
 
     def test_sign_adds_the_web_headers_only_to_api_calls(self):

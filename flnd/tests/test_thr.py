@@ -147,6 +147,8 @@ class RoutesTest(unittest.TestCase):
         self.assertEqual([(c.name, c.own) for c in route.categories],
                          [("posts", True), ("replies", True), ("reposts", False),
                           ("profile", True)])
+        # A repost keeps the original's date, so it is not read as newest first.
+        self.assertEqual([c.newest_first for c in route.categories], [True, True, False, False])
         self.assertEqual([known.kind for known in Threads.routes if known.single], ["post"])
         self.assertEqual(len(check(Threads)), 3)
 

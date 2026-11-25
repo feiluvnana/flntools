@@ -180,9 +180,9 @@ class Threads(Plugin):
         async for post in read_tab(ctx, profile, "replies"):
             yield post
 
-    @user.category(own=False)
+    @user.category(own=False, newest_first=False)
     async def reposts(self, ctx: Ctx, profile: Profile) -> AsyncIterator[Post]:
-        """The posts the profile reposted, newest first."""
+        """The posts the profile reposted, each with the original post's date."""
         async for post in read_tab(ctx, profile, "reposts"):
             yield post
 
