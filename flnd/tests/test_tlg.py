@@ -21,7 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fakes import EngineCase, make_plugin, sign_in, vaulted
+from fakes import EngineCase, kept_login, make_plugin, sign_in
 from plugin_kit import FakeCtx, check, collect
 from telethon.errors import (
     ChannelPrivateError,
@@ -649,7 +649,7 @@ def store(**values):
 
 def stored():
     """What `logins/tlg.json` holds; nothing without it."""
-    return vaulted("tlg")[1]
+    return kept_login("tlg")[1]
 
 
 class TelegramCase(EngineCase):

@@ -1,4 +1,4 @@
-"""The chain's own steps (`flnd.engine.steps`): the links between category folders, and
+"""The chain's own steps (`flnd.engine.crawl`): the links between category folders, and
 `Saved` at the end.
 
 Every run fakes the network (`flnkit.net.reply` routes, from `test_engine`) and uses synthetic

@@ -4,7 +4,7 @@
 - `fetch` and `download` drive the HTTP library (`flnkit.net`) from a test's own thread.
 - `EngineCase`, `make_plugin`, `login_cookies`, `own_login` and `run_targets` run the engine on
   test plugins (API 2), on `flnkit.net.fake` and a fake clock.
-- `sign_in` logs a plugin in as `flnd.engine.auth.login` leaves it, and `vaulted` reads it.
+- `sign_in` logs a plugin in as `flnd.engine.auth.login` leaves it, and `kept_login` reads it.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from flnkit import net as _net
 __all__ = ["CDN", "Engine", "EngineCase", "download", "drive", "fetch", "filed", "history",
            "login_cookies",
            "make_plugin",
-           "noise", "own_login", "run_targets", "sign_in", "targets", "vaulted"]
+           "noise", "own_login", "run_targets", "sign_in", "targets", "kept_login"]
 
 
 def drive(command):
@@ -80,7 +80,7 @@ def sign_in(code: str, jar=None, **secrets: str) -> None:
         _auth._write(_auth._secret_file(code), json.dumps(secrets))
 
 
-def vaulted(code: str) -> tuple[_cookies.Jar, dict[str, str]]:
+def kept_login(code: str) -> tuple[_cookies.Jar, dict[str, str]]:
     """A plugin's saved jar and its other secrets; an empty jar and no secrets when it has
     none."""
     return _auth.load(code), _auth.secrets(code)

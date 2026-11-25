@@ -11,7 +11,7 @@ from unittest import mock
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
-from fakes import EngineCase, sign_in, vaulted
+from fakes import EngineCase, kept_login, sign_in
 from plugin_kit import FakeCtx, Reply, check, collect, fake_clock
 
 from flnd import _library
@@ -733,7 +733,7 @@ class LoginTest(EngineCase):
                         _auth.login(self.home, Loibus(), method, path=path)
                     continue
                 _auth.login(self.home, Loibus(), method, path=path)
-                self.assertEqual({cookie["domain"] for cookie in vaulted("loi")[0]},
+                self.assertEqual({cookie["domain"] for cookie in kept_login("loi")[0]},
                                  {".loix.cc"})
 
 

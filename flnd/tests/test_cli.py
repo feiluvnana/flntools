@@ -26,11 +26,11 @@ from unittest import mock
 import pyte
 from fakes import (
     CDN,
+    kept_login,
     login_cookies,
     make_plugin,
     noise,
     sign_in,
-    vaulted,
 )
 from prompt_lines import select_from_lines
 from test_library import example_source
@@ -723,7 +723,7 @@ class AuthTest(FlndCase):
         self.assertEqual(code, 0, err)
         self.assertRegex(text, r"^ins: logged in \(ok\)\n$")
         self.assertEqual({cookie["name"]: cookie["domain"]
-                          for cookie in vaulted("ins")[0].list},
+                          for cookie in kept_login("ins")[0].list},
                          {"sessionid": ".instagram.com", "ds_user_id": ".www.instagram.com"})
         self.assertEqual(self.run_app("auth", "login", "twt", str(self.cookie_file(NETSCAPE)))[0],
                          0)
@@ -744,7 +744,7 @@ class AuthTest(FlndCase):
         self.assertRegex(text, r"tlg +ok +\S*tlg\.json")
         self.assertNotIn("secret-val", text)
         self.assertEqual(self.run_app("auth", "logout", "ins")[1], "ins: logged out\n")
-        self.assertEqual(vaulted("ins")[0].list, [])
+        self.assertEqual(kept_login("ins")[0].list, [])
         self.assertEqual([row.plugin for row in _flnd_auth_rows()], ["tlg"])
         for argv in (("ins",), ("ytb",)):
             with self.subTest(argv=argv):

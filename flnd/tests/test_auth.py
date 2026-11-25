@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fakes import EngineCase, login_cookies, make_plugin, own_login, sign_in, vaulted
+from fakes import EngineCase, kept_login, login_cookies, make_plugin, own_login, sign_in
 
 from flnd.engine import auth
 from flnd.errors import LoginError, PluginError, UsageError
@@ -60,7 +60,7 @@ class LoginTest(AuthCase):
     def test_a_cookie_file_is_kept_for_the_plugins_domains_only_with_mode_0600(self):
         found = auth.login(self.home, self.plugin(), "file", path=self.export)
         kept = self.logins / "aaa.txt"
-        self.assertEqual([(cookie["domain"], cookie["value"]) for cookie in vaulted("aaa")[0]],
+        self.assertEqual([(cookie["domain"], cookie["value"]) for cookie in kept_login("aaa")[0]],
                          [(".aaa.example", "aaa-session")])
         self.assertTrue(self.export.is_file())
         self.assertEqual((found.plugin, found.status, found.file), ("aaa", "ok", str(kept)))
@@ -77,7 +77,7 @@ class LoginTest(AuthCase):
                                "aaa.example\tFALSE\t/\tTRUE\t0\t__Host-sid\th\n"
                                "aaa.example\tFALSE\t/\tTRUE\t0\tsid\ts\n")
         auth.login(self.home, self.plugin(), "file", path=self.export)
-        self.assertEqual({cookie["name"]: cookie["domain"] for cookie in vaulted("aaa")[0]},
+        self.assertEqual({cookie["name"]: cookie["domain"] for cookie in kept_login("aaa")[0]},
                          {"__Host-sid": "aaa.example", "sid": ".aaa.example"})
 
     def test_a_json_export_is_kept_as_netscape(self):
@@ -87,14 +87,14 @@ class LoginTest(AuthCase):
         auth.login(self.home, self.plugin(), "file", path=self.export)
         self.assertEqual((self.logins / "aaa.txt").read_text().splitlines()[0],
                          "# Netscape HTTP Cookie File")
-        self.assertEqual([(cookie["name"], cookie["value"]) for cookie in vaulted("aaa")[0]],
+        self.assertEqual([(cookie["name"], cookie["value"]) for cookie in kept_login("aaa")[0]],
                          [("sid", "j")])
 
     def test_a_login_again_replaces_the_earlier_one(self):
         auth.login(self.home, self.plugin(), "file", path=self.export)
         self.export.write_text(NETSCAPE.replace("aaa-session", "second"))
         auth.login(self.home, self.plugin(), "file", path=self.export)
-        self.assertEqual([cookie["value"] for cookie in vaulted("aaa")[0]], ["second"])
+        self.assertEqual([cookie["value"] for cookie in kept_login("aaa")[0]], ["second"])
         self.assertEqual(sorted(path.name for path in self.logins.iterdir()), ["aaa.txt"])
 
     def test_a_file_without_a_login_cookie_is_refused_and_keeps_nothing(self):
@@ -151,7 +151,7 @@ class LoginTest(AuthCase):
         found = auth.login(self.home, plugin(), "qr")
         self.assertEqual((found.plugin, found.status, found.file),
                          ("aaa", "ok", str(self.logins / "aaa.json")))
-        self.assertEqual(vaulted("aaa")[1], {"session": "s-qr", "api_id": "1"})
+        self.assertEqual(kept_login("aaa")[1], {"session": "s-qr", "api_id": "1"})
         if os.name != "nt":
             self.assertEqual(self.mode(self.logins / "aaa.json"), 0o600)
             self.assertEqual(self.mode(self.logins), 0o700)
@@ -162,7 +162,7 @@ class LoginTest(AuthCase):
         written = make_plugin("aaa", login=own_login(check=check))
         with self.assertRaisesRegex(PluginError, "written only during Login.start"):
             auth.login(self.home, written(), "qr")
-        self.assertEqual(vaulted("aaa")[1], {"session": "s-qr", "api_id": "1"})
+        self.assertEqual(kept_login("aaa")[1], {"session": "s-qr", "api_id": "1"})
 
     def test_a_failed_check_keeps_nothing(self):
         plugin = make_plugin("aaa", login=own_login(check=lambda self, ctx: False))
@@ -180,11 +180,11 @@ class LoginTest(AuthCase):
         sign_in("aaa", session="old", api_id="1")
         auth.login(self.home, make_plugin("aaa", login=own_login(start))(), "qr")
         self.assertEqual(seen, [{"session": "old", "api_id": "1"}])
-        self.assertEqual(vaulted("aaa")[1], {"session": "new", "api_id": "1"})
+        self.assertEqual(kept_login("aaa")[1], {"session": "new", "api_id": "1"})
 
     def test_secrets_round_trip_through_the_json_file(self):
         sign_in("tlg", session="1BVts-secret", api_id="2", api_hash="abc")
-        self.assertEqual(vaulted("tlg")[1], {"session": "1BVts-secret", "api_id": "2",
+        self.assertEqual(kept_login("tlg")[1], {"session": "1BVts-secret", "api_id": "2",
                                              "api_hash": "abc"})
         self.assertEqual(auth.secrets("nobody"), {})
         (self.logins / "tlg.json").write_text("[1]")
@@ -266,7 +266,7 @@ class WriteBackTest(AuthCase):
                                     for name, value in values.items()]).jar
 
     def saved(self):
-        return vaulted("twt")[0]
+        return kept_login("twt")[0]
 
     def test_a_rotated_cookie_is_saved_in_the_file_and_the_rest_kept(self):
         for domain in (".x.example", "api.x.example"):

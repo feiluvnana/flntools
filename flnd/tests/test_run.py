@@ -22,12 +22,12 @@ from fakes import (
     CDN,
     Engine,
     EngineCase,
+    kept_login,
     login_cookies,
     make_plugin,
     noise,
     own_login,
     sign_in,
-    vaulted,
 )
 
 from flnd.engine import crawl as job
@@ -245,7 +245,7 @@ class LoginStateTest(EngineCase):
             ("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/"),
             ("set-cookie", "_tracker=t1; Domain=.aaa.example; Path=/")])
         self.run_engine(source, targets=["aaa:a", "aaa:b"])
-        saved = vaulted("aaa")[0]
+        saved = kept_login("aaa")[0]
         self.assertEqual((saved["ct0"], saved["sid"], "_tracker" in saved), ("new-ct0", "1", False))
         self.assertNotIn("new-ct0", "\n".join(self.lines()))
 
@@ -259,7 +259,7 @@ class LoginStateTest(EngineCase):
         self.routes["https://api.aaa.example/me"] = _net.reply(
             200, json={}, headers=[("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/")])
         self.run_engine(make_plugin("aaa", route, login=login_cookies("sid")), targets=["aaa:a"])
-        self.assertEqual(vaulted("aaa")[0]["ct0"], "new-ct0")
+        self.assertEqual(kept_login("aaa")[0]["ct0"], "new-ct0")
 
     def test_requires_login_fails_the_targets(self):
         ran = []
