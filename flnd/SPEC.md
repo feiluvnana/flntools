@@ -53,6 +53,7 @@ saves something.
 
 ```text
 .flnd/
+  .lock                 empty; held while a command that writes runs (see below)
   config.toml           settings, optional ([defaults] and [plugins.<code>])
   metadata/flnd.db      files, targets, runs, failures (SQLite)
   media/<code>/<value>/<folder>/...     the downloaded files of each target
@@ -616,15 +617,21 @@ early. What a run skips and where it stops:
 Files saved on disk are still skipped, so it downloads only what is missing. Use it when a creator
 unarchives an old post or a missing file comes back.
 
-`--dry` saves and writes nothing: it prints `found <target>` for each target a search finds, then
-`new <path>` or `saved <path>` for each file, and a count.
+`--dry` saves and writes nothing, and takes no home lock, so it can run beside a real run. It
+prints `found <target>` for each target a search finds, then `new <path>` or `saved <path>` for
+each file, and a count.
 
 Ctrl-C: the first stops listing and lets files in progress finish; the second, or a SIGTERM, stops
 at once and leaves `.part` files to resume (what still runs 2 s later is cancelled, and 5 s later
 the process quits); the third quits at once, exit 130.
 
-Two runs may share a home: a part is its own lock, and a file another run is saving is skipped as
-`busy`.
+One run per home. `get`, `sync`, `target clean` and `status --fix` hold an operating-system lock
+on `<home>/.lock` from before they write anything until they end, so a crash never leaves a stale
+lock. A second one stops at once with `another flnd run is using <home>`, hint `wait for it to
+finish, or use another --home`, exit 2. `target follow`, `unfollow` and `retry`, `status` without
+`--fix`, `target list`, `auth` and `config` never take it, so you can follow a target while a sync
+runs: that write waits up to 30 s for `flnd.db`, while the run's own commit never waits, and goes
+back in the queue until the write is done.
 
 ## Logins
 
@@ -682,7 +689,7 @@ Exit codes:
 - 1: some files or targets failed (named above the exit); `flnd status` exits 1 when something needs
   care
 - 2: a usage error: unknown command or flag, a target no plugin reads, a category its route lacks, a
-  bad `--when`, `--limit` or `--folder`
+  bad `--when`, `--limit` or `--folder`, or another run using the home
 - 3: a login is needed, was refused, or `flnd auth login` failed
 - 4: flnd itself stopped: a full or refused disk, a missing tool, a broken plugin, a bug
 - 130: Ctrl-C
@@ -707,7 +714,6 @@ Error
 │   └── Changed             the answer no longer has the expected shape
 ├── NetworkError            DNS, TLS, timeout, reset, a cut transfer
 ├── DiskError      exit 4   no space, no permission, a long name (.path); stops the run
-│   └── BusyError           another run holds the part: that file is skipped
 ├── ToolError      exit 4   ffmpeg, 7zz or a browser is missing (stops the run) or failed
 └── PluginError    exit 4   a broken plugin class, or a bug escaping a listing
 Stopped(KeyboardInterrupt)  exit 130, never an Error

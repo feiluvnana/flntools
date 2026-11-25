@@ -12,6 +12,7 @@ and the home is a temporary folder.
 import asyncio
 import datetime
 import gc
+import sqlite3
 import threading
 import unittest
 import warnings
@@ -23,8 +24,10 @@ from fakes import CDN, Engine, EngineCase, drive, login_cookies, make_plugin, no
 from flnd import _library, errors, plugin
 from flnd.engine import events as _events
 from flnd.engine import jobs as jobs_module
+from flnd.engine import store as _store
 from flnd.engine.plugins import PLUGINS
 from flnd.plugin import File, Plugin, Post, Target, route
+from flnkit import files as _files
 from flnkit import net as _net
 
 JPEG = noise("JPEG")
@@ -657,6 +660,103 @@ class SearchFolderTest(LibraryCase):
         self.fl.get().wait()
         self.assertIn("two/posts/2026-03-01_c1.jpg", self.media())
 
+
+class HomeLockTest(LibraryCase):
+    """One run per home: `<home>/.lock`, and the commands that never take it."""
+
+    def locked(self):
+        return _files.lock(self.home / ".lock")
+
+    def test_the_commands_that_write_rows_a_run_lands_are_refused_on_a_locked_home(self):
+        self.fl.get("exs:example_user").wait()
+        calls = (lambda: self.fl.get("exs:example_user").wait(), lambda: self.fl.sync().wait(),
+                 lambda: self.fl.targets.clean("exs:example_user"),
+                 lambda: self.fl.targets.clean("exs:example_user", media=True),
+                 lambda: self.fl.check(fix=True))
+        with self.locked() as free:
+            self.assertTrue(free)
+            for call in calls:
+                with self.subTest(), self.assertRaises(errors.UsageError) as caught:
+                    call()
+                self.assertEqual(str(caught.exception), f"another flnd run is using {self.home}")
+                self.assertEqual(caught.exception.hint,
+                                 "wait for it to finish, or use another --home")
+        self.assertEqual(len(list(self.fl.targets)), 1)
+        self.assertTrue(any((self.home / "media").rglob("*.jpg")))
+
+    def test_a_dry_get_or_sync_works_on_a_locked_home_and_leaves_the_lock(self):
+        self.fl.get("exs:example_user").wait()
+        with self.locked() as free:
+            self.assertTrue(free)
+            self.assertEqual(len(list(self.fl.get("exs:example_user", dry=True))), 3)
+            self.fl.sync(dry=True).wait()
+            with self.locked() as second:
+                self.assertFalse(second, "the lock is still its holder's")
+
+    def test_follow_retry_and_the_reads_never_take_the_lock(self):
+        self.fl.get("exs:example_user").wait()
+        with self.locked() as free:
+            self.assertTrue(free)
+            self.fl.targets.unfollow("exs:example_user")
+            self.fl.targets.follow("exs:example_user")
+            self.fl.targets.retry("exs:example_user")
+            self.assertEqual(len(list(self.fl.targets)), 1)
+            self.assertTrue(self.fl.check().ok)
+            self.assertIsNotNone(self.fl.status)
+            self.assertEqual(list(self.fl.auth), [])
+            self.assertIn("exs", self.fl.config.where("defaults.when") + "exs")
+
+    def test_the_lock_is_free_after_a_command_and_after_an_error(self):
+        self.fl.get("exs:example_user").wait()
+        with self.locked() as free:
+            self.assertTrue(free)
+        with self.assertRaises(errors.UsageError):
+            self.fl.targets.clean("exs:nobody:else")
+        with self.locked() as free:
+            self.assertTrue(free)
+        self.fl.targets.clean("exs:example_user")
+        self.fl.check(fix=True)
+        with self.locked() as free:
+            self.assertTrue(free)
+        self.assertEqual((self.home / ".lock").read_bytes(), b"")
+
+    def test_a_follow_write_during_a_commit_is_waited_for_and_the_run_goes_on(self):
+        self.fl.get("exs:example_user").wait()
+        self.listing["example_user", "posts"].insert(0, "p0")
+        holder = sqlite3.connect(self.home / _store.DB, isolation_level=None,
+                                 check_same_thread=False)
+        release = threading.Timer(0.3, lambda: holder.execute("COMMIT"))
+        follow = threading.Thread(target=lambda: self.fl.targets.follow("exs:example_creator"))
+        serve = self.serve
+
+        def held(request):
+            # The first file's answer: another process starts writing `flnd.db`, as a
+            # `target follow` does, and the run's commit meets its lock.
+            if not release.is_alive() and str(request.url).startswith(CDN):
+                holder.execute("BEGIN IMMEDIATE")
+                release.start()
+                follow.start()
+            return serve(request)
+
+        self.serve = held
+        requeued = []
+        busy = jobs_module.Scheduler._busy
+
+        async def counted(scheduler, job, error, tries):
+            requeued.append(error)
+            return await busy(scheduler, job, error, tries)
+
+        try:
+            with mock.patch.object(jobs_module.Scheduler, "_busy", counted):
+                report = self.fl.get("exs:example_user").wait()
+        finally:
+            release.join()
+            follow.join(10)
+            holder.close()
+        self.assertEqual((report.saved, report.ok), (1, True))
+        self.assertTrue(requeued, "the commit met the lock and was queued again")
+        self.assertEqual(sorted(row.target.value for row in self.fl.targets),
+                         ["example_creator", "example_user"])
 
 if __name__ == "__main__":
     unittest.main()

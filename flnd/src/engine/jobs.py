@@ -1104,11 +1104,9 @@ def _made(folder: Path) -> tuple[Path, os.stat_result]:
 
 
 def stops(error: BaseException) -> bool:
-    """Whether `error` stops the run, for every job after it: a full or refused disk (but not
-    a part another run holds, which skips only its file), a missing tool (even when its error
-    says another try may work), or a broken plugin class."""
-    disk = isinstance(error, errors.DiskError) and not isinstance(error, files.BusyError)
-    return disk or _broken(error) or _missing(error)
+    """Whether `error` stops the run, for every job after it: a full or refused disk, a missing
+    tool (even when its error says another try may work), or a broken plugin class."""
+    return isinstance(error, errors.DiskError) or _broken(error) or _missing(error)
 
 
 def _again_later(error: Exception) -> bool:

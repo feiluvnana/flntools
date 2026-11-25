@@ -482,6 +482,22 @@ class RunTest(ExampleCase):
                          ([], ["run"]))
 
 
+class HomeLockTest(ExampleCase):
+    """A second command on a home another run is using stops at once, with exit status 2."""
+
+    def test_get_on_a_locked_home_exits_2_and_follow_still_works(self):
+        from flnkit import files
+
+        with files.lock(Path(".flnd") / ".lock") as free:
+            self.assertTrue(free)
+            code, _, err = self.run_app("get", "exs:example_user")
+            self.assertEqual(code, 2)
+            self.assertIn("another flnd run is using .flnd", err)
+            self.assertIn("wait for it to finish, or use another --home", err)
+            self.assertEqual(self.run_app("target", "follow", "exs:example_user")[0], 0)
+        self.assertEqual(self.run_app("get", "exs:example_user")[0], 0)
+
+
 class FormsTest(ExampleCase):
     """What a terminal is asked, in forms (`flnd.ui.forms`): status's repair, the login."""
 

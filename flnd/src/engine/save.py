@@ -23,7 +23,7 @@ from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
 from flnd.engine import config, jobs, store
-from flnd.engine.events import BUSY, Failed, Saved, Skipped, sink
+from flnd.engine.events import Failed, Saved, sink
 from flnd.engine.jobs import Job, Kind
 from flnd.errors import (
     DiskError,
@@ -480,7 +480,7 @@ class Saver:
                    plugin: str) -> dict[str, Path]:
         """Save one post's files at once, commit their rows together, then finish each.
 
-        A file that fails or is busy is reported, and the others go on.
+        A file that fails is reported, and the others go on.
 
         Args:
             items: the post's files.
@@ -524,7 +524,7 @@ class Saver:
 
     async def _file(self, item: Item, client: net.Client,
                     plugin: str) -> _Landed | _Failure | None:
-        """One file into place and its row made; None when it was dropped, busy or had no URL."""
+        """One file into place and its row made; None when it was dropped or had no URL."""
         flow = _Flow()
         try:
             coro = self._land(item, client, plugin, flow)
@@ -537,12 +537,6 @@ class Saver:
             self._count(item, queued=-1)
             if self.claims is not None:
                 self.claims.release(item.dest, item.key)
-            return None
-        except files.BusyError:
-            self._count(item, downloading=-1, skipped=1)
-            await self.emit(Skipped(item.target, item.category, item.post, item.dest,
-                                    reason=BUSY))
-            ui.info("{name}: being saved by another run", name=item.label or item.dest.name)
             return None
         except Error as error:
             if jobs.stops(error):
@@ -644,7 +638,7 @@ class Saver:
             finally:
                 slot.release()
         finally:
-            # A file that never queued (a busy part) lets the next one go on.
+            # A file that never queued lets the next one go on.
             turn[1].set()
         assert held.saved is not None
         return held.saved
@@ -960,14 +954,9 @@ class Saver:
     async def _part(self, dest: Path) -> AsyncIterator[files.Part]:
         """`files.part(dest, resume=True)`, opened and landed on the scheduler's
         threads, never on the loop.
-
-        Raises:
-            BusyError: another run holds the part: the file's, never the run's stop.
         """
         manager = files.part(dest, resume=True)
         held = await self._enter(manager, dest)
-        if held is None:
-            raise files.BusyError(f"{dest.name}: being saved by another run")
         try:
             yield held
         except BaseException as error:
@@ -977,15 +966,12 @@ class Saver:
             raise
         await self.scheduler.on(Kind.WRITE, manager.__exit__, None, None, None, path=dest)
 
-    async def _enter(self, manager: Any, dest: Path) -> files.Part | None:
-        """Open a part on a thread; None when another run holds it."""
+    async def _enter(self, manager: Any, dest: Path) -> files.Part:
+        """Open a part on a thread."""
         opened: list[files.Part] = []
 
-        def enter() -> files.Part | None:
-            try:
-                held = manager.__enter__()
-            except files.BusyError:
-                return None
+        def enter() -> files.Part:
+            held = manager.__enter__()
             # An empty write makes the part's buffer here, so a write from the loop opens
             # nothing; one the disk refuses leaves the part at once.
             try:

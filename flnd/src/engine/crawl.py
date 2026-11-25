@@ -1368,9 +1368,8 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
     if run.settings.stop.soon.is_set():
         return TargetReport(target, (), 0, error=Stopped(STOPPED))
     started = time.monotonic()
-    # No lock on the target: each file's part locks itself, so two runs may share a target and
-    # the sweep passes over the parts another run holds. It runs while the listing starts, and
-    # ends before the first file is handed over.
+    # No lock on the target: the home's one run owns every part. The sweep runs while the
+    # listing starts, and ends before the first file is handed over.
     sweep_dir = _sweep_folder(run.settings.home, target, options)
     sweeping = (asyncio.ensure_future(run.off(files.sweep, sweep_dir))
                 if sweep_dir is not None else None)

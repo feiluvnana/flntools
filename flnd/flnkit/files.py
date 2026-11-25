@@ -27,7 +27,7 @@ from pathlib import Path, PurePosixPath
 from typing import IO, Any, Literal
 
 from flnkit import clock
-from flnkit.errors import DiskError, SiteError, ToolError, disk
+from flnkit.errors import SiteError, ToolError, disk
 
 PART = ".part"
 SIDE = ".json"
@@ -39,10 +39,6 @@ BINARY = getattr(os, "O_BINARY", 0)
 WINDOWS = os.name == "nt"
 # On Windows an antivirus or indexer may hold `dest` briefly, so a rename retries for ~1 s.
 REPLACE_TRIES, REPLACE_PAUSE = 20, 0.05
-# Windows locks byte ranges, and a locked range refuses writes from every other handle, the
-# writer's own included. One byte far past any real file's end is locked instead, so writes
-# through another handle (a source's `fetch`, ffmpeg) still land.
-LOCK_AT = 1 << 62
 # Errnos that mean the file system has no locks at all (some network shares): write unlocked.
 NO_LOCKS = {errno.ENOLCK, errno.EOPNOTSUPP, getattr(errno, "ENOTSUP", errno.EOPNOTSUPP)}
 # A sweep removes a part untouched this long (it may still resume until then), and an orphan
@@ -62,10 +58,6 @@ else:
     import fcntl
 
 
-class BusyError(DiskError):
-    """Raised when another run holds a part: that file is being saved by someone else."""
-
-
 @dataclass(frozen=True)
 class Saved:
     """Where a part landed, and the size and modified time (ns) it had there.
@@ -79,7 +71,7 @@ class Saved:
 
 
 class Part:
-    """An open, locked `<dest>.part`, yielded by `part`.
+    """An open `<dest>.part`, yielded by `part`.
 
     A caller writes through `write` (or `write_at` from several threads), or hands `path` to a
     tool that writes by name. It may change `dest` (a download whose content calls for another
@@ -88,7 +80,7 @@ class Part:
     Attributes:
         dest: where the part lands on a clean exit.
         path: the part's own path, `<dest>.part` or a shortened name.
-        fd: the locked descriptor; it stays open for the whole block.
+        fd: the open descriptor; it stays open for the whole block.
         size: how many bytes the part holds: what was there when opened, then what `write`,
             `write_at` and `reset` made it. A tool that writes by name doesn't move it.
         mtime: the modified time to give the file, in epoch seconds; None keeps the write's.
@@ -99,7 +91,7 @@ class Part:
     Args:
         dest: where the part lands.
         path: the part's own path.
-        fd: its open, locked descriptor, which the part now owns.
+        fd: its open descriptor, which the part now owns.
         size: how many bytes it held when opened.
         resume: whether it is a download's, kept on failure (see `part`).
     """
@@ -253,29 +245,30 @@ class Part:
 
 @contextmanager
 def part(dest: str | os.PathLike[str], *, resume: bool = False) -> Iterator[Part]:
-    """Open and lock `<dest>.part`, yield it, and rename it onto `dest` on a clean exit.
+    """Open `<dest>.part`, yield it, and rename it onto `dest` on a clean exit.
 
-    The two kinds of caller differ in three ways, all set by `resume`:
-    - a download (`resume=True`) keeps the bytes a failed run left and goes on from them, raises
-      `BusyError` at once when another run holds the part, and keeps the part when it fails;
-    - a small write (`resume=False`) starts from an empty part, waits for another writer of the
-      same file, and removes the part when it fails.
+    The two kinds of caller differ in two ways, both set by `resume`:
+    - a download (`resume=True`) keeps the bytes a failed run left and goes on from them, and
+      keeps the part when it fails;
+    - a small write (`resume=False`) starts from an empty part and removes the part when it
+      fails.
+
+    One run per home is the rule (`lock`), so nothing else writes the part.
 
     Args:
         dest: the file to write; its folder is made when missing.
         resume: True for a download, as above.
 
     Yields:
-        The locked `Part`. After a clean exit, `Part.saved` says where it landed.
+        The open `Part`. After a clean exit, `Part.saved` says where it landed.
 
     Raises:
-        BusyError: `resume` is True and another run holds the part.
-        DiskError: the part can't be opened, locked or renamed (no space, no permission).
+        DiskError: the part can't be opened or renamed (no space, no permission).
     """
     target = Path(dest)
     path = _part_path(target)
     try:
-        fd, size = _open(path, wait=not resume, resume=resume)
+        fd, size = _open(path)
         if size and not resume:
             os.ftruncate(fd, 0)
             size = 0
@@ -334,7 +327,7 @@ def walk(folder: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
 
 
 def sweep(folder: str | os.PathLike[str]) -> int:
-    """Remove the stale parts under `folder`: untouched for a week, and held by no run.
+    """Remove the stale parts under `folder`: untouched for a week.
 
     A part kept by a failed download stays a week, so a later run can resume it. A sidecar
     without its part goes after an hour. The hidden `.<name>.stage` files older versions left go
@@ -365,7 +358,7 @@ def sweep(folder: str | os.PathLike[str]) -> int:
         for path in own:
             sides.pop(path)
         if _older(entry, now, KEEP_AGE):
-            removed += _remove_unheld(entry.path, own)
+            removed += sum(_unlink(one) for one in (entry.path, *own))
     for path, entry in sides.items():
         if _older(entry, now, SETTLE_AGE):
             removed += _unlink(path)
@@ -386,60 +379,52 @@ def _part_path(dest: Path) -> Path:
     return dest.with_name(f"{head}.{digest}{PART}")
 
 
-def _open(path: Path, *, wait: bool, resume: bool = False) -> tuple[int, int]:
-    """Open and lock the part at `path`, returning its descriptor and the bytes it holds."""
+def _open(path: Path) -> tuple[int, int]:
+    """Open the part at `path`, making its folder when missing; its descriptor and size."""
     while True:
         try:
-            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | BINARY, 0o666)
-            fresh = True
+            return os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | BINARY, 0o666), 0
         except FileExistsError:
-            fd = os.open(path, os.O_RDWR | os.O_CREAT | BINARY, 0o666)
-            fresh = False
+            fd = os.open(path, os.O_RDWR | BINARY)
+            return fd, os.fstat(fd).st_size
         except FileNotFoundError:
             path.parent.mkdir(parents=True, exist_ok=True)
-            continue
-        try:
-            if not _lock(fd, wait=wait):
-                raise BusyError(f"{path.name}: being saved by another run",
-                                hint="let the other run finish; the next run skips it")
-            if fresh:
-                return fd, 0
-            found = os.fstat(fd)
-            if _names(path, found):
-                return fd, found.st_size
-            if not wait:
-                raise BusyError(f"{path.name}: just saved by another run")
-            # A download must not start a fresh part over a file another run just landed.
-            if resume and path.name.endswith(PART):
-                landed = path.with_name(path.name[: -len(PART)])
-                if landed.is_file() and not path.is_file():
-                    raise BusyError(f"{path.name}: just saved by another run",
-                                    hint="let the other run finish; the next run skips it")
-        except BaseException:
-            os.close(fd)
-            raise
+
+
+@contextmanager
+def lock(path: str | os.PathLike[str]) -> Iterator[bool]:
+    """Hold an operating-system lock on the file `path` for the block.
+
+    The lock goes with the process, so a crashed run never leaves a stale one. A file system
+    with no locks (some network shares) counts as free.
+
+    Args:
+        path: the lock file; it and its folder are made when missing, and it is never removed.
+
+    Yields:
+        True when the lock is held; False when another process holds it.
+
+    Raises:
+        DiskError: the file can't be opened.
+    """
+    target = Path(path)
+    try:
+        fd, _ = _open(target)
+    except OSError as error:
+        raise disk(error, target) from error
+    try:
+        yield _lock(fd)
+    finally:
         os.close(fd)
 
 
-def _names(path: Path, found: os.stat_result) -> bool:
-    """Whether `path` still names the file `found` describes."""
-    try:
-        here = os.stat(path)
-    except FileNotFoundError:
-        return False
-    return (here.st_dev, here.st_ino) == (found.st_dev, found.st_ino)
-
-
-def _lock(fd: int, *, wait: bool) -> bool:
-    """Lock `fd` for this process; False when another holds it and `wait` is off."""
+def _lock(fd: int) -> bool:
+    """Lock `fd` without waiting; False when another process holds it."""
     try:
         if WINDOWS:
-            os.lseek(fd, LOCK_AT, os.SEEK_SET)
-            # LK_LOCK tries once a second for 10 s, then raises: a writer that slow is stuck.
-            msvcrt.locking(fd, msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
-            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
         else:
-            fcntl.flock(fd, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         return False
     except OSError as error:
@@ -449,15 +434,6 @@ def _lock(fd: int, *, wait: bool) -> bool:
             return False
         raise
     return True
-
-
-def _close(fd: int) -> None:
-    """Unlock and close `fd`."""
-    if WINDOWS:
-        with suppress(OSError):
-            os.lseek(fd, LOCK_AT, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-    os.close(fd)
 
 
 def _end(held: Part) -> None:
@@ -475,7 +451,7 @@ def _end(held: Part) -> None:
         held._buffer = None
     if held.fd >= 0:
         fd, held.fd = held.fd, -1
-        _close(fd)
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -516,7 +492,6 @@ def _leave(held: Part) -> None:
                 with suppress(OSError), held._side:
                     _write_side(held.side_path, held.meta)
             return
-        # POSIX removes the part while it is still locked, so no run takes it in between;
         # Windows can't remove an open file, so there it closes first.
         if WINDOWS:
             with suppress(OSError):
@@ -607,28 +582,6 @@ def _older(entry: os.DirEntry[str], now: float, age: float) -> bool:
         return False
     except OSError as error:
         raise disk(error) from error
-
-
-def _remove_unheld(path: str, sides: list[str]) -> int:
-    """Remove a stale part and its sidecars, unless a run holds it."""
-    try:
-        fd = os.open(path, os.O_RDWR | BINARY)
-    except FileNotFoundError:
-        return 0
-    except OSError as error:
-        raise disk(error) from error
-    try:
-        if not _lock(fd, wait=False):
-            return 0
-        if WINDOWS:
-            # Windows can't remove an open file; a run that takes the part now just restarts it.
-            _close(fd)
-            fd = -1
-        # On POSIX, removed while still locked, so no run can take it in between.
-        return sum(_unlink(one) for one in (path, *sides))
-    finally:
-        if fd >= 0:
-            _close(fd)
 
 
 def _unlink(path: str | os.PathLike[str]) -> int:

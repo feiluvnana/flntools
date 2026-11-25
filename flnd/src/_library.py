@@ -10,13 +10,14 @@ import os
 import threading
 import weakref
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, contextmanager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from flnd.engine.events import Checked, Failure, Record, Status, Tracked
 from flnd.errors import UsageError
 from flnd.plugin import LoggedIn
+from flnkit import files
 
 if TYPE_CHECKING:
     from flnd.engine._engine import Chosen, Engine, TargetInfo
@@ -154,7 +155,8 @@ class Flnd:
 
         Raises:
             UsageError: a target, category, `when`, `limit`, or `folder` is wrong, or the
-                home's config.toml is.
+                home's config.toml is; the run raises it too, when another run is using the
+                home (`<home>/.lock`).
 
         Example:
             >>> with open("example-home") as fl:  # doctest: +ELLIPSIS
@@ -181,7 +183,7 @@ class Flnd:
         folder = self._engine().check_folder(folder, resolved, again=again)
         return self._run(f"get {_names(resolved)}", lambda engine: engine.run_download(
             resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again,
-            folder=folder))
+            folder=folder), dry=dry)
 
     def sync(
         self, *patterns: str, limit: int | None = None, when: str | None = None,
@@ -199,7 +201,8 @@ class Flnd:
             The `Run`, not started yet: iterate it, or call `wait()`.
 
         Raises:
-            UsageError: a pattern is empty, or `when`, `limit` or config.toml is wrong.
+            UsageError: a pattern is empty, or `when`, `limit` or config.toml is wrong; the run
+                raises it too, when another run is using the home.
 
         Example:
             >>> with open("example-home") as fl:
@@ -220,7 +223,8 @@ class Flnd:
         if not (limit or dry or again):
             return self._run(name, lambda engine: engine.run_sync(matched, time=span))
         return self._run(name, lambda engine: engine.run_download(
-            resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again))
+            resolved, time=span, limit=limit, dry=dry, sync=True, keep=True, again=again),
+            dry=dry)
 
     @property
     def status(self) -> Status | None:
@@ -314,6 +318,7 @@ class Flnd:
 
         Raises:
             DiskError: the media folder can't be read, or `flnd.db` written.
+            UsageError: `fix` is True and another run is using the home.
 
         Example:
             >>> with open("example-home") as fl:
@@ -322,7 +327,7 @@ class Flnd:
         """
         from flnd.engine import store
 
-        with store.open(self.home) as db:
+        with self._locked() if fix else nullcontext(), store.open(self.home) as db:
             return store.check(self.home, db, fix=fix)
 
     def plugin(self, code: str) -> AbstractAsyncContextManager[Ctx]:
@@ -406,13 +411,28 @@ class Flnd:
             raise UsageError("give at least one target")
         return resolved
 
-    def _run(self, name: str, command: Any) -> Run:
-        """A `Run` whose loop makes this home's engine and awaits `command` with it."""
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Hold the home's one-writer lock (`<home>/.lock`) for the block.
+
+        Raises:
+            UsageError: another flnd run is using this home.
+        """
+        with files.lock(self.home / ".lock") as free:
+            if not free:
+                raise UsageError(f"another flnd run is using {self.home}",
+                                 hint="wait for it to finish, or use another --home")
+            yield
+
+    def _run(self, name: str, command: Any, *, dry: bool = False) -> Run:
+        """A `Run` whose loop makes this home's engine and awaits `command` with it, under the
+        home's lock unless it is a dry run, which writes nothing."""
         from flnd.engine.run import Run
 
         async def work(emit: Any, stop: Any) -> None:
-            engine = self._engine(emit, stop)
-            await command(engine)
+            with nullcontext() if dry else self._locked():
+                engine = self._engine(emit, stop)
+                await command(engine)
 
         run = Run(work, name=name, closed=self._closed)
         self._runs.add(run)
@@ -488,10 +508,12 @@ class Targets:
             Each target as it stood when it was forgotten.
 
         Raises:
-            UsageError: a target is wrong, or the home doesn't know it.
+            UsageError: a target is wrong, or the home doesn't know it, or another run is using
+                the home.
         """
         engine = self._owner._engine()
-        return [_tracked(info) for info in engine.target_clean(list(targets), media=media)]
+        with self._owner._locked():
+            return [_tracked(info) for info in engine.target_clean(list(targets), media=media)]
 
 
 class Auth:

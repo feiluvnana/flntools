@@ -1,12 +1,11 @@
-"""`flnkit.files`: parts, their locks, small writes, walks and stale-part sweeps.
+"""`flnkit.files`: parts, the home lock, small writes, walks and stale-part sweeps.
 
-Two runs sharing a home are played by two threads: a POSIX `flock` belongs to an open file
-description, so two opens in one process exclude each other as two processes do.
+Two runs on one home are played by two opens in one process: a POSIX `flock` belongs to an
+open file description, so they exclude each other as two processes do.
 """
 
 import os
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -115,64 +114,28 @@ class PartTest(FsCase):
 
 
 class LockTest(FsCase):
-    def test_a_second_download_of_a_held_part_is_busy(self):
-        with self.part() as held:
-            held.write(b"mine")
-            with self.assertRaises(_files.BusyError) as caught, self.part():
-                self.fail("the block must not run")
-        self.assertIsInstance(caught.exception, DiskError)
-        self.assertIn("being saved by another run", str(caught.exception))
-        self.assertEqual(self.dest.read_bytes(), b"mine")
+    def test_a_second_lock_on_a_held_file_is_refused_until_it_is_released(self):
+        path = self.folder / "sub" / ".lock"
+        with _files.lock(path) as first, _files.lock(path) as second:
+            self.assertEqual((first, second), (True, False))
+        with _files.lock(path) as again:
+            self.assertTrue(again)
+        self.assertEqual(path.read_bytes(), b"", "the lock file is only a lock")
 
-    @unittest.skipIf(os.name == "nt", "Windows cannot rename an open file")
-    def test_a_part_landed_between_open_and_lock_is_busy_not_rewritten(self):
-        first = self.part()
-        first.__enter__().write(b"whole")
-        real = _files._lock
+    def test_the_lock_is_released_after_an_error(self):
+        path = self.folder / ".lock"
+        with self.assertRaises(ValueError), _files.lock(path):
+            raise ValueError("boom")
+        with _files.lock(path) as free:
+            self.assertTrue(free)
 
-        def late(fd, *, wait):
-            first.__exit__(None, None, None)
-            return real(fd, wait=wait)
-
-        with mock.patch.object(_files, "_lock", late), \
-                self.assertRaises(_files.BusyError), self.part():
-            self.fail("the block must not run")
-        self.assertEqual((self.dest.read_bytes(), self.names()), (b"whole", ["a.txt"]))
-
-    def test_a_small_write_waits_for_the_other_writer(self):
-        order = []
-        with _files.part(self.dest) as held:
-            held.write(b"first")
-            other = threading.Thread(target=lambda: order.append(_files.write(self.dest, b"2")))
-            other.start()
-            other.join(0.1)
-            self.assertTrue(other.is_alive())
-            order.append("first")
-        other.join(5)
-        self.assertEqual(order, ["first", self.dest])
-        self.assertEqual((self.dest.read_bytes(), self.names()), (b"2", ["a.txt"]))
-
-    def test_two_runs_on_one_home_save_a_file_once(self):
-        start, outcomes = threading.Barrier(2), []
-
-        def run(data):
-            start.wait()
-            try:
-                with self.part() as held:
-                    held.write(data)
-                    _time.sleep(0.05)
-                outcomes.append("saved")
-            except _files.BusyError:
-                outcomes.append("busy")
-
-        threads = [threading.Thread(target=run, args=(data,)) for data in (b"one", b"two")]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(5)
-        self.assertEqual(sorted(outcomes), ["busy", "saved"])
-        self.assertIn(self.dest.read_bytes(), (b"one", b"two"))
-        self.assertEqual(self.names(), ["a.txt"])
+    def test_a_file_system_without_locks_counts_as_free(self):
+        error = OSError(_files.errno.ENOLCK, "no locks")
+        with mock.patch.object(_files, "fcntl", create=True) as fcntl, \
+                mock.patch.object(_files, "WINDOWS", False):
+            fcntl.flock.side_effect = error
+            with _files.lock(self.folder / ".lock") as free:
+                self.assertTrue(free)
 
 
 class CountTest(FsCase):
@@ -181,8 +144,8 @@ class CountTest(FsCase):
     def test_system_calls_of_a_new_and_a_resumed_download(self):
         calls = ("open", "stat", "lstat", "fstat", "utime", "replace", "unlink", "close")
         new = {"open": 1, "fstat": 1, "utime": 1, "replace": 1, "close": 1}
-        # A resumed part adds one open, one stat and one fstat to check it.
-        resumed = {"open": 2, "stat": 1, "fstat": 2, "utime": 1, "replace": 1, "close": 1}
+        # A resumed part is opened again after the failed exclusive open, and sized by fstat.
+        resumed = {"open": 2, "fstat": 2, "utime": 1, "replace": 1, "close": 1}
         for name, expected in (("new.txt", new), ("resumed.txt", resumed)):
             if name == "resumed.txt":
                 (self.folder / "resumed.txt.part").write_bytes(b"half")
@@ -286,13 +249,7 @@ class WalkSweepTest(FsCase):
             self.assertEqual(_files.sweep(self.folder), 0)
         self.assertEqual(self.names(), sorted(ages))
 
-    def test_sweep_skips_a_held_part_and_a_missing_folder(self):
-        with self.part(self.folder / "a") as held:
-            held.write(b"x")
-            os.utime(held.path, (0, 0))
-            self.assertEqual(_files.sweep(self.folder), 0)
-            self.assertEqual(self.names(), ["a.part"])
-        self.assertEqual(self.names(), ["a"])
+    def test_sweep_of_a_missing_folder_removes_nothing(self):
         self.assertEqual(_files.sweep(self.folder / "nope"), 0)
 
 

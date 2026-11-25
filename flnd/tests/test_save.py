@@ -26,7 +26,7 @@ from unittest import mock
 from fakes import EngineCase, make_plugin
 
 from flnd.engine import jobs, store
-from flnd.engine.events import Failed, Saved, Skipped
+from flnd.engine.events import Failed, Saved
 from flnd.engine.jobs import Kind
 from flnd.engine.save import Item, Saver
 from flnd.errors import DiskError, NotFound
@@ -155,15 +155,7 @@ class StagesTest(SaveCase):
         self.assertEqual((self.tmp / "media" / "a.jpg").read_bytes(), JPEG)
         self.assertIn("mirror 1 failed", self.lines.getvalue())
 
-    def test_a_part_another_run_holds_is_skipped_as_busy(self) -> None:
-        self.routes[f"{CDN}/a.jpg"] = JPEG
-        with files.part(self.tmp / "media" / "a.jpg", resume=True):
-            self.save(self.item("a.jpg"))
-        self.assertEqual(self.events, [Skipped(T, "posts", "1", self.tmp / "media" / "a.jpg",
-                                               reason="busy")])
-        self.assertIsNone(self.jobs._stop, "a busy part is the file's, never the run's stop")
-
-    def test_a_cancel_while_the_part_opens_leaves_no_lock(self) -> None:
+    def test_a_cancel_while_the_part_opens_leaves_no_part_open(self) -> None:
         opening, go, real_open = threading.Event(), threading.Event(), files._open
         self.routes[f"{CDN}/a.jpg"] = JPEG
 
@@ -693,9 +685,9 @@ def probe(case) -> list[float]:
 
 
 class RealSchedulerTest(SaveCase):
-    """The save on the scheduler's pools and retry rule: a busy part and a flaky join."""
+    """The save on the scheduler's pools and retry rule: a flaky join."""
 
-    def test_a_busy_part_and_a_flaky_join(self) -> None:
+    def test_a_flaky_join(self) -> None:
         self.routes.update({f"{CDN}/a.jpg": JPEG, f"{CDN}/b.jpg": PNG,
                             f"{CDN}/v.mp4": b"V" * 9, f"{CDN}/au.mp4": b"A" * 9})
         ran: list = []
@@ -708,12 +700,11 @@ class RealSchedulerTest(SaveCase):
             return 0, "", ""
 
         dash = File(f"{CDN}/v.mp4", audio=f"{CDN}/au.mp4")
-        with files.part(self.tmp / "media" / "a.jpg", resume=True), \
-                files.fake({"ffmpeg": ffmpeg}):
+        with files.fake({"ffmpeg": ffmpeg}):
             self.save(self.item("a.jpg"), self.item("b.jpg"),
                       self.item("v.mp4", file=dash, kind=None))
         self.assertEqual(sorted(type(event).__name__ for event in self.events),
-                         ["Saved", "Saved", "Skipped"])
+                         ["Saved", "Saved", "Saved"])
         self.assertIsNone(self.jobs._stop)
         self.assertEqual(len(ran), 2)
 
