@@ -166,5 +166,21 @@ class DayTest(unittest.TestCase):
         self.assertEqual(_time.day(next_year), next_year)
 
 
+class StampTest(unittest.TestCase):
+    """`flnkit.clock.stamp`: the Unix time of a date that has a time of day."""
+
+    def test_a_time_gives_unix_seconds_and_a_day_or_a_wrong_date_gives_none(self):
+        minus_five = datetime.timezone(datetime.timedelta(hours=-5))
+        for value in (1767312000, 1767312000000, "1767312000", "2026-01-02T00:00:00Z",
+                      "2026-01-02 00:00:00", datetime.datetime(2026, 1, 2),
+                      datetime.datetime(2026, 1, 1, 19, tzinfo=minus_five)):
+            with self.subTest(value=value):
+                self.assertEqual(_time.stamp(value), 1767312000.0)
+        self.assertEqual(_time.stamp(1767312000.5), 1767312000.5)
+        for value in (datetime.date(2026, 1, 2), "2026-01-02", None, True, "soon", 946684800):
+            with self.subTest(value=value):
+                self.assertIsNone(_time.stamp(value))
+
+
 if __name__ == "__main__":
     unittest.main()

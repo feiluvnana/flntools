@@ -408,10 +408,16 @@ class TimeTest(JobCase):
         self.assertEqual(self.saved(Dated, Options(until=date(2026, 6, 30))), ["in", "undated"])
 
 
+def dated(post_id):
+    """A later post is newer: `pN` is N days before 2026-03-01, any other id comes after it."""
+    if post_id.startswith("p"):
+        return date(2026, 3, 1) - datetime.timedelta(days=int(post_id[1:]))
+    return date(2026, 3, 2)
+
+
 class SyncStopTest(JobCase):
-    """`sync` stops a `newest_first` category after 5 saved posts in a row, only once its
-    listing has reached its end. `HeadTest` covers the sooner stop at the head; these tests
-    forget the head first, so the run of 5 is what stops them."""
+    """`sync` stops a `newest_first` category at its head, once its listing has reached its
+    end (`tests/test_smart_sync.py` covers the rule in full: times, pins, cuts)."""
 
     def setUp(self):
         super().setUp()
@@ -427,7 +433,7 @@ class SyncStopTest(JobCase):
                         raise SiteError("cut")
                     self.listed.append(post_id)
                     files = self.post_files.get(post_id, [File(f"{CDN}/{post_id}.jpg")])
-                    yield Post(post_id, files, date=datetime.date(2026, 1, 1))
+                    yield Post(post_id, files, date=dated(post_id))
             finally:
                 self.finished.append(True)
 
@@ -441,47 +447,21 @@ class SyncStopTest(JobCase):
     def forget_record(self):
         self.sql("UPDATE targets SET complete = '{}' WHERE key = ?", "fed:example_user")
 
-    def forget_head(self):
-        self.sql("UPDATE targets SET heads = '{}' WHERE key = ?", "fed:example_user")
-
     def sync(self):
         self.listed.clear()
-        self.forget_head()
         return self.engine.sync(["fed:example_user"])
-
-    def test_sync_stops_after_5_saved_posts_in_a_row_with_a_record_and_closes_the_listing(self):
-        self.assertTrue(self.engine.download(["fed:example_user|all"]).ok)
-        self.assertEqual(self.record(), {"posts": "2026-01-01"})
-        self.ids = ["n1", "n2", *self.ids]
-        self.finished.clear()
-        report = self.sync()
-        self.assertEqual(self.listed, ["n1", "n2", "p0", "p1", "p2", "p3", "p4"])
-        self.assertEqual(self.finished, [True])
-        self.assertEqual(sorted(path.name for path in report.targets[0].written),
-                         ["2026-01-01_n1.jpg", "2026-01-01_n2.jpg"])
-        # It stopped early, so the record is the earlier one, still there.
-        self.assertIn("posts", self.record())
-
-    def test_a_caught_up_sync_stays_complete_and_stops_after_5_saved_posts(self):
-        self.assertTrue(self.engine.download(["fed:example_user|all"]).ok)
-        for _ in range(2):
-            report = self.sync()
-            self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
-            self.assertEqual(report.files, 0)
-            self.assertIn("posts", self.record())
-        self.assertEqual(fakes.targets(self.home)["fed:example_user"].cursors, {})
 
     def test_files_queued_by_an_earlier_category_are_not_caught_up(self):
         """fixes #4: a second feed listing the first one's 6 new posts goes on past them."""
         async def posts(plugin, ctx, user):
             for post_id in self.ids:
-                yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 1, 1))
+                yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=dated(post_id))
 
         async def media(plugin, ctx, user):
             # The new posts `posts` queued, then one only `media` has, then the saved ones.
             for post_id in [*self.ids[:6], *self.deeper, *self.ids[6:]]:
                 self.listed.append(post_id)
-                yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 1, 1))
+                yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=dated(post_id))
 
         self.deeper = []
         engine = Engine(home=self.home,
@@ -492,30 +472,18 @@ class SyncStopTest(JobCase):
         self.listed.clear()
         report = engine.sync(["two:example_user"])
         self.assertIn("m1", self.listed)
-        self.assertIn("2026-01-01_m1.jpg", [path.name for path in report.targets[0].written])
+        self.assertIn("2026-03-02_m1.jpg", [path.name for path in report.targets[0].written])
 
-    def test_posts_with_no_files_or_only_text_neither_count_nor_break_the_saved_run(self):
-        """A reply with nothing to save, between saved posts, must not reset the run of 5
-        (twt replies)."""
+    def test_posts_with_no_files_or_only_text_do_not_end_the_sync_before_its_head(self):
+        """A reply with nothing to save, above the head, neither stops the sync nor counts as a
+        saved post (twt replies)."""
         self.assertTrue(self.engine.download(["fed:example_user|all"]).ok)
         text = File.text("note.txt", "a note")
-        self.ids = ["p0", "none1", "p1", "text1", "p2", "none2", "p3", "p4", "p5", "p6", "p7"]
+        self.ids = ["none1", "text1", "none2", *self.ids]
         self.post_files = {"none1": [], "none2": [], "text1": [text]}
         self.sync()
-        self.assertEqual(self.listed, ["p0", "none1", "p1", "text1", "p2", "none2", "p3", "p4"])
+        self.assertEqual(self.listed, ["none1", "text1", "none2", "p0", "p1", "p2", "p3"])
         self.assertEqual(self.finished[-1], True)
-
-    def test_a_saved_run_shorter_than_5_does_not_stop_it(self):
-        self.engine.download(["fed:example_user|all"])
-        # Remove two saved files in the middle: the 4 saved ones before it never reach 5,
-        # then a new one resets.
-        for name in ("p2", "p3"):
-            next(self.target_dir("fed", "example_user").rglob(f"*{name}.jpg")).unlink()
-            self.sql("DELETE FROM files WHERE key = ?", f"fed:{name}")
-        report = self.sync()
-        self.assertEqual(len(report.targets[0].written), 2)
-        # p0, p1 saved, p2 and p3 fetched again, then p4..p7: 4 saved in a row never stop it.
-        self.assertEqual(self.listed, self.ids)
 
     def test_without_a_record_or_after_an_interrupted_listing_sync_lists_everything(self):
         self.engine.download(["fed:example_user|all"])
@@ -526,7 +494,7 @@ class SyncStopTest(JobCase):
         # The listing reached its end, so it is recorded now, and the next sync stops.
         self.assertIsNotNone(self.record())
         self.sync()
-        self.assertEqual(self.listed, self.ids[:5])
+        self.assertEqual(self.listed, self.ids[:4])
 
         self.forget_record()
         self.fail_at = ["p6"]
@@ -538,30 +506,16 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.listed, self.ids)
         self.assertIsNotNone(self.record())
 
-    def test_download_stops_at_saved_posts_by_default_and_again_lists_all(self):
+    def test_download_stops_at_the_head_by_default_and_again_lists_all(self):
         self.engine.download(["fed:example_user|all"])
-        self.forget_head()
         self.listed.clear()
         report = self.engine.download(["fed:example_user|all"])
-        self.assertEqual(self.listed, self.ids[:5])
-        self.assertEqual((report.files, report.targets[0].skipped), (0, 5))
+        self.assertEqual(self.listed, self.ids[:4])
+        self.assertEqual((report.files, report.targets[0].skipped), (0, 4))
         self.listed.clear()
         report_again = self.engine.download(["fed:example_user|all"], again=True)
         self.assertEqual(self.listed, self.ids)
         self.assertEqual((report_again.files, report_again.targets[0].skipped), (0, 8))
-
-    def test_stop_after_in_the_config_changes_the_run_of_5_and_a_bad_value_is_a_usage_error(self):
-        self.engine.download(["fed:example_user|all"])
-        config = self.home.joinpath("config.toml")
-        config.write_text("[plugins.fed]\nstop_after = 3\n")
-        self.sync()
-        self.assertEqual(self.listed, self.ids[:3])
-        config.write_text("[plugins.fed]\nstop_after = 0\n")
-        # A bad setting stops the whole run as a usage error, before the source sends anything.
-        with self.assertRaises(UsageError) as caught:
-            self.engine.sync(["fed:example_user"])
-        self.assertIn("plugins.fed.stop_after is a whole number of at least 1",
-                      str(caught.exception))
 
     def test_a_feed_that_is_not_newest_first_is_never_stopped(self):
         listed = []
@@ -919,77 +873,21 @@ class CtrlCTest(JobCase):
 
 
 class HeadTest(JobCase):
-    """Smart sync, the head: a sync stops at the newest post an earlier run saw, and the post
-    after it."""
-
-    def setUp(self):
-        super().setUp()
-        # Each post's day: a later one is newer; a pinned post sits on top with an older day.
-        self.posts = [("p3", 3), ("p2", 2), ("p1", 1), ("p0", 1)]
-        self.listed = []
-        # The posts the site shows above its date order.
-        self.pinned = set()
-
-        async def posts(plugin, ctx, user):
-            for post_id, day in list(self.posts):
-                self.listed.append(post_id)
-                yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")],
-                           date=datetime.date(2026, 1, day), pinned=post_id in self.pinned)
-
-        heads = feed("hed", posts, newest_first=True, key="{post}", filename="{post}_{num}")
-        self.engine = Engine(home=self.home, sources={"hed": heads})
-
-    def heads(self):
-        return fakes.targets(self.home)["hed:example_user"].heads
-
-    def test_a_full_listing_keeps_its_newest_post_and_a_sync_stops_after_it(self):
-        self.assertTrue(self.engine.download(["hed:example_user|all"]).ok)
-        self.assertEqual(self.heads(), {"posts": "p3"})
-        self.listed.clear()
-        report = self.engine.sync(["hed:example_user"])
-        # The head and the post after it: nothing new, two posts read, not five.
-        self.assertEqual(self.listed, ["p3", "p2"])
-        self.assertEqual(report.files, 0)
-        self.assertIn("* posts: nothing new", self.lines())
-
-    def test_new_posts_above_the_head_are_saved_and_become_the_head(self):
-        self.engine.download(["hed:example_user|all"])
-        self.posts = [("n1", 5), ("n0", 4), *self.posts]
-        self.listed.clear()
-        report = self.engine.sync(["hed:example_user"])
-        self.assertEqual(self.listed, ["n1", "n0", "p3", "p2"])
-        self.assertEqual(sorted(path.stem for path in report.targets[0].written), ["n0_0", "n1_0"])
-        self.assertEqual(self.heads(), {"posts": "n1"})
-
-    def test_a_pinned_head_above_new_posts_neither_ends_the_sync_nor_becomes_the_head(self):
-        self.engine.download(["hed:example_user|all"])
-        # The site pinned the old head above two new posts, and the post after it too.
-        self.posts = [("p3", 3), ("n1", 5), ("n0", 4), ("p2", 2), ("p1", 1), ("p0", 1)]
-        report = self.engine.sync(["hed:example_user"])
-        self.assertEqual(sorted(path.stem for path in report.targets[0].written), ["n0_0", "n1_0"])
-        # The newest post by its day is the head now, not the pinned one listed first.
-        self.assertEqual(self.heads(), {"posts": "n1"})
-
-    def test_a_pinned_post_above_the_head_is_skipped_as_pinned(self):
-        self.engine.download(["hed:example_user|all"])
-        self.posts = [("p3", 3), ("p2", 2), ("n1", 5), ("n0", 4), ("p1", 1)]
-        self.pinned = {"p3", "p2"}
-        report = self.engine.sync(["hed:example_user"])
-        self.assertEqual(sorted(path.stem for path in report.targets[0].written), ["n0_0", "n1_0"])
-        self.assertEqual(self.heads(), {"posts": "n1"})
+    """A post a plugin yields in parts (TikTok's photos, all of one id) is one post to a sync."""
 
     def test_parts_of_one_post_count_once(self):
-        # A plugin yielding a photo post as one post per photo, all of one id (TikTok's).
-        self.posts = [("c1", 5), ("c1", 5), ("c1", 5), ("p3", 3)]
-        report = self.engine.download(["hed:example_user|all"], limit=1)
-        self.assertEqual(self.listed, ["c1", "c1", "c1", "p3"])
-        self.assertEqual(len(report.targets[0].written), 1)
+        listed = []
 
-    def test_a_listing_cut_short_keeps_the_head_it_had(self):
-        self.engine.download(["hed:example_user|all"])
-        self.posts = [("n1", 5), *self.posts]
-        self.engine.download(["hed:example_user|all"], limit=1)
-        self.assertEqual(self.heads(), {"posts": "p3"})
+        async def posts(plugin, ctx, user):
+            for post_id in ("c1", "c1", "c1", "p3"):
+                listed.append(post_id)
+                yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 1, 3))
+
+        engine = Engine(home=self.home, sources={"hed": feed(
+            "hed", posts, newest_first=True, key="{post}", filename="{post}_{num}")})
+        report = engine.download(["hed:example_user|all"], limit=1)
+        self.assertEqual(listed, ["c1", "c1", "c1", "p3"])
+        self.assertEqual(len(report.targets[0].written), 1)
 
 
 class RetryOrderTest(JobCase):
@@ -1146,7 +1044,7 @@ class ResumeTest(JobCase):
             async for page in ctx.pages(f"{API}/feed", cursor="next"):
                 for post_id in page.json["ids"]:
                     yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")],
-                               date=datetime.date(2026, 1, 1))
+                               date=dated(post_id))
 
         def answer(request):
             cursor = dict(request.url.params).get("cursor")
@@ -1188,9 +1086,8 @@ class ResumeTest(JobCase):
         self.assertEqual(self.row().cursors, {})
         self.assertIn("posts", self.row().complete)
 
-    def test_a_cursor_kept_for_a_listing_read_to_its_end_is_a_gap(self):
+    def test_a_cursor_kept_for_a_listing_read_to_its_end_is_dropped_by_a_sync(self):
         self.interrupted()
-        # Every post the failed run listed is saved meanwhile, as a later run would have.
         self.fail_on = "c2-unused"
         self.engine.download(["pgd:example_user|all"])
         self.feed[None] = (["n1", "n2"], "c0")
@@ -1200,9 +1097,9 @@ class ResumeTest(JobCase):
                  "pgd:example_user")
         self.cursors_fetched = []
         self.engine.download(["pgd:example_user|all"])
-        # The newest down to 5 saved posts in a row, then the gap.
-        self.assertEqual(self.cursors_fetched, [None, "c0", "c2"])
-        self.assertEqual((self.row().cursors, self.row().gaps), ({}, {}))
+        # The newest down to the head (the first post the last full read saw), and no cursor.
+        self.assertEqual(self.cursors_fetched, [None, "c0"])
+        self.assertEqual(self.row().cursors, {})
 
     def test_a_refused_cursor_is_dropped_and_the_listing_starts_over(self):
         self.interrupted()
@@ -1934,7 +1831,7 @@ class FolderOptionTest(JobCase):
         ])
         self.assertFalse((self.home / _store.MEDIA).exists())
 
-    def test_query_short_circuits_on_head_and_stop_after_and_again_and_when(self):
+    def test_query_short_circuits_on_head_and_again_and_when(self):
         from flnd.plugin import Range
 
         pages = [[10, 9], [8, 7, 6, 5, 4], [3, 2, 1]]
@@ -2001,7 +1898,7 @@ class FolderOptionTest(JobCase):
         self.assertTrue(r4.ok)
         self.assertEqual(seen_pages, [0, 1, 2])
 
-        # 5. Backward-compat: completed search with heads={} short-circuits on stop_after (5).
+        # 5. A completed search with no head reads every page, and keeps a head after.
         with _store.Store(self.home) as s:
             s.progress(Target("pgd:cats", kind="query"), cursors={}, complete=["query"],
                        heads={})
@@ -2015,7 +1912,7 @@ class FolderOptionTest(JobCase):
         seen_pages.clear()
         r5 = engine.sync()
         self.assertTrue(r5.ok)
-        self.assertEqual(seen_pages, [0, 1])  # 12,11 (2) + 8,7,6 (3) = 5 seen in a row!
+        self.assertEqual(seen_pages, [0, 1, 2])
         self.assertEqual(fakes.targets(self.home)["pgd:cats"].heads.get("query"), "pgd:12")
 
         # 6. Crash partway through (> SEEN_FLUSH=10) preserves already-flushed seen items.

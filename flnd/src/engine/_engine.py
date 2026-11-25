@@ -77,7 +77,7 @@ async def _child_done(
     route = next((r for r in run.source.routes if r.kind == kind), None)
     if route is None:
         return False
-    open_cats = set(child_row.cursors) | set(child_row.gaps)
+    open_cats = set(child_row.cursors)
     if not route.categories:
         return route.kind in child_row.complete and route.kind not in open_cats
     own = tuple(cat.name for cat in route.categories if cat.own)
@@ -90,36 +90,18 @@ async def _child_done(
     return True
 
 
-def _query_sync_state(
-    route: Any, row: store.TargetRow | None, stop_after: int, *, again: bool,
-) -> dict[str, Any]:
-    """Compute smart-sync state for a discovering query route."""
+def _query_sync_state(route: Any, row: store.TargetRow | None, *, again: bool) -> dict[str, Any]:
+    """Compute smart-sync state for a discovering query route: a search keeps the key of its
+    first target as its head, and a sync stops at it."""
     seen = set() if again else set(row.seen if row is not None else ())
     resuming = not again and row is not None and bool(row.cursors)
     complete = not again and row is not None and route.kind in row.complete
-    gaps = [] if (again or row is None) else list(row.gaps.get(route.kind, ()))
     head = None if (again or row is None) else row.heads.get(route.kind)
-    streak: int | None = stop_after
-    can_stop = route.newest_first and complete and not resuming
-    if can_stop and "" in gaps:
-        if head is not None:
-            streak = None
-        else:
-            can_stop = False
     return {
         "seen": seen, "resuming": resuming, "complete": complete,
-        "head": head, "streak": streak, "can_stop": can_stop,
+        "head": head if isinstance(head, str) else None,
+        "can_stop": route.newest_first and complete and not resuming,
     }
-
-
-def _should_stop_query(state: dict[str, Any], met_head: bool, seen_in_a_row: int) -> bool:
-    """Whether a discovering query has caught up to earlier runs."""
-    if not state["can_stop"]:
-        return False
-    if met_head and seen_in_a_row >= crawl.HEAD_IN_A_ROW:
-        return True
-    streak = state["streak"]
-    return streak is not None and seen_in_a_row >= streak
 
 
 async def _save_query_progress(
@@ -127,17 +109,14 @@ async def _save_query_progress(
     state: dict[str, Any], first_child: str | None, *,
     caught_up: bool, cut_short: bool, failed: bool,
 ) -> None:
-    """Persist `heads`, `complete`, `cursors`, and `gaps` after a query discovery run."""
+    """Persist `heads`, `complete` and `cursors` after a query discovery run; a run cut short
+    or failed leaves the head where it was."""
     if not failed and (caught_up or not cut_short):
         heads = ({kind: first_child}
                  if not state["resuming"] and first_child is not None else None)
         await run.off(functools.partial(
             db.progress, target, cursors={kind: None, "max_id": None}, complete=[kind],
-            heads=heads, gaps={kind: []},
-        ))
-    elif state["complete"] and not caught_up and (cut_short or failed):
-        await run.off(functools.partial(
-            db.progress, target, cursors={}, complete=[], gaps={kind: [""]},
+            heads=heads,
         ))
 # Targets active at once in a run (listing, or with more files queued than their places), and
 # targets listing at once per plugin: one for a plugin that reads in the browser,
@@ -458,7 +437,7 @@ class Engine:
 
     def target_clean(self, targets: Sequence[Target | str], *, media: bool = False,
                      ) -> list[TargetInfo]:
-        """Forget known targets: their rows, files rows, failures, cursors, heads and gaps.
+        """Forget known targets: their rows, files rows, failures, cursors and heads.
 
         With `media`, their recorded files, links and extracted folders go too, and
         the folders left empty. Files under `media/` no row names stay.
@@ -615,7 +594,7 @@ class Engine:
         categories = () if is_query else kept or tuple(self.sources[target.plugin].categories)
         complete = dict(row.complete) if row is not None else {}
         is_single = self._is_single(target)
-        open_cats = set(row.cursors) | set(row.gaps) if row is not None else set()
+        open_cats = set(row.cursors) if row is not None else set()
         pending = (
             tuple(cat for cat in categories if cat not in complete or cat in open_cats)
             if not is_query and not is_single else ()
@@ -765,15 +744,13 @@ class Engine:
         known_failures = (
             await run.off(db.target_failures) if db is not None and not options.again else {}
         )
-        state = _query_sync_state(route, row, run.config.stop_after, again=options.again)
+        state = _query_sync_state(route, row, again=options.again)
         seen_batch: list[str] = []
         discover_failed = False
         caught_up = False
         cut_short = False
         quota_skipped = False
         first_child: str | None = None
-        seen_in_a_row = 0
-        met_head = False
         taken = 0
         child_opts = replace(options, limit=None, query=target.value, link=None)
         planned = _planned(child_opts)
@@ -804,10 +781,7 @@ class Engine:
                             if db is not None and len(seen_batch) >= SEEN_FLUSH:
                                 await run.off(db.seen, target, seen_batch)
                                 seen_batch.clear()
-                        seen_in_a_row += 1
-                        if state["head"] is not None and child_key == state["head"]:
-                            met_head = True
-                        if _should_stop_query(state, met_head, seen_in_a_row):
+                        if state["can_stop"] and child_key == state["head"]:
                             caught_up = True
                             listing.caught_up = True
                             break
@@ -815,7 +789,6 @@ class Engine:
                     if options.limit is not None and taken >= options.limit:
                         cut_short = True
                         break
-                    seen_in_a_row = 0
                     self.tally.add(child, planned)
                     left_before = getattr(run.source, "_left", 0)
                     rep = await runner.target(child, child_opts)
@@ -895,7 +868,7 @@ class Engine:
         written: list[Path] = []
         skipped, child_failed, seen_to_mark, failed = 0, None, [], False
         route = next(r for r in run.source.routes if r.kind == target.kind)
-        state = _query_sync_state(route, row, run.config.stop_after, again=options.again)
+        state = _query_sync_state(route, row, again=options.again)
         state["seen"] = seen_keys
         outcome = {"caught_up": False, "cut_short": False, "first_child": None}
         try:
@@ -942,7 +915,6 @@ class Engine:
 
         db = run.settings.db
         skipped, new_count, child_failed = 0, 0, None
-        seen_in_a_row, met_head = 0, False
         child_opts = replace(options, limit=None, query=target.value, link=None)
         planned = _planned(child_opts)
         span = Range(options.since, options.until)
@@ -971,10 +943,7 @@ class Engine:
                         if db is not None and len(seen_to_mark) >= SEEN_FLUSH:
                             await run.off(db.seen, target, seen_to_mark)
                             seen_to_mark.clear()
-                    seen_in_a_row += 1
-                    if state["head"] is not None and child_key == state["head"]:
-                        met_head = True
-                    if _should_stop_query(state, met_head, seen_in_a_row):
+                    if state["can_stop"] and child_key == state["head"]:
                         outcome["caught_up"] = True
                         listing.caught_up = True
                         break
@@ -982,7 +951,6 @@ class Engine:
                 if new_count >= MAX_SYNC_NEW:
                     outcome["cut_short"] = True
                     break
-                seen_in_a_row = 0
                 new_count += 1
                 self.tally.add(child, planned)
                 left_before = getattr(run.source, "_left", 0)
@@ -1612,7 +1580,7 @@ def _target_status(
     if failed > 0:
         return "failed", failed
     at = row.last_sync if row is not None else ""
-    has_open = row is not None and (bool(row.cursors) or bool(row.gaps))
+    has_open = row is not None and bool(row.cursors)
     started = bool(complete or has_open or files or (row is not None and (row.heads or row.seen)))
     if not started and (not at or not is_single):
         return "new", 0

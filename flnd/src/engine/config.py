@@ -40,7 +40,7 @@ EXTENSION = re.compile(r"\.\w{1,16}$")
 PROXIES = ("http", "https", "socks5", "socks5h")
 # The keys an old config.toml may still hold; each gets one warning.
 GONE = frozenset({"height", "browser", "rate", "fresh", "sidecars", "dedupe", "switch", "again",
-                  "exec", "exec_timeout", "vault", "scroll"})
+                  "exec", "exec_timeout", "vault", "scroll", "stop_after"})
 # A speed: `"0"` for off, or a number and a unit per second, in units of 1024 (as `text.size`).
 SPEED = re.compile(r"(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)/s", re.IGNORECASE)
 UNITS = {"b": 1, "kb": 1024, "mb": 1024 ** 2, "gb": 1024 ** 3}
@@ -81,7 +81,6 @@ class PluginConfig(msgspec.Struct, frozen=True):
     pace: float | None = None
     limits: dict[str, int] = msgspec.field(default_factory=dict)
     proxy: str | None = None
-    stop_after: int = 5
     folder: str | None = None
     filename: str | None = None
     # The plugin's own `Settings` struct, or None for a plugin flnd wasn't given.
@@ -168,7 +167,6 @@ PLUGINS = {
                   lambda value: all(host and n >= 1 for host, n in value.items())),
     "proxy": Key(str, " or ".join(f'"{scheme}://<host>:<port>"' for scheme in PROXIES),
                  _proxy_ok),
-    "stop_after": Key(int, "a whole number of at least 1", lambda value: value >= 1),
     "folder": Key(str, "a template"),
     "filename": Key(str, "a template"),
 }

@@ -51,7 +51,7 @@ from flnd.errors import (
 from flnd.plugin import Category, File, Plugin, Post, Range, Route, Target
 from flnd.ui.log import ui
 from flnkit import files, text
-from flnkit.clock import day
+from flnkit.clock import day, stamp
 from flnkit.text import fill
 
 if TYPE_CHECKING:
@@ -85,7 +85,7 @@ class Options:
     # `--when`'s two days, both included; None is no limit on that side.
     since: datetime.date | None = None
     until: datetime.date | None = None
-    # A synced target with nothing lost stops a `newest_first` listing after 5 saved posts.
+    # A sync (a followed target, or `flnd sync`): its `newest_first` listings stop at their head.
     stop_at_saved: bool = False
     # Max discovered targets on a discovering route, or max posts on a normal target.
     limit: int | None = None
@@ -156,9 +156,9 @@ NOON = 12
 # Posts in a row older than `--when` that end a `newest_first` listing: more than the posts a
 # profile pins above its newest (Instagram pins up to 3).
 OLDER_IN_A_ROW = 5
-# Saved posts in a row, the head an earlier run saw counted, that end a sync once it met that
-# head: the head itself, and the post after it, which shows the head wasn't pinned above new ones.
-HEAD_IN_A_ROW = 2
+# Old posts in a row (the head itself, or older than it) that end a sync. A site pins up to 3
+# posts above its newest (ins, tik), so 4 can't be pins, marked or not.
+OLD_IN_A_ROW = 4
 # Template fields known only once a post's files are listed: a key that names one can't be
 # built from the post alone, so a lazy post's files must be listed to tell if it is saved.
 LISTED_FIELDS = frozenset({"count", "index", "extension", "path", "dir", "file"})
@@ -1214,9 +1214,8 @@ class Downloads:
 
         Args:
             error: what ended the listing. After a listing that failed, every file handed over
-                runs to its end: the gap's cursor is kept after them, so a file dropped here
-                would never be listed again. After a stop (`Stopped`, Ctrl-C) the files still
-                queued are dropped, and the running ones finish.
+                runs to its end, so none of the files it found is wasted. After a stop (`Stopped`,
+                Ctrl-C) the files still queued are dropped, and the running ones finish.
 
         Returns:
             The paths written, in the order they landed.
@@ -1347,7 +1346,7 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
 
     1. Sweep stale parts, make its ledger and downloads, and read its row.
     2. List it and wait for its downloads (`_execute_listing`), then make the held links.
-    3. Keep its listings' cursors, heads, gaps and completeness (`Home.progress`); a found
+    3. Keep its listings' cursors, heads and completeness (`Home.progress`); a found
        target of a search keeps nothing, since the search's row keeps what it found.
     4. A target that ran to its end clears its whole-target failure and recounts its files.
     5. Report it, and end its rows (`_ended`).
@@ -1413,7 +1412,7 @@ def _keep(db: store.Store, target: Target, options: Options, progress: _Progress
     # A target a search found has no row of its own: the search's row keeps what it found.
     if not options.query:
         db.progress(target, cursors=progress.cursors(), complete=progress.complete,
-                    heads=progress.heads, gaps=progress.gaps)
+                    heads=progress.heads)
     if finished:
         # A failure of the whole target is over once it ran to its end.
         db.clear(store.key(target))
@@ -1428,49 +1427,27 @@ class _Progress:
 
     def __init__(self, row: store.TargetRow | None, *, again: bool) -> None:
         earlier = row if row is not None and not again else None
+        self.again = again
         # Each listing an earlier run read to its end, with the day it did.
         self.listed: Mapping[str, str] = earlier.complete if earlier is not None else {}
         # The cursor each cut-short listing was reading.
         self.started: Mapping[str, str] = earlier.cursors if earlier is not None else {}
         # The newest post each listing had when an earlier run read it from the top.
-        self.seen_heads: Mapping[str, str] = earlier.heads if earlier is not None else {}
-        # Where earlier syncs of each listing were cut short, newest first.
-        self._gaps: Mapping[str, list[str]] = earlier.gaps if earlier is not None else {}
+        self.seen_heads: Mapping[str, Any] = earlier.heads if earlier is not None else {}
         # This run's listings, by name ("" for a route's own), the ones it read to their end,
-        # their heads, and the gaps the syncs leave.
+        # and their heads.
         self.listings: dict[str, Listing] = {}
         self.complete: list[str] = []
-        self.heads: dict[str, str] = {}
-        self.gaps: dict[str, list[str]] = {}
-
-    def gaps_of(self, name: str) -> list[str]:
-        """A listing's gaps from earlier syncs, newest first.
-
-        A cursor kept for a listing already read to its end is a gap too: a sync cut short,
-        from a flnd that kept it as the listing's cursor.
-
-        Args:
-            name: the listing's name; "" for a route's own posts.
-
-        Returns:
-            The gaps' cursors; "" for a gap with no cursor.
-        """
-        found = list(self._gaps.get(name, ()))
-        old = self.started.get(name)
-        if old and name in self.listed and old not in found:
-            found.append(old)
-        return found
+        self.heads: dict[str, dict[str, Any]] = {}
 
     def cursors(self) -> dict[str, str | None]:
         """Each listing's cursor to keep: the page it was reading, or None when it ran out.
-
-        A sync keeps gaps instead (`gaps`), so its listing's cursor is dropped.
 
         Returns:
             Each listing's cursor by name, as `Home.progress` takes them.
         """
         return {
-            name: None if name in self.complete or name in self.gaps else listing.cursor
+            name: None if name in self.complete else listing.cursor
             for name, listing in self.listings.items()
         }
 
@@ -1632,16 +1609,19 @@ class _Kept:
     """The posts a route or category yields, filtered by `--when`: an async iterator."""
 
     def __init__(self, yielded: Any, category: str, *, newest_first: bool,
-                 span: Range) -> None:
+                 span: Range, stops: _Stops | None = None) -> None:
         self.category, self.newest_first, self.time = category, newest_first, span
         self.ran_out = False
         self.stopped_at_since = False
+        # Whether a sync met 4 old posts in a row (`_Stops`) and stopped there.
+        self.reached = False
+        self._stops = stops or _Stops()
         # The targets the listing yielded, in order, each as the source wrote it.
         self.linked: list[Target] = []
-        # The newest post listed, by its day (the first one, while none has a day): the head a
-        # later sync stops at.
-        self.newest: str | None = None
-        self._newest_day: datetime.date | None = None
+        # The newest post listed by its time (the first of a tie), as `{"id", "ts"}`; the first
+        # post that isn't pinned while none has a time: the head a later sync goes by.
+        self.head: dict[str, Any] | None = None
+        self._best: Any = None
         # Posts it queued files of, counted by `_queue_listed`: none means nothing new.
         self.queued = 0
         # The ids of the pinned posts it yielded.
@@ -1655,10 +1635,13 @@ class _Kept:
         return self._iter
 
     async def _kept(self) -> AsyncIterator[Post]:
-        """Yield kept posts, stopping early after 5 older posts on `newest_first` feeds."""
+        """Yield kept posts, stopping early after a sync's 4 old posts in a row, or after 5 older
+        than `--when`, on `newest_first` feeds."""
         older = 0
+        counted: str | None = None
+        old_run = 0
         # A post a source yields in parts (TikTok yields each photo of a photo post as a post of
-        # the same id) is one post to the streaks: only its first part counts.
+        # the same id) is one post to the run of older posts: only its first part counts.
         last: str | None = None
         async for post in self._steps:
             if isinstance(post, Target):
@@ -1675,15 +1658,26 @@ class _Kept:
             # A single route has no categories: its post names its own, with its owner.
             post = _Filed(post, self.category or (post.owner and post.category) or "")
             posted = day(post.date)
+            stale = False
             if pinned:
                 self.pinned.add(post.id)
             else:
-                self._note(post.id, listed)
+                self._note(post)
+                if self._stops.sync and post.id != counted:
+                    counted = post.id
+                    old_run = old_run + 1 if self._stops.old(post) else 0
+                    stale = old_run >= OLD_IN_A_ROW
             if posted in self.time:
                 older = older if pinned else 0
                 last = post.id
                 yield post
+                if stale:
+                    self.reached = True
+                    return
                 continue
+            if stale:
+                self.reached = True
+                return
             since = self.time.since
             if self.newest_first and since and listed and listed < since and not pinned:
                 older += post.id != last
@@ -1693,17 +1687,19 @@ class _Kept:
                     return
         self.ran_out = True
 
+    def _note(self, post: Any) -> None:
+        """Keep `post`, one that isn't pinned, as the head if it is the first, or the newest."""
+        moment = stamp(post.listed)
+        when = moment if moment is not None else day(post.listed)
+        if self.head is None or (when is not None and (
+                self._best is None or _newer(when, self._best))):
+            self.head, self._best = _head(post), when
+
     async def aclose(self) -> None:
         """Close the listing, and the generator under it."""
         if self._iter is not None:
             await self._iter.aclose()  # type: ignore[attr-defined]
         await self._steps.aclose()
-
-    def _note(self, post: str, posted: datetime.date | None) -> None:
-        """Keep `post` as the newest so far when it is the first, or newer than the newest."""
-        if self.newest is None or (
-                posted is not None and (self._newest_day is None or posted > self._newest_day)):
-            self.newest, self._newest_day = post, posted
 
 
 class _Filed:
@@ -1851,21 +1847,82 @@ def _at_limit(run: PluginRun, yielded: set[Target], limit: int | None) -> bool:
     return run.settings.stop.soon.is_set() or (limit is not None and len(yielded) >= limit)
 
 
-@dataclass(frozen=True)
-class _Stops:
-    """When a sync of a listing has caught up: the engine's early stop at saved posts."""
+def _head(post: Any) -> dict[str, Any]:
+    """A listing's head from its newest post: its id, and its time (Unix seconds when the post
+    has a time of day, else its day as `YYYY-MM-DD`, else None)."""
+    moment = stamp(post.listed)
+    posted = day(post.listed)
+    return {"id": post.id,
+            "ts": moment if moment is not None else posted.isoformat() if posted else None}
 
-    sync: bool = False
-    streak: int | None = 5
-    head: str | None = None
+
+def _newer(a: Any, b: Any) -> bool:
+    """Whether time `a` is strictly after `b`: Unix seconds, or a day (days compare as days)."""
+    if isinstance(a, float) and isinstance(b, float):
+        return a > b
+    return (day(a) or datetime.date.min) > (day(b) or datetime.date.min)
+
+
+class _Stops:
+    """Where a sync of a `newest_first` listing stops: after 4 old posts in a row. A post is old
+    when it is the head, or strictly older than the head's time (never equal: posts that share a
+    second or a day with the head may be new). A post with no time is never old by time, and a
+    marked pinned post is skipped. No pin mark is trusted: the head is the newest post by time,
+    and 4 in a row can't be pins.
+
+    Args:
+        sync: whether this pass stops at its head; a first download doesn't.
+        head: what an earlier run stored: `{"id", "ts"}`, or the bare id an older home kept.
+    """
+
+    def __init__(self, sync: bool = False, head: Any = None) -> None:
+        self.sync, self.raw = sync, head
+        self.id: str | None = None
+        self.ts: float | None = None
+        self.day: datetime.date | None = None
+        if isinstance(head, str):
+            self.id = head
+        elif isinstance(head, dict):
+            self.id = head.get("id")
+            when = head.get("ts")
+            if isinstance(when, str):
+                self.day = datetime.date.fromisoformat(when)
+            elif isinstance(when, (int, float)) and not isinstance(when, bool):
+                self.ts, self.day = float(when), day(when)
+
+    def old(self, post: Any) -> bool:
+        """Whether `post`, one that isn't pinned, is the head or strictly older than it."""
+        if post.id == self.id:
+            if self.day is None:
+                # A head with no time (a bare id): the head post gives it for the rest of the pass.
+                self.ts, self.day = stamp(post.listed), day(post.listed)
+            return True
+        return self._older(post)
+
+    def _older(self, post: Any) -> bool:
+        if self.day is None:
+            return False
+        moment = stamp(post.listed) if self.ts is not None else None
+        if moment is not None:
+            return moment < self.ts
+        posted = day(post.listed)
+        return posted is not None and posted < self.day
+
+    def syncing(self) -> _Stops:
+        """The same head, for a pass that stops at it."""
+        return _Stops(True, self.raw)
+
+    @property
+    def known(self) -> bool:
+        """Whether an earlier run stored a head."""
+        return self.id is not None
 
 
 async def _queue_all(
-    work: _Work, kept: _Kept, *, stops: _Stops = _Stops(), limit: int | None = None,
-    listing: Listing | None = None,
+    work: _Work, kept: _Kept, *, limit: int | None = None, listing: Listing | None = None,
 ) -> tuple[Ended, int]:
     """Queue kept posts, then release held undated posts."""
-    ended, taken = await _queue_listed(work, kept, stops=stops, limit=limit, listing=listing)
+    ended, taken = await _queue_listed(work, kept, limit=limit, listing=listing)
     if ended is Ended.STOPPED:
         return ended, taken
     for post in await work.ledger.release():
@@ -1880,13 +1937,11 @@ async def _queue_all(
 
 
 async def _queue_listed(
-    work: _Work, kept: _Kept, *, stops: _Stops, limit: int | None = None,
-    listing: Listing | None = None,
+    work: _Work, kept: _Kept, *, limit: int | None = None, listing: Listing | None = None,
 ) -> tuple[Ended, int]:
-    """Queue each post in `kept` until stopped, `limit`, or a sync caught up (`_Stops`)."""
-    saved_in_a_row = 0
+    """Queue each post in `kept` until it ends: it ran out, a sync met its old posts (`_Stops`),
+    it hit `limit`, or the run stopped."""
     taken = 0
-    met_head = False
     # Consecutive parts of one post (the same id, as `_Kept` says) count once, for `--limit` too.
     last: str | None = None
     stop = work.downloads.settings.stop.soon
@@ -1906,29 +1961,18 @@ async def _queue_listed(
                 kept.queued += outcome is Outcome.QUEUED
                 continue
             if part:
-                # A part saved like the rest leaves the streak as it was; a new part breaks it.
-                if outcome is Outcome.QUEUED:
-                    kept.queued, saved_in_a_row = kept.queued + 1, 0
+                kept.queued += outcome is Outcome.QUEUED
                 continue
             taken += 1
             kept.queued += outcome is Outcome.QUEUED
             if listing is not None and outcome is Outcome.QUEUED:
                 listing.queued += 1
-            saved_in_a_row = saved_in_a_row + 1 if outcome is Outcome.SAVED else 0
-            met_head = met_head or (stops.head is not None and post.id == stops.head)
             # `--limit` is checked as the next post comes, not here: the next may be another part
             # of this one. That reads one more item of the listing, never one more post.
-            if not stops.sync:
-                continue
-            if met_head and saved_in_a_row >= HEAD_IN_A_ROW:
-                # The caller says "nothing new", or jumps into the listing's gaps.
-                return Ended.CAUGHT_UP, taken
-            if stops.streak is not None and saved_in_a_row >= stops.streak:
-                ui.info("{category}: {count} saved posts in a row, caught up",
-                        category=kept.category or "posts", count=saved_in_a_row)
-                return Ended.CAUGHT_UP, taken
     finally:
         await kept.aclose()
+    if kept.reached:
+        return Ended.CAUGHT_UP, taken
     return (Ended.RAN_OUT if kept.ran_out else Ended.CUT), taken
 
 
@@ -2059,11 +2103,7 @@ async def _list_one(
 ) -> tuple[Ended, int]:
     """List one category (or a route's own posts) into `work`, and note where it ended."""
     ui.debug("{target}: list {name}", target=str(target), name=name or target.kind)
-    stops = _Stops(
-        sync=newest_first and name in progress.listed,
-        streak=run.config.stop_after,
-        head=progress.seen_heads.get(name),
-    )
+    stops = _Stops(newest_first and name in progress.listed, progress.seen_heads.get(name))
     if stops.sync:
         return await _sync_one(work, run, site, target, options, progress, name=name,
                                items=items, stops=stops, remaining=remaining)
@@ -2075,28 +2115,42 @@ async def _list_one(
         ui.info("{target}: {name}: going on where an interrupted run stopped",
                 target=str(target), name=name or target.kind)
         await run.settings.emit(RESUMING)
-    ended, taken, kept = await _listed(work, run, site, name, newest_first, items, listing,
-                                       stops, options, remaining)
+    try:
+        ended, taken, kept = await _listed(work, run, site, name, newest_first, items, listing,
+                                           stops, options, remaining)
+    except BaseException:
+        _keep_top(progress, name, listing, newest_first and not start)
+        raise
     if ended is Ended.CUT and kept.stopped_at_since:
         listing.cursor = None
-    if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP):
+    if ended is Ended.RAN_OUT:
         progress.complete.append(name)
-        if not start and kept.newest is not None:
-            progress.heads[name] = kept.newest
-    if ended is Ended.RAN_OUT and start and listing.taken and not listing.refused:
+        if not start and kept.head is not None:
+            progress.heads[name] = kept.head
+    elif ended in (Ended.CUT, Ended.STOPPED):
+        _keep_top(progress, name, listing, newest_first and not start)
+    if ended is Ended.RAN_OUT and start and listing.taken and not listing.refused and stops.known:
         # The run that saved the cursor was cut short, so posts newer than those it saw may
-        # have come since: list from the newest down to the saved posts.
+        # have come since: list from the newest down to the head it kept.
         rest = None if remaining is None else remaining - taken
         if rest is None or rest > 0:
             ui.debug("{target}: list {name} from the newest", target=str(target),
                      name=name or target.kind)
+            down = stops.syncing()
             ended, extra, newest = await _listed(
-                work, run, site, name, True, items, Listing(),
-                replace(stops, sync=True), options, rest)
+                work, run, site, name, True, items, Listing(head=down.id, sync=True), down,
+                options, rest)
             taken += extra
-            if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and newest.newest is not None:
-                progress.heads[name] = newest.newest
+            if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and newest.head is not None:
+                progress.heads[name] = newest.head
     return ended, taken
+
+
+def _keep_top(progress: _Progress, name: str, listing: Listing, fresh: bool) -> None:
+    """Keep the head of a first download that was cut short (with its cursor), so that once it
+    runs out, the newer posts that came meanwhile are read down to it."""
+    if fresh and not progress.again and listing.cursor and listing.top is not None:
+        progress.heads[name] = listing.top
 
 
 async def _sync_one(
@@ -2104,74 +2158,27 @@ async def _sync_one(
     progress: _Progress, *, name: str, items: Callable[[], Awaitable[Any]], stops: _Stops,
     remaining: int | None,
 ) -> tuple[Ended, int]:
-    """Sync a `newest_first` listing an earlier run read to its end: the newest, then its gaps."""
-    gaps = progress.gaps_of(name)
-    label = f"{target}: {name or target.kind}"
-    cursorless = "" in gaps
-    if cursorless:
-        stops = replace(stops, streak=None) if stops.head is not None else replace(stops,
-                                                                                    sync=False)
-    listing = progress.listings[name] = Listing(None, label=label, head=stops.head, sync=True)
+    """Sync a `newest_first` listing an earlier run read to its end: from the newest down to its
+    head. The head moves only when the pass reaches it or the end; a pass cut short, or failed,
+    leaves it, so the next one reads down to it again (the saved posts cost no request)."""
+    listing = progress.listings[name] = Listing(
+        None, label=f"{target}: {name or target.kind}", head=stops.id, sync=True)
     work.ledger.tally.start(target, name, listing)
-    # 1. The newest posts. A listing that raises (the site failed it) is cut short like any:
-    # where it was is kept as a gap before the error goes on to fail the target.
     try:
         ended, taken, kept = await _listed(work, run, site, name, True, items, listing, stops,
                                            options, remaining)
-    except BaseException:
-        progress.gaps[name] = list(dict.fromkeys([listing.cursor or "", *gaps]))
-        raise
-    queued = kept.queued
-    if ended is Ended.CUT and kept.stopped_at_since:
+    finally:
+        # A cut sync keeps no cursor: the next one starts from the newest.
         listing.cursor = None
+    if ended is Ended.CUT and kept.stopped_at_since:
         ended = Ended.RAN_OUT
-        left = list(gaps)
-    elif ended is Ended.RAN_OUT or (ended is Ended.CAUGHT_UP and cursorless):
-        left = []
-    elif ended is Ended.CAUGHT_UP:
-        # 2. Into each gap, newest first.
-        left = list(gaps)
-        while left:
-            rest = None if remaining is None else remaining - taken
-            if rest is not None and rest <= 0:
-                ended = Ended.CUT
-                break
-            ui.info("{target}: resuming from the last run", target=label)
-            await run.settings.emit(RESUMING)
-            jump = progress.listings[name] = Listing(left[0], label=label)
-            work.ledger.tally.start(target, name, jump)
-            try:
-                ended, extra, filled = await _listed(work, run, site, name, True, items, jump,
-                                                     stops, options, rest)
-            except BaseException:
-                progress.gaps[name] = [jump.cursor or left[0], *left[1:]]
-                raise
-            taken, queued = taken + extra, queued + filled.queued
-            if jump.refused:
-                # The site no longer pages from the gap's cursor, and listed from the newest
-                # instead: the next sync reads down to the head, past the gap.
-                left = list(dict.fromkeys(["", *left[1:]]))
-                break
-            if ended is Ended.RAN_OUT:
-                # The listing's end is below every gap.
-                left = []
-            elif ended is Ended.CAUGHT_UP:
-                left = left[1:]
-            else:
-                left = [jump.cursor or left[0], *left[1:]]
-                break
-    else:
-        # 3. Cut short at the top: a new gap above the old ones.
-        left = list(dict.fromkeys([listing.cursor or "", *gaps]))
-    progress.gaps[name] = left
     if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP):
         progress.complete.append(name)
-        if not left and kept.newest is not None:
-            progress.heads[name] = kept.newest
-    if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and not queued and not gaps:
-        # 4. Nothing new.
-        ui.info("{category}: nothing new", category=name or "posts")
-        await run.settings.emit(Skipped(target, name, "", None, reason=NOTHING_NEW))
+        if kept.head is not None:
+            progress.heads[name] = kept.head
+        if not kept.queued:
+            ui.info("{category}: nothing new", category=name or "posts")
+            await run.settings.emit(Skipped(target, name, "", None, reason=NOTHING_NEW))
     return ended, taken
 
 
@@ -2269,15 +2276,18 @@ async def _listed(
 ) -> tuple[Ended, int, _Kept]:
     """Run one listing with `listing` set on the site, queueing what it yields into `work`."""
     site.listing = listing
+    kept = None
     try:
         kept = _Kept(await items(), name, newest_first=newest_first,
-                     span=Range(options.since, options.until))
-        ended, taken = await _queue_all(work, kept, stops=stops, limit=remaining, listing=listing)
+                     span=Range(options.since, options.until), stops=stops)
+        ended, taken = await _queue_all(work, kept, limit=remaining, listing=listing)
         if ended is Ended.RAN_OUT and listing.stalled:
             # A feed the stall guard ended is cut short, so the category is not complete.
             ended = Ended.CUT
     finally:
         site.listing = None
+        if kept is not None:
+            listing.top = kept.head
     work.linked.extend(kept.linked)
     return ended, taken, kept
 

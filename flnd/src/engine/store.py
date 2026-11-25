@@ -1,5 +1,5 @@
-"""`flnd.db`, schema 4: its tables, the migrations from versions 2 and 3, its rows and queries, and
-`check`, which compares the rows with the disk and repairs them. SPEC.md#for-developers
+"""`flnd.db`, schema 5: its tables, the migrations from versions 2, 3 and 4, its rows and queries,
+and `check`, which compares the rows with the disk and repairs them. SPEC.md#for-developers
 explains it.
 """
 
@@ -38,15 +38,16 @@ __all__ = ["FailureRow", "FileRow", "RunRow", "State", "Store", "TargetRow",
 MEDIA, METADATA = Path("media"), Path("metadata")
 DB = METADATA / "flnd.db"
 SECRETS = METADATA / "secret.db"
-# Where a version-2 or version-3 `flnd.db` is copied, whole, before its migration.
+# Where a version-2, version-3 or version-4 `flnd.db` is copied, whole, before its migration.
 BACKUP_V2 = METADATA / "flnd.v2.db"
 BACKUP_V3 = METADATA / "flnd.v3.db"
-VERSION = "4"
+BACKUP_V4 = METADATA / "flnd.v4.db"
+VERSION = "5"
 # What a migrated home that still has a `secret.db` is told, once.
 LOGINS_NOTICE = "logins are cookie files now: flnd auth login <code> <file>"
 
 SCHEMA = """
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '4'
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '5'
 CREATE TABLE files (
     key TEXT PRIMARY KEY, target TEXT NOT NULL, plugin TEXT NOT NULL,
     post_id TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '', path TEXT NOT NULL,
@@ -66,10 +67,9 @@ CREATE TABLE targets (
     key TEXT PRIMARY KEY, plugin TEXT NOT NULL, value TEXT NOT NULL, kind TEXT NOT NULL,
     follow INTEGER NOT NULL DEFAULT 0, categories TEXT NOT NULL DEFAULT '[]', query TEXT,
     complete TEXT NOT NULL DEFAULT '{}', cursors TEXT NOT NULL DEFAULT '{}',
-    seen TEXT NOT NULL DEFAULT '[]', last_sync TEXT NOT NULL DEFAULT '',
+    last_sync TEXT NOT NULL DEFAULT '',
     files INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
-    heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}',
-    folder TEXT
+    heads TEXT NOT NULL DEFAULT '{}', folder TEXT
 ) WITHOUT ROWID;
 CREATE TABLE target_seen (
     target TEXT NOT NULL, item TEXT NOT NULL, ord INTEGER NOT NULL,
@@ -120,7 +120,7 @@ ROW_SELECT = ("key, target, path, size, mtime, post_id, category, date, estimate
               " at, files, unpacked, folder, extracted")
 STEP_COLUMNS = frozenset({"path", "size", "mtime", "unpacked", "folder", "extracted"})
 TARGET_COLUMNS = ("key", "plugin", "value", "kind", "follow", "categories", "query", "complete",
-                  "cursors", "seen", "last_sync", "files", "bytes", "heads", "gaps", "folder")
+                  "cursors", "last_sync", "files", "bytes", "heads", "folder")
 FAILURE_SELECT = ("key, target, post_id, category, file, cursor, attempts, class, message, hint,"
                   " retryable, url, run, at")
 
@@ -190,11 +190,10 @@ class TargetRow(msgspec.Struct):
     last_sync: str = ""
     files: int = 0
     bytes: int = 0
-    # Each listing's newest post a run that read it from the top saw, where a sync stops.
-    heads: dict[str, str] = {}
-    # Each listing's gaps: where cut-short syncs stopped, newest first; "" is a gap with no
-    # cursor, which the next sync reads down to the head instead.
-    gaps: dict[str, list[str]] = {}
+    # Each listing's newest post a run that read it from the top saw, where a sync stops: for
+    # posts `{"id": ..., "ts": ...}` (Unix seconds, a day as `YYYY-MM-DD`, or null; an old home
+    # keeps the bare id), for a search the key of its first target.
+    heads: dict[str, Any] = {}
     # For a followed search: the `--folder` its hits go to, which a plain sync reuses.
     folder: str | None = None
 
@@ -292,15 +291,15 @@ def open(home: Path, *, loop: bool = False) -> Store:
 
 
 def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
-    """Set the pragmas, then make schema 4 or migrate an older one, in one transaction."""
+    """Set the pragmas, then make schema 5 or migrate an older one, in one transaction."""
     sql.execute(f"PRAGMA busy_timeout = {OTHER_BUSY_MS}")
     sql.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
     sql.execute(f"PRAGMA wal_autocheckpoint = {0 if loop else OTHER_CHECKPOINT_PAGES}")
     old = _version(sql)
     if old == "1":
         raise UsageError(f"{home} is from an old flnd; start a new home")
-    if old in ("2", "3"):
-        _backup(sql, home / (BACKUP_V2 if old == "2" else BACKUP_V3), old)
+    if old in ("2", "3", "4"):
+        _backup(sql, home / {"2": BACKUP_V2, "3": BACKUP_V3, "4": BACKUP_V4}[old], old)
     notice = False
     sql.execute("BEGIN IMMEDIATE")
     try:
@@ -310,10 +309,11 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
                 sql.execute(statement)
             sql.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
             sql.execute("INSERT INTO meta VALUES ('keys', '2')")
-        elif version in ("2", "3"):
+        elif version in ("2", "3", "4"):
             if version == "2":
                 _drop_accounts(sql)
-            _drop_hashes(sql)
+            if version in ("2", "3"):
+                _drop_hashes(sql)
             sql.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (VERSION,))
         elif version != VERSION:
             raise UsageError(f"home schema {version!r} needs a newer flnd",
@@ -335,7 +335,12 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
             for statement in STATEMENTS:
                 if "target_seen" in statement:
                     sql.execute(statement)
+        if version and "seen" in _columns(sql, "targets"):
+            # `target_seen` replaced `targets.seen`: keep what only the old column holds.
             _backfill_seen(sql)
+            sql.execute("ALTER TABLE targets DROP COLUMN seen")
+        if version and "gaps" in _columns(sql, "targets"):
+            sql.execute("ALTER TABLE targets DROP COLUMN gaps")
         sql.execute("COMMIT")
     except BaseException:
         if sql.in_transaction:
@@ -894,18 +899,15 @@ class Store:
             )
 
     def progress(self, target: _Target, *, cursors: Mapping[str, str | None],
-                 complete: Sequence[str], heads: Mapping[str, str] | None = None,
-                 gaps: Mapping[str, Sequence[str]] | None = None) -> None:
+                 complete: Sequence[str], heads: Mapping[str, Any] | None = None) -> None:
         """Keep where a target's listings stopped, after its run.
 
         Args:
             cursors: each category's cursor to resume from; None drops it.
             complete: the categories listed to their end today.
             heads: each listing's newest post, for listings read from the top; None keeps.
-            gaps: each listing's gaps, newest first; an empty list drops them, and a listing
-                left out keeps its own.
         """
-        if not cursors and not complete and not heads and not gaps:
+        if not cursors and not complete and not heads:
             return
         today = datetime.datetime.fromtimestamp(clock.wall(), datetime.UTC).date().isoformat()
         with self._db.transaction():
@@ -915,8 +917,6 @@ class Store:
             row.cursors = {name: value for name, value in merged.items() if value}
             row.complete = {**row.complete, **dict.fromkeys(complete, today)}
             row.heads = {**row.heads, **(heads or {})}
-            kept = {**row.gaps, **{name: list(found) for name, found in (gaps or {}).items()}}
-            row.gaps = {name: found for name, found in kept.items() if found}
             self._put(row)
 
     def tally(self, target: _Target) -> None:
@@ -937,8 +937,8 @@ class Store:
                        f" VALUES ({', '.join('?' * len(TARGET_COLUMNS))})",
                        (row.key, row.plugin, row.value, row.kind, int(row.follow),
                         _json(list(row.categories)), row.query, _json(row.complete),
-                        _json(row.cursors), _json(row.seen), row.last_sync, row.files,
-                        row.bytes, _json(row.heads), _json(row.gaps), row.folder))
+                        _json(row.cursors), row.last_sync, row.files, row.bytes,
+                        _json(row.heads), row.folder))
 
     # -- plugins' state ---------------------------------------------------------------------
 
@@ -1046,11 +1046,11 @@ def _file_row(found: tuple[Any, ...]) -> FileRow:
 
 
 def _target_row(found: tuple[Any, ...]) -> TargetRow:
-    (item, plugin, value, kind, follow, categories, query, complete, cursors, seen, last_sync,
-     count, size, heads, gaps, folder) = found
+    (item, plugin, value, kind, follow, categories, query, complete, cursors, last_sync,
+     count, size, heads, folder) = found
     return TargetRow(item, plugin, value, kind, bool(follow), tuple(json.loads(categories)),
-                     query, json.loads(complete), json.loads(cursors), json.loads(seen),
-                     last_sync, count, size, json.loads(heads), json.loads(gaps), folder)
+                     query, json.loads(complete), json.loads(cursors), [], last_sync, count,
+                     size, json.loads(heads), folder)
 
 
 def _failure_row(found: tuple[Any, ...]) -> FailureRow:

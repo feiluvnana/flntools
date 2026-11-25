@@ -300,7 +300,7 @@ def target_retry(args: argparse.Namespace) -> int:
 
 
 def target_clean(args: argparse.Namespace) -> int:
-    """Forget targets: their rows, files rows, failures, cursors, heads and gaps.
+    """Forget targets: their rows, files rows, failures, cursors and heads.
 
     --media also deletes their recorded files, links, extracted folders and the
     folders left empty. Files under media/ that nothing recorded are never deleted.

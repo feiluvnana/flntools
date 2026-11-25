@@ -1014,7 +1014,7 @@ class PluginRun:
     web: net.Client
     # The files' downloads, over the same session and limits: stopped by the second Ctrl-C.
     files: net.Client
-    # The plugin's `[plugins.<code>]` settings in config.toml: pace, limits, proxy, stop_after,
+    # The plugin's `[plugins.<code>]` settings in config.toml: pace, limits, proxy,
     # its templates and its own `Settings`, each over what its class says.
     config: PluginConfig = field(default_factory=PluginConfig)
     # The posts its `date` hook had no day for, read once for the run (`crawl.asked`).
@@ -1567,6 +1567,9 @@ class Listing:
         self.stalled = False
         # Whether a discovering query stopped early because it caught up to its head/seen.
         self.caught_up = False
+        # The newest post of it by time, as the crawl's head (`crawl._head`), kept for the
+        # crawl even when the listing fails.
+        self.top: dict[str, Any] | None = None
 
 
 class Resume:

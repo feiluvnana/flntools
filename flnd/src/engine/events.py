@@ -363,7 +363,7 @@ class Tracked(msgspec.Struct, frozen=True):
     status: str = ""
     # Pending failed files (not NotFound and not saved since).
     failed: int = 0
-    # Categories not yet completed (missing from complete, or with open cursors or gaps).
+    # Categories not yet completed (missing from complete, or with open cursors).
     pending: tuple[str, ...] = ()
 
 

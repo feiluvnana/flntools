@@ -604,13 +604,23 @@ early. What a run skips and where it stops:
 - A gone file: a 404 or 410 records it `gone`; it is not asked for again unless `--again`
 - Failed files: each `get` of a target first retries that target's failed files, on at most 3 later
   runs per file; a post is listed again from its page's cursor for fresh links
-- Nothing new: a newest-first category or search keeps its head; a sync stops after the head and
-  the post after it, one request when the site pages by cursor (`Skipped`, reason `nothing new`)
-- Caught up: after 5 saved posts or seen search targets in a row (`[plugins.<code>] stop_after`);
-  a search records its head and incrementally flushes seen targets, and respects `--when` on sync
+- Caught up, one rule: a newest-first category keeps its head, `{"id", "ts"}`: its newest post by
+  time (the first of a tie; a post with no time is the head only when none has one), with that time
+  (Unix seconds when the site gives a time of day, else its day). A post is old when it is the head,
+  or strictly older than the head's time (never equal: posts of the head's second or day may be new;
+  a day against a time compares days; a post with no time is never old by time). A sync stops after
+  4 old posts in a row; a new post resets the count, and a post marked `pinned` is skipped. No pin
+  mark is trusted: 4 is above every site's pin limit (ins 3, tik 3, twt 1, thr 1). A head with no
+  time (an older home kept the bare id) takes the time of its post when the pass meets it; if that
+  post is gone, the listing is read whole once. A listing with
+  nothing new is one request when the site pages by cursor (`Skipped`, reason `nothing new`). A
+  search keeps the key of its first target as its head, and a sync stops at it (`--when` goes on to
+  the search)
 - Older than `--when`: after 5 posts in a row older than its start
-- A cut-short run: a full download keeps its cursor and resumes there; a cut sync keeps a gap and
-  the next sync jumps to it once it meets saved posts
+- A cut-short run: a full download keeps its cursor, and its head, and resumes there; once it ran
+  out it reads the newest down to that head. A sync that is cut, or fails, leaves its head: the next
+  one reads down to it again, and the saved posts cost no request. The head moves only when a pass
+  reaches the head or the end of the listing
 - Not newest first: read to the end on every run
 
 `--again` lists every post again, past the head and saved cursors, and asks again for gone files.
@@ -781,8 +791,9 @@ folders, and files renamed into place in the last minute. On a terminal `flnd st
 rows? (y/N)`; `flnd status --fix` repairs without asking. It never deletes, moves or downloads a
 file. Failure kinds: `network blocked site changed login disk tool bug usage gone error`.
 
-A version-2 or version-3 home migrates on first open, after copying `metadata/flnd.v2.db` (or
-`flnd.v3.db`); a version-1 home is refused with `<home> is from an old flnd; start a new home`.
+A version-2, version-3 or version-4 home migrates on first open, after copying `metadata/flnd.v2.db`
+(or `flnd.v3.db`, `flnd.v4.db`); a version-1 home is refused with `<home> is from an old flnd;
+start a new home`.
 
 ## Commands and flags
 
@@ -823,7 +834,7 @@ retryable, so their next `get` tries them again (a file the site said is gone is
 A target that is wrong, or that a command needs known and the home doesn't know, is a usage error.
 
 **`flnd target clean <target...> [--media]`** forgets the targets (rows, files rows, failures,
-cursors, heads, gaps). An unknown target is a usage error. `--media` (default off) also deletes
+cursors, heads). An unknown target is a usage error. `--media` (default off) also deletes
 their recorded files, links, extracted folders and the folders left empty; files no row
 names are never deleted. A terminal is asked first.
 
@@ -866,7 +877,6 @@ ignored. A key an older flnd had gets `<file>: <key> is gone`. `flnd config` sho
 | `pace` | number | the plugin's | seconds between page requests of one bucket; 0 or more |
 | `limits` | table | the plugin's | `"<host>" = n` files at once (n at least 1), merged over its |
 | `proxy` | text | none | `http://`, `https://`, `socks5://` or `socks5h://` with host and port |
-| `stop_after` | int | `5` | saved posts in a row that end a newest-first sync; at least 1 |
 | `folder` | text | the plugin's | folder template ([Folders](#folders)) |
 | `filename` | text | the plugin's | file name template |
 
@@ -881,7 +891,7 @@ A plugin's own settings (its `Settings` struct) are keys of its table and reach 
 - `pace` and `limits` win over the plugin's class. A host's cap still adapts under the file's
   number.
 - Gone keys, each warned as `<file>: <key> is gone`: `height`, `browser`, `rate`, `fresh`,
-  `sidecars`, `dedupe`, `switch`, `again`, `exec`, `exec_timeout`, `vault`, `scroll`.
+  `sidecars`, `dedupe`, `switch`, `again`, `exec`, `exec_timeout`, `vault`, `scroll`, `stop_after`.
 
 ```toml
 [defaults]
@@ -1133,12 +1143,12 @@ src/      the package flnd
 `tests/test_layers.py` checks the import rules. A run has one asyncio loop on its own thread; plugin
 code is async; only `engine/jobs.py` retries, sleeps and picks threads; a commit is one per post.
 
-**The home's files.** `flnd.db` is SQLite in WAL mode, schema version 4: `files` (a row per file,
+**The home's files.** `flnd.db` is SQLite in WAL mode, schema version 5: `files` (a row per file,
 key `<code>:<key>`, with target, post, category, path, size, date, state `saved`, `gone` or
-`link`), `posts` (a view of `files`), `targets` (follow, categories, cursors, heads, gaps, `seen`),
-`runs`, `failures` (class, message, hint, attempts, redacted URL), `state` (a plugin's
-own values). One transaction per post; a file's row is written after
-the file, so a crash leaves at worst a file without a row. A file
+`link`), `posts` (a view of `files`), `targets` (follow, categories, cursors, heads, folder),
+`target_seen` (the targets a search found), `runs`, `failures` (class, message, hint, attempts,
+redacted URL), `state` (a plugin's own values). One transaction per post; a file's row is written
+after the file, so a crash leaves at worst a file without a row. A file
 listed in two categories of a target is saved once, and the second is a link row `<key>@<category>`.
 Read it with any SQLite tool.
 

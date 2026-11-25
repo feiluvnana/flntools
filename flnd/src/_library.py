@@ -497,7 +497,7 @@ class Targets:
         return [_tracked(info) for info in engine.target_retry(list(targets))]
 
     def clean(self, *targets: str | Target, media: bool = False) -> list[Tracked]:
-        """Forget known targets: their rows, files rows, failures, cursors, heads and gaps.
+        """Forget known targets: their rows, files rows, failures, cursors and heads.
 
         Args:
             targets: the targets to forget.

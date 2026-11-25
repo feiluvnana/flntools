@@ -230,6 +230,33 @@ def day(value: object) -> datetime.date | None:
     return found
 
 
+def stamp(value: object) -> float | None:
+    """The Unix time of a date a site gives, when it gives a time of day too.
+
+    Args:
+        value: anything `day` reads.
+
+    Returns:
+        Unix seconds, or None when `value` is only a day (a `date`, or ISO text with no time),
+        or is not a date, or can't be right (see `day`).
+    """
+    if day(value) is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            value = int(text)
+        else:
+            if len(text) <= 10:
+                return None
+            value = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if isinstance(value, datetime.datetime):
+        return (value if value.tzinfo else value.replace(tzinfo=datetime.UTC)).timestamp()
+    if isinstance(value, (int, float)):
+        return float(value / 1000 if abs(value) >= MILLISECONDS else value)
+    return None
+
+
 _awake_depth: int = 0
 _awake_lock = threading.Lock()
 _awake_proc: subprocess.Popen[bytes] | None = None

@@ -1,5 +1,6 @@
-"""Smart sync and the failure report: the stop at nothing new, the gap fill, the automatic retry,
-`flnd retry`, `fl.status`, and the samples of changed answers, kept scrubbed.
+"""Smart sync and the failure report: the one sync rule (stop at the head id or an older time),
+the automatic retry, `flnd retry`, `fl.status`, and the samples of changed answers, kept
+scrubbed.
 
 Every test runs the engine on a temporary home over a fake network and a fake clock
 (`EngineCase`). The `Feed` plugin pages its posts by cursor, the way the sites' APIs do: each
@@ -8,15 +9,13 @@ works after new posts arrive on top. Each listing signs its file URLs afresh (`s
 CDN's signed URLs are, so a test can tell a fresh URL from a stored one.
 """
 
-import asyncio
 import datetime
 import io
 import os
-import threading
+import sqlite3
 import time
 import unittest
 from contextlib import redirect_stdout
-from unittest import mock
 
 import fakes
 from fakes import CDN, Engine, EngineCase, login_cookies
@@ -24,10 +23,8 @@ from test_library import registered
 
 from flnd import _library, errors
 from flnd import cli as flnd_cli
-from flnd.engine import crawl as job
-from flnd.engine import save
 from flnd.engine import store as _store
-from flnd.engine.events import NOTHING_NEW, RESUMING, Saved, Skipped
+from flnd.engine.events import NOTHING_NEW, Saved, Skipped
 from flnd.errors import Changed
 from flnd.plugin import File, Plugin, Post, Range, route
 from flnd.ui.log import ui
@@ -35,8 +32,16 @@ from flnkit import net as _net
 
 API = "https://api.example.com"
 # Posts a page of the feed holds.
-PAGE = 3
+PAGE = 4
 DAY = datetime.date(2026, 1, 1)
+# 2026-01-02 00:00 UTC, a time the fake clock (2026-01-01) finds right.
+T0 = 1767312000
+
+
+def dated(post_id):
+    """The day of a feed post: `pN` is N days before DAY, `nN` and `xN` are newer than any `p`."""
+    n = int(post_id[1:])
+    return DAY + datetime.timedelta(days={"p": -n, "n": 100 - n, "x": 200 - n}[post_id[0]])
 
 
 class FeedCase(EngineCase):
@@ -67,7 +72,8 @@ class FeedCase(EngineCase):
             sig = f"s{test.listings}" + (f"&token={test.signed}" if test.signed else "")
             async for response in ctx.pages(f"{API}/feed", cursor="next", send="after"):
                 for post_id in response.json["ids"]:
-                    yield Post(post_id, [File(f"{CDN}/{post_id}.jpg?sig={sig}")], date=DAY)
+                    yield Post(post_id, [File(f"{CDN}/{post_id}.jpg?sig={sig}")],
+                               date=dated(post_id))
 
         listed = route("fed:{user}", newest_first=False)(user)
         listed.category(newest_first=True)(posts)
@@ -120,9 +126,9 @@ class FeedCase(EngineCase):
 class NothingNewTest(FeedCase):
     def test_a_sync_with_nothing_new_makes_one_request(self):
         self.assertTrue(self.download().ok)
-        self.assertEqual(self.row().heads, {"posts": "p1"})
+        self.assertEqual(self.row().heads, {"posts": {"id": "p1", "ts": "2025-12-31"}})
         report = self.sync()
-        # The head and the post after it are on the first page: one request, no file.
+        # The head and three older posts are on the first page: one request, no file.
         self.assertEqual([str(request.url) for request in self.requests], [f"{API}/feed"])
         self.assertEqual(report.files, 0)
         [skipped] = [event for event in self.events if isinstance(event, Skipped)
@@ -136,7 +142,7 @@ class NothingNewTest(FeedCase):
             self.enterContext(registered(self.source))
             report = fl.get().wait()
         # A listing with nothing new is no file skipped.
-        self.assertEqual((report.unchanged, report.skipped, report.saved), (1, 2, 0))
+        self.assertEqual((report.unchanged, report.skipped, report.saved), (1, 4, 0))
 
     def test_sync_and_get_check_non_newest_first_and_shortcircuit_posts(self):
         stories = ["s1"]
@@ -170,9 +176,9 @@ class NothingNewTest(FeedCase):
         self.requests.clear()
         self.assertTrue(
             self.engine.download(["fed:example_user|all"], sync=True, again=True).ok)
-        self.assertEqual(self.pages(), [None, "p3", "p6"])
+        self.assertEqual(self.pages(), [None, "p4", "p8"])
 
-    def test_when_since_stop_leaves_no_stale_cursor_or_gap(self):
+    def test_when_since_stop_leaves_no_stale_cursor(self):
         dates = {"p1": datetime.date(2026, 1, 10)}
         for n in range(2, 10):
             dates[f"p{n}"] = datetime.date(2025, 12, 1)
@@ -204,112 +210,285 @@ class NothingNewTest(FeedCase):
         # Next full `get` starts from newest (`None`), gets p2..p9, and marks complete.
         self.requests.clear()
         self.assertTrue(self.download().ok)
-        self.assertEqual(self.pages(), [None, "p3", "p6"])
+        self.assertEqual(self.pages(), [None, "p4", "p8"])
         self.assertEqual(self.saved(), sorted(self.posts))
-        self.assertEqual(self.row().heads, {"posts": "p1"})
+        self.assertEqual(self.row().heads, {"posts": {"id": "p1", "ts": "2026-01-10"}})
 
-        # `sync` with `--when` on a complete target leaves no fake gap; next sync short-circuits.
+        # `sync` with `--when` on a complete target leaves no cursor; next sync short-circuits.
         self.requests.clear()
         self.assertTrue(self.engine.sync(["fed:example_user"], time=Range(since=DAY)).ok)
-        self.assertEqual(self.row().gaps, {})
-        self.assertEqual(self.row().heads, {"posts": "p1"})
+        self.assertEqual(self.row().cursors, {})
+        self.assertEqual(self.row().heads, {"posts": {"id": "p1", "ts": "2026-01-10"}})
         self.assertTrue(self.sync().ok)
         self.assertEqual(self.pages(), [None])
 
 
 # ---------------------------------------------------------------------------------------------
-# The gap fill
+# The one rule: stop at the head id, or at a strictly older time
 # ---------------------------------------------------------------------------------------------
 
-class GapTest(FeedCase):
-    def test_a_sync_cut_short_leaves_no_gap_on_the_next(self):
+class CutTest(FeedCase):
+    """A sync that doesn't reach the head leaves it, so the next one reads down to it."""
+
+    def test_a_sync_cut_short_keeps_its_head_and_the_next_reads_down_to_it(self):
         self.download()
-        # Four pages of new posts; the sync is cut after six of them (`--limit`, so the six are
-        # whole when it ends).
+        old_head = {"id": "p1", "ts": "2025-12-31"}
+        # Four pages of new posts; the sync is cut after six of them (`--limit`).
         self.posts = [f"n{number}" for number in range(1, 13)] + self.posts
         self.engine.download(["fed:example_user|all"], limit=6)
         self.assertEqual(self.saved(), sorted([*self.posts[:6], *self.posts[12:]]))
-        self.assertEqual(self.row().gaps, {"posts": ["n6"]})
-        # The head stays the old one while a gap is open: the gap lies above it.
-        self.assertEqual(self.row().heads, {"posts": "p1"})
+        self.assertEqual((self.row().heads, self.row().cursors), ({"posts": old_head}, {}))
         # Two more posts arrive; the site answers again.
         self.posts = ["x1", "x2", *self.posts]
         report = self.sync()
         self.assertTrue(report.ok)
-        # The newest down to 5 saved posts in a row (x1, x2 new, n1..n5 saved), then the gap
-        # from its cursor down to the old head and the post after it.
-        self.assertEqual(self.pages(), [None, "n1", "n4", "n6", "n9", "n12"])
-        self.assertEqual(self.saved(), sorted([*self.posts]))
-        self.assertEqual((self.row().gaps, self.row().heads), ({}, {"posts": "x1"}))
-        self.assertIn(RESUMING, self.events)
-        self.assertIn("* fed:example_user: posts: resuming from the last run", self.lines())
+        # The newest down to the old head, on the fifth page; the six saved files cost no
+        # request.
+        self.assertEqual(self.pages(), [None, "n2", "n6", "n10", "p2"])
+        self.assertEqual(self.saved(), sorted(self.posts))
+        self.assertEqual([self.asked(post) for post in ("n1", "n6")], [[], []])
+        self.assertEqual([len(self.asked(post)) for post in ("n7", "n12", "x1")], [1, 1, 1])
+        self.assertEqual(self.row().heads, {"posts": {"id": "x1", "ts": "2026-07-19"}})
         # Nothing is left behind: the next sync has nothing new.
         self.sync()
         self.assertEqual(self.pages(), [None])
 
-    def test_a_sync_the_site_failed_part_way_leaves_no_gap_on_the_next(self):
+    def test_a_sync_the_site_failed_part_way_keeps_its_head_too(self):
         self.download()
         self.posts = [f"n{number}" for number in range(1, 13)] + self.posts
-        self.fail_after = "n6"
-        # n6's file, handed over before the listing failed, waits until it has: it still runs
-        # to its end, since the gap's cursor is kept after it.
-        failed = threading.Event()
-        real_finish, real_file = job.Downloads.finish, save.Saver._file
-
-        async def finish(downloads, error=None):
-            if error is not None:
-                failed.set()
-            return await real_finish(downloads, error)
-
-        async def held(saver, item, *args):
-            if item.key == "fed:n6":
-                self.assertTrue(await asyncio.to_thread(failed.wait, 30))
-            return await real_file(saver, item, *args)
-
-        with mock.patch.object(job.Downloads, "finish", finish), \
-                mock.patch.object(save.Saver, "_file", held):
-            self.assertFalse(self.sync().ok)
-        self.assertIn("n6", self.saved())
-        self.assertEqual(self.pages()[:3], [None, "n3", "n6"])
-        self.assertEqual(self.row().gaps, {"posts": ["n6"]})
+        self.fail_after = "n8"
+        self.assertFalse(self.sync().ok)
+        self.assertEqual(self.pages()[:3], [None, "n4", "n8"])
+        self.assertEqual((self.row().heads, self.row().cursors),
+                         ({"posts": {"id": "p1", "ts": "2025-12-31"}}, {}))
         self.fail_after = None
         self.assertTrue(self.sync().ok)
         self.assertEqual(self.saved(), sorted(self.posts))
-        self.assertEqual(self.row().gaps, {})
+        self.assertEqual(self.row().heads["posts"]["id"], "n1")
         self.sync()
         self.assertEqual(self.pages(), [None])
 
-    def test_a_gap_without_a_cursor_reads_down_to_the_head(self):
-        listed, cut = [], {"at": None}
+    def test_a_first_download_cut_short_keeps_its_cursor_and_a_head_to_read_down_to(self):
+        self.engine.download(["fed:example_user|all"], limit=6)
+        self.assertEqual(self.row().heads["posts"]["id"], "p1")
+        self.assertEqual(self.row().complete, {})
+        self.posts = ["n1", "n2", *self.posts]
+        self.requests.clear()
+        self.assertTrue(self.download().ok)
+        # It goes on from its cursor to the end, then reads the newest down to its head.
+        self.assertEqual(self.saved(), sorted(self.posts))
+        self.assertEqual(self.row().heads["posts"]["id"], "n1")
+        self.assertEqual(self.row().cursors, {})
+        self.sync()
+        self.assertEqual(self.pages(), [None])
+
+
+class TimelineCase(EngineCase):
+    """The `tml` plugin: one newest-first category, `timeline` (id, time, pinned) in its order,
+    each post one picture. A time is a Unix time, a day, or None."""
+
+    def setUp(self):
+        super().setUp()
+        self.timeline = []
+        self.read = []
+        self.cut_at = None
         test = self
 
         async def user(self, ctx, user):
             return user
 
         async def posts(self, ctx, user):
-            for post_id in test.posts:
-                if post_id == cut["at"]:
+            for post_id, when, pinned in list(test.timeline):
+                if post_id == test.cut_at:
                     raise errors.SiteError("the feed stopped answering")
-                listed.append(post_id)
-                yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=DAY)
+                test.read.append(post_id)
+                yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=when, pinned=pinned)
 
-        read = route("lst:{user}", newest_first=False)(user)
-        read.category(newest_first=True)(posts)
-        source = type("List", (Plugin,), {"code": "lst", "name": "List",
-                                          "domains": ("example.com",), "api": 2, "key": "{post}",
-                                          "filename": "{post}", "user": read, "posts": posts})
-        engine = Engine(home=self.home, sources={"lst": source})
-        engine.download(["lst:example_user|all"], sync=True)
-        self.posts = [f"n{number}" for number in range(1, 13)] + self.posts
-        cut["at"] = "n8"
-        self.assertFalse(engine.sync(["lst:example_user"]).ok)
-        self.assertEqual(fakes.targets(self.home)["lst:example_user"].gaps, {"posts": [""]})
-        cut["at"], listed[:] = None, []
-        self.assertTrue(engine.sync(["lst:example_user"]).ok)
-        # Past n1..n7, saved, down to the head and the post after it.
-        self.assertEqual(listed, [*self.posts[:14]])
-        self.assertEqual(len(fakes.history(self.home)), len(self.posts))
-        self.assertEqual(fakes.targets(self.home)["lst:example_user"].gaps, {})
+        listed = route("tml:{user}", newest_first=False)(user)
+        listed.category(newest_first=True)(posts)
+        source = type("Timeline", (Plugin,), {
+            "code": "tml", "name": "Timeline", "domains": ("example.com",), "api": 2,
+            "key": "{post}", "filename": "{post}", "user": listed, "posts": posts})
+        self.engine = Engine(home=self.home, sources={"tml": source})
+
+    def put(self, *posts):
+        """The timeline, from (id, time) pairs; a third item, True, pins the post."""
+        self.timeline = [(post[0], post[1], len(post) > 2 and post[2]) for post in posts]
+
+    def download(self):
+        return self.engine.download(["tml:example_user|all"], sync=True)
+
+    def sync(self, **options):
+        self.read.clear()
+        self.requests.clear()
+        return self.engine.sync(["tml:example_user"], **options)
+
+    def head(self):
+        return fakes.targets(self.home)["tml:example_user"].heads["posts"]
+
+    def saved(self):
+        return sorted(key.partition(":")[2] for key in fakes.history(self.home))
+
+    def asked(self, post):
+        return [request for request in self.requests
+                if str(request.url).split("?")[0] == f"{CDN}/{post}.jpg"]
+
+    def sql(self, statement, *args):
+        with sqlite3.connect(self.home / _store.DB) as db:
+            db.execute(statement, args)
+        db.close()
+
+
+# The head `h`, and six posts older than it, each strictly older than the one before.
+OLD = [(f"o{number}", T0 - 100 * number) for number in range(1, 7)]
+
+
+class HeadRuleTest(TimelineCase):
+    def start(self, *posts):
+        """Download `h` (or `posts`) and the old posts: the head is the newest of them."""
+        self.put(*(posts or [("h", T0)]), *OLD)
+        self.assertTrue(self.download().ok)
+
+    def test_a_sync_stops_after_four_old_posts_and_the_head_moves_to_the_newest(self):
+        self.start()
+        self.assertEqual(self.head(), {"id": "h", "ts": float(T0)})
+        self.put(("n2", T0 + 50), ("n1", T0 + 40), ("h", T0), *OLD)
+        report = self.sync()
+        self.assertEqual(self.read, ["n2", "n1", "h", "o1", "o2", "o3"])
+        self.assertEqual(sorted(path.stem for path in report.targets[0].written), ["n1", "n2"])
+        self.assertEqual(self.head(), {"id": "n2", "ts": float(T0 + 50)})
+
+    def test_new_posts_in_the_head_second_are_never_missed(self):
+        self.start()
+        self.put(("n3", T0), ("n2", T0), ("n1", T0), ("h", T0), *OLD)
+        self.sync()
+        self.assertEqual(self.read[:4], ["n3", "n2", "n1", "h"])
+        self.assertTrue({"h", "n1", "n2", "n3"} <= set(self.saved()))
+
+    def test_new_posts_on_the_head_day_are_never_missed_when_the_site_gives_only_days(self):
+        day = datetime.date(2026, 1, 1)
+        olds = [(f"o{number}", day - datetime.timedelta(days=number)) for number in range(1, 7)]
+        self.put(("h", day), *olds)
+        self.download()
+        self.assertEqual(self.head(), {"id": "h", "ts": "2026-01-01"})
+        self.put(("n2", day), ("n1", day), ("h", day), *olds)
+        self.sync()
+        self.assertEqual(self.read, ["n2", "n1", "h", "o1", "o2", "o3"])
+        self.assertTrue({"n1", "n2"} <= set(self.saved()))
+
+    def test_a_day_against_a_time_compares_days_only(self):
+        self.start(("h", T0 + 36_000))
+        # A new post that gives only its day, the head's day, is not old.
+        self.put(("n1", datetime.date(2026, 1, 2)), ("h", T0 + 36_000), *OLD)
+        self.sync()
+        self.assertEqual(self.read, ["n1", "h", "o1", "o2", "o3"])
+        self.assertIn("n1", self.saved())
+
+    def test_a_deleted_head_ends_the_sync_after_four_older_posts(self):
+        self.start()
+        self.put(("n1", T0 + 40), *OLD)
+        self.sync()
+        self.assertEqual(self.read, ["n1", "o1", "o2", "o3", "o4"])
+        self.assertEqual(self.head(), {"id": "n1", "ts": float(T0 + 40)})
+
+    def test_an_unmarked_old_pinned_post_on_top_is_never_the_head_and_never_ends_a_sync(self):
+        self.start(("pin", T0 - 5000), ("h", T0))
+        self.assertEqual(self.head()["id"], "h")
+        self.put(("pin", T0 - 5000), ("n1", T0 + 30), ("h", T0), *OLD)
+        self.sync()
+        self.assertEqual(self.read, ["pin", "n1", "h", "o1", "o2", "o3"])
+        self.assertIn("n1", self.saved())
+        self.assertEqual(self.head()["id"], "n1")
+
+    def test_three_unmarked_old_pins_on_top_then_new_posts_are_all_read(self):
+        self.start()
+        pins = [("q3", T0 - 7000), ("q2", T0 - 8000), ("q1", T0 - 9000)]
+        self.put(*pins, ("n2", T0 + 50), ("n1", T0 + 40), ("h", T0), *OLD)
+        self.sync()
+        self.assertEqual(self.read[:5], ["q3", "q2", "q1", "n2", "n1"])
+        self.assertTrue({"n1", "n2"} <= set(self.saved()))
+
+    def test_an_old_post_between_new_ones_resets_the_count(self):
+        self.start()
+        self.put(("n3", T0 + 50), ("i1", T0 - 1), ("i2", T0 - 2), ("i3", T0 - 3), ("n2", T0 + 40),
+                 ("n1", T0 + 30), ("h", T0), *OLD)
+        self.sync()
+        self.assertEqual(self.read[:7], ["n3", "i1", "i2", "i3", "n2", "n1", "h"])
+        self.assertTrue({"n1", "n2", "n3"} <= set(self.saved()))
+
+    def test_a_pinned_post_that_is_marked_is_neither_old_nor_the_head(self):
+        self.start()
+        self.put(("old", T0 - 99_999, True), ("n1", T0 + 30), ("h", T0), *OLD)
+        self.sync()
+        self.assertEqual(self.read, ["old", "n1", "h", "o1", "o2", "o3"])
+        self.assertEqual(self.head()["id"], "n1")
+
+    def test_a_post_with_no_date_is_never_old_by_time(self):
+        self.start()
+        self.put(("u1", None), ("n1", T0 + 30), ("h", T0), *OLD)
+        self.sync()
+        self.assertEqual(self.read, ["u1", "n1", "h", "o1", "o2", "o3"])
+        self.assertIn("u1", self.saved())
+
+    def test_a_listing_with_no_date_is_read_to_its_end(self):
+        self.put(("u2", None), ("u1", None))
+        self.download()
+        self.assertEqual(self.head(), {"id": "u2", "ts": None})
+        self.put(("n1", None), ("u2", None), ("u1", None))
+        self.sync()
+        self.assertEqual(self.read, ["n1", "u2", "u1"])
+
+    def test_a_sync_the_site_cut_leaves_the_head_and_the_next_one_catches_up(self):
+        self.start()
+        self.put(("n3", T0 + 50), ("n2", T0 + 40), ("n1", T0 + 30), ("h", T0), *OLD)
+        self.cut_at = "n1"
+        self.assertFalse(self.sync().ok)
+        self.assertEqual(self.head(), {"id": "h", "ts": float(T0)})
+        self.assertEqual(fakes.targets(self.home)["tml:example_user"].cursors, {})
+        self.cut_at = None
+        self.assertTrue(self.sync().ok)
+        self.assertEqual(self.read[:4], ["n3", "n2", "n1", "h"])
+        # The two files saved before the cut are not asked for again.
+        self.assertEqual([self.asked("n3"), self.asked("n2")], [[], []])
+        self.assertEqual(len(self.asked("n1")), 1)
+        self.assertEqual(self.head()["id"], "n3")
+
+    def test_when_still_stops_after_five_posts_older_than_its_start(self):
+        self.put(("p1", T0))
+        self.download()
+        # No head to go by: the older-than-`--when` rule alone ends the listing.
+        self.sql("UPDATE targets SET heads = '{}' WHERE key = ?", "tml:example_user")
+        old = [(f"o{number}", T0 - 86_400 * (number + 1)) for number in range(8)]
+        self.put(("n1", T0 + 10), *old)
+        self.sync(time=Range(since=datetime.date(2026, 1, 2)))
+        self.assertEqual(self.read, ["n1", "o0", "o1", "o2", "o3", "o4"])
+        self.assertEqual(self.saved(), ["n1", "p1"])
+
+    def test_a_bare_id_head_takes_its_time_from_its_post_and_is_rewritten(self):
+        self.start()
+        self.sync()
+        dated_read, dated_requests = list(self.read), len(self.requests)
+        self.sql("UPDATE targets SET heads = ? WHERE key = ?", '{"posts": "h"}',
+                 "tml:example_user")
+        self.sync()
+        # Nothing new: the same posts and requests as a dated head.
+        self.assertEqual((self.read, len(self.requests)), (dated_read, dated_requests))
+        self.put(("n1", T0 + 30), ("h", T0), *OLD)
+        self.sql("UPDATE targets SET heads = ? WHERE key = ?", '{"posts": "h"}',
+                 "tml:example_user")
+        self.sync()
+        self.assertEqual(self.read, ["n1", "h", "o1", "o2", "o3"])
+        self.assertEqual(self.head(), {"id": "n1", "ts": float(T0 + 30)})
+
+    def test_a_bare_id_head_that_was_deleted_reads_the_listing_once(self):
+        self.start()
+        self.sql("UPDATE targets SET heads = ? WHERE key = ?", '{"posts": "gone"}',
+                 "tml:example_user")
+        self.sync()
+        self.assertEqual(self.read, ["h", *(name for name, _ in OLD)])
+        self.assertEqual(self.head(), {"id": "h", "ts": float(T0)})
+        self.sync()
+        self.assertEqual(self.read, ["h", "o1", "o2", "o3"])
 
 
 # ---------------------------------------------------------------------------------------------
@@ -330,7 +509,7 @@ class RetryTest(FeedCase):
             self.sync()
             # The failed post's page again, from the cursor of the page it was on, then the
             # newest page for new posts.
-            self.assertEqual(self.pages(), ["p6", None], attempt)
+            self.assertEqual(self.pages(), ["p4", "p8", None], attempt)
             self.assertTrue(self.asked("p8"), attempt)
             self.assertEqual(self.failures_row()["attempts"], attempt)
         # The first failure and three retries: no more by itself.
@@ -374,7 +553,7 @@ class RetryTest(FeedCase):
         self.posts.remove("p8")
         self.sync()
         # From the cursor of its page to the listing's end, without it: it is gone.
-        self.assertEqual(self.pages(), ["p6", None])
+        self.assertEqual(self.pages(), ["p4", None])
         self.assertEqual(self.failures_row()["class"], "NotFound")
         with _store.open(self.home) as db:
             self.assertEqual(db.known("fed:p8")[1], _store.GONE)

@@ -641,7 +641,7 @@ class SearchFolderTest(LibraryCase):
         self.fl.get("exq?words", folder="{query}/{category}").wait()
         row = next(row for row in self.fl.targets if row.target.value == "words")
         self.assertTrue(row.follow)
-        self.found.append("exq:example_creator")
+        self.found.insert(0, "exq:example_creator")
         self.listing["example_creator", "posts"] = ["c1"]
         self.fl.get().wait()
         self.assertIn("words/posts/2026-03-01_c1.jpg", self.media())
@@ -655,7 +655,7 @@ class SearchFolderTest(LibraryCase):
             self.fl.get("exq?words", folder="two/{category}")
         with _library.open(self.home, again=True) as again:
             again.get("exq?words", folder="two/{category}").wait()
-        self.found.append("exq:example_creator")
+        self.found.insert(0, "exq:example_creator")
         self.listing["example_creator", "posts"] = ["c1"]
         self.fl.get().wait()
         self.assertIn("two/posts/2026-03-01_c1.jpg", self.media())

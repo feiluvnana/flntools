@@ -72,7 +72,6 @@ class ReadTest(Case):
     def test_missing_files_are_every_default(self):
         found = config.read(self.home, user=self.user)
         self.assertEqual(found, Config(defaults=config.Defaults()))
-        self.assertEqual(found.plugin("ins").stop_after, 5)
         self.assertEqual(found.origin("when"), Where.DEFAULT)
 
     def test_each_key_takes_its_type(self):
@@ -84,7 +83,6 @@ class ReadTest(Case):
              {"cdn.example.com": 4}),
             ('[plugins.exm]\nproxy = "socks5://127.0.0.1:1080"', "plugins.exm.proxy",
              "socks5://127.0.0.1:1080"),
-            ("[plugins.exm]\nstop_after = 9", "plugins.exm.stop_after", 9),
             ('[plugins.exm]\nfolder = "{category}/{title}"', "plugins.exm.folder",
              "{category}/{title}"),
             ('[plugins.exm]\nfilename = "{date}_{post}"', "plugins.exm.filename",
@@ -113,7 +111,6 @@ class ReadTest(Case):
             '[defaults]\nslowest = "fast"', '[defaults]\ntimeout = 5', '[plugins.exm]\npace = "2"', "[plugins.exm]\npace = -1",
             '[plugins.exm]\nlimits = { "a" = 0 }', '[plugins.exm]\nproxy = "ftp://h:1"',
             '[plugins.exm]\nproxy = "http://h:99999"', '[plugins.exm]\nproxy = "http://h:1\\n"',
-            "[plugins.exm]\nstop_after = 0",
             '[plugins.exm]\nfolder = "../out"',
             '[plugins.exm]\nfilename = "{nope}"', '[plugins.exm]\nfilename = "{post"',
             '[plugins.exm]\ntries = "x"', "[plugins]\nexm = 1", "defaults = 1",
@@ -151,7 +148,7 @@ class ReadTest(Case):
             ("plugins.exm.limits", {f"u:{mark}@h": 0}), ("plugins.exm.limits", mark),
             ("plugins.exm.folder", f"../{mark}"), ("plugins.exm.filename", f"{{{mark}}}"),
             ("plugins.exm.filename", f"{{{mark}"),
-            ("plugins.exm.tries", mark), ("plugins.exm.stop_after", [mark]),
+            ("plugins.exm.tries", mark),
             ("defaults.when", mark), ("defaults.slowest", f"1 {mark}/s"),
             ("defaults.timeout", {"a": mark}),
             ("plugins.exm", url), ("plugins.proxy", url),
@@ -173,13 +170,13 @@ class ReadTest(Case):
 
     def test_unknown_keys_and_gone_keys_warn(self):
         found = self.read(home="[defaults]\nagain = true\nrate = '1 MB/s'\n[vault]\nkey = 'file'\n"
-                               "[plugins.exm]\nbrowser = 'chrome'\n[plugins.zzz]\nodd = 1\n"
-                               "[sources.exm]\npace = 3")
+                               "[plugins.exm]\nbrowser = 'chrome'\nstop_after = 5\n"
+                               "[plugins.zzz]\nodd = 1\n[sources.exm]\npace = 3")
         self.assertEqual(found.defaults, config.Defaults())
         self.assertIsNone(found.plugin("exm").pace)
         gone = [call.kwargs["name"] for call in self.warn.call_args_list
                 if call.args == ("{label}: {name} is gone",)]
-        self.assertEqual(gone, ["again", "rate", "browser"])
+        self.assertEqual(gone, ["again", "rate", "browser", "stop_after"])
         for setting in ("[vault]", "[plugins.zzz] odd", "[sources]"):
             self.assertIn(setting, self.warned())
         self.assertIn(str(self.home / "config.toml"), self.warned())

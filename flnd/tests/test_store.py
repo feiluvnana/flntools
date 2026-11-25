@@ -1,5 +1,5 @@
-"""src/engine/store.py: `flnd.db` schema 3, the migration of a version-2 home, the refusal of a version-1 one,
-its pragmas, the busy signal, and `check`.
+"""src/engine/store.py: `flnd.db` schema 5, the migration of version-2, -3 and -4 homes, the
+refusal of a version-1 one, its pragmas, the busy signal, and `check`.
 """
 
 import datetime
@@ -98,6 +98,16 @@ V3_SCHEMA = (V2_SCHEMA.split("CREATE TABLE accounts")[0].replace("version = '2'"
              .replace(" account TEXT,", ""))
 
 
+# Version 4 as a home made it: today's schema with the `targets.seen` copy and `targets.gaps`
+# that version 5 drops.
+V4_SCHEMA = (store.SCHEMA.replace("version = '5'", "version = '4'")
+             .replace("    last_sync TEXT NOT NULL DEFAULT '',",
+                      "    seen TEXT NOT NULL DEFAULT '[]', last_sync TEXT NOT NULL DEFAULT '',")
+             .replace("heads TEXT NOT NULL DEFAULT '{}', folder TEXT",
+                      "heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}',\n"
+                      "    folder TEXT"))
+assert "gaps" in V4_SCHEMA and "seen TEXT" in V4_SCHEMA
+
 # What a migration keeps of a file's row, as every version holds it.
 FILES = "SELECT key, target, plugin, post_id, category, path, size FROM files ORDER BY key"
 
@@ -177,8 +187,10 @@ class MigrationTest(StoreCase):
             sql.executescript(V2_SCHEMA)
             sql.executescript(
                 "INSERT INTO meta VALUES ('version', '2'), ('keys', '2');"
-                "INSERT INTO targets (key, plugin, value, kind, follow, account) VALUES"
-                " ('ins:example_user', 'ins', 'example_user', 'user', 1, 'example_handle');"
+                "INSERT INTO targets (key, plugin, value, kind, follow, account, heads, gaps,"
+                " seen) VALUES ('ins:example_user', 'ins', 'example_user', 'user', 1,"
+                " 'example_handle', '{\"posts\": \"p1\"}', '{\"posts\": [\"\"]}',"
+                " '[\"ins:post/1\"]');"
                 "INSERT INTO files (key, target, plugin, post_id, category, path, size) VALUES"
                 " ('ins:1', 'ins:example_user', 'ins', '1', 'posts', 'media/ins/1.jpg', 10);"
                 "INSERT INTO accounts (plugin, name, origin, at, is_default) VALUES"
@@ -200,12 +212,67 @@ class MigrationTest(StoreCase):
                 " 'media/ins/1.jpg', 10, x'aa', 'media/ins/1.jpg.json');")
         sql.close()
 
+    def v4(self):
+        """A version-4 home, made by the old schema text: a followed target with a head, a cursor
+        and a gap, a search with the targets it saw (in `target_seen` and in the old copy)."""
+        self.path.parent.mkdir(parents=True)
+        with sqlite3.connect(self.path) as sql:
+            sql.executescript(V4_SCHEMA)
+            sql.executescript(
+                "INSERT INTO meta VALUES ('version', '4'), ('keys', '2');"
+                "INSERT INTO targets (key, plugin, value, kind, follow, complete, cursors, heads,"
+                " gaps, seen) VALUES ('ins:example_user', 'ins', 'example_user', 'user', 1,"
+                " '{\"posts\": \"2026-01-02\"}', '{\"reels\": \"c9\"}',"
+                " '{\"posts\": \"p1\"}', '{\"posts\": [\"c3\"]}', '[]');"
+                "INSERT INTO targets (key, plugin, value, kind, follow, query, heads, seen) VALUES"
+                " ('twt:example_search', 'twt', 'example_search', 'search', 1, 'example_search',"
+                " '{\"search\": \"twt:post/9\"}', '[\"twt:post/9\", \"twt:post/8\"]');"
+                "INSERT INTO target_seen VALUES ('twt:example_search', 'twt:post/9', 0),"
+                " ('twt:example_search', 'twt:post/8', 1);"
+                "INSERT INTO files (key, target, plugin, post_id, category, path, size) VALUES"
+                " ('ins:1', 'ins:example_user', 'ins', '1', 'posts', 'media/ins/1.jpg', 10);")
+        sql.close()
+
+    def test_a_version_4_home_loses_its_seen_copy_and_its_gaps_and_keeps_the_rest(self):
+        self.v4()
+        before = rows(self.path, FILES)
+        with self.open() as opened:
+            found = opened.targets()
+            user, search = found["ins:example_user"], found["twt:example_search"]
+            self.assertEqual((user.follow, user.complete, user.cursors, user.heads),
+                             (True, {"posts": "2026-01-02"}, {"reels": "c9"}, {"posts": "p1"}))
+            self.assertEqual((search.query, search.heads, search.seen),
+                             ("example_search", {"search": "twt:post/9"},
+                              ["twt:post/9", "twt:post/8"]))
+        self.assertEqual(rows(self.path, "SELECT value FROM meta WHERE key = 'version'"),
+                         [("5",)])
+        self.assertEqual(rows(self.path, FILES), before)
+        self.assertFalse({"seen", "gaps"} & set(columns(self.path)["targets"]))
+        with store.open(self.home / "fresh") as fresh:
+            fresh.state("x")["y"] = 1
+        self.assertEqual(columns(self.path), columns(fresh.path))
+        backup = self.home / store.BACKUP_V4
+        self.assertEqual(rows(backup, "SELECT gaps FROM targets WHERE key = 'ins:example_user'"),
+                         [('{"posts": ["c3"]}',)])
+        self.assertEqual(rows(backup, "SELECT value FROM meta WHERE key = 'version'"), [("4",)])
+        self.assertEqual([(self.home / name).exists()
+                          for name in (store.BACKUP_V2, store.BACKUP_V3)], [False, False])
+
+    def test_a_version_4_seen_copy_that_target_seen_lacks_is_kept(self):
+        self.v4()
+        with sqlite3.connect(self.path) as sql:
+            sql.execute("DELETE FROM target_seen")
+        sql.close()
+        with self.open() as opened:
+            self.assertEqual(opened.target("twt:example_search").seen,
+                             ["twt:post/9", "twt:post/8"])
+
     def test_a_version_3_home_loses_its_hashes_and_keeps_the_rest(self):
         self.v3()
         before = rows(self.path, FILES)
         self.open().close()
         self.assertEqual(rows(self.path, "SELECT value FROM meta WHERE key = 'version'"),
-                         [("4",)])
+                         [("5",)])
         self.assertEqual(rows(self.path, FILES), before)
         names = {name for _, name, *_ in schema(self.path)}
         self.assertFalse({"files_hash", "files_size"} & names)
@@ -232,9 +299,10 @@ class MigrationTest(StoreCase):
         before = rows(self.path, FILES)
         with self.open() as opened:
             self.assertEqual(rows(self.path, "SELECT key, value FROM meta ORDER BY key"),
-                             [("keys", "2"), ("logins", "told"), ("version", "4")])
+                             [("keys", "2"), ("logins", "told"), ("version", "5")])
             target = opened.targets()["ins:example_user"]
             self.assertEqual((target.plugin, target.follow), ("ins", True))
+            self.assertEqual((target.heads, target.seen), ({"posts": "p1"}, ["ins:post/1"]))
             self.assertEqual(rows(self.path, FILES), before)
         names = {name for _, name, *_ in schema(self.path)}
         self.assertNotIn("accounts", names)
@@ -274,7 +342,7 @@ class MigrationTest(StoreCase):
                          [("keys",), ("version",)])
 
     def test_a_home_flnd_cannot_read_is_refused(self):
-        cases = {"newer": "INSERT INTO meta VALUES ('version', '5')",
+        cases = {"newer": "INSERT INTO meta VALUES ('version', '6')",
                  "unversioned": "DELETE FROM meta; INSERT INTO files (key, target, source, path)"
                                 " VALUES ('a:1', 'a:b', 'a', 'p')"}
         for name, change in cases.items():
@@ -642,9 +710,8 @@ class RekeyTest(StoreCase):
         """A home as the last version left it: single posts keyed by their id."""
         self.path.parent.mkdir(parents=True)
         with sqlite3.connect(self.path) as sql:
-            for statement in store.STATEMENTS:
-                sql.execute(statement)
-            sql.execute("INSERT INTO meta VALUES ('version', ?)", (store.VERSION,))
+            sql.executescript(V4_SCHEMA)
+            sql.execute("INSERT INTO meta VALUES ('version', '4')")
             sql.executemany(
                 "INSERT INTO targets (key, plugin, value, kind, categories, seen)"
                 " VALUES (?, ?, ?, ?, '[\"photo\"]', ?)",
@@ -677,7 +744,8 @@ class RekeyTest(StoreCase):
     def test_a_second_open_changes_nothing(self):
         self.old_home()
         self.open().close()
-        query = "SELECT key, value, kind, seen FROM targets ORDER BY key"
+        query = ("SELECT key, value, kind, (SELECT group_concat(item) FROM target_seen WHERE"
+                 " target = key) FROM targets ORDER BY key")
         before = rows(self.path, query)
         self.open().close()
         self.assertEqual(rows(self.path, query), before)
@@ -732,6 +800,7 @@ class TargetSeenTest(StoreCase):
                 fresh_sql.close()
             sql.execute("DROP INDEX IF EXISTS target_seen_ord")
             sql.execute("DROP TABLE IF EXISTS target_seen")
+            sql.execute("ALTER TABLE targets ADD COLUMN seen TEXT NOT NULL DEFAULT '[]'")
             sql.execute("UPDATE targets SET seen = ? WHERE key = ?",
                         ('["twt:post/3", "twt:post/1", "twt:post/2"]', "twt:cats"))
             sql.commit()
@@ -752,7 +821,7 @@ class TargetSeenTest(StoreCase):
             sql.close()
         self.assertEqual(migrated_schema, fresh_schema)
 
-        # 2. Incremental seen() appends O(1) without touching targets.seen JSON or progress().
+        # 2. Incremental seen() appends O(1) without touching progress().
         q = Target("twt:dogs", kind="search")
         with store.Store(self.home) as opened:
             opened.record(q, query="dogs")
@@ -765,9 +834,6 @@ class TargetSeenTest(StoreCase):
             self.assertEqual(row.seen, ["twt:post/9", "twt:post/8", "twt:post/7"])
             self.assertEqual(row.cursors, {"max_id": "99"})
             self.assertEqual(row.heads, {"search": "twt:post/9"})
-            # targets.seen column was not rewritten with the incremental appends.
-            self.assertEqual(rows(self.path, "SELECT seen FROM targets WHERE key = 'twt:dogs'"),
-                             [("[]",)])
             opened.forget("twt:dogs")
             self.assertEqual(
                 rows(self.path, "SELECT item FROM target_seen WHERE target = 'twt:dogs'"), [],
