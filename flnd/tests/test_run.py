@@ -238,7 +238,7 @@ class LoginStateTest(EngineCase):
         self.assertEqual(self.requests[0].headers["cookie"], "sid=1; other=2")
         self.assertFalse(any("not logged in" in line for line in self.lines()))
 
-    def test_the_cookies_the_site_rotated_are_saved_in_the_vault_after_the_group(self):
+    def test_the_cookies_the_site_rotated_are_saved_in_the_logins_file_after_the_group(self):
         self.log_in("aaa", sid="1", ct0="old")
         source = make_plugin("aaa", lambda ctx: ctx.fetch("https://api.aaa.example/me"),
                              login=login_cookies("sid"))
@@ -246,7 +246,7 @@ class LoginStateTest(EngineCase):
             ("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/"),
             ("set-cookie", "_tracker=t1; Domain=.aaa.example; Path=/")])
         self.run_engine(source, targets=["aaa:a", "aaa:b"])
-        saved = vaulted(self.home, "aaa")[0]
+        saved = vaulted("aaa")[0]
         self.assertEqual((saved["ct0"], saved["sid"], "_tracker" in saved), ("new-ct0", "1", False))
         self.assertNotIn("new-ct0", "\n".join(self.lines()))
 
@@ -260,7 +260,7 @@ class LoginStateTest(EngineCase):
         self.routes["https://api.aaa.example/me"] = _net.reply(
             200, json={}, headers=[("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/")])
         self.run_engine(make_plugin("aaa", route, login=login_cookies("sid")), targets=["aaa:a"])
-        self.assertEqual(vaulted(self.home, "aaa")[0]["ct0"], "new-ct0")
+        self.assertEqual(vaulted("aaa")[0]["ct0"], "new-ct0")
 
     def test_requires_login_fails_the_targets(self):
         ran = []
@@ -387,11 +387,11 @@ class HttpTest(EngineCase):
         self.assertIsInstance(report.targets[0].error, Blocked)
         self.assertEqual(ran, [("other", 0.0)])
 
-    def test_challenges_are_waited_out_by_rounds_of_the_account(self):
+    def test_challenges_are_waited_out_by_rounds_of_the_plugin(self):
         self.run_engine(make_plugin("aaa", lambda ctx: ctx.hold("challenged")),
                         targets=["aaa:a", "aaa:b", "aaa:c", "aaa:d"])
         waits = [line for line in self.lines() if "challenged; waiting" in line]
-        # The rounds are the account's, across its targets: 30, 120 and 480 s, then the
+        # The rounds are the plugin's, across its targets: 30, 120 and 480 s, then the
         # fourth in a row fails its target (`Blocked`).
         self.assertEqual([wait.rsplit(" ", 1)[1] for wait in waits], ["30.0s", "2m", "8m"])
         # Its targets list at once, so any one of them meets the fourth.
@@ -867,7 +867,7 @@ class LoginStaysAtHomeTest(EngineCase):
 
         jar = [{"name": name, "value": value, "domain": ".x.com", "path": "/"}
                for name, value in {"auth_token": "secret", "ct0": "old"}.items()]
-        sign_in(self.home, "twt", jar)
+        sign_in("twt", jar)
         user = {"data": {"user": {"result": {"rest_id": "42"}}}}
         self.routes[url("UserByScreenName")] = _net.reply(
             200, json=user, headers={"set-cookie": "ct0=new; Domain=x.com; Path=/"})

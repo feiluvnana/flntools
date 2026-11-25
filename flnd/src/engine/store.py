@@ -1,4 +1,4 @@
-"""`flnd.db`, schema 2: its tables, the migration from version 1, its rows and queries, and
+"""`flnd.db`, schema 3: its tables, the migrations from versions 1 and 2, its rows and queries, and
 `check`, which compares the rows with the disk and repairs them. SPEC.md#for-developers
 explains it.
 """
@@ -27,7 +27,7 @@ from flnd.errors import Changed, DiskError, NotFound, UsageError
 from flnd.ui.log import LOGS, ui
 from flnkit import clock, db, files, text
 
-__all__ = ["AccountRow", "FailureRow", "FileRow", "RunRow", "State", "Store", "TargetRow",
+__all__ = ["FailureRow", "FileRow", "RunRow", "State", "Store", "TargetRow",
            "busy", "check", "erase", "folder_name", "open", "sample", "sweep",
            "target_folder"]
 
@@ -38,12 +38,15 @@ __all__ = ["AccountRow", "FailureRow", "FileRow", "RunRow", "State", "Store", "T
 MEDIA, METADATA = Path("media"), Path("metadata")
 DB = METADATA / "flnd.db"
 SECRETS = METADATA / "secret.db"
-# Where a version-1 `flnd.db` is copied, whole, before its migration.
+# Where a version-1 or version-2 `flnd.db` is copied, whole, before its migration.
 BACKUP = METADATA / "flnd.v1.db"
-VERSION = "2"
+BACKUP_V2 = METADATA / "flnd.v2.db"
+VERSION = "3"
+# What a migrated home that still has a `secret.db` is told, once.
+LOGINS_NOTICE = "logins are cookie files now: flnd auth login <code> <file>"
 
 SCHEMA = """
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '2'
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '3'
 CREATE TABLE files (
     key TEXT PRIMARY KEY, target TEXT NOT NULL, plugin TEXT NOT NULL,
     post_id TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '', path TEXT NOT NULL,
@@ -67,7 +70,7 @@ CREATE TABLE targets (
     complete TEXT NOT NULL DEFAULT '{}', cursors TEXT NOT NULL DEFAULT '{}',
     seen TEXT NOT NULL DEFAULT '[]', last_sync TEXT NOT NULL DEFAULT '',
     files INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
-    heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}', account TEXT,
+    heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}',
     folder TEXT
 ) WITHOUT ROWID;
 CREATE TABLE target_seen (
@@ -91,22 +94,15 @@ CREATE INDEX failures_run ON failures (run);
 CREATE UNIQUE INDEX failures_key ON failures (key);
 CREATE TABLE state (plugin TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
                     PRIMARY KEY (plugin, key)) WITHOUT ROWID;
-CREATE TABLE accounts (
-    id INTEGER PRIMARY KEY, plugin TEXT NOT NULL, name TEXT NOT NULL,
-    origin TEXT NOT NULL,                           -- browser | chrome | file | … | qr | phone
-    at TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'ok',              -- ok | held | expired
-    held_until TEXT, expires TEXT, UNIQUE (plugin, name)
-);
 """
 # Executed one by one: `executescript` would commit the migration's transaction halfway.
 STATEMENTS = tuple(part for part in SCHEMA.split(";") if "CREATE" in part)
 
-# The tables version 1 had that version 2 rebuilds, with each new column's old name.
+# The tables version 1 had that schema 3 rebuilds, with each new column's old name.
 REBUILT = {"meta": {}, "files": {"plugin": "source"}, "targets": {"plugin": "source"},
            "runs": {}, "failures": {}, "state": {"plugin": "source"}}
 V1_DROPPED = ("logins", "probes")
-# A column an old version-1 table lacks, whose version-1 default isn't schema 2's: a failure
+# A column an old version-1 table lacks, whose version-1 default isn't schema 3's: a failure
 # from before `retryable` was recorded wasn't retryable.
 V1_DEFAULTS = {("failures", "retryable"): "0"}
 V1_INDEXES = ("files_post", "files_hash", "files_undated", "failures_target", "failures_run",
@@ -137,16 +133,9 @@ ROW_SELECT = ("key, target, path, size, mtime, post_id, category, date, estimate
 STEP_COLUMNS = frozenset({"path", "size", "mtime", "unpacked", "folder", "hash", "sidecar",
                           "extracted"})
 TARGET_COLUMNS = ("key", "plugin", "value", "kind", "follow", "categories", "query", "complete",
-                  "cursors", "seen", "last_sync", "files", "bytes", "heads", "gaps", "account",
-                  "folder")
+                  "cursors", "seen", "last_sync", "files", "bytes", "heads", "gaps", "folder")
 FAILURE_SELECT = ("key, target, post_id, category, file, cursor, attempts, class, message, hint,"
                   " retryable, url, run, at")
-ACCOUNT_SELECT = "id, plugin, name, origin, at, is_default, status, held_until, expires"
-
-# How version 1 named a login's origin, as version 2 names it; any other text was a file's name.
-ORIGINS = {"chrome": "chrome", "firefox": "firefox", "safari": "safari", "browser": "browser",
-           "qr": "qr",
-           "phone": "phone"}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -222,8 +211,6 @@ class TargetRow(msgspec.Struct):
     # Each listing's gaps: where cut-short syncs stopped, newest first; "" is a gap with no
     # cursor, which the next sync reads down to the head instead.
     gaps: dict[str, list[str]] = {}
-    # The account that last worked for it, tried first next time.
-    account: str | None = None
     # For a followed search: the `--folder` its hits go to, which a plain sync reuses.
     folder: str | None = None
 
@@ -264,22 +251,6 @@ class RunRow(msgspec.Struct):
     failed: int = 0
 
 
-class AccountRow(msgspec.Struct):
-    """One login of one plugin, in `accounts`; its secrets are in `secret.db`."""
-
-    id: int
-    plugin: str
-    name: str
-    # How it logged in: `browser`, `chrome`, `file`, `firefox`, `safari`, `qr`, `phone`, ….
-    origin: str
-    at: str
-    default: bool = False
-    # `ok`, `held` (until `held_until`) or `expired`.
-    status: str = "ok"
-    held_until: str | None = None
-    expires: str | None = None
-
-
 class _Target(Protocol):
     """What the store reads of a `flnd.plugin.Target`."""
 
@@ -309,11 +280,11 @@ def busy(error: BaseException) -> bool:
 
 
 # ---------------------------------------------------------------------------------------------
-# Opening, and the migration from version 1
+# Opening, and the migrations from versions 1 and 2
 # ---------------------------------------------------------------------------------------------
 
 def open(home: Path, *, loop: bool = False) -> Store:
-    """Open a home's `flnd.db`, migrating a version-1 file in place.
+    """Open a home's `flnd.db`, migrating a version-1 or version-2 file in place.
 
     A home without `flnd.db` is left untouched until the first write.
 
@@ -337,12 +308,14 @@ def open(home: Path, *, loop: bool = False) -> Store:
 
 
 def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
-    """Set the pragmas, then make schema 2 or migrate version 1, in one transaction."""
+    """Set the pragmas, then make schema 3 or migrate an older one, in one transaction."""
     sql.execute(f"PRAGMA busy_timeout = {OTHER_BUSY_MS}")
     sql.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
     sql.execute(f"PRAGMA wal_autocheckpoint = {0 if loop else OTHER_CHECKPOINT_PAGES}")
-    if _version(sql) == "1":
-        _backup(sql, home / BACKUP)
+    old = _version(sql)
+    if old in ("1", "2"):
+        _backup(sql, home / (BACKUP if old == "1" else BACKUP_V2), old)
+    notice = False
     sql.execute("BEGIN IMMEDIATE")
     try:
         version = _version(sql)
@@ -352,10 +325,16 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
             sql.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
             sql.execute("INSERT INTO meta VALUES ('keys', '2')")
         elif version == "1":
-            _migrate(sql, home)
+            _migrate(sql)
+        elif version == "2":
+            _drop_accounts(sql)
         elif version != VERSION:
             raise UsageError(f"home schema {version!r} needs a newer flnd",
                              hint="upgrade flnd, or open the home with the flnd that wrote it")
+        if version in ("1", "2") and (home / SECRETS).is_file():
+            # An old home's sealed logins are left alone, and its person is told once.
+            sql.execute("INSERT OR REPLACE INTO meta VALUES ('logins', 'told')")
+            notice = True
         if version and not sql.execute("SELECT 1 FROM meta WHERE key = 'keys'").fetchone():
             _rekey(sql)
             sql.execute("INSERT INTO meta VALUES ('keys', '2')")
@@ -375,12 +354,14 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
         if sql.in_transaction:
             sql.execute("ROLLBACK")
         raise
+    if notice:
+        ui.warn(LOGINS_NOTICE)
     if loop:
         sql.execute(f"PRAGMA busy_timeout = {LOOP_BUSY_MS}")
 
 
-def _backup(sql: sqlite3.Connection, path: Path) -> None:
-    """Copy a version-1 file to `path` with SQLite's online backup, unless a copy is there."""
+def _backup(sql: sqlite3.Connection, path: Path, version: str) -> None:
+    """Copy an old file to `path` with SQLite's online backup, unless a copy is there."""
     if path.is_file():
         return
     part = path.with_name(f"{path.name}.part")
@@ -393,7 +374,7 @@ def _backup(sql: sqlite3.Connection, path: Path) -> None:
         os.replace(part, path)
     except (OSError, sqlite3.Error) as error:
         part.unlink(missing_ok=True)
-        raise DiskError(f"{path}: can't keep a copy of version 1 before migrating: {error}",
+        raise DiskError(f"{path}: can't keep a copy of version {version} before migrating: {error}",
                         hint="free some disk space, then run flnd again") from error
 
 
@@ -416,8 +397,21 @@ def _tables(sql: sqlite3.Connection) -> set[str]:
     return {name for (name,) in sql.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
-def _migrate(sql: sqlite3.Connection, home: Path) -> None:
-    """Rebuild a version-1 file's tables as schema 2, in the caller's transaction."""
+def _drop_accounts(sql: sqlite3.Connection) -> None:
+    """Migrate a version-2 file to 3: no `accounts` table, no `targets.account` column, in the
+    caller's transaction."""
+    sql.execute("DROP TABLE IF EXISTS accounts")
+    if "account" in _columns(sql, "targets"):
+        for _, index, *_, origin, _ in sql.execute("PRAGMA index_list(targets)").fetchall():
+            if origin == "c" and "account" in [
+                    row[2] for row in sql.execute(f"PRAGMA index_info({index})")]:
+                sql.execute(f"DROP INDEX {index}")
+        sql.execute("ALTER TABLE targets DROP COLUMN account")
+    sql.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (VERSION,))
+
+
+def _migrate(sql: sqlite3.Connection) -> None:
+    """Rebuild a version-1 file's tables as schema 3, in the caller's transaction."""
     tables = _tables(sql)
     sql.execute("DROP VIEW IF EXISTS posts")
     for index in V1_INDEXES:
@@ -433,7 +427,6 @@ def _migrate(sql: sqlite3.Connection, home: Path) -> None:
     if "targets" in tables:
         _copy_targets(sql)
         _backfill_seen(sql)
-    _accounts(sql, home, tables)
     for table in [*(f"v1_{name}" for name in REBUILT if name in tables), *V1_DROPPED]:
         sql.execute(f"DROP TABLE IF EXISTS {table}")
     sql.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (VERSION,))
@@ -508,7 +501,7 @@ def _columns(sql: sqlite3.Connection, table: str) -> list[str]:
 
 def _copy(sql: sqlite3.Connection, table: str, renames: Mapping[str, str]) -> None:
     """Fill a new table from `v1_<table>`, by column; a column the old one lacks takes its
-    version-1 default (`V1_DEFAULTS`, else schema 2's), and one the new one lacks is dropped."""
+    version-1 default (`V1_DEFAULTS`, else schema 3's), and one the new one lacks is dropped."""
     old = set(_columns(sql, f"v1_{table}"))
     pairs = [(new, renames.get(new, new)) for new in _columns(sql, table)]
     pairs = [(new, was if was in old else V1_DEFAULTS[table, new]) for new, was in pairs
@@ -523,7 +516,7 @@ def _copy(sql: sqlite3.Connection, table: str, renames: Mapping[str, str]) -> No
 def _copy_targets(sql: sqlite3.Connection) -> None:
     """Fill `targets` from `v1_targets`; its `options` JSON becomes the `categories` list."""
     old = set(_columns(sql, "v1_targets"))
-    kept = [name for name in TARGET_COLUMNS if name in old and name not in ("plugin", "account")]
+    kept = [name for name in TARGET_COLUMNS if name in old and name != "plugin"]
     found = sql.execute(f"SELECT source, options, {', '.join(kept)} FROM v1_targets").fetchall()
     sql.executemany(
         f"INSERT INTO targets (plugin, categories, {', '.join(kept)})"
@@ -541,46 +534,6 @@ def _categories(options: str) -> list[str]:
         return []
     names = settings.get("only") or settings.get("categories") or []
     return [name for name in names if isinstance(name, str)] if isinstance(names, list) else []
-
-
-def _accounts(sql: sqlite3.Connection, home: Path, tables: set[str]) -> None:
-    """Make a default account for each `logins` row, and each `secret.db` slot not in it;
-    `flnd.engine.auth` seals that slot's values under it."""
-    logins = (sql.execute("SELECT source, origin, at FROM logins").fetchall()
-              if "logins" in tables else [])
-    known = {code for code, _, _ in logins}
-    made = now()
-    rows = [*((code, _origin(origin), at or made) for code, origin, at in logins),
-            *((code, "", made) for code in _slots(home / SECRETS) if code not in known)]
-    sql.executemany("INSERT INTO accounts (plugin, name, origin, at, is_default)"
-                    " VALUES (?, 'default', ?, ?, 1)", rows)
-
-
-def _origin(origin: str) -> str:
-    """A version-1 origin as version 2 names it: a browser's or a method's name, else `file`."""
-    if not origin:
-        return ""
-    return ORIGINS.get(origin.lower(), "file")
-
-
-def _slots(path: Path) -> list[str]:
-    """The slots (plugin codes) of a version-1 `secret.db`, read only; none when it is
-    missing or sealed already."""
-    if not path.is_file():
-        return []
-    try:
-        sql = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
-    except sqlite3.Error as error:
-        raise DiskError(f"{path}: {error}") from error
-    try:
-        if "secrets" not in _tables(sql) or "slot" not in _columns(sql, "secrets"):
-            return []
-        found = sql.execute("SELECT DISTINCT slot FROM secrets ORDER BY slot").fetchall()
-    except sqlite3.Error as error:
-        raise DiskError(f"{path}: {error}") from error
-    finally:
-        sql.close()
-    return [slot for (slot,) in found]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1030,8 +983,7 @@ class Store:
 
     def progress(self, target: _Target, *, cursors: Mapping[str, str | None],
                  complete: Sequence[str], heads: Mapping[str, str] | None = None,
-                 gaps: Mapping[str, Sequence[str]] | None = None,
-                 account: str | None = None) -> None:
+                 gaps: Mapping[str, Sequence[str]] | None = None) -> None:
         """Keep where a target's listings stopped, after its run.
 
         Args:
@@ -1040,9 +992,8 @@ class Store:
             heads: each listing's newest post, for listings read from the top; None keeps.
             gaps: each listing's gaps, newest first; an empty list drops them, and a listing
                 left out keeps its own.
-            account: the account that worked, tried first next time; None keeps.
         """
-        if not cursors and not complete and not heads and not gaps and account is None:
+        if not cursors and not complete and not heads and not gaps:
             return
         today = datetime.datetime.fromtimestamp(clock.wall(), datetime.UTC).date().isoformat()
         with self._db.transaction():
@@ -1054,7 +1005,6 @@ class Store:
             row.heads = {**row.heads, **(heads or {})}
             kept = {**row.gaps, **{name: list(found) for name, found in (gaps or {}).items()}}
             row.gaps = {name: found for name, found in kept.items() if found}
-            row.account = account or row.account
             self._put(row)
 
     def tally(self, target: _Target) -> None:
@@ -1076,55 +1026,9 @@ class Store:
                        (row.key, row.plugin, row.value, row.kind, int(row.follow),
                         _json(list(row.categories)), row.query, _json(row.complete),
                         _json(row.cursors), _json(row.seen), row.last_sync, row.files,
-                        row.bytes, _json(row.heads), _json(row.gaps), row.account, row.folder))
+                        row.bytes, _json(row.heads), _json(row.gaps), row.folder))
 
-    # -- accounts and plugins' state --------------------------------------------------------
-
-    def accounts(self, plugin: str | None = None) -> list[AccountRow]:
-        """The accounts, of one plugin or of all, the default first, then in order made."""
-        where, args = ("WHERE plugin = ?", (plugin,)) if plugin is not None else ("", ())
-        found = self._db.all(f"SELECT {ACCOUNT_SELECT} FROM accounts {where}"
-                             " ORDER BY plugin, is_default DESC, id", args)
-        return [_account_row(row) for row in found]
-
-    def login(self, plugin: str, name: str, *, origin: str) -> AccountRow:
-        """Record a login of an account, made if new (the plugin's first is its default).
-
-        Returns:
-            The account's row, `ok` again.
-        """
-        with self._db.transaction() as sql:
-            first = sql.execute("SELECT 1 FROM accounts WHERE plugin = ?", (plugin,)).fetchone()
-            sql.execute("INSERT INTO accounts (plugin, name, origin, at, is_default)"
-                        " VALUES (?, ?, ?, ?, ?) ON CONFLICT (plugin, name) DO UPDATE SET"
-                        " origin = excluded.origin, at = excluded.at, status = 'ok',"
-                        " held_until = NULL", (plugin, name, origin, now(), int(first is None)))
-            found = sql.execute(f"SELECT {ACCOUNT_SELECT} FROM accounts WHERE plugin = ? AND"
-                                " name = ?", (plugin, name)).fetchone()
-        return _account_row(found)
-
-    def logout(self, account: int) -> None:
-        """Forget an account's row; the plugin's next account becomes its default."""
-        with self._db.transaction() as sql:
-            found = sql.execute("SELECT plugin FROM accounts WHERE id = ?", (account,)).fetchone()
-            sql.execute("DELETE FROM accounts WHERE id = ?", (account,))
-            if found is not None:
-                sql.execute("UPDATE accounts SET is_default = 1 WHERE id = (SELECT min(id) FROM"
-                            " accounts WHERE plugin = ?1) AND NOT EXISTS (SELECT 1 FROM accounts"
-                            " WHERE plugin = ?1 AND is_default)", (found[0],))
-
-    def make_default(self, account: int) -> None:
-        """Make an account its plugin's default, and no other."""
-        with self._db.transaction() as sql:
-            sql.execute("UPDATE accounts SET is_default = (id = ?1) WHERE plugin = (SELECT plugin"
-                        " FROM accounts WHERE id = ?1)", (account,))
-
-    def mark(self, account: int, *, status: str, held_until: str | None = None,
-             expires: str | None = None) -> None:
-        """Set an account's status: `ok`, `held` (until `held_until`) or `expired`."""
-        self._db.write("UPDATE accounts SET status = ?, held_until = ?,"
-                       " expires = coalesce(?, expires) WHERE id = ?",
-                       (status, held_until, expires, account))
+    # -- plugins' state ---------------------------------------------------------------------
 
     def state(self, plugin: str) -> State:
         """A plugin's own values between runs, as a mapping."""
@@ -1232,11 +1136,10 @@ def _file_row(found: tuple[Any, ...]) -> FileRow:
 
 def _target_row(found: tuple[Any, ...]) -> TargetRow:
     (item, plugin, value, kind, follow, categories, query, complete, cursors, seen, last_sync,
-     count, size, heads, gaps, account, folder) = found
+     count, size, heads, gaps, folder) = found
     return TargetRow(item, plugin, value, kind, bool(follow), tuple(json.loads(categories)),
                      query, json.loads(complete), json.loads(cursors), json.loads(seen),
-                     last_sync, count, size, json.loads(heads), json.loads(gaps), account,
-                     folder)
+                     last_sync, count, size, json.loads(heads), json.loads(gaps), folder)
 
 
 def _failure_row(found: tuple[Any, ...]) -> FailureRow:
@@ -1244,11 +1147,6 @@ def _failure_row(found: tuple[Any, ...]) -> FailureRow:
      run, at) = found
     return FailureRow(item, target, post, category, file, cursor, attempts, error, message, hint,
                       bool(retryable), url, run, at)
-
-
-def _account_row(found: tuple[Any, ...]) -> AccountRow:
-    ident, plugin, name, origin, at, default, status, held_until, expires = found
-    return AccountRow(ident, plugin, name, origin, at, bool(default), status, held_until, expires)
 
 
 def _json(value: Any) -> str:

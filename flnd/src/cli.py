@@ -32,8 +32,6 @@ CODES = (
 )
 # The most failed targets `status` lists before "and N more".
 SHOWN = 10
-# An account whose login ends within this many days is listed by `status` as expiring.
-SOON_DAYS = 7
 
 
 # ---------------------------------------------------------------------------------------------
@@ -307,10 +305,7 @@ def _sure(fl: flnd.Flnd, args: argparse.Namespace) -> bool:
 
 
 def auth_list(args: argparse.Namespace) -> int:
-    """Work in the accounts of every plugin: origin, default, and whether each is usable.
-
-    On a terminal it is a list: * makes the account under the cursor its plugin's default, a
-    logs one in, d logs it out. On a pipe it is a plain table.
+    """List the logins: each plugin that has one, whether it is usable, and its file.
 
     Args:
         args: the parsed flags.
@@ -318,39 +313,25 @@ def auth_list(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd.ui import lists
+    from flnd.ui import out
 
     with _open(args) as fl:
-        if args.json:
-            for row in fl.auth:
-                _json(row)
-            return OK
-
-        def load() -> list[lists.AccountRow]:
-            last: dict[tuple[str, str], str] = {}
-            for each in fl.targets:
-                key = (each.target.plugin, each.account or "")
-                last[key] = max(last.get(key, ""), each.at)
-            return [lists.AccountRow(row.plugin, row.name, row.is_default, row.origin,
-                                     _left(row.held_until, held=True), _left(row.expires),
-                                     _ago(last.get((row.plugin, row.name), "")))
-                    for row in fl.auth]
-
-        def login(row: lists.AccountRow | None) -> None:
-            code = row.plugin if row is not None else _pick_plugin(fl)
-            method, path = _ask_how(args, code, fl)
-            fl.auth.login(code, method=method, path=path)
-
-        lists.accounts(load, default=lambda row: fl.auth.default(row.plugin, row.name),
-                       add=login, logout=lambda row: fl.auth.logout(row.plugin, name=row.name))
+        rows = list(fl.auth)
+    if args.json:
+        for row in rows:
+            _json(row)
+    elif not rows:
+        out.line(("no logins", "dim"))
+    else:
+        _table(("plugin", "status", "file"), [(row.plugin, row.status, row.file) for row in rows])
     return OK
 
 
 def auth_login(args: argparse.Namespace) -> int:
-    """Log an account of a plugin in, and save the login encrypted in the home.
+    """Log in to a plugin, and keep the login in the logins folder.
 
-    METHOD is file (a cookies.txt or JSON export, with its PATH), or the plugin's own way
-    (tlg: qr, phone). Left out in a terminal, it is asked.
+    HOW is the cookie file (a cookies.txt or JSON export) for a cookie plugin, or the
+    plugin's own way (tlg: qr, phone). A cookie file left out in a terminal is asked.
 
     Args:
         args: the parsed flags.
@@ -359,22 +340,18 @@ def auth_login(args: argparse.Namespace) -> int:
         0.
 
     Raises:
-        UsageError: METHOD is left out where nobody can be asked (no terminal, or --json).
+        UsageError: the cookie file is left out where nobody can be asked (no terminal, or
+            --json).
     """
-    method, path = args.method, args.path
-    if method is not None and path is None and method not in _methods(args.plugin):
-        # `flnd auth login ins cookies.txt`: a path alone means a file.
-        method, path = "file", method
-    if method is None and path is None:
-        method, path = _ask_how(args)
+    method, path = _how(args)
     with _open(args) as fl:
         done = fl.auth.login(args.plugin, method=method, path=path)
-    _line(args, done, f"{done.plugin}: logged in as {done.name} ({done.origin})")
+    _line(args, done, f"{done.plugin}: logged in ({done.status})")
     return OK
 
 
 def auth_logout(args: argparse.Namespace) -> int:
-    """Log an account out: its saved login and its row. The default one when none is named.
+    """Log out of a plugin: delete its saved login.
 
     Args:
         args: the parsed flags.
@@ -385,12 +362,11 @@ def auth_logout(args: argparse.Namespace) -> int:
     from flnd.ui import forms
 
     with _open(args) as fl:
-        if not args.json and not forms.confirm(
-                f"Log {args.account or 'the default account'} out of {args.plugin}?"):
+        if not args.json and not forms.confirm(f"Log out of {args.plugin}?"):
             _line(args, None, "kept: nobody was logged out")
             return OK
-        gone = fl.auth.logout(args.plugin, name=args.account)
-    _line(args, gone, f"{gone.plugin}: {gone.name} logged out")
+        gone = fl.auth.logout(args.plugin)
+    _line(args, gone, f"{gone.plugin}: logged out")
     return OK
 
 
@@ -449,7 +425,7 @@ def plugin_install(args: argparse.Namespace) -> int:
 
 
 def plugin_uninstall(args: argparse.Namespace) -> int:
-    """Uninstall a plugin. Its accounts and targets stay.
+    """Uninstall a plugin. Its targets stay.
 
     Args:
         args: the parsed flags.
@@ -469,7 +445,7 @@ def plugin_uninstall(args: argparse.Namespace) -> int:
 
 
 def status(args: argparse.Namespace) -> int:
-    """Show the last run, its failures by target, the accounts that need care, and the disk.
+    """Show the last run, its failures by target, the logins that need care, and the disk.
 
     A failure a later run saved is left out. A failed file is retried by itself at the start of
     its target's next 3 gets; `flnd target list`'s r asks for it again after that. With --json,
@@ -485,20 +461,19 @@ def status(args: argparse.Namespace) -> int:
 
     with _open(args) as fl:
         found = fl.status
-        accounts = [row for row in fl.auth if _state(row) != "ok"]
+        logins = [row for row in fl.auth if row.status != "ok"]
         checked = fl.check()
-    well = (found is None or not found.failures) and not accounts and checked.ok
+    well = (found is None or not found.failures) and not logins and checked.ok
     if args.json:
-        out.json({"type": "Status", "status": found, "accounts": accounts,
+        out.json({"type": "Status", "status": found, "logins": logins,
                   "disk": checked})
         return OK if well else FAILED
     if found is None:
         out.line(("no run yet", "dim"))
     else:
         _last(found)
-    for row in accounts:
-        out.line(("  account ", "dim"), (f"{row.plugin} {row.name}", "bold focus"), ": ",
-                 (_state(row), "warn"))
+    for row in logins:
+        out.line(("  login ", "dim"), (row.plugin, "bold focus"), ": ", (row.status, "warn"))
     _disk(checked)
     rows = len(checked.missing) + len(checked.resized)
     if rows and not checked.fixed and forms.confirm(f"Repair {out.count(rows, 'row')}?",
@@ -506,7 +481,7 @@ def status(args: argparse.Namespace) -> int:
         with _open(args) as fl:
             checked = fl.check(fix=True)
         _disk(checked)
-        well = (found is None or not found.failures) and not accounts and checked.ok
+        well = (found is None or not found.failures) and not logins and checked.ok
     return OK if well else FAILED
 
 
@@ -626,23 +601,6 @@ def _disk(found: Any) -> None:
         out.line((line, "dim"), (", ".join(problems), "bold bad"))
 
 
-def _state(account: Any) -> str:
-    """What an account's status line says: ok, held, expired, or expiring soon."""
-    import datetime
-
-    now = datetime.datetime.now(datetime.UTC)
-    if account.status == "held" and account.held_until:
-        left = datetime.datetime.fromisoformat(account.held_until) - now
-        return f"held {max(1, round(left.total_seconds() / 60))} min"
-    if account.status == "expired":
-        return "expired"
-    if account.expires:
-        left = datetime.datetime.fromisoformat(account.expires) - now
-        if left.days < SOON_DAYS:
-            return "expired" if left.total_seconds() <= 0 else f"expires in {left.days + 1} days"
-    return "ok"
-
-
 # ---------------------------------------------------------------------------------------------
 # The parser
 # ---------------------------------------------------------------------------------------------
@@ -748,16 +706,14 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--media", action="store_true",
                      help="also delete their files, sidecars, links and extracted folders")
 
-    accounts = group("auth", "List the accounts, log one in or out")
-    command(accounts, "list", auth_list)
-    sub = command(accounts, "login", auth_login)
+    logins = group("auth", "List the logins, log in to a plugin or out of one")
+    command(logins, "list", auth_list)
+    sub = command(logins, "login", auth_login)
     sub.add_argument("plugin", help="the plugin's code (ins)")
-    sub.add_argument("method", nargs="?",
-                     help="file, or the plugin's own way (qr, phone)")
-    sub.add_argument("path", nargs="?", help="the cookie file's path, for file")
-    sub = command(accounts, "logout", auth_logout)
+    sub.add_argument("how", nargs="?", metavar="file",
+                     help="the cookie file's path; for tlg, its way (qr, phone)")
+    sub = command(logins, "logout", auth_logout)
     sub.add_argument("plugin", help="the plugin's code (ins)")
-    sub.add_argument("account", nargs="?", help="the account's name; the default when left out")
 
     plugins = group("plugin", "List the plugins, install or uninstall one")
     command(plugins, "list", plugin_list)
@@ -866,71 +822,29 @@ def _targets(given: Sequence[str]) -> list[str]:
     return found
 
 
-def _ask_how(args: argparse.Namespace, code: str | None = None,
-             fl: flnd.Flnd | None = None) -> tuple[str, str | None]:
-    """Ask how to log in to a plugin: one of its methods, and a path for a file."""
-    from contextlib import nullcontext
-
+def _how(args: argparse.Namespace) -> tuple[str, str | None]:
+    """The method and the cookie file of a login: a cookie plugin's HOW is its file (asked in a
+    terminal when left out), any other's is its method, the first it has by default."""
     import flnd
     from flnd.ui import forms
 
-    code = code or args.plugin
+    code = args.plugin
     ways = _methods(code)
     if not ways:
         # Not built in: a plugin's ways are read from its class, which this imports.
-        with (nullcontext(fl) if fl is not None else _open(args)) as home:
+        with _open(args) as home:
             found = next((row for row in home.plugins if row.code == code), None)
         if found is None:
             raise flnd.UsageError(f"unknown plugin {code!r}",
                                   hint="flnd plugin list shows the plugins")
         ways = tuple(found.logins)
-    cookie_only = ways == ("file",)
+    if ways != ("file",):
+        return args.how or ways[0], None
+    if args.how:
+        return "file", args.how
     if args.json or not forms.interactive():
-        hint = (f"flnd auth login {code} <cookies.txt>" if cookie_only else
-                f"flnd auth login {code} <method>, a method of {', '.join(ways)}")
-        raise flnd.UsageError(f"{code}: how to log in?", hint=hint)
-    if cookie_only:
-        # A cookie site has one way, so the menu is skipped: ask for the file's path.
-        return "file", (forms.text("Cookie file") or "").strip()
-    name = _names().get(code, code)
-    picked = forms.select(f"Log in to {name}", [_way(way) for way in ways])
-    if picked is None:
-        raise flnd.UsageError(f"{code}: no way chosen to log in")
-    path = None
-    if picked == "file":
-        path = (forms.text("Cookie file") or "").strip()
-    return picked, path
-
-
-def _way(way: str) -> Any:
-    """One way to log in as the login form words it."""
-    from flnd.ui import forms
-
-    words = {"file": ("From a cookie file", "a cookies.txt you exported"),
-             "qr": ("With a QR code", "scan it in the app"),
-             "phone": ("With your phone number", "a code comes by message")}
-    label, note = words.get(way, (f"From your {way.title()}", "reads its cookies"))
-    return forms.Option(label, way, note)
-
-
-def _names() -> dict[str, str]:
-    """The name of every built-in plugin, by code, from the manifest."""
-    from flnd.plugins import _manifest
-
-    return {code: str(entry["name"]) for code, entry in _manifest.PLUGINS.items()}
-
-
-def _pick_plugin(fl: flnd.Flnd) -> str:
-    """Ask which plugin to log in to, of those that have a login."""
-    from flnd.ui import forms
-
-    logins = {row.code: row.name for row in fl.plugins if row.logins}
-    picked = forms.select("Log in to", {f"{name} ({code})": code for code, name in logins.items()})
-    if picked is None:
-        import flnd
-
-        raise flnd.UsageError("no plugin chosen to log in to")
-    return str(picked)
+        raise flnd.UsageError(f"{code}: which cookie file?", hint=f"flnd auth login {code} <file>")
+    return "file", (forms.text("Cookie file") or "").strip()
 
 
 def _ago(at: str) -> float | None:
@@ -941,14 +855,6 @@ def _ago(at: str) -> float | None:
         return None
     then = datetime.datetime.fromisoformat(at)
     return (datetime.datetime.now(datetime.UTC) - then).total_seconds()
-
-
-def _left(at: str | None, *, held: bool = False) -> float | None:
-    """Seconds until an ISO 8601 time (0 or less: it has passed); None for none."""
-    ago = _ago(at or "")
-    if ago is None or (held and ago >= 0):
-        return None
-    return -ago
 
 
 def _line(args: argparse.Namespace, value: Any, text: str) -> None:

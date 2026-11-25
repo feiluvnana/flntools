@@ -83,14 +83,12 @@ class ReadTest(Case):
             ('[defaults]\nrate = "20 MB/s"', "defaults.rate", "20 MB/s"),
             ('[defaults]\nslowest = "500 KB/s"', "defaults.slowest", "500 KB/s"),
             ("[defaults]\nheight = 720", "defaults.height", 720),
-            ("[defaults]\nswitch = true", "defaults.switch", True),
             ("[plugins.exm]\npace = 2", "plugins.exm.pace", 2.0),
             ('[plugins.exm]\nlimits = { "cdn.example.com" = 4 }', "plugins.exm.limits",
              {"cdn.example.com": 4}),
             ('[plugins.exm]\nproxy = "socks5://127.0.0.1:1080"', "plugins.exm.proxy",
              "socks5://127.0.0.1:1080"),
             ("[plugins.exm]\nstop_after = 9", "plugins.exm.stop_after", 9),
-            ("[plugins.exm]\nswitch = true", "plugins.exm.switch", True),
             ('[plugins.exm]\nfolder = "{category}/{title}"', "plugins.exm.folder",
              "{category}/{title}"),
             ('[plugins.exm]\nfilename = "{date}_{post}"', "plugins.exm.filename",
@@ -205,7 +203,7 @@ class ReadTest(Case):
 
     def test_resolution_order_and_where(self):
         found = self.read(home="[defaults]\nheight = 720\nsidecars = true",
-                          user="[defaults]\nheight = 480\nwhen = '1y'\nswitch = true",
+                          user="[defaults]\nheight = 480\nwhen = '1y'\n[plugins.exm]\npace = 2",
                           sidecars=False)
         rows = [("sidecars", False, Where.ARGUMENT), ("height", 720, Where.HOME),
                 ("when", "1y", Where.USER), ("rate", "0", Where.DEFAULT)]
@@ -213,8 +211,8 @@ class ReadTest(Case):
             with self.subTest(key):
                 self.assertEqual(getattr(found.defaults, key), value)
                 self.assertEqual(found.origin(key), where)
-        self.assertIs(found.plugin("exm").switch, True)
-        self.assertEqual(found.origin("plugins.exm.switch"), Where.USER)
+        self.assertEqual(found.plugin("exm").pace, 2.0)
+        self.assertEqual(found.origin("plugins.exm.pace"), Where.USER)
         self.assertEqual(found.plugin("exm").settings, Settings())
 
     def test_a_non_table_sources_entry_warns(self):

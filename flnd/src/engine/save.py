@@ -77,7 +77,6 @@ class Item:
         kind: what it must be (`files.IMAGE`, `files.SNIFF`, …); None checks nothing.
         day: its post's day, the file's modified time at noon UTC; None uses `Last-Modified`.
         headers: extra request headers for its transfer.
-        account: the account it is fetched with; None for the plugin's default.
         count: how many files the post has, on its first file's row only; None otherwise.
         estimated: whether `day` was taken from the posts around it.
         dated_name: whether the name uses `{date}_` and may take `Last-Modified`.
@@ -101,7 +100,6 @@ class Item:
     kind: str | None = None
     day: datetime.date | None = None
     headers: Mapping[str, str] | None = None
-    account: str | None = None
     count: int | None = None
     estimated: bool = False
     dated_name: bool = False
@@ -939,7 +937,7 @@ class Saver:
                         await self._call(shutil.copyfile, one.path, held.path)
                     else:
                         await self.scheduler.run(Job(
-                            kind=Kind.MERGE, work=join, plugin=plugin, account=item.account,
+                            kind=Kind.MERGE, work=join, plugin=plugin,
                             target=str(item.target)))
                 finally:
                     for stream in streams:
@@ -968,7 +966,7 @@ class Saver:
         """A `FILE` job for `item`: of its first mirror's host, or of the plugin's first domain
         for a file its `fetch` function writes."""
         host = (urlsplit(first).hostname or "") if isinstance(first, str) else item.domain
-        return Job(kind=Kind.FILE, work=work, plugin=plugin, account=item.account,
+        return Job(kind=Kind.FILE, work=work, plugin=plugin,
                    host=host or plugin, target=str(item.target), size=item.file.size,
                    path=item.dest, priority=0 if item.retried else None)
 

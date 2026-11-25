@@ -41,7 +41,7 @@ __all__ = [
 
 
 class Hidden(SiteError):
-    """It exists, but this account can't see it: a private profile, a chat the account left."""
+    """It exists, but this login can't see it: a private profile, a chat the login left."""
 
 
 class PluginError(Error):
@@ -56,7 +56,7 @@ DISK_HINTS = {
     errno.EROFS: "that disk is read-only; use another --home",
     errno.ENAMETOOLONG: "use a shorter --home or folder template",
 }
-LOGIN_HINT = "run flnd auth login {code}"
+LOGIN_HINT = "export a fresh cookie file, then flnd auth login {code} <file>"
 BUG_HINT = "this is a bug; run with -v and report it"
 
 

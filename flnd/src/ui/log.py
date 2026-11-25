@@ -297,15 +297,6 @@ class UI:
             for line, times in shown:
                 self._show(out.styled(_kind, line, fancy=self._use_unicode(), times=times))
 
-    def note(self, record: dict[str, Any]) -> None:
-        """Write a record to the journal only, such as an account switch; nothing without one.
-
-        Args:
-            record: its fields, with its `type`.
-        """
-        if self._journal is not None:
-            self._journal.write(record)
-
     def record(self, kind: Level, message: str) -> None:
         """Write a line to the journal only, never to the terminal: the screen's own failures.
 

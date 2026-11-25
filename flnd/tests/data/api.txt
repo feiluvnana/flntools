@@ -1,14 +1,4 @@
 flnd: module
-flnd.Account(id: int, plugin: str, name: str, origin: str, at: str, is_default: bool = False, status: Literal['ok', 'held', 'expired'] = 'ok', held_until: str | None = None, expires: str | None = None)
-flnd.Account.at: field -> str
-flnd.Account.expires: field -> str | None
-flnd.Account.held_until: field -> str | None
-flnd.Account.id: field -> int
-flnd.Account.is_default: field -> bool
-flnd.Account.name: field -> str
-flnd.Account.origin: field -> str
-flnd.Account.plugin: field -> str
-flnd.Account.status: field -> Literal['ok', 'held', 'expired']
 flnd.Blocked(flnd.SiteError)
 flnd.Blocked.hint: attribute
 flnd.Blocked.response: attribute
@@ -67,7 +57,7 @@ flnd.Flnd.config: attribute
 flnd.Flnd.files(*, target: str | Target | None = None, kind: str | None = None, since: datetime.date | str | None = None) -> list[Record]
 flnd.Flnd.get(*targets: str | Target, limit: int | None = None, when: str | None = None, dry: bool = False, folder: str | Mapping[str, str] | None = None) -> Run
 flnd.Flnd.home: attribute
-flnd.Flnd.plugin(code: str, *, account: str | None = None) -> AbstractAsyncContextManager[Ctx]
+flnd.Flnd.plugin(code: str) -> AbstractAsyncContextManager[Ctx]
 flnd.Flnd.plugins: attribute
 flnd.Flnd.status: property -> Status | None
 flnd.Flnd.sync(*patterns: str, limit: int | None = None, when: str | None = None, dry: bool = False) -> Run
@@ -78,8 +68,7 @@ flnd.Hidden.response: attribute
 flnd.Hidden.retryable: attribute
 flnd.Hidden.status: attribute
 flnd.Hidden.target: attribute
-flnd.HoldState(plugin: str, account: str | None, bucket: str, until: float, reason: str, count: int = 1)
-flnd.HoldState.account: attribute -> str | None
+flnd.HoldState(plugin: str, bucket: str, until: float, reason: str, count: int = 1)
 flnd.HoldState.bucket: attribute -> str
 flnd.HoldState.count: attribute -> int
 flnd.HoldState.plugin: attribute -> str
@@ -97,6 +86,11 @@ flnd.Installed.name: attribute -> str
 flnd.Installed.origin: attribute -> str
 flnd.Installed.version: attribute -> str
 flnd.Installed.where: attribute -> str
+flnd.LoggedIn(plugin: str, status: str, file: str, expires: str | None = None)
+flnd.LoggedIn.expires: field -> str | None
+flnd.LoggedIn.file: field -> str
+flnd.LoggedIn.plugin: field -> str
+flnd.LoggedIn.status: field -> str
 flnd.LoginError(flnd.Error)
 flnd.LoginError.hint: attribute
 flnd.LoginError.retryable: attribute
@@ -217,8 +211,7 @@ flnd.ToolError.hint: attribute
 flnd.ToolError.retryable: attribute
 flnd.ToolError.tail: attribute
 flnd.ToolError.target: attribute
-flnd.Tracked(target: flnd.plugin.Target, follow: bool = False, at: str = '', files: int = 0, size: int = 0, seen: int = 0, categories: tuple[str, ...] = (), complete: dict[str, str] = <factory>, query: bool = False, account: str | None = None, status: str = '', failed: int = 0, pending: tuple[str, ...] = ())
-flnd.Tracked.account: attribute -> str | None
+flnd.Tracked(target: flnd.plugin.Target, follow: bool = False, at: str = '', files: int = 0, size: int = 0, seen: int = 0, categories: tuple[str, ...] = (), complete: dict[str, str] = <factory>, query: bool = False, status: str = '', failed: int = 0, pending: tuple[str, ...] = ())
 flnd.Tracked.at: attribute -> str
 flnd.Tracked.categories: attribute -> tuple[str, ...]
 flnd.Tracked.complete: attribute -> dict[str, str]
@@ -239,16 +232,6 @@ flnd.__version__: str
 flnd.open(home: str | os.PathLike[str] | None = None, *, again: bool | None = None) -> Flnd
 flnd.plugin: module
 flnd.plugin.API: int
-flnd.plugin.Account(id: int, plugin: str, name: str, origin: str, at: str, is_default: bool = False, status: Literal['ok', 'held', 'expired'] = 'ok', held_until: str | None = None, expires: str | None = None)
-flnd.plugin.Account.at: field -> str
-flnd.plugin.Account.expires: field -> str | None
-flnd.plugin.Account.held_until: field -> str | None
-flnd.plugin.Account.id: field -> int
-flnd.plugin.Account.is_default: field -> bool
-flnd.plugin.Account.name: field -> str
-flnd.plugin.Account.origin: field -> str
-flnd.plugin.Account.plugin: field -> str
-flnd.plugin.Account.status: field -> Literal['ok', 'held', 'expired']
 flnd.plugin.Blocked(flnd.SiteError)
 flnd.plugin.Blocked.hint: attribute
 flnd.plugin.Blocked.response: attribute
@@ -285,9 +268,7 @@ flnd.plugin.Cookies.names: attribute
 flnd.plugin.Cookies.required: attribute
 flnd.plugin.Cookies.start(ctx: Ctx, method: str) -> None
 flnd.plugin.Cookies.url: attribute
-flnd.plugin.Cookies.whoami(ctx: Ctx) -> str | None
 flnd.plugin.Ctx(*args, **kwargs)
-flnd.plugin.Ctx.account: property -> Account | None
 flnd.plugin.Ctx.ask(message: str, *, secret: bool = False, description: str = '', choices: Sequence[str] = ()) -> str
 flnd.plugin.Ctx.call(fn: Callable[..., T], *args: Any) -> T
 flnd.plugin.Ctx.click(css: str, *, timeout: float = 10.0) -> None
@@ -364,7 +345,6 @@ flnd.plugin.Login.names: attribute -> tuple[str, ...]
 flnd.plugin.Login.required: attribute
 flnd.plugin.Login.start(ctx: Ctx, method: str) -> None
 flnd.plugin.Login.url: attribute -> str
-flnd.plugin.Login.whoami(ctx: Ctx) -> str | None
 flnd.plugin.LoginError(flnd.Error)
 flnd.plugin.LoginError.hint: attribute
 flnd.plugin.LoginError.retryable: attribute
@@ -497,8 +477,7 @@ flnd.testing.Collected.key: field -> str
 flnd.testing.Collected.path: field -> str
 flnd.testing.Collected.post: field -> Post
 flnd.testing.Collected.url: field -> Any
-flnd.testing.FakeCtx(plugin: type[Plugin] | Plugin, target: str | flnd.plugin.Target = '', *, routes: Mapping[str, Reply | Callable[[Request], Any]] | None = None, pages: Mapping[str, FakePage | str] | None = None, account: str | None = None, cookies: Mapping[str, str] | None = None, when: flnd.plugin.Range = Range(since=None, until=None), answers: Sequence[str] = (), state: MutableMapping[str, Any] | None = None, settings: Mapping[str, Any] | None = None)
-flnd.testing.FakeCtx.account: property -> flnd.plugin.Account | None
+flnd.testing.FakeCtx(plugin: type[Plugin] | Plugin, target: str | flnd.plugin.Target = '', *, routes: Mapping[str, Reply | Callable[[Request], Any]] | None = None, pages: Mapping[str, FakePage | str] | None = None, cookies: Mapping[str, str] | None = None, when: flnd.plugin.Range = Range(since=None, until=None), answers: Sequence[str] = (), state: MutableMapping[str, Any] | None = None, settings: Mapping[str, Any] | None = None)
 flnd.testing.FakeCtx.ask(message: str, *, secret: bool = False, description: str = '', choices: Sequence[str] = ()) -> str
 flnd.testing.FakeCtx.call(fn: Callable[..., T], *args: Any) -> T
 flnd.testing.FakeCtx.click(css: str, *, timeout: float = 10.0) -> None

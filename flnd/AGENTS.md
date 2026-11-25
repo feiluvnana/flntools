@@ -34,7 +34,7 @@ These rules are for anyone who changes flnd: how to check, lay out, name, write 
 ## Privacy
 - Use only example handles in code, tests and docs: `example_user`, `example_creator`,
   `example_handle`, `example.page`, `examplechannel`, and the domain `example.com`.
-- `FLND_TEST_NO_PROFILES=1` (set by `make test`) makes the tests refuse the real key file and
+- `FLND_TEST_NO_PROFILES=1` (set by `make test`) makes the tests refuse the real logins and
   the real user config in `~/.config/flnd/`, and keeps the browser's cache out of the real home.
 
 ## Layout
@@ -58,7 +58,7 @@ src/                 the package flnd
     save.py        a file job: transfer, dedupe, unpack, sidecar, exec, the commit
     resolve.py     target text -> (plugin, Target, categories)
     plugins.py     the plugin manager
-    auth.py        accounts, switching, the sealed vault, login methods
+    auth.py        the logins folder, login steps, cookie write-back
     store.py       flnd.db: schema, migrations, rows, check and repair
     config.py      config.toml: structs, reading, editing
   ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
@@ -66,7 +66,7 @@ src/                 the package flnd
   plugins/         built-ins, importing only flnd.plugin and the standard library
     __init__.py _manifest.py fbk.py ins.py loi.py mht.py thr.py tik.py tlg.py twt.py web.py
 flnkit/              the standalone package flnkit, imports nothing of flnd
-  net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py vault.py media.py
+  net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py media.py
   stream.py
 ```
 
@@ -128,7 +128,7 @@ Error(Exception)            .hint: str (what to do; "" when nothing)
 ├── SiteError
 │   ├── Blocked             .wait: float | None (seconds the site asked for)
 │   ├── NotFound            404 or 410: recorded gone, never asked again
-│   ├── Hidden              it exists, but this account can't see it
+│   ├── Hidden              it exists, but this login can't see it
 │   └── Changed             the answer can't be read; a scrubbed sample is kept
 ├── NetworkError            timeout, reset, DNS, TLS; retried
 ├── DiskError               exit 4; stops the run

@@ -15,7 +15,6 @@ _HOMES = {
     "Flnd": "flnd._library",
     "open": "flnd._library",
     "Run": "flnd.engine.run",
-    "Account": "flnd.plugin",
     "Checked": "flnd.engine.events",
     "Event": "flnd.engine.events",
     "Failed": "flnd.engine.events",
@@ -23,6 +22,7 @@ _HOMES = {
     "FileState": "flnd.engine.events",
     "HoldState": "flnd.engine.events",
     "Installed": "flnd.engine.events",
+    "LoggedIn": "flnd.plugin",
     "Phase": "flnd.engine.events",
     "Planned": "flnd.engine.events",
     "Record": "flnd.engine.events",
@@ -52,8 +52,8 @@ _HOMES = {
 # Written out, not built from `_HOMES`, so linters and editors can read it; a test checks that
 # the two agree.
 __all__ = [
-    "Account", "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed",
-    "Failure", "FileState", "Flnd", "Hidden", "HoldState", "Installed", "LoginError",
+    "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure",
+    "FileState", "Flnd", "Hidden", "HoldState", "Installed", "LoggedIn", "LoginError",
     "NetworkError", "NotFound", "Phase", "Planned", "PluginError", "Record", "Report", "Run",
     "Saved", "SiteError", "Skipped", "State", "Status", "Stopped", "Target", "TargetState",
     "ToolError", "Tracked", "UsageError", "__version__", "open",
@@ -96,7 +96,7 @@ if TYPE_CHECKING:
         ToolError,
         UsageError,
     )
-    from flnd.plugin import Account, Target
+    from flnd.plugin import LoggedIn, Target
 
 
 def __getattr__(name: str) -> Any:

@@ -1,4 +1,4 @@
-"""The interactive lists: targets, accounts and plugins, inline under the prompt (Textual).
+"""The interactive lists: targets and plugins, inline under the prompt (Textual).
 
 SPEC.md#commands-and-flags explains it.
 """
@@ -15,8 +15,7 @@ from rich.cells import cell_len
 from flnd.errors import Error
 from flnd.ui import forms, out, theme
 
-__all__ = ["AccountRow", "Column", "Key", "PluginRow", "Row", "TargetRow", "accounts", "plugins",
-           "show", "targets"]
+__all__ = ["Column", "Key", "PluginRow", "Row", "TargetRow", "plugins", "show", "targets"]
 
 Part = out.Part | list[out.Part]
 
@@ -35,7 +34,7 @@ class Row:
     """One row of a list.
 
     Args:
-        key: what the keys' callbacks get for it: a target, an account, a plugin.
+        key: what the keys' callbacks get for it: a target, a plugin.
         cells: one per column: text, or (text, style) pairs.
         fixed: `d` is shown dim and does nothing on it (a built-in plugin).
     """
@@ -429,26 +428,6 @@ class TargetRow:
 
 
 @dataclass(frozen=True)
-class AccountRow:
-    """A row of `auth list`.
-
-    Args:
-        origin: how it logged in: browser, chrome or file.
-        held: seconds left on a hold; None when it isn't held.
-        expires: seconds until its login expires (0 or less: expired); None when unknown.
-        ago: seconds since it last saved a file; None if it never did.
-    """
-
-    plugin: str
-    name: str
-    default: bool
-    origin: str
-    held: float | None
-    expires: float | None
-    ago: float | None
-
-
-@dataclass(frozen=True)
 class PluginRow:
     """A row of `plugin list`: `targets` counts the targets that use it; `disabled` is why a
     plugin that didn't load is off (the row says "disabled"; the command prints the reason)."""
@@ -466,12 +445,8 @@ TARGET_COLUMNS = (Column("target", limit=28), Column("followed"),
                   Column("categories", limit=20), Column("status"),
                   Column("files", right=True), Column("size", right=True),
                   Column("last run", right=True))
-ACCOUNT_COLUMNS = (Column("plugin"), Column("name"), Column("default"), Column("origin"),
-                   Column("status"), Column("saved", right=True))
 PLUGIN_COLUMNS = (Column("code"), Column("name"), Column("kind"), Column("api", right=True),
                   Column("domains"), Column("targets", right=True))
-# An account whose login expires sooner than this shows the days left, in `warn`.
-SOON = 7 * 86400
 
 
 def targets(load: Callable[[], Sequence[TargetRow]], *, follow: Callable[[TargetRow], object],
@@ -499,26 +474,6 @@ def targets(load: Callable[[], Sequence[TargetRow]], *, follow: Callable[[Target
     keys = (Key("f", "follow", _given(follow)), Key("r", "retry", _given(retry)),
             Key("a", "add", ask, leave=True))
     show("Targets", TARGET_COLUMNS, rows, keys=keys, delete=Key("d", "delete", _given(delete)))
-
-
-def accounts(load: Callable[[], Sequence[AccountRow]], *, default: Callable[[AccountRow], object],
-             add: Callable[[AccountRow | None], object], logout: Callable[[AccountRow], object]
-             ) -> None:
-    """Every account of every plugin.
-
-    Args:
-        default: make the account its plugin's default (`*`).
-        add: open the login form, for the plugin of the account under the cursor (`a`).
-        logout: log the account out, after a confirmation (`d`).
-    """
-    fancy = theme.unicode(sys.stdout)
-
-    def rows() -> list[Row]:
-        return [Row(account, _account(account, fancy)) for account in load()]
-
-    keys = (Key("*", "default", _given(default)), Key("a", "add", add, leave=True))
-    show("Accounts", ACCOUNT_COLUMNS, rows, keys=keys, delete=Key("d", "log out",
-                                                                  _given(logout)))
 
 
 def plugins(load: Callable[[], Sequence[PluginRow]], *, install: Callable[[str], object],
@@ -608,26 +563,6 @@ def _target_details(target: TargetRow) -> tuple[tuple[str, Part], ...]:
         ("done", (", ".join(done), "good") if done else ("none", "dim")),
         ("pending", (", ".join(target.pending), "warn")),
     )
-
-
-def _account(account: AccountRow, fancy: bool) -> tuple[Part, ...]:
-    star: Part = (f"{theme.glyph('default', fancy)} default", "focus") if account.default else ""
-    saved = _ago(account.ago, "never saved")
-    return (account.plugin, account.name, star, account.origin, _status(account),
-            saved if isinstance(saved, tuple) else f"saved {saved}")
-
-
-def _status(account: AccountRow) -> Part:
-    if account.held:
-        return (f"held {max(1, round(account.held / 60))} min", "warn")
-    if account.expires is None:
-        return ("ok", "good")
-    if account.expires <= 0:
-        return ("expired", "bad")
-    if account.expires < SOON:
-        days = max(1, round(account.expires / 86400))
-        return (f"expires in {days} day{'s' if days != 1 else ''}", "warn")
-    return ("ok", "good")
 
 
 def _plugin(plugin: PluginRow) -> tuple[Part, ...]:

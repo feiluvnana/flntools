@@ -74,7 +74,6 @@ class Defaults(msgspec.Struct, frozen=True):
     rate: str = "0"
     slowest: str = "0"
     height: int = 0
-    switch: bool = False
     fresh: str = "0"
     timeout: str = "10m"
 
@@ -87,7 +86,6 @@ class PluginConfig(msgspec.Struct, frozen=True):
     proxy: str | None = None
     stop_after: int = 5
     browser: str | None = None
-    switch: bool = False
     folder: str | None = None
     filename: str | None = None
     # The plugin's own `Settings` struct, or None for a plugin flnd wasn't given.
@@ -104,7 +102,7 @@ class Config(msgspec.Struct, frozen=True):
 
     def plugin(self, code: str) -> PluginConfig:
         """One plugin's settings, or every default for a code no file names."""
-        return self.plugins.get(code) or PluginConfig(switch=self.defaults.switch)
+        return self.plugins.get(code) or PluginConfig()
 
     def origin(self, key: str) -> Where:
         """Where a dotted name's value came from (`when` is `defaults.when`)."""
@@ -170,7 +168,6 @@ DEFAULTS = {
     "rate": Key(str, 'a speed such as "20 MB/s" or "500 KB/s", or "0" for off', _speed_ok),
     "slowest": Key(str, 'a speed such as "50 KB/s", or "0" for off', _speed_ok),
     "height": Key(int, "a whole number of pixels, 0 for the best", lambda value: value >= 0),
-    "switch": Key(bool, "true or false"),
     "fresh": Key(str, 'a duration such as "1d", "12h" or "30m", or "0" for off', _duration_ok),
     "timeout": Key(str, 'a duration such as "10m", "600s" or "1h", or "0" for off', _duration_ok),
 }
@@ -182,7 +179,6 @@ PLUGINS = {
                  _proxy_ok),
     "stop_after": Key(int, "a whole number of at least 1", lambda value: value >= 1),
     "browser": Key(str, '"chromium" or "chrome"', lambda value: value in BROWSERS),
-    "switch": Key(bool, "true or false"),
     "folder": Key(str, "a template"),
     "filename": Key(str, "a template"),
 }
@@ -449,15 +445,21 @@ def cut(name: str, limit: int = NAME_MAX) -> str:
 # ---------------------------------------------------------------------------------------------
 
 
-def user_file() -> Path:
-    """The user file: `~/.config/flnd/config.toml`, or `%APPDATA%\\flnd\\config.toml`."""
+def folder() -> Path:
+    """The user's flnd folder: `~/.config/flnd`, or `%APPDATA%\\flnd`; `config.toml` and the
+    logins folder are in it."""
     if sys.platform == "win32" and os.environ.get("APPDATA"):
-        return Path(os.environ["APPDATA"]) / "flnd" / FILE
-    return Path.home() / ".config" / "flnd" / FILE
+        return Path(os.environ["APPDATA"]) / "flnd"
+    return Path.home() / ".config" / "flnd"
 
 
-def _guard(path: Path) -> None:
-    """Refuse the account's real user file while the tests run."""
+def user_file() -> Path:
+    """The user file: `config.toml` in `folder()`."""
+    return folder() / FILE
+
+
+def guard(path: Path) -> None:
+    """Refuse a path in the account's real flnd folder while the tests run."""
     if not os.environ.get(NO_PROFILES):
         return
     if sys.platform == "win32":
@@ -468,7 +470,7 @@ def _guard(path: Path) -> None:
         # The account's own home, not $HOME, which a test may point elsewhere.
         real = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config" / "flnd"
     if path.resolve().is_relative_to(real.resolve()):
-        raise RuntimeError(f"{NO_PROFILES} is set: refusing the real user config {path}")
+        raise RuntimeError(f"{NO_PROFILES} is set: refusing the real flnd folder {path}")
 
 
 def settings(home: Path, *, plugins: Mapping[str, type] | None = None,
@@ -486,7 +488,7 @@ def settings(home: Path, *, plugins: Mapping[str, type] | None = None,
     """
     user: Path | None = user_file()
     try:
-        _guard(user)
+        guard(user)
     except RuntimeError:
         user = None
     return read(home, user=user, plugins=plugins, given=given)
@@ -526,15 +528,12 @@ def read(home: Path, *, user: Path | None, plugins: Mapping[str, type] | None = 
     defaults = Defaults(**{key.removeprefix("defaults."): value for key, value in values.items()
                            if key.startswith("defaults.")})
     resolved = {code: _plugin(code, values, plugins.get(code), defaults) for code in codes}
-    for code in codes:
-        if f"plugins.{code}.switch" not in where and "defaults.switch" in where:
-            where[f"plugins.{code}.switch"] = where["defaults.switch"]
     return Config(defaults=defaults, plugins=resolved, where=where)
 
 
 def _load(path: Path, origin: Where) -> dict[str, Any]:
     """One file's tables, `[sources.*]` read as `[plugins.*]`; `{}` when it is missing."""
-    _guard(path)
+    guard(path)
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -688,7 +687,6 @@ def _plugin(code: str, values: Mapping[str, Any], cls: type | None,
     own = {key.removeprefix(prefix): value for key, value in values.items()
            if key.startswith(prefix)}
     engine = {name: own.pop(name) for name in list(own) if name in PLUGINS}
-    engine.setdefault("switch", defaults.switch)
     settings_class = getattr(cls, "Settings", None)
     settings = msgspec.convert(own, settings_class) if settings_class is not None else None
     return PluginConfig(**engine, settings=settings)
@@ -738,7 +736,7 @@ def _edit(key: str, value: Any, *, home: Path, user: Path,
 
     tables, name = _known(key, plugins)
     path = home / FILE
-    _guard(path)
+    guard(path)
     try:
         document = tomlkit.parse(path.read_text(encoding="utf-8"))
     except FileNotFoundError:

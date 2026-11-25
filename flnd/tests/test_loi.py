@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import datetime
+import hashlib
 import itertools
 import json
 import unittest
@@ -29,8 +30,8 @@ from flnd.plugins.loi import (
 )
 from flnd.testing import FakeCtx, Reply, check, collect, fake_clock
 from flnkit import cookies as _cookies
+from flnkit import errors as _errors
 from flnkit import net as _net
-from flnkit import vault as _vault
 
 
 def encrypt(text):
@@ -134,8 +135,8 @@ class SignTest(unittest.TestCase):
             "x-security-challenge": "turnstile-v1",
             "x-request-id": "06056776-a901-4234-856d-789aebcdef50",
             "x-signature-timestamp": "1700000000000",
-            "x-request-signature": _vault.digest(
-                "get|lois/5930||1700000000000|loibus-sec-decoy-salt-v1")})
+            "x-request-signature": hashlib.sha256(
+                b"get|lois/5930||1700000000000|loibus-sec-decoy-salt-v1").hexdigest()})
         self.assertNotEqual(signature("GET", "https://api.moegoat.com/api/x", now_ms=1),
                             signature("GET", "https://api.moegoat.com/api/x", now_ms=1))
 
@@ -582,7 +583,7 @@ class EngineTest(EngineCase):
         super().setUp()
         jar = [{"name": "access-token", "value": "Bearer%20tok", "domain": ".loix.cc",
                 "path": "/"}]
-        sign_in(self.home, "loi", jar)
+        sign_in("loi", jar)
         self.routes.update({
             f"{API}lois/5930": _net.reply(200, json={"data": {**POST, "images": []}}),
             f"{API}user/info": _net.reply(200, json=USER)})
@@ -725,16 +726,16 @@ class LoginTest(EngineCase):
         path = self.home.parent / "cookies.txt"
         for method, names, said in [
             ("file", ("access-token", "user-level"), None),
-            ("file", ("user-level",), "no access-token for loix.cc in cookies.txt"),
+            ("file", ("user-level",), r"loi: no login cookie \(access-token\) in cookies.txt"),
         ]:
             with self.subTest(method=method, names=names):
                 jar(*names).save(path)
                 if said is not None:
-                    with self.assertRaisesRegex(_vault.LoginError, said):
+                    with self.assertRaisesRegex(_errors.LoginError, said):
                         _auth.login(self.home, Loibus(), method, path=path)
                     continue
                 _auth.login(self.home, Loibus(), method, path=path)
-                self.assertEqual({cookie["domain"] for cookie in vaulted(self.home, "loi")[0]},
+                self.assertEqual({cookie["domain"] for cookie in vaulted("loi")[0]},
                                  {".loix.cc"})
 
 

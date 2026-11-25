@@ -182,7 +182,7 @@ class Twitter(Plugin):
     key = "{post}_{n}"
 
     def __init__(self) -> None:
-        # One instance serves every target of its account in a run: the query table, and the
+        # One instance serves every target in a run: the query table, and the
         # tweets a search listed, by id, which `post` reads instead of asking the API.
         self.graph = Graph()
         self.found: dict[str, list[Post] | dict] = {}

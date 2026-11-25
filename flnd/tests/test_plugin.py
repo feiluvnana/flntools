@@ -633,7 +633,6 @@ class HooksTest(unittest.TestCase):
         self.assertEqual((login.names, login.required, "file" in login.methods),
                          (("sid", "token"), False, True))
         self.assertTrue(run(login.check(Jar())))
-        self.assertIsNone(run(login.whoami(Jar())))
         self.assertFalse(run(Login().check(Jar())))
         with self.assertRaisesRegex(UsageError, "phone: cookies are read"):
             run(login.start(Jar(), "phone"))
@@ -668,7 +667,7 @@ class HooksTest(unittest.TestCase):
         self.assertEqual(members, {
             "fetch", "pages", "open", "feed", "load", "document", "warm", "click", "shown",
             "handoff", "pause", "hold", "call", "ask", "log", "target",
-            "when", "time", "settings", "account", "cookies", "state", "secrets", "request"})
+            "when", "time", "settings", "cookies", "state", "secrets", "request"})
         self.assertEqual(str(inspect.signature(Ctx.pages)),
                          "(self, request: 'str | Request', *, cursor: 'str | Callable[[Response], "
                          "str | None]', send: 'str | Callable[[str], "
@@ -858,21 +857,19 @@ class FetchTest(CtxCase):
         self.assertNotIn("x-signed", other.headers)
         self.assertNotEqual(other.headers.get("user-agent"), "example-agent/1")
 
-    def test_a_refusal_unchecked_is_read_and_never_expires_the_account(self):
+    def test_a_refusal_unchecked_is_read(self):
         for status in (401, 403, 404, 410):
             with self.subTest(status=status):
-                run, response = self.fetched(Request(f"{API_URL}/private", check=False),
+                _, response = self.fetched(Request(f"{API_URL}/private", check=False),
                                              serve=lambda request, status=status:
                                              _net.reply(status))
                 self.assertEqual(response.status, status)
-                self.assertEqual(run.scheduler.expired, set())
 
-    def test_a_checked_403_is_a_login_error_and_expires_the_account(self):
+    def test_a_checked_403_is_a_login_error(self):
         self.serve = lambda request: _net.reply(403)
         run, ctx = self.ctx()
         with self.assertRaises(LoginError):
             self.call(run, ctx.fetch(f"{API_URL}/private"))
-        self.assertEqual(run.scheduler.expired, {("exw", None)})
 
     def test_a_5xx_is_tried_again_and_the_last_answer_read(self):
         def serve(request):

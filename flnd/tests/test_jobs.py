@@ -66,7 +66,6 @@ async def peak(scheduler: Scheduler, made: list[Job]) -> int:
 
 def job(kind: Kind = Kind.PAGE, **fields) -> Job:
     fields.setdefault("plugin", "ex")
-    fields.setdefault("account", "example_user")
     fields.setdefault("host", "example.com")
     return Job(kind=kind, work=fields.pop("work", None), **fields)
 
@@ -82,15 +81,15 @@ class PoolTest(unittest.TestCase):
                 self.assertEqual(run(lambda s, f, k=kind: _size(s, k), cpus=cpus), size)
 
     def test_how_many_run_at_once(self):
-        def tabs(n, accounts=1, scroll=False):
-            return [job(Kind.TAB, account=f"a{i % accounts}", scroll=scroll) for i in range(n)]
+        def tabs(n, plugins=1, scroll=False):
+            return [job(Kind.TAB, plugin=f"p{i % plugins}", scroll=scroll) for i in range(n)]
 
         rows = {  # name: (jobs, options, most at once)
             "merge lane": ([job(Kind.MERGE) for _ in range(9)], {}, 4),
             "exec lane": ([job(Kind.EXEC) for _ in range(3)], {}, 1),
             "tab budget": (tabs(9), {}, jobs.TABS),
-            "scrolling tabs of one account": (tabs(5, scroll=True), {}, 2),
-            "scrolling tabs of two accounts": (
+            "scrolling tabs of one plugin": (tabs(5, scroll=True), {}, 2),
+            "scrolling tabs of two plugins": (
                 tabs(6, 2, scroll=True), {}, min(jobs.TABS, 2 * jobs.SCROLLING)),
             "a host's cap starts at 8": ([job(Kind.FILE) for _ in range(20)], {}, 8),
             "a host's own limit": (
@@ -164,7 +163,7 @@ class PoolTest(unittest.TestCase):
             tasks = [asyncio.ensure_future(scheduler.run(job(Kind.TAB, scroll=True, work=scroll)))
                      for _ in range(6)]
             tasks.append(asyncio.ensure_future(scheduler.run(
-                job(Kind.TAB, account="b", work=other))))
+                job(Kind.TAB, plugin="b", work=other))))
             for _ in range(5):
                 await asyncio.sleep(0)
             gate.set()
@@ -347,19 +346,12 @@ def network():
     return errors.NetworkError("reset", retryable=True)
 
 
-def moved(made, error):
-    """A switch hook with another account always free."""
-    other = Job(kind=made.kind, work=raising("on b"), plugin=made.plugin, account="b",
-                bucket=made.bucket, host=made.host, first=made.first)
-    return other
-
-
 class RetryTest(unittest.TestCase):
-    def outcome(self, *outcomes, kind=Kind.PAGE, first=False, **options):
+    def outcome(self, *outcomes, kind=Kind.PAGE, **options):
         """What a job with these outcomes ends with, the waits it slept, and the scheduler."""
         async def main(scheduler, fake):
             try:
-                result = await scheduler.run(job(kind, first=first, work=raising(*outcomes)))
+                result = await scheduler.run(job(kind, work=raising(*outcomes)))
             except errors.Error as error:
                 result = type(error)
             return result, list(fake.slept), scheduler
@@ -380,20 +372,11 @@ class RetryTest(unittest.TestCase):
                 (blocked(), blocked(), blocked(), blocked()), {}, errors.Blocked,
                 [30, 120, 480]),
             "a block holds the larger wait": ((blocked(200), "ok"), {}, "ok", [200]),
-            "a block moves with switching": ((blocked(),), {"switch": moved}, "on b", []),
             "a wall holds 30 s then 120 s": ((wall(), wall(), "ok"), {}, "ok", [30, 120]),
             "a third wall fails": ((wall(), wall(), wall()), {}, errors.LoginError, [30, 120]),
-            "a third wall moves with switching": (
-                (wall(), wall(), wall()), {"switch": moved}, "on b", [30, 120]),
             "a 401 fails at once": ((errors.LoginError("401"),), {}, errors.LoginError, []),
-            "a 401 moves with switching": (
-                (errors.LoginError("401"),), {"switch": moved}, "on b", []),
             "hidden fails": ((errors.Hidden("hidden"),), {}, errors.Hidden, []),
-            "hidden moves with switching": ((errors.Hidden("hidden"),), {"switch": moved}, "on b",
-                                            []),
             "not found fails": ((errors.NotFound("gone"),), {}, errors.NotFound, []),
-            "not found past the first page fails with switching": (
-                (errors.NotFound("gone"),), {"switch": moved}, errors.NotFound, []),
             "changed is never retried": (
                 (errors.Changed("new shape", retryable=True), "ok"), {}, errors.Changed, []),
             "a final network error fails at once": (
@@ -421,13 +404,6 @@ class RetryTest(unittest.TestCase):
                     self.assertEqual(got, result)
                     self.assertEqual(slept, waits)
 
-    def test_not_found_on_a_first_page_moves_with_switching(self):
-        for kind in (Kind.PAGE, Kind.TAB):
-            with self.subTest(kind):
-                got, _, _ = self.outcome(errors.NotFound("gone"), kind=kind, first=True,
-                                         switch=moved)
-                self.assertEqual(got, "on b")
-
     def test_network_failures_and_5xx_wait_1_2_4_8_s_with_jitter(self):
         for error in (network(), errors.SiteError("502", status=502, retryable=True)):
             for tries, result in ((4, "ok"), (5, type(error))):
@@ -437,12 +413,6 @@ class RetryTest(unittest.TestCase):
                     self.assertEqual(len(slept), 4)
                     for wait, base in zip(slept, (1, 2, 4, 8), strict=True):
                         self.assertTrue(base * 0.5 <= wait <= base * 1.5, (wait, base))
-
-    def test_a_login_failure_marks_the_account_expired(self):
-        _, _, scheduler = self.outcome(errors.LoginError("403"))
-        self.assertEqual(scheduler.expired, {("ex", "example_user")})
-        _, _, scheduler = self.outcome(errors.LoginError("403"), switch=moved)
-        self.assertEqual(scheduler.expired, set())
 
     def test_a_full_disk_a_missing_tool_or_a_broken_plugin_stops_the_run(self):
         for error in (errors.DiskError("full"), files.MissingError("ffmpeg isn't installed"),
@@ -477,16 +447,6 @@ class RetryTest(unittest.TestCase):
             return ran, {type(result) for result in results}
 
         self.assertEqual(run(main), ([], {errors.DiskError}))
-
-    def test_a_moved_job_starts_its_tries_afresh(self):
-        def switch(made, error):
-            if made.account == "b":
-                return None
-            return Job(kind=made.kind, work=raising(wall(), wall(), wall()), plugin=made.plugin,
-                       account="b", host=made.host)
-
-        got, slept, _ = self.outcome(wall(), wall(), wall(), switch=switch)
-        self.assertEqual((got, slept), (errors.LoginError, [30, 120, 30, 120]))
 
     def test_a_plugins_bug_or_a_failing_tool_leaves_the_run_going(self):
         for error in (errors.PluginError("bug"), files.RunError("ffmpeg failed")):
@@ -676,7 +636,7 @@ class CapTest(unittest.TestCase):
 
 
 class HoldTest(unittest.TestCase):
-    """What is held while a job waits: its bucket for a block, its whole account for a wall."""
+    """What is held while a job waits: its bucket for a block, its whole plugin for a wall."""
 
     def held(self, error, *, bucket="graphql"):
         seen = []
@@ -684,7 +644,7 @@ class HoldTest(unittest.TestCase):
         class Watched(clock.Fake):
             def sleep(self, seconds, *, stop=None):
                 if seconds >= 1:
-                    seen.append({(h.account, h.bucket) for h in scheduler.holds})
+                    seen.append({(h.plugin, h.bucket) for h in scheduler.holds})
                 return super().sleep(seconds, stop=stop)
 
         async def main():
@@ -698,40 +658,40 @@ class HoldTest(unittest.TestCase):
             asyncio.run(main())
         return seen
 
-    def test_a_block_holds_its_bucket_and_a_wall_its_account(self):
+    def test_a_block_holds_its_bucket_and_a_wall_its_plugin(self):
         rows = [
-            (blocked(60, 429), [{("example_user", "graphql")}]),
-            (blocked(), [{("example_user", "graphql")}]),
-            (wall(), [{("example_user", None)}]),
+            (blocked(60, 429), [{("ex", "graphql")}]),
+            (blocked(), [{("ex", "graphql")}]),
+            (wall(), [{("ex", None)}]),
         ]
         for error, expected in rows:
             with self.subTest(str(error)):
                 self.assertEqual(self.held(error), expected)
 
     def test_what_each_hold_keeps_waiting(self):
-        rows = [  # (held bucket, job kind, its account, its bucket, when it starts)
-            (None, Kind.PAGE, "example_user", "graphql", 100.0),
-            (None, Kind.TAB, "example_user", "", 100.0),
-            (None, Kind.CALL, "example_user", "", 100.0),
-            (None, Kind.FILE, "example_user", "", 0.0),
-            (None, Kind.PAGE, "b", "graphql", 0.0),
-            ("graphql", Kind.PAGE, "example_user", "graphql", 100.0),
-            ("graphql", Kind.PAGE, "example_user", "search", 0.0),
-            ("graphql", Kind.TAB, "example_user", "graphql", 0.0),
-            ("graphql", Kind.CALL, "example_user", "graphql", 0.0),
+        rows = [  # (held bucket, job kind, its plugin, its bucket, when it starts)
+            (None, Kind.PAGE, "ex", "graphql", 100.0),
+            (None, Kind.TAB, "ex", "", 100.0),
+            (None, Kind.CALL, "ex", "", 100.0),
+            (None, Kind.FILE, "ex", "", 0.0),
+            (None, Kind.PAGE, "other", "graphql", 0.0),
+            ("graphql", Kind.PAGE, "ex", "graphql", 100.0),
+            ("graphql", Kind.PAGE, "ex", "search", 0.0),
+            ("graphql", Kind.TAB, "ex", "graphql", 0.0),
+            ("graphql", Kind.CALL, "ex", "graphql", 0.0),
         ]
-        for held, kind, account, bucket, start in rows:
-            with self.subTest(held=held, kind=kind, account=account, bucket=bucket):
-                async def main(scheduler, fake, held=held, kind=kind, account=account,
+        for held, kind, plugin, bucket, start in rows:
+            with self.subTest(held=held, kind=kind, plugin=plugin, bucket=bucket):
+                async def main(scheduler, fake, held=held, kind=kind, plugin=plugin,
                                bucket=bucket):
-                    scheduler.hold("ex", "example_user", seconds=100, reason="flood wait",
+                    scheduler.hold("ex", seconds=100, reason="flood wait",
                                    bucket=held)
                     starts = []
 
                     async def work():
                         starts.append(clock.now())
 
-                    await scheduler.run(job(kind, account=account, bucket=bucket, work=work))
+                    await scheduler.run(job(kind, plugin=plugin, bucket=bucket, work=work))
                     return starts[0]
 
                 self.assertEqual(run(main), start)
@@ -740,13 +700,13 @@ class HoldTest(unittest.TestCase):
         async def main(scheduler, fake):
             ends = []
             for seconds in (10, 200, 10):
-                scheduler.hold("ex", "example_user", seconds=seconds, reason="flood wait")
+                scheduler.hold("ex", seconds=seconds, reason="flood wait")
                 ends.append(scheduler.holds[0].until - clock.now())
                 fake.advance(ends[-1])
             with self.assertRaises(errors.Blocked):
-                scheduler.hold("ex", "example_user", seconds=10, reason="flood wait")
+                scheduler.hold("ex", seconds=10, reason="flood wait")
             fake.advance(600)
-            scheduler.hold("ex", "example_user", seconds=10, reason="flood wait")
+            scheduler.hold("ex", seconds=10, reason="flood wait")
             return ends, scheduler.holds[0].until - clock.now()
 
         self.assertEqual(run(main), ([30, 200, 480], 30))
@@ -754,7 +714,7 @@ class HoldTest(unittest.TestCase):
     def test_a_fourth_hold_fails_its_job_without_another_try(self):
         async def main(scheduler, fake):
             async def work():
-                scheduler.hold("ex", "example_user", seconds=0, reason="flood wait")
+                scheduler.hold("ex", seconds=0, reason="flood wait")
 
             for _ in range(3):
                 await scheduler.run(job(work=work))

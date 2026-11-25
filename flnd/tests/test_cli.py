@@ -38,6 +38,7 @@ from test_library import example_source
 
 from flnd import Blocked, Target
 from flnd import cli as flnd_cli
+from flnd.engine import auth as _auth
 from flnd.engine import run as _run
 from flnd.engine import store as _store
 from flnd.engine._engine import _Runner
@@ -57,7 +58,7 @@ from flnd.errors import (
     UsageError,
 )
 from flnd.plugin import Plugin, Post, route
-from flnd.ui import forms, out
+from flnd.ui import out
 from flnd.ui.log import ui
 from flnkit import net as _net
 
@@ -115,13 +116,8 @@ class FlndCase(unittest.TestCase):
             return self.sure
 
         self.enterContext(mock.patch("flnd.ui.forms.confirm", confirm))
-        ask = forms.ask
-
-        def named(message, **options):
-            # A login's name is taken as offered, as enter takes it; other questions are asked.
-            return options["default"] if message == "Account name" else ask(message, **options)
-
-        self.enterContext(mock.patch("flnd.ui.forms.ask", named))
+        # The logins folder, outside the home, as `~/.config/flnd/logins` is.
+        self.enterContext(mock.patch.object(_auth, "LOGINS", Path(self.tmp.name) / "logins"))
 
     def pipe(self, text):
         self.stdin.stop()
@@ -527,28 +523,6 @@ class WiringTest(ExampleCase):
             "exs:needs_retry": ("retry", 1, ("posts", "reels")),
         })
 
-    def test_the_account_list_sets_the_default_and_logs_out(self):
-        sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="one")
-        sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="two")
-        self.answer(str(self.cookie_file(NETSCAPE)))
-
-        def script(title, load, keys, delete):
-            def defaults():
-                return {each.key.name: each.key.default for each in load()}
-
-            self.assertEqual((defaults(), load()[0].key.origin), ({"one": True, "two": False},
-                                                                  "file"))
-            keys["*"].run([each.key for each in load() if each.key.name == "two"][0])
-            self.assertEqual(defaults(), {"one": False, "two": True})
-            delete.run([each.key for each in load() if each.key.name == "two"][0])
-            self.assertEqual(list(defaults()), ["one"])
-            # `a` on a row logs in to its plugin, asking the way and the name (taken as offered:
-            # the site gives none, so the next free `accountN`).
-            keys["a"].run(load()[0].key)
-            self.assertEqual([each.key.name for each in load()], ["one", "account1"])
-
-        self.listed(script, "auth", "list")
-
     def test_the_plugin_list_installs_and_uninstalls(self):
         source = Path(self.tmp.name) / "exa.py"
         source.write_text(
@@ -629,7 +603,7 @@ class FormsTest(ExampleCase):
                 mock.patch("flnd.ui.forms.text", return_value=str(self.cookie_file(NETSCAPE))):
             code, text, err = self.run_app("auth", "login", "twt")
         self.assertEqual(code, 0, err)
-        self.assertRegex(text, r"^twt: logged in as ")
+        self.assertRegex(text, r"^twt: logged in \(ok\)")
 
 
 class ExitStatusTest(FlndCase):
@@ -785,8 +759,7 @@ class ListsTest(FlndCase):
         self.assertEqual(self.run_app("target", "list")[1].split(),
                          ["target", "followed", "categories", "status", "files", "size",
                           "last", "run"])
-        self.assertEqual(self.run_app("auth", "list")[1].split(),
-                         ["plugin", "name", "default", "origin", "status", "saved"])
+        self.assertEqual(self.run_app("auth", "list")[1], "no logins\n")
         code, text, _ = self.run_app("config")
         self.assertEqual(code, 0)
         self.assertEqual(text.splitlines()[0].split(), ["key", "value", "default", "from"])
@@ -828,74 +801,83 @@ class ListsTest(FlndCase):
 
 class AuthTest(FlndCase):
     def test_login_by_file_keeps_only_the_plugins_cookies(self):
-        code, text, err = self.run_app("auth", "login", "ins", "file",
-                                       str(self.cookie_file(NETSCAPE)))
+        code, text, err = self.run_app("auth", "login", "ins", str(self.cookie_file(NETSCAPE)))
         self.assertEqual(code, 0, err)
-        self.assertRegex(text, r"^ins: logged in as \w+ \(file\)\n$")
+        self.assertRegex(text, r"^ins: logged in \(ok\)\n$")
         self.assertEqual({cookie["name"]: cookie["domain"]
-                          for cookie in vaulted(Path(".flnd"), "ins")[0].list},
+                          for cookie in vaulted("ins")[0].list},
                          {"sessionid": ".instagram.com", "ds_user_id": ".www.instagram.com"})
-        # A path alone means a file; nothing but the two stores is written.
         self.assertEqual(self.run_app("auth", "login", "twt", str(self.cookie_file(NETSCAPE)))[0],
                          0)
-        self.assertEqual(sorted(path.name for path in Path(".flnd").rglob("*") if path.is_file()
-                                and path.suffix == ".db"), ["flnd.db", "secret.db"])
+        # The logins are in the logins folder, never in the home.
+        self.assertEqual(sorted(path.name for path in _auth.folder().iterdir()),
+                         ["ins.txt", "twt.txt"])
+        self.assertEqual([path.name for path in Path(".flnd").rglob("*.txt")], [])
 
-    def test_list_default_and_logout(self):
+    def test_list_and_logout(self):
         import time
 
-        sign_in(".flnd", "ins", [{"name": "sessionid", "value": "secret-val",
-                                  "domain": ".instagram.com", "expires": time.time() - 10}],
-                name="one")
-        sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="two")
+        sign_in("ins", [{"name": "sessionid", "value": "secret-val",
+                         "domain": ".instagram.com", "expires": time.time() - 10}])
+        sign_in("tlg", session="s")
         code, text, _ = self.run_app("auth", "list")
         self.assertEqual(code, 0)
-        self.assertRegex(text, r"ins +one +. default +file +ok")
-        self.assertRegex(text, r"ins +two +file +ok")
+        self.assertRegex(text, r"ins +expired +\S*ins\.txt")
+        self.assertRegex(text, r"tlg +ok +\S*tlg\.json")
         rows = [json.loads(line) for line in self.run_app("--json", "auth", "list")[1]
                 .splitlines()]
-        self.assertEqual([row["name"] for row in rows], ["one", "two"])
+        self.assertEqual([(row["plugin"], row["status"]) for row in rows],
+                         [("ins", "expired"), ("tlg", "ok")])
         self.assertNotIn("secret-val", text)
-        self.assertEqual(self.run_app("auth", "logout", "ins", "two")[1],
-                         "ins: two logged out\n")
-        self.assertEqual(self.run_app("auth", "logout", "ins")[1], "ins: one logged out\n")
-        self.assertEqual(vaulted(".flnd", "ins")[0].list, [])
-        for argv in (("ins",), ("ytb",), ("ins", "nobody")):
+        self.assertEqual(self.run_app("auth", "logout", "ins")[1], "ins: logged out\n")
+        self.assertEqual(vaulted("ins")[0].list, [])
+        self.assertEqual([row.plugin for row in _flnd_auth_rows()], ["tlg"])
+        for argv in (("ins",), ("ytb",)):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_app("auth", "logout", *argv)[0], 2)
 
-    def test_a_logout_asks_a_terminal_and_a_declined_one_keeps_the_account(self):
-        sign_in(".flnd", "ins", [{"name": "a", "value": "1", "domain": ".x.example"}], name="one")
+    def test_an_empty_list_says_so(self):
+        self.assertEqual(self.run_app("auth", "list")[1], "no logins\n")
+
+    def test_a_logout_asks_a_terminal_and_a_declined_one_keeps_the_login(self):
+        sign_in("ins", [{"name": "a", "value": "1", "domain": ".x.example"}])
         self.sure = False
         self.assertEqual(self.run_app("auth", "logout", "ins")[1], "kept: nobody was logged out\n")
-        self.assertEqual(self.asked, ["Log the default account out of ins?"])
-        self.assertIn("one", self.run_app("auth", "list")[1])
+        self.assertEqual(self.asked, ["Log out of ins?"])
+        self.assertIn("ins", self.run_app("auth", "list")[1])
         self.pipe("")
-        self.assertEqual(self.run_app("auth", "logout", "ins")[1], "ins: one logged out\n")
+        self.assertEqual(self.run_app("auth", "logout", "ins")[1], "ins: logged out\n")
 
     def test_a_missing_cookie_exits_3_and_a_wrong_way_or_plugin_exits_2(self):
-        code, _, err = self.run_app("auth", "login", "fbk", "file",
-                                    str(self.cookie_file(NETSCAPE)))
+        code, _, err = self.run_app("auth", "login", "fbk", str(self.cookie_file(NETSCAPE)))
         self.assertEqual(code, 3)
-        self.assertIn("fbk: no c_user or xs for facebook.com in cookies.txt", err)
+        self.assertIn("fbk: no login cookie (c_user, xs) in cookies.txt", err)
+        self.assertIn("export the cookies from a browser where you are logged in", err)
         self.assertNotIn("Traceback", err)
-        self.assertEqual(self.run_app("auth", "login", "ins", "netscape", "x")[0], 2)
+        self.assertEqual(self.run_app("auth", "login", "ins", "no-such-file.txt")[0], 2)
         self.assertEqual(self.run_app("auth", "login", "ytb", "chrome")[0], 2)
 
-    def test_the_way_is_asked_on_a_terminal_and_never_on_a_pipe_or_with_json(self):
+    def test_an_expired_file_exits_3(self):
+        old = NETSCAPE.replace("1825861327", "1000000000")
+        code, _, err = self.run_app("auth", "login", "ins", str(self.cookie_file(old)))
+        self.assertEqual(code, 3)
+        self.assertIn("ins: the login in cookies.txt has expired", err)
+        self.assertIn("export a fresh cookie file", err)
+
+    def test_the_file_is_asked_on_a_terminal_and_never_on_a_pipe_or_with_json(self):
         path = self.cookie_file(NETSCAPE)
         self.answer(str(path))
         code, text, err = self.run_app("auth", "login", "twt")
         self.assertEqual(code, 0, err)
-        self.assertRegex(text, r"^twt: logged in as \w+ \(file\)\n$")
+        self.assertRegex(text, r"^twt: logged in \(ok\)\n$")
         self.pipe("")
         code, _, err = self.run_app("auth", "login", "ins")
         self.assertEqual(code, 2)
-        self.assertIn("flnd auth login ins <cookies.txt>", err)
+        self.assertIn("flnd auth login ins <file>", err)
         self.answer("1")
         self.assertEqual(self.run_app("auth", "login", "ins", "--json")[0], 2)
 
-    def test_a_plugin_with_its_own_login_offers_its_own_ways(self):
+    def test_a_plugin_with_its_own_login_takes_its_way_or_its_first(self):
         calls = []
 
         def start(self, ctx, method):
@@ -910,14 +892,21 @@ class AuthTest(FlndCase):
             async def user(self, ctx, user):
                 yield Post(user)
 
-        self.answer("2")
         with mock.patch.dict(PLUGINS, {"own": Own}), \
                 mock.patch.dict("flnd.plugins._manifest.PLUGINS", {"own": {
                     "name": "Own", "domains": ("own.example",), "forms": (), "categories": (),
                     "logins": ("qr", "phone")}}):
-            code, _, err = self.run_app("auth", "login", "own")
-        self.assertEqual(code, 0, err)
-        self.assertEqual(calls, ["phone"])
+            self.assertEqual(self.run_app("auth", "login", "own")[0], 0)
+            self.assertEqual(self.run_app("auth", "login", "own", "phone")[0], 0)
+        self.assertEqual(calls, ["qr", "phone"])
+
+
+def _flnd_auth_rows():
+    """The logins `flnd auth list` shows, read through the library over `./.flnd`."""
+    import flnd
+
+    with flnd.open(".flnd") as fl:
+        return list(fl.auth)
 
 
 class StoppingTest(unittest.TestCase):

@@ -1,5 +1,5 @@
 """`Engine`: every flnd command as a method, run on one loop, with the run's instance of each
-plugin and account. SPEC.md#for-developers explains it.
+plugin. SPEC.md#for-developers explains it.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from flnd.errors import (
     Stopped,
     UsageError,
 )
-from flnd.plugin import Account, Browser, Plugin, Range, Target
+from flnd.plugin import Browser, Plugin, Range, Target
 from flnd.ui.log import ui
 from flnkit import clock, net, text
 
@@ -53,8 +53,8 @@ MAX_SYNC_NEW = 25
 SEEN_FLUSH = 10
 
 
-def _account_stop(error: Error | None) -> LoginError | Blocked | None:
-    """Return `error` if it means this account cannot continue (login refused or bot block)."""
+def _plugin_stop(error: Error | None) -> LoginError | Blocked | None:
+    """Return `error` if it means this plugin cannot continue (login refused or bot block)."""
     if isinstance(error, LoginError) or (
             isinstance(error, Blocked) and not error.retryable):
         return error
@@ -158,7 +158,7 @@ async def _save_query_progress(
             db.progress, target, cursors={}, complete=[], gaps={kind: [""]},
         ))
 # Targets active at once in a run (listing, or with more files queued than their places), and
-# targets listing at once per plugin and account: one for a plugin that reads in the browser,
+# targets listing at once per plugin: one for a plugin that reads in the browser,
 # whose site sees one person, and `HTTP_AT_ONCE` for one that only sends requests.
 ACTIVE = jobs.LISTINGS
 HTTP_AT_ONCE = 4
@@ -190,7 +190,6 @@ class TargetInfo:
     categories: tuple[str, ...]
     complete: dict[str, str]
     query: bool
-    account: str | None
     status: str = ""
     failed: int = 0
     pending: tuple[str, ...] = ()
@@ -789,7 +788,6 @@ class Engine:
             categories=categories,
             complete=complete,
             query=is_query,
-            account=row.account if row is not None else None,
             status=status,
             failed=failed,
             pending=pending,
@@ -897,7 +895,7 @@ class Engine:
         reports: list[TargetReport] = []
         await self._discover_and_run(runner, entry.run, target, options, reports, span=span,
                                      stop=stop)
-        if reports and (stopped := _account_stop(reports[0].error)) is not None:
+        if reports and (stopped := _plugin_stop(reports[0].error)) is not None:
             entry.refused = stopped
         return reports
 
@@ -1031,7 +1029,7 @@ class Engine:
             return failed
         report = await self._sync_query_run(runner, entry.run, target, options, row,
                                             seen_keys, known_keys, stop)
-        if (stopped := _account_stop(report.error)) is not None:
+        if (stopped := _plugin_stop(report.error)) is not None:
             entry.refused = stopped
         return report
 
@@ -1188,18 +1186,13 @@ class Engine:
                                  tally=self.tally, config=found)
             settings.claims = crawl.Claims()
             runner = _Runner(self, settings)
-            runner.worked = await _off(_worked, db)
-            settings.follow, settings.peer = runner.follow, runner.peer
+            settings.follow = runner.follow
             async with shared_browser(settings), save.attached(settings):
                 scheduler = ctx.scheduler(settings)
                 assert scheduler is not None
                 self._scheduler = scheduler
                 global _SCHEDULER
                 _SCHEDULER = scheduler
-                runner.switcher = scheduler.switch = auth.Switcher(
-                    scheduler, lambda code: found.plugin(code).switch, runner.listed,
-                    shown=self.tally.switched)
-                settings.switch = scheduler.switch
                 try:
                     yield runner
                 finally:
@@ -1214,8 +1207,8 @@ class Engine:
                 await _off(db.close)
 
     @contextlib.asynccontextmanager
-    async def script(self, code: str, name: str | None = None) -> AsyncIterator[Ctx]:
-        """A plugin's account `Ctx` for a script, on the caller's running loop.
+    async def script(self, code: str) -> AsyncIterator[Ctx]:
+        """A plugin's `Ctx` for a script, on the caller's running loop.
 
         It opens what a run opens (the home's database, the scheduler with its holds and walls,
         the plugin's instance, its login check and its `connect` hook), and on the way out
@@ -1224,30 +1217,20 @@ class Engine:
 
         Args:
             code: the plugin's code.
-            name: the account's name; None takes the default one.
 
         Raises:
             UsageError: no such plugin, or the home's config.toml has a value it doesn't take.
-            LoginError: no such account, a login the plugin needs, or the vault's key is gone.
+            LoginError: a login the plugin needs.
         """
         if code not in self.sources:
             raise UsageError(f"unknown plugin {code!r}. Plugins: {', '.join(self.sources)}")
         async with self._running(Stop()) as runner:
-            found = await _off(_accounts, runner.settings.db, code)
-            if name is None:
-                account = next((one for one in found if one.is_default), None) \
-                    or auth.pick(found)
-            else:
-                account = next((one for one in found if one.name == name), None)
-                if account is None:
-                    raise LoginError(f"{code}: no account {name!r}",
-                                     hint=f"run flnd auth login {code}")
-            entry = await runner.entry(code, account)
+            entry = await runner.entry(code)
             if entry.error is not None:
                 raise entry.error
             if not entry.logged_in and _required(entry.run.source):
-                raise crawl.logged_out(Target(f"{code}:", kind=auth.ACCOUNT))
-            yield _account(entry.run)
+                raise crawl.logged_out(Target(f"{code}:", kind=auth.LOGIN))
+            yield _plugin_ctx(entry.run)
 
     def _recorded(self, rows: Mapping[str, store.TargetRow]) -> list[Target]:
         """The targets of `flnd.db`'s rows, rebuilt from each row's source, kind and value."""
@@ -1367,7 +1350,7 @@ class _Entry:
     logged_in: bool = True
     # What broke it as it started (its `connect`, its login check); its targets fail with it.
     error: BaseException | None = None
-    # A login or account-protecting block the site raised: later targets fail with it.
+    # A login or protecting block the site raised: later targets fail with it.
     refused: LoginError | Blocked | None = None
     # Set once its login is checked and its `connect` entered: what its other targets wait for.
     started: asyncio.Event = field(default_factory=asyncio.Event)
@@ -1378,17 +1361,11 @@ class _Runner:
 
     def __init__(self, engine: Engine, settings: RunShared) -> None:
         self.engine, self.settings = engine, settings
-        # Each (plugin, account)'s instance.
-        self._entries: dict[tuple[str, str | None], _Entry] = {}
-        # Each plugin's accounts, read once; and the account that worked for each target, by
-        # key, read as the run starts (`Engine._running`).
-        self._accounts: dict[str, asyncio.Future[list[Account]]] = {}
-        self.worked: dict[str, str] = {}
-        # The run's switcher, whose holds and expiries `close` writes; None until it runs.
-        self.switcher: auth.Switcher | None = None
+        # Each plugin's instance.
+        self._entries: dict[str, _Entry] = {}
         self._active = asyncio.Semaphore(ACTIVE)
-        # Each plugin's and account's listings at once.
-        self._listing: dict[tuple[str, str | None], asyncio.Semaphore] = {}
+        # Each plugin's listings at once.
+        self._listing: dict[str, asyncio.Semaphore] = {}
         # The targets the run has started, each run once however often it is named; set
         # once each ends, with its report.
         self._once: dict[Target, asyncio.Event] = {}
@@ -1398,16 +1375,15 @@ class _Runner:
         # Each target's turn at its first step, in the order they started (`crawl.Turn`).
         self._turns: list[asyncio.Event] = []
 
-    async def entry(self, code: str, account: Account | None) -> _Entry:
-        """The run's instance of the plugin `code` for `account`, started on first use.
+    async def entry(self, code: str) -> _Entry:
+        """The run's instance of the plugin `code`, started on first use.
 
         Raises:
             UsageError: the home's config.toml has a value the plugin doesn't take.
-            LoginError: the vault's key is gone.
+            LoginError: the login file can't be read.
         """
 
-        key = (code, account.name if account is not None else None)
-        entry = self._entries.get(key)
+        entry = self._entries.get(code)
         if entry is not None:
             await entry.started.wait()
             if entry.run is None:
@@ -1418,10 +1394,10 @@ class _Runner:
         source = self.engine.sources[code]()
         stack = contextlib.AsyncExitStack()
         # Kept before the first wait, so a target that comes meanwhile waits for this one.
-        entry = self._entries[key] = _Entry(None, stack)  # type: ignore[arg-type]
+        entry = self._entries[code] = _Entry(None, stack)  # type: ignore[arg-type]
         try:
             run = entry.run = await stack.enter_async_context(
-                ctx.opened(self.settings, source, account))
+                ctx.opened(self.settings, source))
         except BaseException as error:
             entry.error = error
             entry.started.set()
@@ -1436,10 +1412,8 @@ class _Runner:
             if not entry.logged_in:
                 ui.warn("{code}: not logged in, using public access; run flnd auth login {code}",
                         code=code)
-            if account is not None:
-                stack.push_async_callback(run.off, auth.write_back, run.settings.home, account,
-                                          run.session.jar)
-            await stack.enter_async_context(_connected(run, _account(run)))
+            stack.push_async_callback(run.off, auth.write_back, code, run.session.jar)
+            await stack.enter_async_context(_connected(run, _plugin_ctx(run)))
             # One cache of the posts the `date` hook had no day for, shared by its targets.
             await run.off(crawl.asked, run)
         except Exception as error:
@@ -1458,7 +1432,7 @@ class _Runner:
 
         settings, tally = self.settings, self.settings.tally
         try:
-            entry = await self.entry(target.plugin, await self._signed(target))
+            entry = await self.entry(target.plugin)
         except Exception as error:
             failed = crawl.failure(error, target)
             tally.end(target, failed=True)
@@ -1478,35 +1452,6 @@ class _Runner:
         tally.end(target, failed=True)
         await crawl.tell(target, failed, settings.emit)
         return entry, TargetReport(target, (), 0, error=failed)
-
-    async def _signed(self, target: Target) -> Account | None:
-        """The account `target` runs as: the one that worked for it last, else the plugin's
-        first usable one (`auth.pick`)."""
-        db = self.settings.db
-        if db is None:
-            return None
-        found = self._accounts.get(target.plugin)
-        if found is None:
-            found = self._accounts[target.plugin] = asyncio.ensure_future(
-                _off(_accounts, db, target.plugin))
-        return auth.pick(await found, preferred=self.worked.get(store.key(target)))
-
-    def listed(self, code: str) -> list[Account]:
-        """A plugin's accounts, once read for one of its targets; none before."""
-        found = self._accounts.get(code)
-        return found.result() if found is not None and found.done() else []
-
-    async def peer(self, code: str, name: str) -> PluginRun:
-        """The plugin's instance for its account `name`, which a job moved to it runs on.
-
-        Raises:
-            Error: what broke that instance as it started.
-        """
-        account = next(found for found in self.listed(code) if found.name == name)
-        entry = await self.entry(code, account)
-        if entry.error is not None:
-            raise entry.error
-        return entry.run
 
     async def _refused(self, target: Target, login: LoginError | Blocked) -> TargetReport:
         """A target whose plugin's login an earlier target had refused: it fails, unasked."""
@@ -1601,7 +1546,7 @@ class _Runner:
                                                   options, listed=listed, turn=began)
         if refused is not None:
             return await self._refused(target, refused)
-        if (stopped := _account_stop(report.error)) is not None:
+        if (stopped := _plugin_stop(report.error)) is not None:
             entry.refused = stopped
         # A full or refused disk stops the whole run: every later file would fail too.
         elif isinstance(report.error, DiskError):
@@ -1619,12 +1564,12 @@ class _Runner:
             place back at once, and the active one when the target has no more files queued
             than its places, so the next target lists while these download.
         """
-        source, account = entry.run.source, entry.run.account
-        key = (source.code, account.name if account is not None else None)
-        listing = self._listing.get(key)
+        source = entry.run.source
+        listing = self._listing.get(source.code)
         if listing is None:
             browser = type(source).browser is not Browser.NONE
-            listing = self._listing[key] = asyncio.Semaphore(1 if browser else HTTP_AT_ONCE)
+            listing = self._listing[source.code] = asyncio.Semaphore(
+                1 if browser else HTTP_AT_ONCE)
         held = {"listing": False, "active": False}
         if listing.locked():
             turn.release()
@@ -1757,7 +1702,7 @@ class _Runner:
         targets', say), then leave each plugin's `connect` hook, write back its cookies and
         close its run.
 
-        A hook whose exit fails is reported, as a `Failed` event for the plugin's account:
+        A hook whose exit fails is reported, as a `Failed` event for the plugin:
         the files are saved, but the run isn't all right.
         """
 
@@ -1775,13 +1720,9 @@ class _Runner:
             try:
                 await entry.stack.aclose()
             except Exception as error:
-                account = Target(f"{entry.run.source.code}:", kind=auth.ACCOUNT)
-                await crawl.tell(account, crawl.failure(error, account, entry.run.source),
+                plugin = Target(f"{entry.run.source.code}:", kind=auth.LOGIN)
+                await crawl.tell(plugin, crawl.failure(error, plugin, entry.run.source),
                                  self.settings.emit)
-        db = self.settings.db
-        if self.switcher is not None and scheduler is not None and db is not None \
-                and not self.settings.dry:
-            await _off(auth.settle, db, self.switcher, scheduler.expired)
 
 
 async def _off(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
@@ -1807,15 +1748,6 @@ async def _carried(awaitable: Awaitable[T]) -> tuple[bool, Any]:
 async def _carried_call(call: Callable[..., Awaitable[T]], *args: Any) -> tuple[bool, Any]:
     """`_carried(call(*args))`, the coroutine made only as this one runs."""
     return await _carried(call(*args))
-
-
-def _accounts(db: store.Store, plugin: str) -> list[Account]:
-    return [auth.account(row) for row in db.accounts(plugin)]
-
-
-def _worked(db: store.Store) -> dict[str, str]:
-    """The account that worked for each target, by key."""
-    return {item: row.account for item, row in db.targets().items() if row.account}
 
 
 def _target_status(
@@ -1857,10 +1789,10 @@ def _planned(options: Options) -> tuple[str, ...]:
     return () if crawl.ALL in names else tuple(names)
 
 
-def _account(run: PluginRun) -> Ctx:
-    """The `Ctx` of a plugin's account, not of a target: what `connect` and `check` see."""
+def _plugin_ctx(run: PluginRun) -> Ctx:
+    """The `Ctx` of a plugin, not of a target: what `connect` and `check` see."""
 
-    return Ctx(run, Target(f"{run.source.code}:", kind=auth.ACCOUNT))
+    return Ctx(run, Target(f"{run.source.code}:", kind=auth.LOGIN))
 
 
 async def _logged_in(run: PluginRun) -> bool:
@@ -1868,7 +1800,7 @@ async def _logged_in(run: PluginRun) -> bool:
     login = run.source.login
     if login is None:
         return True
-    return bool(await login.check(_account(run)))
+    return bool(await login.check(_plugin_ctx(run)))
 
 
 def _required(source: Plugin) -> bool:
@@ -1932,9 +1864,9 @@ def _follow(url: str) -> str:
 
 
 @contextlib.asynccontextmanager
-async def _connected(run: PluginRun, account: Ctx) -> AsyncIterator[None]:
+async def _connected(run: PluginRun, plugin: Ctx) -> AsyncIterator[None]:
     """Run the plugin's `connect` hook, an async context manager, around a block, on the run's
     loop. An error in the block is handed to its exit, which may swallow it, as `async with`
     would; an error of the exit itself goes on up, for the run to report."""
-    async with run.source.connect(account):
+    async with run.source.connect(plugin):
         yield

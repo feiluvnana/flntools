@@ -1,8 +1,9 @@
-"""src/engine/store.py: `flnd.db` schema 2, the migration of a version-1 home, its pragmas,
-accounts, the busy signal, and `check`.
+"""src/engine/store.py: `flnd.db` schema 3, the migrations of a version-1 and a version-2 home,
+its pragmas, the busy signal, and `check`.
 """
 
 import datetime
+import io
 import os
 import sqlite3
 import subprocess
@@ -19,6 +20,7 @@ from flnd.engine import store
 from flnd.errors import Changed, DiskError, NetworkError, NotFound, UsageError
 from flnd.plugin import Target
 from flnd.testing import fake_clock
+from flnd.ui.log import ui
 
 # Version 1 as a home made it: its schema text, then what its `_upgrade` added.
 V1 = """
@@ -111,10 +113,81 @@ INSERT INTO probes VALUES ('media/ins/example_user/1_1.mp4', 30, 6, '{}');
 """
 
 
+# Version 2 as a home made it: its schema text, with `accounts` and `targets.account`.
+V2_SCHEMA = """
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '2'
+CREATE TABLE files (
+    key TEXT PRIMARY KEY, target TEXT NOT NULL, plugin TEXT NOT NULL,
+    post_id TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '', path TEXT NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0, mtime INTEGER, date TEXT,
+    estimated INTEGER NOT NULL DEFAULT 0, kind TEXT, files INTEGER, hash BLOB,
+    state TEXT NOT NULL DEFAULT 'saved',            -- saved | gone | link
+    unpacked TEXT NOT NULL DEFAULT '', folder TEXT, sidecar TEXT, extracted TEXT,
+    at TEXT NOT NULL DEFAULT ''
+) WITHOUT ROWID;
+CREATE INDEX files_post ON files (target, post_id);
+CREATE INDEX files_size ON files (size) WHERE state = 'saved';
+CREATE INDEX files_hash ON files (hash) WHERE hash IS NOT NULL;
+CREATE INDEX files_undated ON files (target) WHERE state = 'saved' AND (date IS NULL OR estimated);
+CREATE VIEW posts AS
+    SELECT target, post_id, min(category) AS category, max(date) AS date,
+           max(count(*), coalesce(max(files), 1)) AS files, max(at) AS at
+    FROM files WHERE state = 'saved' GROUP BY target, post_id;
+CREATE TABLE targets (
+    key TEXT PRIMARY KEY, plugin TEXT NOT NULL, value TEXT NOT NULL, kind TEXT NOT NULL,
+    follow INTEGER NOT NULL DEFAULT 0, categories TEXT NOT NULL DEFAULT '[]', query TEXT,
+    complete TEXT NOT NULL DEFAULT '{}', cursors TEXT NOT NULL DEFAULT '{}',
+    seen TEXT NOT NULL DEFAULT '[]', last_sync TEXT NOT NULL DEFAULT '',
+    files INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
+    heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}', account TEXT,
+    folder TEXT
+) WITHOUT ROWID;
+CREATE TABLE target_seen (
+    target TEXT NOT NULL, item TEXT NOT NULL, ord INTEGER NOT NULL,
+    PRIMARY KEY (target, item)
+) WITHOUT ROWID;
+CREATE INDEX target_seen_ord ON target_seen (target, ord);
+CREATE TABLE runs (
+    id INTEGER PRIMARY KEY, command TEXT NOT NULL, started TEXT NOT NULL, ended TEXT,
+    saved INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE failures (
+    run INTEGER, key TEXT NOT NULL, target TEXT NOT NULL, post_id TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '', class TEXT NOT NULL, message TEXT NOT NULL,
+    hint TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 1, at TEXT NOT NULL,
+    cursor TEXT, retryable INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX failures_target ON failures (target, key);
+CREATE INDEX failures_run ON failures (run);
+CREATE UNIQUE INDEX failures_key ON failures (key);
+CREATE TABLE state (plugin TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+                    PRIMARY KEY (plugin, key)) WITHOUT ROWID;
+CREATE TABLE accounts (
+    id INTEGER PRIMARY KEY, plugin TEXT NOT NULL, name TEXT NOT NULL,
+    origin TEXT NOT NULL,                           -- browser | chrome | file | … | qr | phone
+    at TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ok',              -- ok | held | expired
+    held_until TEXT, expires TEXT, UNIQUE (plugin, name)
+);
+"""
+
+
 def schema(path):
     """A database file's schema, as SQLite keeps it."""
     with sqlite3.connect(path) as sql:
         found = sorted(sql.execute("SELECT type, name, tbl_name, sql FROM sqlite_master"))
+    sql.close()
+    return found
+
+
+def columns(path):
+    """Each table's column names, and the names of the other objects, as SQLite keeps them."""
+    with sqlite3.connect(path) as sql:
+        found = {name: [row[1] for row in sql.execute(f"PRAGMA table_info({name})")]
+                 for (name,) in sql.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        found["."] = sorted(name for (name,) in sql.execute(
+            "SELECT name FROM sqlite_master WHERE type != 'table'"))
     sql.close()
     return found
 
@@ -132,6 +205,9 @@ class StoreCase(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.home = Path(folder.name)
         self.path = self.home / store.DB
+        # What the store says (a warning), kept off the terminal.
+        self.said = io.StringIO()
+        self.enterContext(ui.scope(dest=self.said, width=200, color=False))
 
     def open(self, **how):
         opened = store.open(self.home, **how)
@@ -155,11 +231,11 @@ class StoreCase(unittest.TestCase):
 
 
 class MigrationTest(StoreCase):
-    def test_every_row_of_a_version_1_home_moves_to_schema_2(self):
+    def test_every_row_of_a_version_1_home_moves_to_schema_3(self):
         self.v1()
         with self.open() as opened:
             self.assertEqual(rows(self.path, "SELECT * FROM meta ORDER BY key"),
-                             [("keys", "2"), ("version", "2")])
+                             [("keys", "2"), ("logins", "told"), ("version", "3")])
             files = {row.key: row for row in opened.on_disk()}
             self.assertEqual(sorted(files), ["ins:1_0", "ins:1_0@reels", "ins:1_1"])
             self.assertEqual((files["ins:1_0"].plugin, files["ins:1_0"].hash,
@@ -176,9 +252,9 @@ class MigrationTest(StoreCase):
                               "twt:example_creator": (), "tik:example_handle": ()})
             user = targets["ins:example_user"]
             self.assertEqual((user.plugin, user.follow, user.complete, user.cursors, user.heads,
-                              user.gaps, user.files, user.bytes, user.account),
+                              user.gaps, user.files, user.bytes),
                              ("ins", True, {"posts": "2026-01-02"}, {"reels": "c1"},
-                              {"posts": "1"}, {"reels": ["c0", ""]}, 2, 40, None))
+                              {"posts": "1"}, {"reels": ["c0", ""]}, 2, 40))
             self.assertEqual((targets["ins:cats"].query, targets["ins:cats"].seen),
                              ("cats", ["ins:example_user"]))
             self.assertEqual(opened.last_run(),
@@ -189,12 +265,7 @@ class MigrationTest(StoreCase):
             self.assertEqual(opened.failed(), {"ins:example_user": True})
             self.assertEqual((dict(opened.state("tlg")), dict(opened.state("ins"))),
                              ({"offset": 12}, {"pace": {"s": 2}}))
-            accounts = [(row.plugin, row.name, row.origin, row.default, row.status)
-                        for row in opened.accounts()]
-            self.assertEqual(accounts, [("ins", "default", "chrome", True, "ok"),
-                                        ("loi", "default", "", True, "ok"),
-                                        ("tlg", "default", "qr", True, "ok"),
-                                        ("twt", "default", "file", True, "ok")])
+            self.assertNotIn("accounts", {name for _, name, *_ in schema(self.path)})
         with store.open(self.home / "fresh") as fresh:
             fresh.state("x")["y"] = 1
         self.assertEqual(schema(self.path), schema(fresh.path))
@@ -224,8 +295,8 @@ class MigrationTest(StoreCase):
         self.assertEqual(rows(self.path, "SELECT * FROM meta"), [("version", "1")])
         with self.open() as opened:
             self.assertEqual((rows(self.path, "SELECT * FROM meta ORDER BY key"),
-                              len(opened.on_disk()), len(opened.targets()), len(opened.accounts())),
-                             ([("keys", "2"), ("version", "2")], 3, 4, 4))
+                              len(opened.on_disk()), len(opened.targets())),
+                             ([("keys", "2"), ("logins", "told"), ("version", "3")], 3, 4))
 
     def test_a_failure_from_before_retryable_was_recorded_is_not_retryable(self):
         self.v1(slots=())
@@ -249,13 +320,76 @@ class MigrationTest(StoreCase):
         self.v1()
         self.open().close()
         before = (schema(self.path), rows(self.path, "SELECT * FROM files ORDER BY key"),
-                  rows(self.path, "SELECT * FROM accounts"))
+                  rows(self.path, "SELECT * FROM meta ORDER BY key"))
         self.open().close()
         self.assertEqual((schema(self.path), rows(self.path, "SELECT * FROM files ORDER BY key"),
-                          rows(self.path, "SELECT * FROM accounts")), before)
+                          rows(self.path, "SELECT * FROM meta ORDER BY key")), before)
+
+    def v2(self, secrets=True):
+        """A version-2 home, made by the old schema text, with an account and a target that
+        remembers it; and a sealed `secret.db` of the vault."""
+        self.path.parent.mkdir(parents=True)
+        with sqlite3.connect(self.path) as sql:
+            sql.executescript(V2_SCHEMA)
+            sql.executescript(
+                "INSERT INTO meta VALUES ('version', '2'), ('keys', '2');"
+                "INSERT INTO targets (key, plugin, value, kind, follow, account) VALUES"
+                " ('ins:example_user', 'ins', 'example_user', 'user', 1, 'example_handle');"
+                "INSERT INTO files (key, target, plugin, post_id, category, path, size) VALUES"
+                " ('ins:1', 'ins:example_user', 'ins', '1', 'posts', 'media/ins/1.jpg', 10);"
+                "INSERT INTO accounts (plugin, name, origin, at, is_default) VALUES"
+                " ('ins', 'example_handle', 'file', '2026-01-01', 1);")
+        sql.close()
+        if secrets:
+            (self.home / store.SECRETS).write_bytes(b"sealed")
+
+    def test_a_version_2_home_loses_its_accounts_and_keeps_the_rest(self):
+        self.v2()
+        before = rows(self.path, "SELECT * FROM files")
+        with self.open() as opened:
+            self.assertEqual(rows(self.path, "SELECT key, value FROM meta ORDER BY key"),
+                             [("keys", "2"), ("logins", "told"), ("version", "3")])
+            target = opened.targets()["ins:example_user"]
+            self.assertEqual((target.plugin, target.follow), ("ins", True))
+            self.assertEqual(rows(self.path, "SELECT * FROM files"), before)
+        names = {name for _, name, *_ in schema(self.path)}
+        self.assertNotIn("accounts", names)
+        self.assertNotIn("account", [row[1] for row in rows(
+            self.path, "PRAGMA table_info(targets)")])
+        with store.open(self.home / "fresh") as fresh:
+            fresh.state("x")["y"] = 1
+        self.assertEqual(columns(self.path), columns(fresh.path))
+        # The old file is kept whole beside it, once; the old vault is left alone.
+        backup = self.home / store.BACKUP_V2
+        self.assertEqual(rows(backup, "SELECT plugin, name FROM accounts"),
+                         [("ins", "example_handle")])
+        self.assertEqual(rows(backup, "SELECT value FROM meta WHERE key = 'version'"), [("2",)])
+        self.assertEqual((self.home / store.SECRETS).read_bytes(), b"sealed")
+
+    def test_an_index_on_the_account_column_is_dropped_first(self):
+        self.v2(secrets=False)
+        with sqlite3.connect(self.path) as sql:
+            sql.execute("CREATE INDEX targets_account ON targets (account)")
+        sql.close()
+        self.open().close()
+        self.assertNotIn("targets_account", {name for _, name, *_ in schema(self.path)})
+
+    def test_a_home_with_a_vault_is_told_once_how_to_log_in_again(self):
+        self.v2()
+        self.open().close()
+        self.open().close()
+        self.assertEqual(self.said.getvalue().count("logins are cookie files now"), 1)
+        self.assertIn("flnd auth login <code> <file>", self.said.getvalue())
+
+    def test_a_home_without_a_vault_is_told_nothing(self):
+        self.v2(secrets=False)
+        self.open().close()
+        self.assertEqual(self.said.getvalue(), "")
+        self.assertEqual(rows(self.path, "SELECT key FROM meta ORDER BY key"),
+                         [("keys",), ("version",)])
 
     def test_a_home_flnd_cannot_read_is_refused(self):
-        cases = {"newer": "INSERT INTO meta VALUES ('version', '3')",
+        cases = {"newer": "INSERT INTO meta VALUES ('version', '4')",
                  "unversioned": "DELETE FROM meta; INSERT INTO files (key, target, source, path)"
                                 " VALUES ('a:1', 'a:b', 'a', 'p')"}
         for name, change in cases.items():
@@ -359,28 +493,15 @@ class RowsTest(StoreCase):
             with self.subTest(wrong=wrong), self.assertRaises(ValueError):
                 opened.twins(besides="a:1", **wrong)
 
-    def test_a_target_keeps_its_categories_and_the_account_that_worked(self):
+    def test_a_target_keeps_its_categories(self):
         opened = self.open()
         user = SimpleNamespace(plugin="ins", value="example_user", kind="user")
         opened.record(user, categories=["posts"])
         opened.record(user)
         self.assertEqual(opened.target("ins:example_user").categories, ("posts",))
         opened.record(user, categories=["all"])
-        opened.progress(user, cursors={}, complete=[], account="example_handle")
         row = opened.target("ins:example_user")
-        self.assertEqual((row.categories, row.follow, row.account), ((), True, "example_handle"))
-
-    def test_accounts_log_in_out_and_hold(self):
-        opened = self.open()
-        first = opened.login("ins", "example_user", origin="chrome")
-        second = opened.login("ins", "example_handle", origin="file")
-        opened.mark(first.id, status="held", held_until="2026-01-02T00:00:00+00:00")
-        self.assertEqual(opened.login("ins", "example_user", origin="browser").status, "ok")
-        self.assertEqual([(row.name, row.default) for row in opened.accounts("ins")],
-                         [("example_user", True), ("example_handle", False)])
-        opened.logout(first.id)
-        self.assertEqual([(row.id, row.default) for row in opened.accounts("ins")],
-                         [(second.id, True)])
+        self.assertEqual((row.categories, row.follow), ((), True))
 
 
 USER = SimpleNamespace(plugin="aaa", value="example_user", kind="user")

@@ -1,8 +1,9 @@
-"""Importing this keeps every test away from the real key file, the real cache and the real plugin
+"""Importing this keeps every test away from the real logins, the real cache and the real plugin
 folder.
 
-It sets `FLND_TEST_NO_PROFILES`, which `flnkit.browser` and `flnkit.vault` read: while it is set,
-the browser's cache goes to a temporary folder and the vault refuses the real key file.
+It sets `FLND_TEST_NO_PROFILES`, which `flnkit.browser` and `flnd.engine.config` read: while it
+is set, the browser's cache goes to a temporary folder and nothing reads or writes the real
+`~/.config/flnd/`.
 
 It also points `FLND_PLUGINS` (`flnd.engine.plugins.folder`) at a folder that doesn't exist,
 unless it is set already, so a plugin the person running the tests has installed in
@@ -24,5 +25,5 @@ from flnkit.browser import NO_PROFILES
 os.environ[NO_PROFILES] = "1"
 os.environ.setdefault(
     plugins.VARIABLE, str(Path(__file__).resolve().parent / "data" / "no-plugins"))
-# The vault's key, in a folder of the run's own, never `~/.config/flnd/key`.
-auth.KEYFILE = Path(tempfile.mkdtemp(prefix="flnd-key-")) / "key"
+# The logins folder, in a folder of the run's own, never `~/.config/flnd/logins`.
+auth.LOGINS = Path(tempfile.mkdtemp(prefix="flnd-logins-"))

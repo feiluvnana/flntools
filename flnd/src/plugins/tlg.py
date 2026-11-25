@@ -79,7 +79,7 @@ HALF_BLOCKS = {(True, True): "█", (True, False): "▀", (False, True): "▄", 
 # ---------------------------------------------------------------------------------------------
 
 class TelegramLogin(Login):
-    """Telegram's own login: a Telethon session, kept with the API pair in the account's secrets.
+    """Telegram's own login: a Telethon session, kept with the API pair in the login's secrets.
 
     `qr` and `phone` log in a new device named flnd. The first login asks for the `api_id` and
     `api_hash`.
@@ -103,26 +103,12 @@ class TelegramLogin(Login):
         """Whether a Telethon session is stored; the API pair alone is no login."""
         return "session" in ctx.secrets
 
-    async def whoami(self, ctx: Ctx) -> str | None:
-        """The account's username, else its name; None without a session that works."""
-        secrets = ctx.secrets
-        if "session" not in secrets:
-            return None
-        client = _client(secrets["session"], int(secrets["api_id"]), secrets["api_hash"])
-        await client.connect()
-        try:
-            me = await client.get_me()
-        finally:
-            await client.disconnect()
-        return None if me is None else (getattr(me, "username", None) or display_name(me))
-
-
 # ---------------------------------------------------------------------------------------------
 # The plugin
 # ---------------------------------------------------------------------------------------------
 
 class Telegram(Plugin):
-    """Telegram chats, through one Telethon client per account on the run's loop."""
+    """Telegram chats, through one Telethon client on the run's loop."""
 
     code = "tlg"
     name = "Telegram"
@@ -142,10 +128,10 @@ class Telegram(Plugin):
     limits = {"t.me": 3}
 
     def __init__(self) -> None:
-        # The connected client of each account, by name ("" without one); and the flood wait
-        # each account is in, shared by every listing and download that meets it.
-        self._clients: dict[str, Any] = {}
-        self._waits: dict[str, asyncio.Future[None]] = {}
+        # The connected client, None before `connect`; and the flood wait the login is in,
+        # shared by every listing and download that meets it.
+        self._connected: Any = None
+        self._waiting: asyncio.Future[None] | None = None
 
     @route("tlg:{chat:[^@].*}", "tlg:@{chat:" + USERNAME + "}",
            # `t.me/c/<n>` holds a channel's id without the `-100` client APIs put before it,
@@ -189,12 +175,12 @@ class Telegram(Plugin):
 
     @asynccontextmanager
     async def connect(self, ctx: Ctx) -> AsyncIterator[None]:
-        """Connect the account's Telethon client for the run, and disconnect it at the end.
+        """Connect the Telethon client for the run, and disconnect it at the end.
 
         Raises:
             LoginError: no session is stored, or it no longer works (revoked elsewhere).
         """
-        secrets, who = ctx.secrets, _who(ctx)
+        secrets = ctx.secrets
         if "session" not in secrets:
             raise LoginError("tlg: not logged in", hint="flnd auth login tlg")
         client = _client(secrets["session"], int(secrets["api_id"]), secrets["api_hash"])
@@ -204,15 +190,15 @@ class Telegram(Plugin):
             if not await client.is_user_authorized():
                 raise LoginError("tlg: the saved login no longer works",
                                  hint="flnd auth login tlg")
-            self._clients[who] = client
+            self._connected = client
             yield
         # Disconnected even when the run stops early, so no connection outlives the run.
         finally:
-            self._clients.pop(who, None)
+            self._connected = None
             await client.disconnect()
 
     def _client(self, ctx: Ctx) -> Any:
-        client = self._clients.get(_who(ctx))
+        client = self._connected
         if client is None:
             raise LoginError("tlg: not logged in", hint="flnd auth login tlg")
         return client
@@ -220,19 +206,18 @@ class Telegram(Plugin):
     # -- Flood waits -----------------------------------------------------------------------
 
     async def _flood(self, ctx: Ctx, error: Any) -> None:
-        """Hold for a `FloodWaitError`, one hold per account however many calls met it."""
+        """Hold for a `FloodWaitError`, one hold however many calls met it."""
         if error.seconds > MAX_FLOOD:
             raise Blocked(
                 f"tlg: flood wait too long ({error.seconds}s); halting session to protect account",
                 wait=error.seconds, retryable=False,
             )
-        who = _who(ctx)
-        waiting = self._waits.get(who)
+        waiting = self._waiting
         if waiting is None:
             wait = error.seconds + random.uniform(3.0, 10.0)
             waiting = asyncio.ensure_future(ctx.hold(FLOOD_WAIT, seconds=wait))
-            self._waits[who] = waiting
-            waiting.add_done_callback(lambda _: self._waits.pop(who, None))
+            self._waiting = waiting
+            waiting.add_done_callback(lambda _: setattr(self, "_waiting", None))
         # Shielded: one waiter cancelled (a segment whose file failed) leaves the others' hold.
         await asyncio.shield(waiting)
 
@@ -268,7 +253,7 @@ class Telegram(Plugin):
         entity = await self._cached(ctx, client, value)
         if entity is None:
             entity = _visible(await self._lookup(ctx, client, value), value)
-            ctx.state[_cache_key(ctx, value)] = _peer(entity)
+            ctx.state[_cache_key(value)] = _peer(entity)
         return entity
 
     async def _cached(self, ctx: Ctx, client: Any, value: str) -> Any:
@@ -276,7 +261,7 @@ class Telegram(Plugin):
         from telethon.errors import ChannelPrivateError, RPCError
         from telethon.tl import types
 
-        kept = ctx.state.get(_cache_key(ctx, value))
+        kept = ctx.state.get(_cache_key(value))
         if not isinstance(kept, dict) or kept.get("_") not in PEERS:
             return None
         fields = {name: field for name, field in kept.items() if name != "_"}
@@ -416,13 +401,8 @@ async def _chunks(client: Any, document: Any, at: int, end: int) -> AsyncIterato
             yield chunk
 
 
-def _who(ctx: Ctx) -> str:
-    """The account's name, which keys its client and its flood wait; "" without one."""
-    return ctx.account.name if ctx.account is not None else ""
-
-
-def _cache_key(ctx: Ctx, value: str) -> str:
-    return f"chats.{_who(ctx)}.{value.casefold()}"
+def _cache_key(value: str) -> str:
+    return f"chats.{value.casefold()}"
 
 
 def _private(value: str) -> Error:

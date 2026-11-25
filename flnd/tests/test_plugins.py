@@ -761,7 +761,7 @@ class UninstallTest(ManagerCase):
         self.assertEqual(list(self.folder.iterdir()), [self.folder / "plugins.json"])
         self.assertEqual(self.fresh().manifest["plugins"], {})
         self.assertEqual(self.manager.warnings,
-                         ["exm is uninstalled; its accounts and targets stay"])
+                         ["exm is uninstalled; its targets stay"])
         for code in ("ins", "exm", "../plugins.json"):
             with self.subTest(code), self.assertRaises(UsageError):
                 self.manager.uninstall(code)

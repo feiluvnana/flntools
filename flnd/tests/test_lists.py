@@ -15,15 +15,12 @@ from test_forms import Terminal, drawn, drive, feed
 from flnd.errors import Stopped, UsageError
 from flnd.ui import forms, lists
 from flnd.ui.forms import PENDING
-from flnd.ui.lists import AccountRow, Column, Key, PluginRow, Row, TargetRow, View
+from flnd.ui.lists import Column, Key, PluginRow, Row, TargetRow, View
 
-H, D = 3600, 86400
+H = 3600
 TARGETS = [TargetRow("ins:example_user", True, ("posts", "reels"), 1620, 2254857830, 2 * H),
            TargetRow("twt:example_creator", True, ("media",), 49, 188743680, 2 * H),
            TargetRow("tik:example_handle", False, ("videos",), 0, 0, None)]
-ACCOUNTS = [AccountRow("ins", "example_user", True, "browser", None, None, 3 * D),
-            AccountRow("ins", "example_handle", False, "chrome", 240, None, D),
-            AccountRow("twt", "example_creator", True, "file", None, 2 * D, 20 * D)]
 PLUGINS = [PluginRow("ins", "Instagram", True, 2, ("instagram.com",), 3),
            PluginRow("exm", "Example", False, 2, ("example.com",), 0)]
 
@@ -167,7 +164,7 @@ class ViewTest(unittest.TestCase):
 
 
 class ListsTest(unittest.TestCase):
-    def test_the_three_lists_look_like_the_mockups(self) -> None:
+    def test_the_lists_look_like_the_mockups(self) -> None:
         cases = [
             ("targets", 100, lists.TARGET_COLUMNS, [lists._target(t, True) for t in TARGETS], [
                 "  Targets · 3" + " " * 79 + "/ filter",
@@ -180,18 +177,6 @@ class ListsTest(unittest.TestCase):
                 "   180.0 MB     2h ago",
                 "    tik:example_handle    ○            videos        new          0 files"
                 "          –      never",
-            ]),
-            ("accounts", 90, lists.ACCOUNT_COLUMNS, [lists._account(a, True) for a in ACCOUNTS], [
-                "  Accounts · 3" + " " * 68 + "/ filter",
-                "",
-                "    plugin   name              default     origin    status"
-                "                      saved",
-                "  ❯ ins      example_user      ★ default   browser   ok                   saved"
-                " 3d ago",
-                "    ins      example_handle                chrome    held 4 min           saved"
-                " 1d ago",
-                "    twt      example_creator   ★ default   file      expires in 2 days   saved"
-                " 20d ago",
             ]),
         ]
         for name, width, columns, cells, lines in cases:
@@ -222,16 +207,12 @@ class ListsTest(unittest.TestCase):
             lists.targets(lambda: TARGETS, follow=record("follow"), retry=record("retry"),
                           add=record("add"), delete=record("delete"))
         text.assert_called_once_with("Target to get")
-        with drive(("asterisk", "a"), ("escape",)):
-            lists.accounts(lambda: ACCOUNTS, default=record("default"), add=record("login"),
-                           logout=record("logout"))
         with drive(("d", "y", "down", "d", "y", "a"), ("escape",), ("escape",)):
             lists.plugins(lambda: PLUGINS, install=record("install"),
                           uninstall=record("uninstall"))
         self.assertEqual(calls, [
             ("follow", TARGETS[1]), ("retry", TARGETS[1]), ("add", "x"),
             ("delete", TARGETS[1]),
-            ("default", ACCOUNTS[0]), ("login", ACCOUNTS[0]),
             ("uninstall", PLUGINS[1]),
         ])
 

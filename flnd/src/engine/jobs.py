@@ -39,7 +39,7 @@ T = TypeVar("T")
 
 # Seconds between two page requests of one bucket, when neither the config nor the class says.
 PACE = 0.5
-# Tabs open at once in a run, and scrolling tabs at once per account.
+# Tabs open at once in a run, and scrolling tabs at once per plugin.
 TABS = 2
 SCROLLING = 2
 # A warm tab opens only while this many tabs of the budget are free, so it never takes the
@@ -142,9 +142,9 @@ class Kind(Enum):
 
 # Kinds with threads of their own, which their work reaches through `Scheduler.on`.
 THREADED = frozenset({Kind.CALL, Kind.HASH, Kind.UNPACK, Kind.EXEC, Kind.WRITE})
-# The kinds an account's hold (a wall, a block of the account) keeps waiting; a bucket's hold
+# The kinds a plugin's hold (a wall, a block of the plugin) keeps waiting; a bucket's hold
 # keeps only that bucket's pages waiting.
-ACCOUNT_HELD = frozenset({Kind.PAGE, Kind.TAB, Kind.CALL})
+PLUGIN_HELD = frozenset({Kind.PAGE, Kind.TAB, Kind.CALL})
 # Lower runs first: 0 is a retried failure.
 PRIORITY = {Kind.PAGE: 1, Kind.TAB: 1, Kind.FILE: 2, Kind.CALL: 2, Kind.WRITE: 2,
             Kind.HASH: 3, Kind.UNPACK: 3, Kind.MERGE: 3, Kind.EXEC: 3}
@@ -159,22 +159,19 @@ class Job(Generic[T]):
         work: the work, a coroutine function for every kind. Work that blocks moves itself
             to its kind's threads with `Scheduler.on`.
         plugin: the plugin's code.
-        account: the account it runs as; None for none.
         bucket: the plugin's bucket for a page; "" is the default bucket, the host.
         host: the host it talks to.
         target: the target it is for, which owns a `FILE` job's place.
         priority: lower runs first; None takes its kind's (`PRIORITY`).
         size: the bytes, when known.
         path: the file it writes: its folder's device picks the writer and the free space.
-        scroll: a `TAB` job that scrolls a feed, under its account's scroll gate.
-        first: a listing job for its target's first page.
+        scroll: a `TAB` job that scrolls a feed, under its plugin's scroll gate.
         done: the bytes a `FILE` job has moved, which its work keeps up to date.
     """
 
     kind: Kind
     work: Callable[[], Awaitable[T]]
     plugin: str = ""
-    account: str | None = None
     bucket: str = ""
     host: str = ""
     target: str | None = None
@@ -182,7 +179,6 @@ class Job(Generic[T]):
     size: int | None = None
     path: Path | None = None
     scroll: bool = False
-    first: bool = False
     done: int = 0
 
     def __post_init__(self) -> None:
@@ -425,7 +421,7 @@ class Cap:
 class Limits:
     """Each host's `Cap`, made on first use: from `CAP`, up to `MOST` or the host's own limit.
 
-    A page's pace is the scheduler's `Bucket` per (plugin, account, bucket) instead.
+    A page's pace is the scheduler's `Bucket` per (plugin, bucket) instead.
 
     Args:
         limits: the most transfers at once to a host and its subdomains, by host name.
@@ -528,19 +524,18 @@ class Budget:
     """One target's share of the run's tabs, as `flnkit.browser.Tabs` takes it.
 
     Each tab the target holds takes a place of the run's `TABS`; a warm tab opens only while
-    `WARM_FREE` of them are free; and a `human` scroll step waits for its account's scroll
+    `WARM_FREE` of them are free; and a `human` scroll step waits for its plugin's scroll
     gate (`SCROLLING` at once). A tab waiting for the gate holds no other place, and the gate's
     holders wait for nothing, so the two can't deadlock.
 
     Args:
         scheduler: the run's.
         plugin: the target's plugin.
-        account: the account it lists as.
     """
 
-    def __init__(self, scheduler: Scheduler, plugin: str, account: str | None) -> None:
+    def __init__(self, scheduler: Scheduler, plugin: str) -> None:
         self._scheduler = scheduler
-        self._gate = scheduler._scrolls.setdefault((plugin, account), Pool(SCROLLING))
+        self._gate = scheduler._scrolls.setdefault(plugin, Pool(SCROLLING))
 
     @property
     def stopped(self) -> BaseException | None:
@@ -561,14 +556,14 @@ class Budget:
         self._scheduler.tabs.give()
 
     async def turn(self, step: Callable[[], Awaitable[T]]) -> T:
-        """Run one scroll step once the account's scroll gate lets it."""
+        """Run one scroll step once the plugin's scroll gate lets it."""
         async with self._gate.place(PRIORITY[Kind.TAB]):
             return await step()
 
 
 @dataclass
 class Hold:
-    """A hold of (plugin, account, bucket), or of the whole account when `bucket` is None.
+    """A hold of (plugin, bucket), or of the whole plugin when `bucket` is None.
 
     Attributes:
         until: when it ends, on the run's clock.
@@ -579,7 +574,6 @@ class Hold:
     """
 
     plugin: str
-    account: str | None
     bucket: str | None
     until: float = 0.0
     reason: str = ""
@@ -608,11 +602,6 @@ async def _nothing() -> None:
     """The work of a job made only to wait for what it would wait for."""
 
 
-def _no_switch(job: Job[Any], error: BaseException) -> Job[Any] | None:
-    """No other account: a run's scheduler takes the auth manager's (`auth.Switcher`)."""
-    return None
-
-
 class Scheduler:
     """Every job of a run: its pools in order, its work under the retry policy, then release.
 
@@ -624,8 +613,6 @@ class Scheduler:
         limits: the most transfers at once to a host, by host name.
         rate: bytes a second for every `FILE` job together; 0 is no limit.
         slowest: bytes a second a transfer may average over 30 s; 0 is off.
-        switch: given a job and what it raised, the same job moved to another free account,
-            or None when there is none (the default).
         stop: the run's stop (`flnd.engine.run.Stop`): its first Ctrl-C ends the waits of a
             listing's jobs (`PAGE`, `TAB`, `CALL`), its second every other's, and while it is
             `suspended` no job starts; None never stops.
@@ -633,9 +620,7 @@ class Scheduler:
 
     def __init__(self, *, pace: Mapping[str, float] | None = None,
                  limits: Mapping[str, int] | None = None, rate: float = 0.0,
-                 slowest: float = 0.0,
-                 switch: Callable[[Job[Any], BaseException], Job[Any] | None] = _no_switch,
-                 stop: Any = None, tally: Any = None) -> None:
+                 slowest: float = 0.0, stop: Any = None, tally: Any = None) -> None:
         cpus = os.cpu_count() or 1
         self.stop = stop
         self.tally = tally
@@ -643,9 +628,6 @@ class Scheduler:
         self.limits = Limits(limits)
         self.rate = Rate(rate)
         self.slowest = slowest
-        self.switch = switch
-        # Accounts a login error ended, for the auth manager to mark expired.
-        self.expired: set[tuple[str, str | None]] = set()
         self.tabs = Pool(TABS)
         sizes = {Kind.CALL: min(8, cpus + 2), Kind.HASH: min(4, cpus), Kind.UNPACK: 1,
                  Kind.MERGE: max(1, cpus // 2), Kind.EXEC: 1}
@@ -653,10 +635,10 @@ class Scheduler:
         self._threads: dict[Kind, ThreadPoolExecutor] = {}
         self._listings: ThreadPoolExecutor | None = None
         self._writers: dict[int, ThreadPoolExecutor] = {}
-        self._scrolls: dict[tuple[str, str | None], Pool] = {}
+        self._scrolls: dict[str, Pool] = {}
         self._targets: dict[str | None, tuple[Pool, Pool]] = {}
-        self._buckets: dict[tuple[str, str | None, str], Bucket] = {}
-        self._holds: dict[tuple[str, str | None, str | None], Hold] = {}
+        self._buckets: dict[tuple[str, str], Bucket] = {}
+        self._holds: dict[tuple[str, str | None], Hold] = {}
         self._devices: dict[Path, int] = {}
         self._free: dict[int, tuple[float, int]] = {}
         self._flight: dict[int, set[Job[Any]]] = {}
@@ -681,16 +663,15 @@ class Scheduler:
         return [*self._threads.values(), *self._writers.values(),
                 *([self._listings] if self._listings is not None else [])]
 
-    async def step(self, plugin: str, account: str | None, work: Callable[..., T],
-                   *args: Any) -> T:
+    async def step(self, plugin: str, work: Callable[..., T], *args: Any) -> T:
         """Run one step of a plugin's plain listing, `work(*args)`, on a listing thread.
 
-        It waits as a `CALL` job would, for its account's holds and a suspension, and raises
+        It waits as a `CALL` job would, for its plugin's holds and a suspension, and raises
         what stopped the run, but takes no `CALL` place: the `LISTINGS` threads are its own,
         so a lazy post's files or the engine's own steps never queue behind listings. It is
         never tried again.
         """
-        job: Job[None] = Job(kind=Kind.CALL, work=_nothing, plugin=plugin, account=account)
+        job: Job[None] = Job(kind=Kind.CALL, work=_nothing, plugin=plugin)
         await self._held(job, bucket=False)
         await self._work(job)
         if self._listings is None:
@@ -719,9 +700,9 @@ class Scheduler:
         """Whether a warm tab may open now: `WARM_FREE` tabs of the budget are free."""
         return self.tabs.free >= WARM_FREE and not self.tabs.waiting
 
-    def hold(self, plugin: str, account: str | None, *, seconds: float, reason: str,
+    def hold(self, plugin: str, *, seconds: float, reason: str,
              bucket: str | None = None, reset: bool = False) -> float:
-        """Hold an account, or one of its buckets, as a block round: the plugin's `ctx.hold`.
+        """Hold a plugin, or one of its buckets, as a block round: the plugin's `ctx.hold`.
 
         The hold lasts the larger of `seconds` and the round's wait (30, 120, 480 s), and
         rounds are forgotten after `RESET` s without one, as for a `Blocked`.
@@ -729,7 +710,7 @@ class Scheduler:
         Args:
             seconds: what the site asked for; 0 when it said nothing.
             reason: why, for the screen.
-            bucket: the bucket held; None holds the whole account.
+            bucket: the bucket held; None holds the whole plugin.
             reset: forget earlier block rounds first (progress was made since the last hold).
 
         Returns:
@@ -738,7 +719,7 @@ class Scheduler:
         Raises:
             Blocked: a fourth round; it fails its job without another try.
         """
-        key = (plugin, account, bucket)
+        key = (plugin, bucket)
         if reset:
             existing = self._holds.get(key)
             if existing is not None:
@@ -749,15 +730,14 @@ class Scheduler:
                                  wait=seconds or None, retryable=False)
         return hold.until - clock.now()
 
-    async def wait(self, plugin: str, account: str | None, *,
-                   bucket: str | None = None) -> None:
-        """Wait out the hold of an account, or of one of its buckets as well, as its `PAGE`
+    async def wait(self, plugin: str, *, bucket: str | None = None) -> None:
+        """Wait out the hold of a plugin, or of one of its buckets as well, as its `PAGE`
         jobs do.
 
         Raises:
             Stopped: the run's first Ctrl-C came meanwhile.
         """
-        await self._held(Job(kind=Kind.PAGE, work=_nothing, plugin=plugin, account=account,
+        await self._held(Job(kind=Kind.PAGE, work=_nothing, plugin=plugin,
                              bucket=bucket or ""), bucket=bucket is not None)
 
     def room(self, host: str) -> bool:
@@ -782,15 +762,10 @@ class Scheduler:
         while True:
             if self._stop is not None:
                 raise self._stop
-            account = job.account
             try:
                 result = await self._once(job)
             except Exception as error:
-                again = await self._again(job, error, tries)
-                if again is not job or again.account != account:
-                    # Moved to another account, which has its own walls and tries.
-                    tries = _Tries()
-                job = again
+                job = await self._again(job, error, tries)
                 continue
             hold = self._holds.get(self._key(job))
             if hold is not None:
@@ -813,7 +788,7 @@ class Scheduler:
         """What ends `job`'s waits: the first Ctrl-C a listing's, the second any other's."""
         if self.stop is None:
             return None
-        return self.stop.soon if job.kind in ACCOUNT_HELD else self.stop.now
+        return self.stop.soon if job.kind in PLUGIN_HELD else self.stop.now
 
     async def _pause(self, job: Job[Any], seconds: float) -> None:
         """Wait `seconds` on the run's clock for `job`."""
@@ -828,14 +803,14 @@ class Scheduler:
             return await self._page(job)
         if job.kind is Kind.FILE:
             return await self._file(job, priority)
-        if job.kind in ACCOUNT_HELD:
+        if job.kind in PLUGIN_HELD:
             await self._held(job, bucket=False)
         if job.kind is Kind.TAB:
             if not job.scroll:
                 async with self.tabs.place(priority):
                     return await self._work(job)
             # The scroll gate first, so a tab waiting for its turn to scroll holds no tab.
-            gate = self._scrolls.setdefault((job.plugin, job.account), Pool(SCROLLING))
+            gate = self._scrolls.setdefault(job.plugin, Pool(SCROLLING))
             async with gate.place(priority), self.tabs.place(priority):
                 return await self._work(job)
         if job.kind in (Kind.WRITE, Kind.EXEC):
@@ -868,7 +843,7 @@ class Scheduler:
 
     async def _page(self, job: Job[T]) -> T:
         await self._held(job)
-        key = (job.plugin, job.account, job.bucket)
+        key = (job.plugin, job.bucket)
         bucket = self._buckets.get(key)
         pace = self.pace.get(job.plugin, PACE)
         if bucket is None and pace > 0:
@@ -999,19 +974,12 @@ class Scheduler:
             raise error
         if isinstance(error, errors.Blocked):
             if tries.blocked >= BLOCKED_TRIES:
-                moved = self.switch(job, error)
-                if moved is not None:
-                    return _retried(moved)
                 raise error
             tries.blocked += 1
             if error.status == 429:
                 return await self._refused(job, error)
             return await self._round(job, error, error.wait or 0.0)
-        if isinstance(error, errors.Hidden):
-            return self._move(job, error)
-        if isinstance(error, errors.NotFound) and job.first and job.kind in (Kind.PAGE, Kind.TAB):
-            return self._move(job, error)
-        if isinstance(error, errors.Changed):
+        if isinstance(error, (errors.Hidden, errors.NotFound, errors.Changed)):
             raise error
         if _again_later(error) and tries.network < len(NETWORK_WAITS):
             wait = NETWORK_WAITS[tries.network] * random.uniform(*JITTER)
@@ -1045,19 +1013,15 @@ class Scheduler:
         return job
 
     async def _login(self, job: Job[T], error: errors.LoginError, tries: _Tries) -> Job[T]:
-        """A wall (a retryable `LoginError`) holds the account 30 s, then 120 s; after that, or
-        on a 401 or 403, the job moves to another account, or fails and the account expires."""
+        """A wall (a retryable `LoginError`) holds the plugin 30 s, then 120 s; after that, or
+        on a 401 or 403, the job fails."""
         if error.retryable and tries.walls < len(WALL_WAITS):
-            hold = self._hold((job.plugin, job.account, None))
+            hold = self._hold((job.plugin, None))
             wait = WALL_WAITS[tries.walls]
             self._hold_for(hold, wait, str(error))
             tries.walls += 1
             await self._wait_hold(job, hold, wait, str(error))
             return _retried(job)
-        moved = self.switch(job, error)
-        if moved is not None:
-            return _retried(moved)
-        self.expired.add((job.plugin, job.account))
         raise error
 
     async def _refused(self, job: Job[T], error: errors.Blocked) -> Job[T]:
@@ -1083,12 +1047,8 @@ class Scheduler:
         return _retried(job)
 
     async def _round(self, job: Job[T], error: errors.Blocked, seconds: float) -> Job[T]:
-        """A block round: move the job, or hold its bucket for the round's wait; the fourth
-        round fails it."""
+        """A block round: hold its bucket for the round's wait; the fourth round fails it."""
         hold = self._counted(self._key(job))
-        moved = self.switch(job, error)
-        if moved is not None:
-            return _retried(moved)
         if not self._rounded(hold, seconds, str(error)):
             raise error
         wait = max(0.0, hold.until - clock.now())
@@ -1096,13 +1056,13 @@ class Scheduler:
         return _retried(job)
 
     async def _wait_hold(self, job: Job[Any], hold: Hold, wait: float, reason: str) -> None:
-        shown = (self.tally.hold(job.plugin, job.account, job.bucket or "pages", wait, reason,
+        shown = (self.tally.hold(job.plugin, job.bucket or "pages", wait, reason,
                                  count=max(1, hold.rounds))
                  if self.tally is not None else nullcontext())
         with shown:
             await self._held(job)
 
-    def _counted(self, key: tuple[str, str | None, str | None]) -> Hold:
+    def _counted(self, key: tuple[str, str | None]) -> Hold:
         """The hold of `key`, with one more block round counted."""
         hold = self._hold(key)
         now = clock.now()
@@ -1119,19 +1079,13 @@ class Scheduler:
         self._hold_for(hold, max(seconds, ROUND_WAITS[hold.rounds - 1]), reason)
         return True
 
-    def _move(self, job: Job[T], error: Exception) -> Job[T]:
-        moved = self.switch(job, error)
-        if moved is None:
-            raise error
-        return _retried(moved)
-
     # Holds -----------------------------------------------------------------------------------
 
     @staticmethod
-    def _key(job: Job[Any]) -> tuple[str, str | None, str]:
-        return (job.plugin, job.account, job.bucket)
+    def _key(job: Job[Any]) -> tuple[str, str]:
+        return (job.plugin, job.bucket)
 
-    def _hold(self, key: tuple[str, str | None, str | None]) -> Hold:
+    def _hold(self, key: tuple[str, str | None]) -> Hold:
         hold = self._holds.get(key)
         if hold is None:
             hold = self._holds[key] = Hold(*key)
@@ -1143,8 +1097,8 @@ class Scheduler:
         hold.reason = reason
 
     async def _held(self, job: Job[Any], *, bucket: bool = True) -> None:
-        """Wait out the hold of the job's whole account, and of its bucket unless told not to."""
-        keys = [(job.plugin, job.account, None)]
+        """Wait out the hold of the job's whole plugin, and of its bucket unless told not to."""
+        keys = [(job.plugin, None)]
         if bucket:
             keys.append(self._key(job))
         while True:

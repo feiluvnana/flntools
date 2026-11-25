@@ -185,7 +185,7 @@ class Manager:
     def uninstall(self, code: str) -> dict[str, Any]:
         """Remove an installed plugin's file or folder, and its entry.
 
-        Its accounts and targets stay, and a warning says so.
+        Its targets stay, and a warning says so.
 
         Returns:
             The entry it had.
@@ -204,7 +204,7 @@ class Manager:
         entry = index.pop(code)
         self._write()
         self._forget(code)
-        self.warnings.append(f"{code} is uninstalled; its accounts and targets stay")
+        self.warnings.append(f"{code} is uninstalled; its targets stay")
         return entry
 
     def load(self, code: str) -> type[Plugin]:

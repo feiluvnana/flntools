@@ -45,7 +45,7 @@ MOCKUP = State(
     files=(FileState("twt:example_creator", "media/1290_2.mp4", 24 * MB, 38 * MB, 12 * MB),
            FileState("twt:example_creator", "media/1287_1.mp4", 48 * MB, 210 * MB, 16 * MB)),
     more=4,
-    holds=(HoldState("twt", None, "pages", 132, "429 from api.example.com", 3),),
+    holds=(HoldState("twt", "pages", 132, "429 from api.example.com", 3),),
     now="twt:example_creator · media, page 4 · held 30 s: 429 from api.example.com",
     saved=449, skipped=1220, failed=1, bytes=2280 * MB, speed=42 * MB,
 )
@@ -290,7 +290,7 @@ class TallyTest(unittest.TestCase):
 
     def test_a_hold_shows_on_the_now_line_until_it_ends(self) -> None:
         self.tally.start(self.user, "posts")
-        with self.tally.hold("ins", None, "pages", 30, "429 from api.example.com", count=2):
+        with self.tally.hold("ins", "pages", 30, "429 from api.example.com", count=2):
             state = self.tally.publish()
         self.assertEqual(state.now,
                          "ins:example_user · posts · held 30 s: 429 from api.example.com")

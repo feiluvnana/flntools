@@ -7,11 +7,12 @@ tests/data/tlg_names.json, so the port renames no saved file.
 
 import asyncio
 import base64
-import contextlib
 import datetime
 import io
 import json
+import os
 import shutil
+import stat
 import struct
 import threading
 import unittest
@@ -212,9 +213,9 @@ class Case(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def ctx(self, *, logged_in=True, account="example_user", state=None, **options):
-        """A context whose account logged in by phone, as a first login does."""
-        ctx = FakeCtx(Telegram, account=account, state=state,
+    def ctx(self, *, logged_in=True, state=None, **options):
+        """A context that logged in by phone, as a first login does."""
+        ctx = FakeCtx(Telegram, state=state,
                       answers=(*CREDENTIALS.values(), "+15550100", "12345"), **options)
         if logged_in:
             self.telegram.authorized = False
@@ -386,31 +387,27 @@ class ChatTest(Case):
                 with self.assertRaisesRegex(Hidden, "is private, or this account left it"):
                     self.run_target()
 
-    def test_a_found_chat_is_cached_per_account_and_checked_again(self):
+    def test_a_found_chat_is_cached_and_checked_again(self):
         state = {}
         self.run_target("tlg:Example Channel", ctx=self.ctx(state=state))
-        self.assertEqual(state["chats.example_user.example channel"],
+        self.assertEqual(state["chats.example channel"],
                          {"_": "InputPeerChannel", "channel_id": 1001, "access_hash": 77})
-        cases = [("example_user", "Example Channel", ["get_entity"]),
-                 # Another account's access hash is no use to this one.
-                 ("example_creator", "Example Channel", ["get_dialogs"]),
+        cases = [("Example Channel", ["get_entity"]),
                  # A chat renamed since no longer answers to the cached title.
-                 ("example_creator", "Renamed", ["get_entity", "get_dialogs"])]
-        for account, title, calls in cases:
-            with self.subTest(account=account, title=title):
+                 ("Renamed", ["get_entity", "get_dialogs"])]
+        for title, calls in cases:
+            with self.subTest(title=title):
                 self.telegram.chats["examplechannel"].title = title
                 self.telegram.dialogs[0].name = title
                 self.telegram.calls = []
-                ctx = self.ctx(state=state, account=account)
+                ctx = self.ctx(state=state)
                 if title == "Renamed":
                     with self.assertRaises(NotFound):
                         self.run_target("tlg:Example Channel", ctx=ctx)
                 else:
                     self.run_target("tlg:Example Channel", ctx=ctx, categories=["photo"])
                 self.assertEqual([c for c in self.telegram.calls if isinstance(c, str)], calls)
-        # Each account keeps its own entry: neither evicts the other.
-        self.assertEqual(sorted(state), ["chats.example_creator.example channel",
-                                         "chats.example_user.example channel"])
+        self.assertEqual(sorted(state), ["chats.example channel"])
 
 
 # ---------------------------------------------------------------------------------------------
@@ -628,13 +625,11 @@ class LoginTest(Case):
         with self.assertRaisesRegex(LoginError, "Telegram refused the login"):
             self.log_in("phone", "+15550100", "99999")
 
-    def test_check_and_whoami(self):
+    def test_check(self):
         ctx = self.ctx(logged_in=False)
         self.assertEqual(asyncio.run(Telegram.login.check(ctx)), False)
-        self.assertIsNone(asyncio.run(Telegram.login.whoami(ctx)))
         ctx = self.ctx()
         self.assertEqual(asyncio.run(Telegram.login.check(ctx)), True)
-        self.assertEqual(asyncio.run(Telegram.login.whoami(ctx)), "example_user")
 
     def test_the_qr_drawing(self):
         matrix = [[False, True, False], [False, False, True], [True, True, False]]
@@ -645,22 +640,16 @@ class LoginTest(Case):
 # Through the engine: the login in the home, the files saved, other plugins beside it
 # ---------------------------------------------------------------------------------------------
 
-def store(home, **values):
-    with contextlib.suppress(UsageError):
-        auth.logout(home, "tlg")
+def store(**values):
+    """Replace what `logins/tlg.json` holds."""
+    auth._secret_file("tlg").unlink(missing_ok=True)
     if values:
-        sign_in(home, "tlg", **values)
+        sign_in("tlg", **values)
 
 
-def stored(home):
-    """The secrets of the account logged in last: a login names it by `whoami`."""
-    from flnd.engine import store as _store
-
-    if not (home / _store.DB).is_file():
-        return {}
-    with _store.open(home) as db:
-        rows = db.accounts("tlg")
-    return vaulted(home, "tlg", max(rows, key=lambda row: row.id).name)[1] if rows else {}
+def stored():
+    """What `logins/tlg.json` holds; nothing without it."""
+    return vaulted("tlg")[1]
 
 
 class TelegramCase(EngineCase):
@@ -680,33 +669,31 @@ class EngineLoginTest(TelegramCase):
     """`flnd auth login tlg <method>` through the engine: what it asks, and what the home keeps."""
 
     def log_in(self, method, *answers, tty=True):
-        from flnd.ui import forms
 
-        confirm, given = forms.confirm, iter(answers)
+        given = iter(answers)
 
         def ask(message, **options):
-            # A blank name takes Telegram's own; every other question takes the next answer.
-            return "" if message == "Account name" else next(given)
-
-        def sure(title, **options):
-            # Logging in again replaces the account of Telegram's own name.
-            return True if title.startswith("Replace the login") else confirm(title, **options)
+            return next(given)
 
         with mock.patch("sys.stdin.isatty", return_value=tty), \
-                mock.patch("flnd.ui.forms.ask", ask), mock.patch("flnd.ui.forms.confirm", sure):
+                mock.patch("flnd.ui.forms.ask", ask):
             auth.login(self.home, Telegram(), method, interactive=True)
 
     def assert_logged_in(self):
-        self.assertEqual(stored(self.home), {"session": SESSION, **CREDENTIALS})
+        self.assertEqual(stored(), {"session": SESSION, **CREDENTIALS})
         self.assertIn("* tlg: logged in as Example User", self.lines())
         screen = self.dest.getvalue()
         # Named by its label, so a failure never prints the secret.
         for label, secret in (("password", "hunter2"), ("api_hash", CREDENTIALS["api_hash"]),
                               ("session", SESSION)):
             self.assertFalse(secret in screen, label)
-        # Kept in secret.db only: no Telethon .session file, no other file holding them.
+        # Kept in logins/tlg.json only (mode 0600): no Telethon .session file, nothing in the
+        # home holding them.
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(auth._secret_file("tlg").stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(auth.folder().stat().st_mode), 0o700)
         for path in self.home.rglob("*"):
-            if path.is_file() and path.name != "secret.db":
+            if path.is_file():
                 data = path.read_bytes()
                 self.assertFalse(b"FAKE-SESSION" in data
                                  or CREDENTIALS["api_hash"].encode() in data, path.name)
@@ -726,7 +713,7 @@ class EngineLoginTest(TelegramCase):
         ]
         for method, first, side, answers in table:
             with self.subTest(method=method, side=side):
-                store(self.home, **first)
+                store(**first)
                 self.fresh(authorized=False, **side)
                 codes = side.get("qr", []).count("timeout") + (method == "qr")
                 self.log_in(method, *answers)
@@ -740,18 +727,18 @@ class EngineLoginTest(TelegramCase):
                   "Telegram refused the login")]
         for method, side, answers, error in table:
             with self.subTest(method=method):
-                store(self.home)
+                store()
                 self.fresh(authorized=False, **side)
                 with self.assertRaisesRegex(LoginError, error):
                     self.log_in(method, *CREDENTIALS.values(), *answers)
-                self.assertEqual(stored(self.home), {})
+                self.assertEqual(stored(), {})
 
     def test_without_a_terminal_a_first_login_asks_nobody(self):
         for method in Telegram.login.methods:
             with self.subTest(method=method), \
                     self.assertRaisesRegex(UsageError, "nobody can answer"):
                 self.log_in(method, tty=False)
-        self.assertEqual((self.telegram.clients, stored(self.home)), ([], {}))
+        self.assertEqual((self.telegram.clients, stored()), ([], {}))
 
 
 class LoginCommandTest(FlndCase):
@@ -760,8 +747,6 @@ class LoginCommandTest(FlndCase):
         self.enterContext(mock.patch.dict("flnd.engine.plugins.PLUGINS", {"tlg": Telegram}))
 
     def test_the_way_is_named_or_asked_and_a_refusal_is_reported(self):
-        from prompt_lines import select_from_lines
-
         methods = []
 
         async def start(ctx, method):
@@ -770,16 +755,11 @@ class LoginCommandTest(FlndCase):
                 raise LoginError("tlg: no QR code was scanned", hint="flnd auth login tlg qr")
             ctx.secrets["session"] = "s"
 
-        async def whoami(ctx):
-            return "example_user"
-
         # On the login object: `FakeCtx` gives it a `start` of its own, over the class's.
-        with mock.patch.object(Telegram.login, "start", start), \
-                mock.patch.object(Telegram.login, "whoami", whoami):
+        with mock.patch.object(Telegram.login, "start", start):
             code, _, err = self.run_app("auth", "login", "tlg", "qr")
             self.assertEqual(code, 0, err)
-            with select_from_lines("1"):
-                code, _, err = self.run_app("auth", "login", "tlg")
+            code, _, err = self.run_app("auth", "login", "tlg")
             self.assertEqual(code, 0, err)
             code, _, err = self.run_app("auth", "login", "tlg", "phone")
         self.assertEqual(methods, ["qr", "qr", "phone"])
@@ -787,10 +767,10 @@ class LoginCommandTest(FlndCase):
         self.assertIn("x tlg: no QR code was scanned", err)
 
     def test_a_stored_session_is_listed(self):
-        sign_in(Path(".flnd"), "tlg", name="example_user", origin="qr")
+        sign_in("tlg", session="s")
         code, out, _ = self.run_app("auth", "list")
         self.assertEqual(code, 0)
-        self.assertRegex(out, r"tlg +example_user +. default +qr +ok")
+        self.assertRegex(out, r"tlg +ok +\S*tlg\.json")
 
 
 def zipped(name, text):
@@ -813,7 +793,7 @@ class EngineDownloadTest(TelegramCase):
         ]
 
     def logged_in(self):
-        store(self.home, session=SESSION, **CREDENTIALS)
+        store(session=SESSION, **CREDENTIALS)
 
     def download(self, *targets, **options):
         return self.run_engine(Telegram, targets=list(targets or ["tlg:@examplechannel"]),
@@ -845,7 +825,7 @@ class EngineDownloadTest(TelegramCase):
         ]
         for options, messages, files, kinds, listed in table:
             with self.subTest(options=options):
-                shutil.rmtree(self.home)
+                shutil.rmtree(self.home, ignore_errors=True)
                 self.logged_in()
                 self.telegram.messages[1001] = messages or chat
                 self.telegram.calls, self.telegram.yielded = [], 0
@@ -914,7 +894,7 @@ class EngineDownloadTest(TelegramCase):
                          .read_text(), "hello")
 
     def test_not_logged_in_fails_the_target(self):
-        store(self.home)
+        store()
         self.assertEqual(self.download(), 0)
         self.assertEqual(self.failures(), ["tlg:examplechannel: not logged in"])
         self.assertEqual(self.telegram.clients, [])

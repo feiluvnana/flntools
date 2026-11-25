@@ -198,7 +198,7 @@ class SaveTest(FileTestCase):
 
     def test_a_failure_or_a_line_break_leaves_nothing(self):
         path = self.folder / "ins.txt"
-        with mock.patch.object(_cookies.os, "replace", side_effect=OSError("disk full")), \
+        with mock.patch("os.replace", side_effect=OSError("disk full")), \
                 self.assertRaises(DiskError):
             self.jar.save(path)
         for value in ("a\nb", f"{self.SECRET}\n", f"{self.SECRET}\r"):

@@ -367,8 +367,8 @@ class CliTest(FlndCase):
             code, out, err = self.run_app("get", "aaa:example_user")
         self.assertEqual(code, 3)
         # The end of the run names the command; flnkit's error had no hint at all.
-        self.assertIn("  hint  run flnd auth login aaa", err)
-        self.assertIn("  run flnd auth login aaa", err)
+        self.assertIn("  hint  export a fresh cookie file, then flnd auth login aaa <file>", err)
+        self.assertIn("  export a fresh cookie file, then flnd auth login aaa <file>", err)
         self.assertNotIn("Traceback", out + err)
 
     def test_a_full_disk_says_what_it_said_before_the_split(self):
@@ -446,7 +446,7 @@ class SplitTest(unittest.TestCase):
 
     def test_classify_fills_an_empty_hint_with_flnds(self):
         login = classify(kit.LoginError("not logged in"), target="ins:example_user")
-        self.assertEqual(login.hint, "run flnd auth login ins")
+        self.assertEqual(login.hint, "export a fresh cookie file, then flnd auth login ins <file>")
         kept = classify(kit.LoginError("refused", hint="log in again"), target="ins:example_user")
         self.assertEqual(kept.hint, "log in again")
         self.assertEqual(classify(kit.LoginError("not logged in")).hint, "")

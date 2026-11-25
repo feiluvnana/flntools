@@ -770,7 +770,6 @@ class _Hold:
     """A wait going on, as the snapshot's `HoldState` shows it."""
 
     plugin: str
-    account: str | None
     bucket: str
     until: float
     reason: str
@@ -801,8 +800,6 @@ class Tally:
         self._holds: list[_Hold] = []
         # The newest listing step: its row, its category, and its `Listing` (pages read).
         self._step: tuple[_Row, str, Listing | None] | None = None
-        # The newest account switch since that step, as the `now` line shows it.
-        self._switch = ""
         self._received = 0
         self._rate = _Rate()
         self._started = clock.now()
@@ -839,13 +836,6 @@ class Tally:
             if name not in row.categories:
                 row.categories.append(name)
             self._step = (row, name, listing)
-            self._switch = ""
-
-    def switched(self, line: str) -> None:
-        """A job moved to another account (`flnd.engine.auth.Switcher`): the `now` line
-        shows `line` until the next listing step."""
-        with self._lock:
-            self._switch = line
 
     def downloading(self, target: Target) -> None:
         """`target`'s listings ended; what is left is its files in flight."""
@@ -908,21 +898,19 @@ class Tally:
             return flight
 
     @contextlib.contextmanager
-    def hold(self, plugin: str, account: str | None, bucket: str, seconds: float, reason: str,
+    def hold(self, plugin: str, bucket: str, seconds: float, reason: str,
              *, count: int = 1) -> Iterator[None]:
         """Show a wait for the block: a site asked the run to come back later, or a source waits.
 
         Args:
             plugin: the source's code.
-            account: its account's name; None when it has none.
             bucket: what waits: "pages" for a listing.
             seconds: how long the wait is.
             reason: why, in the site's or the source's words.
             count: the round of waits in a row this one is, from 1.
         """
         with self._lock:
-            hold = _Hold(plugin, account, bucket, clock.now() - self._started + seconds, reason,
-                         count)
+            hold = _Hold(plugin, bucket, clock.now() - self._started + seconds, reason, count)
             self._holds.append(hold)
         try:
             yield
@@ -1030,7 +1018,7 @@ class Tally:
             FileState(f._row.text, f.path, f.done, f.total, f.rate.at(now, f.done))
             for f in flights[:FILES_SHOWN]
         )
-        holds = tuple(HoldState(h.plugin, h.account, h.bucket, h.until, h.reason, h.count)
+        holds = tuple(HoldState(h.plugin, h.bucket, h.until, h.reason, h.count)
                       for h in self._holds)
         return State(
             version=self._version, elapsed=elapsed, targets=targets, files=files,
@@ -1057,8 +1045,6 @@ class Tally:
             row, name, listing = self._step
             pages = listing.read if listing is not None else 0
             step = f"{row.text} · {name}" + (f", page {pages}" if pages else "")
-        if self._switch:
-            step = f"{step} · {self._switch}" if step else self._switch
         if not self._holds:
             return step
         hold = self._holds[-1]

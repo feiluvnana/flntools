@@ -136,8 +136,7 @@ class LazyImportTest(unittest.TestCase):
         loaded = set(result.stdout.split())
         self.assertEqual({name for name in loaded if name.startswith("flnd.engine.")},
                          {"flnd.engine.events", "flnd.engine.run"})
-        self.assertEqual(loaded & {"flnkit.net", "flnkit.browser", "flnkit.cookies",
-                                   "flnkit.vault"}, set())
+        self.assertEqual(loaded & {"flnkit.net", "flnkit.browser", "flnkit.cookies"}, set())
 
     def test_every_public_name_resolves_and_is_listed(self):
         import flnd

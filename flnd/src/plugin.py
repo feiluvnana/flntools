@@ -25,7 +25,7 @@ from collections.abc import (
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field
 from types import MappingProxyType, MethodType
-from typing import Any, ClassVar, Literal, Protocol, TypeVar
+from typing import Any, ClassVar, Protocol, TypeVar
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from flnd.errors import (
@@ -45,7 +45,7 @@ from flnkit.dig import dig
 from flnkit.html import Document, Element
 
 __all__ = [
-    "API", "Account", "Blocked", "Browser", "Category", "Changed", "Clock", "Cookies", "Ctx",
+    "API", "Blocked", "Browser", "Category", "Changed", "Clock", "Cookies", "Ctx",
     "DateLike", "Document", "Element", "Error", "Fetch", "File", "Hidden", "Landed", "Login",
     "LoginError", "NetworkError", "NotFound", "Part", "Plugin", "PluginError", "Post", "Range",
     "Request", "Response", "Route", "Settings", "SiteError", "Stream", "Target", "UsageError",
@@ -61,7 +61,7 @@ SITE_PREFIXES = ("www.", "m.", "mobile.", "web.", "mbasic.", "touch.")
 NAME = r"[\w.]+"
 # Where a generated form shows a `*`: any one segment, which help can't name.
 ANY = "…"
-# A plugin's code: what its targets start with, and its slot in the vault.
+# A plugin's code: what its targets start with, and the name of its login files.
 CODE = re.compile(r"[a-z][a-z0-9]{1,15}")
 # A domain as `domains` lists it: a lowercase host name with a dot, no scheme, port or path.
 HOST = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
@@ -103,7 +103,7 @@ DateLike = datetime.date | int | float | str | None
 
 
 # ---------------------------------------------------------------------------------------------
-# Values: targets, accounts, requests and answers
+# Values: targets, logins, requests and answers
 # ---------------------------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -160,29 +160,19 @@ def _split_target(written: str) -> tuple[str, bool, str]:
 
 
 @dataclass(frozen=True)
-class Account:
-    """One logged-in account of a plugin, as `flnd.db` keeps it.
+class LoggedIn:
+    """A plugin's login, as the logins folder keeps it.
 
     Args:
-        id: its row's id.
         plugin: the plugin's code.
-        name: its name on the site (`Login.whoami`), or the name it was given.
-        origin: where its login came from: a cookie file's name, or a method of the plugin's login.
-        at: when it logged in, as ISO 8601 UTC.
-        is_default: whether runs use it when none is named.
-        status: "ok", "held" (a block holds it) or "expired" (the site logged it out).
-        held_until: when a hold ends, as ISO 8601 UTC; None without one.
-        expires: when its login expires, as ISO 8601 UTC; None when the site doesn't say.
+        status: "ok", "expires in N days" or "expired".
+        file: the login's file.
+        expires: when its login cookies expire, as ISO 8601 UTC; None when they don't.
     """
 
-    id: int
     plugin: str
-    name: str
-    origin: str
-    at: str
-    is_default: bool = False
-    status: Literal["ok", "held", "expired"] = "ok"
-    held_until: str | None = None
+    status: str
+    file: str
     expires: str | None = None
 
 
@@ -889,7 +879,7 @@ def route(*patterns: str | tuple[str, str], newest_first: bool = True, single: b
 class Login:
     """How a plugin logs in, assigned as `login = MyLogin()`; a cookie site uses `cookies(...)`.
 
-    A subclass sets `methods` and implements `start`; `check` and `whoami` are optional.
+    A subclass sets `methods` and implements `start`; `check` is optional.
 
     Args:
         required: whether the plugin can list nothing without a login.
@@ -914,12 +904,8 @@ class Login:
         raise NotImplementedError(f"{type(self).__name__}.start")
 
     async def check(self, ctx: Ctx) -> bool:
-        """Whether the account is logged in; by default, whether one of `names` is a cookie."""
+        """Whether the plugin is logged in; by default, whether one of `names` is a cookie."""
         return any(name in ctx.cookies for name in self.names)
-
-    async def whoami(self, ctx: Ctx) -> str | None:
-        """The account's name on the site; None when it can't tell."""
-        return None
 
 
 class Cookies(Login):
@@ -1077,7 +1063,7 @@ class Ctx(Protocol):
                 once a new body came since the last hold), then the tab is opened again to
                 the page last opened and scrolled on, and a body read before is not given
                 again; past the engine's last round it still raises `Blocked`.
-            bucket: the bucket those holds count against; None holds the account.
+            bucket: the bucket those holds count against; None holds the plugin.
         """
         ...
 
@@ -1139,7 +1125,7 @@ class Ctx(Protocol):
                    bucket: str | None = None, reset: bool = False) -> None:
         """Hold the plugin's requests for a block it read itself (a feed's, a page's, an SDK's).
 
-        The engine holds the bucket, or switches accounts, by its block rules.
+        The engine holds the bucket by its block rules.
 
         Args:
             reason: what the site did, shown with the hold.
@@ -1193,13 +1179,8 @@ class Ctx(Protocol):
         ...
 
     @property
-    def account(self) -> Account | None:
-        """The account the target runs as; None without a login."""
-        ...
-
-    @property
     def cookies(self) -> Mapping[str, str]:
-        """The account's cookies on the plugin's domains, read-only."""
+        """The login's cookies on the plugin's domains, read-only."""
         ...
 
     @property
@@ -1209,7 +1190,7 @@ class Ctx(Protocol):
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
-        """The account's sealed secrets; writable only during a login."""
+        """The login's saved secrets (`logins/<code>.json`); writable only during a login."""
         ...
 
     @property
@@ -1240,7 +1221,7 @@ class Plugin:
     api: ClassVar[int]
     # How it logs in; None for no login.
     login: ClassVar[Login | None] = None
-    # Seconds between two page requests of one bucket of one account.
+    # Seconds between two page requests of one bucket.
     pace: ClassVar[float] = 0.5
     # Host -> the most files at once to it.
     limits: ClassVar[Mapping[str, int]] = MappingProxyType({})
@@ -1256,7 +1237,7 @@ class Plugin:
     hidden: ClassVar[bool] = False
     # The User-Agent of its HTTP requests; None keeps the client's.
     user_agent: ClassVar[str | None] = None
-    # URL paths meaning "log in" or a stopped account, matched by whole path segments.
+    # URL paths meaning "log in" or a stopped login, matched by whole path segments.
     walls: ClassVar[tuple[str, ...]] = ()
     # The templates of a file's folder under the target's ("" is the target's own), its name,
     # and its history key.
@@ -1363,7 +1344,7 @@ class Plugin:
 
         Args:
             request: the request.
-            cookies: the account's cookies on the plugin's domains.
+            cookies: the login's cookies on the plugin's domains.
         """
         return request
 
@@ -1503,7 +1484,7 @@ def _check_login(login: object, code: str) -> None:
         raise PluginError(f'{code}.login.names: set the cookie names, as ("sessionid",)')
     if type(login).start is Login.start:
         raise PluginError(f"{code}.login.start: implement async def start(self, ctx, method)")
-    for hook in ("start", "check", "whoami"):
+    for hook in ("start", "check"):
         if not inspect.iscoroutinefunction(getattr(type(login), hook)):
             raise PluginError(f"{code}.login.{hook}: make it async def")
 

@@ -175,19 +175,18 @@ class GetTest(LibraryCase):
         self.assertFalse(any((self.home / "media").rglob("*.jpg")))
         self.assertFalse((self.home / "media" / "exs").exists())
 
-    def test_auth_login_logout_and_default(self):
+    def test_auth_login_logout(self):
         self.fl.add(example_source({}, code="exc", login=login_cookies("sid")))
         cookies = Path(self.home.parent / "cookies.txt")
         cookies.write_text("# Netscape HTTP Cookie File\n"
                            ".exc.example\tTRUE\t/\tTRUE\t1825861327\tsid\texample-value\n",
                            encoding="utf-8")
-        first = self.fl.auth.login("exc", method="file", path=str(cookies), name="one")
-        second = self.fl.auth.login("exc", path=str(cookies), name="two")
-        self.assertEqual((first.origin, first.is_default, second.is_default), ("file", True, False))
-        self.assertEqual([item.name for item in self.fl.auth], ["one", "two"])
-        self.assertTrue(self.fl.auth.default("exc", "two").is_default)
-        self.assertEqual(self.fl.auth.logout("exc").name, "two")
-        self.assertEqual(self.fl.auth.logout("exc", name="one").name, "one")
+        first = self.fl.auth.login("exc", method="file", path=str(cookies))
+        second = self.fl.auth.login("exc", path=str(cookies))
+        self.assertEqual((first.plugin, first.status, second.file), ("exc", "ok", first.file))
+        self.assertEqual([item.plugin for item in self.fl.auth], ["exc"])
+        self.assertEqual(self.fl.auth.logout("exc").plugin, "exc")
+        self.assertEqual(list(self.fl.auth), [])
         for call in (lambda: self.fl.auth.logout("exc"),
                      lambda: self.fl.auth.login("exc", method="nope"),
                      lambda: self.fl.auth.login("exs")):
@@ -529,29 +528,20 @@ class ScriptTest(LibraryCase):
     def setUp(self):
         super().setUp()
         self.fl.add(example_source({}, code="exc", login=login_cookies("sid")))
-        for name in ("one", "two"):
-            sign_in(self.home, "exc", [{"name": "sid", "value": f"v-{name}",
-                                        "domain": ".exc.example", "path": "/"}], name=name)
+        sign_in("exc", [{"name": "sid", "value": "v-one", "domain": ".exc.example",
+                         "path": "/"}])
 
-    def use(self, work, *, account=None, code="exc"):
+    def use(self, work, *, code="exc"):
         async def script():
-            async with self.fl.plugin(code, account=account) as ctx:
+            async with self.fl.plugin(code) as ctx:
                 return await work(ctx)
         return drive(script())
 
-    def test_it_fetches_as_the_default_account_with_its_cookies(self):
+    def test_it_fetches_with_the_plugins_cookies(self):
         async def work(ctx):
-            self.assertEqual(ctx.account.name, "one")
             return (await ctx.fetch(f"{self.API}/me")).status
         self.assertEqual(self.use(work), 200)
         self.assertIn("v-one", self.requests[-1].headers.get("cookie", ""))
-
-    def test_a_named_account_is_used(self):
-        async def work(ctx):
-            await ctx.fetch(f"{self.API}/me")
-            return ctx.account.name
-        self.assertEqual(self.use(work, account="two"), "two")
-        self.assertIn("v-two", self.requests[-1].headers.get("cookie", ""))
 
     def test_retries_and_holds_work_as_in_a_run(self):
         answers = [_net.reply(503), _net.reply(200, content=b"ok")]
@@ -573,20 +563,17 @@ class ScriptTest(LibraryCase):
         with mock.patch.object(auth, "write_back", wraps=auth.write_back) as back:
             with self.assertRaises(ValueError):
                 self.use(work)
-        self.assertEqual(back.call_args.args[1].name, "one")
+        self.assertEqual(back.call_args.args[0], "exc")
 
         async def read(ctx):
             return ctx.state.get("seen")
         self.assertEqual(self.use(read), 3)
 
-    def test_a_missing_plugin_or_account_says_what_to_do(self):
+    def test_a_missing_plugin_says_what_to_do(self):
         async def work(ctx):
             self.fail("the block must not run")
         with self.assertRaises(flnd.UsageError):
             self.use(work, code="nope")
-        with self.assertRaises(flnd.LoginError) as caught:
-            self.use(work, account="three")
-        self.assertIn("flnd auth login exc", caught.exception.hint)
 
     def test_a_plugin_that_needs_a_login_it_lacks_raises_login_error(self):
         self.fl.add(example_source({}, code="exr", login=login_cookies("sid", required=True)))

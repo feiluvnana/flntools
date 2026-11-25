@@ -200,8 +200,7 @@ class FakeCtx:
         target: the target the plugin acts for, as people write it; `collect` sets it.
         routes: the HTTP answers, by URL.
         pages: the pages `open` shows, by URL: a `FakePage`, or its HTML.
-        account: the account's name; None runs with no login.
-        cookies: the account's cookies on the plugin's domains.
+        cookies: the login's cookies on the plugin's domains.
         when: the run's `when`.
         answers: what `ask` answers, in order.
         state: the plugin's saved state, shared by contexts given the same dict.
@@ -214,7 +213,7 @@ class FakeCtx:
     def __init__(self, plugin: type[Plugin] | Plugin, target: str | flnd.plugin.Target = "", *,
                  routes: Mapping[str, Reply | Callable[[Request], Any]] | None = None,
                  pages: Mapping[str, FakePage | str] | None = None,
-                 account: str | None = None, cookies: Mapping[str, str] | None = None,
+                 cookies: Mapping[str, str] | None = None,
                  when: flnd.plugin.Range = flnd.plugin.Range(), answers: Sequence[str] = (),
                  state: MutableMapping[str, Any] | None = None,
                  settings: Mapping[str, Any] | None = None) -> None:
@@ -228,7 +227,6 @@ class FakeCtx:
         self._plugin = plugin
         self._target = _resolved(type(plugin), target)
         self._routes, self._pages = dict(routes or {}), dict(pages or {})
-        self._account = account
         self._cookies = MappingProxyType(dict(cookies or {}))
         self._when = when
         self._answers = deque(answers)
@@ -464,12 +462,12 @@ class FakeCtx:
             Blocked: past the last round.
         """
         with clock.use(self._clock()):
-            self._jobs.hold(self._plugin.code, self._account, seconds=seconds or 0.0,
-                            reason=reason, bucket=bucket, reset=reset)
-            await self._jobs.wait(self._plugin.code, self._account, bucket=bucket)
+            self._jobs.hold(self._plugin.code, seconds=seconds or 0.0, reason=reason,
+                            bucket=bucket, reset=reset)
+            await self._jobs.wait(self._plugin.code, bucket=bucket)
 
     async def call(self, fn: Callable[..., T], *args: Any) -> T:
-        """Run `fn` as a call job, once the account's holds end, on a thread as the engine's
+        """Run `fn` as a call job, once the plugin's holds end, on a thread as the engine's
         thread pool runs it."""
         async def work() -> Any:
             return await asyncio.to_thread(fn, *args)
@@ -526,15 +524,6 @@ class FakeCtx:
         return self._settings
 
     @property
-    def account(self) -> flnd.plugin.Account | None:
-        """The account named `account`; None without one."""
-        if self._account is None:
-            return None
-        at = datetime.datetime.fromtimestamp(self._clock().wall, datetime.UTC).isoformat()
-        return flnd.plugin.Account(1, self._plugin.code, self._account, "test", at,
-                                   is_default=True)
-
-    @property
     def cookies(self) -> Mapping[str, str]:
         """The cookies, read-only."""
         return self._cookies
@@ -546,7 +535,7 @@ class FakeCtx:
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
-        """The account's secrets: empty at first, written only during `Login.start`."""
+        """The plugin's secrets: empty at first, written only during `Login.start`."""
         return self._secrets
 
     @property
@@ -573,7 +562,7 @@ class FakeCtx:
     async def _run(self, kind: Any, work: Callable[[], Awaitable[T]], *, bucket: str = "",
                    host: str = "") -> T:
         """Run `work` as a scheduler job of `kind`, on the fake clock."""
-        job = jobs.Job(kind=kind, work=work, plugin=self._plugin.code, account=self._account,
+        job = jobs.Job(kind=kind, work=work, plugin=self._plugin.code,
                        bucket=bucket, host=host)
         with clock.use(self._clock()):
             return await self._jobs.run(job)
@@ -732,7 +721,7 @@ class _CtxFeed:
 
 
 def _secrets(plugin: Plugin) -> flnd.engine.ctx.Secrets:
-    """The account's secrets: written only while the plugin's `Login.start` runs."""
+    """The plugin's secrets: written only while the plugin's `Login.start` runs."""
     login = type(plugin).login
     if login is not None and not getattr(login.start, "marked", False):
         login.start = _marked(login.start)

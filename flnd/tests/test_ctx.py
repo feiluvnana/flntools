@@ -188,7 +188,7 @@ class ExpiringLoginTest(CtxCase):
                 jar = [{"name": name, "value": "secret-value", "domain": ".example.com",
                         "path": "/", "expires": expires}
                        for name, expires in (("token", when), ("other", now + 60))]
-                sign_in(self.home, "exm", jar)
+                sign_in("exm", jar)
                 self.open()
                 self.assertEqual(self.lines(), [line] if line else [])
 
@@ -238,7 +238,7 @@ class PaceTest(CtxCase):
         self.assertGreaterEqual(held, 5.0)
         self.call(run, ctx.fetch(f"{API}/me"))
         self.assertEqual(self.now, held)
-        self.assertEqual(list(run.scheduler._holds), [("exm", None, "cdn.example")])
+        self.assertEqual(list(run.scheduler._holds), [("exm", "cdn.example")])
 
 
 class FetchTest(CtxCase):
@@ -300,7 +300,7 @@ class FetchTest(CtxCase):
             def sign(self, request, cookies):
                 return request.replace(headers={**request.headers, "X-Token": cookies["token"]})
 
-        sign_in(self.home, "exm", [{"name": "token", "value": "t", "domain": ".example.com",
+        sign_in("exm", [{"name": "token", "value": "t", "domain": ".example.com",
                                     "path": "/"}])
         run, ctx = self.ctx(Signed)
         answer = _net.Response(200, f"{API}/feed", {}, b"{}")
@@ -315,7 +315,7 @@ class BrowserTest(CtxCase):
             stealth = False
 
         jar = [{"name": "token", "value": "t", "domain": ".example.com", "path": "/"}]
-        sign_in(self.home, "exm", jar)
+        sign_in("exm", jar)
         for plugin, stealth in ((Example, True), (Wide, False)):
             with self.subTest(stealth=stealth):
                 self.browsers.clear()
@@ -483,7 +483,7 @@ class FeedTest(CtxCase):
         self.assertEqual(self.raw.loaded, [PAGE, PAGE])
         # The site's 50 s is longer than the first round's 30 s; the hold is of bucket "g".
         self.assertGreaterEqual(self.now, 50.0)
-        self.assertEqual(list(run.scheduler._holds), [("exm", None, "g")])
+        self.assertEqual(list(run.scheduler._holds), [("exm", "g")])
 
     def stuck_in(self, run, ctx, step, **options):
         async def scroller(page, **_):
@@ -801,7 +801,7 @@ class HandoffTest(CtxCase):
     def test_a_hidden_window_is_reopened_visible_with_its_cookies_and_page(self):
         self.raw = FakeRaw([200, 200])
         jar = [{"name": "token", "value": "t", "domain": ".example.com", "path": "/"}]
-        sign_in(self.home, "exm", jar)
+        sign_in("exm", jar)
         run, ctx = self.ctx()
         self.call(run, ctx.open(PAGE))
         self.browsers[0].headless = True

@@ -110,21 +110,19 @@ flnd get ins:example_user --dry --limit 5
 It prints `new <path>` for a file it would save and `saved <path>` for one you have.
 More: [Sync](SPEC.md#sync).
 
-## Log in and switch accounts
+## Log in
 
-Goal: use your login for a site, and use a second account when the first is blocked.
+Goal: use your login for a site.
 
 ```sh
-flnd auth login ins file cookies.txt
+flnd auth login ins cookies.txt
 flnd auth list
 ```
 
-A method is `file <path>`, or, for Telegram, `qr` and `phone`. Log in again as another
-account to keep both.
-`flnd auth list` shows them, and `d` on a terminal logs one out. To let a request the first
-account cannot make move on to the next, set `switch = true` under `[defaults]` in
-`config.toml` (`flnd config` edits it).
-More: [Logins and accounts](SPEC.md#logins-and-accounts), [Config](SPEC.md#config).
+Give it a cookie file exported from a browser where you are logged in; Telegram takes `qr` or
+`phone` instead. Logging in again replaces the login, `flnd auth list` shows each login and
+when it expires, and `flnd auth logout ins` deletes one.
+More: [Logins](SPEC.md#logins).
 
 ## Fix a failed run
 

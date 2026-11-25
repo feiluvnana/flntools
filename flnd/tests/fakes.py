@@ -4,7 +4,7 @@
 - `fetch` and `download` drive the HTTP library (`flnkit.net`) from a test's own thread.
 - `EngineCase`, `make_plugin`, `login_cookies`, `own_login` and `run_targets` run the engine on
   test plugins (API 2), on `flnkit.net.fake` and a fake clock.
-- `sign_in` logs an account in as `flnd.engine.auth.login` leaves it, and `vaulted` reads it.
+- `sign_in` logs a plugin in as `flnd.engine.auth.login` leaves it, and `vaulted` reads it.
 """
 
 from __future__ import annotations
@@ -18,8 +18,9 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from unittest import mock
 
-import no_profiles  # noqa: F401  (refuses real browser profiles)
+import no_profiles  # noqa: F401  (refuses real browser profiles and the real logins)
 import unawaited  # noqa: F401  (a coroutine never awaited fails its test)
 
 from flnd import plugin
@@ -67,37 +68,22 @@ class Engine(_engine.Engine):
         return drive(self.run_sync(targets, time=time))
 
 
-def sign_in(home, code: str, jar=None, *, name: str = "default", origin: str = "file",
-            **secrets: str) -> plugin.Account:
-    """Log the account `name` of `code` in, as `auth.login` leaves it: its row, then its jar
-    (cookie dicts) and `secrets`, sealed."""
+def sign_in(code: str, jar=None, **secrets: str) -> None:
+    """Log `code` in, as `auth.login` leaves it in the logins folder: its cookie file (from
+    cookie dicts) and its `secrets`."""
     import json
 
-    home = Path(home)
-    with _store.open(home) as db:
-        row = db.login(code, name, origin=origin)
-    with _auth.secrets(home, row.id, plugin=code) as saved:
-        if jar is not None:
-            saved[_auth.COOKIES] = json.dumps(_auth.fix_domains(_cookies.Jar(jar)).list)
-        saved.update(secrets)
-    return _auth.account(row)
+    if jar is not None:
+        _auth._made()
+        _cookies.Jar(_auth.fix_domains(_cookies.Jar(jar)).list).save(_auth._cookie_file(code))
+    if secrets:
+        _auth._write(_auth._secret_file(code), json.dumps(secrets))
 
 
-def vaulted(home, code: str, name: str | None = None) -> tuple[_cookies.Jar, dict[str, str]]:
-    """An account's jar and its other secrets, the default one's unless `name` is given; an
-    empty jar and no secrets when there is none."""
-    home = Path(home)
-    if not (home / _store.DB).is_file():
-        return _cookies.Jar(), {}
-    with _store.open(home) as db:
-        found = [row for row in db.accounts(code)
-                 if row.name == name or (name is None and row.default)]
-    if not found:
-        return _cookies.Jar(), {}
-    kept = _auth.account(found[0])
-    with _auth.secrets(home, kept.id) as saved:
-        rest = {key: value for key, value in saved.items() if key != _auth.COOKIES}
-    return _auth.load(home, kept), rest
+def vaulted(code: str) -> tuple[_cookies.Jar, dict[str, str]]:
+    """A plugin's saved jar and its other secrets; an empty jar and no secrets when it has
+    none."""
+    return _auth.load(code), _auth.secrets(code)
 
 
 def history(home) -> dict[str, dict[str, Any]]:
@@ -246,13 +232,12 @@ def login_cookies(*names: str, required: bool = False) -> plugin.Cookies:
     return plugin.cookies(*names, url="https://example.com/login", required=required)
 
 
-def own_login(start=None, *, methods=("qr",), check=None, whoami=None):
+def own_login(start=None, *, methods=("qr",), check=None):
     """A plugin's own `Login`: `start(self, ctx, method)` logs in; `check(self, ctx)` says
     whether it did.
 
     Either may be a plain function or an `async def`; what a plain one returns is awaited when it
-    is awaitable. Without `check`, it is logged in when its secrets hold `session`. `whoami` is
-    the account's name on the site; None names none.
+    is awaitable. Without `check`, it is logged in when its secrets hold `session`.
     """
     async def called(function, *args):
         found = function(*args)
@@ -267,11 +252,8 @@ def own_login(start=None, *, methods=("qr",), check=None, whoami=None):
             return "session" in ctx.secrets
         return await called(check, self, ctx)
 
-    async def named(self, ctx):
-        return whoami
-
     return type("OwnLogin", (plugin.Login,), {"methods": methods, "start": started,
-                                              "check": checked, "whoami": named})()
+                                              "check": checked})()
 
 
 def filed(plugin_class, link, found):
@@ -295,6 +277,8 @@ class EngineCase(unittest.TestCase):
         folder = TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.home = Path(folder.name) / ".flnd"
+        # Each test logs in to a logins folder of its own.
+        self.enterContext(mock.patch.object(_auth, "LOGINS", Path(folder.name) / "logins"))
         self.requests = []
         self.routes = {}
         # A lambda, so a test that replaces `self.serve` is answered by its own.
@@ -337,7 +321,7 @@ class EngineCase(unittest.TestCase):
     def log_in(self, code, **values):
         jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name,
                value in values.items()]
-        sign_in(self.home, code, jar)
+        sign_in(code, jar)
 
     def lines(self):
         return self.dest.getvalue().splitlines()

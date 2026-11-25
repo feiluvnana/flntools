@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from flnd.engine.events import Checked, Failure, Installed, Record, Status, Tracked
 from flnd.errors import PluginError, UsageError
-from flnd.plugin import Account
+from flnd.plugin import LoggedIn
 
 if TYPE_CHECKING:
     from flnd.engine._engine import Chosen, Engine, TargetInfo
@@ -83,7 +83,7 @@ class Flnd:
         self.home = Path(chosen).expanduser()
         # The targets the home knows: list, follow, unfollow, retry, clean.
         self.targets = Targets(self)
-        # The accounts: login, logout, default.
+        # The logins: iterate, login, logout.
         self.auth = Auth(self)
         # The plugins: built-in, installed, added: install, uninstall.
         self.plugins = Plugins(self)
@@ -372,26 +372,23 @@ class Flnd:
                              f"{taken.__qualname__}", hint="give the class another code")
         self._added[plugin.code] = plugin
 
-    def plugin(self, code: str, *,
-               account: str | None = None) -> AbstractAsyncContextManager[Ctx]:
-        """Use a plugin's account in a script, on the caller's running event loop.
+    def plugin(self, code: str) -> AbstractAsyncContextManager[Ctx]:
+        """Use a plugin in a script, on the caller's running event loop.
 
-        It opens the home's store and the account's cookies, starts a scheduler on the caller's
+        It opens the home's store and the plugin's login, starts a scheduler on the caller's
         loop (so retries, holds and walls work as in a run), and gives the plugin's `Ctx`.
         Leaving the block writes the changed cookies and the plugin's state back and closes it
         all, an error included. Only async code can use it; there is no thread.
 
         Args:
             code: the plugin's code (`"ins"`).
-            account: the account's name; None takes the plugin's default one.
 
         Returns:
             An async context manager of the plugin's `Ctx`.
 
         Raises:
             UsageError: `code` is no plugin's code, or the home's config.toml is wrong.
-            LoginError: the plugin has no such account, needs a login it lacks, or the vault's
-                key is gone.
+            LoginError: the plugin needs a login it lacks.
 
         Example:
             >>> import asyncio, flnd
@@ -404,7 +401,7 @@ class Flnd:
             ...
             flnkit.errors.UsageError: unknown plugin 'nope'. Plugins: ...
         """
-        return self._engine().script(code, account)
+        return self._engine().script(code)
 
     # -----------------------------------------------------------------------------------------
     # Helpers
@@ -547,7 +544,7 @@ class Targets:
 
 
 class Auth:
-    """The accounts of a home: iterate it for `Account` rows, or log in and out.
+    """The logins: iterate it for `LoggedIn` rows, or log in and out.
 
     Reached as `Flnd.auth`.
     """
@@ -555,37 +552,31 @@ class Auth:
     def __init__(self, owner: Flnd) -> None:
         self._owner = owner
 
-    def __iter__(self) -> Iterator[Account]:
-        from flnd.engine import auth, store
+    def __iter__(self) -> Iterator[LoggedIn]:
+        from flnd.engine import auth
 
-        home = self._owner.home
-        auth.seal_plaintext(home)
-        with store.open(home) as db:
-            return iter([auth.account(row) for row in db.accounts()])
+        sources = self._owner._sources()
+        found = [auth.entry(code, sources[code]) for code in auth.codes() if code in sources]
+        return iter([row for row in found if row is not None])
 
-    def login(self, plugin: str, *, method: str | None = None, path: str | None = None,
-              name: str | None = None) -> Account:
-        """Log an account in, and seal the login in the home's vault.
+    def login(self, plugin: str, *, method: str | None = None,
+              path: str | None = None) -> LoggedIn:
+        """Log in to a plugin, and keep the login in the logins folder.
 
         Args:
             plugin: the plugin's code (`"ins"`).
             method: one of the plugin's login methods: `"file"` for a cookies.txt or JSON
                 export (with `path`), or the plugin's own (`"qr"`, `"phone"` for tlg). None
-                takes the only one the plugin has, or `"file"`
-                when `path` is given.
+                takes the only one the plugin has, or `"file"` when `path` is given.
             path: the cookie file, for `"file"`.
-            name: the account's name. None, on a terminal, asks for it (offering the site's own
-                name, else the next `accountN`, and asking before it replaces an account that
-                has the name); off a terminal it takes the site's own name, else the default
-                account's.
 
         Returns:
-            The account after it.
+            The login after it.
 
         Raises:
             UsageError: `plugin` or `method` is wrong, or the plugin has several methods and
                 none was named.
-            LoginError: the cookie file has no login for the site, or the site refused it.
+            LoginError: the cookie file has no login for the site, or its login expired.
 
         Example:
             >>> import flnd
@@ -611,42 +602,29 @@ class Auth:
             raise UsageError(f"{plugin} logs in by {', '.join(methods)}, not {method!r}")
         if method == "file" and not (path and Path(path).expanduser().is_file()):
             raise UsageError(f"{plugin}: a file login needs the path of a cookie file",
-                             hint=f"flnd auth login {plugin} file <path>")
-        return auth.login(self._owner.home, cls(), method, path=path, name=name,
-                          interactive=True)
+                             hint=f"flnd auth login {plugin} <file>")
+        return auth.login(self._owner.home, cls(), method, path=path, interactive=True)
 
-    def logout(self, plugin: str, *, name: str | None = None) -> Account:
-        """Log an account out: its secrets and its row. The default when no `name` is given.
+    def logout(self, plugin: str) -> LoggedIn:
+        """Delete a plugin's login.
 
         Returns:
-            The account that was removed.
+            The login that was removed.
 
         Raises:
-            UsageError: `plugin` is no plugin's code, or has no such account.
+            UsageError: `plugin` is no plugin's code, or isn't logged in.
 
         Example:
             >>> import flnd
-            >>> with flnd.open("example-home") as fl:
-            ...     fl.auth.logout("ins")
+            >>> with flnd.open("example-home") as fl:  # doctest: +ELLIPSIS
+            ...     fl.auth.logout("nope")
             Traceback (most recent call last):
             ...
-            flnkit.errors.UsageError: ins: no account
+            flnkit.errors.UsageError: unknown plugin 'nope'. Plugins: ...
         """
         from flnd.engine import auth
 
-        self._owner._plugin(plugin)
-        return auth.logout(self._owner.home, plugin, name)
-
-    def default(self, plugin: str, name: str) -> Account:
-        """Make an account the one the plugin's runs use when none is named.
-
-        Raises:
-            UsageError: `plugin` is no plugin's code, or has no such account.
-        """
-        from flnd.engine import auth
-
-        self._owner._plugin(plugin)
-        return auth.default(self._owner.home, plugin, name)
+        return auth.logout(plugin, self._owner._plugin(plugin))
 
 
 class Plugins:
@@ -713,7 +691,7 @@ class Plugins:
         return next(row for row in self if row.code == code)
 
     def uninstall(self, code: str) -> Installed:
-        """Remove an installed plugin. Its accounts and targets stay.
+        """Remove an installed plugin. Its targets stay.
 
         Returns:
             The plugin's row as it was.
@@ -819,7 +797,7 @@ def _tracked(info: TargetInfo) -> Tracked:
     """A target's `TargetInfo` as the public `Tracked`."""
     return Tracked(info.target, follow=info.follow, at=info.at, files=info.files,
                    size=info.size, seen=info.seen, categories=info.categories,
-                   complete=info.complete, query=info.query, account=info.account,
+                   complete=info.complete, query=info.query,
                    status=info.status, failed=info.failed, pending=info.pending)
 
 

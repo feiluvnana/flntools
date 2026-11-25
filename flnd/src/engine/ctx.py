@@ -306,7 +306,7 @@ def _plain(value: Any) -> bool:
 
 
 class Secrets(MutableMapping[str, str]):
-    """An account's secrets: read any time, written only while `Login.start` runs (`start`).
+    """A plugin's secrets: read any time, written only while `Login.start` runs (`start`).
 
     Args:
         data: gives the mapping that keeps them, opened on first use.
@@ -353,7 +353,7 @@ class Secrets(MutableMapping[str, str]):
 # ---------------------------------------------------------------------------------------------
 
 class Ctx:
-    """The engine's `flnd.plugin.Ctx` for one target (or a plugin's account) in a run.
+    """The engine's `flnd.plugin.Ctx` for one target (or the plugin itself) in a run.
 
     Each request is a scheduler job: a page job on the plugin's domains, a file-pooled one
     elsewhere, retried and held by the scheduler's policy. The browser's verbs go through the
@@ -361,7 +361,7 @@ class Ctx:
 
     Args:
         run: the plugin's resources for the run.
-        target: the target it acts for; `<code>:` for the plugin's account.
+        target: the target it acts for; `<code>:` for the plugin itself.
         when: the run's `when`.
         login: for `flnd auth login`: `ask` asks in the terminal.
     """
@@ -383,8 +383,6 @@ class Ctx:
         self._secrets = Secrets(lambda: run.secrets)
         # The category's listing, which `pages` resumes and reports to; the crawl sets it.
         self.listing: Listing | None = None
-        # Whether a page of the plugin's own was asked for yet: the first is the target's.
-        self._paged = False
         self._request: Request | None = None
         self._opened = ""
         # The feeds made, each listening from its call: `open` and `click` wait for them.
@@ -392,24 +390,6 @@ class Ctx:
         # The last feed being made: each waits for the one before, since a target's tabs are
         # used from one thread at a time (two at once would each open a tab of their own).
         self._making: asyncio.Future[Any] | None = None
-
-    @property
-    def _who(self) -> str | None:
-        """The name of the account the target runs as now; None for none."""
-        return self._run.account.name if self._run.account is not None else None
-
-    async def _moved(self, name: str) -> None:
-        """Run the target as the account `name` from now on (6.7): its instance, its state and
-        secrets, and its tabs, which the old account's cookies opened, closed for new ones."""
-        peer = self._run.settings.peer
-        assert peer is not None, "a job moves only in a run that can open another account"
-        run = await peer(self._plugin.code, name)
-        old, self._tabs = self._tabs, TargetTabs(run)
-        self._run, self._plugin = run, run.source
-        self._state = JsonState(run.values)
-        self._secrets = Secrets(lambda: run.secrets)
-        if not old.idle:
-            await run.off(old.close)
 
     # -- what the crawl reads -------------------------------------------------------------
 
@@ -518,24 +498,15 @@ class Ctx:
 
     def _job(self, url: str, work: Callable[[], Awaitable[T]], *,
              bucket: str = "") -> Awaitable[T]:
-        """`work` as a scheduler job of the target's account: a `PAGE` job on the plugin's
+        """`work` as a scheduler job of the target's plugin: a `PAGE` job on the plugin's
         domains, paced in its bucket; a `FILE` job on any other host, under its cap, ahead of
-        the target's files. A job the scheduler moved to another account moves the target."""
+        the target's files."""
         host = net.URL(url).host
         own = on_domains(self._plugin, url)
         job = jobs.Job(kind=jobs.Kind.PAGE if own else jobs.Kind.FILE, work=work,
-                       plugin=self._plugin.code, account=self._who, host=host,
+                       plugin=self._plugin.code, host=host,
                        bucket=bucket if own else "", target=str(self._target),
-                       priority=None if own else jobs.PRIORITY[jobs.Kind.PAGE],
-                       first=own and not self._paged)
-        self._paged = self._paged or own
-
-        async def moved() -> T:
-            if job.account != self._who:
-                await self._moved(job.account)
-            return await work()
-
-        job.work = moved
+                       priority=None if own else jobs.PRIORITY[jobs.Kind.PAGE])
         return self._run.scheduler.run(job)
 
     def pages(self, request: str | Request, *,
@@ -601,14 +572,9 @@ class Ctx:
         self._opened = url
         await self._listened()
         page, warm = await self._run.off(self._take, url)
-        taken = self._tabs
 
         async def attempt() -> Landed:
-            nonlocal page, warm, taken
-            if taken is not self._tabs:
-                # Moved to another account: its own window, with its cookies.
-                page, warm = await self._run.off(self._take, url)
-                taken = self._tabs
+            nonlocal warm
             if warm is not None:
                 visit, warm = warm, None
                 try:
@@ -713,7 +679,7 @@ class Ctx:
         if seconds <= 0:
             return
         tally = self._run.settings.tally
-        held = (tally.hold(self._plugin.code, None, "pages", seconds, reason)
+        held = (tally.hold(self._plugin.code, "pages", seconds, reason)
                 if tally is not None else contextlib.nullcontext())
         with held:
             if not await clock.pause(seconds, stop=self._run.web.stop):
@@ -731,8 +697,8 @@ class Ctx:
         """
         code = self._plugin.code
         try:
-            held = self._run.scheduler.hold(code, self._who, seconds=seconds or 0.0,
-                                            reason=reason, bucket=bucket, reset=reset)
+            held = self._run.scheduler.hold(code, seconds=seconds or 0.0, reason=reason,
+                                            bucket=bucket, reset=reset)
         except Blocked as error:
             raise Blocked(f"{code}: {reason}, after {len(jobs.ROUND_WAITS)} holds",
                           hint="try again later, or raise the plugin's pace in config.toml",
@@ -740,11 +706,11 @@ class Ctx:
         ui.warn("{target}: {reason}; waiting {time}", target=str(self._target), reason=reason,
                 time=text.duration(round(held)))
         tally = self._run.settings.tally
-        shown = (tally.hold(code, self._who, "pages", held, reason) if tally is not None
+        shown = (tally.hold(code, "pages", held, reason) if tally is not None
                  else contextlib.nullcontext())
         with shown:
             try:
-                await self._run.scheduler.wait(code, self._who, bucket=bucket)
+                await self._run.scheduler.wait(code, bucket=bucket)
             except Stopped:
                 raise Stopped(f"{self._target}: stopped while waiting: {reason}") from None
 
@@ -800,11 +766,6 @@ class Ctx:
     def settings(self) -> flnd.plugin.Settings:
         """The plugin's `Settings`: its keys of config.toml, over its defaults."""
         return self._settings
-
-    @property
-    def account(self) -> flnd.plugin.Account | None:
-        """The account this target runs as; None for a plugin without one."""
-        return self._run.account
 
     @property
     def cookies(self) -> Mapping[str, str]:
@@ -1056,8 +1017,6 @@ class PluginRun:
     # The plugin's `[plugins.<code>]` settings in config.toml: pace, limits, proxy, stop_after,
     # its templates and its own `Settings`, each over what its class says.
     config: PluginConfig = field(default_factory=PluginConfig)
-    # The account it runs as; None for a plugin with none.
-    account: flnd.plugin.Account | None = None
     # The posts its `date` hook had no day for, read once for the run (`crawl.asked`).
     asked: dict[str, float] | None = None
     _state: store.Store | None = field(default=None, repr=False)
@@ -1141,18 +1100,16 @@ class PluginRun:
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
-        """The account's sealed secrets in the home's `secrets.db`, opened on first use; none
-        without an account."""
+        """The plugin's saved secrets (`logins/<code>.json`), read on first use."""
         if self._secrets is None:
-            self._secrets = {} if self.account is None else auth.secrets(
-                self.settings.home, self.account.id, plugin=self.source.code)
+            self._secrets = auth.secrets(self.source.code)
         return self._secrets
 
     async def call(self, fn: Callable[..., T], *args: Any) -> T:
         """Run the plugin's blocking `fn(*args)` (`ctx.call`) on a `CALL` thread, as a step of
         the run (`jobs.Scheduler.step`): it waits for the plugin's holds, and is never tried
         again."""
-        return await self.scheduler.step(self.source.code, None, fn, *args)
+        return await self.scheduler.step(self.source.code, fn, *args)
 
     async def off(self, fn: Callable[..., T], *args: Any) -> T:
         """Run the engine's own blocking step, `fn(*args)`, on a `CALL` thread, with no job.
@@ -1244,28 +1201,24 @@ def plugin_run(settings: RunShared, plugin: Plugin, *, jar: cookies.Jar | None =
     """Open one plugin's resources outside a run (a login), and close them however the block
     ends.
 
-    The cookies of the plugin's default account are read from the home once, here, unless
-    `jar` is given, and a cookie of the login that has expired or expires within
-    `EXPIRY_WARNING` is a warning line. The plugin's `[plugins.<code>]` settings in config.toml
-    are read here too, and give the scheduler its pace and its hosts' limits, the session its
-    proxy, and the instance its `folder` and `filename` templates. Nothing is sent yet.
+    The plugin's cookies are read from the logins folder once, here, unless `jar` is given, and
+    a cookie of the login that has expired or expires within `EXPIRY_WARNING` is a warning
+    line. The plugin's `[plugins.<code>]` settings in config.toml are read here too, and give
+    the scheduler its pace and its hosts' limits, the session its proxy, and the instance its
+    `folder` and `filename` templates. Nothing is sent yet.
 
     Args:
         settings: what the run shares.
         plugin: the plugin.
-        jar: the cookies to use instead of the default account's (a login's, being checked).
-        secrets: what `ctx.secrets` keeps instead of the default account's vault (a login's,
-            written once it is named).
+        jar: the cookies to use instead of the saved ones (a login's, being checked).
+        secrets: what `ctx.secrets` keeps instead of the saved ones (a login's, written once
+            it is checked).
 
     Raises:
         UsageError: the home's config.toml has a value it doesn't take.
     """
-    found = None
-    if jar is None and (settings.home / store.DB).is_file():
-        with store.open(settings.home) as db:
-            found = auth.pick([auth.account(row) for row in db.accounts(plugin.code)])
-    configured, kept = _read(settings, plugin, found)
-    run = _made(settings, plugin, configured, kept if jar is None else jar, found)
+    configured, kept = _read(settings, plugin)
+    run = _made(settings, plugin, configured, kept if jar is None else jar)
     run._secrets = secrets
     try:
         yield run
@@ -1274,35 +1227,31 @@ def plugin_run(settings: RunShared, plugin: Plugin, *, jar: cookies.Jar | None =
 
 
 @contextlib.asynccontextmanager
-async def opened(settings: RunShared, plugin: Plugin,
-                 account: flnd.plugin.Account | None = None) -> AsyncIterator[PluginRun]:
-    """One plugin's resources for an account in a run, on its loop, closed on the loop.
+async def opened(settings: RunShared, plugin: Plugin) -> AsyncIterator[PluginRun]:
+    """One plugin's resources in a run, on its loop, closed on the loop.
 
     Raises:
         UsageError: the home's config.toml has a value it doesn't take.
-        LoginError: the vault's key is gone.
+        LoginError: the login file can't be read.
     """
-    # The home's config.toml and the account's cookies are read off the loop.
-    run = _made(settings, plugin, *await asyncio.to_thread(_read, settings, plugin, account),
-                account)
+    # The home's config.toml and the plugin's cookies are read off the loop.
+    run = _made(settings, plugin, *await asyncio.to_thread(_read, settings, plugin))
     try:
         yield run
     finally:
         await run.aclose()
 
 
-def _read(settings: RunShared, plugin: Plugin, account: flnd.plugin.Account | None,
-          ) -> tuple[PluginConfig, cookies.Jar]:
-    """A plugin's `[plugins.<code>]` settings (the run's, or read here) and the account's
-    cookies, from the home."""
+def _read(settings: RunShared, plugin: Plugin) -> tuple[PluginConfig, cookies.Jar]:
+    """A plugin's `[plugins.<code>]` settings (the run's, or read here) and its saved cookies."""
     found = getattr(settings, "config", None) or config.settings(
         settings.home, plugins={plugin.code: type(plugin)})
-    return found.plugin(plugin.code), auth.load(settings.home, account)
+    return found.plugin(plugin.code), auth.load(plugin.code)
 
 
-def _made(settings: RunShared, plugin: Plugin, configured: PluginConfig, jar: cookies.Jar,
-          account: flnd.plugin.Account | None) -> PluginRun:
-    """A plugin's `PluginRun` for an account: its login's cookies warned of, its settings
+def _made(settings: RunShared, plugin: Plugin, configured: PluginConfig,
+          jar: cookies.Jar) -> PluginRun:
+    """A plugin's `PluginRun`: its login's cookies warned of, its settings
     applied. A configured template replaces its class's on this instance; a category's or a
     route's own still wins (`crawl._format`)."""
     _warn_expiring(plugin, jar)
@@ -1320,7 +1269,7 @@ def _made(settings: RunShared, plugin: Plugin, configured: PluginConfig, jar: co
     return PluginRun(plugin, settings, jar, session,
                      net.Client(session, stop=stop.soon if stop else None),
                      net.Client(session, stop=stop.now if stop else None), configured,
-                     account=account, _own_jobs=own)
+                     _own_jobs=own)
 
 
 def _sign(plugin: Plugin, url: str, method: str, headers: MutableMapping[str, str],
@@ -1517,9 +1466,7 @@ class TargetTabs:
             # plugin's proxy: say so, rather than let page loads leave unproxied silently.
             ui.warn("{code}: the browser doesn't use the proxy in config.toml; only the "
                     "plugin's HTTP requests do", code=self._source.code)
-        account = self._run.account
-        budget = jobs.Budget(self._run.scheduler, self._source.code,
-                             account.name if account is not None else None)
+        budget = jobs.Budget(self._run.scheduler, self._source.code)
         return browser.Tabs(self._shared, self._run.jar, scroll=browser.HUMAN, budget=budget,
                             assets=self._source.assets, hidden=self._source.hidden)
 
@@ -1529,7 +1476,7 @@ class TargetTabs:
         return self._tabs is not None
 
     def cookies(self) -> list[Mapping[str, Any]]:
-        """Its account's browser's cookies, or none when this target never opened a tab."""
+        """Its browser's cookies, or none when this target never opened a tab."""
         if self._tabs is None or self._shared is None or not self._shared.launched:
             return []
         return list(self._tabs.run(self._shared.cookies(self._run.jar)))

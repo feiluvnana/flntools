@@ -107,7 +107,7 @@ class Loibus(Plugin):
     key = "{dir}/{part}/{file}"
 
     def __init__(self) -> None:
-        # One instance per account per run (the crawl's rule), so these last the run.
+        # One instance per run (the crawl's rule), so these last the run.
         self._limit: int | None = None
         self._limit_read = False
         # Posts whose `archive` was listed: that category writes their info.md, with links.

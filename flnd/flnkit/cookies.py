@@ -1,12 +1,10 @@
 """Cookie jars: read cookies from a file or raw text.
 
-SPEC.md#logins-and-accounts explains it."""
+SPEC.md#logins explains it."""
 
 from __future__ import annotations
 
 import json
-import os
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -18,30 +16,12 @@ __all__ = ["Jar", "load"]
 Cookie = dict[str, Any]
 PathLike = str | Path
 
-_PLATFORM = sys.platform
-
 # The largest cookie file `load` reads: 16 MiB. A full browser export is a few hundred KB, so
 # anything this size is a mistake or an attack, refused before it is parsed.
 MAX_SIZE = 16 * 1024 * 1024
 # The spellings JSON exports use: Playwright and extensions ("no_restriction" in Chrome).
 _JSON_SAME_SITE = {"none": "None", "no_restriction": "None", "lax": "Lax", "strict": "Strict"}
 _HTTP_ONLY = "#HttpOnly_"
-
-
-def home() -> Path:
-    """The account's home folder, from the operating system, whatever `Path.home` says.
-
-    Returns:
-        The password database's home on POSIX, or `%USERPROFILE%` on Windows.
-    """
-    if _PLATFORM == "win32":
-        return Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
-    try:
-        import pwd
-
-        return Path(pwd.getpwuid(os.getuid()).pw_dir)
-    except (ImportError, AttributeError):
-        return Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
 
 
 # Errors: cookies are read to log in, so a cookie file that is broken, too big or unreadable

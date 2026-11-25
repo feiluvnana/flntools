@@ -1,57 +1,31 @@
-"""src/engine/auth.py: the sealed vault and its key, accounts, the login methods, logout, the
-logins' state and the cookies a run writes back.
+"""src/engine/auth.py: the logins folder, the login methods, logout, `auth list`'s rows and the
+cookies a run writes back.
 
-No browser, no network: cookie stores are faked, cookie files are written by the tests, and the
-vault is a real one in a temporary home, with its key outside it.
+No browser, no network: cookie files are written by the tests, in a logins folder that is
+a temporary one, never `~/.config/flnd/logins`.
 """
 
 import io
-import json
 import os
-import sqlite3
 import stat
 import sys
 import tempfile
-import types
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from fakes import (
-    CDN,
-    EngineCase,
-    login_cookies,
-    make_plugin,
-    noise,
-    own_login,
-    sign_in,
-    targets,
-    vaulted,
-)
-from test_ctx import FakeBrowser, FakeRaw
+from fakes import EngineCase, login_cookies, make_plugin, own_login, sign_in, vaulted
 
-import flnd
-from flnd.engine import auth, jobs, store
-from flnd.errors import Blocked, Hidden, LoginError, NotFound, PluginError, UsageError
-from flnd.plugin import Account, Target
-from flnd.testing import fake_clock
+from flnd.engine import auth
+from flnd.errors import LoginError, PluginError, UsageError
 from flnd.ui.log import ui
-from flnkit import db, net
+from flnkit import clock, net
 
+# One login cookie that ends in 2027, and a cookie of another site.
 NETSCAPE = ("# Netscape HTTP Cookie File\n"
             ".aaa.example\tTRUE\t/\tTRUE\t1825861327\tsid\taaa-session\n"
             ".example.com\tTRUE\t/\tTRUE\t1825861327\tsid\telsewhere\n")
-
-
-@contextmanager
-def raw(home):
-    """`secret.db`, opened as any SQLite tool would."""
-    db = sqlite3.connect(home / store.SECRETS, isolation_level=None)
-    try:
-        yield db
-    finally:
-        db.close()
+ENDS = 1825861327
 
 
 class AuthCase(unittest.TestCase):
@@ -59,167 +33,128 @@ class AuthCase(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.home = Path(folder.name) / ".flnd"
-        # The key outside the home, as `~/.config/flnd/key` is.
-        self.key = Path(folder.name) / "config" / "key"
-        self.enterContext(mock.patch.object(auth, "KEYFILE", self.key))
+        # The logins folder, outside the home, as `~/.config/flnd/logins` is; not made yet.
+        self.logins = Path(folder.name) / "config" / "logins"
+        self.enterContext(mock.patch.object(auth, "LOGINS", self.logins))
         self.dest = io.StringIO()
         self.enterContext(ui.scope(dest=self.dest, width=400, color=False))
         self.plugin = make_plugin("aaa", login=login_cookies("sid"))
+        self.export = Path(folder.name) / "cookies.txt"
+        self.export.write_text(NETSCAPE)
 
-    def accounts(self, code="aaa"):
-        with store.open(self.home) as db:
-            return [(row.name, row.origin, row.default) for row in db.accounts(code)]
-
-    def stored(self):
-        """Every byte of `secret.db` and its WAL."""
-        return b"".join(path.read_bytes() for path in self.home.rglob("secret.db*"))
+    def mode(self, path):
+        return stat.S_IMODE(path.stat().st_mode)
 
 
-class VaultTest(AuthCase):
-    def test_a_value_is_sealed_under_the_key_outside_the_home(self):
-        sign_in(self.home, "tlg", session="1BVts-secret", api_hash="abc")
-        self.assertEqual(vaulted(self.home, "tlg")[1], {"session": "1BVts-secret",
-                                                        "api_hash": "abc"})
-        with raw(self.home) as db:
-            [(sealed,)] = db.execute("SELECT sealed FROM secrets WHERE name = 'session'")
-        self.assertEqual(sealed[0], 1)
-        self.assertFalse(b"1BVts-secret" in self.stored(), "plaintext in secret.db")
-        self.assertEqual(len(self.key.read_bytes()), 32)
-        self.assertFalse(any(path.name == "key" for path in self.home.rglob("*")))
-        if os.name != "nt":
-            self.assertEqual(stat.S_IMODE(self.key.stat().st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE((self.home / store.SECRETS).stat().st_mode), 0o600)
-
-    def test_s16_secret_db_holds_no_plaintext_after_a_login(self):
-        export = self.home.parent / "cookies.txt"
-        export.write_text(NETSCAPE.replace("aaa.example", "instagram.com").replace("\tsid\t",
-                                                                                   "\tsessionid\t"))
-        with flnd.open(self.home) as fl:
-            fl.auth.login("ins", path=str(export))
-        self.assertTrue(self.stored())
-        self.assertFalse(b"aaa-session" in self.stored(), "plaintext in secret.db")
-
-    def test_a_value_moved_to_another_slot_does_not_open(self):
-        first, second = sign_in(self.home, "aaa", name="one"), sign_in(self.home, "aaa", name="two")
-        with auth.secrets(self.home, first.id) as saved:
-            saved["token"] = "t"
-        with raw(self.home) as db:
-            db.execute("UPDATE secrets SET account = ?", (second.id,))
-        with auth.secrets(self.home, second.id) as saved, self.assertRaises(LoginError):
-            saved["token"]
-
-    def test_a_missing_or_wrong_key_keeps_the_rows(self):
-        sign_in(self.home, "aaa", token="t")
-        kept = self.key.read_bytes()
-        for name, change in (("missing", self.key.unlink),
-                             ("wrong", lambda: self.key.write_bytes(bytes(32)))):
-            with self.subTest(name), auth.secrets(self.home, 1, plugin="aaa") as saved:
-                change()
-                with self.assertRaises(LoginError) as raised:
-                    saved["token"]
-                self.assertEqual((str(raised.exception), raised.exception.hint),
-                                 ("the vault's key is gone", "flnd auth login aaa"))
-                self.assertIn("token", saved)
-                self.key.unlink(missing_ok=True)
-                self.key.write_bytes(kept)
-                self.assertEqual(saved["token"], "t")
-
-    def test_no_key_file_or_vault_until_a_secret_is_written(self):
-        with auth.secrets(self.home, 1) as saved:
-            self.assertEqual((len(saved), "x" in saved), (0, False))
-        self.assertFalse(self.key.exists() or self.home.exists())
-
-    def version_1(self, session="plain-session"):
-        self.home.joinpath("metadata").mkdir(parents=True)
-        with raw(self.home) as db:
-            db.execute("CREATE TABLE secrets (slot TEXT NOT NULL, name TEXT NOT NULL,"
-                       " value TEXT NOT NULL, PRIMARY KEY (slot, name)) WITHOUT ROWID")
-            db.executemany("INSERT INTO secrets VALUES (?, ?, ?)",
-                           [("tlg", "session", session), ("ins", "cookies", "[]")])
-
-    def test_a_crash_before_the_vacuum_leaves_no_plaintext(self):
-        self.version_1("plain-session-" * 40)
-        connect = db.connect
-
-        class Crashing:
-            def __init__(self, sql):
-                self.sql = sql
-
-            def execute(self, statement, *args):
-                if statement == "VACUUM":
-                    raise KeyboardInterrupt("crash")
-                return self.sql.execute(statement, *args)
-
-            def __getattr__(self, name):
-                return getattr(self.sql, name)
-
-        with mock.patch.object(db, "connect", lambda path: Crashing(connect(path))), \
-                self.assertRaises(KeyboardInterrupt):
-            auth.seal_plaintext(self.home)
-        self.assertFalse(b"plain-session-plain" in self.stored(), "plaintext in secret.db")
-        self.assertEqual(vaulted(self.home, "tlg")[1], {"session": "plain-session-" * 40})
-        self.assertFalse(b"plain-session-plain" in self.stored(), "plaintext in secret.db")
-        with raw(self.home) as sql:
-            self.assertEqual(sql.execute("PRAGMA freelist_count").fetchone(), (0,))
-
-    def test_plaintext_is_sealed_on_first_open(self):
-        self.version_1()
-        with flnd.open(self.home) as fl:
-            self.assertEqual([row.plugin for row in fl.auth], ["ins", "tlg"])
-        self.assertEqual(vaulted(self.home, "tlg")[1], {"session": "plain-session"})
-        self.assertEqual([self.accounts(code) for code in ("ins", "tlg")],
-                         [[("default", "", True)], [("default", "", True)]])
-        self.assertFalse(b"plain-session" in self.stored(), "plaintext in secret.db")
+class FolderTest(AuthCase):
+    def test_the_folder_is_beside_the_user_config_and_the_real_one_is_refused_in_tests(self):
+        with mock.patch.object(auth, "LOGINS", None):
+            with self.assertRaisesRegex(RuntimeError, "refusing the real flnd folder"):
+                auth.folder()
+            with mock.patch.dict(os.environ, {"FLND_TEST_NO_PROFILES": ""}):
+                self.assertEqual(auth.folder().name, "logins")
+                self.assertEqual(auth.folder().parent.name, "flnd")
 
 
 class LoginTest(AuthCase):
-    def setUp(self):
-        super().setUp()
-        self.export = self.home.parent / "cookies.txt"
-        self.export.write_text(NETSCAPE)
-
-    def test_a_cookie_file_keeps_the_plugins_domains_only_and_is_never_copied(self):
+    def test_a_cookie_file_is_kept_for_the_plugins_domains_only_with_mode_0600(self):
         found = auth.login(self.home, self.plugin(), "file", path=self.export)
-        self.assertEqual((found.name, found.origin, found.is_default), ("account1", "file", True))
-        self.assertEqual([(cookie["domain"], cookie["value"]) for cookie in vaulted(self.home,
-                                                                                    "aaa")[0]],
+        kept = self.logins / "aaa.txt"
+        self.assertEqual([(cookie["domain"], cookie["value"]) for cookie in vaulted("aaa")[0]],
                          [(".aaa.example", "aaa-session")])
         self.assertTrue(self.export.is_file())
-        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()),
-                         ["flnd.db", "secret.db"])
+        self.assertEqual((found.plugin, found.status, found.file), ("aaa", "ok", str(kept)))
         self.assertEqual(found.expires, "2027-11-10T15:42:07+00:00")
+        self.assertNotIn("elsewhere", kept.read_text())
+        if os.name != "nt":
+            self.assertEqual(self.mode(kept), 0o600)
+            self.assertEqual(self.mode(self.logins), 0o700)
+        # Never inside a home.
+        self.assertEqual([path for path in self.home.rglob("*.txt")], [])
 
-    def test_s14_a_host_cookie_keeps_its_host(self):
+    def test_a_host_cookie_keeps_its_host(self):
         self.export.write_text("# Netscape HTTP Cookie File\n"
                                "aaa.example\tFALSE\t/\tTRUE\t0\t__Host-sid\th\n"
                                "aaa.example\tFALSE\t/\tTRUE\t0\tsid\ts\n")
         auth.login(self.home, self.plugin(), "file", path=self.export)
-        self.assertEqual({cookie["name"]: cookie["domain"] for cookie in vaulted(self.home,
-                                                                                 "aaa")[0]},
+        self.assertEqual({cookie["name"]: cookie["domain"] for cookie in vaulted("aaa")[0]},
                          {"__Host-sid": "aaa.example", "sid": ".aaa.example"})
 
-    def test_a_refused_login_keeps_nothing(self):
-        wrong = self.home.parent / "wrong.txt"
+    def test_a_json_export_is_kept_as_netscape(self):
+        self.export.write_text('[{"name": "sid", "value": "j", "domain": ".aaa.example",'
+                               ' "expires": 1825861327}, {"name": "x", "value": "y",'
+                               ' "domain": "other.example"}]')
+        auth.login(self.home, self.plugin(), "file", path=self.export)
+        self.assertEqual((self.logins / "aaa.txt").read_text().splitlines()[0],
+                         "# Netscape HTTP Cookie File")
+        self.assertEqual([(cookie["name"], cookie["value"]) for cookie in vaulted("aaa")[0]],
+                         [("sid", "j")])
+
+    def test_a_login_again_replaces_the_earlier_one(self):
+        auth.login(self.home, self.plugin(), "file", path=self.export)
+        self.export.write_text(NETSCAPE.replace("aaa-session", "second"))
+        auth.login(self.home, self.plugin(), "file", path=self.export)
+        self.assertEqual([cookie["value"] for cookie in vaulted("aaa")[0]], ["second"])
+        self.assertEqual(sorted(path.name for path in self.logins.iterdir()), ["aaa.txt"])
+
+    def test_a_file_without_a_login_cookie_is_refused_and_keeps_nothing(self):
+        wrong = self.export.with_name("wrong.txt")
         wrong.write_text("# Netscape HTTP Cookie File\naaa.example\tFALSE\t/\tTRUE\t0\tother\to\n")
-        table = [("file", {"path": wrong}, LoginError, "no sid for aaa.example in wrong.txt"),
-                 ("file", {}, UsageError, "needs the cookie file's path"),
+        with self.assertRaises(LoginError) as raised:
+            auth.login(self.home, self.plugin(), "file", path=wrong)
+        self.assertEqual((str(raised.exception), raised.exception.hint),
+                         ("aaa: no login cookie (sid) in wrong.txt",
+                          "export the cookies from a browser where you are logged in"))
+        self.assertFalse(self.logins.exists())
+
+    def test_the_other_refusals_name_themselves_and_keep_nothing(self):
+        table = [("file", {}, UsageError, "needs the cookie file's path"),
                  ("qr", {}, UsageError, "logs in by file"),
-                 ("file", {"path": self.home.parent / "none.txt"}, LoginError, "can't read")]
+                 ("file", {"path": self.export.with_name("none.txt")}, LoginError, "can't read")]
         for method, options, error, said in table:
             with self.subTest(method=method, options=options), \
                     self.assertRaisesRegex(error, said):
                 auth.login(self.home, self.plugin(), method, **options)
         with self.assertRaisesRegex(UsageError, "needs no login"):
             auth.login(self.home, make_plugin("bbb")(), "file")
-        self.assertEqual(self.accounts(), [])
+        self.assertFalse(self.logins.exists())
+
+    def test_a_file_whose_login_cookies_have_all_expired_is_refused(self):
+        self.export.write_text(NETSCAPE.replace(str(ENDS), str(ENDS - 400_000_000)))
+        with mock.patch.object(clock, "wall", lambda: ENDS - 100_000_000):
+            with self.assertRaises(LoginError) as raised:
+                auth.login(self.home, self.plugin(), "file", path=self.export)
+        self.assertEqual((str(raised.exception), raised.exception.hint),
+                         ("aaa: the login in cookies.txt has expired",
+                          "export a fresh cookie file"))
+        self.assertFalse(self.logins.exists())
+
+    def test_one_live_or_session_login_cookie_is_enough(self):
+        plugin = make_plugin("aaa", login=login_cookies("sid", "token"))
+        past, now = ENDS - 400_000_000, ENDS - 100_000_000
+        for name, lines in (
+                ("a live one", f".aaa.example\tTRUE\t/\tTRUE\t{past}\tsid\ta\n"
+                               f".aaa.example\tTRUE\t/\tTRUE\t{ENDS}\ttoken\tb\n"),
+                ("a session one", f".aaa.example\tTRUE\t/\tTRUE\t{past}\tsid\ta\n"
+                                  ".aaa.example\tTRUE\t/\tTRUE\t0\ttoken\tb\n")):
+            with self.subTest(name):
+                self.export.write_text("# Netscape HTTP Cookie File\n" + lines)
+                with mock.patch.object(clock, "wall", lambda: now):
+                    auth.login(self.home, plugin(), "file", path=self.export)
+                self.assertTrue((self.logins / "aaa.txt").is_file())
 
     def test_a_plugins_own_login_writes_its_secrets_in_start_only(self):
         def start(self, ctx, method):
             ctx.secrets.update(session=f"s-{method}", api_id="1")
 
         plugin = make_plugin("aaa", login=own_login(start, methods=("qr", "phone")))
-        self.assertEqual(auth.login(self.home, plugin(), "qr").origin, "qr")
-        self.assertEqual(vaulted(self.home, "aaa")[1], {"session": "s-qr", "api_id": "1"})
+        found = auth.login(self.home, plugin(), "qr")
+        self.assertEqual((found.plugin, found.status, found.file),
+                         ("aaa", "ok", str(self.logins / "aaa.json")))
+        self.assertEqual(vaulted("aaa")[1], {"session": "s-qr", "api_id": "1"})
+        if os.name != "nt":
+            self.assertEqual(self.mode(self.logins / "aaa.json"), 0o600)
+            self.assertEqual(self.mode(self.logins), 0o700)
 
         def check(self, ctx):
             ctx.secrets["late"] = "1"
@@ -227,13 +162,13 @@ class LoginTest(AuthCase):
         written = make_plugin("aaa", login=own_login(check=check))
         with self.assertRaisesRegex(PluginError, "written only during Login.start"):
             auth.login(self.home, written(), "qr")
-        self.assertEqual(vaulted(self.home, "aaa")[1], {"session": "s-qr", "api_id": "1"})
+        self.assertEqual(vaulted("aaa")[1], {"session": "s-qr", "api_id": "1"})
 
     def test_a_failed_check_keeps_nothing(self):
         plugin = make_plugin("aaa", login=own_login(check=lambda self, ctx: False))
         with self.assertRaisesRegex(LoginError, "the login didn't work"):
             auth.login(self.home, plugin(), "qr")
-        self.assertEqual(self.accounts(), [])
+        self.assertFalse(self.logins.exists())
 
     def test_a_stored_api_key_is_not_asked_again(self):
         seen = []
@@ -242,11 +177,22 @@ class LoginTest(AuthCase):
             seen.append(dict(ctx.secrets))
             ctx.secrets["session"] = "new"
 
-        sign_in(self.home, "aaa", session="old", api_id="1")
+        sign_in("aaa", session="old", api_id="1")
         auth.login(self.home, make_plugin("aaa", login=own_login(start))(), "qr")
         self.assertEqual(seen, [{"session": "old", "api_id": "1"}])
-        self.assertEqual(vaulted(self.home, "aaa")[1], {"session": "new", "api_id": "1"})
-        self.assertEqual(self.accounts(), [("default", "qr", True)])
+        self.assertEqual(vaulted("aaa")[1], {"session": "new", "api_id": "1"})
+
+    def test_secrets_round_trip_through_the_json_file(self):
+        sign_in("tlg", session="1BVts-secret", api_id="2", api_hash="abc")
+        self.assertEqual(vaulted("tlg")[1], {"session": "1BVts-secret", "api_id": "2",
+                                             "api_hash": "abc"})
+        self.assertEqual(auth.secrets("nobody"), {})
+        (self.logins / "tlg.json").write_text("[1]")
+        with self.assertRaisesRegex(LoginError, "isn't a login file"):
+            auth.secrets("tlg")
+        (self.logins / "tlg.json").write_text("{not json")
+        with self.assertRaisesRegex(LoginError, "can't read tlg.json"):
+            auth.secrets("tlg")
 
     def test_ask_answers_only_in_a_terminal_with_its_description(self):
         answers = []
@@ -268,112 +214,49 @@ class LoginTest(AuthCase):
         self.assertIn("With the country code", self.dest.getvalue())
 
 
-class AccountsTest(AuthCase):
-    def login(self, whoami=None, session="s", **options):
-        def start(self, ctx, method):
-            ctx.secrets["session"] = session
+class ListAndLogoutTest(AuthCase):
+    def test_a_login_lists_its_status_and_its_file(self):
+        now = ENDS - 100_000_000
+        table = [("ok", now + 90 * 86400), ("expires in 3 days", now + 2 * 86400 + 3600),
+                 ("expired", now - 10)]
+        for status, ends in table:
+            with self.subTest(status):
+                sign_in("aaa", [{"name": "sid", "value": "v", "domain": ".aaa.example",
+                                 "expires": ends}])
+                with mock.patch.object(clock, "wall", lambda: now):
+                    found = auth.entry("aaa", self.plugin)
+                self.assertEqual((found.status, found.file), (status, str(self.logins / "aaa.txt")))
 
-        plugin = make_plugin("aaa", login=own_login(start, whoami=whoami))
-        return auth.login(self.home, plugin(), "qr", **options)
+    def test_a_session_login_never_expires_and_a_missing_one_is_none(self):
+        sign_in("aaa", [{"name": "sid", "value": "v", "domain": ".aaa.example"}])
+        self.assertEqual(auth.entry("aaa", self.plugin).status, "ok")
+        self.assertIsNone(auth.entry("bbb", self.plugin))
+        sign_in("tlg", session="s")
+        self.assertEqual(auth.entry("tlg", self.plugin).file, str(self.logins / "tlg.json"))
+        (self.logins / "aaa.txt").write_bytes(b"\xff\xfe")
+        self.assertEqual(auth.entry("aaa", self.plugin).status, "unreadable")
 
-    def test_each_name_whoami_gives_is_an_account_and_the_first_is_the_default(self):
-        self.login("example_user", "one")
-        self.login("example_creator", "two")
-        self.login("example_user", "three")
-        self.assertEqual(self.accounts(), [("example_user", "qr", True),
-                                           ("example_creator", "qr", False)])
-        self.assertEqual([vaulted(self.home, "aaa", name)[1] for name in ("example_user",
-                                                                          "example_creator")],
-                         [{"session": "three"}, {"session": "two"}])
+    def test_the_codes_with_a_login_are_listed_in_order(self):
+        self.assertEqual(auth.codes(), [])
+        sign_in("tlg", session="s")
+        sign_in("aaa", [{"name": "sid", "value": "v", "domain": ".aaa.example"}])
+        self.assertEqual(auth.codes(), ["aaa", "tlg"])
 
-    def test_an_unnamed_account_is_asked_for_in_a_terminal_else_the_default_or_account1(self):
-        self.login()
-        self.login()
-        self.assertEqual(self.accounts(), [("account1", "qr", True)])
-        with mock.patch.object(sys.stdin, "isatty", return_value=True), \
-                mock.patch("flnd.ui.forms.ask", return_value="example_handle") as asked:
-            self.login(interactive=True)
-        asked.assert_called_once_with("Account name", default="account2")
-        self.assertEqual([name for name, _, _ in self.accounts()], ["account1", "example_handle"])
-
-    def test_the_form_offers_the_sites_name_and_asks_before_replacing_an_account(self):
-        self.login("example_user", "one")
-        with mock.patch.object(sys.stdin, "isatty", return_value=True), \
-                mock.patch("flnd.ui.forms.ask", side_effect=["", "example_creator"]) as asked, \
-                mock.patch("flnd.ui.forms.confirm", side_effect=[False]) as sure:
-            self.login("example_user", "two", interactive=True)
-        # A blank answer takes the offered name, which is taken: declining asks again.
-        self.assertEqual(asked.mock_calls, [mock.call("Account name", default="example_user"),
-                                            mock.call("Account name", default="account1")])
-        sure.assert_called_once_with("Replace the login of example_user?")
-        self.assertEqual([name for name, _, _ in self.accounts()],
-                         ["example_user", "example_creator"])
-        self.assertEqual(vaulted(self.home, "aaa", "example_user")[1], {"session": "one"})
-        with mock.patch.object(sys.stdin, "isatty", return_value=True), \
-                mock.patch("flnd.ui.forms.ask", return_value="example_user"), \
-                mock.patch("flnd.ui.forms.confirm", return_value=True):
-            self.login(None, "three", interactive=True)
-        self.assertEqual(vaulted(self.home, "aaa", "example_user")[1], {"session": "three"})
-
-    def test_a_given_name_and_a_pipe_ask_nothing(self):
-        with mock.patch.object(sys.stdin, "isatty", return_value=True), \
-                mock.patch("flnd.ui.forms.ask") as asked:
-            self.login("example_user", name="example_handle", interactive=True)
-        with mock.patch.object(sys.stdin, "isatty", return_value=False), \
-                mock.patch("flnd.ui.forms.ask") as piped:
-            self.login("example_user", interactive=True)
-        asked.assert_not_called()
-        piped.assert_not_called()
-        self.assertEqual([name for name, _, _ in self.accounts()],
-                         ["example_handle", "example_user"])
-
-    def test_pick_prefers_the_account_that_worked_then_ok_ones(self):
-        for name in ("one", "two", "three"):
-            sign_in(self.home, "aaa", name=name)
-        with store.open(self.home) as db:
-            ids = {row.name: row.id for row in db.accounts("aaa")}
-            table = [({}, None, "one"), ({}, "two", "two"), ({"one": "held"}, None, "two"),
-                     ({"one": "expired", "two": "expired"}, "two", "three"),
-                     ({"one": "held", "two": "expired", "three": "held"}, None, "one"),
-                     ({"one": "expired", "two": "expired", "three": "expired"}, None, None)]
-            for marks, preferred, expected in table:
-                with self.subTest(marks=marks, preferred=preferred):
-                    for name, ident in ids.items():
-                        db.mark(ident, status=marks.get(name, "ok"))
-                    listed = [auth.account(row) for row in db.accounts("aaa")]
-                    found = auth.pick(listed, preferred=preferred)
-                    self.assertEqual(found and found.name, expected)
-
-    def test_logout_deletes_one_account_and_its_secrets_and_the_next_becomes_default(self):
+    def test_logout_deletes_the_files_of_that_plugin_only(self):
+        with self.assertRaisesRegex(UsageError, "aaa: not logged in"):
+            auth.logout("aaa", self.plugin)
+        sign_in("aaa", [{"name": "sid", "value": "v", "domain": ".aaa.example"}], session="s")
+        sign_in("bbb", session="b")
+        self.assertEqual(auth.logout("aaa", self.plugin).plugin, "aaa")
+        self.assertEqual(sorted(path.name for path in self.logins.iterdir()), ["bbb.json"])
         with self.assertRaises(UsageError):
-            auth.logout(self.home, "aaa")
-        self.login("example_user")
-        self.login("example_creator")
-        sign_in(self.home, "bbb", session="b")
-        self.assertEqual(auth.logout(self.home, "aaa").name, "example_user")
-        self.assertEqual([(row[0], row[2]) for row in self.accounts()],
-                         [("example_creator", True)])
-        with self.assertRaises(UsageError):
-            auth.logout(self.home, "aaa", "example_user")
-        self.assertEqual(auth.logout(self.home, "aaa", "example_creator").name, "example_creator")
-        self.assertEqual(self.accounts(), [])
-        with raw(self.home) as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM secrets").fetchone(), (1,))
-
-    def test_default_names_the_account_runs_use(self):
-        self.login("example_user")
-        self.login("example_creator")
-        self.assertTrue(auth.default(self.home, "aaa", "example_creator").is_default)
-        self.assertEqual([(row[0], row[2]) for row in self.accounts()],
-                         [("example_creator", True), ("example_user", False)])
-        with self.assertRaises(UsageError):
-            auth.default(self.home, "aaa", "nobody")
+            auth.logout("aaa", self.plugin)
 
 
 class WriteBackTest(AuthCase):
     def setUp(self):
         super().setUp()
-        self.account = sign_in(self.home, "twt", [
+        sign_in("twt", [
             {"name": "ct0", "value": "old-ct0", "domain": ".x.example", "path": "/",
              "expires": 1900000000},
             {"name": "auth_token", "value": "login-token", "domain": ".x.example", "path": "/"}])
@@ -383,34 +266,39 @@ class WriteBackTest(AuthCase):
                                     for name, value in values.items()]).jar
 
     def saved(self):
-        return vaulted(self.home, "twt")[0]
+        return vaulted("twt")[0]
 
-    def test_a_rotated_cookie_is_saved_and_the_rest_kept(self):
+    def test_a_rotated_cookie_is_saved_in_the_file_and_the_rest_kept(self):
         for domain in (".x.example", "api.x.example"):
             with self.subTest(domain):
-                self.assertEqual(auth.write_back(self.home, self.account,
-                                                 self.current(domain, ct0=f"new{domain}")), ["ct0"])
+                self.assertEqual(auth.write_back("twt", self.current(domain, ct0=f"new{domain}")),
+                                 ["ct0"])
                 self.assertEqual((self.saved()["ct0"], self.saved()["auth_token"],
                                   len(self.saved())),
                                  (f"new{domain}", "login-token", 2))
         self.assertEqual([cookie["expires"] for cookie in self.saved() if cookie["name"] == "ct0"],
                          [1900000000])
+        if os.name != "nt":
+            self.assertEqual(self.mode(self.logins / "twt.txt"), 0o600)
+        self.assertEqual(sorted(path.name for path in self.logins.iterdir()), ["twt.txt"])
 
     def test_nothing_new_is_added_and_nothing_written_without_a_change(self):
         table = [self.current(ct0="old-ct0", _ga="track"), self.current(ct0=""), []]
+        before = (self.logins / "twt.txt").stat().st_mtime_ns
         for current in table:
             with self.subTest(current=current):
-                self.assertEqual(auth.write_back(self.home, self.account, current), [])
+                self.assertEqual(auth.write_back("twt", current), [])
         self.assertEqual([cookie["name"] for cookie in self.saved()], ["ct0", "auth_token"])
-        self.assertEqual(auth.write_back(self.home / "never", self.account, self.current(ct0="x")),
-                         [])
-        self.assertFalse((self.home / "never").exists())
+        self.assertEqual((self.logins / "twt.txt").stat().st_mtime_ns, before)
+
+    def test_a_plugin_without_a_login_file_writes_nothing(self):
+        self.assertEqual(auth.write_back("never", self.current(ct0="x")), [])
+        self.assertEqual(sorted(path.name for path in self.logins.iterdir()), ["twt.txt"])
 
     def test_a_failure_warns_and_no_value_reaches_a_line(self):
-        auth.write_back(self.home, self.account, self.current(ct0="new-ct0"))
-        with mock.patch.object(auth, "secrets", side_effect=OSError("disk full: newer-ct0")):
-            self.assertEqual(auth.write_back(self.home, self.account,
-                                             self.current(ct0="newer-ct0")), [])
+        auth.write_back("twt", self.current(ct0="new-ct0"))
+        with mock.patch.object(auth, "load", side_effect=OSError("disk full: newer-ct0")):
+            self.assertEqual(auth.write_back("twt", self.current(ct0="newer-ct0")), [])
         said = self.dest.getvalue()
         self.assertIn("twt: could not save refreshed cookies (OSError)", said)
         for value in ("old-ct0", "new-ct0", "newer-ct0", "login-token"):
@@ -418,224 +306,40 @@ class WriteBackTest(AuthCase):
         self.assertEqual(self.saved()["ct0"], "new-ct0")
 
 
-
-class BrowserAccountsTest(EngineCase):
-    """Two accounts of a browser plugin in one run: each sees its own cookies alone."""
-
-    def setUp(self):
-        super().setUp()
-        for name in ("one", "two"):
-            sign_in(self.home, "aaa", [{"name": "sid", "value": name, "domain": "aaa.example",
-                                        "path": "/"}], name=name)
-        with store.open(self.home) as db:
-            db.progress(Target("aaa:y", kind="user"), cursors={}, complete=[], account="two")
-        self.browsers = []
-
-        async def launch(**options):
-            self.browsers.append(FakeBrowser(FakeRaw, options))
-            return self.browsers[-1]
-
-        self.enterContext(mock.patch("flnkit.browser.launch", launch))
-        self.routes["https://aaa.example/api"] = net.reply(200, json={})
-
-    def test_two_accounts_never_see_each_others_cookies(self):
-        async def route(ctx):
-            await ctx.open(f"https://aaa.example/{ctx.target.value}")
-            await ctx.fetch("https://aaa.example/api")
-
-        plugin = make_plugin("aaa", route, login=login_cookies("sid"), browser=True)
-        self.assertTrue(self.report(plugin, targets=["aaa:x", "aaa:y"]).ok)
-        self.assertEqual(sorted(request.headers["cookie"] for request in self.requests),
-                         ["sid=one", "sid=two"])
-        self.assertEqual(sorted([cookie["value"] for cookie in browser.added]
-                                for browser in self.browsers), [["one"], ["two"]])
-        self.assertEqual([vaulted(self.home, "aaa", name)[0]["sid"] for name in ("one", "two")],
-                         ["one", "two"])
-
-
-class SwitchTest(AuthCase):
-    """`auth.Switcher`, the scheduler's `switch`: which account a refused job moves to."""
+class RefusedLoginTest(EngineCase):
+    """A run of a plugin whose login the site refuses: its targets fail, and the next run tries
+    again."""
 
     def setUp(self):
         super().setUp()
-        self.enterContext(fake_clock())
-        self.scheduler = jobs.Scheduler()
-        self.listed = [Account(id=n, plugin="aaa", name=name, origin="file", at="")
-                       for n, name in enumerate("abc", 1)]
-        self.shown = []
-        self.switch = auth.Switcher(self.scheduler, lambda code: code == "aaa",
-                                    lambda code: self.listed, shown=self.shown.append)
-
-    def job(self, plugin="aaa", account="a"):
-        return jobs.Job(kind=jobs.Kind.PAGE, work=None, plugin=plugin, account=account)
-
-    def test_each_trigger_moves_the_job_to_the_next_account_and_journals_it(self):
-        journal = Path(self.home.parent / "journal.jsonl")
-        table = [(Blocked("blocked", wait=60.0), "blocked"), (LoginError("401"), "expired"),
-                 (Hidden("hidden"), "hidden"), (NotFound("gone"), "not_found")]
-        with ui.file(journal):
-            for error, reason in table:
-                with self.subTest(reason):
-                    made = self.job()
-                    self.assertIs(self.switch(made, error), made)
-                    self.assertEqual((made.account, self.shown[-1]), ("b",
-                                                                      f"aaa: a → b ({reason})"))
-        records = [json.loads(line) for line in journal.read_text().splitlines()]
-        self.assertEqual([(record["type"], record["from"], record["to"], record["reason"])
-                          for record in records],
-                         [("switch", "a", "b", reason) for _, reason in table])
-        self.assertEqual((self.switch.expired, list(self.switch.held)), ({("aaa", "a")}, [("aaa",
-                                                                                           "a")]))
-        self.assertEqual([(hold.account, hold.until) for hold in self.scheduler.holds], [("a",
-                                                                                          60.0)])
-
-    def test_a_job_never_goes_back_to_an_account_it_left(self):
-        made, moves = self.job(), []
-        while self.switch(made, LoginError("403")) is not None:
-            moves.append(made.account)
-        self.assertEqual((moves, made.account), (["b", "c"], "c"))
-
-    def test_a_held_account_is_passed_over_and_with_every_one_held_the_earliest_is_taken(self):
-        self.scheduler.hold("aaa", "b", seconds=300.0, reason="blocked")
-        made = self.job()
-        self.switch(made, Hidden("hidden"))
-        self.assertEqual(made.account, "c")
-        self.listed[2] = Account(id=3, plugin="aaa", name="c", origin="file", at="",
-                                 status="held", held_until="2026-01-01T00:10:00+00:00")
-        made = self.job()
-        self.switch(made, Hidden("hidden"))
-        self.assertEqual(made.account, "b")
-        self.listed[1] = Account(id=2, plugin="aaa", name="b", origin="file", at="",
-                                 status="expired")
-        made = self.job()
-        self.switch(made, Hidden("hidden"))
-        self.assertEqual(made.account, "c")
-
-    def test_nothing_moves_with_switching_off_or_without_an_account(self):
-        for made in (self.job(plugin="bbb"), self.job(account=None)):
-            with self.subTest(made.plugin, account=made.account):
-                self.assertIsNone(self.switch(made, Hidden("hidden")))
-        self.assertEqual(self.shown, [])
-
-
-class SwitchEngineTest(EngineCase):
-    """A run of a plugin with `switch = true` and two accounts."""
-
-    def setUp(self):
-        super().setUp()
-        self.home.mkdir(parents=True, exist_ok=True)
-        (self.home / "config.toml").write_text("[plugins.aaa]\nswitch = true\n")
-        for name in ("one", "two"):
-            sign_in(self.home, "aaa", [{"name": "sid", "value": name, "domain": "aaa.example"}],
-                    name=name)
-        self.refused = {"one"}
+        sign_in("aaa", [{"name": "sid", "value": "one", "domain": "aaa.example"}])
+        self.refused = True
 
         def page(request):
-            sid = request.headers["cookie"].removeprefix("sid=")
-            return net.reply(403 if sid in self.refused else 200, json={"as": sid})
+            return net.reply(403 if self.refused else 200, json={"ok": True})
 
         self.routes["https://aaa.example/p"] = page
-        self.seen = []
 
         async def route(ctx):
-            self.seen.append((await ctx.fetch("https://aaa.example/p")).json["as"])
+            await ctx.fetch("https://aaa.example/p")
 
         self.plugin = make_plugin("aaa", route, login=login_cookies("sid"))
 
-    def sent(self):
-        return [request.headers["cookie"] for request in self.requests]
-
-    def test_a_refused_account_hands_the_target_to_the_next_which_is_kept(self):
-        self.assertTrue(self.report(self.plugin, targets=["aaa:x"]).ok)
-        self.assertEqual((self.sent(), self.seen), (["sid=one", "sid=two"], ["two"]))
-        self.assertEqual(targets(self.home)["aaa:x"].account, "two")
-        with store.open(self.home) as db:
-            self.assertEqual([(row.name, row.status) for row in db.accounts("aaa")],
-                             [("one", "expired"), ("two", "ok")])
-        # The next run starts as the account that worked.
+    def test_a_refused_login_fails_every_target_with_its_hint_and_the_next_run_tries_again(self):
+        report = self.report(self.plugin, targets=["aaa:x", "aaa:y"])
+        self.assertEqual([type(each.error) for each in report.targets], [LoginError] * 2)
+        self.assertEqual({each.error.hint for each in report.targets},
+                         {"export a fresh cookie file, then flnd auth login aaa <file>"})
+        self.refused = False
         self.requests.clear()
-        self.refused = set()
         self.assertTrue(self.report(self.plugin, targets=["aaa:x"]).ok)
-        self.assertEqual(self.sent(), ["sid=two"])
+        self.assertEqual([request.headers["cookie"] for request in self.requests], ["sid=one"])
 
-    def test_with_every_account_refused_the_target_fails(self):
-        self.refused = {"one", "two"}
-        report = self.report(self.plugin, targets=["aaa:x"])
-        self.assertIsInstance(report.targets[0].error, LoginError)
-        self.assertEqual(self.sent(), ["sid=one", "sid=two"])
-
-    def test_a_page_opened_after_a_move_is_the_new_accounts(self):
-        browsers = []
-
-        async def launch(**options):
-            # The first account's window is walled; the second's opens.
-            status = 403 if not browsers else 200
-            browsers.append(FakeBrowser(lambda: FakeRaw([status] * 20), options))
-            return browsers[-1]
-
-        async def route(ctx):
-            self.seen.append((await ctx.open("https://aaa.example/p")).status)
-
-        self.enterContext(mock.patch("flnkit.browser.launch", launch))
-        plugin = make_plugin("aaa", route, login=login_cookies("sid"), browser=True)
-        self.assertTrue(self.report(plugin, targets=["aaa:x"]).ok)
-        self.assertEqual(self.seen, [200])
-        self.assertEqual([[raw.loaded for raw in browser.opened] for browser in browsers],
-                         [[["https://aaa.example/p"]], [["https://aaa.example/p"]]])
-        self.assertEqual(targets(self.home)["aaa:x"].account, "two")
-
-    def test_each_trigger_on_a_first_page_moves_the_target(self):
-        checks = []
-
-        def page(request):
-            sid = request.headers["cookie"].removeprefix("sid=")
-            if sid == "one":
-                return self.first_page[sid]
-            return net.reply(200, json={"ok": True})
-
-        for reason, first in (
-            ("blocked", net.reply(429, headers={"Retry-After": "30"})),
-            ("hidden", None),
-            ("not_found", net.reply(404)),
-        ):
-            with self.subTest(reason):
-                self.requests.clear()
-                self.seen = []
-                checks.clear()
-                if first is not None:
-                    self.first_page = {"one": first}
-                    async def route(ctx):
-                        await ctx.fetch("https://aaa.example/p")
-                    plugin = make_plugin("aaa", route, login=login_cookies("sid"))
-                else:
-                    async def route(ctx):
-                        checks.append(ctx.account.name)
-                        if ctx.account.name == "one":
-                            raise Hidden("walled")
-                    plugin = make_plugin("aaa", route, login=login_cookies("sid"))
-                self.routes["https://aaa.example/p"] = page
-                self.assertTrue(self.report(plugin, targets=["aaa:x"]).ok)
-                self.assertEqual(targets(self.home)["aaa:x"].account, "two")
-
-    def test_hidden_lazy_files_are_listed_again_after_a_move(self):
-        from flnd.plugin import File, Post  # noqa: PLC0415 - test-only plugin body
-
-        self.routes["https://aaa.example/a.jpg"] = net.reply(200, content=noise("jpg"))
-        built = make_plugin("aaa", login=login_cookies("sid"))
-
-        async def posts(self, ctx, context):
-            async def lazy_files():
-                if ctx.cookies.get("sid") == "one":
-                    raise Hidden("hidden")
-                return [File(f"{CDN}/a.jpg", name="a.jpg")]
-
-            yield Post("p1", lazy_files)
-            if ctx.account.name == "one":
-                raise Hidden("walled")
-
-        built.posts = types.MethodType(posts, built)
-        self.assertEqual(self.run_engine(built, targets=["aaa:x"]), 1)
-        self.assertEqual(targets(self.home)["aaa:x"].account, "two")
+    def test_the_run_sends_the_cookies_of_the_plugins_file(self):
+        self.refused = False
+        self.assertTrue(self.report(self.plugin, targets=["aaa:x"]).ok)
+        self.assertEqual([request.headers["cookie"] for request in self.requests], ["sid=one"])
+        self.assertEqual([path.name for path in auth.folder().iterdir()], ["aaa.txt"])
 
 
 if __name__ == "__main__":

@@ -16,10 +16,10 @@ import msgspec
 # Both are read at runtime, by `typing.get_type_hints` (the API snapshot, a decoder), so they
 # are real imports. `flnd.errors` is stdlib-only; `flnd.plugin` is the light half of flnd.
 from flnd.errors import Error
-from flnd.plugin import Account, Target
+from flnd.plugin import Target
 
 __all__ = [
-    "BUSY", "NOTHING_NEW", "RESUMING", "Account", "Checked", "Event", "Failed", "Failure",
+    "BUSY", "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure",
     "FileState", "HoldState", "Installed", "Phase", "Planned", "Record", "Report", "Resources",
     "Saved", "Skipped", "State", "Status", "TargetState", "Tracked", "encode", "sink",
 ]
@@ -230,14 +230,13 @@ class HoldState(msgspec.Struct, frozen=True):
     """A wait the run is in: a site asked it to come back later, or a source waits.
 
     Example:
-        >>> hold = HoldState("twt", None, "pages", 42.0, "429 from api.example.com", 3)
+        >>> hold = HoldState("twt", "pages", 42.0, "429 from api.example.com", 3)
         >>> hold.until, hold.count
         (42.0, 3)
     """
 
-    # The source's code, and its account's name (None when it has none).
+    # The source's code.
     plugin: str
-    account: str | None
     # What waits: "pages" for the listing.
     bucket: str
     # When the wait ends, in seconds since the run started (`State.elapsed`'s clock).
@@ -419,8 +418,6 @@ class Tracked(msgspec.Struct, frozen=True):
     complete: dict[str, str] = {}
     # Whether it is a search (`<plugin>?<words>`) rather than one account or post.
     query: bool = False
-    # The account that last worked for it; None before one did.
-    account: str | None = None
     # Download status: "synced", "partial", "failed", "retry", or "new" ("" when unset).
     status: str = ""
     # Pending failed files (not NotFound and not saved since).

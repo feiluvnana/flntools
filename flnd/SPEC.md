@@ -6,11 +6,11 @@ refusal says, and how to script it. The words, once: a **target** is what you as
 that reads one kind of target, a **category** is one part of a target (`reels`), a **post** is one
 item of a site with its **files**, and the **home** is the folder where flnd keeps all of it.
 
-Sections: [Install and first run](#install-and-first-run) · [Targets](#targets) · [Dates](#dates) ·
-[Categories](#categories) · [Folders](#folders) · [Sync](#sync) · [Logins and
-accounts](#logins-and-accounts) · [When it goes wrong](#when-it-goes-wrong) · [Commands and
-flags](#commands-and-flags) · [Config](#config) · [Plugins](#plugins) · [Python](#python) · [Writing
-a plugin](#writing-a-plugin) · [For developers](#for-developers)
+Sections: [Install and first run](#install-and-first-run) · [Targets](#targets) ·
+[Dates](#dates) · [Categories](#categories) · [Folders](#folders) · [Sync](#sync) ·
+[Logins](#logins) · [When it goes wrong](#when-it-goes-wrong) · [Commands and
+flags](#commands-and-flags) · [Config](#config) · [Plugins](#plugins) · [Python](#python) ·
+[Writing a plugin](#writing-a-plugin) · [For developers](#for-developers)
 
 ## Install and first run
 
@@ -39,9 +39,9 @@ zip and tar are read by Python. flnd finds each program on your PATH, never down
 First run:
 
 ```sh
-flnd auth login ins file cookies.txt   # log in to Instagram with a cookie file
+flnd auth login ins cookies.txt        # log in to Instagram with a cookie file
 flnd get ins:example_user         # its own content: posts, reels, stories, ...
-flnd status                       # the last run, its failures, accounts, the disk
+flnd status                       # the last run, its failures, logins, the disk
 ```
 
 Then `flnd get` alone gets what is new for every target you have followed.
@@ -54,8 +54,7 @@ saves something.
 ```text
 .flnd/
   config.toml           settings, optional ([defaults] and [plugins.<code>])
-  metadata/flnd.db      files, targets, runs, failures, accounts (SQLite)
-  metadata/secret.db    the vault: logins and cookies, sealed under a key outside the home
+  metadata/flnd.db      files, targets, runs, failures (SQLite)
   media/<code>/<value>/<folder>/...     the downloaded files of each target
   log/<time>_get.jsonl  the run journal; log/crash-<time>.txt a bug's traceback
 ```
@@ -632,54 +631,53 @@ the process quits); the third quits at once, exit 130.
 Two runs may share a home: a part is its own lock, and a file another run is saving is skipped as
 `busy`.
 
-## Logins and accounts
+## Logins
 
-`flnd auth login <plugin> [method] [path]` logs an account in. A method is one of the plugin's own
-(`flnd auth login <plugin>` with none, on a terminal, asks for the cookie file's path, or shows
-a menu for Telegram):
+One login per plugin, kept as a file in the logins folder `~/.config/flnd/logins/`
+(`%APPDATA%\flnd\logins\`), made with mode 0700, beside the user's `config.toml`. It is shared
+by every home and never inside one, so a copied home carries no login.
 
-- `file <path>`: reads a Netscape `cookies.txt` or a JSON cookie export (a path alone means `file`)
-- `qr`, `phone`: Telegram only: a QR code to scan, or your number and the code Telegram sends
+`flnd auth login <plugin> [file]` logs in. For a cookie plugin it takes the path of a Netscape
+`cookies.txt` or a JSON cookie export, left out on a terminal it asks for it. Telegram takes its own
+way instead: `qr` (the default) shows a QR code to scan, `phone` asks for your number and the code
+Telegram sends.
 
-Only the cookies of the plugin's domains are kept, and the login is refused unless one of the
-plugin's login cookies is there. A cookie plugin's login cookies are in [Plugins](#plugins). Off a
-terminal (or with `--json`) leaving the method out is `<code>: how to log in?` with the hint `flnd
-auth login <code> <method>, a method of <list>`.
+- a cookie login keeps only the cookies of the plugin's domains, as Netscape text, in
+  `logins/<code>.txt` (mode 0600, written through a temp file and an atomic replace), and replaces
+  any earlier login. It is refused unless one of the plugin's login cookies is there, and unless
+  one of them is still good (a session cookie always is). A cookie plugin's login cookies are in
+  [Plugins](#plugins).
+- Telegram keeps its session, `api_id` and `api_hash` in `logins/tlg.json` (mode 0600), which is
+  what `ctx.secrets` reads. A cookie's value or a secret is never printed, logged or put in an
+  error: messages name the file, the line or the cookie.
+
+Refusals:
 
 - unknown plugin: `unknown plugin '<code>'`, hint `flnd plugin list shows the plugins`
-- a method the plugin lacks: `<code> logs in by <methods>, not '<method>'`
+- a way the plugin lacks: `<code> logs in by <methods>, not '<method>'`
 - a plugin with no login (`mht`, `web`): `<code> needs no login`
-- `file` without a readable path: `<code>: a file login needs the path of a cookie file`, hint `flnd
-  auth login <code> file <path>`
+- no readable file: `<code>: a file login needs the path of a cookie file`, hint `flnd auth login
+  <code> <file>`; on a pipe or with `--json`, `<code>: which cookie file?`
+- no login cookie: `<code>: no login cookie (<names>) in <file>`, hint `export the cookies from a
+  browser where you are logged in`
+- every login cookie expired: `<code>: the login in <file> has expired`, hint `export a fresh
+  cookie file`
 
-Accounts: each account the site names is kept apart; logging in again as one replaces its login. On
-a terminal the login asks for an optional "Account name" (the site's own name, else `account<n>`);
-off a terminal the offered name is taken. The first account is the plugin's default. A target runs
-as the account that last worked for it, else the first `ok` one.
+Using it:
 
-- `flnd auth list`: every account, its plugin, name, default mark, origin, and status (`ok`, `held 4
-  min`, `expires in 2 days`, `expired`). On a terminal `*` makes the account under the cursor the
-  default, `a` logs one in, `d` logs it out.
-- `flnd auth logout <plugin> [account]`: the account, or the default one. A terminal is asked first.
-- **Switching.** `switch = true` (under `[defaults]`, or one `[plugins.<code>]`) moves a request its
-  account cannot make to the plugin's next account, in `auth list` order: a block, a refused login
-  (the account is marked `expired`), `Hidden`, a first page that is `NotFound`. An account that
-  already ran the request, is expired or is held is skipped. A request never returns to an account
-  it left; after every one it waits or fails as without switching. Each move is a `switch` record in
-  the journal.
-- **Walls.** A page that lands on a login wall the plugin declares waits 30 s, then 2 min, then
-  counts as a refused login.
-- **Expiry.** A run warns when a login cookie has expired or expires within 3 days, and writes back
-  the cookies the site refreshed.
-
-### The vault
-
-Logins are sealed in `metadata/secret.db` (AES-256-GCM, bound to each row). The 32-byte key is
-`~/.config/flnd/key` (`%APPDATA%\flnd\key`), mode 0600, one per user, made at the first login, and
-never inside a home: a key file in a home is refused, so a copied home carries no key. With the key
-gone, reading says `the vault's key is gone` (hint: log in again); rows are kept and open again when
-the key returns, and the run marks the account `expired`. A cookie's value is never printed, logged
-or put in an error: messages name the file, line, browser or cookie name.
+- `flnd auth list`: one row per plugin with a login: plugin, status (`ok`, `expires in 2 days`,
+  `expired`) and its file. A plain table; `--json` one row each.
+- `flnd auth logout <plugin>`: deletes its files. A terminal is asked first.
+- **A run** reads `logins/<code>.txt`, and warns when a login cookie has expired or expires within
+  3 days. When the site refreshes a cookie the file already holds, the run writes it back to the
+  file atomically (mode 0600), so a rotating session stays alive.
+- **Refused.** A 401 or 403 on the plugin's domains, or a login wall the plugin declares (a page
+  that lands on it waits 30 s, then 2 min, then counts as refused), fails that plugin's targets
+  with the hint `export a fresh cookie file, then flnd auth login <code> <file>`. Nothing is
+  marked: the next run tries again.
+- **Holds.** A block holds the plugin, not a login: 30 s, 2 min, 8 min, then the target fails.
+- An old home's `metadata/secret.db` is left alone and ignored; the first run that finds one says
+  `logins are cookie files now: flnd auth login <code> <file>`, once.
 
 ## When it goes wrong
 
@@ -710,7 +708,7 @@ Error
 ├── SiteError               the site answered, but not usefully (.status, .response)
 │   ├── Blocked             rate limited or blocked (.wait seconds, or None)
 │   ├── NotFound            404 or 410: recorded gone
-│   ├── Hidden              it exists, but this account cannot see it
+│   ├── Hidden              it exists, but this login cannot see it
 │   └── Changed             the answer no longer has the expected shape
 ├── NetworkError            DNS, TLS, timeout, reset, a cut transfer
 ├── DiskError      exit 4   no space, no permission, a long name (.path); stops the run
@@ -728,12 +726,12 @@ Any other `Error` exits 1. What the engine does, by cause:
   the file fails
 - 429 (`Blocked`): the host's bucket waits `Retry-After` or the reset (at most 1 h), else 30 s, and
   its pace halves for 20 requests; a third 429 in a row is a block round
-- a block a plugin reads from a page (`Blocked`): the account is held 30 s, then 2 min, then 8 min;
+- a block a plugin reads from a page (`Blocked`): the plugin is held 30 s, then 2 min, then 8 min;
   ten quiet minutes restart the rounds; the fourth round fails the target
 - 404, 410 (`NotFound`): never retried; the file is recorded gone, the target goes on
-- not visible to this account (`Hidden`): the job moves to another account with `switch`, else fails
-- 401, 403 on the plugin's domains (`LoginError`): not retried; `switch` moves on, else the account
-  is marked expired
+- not visible to this login (`Hidden`): the job fails
+- 401, 403 on the plugin's domains (`LoginError`): not retried; the plugin's targets fail with a
+  hint to log in again
 - a login wall (`LoginError`): waits 30 s, then 2 min, then as a 401
 - expired link (403, 410 on a lazy post's file): the post's files are listed again once
 - unreadable answer (`Changed`): never retried; a scrubbed sample is kept in `log/<run>/samples/`
@@ -757,18 +755,19 @@ Messages you will meet:
 - `<home>/flnd.db: locked by another process, for 30s`: wait, or use another `--home`
 - `unexpected <Type>: ...`: a bug: run with `-v` and report it
 
-`classify` gives an error without a hint flnd's: a login error about a target gets `run flnd auth
-login <code>`; a full or quota disk `free some space on that disk, or use another --home`; a
-read-only one `that disk is read-only; use another --home`; a long name `use a shorter --home or
-folder template`; any other exception from a plugin becomes a `PluginError`, `this is a bug; run
-with -v and report it`. A URL in a message loses its user info, query and fragment; secret headers
-become `***`; samples replace values under keys like `token`, `cookie`, `session`, `auth`,
-`password`, `secret`, `key`, `sig` with `...` and never keep a login's answer.
+`classify` gives an error without a hint flnd's: a login error about a target gets `export a fresh
+cookie file, then flnd auth login <code> <file>`; a full or quota disk `free some space on that
+disk, or use another --home`; a read-only one `that disk is read-only; use another --home`; a long
+name `use a shorter --home or folder template`; any other exception from a plugin becomes a
+`PluginError`, `this is a bug; run with -v and report it`. A URL in a message loses its user
+info, query and fragment; secret headers become `***`; samples replace values under keys like
+`token`, `cookie`, `session`, `auth`, `password`, `secret`, `key`, `sig` with `...` and never keep a
+login's answer.
 
 ### check and repair
 
 `flnd status` shows the last run that downloaded (its command, times, saves, failures grouped by
-target: 10 shown, then "and N more"), the accounts that are held, expired or expire within a week,
+target: 10 shown, then "and N more"), the logins that are expired or expire within 3 days,
 and the disk against the history. `check` compares the rows with the disk:
 
 - **missing**: a row's file is gone. A repair removes the row; `flnd get <target> --again` then
@@ -780,7 +779,7 @@ Never unknown: parts, hidden files, symlinks, hard links of known files, sidecar
 folders, and files renamed into place in the last minute. On a terminal `flnd status` asks `Repair 2
 rows? (y/N)`; a yes is `fl.check(fix=True)`. It never deletes, moves or downloads a file. Failure
 kinds: `network blocked site changed login disk tool bug usage gone error`. A home of an older
-version migrates on first open, after copying `metadata/flnd.v1.db`.
+version migrates on first open, after copying `metadata/flnd.v1.db` (or `flnd.v2.db`).
 
 ## Commands and flags
 
@@ -823,8 +822,7 @@ cursors, heads, gaps). An unknown target is a usage error. `--media` (default of
 their recorded files, sidecars, links, extracted folders and the folders left empty; files no row
 names are never deleted. A terminal is asked first.
 
-**`flnd auth list | login <plugin> [method] [path] | logout <plugin> [account]`**: see [Logins and
-accounts](#logins-and-accounts).
+**`flnd auth list | login <plugin> [file] | logout <plugin>`**: see [Logins](#logins).
 
 **`flnd plugin list`, `flnd plugin install <path>`, `flnd plugin uninstall <code>`**: `list` shows
 built-in, installed and disabled plugins (kind, API, domains, targets using it, a disabled one's
@@ -832,11 +830,11 @@ reason). `install` checks a `.py` file or a package folder with `__init__.py`, c
 plugin folder and records it. It refuses a home or cookie file, a link, a special file, a file with
 other hard links, a built-in's code, and an API this flnd lacks. `uninstall` removes an installed
 plugin (`<code> is built in; it can't be uninstalled`, `no plugin named <code> is installed`); its
-accounts and targets stay. Plugins load from `$FLND_PLUGINS`, else `~/.config/flnd/plugins/`, never
+targets stay. Plugins load from `$FLND_PLUGINS`, else `~/.config/flnd/plugins/`, never
 from a home.
 
 **`flnd status`**: see [check and repair](#check-and-repair). `--json` prints one `{"type":
-"Status", "status", "accounts", "disk"}`.
+"Status", "status", "logins", "disk"}`.
 
 **`flnd config`** lists each key, value, default and origin (`home`, `user`, `default`). On a
 terminal `e` edits, `a` adds a key, `d` resets one; comments in the file stay. `--json` prints one
@@ -871,7 +869,6 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it
 | `rate` | text | `"0"` | the run's speed limit (`"20 MB/s"`, `"500 KB/s"`; `"0"` off) |
 | `slowest` | text | `"0"` | cut a transfer under this speed over 30 s and go on |
 | `height` | int | `0` | tallest video wanted in pixels; checked, not yet read by the engine |
-| `switch` | bool | `false` | move a refused request to the plugin's next account |
 | `fresh` | text | `"0"` | in `get`, skip complete categories within this long (`"1d"`, `"0"` off) |
 | `timeout` | text | `"10m"` | abort a stalled download after this (`"10m"`, `"600s"`, `"0"` off) |
 
@@ -879,12 +876,11 @@ ignored (`[sources.<code>]` reads as `[plugins.<code>]`). `flnd config` edits it
 
 | Key | Type | Default | What it does |
 | --- | --- | --- | --- |
-| `pace` | number | the plugin's | seconds between page requests of one account; 0 or more |
+| `pace` | number | the plugin's | seconds between page requests of one bucket; 0 or more |
 | `limits` | table | the plugin's | `"<host>" = n` files at once (n at least 1), merged over its |
 | `proxy` | text | none | `http://`, `https://`, `socks5://` or `socks5h://` with host and port |
 | `stop_after` | int | `5` | saved posts in a row that end a newest-first sync; at least 1 |
 | `browser` | text | none | `"chromium"` or `"chrome"`, for an `ANY` browser plugin; unread |
-| `switch` | bool | `[defaults]`'s | account switching for this plugin |
 | `folder` | text | the plugin's | folder template ([Folders](#folders)) |
 | `filename` | text | the plugin's | file name template |
 
@@ -898,14 +894,12 @@ A plugin's own settings (its `Settings` struct) are keys of its table and reach 
   names up through the proxy; the URL may hold a user and password.
 - `pace` and `limits` win over the plugin's class. A host's cap still adapts under the file's
   number.
-- Gone keys: `[defaults] again`, `exec` and `exec_timeout`, `[vault]`,
-  `scroll` (unknown now); `dedupe = "link"` reads as `true`, `"off"` as `false`, each with a
-  warning.
+- Gone keys: `[defaults] again`, `exec` and `exec_timeout`, `[vault]`, `switch`, `scroll`
+  (unknown now); `dedupe = "link"` reads as `true`, `"off"` as `false`, each with a warning.
 
 ```toml
 [defaults]
 when = "1y"
-switch = true
 
 [plugins.ins]
 pace = 3.0
@@ -924,7 +918,7 @@ code's own declaration; `folder` is under `media/<code>/<value>/`.
 Shared by every cookie login: method `file`, a cookie file's path; the cookies of the
 plugin's domains are kept; a run warns when the login cookie expires within 3 days. Walls and blocks
 are held 30 s, 2 min, 8 min by the engine; the fourth block in a row fails the target. Pace is the
-least seconds between two page requests of one account; each CDN host's files go 8 at once, adapting
+least seconds between two page requests of one bucket; each CDN host's files go 8 at once, adapting
 up to 32.
 
 ### ins (Instagram)
@@ -1152,12 +1146,12 @@ Every call, and the CLI command it matches:
 | `fl.targets.follow(*t)`, `.unfollow(*t)`, `.retry(*t)` | `list[Tracked]` | `f`, `r` in the list |
 | `fl.targets.clean(*t, media=False)` | `list[Tracked]` | `flnd target clean` |
 | `fl.files(target=None, kind=None, since=None)` | `list[Record]` | reads `flnd.db` |
-| `fl.auth` | accounts, `Account` each | `flnd auth list` |
-| `fl.auth.login(plugin, *, method=None, path=None, name=None)` | `Account` | `flnd auth login` |
-| `fl.auth.logout(plugin, name=None)`, `.default(plugin, name)` | `Account` | `flnd auth logout` |
+| `fl.auth` | logins, `LoggedIn` each | `flnd auth list` |
+| `fl.auth.login(plugin, *, method=None, path=None)` | `LoggedIn` | `flnd auth login` |
+| `fl.auth.logout(plugin)` | `LoggedIn` | `flnd auth logout` |
 | `fl.plugins`, `.install(path)`, `.uninstall(code)` | `Installed` | `flnd plugin ...` |
 | `fl.add(PluginClass)` | | a plugin for this `Flnd` alone |
-| `async with fl.plugin(code, account=None) as ctx` | the plugin's `Ctx` | a script's own loop |
+| `async with fl.plugin(code) as ctx` | the plugin's `Ctx` | a script's own loop |
 | `fl.status` | `Status` or None | `flnd status` |
 | `fl.check(*, fix=False)` | `Checked` | `flnd status` repair |
 | `fl.config` (dotted names), `.where(k)`, `.default(k)`, `.set(k, v)`, `.unset(k)` | | `config` |
@@ -1289,7 +1283,7 @@ with flnd.open(other) as fl:
             assert str(error) == said
 ```
 
-### Accounts and settings
+### Logins and settings
 
 ```python
 def write_cookies(filename):
@@ -1299,13 +1293,13 @@ def write_cookies(filename):
     return str(path)
 
 with flnd.open(home) as fl:
-    a1 = fl.auth.login("ins", path=write_cookies("c1.txt"), name="example_user")
-    a2 = fl.auth.login("ins", path=write_cookies("c2.txt"), name="example_creator")
-    assert a1.is_default and not a2.is_default
-    fl.auth.default("ins", "example_creator")
-    assert [a.name for a in fl.auth if a.plugin == "ins" and a.is_default] == ["example_creator"]
-    fl.config.set("plugins.ins.switch", True)
-    assert fl.config["plugins.ins.switch"] is True
+    first = fl.auth.login("ins", path=write_cookies("c1.txt"))
+    again = fl.auth.login("ins", path=write_cookies("c2.txt"))
+    assert (first.plugin, again.file) == ("ins", first.file)
+    assert [row.plugin for row in fl.auth] == ["ins"]
+    fl.auth.logout("ins")
+    fl.config.set("plugins.ins.pace", 3.0)
+    assert fl.config["plugins.ins.pace"] == 3.0
 ```
 
 `fl.auth.login("ins", method="file", path="cookies.txt")` reads a cookie file the same
@@ -1438,7 +1432,7 @@ Rules for changing the code are in `AGENTS.md`. The shape:
 
 ```text
 flnkit/   standalone toolkit, imports nothing of flnd: net browser files html dig text clock
-          db cookies vault media stream errors
+          db cookies media stream errors
 src/      the package flnd
   _library.py cli.py errors.py plugin.py testing.py
   engine/  run meter jobs crawl save resolve plugins auth store config
@@ -1449,12 +1443,12 @@ src/      the package flnd
 `tests/test_layers.py` checks the import rules. A run has one asyncio loop on its own thread; plugin
 code is async; only `engine/jobs.py` retries, sleeps and picks threads; a commit is one per post.
 
-**The home's files.** `flnd.db` is SQLite in WAL mode, schema version 2: `files` (a row per file,
+**The home's files.** `flnd.db` is SQLite in WAL mode, schema version 3: `files` (a row per file,
 key `<code>:<key>`, with target, post, category, path, size, date, hash, state `saved`, `gone` or
-`link`), `posts` (a view of `files`), `targets` (follow, categories, cursors, heads, gaps, `seen`,
-`account`), `runs`, `failures` (class, message, hint, attempts, redacted URL), `state` (a plugin's
-own values) and `accounts` (never a secret). One transaction per post; a file's row is written after
-the file, so a crash leaves at worst a file without a row. `secret.db` holds the vault. A file
+`link`), `posts` (a view of `files`), `targets` (follow, categories, cursors, heads, gaps, `seen`),
+`runs`, `failures` (class, message, hint, attempts, redacted URL), `state` (a plugin's
+own values). One transaction per post; a file's row is written after
+the file, so a crash leaves at worst a file without a row. A file
 listed in two categories of a target is saved once, and the second is a link row `<key>@<category>`.
 Read it with any SQLite tool.
 
