@@ -924,7 +924,7 @@ class Browser(enum.Enum):
 
     # HTTP only: no tab.
     NONE = "none"
-    # flnd's Chromium, or the user's Chrome; Chromium by default.
+    # Google Chrome, else Playwright's Chromium.
     ANY = "any"
 
 
