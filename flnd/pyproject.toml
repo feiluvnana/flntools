@@ -42,8 +42,6 @@ flnd = ["py.typed"]
 # The tools `make` runs: ruff for `make lint`; pyte draws a terminal in the screen's tests;
 # psutil reads process memory for `tests/bench/mem.py`.
 dev = ["ruff>=0.14", "pyte>=0.8", "psutil>=5.9"]
-# Only `make dist` needs PyInstaller; its recipe adds this group with `uv run --group dist`.
-dist = ["pyinstaller>=6"]
 
 [tool.uv]
 default-groups = ["dev"]

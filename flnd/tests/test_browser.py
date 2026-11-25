@@ -1,4 +1,4 @@
-"""`flnkit.browser`: `launch`, the Chromium offer, `Page`, `Capture`, scrolling.
+"""`flnkit.browser`: `launch`, the missing-browser error, `Page`, `Capture`, scrolling.
 
 Every coroutine runs on one loop on a thread of its own for the module (`run`). Profile and
 Chromium tests
@@ -7,7 +7,6 @@ on pages served from memory (`fulfill`), or from 127.0.0.1 for `Page.fetch`, and
 """
 
 import asyncio
-import contextlib
 import importlib
 import json
 import os
@@ -137,11 +136,8 @@ class BrowserCase(unittest.TestCase):
         self.enterContext(ui.scope(dest=self.dest, color=False, width=300))
         previous = ui.level
         self.addCleanup(setattr, ui, "level", previous)
-        # The bundled build whether or not Chrome is installed, with no earlier test's answer to
-        # the Chromium download remembered.
+        # Whether or not Chrome is installed on this machine, no test finds it unless it says so.
         self.enterContext(mock.patch.object(_browser, "_chrome_installed", return_value=False))
-        self.enterContext(mock.patch.object(_browser, "_chromium_declined", False))
-        self.enterContext(mock.patch.object(_browser, "_chromium_failed", None))
 
     def lines(self) -> list[str]:
         return self.dest.getvalue().splitlines()
@@ -203,63 +199,26 @@ class MissingPlaywrightTest(BrowserCase):
 
 
 
-class FakeInstaller:
-    """A finished `subprocess.Popen` of Playwright's installer, with its output and exit code."""
-
-    def __init__(self, output: str, returncode: int):
-        self.stdout, self.returncode = StringIO(output), returncode
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc_info):
-        return None
-
-
-def drawn(screen, label, *, total=None):
-    """A `Screen.progress` as flnd's (`flnd.engine.ctx`): a line with the label, and no bar."""
-    ui.info("{label}", label=label)
-    return contextlib.nullcontext(_browser._Bar())
-
-
 class ChromeOnlyTest(BrowserCase):
-    """Which browser launch starts, and the Chromium download offered without Chrome."""
+    """Which browser launch starts, and what a missing browser raises."""
 
     def setUp(self):
         super().setUp()
         folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        # Where Playwright would keep its Chromium: nothing there until the fake installer runs.
+        # Where Playwright keeps its Chromium: nothing there unless a test puts it.
         self.chromium = folder / "chromium-1" / "chrome"
         self.playwright = FakePlaywright(str(self.chromium))
-        self.installs, self.launched = [], []
+        self.launched = []
 
         async def open_context(playwright, channel, launch_options, context_options):
             self.launched.append(channel)
             return FakeContext(), [playwright.stop]
 
         self.patch_launch(starts(self.playwright), open_context)
-        self.enterContext(mock.patch.object(_browser.subprocess, "Popen", self.popen))
-        # The rows show as flnd's screen shows them (`flnd.engine.ctx`).
-        self.enterContext(mock.patch.object(_browser.Screen, "progress", drawn))
-        self.enterContext(mock.patch("playwright._impl._driver.compute_driver_executable",
-                                     return_value=("/driver/node", "/driver/cli.js")))
-
-    def popen(self, argv, **options):
-        """Playwright's installer: it prints progress lines, then the browser is there."""
-        self.installs.append((argv, options))
-        self.place()
-        return FakeInstaller("|■■■■      |  40% of 167.3 MiB\n"
-                             "|■■■■■■■■■■| 100% of 167.3 MiB\n"
-                             "Chromium downloaded\n", 0)
 
     def place(self):
         self.chromium.parent.mkdir(parents=True)
         self.chromium.write_text("")
-
-    def answer(self, *keys):
-        answers = iter(keys)
-        self.enterContext(mock.patch.object(_browser.Screen, "confirm",
-                                            side_effect=lambda *a: next(answers) == "y"))
 
     def launch_and_close(self):
         async def go():
@@ -267,85 +226,20 @@ class ChromeOnlyTest(BrowserCase):
 
         run(go())
 
-    def test_chrome_or_a_downloaded_chromium_is_used_without_asking(self):
-        self.answer()  # any question would read a key, and there is none
+    def test_chrome_or_a_downloaded_chromium_is_used(self):
         with mock.patch.object(_browser, "_chrome_installed", return_value=True):
             self.launch_and_close()
         self.place()
         self.launch_and_close()
-        self.assertEqual((self.launched, self.installs), (["chrome", "chromium"], []))
+        self.assertEqual(self.launched, ["chrome", "chromium"])
 
-    def test_yes_downloads_chromium_then_launches_it(self):
-        self.answer("y")
-        self.launch_and_close()
-        self.assertEqual(self.launched, ["chromium"])
-        (argv, options), = self.installs
-        self.assertEqual(argv, ["/driver/node", "/driver/cli.js", "install", "--no-shell",
-                                "chromium"])
-        self.assertEqual(options["env"]["PW_LANG_NAME"], "python")
-        # Into Playwright's user cache: the installer's folder is left to Playwright.
-        added = {key for key in options["env"] if key not in os.environ}
-        self.assertNotIn("PLAYWRIGHT_BROWSERS_PATH", added)
-        self.assertIn("Downloading Chromium", self.dest.getvalue())
-        # A later run finds it and doesn't ask: there is no key left to answer with.
-        self.launch_and_close()
-        self.assertEqual((self.launched, len(self.installs)), (["chromium", "chromium"], 1))
-
-    def test_no_or_no_terminal_raises_naming_chrome_and_asks_once(self):
-        with mock.patch.object(_browser.Screen, "confirm", side_effect=[False]):
-            for _ in range(2):
-                with self.assertRaises(ToolError) as caught:
-                    run(_browser.launch())
-                self.assertEqual(str(caught.exception), _browser.NEEDS_CHROME)
-                self.assertEqual(caught.exception.hint, _browser.INSTALL_CHROME)
-        self.assertEqual(self.playwright.stops, 2)
-        self.dest.seek(0)
-        self.dest.truncate()
-        with mock.patch.object(_browser, "_chromium_declined", False), \
-                mock.patch.object(sys.stdin, "isatty", return_value=False), \
-                self.assertRaisesRegex(ToolError, "^Google Chrome is needed: install it"):
+    def test_a_missing_browser_raises_naming_chrome_and_its_install(self):
+        with self.assertRaises(ToolError) as caught:
             run(_browser.launch())
-        self.assertNotIn(_browser.CHROMIUM_QUESTION, self.dest.getvalue())
-        self.assertEqual((self.launched, self.installs), ([], []))
-
-    def test_a_failed_download_is_raised_and_raised_again_without_asking(self):
-        self.answer("y")
-        failed = FakeInstaller("Error: ENOSPC\n", 1)
-        raised = []
-        with mock.patch.object(_browser.subprocess, "Popen", return_value=failed) as popen:
-            for _ in range(2):
-                with self.assertRaisesRegex(ToolError, "exited with 1: Error: ENOSPC") as caught:
-                    run(_browser.launch())
-                raised.append(caught.exception)
-        self.assertIs(raised[0], raised[1])
-        self.assertEqual((popen.call_count, self.launched), (1, []))
-        self.assertIn("Downloading Chromium", self.dest.getvalue())
-
-    def test_two_threads_at_once_ask_once_and_download_once(self):
-        asked, installs, channels = [], [], []
-        start = threading.Barrier(2)
-
-        def confirm(*args):
-            asked.append(args)
-            time.sleep(0.05)  # time for the other thread to reach the question, were it free to
-            return True
-
-        def install(screen):
-            installs.append(1)
-            self.place()
-
-        def open_one():
-            start.wait()
-            channels.append(_browser._channel(self.playwright, _browser.Screen()))
-
-        with mock.patch.object(_browser.Screen, "confirm", confirm), \
-                mock.patch.object(_browser, "_install_chromium", install):
-            threads = [threading.Thread(target=open_one) for _ in range(2)]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join()
-        self.assertEqual((len(asked), len(installs), channels), (1, 1, ["chromium", "chromium"]))
+        self.assertEqual(str(caught.exception), "Google Chrome is needed")
+        self.assertEqual(caught.exception.hint,
+                         "install Chrome, or run: uv run playwright install chromium")
+        self.assertEqual((self.playwright.stops, self.launched), (1, []))
 
     def test_chrome_is_looked_for_where_playwright_looks(self):
         found = []
@@ -1453,10 +1347,8 @@ class StealthHardeningTest(BrowserCase):
             from types import SimpleNamespace
 
             pw = SimpleNamespace(chromium=SimpleNamespace(executable_path="chromium"))
-            await _browser._launch(pw, headless=True, stealth=True,
-                                   screen=_browser.Screen())
-            await _browser._launch(pw, headless=True, stealth=False,
-                                   screen=_browser.Screen())
+            await _browser._launch(pw, headless=True, stealth=True)
+            await _browser._launch(pw, headless=True, stealth=False)
 
         with mock.patch.object(_browser, "_channel", return_value=None), \
              mock.patch.object(_browser, "_open_context", side_effect=fake_open), \

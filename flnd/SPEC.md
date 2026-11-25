@@ -27,8 +27,9 @@ Windows, `winget install ezwinports.make`, or type the `uv` command each target 
 
 Outside programs, each needed only for some files:
 
-- Google Chrome, for the sites that open a browser. When missing: asks once to download Chromium
-  (about 200 MB) on a terminal; off a terminal the run stops with "Google Chrome is needed".
+- Google Chrome, for the sites that open a browser. When missing (and no Playwright Chromium
+  either): the run stops with "Google Chrome is needed"; the hint says to install Chrome, or run
+  `uv run playwright install chromium`.
 - ffmpeg, for joining a video with its sound track. When missing: a `ToolError`; the file fails and
   is retried on later runs.
 - 7-Zip (`7zz` or `7z`), for 7z, RAR and encrypted zip. When missing: a `ToolError`; the archive is
@@ -1159,9 +1160,9 @@ Read it with any SQLite tool.
 | `make check` | ruff (`make lint` alone), then every test; green at every commit |
 | `make test ARGS="-k fetch"` | the tests, or some (`FLND_TEST_NO_PROFILES=1`) |
 | `make bench` | offline benchmarks; `ARGS=--gate` fails on a 15% slowdown, `--record` rebases |
-| `make dist`, `setup`, `clean` | a binary; sync `.venv`; remove builds |
+| `make setup`, `clean` | sync `.venv`; remove builds |
 | `make try ARGS="ins:example_user"` | list, live, what a get would save (scratch home `.try`) |
-| `make ext`, `make live`, `make cdn-real` | hand checks, never part of `check` |
+| `make ext`, `make live` | hand checks, never part of `check` |
 
 **Benchmarks** (`tests/bench/`, groups `startup ui net disk db walk cpu e2e browser`) run offline
 against a loopback server and scratch folders; `make check` runs each in smoke mode only. Run them

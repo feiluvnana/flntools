@@ -15,10 +15,8 @@ import math
 import os
 import random
 import re
-import subprocess
 import sys
 import tempfile
-import threading
 import weakref
 from collections import Counter, deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
@@ -39,28 +37,11 @@ NO_PROFILES = "FLND_TEST_NO_PROFILES"
 
 
 class Screen:
-    """What the browser asks of a person and shows them: a yes-or-no question and a progress row.
+    """What the browser shows a person while it waits: a progress row.
 
-    This default asks on a plain terminal, says no without one, and draws no rows. flnd passes
-    its own (`flnd.engine.ctx`), so its questions and rows look like the rest of its screen.
+    This default draws no rows. flnd passes its own (`flnd.engine.ctx`), so its rows look like
+    the rest of its screen.
     """
-
-    def confirm(self, question: str) -> bool:
-        """Ask `question`; True only for a yes. No terminal is a no, at once.
-
-        Args:
-            question: the yes-or-no question, shown with a `[y/N]` suffix.
-
-        Returns:
-            True when the answer is `y` or `yes` in any case, with spaces around it ignored.
-            False for anything else, and for no terminal.
-        """
-        if not (sys.stdin.isatty() and sys.stdout.isatty()):
-            return False
-        try:
-            return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
-        except EOFError:
-            return False
 
     def progress(self, label: str, *, total: float | None = None) -> Any:
         """A row for `label`, as a context manager giving a bar with `count` and `fail()`."""
@@ -452,13 +433,9 @@ CHROME_PATHS = {
 }
 # The environment variables whose folders Chrome may be installed under on Windows; each is tried.
 WINDOWS_ROOTS = ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)")
-CHROMIUM_QUESTION = "Google Chrome isn't installed. Download Chromium instead (about 200 MB)?"
-NEEDS_CHROME = "Google Chrome is needed: install it from https://www.google.com/chrome/"
+NEEDS_CHROME = "Google Chrome is needed"
 # What a missing browser's `ToolError` says to do.
-INSTALL_CHROME = "install Google Chrome, or run in a terminal and accept Chromium's download"
-# Playwright's installer prints a line such as "|■■■■      |  20% of 167.3 MiB" every few
-# percent when its output isn't a terminal; the number is the progress row's.
-INSTALL_PERCENT = re.compile(r"(\d+)% of")
+INSTALL_CHROME = "install Chrome, or run: uv run playwright install chromium"
 # What a feed takes as its match: a substring of the URL, a regex searched in it, or a predicate.
 Match = Union[str, "re.Pattern[str]", Callable[[str], bool]]
 # What a feed takes as its cursor reader: given one parsed body, `(more, cursor)` when the body is
@@ -466,13 +443,6 @@ Match = Union[str, "re.Pattern[str]", Callable[[str], bool]]
 # one), or None when the body says nothing about paging.
 Reader = Callable[[Any], "tuple[bool, str | None] | None"]
 
-# Set when the Chromium download was declined (or couldn't be asked), so it isn't asked again.
-_chromium_declined = False
-# The error the Chromium download failed with, re-raised without asking for the rest of the process.
-_chromium_failed: ToolError | None = None
-# The check, the question and the download are one step: the launch runs them on a worker thread
-# (the question waits for a person), and a second run in the process mustn't ask at the same time.
-_chromium_offer = threading.Lock()
 # The headed user agent of each browser executable, by its path: measuring it costs a launch.
 _HEADFUL_UA: dict[str, str] = {}
 # The client-hint data of each browser executable (its brands and platform), the same way.
@@ -537,8 +507,7 @@ class Visit:
 # Launching
 # ---------------------------------------------------------------------------------------------
 
-async def launch(*, headless: bool = False, stealth: bool = True, screen: Screen | None = None,
-                 assets: bool = True) -> Browser:
+async def launch(*, headless: bool = False, stealth: bool = True, assets: bool = True) -> Browser:
     """Launch Chrome, or Playwright's Chromium, and return it as a `Browser`. Runs on the loop.
 
         chrome = await launch()
@@ -547,21 +516,18 @@ async def launch(*, headless: bool = False, stealth: bool = True, screen: Screen
     Args:
         headless: hide the window. A visible one (the default) lets a person solve a captcha.
         stealth: hide `navigator.webdriver`, which sites read to tell automation apart.
-        screen: where the offer to download Chromium is asked and its progress shown; None
-            for the plain `Screen`.
         assets: load images, media and fonts; False disables image loading natively.
 
     Returns:
         The browser, which `Browser.close` closes.
 
     Raises:
-        ToolError: no Chrome, and Chromium's download was declined or failed.
+        ToolError: neither Google Chrome nor Playwright's Chromium is installed.
         ImportError: Playwright isn't installed.
     """
     playwright = await _start_playwright()
     try:
-        return await _launch(playwright, headless=headless, stealth=stealth,
-                             screen=screen or Screen(), assets=assets)
+        return await _launch(playwright, headless=headless, stealth=stealth, assets=assets)
     # Any exception, Ctrl-C included, stops Playwright's driver before it goes on up.
     except BaseException:
         await playwright.stop()
@@ -577,7 +543,7 @@ async def _start_playwright() -> Playwright:
     return await async_playwright().start()
 
 
-async def _launch(playwright: Playwright, *, headless: bool, stealth: bool, screen: Screen,
+async def _launch(playwright: Playwright, *, headless: bool, stealth: bool,
                   assets: bool = True) -> Browser:
     """Launch a browser for `launch`."""
     launch_options: dict[str, Any] = {"headless": headless, "args": list(LAUNCH_ARGS)}
@@ -587,8 +553,7 @@ async def _launch(playwright: Playwright, *, headless: bool, stealth: bool, scre
         launch_options["args"].append("--blink-settings=imagesEnabled=false")
     width, height = DEFAULT_VIEWPORT
     context_options: dict[str, Any] = {"viewport": {"width": width, "height": height}}
-    # It may ask a person and download Chromium: off the loop, so nothing else stalls.
-    channel = await asyncio.to_thread(_channel, playwright, screen)
+    channel = _channel(playwright)
     context_options["screen"] = dict(SCREEN)
     context, close_steps = await _open_context(
         playwright, channel, launch_options, context_options
@@ -616,34 +581,14 @@ def hidden_script() -> str:
     return HIDDEN_SCRIPT % {"toolbar": TOOLBAR, "named": json.dumps(SOFTWARE_GL[key])}
 
 
-def _channel(playwright: Playwright, screen: Screen) -> str:
+def _channel(playwright: Playwright) -> str:
     """The channel `launch` uses: `chrome` when Google Chrome is installed, `chromium` otherwise."""
-    global _chromium_declined, _chromium_failed
     if _chrome_installed():
         return "chrome"
-    # Where Playwright keeps the Chromium it downloads, in the user cache: found here, it was
-    # downloaded on an earlier run, so it is used without asking again.
-    chromium = Path(playwright.chromium.executable_path)
-    if chromium.is_file():
+    # Playwright's own Chromium, in the user cache, from `playwright install chromium`.
+    if Path(playwright.chromium.executable_path).is_file():
         return "chromium"
-    with _chromium_offer:
-        # Looked at again under the lock: a thread that waited here finds what the first one did.
-        if chromium.is_file():
-            return "chromium"
-        if _chromium_failed is not None:
-            raise _chromium_failed
-        # Without a terminal `confirm` says no at once. A no is kept for the process, so it is
-        # asked only once.
-        if _chromium_declined or not screen.confirm(CHROMIUM_QUESTION):
-            _chromium_declined = True
-            raise ToolError(NEEDS_CHROME, hint=INSTALL_CHROME)
-        try:
-            _install_chromium(screen)
-        except ToolError as error:
-            # A failed download (no space, no network) would likely fail again after asking again.
-            _chromium_failed = error
-            raise
-    return "chromium"
+    raise ToolError(NEEDS_CHROME, hint=INSTALL_CHROME)
 
 
 def _chrome_executable() -> Path | None:
@@ -663,29 +608,6 @@ def _chrome_executable() -> Path | None:
 def _chrome_installed() -> bool:
     """Whether Google Chrome is where Playwright's `chrome` channel looks for it."""
     return _chrome_executable() is not None
-
-
-def _install_chromium(screen: Screen) -> None:
-    """Download Chromium with Playwright's installer under a progress row into the user cache."""
-    # A bundled flnd has no `python -m playwright`, so this runs the driver Playwright ships.
-    from playwright._impl._driver import compute_driver_executable, get_driver_env
-
-    node, cli_js = compute_driver_executable()
-    lines: list[str] = []
-    with screen.progress("Downloading Chromium", total=100) as bar:
-        # The installer's output is read here, not shown: its own bars would tear the live area.
-        cmd = [node, cli_js, "install", "--no-shell", "chromium"]
-        with subprocess.Popen(cmd, env=get_driver_env(), stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                              errors="replace") as installer:
-            for line in installer.stdout or ():
-                lines.append(line.strip())
-                if found := INSTALL_PERCENT.search(line):
-                    bar.count = int(found[1])
-        if installer.returncode:
-            last = next((line for line in reversed(lines) if line), "no output")
-            raise ToolError(f"Chromium was not downloaded: Playwright's installer exited with "
-                            f"{installer.returncode}: {last}", hint=INSTALL_CHROME)
 
 
 def _headless_shell_installed(playwright: Playwright) -> bool:
@@ -1772,7 +1694,7 @@ class RunBrowser:
         stealth: hide `navigator.webdriver` (see `launch`).
         headless: hide a window when a tab is asked for without saying (see `tab`); a visible
             one (the default) lets a person solve a captcha.
-        screen: what asks a person and shows them progress (see `Screen`); None for the plain
+        screen: what shows a person progress (see `Screen`); None for the plain
             one.
     """
 
@@ -1849,7 +1771,7 @@ class RunBrowser:
                               if not any(_overlap(seen, jar) for seen in window[0])), None)
                 if found is None:
                     browser = await launch(stealth=self._stealth, headless=wanted,
-                                           screen=self.screen, assets=assets)
+                                           assets=assets)
                     found = ([], browser, [])
                     self._logins.append(found)
                 await found[1].add_cookies(jar)
@@ -1900,8 +1822,7 @@ class RunBrowser:
         tabs = [(page, page.raw.url) for page in list(old.pages)
                 if not page.raw.is_closed()]
         await old.close()
-        new = await launch(stealth=self._stealth, headless=headless, screen=self.screen,
-                           assets=assets)
+        new = await launch(stealth=self._stealth, headless=headless, assets=assets)
         await new.add_cookies(jar)
         for page, url in tabs:
             await page.move(new, url)

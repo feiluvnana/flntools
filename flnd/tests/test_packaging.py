@@ -105,16 +105,6 @@ HEAVY = {"flnd.engine._engine", "flnd.engine.ctx", "playwright", "rich", "curl_c
          "msgspec"}
 
 
-class BundleTest(unittest.TestCase):
-    def test_the_bundle_collects_the_modules_flnd_imports_by_name(self):
-        # Plugins and libraries load lazily by name (`importlib.import_module`), which
-        # PyInstaller's import scan can't follow: without this flag, `flnd sources` in the
-        # bundle fails with "No module named 'flnd.plugins.tik'".
-        script = (ROOT / "tests" / "dist.py").read_text(encoding="utf-8")
-        self.assertIn('"--collect-submodules", "flnd"', script)
-        self.assertIn('"--collect-submodules", "flnkit"', script)
-
-
 class LazyImportTest(unittest.TestCase):
     def test_import_flnd_loads_only_its_own_init(self):
         loaded = loaded_after("import flnd")

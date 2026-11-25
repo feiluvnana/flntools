@@ -25,9 +25,6 @@ test-browser: ; $(RUN) python -m unittest tests.test_browser tests.test_hidden $
 lint:     ; $(RUN) ruff check src flnkit tests
 check: lint test
 bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
-# A hand check: throughput from one real CDN host at caps 8, 16, 24 and 32, from URLs kept
-# outside the repo: `make cdn-real ARGS="--urls ~/flnd-cdn.txt"` (SPEC.md#for-developers).
-cdn-real: ; $(RUN) python tests/bench/cdn_real.py $(ARGS)
 # Lists, live, what a get would save, without saving anything, in a scratch home `.try`:
 # `make try ARGS="ins:example_user/reels"`. Log in there first for a site that needs it
 # (`uv run flnd --home .try auth login ins cookies.txt`); `make clean` removes it.
@@ -35,8 +32,6 @@ try:      ; $(RUN) flnd --home .try get --dry $(ARGS)
 # The hand live check on the test accounts (`~/.config/flnd/live.toml`), never part of `check`:
 # `make live ARGS=ins`. Runs each route with `dry=True`, downloading nothing.
 live:     ; $(RUN) python tests/live.py $(ARGS)
-# The one-file binary, from a staged copy of the two packages (tests/dist.py).
-dist:     ; $(RUN) --group dist python tests/dist.py
 clean:    ; $(RUN) python -c \
-	    "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
-.PHONY: setup test lint check cdn-real try live dist clean
+	    "import shutil; [shutil.rmtree(p, True) for p in ('build', '.try')]"
+.PHONY: setup test lint check try live clean

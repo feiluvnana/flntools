@@ -324,7 +324,6 @@ class BrowserTest(CtxCase):
                 self.assertEqual(self.browsers, [])
                 self.call(run, ctx.open(PAGE))
                 [browser] = self.browsers
-                self.assertIsInstance(browser.options.pop("screen"), _browser.Screen)
                 self.assertEqual(browser.options,
                                  {"stealth": stealth, "headless": False, "assets": False})
                 self.assertEqual([cookie["name"] for cookie in browser.added], ["token"])

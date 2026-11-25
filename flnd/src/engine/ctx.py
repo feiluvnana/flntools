@@ -916,10 +916,7 @@ class _Feed:
 # ---------------------------------------------------------------------------------------------
 
 class _Screen(browser.Screen):
-    """The browser's questions, asked as flnd's others are; its rows are a line each."""
-
-    def confirm(self, question: str) -> bool:
-        return forms.confirm(question, default=False)
+    """The browser's progress rows, drawn as flnd's others are: a line each."""
 
     def progress(self, label: str, *, total: float | None = None) -> Any:
         ui.warn("{label}", label=label)

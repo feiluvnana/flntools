@@ -24,8 +24,7 @@ These rules are for anyone who changes flnd: how to check, lay out, name, write 
   `SPEC.md#for-developers`.
 - `make check PY=3.11` runs on the oldest Python that `requires-python` allows. Run it before
   a release.
-- `make dist` builds a one-file binary.
-- `make clean` removes `build`, `dist` and `.try`.
+- `make clean` removes `build` and `.try`.
 - **On Windows**, install make with `winget install ezwinports.make`, or use the one that comes
   with Git for Windows. Each Makefile recipe is one `uv` command you can also type yourself.
 
