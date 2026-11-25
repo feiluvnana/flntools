@@ -43,7 +43,7 @@ class Screen:
     the rest of its screen.
     """
 
-    def progress(self, label: str, *, total: float | None = None) -> Any:
+    def progress(self, label: str) -> Any:
         """A row for `label`, as a context manager giving a bar with `count` and `fail()`."""
         return contextlib.nullcontext(_Bar())
 

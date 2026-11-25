@@ -1082,8 +1082,6 @@ class Client:
                 await sink.add(chunk)
                 meter.add(len(chunk))
                 at += len(chunk)
-                if meter.pace is not None:
-                    await meter.pace(len(chunk))
                 if end is not None and at >= end:
                     break
         finally:
@@ -1139,9 +1137,6 @@ class Meter:
         # Runs one blocking write of the part, `await write(call, *args)`, on the caller's
         # thread for the part's disk; None uses this module's one writer thread.
         self.write = write
-        # Waited for after each chunk with its size, `await pace(n)`: the caller's speed
-        # limit; None limits nothing.
-        self.pace: Callable[[int], Awaitable[None]] | None = None
 
     def start(self, total: int | None, at: int) -> None:
         """A try begins: set the sink's total, and move it to where the try starts.

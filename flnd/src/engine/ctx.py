@@ -918,9 +918,9 @@ class _Feed:
 class _Screen(browser.Screen):
     """The browser's progress rows, drawn as flnd's others are: a line each."""
 
-    def progress(self, label: str, *, total: float | None = None) -> Any:
+    def progress(self, label: str) -> Any:
         ui.warn("{label}", label=label)
-        return super().progress(label, total=total)
+        return super().progress(label)
 
 
 # The side tabs of the block running in this context (`Ctx.aside`): a lazy post's files, a
