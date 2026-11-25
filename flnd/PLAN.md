@@ -478,4 +478,15 @@ Rough size, an estimate to check against at the end:
 
 ## Numbers
 
-(Filled in by step 0 and by each step's commit.)
+Step 0 (1923c7a, 2026-11-25, machine not quiet):
+
+| Measure | Value |
+| --- | --- |
+| Code / tests / SPEC lines | 42,317 / 36,412 / 1,504 |
+| `make check` | 67 s, 1,486 tests (20 skipped) |
+| `flnd --help` (warm, through `uv run`) | 0.04 s |
+| Gates not met | `db.point_read` 2.39 us (2.2), `e2e.sync_100_targets` 3.93 s (3.84), |
+| | `browser.scroll_default` 21.4 s (16), `browser.warm_4` 0.115 s (0.091) |
+
+The other gated numbers met their targets. The full run is kept outside the repo; later steps
+compare against a fresh run made back to back, not against these.
