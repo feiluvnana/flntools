@@ -1,4 +1,4 @@
-"""flnd.plugin (plugin API 2) on its own: the checks a plugin's class gets when it is made, routes
+"""flnd.plugin on its own: the checks a pattern, a route and a category get, routes
 and categories, `resolve`, walls, the types a plugin yields and reads, hooks, logins, `Ctx`'s
 members and the helpers. Made-up plugins on example.com; no network.
 """
@@ -22,7 +22,6 @@ from flnd.engine.crawl import Options
 from flnd.engine.events import Planned
 from flnd.errors import Blocked
 from flnd.plugin import (
-    API,
     Browser,
     Ctx,
     File,
@@ -72,7 +71,7 @@ async def posts(self, ctx, profile):
 
 def plugin(**attrs):
     """A plugin class made from `attrs` over a valid one, so each row changes one thing."""
-    body = {"code": "exm", "name": "Example", "api": API, "domains": ("example.com",),
+    body = {"code": "exm", "name": "Example", "domains": ("example.com",),
             "user": route("exm:{user}", "example.com/{user}")(listing)}
     body.update(attrs)
     return type("Example", (Plugin,), {key: value for key, value in body.items()
@@ -82,7 +81,6 @@ def plugin(**attrs):
 class Example(Plugin):
     code = "exm"
     name = "Example"
-    api = API
     domains = ("example.com",)
     login = cookies("sessionid", url="https://www.example.com/accounts/login/")
     browser = Browser.ANY
@@ -132,140 +130,13 @@ def run(coroutine):
 
 
 class DeclarationTest(unittest.TestCase):
-    """A mistake raises when the class is made, naming the attribute and the fix."""
-
-    def test_each_mistake_is_named(self):
-        class NoStart(Login):
-            methods = ("qr",)
-
-        class SyncCheck(Login):
-            methods = ("qr",)
-
-            async def start(self, ctx, method): ...
-
-            def check(self, ctx):
-                return True
-
-        class Undescribed(Settings):
-            """No attributes here."""
-
-            height: int = 1080
-
-        class Undefaulted(Settings):
-            """Attributes:
-                height: the tallest video.
-            """
-
-            height: int
-
-        def sync_listing(self, ctx, user):
-            yield Post("p1")
-
-        async def two(self, ctx, user):
-            yield Post(user)
-
-        async def sign(self, request):
-            return request
-
-        def resolve(cls, text):
-            return None
-
-        def returns(method, category):
-            def make():
-                made = route("exm:{user}")(method)
-                made.category(category)
-                return plugin(user=made)
-
-            return make
-
-        rows = [
-            ("code", lambda: plugin(code=None), r"Example\.code: missing"),
-            ("code", lambda: plugin(code="X"), r"Example\.code: 'X'"),
-            ("name", lambda: plugin(name=None), r"exm\.name: set name"),
-            ("api", lambda: plugin(api=None), r"exm\.api: missing; set api = 2"),
-            ("api", lambda: plugin(api=1), r"written for plugin API 1"),
-            ("api", lambda: plugin(api=3), r"needs plugin API 3"),
-            ("api", lambda: plugin(api="2"), r"exm\.api: '2'"),
-            ("domains", lambda: plugin(domains="example.com"), r"exm\.domains"),
-            ("domains", lambda: plugin(domains=("example.com/x",)), r"exm\.domains"),
-            ("domains", lambda: plugin(domains=("https:example.com",)),
-             r"exm\.domains: 'https:example\.com'.*lowercase hosts, without a scheme"),
-            ("domains", lambda: plugin(domains=("Example.com",)), r"exm\.domains: 'Example"),
-            ("domains", lambda: plugin(domains=("example.com:8080",)), r"without .* a port"),
-            ("route name", lambda: plugin(user=None, date=route("exm:{user}")(listing)),
-             r"exm\.date: a route or category named like the date hook replaces it; rename"),
-            ("route name", lambda: plugin(user=None, login=route("exm:{user}")(listing)),
-             r"exm\.login: .* named like the login declaration replaces it; rename"),
-            ("route", lambda: plugin(user=None), r"exm: no route"),
-            ("login", lambda: plugin(login="sessionid"), r"exm\.login: set login"),
-            ("login", lambda: plugin(login=Login()), r"exm\.login\.methods: set the ways"),
-            ("login", lambda: plugin(login=NoStart()), r"exm\.login\.start: implement"),
-            ("login", lambda: plugin(login=SyncCheck()), r"exm\.login\.check: make it async"),
-            ("pace", lambda: plugin(pace=-1), r"exm\.pace"),
-            ("pace", lambda: plugin(pace=True), r"exm\.pace"),
-            ("limits", lambda: plugin(limits={"cdn.example.com": 0}), r"exm\.limits"),
-            ("browser", lambda: plugin(browser="chrome"), r"exm\.browser.*Browser\.ANY"),
-            ("stealth", lambda: plugin(stealth=1), r"exm\.stealth"),
-            ("assets", lambda: plugin(assets=1), r"exm\.assets"),
-            ("hidden", lambda: plugin(hidden=1), r"exm\.hidden"),
-            ("user_agent", lambda: plugin(user_agent=" "), r"exm\.user_agent"),
-            ("walls", lambda: plugin(walls="/login"), r"exm\.walls"),
-            ("walls", lambda: plugin(walls=("login",)), r"exm\.walls"),
-            ("walls", lambda: plugin(walls=("/login?next=1",)), r"exm\.walls"),
-            ("walls", lambda: plugin(walls=("/",)), r"exm\.walls"),
-            ("fields", lambda: plugin(fields=("post",)), r"exm\.fields: post is the engine's"),
-            ("folder", lambda: plugin(folder="../up"), r"exm\.folder: '\.\./up' leaves"),
-            ("folder", lambda: plugin(folder="{album}"), r"exm\.folder: unknown field \{album\}"),
-            ("key", lambda: plugin(key="{post"), r"exm\.key: '\{post'"),
-            ("key", lambda: plugin(key=""), r"exm\.key: ''; set a template"),
-            ("unsupported", lambda: plugin(unsupported={"example.com/{x}": "no"}),
-             r"exm\.unsupported: pattern 'example\.com/\{x\}' has \{x\}, but a refusal captures "
-             r"nothing; write \* for that segment"),
-            ("unsupported", lambda: plugin(unsupported={"example.com/x": ""}), r"exm\.unsupported"),
-            ("Settings", lambda: plugin(Settings=dict), r"exm\.Settings: <class 'dict'>"),
-            ("Settings", lambda: plugin(Settings=Undescribed),
-             r"exm\.Settings\.height: describe it"),
-            ("Settings", lambda: plugin(Settings=Undefaulted),
-             r"exm\.Settings\.height: give it a default"),
-            ("old name", lambda: plugin(needs=("sid",)), r"exm\.needs: plugin API 2 spells it"),
-            ("old name", lambda: plugin(scroll="human"), r"exm\.scroll"),
-            ("old name", lambda: plugin(single_kinds=("post",)), r"single=True"),
-            ("derived", lambda: plugin(routes=()), r"Example\.routes: made from"),
-            ("sign", lambda: plugin(sign=lambda self, request: request),
-             r"exm\.sign: take \(self, request, cookies\)"),
-            ("sign", lambda: plugin(sign=sign), r"exm\.sign: make it def \(not async def\)"),
-            ("date", lambda: plugin(date=lambda self, ctx, post: None),
-             r"exm\.date: make it async def"),
-            ("blocked", lambda: plugin(blocked=sign), r"exm\.blocked: make it def"),
-            ("refresh", lambda: plugin(refresh=lambda self, ctx, post: post),
-             r"exm\.refresh: make it async def"),
-            ("connect", lambda: plugin(connect=two), r"exm\.connect: make it def"),
-            ("resolve", lambda: plugin(resolve=resolve), r"exm\.resolve: make it a @classmethod"),
-            ("route", lambda: plugin(user=route("exm:{user}")(sync_listing)),
-             r"exm\.user: a route without categories lists posts; make it an async def"),
-            ("route", returns(listing, posts), r"exm\.user: a route with categories returns"),
-            ("category", returns(profile, profile), r"exm\.profile: a category lists posts"),
-        ]
-        for attribute, make, message in rows:
-            with self.subTest(attribute, message=message), self.assertRaisesRegex(
-                    PluginError, message):
-                make()
-        # An empty folder is the target's own; an empty name or key is a mistake (above).
-        self.assertEqual(plugin(folder="").folder, "")
+    """A mistake in a pattern or an option raises when it is made, naming what to fix."""
 
     def test_each_pattern_mistake_is_named(self):
         rows = [
-            (("cdn.example.com/{user}",),
-             r"pattern 'cdn\.example\.com/\{user\}' isn't on its domains"),
-            (("abc:{user}",), r"must start with the plugin's code; write it exm:\{user\}"),
-            (("exm:{user}", "exm:{user}"), r"is given twice"),
-            (("www.example.com/{user}", "example.com/{user}"), r"is given twice"),
             (("exm:{name}",), r"captures 'name', but the method's value parameter is 'user'"),
             (("example.com/{user}/{post}",), r"needs exactly one placeholder, not 2"),
             (("example.com/*",), r"needs exactly one placeholder, not 0"),
-            ((("example.com/{a}/{b}", "{a}_{c}"),), r"may name only its placeholders"),
-            ((("example.com/{a}", "fixed"),), r"names no placeholder"),
-            ((("example.com/{a}", "{a!r}"),), r"may name only its placeholders"),
             (("example.com/{user}/{user}",), r"\{user\} is named twice"),
             (("example.com/{user",), r"a '\{' with no '\}'"),
             (("example.com/user}",), r"a '\}' with no '\{'"),
@@ -279,14 +150,7 @@ class DeclarationTest(unittest.TestCase):
             with self.subTest(patterns), self.assertRaisesRegex(PluginError, message):
                 plugin(user=route(*patterns)(listing))
         options = [
-            (lambda: route("exm:{user}", single=1)(listing), r"route listing: single is True"),
-            (lambda: route("exm:{user}", discovers="yes")(listing), r"discovers is True or"),
-            (lambda: route("exm:{user}", newest_first=None)(listing), r"newest_first is True"),
             (lambda: route("exm:{user}", shown=3)(listing), r"route listing: shown is the form"),
-            (lambda: route("exm:{user}")(profile).category(own=0)(posts),
-             r"category posts: own is True or False, not 0"),
-            (lambda: route("exm:{user}")(profile).category(newest_first=1)(posts),
-             r"category posts: newest_first is True or False, not 1"),
             (lambda: route("exm:{user}")(profile).category(url="{user")(posts),
              r"category posts: url '\{user'"),
             (lambda: route("exm:{user}")(profile).category(lambda self, profile: None),
@@ -1135,7 +999,6 @@ class Saving(Plugin):
 
     code = "exn"
     name = "Saving"
-    api = API
     domains = ("example.com",)
     filename = "{post}_{num}"
     # Set by each test: the files of the one post.
@@ -1163,7 +1026,6 @@ class Owned(Plugin):
 
     code = "exo"
     name = "Owned"
-    api = API
     domains = ("owned.example",)
     filename = "{post}_{num}"
     # Set by each test: who owns the single post, and its category.
@@ -1358,7 +1220,6 @@ class EngineTest(EngineCase):
         class Finder(Plugin):
             code = "exf"
             name = "Finder"
-            api = API
             domains = ("example.net",)
 
             @route("exf:{user}", discovers=True)

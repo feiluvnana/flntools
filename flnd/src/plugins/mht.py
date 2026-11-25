@@ -35,7 +35,6 @@ class Mimi(Plugin):
     code = "mht"
     name = "mimihentai"
     domains = ("mimihentai.moe",)
-    api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
     assets = True
     # Everything it reads is public JSON: no login, no tab, so no walls.

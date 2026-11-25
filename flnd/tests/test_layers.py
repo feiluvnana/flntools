@@ -15,8 +15,8 @@ The rules:
    `src/testing.py` imports `flnd`, `src/plugin.py`, `src/engine/*` and `flnkit`;
    `src/_library.py` imports `src/engine/*`, `flnkit`, `src/errors.py` and `src/plugin.py`.
 5. `src/plugins/*` imports from flnd only `flnd.plugin`, and a third-party SDK only inside a
-   function; the registry, `src/plugins/__init__.py`, also reads `_manifest.py`.
-6. `src/cli.py` imports only `flnd`, `src/ui/*` and `src/plugins/_manifest.py`.
+   function; the table, `src/plugins/__init__.py`, imports none.
+6. `src/cli.py` imports only `flnd`, `src/ui/*` and the table, `flnd.plugins`.
 7. `src/__init__.py` imports nothing at import time beyond the standard library.
 And nothing imports `flnd.cli` but `src/__main__.py`, which is how `python -m flnd` starts it.
 What can't follow a rule yet is in `EXEMPT`, each entry with the step that removes it.
@@ -148,9 +148,9 @@ def allowed(importer: str, imported: str) -> bool:
     if importer == "flnd.engine.events":
         return imported == "flnd.plugin" or under(imported, "flnkit")
     if importer == "flnd.engine.plugins":
-        # The plugin manager reads the built-ins' plain-data manifest, without importing them.
+        # The loader reads the table of the built-ins, without importing them.
         return (under(imported, "flnd.engine", "flnkit", "flnd.ui")
-                or imported in ("flnd.plugin", "flnd.plugins._manifest"))
+                or imported in ("flnd.plugin", "flnd.plugins"))
     if under(importer, "flnd.engine"):
         return under(imported, "flnd.engine", "flnkit", "flnd.ui") or imported == "flnd.plugin"
     if importer == "flnd.plugin":
@@ -160,12 +160,12 @@ def allowed(importer: str, imported: str) -> bool:
     if importer == "flnd._library":
         return under(imported, "flnd.engine", "flnkit") or imported == "flnd.plugin"
     if importer == "flnd.plugins":
-        # The registry lists the built-ins from their manifest, without importing them.
-        return imported in ("flnd.plugin", "flnd.plugins._manifest")
+        # The table of the built-ins is plain data.
+        return False
     if under(importer, "flnd.plugins"):
         return imported == "flnd.plugin"
     if importer == "flnd.cli":
-        return imported in ("flnd", "flnd.plugins._manifest") or under(imported, "flnd.ui")
+        return imported in ("flnd", "flnd.plugins") or under(imported, "flnd.ui")
     if importer == "flnd.__main__":
         return imported == "flnd.cli"
     raise AssertionError(f"{importer} is in no layer of AGENTS.md › Layout")

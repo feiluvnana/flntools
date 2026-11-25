@@ -161,7 +161,6 @@ class Facebook(Plugin):
     code = "fbk"
     name = "Facebook"
     domains = ("facebook.com", "fb.com", "fb.watch")
-    api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
     hidden = True
     # Not required: a logged-out browser gets what Facebook shows the public, which is little.

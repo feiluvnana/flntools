@@ -8,7 +8,7 @@ from flnd.engine.resolve import Manifest, resolve
 from flnd.errors import UsageError
 from flnd.plugin import Target
 
-MANIFEST = Manifest(PLUGINS.manifest())
+MANIFEST = Manifest(PLUGINS)
 
 
 def read(text, follow=None):

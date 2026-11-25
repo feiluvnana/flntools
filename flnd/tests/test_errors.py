@@ -44,7 +44,7 @@ from flnd.errors import (
     classify,
     disk,
 )
-from flnd.plugin import File, Plugin, Target, dig, route
+from flnd.plugin import File, Target, dig
 from flnd.ui.log import ui
 from flnkit import clock as _time
 from flnkit import errors as kit
@@ -178,16 +178,6 @@ class ClassesTest(HttpCase):
                          "install flnd-no-such-tool-example, or put it on PATH")
 
     def test_plugin_error(self):
-        with self.assertRaisesRegex(PluginError, "other.example"):
-            class Outside(Plugin):
-                code, name, domains = "out", "Outside", ("aaa.example",)
-                api = 2
-                filename = "{date}_{post}{index}"
-
-                @route("other.example/{user}")
-                async def user(self, ctx, user):
-                    yield user
-
         with self.assertRaises(PluginError):
             File(mirrors=[])
         # An unexpected error in a listing is a bug in the plugin: a PluginError naming it.

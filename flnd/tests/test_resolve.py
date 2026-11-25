@@ -1,18 +1,17 @@
 """The resolver (`flnd.engine.resolve`): one table of texts and what they become."""
 
-import subprocess
-import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from fakes import Engine, EngineCase, noise
 from test_library import LibraryCase, example_source
 
 from flnd.engine import crawl, store
+from flnd.engine.plugins import PLUGINS, domains
 from flnd.engine.resolve import Manifest, Resolved, resolve
 from flnd.errors import PluginError, UsageError
 from flnd.plugin import Target, route
-from flnd.plugins import _manifest
 from flnd.plugins.web import Web
 from flnkit import net
 
@@ -57,17 +56,30 @@ BUILT_IN = {
     "mde": {"domains": ["mobile.de", "m.example.org"],
             "routes": [{"name": "user", "patterns": ["mobile.de/{x}", "m.example.org/{x}"]}]},
 }
-INSTALLED = {"version": 1, "plugins": {
-    "web": {"routes": [{"name": "page", "patterns": ["web:{url:.+}"]}]},
-    "bbb": {"domains": ["dup.example"], "routes": [{"name": "page", "patterns": ["bbb:{x}"]}]},
+# More plugins, one with the domain the first one also has: the first in order wins it.
+MORE = {
     "aaa": {"domains": ["dup.example", "example.com"],
             "routes": [{"name": "page", "patterns": ["dup.example/{x}", "example.com/{x}"]}]},
-    # A built-in's code is never replaced.
-    "exm": {"routes": [{"name": "other", "patterns": ["exm:{x:.+}"]}]},
-    # Malformed: disabled alone.
-    "bad": {"domains": ["bad.example"], "routes": [{"name": "r", "patterns": ["bad:{a"]}]},
-}}
-MANIFEST = Manifest(BUILT_IN, INSTALLED)
+    "bbb": {"domains": ["dup.example"], "routes": [{"name": "page", "patterns": ["bbb:{x}"]}]},
+    "web": {"routes": [{"name": "page", "patterns": ["web:{url:.+}"]}]},
+}
+
+
+def stand_in(data):
+    """A class-like object with what `resolve.entry` reads of a plugin, made from plain data."""
+    routes = [SimpleNamespace(
+        kind=route.get("name", ""), single=route.get("single", False),
+        discovers=route.get("discovers", False), shown=route.get("shown"),
+        patterns=[tuple(item) if isinstance(item, list) else item
+                  for item in route["patterns"]],
+        categories=[SimpleNamespace(name=item["name"], own=item["own"])
+                    for item in route.get("categories", ())]) for route in data["routes"]]
+    return SimpleNamespace(domains=tuple(data.get("domains", ())), routes=routes,
+                           unsupported=data.get("unsupported", {}))
+
+
+SOURCES = {code: stand_in(data) for code, data in {**BUILT_IN, **MORE}.items()}
+MANIFEST = Manifest(SOURCES)
 KNOWN = {"exm:example_creator": ("reels",), "exm?dogs": ("posts",)}
 SHORT = {"https://s.example/abc": "https://www.example.com/p/Abc",
          "https://s.example/loop": "https://s.example/elsewhere"}
@@ -265,19 +277,16 @@ class ResolveTest(unittest.TestCase):
         for patterns, message in MALFORMED:
             route = {"patterns": ["bad:{a}"]} if patterns is None else {"name": "r",
                                                                          "patterns": patterns}
-            entry = {"bad": {"routes": [route]}}
+            manifest = Manifest({"bad": stand_in({"routes": [route]}), **SOURCES})
             with self.subTest(patterns=patterns):
                 with self.assertRaises(PluginError) as caught:
-                    Manifest(entry)
+                    manifest.get("bad")
                 self.assertEqual(str(caught.exception), message)
-                # Installed, it is disabled alone and the rest still loads.
-                manifest = Manifest(BUILT_IN, {"plugins": entry})
-                self.assertEqual(str(manifest.broken["bad"]), message)
-                self.assertEqual(list(manifest.plugins), list(BUILT_IN))
-        self.assertEqual(list(MANIFEST.broken), ["bad"])
+                # Only that plugin fails: the rest still resolves.
+                self.assertEqual(manifest.get("exs").code, "exs")
 
-    def test_the_built_ins_resolve_from_their_manifest(self):
-        manifest = Manifest(_manifest.PLUGINS)
+    def test_the_built_ins_resolve_from_their_classes(self):
+        manifest = Manifest(PLUGINS, lambda code: domains(PLUGINS, code))
         user = ("posts", "reels", "stories", "highlights", "profile")
         for text, expected in [
             ("ins:example_user|tagged", N("ins", "example_user", "user", ("tagged",))),
@@ -312,23 +321,6 @@ class ResolveTest(unittest.TestCase):
         ]:
             with self.subTest(text=text):
                 self.assertEqual(resolve(text, manifest=manifest, known={}), expected)
-
-    def test_resolving_imports_no_plugin(self):
-        code = ("import sys\n"
-                "from flnd.engine.resolve import Manifest, resolve\n"
-                "from flnd.plugins import _manifest\n"
-                "manifest = Manifest(_manifest.PLUGINS)\n"
-                "for text in ('ins:example_user|reels', 'twt?cats', "
-                "'https://www.instagram.com/example_user', 'https://nowhere.example/x'):\n"
-                "    try:\n"
-                "        resolve(text, manifest=manifest, known={})\n"
-                "    except Exception as error:\n"
-                "        print(type(error).__name__)\n"
-                "print(sorted(n for n in sys.modules if n.startswith('flnd.plugins.') "
-                "or n == 'flnd.plugin'))\n")
-        found = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                               check=True)
-        self.assertEqual(found.stdout.split(), ["['flnd.plugins._manifest']"])
 
 
 class MixedRunTest(LibraryCase):

@@ -7,7 +7,6 @@ from __future__ import annotations
 import datetime
 import fnmatch
 import os
-import sys
 import threading
 import weakref
 from collections.abc import Iterator, Mapping, Sequence
@@ -15,8 +14,8 @@ from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from flnd.engine.events import Checked, Failure, Installed, Record, Status, Tracked
-from flnd.errors import PluginError, UsageError
+from flnd.engine.events import Checked, Failure, Record, Status, Tracked
+from flnd.errors import UsageError
 from flnd.plugin import LoggedIn
 
 if TYPE_CHECKING:
@@ -85,8 +84,6 @@ class Flnd:
         self.targets = Targets(self)
         # The logins: iterate, login, logout.
         self.auth = Auth(self)
-        # The plugins: built-in, installed, added: install, uninstall.
-        self.plugins = Plugins(self)
         # The settings of `config.toml`: read, set, unset.
         self.config = Config(self)
         # Whether `get` asks again for everything.
@@ -340,8 +337,7 @@ class Flnd:
     def add(self, plugin: type[Plugin]) -> None:
         """Add a plugin for this `Flnd` alone: its targets resolve and get like a built-in's.
 
-        It comes after the built-ins and the installed plugins, so a code one of them has is
-        refused, never replaced.
+        It comes after the built-ins, so a code one of them has is refused, never replaced.
 
         Args:
             plugin: the `flnd.plugin.Plugin` subclass.
@@ -408,7 +404,7 @@ class Flnd:
     # -----------------------------------------------------------------------------------------
 
     def _sources(self) -> Mapping[str, type[Plugin]]:
-        """The built-in plugins and the installed ones, then the ones `add` added."""
+        """The built-in plugins, then the ones `add` added."""
         from collections import ChainMap
 
         from flnd.engine.plugins import PLUGINS
@@ -416,7 +412,7 @@ class Flnd:
         return ChainMap(self._added, PLUGINS)
 
     def _plugin(self, code: str) -> type[Plugin]:
-        """The plugin of a code, built-in, installed or added."""
+        """The plugin of a code, built-in or added."""
         sources = self._sources()
         if code not in sources:
             raise UsageError(f"unknown plugin {code!r}. Plugins: {', '.join(sources)}")
@@ -627,90 +623,6 @@ class Auth:
         return auth.logout(plugin, self._owner._plugin(plugin))
 
 
-class Plugins:
-    """The plugins a home can use: iterate it for `Installed` rows, or install one.
-
-    Reached as `Flnd.plugins`.
-    """
-
-    def __init__(self, owner: Flnd) -> None:
-        self._owner = owner
-
-    def __iter__(self) -> Iterator[Installed]:
-        """The built-ins, the installed plugins (disabled ones too, saying why), then `add`'s.
-
-        Reading it imports every plugin, as `flnd plugin list` does.
-
-        Example:
-            >>> import flnd
-            >>> with flnd.open("example-home") as fl:
-            ...     [row.origin for row in fl.plugins if row.code == "ins"]
-            ['built-in']
-        """
-        from flnd.engine import plugins
-
-        registry = plugins.PLUGINS
-        rows = [_installed(registry[code]) for code in registry.built_in_codes()]
-        mgr = registry.manager()
-        index = mgr.manifest["plugins"]
-        registry.flush(mgr)
-        for code, entry in sorted(index.items()):
-            if code in registry._overrides or code in mgr.built_in:
-                continue
-            where = str(mgr.folder / str(entry.get("file", code)))
-            try:
-                cls = mgr.load(code)
-            except PluginError:
-                registry.flush(mgr)
-                rows.append(Installed(code, str(entry.get("name", code)), plugins.FILE,
-                                      where=where, api=0, disabled=mgr.disabled[code]))
-            else:
-                registry.flush(mgr)
-                rows.append(_installed(cls, origin=plugins.FILE,
-                                       where=plugins.where(cls) or where,
-                                       version=plugins.version(cls)))
-        rows += [_installed(cls, origin=plugins.SCRIPT)
-                 for cls in self._owner._added.values()]
-        return iter(rows)
-
-    def install(self, path: str | os.PathLike[str]) -> Installed:
-        """Check a plugin's `.py` file or package folder, copy it into the plugin folder, and
-        record it. An installed code is replaced.
-
-        Raises:
-            UsageError: not a plugin file or package, or a built-in's code.
-            PluginError: its API isn't this flnd's, or it fails its checks.
-        """
-        from flnd.engine.plugins import PLUGINS
-
-        mgr = PLUGINS.manager()
-        try:
-            code = _code(mgr.install(path))
-        finally:
-            PLUGINS.flush(mgr)
-        return next(row for row in self if row.code == code)
-
-    def uninstall(self, code: str) -> Installed:
-        """Remove an installed plugin. Its targets stay.
-
-        Returns:
-            The plugin's row as it was.
-
-        Raises:
-            UsageError: a built-in, or no plugin installed with that code.
-        """
-        from flnd.engine.plugins import PLUGINS
-
-        found = next((row for row in self if row.code == code), None)
-        mgr = PLUGINS.manager()
-        try:
-            mgr.uninstall(code)
-        finally:
-            PLUGINS.flush(mgr)
-        assert found is not None
-        return found
-
-
 class Config(Mapping[str, Any]):
     """The home's settings, by dotted name: `"defaults.when"`, `"plugins.ins.pace"`.
 
@@ -799,27 +711,6 @@ def _tracked(info: TargetInfo) -> Tracked:
                    size=info.size, seen=info.seen, categories=info.categories,
                    complete=info.complete, query=info.query,
                    status=info.status, failed=info.failed, pending=info.pending)
-
-
-def _installed(cls: type[Plugin], *, origin: str | None = None, where: str | None = None,
-               version: str = "") -> Installed:
-    """A working plugin's row for `Flnd.plugins`."""
-    from flnd.engine import plugins
-
-    where = where or f"{cls.__module__}:{cls.__qualname__}"
-    # flnd is imported by now: the library is reached through it.
-    version = getattr(sys.modules.get("flnd"), "__version__", "") if origin is None else version
-    origin = origin or plugins.BUILT_IN
-    methods = cls.login.methods if cls.login is not None else ()
-    return Installed(cls.code, cls.name, origin, where=where, version=version, api=cls.api,
-                     domains=tuple(cls.domains), forms=tuple(cls.forms),
-                     categories=tuple(cls.categories), logins=tuple(methods))
-
-
-def _code(entry: Mapping[str, Any]) -> str:
-    """The code of the plugin an install just recorded: its file's name without `.py`."""
-    file = str(entry["file"])
-    return file[:-3] if file.endswith(".py") else file
 
 
 def _names(targets: Sequence[Chosen]) -> str:

@@ -20,7 +20,7 @@ from flnd.plugin import Target
 
 __all__ = [
     "BUSY", "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure",
-    "FileState", "HoldState", "Installed", "Phase", "Planned", "Record", "Report", "Resources",
+    "FileState", "HoldState", "Phase", "Planned", "Record", "Report", "Resources",
     "Saved", "Skipped", "State", "Status", "TargetState", "Tracked", "encode", "sink",
 ]
 
@@ -321,39 +321,6 @@ class Report(msgspec.Struct, frozen=True):
     def ok(self) -> bool:
         """Whether nothing failed."""
         return not self.failed
-
-
-class Installed(msgspec.Struct, frozen=True):
-    """One plugin flnd knows, as `fl.plugins` lists it: where it came from, and whether it works.
-
-    A plugin that failed to load or was refused is listed too, with `disabled` saying why; its
-    other fields are what its name told (its code, its origin).
-
-    Example:
-        >>> row = Installed("exm", "Example", "file", where="/plugins/exm.py", api=2)
-        >>> row.origin, row.disabled
-        ('file', '')
-    """
-
-    # The plugin's code.
-    code: str
-    # The site's name, as people know it; the code for a plugin that didn't load.
-    name: str
-    # "built-in", "file" (the plugin folder) or "script" (`fl.add`).
-    origin: str
-    # The module or file it comes from.
-    where: str = ""
-    # flnd's own version for a built-in, or a file plugin's `__version__`; "" when none.
-    version: str = ""
-    # The plugin API it was written for; 0 for one that didn't load.
-    api: int = 2
-    # Its domains, the target forms it reads, its categories and its ways to log in.
-    domains: tuple[str, ...] = ()
-    forms: tuple[str, ...] = ()
-    categories: tuple[str, ...] = ()
-    logins: tuple[str, ...] = ()
-    # Why it is disabled, with the file and line of the failure; "" when it works.
-    disabled: str = ""
 
 
 class Record(msgspec.Struct, frozen=True):

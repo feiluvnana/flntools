@@ -140,7 +140,6 @@ class Instagram(Plugin):
     code = "ins"
     name = "Instagram"
     domains = ("instagram.com",)
-    api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
     hidden = True
     # Logged in when `sessionid` is there. Not required: a public profile shows something.

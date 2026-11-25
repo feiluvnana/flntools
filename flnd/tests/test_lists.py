@@ -15,14 +15,12 @@ from test_forms import Terminal, drawn, drive, feed
 from flnd.errors import Stopped, UsageError
 from flnd.ui import forms, lists
 from flnd.ui.forms import PENDING
-from flnd.ui.lists import Column, Key, PluginRow, Row, TargetRow, View
+from flnd.ui.lists import Column, Key, Row, TargetRow, View
 
 H = 3600
 TARGETS = [TargetRow("ins:example_user", True, ("posts", "reels"), 1620, 2254857830, 2 * H),
            TargetRow("twt:example_creator", True, ("media",), 49, 188743680, 2 * H),
            TargetRow("tik:example_handle", False, ("videos",), 0, 0, None)]
-PLUGINS = [PluginRow("ins", "Instagram", True, 2, ("instagram.com",), 3),
-           PluginRow("exm", "Example", False, 2, ("example.com",), 0)]
 
 
 class ViewTest(unittest.TestCase):
@@ -185,15 +183,6 @@ class ListsTest(unittest.TestCase):
                                                                    enumerate(c)], (), None)
                 self.assertEqual(drawn(view.view(True), width=width).splitlines()[:6], lines)
 
-    def test_a_pipe_prints_a_plain_table(self) -> None:
-        stdout = self.enterContext(mock.patch("sys.stdout", io.StringIO()))
-        lists.plugins(lambda: PLUGINS, install=print, uninstall=print)
-        self.assertEqual(stdout.getvalue(), "\n".join([
-            "code  name       kind       api  domains        targets",
-            "ins   Instagram  built-in   2    instagram.com  3",
-            "exm   Example    installed  2    example.com    0",
-        ]) + "\n")
-
     def test_on_a_terminal_each_list_runs_its_callbacks(self) -> None:
         self.enterContext(mock.patch("sys.stdin", Terminal("")))
         self.enterContext(mock.patch("sys.stdout", Terminal("")))
@@ -207,20 +196,16 @@ class ListsTest(unittest.TestCase):
             lists.targets(lambda: TARGETS, follow=record("follow"), retry=record("retry"),
                           add=record("add"), delete=record("delete"))
         text.assert_called_once_with("Target to get")
-        with drive(("d", "y", "down", "d", "y", "a"), ("escape",), ("escape",)):
-            lists.plugins(lambda: PLUGINS, install=record("install"),
-                          uninstall=record("uninstall"))
         self.assertEqual(calls, [
             ("follow", TARGETS[1]), ("retry", TARGETS[1]), ("add", "x"),
             ("delete", TARGETS[1]),
-            ("uninstall", PLUGINS[1]),
         ])
 
     def test_ctrl_c_raises_stopped(self) -> None:
         self.enterContext(mock.patch("sys.stdin", Terminal("")))
         self.enterContext(mock.patch("sys.stdout", Terminal("")))
         with drive(("ctrl+c",)), self.assertRaises(Stopped):
-            lists.plugins(lambda: PLUGINS, install=print, uninstall=print)
+            lists.targets(lambda: TARGETS, follow=print, retry=print, add=print, delete=print)
 
     def test_narrow_terminal_and_wide_chars_fit_within_width(self) -> None:
         from rich.cells import cell_len

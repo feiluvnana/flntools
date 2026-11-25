@@ -34,7 +34,6 @@ class Web(Plugin):
 
     code = "web"
     name = "the web"
-    api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
     assets = True
     # It owns no domain: the resolver gives it links no other plugin claims, so every request

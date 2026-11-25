@@ -8,10 +8,10 @@ import unittest
 
 import fakes
 
+from flnd.engine.plugins import PLUGINS
 from flnd.engine.resolve import Manifest, resolve
 from flnd.errors import Blocked, LoginError, NotFound, UsageError
 from flnd.plugin import Target
-from flnd.plugins import _manifest
 from flnd.plugins.thr import Threads
 from flnd.testing import FakeCtx, FakePage, Sent, check, collect
 from flnkit import net as _net
@@ -126,7 +126,7 @@ class RoutesTest(unittest.TestCase):
         self.assertIsNone(Threads.resolve("https://www.threads.com/"))
 
     def test_a_query_and_another_kind_are_refused(self):
-        manifest = Manifest(_manifest.PLUGINS)
+        manifest = Manifest(PLUGINS)
         for text, message in [("thr?cats", "thr has no search"),
                               ("threads.com/search?q=cats", "^thr: there's no search"),
                               ("thr:thing/C1abc", "thing isn't a post kind of thr")]:
@@ -141,8 +141,7 @@ class RoutesTest(unittest.TestCase):
                 self.assertEqual(Threads.resolve(found.text), found)
 
     def test_declarations(self):
-        self.assertEqual((Threads.api, Threads.pace, Threads.domains),
-                         (2, 2.0, ("threads.com", "threads.net")))
+        self.assertEqual((Threads.pace, Threads.domains), (2.0, ("threads.com", "threads.net")))
         self.assertEqual(Threads.login.names, ("sessionid",))
         route = next(known for known in Threads.routes if known.kind == "user")
         self.assertEqual([(c.name, c.own) for c in route.categories],

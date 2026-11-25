@@ -21,7 +21,6 @@ _HOMES = {
     "Failure": "flnd.engine.events",
     "FileState": "flnd.engine.events",
     "HoldState": "flnd.engine.events",
-    "Installed": "flnd.engine.events",
     "LoggedIn": "flnd.plugin",
     "Phase": "flnd.engine.events",
     "Planned": "flnd.engine.events",
@@ -53,7 +52,7 @@ _HOMES = {
 # the two agree.
 __all__ = [
     "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure",
-    "FileState", "Flnd", "Hidden", "HoldState", "Installed", "LoggedIn", "LoginError",
+    "FileState", "Flnd", "Hidden", "HoldState", "LoggedIn", "LoginError",
     "NetworkError", "NotFound", "Phase", "Planned", "PluginError", "Record", "Report", "Run",
     "Saved", "SiteError", "Skipped", "State", "Status", "Stopped", "Target", "TargetState",
     "ToolError", "Tracked", "UsageError", "__version__", "open",
@@ -68,7 +67,6 @@ if TYPE_CHECKING:
         Failure,
         FileState,
         HoldState,
-        Installed,
         Phase,
         Planned,
         Record,

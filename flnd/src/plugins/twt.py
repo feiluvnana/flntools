@@ -146,7 +146,6 @@ class Twitter(Plugin):
     code = "twt"
     name = "Twitter/X"
     domains = ("x.com", "twitter.com")
-    api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
     hidden = True
     # Paths on the site that are pages of it, not profiles. x.com/i covers x.com/i/* too,

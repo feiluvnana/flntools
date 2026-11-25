@@ -1,6 +1,6 @@
-"""Plugin API 2: what a plugin declares, the types it yields and reads, `Ctx`, and its helpers.
+"""What a plugin declares, the types it yields and reads, `Ctx`, and its helpers.
 
-SPEC.md#writing-a-plugin explains it; a mistake in a plugin's class raises when it is made.
+SPEC.md#writing-a-plugin explains it.
 """
 
 from __future__ import annotations
@@ -45,15 +45,13 @@ from flnkit.dig import dig
 from flnkit.html import Document, Element
 
 __all__ = [
-    "API", "Blocked", "Browser", "Category", "Changed", "Clock", "Cookies", "Ctx",
+    "Blocked", "Browser", "Category", "Changed", "Clock", "Cookies", "Ctx",
     "DateLike", "Document", "Element", "Error", "Fetch", "File", "Hidden", "Landed", "Login",
     "LoginError", "NetworkError", "NotFound", "Part", "Plugin", "PluginError", "Post", "Range",
     "Request", "Response", "Route", "Settings", "SiteError", "Stream", "Target", "UsageError",
     "best", "cookies", "dig", "meta", "numbered", "page_info", "route",
 ]
 
-# The plugin API's major version: a plugin declares the one it was written for (`api = 2`).
-API = 2
 # Hosts that are the same site as their bare domain: desktop, mobile and web variants.
 SITE_PREFIXES = ("www.", "m.", "mobile.", "web.", "mbasic.", "touch.")
 # What `{name}` matches without a regex: a user name as the sites spell them, one leading `@`
@@ -61,10 +59,6 @@ SITE_PREFIXES = ("www.", "m.", "mobile.", "web.", "mbasic.", "touch.")
 NAME = r"[\w.]+"
 # Where a generated form shows a `*`: any one segment, which help can't name.
 ANY = "…"
-# A plugin's code: what its targets start with, and the name of its login files.
-CODE = re.compile(r"[a-z][a-z0-9]{1,15}")
-# A domain as `domains` lists it: a lowercase host name with a dot, no scheme, port or path.
-HOST = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
 # The fields the engine fills for every file, which a template may use beside `fields`.
 TEMPLATE_FIELDS = (
     "plugin", "target", "category", "post", "num", "count", "index", "extension", "path",
@@ -72,27 +66,8 @@ TEMPLATE_FIELDS = (
 )
 # The fields a `Post` may not set: the engine's own, so a plugin never overwrites one.
 RESERVED = frozenset(TEMPLATE_FIELDS) | {"id", "files", "headers", "listed", "pinned"}
-# Names of older plugin APIs, refused with how API 2 spells them.
-OLD_NAMES = {
-    "needs": 'login = cookies("<name>", url=...)',
-    "requires_login": 'login = cookies("<name>", url=..., required=True)',
-    "login_methods": "a Login subclass's `methods`",
-    "logged_in": "a Login subclass's `async check(ctx)`",
-    "concurrency": 'limits = {"<host>": <files at once>}',
-    "prepare": "sign(self, request, cookies)",
-    "scroll": "nothing: the engine scrolls every feed like a person",
-    "single_kinds": "@route(..., single=True) on each one-post route",
-}
 # The ways a cookie site's login is read: a cookies.txt file, given by its path.
 COOKIE_METHODS = ("file",)
-# Each optional hook: whether it is `async def`, and the parameters it takes.
-HOOKS = {
-    "sign": (False, ("self", "request", "cookies")),
-    "connect": (False, ("self", "ctx")),
-    "date": (True, ("self", "ctx", "post")),
-    "blocked": (False, ("self", "response")),
-    "refresh": (True, ("self", "ctx", "post")),
-}
 # What a `File` slot holds when it isn't given; None for the rest.
 FILE_DEFAULTS = {"mirrors": (), "ranged": False}
 _FORMATTER = string.Formatter()
@@ -646,8 +621,6 @@ class _Pattern:
         # pattern has none.
         self.literals = 0 if self.host is None else 1 + len(self.keys) + sum(
             1 for segment in self.segments if not set(segment) & set("{}*"))
-        if template is not None:
-            _check_value_template(pattern, template, self.names)
 
     def match(self, written: str, link: _Link | None) -> dict[str, str] | None:
         """The captures when `written` or `link` matches; None when it doesn't.
@@ -721,7 +694,6 @@ class Category:
         self.name = function.__name__
         self.own, self.url, self.newest_first = own, url, newest_first
         self.folder, self.key = folder, key
-        _check_options(f"category {self.name}", {"own": own, "newest_first": newest_first})
         parameters = list(inspect.signature(function).parameters)
         if len(parameters) != 3:
             raise PluginError(f"category {self.name}: take (self, ctx, profile), not "
@@ -771,8 +743,6 @@ class Route:
         self.patterns = patterns
         self.newest_first, self.single, self.folder, self.shown = (
             newest_first, single, folder, shown)
-        _check_options(f"route {self.kind}", {"newest_first": newest_first, "single": single,
-                                               "discovers": discovers})
         if shown is not None and (not isinstance(shown, str) or not shown.strip()):
             raise PluginError(f"route {self.kind}: shown is the form help shows, such as "
                               f"'exm:<title>', not {shown!r}")
@@ -1206,9 +1176,8 @@ class Ctx(Protocol):
 class Plugin:
     """One site flnd downloads from: what it declares, its routes, categories and hooks.
 
-    Only `code`, `name`, `api` and one route are required. The class is checked when it is
-    made: a mistake raises `PluginError` naming the attribute and the fix. Its `routes`, `forms`
-    and `categories` are then derived from its `@route` methods.
+    Only `code`, `name` and one route are required. Its `routes`, `forms` and `categories` are
+    derived from its `@route` methods when the class is made.
     """
 
     # What its targets start with: 2 to 16 lowercase letters and digits.
@@ -1217,8 +1186,6 @@ class Plugin:
     name: ClassVar[str]
     # Its own domains: paced, signed and given its cookies; a link on one is its.
     domains: ClassVar[tuple[str, ...]] = ()
-    # The plugin API it was written for.
-    api: ClassVar[int]
     # How it logs in; None for no login.
     login: ClassVar[Login | None] = None
     # Seconds between two page requests of one bucket.
@@ -1259,13 +1226,13 @@ class Plugin:
     _refusals: ClassVar[tuple[tuple[_Pattern, str], ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        """Check the class's declarations, and derive its routes, forms and categories.
+        """Derive the class's routes, forms and categories.
 
         A class with no code and no route of its own is a base for other plugins, left alone
         until a subclass is made.
 
         Raises:
-            PluginError: the first mistake, worded `<code>.<attribute>: <what>; <the fix>`.
+            PluginError: the class declares one of the derived fields itself.
         """
         super().__init_subclass__(**kwargs)
         for derived in ("routes", "forms", "categories"):
@@ -1278,10 +1245,8 @@ class Plugin:
         cls.routes = tuple(routes.values())
         if not getattr(cls, "code", None) and not cls.routes:
             return
-        _check(cls)
         cls._refusals = tuple((_Pattern(pattern), reason)
                               for pattern, reason in cls.unsupported.items())
-        _check_patterns(cls)
         names = [category.name for known in cls.routes for category in known.categories]
         cls.categories = tuple(dict.fromkeys(names))
         forms = [form for known in cls.routes for form in known.forms(cls.code)]
@@ -1375,284 +1340,6 @@ class Plugin:
             raise NotFound(f"{self.code}: post {post.id}'s links expired, and its files can't "
                            "be listed again")
         return post.replace(files=tuple(await post.files()))
-
-
-# ---------------------------------------------------------------------------------------------
-# Checking a plugin when its class is made
-# ---------------------------------------------------------------------------------------------
-
-def _check(cls: type[Plugin]) -> None:
-    """Check a plugin's declarations; see `Plugin.__init_subclass__` for what fails."""
-    code = getattr(cls, "code", None)
-    if not isinstance(code, str) or not CODE.fullmatch(code):
-        raise PluginError(f"{cls.__name__}.code: {'missing' if code is None else repr(code)}; "
-                          'set code = "exm": 2 to 16 lowercase letters and digits')
-    for old, spelled in OLD_NAMES.items():
-        if hasattr(cls, old):
-            raise PluginError(f"{code}.{old}: plugin API {API} spells it {spelled}")
-    name = getattr(cls, "name", None)
-    if not isinstance(name, str) or not name.strip():
-        raise PluginError(f'{code}.name: set name = "Example", the site\'s name for help')
-    _check_api(cls, code)
-    domains = cls.domains
-    if not isinstance(domains, tuple):
-        raise PluginError(f'{code}.domains: {domains!r}; set domains = ("example.com",)')
-    for domain in domains:
-        if not isinstance(domain, str) or not HOST.fullmatch(domain):
-            raise PluginError(f'{code}.domains: {domain!r}; set domains = ("example.com",): '
-                              "lowercase hosts, without a scheme, a port or a path")
-    if not cls.routes:
-        raise PluginError(f'{code}: no route; mark an async method with @route("{code}:{{user}}")')
-    _check_route_names(cls, code)
-    _check_values(cls, code)
-    _check_login(cls.login, code)
-    _check_settings(cls.Settings, code)
-    _check_hooks(cls, code)
-    for known in cls.routes:
-        _check_route(known, code)
-    _check_templates(cls, code)
-
-
-def _check_api(cls: type[Plugin], code: str) -> None:
-    """Check `api`: the plugin API the plugin was written for must be this flnd's."""
-    api = getattr(cls, "api", None)
-    if api is None:
-        raise PluginError(f"{code}.api: missing; set api = {API}, the plugin API it is written "
-                          "for")
-    if not isinstance(api, int) or isinstance(api, bool) or api < 1:
-        raise PluginError(f"{code}.api: {api!r}; set api = {API}")
-    if api > API:
-        raise PluginError(f"{code} needs plugin API {api}; this flnd has {API}",
-                          hint="update flnd")
-    if api < API:
-        raise PluginError(f"{code} was written for plugin API {api}; this flnd has {API}",
-                          hint="see the API versions part of the writing-a-plugin page of "
-                               "flnd's docs")
-
-
-def _check_values(cls: type[Plugin], code: str) -> None:
-    """Check the declarations that are plain values: pace, limits, browser and the rest."""
-    pace = cls.pace
-    if not isinstance(pace, (int, float)) or isinstance(pace, bool) or pace < 0:
-        raise PluginError(f"{code}.pace: {pace!r}; set the seconds between page requests, "
-                          "such as 0.5")
-    if not isinstance(cls.limits, Mapping) or not all(
-            isinstance(host, str) and isinstance(n, int) and not isinstance(n, bool) and n > 0
-            for host, n in cls.limits.items()):
-        raise PluginError(f'{code}.limits: {cls.limits!r}; set {{"<host>": <files at once>}}, '
-                          "each a whole number above 0")
-    if not isinstance(cls.browser, Browser):
-        raise PluginError(f"{code}.browser: {cls.browser!r}; set Browser.NONE or Browser.ANY")
-    if not isinstance(cls.stealth, bool):
-        raise PluginError(f"{code}.stealth: {cls.stealth!r}; set True or False")
-    for name in ("assets", "hidden"):
-        if not isinstance(getattr(cls, name), bool):
-            raise PluginError(f"{code}.{name}: {getattr(cls, name)!r}; set True or False")
-    agent = cls.user_agent
-    if agent is not None and (not isinstance(agent, str) or not agent.strip()):
-        raise PluginError(f"{code}.user_agent: {agent!r}; set the User-Agent text, or None")
-    walls = cls.walls
-    if not isinstance(walls, tuple) or not all(
-            isinstance(wall, str) and wall.startswith("/") and wall.rstrip("/")
-            and not set(wall) & set("?#") for wall in walls):
-        raise PluginError(f'{code}.walls: {walls!r}; set URL paths such as ("/accounts/login",)')
-    fields = cls.fields
-    if not isinstance(fields, tuple) or not all(isinstance(field, str) for field in fields):
-        raise PluginError(f'{code}.fields: {fields!r}; set the post fields as ("caption",)')
-    clash = sorted(set(fields) & RESERVED)
-    if clash:
-        raise PluginError(f"{code}.fields: {', '.join(clash)} is the engine's; name the site's "
-                          "field otherwise")
-    if not isinstance(cls.unsupported, Mapping) or not all(
-            isinstance(pattern, str) and isinstance(reason, str) and reason
-            for pattern, reason in cls.unsupported.items()):
-        raise PluginError(f'{code}.unsupported: set {{"<pattern>": "<why it is refused>"}}')
-
-
-def _check_login(login: object, code: str) -> None:
-    """Check `login`: None, or a `Login` with methods, names and async hooks."""
-    if login is None:
-        return
-    if not isinstance(login, Login):
-        raise PluginError(f'{code}.login: set login = cookies("<name>", url=...), an instance '
-                          "of a Login subclass, or None")
-    methods = login.methods
-    if not isinstance(methods, tuple) or not methods or not all(
-            isinstance(method, str) and method for method in methods):
-        raise PluginError(f'{code}.login.methods: set the ways it logs in, as ("qr", "phone")')
-    if not isinstance(login.names, tuple) or not all(isinstance(n, str) for n in login.names):
-        raise PluginError(f'{code}.login.names: set the cookie names, as ("sessionid",)')
-    if type(login).start is Login.start:
-        raise PluginError(f"{code}.login.start: implement async def start(self, ctx, method)")
-    for hook in ("start", "check"):
-        if not inspect.iscoroutinefunction(getattr(type(login), hook)):
-            raise PluginError(f"{code}.login.{hook}: make it async def")
-
-
-def _check_settings(settings: object, code: str) -> None:
-    """Check `Settings`: a frozen `Settings` subclass, each field defaulted and described."""
-    if not (isinstance(settings, type) and issubclass(settings, Settings)):
-        raise PluginError(f"{code}.Settings: {settings!r}; declare class Settings(Settings) "
-                          "with its fields")
-    described = _attributes(inspect.getdoc(settings) or "") if settings is not Settings else set()
-    for known in dataclasses.fields(settings):
-        if (known.default is dataclasses.MISSING
-                and known.default_factory is dataclasses.MISSING):
-            raise PluginError(f"{code}.Settings.{known.name}: give it a default")
-        if known.name not in described:
-            raise PluginError(f"{code}.Settings.{known.name}: describe it with a line under "
-                              "Attributes: in the class's docstring")
-
-
-def _attributes(doc: str) -> set[str]:
-    """The names an `Attributes:` section of a docstring describes."""
-    _, found, section = doc.partition("Attributes:")
-    if not found:
-        return set()
-    names = set()
-    for line in section.splitlines()[1:]:
-        if line.strip() and not line.startswith((" ", "\t")):
-            break
-        match = re.match(r"\s+(\w+)\s*(?:\(.*\))?:", line)
-        if match:
-            names.add(match[1])
-    return names
-
-
-def _check_hooks(cls: type[Plugin], code: str) -> None:
-    """Check each hook's kind (`async def` or not) and parameters, and that `resolve` is a
-    classmethod."""
-    for hook, (is_async, parameters) in HOOKS.items():
-        function = getattr(cls, hook)
-        if inspect.iscoroutinefunction(function) != is_async or inspect.isasyncgenfunction(
-                function):
-            kind = "async def" if is_async else "def (not async def)"
-            raise PluginError(f"{code}.{hook}: make it {kind} {hook}({', '.join(parameters)})")
-        found = tuple(inspect.signature(function).parameters)
-        if len(found) != len(parameters):
-            raise PluginError(f"{code}.{hook}: take ({', '.join(parameters)}), not "
-                              f"({', '.join(found)})")
-    for owner in cls.__mro__:
-        if "resolve" in vars(owner):
-            if not isinstance(vars(owner)["resolve"], classmethod):
-                raise PluginError(f"{code}.resolve: make it a @classmethod taking (cls, text)")
-            break
-
-
-def _check_route(known: Route, code: str) -> None:
-    """Check that a route and its categories are async the way their listings need."""
-    label = f"{code}.{known.kind}"
-    if known.categories:
-        if not inspect.iscoroutinefunction(known.function):
-            raise PluginError(f"{label}: a route with categories returns what they receive; "
-                              "make it async def, returning a mapping, not yielding")
-    elif not inspect.isasyncgenfunction(known.function):
-        raise PluginError(f"{label}: a route without categories lists posts; make it an async "
-                          "def that yields Post and Target")
-    for category in known.categories:
-        if not inspect.isasyncgenfunction(category.function):
-            raise PluginError(f"{code}.{category.name}: a category lists posts; make it an "
-                              "async def that yields Post and Target")
-
-
-def _check_templates(cls: type[Plugin], code: str) -> None:
-    """Check that every template stays in the target's folder and names only known fields."""
-    known = (*TEMPLATE_FIELDS, *cls.fields)
-    templates = [("folder", cls.folder), ("filename", cls.filename), ("key", cls.key)]
-    for listed in cls.routes:
-        templates.append((f"{listed.kind}.folder", listed.folder))
-        for category in listed.categories:
-            templates += [(f"{category.name}.folder", category.folder),
-                          (f"{category.name}.key", category.key)]
-    for attribute, template in templates:
-        # An empty folder is the target's own folder; an empty name or key names nothing.
-        if template is None or (template == "" and attribute.endswith("folder")):
-            continue
-        if not isinstance(template, str) or not template:
-            raise PluginError(f"{code}.{attribute}: {template!r}; set a template such as "
-                              '"{post}_{num}"')
-        if ("\\" in template or template.startswith("/") or re.match(r"[A-Za-z]:", template)
-                or any(part in (".", "..") for part in template.split("/"))):
-            raise PluginError(f"{code}.{attribute}: {template!r} leaves the target's folder; "
-                              "write a relative path with '/' and no '..'")
-        try:
-            used = text.fields(template)
-        except ValueError as error:
-            raise PluginError(f"{code}.{attribute}: {template!r}: {error}") from None
-        for unknown in sorted(used - set(known)):
-            raise PluginError(f"{code}.{attribute}: unknown field {{{unknown}}}; fields are "
-                              f"{', '.join(known)}",
-                              hint=f"list a post field in {code}.fields to use it")
-
-
-def _check_patterns(cls: type[Plugin]) -> None:
-    """Check that link patterns are on the plugin's domains, and that none is given twice."""
-    for pattern, _ in cls._refusals:
-        if pattern.names:
-            raise PluginError(f"{cls.code}.unsupported: pattern {pattern.text!r} has "
-                              f"{{{pattern.names[0]}}}, but a refusal captures nothing; write * "
-                              "for that segment")
-    seen: set[str] = set()
-    own = [pattern for value in vars(cls).values() if isinstance(value, Route)
-           for pattern in value._patterns]
-    every = [pattern for known in cls.routes for pattern in known._patterns]
-    for pattern in every + [pattern for pattern, _ in cls._refusals]:
-        if pattern.host is not None and not any(
-                pattern.host == _bare_host(domain) for domain in cls.domains):
-            raise PluginError(f"{cls.code}: pattern {pattern.text!r} isn't on its domains "
-                              f"{cls.domains}")
-        # Only the class's own routes: a subclass with another code reads its base's patterns.
-        if pattern.host is None and pattern in own and pattern.code != cls.code:
-            written = pattern.text[len(pattern.code or ""):]
-            written = written if written.startswith(("?", ":")) else f":{written}"
-            raise PluginError(f"{cls.code}: pattern {pattern.text!r} must start with the "
-                              f"plugin's code; write it {cls.code}{written}")
-        if pattern.host is None:
-            key = pattern.body
-        else:
-            head, sep, tail = pattern.text.partition("://")
-            host, slash, rest = (tail if sep else head).partition("/")
-            key = f"{_bare_host(host.lower())}{slash}{rest}"
-        if key in seen:
-            raise PluginError(f"{cls.code}: pattern {pattern.text!r} is given twice")
-        seen.add(key)
-
-
-def _check_route_names(cls: type[Plugin], code: str) -> None:
-    """Check that no route or category takes the name of a hook or a declaration."""
-    for known in cls.routes:
-        for name in (known.kind, *(category.name for category in known.categories)):
-            if name in HOOKS or name == "resolve":
-                raise PluginError(f"{code}.{name}: a route or category named like the {name} "
-                                  "hook replaces it; rename the method")
-            if name in vars(Plugin) or name in ("code", "name", "api"):
-                raise PluginError(f"{code}.{name}: a route or category named like the {name} "
-                                  "declaration replaces it; rename the method")
-
-
-def _check_options(label: str, options: Mapping[str, object]) -> None:
-    """Check that each of a route's or a category's switches is True or False."""
-    for option, value in options.items():
-        if not isinstance(value, bool):
-            raise PluginError(f"{label}: {option} is True or False, not {value!r}")
-
-
-def _check_value_template(pattern: str, template: str, names: list[str]) -> None:
-    """Check a `(pattern, value)` pair's template: plain `{name}` fields the pattern captures."""
-    used = []
-    try:
-        parsed = list(_FORMATTER.parse(template))
-    except ValueError as error:
-        raise PluginError(f"pattern {pattern!r}: value {template!r}: {error}") from None
-    for _, name, spec, conversion in parsed:
-        if name is None:
-            continue
-        if name not in names or spec or conversion:
-            raise PluginError(f"pattern {pattern!r}: value {template!r} may name only its "
-                              f"placeholders, as {{{names[0] if names else 'name'}}}")
-        used.append(name)
-    if not used:
-        raise PluginError(f"pattern {pattern!r}: value {template!r} names no placeholder")
 
 
 # ---------------------------------------------------------------------------------------------

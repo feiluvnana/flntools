@@ -83,7 +83,6 @@ class Loibus(Plugin):
     code = "loi"
     name = "LOIBUS"
     domains = ("loix.cc", "moegoat.com")
-    api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
     assets = True
     # A more literal route (a post, an author, a search) wins over these catch-alls.

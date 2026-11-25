@@ -15,8 +15,8 @@ from unittest import mock
 import no_profiles  # noqa: F401
 
 from flnd import plugin as v2
+from flnd.engine.plugins import PLUGINS
 from flnd.errors import Blocked, LoginError, NotFound, PluginError, SiteError, UsageError
-from flnd.plugins import PLUGINS
 from flnd.testing import FakeCtx, FakePage, Reply, Sent, check, collect, fake_clock
 from flnkit import clock as _time
 
@@ -48,7 +48,7 @@ WALL = "https://www.example.com/accounts/login/next"
 
 
 class Gallery(v2.Plugin):
-    code, name, api = "gal", "Gallery", v2.API
+    code, name = "gal", "Gallery"
     domains = ("api.example.com", "www.example.com")
     walls = ("/accounts/login",)
     fields = ("album",)

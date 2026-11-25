@@ -249,8 +249,6 @@ class RoutesTest(unittest.TestCase):
                 self.assertEqual(Instagram.resolve(found.text), found)
 
     def test_declarations(self):
-        # S13: the API version is no longer shadowed by an API client on the instance.
-        self.assertEqual((Instagram.api, Instagram().api), (2, 2))
         self.assertEqual(Instagram.pace, 2.0)
         self.assertEqual(Instagram.walls, ("/accounts/login",))
         route = next(known for known in Instagram.routes if known.kind == "user")

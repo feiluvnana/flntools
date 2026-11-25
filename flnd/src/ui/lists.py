@@ -15,7 +15,7 @@ from rich.cells import cell_len
 from flnd.errors import Error
 from flnd.ui import forms, out, theme
 
-__all__ = ["Column", "Key", "PluginRow", "Row", "TargetRow", "plugins", "show", "targets"]
+__all__ = ["Column", "Key", "Row", "TargetRow", "show", "targets"]
 
 Part = out.Part | list[out.Part]
 
@@ -427,26 +427,10 @@ class TargetRow:
     pending: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
-class PluginRow:
-    """A row of `plugin list`: `targets` counts the targets that use it; `disabled` is why a
-    plugin that didn't load is off (the row says "disabled"; the command prints the reason)."""
-
-    code: str
-    name: str
-    builtin: bool
-    api: int
-    domains: tuple[str, ...]
-    targets: int
-    disabled: str = ""
-
-
 TARGET_COLUMNS = (Column("target", limit=28), Column("followed"),
                   Column("categories", limit=20), Column("status"),
                   Column("files", right=True), Column("size", right=True),
                   Column("last run", right=True))
-PLUGIN_COLUMNS = (Column("code"), Column("name"), Column("kind"), Column("api", right=True),
-                  Column("domains"), Column("targets", right=True))
 
 
 def targets(load: Callable[[], Sequence[TargetRow]], *, follow: Callable[[TargetRow], object],
@@ -474,26 +458,6 @@ def targets(load: Callable[[], Sequence[TargetRow]], *, follow: Callable[[Target
     keys = (Key("f", "follow", _given(follow)), Key("r", "retry", _given(retry)),
             Key("a", "add", ask, leave=True))
     show("Targets", TARGET_COLUMNS, rows, keys=keys, delete=Key("d", "delete", _given(delete)))
-
-
-def plugins(load: Callable[[], Sequence[PluginRow]], *, install: Callable[[str], object],
-            uninstall: Callable[[PluginRow], object]) -> None:
-    """The plugins: built in, then installed.
-
-    Args:
-        install: install the plugin at a path typed into the form (`a`).
-        uninstall: uninstall an installed plugin, after a confirmation (`d`); a built-in has none.
-    """
-    def rows() -> list[Row]:
-        return [Row(plugin, _plugin(plugin), fixed=plugin.builtin) for plugin in load()]
-
-    def ask(_: Any) -> None:
-        typed = forms.text("Path of the plugin")
-        if typed:
-            install(typed.strip())
-
-    show("Plugins", PLUGIN_COLUMNS, rows, keys=(Key("a", "add", ask, leave=True),),
-         delete=Key("d", "uninstall", _given(uninstall)))
 
 
 def _given(run: Callable[[Any], object]) -> Callable[[Any], object]:
@@ -563,14 +527,6 @@ def _target_details(target: TargetRow) -> tuple[tuple[str, Part], ...]:
         ("done", (", ".join(done), "good") if done else ("none", "dim")),
         ("pending", (", ".join(target.pending), "warn")),
     )
-
-
-def _plugin(plugin: PluginRow) -> tuple[Part, ...]:
-    kind: Part = ("built-in", "dim") if plugin.builtin else "installed"
-    if plugin.disabled:
-        kind = ("disabled", "bad")
-    return (plugin.code, plugin.name, kind, str(plugin.api), " ".join(plugin.domains),
-            f"{plugin.targets:,}")
 
 
 def _size(n: int) -> str:

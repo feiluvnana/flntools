@@ -1,778 +1,195 @@
-"""Plugins (`flnd.engine.plugins`).
+"""The built-in plugins: their table, their loader and their declarations.
 
-Every test gets a registry that hasn't looked for plugins yet (`PluginCase`), a plugin folder
-of its own (`$FLND_PLUGINS`), a temporary home, the fake network and the fake clock. A plugin
-is installed into that folder via `Manager` (`plugins.json`).
-
-The gates of plugins, each a test below:
-- the example plugin's own tests pass, and it downloads through `Flnd`;
-- a broken plugin (a syntax error, an import error, a newer plugin API, a wrong code) disables
-  only itself, with a warning naming its file and line, and a listing that raises fails only
-  its own target;
-- nothing loads from a home: `<home>/plugins/evil.py` never runs, whatever command reads it;
-- the plugin manager (`ManagerCase` on): install, replace, refuse, check again, ignore, disable,
-  uninstall.
+`flnd.plugins.TABLE` is written by hand, so these tests check it against each class, and check
+that `--help` and target resolution import no more plugin modules than they need. Each plugin's
+own tests are in tests/test_<code>.py.
 """
 
-from __future__ import annotations
-
-import contextlib
-import hashlib
-import io
-import json
-import os
+import ast
+import importlib
 import subprocess
 import sys
-import textwrap
-import threading
 import unittest
+import unittest.mock
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from unittest import mock
 
-import no_profiles  # noqa: F401  (also points $FLND_PLUGINS away from the real folder)
-from fakes import EngineCase, noise
-
-import flnd
-from flnd import cli as flnd_cli
-from flnd.engine import crawl as job
-from flnd.engine import plugins as _plugins
+from flnd.engine import plugins
 from flnd.engine.plugins import PLUGINS
-from flnd.engine.resolve import Manifest, resolve
-from flnd.errors import PluginError, UsageError
-from flnd.plugins import _manifest
-from flnkit import clock
-from flnkit import net as _net
+from flnd.plugin import COOKIE_METHODS, RESERVED, TEMPLATE_FIELDS, Plugin
+from flnd.plugins import TABLE
+from flnkit import text
 
-ROOT = Path(__file__).resolve().parent.parent
-JPEG = noise("JPEG")
-
-# A working plugin: `exm:<user>` lists one post with one photo, which `serve` answers.
-GOOD = '''
-from flnd.plugin import File, Plugin, Post, route
-
-__version__ = "2.1"
+PLUGINS_DIR = Path(__file__).resolve().parent.parent / "src" / "plugins"
+# The SDKs a built-in plugin may import (inside a function), beside flnd.plugin and the
+# standard library: Telegram's client and QR codes, and LOIBUS's decryption.
+SDKS = ("telethon", "qrcode", "cryptography")
+CODES = ["tik", "fbk", "ins", "thr", "twt", "loi", "tlg", "mht", "web"]
 
 
-class {name}(Plugin):
-    code, name, domains, api = "{code}", "{name}", ("{code}.example",), {api}
-
-    @route("{code}:{{user}}", "{code}.example/{{user}}")
-    async def user(self, ctx, user):
-        if user == "broken":
-            raise KeyError("id")
-        yield Post("p1", [File("https://cdn.example.com/" + user + ".jpg")])
-'''
-
-
-def plugin(code: str, *, name: str = "Example", api: int = 2) -> str:
-    """The text of a working plugin file for `code`."""
-    return GOOD.format(code=code, name=name, api=api)
+def loaded_after(code: str) -> list[str]:
+    """The plugin modules a fresh interpreter has imported after running `code`."""
+    shown = (f"import sys\n{code}\n"
+             "print(sorted(name for name in sys.modules if name.startswith('flnd.plugins.')\n"
+             "             and name.count('.') == 2))")
+    result = subprocess.run([sys.executable, "-c", shown], capture_output=True, text=True,
+                            check=True)
+    return eval(result.stdout.strip().splitlines()[-1])  # a list of names, printed by us
 
 
-class PluginCase(EngineCase):
-    """A fresh registry, a plugin folder of its own, and the log in `self.dest`."""
-
-    def serve(self, request):
-        if str(request.url).startswith("https://cdn.example.com/"):
-            return _net.reply(200, content=JPEG)
-        return super().serve(request)
-
-    def setUp(self):
-        super().setUp()
-        folder = TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        root = Path(folder.name).resolve()
-        self.folder = root / "plugins"
-        self.staging = root / "staging"
-        self.folder.mkdir()
-        self.enterContext(mock.patch.dict(os.environ, {_plugins.VARIABLE: str(self.folder)}))
-        # The registry reads the folder lazily; each test starts fresh.
-        self.enterContext(mock.patch.multiple(
-            PLUGINS, _overrides={}, _built_in={}, _removed=set(), _mgr=None, _stamp=None,
-            _warned=0))
-        self.enterContext(mock.patch.dict(sys.modules))
-        self.fl = self.enterContext(flnd.open(self.home))
-
-    def write(self, name: str, text: str) -> Path:
-        """Write a file in the plugin folder, its text dedented."""
-        path = self.folder / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(textwrap.dedent(text), encoding="utf-8")
-        return path
-
-    def install(self, name: str, text: str) -> Path:
-        """Stage a plugin file and install it into `self.folder` via `Manager`."""
-        staged = self.staging / name
-        staged.parent.mkdir(parents=True, exist_ok=True)
-        staged.write_text(textwrap.dedent(text), encoding="utf-8")
-        target = staged.parent if "/" in name else staged
-        entry = _plugins.Manager(self.folder, built_in=_manifest.PLUGINS).install(target)
-        return self.folder / entry["file"]
-
-    def loaded(self) -> set[str]:
-        """The plugin modules imported so far, by code."""
-        return {name.removeprefix(_plugins.MODULE_PREFIX) for name in sys.modules
-                if name.startswith(_plugins.MODULE_PREFIX) and "." not in name}
-
-    def rows(self) -> dict[str, flnd.Installed]:
-        return {row.code: row for row in self.fl.plugins}
+def built_in() -> dict[str, type[Plugin]]:
+    """Each built-in plugin's class by code, in the table's order."""
+    return {entry.code: getattr(importlib.import_module(entry.module), entry.cls)
+            for entry in TABLE}
 
 
-class DiscoveryTest(PluginCase):
-    def test_a_file_plugin_downloads_like_a_built_in(self):
-        self.install("exm.py", plugin("exm"))
-        report = self.fl.get("exm:example_user").wait()
-        self.assertEqual((report.saved, report.failed), (1, ()))
-        saved = self.home / "media" / "exm" / "example_user" / "p1_0.jpg"
-        self.assertEqual(saved.read_bytes(), JPEG)
+class TableTest(unittest.TestCase):
+    def test_the_table_lists_the_built_ins_in_order_with_web_last(self):
+        self.assertEqual([entry.code for entry in TABLE], CODES)
+        self.assertEqual(list(PLUGINS)[:len(CODES)], CODES)
 
-    def test_a_code_imports_its_plugin_alone(self):
-        self.install("exm.py", plugin("exm"))
-        self.install("exo.py", plugin("exo"))
-        self.fl._resolve(["exm:example_user", "ins:example_user"])
-        self.assertEqual(self.loaded(), set())
-        self.fl.get("exm:example_user").wait()
-        self.assertEqual(self.loaded(), {"exm"})
+    def test_each_entry_matches_its_class(self):
+        for entry in TABLE:
+            with self.subTest(plugin=entry.code):
+                cls = built_in()[entry.code]
+                self.assertEqual((cls.code, cls.__module__, cls.__name__, cls.domains),
+                                 (entry.code, entry.module, entry.cls, entry.domains))
 
-    def test_a_built_in_link_imports_no_plugin(self):
-        self.install("exm.py", plugin("exm"))
-        self.fl._resolve(["https://www.instagram.com/example_user/"])
-        self.assertEqual(self.loaded(), set())
-
-    def test_a_built_in_download_never_looks_for_plugins(self):
-        with mock.patch.object(PLUGINS, "manager", side_effect=AssertionError("checked plugins")):
-            self.fl.get("mht:70982").wait()
-
-    def test_a_link_no_built_in_reads_resolves_without_importing(self):
-        self.install("exm.py", plugin("exm"))
-        [found] = self.fl._resolve(["https://exm.example/example_user"])
-        self.assertEqual((found.plugin, found.kind, found.value), ("exm", "user", "example_user"))
-        self.assertEqual(self.loaded(), set())
-
-    def test_a_package_plugin_imports_its_own_modules(self):
-        site = self.staging / "exp/site.py"
-        site.parent.mkdir(parents=True, exist_ok=True)
-        site.write_text(textwrap.dedent(plugin("exp")), encoding="utf-8")
-        self.install("exp/__init__.py", "from .site import Example\n")
-        self.assertEqual(self.fl._resolve(["exp:example_user"])[0].kind, "user")
-        self.assertEqual(self.rows()["exp"].where, str(self.folder / "exp"))
-
-    def test_a_script_adds_after_the_plugins_and_is_refused_a_taken_code(self):
-        self.install("exm.py", plugin("exm"))
-        Other = type(PLUGINS["exm"])("Other", (PLUGINS["exm"],), {})
-        with self.assertRaises(flnd.UsageError) as caught:
-            self.fl.add(Other)
-        self.assertIn("exm: the code is taken by", str(caught.exception))
-        Own = type(PLUGINS["exm"])("Own", (PLUGINS["exm"],), {"code": "own"})
-        self.fl.add(Own)
-        self.assertEqual(self.rows()["own"].origin, "script")
-
-    def test_plugins_list_origin_version_and_forms(self):
-        self.install("exm.py", plugin("exm"))
-        rows = self.rows()
-        self.assertEqual((rows["ins"].origin, rows["ins"].version), ("built-in", flnd.__version__))
-        exm = rows["exm"]
-        self.assertEqual((exm.origin, exm.version, exm.api), ("file", "2.1", 2))
-        self.assertEqual(exm.forms, ("exm:<user>", "https://www.exm.example/<user>/"))
-
-    def test_a_folder_that_isnt_there_holds_no_plugin(self):
-        os.environ[_plugins.VARIABLE] = str(self.folder / "missing")
-        self.assertEqual(list(PLUGINS), ["tik", "fbk", "ins", "thr", "twt", "loi", "tlg", "mht", "web"])
-
-    def test_the_default_folder_is_the_users_config(self):
-        del os.environ[_plugins.VARIABLE]
-        with mock.patch.dict(os.environ, {"FLND_TEST_NO_PROFILES": ""}):
-            with mock.patch.object(sys, "platform", "linux"):
-                self.assertEqual(_plugins.folder(), Path.home() / ".config" / "flnd" / "plugins")
-            with mock.patch.object(sys, "platform", "win32"), \
-                    mock.patch.dict(os.environ, {"APPDATA": str(self.folder)}):
-                self.assertEqual(_plugins.folder(), self.folder / "flnd" / "plugins")
+    def test_no_domain_belongs_to_two_plugins(self):
+        owners: dict[str, str] = {}
+        for entry in TABLE:
+            for domain in entry.domains:
+                self.assertNotIn(domain, owners, f"{domain} is {owners.get(domain)}'s too")
+                owners[domain] = entry.code
 
 
-class ContainmentTest(PluginCase):
-    def disabled(self, code: str) -> str:
-        """Why a plugin is disabled, after checking the others still work."""
-        rows = self.rows()
-        self.assertFalse(rows["exm"].disabled)
-        self.assertEqual(self.fl._resolve(["exm:example_user"])[0].plugin, "exm")
-        return rows[code].disabled
+class LoaderTest(unittest.TestCase):
+    def test_a_plugin_is_imported_when_it_is_looked_up(self):
+        base = "from flnd.engine.plugins import PLUGINS\n"
+        self.assertEqual(loaded_after(base + "list(PLUGINS); PLUGINS.domains('ins')"), [])
+        self.assertEqual(loaded_after(base + "PLUGINS['ins']"), ["flnd.plugins.ins"])
 
-    def test_a_syntax_error_disables_that_plugin_alone(self):
-        self.install("exm.py", plugin("exm"))
-        self.install("bad.py", plugin("bad"))
-        path = self.write("bad.py", "x = 1\ndef broken(:\n")
-        self.assertIn(f"{path}, line 2", self.disabled("bad"))
-        self.assertIn("bad: disabled", self.dest.getvalue())
+    def test_resolving_a_code_imports_that_plugin_alone(self):
+        code = ("import flnd\n"
+                "with flnd.open('example-home') as fl:\n"
+                "    fl._resolve(['ins:example_user'])")
+        self.assertEqual(loaded_after(code), ["flnd.plugins.ins"])
 
-    def test_an_import_error_names_the_file_and_line(self):
-        self.install("exm.py", plugin("exm"))
-        self.install("bad.py", plugin("bad"))
-        path = self.write("bad.py", "import os\nimport flnd_no_such_module\n" + plugin("bad"))
-        reason = self.disabled("bad")
-        self.assertIn(f"{path}, line 2: ModuleNotFoundError", reason)
+    def test_resolving_a_link_imports_the_plugin_of_its_domain_alone(self):
+        code = ("import flnd\n"
+                "with flnd.open('example-home') as fl:\n"
+                "    fl._resolve(['https://www.tiktok.com/@example_user'])")
+        self.assertEqual(loaded_after(code), ["flnd.plugins.tik"])
 
-    def test_a_newer_or_older_plugin_api_is_refused(self):
-        self.install("exm.py", plugin("exm"))
-        self.install("new.py", plugin("new"))
-        self.install("old.py", plugin("old"))
-        self.write("new.py", plugin("new", api=3))
-        self.write("old.py", plugin("old", api=1))
-        self.assertIn("new is written for plugin API 3; this flnd has 2; it needs a newer flnd",
-                      self.disabled("new"))
-        self.assertIn("old is written for plugin API 1; this flnd has 2",
-                      self.rows()["old"].disabled)
+    def test_a_link_no_plugin_owns_imports_web_alone(self):
+        code = ("import flnd\n"
+                "with flnd.open('example-home') as fl:\n"
+                "    fl._resolve(['https://example.com/page'])")
+        self.assertEqual(loaded_after(code), ["flnd.plugins.web"])
 
-    def test_a_class_with_another_code_is_refused(self):
-        self.install("exm.py", plugin("exm"))
-        self.install("odd.py", plugin("odd"))
-        self.write("odd.py", plugin("xyz"))
-        self.assertIn("its plugin's code is 'xyz', not 'odd'", self.disabled("odd"))
-
-    def test_a_file_name_that_isnt_a_code_is_ignored(self):
-        self.install("exm.py", plugin("exm"))
-        stray = self.write("Bad-Name.py", plugin("exm"))
-        rows = self.rows()
-        self.assertNotIn("Bad-Name", rows)
-        self.assertIn(f"{stray} isn't installed", self.dest.getvalue())
-
-    def test_a_disabled_plugin_is_not_in_plugins(self):
-        self.install("bad.py", plugin("bad"))
-        self.write("bad.py", "raise RuntimeError('no')\n")
-        report = self.fl.get("bad:example_user").wait()
-        self.assertEqual(len(report.failed), 1)
-        self.assertIn("bad is disabled", str(report.failed[0].error))
-        self.assertNotIn("bad", list(PLUGINS))
-
-    def test_a_listing_that_raises_fails_its_target_alone(self):
-        self.install("exm.py", plugin("exm"))
-        run = self.fl.get("exm:broken", "exm:example_user")
-        failed = [event for event in run if isinstance(event, flnd.Failed)]
-        self.assertEqual(run.report.saved, 1)
-        [event] = failed
-        self.assertEqual(str(event.target), "exm:broken")
-        self.assertIsInstance(event.error, flnd.PluginError)
-        self.assertEqual(str(event.error), "unexpected KeyError: 'id'")
-        self.assertIn(f"a bug in the plugin exm ({self.folder / 'exm.py'})", event.error.hint)
-
-    def test_an_async_category_that_holds_the_loop_warns(self):
-        self.install("slow.py", '''
-            import time
-            from flnd.plugin import File, Plugin, Post, route
-
-            class Slow(Plugin):
-                code, name, domains, api = "slow", "Slow", ("slow.example",), 2
-
-                @route("slow:{user}")
-                async def user(self, ctx, user):
-                    time.sleep(0.05)
-                    yield Post("p1", [File("https://cdn.example.com/p1.jpg")])
-            ''')
-        with mock.patch.object(job, "HELD", 0.01):
-            self.assertEqual(self.fl.get("slow:example_user").wait().saved, 1)
-        self.assertIn("Slow.user held the loop", self.dest.getvalue())
-
-
-class NeverFromAHomeTest(PluginCase):
-    """A home may be a folder someone else made: code in it must never run."""
-
-    def setUp(self):
-        super().setUp()
-        self.marker = self.home.parent / "PWNED"
-        evil = f"open({str(self.marker)!r}, 'w').close()\n" + plugin("evil")
-        for folder in (self.home / "plugins", self.home / "sources",
-                       self.home.parent / "plugins", self.home.parent / "sources"):
-            folder.mkdir(parents=True)
-            (folder / "evil.py").write_text(evil, encoding="utf-8")
-            (folder / "plugins.json").write_text(
-                json.dumps({"version": 1, "plugins": {"evil": {"file": "evil.py", "api": 2}}}),
-                encoding="utf-8")
-
-    def test_no_read_or_command_loads_it(self):
-        self.assertNotIn("evil", self.rows())
-        with self.assertRaises(flnd.UsageError):
-            self.fl.get("evil:example_user")
-        list(self.fl.auth)
-        with contextlib.chdir(self.home.parent), contextlib.redirect_stdout(io.StringIO()):
-            flnd_cli.main(["--home", str(self.home), "plugin", "list"])
-            flnd_cli.main(["auth", "list"])
-        self.assertFalse(self.marker.exists())
-
-
-class CliTest(PluginCase):
-    def run_app(self, *argv):
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(self.dest):
-            code = flnd_cli.main(["--home", str(self.home), *argv])
-        return code, out.getvalue()
-
-    def test_plugin_list_shows_plugins_and_why_one_is_disabled(self):
-        self.install("exm.py", plugin("exm"))
-        self.install("bad.py", plugin("bad", name="bad"))
-        self.write("bad.py", "x = (\n")
-        code, out = self.run_app("plugin", "list")
-        self.assertEqual(code, 0)
-        self.assertRegex(out, r"ins +Instagram +built-in +2 ")
-        self.assertRegex(out, r"exm +Example +installed +2 ")
-        self.assertRegex(out, r"bad +bad +disabled +0 ")
-        self.assertIn("bad disabled: ", out)
-
-
-class HelpTest(unittest.TestCase):
     def test_help_imports_no_plugin(self):
-        with TemporaryDirectory() as folder:
-            marker = Path(folder) / "IMPORTED"
-            Path(folder, "exm.py").write_text(f"open({str(marker)!r}, 'w').close()\n",
-                                              encoding="utf-8")
-            env = {**os.environ, _plugins.VARIABLE: folder}
-            subprocess.run([sys.executable, "-m", "flnd", "--help"], cwd=ROOT, env=env,
-                           capture_output=True, check=True)
-            self.assertFalse(marker.exists())
+        code = "from flnd import cli\ncli.parser().parse_args(['sync'])"
+        self.assertEqual(loaded_after(code), [])
+
+    def test_the_forms_of_get_help_import_every_plugin(self):
+        code = "from flnd import cli\ncli._forms()"
+        self.assertEqual(loaded_after(code), sorted(entry.module for entry in TABLE))
+
+    def test_a_registry_can_be_patched_like_a_dict(self):
+        with unittest.mock.patch.dict(PLUGINS, {"exm": object}):
+            self.assertIn("exm", PLUGINS)
+            self.assertEqual(list(PLUGINS)[-1], "exm")
+        self.assertNotIn("exm", PLUGINS)
+        self.assertEqual(len(PLUGINS), len(TABLE))
+
+    def test_domains_come_from_the_table_until_a_class_is_set(self):
+        self.assertEqual(plugins.domains(PLUGINS, "ins"), ("instagram.com",))
+        self.assertEqual(plugins.domains(PLUGINS, "none"), ())
 
 
-# ---------------------------------------------------------------------------------------------
-# The plugin manager (`flnd.engine.plugins.Manager`)
-# ---------------------------------------------------------------------------------------------
+class BuiltInTest(unittest.TestCase):
+    def test_each_describes_itself(self):
+        for code, plugin in built_in().items():
+            with self.subTest(plugin=code):
+                self.assertTrue(plugin.name.strip() and plugin.forms)
+                # `web` reads any link, so it has no domains of its own.
+                self.assertEqual(bool(plugin.domains), code != "web")
 
-# An API 2 plugin; it touches `{marker}` each time it is imported.
-API2 = """\
-from pathlib import Path
-from flnd.plugin import Plugin, route
+    def test_routes_have_unique_names_and_the_templates_name_known_fields(self):
+        for code, plugin in built_in().items():
+            with self.subTest(plugin=code):
+                kinds = [route.kind for route in plugin.routes]
+                self.assertTrue(kinds)
+                self.assertEqual(len(kinds), len(set(kinds)))
+                known = {*TEMPLATE_FIELDS, *plugin.fields}
+                self.assertFalse(set(plugin.fields) & RESERVED)
+                templates = [plugin.folder, plugin.filename, plugin.key]
+                for route in plugin.routes:
+                    templates.append(route.folder)
+                    for category in route.categories:
+                        templates += [category.folder, category.key]
+                for template in templates:
+                    if template:
+                        self.assertLessEqual(text.fields(template), known, template)
 
-Path({marker!r}).touch()
-
-
-class Example(Plugin):
-    code, name, api, domains = "{code}", "{name}", {api}, ("{code}.example",)
-    unsupported = {{"{code}.example/explore": "explore pages aren't targets"}}
-
-    @route("{code}:{{user}}", "{code}.example/{{user}}")
-    async def user(self, ctx, user):
-        return {{}}
-
-    @user.category
-    async def posts(self, ctx, profile):
-        yield None
-
-    @user.category(own=False)
-    async def tagged(self, ctx, profile):
-        yield None
-"""
-
-
-class ManagerCase(unittest.TestCase):
-    """A plugin folder and the files to install, in a temporary folder; a fake clock."""
-
-    def setUp(self):
-        root = TemporaryDirectory()
-        self.addCleanup(root.cleanup)
-        self.root = Path(root.name).resolve()
-        self.folder, self.marker = self.root / "plugins", self.root / "IMPORTED"
-        self.enterContext(clock.use(clock.Fake()))
-        self.enterContext(mock.patch.dict(sys.modules))
-        self.manager = self.fresh()
-
-    def write(self, where: str, text: str = "", **fields) -> Path:
-        """A file under the temporary folder: `text`, or an API 2 plugin made from `fields`."""
-        path = self.root / where
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text or self.plugin(**fields), encoding="utf-8")
-        return path
-
-    def plugin(self, **fields) -> str:
-        return API2.format(marker=str(self.marker), **{"code": "exm", "name": "Example",
-                                                       "api": 2, **fields})
-
-    def fresh(self) -> _plugins.Manager:
-        """A manager reading the folder anew, as the next command does."""
-        return _plugins.Manager(self.folder, built_in=("ins", "tik"))
-
-    def imported(self) -> bool:
-        """Whether a plugin was imported since the last call."""
-        found = self.marker.exists()
-        self.marker.unlink(missing_ok=True)
-        return found
-
-
-class InstallTest(ManagerCase):
-    def test_install_a_file_and_a_package(self):
-        entry = self.manager.install(self.write("src/my_plugin.py"))
-        self.assertEqual(entry["file"], "exm.py")
-        self.assertEqual(entry["sha256"], hashlib.sha256(
-            (self.folder / "exm.py").read_bytes()).hexdigest())
-        self.assertEqual(entry["installed"], "2026-01-01T00:00:00Z")
-        self.assertEqual(entry["routes"], [{
-            "name": "user", "single": False, "discovers": False, "shown": None,
-            "patterns": ["exm:{user}", "exm.example/{user}"],
-            "categories": [{"name": "posts", "own": True}, {"name": "tagged", "own": False}]}])
-        self.assertEqual(json.loads((self.folder / "plugins.json").read_text())["plugins"],
-                         {"exm": entry})
-        self.write("src/exp/__init__.py", "from .site import Example\n")
-        self.write("src/exp/site.py", code="exp")
-        self.assertEqual(self.manager.install(self.root / "src" / "exp")["file"], "exp")
-        self.assertTrue((self.folder / "exp" / "site.py").is_file())
-        manager = self.fresh()
-        self.assertEqual((manager.load("exm").code, manager.load("exp").code), ("exm", "exp"))
-
-    def test_install_replaces_one(self):
-        self.manager.install(self.write("src/exm.py"))
-        self.assertEqual(self.manager.load("exm").name, "Example")
-        self.manager.install(self.write("src/exm/__init__.py", name="Example 2").parent)
-        self.assertEqual(self.manager.load("exm").name, "Example 2")
-        self.assertFalse((self.folder / "exm.py").exists())
-        self.assertEqual(self.fresh().manifest["plugins"]["exm"]["file"], "exm")
-
-    def test_refusals(self):
-        def unreadable(name: str) -> Path:
-            # Mode 0: reading it would raise PermissionError, not the refusal.
-            path = self.write(name, "never read")
-            path.chmod(0)
-            return path
-
-        def link(name: str, to: Path) -> Path:
-            (self.root / name).symlink_to(to)
-            return self.root / name
-
-        def hard(name: str) -> Path:
-            os.link(self.write(f"{name}.real"), self.root / name)
-            return self.root / name
-
-        def fifo(name: str) -> Path:
-            os.mkfifo(self.root / name)
-            return (self.root / name).parent
-
-        def recoded(name: str, code: str) -> Path:
-            # The code changed once the class is made, which only a check after the run sees.
-            return self.write(name, self.plugin() + f"\nExample.code = {code!r}\n")
-
-        def lying(name: str, shown: str) -> Path:
-            # A str subclass that reads "exm" but formats as `shown`, in a path's f-string.
-            return self.write(name, self.plugin() + "\n\nclass Lie(str):\n    def __format__("
-                              f"self, spec):\n        return {shown!r}\n\n\n"
-                              'Example.code = Lie("exm")\n')
-
-        # Where `.{name}.old` would point if a lying code were formatted into it.
-        kept = self.write("src/victim.old/keep.txt", "kept")
-
-        # Two folders down, so `../../evil` would land in the temporary folder, not above it.
-        self.folder = self.root / "deep" / "plugins"
-        self.manager = self.fresh()
-        victim = self.write("src/victim/thesis.txt", "years of work")
-        two = self.plugin() + '\n\nclass Other(Example):\n    code = "exo"\n'
-        home = "is a home or cookie file"
-        changed = "its code is .* once it has run"
-        cases = {
-            "a code that climbs, after the class": (lambda: recoded("src/c1.py", "../../evil"),
-                                                    PluginError, changed),
-            "a code in capitals, after the class": (lambda: recoded("src/c2.py", "EXM"),
-                                                    PluginError, changed),
-            "an absolute code, after the class": (
-                lambda: recoded("src/pv/__init__.py", str(victim.parent)).parent, PluginError,
-                changed),
-            "a lying code": (lambda: lying("src/c3.py", "../../evil"), PluginError, changed),
-            "a lying code, in a package": (
-                lambda: lying("src/pz/__init__.py", "/../../src/victim").parent, PluginError,
-                changed),
-            "a package holding a pipe": (lambda: fifo("src/ps/pipe"), UsageError,
-                                         "holds .*ps/pipe, a special file"),
-            "a built-in's code": (lambda: self.write("src/ins.py", code="ins"), UsageError,
-                                  "ins is a built-in"),
-            "in a home": (lambda: self.write("src/.flnd/exm.py"), UsageError, home),
-            # The disk may ignore case, so names are compared casefolded.
-            "in a home, in capitals": (lambda: self.root / "src/.FLND/exm.py", UsageError, home),
-            "a cookie file": (lambda: unreadable("src/x_cookies.txt"), UsageError, home),
-            "a package holding cookies": (lambda: unreadable("src/pc/a_cookies.txt").parent,
-                                          UsageError, "holds .*a_cookies.txt"),
-            "a package holding cookies, in capitals": (
-                lambda: unreadable("src/pu/A_COOKIES.TXT").parent, UsageError,
-                "holds .*A_COOKIES.TXT"),
-            "a hard link": (lambda: hard("src/hl.py"), UsageError, "other hard links"),
-            "a package holding a home": (lambda: unreadable("src/ph/.flnd/flnd.db").parent.parent,
-                                         UsageError, r"holds .*\.flnd"),
-            "a link": (lambda: link("src/l.py", self.write("src/real.py")), UsageError,
-                       "is a link"),
-            "a package holding a link": (lambda: link("src/pl/up", self.root).parent, UsageError,
-                                         "holds .*pl/up"),
-            "neither a file nor a package": (lambda: self.write("src/notes.txt", "x"),
-                                             UsageError, "neither"),
-            "a code that climbs": (lambda: self.write("src/up.py", code="../../up"),
-                                   PluginError, r"src/up\.py, line 7: Example\.code"),
-            "two plugins": (lambda: self.write("src/two.py", two), PluginError,
-                            "defines Example, Other"),
+    def test_declarations(self):
+        rows = {  # code: (login cookies, pace, stealth, own User-Agent, host limits)
+            "tik": (("sessionid", "sid_tt"), 2.0, True, False, {}),
+            "fbk": (("c_user", "xs"), 2.0, True, False, {}),
+            "ins": (("sessionid",), 2.0, True, False, {}),
+            "thr": (("sessionid",), 2.0, True, False, {}),
+            "twt": (("auth_token",), 2.0, True, False,
+                    {"pbs.twimg.com": 4, "video.twimg.com": 4}),
+            "loi": (("access-token",), 1.5, True, False, {"api.moegoat.com": 2}),
+            "tlg": ((), 0.5, True, False, {"t.me": 3}),
+            "mht": ((), 0.5, True, False, {}),
+            "web": ((), 0.5, True, False, {}),
         }
-        for path in ("src/pc", "src/ph", "src/pl", "src/pu", "src/ps"):
-            self.write(f"{path}/__init__.py")
-        for label, (make, error, said) in cases.items():
-            with self.subTest(label), self.assertRaisesRegex(error, said):
-                self.manager.install(make())
-        self.assertFalse(self.folder.exists())
-        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["IMPORTED", "src"])
-        self.assertEqual((victim.read_text(), kept.read_text()), ("years of work", "kept"))
+        logins = {"tlg": ("qr", "phone"), "mht": None, "web": None}
+        for code, plugin in built_in().items():
+            with self.subTest(plugin=code):
+                self.assertEqual((tuple(getattr(plugin.login, "names", ())), plugin.pace,
+                                  plugin.stealth,
+                                  bool(plugin.user_agent), dict(plugin.limits)), rows[code])
+                methods = plugin.login.methods if plugin.login is not None else None
+                self.assertEqual(methods, logins.get(code, COOKIE_METHODS))
 
-    def test_an_api_it_cant_read_is_refused_unimported(self):
-        decoy = "class Decoy:\n    api = 2\n\n\n"
-        cases = {
-            "a sum": self.plugin(api="1 + 2"),
-            "a float": self.plugin(api="2.0"),
-            "a variable": "API = 3\n" + self.plugin(api="API"),
-            "an if": self.plugin().replace("    unsupported", "    if True:\n        api = 3\n"
-                                           "    unsupported"),
-            "a decoy": self.plugin(api="int('3')").replace("\n\nclass Example", decoy + "class "
-                                                           "Example"),
-            "an annotation": self.plugin().replace("    unsupported",
-                                                   "    api: int = 3\n    unsupported"),
-            "none": self.plugin().replace(", api, ", ", ").replace(", 2, (", ", ("),
+    def test_categories_and_single_post_kinds(self):
+        # Without a category named a target gets its own; a single post's route is its kind.
+        rows = {
+            "tik": ("videos stories playlists reposts liked favorites profile", "post short"),
+            "fbk": ("posts highlights photos tagged albums reels videos stories profile",
+                    "video watch share photo post"),
+            "ins": ("posts reels tagged reposts stories highlights profile", "post"),
+            "thr": ("posts replies reposts profile", "post"),
+            "twt": ("posts media highlights reposts replies profile", "post"),
+            "loi": ("archive photo", "post"),
+            "tlg": ("photo video file", ""),
+            "mht": ("chapters cover", "chapter"),
+            "web": ("", "page"),
         }
-        for label, text in cases.items():
-            with self.subTest(label):
-                with self.assertRaisesRegex(PluginError, "(?i)api"):
-                    self.manager.install(self.write("src/exm.py", text))
-                self.assertFalse(self.imported())
-        # Set after the class is made: it runs, but its entry never says api 3.
-        with self.assertRaisesRegex(PluginError, "(?i)api"):
-            self.manager.install(self.write("src/exm.py", self.plugin() + "\nExample.api = 3\n"))
-        self.assertFalse(self.folder.exists())
+        for code, plugin in built_in().items():
+            with self.subTest(plugin=code):
+                single = tuple(route.kind for route in plugin.routes if route.single)
+                categories, kinds = rows[code]
+                self.assertEqual((plugin.categories, single),
+                                 (tuple(categories.split()), tuple(kinds.split())))
 
-    def test_a_file_swapped_after_its_check_is_never_read(self):
-        cookies = self.write("x_cookies.txt", "never read")
-        cookies.chmod(0)
-        fifo, writers = self.root / "src/exm.py", []
-
-        def to_link():
-            fifo.unlink()
-            fifo.symlink_to(cookies)
-
-        def to_fifo():
-            fifo.unlink()
-            os.mkfifo(fifo)
-            # A writer, so the unfixed code's read ends rather than hangs.
-            writers.append(threading.Thread(target=write))
-            writers[-1].start()
-
-        def write():
-            with contextlib.suppress(OSError):
-                fifo.write_text("x = 1\n")
-
-        def to_other():
-            # A regular file with one link, renamed in: only its inode tells it apart.
-            os.replace(self.write("src/other.py"), fifo)
-
-        def swapping(name, after, swap):
-            """`name`, swapping the file once it has been called `after` times."""
-            real, calls = getattr(_plugins, name), []
-
-            def swapped(*args, **kwargs):
-                found = real(*args, **kwargs)
-                calls.append(args)
-                if len(calls) == after:
-                    swap()
-                return found
-            return swapped
-
-        # After the check of the source; then after the copy has listed it, before its read.
-        swaps = [("_refused", 1, "a link", to_link), ("_refused", 1, "a fifo", to_fifo),
-                 ("_tree", 2, "a link", to_link), ("_tree", 2, "a fifo", to_fifo),
-                 ("_tree", 2, "another file", to_other)]
-        for name, after, label, swap in swaps:
-            self.write("src/exm.py")
-            with self.subTest(label, after=name), mock.patch.object(
-                    _plugins, name, swapping(name, after, swap)):
-                with self.assertRaises(UsageError) as caught:
-                    self.manager.install(fifo)
-                self.assertIn(str(fifo), str(caught.exception))
-                self.assertNotIn("flnd-install-", str(caught.exception))
-            for writer in writers:
-                fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
-                writer.join()
-                os.close(fd)
-            writers.clear()
-            fifo.unlink()
-        self.assertFalse(self.folder.exists())
-
-        # A pipe nobody writes to: the read must not wait for a writer. Bounded, so a read
-        # that waits fails here instead of hanging the suite.
-        self.write("src/exm.py")
-        raised = []
-
-        def install():
-            try:
-                self.manager.install(fifo)
-            except Exception as error:
-                raised.append(error)
-
-        with mock.patch.object(_plugins, "_tree", swapping("_tree", 2, lambda: (
-                fifo.unlink(), os.mkfifo(fifo)))):
-            worker = threading.Thread(target=install, daemon=True)
-            worker.start()
-            worker.join(10)
-            waited = worker.is_alive()
-            if waited:
-                os.close(os.open(fifo, os.O_WRONLY))  # lets the waiting read go
-                worker.join()
-        self.assertFalse(waited, "the read waited for a writer")
-        self.assertIsInstance(raised[0], UsageError)
-
-    def test_the_copy_is_checked_again(self):
-        real = _plugins._copy
-
-        def sneaky(source, dest, *args):
-            real(source, dest, *args)
-            (dest / "up").symlink_to(self.root)
-
-        self.write("src/pkg/__init__.py")
-        with mock.patch.object(_plugins, "_copy", sneaky), self.assertRaisesRegex(
-                UsageError, "holds .*up"):
-            self.manager.install(self.root / "src/pkg")
-        # Refused before it is imported, not only before it is kept.
-        self.assertFalse(self.imported())
-        self.assertFalse(self.folder.exists())
-
-
-class LoadTest(ManagerCase):
-    def test_an_edited_file_is_checked_again(self):
-        self.manager.install(self.write("src/exm.py"))
-        before = self.fresh().manifest["plugins"]["exm"]
-        self.write("plugins/exm.py", name="Edited")
-        self.assertEqual(self.fresh().load("exm").name, "Edited")
-        after = self.fresh().manifest["plugins"]["exm"]
-        self.assertNotEqual(after["sha256"], before["sha256"])
-        self.assertEqual((after["name"], after["installed"]), ("Edited", before["installed"]))
-
-    def test_a_file_without_an_entry_is_ignored(self):
-        self.manager.install(self.write("src/exm.py"))
-        stray = self.write("plugins/stray.py", code="stray")
-        manager = self.fresh()
-        self.assertEqual(list(manager.manifest["plugins"]), ["exm"])
-        self.assertEqual(manager.warnings,
-                         [f"{stray} isn't installed: flnd plugin install {stray}"])
-        self.imported()
-        with self.assertRaises(UsageError):
-            manager.load("stray")
-        self.assertFalse(self.imported())
-        # What the warning says to do: install it where it is.
-        manager.install(stray)
-        self.assertEqual(self.fresh().load("stray").code, "stray")
-
-    def test_another_api_is_disabled_with_its_hint(self):
-        self.manager.install(self.write("src/exm.py"))
-        old = self.plugin(api=1).replace(
-            "    unsupported", '    needs = "sessionid"\n    single_kinds = ("post",)\n'
-            "    unsupported")
-        cases = {3: (self.plugin(api=3), "it needs a newer flnd"),
-                 1: (old, 'needs becomes login = cookies("<name>", url=...); single_kinds '
-                          "becomes @route(..., single=True) on each one-post route")}
-        for api, (text, hint) in cases.items():
-            with self.subTest(api=api):
-                self.write("plugins/exm.py", text)
-                self.imported()
-                manager = self.fresh()
-                with self.assertRaises(PluginError) as caught:
-                    manager.load("exm")
-                self.assertIn(f"written for plugin API {api}", str(caught.exception))
-                self.assertEqual(caught.exception.hint, hint)
-                self.assertEqual(manager.disabled["exm"], f"{caught.exception.__cause__}; {hint}")
-                with self.assertRaises(PluginError):
-                    self.manager.install(self.write("src/exm.py", text))
-                self.assertFalse(self.imported())
-
-    def test_a_broken_plugin_names_its_own_file_and_line(self):
-        # S7: a frame in `exm.py` is not the package `ex`'s, whatever their names share. Each
-        # plugin declares its API plainly, so it is imported and fails there.
-        exm = self.folder / "exm.py"
-        cases = {
-            "exm.py": ("x = 1\nraise KeyError('id')\n", f"{exm}, line 2: KeyError: 'id'"),
-            "ex": (f"exec(compile('raise KeyError(1)', {str(exm)!r}, 'exec'))\n",
-                   f"{self.folder / 'ex' / '__init__.py'}, line 1: KeyError: 1"),
-        }
-        for name, (text, said) in cases.items():
-            with self.subTest(name):
-                code = name.removesuffix(".py")
-                where = f"plugins/{name}" + ("/__init__.py" if code == name else "")
-                self.write(where, text + self.plugin(code=code))
-                self.write("plugins/plugins.json", json.dumps(
-                    {"version": 1, "plugins": {code: {"file": name, "api": 2}}}))
-                manager = self.fresh()
-                with self.assertRaises(PluginError):
-                    manager.load(code)
-                self.assertEqual(manager.disabled[code], said)
-
-    def test_resolution_imports_no_plugin(self):
-        self.manager.install(self.write("src/exm.py"))
-        self.assertTrue(self.imported())
-        prefix = _plugins.MODULE_PREFIX
-        self.assertFalse([name for name in sys.modules if name.startswith(prefix)])
-        manifest = Manifest({}, self.fresh().manifest)
-        for text in ("exm:example_user", "https://www.exm.example/example_user/"):
-            with self.subTest(text):
-                found = resolve(text, manifest=manifest, known={})
-                self.assertEqual((found.code, found.kind, found.value, found.categories),
-                                 ("exm", "user", "example_user", ("posts",)))
-        with self.assertRaisesRegex(UsageError, "explore pages"):
-            resolve("https://exm.example/explore", manifest=manifest, known={})
-        self.assertFalse(self.imported())
-
-    def test_an_edit_that_fails_keeps_the_entry(self):
-        self.manager.install(self.write("src/exm.py"))
-        before = self.fresh().manifest["plugins"]["exm"]
-        self.write("plugins/exm.py", code="zzz")
-        with self.assertRaisesRegex(PluginError, "'zzz'"):
-            self.fresh().load("exm")
-        self.assertEqual(self.fresh().manifest["plugins"]["exm"], before)
-
-    def test_what_load_refuses(self):
-        outside = self.write("x.py", f"open({str(self.marker)!r}, 'w').close()\n")
-        cookies = self.write("z_cookies.txt", "never read")
-        self.manager.install(self.write("src/exp/__init__.py", code="exp").parent)
-        (self.folder / "exp" / "leak.txt").symlink_to(cookies)
-        (self.folder / "exm.py").symlink_to(outside)
-        entries = {"climbs": "../x.py", "absolute": str(outside), "linked": "exm.py",
-                   "a link inside": "exp"}
-        for label, file in entries.items():
-            code = "exp" if file == "exp" else "exm"
-            entry = {**self.fresh().manifest["plugins"].get(code, {}), "file": file, "api": 2}
-            self.write("plugins/plugins.json", json.dumps(
-                {"version": 1, "plugins": {code: entry}}))
-            self.imported()
-            with self.subTest(label), self.assertRaisesRegex(PluginError, "link|not exm"):
-                self.fresh().load(code)
-            self.assertFalse(self.imported(), label)
-
-    def test_a_built_in_code_in_the_index_is_ignored(self):
-        self.write("plugins/ins.py", code="ins")
-        self.write("plugins/plugins.json", json.dumps(
-            {"version": 1, "plugins": {"ins": {"file": "ins.py", "api": 2, "sha256": ""}}}))
-        manager = self.fresh()
-        self.assertEqual(manager.manifest["plugins"], {})
-        self.assertEqual(manager.warnings, [
-            f"{self.folder / 'plugins.json'} lists ins, a built-in plugin's code; "
-            "that entry is ignored",
-            f"{self.folder / 'ins.py'} has a built-in plugin's code; it is ignored"])
-        for act in (manager.load, manager.uninstall):
-            with self.subTest(act.__name__), self.assertRaisesRegex(UsageError, "built in"):
-                act("ins")
-        self.assertTrue((self.folder / "ins.py").exists())
-        self.assertFalse(self.imported())
-
-
-class UninstallTest(ManagerCase):
-    def test_uninstall(self):
-        self.manager.install(self.write("src/exm.py"))
-        self.assertEqual(self.manager.uninstall("exm")["file"], "exm.py")
-        self.assertEqual(list(self.folder.iterdir()), [self.folder / "plugins.json"])
-        self.assertEqual(self.fresh().manifest["plugins"], {})
-        self.assertEqual(self.manager.warnings,
-                         ["exm is uninstalled; its targets stay"])
-        for code in ("ins", "exm", "../plugins.json"):
-            with self.subTest(code), self.assertRaises(UsageError):
-                self.manager.uninstall(code)
-        self.assertTrue((self.folder / "plugins.json").exists())
-
-    def test_the_folder(self):
-        with mock.patch.dict(os.environ, {_plugins.VARIABLE: str(self.folder)}):
-            self.assertEqual(_plugins.folder(), self.folder)
-        with mock.patch.dict(os.environ, {_plugins.VARIABLE: ""}), \
-                self.assertRaises(RuntimeError):
-            _plugins.folder()
+    def test_a_plugin_imports_only_flnd_plugin_the_standard_library_and_its_sdk(self):
+        # tests/test_layers.py checks the import time; this checks every import, anywhere.
+        for path in sorted(PLUGINS_DIR.glob("[!_]*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                    names = [node.module]
+                else:
+                    continue
+                for name in names:
+                    with self.subTest(plugin=path.stem, imports=name):
+                        top = name.split(".")[0]
+                        self.assertTrue(name == "flnd.plugin" or top in SDKS
+                                        or top in sys.stdlib_module_names)
 
 
 if __name__ == "__main__":

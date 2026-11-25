@@ -45,10 +45,10 @@ and `flnkit/`, a standalone package imported as `flnkit`. Its tree:
 src/                 the package flnd
   __init__.py      public names, each loaded on first use
   __main__.py      python -m flnd
-  _library.py      open, Flnd, and the groups Targets, Auth, Plugins, Config
+  _library.py      open, Flnd, and the groups Targets, Auth, Config
   cli.py           the commands
   errors.py        the one error hierarchy
-  plugin.py        plugin API 2 (public)
+  plugin.py        what a plugin declares and gets (public)
   testing.py       the plugin test kit (public)
   engine/
     run.py         Run, the loop's thread, the event channel, Ctrl-C, the journal
@@ -57,14 +57,14 @@ src/                 the package flnd
     crawl.py       one target: listing, smart sync, early stops, the Ledger
     save.py        a file job: transfer, dedupe, unpack, sidecar, exec, the commit
     resolve.py     target text -> (plugin, Target, categories)
-    plugins.py     the plugin manager
+    plugins.py     the plugin loader: a code to its class, imported on first use
     auth.py        the logins folder, login steps, cookie write-back
     store.py       flnd.db: schema, migrations, rows, check and repair
     config.py      config.toml: structs, reading, editing
   ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
     theme.py out.py screen.py lists.py forms.py
   plugins/         built-ins, importing only flnd.plugin and the standard library
-    __init__.py _manifest.py fbk.py ins.py loi.py mht.py thr.py tik.py tlg.py twt.py web.py
+    __init__.py (the table) fbk.py ins.py loi.py mht.py thr.py tik.py tlg.py twt.py web.py
 flnkit/              the standalone package flnkit, imports nothing of flnd
   net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py media.py
   stream.py
@@ -82,7 +82,7 @@ The import rules, checked by `tests/test_layers.py` by reading every file's impo
    `src/_library.py` imports `src/engine/*`, `flnkit`, `src/errors.py` and `src/plugin.py`.
 5. `src/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
    (`telethon`, `qrcode`), imported inside a function.
-6. `src/cli.py` imports only `flnd`, `src/ui/*` and `src/plugins/_manifest.py`.
+6. `src/cli.py` imports only `flnd`, `src/ui/*` and the table, `src/plugins/__init__.py`.
 7. `src/__init__.py` imports nothing at import time beyond the standard library.
 
 Also: `flnkit/` never imports `src/engine/`, `src/ui/` or `src/plugins/`, and `src/ui/` never
@@ -143,14 +143,6 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 - `errors.disk(OSError)` is the one disk mapper.
 - A user error never shows a traceback.
 - `Stopped` derives from `KeyboardInterrupt`, never from `flnd.Error`.
-
-## Plugin API
-- The API grows by additions within API 2: a new verb, a new optional field. An old plugin
-  keeps working, so such a change needs no new major version.
-- A change that breaks plugins means API 3, plus an adapter that runs API 2 plugins with a
-  deprecation warning for at least one release.
-- `flnd.plugin.API` and `SPEC.md#writing-a-plugin` say which
-  version this flnd has.
 
 ## Bugs
 - Write the failing test first, and run it against the unfixed code. It must fail there.

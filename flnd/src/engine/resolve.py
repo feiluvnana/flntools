@@ -1,12 +1,12 @@
 """The resolver: a target's text read into its plugin, value, kind and categories.
 
-SPEC.md#targets explains it. It reads only the manifest, never a plugin module.
+SPEC.md#targets explains it. It imports only the plugin a target names.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -70,7 +70,7 @@ class _Url:
 
 
 class _Pattern:
-    """One route or `unsupported` pattern, compiled from the manifest's text.
+    """One route or `unsupported` pattern, compiled from a plugin's text.
 
     Args:
         text: `exm:{user}`, `exm?{words}`, `example.com/p/{id:\\w+}` or `example.com/watch?v={id}`.
@@ -265,48 +265,48 @@ class _Plugin:
 
 
 class Manifest:
-    """What resolving needs of every plugin, read from the manifest's plain data.
+    """What resolving needs of every plugin, read from its class the first time it is asked for.
 
-    An entry is one plugin of `plugins.json`: `domains`, `unsupported` (pattern
-    to reason) and `routes`, each with `name`, `patterns` (a text, or a `[pattern, template]`
-    pair), `single`, `discovers`, `shown` and `categories` (`{"name", "own"}`); the
-    built-ins' entries in `_manifest.py` hold the same (`flnd.plugins.facts`).
+    Only the plugin a target names, or whose domain a link is on, is imported.
 
     Args:
-        built_in: the built-ins' entries by code, in the order they are tried.
-        installed: `plugins.json`'s data; its plugins come after, by code. A built-in's code
-            is never replaced, and a malformed entry is left out and kept in `broken`.
-
-    Raises:
-        PluginError: a built-in's entry is malformed.
+        sources: the plugin classes by code, in the order links are tried; a `Registry` imports
+            a class when it is first read.
+        domains: a code's domains, without importing it; None reads the class's own.
     """
 
-    def __init__(self, built_in: Mapping[str, Mapping[str, Any]],
-                 installed: Mapping[str, Any] | None = None) -> None:
-        self.plugins = {code: _entry(code, entry) for code, entry in built_in.items()}
-        # An installed plugin with a malformed entry is disabled alone, with its error.
-        self.broken: dict[str, PluginError] = {}
-        plugins = dict((installed or {}).get("plugins", {}))
-        for code, entry in sorted(plugins.items()):
-            if code in built_in:
-                continue
+    def __init__(self, sources: Mapping[str, Any],
+                 domains: Callable[[str], Sequence[str]] | None = None) -> None:
+        self.sources = sources
+        self._domains = domains or (lambda code: sources[code].domains)
+        self._compiled: dict[str, _Plugin] = {}
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.sources)
+
+    def get(self, code: str) -> _Plugin | None:
+        """The plugin with this code, compiled; None when there is none."""
+        if code not in self._compiled:
+            if code not in self.sources:
+                return None
+            cls = self.sources[code]
             try:
-                self.plugins[code] = _entry(code, entry)
+                self._compiled[code] = _compiled(code, entry(cls))
             except PluginError as error:
-                self.broken[code] = error
+                raise PluginError(f"plugin {code}: {error}") from None
+        return self._compiled[code]
+
+    def owner(self, host: str) -> _Plugin | None:
+        """The first plugin with a domain `host` is on."""
+        for code in self.sources:
+            if any(host == domain or host.endswith("." + domain) for domain in self._domains(code)):
+                return self.get(code)
+        return None
 
     @property
     def codes(self) -> str:
         """Every code, for a hint: `Plugins: tik, fbk, …`."""
-        return f"Plugins: {', '.join(self.plugins)}"
-
-
-def _entry(code: str, entry: Mapping[str, Any]) -> _Plugin:
-    """One plugin's entry, compiled."""
-    try:
-        return _compiled(code, entry)
-    except PluginError as error:
-        raise PluginError(f"plugin {code}: {error}") from None
+        return f"Plugins: {', '.join(self.sources)}"
 
 
 def _compiled(code: str, entry: Mapping[str, Any]) -> _Plugin:
@@ -317,7 +317,7 @@ def _compiled(code: str, entry: Mapping[str, Any]) -> _Plugin:
 
 
 def entry(cls: type) -> dict[str, Any]:
-    """What resolving reads of a plugin class, as the manifest and `plugins.json` hold it."""
+    """What resolving reads of a plugin class, as plain data."""
     return {
         "domains": list(cls.domains),  # type: ignore[attr-defined]
         "unsupported": dict(cls.unsupported),  # type: ignore[attr-defined]
@@ -406,12 +406,12 @@ def _resolve(text: str, manifest: Manifest, known: Mapping[str, Sequence[str]],
         # A link without its scheme (`example.com/example_user`) reads as one, as today, only
         # when a plugin claims its host.
         host = text.split("/", 1)[0].lower() if "/" in text else ""
-        if host and _owner(manifest, host) is not None:
+        if host and manifest.owner(host) is not None:
             return _link(*_listed(f"https://{text}", manifest), manifest, known, follow)
-        choices = ", ".join(f"{code}:{text}" for code in manifest.plugins)
+        choices = ", ".join(f"{code}:{text}" for code in manifest)
         raise UsageError(f'which plugin is "{text}"? Write it as {choices}')
     code, body = found[1].lower(), text[found.end():].strip()
-    plugin = manifest.plugins.get(code)
+    plugin = manifest.get(code)
     if plugin is None:
         raise UsageError(f"no plugin named {code}", hint=manifest.codes)
     if found[2] == "?":
@@ -518,7 +518,7 @@ def _listed(text: str, manifest: Manifest) -> tuple[str, list[str] | None]:
     """A link and the categories after its last `|`, when it is a plugin's and every name in
     the list is one of the plugin's categories or `all`; else the text whole, with none."""
     head, bar, tail = text.rpartition("|")
-    plugin = _owner(manifest, (urlsplit(head).hostname or "").lower().rstrip(".")) if bar else None
+    plugin = manifest.owner((urlsplit(head).hostname or "").lower().rstrip(".")) if bar else None
     tokens = _tokens(tail)
     if plugin is None or not tokens or not _named(tokens, plugin.categories):
         return text, None
@@ -532,9 +532,9 @@ def _link(text: str, tokens: list[str] | None, manifest: Manifest,
     `tokens`, else the stored or the route's own."""
     parsed = urlsplit(text)
     host = (parsed.hostname or "").lower().rstrip(".")
-    plugin = _owner(manifest, host)
+    plugin = manifest.owner(host)
     if plugin is None:
-        web = manifest.plugins.get(WEB)
+        web = manifest.get(WEB)
         hit = _find(web, text, None) if web is not None else None
         if not isinstance(hit, tuple):
             raise UsageError(f"no plugin reads links to {host}", hint=manifest.codes)
@@ -556,10 +556,6 @@ def _link(text: str, tokens: list[str] | None, manifest: Manifest,
     led = f" (from {typed})" if typed is not None else ""
     raise UsageError(f"{plugin.code}: can't read {text}{led}",
                      hint=f"Write it like {plugin.forms}")
-
-
-def _owner(manifest: Manifest, host: str) -> _Plugin | None:
-    return next((plugin for plugin in manifest.plugins.values() if plugin.on(host)), None)
 
 
 def _find(plugin: _Plugin, text: str, url: _Url | None) -> tuple[_Route, str] | str | None:

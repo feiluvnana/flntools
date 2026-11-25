@@ -193,12 +193,6 @@ class GetTest(LibraryCase):
             with self.subTest(), self.assertRaises(flnd.UsageError):
                 call()
 
-    def test_plugins_lists_built_in_and_added(self):
-        rows = {row.code: row for row in self.fl.plugins}
-        self.assertEqual((rows["ins"].origin, rows["exs"].origin), ("built-in", "script"))
-        with self.assertRaises(flnd.UsageError):
-            self.fl.plugins.uninstall("ins")
-
     def test_config_reads_sets_and_unsets(self):
         self.assertEqual((self.fl.config["when"], self.fl.config.where("when")), ("", "default"))
         self.fl.config.set("defaults.when", "30d")

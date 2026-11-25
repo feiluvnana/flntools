@@ -31,7 +31,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
-from flnd.engine import config, jobs, plugins, save, store
+from flnd.engine import config, jobs, save, store
 from flnd.engine.ctx import Ctx, Listing, PluginRun, met_turn
 from flnd.engine.events import NOTHING_NEW, RESUMING, Failed, Skipped, sink
 from flnd.errors import (
@@ -243,12 +243,6 @@ def failure(error: BaseException, target: Target, source: Plugin | None = None) 
     """
     made = classify(error, target=str(target))
     assert isinstance(made, Error), made
-    # A bug in a plugin is its author's to fix, not flnd's: the hint says whose code it is.
-    where = plugins.where(type(source)) if source is not None else None
-    if (where is not None and source is not None and isinstance(made, PluginError)
-            and made.__cause__ is error):
-        made.hint = (f"a bug in the plugin {source.code} ({where}), not in flnd; "
-                     "report it to its author")
     if (source is not None and type(made) is SiteError and made.status in LOGIN_WALLS
             and _on_domains(made, source.domains)):
         login = logged_out(target, f"{source.code}: the site refused the login "

@@ -341,7 +341,6 @@ class TikTok(Plugin):
     code = "tik"
     name = "TikTok"
     domains = ("tiktok.com", "vm.tiktok.com", "vt.tiktok.com")
-    api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
     hidden = True
     # Either cookie proves a login; none is needed, since public profiles are read without one.

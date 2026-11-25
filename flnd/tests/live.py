@@ -30,8 +30,8 @@ from typing import Any
 import flnd
 from flnd.engine import crawl
 from flnd.engine.events import Failed, Planned, Saved
+from flnd.engine.plugins import PLUGINS
 from flnd.plugin import Plugin
-from flnd.plugins._manifest import PLUGINS
 from flnkit import text
 
 DEFAULT_CONFIG = Path.home() / ".config" / "flnd" / "live.toml"
@@ -124,20 +124,18 @@ def _string_list(value: Any, name: str) -> list[str]:
 
 
 def _route_specs(code: str, plugins: Sequence[type[Any]] = ()) -> dict[str, list[str]]:
-    """Return `{route_name: [category_name, ...]}` for `code` from manifest or added plugins."""
+    """Return `{route_name: [category_name, ...]}` for `code` from the built-ins or added plugins."""
     for cls in plugins:
         if getattr(cls, "code", None) == code:
             return {
                 route.kind: [cat.name for cat in route.categories]
                 for route in cls.routes
             }
-    entry = PLUGINS.get(code)
-    if entry is None:
+    if code not in PLUGINS:
         raise ValueError(f"unknown plugin {code!r}")
-    routes: Sequence[Mapping[str, Any]] = entry["routes"]  # type: ignore[assignment]
     return {
-        str(route["name"]): [str(cat["name"]) for cat in route.get("categories", ())]
-        for route in routes
+        route.kind: [cat.name for cat in route.categories]
+        for route in PLUGINS[code].routes
     }
 
 

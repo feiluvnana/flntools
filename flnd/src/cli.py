@@ -10,6 +10,8 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
+from flnd.plugins import TABLE
+
 if TYPE_CHECKING:
     import flnd
 
@@ -370,80 +372,6 @@ def auth_logout(args: argparse.Namespace) -> int:
     return OK
 
 
-def plugin_list(args: argparse.Namespace) -> int:
-    """Work in the plugins: built in, installed from a file or folder, and why one is disabled.
-
-    On a terminal it is a list: a installs a plugin from a path, d uninstalls an installed one.
-    On a pipe it is a plain table. Plugins load from $FLND_PLUGINS, else ~/.config/flnd/plugins
-    (APPDATA's flnd/plugins on Windows); never from a home.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        0.
-    """
-    from flnd.ui import lists
-
-    with _open(args) as fl:
-        if args.json:
-            for row in fl.plugins:
-                _json(row)
-            return OK
-
-        def load() -> list[lists.PluginRow]:
-            used: dict[str, int] = {}
-            for each in fl.targets:
-                used[each.target.plugin] = used.get(each.target.plugin, 0) + 1
-            return [lists.PluginRow(row.code, row.name, row.origin == "built-in", row.api,
-                                    tuple(row.domains), used.get(row.code, 0), row.disabled)
-                    for row in fl.plugins if row.origin != "script"]
-
-        lists.plugins(load, install=fl.plugins.install,
-                      uninstall=lambda row: fl.plugins.uninstall(row.code))
-        from flnd.ui import out
-
-        for row in fl.plugins:
-            if row.disabled:
-                out.line((f"{row.code} disabled: ", "bold bad"), (str(row.disabled), "bad"))
-    return OK
-
-
-def plugin_install(args: argparse.Namespace) -> int:
-    """Install a plugin from a .py file or a package folder, replacing one with its code.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        0.
-    """
-    with _open(args) as fl:
-        done = fl.plugins.install(args.path)
-    _line(args, done, f"{done.code}: installed ({done.name})")
-    return OK
-
-
-def plugin_uninstall(args: argparse.Namespace) -> int:
-    """Uninstall a plugin. Its targets stay.
-
-    Args:
-        args: the parsed flags.
-
-    Returns:
-        0.
-    """
-    from flnd.ui import forms
-
-    with _open(args) as fl:
-        if not args.json and not forms.confirm(f"Uninstall {args.code}?"):
-            _line(args, None, "kept: nothing was uninstalled")
-            return OK
-        gone = fl.plugins.uninstall(args.code)
-    _line(args, gone, f"{gone.code}: uninstalled")
-    return OK
-
-
 def status(args: argparse.Namespace) -> int:
     """Show the last run, its failures by target, the logins that need care, and the disk.
 
@@ -608,13 +536,15 @@ def _disk(found: Any) -> None:
 class _Parser(argparse.ArgumentParser):
     """argparse, with its help and its errors printed by `flnd.ui.out`."""
 
-    tail: Sequence[tuple[str, Sequence[Any]]] = ()
+    # Rows to end the help with, or a function making them when the help is printed.
+    tail: Sequence[tuple[str, Sequence[Any]]] | Callable[[], Sequence[tuple[str, Sequence[Any]]]]
+    tail = ()
 
     def print_help(self, file: Any = None) -> None:
         """Print the help in the theme; `file` is ignored, as the help goes to standard output."""
         from flnd.ui import out
 
-        out.help(self, tail=self.tail)
+        out.help(self, tail=self.tail() if callable(self.tail) else self.tail)
 
     def error(self, message: str) -> Any:
         """A mistake in the flags: print it as any usage error is, with the help to read, and
@@ -656,7 +586,7 @@ def parser() -> argparse.ArgumentParser:
     top = _Parser(prog="flnd", description="download whole accounts from the web",
                   parents=[_globals()])
     top.add_argument("-V", "--version", action=_Version, version=f"flnd {flnd.__version__}")
-    top.tail = [("plugins", [" ".join(_plugins())]),
+    top.tail = [("plugins", [" ".join(entry.code for entry in TABLE)]),
                 ("", [("a plugin's targets: flnd get -h", "dim")])]
     verbs = top.add_subparsers(title="commands", metavar="<command>")
 
@@ -686,7 +616,7 @@ def parser() -> argparse.ArgumentParser:
                           "TEMPLATE is one, or a list like posts:{target}/feed,*:{target}/other; "
                           "a search needs one")
     _again(sub)
-    sub.tail = _forms()
+    sub.tail = _forms
 
     sub = command(verbs, "sync", sync)
     sub.add_argument("patterns", nargs="*", metavar="pattern",
@@ -714,13 +644,6 @@ def parser() -> argparse.ArgumentParser:
                      help="the cookie file's path; for tlg, its way (qr, phone)")
     sub = command(logins, "logout", auth_logout)
     sub.add_argument("plugin", help="the plugin's code (ins)")
-
-    plugins = group("plugin", "List the plugins, install or uninstall one")
-    command(plugins, "list", plugin_list)
-    sub = command(plugins, "install", plugin_install)
-    sub.add_argument("path", help="a plugin's .py file or package folder")
-    sub = command(plugins, "uninstall", plugin_uninstall)
-    sub.add_argument("code", help="the plugin's code")
 
     command(verbs, "status", status)
     command(verbs, "config", config)
@@ -770,35 +693,33 @@ def _short(text: str) -> str:
     return re.split(r"[,:.](?:\s|$)", text, maxsplit=1)[0]
 
 
-def _plugins() -> list[str]:
-    """The code of every built-in plugin, read from the manifest, so no plugin is imported."""
-    from flnd.plugins import _manifest
+def _classes() -> list[Any]:
+    """The class of every built-in plugin, imported: only a help that lists them needs this."""
+    import importlib
 
-    return list(_manifest.PLUGINS)
+    return [getattr(importlib.import_module(entry.module), entry.cls) for entry in TABLE]
 
 
 def _methods(code: str) -> tuple[str, ...]:
-    """The login methods of a built-in plugin, from the manifest; none for any other code."""
-    from flnd.plugins import _manifest
+    """The login methods of a built-in plugin; none for any other code."""
+    import importlib
 
-    entry: Any = _manifest.PLUGINS.get(code)
-    return tuple(entry["logins"]) if entry is not None else ()
+    entry = next((entry for entry in TABLE if entry.code == code), None)
+    if entry is None:
+        return ()
+    login = getattr(importlib.import_module(entry.module), entry.cls).login
+    return tuple(login.methods) if login is not None else ()
 
 
 def _forms() -> list[tuple[str, list[Any]]]:
     """A row per built-in plugin for a command's help: the targets it reads, its categories."""
-    from flnd.plugins import _manifest
-
     rows: list[tuple[str, list[Any]]] = [("plugins", [("the targets each reads, then its "
                                                       "categories", "dim")])]
-    for code, entry in _manifest.PLUGINS.items():
-        forms: Any = entry["forms"]
-        domains: Any = entry["domains"]
-        categories: Any = entry["categories"]
-        own = [form for form in forms if not form.startswith("http")]
-        on = [f"a link on {', '.join(domains)}"] if domains else []
-        cats: list[Any] = [("\n|", "dim"), ",".join(categories)] if categories else []
-        rows.append((code, [", ".join([*own, *on]), *cats]))
+    for cls in _classes():
+        own = [form for form in cls.forms if not form.startswith("http")]
+        on = [f"a link on {', '.join(cls.domains)}"] if cls.domains else []
+        cats: list[Any] = [("\n|", "dim"), ",".join(cls.categories)] if cls.categories else []
+        rows.append((cls.code, [", ".join([*own, *on]), *cats]))
     return rows
 
 
@@ -831,13 +752,7 @@ def _how(args: argparse.Namespace) -> tuple[str, str | None]:
     code = args.plugin
     ways = _methods(code)
     if not ways:
-        # Not built in: a plugin's ways are read from its class, which this imports.
-        with _open(args) as home:
-            found = next((row for row in home.plugins if row.code == code), None)
-        if found is None:
-            raise flnd.UsageError(f"unknown plugin {code!r}",
-                                  hint="flnd plugin list shows the plugins")
-        ways = tuple(found.logins)
+        raise flnd.UsageError(f"unknown plugin {code!r}", hint="flnd --help lists the plugins")
     if ways != ("file",):
         return args.how or ways[0], None
     if args.how:

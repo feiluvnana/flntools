@@ -25,9 +25,6 @@ test-browser: ; $(RUN) python -m unittest tests.test_browser tests.test_hidden $
 lint:     ; $(RUN) ruff check src flnkit tests
 check: lint test
 api:      ; $(RUN) python tests/api_snapshot.py --write
-# The data `flnd --help` and target resolution read instead of importing every plugin; run it
-# after changing a plugin's domains, routes or categories (tests/test_manifest.py checks it).
-manifest: ; $(RUN) python tests/plugin_manifest.py --write
 bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
 # A hand check: throughput from one real CDN host at caps 8, 16, 24 and 32, from URLs kept
 # outside the repo: `make cdn-real ARGS="--urls ~/flnd-cdn.txt"` (SPEC.md#for-developers).
@@ -45,4 +42,4 @@ live:     ; $(RUN) python tests/live.py $(ARGS)
 dist:     ; $(RUN) --group dist python tests/dist.py
 clean:    ; $(RUN) python -c \
 	    "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
-.PHONY: setup test lint check api manifest cdn-real docs try live dist clean
+.PHONY: setup test lint check api cdn-real docs try live dist clean

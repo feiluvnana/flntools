@@ -29,7 +29,6 @@ from fakes import (
     login_cookies,
     make_plugin,
     noise,
-    own_login,
     sign_in,
     vaulted,
 )
@@ -57,7 +56,6 @@ from flnd.errors import (
     ToolError,
     UsageError,
 )
-from flnd.plugin import Plugin, Post, route
 from flnd.ui import out
 from flnd.ui.log import ui
 from flnkit import net as _net
@@ -523,26 +521,6 @@ class WiringTest(ExampleCase):
             "exs:needs_retry": ("retry", 1, ("posts", "reels")),
         })
 
-    def test_the_plugin_list_installs_and_uninstalls(self):
-        source = Path(self.tmp.name) / "exa.py"
-        source.write_text(
-            "from flnd.plugin import Plugin, Post, route\n\n\nclass Example(Plugin):\n"
-            "    code, name, api, domains = 'exa', 'Example', 2, ('exa.example',)\n\n"
-            "    @route('exa:{user}')\n    async def user(self, ctx, user):\n"
-            "        yield Post(user)\n", encoding="utf-8")
-
-        def script(title, load, keys, delete):
-            self.assertIn("ins", [each.key.code for each in load() if each.key.builtin])
-            with mock.patch("flnd.ui.forms.text", return_value=str(source)):
-                keys["a"].run(None)
-            [added] = [each.key for each in load() if not each.key.builtin]
-            self.assertEqual((added.code, added.api), ("exa", 2))
-            delete.run(added)
-            self.assertEqual([each.key for each in load() if not each.key.builtin], [])
-
-        with mock.patch.dict(os.environ, {"FLND_PLUGINS": str(Path(self.tmp.name) / "plugins")}):
-            self.listed(script, "plugin", "list")
-
 
 class FormsTest(ExampleCase):
     """What a terminal is asked, in forms (`flnd.ui.forms`): status's repair, config, the login."""
@@ -708,13 +686,11 @@ class HelpTest(FlndCase):
                 self.assertLessEqual(len(lines), 24, "\n".join(lines))
                 self.assertTrue(all(len(line) <= 80 for line in lines), "\n".join(lines))
 
-    def test_help_lists_the_commands_and_every_plugin_from_the_manifest(self):
+    def test_help_lists_the_commands_and_every_plugin(self):
         code, text, _ = self.run_app("--help")
         self.assertEqual(code, 0)
         self.assertIn("flnd 0.2.0 - download whole accounts from the web", text)
-        for verb in ("get ", "target list|clean", "auth list|login|logout",
-                     "plugin list|install|uninstall", "status",
-                     "config"):
+        for verb in ("get ", "target list|clean", "auth list|login|logout", "status", "config"):
             self.assertIn(f"  {verb}", text)
         self.assertIn("tik fbk ins thr twt loi tlg mht", text)
         self.assertEqual(self.run_app()[1], text)
@@ -730,8 +706,8 @@ class HelpTest(FlndCase):
         self.assertNotIn("Args:", text)
 
     def test_a_group_lists_its_commands(self):
-        for group, names in (("target", ("list", "clean")), ("auth", ("list", "login", "logout")),
-                             ("plugin", ("list", "install", "uninstall"))):
+        for group, names in (("target", ("list", "clean")),
+                             ("auth", ("list", "login", "logout"))):
             with self.subTest(group):
                 code, text, _ = self.run_app(group)
                 self.assertEqual(code, 0)
@@ -767,36 +743,6 @@ class ListsTest(FlndCase):
         rows = [json.loads(line) for line in self.run_app("--json", "config")[1].splitlines()]
         self.assertEqual(rows[0]["key"], "defaults.dedupe")
         self.assertFalse((Path(".flnd") / _store.DB).exists())
-
-    def test_plugin_list_shows_each_plugin_and_why_one_is_disabled(self):
-        code, text, _ = self.run_app("plugin", "list")
-        self.assertEqual(code, 0)
-        self.assertRegex(text, r"ins +Instagram +built-in +2 ")
-        rows = [json.loads(line) for line in self.run_app("--json", "plugin", "list")[1]
-                .splitlines()]
-        self.assertEqual([row["code"] for row in rows],
-                         ["tik", "fbk", "ins", "thr", "twt", "loi", "tlg", "mht", "web"])
-
-    def test_plugin_install_and_uninstall(self):
-        source = Path(self.tmp.name) / "exa.py"
-        source.write_text(
-            "from flnd.plugin import Plugin, Post, route\n\n\nclass Example(Plugin):\n"
-            "    code, name, api, domains = 'exa', 'Example', 2, ('exa.example',)\n\n"
-            "    @route('exa:{user}')\n    async def user(self, ctx, user):\n"
-            "        yield Post(user)\n", encoding="utf-8")
-        folder = Path(self.tmp.name) / "plugins"
-        with mock.patch.dict(os.environ, {"FLND_PLUGINS": str(folder)}):
-            code, text, err = self.run_app("plugin", "install", str(source))
-            self.assertEqual((code, text), (0, "exa: installed (Example)\n"), err)
-            self.assertRegex(self.run_app("plugin", "list")[1], r"exa +Example +installed +2 ")
-            self.sure = False
-            self.assertEqual(self.run_app("plugin", "uninstall", "exa")[1],
-                             "kept: nothing was uninstalled\n")
-            self.assertEqual(self.asked, ["Uninstall exa?"])
-            self.sure = True
-            self.assertEqual(self.run_app("plugin", "uninstall", "exa")[1], "exa: uninstalled\n")
-            self.assertEqual(self.run_app("plugin", "uninstall", "ins")[0], 2)
-            self.assertEqual(self.run_app("plugin", "install", "missing.py")[0], 2)
 
 
 class AuthTest(FlndCase):
@@ -876,29 +822,6 @@ class AuthTest(FlndCase):
         self.assertIn("flnd auth login ins <file>", err)
         self.answer("1")
         self.assertEqual(self.run_app("auth", "login", "ins", "--json")[0], 2)
-
-    def test_a_plugin_with_its_own_login_takes_its_way_or_its_first(self):
-        calls = []
-
-        def start(self, ctx, method):
-            calls.append(method)
-            ctx.secrets["session"] = "s"
-
-        class Own(Plugin):
-            code, name, domains, api = "own", "Own", ("own.example",), 2
-            login = own_login(start, methods=("qr", "phone"))
-
-            @route("own:{user}", single=True)
-            async def user(self, ctx, user):
-                yield Post(user)
-
-        with mock.patch.dict(PLUGINS, {"own": Own}), \
-                mock.patch.dict("flnd.plugins._manifest.PLUGINS", {"own": {
-                    "name": "Own", "domains": ("own.example",), "forms": (), "categories": (),
-                    "logins": ("qr", "phone")}}):
-            self.assertEqual(self.run_app("auth", "login", "own")[0], 0)
-            self.assertEqual(self.run_app("auth", "login", "own", "phone")[0], 0)
-        self.assertEqual(calls, ["qr", "phone"])
 
 
 def _flnd_auth_rows():

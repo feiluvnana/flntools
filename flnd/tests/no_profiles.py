@@ -1,13 +1,8 @@
-"""Importing this keeps every test away from the real logins, the real cache and the real plugin
-folder.
+"""Importing this keeps every test away from the real logins and the real cache.
 
 It sets `FLND_TEST_NO_PROFILES`, which `flnkit.browser` and `flnd.engine.config` read: while it
 is set, the browser's cache goes to a temporary folder and nothing reads or writes the real
 `~/.config/flnd/`.
-
-It also points `FLND_PLUGINS` (`flnd.engine.plugins.folder`) at a folder that doesn't exist,
-unless it is set already, so a plugin the person running the tests has installed in
-`~/.config/flnd/` never loads into a test. A test of plugins sets its own.
 
 `make test` sets the first variable for the whole run. `fakes.py` and the test modules that deal
 with browsers and cookies import this too, so running one of them by hand is guarded the same way;
@@ -19,11 +14,9 @@ import os
 import tempfile
 from pathlib import Path
 
-from flnd.engine import auth, plugins
+from flnd.engine import auth
 from flnkit.browser import NO_PROFILES
 
 os.environ[NO_PROFILES] = "1"
-os.environ.setdefault(
-    plugins.VARIABLE, str(Path(__file__).resolve().parent / "data" / "no-plugins"))
 # The logins folder, in a folder of the run's own, never `~/.config/flnd/logins`.
 auth.LOGINS = Path(tempfile.mkdtemp(prefix="flnd-logins-"))

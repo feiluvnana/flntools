@@ -350,7 +350,7 @@ class PluginTest(unittest.TestCase):
     """Each built-in plugin has a `SPEC.md` section headed by its code."""
 
     def test_one_section_per_plugin(self) -> None:
-        from flnd.plugins import PLUGINS
+        from flnd.engine.plugins import PLUGINS
 
         text = prose(SPEC.read_text(encoding="utf-8"))
         sections = re.findall(r"^#{3}\s+([a-z]{3})\b", text, re.M)

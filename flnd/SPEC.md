@@ -65,7 +65,6 @@ run that downloads: entries older than 30 days go.
 | Variable | Used for |
 | --- | --- |
 | `FLND_HOME` | the home when `--home` is not given |
-| `FLND_PLUGINS` | the folder installed plugins load from (default `~/.config/flnd/plugins/`) |
 | `NO_COLOR`, `TERM=dumb` | turn colour off (so does a pipe or a file) |
 | `LANG`, `LC_ALL` | a terminal that is not UTF-8 gets `v x * - >` for the glyphs |
 | `APPDATA` | on Windows, the user folder (`%APPDATA%\flnd\`) instead of `~/.config/flnd/` |
@@ -653,7 +652,7 @@ Telegram sends.
 
 Refusals:
 
-- unknown plugin: `unknown plugin '<code>'`, hint `flnd plugin list shows the plugins`
+- unknown plugin: `unknown plugin '<code>'`, hint `flnd --help lists the plugins`
 - a way the plugin lacks: `<code> logs in by <methods>, not '<method>'`
 - a plugin with no login (`mht`, `web`): `<code> needs no login`
 - no readable file: `<code>: a file login needs the path of a cookie file`, hint `flnd auth login
@@ -824,15 +823,6 @@ names are never deleted. A terminal is asked first.
 
 **`flnd auth list | login <plugin> [file] | logout <plugin>`**: see [Logins](#logins).
 
-**`flnd plugin list`, `flnd plugin install <path>`, `flnd plugin uninstall <code>`**: `list` shows
-built-in, installed and disabled plugins (kind, API, domains, targets using it, a disabled one's
-reason). `install` checks a `.py` file or a package folder with `__init__.py`, copies it into the
-plugin folder and records it. It refuses a home or cookie file, a link, a special file, a file with
-other hard links, a built-in's code, and an API this flnd lacks. `uninstall` removes an installed
-plugin (`<code> is built in; it can't be uninstalled`, `no plugin named <code> is installed`); its
-targets stay. Plugins load from `$FLND_PLUGINS`, else `~/.config/flnd/plugins/`, never
-from a home.
-
 **`flnd status`**: see [check and repair](#check-and-repair). `--json` prints one `{"type":
 "Status", "status", "logins", "disk"}`.
 
@@ -909,7 +899,7 @@ proxy = "socks5://127.0.0.1:1080"
 
 ## Plugins
 
-One section per built-in plugin, API 2, in the order links are tried (`web` last). Targets and
+One section per built-in plugin, in the order links are tried (`web` last). Targets and
 refusals are in [Targets](#targets). Each section lists categories (`own` ones are the default,
 `opt-in` ones need a name or `all`; NF marks newest-first, the only ones that stop early), folder,
 file name and history key templates, login, limits and walls, and known gaps. Everything here is the
@@ -1149,7 +1139,6 @@ Every call, and the CLI command it matches:
 | `fl.auth` | logins, `LoggedIn` each | `flnd auth list` |
 | `fl.auth.login(plugin, *, method=None, path=None)` | `LoggedIn` | `flnd auth login` |
 | `fl.auth.logout(plugin)` | `LoggedIn` | `flnd auth logout` |
-| `fl.plugins`, `.install(path)`, `.uninstall(code)` | `Installed` | `flnd plugin ...` |
 | `fl.add(PluginClass)` | | a plugin for this `Flnd` alone |
 | `async with fl.plugin(code) as ctx` | the plugin's `Ctx` | a script's own loop |
 | `fl.status` | `Status` or None | `flnd status` |
@@ -1312,13 +1301,13 @@ and the one exception is
 
 A plugin is one class for one site: which targets it reads, and the posts each has. flnd does the
 pacing, retries, downloading, naming, dating, skipping, early stops, resuming, progress and logins.
-Plugin API 2 is `flnd.plugin`; `flnd.testing` tests it; `tests/example_plugin.py` is a bigger
+The plugin API is `flnd.plugin`; `flnd.testing` tests it; `tests/example_plugin.py` is a bigger
 example and `src/plugins/` holds real ones.
 
 The contract:
 
 - `code` (text): 2 to 16 lowercase letters or digits, a letter first: `exm:<user>`
-- `name`, `api` (text, int): the site's name; `api = 2` is required
+- `name` (text): the site's name
 - `domains` (tuple): the plugin's hosts and subdomains; requests to them are paced, signed, with
   cookies
 - `login` (`cookies(...)` or a `Login`): `cookies("token", url=..., required=False)`; none means no
@@ -1357,9 +1346,8 @@ A pattern is `exm:{user}` (after the code), `exm?{words}` (a search), `example.c
 or `example.com/watch?v={id}`. `{name}` matches a user name (a leading `@` dropped), `{id:\d+}`
 gives a regex, `*` matches one path segment. A `[pattern, template]` pair builds the value from
 several placeholders. Routes are tried in declaration order; the first match wins, so a narrow route
-comes before a catch-all. A mistake in the class raises `PluginError` when it is made (a missing
-`code`, a pattern outside the domains, a category declared twice, a hook of the wrong kind). The API
-grows by additions; a break is API 3 with an adapter.
+comes before a catch-all. A malformed pattern or a category declared twice raises `PluginError`
+when the class is made; `tests/test_plugins.py` checks the declarations of the built-ins.
 
 ```python
 from flnd.plugin import File, Plugin, Post, Request, cookies, route
@@ -1416,15 +1404,10 @@ assert ctx.seen.requests[0][2]["headers"] == {"Authorization": "Bearer example-t
 assert [str(found) for found in check(Example)] == ["exm:example_user", "exm:example_user"]
 ```
 
-To ship it: `flnd plugin install <file or folder>` (an installed plugin loads from the plugin
-folder, never from a home, and runs in flnd's process with your logins, so install only code you
-trust), or `fl.add(Example)` for one script. A built-in is `src/plugins/<code>.py` importing only
-`flnd.plugin` and the standard library (an SDK inside a function), with tests on `FakeCtx`, `make
-manifest` run after any change to domains, routes or categories, and a section in this page.
-`flnd.plugin.API` is 2; a plugin of another API is refused (`exm needs plugin API 3; this flnd has
-2`, hint `update flnd`; `exm was written for plugin API 1; this flnd has 2`). Dropped names are
-refused with their new spelling: `needs`, `requires_login`, `login_methods`, `logged_in`,
-`concurrency`, `prepare`, `scroll`, `single_kinds` (see `OLD_NAMES` in `src/plugin.py`).
+To ship it: `fl.add(Example)` for one script. A built-in is `src/plugins/<code>.py` importing only
+`flnd.plugin` and the standard library (an SDK inside a function), with tests on `FakeCtx`, an
+entry in `TABLE` of `src/plugins/__init__.py` (code, module, class, domains; `web` stays last,
+and `tests/test_plugins.py` checks the entry against the class), and a section in this page.
 
 ## For developers
 
@@ -1458,7 +1441,7 @@ Read it with any SQLite tool.
 | --- | --- |
 | `make check` | ruff (`make lint` alone), then every test; green at every commit |
 | `make test ARGS="-k fetch"` | the tests, or some (`FLND_TEST_NO_PROFILES=1`) |
-| `make api`, `make manifest` | regenerate `tests/data/api.txt` (read its diff); the manifest |
+| `make api` | regenerate `tests/data/api.txt` (read its diff) |
 | `make bench` | offline benchmarks; `ARGS=--gate` fails on a 15% slowdown, `--record` rebases |
 | `make docs`, `dist`, `setup`, `clean` | API reference; a binary; sync `.venv`; remove builds |
 | `make try ARGS="ins:example_user"` | list, live, what a get would save (scratch home `.try`) |

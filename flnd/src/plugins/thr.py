@@ -91,7 +91,6 @@ class Threads(Plugin):
     code = "thr"
     name = "Threads"
     domains = ("threads.com", "threads.net")
-    api = 2
     # Images, media and fonts load until a live check shows its pages work without them.
     hidden = True
     # Threads uses the Instagram login: logged in when `sessionid` is there (confirm live).

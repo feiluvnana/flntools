@@ -9,10 +9,10 @@ from types import SimpleNamespace
 
 import fakes  # noqa: F401  (refuses real profiles; fails a coroutine never awaited)
 
+from flnd.engine.plugins import PLUGINS
 from flnd.engine.resolve import Manifest, resolve
 from flnd.errors import Blocked, LoginError, NotFound, SiteError, UsageError
 from flnd.plugin import Plugin, Range, Target
-from flnd.plugins import _manifest
 from flnd.plugins.fbk import (
     HIGHLIGHT_NEXT,
     TEMPORARILY_BLOCKED,
@@ -516,7 +516,7 @@ def owned_by_name(result, vanity="example.page", ident="42"):
 
 class HardTargetTest(unittest.TestCase):
     def test_a_typed_key_resolves_to_itself(self):
-        manifest = Manifest(_manifest.PLUGINS)
+        manifest = Manifest(PLUGINS)
         for link in [
             "https://www.facebook.com/example.page/posts/pfbid0Abc",
             "https://www.facebook.com/100012345678901/posts/7",

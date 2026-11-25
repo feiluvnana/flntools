@@ -58,7 +58,6 @@ flnd.Flnd.files(*, target: str | Target | None = None, kind: str | None = None, 
 flnd.Flnd.get(*targets: str | Target, limit: int | None = None, when: str | None = None, dry: bool = False, folder: str | Mapping[str, str] | None = None) -> Run
 flnd.Flnd.home: attribute
 flnd.Flnd.plugin(code: str) -> AbstractAsyncContextManager[Ctx]
-flnd.Flnd.plugins: attribute
 flnd.Flnd.status: property -> Status | None
 flnd.Flnd.sync(*patterns: str, limit: int | None = None, when: str | None = None, dry: bool = False) -> Run
 flnd.Flnd.targets: attribute
@@ -74,18 +73,6 @@ flnd.HoldState.count: attribute -> int
 flnd.HoldState.plugin: attribute -> str
 flnd.HoldState.reason: attribute -> str
 flnd.HoldState.until: attribute -> float
-flnd.Installed(code: str, name: str, origin: str, where: str = '', version: str = '', api: int = 2, domains: tuple[str, ...] = (), forms: tuple[str, ...] = (), categories: tuple[str, ...] = (), logins: tuple[str, ...] = (), disabled: str = '')
-flnd.Installed.api: attribute -> int
-flnd.Installed.categories: attribute -> tuple[str, ...]
-flnd.Installed.code: attribute -> str
-flnd.Installed.disabled: attribute -> str
-flnd.Installed.domains: attribute -> tuple[str, ...]
-flnd.Installed.forms: attribute -> tuple[str, ...]
-flnd.Installed.logins: attribute -> tuple[str, ...]
-flnd.Installed.name: attribute -> str
-flnd.Installed.origin: attribute -> str
-flnd.Installed.version: attribute -> str
-flnd.Installed.where: attribute -> str
 flnd.LoggedIn(plugin: str, status: str, file: str, expires: str | None = None)
 flnd.LoggedIn.expires: field -> str | None
 flnd.LoggedIn.file: field -> str
@@ -231,7 +218,6 @@ flnd.UsageError.target: attribute
 flnd.__version__: str
 flnd.open(home: str | os.PathLike[str] | None = None, *, again: bool | None = None) -> Flnd
 flnd.plugin: module
-flnd.plugin.API: int
 flnd.plugin.Blocked(flnd.SiteError)
 flnd.plugin.Blocked.hint: attribute
 flnd.plugin.Blocked.response: attribute

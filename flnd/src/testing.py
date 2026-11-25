@@ -1038,10 +1038,9 @@ def _typed(ctx: FakeCtx, file: flnd.plugin.File) -> str:
 def check(plugin: type[Plugin]) -> list[flnd.plugin.Target]:
     """Check a plugin class, and resolve every example target its routes' docstrings give.
 
-    The class's declarations are checked again, as when it was made. Then the examples: in
-    each route's docstring, every backticked target of the plugin (`exm:example_user`,
-    `exm?words`, or a link on its domains) must resolve to that route. A form with a
-    placeholder (`exm:<user>`, `{user}`) isn't an example, and is skipped.
+    The examples: in each route's docstring, every backticked target of the plugin
+    (`exm:example_user`, `exm?words`, or a link on its domains) must resolve to that route. A
+    form with a placeholder (`exm:<user>`, `{user}`) isn't an example, and is skipped.
 
     Args:
         plugin: the plugin class.
@@ -1050,7 +1049,7 @@ def check(plugin: type[Plugin]) -> list[flnd.plugin.Target]:
         Each example, resolved, in the order the routes give them.
 
     Raises:
-        PluginError: it isn't a `Plugin` subclass with a code, a declaration is wrong, or an
+        PluginError: it isn't a `Plugin` subclass with a code, or an
             example doesn't resolve, or resolves to another route.
 
     Example:
@@ -1068,7 +1067,6 @@ def check(plugin: type[Plugin]) -> list[flnd.plugin.Target]:
             and getattr(plugin, "code", None)):
         raise PluginError(f"check takes a flnd.plugin.Plugin subclass with a code, "
                           f"not {plugin!r}")
-    flnd.plugin._check(plugin)
     found = []
     for route in plugin.routes:
         for text in _examples(plugin, route.function.__doc__ or ""):

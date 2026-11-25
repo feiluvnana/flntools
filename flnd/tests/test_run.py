@@ -815,7 +815,7 @@ class ApiTest(EngineCase):
         self.assertFalse((self.home / _store.DB).exists())
 
     def test_categories_on_a_single_post_are_refused_before_any_request(self):
-        from flnd.plugins import PLUGINS
+        from flnd.engine.plugins import PLUGINS
 
         message = "tik:post/7312345678901234567 is one post, with no categories"
         engine = Engine(home=self.home, sources=PLUGINS)

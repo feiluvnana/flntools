@@ -8,8 +8,6 @@ import asyncio
 import contextlib
 import datetime
 import functools
-import re
-from collections import ChainMap
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -251,9 +249,6 @@ class Engine:
         self._scheduler: jobs.Scheduler | None = None
         # The database of the run going on; None between them.
         self._db: store.Store | None = None
-        # What resolving reads of each plugin known so far, by code (`manifest`).
-        self._entries: dict[str, Mapping[str, Any]] | None = None
-        self._installed: dict[str, Mapping[str, Any]] = {}
         self._manifest: flnd.engine.resolve.Manifest | None = None
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
@@ -297,69 +292,16 @@ class Engine:
 
     @property
     def manifest(self) -> flnd.engine.resolve.Manifest:
-        """What resolving reads of the plugins known so far: each built-in's manifest entry,
-        which imports none of them, then each other plugin's, from `plugins.json` or its class."""
-        if self._entries is None:
-            self._entries = {}
-            maps = self.sources.maps if isinstance(self.sources, ChainMap) else [self.sources]
-            for found in reversed(maps):
-                if isinstance(found, plugins.Registry):
-                    self._entries |= found.manifest()
-                else:
-                    self._entries |= {code: flnd.engine.resolve.entry(cls)
-                                      for code, cls in found.items()}
+        """What resolving reads of the plugins, each from its class when first asked for."""
         if self._manifest is None:
-            installed = {"plugins": self._installed} if self._installed else None
-            self._manifest = flnd.engine.resolve.Manifest(self._entries, installed)
+            self._manifest = flnd.engine.resolve.Manifest(
+                self.sources, lambda code: plugins.domains(self.sources, code))
         return self._manifest
-
-    def _widen(self, code: str | None = None) -> bool:
-        """Add one installed plugin, or every installed plugin, to `manifest`, without importing it.
-
-        Args:
-            code: the plugin's code; None for every installed plugin from `plugins.json`.
-        """
-        known = self.manifest.plugins
-        if code is not None and code in known:
-            return False
-        maps = self.sources.maps if isinstance(self.sources, ChainMap) else [self.sources]
-        added_entries: dict[str, Mapping[str, Any]] = {}
-        added_installed: dict[str, Mapping[str, Any]] = {}
-        for found in reversed(maps):
-            if isinstance(found, plugins.Registry):
-                for name, entry in found.installed(code).items():
-                    if name not in known and name not in self._installed:
-                        added_installed[name] = entry
-            else:
-                codes = [code] if code is not None else list(found)
-                for name in codes:
-                    if name not in known and name in found:
-                        added_entries[name] = flnd.engine.resolve.entry(found[name])
-        if added_entries or added_installed:
-            self._entries = {**(self._entries or {}), **added_entries}
-            self._installed.update(added_installed)
-            self._manifest = None
-        return bool(added_entries or added_installed)
 
     def _read(self, text: str, stored: Mapping[str, Sequence[str]]) -> Chosen:
         """One target's text, resolved (`flnd.engine.resolve`), with its categories."""
-        code = re.match(r"\s*([A-Za-z][A-Za-z0-9]*)\s*[:?]", text)
-        linked = text.strip().lower().startswith(("http://", "https://"))
-        if code is not None and not linked:
-            self._widen(code[1].lower())
-        try:
-            found = flnd.engine.resolve.resolve(text, manifest=self.manifest, known=stored,
-                                                follow=_follow)
-        except UsageError:
-            if (code is not None and not linked) or not self._widen():
-                raise
-            found = flnd.engine.resolve.resolve(text, manifest=self.manifest, known=stored,
-                                                follow=_follow)
-        if found.code == flnd.engine.resolve.WEB and not text.strip().lower().startswith("web:"):
-            if self._widen():
-                found = flnd.engine.resolve.resolve(text, manifest=self.manifest, known=stored,
-                                                    follow=_follow)
-
+        found = flnd.engine.resolve.resolve(text, manifest=self.manifest, known=stored,
+                                            follow=_follow)
         kept = found.named or found.key in stored
         return Chosen(Target(found.key, kind=found.kind),
                       found.categories if kept else None, found.link)
@@ -795,9 +737,7 @@ class Engine:
 
     def _route(self, target: Target) -> Any:
         """The route that reads `target` (its manifest entry or its class's), or None."""
-        plugin = self.manifest.plugins.get(target.plugin)
-        if plugin is None and self._widen(target.plugin):
-            plugin = self.manifest.plugins.get(target.plugin)
+        plugin = self.manifest.get(target.plugin)
         if plugin is not None:
             return next((r for r in plugin.routes if r.name == target.kind), None)
         try:
