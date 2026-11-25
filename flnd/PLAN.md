@@ -68,9 +68,10 @@ weakening plugins or degrading performance.
 7. **Interactive lists and Textual forms (`textual`): `target list` keys, `auth list` keys,
    `config` editor.**
    - Why: 1,800 lines of Textual UI and tests to do what plain tables and subcommands do.
-   - Instead: Plain tables, plus `target follow/unfollow/retry`, `status --fix`, and a ~40-line
-     stdlib prompt helper (`input`, `getpass`, `y/N`) for `ctx.ask` (tlg), `auth logout` and
-     `target clean`. Edit `config.toml` by hand.
+   - Instead: Plain tables, plus `target follow/unfollow/retry`, `status --fix`. The questions
+     (`ctx.ask` for tlg, `auth logout`, `target clean`) keep their Huh look: `src/ui/forms.py`
+     already draws it with Rich and raw keys when Textual can't run, and that becomes the only
+     path. Edit `config.toml` by hand.
 8. **`--json` output and the `Resources` event.**
    - Why: No consumer besides the Python API.
    - Instead: The text output and the run journal.
@@ -269,15 +270,20 @@ Record: line counts, `make check` time, `make bench` numbers, `flnd --help` time
   note under "For developers".
 - AGENTS.md: drop the rules about the public surface, `test_names` and `make api`.
 
-### Step 6. Plain output and stdlib prompts (low-cost model)
+### Step 6. Plain output, Huh-look prompts without Textual (sonnet)
 
 `refactor:replace the interactive lists with plain tables and subcommands`, then
 `refactor:remove json output and the use line`
 
 - Delete `src/ui/lists.py`, `src/engine/meter.py`, `tests/test_lists.py`, `tests/test_forms.py`.
-- Replace Textual's 583-line `src/ui/forms.py` with a ~40-line stdlib prompt module (`input()`,
-  `getpass.getpass()`, `y/N` `confirm()`, `interactive()`) so `ctx.ask` (Telegram `qr`/`phone`
-  login), `auth logout` and `target clean` keep working cleanly without Textual.
+- Keep `src/ui/forms.py` and its look (Charm's Huh: the title, the `>` pick, the hint row).
+  Its plain stand-in (`_plain`, `_frame`, `_keys`: Rich frames, raw keys) already draws the same
+  owners without Textual off the main thread. Make it the only path: delete `_app`, `_show`
+  and the Textual widgets, keep `select`, `text` (with `secret`), `confirm`, `ask`, `choose`.
+- `_plain` uses `termios`, which Windows lacks. Add a Windows branch: keys from
+  `msvcrt.getwch()` mapped to the same names (arrows arrive as `\xe0` + a code). Off a terminal
+  the questions stay refused as today (`_needed`).
+- Rewrite `tests/test_forms.py` to drive `_plain` through fake keys (no Textual pilot).
 - Drop `textual` and `tomlkit` from `pyproject.toml` (reading uses stdlib `tomllib`; delete
   `config.write`/`config.unset` and `fl.config.set`/`unset`).
 - Move `psutil` from runtime dependencies to `[dependency-groups] dev` (used only by
