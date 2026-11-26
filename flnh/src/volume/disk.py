@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import plistlib
+import re
 import shutil
 import struct
 import subprocess
@@ -20,14 +22,6 @@ WIN_SYSTEM_ENTRIES = frozenset({"windows", "pagefile.sys", "hiberfil.sys", "swap
 
 FSCTL_LOCK_VOLUME = 0x00090018
 FSCTL_DISMOUNT_VOLUME = 0x00090020
-FSCTL_EXTEND_VOLUME = 0x000900F0
-FSCTL_SHRINK_VOLUME = 0x000901B0
-
-
-def pack_shrink_info(request_type: int, new_sectors: int = 0) -> bytes:
-    """Pack Win32 `SHRINK_VOLUME_INFORMATION` (`ShrinkRequestType`, `Flags=0`, `NewSectors`)."""
-    sectors = new_sectors if request_type == 1 else 0
-    return struct.pack("<I4xQq", request_type, 0, sectors)
 
 
 def check_filesystem(fs_type: str) -> None:
@@ -299,6 +293,30 @@ class FileDisk:
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True, check=False)
+
+
+def _pread_all(fd: int, offset: int, size: int) -> bytes:
+    """Read exactly `size` bytes at `offset`, or fewer only at the end of the device."""
+    chunks: list[bytes] = []
+    while size > 0:
+        chunk = os.pread(fd, size, offset)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        offset += len(chunk)
+        size -= len(chunk)
+    return b"".join(chunks)
+
+
+def _pwrite_all(fd: int, offset: int, data: bytes, device: str) -> None:
+    """Write all of `data` at `offset`, failing on a short write."""
+    view = memoryview(data)
+    while view:
+        n = os.pwrite(fd, view, offset)
+        if n <= 0:
+            raise errors.DiskError(f"short write to {device} at byte {offset}")
+        view = view[n:]
+        offset += n
 
 
 class Win32Disk:
@@ -637,10 +655,24 @@ class LinuxDisk:
         self.part_dev = parts[0]
         self.fs_type = parts[1].lower()
         self.mountpoint = parts[2]
+        # The kernel's own numbers for the partition, so the table edit lands on it and on
+        # nothing else (LVM, RAID, dm-crypt or a whole-disk filesystem have none).
+        sys_dir = Path("/sys/class/block") / Path(os.path.realpath(self.part_dev)).name
+        self._sys_dir = sys_dir
         pk = _run(["lsblk", "-no", "PKNAME", self.part_dev])
         pkname = pk.stdout.strip()
-        self.device_id = f"/dev/{pkname}" if pkname else self.part_dev
-        self.sector_size = 512
+        if not (sys_dir / "partition").is_file() or not pkname:
+            raise errors.UnsupportedError(
+                f"--volume needs a filesystem on a plain disk partition: {self.part_dev}",
+                hint="LVM, RAID, encrypted and whole-disk filesystems are not supported",
+            )
+        self.part_index = int((sys_dir / "partition").read_text(encoding="utf-8").strip())
+        self.device_id = f"/dev/{pkname}"
+        ss = _run(["blockdev", "--getss", self.device_id])
+        self.sector_size = int(ss.stdout.strip()) if ss.stdout.strip().isdigit() else 512
+        # sysfs counts in 512-byte units whatever the sector size.
+        self.part_offset = int((sys_dir / "start").read_text(encoding="utf-8")) * 512
+        self.part_bytes = int((sys_dir / "size").read_text(encoding="utf-8")) * 512
         sz = _run(["blockdev", "--getsize64", self.device_id])
         self.total_sectors = int(sz.stdout.strip()) // self.sector_size if sz.stdout.strip() else 0
         self._fp = open(self.device_id, "r+b", buffering=0)
@@ -667,12 +699,11 @@ class LinuxDisk:
         return bool(self.system_disk_reason())
 
     def read_sectors(self, lba: int, count: int) -> bytes:
-        self._fp.seek(lba * self.sector_size)
-        return self._fp.read(count * self.sector_size)
+        return _pread_all(self._fp.fileno(), lba * self.sector_size, count * self.sector_size)
 
     def write_sectors(self, lba: int, data: bytes) -> None:
-        self._fp.seek(lba * self.sector_size)
-        self._fp.write(data)
+        _pwrite_all(self._fp.fileno(), lba * self.sector_size, data, self.device_id)
+        os.fsync(self._fp.fileno())
 
     def max_shrink_bytes(self, part_index: int) -> int:
         _total, _used, free = shutil.disk_usage(self.mountpoint)
@@ -688,20 +719,36 @@ class LinuxDisk:
         _run(["e2fsck", "-f", "-p", self.part_dev])
         size_k = f"{new_bytes // 1024}K"
         rs = _run(["resize2fs", self.part_dev, size_k])
+        # Mount again either way: the files to hide are read from it next.
+        mt = _run(["mount", self.part_dev, self.mountpoint])
         if rs.returncode != 0:
-            _run(["mount", self.part_dev, self.mountpoint])
             raise errors.DiskError(f"resize2fs shrink failed: {rs.stderr.strip()}")
+        if mt.returncode != 0:
+            raise errors.DiskError(
+                f"cannot mount {self.part_dev} again after shrinking: {mt.stderr.strip()}",
+                hint=f"mount it, then grow it back with resize2fs {self.part_dev}",
+            )
 
     def expand_fs(self, part_index: int, new_bytes: int) -> None:
-        _run(["umount", self.part_dev])
-        _run(["e2fsck", "-f", "-p", self.part_dev])
+        # ext4 grows online, so the volume stays mounted for the files restored onto it.
+        kernel_bytes = int((self._sys_dir / "size").read_text(encoding="utf-8")) * 512
+        if kernel_bytes < new_bytes:
+            raise errors.DiskError(
+                f"the kernel still sees {self.part_dev} at its shrunk size",
+                hint=f"run partx -u {self.device_id}, then resize2fs {self.part_dev}",
+            )
         rs = _run(["resize2fs", self.part_dev, f"{new_bytes // 1024}K"])
         if rs.returncode != 0:
             raise errors.DiskError(f"resize2fs expand failed: {rs.stderr.strip()}")
-        _run(["mount", self.part_dev, self.mountpoint])
 
     def refresh(self) -> None:
-        _run(["partprobe", self.device_id])
+        # partx updates one partition while it is mounted; partprobe refuses (EBUSY).
+        res = _run(["partx", "-u", "--nr", str(self.part_index), self.device_id])
+        if res.returncode != 0:
+            raise errors.DiskError(
+                f"cannot make the kernel re-read {self.part_dev}: {res.stderr.strip()}",
+                hint="reboot, or run partx -u on the disk, before using the volume",
+            )
 
     def close(self) -> None:
         if not self._fp.closed:
@@ -709,9 +756,13 @@ class LinuxDisk:
 
 
 class DarwinDisk:
-    """macOS raw disk + APFS resizeContainer backend."""
+    """macOS raw disk + APFS resizeContainer backend.
 
-    manages_table = False
+    `diskutil apfs resizeContainer` resizes the GPT partition itself, so the table is left to
+    it. The raw device is the physical disk that holds the container's one physical store.
+    """
+
+    manages_table = True
 
     def __init__(self, path: Path) -> None:
         if os.geteuid() != 0:  # type: ignore[attr-defined]
@@ -719,15 +770,39 @@ class DarwinDisk:
                 "--volume requires root privileges",
                 hint="re-run with sudo",
             )
-        info = self._diskutil_plist(str(path))
+        # diskutil takes a device or a mount point, never a folder inside a volume.
+        info = self._diskutil_plist(_mount_point(path))
         self.vol_id = str(info.get("DeviceIdentifier", ""))
-        self.parent_disk = str(info.get("ParentWholeDisk", self.vol_id))
         self.fs_type = str(info.get("FilesystemType", "")).lower()
-        self.device_id = f"/dev/r{self.parent_disk}"
-        self.sector_size = int(info.get("DeviceBlockSize", 512))
+        self.container_free = int(info.get("APFSContainerFree") or info.get("FreeSpace") or 0)
+        self.store = _physical_store(info)
+        store_info = self._diskutil_plist(self.store)
+        self.parent_disk = str(store_info.get("ParentWholeDisk", ""))
+        match = re.fullmatch(r"disk\d+s(\d+)", self.store)
+        if not match or not self.parent_disk:
+            raise errors.UnsupportedError(f"cannot find the partition behind {path}")
+        self.part_index = int(match.group(1))
+        self.part_offset = int(store_info.get("PartitionMapPartitionOffset", -1))
+        self.part_bytes = int(store_info.get("TotalSize", 0))
         disk_info = self._diskutil_plist(self.parent_disk)
+        self.sector_size = int(disk_info.get("DeviceBlockSize", 512))
         self.total_sectors = int(disk_info.get("TotalSize", 0)) // self.sector_size
-        self._fp = open(self.device_id, "r+b", buffering=0)
+        self.device_id = f"/dev/r{self.parent_disk}"
+        self._fp: Any = None
+
+    def _raw(self) -> int:
+        """The raw disk, opened on first use: only after the safety checks have passed."""
+        if self._fp is None:
+            try:
+                self._fp = open(self.device_id, "r+b", buffering=0)
+            except OSError as exc:
+                if exc.errno == errno.EBUSY:
+                    raise errors.BusyError(
+                        f"macOS refuses to write to {self.device_id} while it is in use",
+                        hint="--volume cannot hide on this disk while its volumes are mounted",
+                    ) from exc
+                raise
+        return self._fp.fileno()
 
     def _diskutil_plist(self, target: str) -> dict[str, Any]:
         res = subprocess.run(
@@ -738,8 +813,10 @@ class DarwinDisk:
         return plistlib.loads(res.stdout)
 
     def system_disk_reason(self) -> str:
-        info = self._diskutil_plist(self.parent_disk)
-        is_boot = bool(info.get("Internal", False)) and bool(info.get("OSInternal", False))
+        boot = self._diskutil_plist("/")
+        boot_store = self._diskutil_plist(_physical_store(boot))
+        is_boot = str(boot_store.get("ParentWholeDisk", "")) == self.parent_disk
+        info = self._diskutil_plist(self.vol_id)
         mounts = {str(info.get("MountPoint", ""))} - {""}
         roles = {str(r) for r in info.get("APFSVolumeRoles", [])}
         return check_darwin_system(mountpoints=mounts, apfs_roles=roles, is_boot_disk=is_boot)
@@ -748,38 +825,52 @@ class DarwinDisk:
         return bool(self.system_disk_reason())
 
     def read_sectors(self, lba: int, count: int) -> bytes:
-        self._fp.seek(lba * self.sector_size)
-        return self._fp.read(count * self.sector_size)
+        return _pread_all(self._raw(), lba * self.sector_size, count * self.sector_size)
 
     def write_sectors(self, lba: int, data: bytes) -> None:
-        self._fp.seek(lba * self.sector_size)
-        self._fp.write(data)
+        _pwrite_all(self._raw(), lba * self.sector_size, data, self.device_id)
+        os.fsync(self._raw())
 
     def max_shrink_bytes(self, part_index: int) -> int:
-        info = self._diskutil_plist(self.vol_id)
-        return int(info.get("FreeSpace", 0))
+        return self.container_free
 
     def shrink_fs(self, part_index: int, new_bytes: int) -> None:
-        rs = _run(["diskutil", "apfs", "resizeContainer", self.vol_id, str(new_bytes)])
+        rs = _run(["diskutil", "apfs", "resizeContainer", self.store, str(new_bytes)])
         if rs.returncode != 0:
             raise errors.BusyError(
-                f"APFS shrink failed: {rs.stderr.strip()}",
+                f"APFS shrink failed: {(rs.stderr or rs.stdout).strip()}",
                 hint="close open files on the volume and try again",
             )
-        _run(["diskutil", "unmountDisk", self.parent_disk])
 
     def expand_fs(self, part_index: int, new_bytes: int) -> None:
-        _run(["diskutil", "mountDisk", self.parent_disk])
-        rs = _run(["diskutil", "apfs", "resizeContainer", self.vol_id, str(new_bytes)])
+        rs = _run(["diskutil", "apfs", "resizeContainer", self.store, str(new_bytes)])
         if rs.returncode != 0:
-            raise errors.DiskError(f"APFS expand failed: {rs.stderr.strip()}")
+            raise errors.DiskError(f"APFS expand failed: {(rs.stderr or rs.stdout).strip()}")
 
     def refresh(self) -> None:
-        _run(["diskutil", "mountDisk", self.parent_disk])
+        pass
 
     def close(self) -> None:
-        if not self._fp.closed:
+        if self._fp is not None and not self._fp.closed:
             self._fp.close()
+
+
+def _mount_point(path: Path) -> str:
+    """The mount point of the volume that holds `path`."""
+    here = Path(os.path.abspath(path))
+    while not os.path.ismount(here) and here.parent != here:
+        here = here.parent
+    return str(here)
+
+
+def _physical_store(info: dict[str, Any]) -> str:
+    """The partition (`diskNsM`) behind a volume: its APFS container's single physical store."""
+    if str(info.get("FilesystemType", "")).lower() != "apfs":
+        return str(info.get("DeviceIdentifier", ""))
+    stores = info.get("APFSPhysicalStores") or []
+    if len(stores) != 1:
+        raise errors.UnsupportedError("--volume needs an APFS container on a single partition")
+    return str(stores[0].get("APFSPhysicalStore", ""))
 
 
 def open_disk(path: Path) -> Disk:

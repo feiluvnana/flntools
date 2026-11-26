@@ -51,18 +51,59 @@ def run_elevated(argv: Sequence[str]) -> int:
         raise permission_error()
     if sys.platform == "win32":
         return _run_win32_uac(argv)
+    # Make the state database as the user, so root only ever writes into a file it doesn't own.
+    # The database is made lazily, on first write, so its folder and empty file are made here.
+    db_path = state.home() / "state.db"
+    db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    db_path.touch(mode=0o600, exist_ok=True)
     cmd = [
         "sudo",
         "env",
         f"{ELEVATED_ENV}=1",
         f"FLNH_HOME={state.home()}",
         sys.executable,
+        "-P",  # never import from the current folder as root
         "-m",
         "flnh",
         *argv,
     ]
     res = subprocess.run(cmd, check=False)
     return int(res.returncode)
+
+
+def give_back(home: Path) -> None:
+    """Hand the state folder back to the `sudo` user after a run as root made files in it.
+
+    Only a real folder inside that user's own home is handed back, never through a symlink:
+    `FLNH_HOME` may point anywhere, and root must not chown what isn't flnh's.
+    """
+    if sys.platform == "win32" or os.geteuid() != 0:
+        return
+    uid, gid = os.environ.get("SUDO_UID", ""), os.environ.get("SUDO_GID", "")
+    if not (uid.isdigit() and gid.isdigit()) or int(uid) == 0:
+        return
+    import pwd  # not on Windows
+
+    try:
+        user_home = Path(pwd.getpwuid(int(uid)).pw_dir).resolve()
+    except KeyError:
+        return
+    if home.is_symlink() or not home.is_dir():
+        return
+    real = home.resolve()
+    if real == user_home or not real.is_relative_to(user_home):
+        return
+    for root, dirs, names in os.walk(home):
+        for name in (*dirs, *names):
+            _chown(os.path.join(root, name), int(uid), int(gid))
+    _chown(str(home), int(uid), int(gid))
+
+
+def _chown(path: str, uid: int, gid: int) -> None:
+    try:
+        os.chown(path, uid, gid, follow_symlinks=False)
+    except OSError:
+        pass
 
 
 class _SHELLEXECUTEINFOW(ctypes.Structure):
@@ -129,7 +170,9 @@ def _run_win32_uac(argv: Sequence[str]) -> int:
         err_file.write_text("", encoding="utf-8")
         prog_file.write_text("", encoding="utf-8")
 
-        params = subprocess.list2cmdline(["-m", "flnh", "--_elevated", str(req_file), *argv])
+        params = subprocess.list2cmdline(
+            ["-P", "-m", "flnh", "--_elevated", str(req_file), *argv]
+        )
         sei = _SHELLEXECUTEINFOW()
         sei.cbSize = ctypes.sizeof(_SHELLEXECUTEINFOW)
         sei.fMask = SEE_MASK_NOCLOSEPROCESS

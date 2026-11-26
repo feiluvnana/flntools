@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import io
 import json
+import os
 import shutil
 import struct
 import tempfile
@@ -25,6 +26,11 @@ VOL_HDR_SIZE = struct.calcsize(VOL_HDR_FMT)
 STREAM_CHUNK = 1024 * 1024
 
 ProgressFn = Callable[[str, int, int], None]
+
+
+class ExpandError(errors.DiskError):
+    """The hidden tail is spent (the data is restored, or saved to a file the message names),
+    but the volume could not be grown back to its old size."""
 
 
 def _emit(
@@ -74,6 +80,20 @@ def _target_partition(parts: list[table.Partition], part_index: int) -> table.Pa
         if part.index == part_index:
             return part
     raise errors.CorruptHeaderError(f"partition {part_index} not found on disk")
+
+
+def _check_same_partition(d: vol_disk.Disk, part: table.Partition) -> None:
+    """Refuse unless the table entry is the partition the OS says holds the volume."""
+    offset = getattr(d, "part_offset", None)
+    size = getattr(d, "part_bytes", None)
+    if offset is not None and offset >= 0 and part.start_lba * d.sector_size != offset:
+        raise errors.SafetyError(
+            f"partition {part.index} in the table does not start where the volume does"
+        )
+    if size and part.sector_count * d.sector_size != size:
+        raise errors.SafetyError(
+            f"partition {part.index} in the table is not the size of the volume"
+        )
 
 
 def _write_table_mbr(d: vol_disk.Disk, mbr: bytes) -> None:
@@ -299,6 +319,11 @@ def hide(
         raise errors.UsageError(f"path not found: {path}")
     if path.parent == path:
         raise errors.SafetyError(f"refusing to hide root path: {path}")
+    if path.is_symlink():
+        raise errors.UsageError(
+            f"--volume does not hide a symlink: {path}",
+            hint="hide the folder or file it points to, or use flnh hide / --lock",
+        )
 
     owns_disk = disk is None
     d = vol_disk.open_disk(path) if disk is None else disk
@@ -314,6 +339,9 @@ def hide(
         part = _target_partition(parts, idx)
         if scheme == "gpt" and part.type_id.upper() in table.SYSTEM_GPT_GUIDS:
             raise errors.SafetyError(f"refusing protected system partition ({part.type_id})")
+        if scheme == "mbr" and int(part.type_id, 16) in table.MBR_SYSTEM_TYPES:
+            raise errors.SafetyError(f"refusing protected system partition ({part.type_id})")
+        _check_same_partition(d, part)
 
         orig_size = pack.tree_size(path)
         est_archive_size = pack.estimate_tar_size(path)
@@ -449,7 +477,13 @@ def hide(
             raise
 
         _emit(on_progress, "cleaning")
-        pack.delete_plaintext(path)
+        cleanup_error = ""
+        try:
+            pack.delete_plaintext(path)
+        except OSError as exc:
+            # The data is safe in the tail: report the leftovers, but let the caller record
+            # the hidden item first so `flnh show` can still find it.
+            cleanup_error = f"{exc.filename or path}: {exc.strerror or exc}"
         return {
             "kind": kind,
             "hidden_path": f"{d.device_id}@lba:{tail_lba}",
@@ -466,6 +500,7 @@ def hide(
                 "archive_sha256": archive_sha256,
                 "backup_path": str(backup_path) if backup_path is not None else "",
             },
+            "cleanup_error": cleanup_error,
         }
     finally:
         if owns_disk:
@@ -505,12 +540,28 @@ def _expand_after_show(
     part_index: int,
     orig_fs_bytes: int,
 ) -> None:
-    if getattr(d, "manages_table", False):
+    try:
+        if not getattr(d, "manages_table", False):
+            _restore_table(d, scheme, orig_mbr, orig_pri, orig_entries)
+            d.refresh()
         d.expand_fs(part_index, orig_fs_bytes)
+    except (errors.Error, OSError) as exc:
+        raise ExpandError(
+            f"data restored, but the volume was not grown back: {exc}",
+            hint="grow the partition and its filesystem by hand to use the freed space",
+        ) from exc
+
+
+def _give_to_sudo_user(*paths: Path) -> None:
+    """Make a kept restore copy readable by the user who ran `sudo`, not only by root."""
+    uid, gid = os.environ.get("SUDO_UID", ""), os.environ.get("SUDO_GID", "")
+    if not (uid.isdigit() and gid.isdigit()) or getattr(os, "geteuid", lambda: -1)() != 0:
         return
-    _restore_table(d, scheme, orig_mbr, orig_pri, orig_entries)
-    d.refresh()
-    d.expand_fs(part_index, orig_fs_bytes)
+    for path in paths:
+        try:
+            os.chown(path, int(uid), int(gid), follow_symlinks=False)
+        except OSError:
+            pass
 
 
 def show(
@@ -587,13 +638,24 @@ def show(
                 orig_fs_bytes=orig_fs_bytes,
             )
         else:
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_tar = Path(tmp_dir) / "restore.tar"
+            # Not enough room to extract on the shrunk volume: copy the archive out, grow the
+            # volume, then extract. Once the volume grows, the copy is the only one left, so
+            # it is checked first and kept when extracting fails.
+            tmp_dir = Path(tempfile.mkdtemp(prefix="flnh-restore-"))
+            tmp_tar = tmp_dir / "restore.tar"
+            try:
                 actual = _stream_sectors_to_file(
                     d, tail_lba, archive_size, tmp_tar, on_bytes=restore_cb
                 )
                 if actual != archive_sha256:
                     raise errors.CorruptHeaderError("hidden archive checksum mismatch in disk tail")
+                pack.check_archive(tmp_tar, kind=kind)
+            except BaseException:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise
+            _give_to_sudo_user(tmp_dir, tmp_tar)
+            # From here on the tail may be wiped or overwritten: every way out names the copy.
+            try:
                 d.write_sectors(meta_lba, b"\x00" * (meta_sectors * d.sector_size))
                 _emit(on_progress, "expanding")
                 _expand_after_show(
@@ -605,7 +667,30 @@ def show(
                     part_index=part_idx,
                     orig_fs_bytes=orig_fs_bytes,
                 )
+            except ExpandError as exc:
+                # Too small to extract onto, and the filesystem may be unmounted: leave the copy.
+                raise ExpandError(
+                    f"the volume was not grown back, so nothing was extracted: {exc.__cause__}",
+                    hint=f"grow the partition and its filesystem by hand, then extract "
+                    f"{tmp_tar} with tar",
+                ) from exc
+            except KeyboardInterrupt as exc:
+                raise errors.Stopped(f"the hidden data is kept at {tmp_tar}") from exc
+            except Exception as exc:
+                raise errors.DiskError(
+                    f"could not grow the volume back: {exc}",
+                    hint=f"the hidden data is kept at {tmp_tar}; extract it with tar",
+                ) from exc
+            try:
                 pack.unpack_from_file(tmp_tar, orig_path, kind=kind)
+            except KeyboardInterrupt as exc:
+                raise errors.Stopped(f"the restored archive is kept at {tmp_tar}") from exc
+            except Exception as exc:
+                raise errors.DiskError(
+                    f"could not extract the restored archive: {exc}",
+                    hint=f"the archive is kept at {tmp_tar}; extract it with tar",
+                ) from exc
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
         return orig_path
     finally:

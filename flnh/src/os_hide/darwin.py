@@ -19,7 +19,8 @@ def _chflags(path: Path, flags: int) -> None:
     fn = getattr(os, "chflags", None)
     if fn is None:
         raise errors.UnsupportedError("os.chflags is only supported on macOS/BSD")
-    fn(path, flags)
+    # Flag the link itself, never what it points to: `_get_flags` reads with `lstat`.
+    fn(path, flags, follow_symlinks=False)
 
 
 def _get_flags(path: Path) -> int:

@@ -13,7 +13,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from flnh import cli, elevate, errors, state
+from flnh import cli, elevate, errors, os_hide, state
 from flnkit.ui import forms
 
 
@@ -108,6 +108,24 @@ class CLITest(unittest.TestCase):
         with state.Store() as store:
             self.assertEqual(store.all(), [])
 
+    def test_two_folders_with_one_name_are_tracked_apart(self) -> None:
+        for parent in ("a", "b"):
+            (self.root / parent / "docs").mkdir(parents=True)
+            code, _, err = self.run_cli("hide", str(self.root / parent / "docs"))
+            self.assertEqual(code, 0, err)
+        with state.Store() as store:
+            self.assertEqual(len(store.all()), 2)
+
+    def test_an_os_error_is_a_clean_error_not_a_bug(self) -> None:
+        folder = self.root / "docs"
+        folder.mkdir()
+        denied = PermissionError(1, "Operation not permitted", str(folder))
+        with mock.patch.object(os_hide, "hide", side_effect=denied):
+            code, _, err = self.run_cli("hide", str(folder))
+        self.assertEqual(code, 4)
+        self.assertNotIn("bug", err)
+        self.assertIn("permission denied", err)
+
     def test_volume_confirmation_off_tty_cancel_and_refuse_without_tty(self) -> None:
         folder = self.root / "vol_dir"
         folder.mkdir()
@@ -168,6 +186,56 @@ class CLITest(unittest.TestCase):
         elevated.assert_called_once_with(
             ["show", state.norm_path(folder), "--backup", str(bak.resolve())]
         )
+
+    @unittest.skipIf(sys.platform == "win32", "symlinks need privileges on Windows")
+    def test_volume_refuses_a_symlink_before_elevating(self) -> None:
+        real = self.root / "real_dir"
+        real.mkdir()
+        link = self.root / "link"
+        link.symlink_to(real)
+        with (
+            mock.patch.object(elevate, "is_admin", return_value=False),
+            mock.patch.object(elevate, "run_elevated", return_value=0) as elevated,
+        ):
+            code, _, err = self.run_cli("hide", str(link), "--volume", "--yes", tty=True)
+        self.assertEqual(code, 2, err)
+        self.assertIn("symlink", err)
+        elevated.assert_not_called()
+        self.assertTrue(real.is_dir())
+
+    @unittest.skipIf(sys.platform == "win32", "sudo is not on Windows")
+    def test_give_back_hands_over_only_a_real_folder_in_the_sudo_users_home(self) -> None:
+        user_home = self.root / "user"
+        inside = user_home / ".config" / "flnh"
+        (inside / "backups").mkdir(parents=True)
+        (inside / "state.db").write_bytes(b"")
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "theirs").write_bytes(b"")
+        link = user_home / "link"
+        link.symlink_to(elsewhere)
+        pw = mock.Mock(pw_dir=str(user_home))
+        for home, handed in [(inside, True), (link, False), (elsewhere, False),
+                             (user_home, False)]:
+            with (
+                self.subTest(home=home.name),
+                mock.patch.dict(os.environ, {"SUDO_UID": "501", "SUDO_GID": "20"}),
+                mock.patch.object(os, "geteuid", return_value=0),
+                mock.patch("pwd.getpwuid", return_value=pw),
+                mock.patch.object(os, "chown") as chown,
+            ):
+                elevate.give_back(home)
+            owned = {Path(call.args[0]) for call in chown.call_args_list}
+            if handed:
+                self.assertEqual(owned, {inside, inside / "backups", inside / "state.db"})
+            else:
+                self.assertEqual(owned, set())
+
+    @unittest.skipIf(sys.platform == "win32", "sudo is not on Windows")
+    def test_sudo_run_makes_the_state_db_as_the_user_first(self) -> None:
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)):
+            elevate.run_elevated(["hide", "/mnt/usb/a", "--volume", "--yes"])
+        self.assertTrue((self.home / "state.db").is_file())
 
     def test_elevated_worker_flag_captures_output_and_sets_home(self) -> None:
         out_f = self.root / "out.txt"

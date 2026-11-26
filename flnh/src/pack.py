@@ -18,8 +18,11 @@ TAR_BUFSIZE = 1024 * 1024
 
 
 def item_id(name: str) -> str:
-    """Deterministic short identifier derived from a filename without leaking it."""
-    return hashlib.sha256(name.casefold().encode("utf-8")).hexdigest()[:12]
+    """Deterministic short identifier derived from a path without leaking it.
+
+    Case is kept: on a case-sensitive filesystem `A/docs` and `a/docs` are two items.
+    """
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
 
 
 def tree_size(path: Path) -> int:
@@ -115,15 +118,64 @@ def pack_to_file(source: Path, dest: Path) -> tuple[int, str, str]:
     return size, sha256, kind
 
 
-def _safe_member_path(root: Path, name: str) -> Path:
-    if not name or name == ".":
-        return root
+def _chown(path: Path, member: tarfile.TarInfo) -> None:
+    """Give `path` back to the archive's owner when running as root (a `sudo` restore)."""
+    if os.name == "nt" or os.geteuid() != 0:
+        return
+    try:
+        os.chown(path, member.uid, member.gid, follow_symlinks=False)
+    except OSError:
+        pass
+
+
+def _check_member(member: tarfile.TarInfo) -> None:
+    if member.isdev() or member.ischr() or member.isblk() or member.isfifo():
+        raise errors.CorruptHeaderError(f"unsupported special file in archive: {member.name}")
+
+
+def check_archive(archive_path: Path, *, kind: str) -> None:
+    """Read `archive_path` through once and refuse it if extracting it would fail.
+
+    Checks entry names and types without writing anything, so a restore can stop while the
+    archive is still safe in the disk tail.
+    """
+    try:
+        with open(archive_path, "rb") as f, tarfile.open(
+            fileobj=f, mode="r|*", bufsize=TAR_BUFSIZE
+        ) as tar:
+            members = 0
+            for member in tar:
+                members += 1
+                if kind == "file":
+                    if members > 1 or not member.isfile():
+                        raise errors.CorruptHeaderError("archive payload is not a single file")
+                    continue
+                _check_member(member)
+                _check_name(member.name)
+                if member.islnk():
+                    _check_name(member.linkname)
+    except tarfile.TarError as exc:
+        raise errors.CorruptHeaderError(f"hidden archive is not a readable tar: {exc}") from exc
+    if kind == "file" and members != 1:
+        raise errors.CorruptHeaderError("archive payload is missing file entry")
+
+
+def _check_name(name: str) -> PurePosixPath:
     clean = name.replace("\\", "/")
     if clean.startswith("/") or (len(clean) >= 2 and clean[1] == ":"):
         raise errors.CorruptHeaderError(f"unsafe path in archive: {name!r}")
-    parts = PurePosixPath(clean).parts
-    if any(part == ".." for part in parts):
+    parts = PurePosixPath(clean)
+    if any(part == ".." for part in parts.parts):
         raise errors.CorruptHeaderError(f"path traversal in archive: {name!r}")
+    return parts
+
+
+def _safe_member_path(root: Path, name: str) -> Path:
+    if not name or name == ".":
+        return root
+    parts = _check_name(name).parts
+    if not parts:
+        return root
     target = (root / Path(*parts)).resolve()
     root_resolved = root.resolve()
     if target != root_resolved and not target.is_relative_to(root_resolved):
@@ -178,6 +230,7 @@ def _extract_single_file(stream: IO[bytes], dest: Path) -> None:
                 os.chmod(dest, stat.S_IMODE(member.mode))
             except OSError:
                 pass
+        _chown(dest, member)
         if tar.next() is not None:
             raise errors.CorruptHeaderError("unexpected extra entries in single-file archive")
 
@@ -187,29 +240,26 @@ def _extract_dir(stream: IO[bytes], stage: Path) -> None:
     stage_resolved = stage.resolve()
     with tarfile.open(fileobj=stream, mode="r|*", bufsize=TAR_BUFSIZE) as tar:
         for member in tar:
-            if member.isdev() or member.ischr() or member.isblk() or member.isfifo():
-                raise errors.CorruptHeaderError(
-                    f"unsupported special file in archive: {member.name}"
-                )
+            _check_member(member)
             target = _safe_member_path(stage, member.name)
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
+                _chown(target, member)
                 dir_times.append((target, member.mtime, member.mode))
-            elif member.issym() or member.islnk():
-                link_target = member.linkname
-                if member.issym():
-                    resolved = (target.parent / link_target).resolve()
-                else:
-                    resolved = _safe_member_path(stage, link_target)
+            elif member.issym():
+                # A symlink may point anywhere, as it did before hiding: making it writes
+                # nothing there, and every later entry is resolved through it and checked.
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.symlink(member.linkname, target)
+                _chown(target, member)
+            elif member.islnk():
+                resolved = _safe_member_path(stage, member.linkname)
                 if resolved != stage_resolved and not resolved.is_relative_to(stage_resolved):
                     raise errors.CorruptHeaderError(
                         f"unsafe link target in archive: {member.name}"
                     )
                 target.parent.mkdir(parents=True, exist_ok=True)
-                if member.issym():
-                    os.symlink(link_target, target)
-                else:
-                    os.link(resolved, target)
+                os.link(resolved, target)
             elif member.isfile():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 src = tar.extractfile(member)
@@ -217,6 +267,7 @@ def _extract_dir(stream: IO[bytes], stage: Path) -> None:
                     raise errors.CorruptHeaderError(f"unreadable entry in archive: {member.name}")
                 with open(target, "wb") as out:
                     shutil.copyfileobj(src, out, length=TAR_BUFSIZE)
+                _chown(target, member)
                 if os.name != "nt":
                     try:
                         os.chmod(target, stat.S_IMODE(member.mode))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 import contextlib
 import json
 import os
@@ -74,19 +75,33 @@ def _main(argv: Sequence[str] | None) -> int:
                 return _run_command(args)
             finally:
                 out.close()
-    return _run_command(args)
+    try:
+        return _run_command(args)
+    finally:
+        elevate.give_back(state.home())
 
 
 def _run_command(args: argparse.Namespace) -> int:
     try:
         return int(args.command(args))
-    except KeyboardInterrupt:
-        out.line(("stopped", "warn"), err=True)
+    except KeyboardInterrupt as stop:
+        detail = f": {stop}" if str(stop) else ""
+        out.line(("stopped", "warn"), detail, err=True)
         return STOPPED
     except Exception as error:
         if isinstance(error, errors.Error):
             out.error(error)
             return exit_code(error)
+        if isinstance(error, builtins.PermissionError):
+            out.error(errors.PermissionError(
+                f"permission denied: {error.filename or error}",
+                hint="check the owner and mode of the path, or run as its owner",
+            ))
+            return BROKE
+        if isinstance(error, OSError):
+            disk_error = errors.disk(error)
+            out.error(disk_error)
+            return exit_code(disk_error)
         out.error(errors.Error(f"flnh hit a bug: {type(error).__name__}: {error}"))
         return BROKE
 
@@ -186,6 +201,12 @@ def _hide_cmd(args: argparse.Namespace) -> int:
         raise errors.UsageError(f"path not found: {target}")
 
     if level == "volume":
+        if target.is_symlink():
+            # Checked here too: the elevated run gets a full path and must get this same one.
+            raise errors.UsageError(
+                f"--volume does not hide a symlink: {target}",
+                hint="hide the folder or file it points to, or use flnh hide / --lock",
+            )
         size_est = pack.tree_size(target)
         out.line(
             ("volume ", "bold focus"),
@@ -202,10 +223,12 @@ def _hide_cmd(args: argparse.Namespace) -> int:
                 return OK
         if not elevate.is_admin():
             if elevate.can_elevate():
-                return elevate.run_elevated(["hide", str(target.resolve()), "--volume", "--yes"])
+                full = target.parent.resolve() / target.name
+                return elevate.run_elevated(["hide", str(full), "--volume", "--yes"])
             raise elevate.permission_error("--volume")
 
-    item_id = pack.item_id(target.name)
+    # The whole path, not the name: two `docs` folders must not share one tracked row.
+    item_id = pack.item_id(state.norm_path(target))
     if level in ("flag", "lock"):
         res = os_hide.hide(target, level=level)
     else:
@@ -225,6 +248,11 @@ def _hide_cmd(args: argparse.Namespace) -> int:
                 size_bytes=res["size_bytes"],
                 hidden_at=clock.wall(),
             )
+        )
+    if res.get("cleanup_error"):
+        raise errors.DiskError(
+            f"hidden, but some original files could not be deleted: {res['cleanup_error']}",
+            hint=f"delete what is left of {target} by hand; flnh show {target} still restores it",
         )
     out.line(("hidden ", "bold good"), f"{target} ", (f"[{level}]", "dim"), mark="ok")
     return OK
@@ -283,8 +311,15 @@ def _show_cmd(args: argparse.Namespace) -> int:
                     store.close()
                     return elevate.run_elevated(sub_argv)
                 raise elevate.permission_error("--volume restore")
-            with _Progress() as prog:
-                volume.show(target, entry=entry, backup_path=backup_path, on_progress=prog.update)
+            try:
+                with _Progress() as prog:
+                    volume.show(
+                        target, entry=entry, backup_path=backup_path, on_progress=prog.update
+                    )
+            except volume.ExpandError:
+                # The data is back: forget the item, then report the volume left small.
+                store.remove(target)
+                raise
             detected_level = "volume"
         elif entry is not None and entry.level in ("flag", "lock"):
             _, detected_level = os_hide.show(target, entry=entry)

@@ -14,6 +14,25 @@ from flnh import errors, os_hide
 from flnh.os_hide import darwin, linux
 
 
+def assert_hidden(case: unittest.TestCase, path: Path) -> None:
+    """Gone from listings: renamed away (Windows, Linux), or flagged `UF_HIDDEN` (macOS)."""
+    if sys.platform == "darwin":
+        case.assertTrue(path.lstat().st_flags & stat.UF_HIDDEN)
+    else:
+        case.assertFalse(path.exists())
+
+
+def assert_denied(case: unittest.TestCase, hidden: Path) -> None:
+    """Locked: a folder can't be listed and a file can't be read (root reads anything)."""
+    if sys.platform != "win32" and os.geteuid() == 0:
+        return
+    with case.assertRaises(PermissionError):
+        if hidden.is_dir():
+            list(hidden.iterdir())
+        else:
+            hidden.read_bytes()
+
+
 class CurrentOSHideTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -29,8 +48,8 @@ class CurrentOSHideTest(unittest.TestCase):
 
         res_dir = os_hide.hide(folder, level="flag")
         res_file = os_hide.hide(single, level="flag")
-        self.assertFalse(folder.exists())
-        self.assertFalse(single.exists())
+        assert_hidden(self, folder)
+        assert_hidden(self, single)
         self.assertNotEqual(res_dir["hidden_path"], res_file["hidden_path"])
         if sys.platform == "win32":
             from flnh.os_hide import win32
@@ -69,11 +88,8 @@ class CurrentOSHideTest(unittest.TestCase):
         secret.write_text("vault-key", encoding="utf-8")
 
         res = os_hide.hide(folder, level="lock")
-        self.assertFalse(folder.exists())
-        hidden = Path(res["hidden_path"])
-        if sys.platform == "win32" or os.geteuid() != 0:
-            with self.assertRaises(PermissionError):
-                list(hidden.iterdir())
+        assert_hidden(self, folder)
+        assert_denied(self, Path(res["hidden_path"]))
 
         restored, lvl = os_hide.show(folder)
         self.assertEqual((restored, lvl), (folder, "lock"))
@@ -84,10 +100,8 @@ class CurrentOSHideTest(unittest.TestCase):
         doc = self.root / "id.txt"
         doc.write_text("passport", encoding="utf-8")
         res = os_hide.hide(doc, level="lock")
-        self.assertFalse(doc.exists())
-        if sys.platform == "win32" or os.geteuid() != 0:
-            with self.assertRaises(PermissionError):
-                list(Path(res["hidden_path"]).iterdir())
+        assert_hidden(self, doc)
+        assert_denied(self, Path(res["hidden_path"]))
         os_hide.show(doc)
         self.assertEqual(doc.read_text(encoding="utf-8"), "passport")
 
@@ -124,6 +138,14 @@ class LinuxBackendTest(unittest.TestCase):
         linux.show(folder)
         self.assertTrue(folder.is_dir())
         self.assertEqual(dot_hidden.read_text(encoding="utf-8").splitlines(), ["preexisting"])
+
+    def test_show_never_reveals_a_dot_folder_flnh_did_not_hide(self) -> None:
+        own = self.root / ".ssh"
+        own.mkdir()
+        self.assertIsNone(linux.detect(self.root / "ssh"))
+        with self.assertRaises(errors.UsageError):
+            linux.show(self.root / "ssh")
+        self.assertTrue(own.is_dir())
 
     def test_lock_chmod_and_cleanup(self) -> None:
         folder = self.root / "lock_dir"
@@ -171,7 +193,8 @@ class DarwinBackendTest(unittest.TestCase):
         def fake_lstat(p: Path) -> FakeStat:
             return FakeStat(orig_lstat(p), flags_map.get(str(p), 0))
 
-        def fake_chflags(p: Path, val: int) -> None:
+        def fake_chflags(p: Path, val: int, follow_symlinks: bool = True) -> None:
+            self.assertFalse(follow_symlinks, "chflags must not follow a symlink")
             flags_map[str(p)] = val
 
         with (

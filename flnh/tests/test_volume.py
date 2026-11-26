@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
-import struct
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -170,15 +172,6 @@ class VolumeRoundTripTest(unittest.TestCase):
             volume.show(folder, disk=d)
         self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
 
-    def test_win32_shrink_ioctl_and_struct_layout(self) -> None:
-        self.assertEqual(vol_disk.FSCTL_SHRINK_VOLUME, 0x000901B0)
-        prep = vol_disk.pack_shrink_info(1, 12345)
-        self.assertEqual(len(prep), 24)
-        req, flags, sectors = struct.unpack("<I4xQq", prep)
-        self.assertEqual((req, flags, sectors), (1, 0, 12345))
-        commit = vol_disk.pack_shrink_info(2, 12345)
-        self.assertEqual(struct.unpack("<I4xQq", commit), (2, 0, 0))
-
     def test_win32_ps_resize_and_manages_table_order(self) -> None:
         fake_win = object.__new__(vol_disk.Win32Disk)
         fake_win.drive = "E:"
@@ -242,6 +235,114 @@ class VolumeRoundTripTest(unittest.TestCase):
         volume.show(folder, disk=d)
         self.assertEqual(events, ["zero_meta", "expand_fs"])
         self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
+
+    def _disk(self, name: str) -> vol_disk.FileDisk:
+        d = vol_disk.FileDisk.create_mbr(self.root / name, 8 * 1024 * 1024, fs_type="ntfs")
+        self.addCleanup(d.close)
+        return d
+
+    @unittest.skipIf(sys.platform == "win32", "symlinks need privileges on Windows")
+    def test_symlinks_pointing_outside_come_back_on_both_restore_paths(self) -> None:
+        for low_space in (False, True):
+            with self.subTest(low_space=low_space):
+                d = self._disk(f"links{low_space}.img")
+                folder = self._sample_folder(f"links{low_space}")
+                (folder / "abs").symlink_to("/etc/hosts")
+                (folder / "up").symlink_to("../elsewhere")
+                volume.hide(folder, disk=d)
+                free = mock.Mock(free=0) if low_space else mock.Mock(free=1 << 40)
+                with mock.patch.object(shutil, "disk_usage", return_value=free):
+                    volume.show(folder, disk=d)
+                self.assertEqual(os.readlink(folder / "abs"), "/etc/hosts")
+                self.assertEqual(os.readlink(folder / "up"), "../elsewhere")
+
+    def test_low_space_restore_keeps_the_archive_when_extracting_fails(self) -> None:
+        d = self._disk("keep.img")
+        folder = self._sample_folder("keep")
+        volume.hide(folder, disk=d)
+        with (
+            mock.patch.object(shutil, "disk_usage", return_value=mock.Mock(free=0)),
+            mock.patch.object(volume.pack, "unpack_from_file", side_effect=OSError(28, "full")),
+            self.assertRaises(errors.DiskError) as caught,
+        ):
+            volume.show(folder, disk=d)
+        kept = Path(caught.exception.hint.split(" at ", 1)[1].split(";", 1)[0])
+        self.addCleanup(shutil.rmtree, kept.parent, True)
+        self.assertTrue(kept.is_file())
+        volume.pack.unpack_from_file(kept, folder, kind="dir")
+        self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
+
+    def test_a_bad_archive_is_refused_before_the_volume_grows(self) -> None:
+        d = self._disk("bad.img")
+        folder = self._sample_folder("bad")
+        volume.hide(folder, disk=d)
+        shrunk = d.fs_bytes
+        with (
+            mock.patch.object(shutil, "disk_usage", return_value=mock.Mock(free=0)),
+            mock.patch.object(
+                volume.pack, "check_archive", side_effect=errors.CorruptHeaderError("bad")
+            ),
+            self.assertRaises(errors.CorruptHeaderError),
+        ):
+            volume.show(folder, disk=d)
+        self.assertEqual(d.fs_bytes, shrunk)
+        volume.show(folder, disk=d)  # still in the tail
+        self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
+
+    def test_a_failed_expand_after_restore_is_an_expand_error(self) -> None:
+        d = self._disk("grow.img")
+        folder = self._sample_folder("grow")
+        volume.hide(folder, disk=d)
+        d.busy = True
+        with self.assertRaises(volume.ExpandError):
+            volume.show(folder, disk=d)
+        self.assertEqual((folder / "doc.txt").read_text(encoding="utf-8"), "volume-payload")
+
+    def test_low_space_restore_keeps_the_copy_when_the_volume_does_not_grow(self) -> None:
+        # The tail is wiped before growing, so every way out must name the copy, and nothing
+        # is extracted onto a volume still too small (or unmounted) for it.
+        for stop in (False, True):
+            with self.subTest(stop=stop):
+                d = self._disk(f"nogrow{stop}.img")
+                folder = self._sample_folder(f"nogrow{stop}")
+                volume.hide(folder, disk=d)
+                failure = KeyboardInterrupt() if stop else errors.DiskError("busy")
+                raised = errors.Stopped if stop else volume.ExpandError
+                with (
+                    mock.patch.object(shutil, "disk_usage", return_value=mock.Mock(free=0)),
+                    mock.patch.object(d, "expand_fs", side_effect=failure),
+                    self.assertRaises(raised) as caught,
+                ):
+                    volume.show(folder, disk=d)
+                said = f"{caught.exception} {getattr(caught.exception, 'hint', '')}"
+                match = re.search(r"(/\S*flnh-restore-\S*/restore\.tar)", said)
+                self.assertIsNotNone(match, said)
+                kept = Path(match.group(1))
+                self.addCleanup(shutil.rmtree, kept.parent, True)
+                self.assertTrue(kept.is_file())
+                self.assertFalse(folder.exists())
+
+    def test_leftovers_after_hiding_are_reported_not_raised(self) -> None:
+        d = self._disk("left.img")
+        folder = self._sample_folder("left")
+        with mock.patch.object(volume.pack, "delete_plaintext", side_effect=PermissionError(
+            13, "Permission denied", str(folder / "doc.txt")
+        )):
+            res = volume.hide(folder, disk=d)
+        self.assertIn("doc.txt", res["cleanup_error"])
+        self.assertIn("meta_lba", res["meta"])
+
+    def test_refuses_a_symlink_and_a_table_entry_that_is_not_the_volume(self) -> None:
+        d = self._disk("guard.img")
+        folder = self._sample_folder("guard")
+        link = self.root / "link"
+        link.symlink_to(folder)
+        with self.assertRaises(errors.UsageError):
+            volume.hide(link, disk=d)
+        d.part_bytes = 4096  # type: ignore[attr-defined]
+        with self.assertRaises(errors.SafetyError):
+            volume.hide(folder, disk=d)
+        self.assertTrue((folder / "doc.txt").exists())
 
     def test_volume_progress_stages_and_monotonic_counts(self) -> None:
         img = self.root / "prog.img"

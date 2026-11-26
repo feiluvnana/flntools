@@ -80,7 +80,8 @@ def detect(orig_path: Path, entry: Any = None) -> dict[str, Any] | None:
         hidden_file.is_file()
         and target.name in hidden_file.read_text(encoding="utf-8").splitlines()
     )
-    if target != orig_path or in_dot_hidden or _sidecar_path(orig_path).is_file() or entry:
+    # A `.name` alone is not proof: `~/.ssh` exists without flnh. Only flnh's own marks count.
+    if entry is not None or in_dot_hidden or _sidecar_path(orig_path).is_file():
         return {"hidden_path": target, "entry": entry}
     return None
 
