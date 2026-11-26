@@ -394,7 +394,7 @@ media/ins/example_user/highlights/Travel/2026-01-02_1234567890.mp4
 
 A template is picked for each file: the category's own, else the route's, else the plugin's. A
 file's modified time is its post's day at noon UTC. A file listed in two categories of one target is
-saved once, and the second gets a link ([For developers](#for-developers)).
+saved once, and the second gets a hard link (else symlink; [For developers](#for-developers)).
 
 ### A single post
 

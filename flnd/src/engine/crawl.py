@@ -1097,13 +1097,13 @@ def _distinct_folders(root: Path, dest: Path, holder: Path) -> bool:
 
 
 def _try_link(dest: Path, holder: Path) -> bool:
-    """Link `dest` to `holder`: a relative symlink, else a hard link where symlinks fail."""
+    """Link `dest` to `holder`: a hard link, else a relative symlink where hard links fail."""
     try:
-        dest.symlink_to(os.path.relpath(holder, dest.parent))
+        os.link(holder, dest)
         return True
     except OSError:
         try:
-            os.link(holder, dest)
+            dest.symlink_to(os.path.relpath(holder, dest.parent))
             return True
         except OSError:
             return False
