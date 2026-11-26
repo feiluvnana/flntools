@@ -1152,6 +1152,27 @@ class ScrollTimingTest(BrowserCase):
                 if expect_stalled:
                     self.assertGreaterEqual(raw.clock.now, _browser.STALL)
 
+    def test_launch_args_memory_nudge_wait_error_and_cold_nudge(self):
+        self.assertFalse({"--renderer-process-limit=1", "--disable-site-isolation-trials",
+                          "--js-flags=--max-old-space-size=1024"} & set(_browser.LAUNCH_ARGS))
+        cdp = SimpleNamespace(send=mock.AsyncMock())
+        ctx = SimpleNamespace(new_cdp_session=mock.AsyncMock(return_value=cdp))
+        run(_browser.Page(cast(Any, SimpleNamespace(context=ctx)), cast(Any, None))._nudge_memory())
+        self.assertEqual([c.args[0] for c in cdp.send.await_args_list],
+                         ["Memory.simulatePressureNotification"])
+        noop = lambda *a, **kw: None  # noqa: E731
+        page = _browser.Page(cast(Any, SimpleNamespace(on=noop, remove_listener=noop, url="")),
+                             cast(Any, None))
+        tabs = SimpleNamespace(page=page, run=run, scroll=_browser.FAST, push=noop, pop=noop)
+        feed = _browser.Feed(cast(Any, tabs), "/g", scroll=True, cursor=lambda x: (True, None))
+        feed._scroller = SimpleNamespace(
+            step=mock.AsyncMock(side_effect=[False, False, False]), nudge=mock.AsyncMock())
+        self.assertEqual((list(feed), feed._scroller.nudge.await_count), ([], 2))
+        feed._scroller = SimpleNamespace(step=mock.AsyncMock(side_effect=_browser.WaitError("x")))
+        feed._closed, feed._items = False, feed._iterate()
+        with self.assertRaises(_browser.WaitError):
+            list(feed)
+
 
 class RunOnTest(unittest.TestCase):
     def test_run_from_the_loop_itself_raises_and_a_ctrl_c_comes_back_as_it_was(self):

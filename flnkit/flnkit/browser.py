@@ -215,16 +215,15 @@ __all__ = [
 LAUNCH_ARGS = [
     "--disable-blink-features=AutomationControlled", "--disable-infobars",
     "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding", "--disable-gpu", "--renderer-process-limit=1",
-    "--disable-site-isolation-trials", "--disable-extensions", "--disable-default-apps",
-    "--disable-component-extensions-with-background-pages", "--disable-background-networking",
-    "--disable-sync", "--disable-translate", "--disable-client-side-phishing-detection",
-    "--disable-component-update", "--disable-domain-reliability", "--mute-audio",
-    "--disable-renderer-accessibility", "--autoplay-policy=user-gesture-required",
-    "--no-first-run", "--no-default-browser-check", "--metrics-recording-only",
-    "--disable-breakpad", "--disable-hang-monitor", "--disable-ipc-flooding-protection",
-    "--password-store=basic", "--use-mock-keychain", "--disable-dev-shm-usage",
-    "--disk-cache-size=1", "--media-cache-size=1", "--js-flags=--max-old-space-size=1024",
+    "--disable-renderer-backgrounding", "--disable-gpu", "--disable-extensions",
+    "--disable-default-apps", "--disable-component-extensions-with-background-pages",
+    "--disable-background-networking", "--disable-sync", "--disable-translate",
+    "--disable-client-side-phishing-detection", "--disable-component-update",
+    "--disable-domain-reliability", "--mute-audio", "--disable-renderer-accessibility",
+    "--autoplay-policy=user-gesture-required", "--no-first-run", "--no-default-browser-check",
+    "--metrics-recording-only", "--disable-breakpad", "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection", "--password-store=basic", "--use-mock-keychain",
+    "--disable-dev-shm-usage", "--disk-cache-size=1", "--media-cache-size=1",
     ("--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,"
      "AcceptCHFrame,InterestFeedContentSuggestions,ProcessPerSiteUpToMainFrameThreshold,"
      "SpareRendererForSitePerProcess,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,"
@@ -926,15 +925,16 @@ class Page:
         self.captures: set[Capture] = set()
 
     async def _nudge_memory(self) -> None:
-        """Periodically nudge Blink and V8 to free layers, caches, and garbage."""
+        """Periodically nudge Blink to trim layers and caches without blocking the loop."""
         try:
             raw = self.raw
             context = getattr(raw, "context", None)
             if context is not None and hasattr(context, "new_cdp_session"):
-                cdp = self._cdp or await context.new_cdp_session(raw)
+                cdp = self._cdp or await asyncio.wait_for(context.new_cdp_session(raw), 5.0)
                 self._cdp = cdp
-                await cdp.send("Memory.simulatePressureNotification", {"level": "critical"})
-                await cdp.send("HeapProfiler.collectGarbage")
+                await asyncio.wait_for(
+                    cdp.send("Memory.simulatePressureNotification", {"level": "critical"}), 5.0,
+                )
         except Exception:
             pass
 
@@ -2373,6 +2373,7 @@ class Feed:
         """Scroll step by step, one call to the loop each, until a body is waiting, for at
         most `STALL` seconds."""
         began = clock.now()
+        cold_nudges = 0
         while not self._fill():
             if self._cursors.ended:
                 break
@@ -2385,11 +2386,15 @@ class Feed:
                 break
             try:
                 went = self._tabs.run(asyncio.wait_for(self._scroller.step(), left))
-            except (TimeoutError, WaitError):
+            except TimeoutError:
                 went = None
             if went is False:
-                if not self._cursors.active or self._cursors.ended:
+                if self._cursors.ended:
                     break
+                if not self._cursors.active:
+                    if self._cursors._reader is None or cold_nudges >= 2:
+                        break
+                    cold_nudges += 1
                 if clock.now() - began >= STALL:
                     self.stalled = True
                     break
