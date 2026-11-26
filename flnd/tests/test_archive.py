@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import shutil
 import tarfile
@@ -10,8 +11,9 @@ import tracemalloc
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
-from flnd.errors import SiteError
+from flnd.errors import DiskError, SiteError
 from flnkit import files as _tools
 from flnkit import files as _unpack
 
@@ -140,6 +142,13 @@ class ExtractTest(ArchiveCase):
         self.assertEqual((folder / "a.txt").read_bytes(), b"new")
         self.assertEqual((folder / "mine.txt").read_bytes(), b"mine")
         self.assertFalse((self.root / ".post.unpack").exists())
+
+    def test_a_disk_error_inside_a_zip_is_a_disk_error(self) -> None:
+        archive = self.zip_with({"a.txt": b"alpha"}, name="post.zip")
+        full = OSError(errno.ENOSPC, "No space left on device")
+        with mock.patch.object(_unpack, "_save", side_effect=full), \
+                self.assertRaises(DiskError):
+            _unpack.extract(archive)
 
     def test_nested_archives_are_not_unpacked(self) -> None:
         inner = self.zip_with({"inner.txt": b"inner"}, name="inner.zip").read_bytes()

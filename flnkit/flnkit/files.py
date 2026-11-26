@@ -1182,6 +1182,8 @@ def _unpack_zip(path: Path, dest: Path, *, password: str | None) -> None:
                         hint="install 7-Zip (7zz) to extract AES-encrypted zips") from error
     except (zipfile.BadZipFile, *DAMAGED) as error:
         raise SiteError(f"{path.name}: {error}") from error
+    except OSError as error:
+        raise disk(error, dest) from error
 
 
 def _unpack_tar(path: Path, dest: Path) -> None:
