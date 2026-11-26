@@ -176,6 +176,20 @@ class PoolTest(unittest.TestCase):
         self.assertEqual(exited, {"wait": False})
         self.assertEqual(closed, {})
 
+    def test_a_waiter_cancelled_as_its_place_is_given_back_stays_cancelled(self):
+        async def check(holder, take) -> None:
+            await take()
+            waiter = asyncio.ensure_future(take())
+            await asyncio.sleep(0)
+            waiter.cancel()
+            holder.give()  # before the waiter's own step runs
+            with self.assertRaises(asyncio.CancelledError):
+                await waiter
+
+        pool, cap = Pool(1), Cap(1, most=1)
+        asyncio.run(check(pool, lambda: pool.take(0)))
+        asyncio.run(check(cap, cap.take))
+
     def test_kinds_take_their_priorities(self):
         expected = {Kind.PAGE: 1, Kind.TAB: 1, Kind.FILE: 2, Kind.UNPACK: 3,
                     Kind.MERGE: 3}

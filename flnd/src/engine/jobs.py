@@ -227,7 +227,8 @@ class Pool:
             if place.done() and not place.cancelled():
                 # Handed over just as the waiter was cancelled: pass the place on.
                 self.give()
-            else:
+            elif entry in self._queue:
+                # `give` may already have popped the cancelled entry and skipped it.
                 self._queue.remove(entry)
                 heapq.heapify(self._queue)
             raise
@@ -348,7 +349,8 @@ class Cap:
         except asyncio.CancelledError:
             if place.done() and not place.cancelled():
                 self.give()
-            else:
+            elif place in self._waiting:
+                # `_wake` may already have popped the cancelled place and skipped it.
                 self._waiting.remove(place)
             raise
         return self._round
