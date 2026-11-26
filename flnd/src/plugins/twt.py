@@ -62,6 +62,11 @@ QUERIES = {
 SEARCH = "SearchTimeline"
 # Consecutive empty search pages with advancing Bottom cursors allowed before stopping.
 SEARCH_EMPTY = 3
+# Retries on a timeline tab when X answers a non-fatal GraphQL error and shows Retry.
+MAX_ERROR_RETRIES = 3
+# Minimum profile timeline tweets seen before `posts` falls back to search backfill.
+BACKFILL_THRESHOLD = 400
+BACKFILL_PREFIX = "backfill:"
 # Matches a `max_id:<digits>` operator in a search query as its own whitespace-delimited token.
 # How many of a search window's last tweets, in scroll order, set where the next window starts.
 SEARCH_TAIL = 5
@@ -179,6 +184,15 @@ class Twitter(Plugin):
     fields = ("part", "n")
     filename = "{date}_{post}_{n}"
     key = "{post}_{n}"
+
+    class Settings(Plugin.Settings):
+        """Twitter/X settings under `[plugins.twt]`.
+
+        Attributes:
+            backfill: continue `posts` past X's profile timeline cap via search.
+        """
+
+        backfill: bool = True
 
     def __init__(self) -> None:
         # One instance serves every target in a run: the query table, and the
@@ -525,11 +539,8 @@ class Twitter(Plugin):
     async def _timeline(self, ctx: Ctx, profile: dict[str, Any],
                         category: str) -> AsyncIterator[Post]:
         """Scroll one timeline's tab to its end, yielding the posts its category keeps."""
-        if self._tab_opened:
-            await ctx.pause(random.uniform(2.0, 5.0), "pausing between profile tabs")
-        self._tab_opened = True
-        timeline = TIMELINES[category]
-        tab = profile["page"] + timeline.tab
+        listing = getattr(ctx, "listing", None)
+        again = bool(getattr(ctx, "_again", False))
         user = profile["user"] or {}
         interstitial = bool(dig(
             user, "profile_metadata.profile_interstitial_type || legacy.profile_interstitial_type"
@@ -545,14 +556,58 @@ class Twitter(Plugin):
             for post in tweet_posts(tweet, category, profile):
                 yield post.replace(pinned=True) if pinned else post
 
+        if (category == "posts" and not again and listing is not None
+                and isinstance(listing.start, str)
+                and listing.start.startswith(BACKFILL_PREFIX)):
+            raw_id = listing.start.removeprefix(BACKFILL_PREFIX)
+            if raw_id.isdigit() and int(raw_id) > 0 and (name := _screen_name(profile)):
+                listing.taken = True
+                async for post in self._backfill_posts(ctx, name, int(raw_id), emit):
+                    yield post
+                return
+
+        if self._tab_opened:
+            await ctx.pause(random.uniform(2.0, 5.0), "pausing between profile tabs")
+        self._tab_opened = True
+        timeline = TIMELINES[category]
+        tab = profile["page"] + timeline.tab
+
         if category != "media":
+            total_tweets = 0
+            oldest_id: int | None = None
+            oldest_date: date | None = None
             async for tweet, pinned in self._scroll(
                 ctx, tab, timeline.query,
                 tab=category,
                 handle=profile["handle"],
                 interstitial=interstitial,
             ):
+                total_tweets += 1
+                tid = tweet_id_of(tweet)
+                if not pinned and tid.isdigit():
+                    tid_int = int(tid)
+                    if oldest_id is None or tid_int < oldest_id:
+                        oldest_id = tid_int
+                        posted = _tweet_date(tweet)
+                        oldest_date = posted.astimezone(UTC).date() if posted else None
                 for post in emit(tweet, pinned):
+                    yield post
+            if (
+                category == "posts"
+                and getattr(ctx.settings, "backfill", True)
+                and not bool(getattr(listing, "sync", False))
+                and not bool(dig(user, "legacy.protected"))
+                and not self._suspended
+                and total_tweets >= BACKFILL_THRESHOLD
+                and (name := _screen_name(profile)) is not None
+                and oldest_id is not None and oldest_id > 1
+                and not (ctx.when.since is not None and oldest_date is not None
+                         and oldest_date < ctx.when.since)
+            ):
+                if listing is not None:
+                    listing.stalled = False
+                await ctx.pause(random.uniform(10.0, 20.0), "pausing before search backfill")
+                async for post in self._backfill_posts(ctx, name, oldest_id - 1, emit):
                     yield post
             return
 
@@ -646,6 +701,7 @@ class Twitter(Plugin):
             empty_pages = 0
             pages = 0
             saw_error = False
+            error_retries = 0
             reader = _search_reader() if query == SEARCH else timeline_state
             feed_match: str | Callable[[str], bool] = match if match is not None else f"/{query}"
             await _wait_ratelimit(ctx, query, meta=meta)
@@ -691,12 +747,30 @@ class Twitter(Plugin):
                                     saw_error = True
                                     ctx.log("warn", "{query}: timeline error ({summary})",
                                             query=query, summary=_error_summary(errors))
+                                    if error_retries < MAX_ERROR_RETRIES:
+                                        delay = random.uniform(3.0, 6.0) * (error_retries + 1)
+                                        await ctx.pause(
+                                            delay, "backing off before retrying timeline error",
+                                        )
+                                        if await _retry_timeline(ctx):
+                                            error_retries += 1
+                                            ctx.log(
+                                                "info",
+                                                "{query}: clicked Retry after timeline error "
+                                                "({n}/{limit})",
+                                                query=query, n=error_retries,
+                                                limit=MAX_ERROR_RETRIES,
+                                            )
+                                            continue
+                                    else:
+                                        break
                                 else:
                                     keys = ", ".join(sorted(str(k) for k in data)[:8])
                                     ctx.log("debug", "{query}: response had no timeline ({keys})",
                                             query=query, keys=keys)
                             elif tweets or cursor is not None:
                                 saw_error = False
+                                error_retries = 0
                             if meta is not None and (tweets or cursor is not None):
                                 meta["more"] = bool(tweets and cursor is not None)
                             # 2026-11-16: a tombstone has no id; it is never new, nor stands for a
@@ -714,7 +788,8 @@ class Twitter(Plugin):
                                     continue
                                 if cursor in seen_cursors:
                                     break
-                                if query != SEARCH and not reloaded:
+                                _, stop_on_empty = _bottom_cursor(data)
+                                if query != SEARCH and not reloaded and stop_on_empty:
                                     break
                                 empty_pages += 1
                                 seen_cursors.add(cursor)
@@ -787,6 +862,162 @@ class Twitter(Plugin):
                 meta["saw_error"] = saw_error
                 meta["pages"] = pages
             break
+
+    async def _backfill_posts(
+        self, ctx: Ctx, screen_name: str, start_max_id: int,
+        emit: Callable[[dict, bool], Iterator[Post]],
+    ) -> AsyncIterator[Post]:
+        """Continue `posts` backward via X search (`max_id:`) past profile timeline caps."""
+        base = f"from:{screen_name} -filter:replies -filter:retweets"
+        seen_ids: set[str] = set()
+        state: dict[str, Any] = {
+            "resets": 0, "windows": 0, "saw_tweet": False, "outcome": "done",
+        }
+        async for post in self._backfill_query(
+            ctx, f"{base} filter:links", start_max_id, emit, seen_ids, state, unfiltered=False,
+        ):
+            yield post
+        if state["outcome"] == "done" and not state["saw_tweet"]:
+            async for post in self._backfill_query(
+                ctx, base, start_max_id, emit, seen_ids, state, unfiltered=True,
+            ):
+                yield post
+        listing = getattr(ctx, "listing", None)
+        if state["outcome"] == "done" and listing is not None:
+            listing.cursor = None
+            listing.stalled = False
+
+    async def _backfill_query(
+        self, ctx: Ctx, base_query: str, start_max_id: int,
+        emit: Callable[[dict, bool], Iterator[Post]],
+        seen_ids: set[str], state: dict[str, Any], *, unfiltered: bool,
+    ) -> AsyncIterator[Post]:
+        """Scroll `max_id:` search windows for one query, pausing cleanly on rate-limit caps."""
+        current_max_id = start_max_id
+        stalled = 0
+        listing = getattr(ctx, "listing", None)
+        tail: deque[tuple[int, date | None]] = deque(maxlen=SEARCH_TAIL)
+        while True:
+            if listing is not None:
+                listing.cursor = f"{BACKFILL_PREFIX}{current_max_id}"
+                listing.stalled = False
+            if state["windows"] > 0:
+                delay = (random.uniform(60.0, 120.0) if state["windows"] % 5 == 0
+                         else random.uniform(15.0, 30.0))
+                await ctx.pause(delay, "pausing between search windows")
+            state["windows"] += 1
+            tail.clear()
+            added = False
+            window_media = False
+            scroll_meta: dict[str, Any] = {"resets": state["resets"]}
+            words = " ".join([with_max_id(base_query, current_max_id), *range_operators(ctx.when)])
+            url = "https://x.com/search?" + urlencode({
+                "q": words, "src": "typed_query", "f": "live",
+            })
+            try:
+                async for tweet, _ in self._scroll(ctx, url, SEARCH, meta=scroll_meta):
+                    tid = tweet_id_of(tweet)
+                    if not tid:
+                        continue
+                    if tid.isdigit():
+                        posted = _tweet_date(tweet)
+                        tail.append((int(tid), posted.astimezone(UTC).date()
+                                     if posted is not None else None))
+                    if tid in seen_ids:
+                        continue
+                    seen_ids.add(tid)
+                    added = True
+                    state["saw_tweet"] = True
+                    if (unwrap(tweet).get("legacy") or {}).get("in_reply_to_status_id_str"):
+                        continue
+                    for post in emit(tweet, False):
+                        window_media = True
+                        yield post
+            except Blocked as error:
+                state["resets"] = scroll_meta.get("resets", state["resets"])
+                edge = min((entry[0] for entry in tail), default=0)
+                pause_id = (edge - 1) if (added and edge > 1) else current_max_id
+                if not error.retryable:
+                    if state["resets"] >= MAX_SEARCH_RESETS and "paused search after" in str(error):
+                        _pause_backfill(
+                            ctx, listing, pause_id, "info",
+                            "posts: paused search backfill after {n} rate-limit resets to "
+                            "protect account; rerun later to resume",
+                            n=state["resets"],
+                        )
+                        state["outcome"] = "paused"
+                        return
+                    raise
+                if error.wait and error.wait >= 300:
+                    try:
+                        _check_search_resets(SEARCH, scroll_meta)
+                    except Blocked:
+                        state["resets"] = scroll_meta.get("resets", state["resets"])
+                        _pause_backfill(
+                            ctx, listing, pause_id, "info",
+                            "posts: paused search backfill after {n} rate-limit resets to "
+                            "protect account; rerun later to resume",
+                            n=state["resets"],
+                        )
+                        state["outcome"] = "paused"
+                        return
+                    state["resets"] = scroll_meta.get("resets", state["resets"])
+                stalled = 0 if added else stalled + 1
+                if stalled > 3:
+                    _pause_backfill(
+                        ctx, listing, pause_id, "warn",
+                        "posts: paused search backfill after repeated rate limits; "
+                        "rerun later to resume",
+                    )
+                    state["outcome"] = "paused"
+                    return
+                try:
+                    await ctx.hold("rate limited", seconds=error.wait, bucket=SEARCH, reset=added)
+                except Blocked:
+                    _pause_backfill(
+                        ctx, listing, pause_id, "warn",
+                        "posts: paused search backfill after holds ran out; "
+                        "rerun later to resume",
+                    )
+                    state["outcome"] = "paused"
+                    return
+                if added and edge > 1:
+                    current_max_id = edge - 1
+                continue
+            state["resets"] = scroll_meta.get("resets", state["resets"])
+            window_stalled = (bool(scroll_meta.get("saw_error"))
+                              or bool(getattr(listing, "stalled", False)))
+            if not added or not tail:
+                if window_stalled:
+                    stalled += 1
+                    if stalled > 3:
+                        _pause_backfill(
+                            ctx, listing, current_max_id, "warn",
+                            "posts: paused search backfill after repeated timeline errors; "
+                            "rerun later to resume",
+                        )
+                        state["outcome"] = "paused"
+                        return
+                    try:
+                        await ctx.hold("search interrupted", bucket=SEARCH, reset=False)
+                    except Blocked:
+                        _pause_backfill(
+                            ctx, listing, current_max_id, "warn",
+                            "posts: paused search backfill after holds ran out; "
+                            "rerun later to resume",
+                        )
+                        state["outcome"] = "paused"
+                        return
+                    continue
+                break
+            if unfiltered and not window_media:
+                break
+            stalled = 0
+            edge_id, edge_date = min(tail, key=lambda entry: entry[0])
+            if edge_id <= 1 or (ctx.when.since is not None and edge_date is not None
+                                and edge_date < ctx.when.since):
+                break
+            current_max_id = edge_id - 1
 
 
 MEDIA_TIMELINES = re.compile(r"/(UserMedia|UserVideoTimeline|UserPhotoTimeline)(?:\?|$)")
@@ -985,6 +1216,17 @@ LINKED = {"media": "media", "highlights": "highlights", "replies": "with_replies
 TAB_BAR = 'a[href$="/media"]'
 INTERSTITIAL_BUTTON = '[data-testid="empty_state_button_text"]'
 EMPTY_STATE = '[data-testid="emptyState"]'
+PRIMARY_COLUMN = '[data-testid="primaryColumn"]'
+RETRY_ERROR_BUTTON = (
+    '[data-testid="error-detail"] button, [data-testid="error-detail"] [role="button"]'
+)
+RETRY_COLUMN_BUTTON = (
+    '[data-testid="primaryColumn"] button:text-is("Retry"), '
+    '[data-testid="primaryColumn"] [role="button"]:text-is("Retry"), '
+    '[data-testid="primaryColumn"] button:text-is("Try again"), '
+    '[data-testid="primaryColumn"] [role="button"]:text-is("Try again")'
+)
+RETRY_BUTTON_TEXT = frozenset({"retry", "try again"})
 SUSPENDED_BANNER = '[data-testid="suspendedAccountBanner"]'
 SUSPENDED_TEXT = "your account is suspended"
 SUSPENDED_MSG = "this account is suspended; twt? searches will not work"
@@ -1048,6 +1290,50 @@ async def _has_tab(ctx: Ctx, tab: str) -> bool:
         await _dismiss_interstitial(ctx)
         await ctx.pause(1, "waiting for the profile's tab bar")
     return True
+
+
+def _screen_name(profile: dict[str, Any]) -> str | None:
+    """A profile's X screen name for `from:` searches, or None for a bare numeric id."""
+    name = dig(profile["user"] or {}, "core.screen_name || legacy.screen_name") or profile["handle"]
+    return name if isinstance(name, str) and name and not name.isdigit() else None
+
+
+def _pause_backfill(
+    ctx: Ctx, listing: Any, pause_id: int, level: str, message: str, **fields: Any,
+) -> None:
+    """Save the search backfill cursor as stalled so the next run resumes safely."""
+    if listing is not None:
+        listing.cursor = f"{BACKFILL_PREFIX}{pause_id}"
+        listing.stalled = True
+    ctx.log(level, message, **fields)
+
+
+async def _retry_shown(ctx: Ctx, css: str) -> bool:
+    """Whether a timeline Retry button matching `css` is visible on the open tab."""
+    try:
+        if css == RETRY_ERROR_BUTTON:
+            return await ctx.shown(css)
+        doc = await ctx.document()
+    except NetworkError:
+        return False
+    root = doc.first(PRIMARY_COLUMN) or doc
+    return any(el.text.strip().lower() in RETRY_BUTTON_TEXT
+               for el in root.css('button, [role="button"]'))
+
+
+async def _retry_timeline(ctx: Ctx) -> bool:
+    """Click X's inline Retry button on a timeline error if it renders; whether it clicked."""
+    for attempt in range(3):
+        for css in (RETRY_ERROR_BUTTON, RETRY_COLUMN_BUTTON):
+            if await _retry_shown(ctx, css):
+                try:
+                    await ctx.click(css, timeout=5.0)
+                except NetworkError:
+                    return False
+                return True
+        if attempt < 2:
+            await ctx.pause(1.0, "waiting for timeline retry button")
+    return False
 
 
 class Graph:
@@ -1177,6 +1463,31 @@ def range_operators(when: Range) -> list[str]:
     return found
 
 
+def _timeline_instructions(data: Any) -> list[Any]:
+    """Extract instructions list from profile or search GraphQL payload."""
+    instructions = dig(
+        data,
+        "data.user.result.timeline.timeline.instructions"
+        " || data.user.result.timeline_v2.timeline.instructions"
+        " || data.search_by_raw_query.search_timeline.timeline.instructions",
+    )
+    return instructions if isinstance(instructions, list) else []
+
+
+def _bottom_cursor(data: Any) -> tuple[str | None, bool]:
+    """The `Bottom` cursor value and whether an empty page with it ends the timeline."""
+    for entry, _ in timeline_entries(_timeline_instructions(data)):
+        content = entry.get("content") or entry.get("item") or {}
+        cursor_obj = (content if content.get("cursorType") == "Bottom"
+                      else content.get("itemContent") or {})
+        if cursor_obj.get("cursorType") == "Bottom":
+            return (
+                cursor_obj.get("value"),
+                cursor_obj.get("stopOnEmptyResponse", True) is not False,
+            )
+    return None, True
+
+
 def read_timeline_page(data: Any) -> tuple[list[dict], str | None, set[str]]:
     """One timeline page's tweets, wrapped as X sent them, its `Bottom` cursor (or None), and
     the id of its pinned tweet, if it has one.
@@ -1186,19 +1497,15 @@ def read_timeline_page(data: Any) -> tuple[list[dict], str | None, set[str]]:
     """
     # 2026-11-11: a timeline sits under `timeline` in one response shape, `timeline_v2` in the
     # other; a search's under `search_by_raw_query`.
-    instructions = dig(
-        data,
-        "data.user.result.timeline.timeline.instructions"
-        " || data.user.result.timeline_v2.timeline.instructions"
-        " || data.search_by_raw_query.search_timeline.timeline.instructions",
-    )
     tweets: list[dict] = []
     cursor, pinned = None, set()
-    for entry, pin in timeline_entries(instructions if isinstance(instructions, list) else []):
+    for entry, pin in timeline_entries(_timeline_instructions(data)):
         content = entry.get("content") or entry.get("item") or {}
         # The `Bottom` cursor is the request for the next page; the `Top` one is not used.
-        if content.get("cursorType") == "Bottom":
-            cursor = content.get("value")
+        cursor_obj = (content if content.get("cursorType") == "Bottom"
+                      else content.get("itemContent") or {})
+        if cursor_obj.get("cursorType") == "Bottom":
+            cursor = cursor_obj.get("value")
         items = [item.get("item", item) for item in content.get("items", [])] or [content]
         for item in items:
             tweet = dig(item, "itemContent.tweet_results.result")
@@ -1213,12 +1520,13 @@ def timeline_state(data: Any) -> tuple[bool, str | None] | None:
     """`(more, cursor)` of one timeline page, for `ctx.feed(cursor=…)`; None for another body.
 
     A body without a `Bottom` cursor (an error or throttle body) says nothing. A page with a
-    cursor but no tweets is the end: X answers the last page with its cursors alone.
+    cursor but no tweets ends unless `stopOnEmptyResponse` is explicitly False.
     """
     tweets, cursor, _ = read_timeline_page(data)
     if cursor is None:
         return None
-    return bool(tweets), cursor
+    _, stop_on_empty = _bottom_cursor(data)
+    return bool(tweets) or not stop_on_empty, cursor
 
 
 def _search_reader() -> Callable[[Any], tuple[bool, str | None] | None]:

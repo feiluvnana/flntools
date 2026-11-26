@@ -1126,6 +1126,258 @@ class TimelineTest(unittest.TestCase):
         self.assertTrue(ctx2.listing.stalled)
         self.assertTrue(any(level == "warn" for level, _ in ctx2.seen.logs))
 
+    def test_timeline_error_clicks_retry_and_recovers(self):
+        err_btn = (
+            '[data-testid="error-detail"] button, '
+            '[data-testid="error-detail"] [role="button"]'
+        )
+        col_btn = (
+            '[data-testid="primaryColumn"] button:text-is("Retry"), '
+            '[data-testid="primaryColumn"] [role="button"]:text-is("Retry"), '
+            '[data-testid="primaryColumn"] button:text-is("Try again"), '
+            '[data-testid="primaryColumn"] [role="button"]:text-is("Try again")'
+        )
+        link = f"{API}id/UserOriginalsTimeline"
+        err = {"data": {}, "errors": [{"message": "Dependency: Unspecified"}]}
+
+        # 1. Error-detail Retry button recovers and clears stalled.
+        ctx = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle": FakePage(shown=[err_btn], feeds=[
+                Sent(link, page(item(tweet("2", [photo("a")])), cursor="c1")),
+                Sent(link, err, scroll=1),
+                Sent(link, page(item(tweet("1", [photo("b")])), cursor="c2"), click=err_btn),
+                Sent(link, page(cursor="c3"), scroll=2),
+            ]),
+        })
+        ctx.listing = Listing(None)
+        saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved], ["2", "1"])
+        self.assertFalse(ctx.listing.stalled)
+        self.assertTrue(any(level == "info" and "Retry" in msg for level, msg in ctx.seen.logs))
+
+        # 2. PrimaryColumn Retry button in HTML also recovers.
+        ctx2 = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle": FakePage(
+                html='<div data-testid="primaryColumn"><button>Retry</button></div>',
+                feeds=[
+                    Sent(link, page(item(tweet("2", [photo("a")])), cursor="c1")),
+                    Sent(link, err, scroll=1),
+                    Sent(link, page(item(tweet("1", [photo("b")])), cursor="c2"), click=col_btn),
+                    Sent(link, page(cursor="c3"), scroll=2),
+                ],
+            ),
+        })
+        ctx2.listing = Listing(None)
+        saved2 = collect(Twitter, "twt:example_handle", ctx=ctx2, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved2], ["2", "1"])
+        self.assertFalse(ctx2.listing.stalled)
+
+    def test_timeline_error_retry_cap_stops_stalled(self):
+        err_btn = (
+            '[data-testid="error-detail"] button, '
+            '[data-testid="error-detail"] [role="button"]'
+        )
+        link = f"{API}id/UserOriginalsTimeline"
+        err = {"data": {}, "errors": [{"message": "Dependency: Unspecified"}]}
+        clicks = 0
+
+        ctx = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle": FakePage(shown=[err_btn], feeds=[
+                Sent(link, page(item(tweet("2", [photo("a")])), cursor="c1")),
+                Sent(link, err, scroll=1),
+                Sent(link, err, click=err_btn),
+            ]),
+        })
+        ctx.listing = Listing(None)
+        orig_click = ctx.click
+
+        async def count_click(css, **kw):
+            nonlocal clicks
+            clicks += 1
+            return await orig_click(css, **kw)
+
+        from unittest import mock
+
+        with mock.patch.object(ctx, "click", side_effect=count_click):
+            saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved], ["2"])
+        self.assertEqual(clicks, 3)
+        self.assertTrue(ctx.listing.stalled)
+        self.assertTrue(any(level == "warn" for level, _ in ctx.seen.logs))
+
+    def test_bottom_cursor_stop_on_empty_false_keeps_scrolling(self):
+        empty_keep = {
+            "data": {"user": {"result": {"timeline": {"timeline": {"instructions": [
+                {"type": "TimelineAddEntries", "entries": [
+                    {"entryId": "cursor-bottom", "content": {
+                        "cursorType": "Bottom", "value": "c2", "stopOnEmptyResponse": False,
+                    }},
+                ]},
+            ]}}}}},
+        }
+        saved = collect(Twitter, "twt:example_handle", ctx=fake(pages=tabs(posts=[
+            page(item(tweet("2", [photo("a")])), cursor="c1"),
+            empty_keep,
+            page(item(tweet("1", [photo("b")])), cursor="c3"),
+            page(cursor="c4"),
+        ])), categories=["posts"])
+        self.assertEqual([f.post.id for f in saved], ["2", "1"])
+
+    def test_posts_backfill_continues_past_timeline_cap_and_skips_small_and_sync(self):
+        from unittest import mock
+        from urllib.parse import urlencode
+
+        link = f"{API}id/UserOriginalsTimeline"
+        s_link = f"{API}q/SearchTimeline"
+
+        def s_url(q):
+            return "https://x.com/search?" + urlencode({"q": q, "src": "typed_query", "f": "live"})
+
+        pin_tweet = tweet("50", [photo("pin")])
+        timeline_page1 = page(item(tweet("100", [photo("a")])), cursor="c1")
+        timeline_page1["data"]["user"]["result"]["timeline"]["timeline"]["instructions"].insert(
+            0, {"type": "TimelinePinEntry", "entry": {"entryId": "p", "content": item(pin_tweet)}},
+        )
+        err = {"data": {}, "errors": [{"message": "Dependency: Unspecified"}]}
+
+        # Case A: large account hitting error continues at max_id:89 (ignoring pinned 50).
+        w1 = s_url("from:example_handle -filter:replies -filter:retweets filter:links max_id:89")
+        w2 = s_url("from:example_handle -filter:replies -filter:retweets filter:links max_id:79")
+        ctx = fake(pages={
+            **tabs(),
+            "https://x.com/example_handle": FakePage(feeds=[
+                Sent(link, timeline_page1),
+                Sent(link, page(item(tweet("90", [photo("b")])), cursor="c2"), scroll=1),
+                Sent(link, err, scroll=2),
+            ]),
+            w1: FakePage(feeds=[
+                Sent(s_link, page(item(tweet("85", [photo("rep")], reply_to="10")),
+                                  item(tweet("80", [photo("c")])), cursor="sc1", search=True)),
+                Sent(s_link, page(cursor="sc2", search=True), scroll=1),
+            ]),
+            w2: FakePage(feeds=[Sent(s_link, page(search=True))]),
+        })
+        ctx.listing = Listing(None)
+        with mock.patch("flnd.plugins.twt.BACKFILL_THRESHOLD", 2, create=True):
+            saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved], ["50", "100", "90", "80"])
+        self.assertIsNone(ctx.listing.cursor)
+        self.assertFalse(ctx.listing.stalled)
+
+        # Case B: empty filtered search falls back to unfiltered search.
+        u1 = s_url("from:example_handle -filter:replies -filter:retweets max_id:89")
+        u2 = s_url("from:example_handle -filter:replies -filter:retweets max_id:69")
+        ctx_unfiltered = fake(pages={
+            **tabs(posts=[
+                page(item(tweet("100", [photo("a")])), cursor="c1"),
+                page(item(tweet("90", [photo("b")])), cursor="c2"),
+            ]),
+            w1: FakePage(feeds=[Sent(s_link, page(search=True))]),
+            u1: FakePage(feeds=[
+                Sent(s_link, page(item(tweet("70", [photo("d")])), cursor="uc1", search=True)),
+                Sent(s_link, page(cursor="uc2", search=True), scroll=1),
+            ]),
+            u2: FakePage(feeds=[Sent(s_link, page(search=True))]),
+        })
+        with mock.patch("flnd.plugins.twt.BACKFILL_THRESHOLD", 2, create=True):
+            saved_u = collect(Twitter, "twt:example_handle", ctx=ctx_unfiltered,
+                              categories=["posts"])
+        self.assertEqual([f.post.id for f in saved_u], ["100", "90", "70"])
+
+        # Case C: anti-ban guards skip sync, protected, backfill=False, and small accounts.
+        two_posts = [page(item(tweet("100", [photo("a")])), item(tweet("90", [photo("b")])))]
+        one_post = [page(item(tweet("100", [photo("a")])))]
+        for name, user_obj, listing_obj, settings_dict, pages_obj in (
+            ("sync", USER, Listing(None, sync=True), None, tabs(posts=two_posts)),
+            ("protected", {"data": {"user": {"result": {
+                "rest_id": USER_ID, "legacy": {"protected": True},
+            }}}}, Listing(None), None, tabs(posts=two_posts)),
+            ("disabled", USER, Listing(None), {"backfill": False}, tabs(posts=two_posts)),
+            ("small", USER, Listing(None), None, tabs(posts=one_post)),
+        ):
+            with self.subTest(guard=name):
+                g_ctx = fake(user=user_obj, pages=pages_obj, settings=settings_dict)
+                g_ctx.listing = listing_obj
+                with mock.patch("flnd.plugins.twt.BACKFILL_THRESHOLD", 2, create=True):
+                    collect(Twitter, "twt:example_handle", ctx=g_ctx, categories=["posts"])
+                self.assertEqual(g_ctx.seen.visited, ["https://x.com/example_handle"])
+
+    def test_posts_backfill_pauses_cleanly_at_reset_cap_and_resumes_from_cursor(self):
+        from unittest import mock
+        from urllib.parse import urlencode
+
+        s_link = f"{API}q/SearchTimeline"
+
+        def s_url(q):
+            return "https://x.com/search?" + urlencode({"q": q, "src": "typed_query", "f": "live"})
+
+        hdr = {
+            "x-rate-limit-remaining": "10",
+            "x-rate-limit-reset": str(int(FAKE_WALL) + 120),
+        }
+        hdr2 = {
+            "x-rate-limit-remaining": "10",
+            "x-rate-limit-reset": str(int(FAKE_WALL) + 600),
+        }
+        w1 = s_url("from:example_handle -filter:replies -filter:retweets filter:links max_id:89")
+        w2 = s_url("from:example_handle -filter:replies -filter:retweets filter:links max_id:79")
+        ctx = fake(pages={
+            **tabs(posts=[
+                page(item(tweet("100", [photo("a")])), item(tweet("90", [photo("b")])),
+                     cursor="c1"),
+            ]),
+            w1: FakePage(feeds=[
+                Sent(s_link, page(item(tweet("80", [photo("c")])), cursor="sc1", search=True),
+                     headers=hdr),
+            ]),
+            w2: FakePage(feeds=[
+                Sent(s_link, page(item(tweet("70", [photo("d")])), cursor="sc2", search=True),
+                     headers=hdr2),
+            ]),
+        })
+        ctx.listing = Listing(None)
+        with mock.patch("flnd.plugins.twt.BACKFILL_THRESHOLD", 2, create=True):
+            saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved], ["100", "90", "80", "70"])
+        self.assertTrue(ctx.listing.stalled)
+        self.assertEqual(ctx.listing.cursor, "backfill:69")
+        self.assertTrue(any(level == "info" and "backfill" in msg for level, msg in ctx.seen.logs))
+
+        # Resume skips UserOriginalsTimeline and finishes cleanly.
+        w3 = s_url("from:example_handle -filter:replies -filter:retweets filter:links max_id:69")
+        w4 = s_url("from:example_handle -filter:replies -filter:retweets filter:links max_id:59")
+        ctx2 = fake(pages={
+            w3: FakePage(feeds=[
+                Sent(s_link, page(item(tweet("60", [photo("e")])), cursor="sc3", search=True)),
+                Sent(s_link, page(cursor="sc4", search=True), scroll=1),
+            ]),
+            w4: FakePage(feeds=[Sent(s_link, page(search=True))]),
+        })
+        ctx2.listing = Listing("backfill:69")
+        saved2 = collect(Twitter, "twt:example_handle", ctx=ctx2, categories=["posts"])
+        self.assertEqual([f.post.id for f in saved2], ["60"])
+        self.assertNotIn("https://x.com/example_handle", ctx2.seen.visited)
+        self.assertTrue(ctx2.listing.taken)
+        self.assertIsNone(ctx2.listing.cursor)
+        self.assertFalse(ctx2.listing.stalled)
+
+        # Fatal Blocked (code 226) and LoginError (code 326) propagate during backfill.
+        for code, exc_type in ((226, Blocked), (326, LoginError)):
+            with self.subTest(fatal=code):
+                ctx_f = fake(pages={
+                    **tabs(posts=[page(item(tweet("100", [photo("a")])),
+                                       item(tweet("90", [photo("b")])))]),
+                    w1: FakePage(feeds=[
+                        Sent(s_link, {"data": {}, "errors": [{"code": code, "message": "x"}]}),
+                    ]),
+                })
+                with mock.patch("flnd.plugins.twt.BACKFILL_THRESHOLD", 2, create=True), \
+                        self.assertRaises(exc_type):
+                    collect(Twitter, "twt:example_handle", ctx=ctx_f, categories=["posts"])
+
 
 class MissingTabTest(unittest.TestCase):
     def test_a_tab_the_profile_lacks_redirects_to_it_and_ends_with_a_line(self):

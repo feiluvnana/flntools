@@ -979,11 +979,16 @@ up to 32.
   `/login`; lock/challenge walls (`/account/access`, `/account/login_challenge`,
   `/i/flow/consent_flow`, `/i/flow/verify`), suspended accounts, and GraphQL codes
   `326`/`64`/`141`/`32`/`239` fail immediately with non-retryable `LoginError` (`226` fails with
-  non-retryable `Blocked`; `88` holds 15m). Sensitive-profile warnings are dismissed automatically
-  across tabs and 429 reloads; a gated or protected profile with no visible timeline raises
-  `Hidden`. A feed that stops before its cursor ends (or gets 0 responses or a GraphQL error without
-  recovering) is left incomplete rather than marked complete. Query ids are refreshed from
-  x.com's script on a 400 or 404, at most once a run.
+  non-retryable `Blocked`; `88` holds 15m). Non-fatal GraphQL timeline errors click X's Retry
+  button (up to 3 times with backoff), and empty pages with `stopOnEmptyResponse: false` keep
+  scrolling. Sensitive-profile warnings are dismissed automatically across tabs and 429 reloads; a
+  gated or protected profile with no visible timeline raises `Hidden`. A feed that stops before its
+  cursor ends (or gets 0 responses or an unrecovered GraphQL error) is left incomplete rather than
+  marked complete. For large profiles (`posts` reaching 400+ tweets), `posts` continues backward
+  via resumable `max_id:` search backfill past X's profile timeline cap (skipped on incremental
+  sync, protected accounts, or `[plugins.twt] backfill = false`), pausing safely after 2 search
+  rate-limit resets to protect the account. Query ids are refreshed from x.com's script on a 400
+  or 404, at most once a run.
 - **Known gaps:** a single tweet has no browser fallback; a protected and a deleted tweet are both
   `NotFound`; video is MP4 only (streaming-only is skipped); text-only tweets save nothing.
 - **Saved as:** `media/twt/example_handle/posts/2026-01-02_1234567890_0.jpg`
