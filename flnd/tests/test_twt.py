@@ -1202,6 +1202,11 @@ class MissingTabTest(unittest.TestCase):
         with self.assertRaises(LoginError) as caught:
             collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
         self.assertFalse(caught.exception.retryable)
+        docs, orig = [0], ctx_clean.document
+        ctx_clean.document = lambda: (docs.__setitem__(0, docs[0] + 1) or orig())
+        self.assertEqual(
+            (len(collect(Twitter, "twt:example_handle", ctx=ctx_clean, categories=["posts"])),
+             docs[0]), (1, 1))
 
     def test_suspended_account_fails_search_with_login_error(self):
         search_url = "https://x.com/search?q=cats&src=typed_query&f=live"

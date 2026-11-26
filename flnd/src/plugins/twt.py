@@ -768,7 +768,7 @@ class Twitter(Plugin):
                 reloaded = True
                 got_new = False
                 continue
-            if await _is_suspended(ctx):
+            if (pages == 0 or saw_error) and await _is_suspended(ctx):
                 self._suspended = True
                 raise LoginError(f"twt: {SUSPENDED_MSG}", hint=SUSPENDED_HINT, retryable=False)
             if pages == 0 and query != SEARCH:
@@ -1009,9 +1009,9 @@ async def _search_404_restricted(ctx: Ctx) -> bool:
 
 async def _is_suspended(ctx: Ctx) -> bool:
     """Whether the open X page shows the viewer's own account is suspended."""
-    if await ctx.shown(SUSPENDED_BANNER):
-        return True
     try:
+        if await ctx.shown(SUSPENDED_BANNER):
+            return True
         doc = await ctx.document()
     except NetworkError:
         return False
