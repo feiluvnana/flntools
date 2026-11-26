@@ -1016,10 +1016,10 @@ up to 32.
 - **Reads:** a profile or page in the browser, and one video, reel, photo or post by link (a
   `fb.watch` or `/share/` link is opened to find where it lands). A tab is scrolled until its
   `page_info` says it ends; nothing is replayed.
-- **Categories:** every tab is read to its end each run. `posts`, `highlights`, `photos`, `albums`,
-  `reels`, `videos`, `stories`, `profile` (own); `tagged` (opt-in). A video found in another tab
-  goes to `videos`, a photo naming its album to `albums/<album>`; others' media (including shared
-  posts) and sidebar preview tiles are left out.
+- **Categories:** `posts` NF, `photos` NF, `reels` NF, `videos` NF, `highlights`, `albums`,
+  `stories`, `profile` (own); `tagged` (opt-in). A video found in another tab goes to `videos`, a
+  photo naming its album to `albums/<album>`; others' media (including shared posts) and sidebar
+  preview tiles are left out.
 - **Folder:** `{part}/{album}`; `highlights/{album}` for `highlights`; `profile` for `profile`.
   **Filename:** `{date}_{post}` (an undated photo takes its date from `posts` or HTTP
   `Last-Modified`); profile pictures `profile_<id>`, covers `cover_<id>`.

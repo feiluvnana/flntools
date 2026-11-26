@@ -8,7 +8,7 @@ from __future__ import annotations
 import random
 import re
 import sys
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from typing import Any, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
@@ -345,7 +345,7 @@ class Facebook(Plugin):
 
     # The posts tab is the profile page the route left open, so it comes first: the tabs after
     # it navigate away.
-    @user.category
+    @user.category(newest_first=True)
     async def posts(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Post]:
         """The profile's own posts: the page's photos and videos, then its scroll's."""
         seen: set[str] = set()
@@ -353,6 +353,7 @@ class Facebook(Plugin):
         results = profile.pop("results", ()) if isinstance(profile, dict) else profile.get(
             "results", ()
         )
+        embedded_more = _has_next_page(results, "posts")
         for result in results:
             for post in media_posts(result, "posts", owner=profile["owner"], seen=seen,
                                     dates=dates):
@@ -360,6 +361,8 @@ class Facebook(Plugin):
         del results
         reloads = 0
         got_new = False
+        saw_line = False
+        saw_cursor = False
         seen_keys: set[str] = {f"m:{pid}" for pid in seen}
         while True:
             try:
@@ -368,6 +371,9 @@ class Facebook(Plugin):
                     if reloads:
                         await ctx.open(profile["url"])
                     async for line in unblocked(ctx, lines):
+                        saw_line = True
+                        if next_page(line, tab="posts") is not None:
+                            saw_cursor = True
                         collect_highlights(line, profile)
                         keys = _line_keys(line)
                         if any(k not in seen_keys for k in keys):
@@ -390,7 +396,12 @@ class Facebook(Plugin):
                 await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
                 reloads += 1
                 got_new = False
-        if isinstance(profile, dict):
+        listing = getattr(ctx, "listing", None)
+        if embedded_more and not saw_cursor:
+            if listing is not None:
+                listing.stalled = True
+            ctx.log("warn", "posts: scroll ended without a feed response")
+        if isinstance(profile, dict) and saw_line and not getattr(listing, "stalled", False):
             profile["posts_scrolled"] = True
 
     @user.category(folder="highlights/{album}", key="{path}")
@@ -425,7 +436,7 @@ class Facebook(Plugin):
                 yield post_of(item, "highlights", album=title)
             ctx.log("info", "highlights: {n} in {title} ({id})", n=len(cards), title=title, id=hid)
 
-    @user.category(url="{photos_url}")
+    @user.category(url="{photos_url}", newest_first=True)
     async def photos(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Post]:
         """The photos tab."""
         async for post in read_tab(ctx, profile, "photos"):
@@ -463,13 +474,13 @@ class Facebook(Plugin):
                 for post in media_posts(result, "albums", album=title, owner=owner, dates=dates):
                     yield post
 
-    @user.category(url="{reels_url}")
+    @user.category(url="{reels_url}", newest_first=True)
     async def reels(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Post]:
         """The reels tab."""
         async for post in read_tab(ctx, profile, "reels"):
             yield post
 
-    @user.category(url="{videos_url}")
+    @user.category(url="{videos_url}", newest_first=True)
     async def videos(self, ctx: Ctx, profile: Mapping[str, Any]) -> AsyncIterator[Post]:
         """The videos tab."""
         async for post in read_tab(ctx, profile, "videos"):
@@ -548,6 +559,13 @@ async def page_results(ctx: Ctx, url: str) -> list[Any] | None:
         await ctx.hold(TEMPORARILY_BLOCKED)
 
 
+def _has_next_page(results: Sequence[Any], tab: str) -> bool:
+    """Whether any initial result reports `has_next_page=True` for `tab`."""
+    return any(
+        (state := next_page(result, tab=tab)) is not None and state[0] for result in results
+    )
+
+
 async def tab_results(ctx: Ctx, url: str, tab: str) -> AsyncIterator[Any]:
     """Each GraphQL result of a scrolled page: those it embeds, then its feed's to the end.
 
@@ -557,6 +575,8 @@ async def tab_results(ctx: Ctx, url: str, tab: str) -> AsyncIterator[Any]:
     seen_keys: set[str] = set()
     reloads = 0
     got_new = False
+    embedded_more = False
+    saw_cursor = False
     while True:
         try:
             async with ctx.feed(FEED, scroll=True, lines=True, cursor=tab_cursor(tab),
@@ -564,6 +584,7 @@ async def tab_results(ctx: Ctx, url: str, tab: str) -> AsyncIterator[Any]:
                 results = await page_results(ctx, url)
                 if results is None:
                     raise SiteError(f"fbk: {url} didn't load")
+                embedded_more = embedded_more or _has_next_page(results, tab)
                 for result in results:
                     keys = _line_keys(result)
                     if any(k not in seen_keys for k in keys):
@@ -571,6 +592,8 @@ async def tab_results(ctx: Ctx, url: str, tab: str) -> AsyncIterator[Any]:
                     seen_keys.update(keys)
                     yield result
                 async for line in unblocked(ctx, lines):
+                    if next_page(line, tab=tab) is not None:
+                        saw_cursor = True
                     keys = _line_keys(line)
                     if any(k not in seen_keys for k in keys):
                         got_new = True
@@ -590,6 +613,9 @@ async def tab_results(ctx: Ctx, url: str, tab: str) -> AsyncIterator[Any]:
             await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
             reloads += 1
             got_new = False
+    listing = getattr(ctx, "listing", None)
+    if embedded_more and not saw_cursor and listing is not None:
+        listing.stalled = True
 
 
 def _check_graphql_errors(line: Any) -> None:
@@ -1102,7 +1128,8 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
         return
     if not isinstance(data, dict) or _other_actor(data, owner):
         return
-    stamp = posted_on(data) or stamp
+    if data.get("__typename") != "Album":
+        stamp = posted_on(data) or stamp
     item = video_item(data, stamp) or photo_item(data, stamp)
     owned_by, named = dig(data, "owner.id || video_owner.id"), dig(data, OWNER_NAME)
     # An owner written as a name is compared with the node's vanity name, when it has one.

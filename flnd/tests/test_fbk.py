@@ -726,6 +726,15 @@ class WalkerTest(unittest.TestCase):
 
         photo_posts = asyncio.run(run_both())
         self.assertEqual([(p.id, p.date) for p in photo_posts], [("501", NOON)])
+        tl_more = {"data": {"page_info": {"has_next_page": True, "end_cursor": "c1"}},
+                   "path": ["node", "timeline_list_feed_units"]}
+        ctx_st = FakeCtx(Facebook, pages={BASE: FakePage(
+            embedded(header(*TABS, user_id="42"), tl_more), feeds=[Sent(GRAPHQL, hl_tile, scroll=1)]
+        ), f"{SITE}/stories/101/?source=profile_highlight": page(hl1_bucket)})
+        ctx_st.listing = SimpleNamespace(stalled=False)
+        s_st = collect(Facebook, "fbk:example.page", ctx=ctx_st, categories=["posts", "highlights"])
+        self.assertEqual((ctx_st.listing.stalled, [s.key for s in s_st]),
+                         (True, ["highlights/Trip_2026/2023-11-15_201.mp4"]))
 
 
 class AntiBanTest(unittest.TestCase):
@@ -804,6 +813,12 @@ class AntiBanTest(unittest.TestCase):
             collect(Facebook, "fbk:example.page", ctx=ctx_368, categories=["photos"])
         self.assertFalse(caught.exception.retryable)
         self.assertEqual(ctx_368.seen.holds, [])
+        cats = next(r for r in Facebook.routes if r.kind == USER).categories
+        self.assertEqual({c.name: c.newest_first for c in cats}, {
+            "posts": True, "highlights": False, "photos": True, "tagged": False, "albums": False,
+            "reels": True, "videos": True, "stories": False, "profile": False})
+        self.assertIsNone(next(media_items({"__typename": "Album", "creation_time": NOON,
+            "media": photo("1", stamp=0)["data"]["node"]})).date)
 
 
 if __name__ == "__main__":
