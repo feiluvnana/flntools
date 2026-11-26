@@ -1144,6 +1144,14 @@ class StalledListTest(JobCase):
         row = self.run_lists(True)
         self.assertNotIn("posts", row.complete)
         self.assertIn("media", row.complete)
+        async def ok(plugin, ctx, user):
+            yield Post("p1", [File(f"{CDN}/p1.jpg")], date=datetime.date(2026, 1, 1))
+        async def fail(plugin, ctx, user):
+            raise RuntimeError("boom")
+            yield
+        self.assertFalse(Engine(home=self.home, sources={"s": feed(
+            "s", ok, fail, newest_first=True, key="{post}")}).download(["s:example_user|all"]).ok)
+        self.assertEqual(fakes.targets(self.home)["s:example_user"].files, 1)
 
     def test_a_list_that_ends_normally_is_complete(self):
         row = self.run_lists(False)

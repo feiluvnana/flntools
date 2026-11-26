@@ -1416,10 +1416,10 @@ def _keep(db: store.Store, target: Target, options: Options, progress: _Progress
     if finished:
         # A failure of the whole target is over once it ran to its end.
         db.clear(store.key(target))
-        # Counting reads every row of the target (35 ms for 100,000), so a run that saved
-        # nothing keeps the count it has, unless it has none yet.
-        if written or row is None or not row.files:
-            db.tally(target)
+    # Counting reads every row of the target (35 ms for 100,000), so a run that saved
+    # nothing keeps the count it has, unless it has none yet.
+    if not options.query and (written or (finished and (row is None or not row.files))):
+        db.tally(target)
 
 
 class _Progress:
