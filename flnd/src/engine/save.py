@@ -902,6 +902,12 @@ class Saver:
                         await self.scheduler.run(Job(
                             kind=Kind.MERGE, work=join, plugin=plugin,
                             target=str(item.target)))
+                except BaseException:
+                    # Only now does the part hold ffmpeg's output, never bytes a download can
+                    # go on from: the next mirror must start it from 0. Before this, the part
+                    # may be another mirror's download, kept for resuming.
+                    held.drop()
+                    raise
                 finally:
                     for stream in streams:
                         stream.drop()

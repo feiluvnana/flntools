@@ -530,6 +530,37 @@ class EngineTest(EngineCase):
                 self.assertEqual(self.saved(), [name])
                 self.assertEqual((folder / name).read_bytes(), body)
 
+    def test_a_failed_stream_keeps_the_next_mirrors_part_for_resuming(self):
+        body, half, log, folder = os.urandom(1 << 20), 1 << 19, [], self.target_dir("aaa", "u")
+        folder.mkdir(parents=True)
+        (folder / "v.mp4.part").write_bytes(body[:half] + bytes(half))
+        (folder / "v.mp4.part.json").write_text(json.dumps({"etag": '"v1"', "last_modified": "",
+            "size": len(body), "segments": [[0, len(body), half]]}))
+        self.routes.update({f"{CDN}/v.mp4": 404, f"{CDN}/a.mp4": b"A", f"{CDN}/plain.mp4":
+            lambda request: log.append(request.headers["range"]) or net.reply(206,
+                content=body[half:], headers={"etag": '"v1"', "accept-ranges": "bytes",
+                "content-range": f"bytes {half}-{len(body) - 1}/{len(body)}"})})
+        self.run_files(File(mirrors=[f"{CDN}/v.mp4", f"{CDN}/plain.mp4"], audio=f"{CDN}/a.mp4",
+                            name="v.mp4"), targets=("aaa:u",))
+        self.assertEqual((folder / "v.mp4").read_bytes(), body)
+        self.assertEqual(log, [f"bytes={half}-{len(body) - 1}"])
+
+    def test_a_join_that_gives_up_leaves_no_bytes_for_the_next_mirror(self):
+        # ffmpeg's half-written output must not be resumed by the plain mirror after it.
+        self.routes.update({f"{CDN}/v.mp4": b"V" * 9, f"{CDN}/a.mp4": b"A" * 9,
+                            f"{CDN}/plain.mp4": b"P" * 9})
+
+        def ffmpeg(argv):
+            Path(argv[-1]).write_bytes(b"half")
+            return 1, "", "Invalid data found when processing input in#0"
+
+        folder = self.target_dir("aaa", "example_user")
+        with files.fake({"ffmpeg": ffmpeg}):
+            self.run_files(File(mirrors=[f"{CDN}/v.mp4", f"{CDN}/plain.mp4"],
+                                audio=f"{CDN}/a.mp4", name="v.mp4"))
+        self.assertEqual(self.saved(), ["v.mp4"])
+        self.assertEqual((folder / "v.mp4").read_bytes(), b"P" * 9)
+
     def test_a_fetch_file_takes_its_plugins_first_domain_and_its_limit(self) -> None:
         async def fetch(part):
             await part.write(JPEG)
