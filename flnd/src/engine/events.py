@@ -39,7 +39,7 @@ RESUMING = "resuming from the last run"
 
 class Saved(msgspec.Struct, frozen=True, tag=True):
     """A file was downloaded and went through every step after: it is on disk under its final
-    name (after `--compress`, the compressed file's), with its row.
+    name, with its row.
 
     Example:
         >>> import datetime, pathlib
@@ -58,11 +58,11 @@ class Saved(msgspec.Struct, frozen=True, tag=True):
     # The post's id, as the site gives it.
     post: str
     # Where the file is now, under the home's `media/` folder; for an archive removed once
-    # extracted (`--compress`), the folder it was extracted to.
+    # extracted, the folder it was extracted to.
     path: Path
     # The post's day, which is also the file's modified time; None when the site gave none.
     date: datetime.date | None
-    # The file's size in bytes, as it is now (after `--compress`, the compressed size).
+    # The file's size in bytes, as it is now on disk.
     size: int
     # Whether a retry brought it back: an earlier run failed on it (SPEC.md#when-it-goes-wrong).
     retried: bool = False
@@ -276,7 +276,7 @@ class Report(msgspec.Struct, frozen=True):
     saved: int = 0
     # Files (or whole posts) already saved, so not downloaded again.
     skipped: int = 0
-    # The bytes of the saved files, as they are on disk (after `--compress`, compressed).
+    # The bytes of the saved files, as they are on disk.
     bytes: int = 0
     # Files a dry run planned.
     planned: int = 0

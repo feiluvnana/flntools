@@ -745,15 +745,15 @@ class Ledger:
         """Make the links held back because their file was still queued in this run.
 
         Called once the downloads finished, off the loop. The file's row gives its final path,
-        since the compress step may have changed its suffix; a file that never landed gets no
-        link.
+        since a step after the download (extracting an archive) may have moved it; a file that
+        never landed gets no link.
 
         Args:
             written: each landed file's path, by history key.
         """
         for dest, item_key, category in self._later:
             holder = written.get(item_key)
-            # The compress step may have moved the file to a new suffix; its row says where.
+            # A step after the download may have moved the file; its row says where.
             found = self._db.known(item_key) if self._db else None
             if found is not None and found[0]:
                 holder = Path(found[0])
