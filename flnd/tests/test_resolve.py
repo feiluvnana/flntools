@@ -202,16 +202,11 @@ TABLE = [
                                   "Categories: posts, reels, tagged")),
     ("exm:list/example_handle|stories", ("exm has no category stories", None)),
     ("exm:post/Abc-1|posts", ("exm:post/Abc-1 is one post, with no categories", "")),
-    # The old way, `<target>/<categories>`, is refused with the way to write it.
-    ("exm:example_user/tagged", ("exm:example_user/tagged: categories aren't written after a /",
-                                 'write the categories after |: "exm:example_user|tagged"')),
-    ("exm:example_user/reels, posts",
-     ("exm:example_user/reels, posts: categories aren't written after a /",
-      'write the categories after |: "exm:example_user|reels, posts"')),
-    ("exm:album/12/archive", ("exm:album/12/archive: categories aren't written after a /",
-                              'write the categories after |: "exm:album/12|archive"')),
-    ("exm:me/posts", ("exm:me/posts: categories aren't written after a /",
-                      'write the categories after |: "exm:me|posts"')),
+    # `<user>/<categories>` is read like any other text: its first word is no post kind.
+    ("exm:example_user/tagged",
+     ("exm:example_user/tagged: example_user isn't a post kind of exm; write exm:post/<id> or "
+      'exm:album/<id> or exm:permalink/<id>_<id> or exm:watch/<id>, or categories after |: '
+      '"exm:<user>|tagged"', None)),
     # `|` after a link names categories of the plugin only; any other text stays in the link.
     ("https://example.com/example_user|stories",
      ("exm: can't read https://example.com/example_user|stories", None)),

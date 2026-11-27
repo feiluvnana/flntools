@@ -420,7 +420,7 @@ def _resolve(text: str, manifest: Manifest, known: Mapping[str, Sequence[str]],
 
 
 def _plain(plugin: _Plugin, body: str, known: Mapping[str, Sequence[str]]) -> Resolved:
-    """`code:value[|categories]`; the old `code:value/categories` is refused."""
+    """`code:value[|categories]`."""
     if not body:
         raise UsageError(f"{plugin.code}: write a value after {plugin.code}:",
                          hint=f"Write it like {plugin.forms}")
@@ -439,8 +439,6 @@ def _plain(plugin: _Plugin, body: str, known: Mapping[str, Sequence[str]]) -> Re
             whole = hit
     elif not isinstance(whole, tuple):
         whole = _typed_key(plugin, body) or whole
-        if not isinstance(whole, tuple):
-            _refuse_slash(plugin, body)
     if isinstance(whole, str):
         raise UsageError(f"{plugin.code}: {whole}")
     if whole is None:
@@ -448,18 +446,6 @@ def _plain(plugin: _Plugin, body: str, known: Mapping[str, Sequence[str]]) -> Re
         raise UsageError(f"{plugin.code}: can't read {body!r}",
                          hint=f"Write it like {plugin.forms}")
     return _made(plugin, whole[0], whole[1], None, known)
-
-
-def _refuse_slash(plugin: _Plugin, body: str) -> None:
-    """Raise when `body` is a value, a `/`, and a category list: the old way to write one."""
-    head, slash, tail = body.rpartition("/")
-    hit = _find(plugin, head.strip(), None) if slash else None
-    names = hit[0].names if isinstance(hit, tuple) and not hit[0].discovers else plugin.categories
-    if isinstance(hit, tuple) and _tokens(tail) and _named(_tokens(tail), names) and (
-            hit[0].names or hit[0].discovers):
-        raise UsageError(f"{plugin.code}:{body}: categories aren't written after a /",
-                         hint=f'write the categories after |: "{plugin.code}:{head.strip()}'
-                              f'|{tail.strip()}"')
 
 
 def _typed_key(plugin: _Plugin, body: str) -> tuple[_Route, str] | None:

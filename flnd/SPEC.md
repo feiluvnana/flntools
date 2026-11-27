@@ -110,9 +110,7 @@ How a target is read, in order:
 4. **`<code>:<value>`** is split at its last `|`: the part after it is the list of categories. A
    route that reads any text (a free title) splits only when every word after the `|` is a
    category or `all`, so `abc:Fans|Lens` stays whole. A one-post route given a list is
-   `<code>:<kind>/<id> is one post, with no categories`. The old written form,
-   `<code>:<value>/<categories>`, is refused with the hint `write the categories after |:
-   "ins:example_user|tagged"`.
+   `<code>:<kind>/<id> is one post, with no categories`.
 5. **`<code>?<query>`** needs a plugin with a search route (`twt`, `mht`). The text after the last
    `|` is categories only when every word in it is `all` or a category of that plugin; else the
    whole text is the query (`mht?AC/DC`, `twt?a|b`, `twt?url:example.com/x`).
@@ -136,11 +134,9 @@ Refusals, with the text printed (all `UsageError`, exit 2, before any request):
 - `ins:%`: `ins: can't read '%'`; hint `Write it like <every form of the plugin>`
 - `ins:example_user|nope`: `ins has no category nope`; hint `Categories: posts, reels, tagged,
   reposts, stories, highlights, profile`
-- `ins:example_user/tagged`: `ins:example_user/tagged: categories aren't written after a /`; hint
-  `write the categories after |: "ins:example_user|tagged"`
-- `ins:reel/C1`, `ins:example_user/posts/`: `ins:reel/C1: reel isn't a post kind of ins; write
-  ins:post/<id>, or categories after |: "ins:<user>|tagged"` (every single kind of the plugin is
-  listed; a plugin with none gives only the `|` hint)
+- `ins:reel/C1`, `ins:example_user/posts/`, `ins:example_user/tagged`: `ins:reel/C1: reel isn't a
+  post kind of ins; write ins:post/<id>, or categories after |: "ins:<user>|tagged"` (every
+  single kind of the plugin is listed; a plugin with none gives only the `|` hint)
 - Every target's key can be typed back, such as `tik:short/ZMabc123` or `fbk:watch/abc`.
 - `tik:post/1234567890123456|all`: `tik:post/1234567890123456 is one post, with no categories`
 - `ins?cats`: `ins has no search`; hint `Write it like ...`
@@ -395,7 +391,6 @@ flnd get "instagram.com/example_user|tagged" # a link takes a list the same way
 ```
 
 - `flnd get "<target>|<list>"` follows the target with that list: later syncs take the same.
-- The old `ins:example_user/tagged` is refused, with the hint to write it `|tagged`.
 - A single post has no categories (naming one is `<code>:<kind>/<id> is one post, with no
   categories`); `loi:<id>` is the exception.
 - `"mht:author/<x>|<list>"` (and the genre, parody and character ones), `"mht?<q>|<list>"` and
