@@ -299,6 +299,7 @@ post: smp:<id>, smp:post/<id>` (a post route comes in a later step).
 | `pxv:artwork/<id>`, `pixiv.net/artworks/<id>`, `/<lang>/artworks/<id>` | `artwork` | one work |
 | `pixiv.net/i/<id>`, `/member_illust.php?illust_id=<id>` (old links) | `artwork` | the same |
 | `pxv:novel/<id>`, `pixiv.net/novel/show.php?id=<id>`, `/<lang>/novel/...` | `novel` | one novel |
+| `pxv?<words>`, `pixiv.net/tags/<words>`, `/tags/<words>/artworks` | `search` | a tag's artworks |
 
 A link's tab (`/illustrations`, `/manga`, `/bookmarks/artworks`) is ignored. `pixiv.me/<name>` has
 no route: the resolver follows it to `/users/<id>`. Only a user's number is a target:
@@ -307,9 +308,9 @@ in pixiv.net/users/<number>; a pixiv.me/<name> link works too`. Refused with `px
 supported; give a user, an artwork or a novel: pxv:12345678, pxv:artwork/12345678,
 pxv:novel/12345678`: `pixiv.net/` alone,
 series (`/novel/series/...`, `/user/<id>/series/...`), `/ranking.php`, `/discovery`, `/request`,
-`/bookmark_new_illust.php`, `/stacc`, `/settings`, `/dashboard`, `/tags` (search comes later),
+`/bookmark_new_illust.php`, `/stacc`, `/settings`, `/dashboard`, a tag page's other tabs,
 `sketch.pixiv.net` and `comic.pixiv.net`. `pxv:artwork/5|manga` is `pxv:artwork/5 is one post, with
-no categories`. Tag search (`pxv?<words>`) is not built yet.
+no categories`. A search needs `--folder`, as twt's does.
 
 **web**
 
@@ -1221,6 +1222,16 @@ up to 32.
   `/ajax/novel/<id>` once, files it by its `userId` under `novels`, and reuses the answer.
   `sign` adds `Referer: https://www.pixiv.net/` and `Accept:
   application/json` to `/ajax/` requests, and each post carries the Referer for its images.
+- **Search:** `pxv?<words>` (and the tag links, their words percent-decoded) discovers the
+  artworks of a tag, newest first: `GET /ajax/search/artworks/<words>?word=<words>&order=date_d
+  &mode=<all, or safe when logged out>&s_mode=s_tag&type=all&p=<n>`, with `scd=<since>&
+  ecd=<until>` (ISO days) from `--when`. A page is 60 hits in `body.illustManga.data[]`, and
+  `body.illustManga.lastPage` is the last page's number. Each hit's `id` is yielded as the
+  target `pxv:artwork/<id>`; a hit with no numeric id, or one already seen, is skipped. It stops
+  at a page with nothing new (an empty page) or after `lastPage`. `s_mode=s_tag` matches part
+  of a tag. Novels aren't searched. No words is `pxv: a search needs words: pxv?example_tag`.
+  The search asks the API like any request, so it keeps the pace, the budget and the captcha
+  handling.
 - **Categories:** `illusts` (`illustType` 0), `manga` (1), `ugoira` (2) and `novels`, all own and
   newest first; `illusts` and `ugoira` share the profile's illust id list and batches. With a sync
   head (`ctx.head`), once a whole batch's newest `createDate` is strictly older than the head's

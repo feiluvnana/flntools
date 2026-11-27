@@ -15,7 +15,7 @@ import unicodedata
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
 from flnd.plugin import (
     Blocked,
@@ -74,19 +74,21 @@ BOOKMARKS = {"illusts": 48, "novels": 24}
 # What every unsupported page of pixiv says after its own reason.
 GIVE = f"; {HINT}"
 PAGES = ("ranking.php", "discovery", "request", "bookmark_new_illust.php", "stacc", "settings",
-         "dashboard", "tags")
+         "dashboard")
 
 
 def _refused() -> dict[str, str]:
-    """Every page of pixiv that is not a user, an artwork or a novel, as a pattern and a reason."""
-    found = {"pixiv.net": f"that page isn't supported{GIVE}",
-             "sketch.pixiv.net": f"pixiv Sketch isn't supported{GIVE}",
-             "comic.pixiv.net": f"pixiv Comic isn't supported{GIVE}"}
+    """Every page of pixiv that is not a user, an artwork, a novel or a tag search, as a pattern
+    and a reason. A tag page's other tabs come first: the first refusal that matches is the one
+    a more specific route is compared with."""
+    found = {f"pixiv.net/{lang}tags/*/{tab}": f"that tag page isn't supported{GIVE}"
+             for lang in ("", "*/") for tab in ("novels", "illustrations", "manga", "top")}
+    found.update({"pixiv.net": f"that page isn't supported{GIVE}",
+                  "sketch.pixiv.net": f"pixiv Sketch isn't supported{GIVE}",
+                  "comic.pixiv.net": f"pixiv Comic isn't supported{GIVE}"})
     for lang in ("", "*/"):
         for page in PAGES:
-            reason = ("tag pages aren't supported yet" if page == "tags"
-                      else "that page isn't supported")
-            found[f"pixiv.net/{lang}{page}"] = reason + GIVE
+            found[f"pixiv.net/{lang}{page}"] = "that page isn't supported" + GIVE
         found[f"pixiv.net/{lang}novel/series"] = f"series aren't supported{GIVE}"
         found[f"pixiv.net/{lang}user/*/series"] = f"series aren't supported{GIVE}"
     return found
@@ -282,6 +284,47 @@ class Pixiv(Plugin):
         """The novels the user bookmarked, as `shiori` reads artworks."""
         async for post in self._bookmarks(ctx, user, "novels"):
             yield post
+
+    @route("pxv?{query}", *(f"pixiv.net/{lang}tags/{{query:[^/]+}}{tab}" for lang in ("", "*/")
+                            for tab in ("/artworks", "")))
+    async def search(self, ctx: Ctx, query: str) -> AsyncIterator[Target]:
+        """A tag search's artworks, newest first, each as an artwork link: `pxv?example_tag`, or
+        `https://www.pixiv.net/tags/example_tag/artworks`. A search needs `--folder`.
+
+        Raises:
+            UsageError: no words.
+        """
+        words = unquote(query).strip()
+        if not words:
+            raise UsageError("pxv: a search needs words: pxv?example_tag")
+        made = quote(words, safe="")
+        when = {key: day.isoformat() for key, day in (("scd", ctx.when.since),
+                                                      ("ecd", ctx.when.until)) if day}
+        seen: set[str] = set()
+        number = 1
+        while True:
+            asked = urlencode({
+                "word": words, "order": "date_d",
+                "mode": "all" if "PHPSESSID" in ctx.cookies else "safe", "s_mode": "s_tag",
+                "type": "all", "p": number, **when})
+            body = await self.ajax(ctx, f"search/artworks/{made}?{asked}", f"search {words!r}")
+            found = body.get("illustManga") if isinstance(body, dict) else None
+            works = found.get("data") if isinstance(found, dict) else None
+            if not isinstance(works, list):
+                raise Changed(f"pxv: the search for {words!r} has an unknown shape",
+                              hint="pixiv's answer may have changed; report it")
+            fresh = 0
+            for work in works:
+                id = str(work.get("id") or "") if isinstance(work, dict) else ""
+                if id.isdigit() and id not in seen:
+                    seen.add(id)
+                    fresh += 1
+                    yield Target(f"pxv:artwork/{id}")
+            # `lastPage` is the number of the last page; a page that gave nothing new ends it too.
+            last = found.get("lastPage")
+            if not fresh or last is True or (isinstance(last, int) and number >= last):
+                return
+            number += 1
 
     def sign(self, request: Request, cookies: Mapping[str, str]) -> Request:
         """Add the web client's headers to an API request; any other is left as it is."""

@@ -4,13 +4,13 @@ import asyncio
 import datetime
 import json
 import unittest
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import no_profiles  # noqa: F401
 from plugin_kit import FakeCtx, FakePage, Reply, check, collect
 
 from flnd.errors import Blocked, Changed, Hidden, LoginError, NotFound
-from flnd.plugin import Post, Target, UsageError
+from flnd.plugin import Post, Range, Target, UsageError
 from flnd.plugins.pxv import Pixiv, _stem
 from flnkit import text as flntext
 
@@ -147,8 +147,7 @@ class FormsTest(unittest.TestCase):
                      "https://www.pixiv.net/settings/viewing", "https://www.pixiv.net/dashboard",
                      "https://www.pixiv.net/novel/series/5",
                      "https://www.pixiv.net/user/5/series/9",
-                     "https://www.pixiv.net/en/tags/example/artworks",
-                     "https://www.pixiv.net/tags/example/artworks",
+                     "https://www.pixiv.net/en/tags/example/novels",
                      "https://sketch.pixiv.net/@example_user", "https://comic.pixiv.net/works/5"):
             with self.subTest(text=text), self.assertRaisesRegex(
                     UsageError, r"pxv: .*isn't supported|pxv: .*aren't supported"):
@@ -1078,3 +1077,62 @@ class ProfilePictureTest(unittest.TestCase):
         found = next(one for one in Pixiv.user.categories if one.name == "profile")
         self.assertEqual((found.own, found.folder, found.key, found.newest_first),
                          (True, "profile", "{path}", False))
+
+
+def search_answer(pages_of, last=None):
+    """The search answer for each `p`: the ids of that page, `lastPage` when given."""
+    def answer(request):
+        page = int(parse_qs(urlsplit(request.url).query)["p"][0])
+        data = [{"id": str(id), "title": "t"} for id in pages_of.get(page, ())]
+        found = {"data": data, **({"lastPage": last} if last is not None else {})}
+        return ok({"illustManga": found})
+    return answer
+
+
+def search_run(text, pages_of, last=None, words="red hair", given=None, **more):
+    ctx = FakeCtx(Pixiv, text, routes={
+        f"{AJAX}/search/artworks/{quote(words, safe='')}": search_answer(pages_of, last)},
+        **more)
+
+    async def go():
+        return [str(one) async for one in ctx._plugin.search(ctx, given or words)]
+    return ctx, asyncio.run(go())
+
+
+class SearchTest(unittest.TestCase):
+    def test_the_forms(self):
+        for text in ("pxv?red hair", "https://www.pixiv.net/tags/example_tag/artworks",
+                     "https://www.pixiv.net/en/tags/%E3%81%82/artworks",
+                     "https://www.pixiv.net/tags/example_tag"):
+            with self.subTest(text=text):
+                self.assertEqual(Pixiv.resolve(text).kind, "search")
+        with self.assertRaisesRegex(UsageError, "isn't supported"):
+            Pixiv.resolve("https://www.pixiv.net/tags/example_tag/novels")
+
+    def test_pages_end_at_last_page_and_skip_repeats(self):
+        ctx, found = search_run("pxv?red hair", {1: (5, 4), 2: (4, 3), 3: (2,)}, last=2)
+        self.assertEqual(found, ["pxv:artwork/5", "pxv:artwork/4", "pxv:artwork/3"])
+        self.assertEqual(len(asked(ctx)), 2)
+
+    def test_an_empty_page_ends_it_and_the_request_is_the_tag_search(self):
+        ctx, found = search_run("pxv?red hair", {1: (5,), 2: ()})
+        self.assertEqual(found, ["pxv:artwork/5"])
+        path, _, query = asked(ctx)[0].partition("?")
+        self.assertEqual(path, "/search/artworks/red%20hair")
+        self.assertEqual(parse_qs(query), {
+            "word": ["red hair"], "order": ["date_d"], "mode": ["safe"], "s_mode": ["s_tag"],
+            "type": ["all"], "p": ["1"]})
+        self.assertEqual(len(asked(ctx)), 2)
+
+    def test_a_login_searches_all_and_when_is_sent(self):
+        when = Range(datetime.date(2026, 1, 2), datetime.date(2026, 1, 9))
+        ctx, _ = search_run("pxv?red hair", {1: ()}, cookies={"PHPSESSID": f"{USER}_example"},
+                            when=when)
+        query = parse_qs(asked(ctx)[0].partition("?")[2])
+        self.assertEqual((query["mode"], query["scd"], query["ecd"]),
+                         (["all"], ["2026-01-02"], ["2026-01-09"]))
+
+    def test_link_words_are_decoded(self):
+        ctx, found = search_run("pxv?x", {1: (5,)}, last=1, words="あ")
+        self.assertEqual((found, asked(ctx)[0].partition("?")[0]),
+                         (["pxv:artwork/5"], "/search/artworks/%E3%81%82"))
