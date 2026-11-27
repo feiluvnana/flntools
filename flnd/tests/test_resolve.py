@@ -108,7 +108,7 @@ TABLE = [
     # A link-only kind's key typed back; a word that is no single kind names the kinds.
     ("exm:watch/ab-1", R("exm", "watch/ab-1", "watch", ())),
     ("exm:reel/C1", ("exm:reel/C1: reel isn't a post kind of exm; write exm:post/<id> or "
-                     'exm:album/<id> or exm:permalink/<id> or exm:watch/<id>, or categories '
+                     'exm:album/<id> or exm:permalink/<id>_<id> or exm:watch/<id>, or categories '
                      'after |: "exm:<user>|tagged"', "")),
     ("exm:album/12", R("exm", "album/12", "album", ("photo", "archive"))),
     ("exm:album/12|archive", N("exm", "album/12", "album", ("archive",))),
@@ -302,9 +302,8 @@ class ResolveTest(unittest.TestCase):
             ("https://x.com/example_handle/status/1790", R("twt", "post/1790", "post", ())),
             ("tik:post/7301234567890123456", R("tik", "post/7301234567890123456", "post", ())),
             ("tik:7301234567890123456", R("tik", "post/7301234567890123456", "post", ())),
-            ("loi:post/12", R("loi", "post/12", "post", ("archive", "photo"))),
-            ("loi:12", R("loi", "post/12", "post", ("archive", "photo"))),
-            ("loi:12|photo", N("loi", "post/12", "post", ("photo",))),
+            ("loi:12", R("loi", "12", "post", ("archive", "photo"))),
+            ("loi:12|photo", N("loi", "12", "post", ("photo",))),
             ("loi:author/183", R("loi", "author/183", "author", ())),
             ("loi:author/183|photo", N("loi", "author/183", "author", ("photo",))),
             ("https://loix.cc/library/loier/183", R("loi", "author/183", "author", ())),
@@ -321,6 +320,12 @@ class ResolveTest(unittest.TestCase):
         ]:
             with self.subTest(text=text):
                 self.assertEqual(resolve(text, manifest=manifest, known={}), expected)
+        for text in ("loi:post/5", "loi?x"):
+            with self.subTest(text=text), self.assertRaises(UsageError):
+                resolve(text, manifest=manifest, known={})
+        # The hint names the post's own form, `loi:<id>`, not a `<kind>/<id>` one.
+        with self.assertRaisesRegex(UsageError, r"write loi:<id>, or"):
+            resolve("loi:post/5", manifest=manifest, known={})
 
 
 class MixedRunTest(LibraryCase):

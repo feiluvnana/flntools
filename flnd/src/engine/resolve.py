@@ -480,8 +480,11 @@ def _refuse_kind(plugin: _Plugin, body: str) -> None:
     word, slash, rest = body.partition("/")
     if not (slash and rest and re.fullmatch(r"[A-Za-z]\w*", word)):
         return
-    kinds = [route.name for route in plugin.routes if route.single]
-    forms = " or ".join(f"{plugin.code}:{kind}/<id>" for kind in kinds)
+    # Each single route's key as typed: its value template, `<id>` for each placeholder.
+    templates = [next((p.template for p in route.patterns if p.template), f"{route.name}/{{id}}")
+                 for route in plugin.routes if route.single]
+    forms = " or ".join(f"{plugin.code}:{re.sub(r'{[^{}]*}', '<id>', template)}"
+                        for template in templates)
     pipe = f'categories after |: "{plugin.code}:<user>|tagged"'
     raise UsageError(f"{plugin.code}:{body}: {word} isn't a post kind of {plugin.code}; "
                      f"write {forms + ', or ' if forms else ''}{pipe}")

@@ -161,10 +161,10 @@ A link that a short link led to adds ` (from <what you typed>)` to `can't read`.
 
 ### Searches and `--limit`
 
-- A search (`twt?<words>`, `mht?<words>`, `loi?<words>`, or a search link) finds targets, and
-  each found target is got as its own. A search needs `--folder`, which puts all its hits in
-  one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search gets only
-  the targets it had not found before.
+- A search (`twt?<words>`, `mht?<words>`, or a search link) finds targets, and each found target
+  is got as its own. A search needs `--folder`, which puts all its hits in one place ([A search
+  needs a folder](#a-search-needs-a-folder)). A followed search gets only the targets it had not
+  found before.
 - `--limit N` (at least 1) is at most N posts per target, or N targets per search or other
   discovering route (`mht:author/...`, `mht:genre/...`, `loi:author/...`). `--limit 0` is `limit
   must be at least 1`.
@@ -265,16 +265,14 @@ characters), `t.me/` alone, `web.telegram.org` links: `tlg: can't read <text>`.
 
 | Form | Route | Reads |
 | --- | --- | --- |
-| `loi:post/<id>`, `loix.cc/lois/<id>`, `moegoat.com/lois/<id>` (digits) | `post` | one post |
+| `loi:<id>`, `loix.cc/lois/<id>`, `moegoat.com/lois/<id>` (digits) | `post` | one post |
 | `loi:author/<id>` | `author` | an author's posts |
 | `loix.cc/library/loier/<id>`, `moegoat.com/library/loier/<id>` | `author` | the same |
-| `loi?<words>`, `loix.cc/search?q=<words>`, `moegoat.com/search?q=<words>` | `search` | a search |
 
-The old `loi:<id>` still reads as a post. Both `author` and `search` find `loi:post/<id>`
-(`--limit N` is N posts); a search needs `--folder`, an author does not, and a search's paging is
-unconfirmed live. Every other page of both domains is refused: `that page isn't supported; give a
-post, an author or a search` (`/library...`: `library pages aren't supported; ...`).
-`loi:post/<id>|archive` and `|photo` (and on `loi:author/<id>`) are allowed.
+`author` finds `loi:<id>` (`--limit N` is N posts) and needs no `--folder`. Every other page of
+both domains is refused: `that page isn't supported; give a post or an author` (`/library...`:
+`library pages aren't supported; ...`), and so is `loi:post/<id>` and `loi?<words>`.
+`loi:<id>|archive` and `|photo` (and on `loi:author/<id>`) are allowed.
 
 **mht**
 
@@ -371,7 +369,7 @@ flnd get "instagram.com/example_user|tagged" # a link takes a list the same way
 - `flnd get "<target>|<list>"` follows the target with that list: later syncs take the same.
 - The old `ins:example_user/tagged` is refused, with the hint to write it `|tagged`.
 - A single post has no categories (naming one is `<code>:<kind>/<id> is one post, with no
-  categories`); `loi:post/<id>` is the exception.
+  categories`); `loi:<id>` is the exception.
 - `"mht:author/<x>|<list>"`, `"mht?<q>|<list>"` and `"twt?<q>|<list>"` pass the list on to each
   target found. With no list, each takes its own.
 - A category that is not newest first (`tagged`, `stories`, `profile` ...) is read to its end on
@@ -1079,10 +1077,8 @@ up to 32.
   its `Retry-After`; a JSON rate answer is a block hold.
 - **Author:** `loi:author/<id>` reads
   `GET api/user/library/loier/id?category_id=<id>&sort=latest&page=<n>`: each page's `data` ids as
-  `loi:post/<id>`, ended by `pagination.total_pages` or a short page; rate answers are held like
+  `loi:<id>`, ended by `pagination.total_pages` or a short page; rate answers are held like
   the links'.
-- **Search:** `loi?<words>` reads `GET api/lois?keyword=<words>&page=<n>&page_size=20`: each page's
-  `data.list` ids as `loi:post/<id>`, ended by a short page; rate answers are held like the links'.
 - **Known gaps:** no tag target; a post counts once its links are fetched; Baidu links go to
   info.md only; an expired token reads as "no download links".
 - **Saved as:** `media/loi/example_author/1234567890_Example_Title/info.md`

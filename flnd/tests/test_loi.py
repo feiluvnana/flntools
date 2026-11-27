@@ -231,10 +231,6 @@ AUTHORS = [
     ("https://moegoat.com/library/loier/183", "183"),
     ("https://www.moegoat.com/library/loier/183/", "183"),
 ]
-SEARCHES = [
-    ("loi?night city", "night city"), ("https://loix.cc/search?q=night+city", "night city"),
-    ("https://www.moegoat.com/search?q=cats&page=2", "cats"),
-]
 REFUSED = [
     ("https://loix.cc/library", "library pages aren't supported"),
     ("https://loix.cc/library/tag/7", "library pages aren't supported"),
@@ -242,7 +238,7 @@ REFUSED = [
     ("https://loix.cc/", "that page isn't supported"), ("loix.cc/5930", "that page isn't"),
     ("https://moegoat.com/vip", "that page isn't supported"),
     ("https://loix.cc/lois/", "that page isn't"), ("https://loix.cc/lois/abc", "that page isn't"),
-    ("loi?", "the query is empty"),
+    ("https://loix.cc/search?q=night+city", "give a post or an author"),
 ]
 
 
@@ -252,17 +248,13 @@ class RoutesTest(unittest.TestCase):
             with self.subTest(text=text):
                 found = Loibus.resolve(text)
                 self.assertEqual(found and (found.text, found.kind),
-                                 value and (f"loi:post/{value}", "post"))
+                                 value and (f"loi:{value}", "post"))
 
-    def test_authors_searches_and_refused_pages(self):
+    def test_authors_and_refused_pages(self):
         for text, author_id in AUTHORS:
             with self.subTest(text=text):
                 found = Loibus.resolve(text)
                 self.assertEqual((found.text, found.kind), (f"loi:author/{author_id}", "author"))
-        for text, query in SEARCHES:
-            with self.subTest(text=text):
-                found = Loibus.resolve(text)
-                self.assertEqual((found.kind, found.value), ("search", query))
         for text, message in REFUSED:
             with self.subTest(text=text), self.assertRaisesRegex(UsageError, message):
                 Loibus.resolve(text)
@@ -456,56 +448,16 @@ class QuotaTest(unittest.TestCase):
         self.assertEqual(asked(ctx), ["lois/5930"])
 
 
-def search_ctx(*answers):
-    """A FakeCtx whose `lois` search answers each page in turn, by the `page` it asked for."""
-    pages = iter(answers)
-    return fake(lois=lambda request: Reply(next(pages)))
-
-
-def found_by(ctx, query="night"):
-    async def run():
-        return [item async for item in Loibus().search(ctx, query)]
-    return asyncio.run(run())
-
-
-def hits(*ids):
-    return {"data": {"list": [{"id": id} for id in ids]}}
-
-
-class SearchTest(unittest.TestCase):
-    def test_each_hit_is_a_post_target_once_and_pages_follow(self):
-        ctx = search_ctx(hits(*range(1, 21)), hits(20, 21))
-        found = found_by(ctx)
-        self.assertEqual([item.text for item in found], [f"loi:post/{i}" for i in range(1, 22)])
-        params = [options["params"] for _, _, options in ctx.seen.requests]
-        self.assertEqual([p["page"] for p in params], ["1", "2"])
-        self.assertEqual(params[0]["keyword"], "night")
-        self.assertEqual(Loibus.resolve(str(found[0])).kind, "post")
-
-    def test_a_short_page_ends_the_search(self):
-        self.assertEqual(len(found_by(search_ctx(hits(1, 2), hits(3)))), 2)
-
-    def test_the_limit_is_posts(self):
-        ctx = search_ctx(hits(*range(1, 21)), hits(21))
-        got = []
-
-        async def run():
-            async for item in Loibus().search(ctx, "night"):
-                got.append(item)
-                if len(got) == 3:
-                    return
-
-        asyncio.run(run())
-        self.assertEqual(len(got), 3)
-        self.assertEqual(len(ctx.seen.requests), 1)
-
-    def test_a_rate_answer_on_the_search_is_held_and_a_post_refusal_is_not(self):
-        rate = _net.Response(200, f"{API}lois", {}, json.dumps(RATE).encode())
-        self.assertEqual(Loibus().blocked(rate), 0.0)
+class HoldTest(unittest.TestCase):
+    def test_a_rate_answer_on_the_author_is_held_and_a_post_refusal_is_not(self):
         author = _net.Response(200, f"{API}user/library/loier/id", {}, json.dumps(RATE).encode())
         self.assertEqual(Loibus().blocked(author), 0.0)
         post = _net.Response(200, f"{API}lois/5930", {}, json.dumps(RATE).encode())
         self.assertIsNone(Loibus().blocked(post))
+
+    def test_a_search_link_is_refused_and_a_bare_id_is_a_post(self):
+        found = Loibus.resolve("loi:5")
+        self.assertEqual((found.kind, found.text), ("post", "loi:5"))
 
 
 class AuthorTest(unittest.TestCase):
@@ -525,7 +477,7 @@ class AuthorTest(unittest.TestCase):
                  "pagination": {"current_page": 2, "total_pages": 2}}
         ctx = self._ctx(page1, page2)
         found = self._run(ctx)
-        self.assertEqual([item.text for item in found], [f"loi:post/{i}" for i in range(1, 22)])
+        self.assertEqual([item.text for item in found], [f"loi:{i}" for i in range(1, 22)])
         params = [options["params"] for _, _, options in ctx.seen.requests]
         self.assertEqual(params, [
             {"category_id": "183", "sort": "latest", "page": "1"},

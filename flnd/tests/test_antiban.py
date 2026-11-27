@@ -196,7 +196,7 @@ class PlatformHardeningTest(unittest.TestCase):
     def test_loi_401_aborts_with_login_error(self) -> None:
         for status, body in ((401, {}), (200, {"code": "401", "message": "expired"})):
             with self.subTest(status=status, body=body):
-                ctx = FakeCtx(loi.Loibus, "loi:post/1", routes={
+                ctx = FakeCtx(loi.Loibus, "loi:1", routes={
                     f"{loi.API}user/info": Reply(body, status=status),
                 })
                 with self.assertRaises(LoginError) as caught:
