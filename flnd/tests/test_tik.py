@@ -278,7 +278,24 @@ class NamesAndKeysTest(unittest.TestCase):
         for item, expected in EMBEDS.values():
             with self.subTest(post=item["id"]):
                 ctx = embedded(item)
-                self.assertEqual(pairs(collect(TikTok, f"tik:post/{item['id']}", ctx=ctx)), expected)
+                saved = collect(TikTok, f"tik:post/{item['id']}", ctx=ctx)
+                self.assertEqual(pairs(saved), expected)
+
+    def test_a_caption_becomes_the_title_and_never_changes_a_key(self):
+        caption = "Sunset at the beach #fun\nsecond line"
+        for item, path, key in (
+            (video(VIDEO, f"{CDN}/v", desc=caption), "videos/Sunset_at_the_beach_", VIDEO),
+            (photo(VIDEO, f"{CDN}/p", desc=caption), "images/Sunset_at_the_beach_", f"{VIDEO}_1"),
+            (video(VIDEO, f"{CDN}/v", desc="#fun @friend"), "videos/", VIDEO),
+            (photo(VIDEO, f"{CDN}/p", desc=""), "images/", f"{VIDEO}_1"),
+            (video(VIDEO, f"{CDN}/v", desc="x" * 60), f"videos/{'x' * 40}_", VIDEO),
+        ):
+            with self.subTest(path=path):
+                saved = collect(TikTok, f"tik:post/{VIDEO}", ctx=embedded(item))
+                [(found, found_key)] = pairs(saved)
+                kind, _, rest = path.partition("/")
+                name = f"{VIDEO}/{kind}/2023-05-18_{rest}{VIDEO}" + ("_1.jpg" if "_1" in key else "")
+                self.assertEqual((found, found_key), (name, key))
 
     def test_a_post_link_is_filed_by_its_creator_and_kind(self):
         link, creator = f"{API}/@example_creator/video/{VIDEO}", {"author": {"uniqueId": "me"}}

@@ -34,6 +34,7 @@ from flnd.plugin import (
     best,
     cookies,
     dig,
+    headline,
     route,
     wall,
 )
@@ -367,13 +368,13 @@ class TikTok(Plugin):
                           ("explore", "the explore page"),
                           ("search", "search pages"))
     }
-    # Names and keys as they always were: `<date>_<post>` and `<post>` for a video, and
-    # `<date>_<post>_<n>` and `<post>_<n>` for the n-th photo (from 1). A changed key downloads
-    # every saved file again. `part` is the folder (videos, images, albums or the category),
-    # `album` the playlist under albums.
+    # A name is `<date>_<title>_<post>` for a video, and `<date>_<title>_<post>_<n>` for the
+    # n-th photo (from 1); the title is the caption's headline, and is left out when empty. A
+    # key is `<post>` or `<post>_<n>`; a changed key downloads every saved file again. `part` is
+    # the folder (videos, images, albums or the category), `album` the playlist under albums.
     folder = "{part}/{album}"
-    fields = ("part", "album", "idx")
-    filename = "{date}_{post}_{idx}"
+    fields = ("part", "album", "idx", "title")
+    filename = "{date}_{title:.40}_{post}_{idx}"
     key = "{post}_{idx}"
 
     # A link with no user is read too.
@@ -498,7 +499,8 @@ class TikTok(Plugin):
             # The path's last part is "<id>~<size options>.jpeg"; the id names the picture.
             picture = PurePosixPath(urlsplit(url).path).name.split("~")[0]
             yield Post(picture, [File(url, name=f"avatar_{picture}.jpg")],
-                       headers=cdn_headers(ctx.cookies), part="profile", album="", idx="")
+                       headers=cdn_headers(ctx.cookies), part="profile", album="", idx="",
+                       title="")
 
     async def refresh(self, ctx: Ctx, post: Post) -> Post:
         """The post's file again, from one fetch of its embed page.
@@ -588,8 +590,8 @@ def post_of(ctx: Ctx, item: dict[str, Any], category: str) -> Post:
     """One file of an item (a video, or one photo of a photo post) as a post of its own.
 
     A photo's key counts from 1 even in a one-photo post, which no engine field gives, so
-    each photo is a post with its `idx`. A photo's name is pinned to today's
-    `<date>_<post>_<n>.jpg`, whatever the CDN's URL ends with; a video's extension is the
+    each photo is a post with its `idx`. A photo's name is pinned to the
+    filename template with `.jpg`, whatever the CDN's URL ends with; a video's extension is the
     content's. A pinned post sits out of date order, and says so.
 
     Args:
@@ -607,13 +609,13 @@ def post_of(ctx: Ctx, item: dict[str, Any], category: str) -> Post:
     name = None
     if item["kind"] == "image":
         day = item["date"] and datetime.datetime.fromtimestamp(item["date"], datetime.UTC)
-        name = "_".join(piece for piece in (day and f"{day:%Y-%m-%d}", item["id"], idx)
-                        if piece) + ".jpg"
+        name = "_".join(piece for piece in (day and f"{day:%Y-%m-%d}", item["title"][:40],
+                                            item["id"], idx) if piece) + ".jpg"
     urls = item["urls"]
     file = File(urls[0], name=name) if len(urls) == 1 else File(mirrors=urls, name=name)
     return Post(item["id"], [file], date=item["date"], pinned=item["pinned"],
                 headers=cdn_headers(ctx.cookies), owner=item.get("owner"), category=category,
-                part=part, album=album, idx=idx)
+                part=part, album=album, idx=idx, title=item["title"])
 
 
 def cdn_headers(cookies: Mapping[str, str]) -> dict[str, str]:
@@ -666,7 +668,7 @@ def items_of(data: Any, now: float) -> list[dict[str, Any]]:
     Returns:
         Dicts with `id`, `date` (Unix seconds, or None), `playlist` (its name or None),
         `pinned` (whether it sits pinned at the top of the profile), `owner` (its author's
-        `uniqueId`, or None), `urls`
+        `uniqueId`, or None), `title` (the caption's `headline`, "" for none), `urls`
         (the file's CDN addresses, best first), `kind` ("video" or "image") and `idx`: 0 for a
         video, else the photo's place from 1. A photo post has `imagePost`, and its video, if
         any, is never read.
@@ -684,7 +686,8 @@ def items_of(data: Any, now: float) -> list[dict[str, Any]]:
                   "playlist": dig(raw, "playlist.name || playlist_info.name"),
                   # A post pinned to the profile's top; the mark is unconfirmed live.
                   "pinned": bool(raw.get("isPinnedItem")),
-                  "owner": dig(raw, "author.uniqueId")}
+                  "owner": dig(raw, "author.uniqueId"),
+                  "title": headline(raw.get("desc"))}
         images = dig(raw, "imagePost.images")
         if images:
             for idx, image in enumerate(images, 1):

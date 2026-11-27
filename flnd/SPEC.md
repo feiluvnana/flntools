@@ -508,7 +508,7 @@ characters of `title`, and the cleaner then runs on the cut text. `flnd.plugin.h
 makes a title of a caption: its first non-empty line, with `#tags`, `@names` and `http(s)` URLs
 removed, whitespace squeezed to single spaces and trimmed ("" for nothing left).
 
-Plugin fields: `ins` `album`; `twt` `part n`; `tik` `part album idx`; `fbk` `part album`;
+Plugin fields: `ins` `album`; `twt` `part n`; `tik` `part album idx title`; `fbk` `part album`;
 `loi` `author title part`; `mht` `title order author genres chapters`; `smp` none;
 `pxv` `title user name`; `web` `name`; a plugin of your own declares its `fields`.
 
@@ -1068,7 +1068,9 @@ up to 32.
   `favorites` (opt-in; the last two only if public). `videos` and `playlists` share one scroll.
 - **Folder:** `{part}/{album}`: `part` is `videos` or `images` for a post, `albums` for a playlist
   video (`album` is the playlist's name), else the category; `profile` for `profile`.
-- **Filename:** `{date}_{post}_{idx}` (`idx` empty for a video; a photo's place from 1).
+- **Filename:** `{date}_{title:.40}_{post}_{idx}`: `title` is the post's caption through
+  `headline`, empty (and dropped with its `_`) for no caption or only tags; `idx` is empty for a
+  video, and a photo's place from 1.
 - **Key:** `{post}_{idx}` (`tik:<id>`, `tik:<id>_<n>`); `profile` keys `profile/avatar_<id>.jpg`.
 - **Login:** cookies `sessionid` or `sid_tt` (optional).
 - **Limits and walls:** pace 1.5; no login walls (`/verify` and `/account/suspended` fail
@@ -1080,8 +1082,10 @@ up to 32.
   with a warning. A walled post list fails `videos` and `playlists` with `Hidden`.
 - **Known gaps:** no such tab is logged; a tab deaf to the click for 10 s fails `Changed`; stories
   only as the page shows them on load.
-- **Saved as:** `media/tik/example_creator/videos/2026-01-02_1234567890123456789.mp4`,
-  `media/tik/example_creator/albums/Example_Playlist/2026-01-03_1234567890123456781.mp4`
+- **Saved as:**
+  `media/tik/example_creator/videos/2026-01-02_Morning_run_1234567890123456789.mp4`,
+  `media/tik/example_creator/albums/Example_Playlist/2026-01-03_1234567890123456781.mp4` (no
+  caption)
 
 ### fbk (Facebook)
 
