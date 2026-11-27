@@ -510,8 +510,8 @@ characters of `title`, and the cleaner then runs on the cut text. `flnd.plugin.h
 makes a title of a caption: its first non-empty line, with `#tags`, `@names` and `http(s)` URLs
 removed, whitespace squeezed to single spaces and trimmed ("" for nothing left).
 
-Plugin fields: `ins` `album title`; `thr` `title`; `twt` `part n`; `tik` `part album idx title`;
-`fbk` `part album`; `loi` `author title part`; `mht` `title order author genres chapters`;
+Plugin fields: `ins` `album title`; `thr` `title`; `twt` `part n title name`; `tik` `part album idx
+title`; `fbk` `part album`; `loi` `author title part`; `mht` `title order author genres chapters`;
 `smp` none; `pxv` `title user name`; `web` `name`; a plugin of your own declares its `fields`.
 
 Rendering: each `/` segment is filled alone. A missing or empty field drops the separators
@@ -1033,9 +1033,13 @@ up to 32.
 - **Categories:** `posts` NF, `media` NF, `highlights`, `replies` NF, `profile` (own); `reposts`
   (opt-in). Retweets are left out of every category but `reposts`; a tweet's files include the media
   of a tweet it quotes and its card image.
-- **Folder:** `{part}` (the category; `media` uses `images` and `videos`); `profile`.
-- **Filename:** `{date}_{post}_{n}` (`n` is `0`, `1`, ..., `q0` for a quoted tweet, `card`).
-- **Key:** `{post}_{n}` (`twt:<tweet id>_<n>`); `profile` keys by `{path}`.
+- **Folder:** `{part}` (the category; `media` uses `images` and `videos`); `profile`, under
+  `media/twt/{name}_{target}/`: `name` is the author's screen name when the target is a user id
+  (`twt:42`), else empty, so `twt:example_handle` stays `example_handle`.
+- **Filename:** `{date}_{title:.40}_{post}_{n}` (`n` is `0`, `1`, ..., `q0` for a quoted tweet,
+  `card`; `title` is `headline` of the tweet's text, a long tweet's own text when it has one;
+  empty, it leaves no `_`; the profile pictures keep their names).
+- **Key:** `{post}_{n}` (`twt:<tweet id>_<n>`); `profile` keys by its path under the folder.
 - **Search:** `twt?<words>` opens the Latest tab; X operators (`from:`, `filter:media`) work;
   `--when` is sent as `since:`/`until:`. When X's cursor ends early or a 429 cuts a window, a
   `max_id:` window follows from the oldest of its last 5 tweets; a window with no new tweet ends
@@ -1062,7 +1066,8 @@ up to 32.
   or 404, at most once a run.
 - **Known gaps:** a single tweet has no browser fallback; a protected and a deleted tweet are both
   `NotFound`; video is MP4 only (streaming-only is skipped); text-only tweets save nothing.
-- **Saved as:** `media/twt/example_handle/posts/2026-01-02_1234567890_0.jpg`
+- **Saved as:** `media/twt/example_handle/posts/2026-01-02_Morning_run_1234567890_0.jpg`,
+  `media/twt/example_user_42/posts/2026-01-02_Morning_run_1234567890_0.jpg` (target `twt:42`)
 
 ### tik (TikTok)
 

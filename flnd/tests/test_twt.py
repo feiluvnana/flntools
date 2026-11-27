@@ -48,14 +48,18 @@ def video(name):
 
 
 def tweet(tweet_id, media, *, author=USER_ID, reply_to=None, retweet=None, by=None,
-          created_at="Mon Nov 09 10:00:00 +0000 2026"):
+          created_at="Mon Nov 09 10:00:00 +0000 2026", text=None, note=None):
     legacy = {"id_str": tweet_id, "user_id_str": author, "extended_entities": {"media": media},
               "created_at": created_at}
+    if text is not None:
+        legacy["full_text"] = text
     if reply_to:
         legacy["in_reply_to_status_id_str"] = reply_to
     if retweet:
         legacy["retweeted_status_result"] = {"result": retweet}
     found = {"__typename": "Tweet", "rest_id": tweet_id, "legacy": legacy}
+    if note is not None:
+        found["note_tweet"] = {"note_tweet_results": {"result": {"text": note}}}
     if by:
         found["core"] = {"user_results": {"result": {"core": {"screen_name": by}}}}
     return found
@@ -256,17 +260,18 @@ EVERYTHING = dict(
                              {"item": item(tweet("601", [photo("reply")], reply_to="600"))}]})],
 )
 # What API 1's twt saved for those answers (tests/test_twt.py's TODAY), as (path, key).
+H = "example_handle"
 TODAY = [
-    ("posts/2026-11-09_100_0.JPG", "100_0"), ("posts/2026-11-09_100_1.mp4", "100_1"),
-    ("posts/700_0.jpg", "700_0"), ("posts/700_2.mp4", "700_2"),
-    ("posts/2026-11-09_800_1.jpg", "800_1"), ("posts/2026-11-09_800_3.mp4", "800_3"),
-    ("posts/2026-11-09_900_0.jpg", "900_0"), ("posts/2026-11-09_900_1.jpeg", "900_1"),
-    ("videos/2026-11-09_200_0.mp4", "200_0"),
-    ("highlights/2026-11-09_300_0.jpg", "300_0"),
-    ("reposts/2026-11-09_500_0.jpg", "500_0"),
-    ("replies/2026-11-09_601_0.jpg", "601_0"),
-    ("profile/avatar_9.JPG", "profile/avatar_9.JPG"),
-    ("profile/banner_1683721221.jpg", "profile/banner_1683721221.jpg"),
+    (f"{H}/posts/2026-11-09_100_0.JPG", "100_0"), (f"{H}/posts/2026-11-09_100_1.mp4", "100_1"),
+    (f"{H}/posts/700_0.jpg", "700_0"), (f"{H}/posts/700_2.mp4", "700_2"),
+    (f"{H}/posts/2026-11-09_800_1.jpg", "800_1"), (f"{H}/posts/2026-11-09_800_3.mp4", "800_3"),
+    (f"{H}/posts/2026-11-09_900_0.jpg", "900_0"), (f"{H}/posts/2026-11-09_900_1.jpeg", "900_1"),
+    (f"{H}/videos/2026-11-09_200_0.mp4", "200_0"),
+    (f"{H}/highlights/2026-11-09_300_0.jpg", "300_0"),
+    (f"{H}/reposts/2026-11-09_500_0.jpg", "500_0"),
+    (f"{H}/replies/2026-11-09_601_0.jpg", "601_0"),
+    (f"{H}/profile/avatar_9.JPG", "profile/avatar_9.JPG"),
+    (f"{H}/profile/banner_1683721221.jpg", "profile/banner_1683721221.jpg"),
 ]
 
 
@@ -304,6 +309,33 @@ class NamesAndKeysTest(unittest.TestCase):
                 ctx = fake(link, routes={url("TweetResultByRestId"): tweet_result(found)})
                 [saved] = collect(Twitter, link, ctx=ctx)
                 self.assertEqual(filed(Twitter, link, saved), kind)
+
+    def test_files_are_named_by_the_tweets_first_words(self):
+        link = "https://x.com/example_handle/status/1790"
+        for text, note, name in [
+            ("Morning run https://t.co/abc #fit", None, f"{DAY}_Morning_run_1790_0.jpg"),
+            ("cut off\u2026", "The whole long tweet\nsecond", f"{DAY}_The_whole_long_tweet_1790_0.jpg"),
+            ("", None, f"{DAY}_1790_0.jpg"),
+            ("#fit https://t.co/abc", None, f"{DAY}_1790_0.jpg"),
+            ("y" * 60, None, f"{DAY}_{'y' * 40}_1790_0.jpg"),
+        ]:
+            with self.subTest(text=text):
+                found = tweet("1790", [photo("a")], by="example_handle", text=text, note=note)
+                ctx = fake(link, routes={url("TweetResultByRestId"): tweet_result(found)})
+                [saved] = collect(Twitter, link, ctx=ctx)
+                self.assertEqual(saved.path, f"example_handle/posts/{name.replace(' ', '_')}")
+                self.assertEqual(saved.key, "1790_0")
+
+    def test_an_id_target_is_named_by_its_screen_name_and_a_handle_target_is_not(self):
+        for target, folder in (("twt:42", "example_user_42"),
+                               ("twt:example_handle", "example_handle")):
+            with self.subTest(target=target):
+                found = tweet("1", [photo("a")], by="example_user", text="Hello there")
+                ctx = fake(target, pages=tabs(
+                    "https://x.com/i/user/42" if target == "twt:42"
+                    else "https://x.com/example_handle", posts=[page(item(found))]))
+                [saved] = collect(Twitter, target, ctx=ctx, categories=["posts"])
+                self.assertEqual(saved.path, f"{folder}/posts/{DAY}_Hello_there_1_0.jpg")
 
     def test_a_quoted_tweets_media_and_the_card_image_come_with_the_post(self):
         quoting = tweet("1", [photo("own")])
@@ -1035,11 +1067,11 @@ class TimelineTest(unittest.TestCase):
         saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["media"])
         self.assertEqual([f.post.id for f in saved], ["30", "20", "15", "15", "10"])
         self.assertEqual([f.path for f in saved], [
-            "videos/2026-11-11_30_0.mp4",
-            "images/2026-11-10_20_0.jpg",
-            "images/2026-11-09_15_0.jpg",
-            "videos/2026-11-09_15_1.mp4",
-            "videos/2026-11-09_10_0.mp4",
+            "example_handle/videos/2026-11-11_30_0.mp4",
+            "example_handle/images/2026-11-10_20_0.jpg",
+            "example_handle/images/2026-11-09_15_0.jpg",
+            "example_handle/videos/2026-11-09_15_1.mp4",
+            "example_handle/videos/2026-11-09_10_0.mp4",
         ])
 
         # Photo-only account: UserVideoTimeline returns 0 tweets, still visits ?filter=photo.
@@ -1427,7 +1459,7 @@ class MissingTabTest(unittest.TestCase):
         )
         ctx = fake(pages={"https://x.com/example_handle": FakePage(feeds=[sent], shown=[button])})
         saved = collect(Twitter, "twt:example_handle", ctx=ctx, categories=["posts"])
-        self.assertEqual([found.path for found in saved], [f"posts/{DAY}_1_0.jpg"])
+        self.assertEqual([found.path for found in saved], [f"example_handle/posts/{DAY}_1_0.jpg"])
         self.assertIn(("info", "dismissed sensitive-content warning"), ctx.seen.logs)
 
     def test_gated_profile_with_empty_state_raises_hidden(self):

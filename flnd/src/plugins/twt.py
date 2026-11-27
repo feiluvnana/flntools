@@ -33,6 +33,7 @@ from flnd.plugin import (
     UsageError,
     cookies,
     dig,
+    headline,
     route,
     wall,
 )
@@ -181,8 +182,11 @@ class Twitter(Plugin):
     # A post is one photo or video of a tweet, so a file is <date>_<tweet id>_<n> whatever the
     # tweet's media count; part is the category folder, images/videos for Media, "" for a tweet.
     folder = "{part}"
-    fields = ("part", "n")
-    filename = "{date}_{post}_{n}"
+    # A tweet's own words and the id folder's name, besides the category folder and the number.
+    # `name` is the screen name for a target given as a user id, else empty.
+    fields = ("part", "n", "title", "name")
+    root = "{name}_{target}"
+    filename = "{date}_{title:.40}_{post}_{n}"
     key = "{post}_{n}"
 
     class Settings(Plugin.Settings):
@@ -507,7 +511,7 @@ class Twitter(Plugin):
             yield post
 
     # The pictures are named after their own id and keyed by their path, as always.
-    @user.category(folder="profile", key="{path}", newest_first=False)
+    @user.category(folder="profile", key="profile/{file}", newest_first=False)
     async def profile(self, ctx: Ctx, profile: dict[str, Any]) -> AsyncIterator[Post]:
         """The avatar at its original size, and the banner at its largest.
 
@@ -528,11 +532,13 @@ class Twitter(Plugin):
             original = avatar.replace("_normal.", ".")
             path = PurePosixPath(urlsplit(original).path)
             name = pin(original, f"avatar_{path.parent.name}", path.suffix.lstrip(".") or "jpg")
-            yield Post(user["rest_id"], [File(original, name=name)], n=None)
+            yield Post(user["rest_id"], [File(original, name=name)], n=None, title="",
+                       name=root_name(profile, user))
         if banner:
             link = f"{banner}/{BANNER_SIZE}"
             name = pin(link, f"banner_{banner.rstrip('/').rsplit('/', 1)[-1]}", "jpg")
-            yield Post(user["rest_id"], [File(link, name=name)], n=None)
+            yield Post(user["rest_id"], [File(link, name=name)], n=None, title="",
+                       name=root_name(profile, user))
 
     # -- Scrolling a tab ---------------------------------------------------------------------
 
@@ -1642,6 +1648,9 @@ def tweet_posts(tweet: dict, category: str, profile: dict[str, Any] | None, *,
     found: list[tuple[int | str, dict]] = list(enumerate(listed(
         dig(legacy, "extended_entities.media"))))
     found += [(f"q{index}", media) for index, media in enumerate(listed(quoted_media))]
+    title = headline(dig(tweet, "note_tweet.note_tweet_results.result.text")
+                     or legacy.get("full_text"))
+    owner_name = root_name(profile, tweet)
     # `created_at` is UTC, so its day is the one the engine gives `{date}`.
     day = posted.astimezone(UTC).date().isoformat() if posted else None
     for index, media in found:
@@ -1655,19 +1664,31 @@ def tweet_posts(tweet: dict, category: str, profile: dict[str, Any] | None, *,
             folder = "videos" if extension == "mp4" else "images"
         else:
             folder = category
-        name = pin(urls[0], stem(day, tweet_id, index), extension)
+        name = pin(urls[0], stem(day, tweet_id, index, title), extension)
         file = File(mirrors=urls, name=name) if len(urls) > 1 else File(urls[0], name=name)
-        yield Post(tweet_id, [file], date=posted, part=folder, n=index)
+        yield Post(tweet_id, [file], date=posted, part=folder, n=index, title=title,
+                   name=owner_name)
     card = card_image(tweet)
     if card is not None:
         folder = part if part is not None else ("images" if category == "media" else category)
-        file = File(card, name=pin(card, stem(day, tweet_id, "card"), "jpg"))
-        yield Post(tweet_id, [file], date=posted, part=folder, n="card")
+        file = File(card, name=pin(card, stem(day, tweet_id, "card", title), "jpg"))
+        yield Post(tweet_id, [file], date=posted, part=folder, n="card", title=title,
+                   name=owner_name)
 
 
-def stem(day: str | None, tweet_id: str, index: int | str) -> str:
-    """What `filename` makes of a tweet's file: `<day>_<tweet id>_<n>`, without an absent day."""
-    return "_".join(str(part) for part in (day, tweet_id, index) if part is not None)
+def stem(day: str | None, tweet_id: str, index: int | str, title: str = "") -> str:
+    """What `filename` makes of a tweet's file: `<day>_<title>_<tweet id>_<n>`, the title cut
+    to 40 characters; an absent day or an empty title leaves no `_`."""
+    return "_".join(str(part) for part in (day, title[:40], tweet_id, index)
+                    if part is not None and part != "")
+
+
+def root_name(profile: dict[str, Any] | None, source: dict) -> str:
+    """The `{name}` of a user-id target's folder: the screen name of `source` (a tweet or the
+    user), or "" for a handle target, whose folder is readable already."""
+    if profile is None or not profile["handle"].isdigit():
+        return ""
+    return dig(source, f"{AUTHOR} || core.screen_name || legacy.screen_name") or ""
 
 
 def pin(url: str, stem: str, extension: str) -> str:
