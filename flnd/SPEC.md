@@ -375,7 +375,7 @@ A category is one part of a target that can be got alone. Each plugin's list is 
 | `loi` | `archive photo` | none |
 | `mht` | `chapters cover` | none |
 | `smp` | `images videos` | none |
-| `pxv` | `illusts manga` | none |
+| `pxv` | `illusts manga ugoira` | none |
 | `web` | none | none |
 
 Write the list after `|`, and quote the target, since `|` is the shell's pipe:
@@ -430,7 +430,7 @@ name):
 | `fbk` video, reel, photo | `videos`, `reels`, `photos` | `media/fbk/<owner>/<category>/` |
 | `fbk` post | `posts` | `media/fbk/<owner>/posts/` |
 | `loi` post | `archive`, `photo` | `media/loi/<author>/<post> <title>/` |
-| `pxv` artwork | `illusts`, `manga` | `media/pxv/<user id>/<category>/` |
+| `pxv` artwork | `illusts`, `manga`, `ugoira` | `media/pxv/<user id>/<category>/` |
 
 The owner is the post's: `user.username`, `screen_name`, `uniqueId`, a Facebook vanity name else its
 id. With no owner in the data the post goes where it always did, `media/<code>/<post id>/`, with no
@@ -1168,15 +1168,26 @@ up to 32.
   (`body.works` by id); both are kept for the run and shared by the categories. A post's files
   are lazy: `/ajax/illust/<id>/pages`, `body[].urls.original`. A date is `createDate` as Unix
   seconds. A single artwork: `/ajax/illust/<id>`, whose `userId` owns it and whose `illustType`
-  gives its category (an ugoira, type 2, is skipped with a warning); a one-page work uses
-  `urls.original`, any other `/pages`. `sign` adds `Referer: https://www.pixiv.net/` and `Accept:
+  gives its category (0 `illusts`, 1 `manga`, 2 `ugoira`); a one-page work uses
+  `urls.original`, any other `/pages`. An ugoira's files: `/ajax/illust/<id>/ugoira_meta`, whose
+  `originalSrc` is the full-size zip (`src`, the small one, with a warning when it is missing;
+  neither is `Changed`) and `frames[] = {file, delay}` (milliseconds).
+  `sign` adds `Referer: https://www.pixiv.net/` and `Accept:
   application/json` to `/ajax/` requests, and each post carries the Referer for its images.
-- **Categories:** `illusts` (`illustType` 0), `manga` (1), both own and newest first. With a sync
+- **Categories:** `illusts` (`illustType` 0), `manga` (1) and `ugoira` (2), all own and newest
+  first; `illusts` and `ugoira` share the profile's illust id list and batches. With a sync
   head (`ctx.head`), once a whole batch's newest `createDate` is strictly older than the head's
   time, no more batches are asked for, so a caught-up profile costs 2 requests.
 - **Folder:** `{category}`, under `media/pxv/<user id>/`. **Filename:** `{date}_{post}_p{num}`
-  (`p<num>` is pixiv's own page number). **Key:** `{post}_{num}`. **Fields:** `title`, `user` (the
-  display name), never in the defaults.
+  (`p<num>` is pixiv's own page number).
+- **Ugoira:** one `File.frames(originalSrc, frames, keep=...)`, so the video is
+  `<date>_<post>_p0.mp4`. It needs ffmpeg, as DASH does (a missing one is a `ToolError`). Setting
+  `ugoira` under `[plugins.pxv]`: `"both"` (the default) keeps the zip beside the video as
+  `<date>_<post>_p0.zip` and adds `<date>_<post>_p0.json` (`File.text`: `mime_type` and the
+  `frames` as pixiv gave them); `"mp4"` saves the video alone. Any other value warns once and
+  is read as `"both"`. An undated post has no `<date>_`.
+- **Key:** `{post}_{num}`. **Fields:** `title`, `user` (the display name), never in the
+  defaults.
 - **Login:** `PHPSESSID`, optional. Logged out, R-18 works are hidden.
 - **Errors:** read from the status, `error` and the body's shape, never the message text. 404, or
   `error` on a 200, is `NotFound`; 400 or 403 with `error` is `Hidden` (with the hint `log in:
@@ -1202,11 +1213,12 @@ up to 32.
   solves it, or the tab's request is checked too, every pxv target of the run fails with `pxv:
   pixiv.net wants a captcha` (hint `open www.pixiv.net in your browser, solve it, then run again`)
   and is never retried. Images from `i.pximg.net` are never checked.
-- **Known gaps:** not built yet: `ugoira`, `novels`, `profile`, `shiori` and
+- **Known gaps:** not built yet: `novels`, `profile`, `shiori` and
   `novelshiori` categories, novel targets and tag search. A work edited later isn't seen by a
   sync; a user's private works are never listed. Answer shapes beyond the live checks are
   unverified.
-- **Saved as:** `media/pxv/12345678/illusts/2026-01-02_123456789_p0.png`
+- **Saved as:** `media/pxv/12345678/illusts/2026-01-02_123456789_p0.png`,
+  `media/pxv/12345678/ugoira/2026-01-02_123456790_p0.mp4` (with `.zip` and `.json`)
 
 ### web (the web)
 

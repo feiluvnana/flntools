@@ -10,8 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # The limits: today's counts, rounded up to the next 100.
-CODE_LINES = 24760
-TEST_LINES = 29820
+CODE_LINES = 24900
+TEST_LINES = 29900
 
 
 def count(*patterns: str) -> int:

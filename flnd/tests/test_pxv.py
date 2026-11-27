@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime
+import json
 import unittest
 from urllib.parse import unquote
 
@@ -146,7 +147,7 @@ class FormsTest(unittest.TestCase):
 
     def test_declarations(self):
         self.assertTrue(check(Pixiv))
-        self.assertEqual(Pixiv.categories, ("illusts", "manga"))
+        self.assertEqual(Pixiv.categories, ("illusts", "manga", "ugoira"))
         self.assertEqual(Pixiv.domains, ("pixiv.net", "pixiv.me"))
         self.assertTrue(Pixiv.login.proves("PHPSESSID"))
         self.assertFalse(Pixiv.login.required)
@@ -304,10 +305,13 @@ class SingleTest(unittest.TestCase):
         self.assertEqual(len(found), 3)
         self.assertEqual(asked(ctx), ["/illust/5", "/illust/5/pages"])
 
-    def test_an_ugoira_yields_nothing_and_warns(self):
+    def test_an_ugoira_is_filed_under_ugoira(self):
         ctx = self.single(illustType=2)
-        self.assertEqual(collect(Pixiv, "pxv:artwork/5", ctx=ctx), [])
-        self.assertTrue(any("ugoira" in text for _, text in ctx.seen.logs))
+        ctx._routes[f"{AJAX}/illust/5/ugoira_meta"] = ugoira_meta()
+        found = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
+        self.assertEqual([(one.path, one.post.owner, one.post.category) for one in found],
+                         [("ugoira/2026-01-02_5_p0.mp4", USER, "ugoira"),
+                          ("ugoira/2026-01-02_5_p0.json", USER, "ugoira")])
 
     def test_the_referer_header_is_on_the_post(self):
         ctx = self.single()
@@ -327,6 +331,64 @@ class SingleTest(unittest.TestCase):
         ctx = self.single(userId=None)
         with self.assertRaises(Changed):
             collect(Pixiv, "pxv:artwork/5", ctx=ctx)
+
+
+ZIP = "https://i.pximg.net/img-zip-ugoira/img/2026/01/02/03/04/05/{}_ugoira1920x1080.zip"
+FRAMES = [{"file": "000000.jpg", "delay": 80}, {"file": "000001.jpg", "delay": 120}]
+
+
+def ugoira_meta(**more):
+    body = {"src": ZIP.replace("1920x1080", "600x600").format(5), "originalSrc": ZIP.format(5),
+            "mime_type": "image/jpeg", "frames": FRAMES, **more}
+    return ok({k: v for k, v in body.items() if v is not None})
+
+
+class UgoiraTest(unittest.TestCase):
+    def listing(self, category="ugoira", settings=None, meta=None, **more):
+        works = {"7": work(7, kind=2, day=2), "6": work(6, kind=0, day=1)}
+        ctx = user_ctx(illusts=(7, 6), works=works, settings=settings,
+                       routes={f"{AJAX}/illust/7/ugoira_meta": meta or ugoira_meta()}, **more)
+        return ctx, collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=[category])
+
+    def test_an_ugoira_is_listed_only_in_ugoira(self):
+        self.assertEqual({one.post.id for one in self.listing("ugoira")[1]}, {"7"})
+        self.assertEqual([one.post.id for one in self.listing("illusts")[1]], ["6"])
+
+    def test_both_keeps_the_zip_and_names_the_json_like_the_video(self):
+        ctx, (video, info) = self.listing()
+        self.assertEqual((video.path, info.path),
+                         ("ugoira/2026-01-02_7_p0.mp4", "ugoira/2026-01-02_7_p0.json"))
+        self.assertEqual((video.file.url, video.file.keep, video.file.delays),
+                         (ZIP.format(5), True, (("000000.jpg", 80), ("000001.jpg", 120))))
+        text = info.file.content
+        self.assertEqual(json.loads(text), {"mime_type": "image/jpeg", "frames": FRAMES})
+        self.assertEqual(asked(ctx)[-1], "/illust/7/ugoira_meta")
+
+    def test_mp4_saves_the_video_alone(self):
+        _, (video,) = self.listing(settings={"ugoira": "mp4"})
+        self.assertEqual((video.path, video.file.keep), ("ugoira/2026-01-02_7_p0.mp4", False))
+
+    def test_another_value_warns_once_and_uses_both(self):
+        ctx, found = self.listing(settings={"ugoira": "zip"})
+        self.assertEqual(len(found), 2)
+        warns = [text for level, text in ctx.seen.logs if "ugoira setting" in text]
+        self.assertEqual(len(warns), 1)
+
+    def test_a_missing_original_falls_back_to_src_with_a_warning(self):
+        ctx, (video, _) = self.listing(meta=ugoira_meta(originalSrc=None))
+        self.assertIn("600x600", video.file.url)
+        self.assertTrue(any("full-size" in text for _, text in ctx.seen.logs))
+
+    def test_no_zip_at_all_is_changed(self):
+        ctx, found = self.listing(meta=ugoira_meta(originalSrc=None, src=None))
+        self.assertEqual(found, [])
+        self.assertIsInstance(ctx.seen.failed[0][1], Changed)
+
+    def test_the_head_stops_the_ugoira_listing_too(self):
+        works = {str(n): work(n, kind=2, day=1) for n in range(1, 201)}
+        ctx = user_ctx(illusts=range(1, 201), works=works, head={"id": "200", "ts": stamp(2)})
+        run(ctx, "ugoira")
+        self.assertEqual(len([url for url in asked(ctx) if "profile/illusts" in url]), 1)
 
 
 class HiddenTest(unittest.TestCase):

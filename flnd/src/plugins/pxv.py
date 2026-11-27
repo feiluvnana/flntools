@@ -1,4 +1,4 @@
-"""pixiv (pxv): a user's illustrations and manga, and single artworks, read over HTTP from
+"""pixiv (pxv): a user's illustrations, manga and ugoira, and single artworks, read over HTTP from
 pixiv's web JSON API. See SPEC.md#pxv-pixiv.
 """
 
@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import functools
+import json
 import random
 import re
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -57,8 +58,9 @@ LIMIT_HINTS = {"sanity_level": SANITY_HINT, "mypixiv": FRIENDS_HINT}
 # What a user's number must be, as a page's user is only ever its number.
 NAME = re.compile(r"@?[\w.-]+")
 # The illustType each own category yields, and the kind of list it reads in `profile/all`.
-KINDS = {"illusts": (0, "illusts"), "manga": (1, "manga")}
-CATEGORY_OF = {0: "illusts", 1: "manga"}
+KINDS = {"illusts": (0, "illusts"), "manga": (1, "manga"), "ugoira": (2, "illusts")}
+CATEGORY_OF = {0: "illusts", 1: "manga", 2: "ugoira"}
+UGOIRA = ("both", "mp4")
 # What every unsupported page of pixiv says after its own reason.
 GIVE = f"; {HINT}"
 PAGES = ("ranking.php", "discovery", "request", "bookmark_new_illust.php", "stacc", "settings",
@@ -106,9 +108,12 @@ class Pixiv(Plugin):
 
         Attributes:
             requests_per_hour: the most API requests one run makes in an hour.
+            ugoira: `"both"` saves the MP4, the original zip and a `.json` of the frames;
+                `"mp4"` only the MP4. Anything else is read as `"both"`, with a warning.
         """
 
         requests_per_hour: int = 900
+        ugoira: str = "both"
 
     @classmethod
     def resolve(cls, text: str) -> Target | None:
@@ -133,6 +138,7 @@ class Pixiv(Plugin):
         self._calls = 0
         self._solves = 0
         self._failed = False
+        self._warned = False
         self._in_page = False
         self._solving = asyncio.Lock()
 
@@ -163,10 +169,12 @@ class Pixiv(Plugin):
             raise hidden
         category = CATEGORY_OF.get(kind)
         if category is None:
-            ctx.log("warn", "pxv: work {id} is an ugoira, which isn't saved yet", id=id)
+            ctx.log("warn", "pxv: work {id} is of an unknown type, {kind}", id=id, kind=kind)
             return
-        if body.get("pageCount") == 1 and isinstance(urls.get("original"), str):
-            files: Any = (File(_image(id, urls["original"])),)
+        if kind == 2:
+            files: Any = functools.partial(self._ugoira, ctx, id, _stamp(body.get("createDate")))
+        elif body.get("pageCount") == 1 and isinstance(urls.get("original"), str):
+            files = (File(_image(id, urls["original"])),)
         else:
             files = functools.partial(self._pages, ctx, id)
         yield _post(id, body, files, owner=str(owner), category=category)
@@ -192,6 +200,12 @@ class Pixiv(Plugin):
     async def manga(self, ctx: Ctx, user: str) -> AsyncIterator[Post]:
         """The manga (`illustType` 1), newest first."""
         async for post in self._posts(ctx, user, "manga"):
+            yield post
+
+    @user.category(folder="ugoira")
+    async def ugoira(self, ctx: Ctx, user: str) -> AsyncIterator[Post]:
+        """The animations (`illustType` 2), newest first, saved as MP4."""
+        async for post in self._posts(ctx, user, "ugoira"):
             yield post
 
     def sign(self, request: Request, cookies: Mapping[str, str]) -> Request:
@@ -231,7 +245,8 @@ class Pixiv(Plugin):
                 if made is not None:
                     stamps.append(made)
                 if work.get("illustType") == kind:
-                    files = functools.partial(self._pages, ctx, id, work)
+                    files = (functools.partial(self._ugoira, ctx, id, made, work) if kind == 2
+                             else functools.partial(self._pages, ctx, id, work))
                     yield _post(id, work, files, date=made)
             # Ids are in upload order, so once a whole batch is older than the head, so is every
             # later one.
@@ -253,6 +268,50 @@ class Pixiv(Plugin):
             urls = page.get("urls") if isinstance(page, dict) else None
             found.append(File(_image(id, urls.get("original") if isinstance(urls, dict) else None)))
         return found
+
+    async def _ugoira(self, ctx: Ctx, id: str, date: int | None,
+                      work: Mapping[str, Any] | None = None) -> list[File]:
+        """One animation's files, one request: the MP4 made from the frames' zip, and with the
+        setting `both` the zip beside it and a `.json` of the frames named like the video."""
+        if work is not None:
+            hidden = _masked(id, work, work.get("url"))
+            if hidden is not None:
+                raise hidden
+        body = await self.ajax(ctx, f"illust/{id}/ugoira_meta", f"work {id}")
+        body = body if isinstance(body, dict) else {}
+        frames = body.get("frames")
+        delays = []
+        for frame in frames if isinstance(frames, list) else ():
+            wait = frame.get("delay") if isinstance(frame, dict) else None
+            if (not isinstance(frame, dict) or not isinstance(frame.get("file"), str)
+                    or not isinstance(wait, int) or isinstance(wait, bool) or wait <= 0):
+                delays = []
+                break
+            delays.append((frame["file"], wait))
+        zipped = body.get("originalSrc")
+        if not delays or not (zipped or body.get("src")):
+            raise Changed(f"pxv: work {id} has no frames or zip",
+                          hint="pixiv's answer may have changed; report it")
+        if not zipped:
+            ctx.log("warn", "pxv: work {id} has no full-size zip; using the small one", id=id)
+        both = self._ugoira_mode(ctx) == "both"
+        video = File.frames(_image(id, zipped or body["src"]), delays, keep=both)
+        if not both:
+            return [video]
+        stem = f"{_day(date)}_{id}_p0" if date is not None else f"{id}_p0"
+        info = json.dumps({"mime_type": body.get("mime_type"), "frames": frames}, indent=2)
+        return [video, File.text(f"{stem}.json", info)]
+
+    def _ugoira_mode(self, ctx: Ctx) -> str:
+        """The `ugoira` setting, `both` with one warning when it is neither value."""
+        mode = getattr(ctx.settings, "ugoira", "both")
+        if mode in UGOIRA:
+            return mode
+        if not self._warned:
+            self._warned = True
+            ctx.log("warn", "pxv: the ugoira setting is both or mp4, not {mode}; using both",
+                    mode=str(mode))
+        return "both"
 
     async def ajax(self, ctx: Ctx, path: str, what: str) -> Any:
         """One API answer's `body`, at a person's pace; the answer is read by status and shape.
@@ -442,6 +501,11 @@ def _stamp(written: Any) -> int | None:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=datetime.UTC)
     return int(moment.timestamp())
+
+
+def _day(seconds: int) -> str:
+    """The UTC day of Unix seconds, as `{date}` names a file."""
+    return datetime.datetime.fromtimestamp(seconds, datetime.UTC).date().isoformat()
 
 
 def _older(newest: int, head: Mapping[str, Any] | None) -> bool:
