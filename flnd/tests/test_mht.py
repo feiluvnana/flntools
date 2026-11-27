@@ -86,6 +86,14 @@ class RoutesTest(unittest.TestCase):
             ("https://mimihentai.moe/author/7", ("author", "mht:author/7")),
             ("https://mimihentai.moe/authors/example-creator", ("author",
                                                                  "mht:author/example-creator")),
+            ("mht:parody/example_parody", ("parody", "mht:parody/example_parody")),
+            ("https://mimihentai.moe/parody/55", ("parody", "mht:parody/55")),
+            ("https://mimihentai.moe/parodies/55", ("parody", "mht:parody/55")),
+            ("mht:character/example_char", ("character", "mht:character/example_char")),
+            ("https://mimihentai.moe/character/example_char",
+             ("character", "mht:character/example_char")),
+            ("https://mimihentai.moe/characters/example_char",
+             ("character", "mht:character/example_char")),
             ("mht:genre/example", ("genre", "mht:genre/example")),
             ("https://mimihentai.moe/genres/12", ("genre", "mht:genre/12")),
             ("mht?genre:vanilla", ("query", "mht?genre:vanilla")),
@@ -110,9 +118,9 @@ class RoutesTest(unittest.TestCase):
                 self.assertEqual(Mimi.resolve(found.text), found)
 
     def test_the_declarations(self):
-        self.assertEqual(len(check(Mimi)), 8)
+        self.assertEqual(len(check(Mimi)), 12)
         self.assertEqual([route.kind for route in Mimi.routes if route.discovers],
-                         ["author", "genre", "query"])
+                         ["author", "genre", "parody", "character", "query"])
         self.assertTrue(all(category.own for route in Mimi.routes
                             for category in route.categories))
 
@@ -244,6 +252,24 @@ class SearchTest(unittest.TestCase):
                                ("genre:missing", "no genre named missing")]:
             with self.subTest(query=query), self.assertRaisesRegex(UsageError, message):
                 listed(fake(), "query", query)
+
+    def test_parodies_by_name_or_id_and_characters_as_written(self):
+        for kind, value, sent in [
+            ("parody", "parody/55", {"parody": "55"}),
+            ("parody", "parody/example_parody", {"parody": "55"}),
+            ("character", "character/example_char", {"character": "example_char"}),
+            ("character", "character/example%20char", {"character": "example char"}),
+        ]:
+            with self.subTest(value=value):
+                ctx = fake(**{"manga/advanced-search": {"items": [{"id": 70982}]}})
+                self.assertEqual(listed(ctx, kind, value), manga(70982))
+                self.assertEqual(ctx.seen.requests[-1][2]["params"],
+                                 {**sent, "cursor_res": "true"})
+        self.assertNotIn("parodies/search", asked(ctx))
+
+    def test_an_unknown_parody_is_refused(self):
+        with self.assertRaisesRegex(UsageError, "no parody named missing"):
+            listed(fake(), "parody", "parody/missing")
 
     def test_authors_and_genres_by_name_or_id(self):
         for kind, value, sent in [

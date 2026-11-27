@@ -166,8 +166,8 @@ A link that a short link led to adds ` (from <what you typed>)` to `can't read`.
   needs a folder](#a-search-needs-a-folder)). A followed search gets only the targets it had not
   found before.
 - `--limit N` (at least 1) is at most N posts per target, or N targets per search or other
-  discovering route (`mht:author/...`, `mht:genre/...`, `loi:author/...`). `--limit 0` is `limit
-  must be at least 1`.
+  discovering route (`mht:author/...`, `mht:genre/...`, `mht:parody/...`, `mht:character/...`,
+  `loi:author/...`). `--limit 0` is `limit must be at least 1`.
 
 ### Accepted and refused forms by plugin
 
@@ -280,6 +280,9 @@ both domains is refused: `that page isn't supported; give a post or an author` (
 - `mht:chapter/<id>`, `mimihentai.moe/manga/.../chapter/<id>`: one chapter (route ``chapter``)
 - `mht:author/<name or id>`, `mimihentai.moe/author/<x>`, `/authors/<x>`: an author's manga (route
   ``author``); `mht:genre/<x>`, `/genre/<x>`, `/genres/<x>`: a genre's (``genre``)
+- `mht:parody/<name or id>`, `mimihentai.moe/parody/<x>`, `/parodies/<x>`: a parody's manga (route
+  ``parody``); `mht:character/<x>`, `/character/<x>`, `/characters/<x>`: a character's
+  (``character``; the name is sent as written, the site has no lookup)
 - `mht?<query>`: every manga a search finds (route ``query``)
 
 Query terms: plain words (title), `title:`, `author:`, `genre:` (repeatable), `-genre:`, `parody:`,
@@ -370,8 +373,8 @@ flnd get "instagram.com/example_user|tagged" # a link takes a list the same way
 - The old `ins:example_user/tagged` is refused, with the hint to write it `|tagged`.
 - A single post has no categories (naming one is `<code>:<kind>/<id> is one post, with no
   categories`); `loi:<id>` is the exception.
-- `"mht:author/<x>|<list>"`, `"mht?<q>|<list>"` and `"twt?<q>|<list>"` pass the list on to each
-  target found. With no list, each takes its own.
+- `"mht:author/<x>|<list>"` (and the genre, parody and character ones), `"mht?<q>|<list>"` and
+  `"twt?<q>|<list>"` pass the list on to each target found. With no list, each takes its own.
 - A category that is not newest first (`tagged`, `stories`, `profile` ...) is read to its end on
   every run; only newest-first ones stop early ([Sync](#sync)).
 
@@ -1086,10 +1089,11 @@ up to 32.
 ### mht (mimihentai)
 
 - **Reads:** the site's public JSON API over HTTP; no login, no browser. A manga's chapters (pages
-  numbered `001`, `002`, ...) and its cover; `author`, `genre` and `query` find manga and each is
-  got as its own `mht:<id>` target. Authors and genres match ignoring case and accents.
+  numbered `001`, `002`, ...) and its cover; `author`, `genre`, `parody`, `character` and `query`
+  find manga and each is got as its own `mht:<id>` target. Authors, genres and parodies match
+  ignoring case and accents.
 - **Categories:** `chapters`, `cover` (own). Not newest first: every chapter is listed, and the
-  engine skips saved ones. A chapter is single; the three finders pass categories on.
+  engine skips saved ones. A chapter is single; the finders pass categories on.
 - **Folder:** `chapters/{order} {title}` (`order` zero-padded to 3 digits when whole); `cover` for
   `cover`. **Filename:** the plugin's (`001`, `cover`; the engine adds the extension). **Key:**
   `{post}_{num}` (`mht:<chapter id>_<n>`); `cover` keys `{post}_cover`.

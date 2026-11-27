@@ -1,5 +1,6 @@
 """mimihentai (mht): manga chapters and covers, one chapter by its link, and the manga an author,
-a genre or a search finds, from the site's public JSON API. See SPEC.md#mht-mimihentai.
+a genre, a parody, a character or a search finds, from the site's public JSON API. See
+SPEC.md#mht-mimihentai.
 """
 
 from __future__ import annotations
@@ -30,7 +31,8 @@ Lookup = Callable[[Ctx, str], Awaitable[list[tuple[str, str]]]]
 
 
 class Mimi(Plugin):
-    """mimihentai's manga, chapters and covers, and the manga an author, genre or search finds."""
+    """mimihentai's manga, chapters and covers, and the manga an author, genre, parody, character
+    or search finds."""
 
     code = "mht"
     name = "mimihentai"
@@ -120,7 +122,7 @@ class Mimi(Plugin):
             yield Post(manga["id"], [File(url, name="cover")],
                        date=manga.get("last_updated"), **_manga_fields(manga))
 
-    # An author's and a genre's value keep their `author/` or `genre/`, so the key,
+    # A finder's value keeps its `author/`, `genre/`, `parody/` or `character/`, so the key,
     # `mht:<value>`, is never a manga's, and the text reads back through its route.
     @route(("mht:author/{author:[^/]+}", "author/{author}"),
            ("mimihentai.moe/author/{author:[^/]+}", "author/{author}"),
@@ -150,6 +152,33 @@ class Mimi(Plugin):
         """
         genre_id = await _resolve_id(ctx, "genre", genre.removeprefix("genre/"), _genres)
         async for item in _search(ctx, "manga/advanced-search", {"genre": genre_id}):
+            yield self._found(item)
+
+    @route(("mht:parody/{parody:[^/]+}", "parody/{parody}"),
+           ("mimihentai.moe/parody/{parody:[^/]+}", "parody/{parody}"),
+           ("mimihentai.moe/parodies/{parody:[^/]+}", "parody/{parody}"),
+           discovers=True, newest_first=False)
+    async def parody(self, ctx: Ctx, parody: str) -> AsyncIterator[Target]:
+        """Every manga of a parody, by name or id: `mht:parody/example_parody`, or
+        `https://mimihentai.moe/parodies/55`.
+
+        Raises:
+            UsageError: no parody has that name.
+        """
+        parody_id = await _resolve_id(ctx, "parody", parody.removeprefix("parody/"), _parodies)
+        async for item in _search(ctx, "manga/advanced-search", {"parody": parody_id}):
+            yield self._found(item)
+
+    @route(("mht:character/{character:[^/]+}", "character/{character}"),
+           ("mimihentai.moe/character/{character:[^/]+}", "character/{character}"),
+           ("mimihentai.moe/characters/{character:[^/]+}", "character/{character}"),
+           discovers=True, newest_first=False)
+    async def character(self, ctx: Ctx, character: str) -> AsyncIterator[Target]:
+        """Every manga of a character: `mht:character/example_char`, or
+        `https://mimihentai.moe/characters/example_char`. The API has no character lookup, so
+        the name is sent as written (%-decoded), as the query's `character:` term does."""
+        name = await _resolve_id(ctx, "character", character.removeprefix("character/"), None)
+        async for item in _search(ctx, "manga/advanced-search", {"character": name}):
             yield self._found(item)
 
     @route("mht?{query}", newest_first=False)
@@ -263,10 +292,11 @@ def _fold(text: str) -> str:
     return " ".join(stripped.casefold().split())
 
 
-async def _resolve_id(ctx: Ctx, kind: str, raw: str, lookup: Lookup) -> str:
-    """The site's id of a genre, author or parody, from its id or its %-encoded name."""
+async def _resolve_id(ctx: Ctx, kind: str, raw: str, lookup: Lookup | None) -> str:
+    """The site's id of a genre, author or parody, from its id or its %-encoded name. With no
+    `lookup` (a character) the decoded value is the answer."""
     value = unquote(raw).strip()
-    if value.isdigit():
+    if lookup is None or value.isdigit():
         return value
     candidates = [value.replace("-", " "), value] if "-" in value else [value]
     for candidate in candidates:
