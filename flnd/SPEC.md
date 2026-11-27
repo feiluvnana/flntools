@@ -841,33 +841,7 @@ folders, and files renamed into place in the last minute. On a terminal `flnd st
 rows? (y/N)`; `flnd status --fix` repairs without asking. It never deletes, moves or downloads a
 file. Failure kinds: `network blocked site changed login disk tool bug usage gone error`.
 
-### Migrating a home
-
-The home and its `flnd.db` share one version number, `2` today (`meta.version`). Version 1 is what
-flnd wrote while it counted `"5"`: only `flnd migrate` reads that value, as 1.
-
-- A v1 home is refused by every command but `migrate` (and those that don't open the home, `auth`
-  and `config`), before any work, with exit 2: `<home> is a v1 home; run flnd migrate`, hint
-  `flnd migrate --dry shows what changes`.
-- Any other older value (`"1"`, `"3"`, `"4"`) is refused with `<home> is from an old flnd; start a
-  new home`; a newer one with `home schema '<value>' needs a newer flnd`.
-- `flnd migrate` takes the home lock, then backs up `flnd.db` with SQLite's backup API to
-  `metadata/flnd.db.v<old>.bak` (`.bak.1`, ... when one is there: a backup is never overwritten).
-  Then it runs each step from the home's version to the newest, each in its own transaction, and
-  prints `v1 → v2: <what changed, with counts>` per step, or `<home> is already v2`.
-- `flnd migrate --dry` prints the same lines, runs the steps on a copy in memory, and writes
-  nothing (no lock, no backup).
-- A step edits the database and may move files under the home. It works offline and never asks
-  the network. A step that raises is rolled back and leaves the version where it was.
-- Only the last 3 steps are kept. A home older than the first kept step is refused with
-  `<home> is a v<n> home, older than this flnd migrates`, hint `open it with an older flnd first`.
-
-v1 to v2: every `loi:post/<id>` target key becomes `loi:<id>` (targets, files, failures,
-`target_seen` as target and as item, and the keys in a search's heads); when both exist their
-rows are merged, followed if either was, with every file kept. Targets of routes since removed
-(every `tlg` target, the `tik` and `loi` searches) are unfollowed, never deleted, so their
-files stay known. No file is moved: saved files are found by key where they are. A
-`[plugins.tlg]` table in `config.toml` is only warned about, so it is left as it is.
+A home from an older schema is refused with `<home> is from an old flnd; start a new home`.
 
 ## Commands and flags
 
@@ -916,9 +890,6 @@ names are never deleted. A terminal is asked first.
 
 **`flnd status [--fix]`**: see [check and repair](#check-and-repair). `--fix` repairs the history
 rows of missing or resized files without asking.
-
-**`flnd migrate [--dry]`**: bring an older home up to date ([Migrating a home](#migrating-a-home));
-`--dry` says what each step would change and writes nothing.
 
 **`flnd config`** prints each key, value, default and origin (`home`, `user`, `default`), then the
 two files to edit by hand: this home's `config.toml`, and the user file for every home.
@@ -1332,7 +1303,7 @@ flnkit/   standalone toolkit, imports nothing of flnd: net browser files html di
           db cookies media stream errors
 src/      the package flnd
   _library.py cli.py errors.py plugin.py
-  engine/  run jobs crawl save resolve plugins auth store migrate config
+  engine/  run jobs crawl save resolve plugins auth store config
   ui/      theme out screen forms log (imports only flnkit, ui, events, errors)
   plugins/ the built-ins, importing only flnd.plugin and the standard library
 ```
@@ -1340,7 +1311,7 @@ src/      the package flnd
 `tests/test_layers.py` checks the import rules. A run has one asyncio loop on its own thread; plugin
 code is async; only `engine/jobs.py` retries, sleeps and picks threads; a commit is one per post.
 
-**The home's files.** `flnd.db` is SQLite in WAL mode, schema version 2: `files` (a row per file,
+**The home's files.** `flnd.db` is SQLite in WAL mode, schema version 5: `files` (a row per file,
 key `<code>:<key>`, with target, post, category, path, size, date, state `saved`, `gone` or
 `link`), `posts` (a view of `files`), `targets` (follow, categories, cursors, heads, folder),
 `target_seen` (the targets a search found), `runs`, `failures` (class, message, hint, attempts,

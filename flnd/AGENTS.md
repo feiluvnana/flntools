@@ -58,7 +58,6 @@ src/                 the package flnd
     plugins.py     the plugin loader: a code to its class, imported on first use
     auth.py        the logins folder, login steps, cookie write-back
     store.py       flnd.db: schema, rows, check and repair
-    migrate.py     flnd migrate: the steps from an older home's version to the newest
     config.py      config.toml: structs and reading
   ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
     theme.py out.py screen.py forms.py log.py
@@ -144,10 +143,6 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 ## Bugs
 - Write the failing test first, and run it against the unfixed code. It must fail there.
 - Put the test and its fix in the same commit.
-
-## Home format
-- A change to what a home stores (flnd.db, or where saved files sit) bumps `store.VERSION` and
-  adds a `flnd migrate` step in the same commit. Keep the last 3 steps.
 
 ## Speed
 - Measure before any speed change, with a benchmark. Keep the numbers.
