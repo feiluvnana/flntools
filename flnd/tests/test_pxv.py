@@ -1058,10 +1058,10 @@ class ProfilePictureTest(unittest.TestCase):
         self.assertEqual([(one.file.url, one.path, one.key) for one in found], [
             ("https://i.pximg.net/user-profile/img/2026/01/02/03/04/05/abcdef0123456789.jpg",
              "Reader_12345678/profile/avatar_2026-01-02.jpg",
-             "Reader_12345678/profile/avatar_2026-01-02.jpg"),
+             "profile/avatar_2026-01-02.jpg"),
             ("https://i.pximg.net/background/img/2025/12/31/03/04/05/fedcba9876543210.png",
              "Reader_12345678/profile/background_2025-12-31.png",
-             "Reader_12345678/profile/background_2025-12-31.png")])
+             "profile/background_2025-12-31.png")])
         self.assertEqual(asked(ctx), [f"/user/{USER}?full=1"])
 
     def test_no_header_or_a_default_avatar_saves_only_the_other(self):

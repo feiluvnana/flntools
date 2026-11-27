@@ -1204,6 +1204,39 @@ class RootTest(EngineCase):
                 self.assertEqual(self.saved(target, given), [expected])
                 shutil.rmtree(self.home)
 
+    def test_a_root_with_the_target_leaves_path_keys_as_they_were(self):
+        from flnd.engine import crawl
+        post = Post("p1", [File(f"{CDN_URL}/p1.jpg")], name="Example")
+
+        class Pathed(Plugin):
+            code = "exk"
+            name = "Pathed"
+            domains = ("pathed.example",)
+            root = "{name}_{target}"
+            fields = ("name",)
+
+            @route("exk:{user}")
+            async def user(self, ctx, user):
+                return {"user": user}
+
+            @user.category(key="{path}")
+            async def pathed(self, ctx, profile):
+                yield post
+
+        class Plain(Pathed):
+            code = "exl"
+            root = "{target}"
+
+        keys = []
+        for plugin in (Pathed(), Plain()):
+            category = next(c for c in plugin.routes[-1].categories if c.name == "pathed")
+            target = Target("exr:example_user")
+            placed = crawl.place(plugin, post, post.files, category=category, target=target,
+                                 route=plugin.routes[-1])
+            keys.append(placed[0].key)
+        self.assertEqual(keys[0], keys[1])
+        self.assertNotIn("Example", keys[0])
+
     def test_a_folder_value_replaces_the_root_and_the_rest_keeps_it(self):
         self.assertEqual(self.saved("exr:example_user", folder="posts:x/{category}"),
                          ["x/posts/p1_0.jpg"])

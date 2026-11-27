@@ -492,7 +492,9 @@ def place(
             name = f"{PurePosixPath(name).stem}_{num}{PurePosixPath(name).suffix}"
             path = "/".join(part for part in (where, name) if part)
         used.add(path)
-        drop = lead if fallback else ""
+        # A root with `{target}` is the target's own folder: `{path}` and `{dir}` start under
+        # it. A root without it (a group of targets) keeps them relative to `media/<code>/`.
+        drop = lead if fallback or "{target}" in root else ""
         kept = "/".join(path.split("/")[len(drop.split("/")):]) if drop and "/" in path else path
         where_kept, _, file_kept = kept.rpartition("/")
         resolved_key = fill(key, {**values, "path": kept, "dir": where_kept, "file": file_kept},
