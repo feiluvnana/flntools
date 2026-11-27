@@ -45,7 +45,7 @@ flnd get ins:example_user         # its own content: posts, reels, stories, ...
 flnd status                       # the last run, its failures, logins, the disk
 ```
 
-Then `flnd get` alone gets what is new for every target you have followed.
+Then `flnd sync` gets what is new for every target you have followed.
 
 ### The home
 
@@ -156,8 +156,9 @@ A link that a short link led to adds ` (from <what you typed>)` to `can't read`.
 
 ### Reading from standard input
 
-`flnd get` reads standard input when it is not a terminal: each line is a target (blank lines and
-`#` lines are skipped), after the command line's targets (`cat targets.txt | flnd get`).
+`flnd get` reads standard input only when a target is `-`: each line is a target (blank lines and
+`#` lines are skipped), put where the `-` was (`cat targets.txt | flnd get -`). `-` may come with
+other targets. Standard input is never read otherwise, even when it is not a terminal.
 
 ### Searches and `--limit`
 
@@ -593,7 +594,7 @@ flnd get "twt?cats" --folder="{query}"
 flnd get "twt?cats" --folder="posts:{query}/posts,*:{query}/other"
 ```
 
-A followed search keeps its folder in its row, and `flnd get` with no target reuses it, as does
+A followed search keeps its folder in its row, and `flnd sync` reuses it, as does
 naming the search again without a `--folder`. Giving it another `--folder` is refused unless
 `--again` is also given, which keeps the new one (files already saved stay where they are):
 
@@ -641,7 +642,7 @@ the same fields and checks. A category's own `folder` still wins over the plugin
 
 ## Sync
 
-`flnd get` follows each target that is not a single post, so `flnd get` alone (or `flnd sync`)
+`flnd get` follows each target that is not a single post, so `flnd sync`
 keeps them current. `flnd sync <pattern>...` syncs only the followed targets whose name matches any
 glob pattern (`*`, `?`, `[seq]`, case-insensitive), such as `flnd sync "ins:*"`. Both `get` and
 `sync` always check followed targets for new content even after they are complete (so
@@ -856,12 +857,13 @@ command.
 | `-h`, `--help` | | print help for flnd or the command |
 | `-V`, `--version` | | print `flnd <version>` |
 
-**`flnd get [target...]`**: get what the targets have, and follow them. With no target it reads
-standard input, else gets every followed target, or prints `nothing to sync` and exits 0.
+**`flnd get [target...]`**: get what the targets have, and follow them. It needs a
+target: with none it is refused (`flnd get needs a target; flnd sync syncs the followed ones`,
+exit 2). A target `-` reads targets from standard input. `flnd sync` gets the followed ones.
 
 | Flag | Default | What it does |
 | --- | --- | --- |
-| `target...` | stdin, then followed | see [Targets](#targets) |
+| `target...` | required; `-` is stdin | see [Targets](#targets) |
 | `--when WHEN` | `[defaults] when`, else every day | see [Dates](#dates) |
 | `--limit N` | none | at most N posts per target, or N targets per search; N at least 1 |
 | `--dry` | off | list what would be saved; write nothing |

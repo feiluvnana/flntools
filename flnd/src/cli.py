@@ -178,30 +178,27 @@ def _lower_priority() -> None:
 
 
 def get(args: argparse.Namespace) -> int:
-    """Get what the targets have, and follow them, so `flnd get` alone keeps them up to date.
+    """Get what the targets have, and follow them, so `flnd sync` keeps them up to date.
 
     A target that isn't a single post is added to the followed ones; the categories it names
-    (ins:example_user|reels) are kept with it. With no target, from the arguments or standard
-    input (one per line; blank lines and lines starting with # are skipped), every followed
-    target is synced.
+    (ins:example_user|reels) are kept with it. A target `-` stands for the lines of standard
+    input (one target per line; blank lines and lines starting with # are skipped); standard
+    input is read only then.
 
     Args:
         args: the parsed flags.
 
     Returns:
         The run's exit code.
-    """
-    _lower_priority()
-    targets = _targets(args.targets)
-    with _open(args) as fl:
-        if not targets and not any(row.follow for row in fl.targets):
-            if args.folder is not None:
-                fl.get(when=args.when, limit=args.limit, dry=args.dry,
-                       folder=args.folder).wait()
-            from flnkit.ui import out
 
-            out.line(("nothing to sync", "dim"))
-            return OK
+    Raises:
+        UsageError: there is no target, from the arguments or from `-`.
+    """
+    targets = _targets(args.targets)
+    if not targets:
+        raise errors.UsageError("flnd get needs a target; flnd sync syncs the followed ones")
+    _lower_priority()
+    with _open(args) as fl:
         run = fl.get(*targets, when=args.when, limit=args.limit, dry=args.dry,
                      folder=args.folder)
         return _watch(fl, run, args)
@@ -583,7 +580,7 @@ def parser() -> argparse.ArgumentParser:
     sub = command(verbs, "get", get)
     sub.add_argument("targets", nargs="*", metavar="target",
                      help="ins:example_user, \"ins:example_user|reels,posts\", a link, or "
-                          "mht?words; read from stdin too; none syncs every followed target")
+                          "mht?words; - reads targets from stdin, one per line")
     _when(sub)
     sub.add_argument("--limit", type=int, metavar="N",
                      help="at most N posts per target, or N targets per search")
@@ -718,9 +715,12 @@ def _open(args: argparse.Namespace) -> _library.Flnd:
 
 
 def _targets(given: Sequence[str]) -> list[str]:
-    """The targets on the command line, then the lines of a piped standard input."""
-    found = list(given)
-    if not sys.stdin.isatty():
+    """The targets on the command line, each `-` replaced by the lines of standard input."""
+    found: list[str] = []
+    for target in given:
+        if target != "-":
+            found.append(target)
+            continue
         lines = [line.strip() for line in sys.stdin]
         found += [line for line in lines if line and not line.startswith("#")]
     return found

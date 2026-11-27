@@ -202,13 +202,6 @@ class GetTest(RunsCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(self.runs[0][2].folder, "{target}/{date}")
 
-        # With no targets and --folder, followed targets run with that folder.
-        self.runs.clear()
-        self.pipe("")
-        code, _, err = self.run_app("get", "--folder=synced")
-        self.assertEqual(code, 0, err)
-        self.assertEqual(self.runs[0][2].folder, "synced")
-
         # Invalid folder templates fail with exit code 2 before starting any run.
         self.runs.clear()
         for bad in ("..", "a/../b", "/abs", "\\back", "C:drive", "a\x00b", "{nope}",
@@ -232,20 +225,45 @@ class GetTest(RunsCase):
         self.assertEqual(self.runs, [])
         self.assertFalse((Path(".flnd") / _store.MEDIA).exists())
 
-    def test_targets_from_stdin_join_the_arguments(self):
+    def test_a_dash_reads_the_targets_from_stdin(self):
         self.pipe("ins:a\n\n# a comment\ntwt:b\n")
-        self.assertEqual(self.run_app("get", "tik:c")[0], 0)
-        self.assertEqual([str(target) for target in self.runs[0][1]], ["tik:c", "ins:a", "twt:b"])
+        self.assertEqual(self.run_app("get", "-")[0], 0)
+        self.assertEqual([str(target) for target in self.runs[0][1]], ["ins:a", "twt:b"])
+        # A dash may come with other targets, and stands where it is written.
+        self.runs.clear()
+        self.pipe("ins:a\n")
+        self.assertEqual(self.run_app("get", "tik:c", "-", "twt:d")[0], 0)
+        self.assertEqual([str(target) for target in self.runs[0][1]], ["tik:c", "ins:a", "twt:d"])
 
-    def test_no_target_syncs_the_followed_ones_or_says_there_are_none(self):
-        self.pipe("")
-        code, out, err = self.run_app("get")
+    def test_stdin_is_not_read_without_a_dash(self):
+        class Blocked(Stdin):
+            def __iter__(self):
+                raise AssertionError("stdin was read")
+
+            read = readline = readlines = __iter__
+
+        self.stdin.stop()
+        self.stdin = mock.patch("sys.stdin", Blocked("ins:a\n"))
+        self.stdin.start()
+        self.assertEqual(self.run_app("get", "tik:c")[0], 0)
+        self.assertEqual([str(target) for target in self.runs[0][1]], ["tik:c"])
+
+    def test_get_needs_a_target(self):
+        for argv in ((), ("--limit", "3"), ("-",)):
+            with self.subTest(argv=argv):
+                self.pipe("\n# nothing\n")
+                code, _, err = self.run_app("get", *argv)
+                self.assertEqual(code, 2)
+                self.assertIn("flnd get needs a target; flnd sync syncs the followed ones", err)
+        self.assertEqual(self.runs, [])
+
+    def test_sync_with_no_pattern_syncs_the_followed_ones_or_says_there_are_none(self):
+        code, out, err = self.run_app("sync")
         self.assertEqual((code, self.runs, out), (0, [], "nothing to sync\n"), err)
         self.run_app("get", "ins:example_user|reels")
         self.run_app("get", "tik:example_creator")
         self.runs.clear()
-        self.pipe("")
-        self.assertEqual(self.run_app("get")[0], 0)
+        self.assertEqual(self.run_app("sync")[0], 0)
         self.assertEqual({str(t) for t in self.runs[0][1]},
                          {"ins:example_user", "tik:example_creator"})
 
@@ -575,8 +593,7 @@ class ExitStatusTest(FlndCase):
         self.assertRegex(out, r" - 2 targets - 0 saved - 0 already saved - 1 failed\n$")
         self.assertIn("  x aaa:bad\n    blocked\n", err)
         self.assertEqual(self.run_app("get", "aaa:good")[0], 0)
-        self.pipe("")
-        self.assertEqual(self.run_app("get")[0], 1)
+        self.assertEqual(self.run_app("sync")[0], 1)
         self.assertEqual(self.run_app("get", "bbb:good")[0], 1)
 
     def test_a_login_the_plugin_needs_exits_3_with_the_command_to_run(self):

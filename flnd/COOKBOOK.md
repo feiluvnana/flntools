@@ -79,7 +79,7 @@ flnd get
 flnd sync "ins:*"
 ```
 
-A profile you get is followed. `flnd get` alone (or `flnd sync`) then gets what is new for every
+A profile you get is followed. `flnd sync` then gets what is new for every
 followed target, and stops at the posts it already has. `flnd sync <pattern>` syncs only followed
 targets matching the glob (`*`, `?`, `[seq]`). `flnd target list` shows them, and `flnd target
 unfollow <target>` stops following one.

@@ -344,7 +344,7 @@ class Tracked(msgspec.Struct, frozen=True):
     """
 
     target: Target
-    # Whether `get` with no target takes it.
+    # Whether `sync` with no pattern takes it.
     follow: bool = False
     # When it was last run, as an ISO 8601 time; "" when never.
     at: str = ""
