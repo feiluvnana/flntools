@@ -1419,7 +1419,9 @@ inheritance is unverified.
 ### Adding a built-in plugin
 
 A built-in is one module of `src/plugins/`, named by its code, that imports only `flnd.plugin` and
-the standard library (its SDK inside a function). Add a row to `TABLE` in `src/plugins/__init__.py`
+the standard library (its SDK inside a function). To name a file itself, it calls
+`flnd.plugin.filename(text)`, the engine's own cleaner (`flnkit.text.filename`), never a copy.
+Add a row to `TABLE` in `src/plugins/__init__.py`
 (code, module, class, domains), so `--help` and the link resolver find it without importing it.
 Its tests run on `tests/plugin_kit.py`: `FakeCtx` stands in for the run's context, `FakePage` and
 `Reply` for pages and answers, and `collect` runs a route to its posts (`FakeCtx(head=...)` fakes

@@ -43,13 +43,14 @@ from flnd.errors import (
 from flnkit import text
 from flnkit.dig import dig
 from flnkit.html import Document, Element
+from flnkit.text import filename
 
 __all__ = [
     "Blocked", "Browser", "Category", "Changed", "Clock", "Cookies", "Ctx",
     "DateLike", "Document", "Element", "Error", "Fetch", "File", "Hidden", "Landed", "Login",
     "LoginError", "NetworkError", "NotFound", "Part", "Plugin", "PluginError", "Post", "Range",
     "Request", "Response", "Route", "Settings", "SiteError", "Stream", "Target", "UsageError",
-    "best", "cookies", "dig", "headline", "meta", "numbered", "page_info", "route",
+    "best", "cookies", "dig", "filename", "headline", "meta", "numbered", "page_info", "route",
 ]
 
 # Hosts that are the same site as their bare domain: desktop, mobile and web variants.

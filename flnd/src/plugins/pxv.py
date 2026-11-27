@@ -11,7 +11,6 @@ import html
 import json
 import random
 import re
-import unicodedata
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
@@ -35,6 +34,7 @@ from flnd.plugin import (
     Target,
     UsageError,
     cookies,
+    filename,
     route,
 )
 
@@ -60,8 +60,6 @@ BATCH = 100
 LIMIT = re.compile(r"//s\.pximg\.net/common/images/limit_([a-z_]+?)(?:_\d+)?\.\w+")
 LIMIT_HINTS = {"sanity_level": SANITY_HINT, "mypixiv": FRIENDS_HINT}
 # What the engine's filename cleaner replaces, and the runs it squeezes to one `_`.
-UNSAFE = re.compile(r'[\\/*?:"<>|\x00-\x1f\x7f-\x9f]')
-SEPARATORS = re.compile(r"[\s_]+")
 # What a user's number must be, as a page's user is only ever its number.
 NAME = re.compile(r"@?[\w.-]+")
 # The illustType each own category yields, and the kind of list it reads in `profile/all`.
@@ -756,9 +754,7 @@ def _stem(date: int | None, title: Any, id: str, tail: str = "") -> str:
     (`flnkit.text.filename`) cleans, so that one leaves it unchanged and it matches the video's."""
     day = _day(date) if date is not None else ""
     raw = f"{day}_{str(title or '')[:40]}_{id}{tail}"
-    raw = "".join(char for char in raw if unicodedata.category(char) != "Cf")
-    cleaned = SEPARATORS.sub("_", UNSAFE.sub("_", raw)).strip("._ ")
-    return cleaned.encode("utf-8")[:200].decode("utf-8", "ignore").strip("._ ")
+    return filename(raw)
 
 
 def _link(name: str) -> str:
