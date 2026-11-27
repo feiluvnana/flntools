@@ -511,7 +511,7 @@ class Twitter(Plugin):
             yield post
 
     # The pictures are named after their own id and keyed by their path, as always.
-    @user.category(folder="profile", key="profile/{file}", newest_first=False)
+    @user.category(folder="profile", key="{path}", newest_first=False)
     async def profile(self, ctx: Ctx, profile: dict[str, Any]) -> AsyncIterator[Post]:
         """The avatar at its original size, and the banner at its largest.
 
