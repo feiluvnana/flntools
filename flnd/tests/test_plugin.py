@@ -45,6 +45,7 @@ from flnd.plugin import (
     best,
     cookies,
     dig,
+    headline,
     meta,
     numbered,
     page_info,
@@ -619,6 +620,20 @@ class HelpersTest(unittest.TestCase):
                 found = best(candidates, height=height)
                 self.assertEqual(None if found is None else found.url, expected)
         self.assertIsNone(best([]))
+
+    def test_headline_makes_a_title_of_a_caption(self):
+        rows = [
+            ("Sunset at the beach #sea #sky", "Sunset at the beach"),
+            ("with @example_user and  @example_handle  today", "with and today"),
+            ("see https://example.com/a?b=1 now", "see now"),
+            ("Morning run \U0001f3c3 done", "Morning run \U0001f3c3 done"),
+            ("\u671d\u306e\u6563\u6b69 #\u5199\u771f", "\u671d\u306e\u6563\u6b69"),
+            ("\n  \n#only #tags\nSecond line\nThird", "Second line"),
+            ("", ""), (None, ""), ("#a @b http://example.com", ""),
+        ]
+        for text, expected in rows:
+            with self.subTest(text=text):
+                self.assertEqual(headline(text), expected)
 
     def test_numbered_and_dig(self):
         rows = [((7,), {}, "07"), ((7,), {"suffix": "_cover"}, "07_cover"),

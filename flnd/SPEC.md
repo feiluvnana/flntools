@@ -507,6 +507,11 @@ segment  = text and {field} / {field:format} / {field.attr} / {field[0]}; {{ and
 | `path` | accepted, but only filled in `key` templates; empty in a folder |
 | plugin fields | each plugin's `fields`, listed below the table |
 
+A text field takes a length, as Python's own format rule does: `{title:.40}` is at most 40
+characters of `title`, and the cleaner then runs on the cut text. `flnd.plugin.headline(text)`
+makes a title of a caption: its first non-empty line, with `#tags`, `@names` and `http(s)` URLs
+removed, whitespace squeezed to single spaces and trimmed ("" for nothing left).
+
 Plugin fields: `ins` `album`; `twt` `part n`; `tik` `part album idx`; `fbk` `part album`;
 `loi` `author title part`; `mht` `title order author genres chapters`; `smp` none;
 `pxv` `title user name`; `web` `name`; a plugin of your own declares its `fields`.

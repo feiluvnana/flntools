@@ -49,7 +49,7 @@ __all__ = [
     "DateLike", "Document", "Element", "Error", "Fetch", "File", "Hidden", "Landed", "Login",
     "LoginError", "NetworkError", "NotFound", "Part", "Plugin", "PluginError", "Post", "Range",
     "Request", "Response", "Route", "Settings", "SiteError", "Stream", "Target", "UsageError",
-    "best", "cookies", "dig", "meta", "numbered", "page_info", "route",
+    "best", "cookies", "dig", "headline", "meta", "numbered", "page_info", "route",
 ]
 
 # Hosts that are the same site as their bare domain: desktop, mobile and web variants.
@@ -1477,6 +1477,19 @@ def best(streams: Sequence[Stream], *, height: int | None = None) -> Stream | No
     if all(stream.width for stream in fit):
         return max(fit, key=lambda stream: (stream.width * stream.height, stream.bitrate))
     return max(fit, key=lambda stream: (stream.height, stream.bitrate))
+
+
+_UNWANTED = re.compile(r"https?://\S+|[#@]\w+")
+
+
+def headline(text: str | None) -> str:
+    """A caption's title: its first non-empty line, without `#tags`, `@names` and http(s) URLs,
+    whitespace squeezed to single spaces and trimmed; "" for None or nothing left."""
+    for line in (text or "").splitlines():
+        found = " ".join(_UNWANTED.sub(" ", line).split())
+        if found:
+            return found
+    return ""
 
 
 def numbered(n: int, *, suffix: str = "", width: int = 2) -> str:
