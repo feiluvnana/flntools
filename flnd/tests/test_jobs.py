@@ -491,7 +491,7 @@ class RetryTest(unittest.TestCase):
                         await scheduler.close()
 
         asyncio.run(main())
-        self.assertEqual(seen, ["held 5 s: blocked"])
+        self.assertEqual(seen, ["held 5.0s: blocked"])
         self.assertEqual(tally.publish(force=True).now, "")
 
     def test_a_job_rate_limited_too_much_fails_with_blocked(self):

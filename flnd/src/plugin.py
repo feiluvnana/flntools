@@ -1091,6 +1091,8 @@ class Ctx(Protocol):
                 the page last opened and scrolled on, and a body read before is not given
                 again; past the engine's last round it still raises `Blocked`.
             bucket: the bucket those holds count against; None holds the plugin.
+
+        Its `stalled` is True once it ended with no new answer for a minute of scrolling.
         """
         ...
 

@@ -521,7 +521,7 @@ class FeedTest(CtxCase):
 
         self.assertEqual(self.stuck(step), [])
         self.assertEqual(len(steps), 60)
-        self.assertIn("exm:example_user: the list got no new answer in 1m; it ends here",
+        self.assertIn("exm:example_user: no new answer in 1m; stopped scrolling",
                       self.lines()[-1])
 
     def test_a_stalled_feed_marks_its_listing_stalled(self):
@@ -534,6 +534,25 @@ class FeedTest(CtxCase):
 
         self.assertEqual(self.stuck_in(run, ctx, step), [])
         self.assertTrue(ctx.listing.stalled)
+
+    def test_a_stalled_feed_says_so_without_a_listing(self):
+        # A dry run has no listing: the plugin reads the stall from the feed.
+        run, ctx = self.ctx()
+
+        async def step():
+            self.fake.advance(1.0)
+            return True
+
+        async def scroller(page, **_):
+            return SimpleNamespace(step=step)
+
+        async def read():
+            async with ctx.feed("graphql") as feed:
+                await asyncio.wait_for(alist(feed), 5)
+                return feed.stalled
+
+        with mock.patch.object(Page, "scroller", scroller):
+            self.assertTrue(self.call(run, read()))
 
     def test_a_stalled_resuming_feed_marks_its_listing_stalled(self):
         run, ctx = self.ctx()

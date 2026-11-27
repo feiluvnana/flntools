@@ -817,6 +817,7 @@ class _Feed:
         self._opening: asyncio.Future[Any] | None = None
         self._done = False
         self.headers: Mapping[str, str] = {}
+        self.stalled = False  # it ended with no new answer for `browser.STALL` seconds
         self._resume = Resume(bucket)
         self._on = resume
 
@@ -874,10 +875,11 @@ class _Feed:
                 if item is _DONE:
                     if getattr(feed, "stalled", False):
                         # The list was cut short, not read to its end: the crawl keeps it
-                        # incomplete (`Listing.stalled`).
+                        # incomplete (`Listing.stalled`), unless the plugin knows better.
+                        self.stalled = True
                         if self._ctx.listing is not None:
                             self._ctx.listing.stalled = True
-                        ui.warn("{target}: the list got no new answer in {time}; it ends here",
+                        ui.warn("{target}: no new answer in {time}; stopped scrolling",
                                 target=str(self._ctx._target),
                                 time=text.duration(browser.STALL))
                     await self.aclose()

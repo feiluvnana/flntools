@@ -228,7 +228,7 @@ class TallyTest(unittest.TestCase):
         with self.tally.hold("ins", "pages", 30, "429 from api.example.com", count=2):
             state = self.tally.publish()
         self.assertEqual(state.now,
-                         "ins:example_user · posts · held 30 s: 429 from api.example.com")
+                         "ins:example_user · posts · held 30.0s: 429 from api.example.com")
         self.assertEqual(self.tally.publish().now, "ins:example_user · posts")
 
 

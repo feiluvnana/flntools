@@ -376,8 +376,7 @@ class Twitter(Plugin):
                             pass
                     continue
                 resets = scroll_meta.get("resets", resets)
-                window_stalled = (bool(scroll_meta.get("saw_error"))
-                                  or bool(getattr(listing, "stalled", False)))
+                window_stalled = _window_stalled(scroll_meta, listing, tail)
                 if not added or not tail:
                     if window_stalled:
                         stalled += 1
@@ -386,9 +385,9 @@ class Twitter(Plugin):
                                       else "stalled before any tweets")
                             raise SiteError(f"twt: search window {reason}", retryable=True)
                         try:
-                            await ctx.hold("search interrupted", bucket=SEARCH, reset=False)
+                            await ctx.hold("search stalled", bucket=SEARCH, reset=False)
                         except Blocked as error:
-                            raise SiteError(f"twt: search interrupted ({error})",
+                            raise SiteError(f"twt: search stalled ({error})",
                                             retryable=True) from error
                         continue
                     completed = True
@@ -706,6 +705,7 @@ class Twitter(Plugin):
             seen_cursors: set[str] = set()
             empty_pages = 0
             pages = 0
+            answered = 0  # pages X answered as a timeline, with no error
             saw_error = False
             error_retries = 0
             reader = _search_reader() if query == SEARCH else timeline_state
@@ -777,6 +777,7 @@ class Twitter(Plugin):
                             elif tweets or cursor is not None:
                                 saw_error = False
                                 error_retries = 0
+                                answered += 1
                             if meta is not None and (tweets or cursor is not None):
                                 meta["more"] = bool(tweets and cursor is not None)
                             # 2026-11-16: a tombstone has no id; it is never new, nor stands for a
@@ -867,6 +868,8 @@ class Twitter(Plugin):
             if meta is not None:
                 meta["saw_error"] = saw_error
                 meta["pages"] = pages
+                meta["answered"] = answered
+                meta["stalled"] = bool(getattr(responses, "stalled", False))
             break
 
     async def _backfill_posts(
@@ -991,21 +994,20 @@ class Twitter(Plugin):
                     current_max_id = edge - 1
                 continue
             state["resets"] = scroll_meta.get("resets", state["resets"])
-            window_stalled = (bool(scroll_meta.get("saw_error"))
-                              or bool(getattr(listing, "stalled", False)))
+            window_stalled = _window_stalled(scroll_meta, listing, tail)
             if not added or not tail:
                 if window_stalled:
                     stalled += 1
                     if stalled > 3:
                         _pause_backfill(
                             ctx, listing, current_max_id, "warn",
-                            "posts: paused search backfill after repeated timeline errors; "
+                            "posts: paused search backfill after it stalled or failed 4 times; "
                             "rerun later to resume",
                         )
                         state["outcome"] = "paused"
                         return
                     try:
-                        await ctx.hold("search interrupted", bucket=SEARCH, reset=False)
+                        await ctx.hold("search stalled", bucket=SEARCH, reset=False)
                     except Blocked:
                         _pause_backfill(
                             ctx, listing, current_max_id, "warn",
@@ -1304,6 +1306,19 @@ def _screen_name(profile: dict[str, Any]) -> str | None:
     return name if isinstance(name, str) and name and not name.isdigit() else None
 
 
+def _window_stalled(meta: dict[str, Any], listing: Any, tail: Sequence[Any]) -> bool:
+    """Whether a search window with no new tweet was cut short, so it is tried again. Past the
+    oldest tweet X answers one page with no tweets, then nothing (2026-11-27): that is the end,
+    and the stall mark is cleared."""
+    if meta.get("saw_error"):
+        return True
+    if meta.get("answered") and not tail:
+        if listing is not None:
+            listing.stalled = False
+        return False
+    return bool(meta.get("stalled")) or bool(getattr(listing, "stalled", False))
+
+
 def _pause_backfill(
     ctx: Ctx, listing: Any, pause_id: int, level: str, message: str, **fields: Any,
 ) -> None:
@@ -1537,7 +1552,8 @@ def timeline_state(data: Any) -> tuple[bool, str | None] | None:
 
 def _search_reader() -> Callable[[Any], tuple[bool, str | None] | None]:
     """A stateful cursor reader for X search: allows up to `SEARCH_EMPTY` empty pages when the
-    `Bottom` cursor advances, stopping immediately on a repeated cursor or `None` after empty."""
+    `Bottom` cursor advances after tweets, stopping immediately on an empty first page, a
+    repeated cursor, or `None` after empty."""
     seen_cursors: set[str] = set()
     empty = 0
 
@@ -1550,7 +1566,7 @@ def _search_reader() -> Callable[[Any], tuple[bool, str | None] | None]:
             empty = 0
             seen_cursors.add(cursor)
             return True, cursor
-        if cursor in seen_cursors:
+        if not seen_cursors or cursor in seen_cursors:  # an empty first page: no results
             return False, cursor
         seen_cursors.add(cursor)
         empty += 1

@@ -789,59 +789,56 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(ctx2.state.get("search:example"), {"max_id": "99"})
         self.assertEqual(ctx2.seen.visited, [w1, w2, w2, w2, w2])
 
-    def test_search_does_not_complete_when_empty_window_stalls(self):
+    def test_search_ends_on_an_empty_answer_and_holds_on_no_answer(self):
         from unittest import mock
 
         plugin = Twitter()
         w1 = self.search_url("example")
         w2 = self.search_url("example max_id:99")
         w3 = self.search_url("example max_id:89")
+        def first():
+            return FakePage(feeds=sent(self.RESPONSE, [
+                page(item(tweet("100", [photo("a")])), cursor="c1", search=True)]))
+
+        def stalling(pages, at):
+            """A ctx whose feed stalls once `at` is opened."""
+            ctx = FakeCtx(plugin, "twt?example", pages=pages)
+            ctx.listing = Listing(None)
+            opened = ctx.open
+
+            async def open_stalled(target_url):
+                res = await opened(target_url)
+                if target_url == at:
+                    ctx.listing.stalled = True
+                return res
+            return ctx, mock.patch.object(ctx, "open", side_effect=open_stalled)
 
         # Stalling mid-window when tweets were already read still lets a clean next window finish.
-        ctx_mid = FakeCtx(plugin, "twt?example", pages={
-            w1: FakePage(feeds=sent(self.RESPONSE, [
-                page(item(tweet("100", [photo("a")])), cursor="c1", search=True),
-            ])),
-            w2: FakePage(feeds=sent(self.RESPONSE, [
-                page(item(tweet("90", [photo("b")])), cursor="c2", search=True),
-            ])),
-            w3: FakePage(feeds=sent(self.RESPONSE, [page(cursor="c3", search=True)])),
-        })
-        ctx_mid.listing = Listing(None)
-        orig_mid_open = ctx_mid.open
-
-        async def open_mid_stall(target_url):
-            res = await orig_mid_open(target_url)
-            if target_url == w1:
-                ctx_mid.listing.stalled = True
-            return res
-
-        with mock.patch.object(ctx_mid, "open", side_effect=open_mid_stall):
+        ctx_mid, stall = stalling({w1: first(), w2: FakePage(feeds=sent(self.RESPONSE, [
+            page(item(tweet("90", [photo("b")])), cursor="c2", search=True)])),
+            w3: FakePage(feeds=sent(self.RESPONSE, [page(cursor="c3", search=True)]))}, w1)
+        with stall:
             found = listed(plugin, ctx_mid, "search", "example")
         self.assertEqual([str(t).rsplit("/", 1)[1] for t in found], ["100", "90"])
         self.assertNotIn("search:example", ctx_mid.state)
 
-        # If a window stalls with 0 tweets on every retry, raise SiteError and preserve max_id.
-        ctx_empty = FakeCtx(plugin, "twt?example", pages={
-            w1: FakePage(feeds=sent(self.RESPONSE, [
-                page(item(tweet("100", [photo("a")])), cursor="c1", search=True),
-            ])),
-            w2: FakePage(feeds=sent(self.RESPONSE, [page(cursor="c2", search=True)])),
-        })
-        ctx_empty.listing = Listing(None)
-        orig_empty_open = ctx_empty.open
+        # A window X answers with no tweets is the end, even when the feed stalls after it.
+        ctx_empty, stall = stalling({w1: first(), w2: FakePage(feeds=sent(self.RESPONSE, [
+            page(cursor="c2", search=True)]))}, w2)
+        with stall:
+            found = listed(plugin, ctx_empty, "search", "example")
+        self.assertEqual([str(t).rsplit("/", 1)[1] for t in found], ["100"])
+        self.assertEqual((ctx_empty.seen.visited, ctx_empty.seen.holds), ([w1, w2], []))
+        self.assertFalse(ctx_empty.listing.stalled)
+        self.assertNotIn("search:example", ctx_empty.state)
 
-        async def open_empty_stall(target_url):
-            res = await orig_empty_open(target_url)
-            if target_url == w2:
-                ctx_empty.listing.stalled = True
-            return res
-
-        with mock.patch.object(ctx_empty, "open", side_effect=open_empty_stall), \
-                self.assertRaises(SiteError):
-            listed(plugin, ctx_empty, "search", "example")
-        self.assertEqual(ctx_empty.state.get("search:example"), {"max_id": "99"})
-        self.assertEqual(ctx_empty.seen.visited, [w1, w2, w2, w2, w2])
+        # A window X never answers is held and tried again, then fails and keeps max_id.
+        ctx_silent, stall = stalling({w1: first(), w2: FakePage(feeds=[])}, w2)
+        with stall, self.assertRaises(SiteError):
+            listed(plugin, ctx_silent, "search", "example")
+        self.assertEqual(ctx_silent.state.get("search:example"), {"max_id": "99"})
+        self.assertEqual(ctx_silent.seen.visited, [w1, w2, w2, w2, w2])
+        self.assertEqual(len(ctx_silent.seen.holds), 3)
 
 
 class TimelineTest(unittest.TestCase):
@@ -1395,6 +1392,31 @@ class TimelineTest(unittest.TestCase):
         self.assertTrue(ctx2.listing.taken)
         self.assertIsNone(ctx2.listing.cursor)
         self.assertFalse(ctx2.listing.stalled)
+
+        # Resuming past the oldest tweet: X answers both queries with no tweets and the feed
+        # stalls; the backfill ends done, with no hold, and drops its cursor.
+        base = "from:example_handle -filter:replies -filter:retweets"
+        w5 = s_url(f"{base} filter:links max_id:9")
+        w6 = s_url(f"{base} max_id:9")
+        ctx3 = fake(pages={
+            w5: FakePage(feeds=[Sent(s_link, page(cursor="sc5", search=True))]),
+            w6: FakePage(feeds=[Sent(s_link, page(cursor="sc6", search=True))]),
+        })
+        ctx3.listing = Listing("backfill:9")
+        orig_open3 = ctx3.open
+
+        async def open_stalled(target_url):
+            res = await orig_open3(target_url)
+            ctx3.listing.stalled = True
+            return res
+
+        with mock.patch.object(ctx3, "open", side_effect=open_stalled):
+            saved3 = collect(Twitter, "twt:example_handle", ctx=ctx3, categories=["posts"])
+        self.assertEqual(saved3, [])
+        self.assertEqual(ctx3.seen.visited, [w5, w6])
+        self.assertEqual(ctx3.seen.holds, [])
+        self.assertIsNone(ctx3.listing.cursor)
+        self.assertFalse(ctx3.listing.stalled)
 
         # Fatal Blocked (code 226) and LoginError (code 326) propagate during backfill.
         for code, exc_type in ((226, Blocked), (326, LoginError)):

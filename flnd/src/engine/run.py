@@ -34,7 +34,7 @@ from flnd.engine.events import (
     State,
     TargetState,
 )
-from flnkit import clock
+from flnkit import clock, text
 
 if TYPE_CHECKING:
     from flnd.engine.ctx import Listing
@@ -985,5 +985,5 @@ class Tally:
         if not self._holds:
             return step
         hold = self._holds[-1]
-        held = f"held {max(0, round(hold.until - elapsed))} s: {hold.reason}"
+        held = f"held {text.duration(max(0, round(hold.until - elapsed)))}: {hold.reason}"
         return f"{step} · {held}" if step else held

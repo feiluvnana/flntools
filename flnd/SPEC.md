@@ -1063,8 +1063,9 @@ up to 32.
   marked complete. For large profiles (`posts` reaching 400+ tweets), `posts` continues backward
   via resumable `max_id:` search backfill past X's profile timeline cap (skipped on incremental
   sync, protected accounts, or `[plugins.twt] backfill = false`), pausing safely after 2 search
-  rate-limit resets to protect the account. Query ids are refreshed from x.com's script on a 400
-  or 404, at most once a run.
+  rate-limit resets to protect the account. A search window X answers with no tweets is the end
+  of the search (past the account's oldest tweet); one X never answers is held and tried again.
+  Query ids are refreshed from x.com's script on a 400 or 404, at most once a run.
 - **Known gaps:** a single tweet has no browser fallback; a protected and a deleted tweet are both
   `NotFound`; video is MP4 only (streaming-only is skipped); text-only tweets save nothing.
 - **Saved as:** `media/twt/example_handle/posts/2026-01-02_Morning_run_1234567890_0.jpg`,
