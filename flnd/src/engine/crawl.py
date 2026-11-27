@@ -493,7 +493,9 @@ def _file_values(
 ) -> dict[str, Any]:
     """The fields a folder, filename or key template of one file may name."""
     code = target.plugin if target is not None else source.code
-    target_val = store.folder_name(target) if target is not None else ""
+    route = _route_of(source, target)
+    target_val = (store.folder_name(target, route is not None and route.single)
+                  if target is not None else "")
     query_val = (options.query or "") if options is not None else ""
     # `{source}` is the older name of `{plugin}`, kept for templates written with it.
     return {
@@ -574,8 +576,10 @@ class Ledger:
         self._asking = type(self.source).date is not Plugin.date
         self._link_warned = False
         # Whether a post with no owner is yet to be told of: a single post filed by owner.
-        self._ownerless = _rooted(self.source, target, options) and not (
-            self._route is not None and self._route.categories)
+        # A plugin with no profile route has no owners to find, so it never says so.
+        self._ownerless = (_rooted(self.source, target, options)
+                           and not (self._route is not None and self._route.categories)
+                           and any(r.categories for r in self.source.routes))
         self._later: list[tuple[Path, str, str]] = []
         # The posts the `date` hook had no day for, read off the loop by `load`.
         self._asked: dict[str, float] = {}
@@ -2436,13 +2440,18 @@ def target_root(home: Path, target: Target, options: Options | None = None,
     return store.target_folder(home, target)
 
 
+def _route_of(source: Plugin | None, target: Target | None) -> Route | None:
+    """The route that reads `target`, or None."""
+    if source is None or target is None:
+        return None
+    return next((r for r in source.routes if r.kind == target.kind), None)
+
+
 def _rooted(source: Plugin | None, target: Target | None, options: Options | None) -> bool:
-    """Whether a single post (not a search's hit) is filed from `media/<plugin>/`: its route
-    has no categories, or its folder starts with `{author}`."""
-    if source is None or target is None or target.kind not in store.POST_KINDS:
-        return False
-    route = next((r for r in source.routes if r.kind == target.kind), None)
-    if route is None:
+    """Whether a single post (not a search's hit) is filed from `media/<plugin>/`: its route is
+    a single one with no categories, or its folder starts with `{author}`."""
+    route = _route_of(source, target)
+    if route is None or source is None or not route.single:
         return False
     if _plugin_folder(source, route, None).startswith("{author}"):
         return True

@@ -147,7 +147,9 @@ class MangaTest(unittest.TestCase):
 
     def test_a_chapter_link_files_as_its_manga_does(self):
         saved = collect(Mimi, "https://mimihentai.moe/manga/70982/chapter/1001", ctx=fake())
-        self.assertEqual([(item.path, item.key) for item in saved], EVERY_FILE[:2])
+        # A chapter link sits in a folder of its id, as a single post does.
+        self.assertEqual([(item.path, item.key) for item in saved],
+                         [(f"1001/{path}", key) for path, key in EVERY_FILE[:2]])
 
     def test_chapters_are_lazy(self):
         async def posts():
@@ -168,7 +170,7 @@ class MangaTest(unittest.TestCase):
                  {"image_url": f"{CDN}/1001/d"}]
         ctx = fake(**{"chapters/1001": {"info": CHAPTERS[0], "pages": pages}})
         saved = collect(Mimi, "https://mimihentai.moe/manga/70982/chapter/1001", ctx=ctx)
-        folder = "chapters/001_First_Chapter/"
+        folder = "1001/chapters/001_First_Chapter/"
         self.assertEqual([item.path for item in saved], [f"{folder}001.webp", f"{folder}004"])
         # The engine names a file whose URL has no extension from its first bytes.
         for content, name in [(b"RIFF\0\0\0\0WEBPVP8 ", "004.webp"),

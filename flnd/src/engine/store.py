@@ -1050,14 +1050,11 @@ LOGIN_URL = re.compile(r"login|logon|signin|sign_in|oauth|auth|session|token|pas
                        re.IGNORECASE)
 
 
-# The kinds of a single post, written `<kind>/<id>`: a folder is named by the id alone.
-POST_KINDS = ("post", "video", "photo", "watch")
-
-
-def folder_name(target: _Target) -> str:
+def folder_name(target: _Target, single: bool = False) -> str:
     """What names a target's folder and fills `{target}`: its value, without a single post's
-    `post/`, so `ins:post/C1abc` is filed in `media/ins/C1abc`."""
-    if target.kind in POST_KINDS:
+    `<kind>/` (`single`: its route is a single one), so `ins:post/C1abc` is filed in
+    `media/ins/C1abc`."""
+    if single:
         return target.value.removeprefix(f"{target.kind}/")
     return target.value
 

@@ -301,7 +301,7 @@ class SingleTest(unittest.TestCase):
         ctx = self.single()
         (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
         self.assertEqual((one.url, one.path, one.key, one.post.owner, one.post.category),
-                         (f"{CDN}/5_p0.png", "illusts/2026-01-02_5_p0.png", "5_0", USER,
+                         (f"{CDN}/5_p0.png", "12345678/illusts/2026-01-02_5_p0.png", "5_0", USER,
                           "illusts"))
         self.assertEqual(asked(ctx), ["/illust/5"])
 
@@ -309,7 +309,7 @@ class SingleTest(unittest.TestCase):
         ctx = self.single(illustType=1)
         (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
         self.assertEqual((one.path, one.post.owner, one.post.category),
-                         ("manga/2026-01-02_5_p0.png", USER, "manga"))
+                         ("12345678/manga/2026-01-02_5_p0.png", USER, "manga"))
 
     def test_a_many_page_work_reads_pages(self):
         ctx = self.single(pageCount=3)
@@ -322,8 +322,8 @@ class SingleTest(unittest.TestCase):
         ctx._routes[f"{AJAX}/illust/5/ugoira_meta"] = ugoira_meta()
         found = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
         self.assertEqual([(one.path, one.post.owner, one.post.category) for one in found],
-                         [("ugoira/2026-01-02_5_p0.mp4", USER, "ugoira"),
-                          ("ugoira/2026-01-02_5_p0.json", USER, "ugoira")])
+                         [("12345678/ugoira/2026-01-02_5_p0.mp4", USER, "ugoira"),
+                          ("12345678/ugoira/2026-01-02_5_p0.json", USER, "ugoira")])
 
     def test_the_referer_header_is_on_the_post(self):
         ctx = self.single()
@@ -741,11 +741,11 @@ class NovelFilesTest(unittest.TestCase):
             routes={f"{AJAX}/novel/5/insert_illusts": inserted(**{
                 "900-2": f"{CDN}/900_p1.jpg", "901-1": f"{CDN}/901_p0.png"})})
         self.assertEqual([(one.path, one.key) for one in found], [
-            ("novels/2026-01-02_5.md", "novel_5_0"),
-            ("novels/2026-01-02_5_cover.jpg", "novel_5_1"),
-            ("novels/2026-01-02_5_1.png", "novel_5_2"),
-            ("novels/2026-01-02_5_2.jpg", "novel_5_3"),
-            ("novels/2026-01-02_5_3.png", "novel_5_4")])
+            ("12345678/novels/2026-01-02_5.md", "novel_5_0"),
+            ("12345678/novels/2026-01-02_5_cover.jpg", "novel_5_1"),
+            ("12345678/novels/2026-01-02_5_1.png", "novel_5_2"),
+            ("12345678/novels/2026-01-02_5_2.jpg", "novel_5_3"),
+            ("12345678/novels/2026-01-02_5_3.png", "novel_5_4")])
         names = [one.path.rpartition("/")[2] for one in found]
         self.assertEqual(names[0], "2026-01-02_5.md")
         self.assertEqual(names[2:], ["2026-01-02_5_1.png", "2026-01-02_5_2.jpg",
@@ -777,20 +777,20 @@ class NovelFilesTest(unittest.TestCase):
         _, found = novel_files("plain")
         cover = found[1]
         self.assertEqual((cover.path, cover.file.mirrors),
-                         ("novels/2026-01-02_5_cover.jpg", (f"{ORIGINAL}.jpg", f"{ORIGINAL}.png")))
+                         ("12345678/novels/2026-01-02_5_cover.jpg", (f"{ORIGINAL}.jpg", f"{ORIGINAL}.png")))
 
     def test_a_default_cover_is_not_saved(self):
         for url in ("https://s.pximg.net/common/images/no_cover.png", "", None,
                     "https://example.com/novel-cover-master/a_master1200.jpg"):
             with self.subTest(url=url):
                 _, found = novel_files("plain", coverUrl=url)
-                self.assertEqual([one.path for one in found], ["novels/2026-01-02_5.md"])
+                self.assertEqual([one.path for one in found], ["12345678/novels/2026-01-02_5.md"])
 
     def test_an_undated_novel_has_no_date_prefix(self):
         _, found = novel_files("[uploadedimage:77]", createDate=None,
                                textEmbeddedImages={"77": {"urls": {"original": EMBED.format(77)}}})
         self.assertEqual([one.path for one in found],
-                         ["novels/5.md", "novels/5_cover.jpg", "novels/5_1.png"])
+                         ["12345678/novels/5.md", "12345678/novels/5_cover.jpg", "12345678/novels/5_1.png"])
 
     def test_a_novel_with_no_text_is_changed(self):
         with self.assertRaises(Changed):
@@ -862,8 +862,8 @@ class SingleNovelTest(unittest.TestCase):
                 found = collect(Pixiv, text, ctx=ctx)
                 self.assertEqual(
                     [(one.path, one.key, one.post.owner, one.post.category) for one in found[:2]],
-                    [("novels/2026-01-02_5.md", "novel_5_0", USER, "novels"),
-                     ("novels/2026-01-02_5_cover.jpg", "novel_5_1", USER, "novels")])
+                    [("12345678/novels/2026-01-02_5.md", "novel_5_0", USER, "novels"),
+                     ("12345678/novels/2026-01-02_5_cover.jpg", "novel_5_1", USER, "novels")])
                 self.assertEqual(asked(ctx), ["/novel/5"])
 
     def test_post_fields(self):

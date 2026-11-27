@@ -1119,6 +1119,38 @@ class OwnerTest(EngineCase):
         self.assertEqual((files, found), (0, ["example_user/posts/p1_0.jpg"]))
 
 
+class Artworks(Plugin):
+    """Owned's twin whose single route is not named like a post: `single` decides, not the name."""
+
+    code = "exa"
+    name = "Artworks"
+    domains = ("artworks.example",)
+    filename = "{post}_{num}"
+
+    @route((r"artworks.example/w/{id:\w+}", "artwork/{id}"), single=True)
+    async def artwork(self, ctx, id):
+        yield Post(id.removeprefix("artwork/"), [File(f"{CDN_URL}/p1.jpg")],
+                   owner="example_user", category="posts")
+
+    @route("exa:{user}")
+    async def user(self, ctx, user):
+        return {"user": user}
+
+    @user.category
+    async def posts(self, ctx, profile):
+        yield Post("p1", [File(f"{CDN_URL}/p1.jpg")])
+
+
+class SingleRouteTest(EngineCase):
+    def test_any_single_route_files_its_post_by_owner(self):
+        self.routes[f"{CDN_URL}/p1.jpg"] = _net.reply(200, content=JPEG)
+        self.run_engine(Artworks, targets=["https://artworks.example/w/7"])
+        folder = self.home / "media" / "exa"
+        found = sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*")
+                       if path.is_file() and not path.name.endswith(".json"))
+        self.assertEqual(found, ["example_user/posts/7_0.jpg"])
+
+
 class EngineTest(EngineCase):
     def saved(self, *files, targets=("exn:example_user",), **options):
         Saving.files = files

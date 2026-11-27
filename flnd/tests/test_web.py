@@ -51,7 +51,9 @@ def saved(text, **routes):
     """What `text` saves: (path, key) pairs, the files, and the requests made."""
     ctx = FakeCtx(Web, text, routes=routes.get("routes", {}))
     found = collect(Web, text, ctx=ctx)
-    return ([(item.path, item.key) for item in found], [item.file for item in found],
+    # A link has no owner: its files sit in the folder its link names, `<link>/<file>`.
+    return ([(item.path.partition("/")[2], item.key) for item in found],
+            [item.file for item in found],
             [(method, url) for method, url, _ in ctx.seen.requests])
 
 

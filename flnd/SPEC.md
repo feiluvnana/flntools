@@ -436,7 +436,8 @@ name):
 
 The owner is the post's: `user.username`, `screen_name`, `uniqueId`, a Facebook vanity name else its
 id. With no owner in the data the post goes where it always did, `media/<code>/<post id>/`, with no
-category folder, and a log line says so. `loi`'s template starts with `{author}`, so its root is
+category folder, and a log line says so. Any route declared `single` is filed this way, whatever its name (`artwork`,
+`novel`); `web` and `mht`'s chapter never give an owner, so they sit under their id. `loi`'s template starts with `{author}`, so its root is
 `media/loi/`. A search's hits ignore all this: they go to the search's `--folder` ([A search needs a
 folder](#a-search-needs-a-folder)). Files saved earlier stay where they are, and keys are unchanged,
 so a post saved by link is skipped, and found in place, when its profile is synced later.
