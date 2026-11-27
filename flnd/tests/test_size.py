@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # The limits: today's counts, rounded up to the next 100.
 CODE_LINES = 25416
-TEST_LINES = 30602
+TEST_LINES = 30702
 
 
 def count(*patterns: str) -> int:

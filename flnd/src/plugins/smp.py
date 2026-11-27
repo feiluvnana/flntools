@@ -89,12 +89,16 @@ class _Post(NamedTuple):
     id: str
     stamp: int | None
     links: dict[str, list[Link]]
+    # The post's `data-author`; "" when the page has none.
+    author: str = ""
 
 
 class _Page(NamedTuple):
     n: int
     more: bool
     posts: list[_Post]
+    # The thread's title, as the page's heading shows it; "" when it has none.
+    title: str = ""
 
 
 class Simp(Plugin):
@@ -111,8 +115,11 @@ class Simp(Plugin):
     walls = ("/login",)
     # The least gap between two forum pages; the plugin adds up to JITTER seconds to it.
     pace = 5.0
+    # The thread's folder is `<title>_<id>`; a file's name carries its post's author.
+    root = "{name}_{target}"
     folder = "{category}"
-    filename = "{date}_{post}_{num}"
+    fields = ("author", "name")
+    filename = "{date}_{author}_{post}_{num}"
     key = "{post}_{num}"
     unsupported = {
         **{f"{host}/{path}": f"that page isn't supported; {HINT}"
@@ -174,8 +181,10 @@ class Simp(Plugin):
             for post in reversed(page.posts):
                 links = post.links.get(category)
                 if links:
-                    files = functools.partial(_files, ctx, post.id, post.stamp, links)
-                    yield Post(post.id, files, date=post.stamp)
+                    files = functools.partial(_files, ctx, post.id, post.stamp, post.author,
+                                              links)
+                    yield Post(post.id, files, date=post.stamp, author=post.author,
+                               name=thread.title)
 
     # -- the forum: pace, budget, captcha ---------------------------------------------------
 
@@ -293,6 +302,7 @@ class _Thread:
         self.pages: list[_Page] = []
         self.cache: dict[int, _Page] = {}
         self.cur = 0
+        self.title = ""
         self.done = False
         self.referer: str | None = None
         self.lock = asyncio.Lock()
@@ -348,6 +358,7 @@ class _Thread:
             self.base = found[1]
         self.referer = landed
         page = _read_page(response.html, landed)
+        self.title = self.title or page.title
         self.cache[page.n] = page
         return page
 
@@ -361,9 +372,11 @@ def _read_page(document: Document, landed: str) -> _Page:
         stamp = article.first("time.u-dt[data-timestamp]")
         written = stamp.attr("data-timestamp") if stamp is not None else None
         posts.append(_Post(number, int(written) if written and written.isdigit() else None,
-                           _links(article)))
+                           _links(article), article.attr("data-author") or ""))
+    heading = document.first("h1.p-title-value")
     return _Page(int(found[1]) if found else 1,
-                 document.first("a.pageNav-jump--next") is not None, posts)
+                 document.first("a.pageNav-jump--next") is not None, posts,
+                 " ".join(heading.text.split()) if heading is not None else "")
 
 
 def _signature(item: Element) -> tuple[str, str]:
@@ -570,7 +583,8 @@ HOSTS = (
 )
 
 
-async def _files(ctx: Ctx, post: str, stamp: int | None, links: Iterable[Link]) -> list[File]:
+async def _files(ctx: Ctx, post: str, stamp: int | None, author: str,
+                 links: Iterable[Link]) -> list[File]:
     """A post's files for some links. A removed or changed file is told of and left out; the
     post fails only when it gives nothing, or on a block, so a retry finds the rest."""
     day = (datetime.datetime.fromtimestamp(stamp, datetime.UTC).date().isoformat()
@@ -585,7 +599,8 @@ async def _files(ctx: Ctx, post: str, stamp: int | None, links: Iterable[Link]) 
             ctx.log("warn", "smp: post {post}: {error}", post=post, error=str(error))
             continue
         for url, name in items:
-            found.append(File(url, name=f"{day}_{post}_{name}" if name and day else None))
+            lead = f"{day}_{author}" if author else day
+            found.append(File(url, name=f"{lead}_{post}_{name}" if name and day else None))
     if not found and errors:
         raise errors[0]
     return found

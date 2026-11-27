@@ -22,17 +22,18 @@ def wrap(url):
     return "/out/?to=" + base64.b64encode(url.encode()).decode()
 
 
-def post(number, body, *, stamp=STAMP, extra=""):
-    return (f'<article class="message message--post" data-author="example_user" '
+def post(number, body, *, stamp=STAMP, extra="", author="example_user"):
+    return (f'<article class="message message--post" data-author="{author}" '
             f'data-content="post-{number}"><header class="message-attribution">'
             f'<time class="u-dt" data-timestamp="{stamp}"></time></header>'
             f'<article class="message-body"><div class="bbWrapper">{body}</div></article>'
             f'{extra}</article>')
 
 
-def page(*posts, nxt=False, logged="true"):
+def page(*posts, nxt=False, logged="true", title=""):
     more = '<a class="pageNav-jump pageNav-jump--next" href="/x">Next</a>' if nxt else ""
-    return (f'<html data-logged-in="{logged}"><body><div class="pageNav">{more}</div>'
+    heading = f'<h1 class="p-title-value"> {title} </h1>' if title else ""
+    return (f'<html data-logged-in="{logged}"><body>{heading}<div class="pageNav">{more}</div>'
             f'{"".join(posts)}</body></html>')
 
 
@@ -221,7 +222,7 @@ class HostTest(unittest.TestCase):
         found, ctx = self.files(goonbox("a1"))
         (one,) = found
         self.assertEqual((one.path, one.url, one.key),
-                         ("images/2026-01-01_5_orig" + "a1.jpg", "https://cdn.example.com/a1.jpg",
+                         ("123/images/2026-01-01_example_user_5_orig" + "a1.jpg", "https://cdn.example.com/a1.jpg",
                           "5_0"))
         self.assertIn("https://goonbox.cr/api/images/a1", asked(ctx))
 
@@ -238,7 +239,21 @@ class HostTest(unittest.TestCase):
         self.assertEqual([f.url for f in found],
                          ["https://cdn.example.com/p1.jpg", "https://cdn.example.com/p2.jpg"])
         self.assertEqual([f.path for f in found],
-                         ["images/2026-01-01_5_0.jpg", "images/2026-01-01_5_1.jpg"])
+                         ["123/images/2026-01-01_example_user_5_0.jpg",
+                          "123/images/2026-01-01_example_user_5_1.jpg"])
+
+    def test_a_threads_title_names_its_folder_and_a_posts_author_its_files(self):
+        for title, author, folder, name in [
+            ("Example Thread", "example_user", "Example_Thread_123",
+             "2026-01-01_example_user_5_origa1.jpg"),
+            ("", "example_user", "123", "2026-01-01_example_user_5_origa1.jpg"),
+            ("Example Thread", "", "Example_Thread_123", "2026-01-01_5_origa1.jpg"),
+        ]:
+            with self.subTest(title=title, author=author):
+                ctx = thread({1: page(post(5, goonbox("a1"), author=author), title=title)})
+                [one] = collect(Simp, "smp:123", ctx=ctx, categories=["images"])
+                self.assertEqual(one.path, f"{folder}/images/{name}")
+                self.assertEqual(one.key, "5_0")
 
     def test_a_bare_thumbnail_is_its_full_image(self):
         body = '<img class="bbImage" src="https://simp6.jpg5.su/x/name.md.jpg">'
@@ -255,7 +270,7 @@ class HostTest(unittest.TestCase):
         self.assertNotIn("https://turbo.cr/api/sign?v=v1", asked(ctx))
         self.assertTrue(found[0].lazy)
         files = asyncio.run(found[0].files())
-        self.assertEqual(files[0].name, "2026-01-01_5_clip.mp4")
+        self.assertEqual(files[0].name, "2026-01-01_example_user_5_clip.mp4")
         self.assertEqual(asked(ctx)[-1], "https://turbo.cr/api/sign?v=v1")
 
     def test_a_host_that_changed_fails_its_files_only(self):

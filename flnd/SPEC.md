@@ -512,7 +512,7 @@ removed, whitespace squeezed to single spaces and trimmed ("" for nothing left).
 
 Plugin fields: `ins` `album title`; `thr` `title`; `twt` `part n title name`; `tik` `part album idx
 title`; `fbk` `part album`; `loi` `author title part`; `mht` `title order author genres chapters
-name`; `smp` none; `pxv` `title user name`; `web` `name`; a plugin of your own declares its
+name`; `smp` `author name`; `pxv` `title user name`; `web` `name`; a plugin of your own declares its
 `fields`.
 
 Rendering: each `/` segment is filled alone. A missing or empty field drops the separators
@@ -1186,8 +1186,11 @@ up to 32.
   (`/embed/`, `/v/`, `/d/`; `/api/sign?v=<id>`, signed and lazy, so `refresh` lists it again).
   A post's files are listed lazily; each link counts once per post; a removed or changed file is
   warned about and left out, and the post fails only when nothing is left.
-- **Folder:** `{category}`, under `media/smp/<thread id>/`. **Filename:** `{date}_{post}_{num}`, or
-  `{date}_{post}_{original name}` when the host gives one. **Key:** `{post}_{num}`.
+- **Folder:** `{category}`, under `media/smp/{name}_{target}/`: `name` is the thread's title (its
+  page's `h1.p-title-value`, "" for none, then the id alone). **Filename:**
+  `{date}_{author}_{post}_{num}`, or `{date}_{author}_{post}_{original name}` when the host gives
+  one; `author` is the post's `data-author`, and an empty one leaves no `_`. **Key:**
+  `{post}_{num}`.
 - **Login:** a cookie whose name matches `.+_user`; required.
 - **Limits and walls:** pace 5 s plus up to 7 s of jitter (5 to 12 s) before each forum page, one
   page at a time; a 45 to 90 s break every 25 pages; at most `pages_per_hour` (default 300,
@@ -1207,7 +1210,7 @@ up to 32.
   pages again from the newest; the same file in two posts of a thread is saved twice; no post
   route, `links`, `hosted` category, attachments or file hosts but goonbox and turbo yet; host API
   shapes are unverified live.
-- **Saved as:** `media/smp/123/images/2026-01-01_456_name.jpg`
+- **Saved as:** `media/smp/Example_Thread_456/images/2026-01-01_example_user_789_name.jpg`
 
 ### pxv (pixiv)
 
