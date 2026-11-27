@@ -265,7 +265,9 @@ both domains is refused: `that page isn't supported; give a post or an author` (
 **mht**
 
 - `mht:<id>`, `mimihentai.moe/manga/<id>` (digits): one manga (route ``manga``)
-- `mht:chapter/<id>`, `mimihentai.moe/manga/.../chapter/<id>`: one chapter (route ``chapter``)
+- `mht:chapter/<id>`, `mimihentai.moe/manga/.../chapter/<id>`: one chapter (route ``chapter``),
+  filed in its manga's folder as the `chapters` category files it (its own number when the
+  answer names no manga)
 - `mht:author/<name or id>`, `mimihentai.moe/author/<x>`, `/authors/<x>`: an author's manga (route
   ``author``); `mht:genre/<x>`, `/genre/<x>`, `/genres/<x>`: a genre's (``genre``)
 - `mht:parody/<name or id>`, `mimihentai.moe/parody/<x>`, `/parodies/<x>`: a parody's manga (route

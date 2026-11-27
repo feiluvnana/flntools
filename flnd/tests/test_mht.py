@@ -18,8 +18,8 @@ CDN = "https://moe-cdn.example.com"
 MANGA = {"id": 70982, "title": "Example Manga", "cover_url": f"{CDN}/covers/70982.webp",
          "last_updated": "2026-11-10T12:00:00Z"}
 CHAPTERS = [
-    {"id": 1001, "title": "First Chapter", "order": 1, "created_at": "2026-11-01T10:00:00Z"},
-    {"id": 1002, "title": "Bonus", "order": 1.5, "created_at": "2026-11-02T10:00:00Z"},
+    {"id": 1001, "title": "First Chapter", "order": 1, "manga_id": 70982, "created_at": "2026-11-01T10:00:00Z"},
+    {"id": 1002, "title": "Bonus", "order": 1.5, "manga_id": 70982, "created_at": "2026-11-02T10:00:00Z"},
 ]
 PAGES = {
     1001: [f"{CDN}/1001/1.webp", f"{CDN}/1001/2.jpg?v=1"],
@@ -147,9 +147,17 @@ class MangaTest(unittest.TestCase):
 
     def test_a_chapter_link_files_as_its_manga_does(self):
         saved = collect(Mimi, "https://mimihentai.moe/manga/70982/chapter/1001", ctx=fake())
-        # A chapter link sits in a folder of its id, as a single post does.
+        # A chapter link sits in its manga's folder, where the `chapters` category puts it.
         self.assertEqual([(item.path, item.key) for item in saved],
-                         [(f"1001/{path}", key) for path, key in EVERY_FILE[:2]])
+                         [(f"70982/{path}", key) for path, key in EVERY_FILE[:2]])
+
+    def test_a_chapter_without_a_manga_keeps_its_own_folder_and_warns(self):
+        info = {k: v for k, v in CHAPTERS[0].items() if k != "manga_id"}
+        ctx = fake(**{"chapters/1001": {"info": info, "pages": [{"image_url": f"{CDN}/1.webp"}]}})
+        saved = collect(Mimi, "mht:chapter/1001", ctx=ctx)
+        self.assertEqual([item.path for item in saved],
+                         ["1001/chapters/001_First_Chapter/001.webp"])
+        self.assertTrue(any(level == "warn" for level, _ in ctx.seen.logs))
 
     def test_chapters_are_lazy(self):
         async def posts():
@@ -170,7 +178,7 @@ class MangaTest(unittest.TestCase):
                  {"image_url": f"{CDN}/1001/d"}]
         ctx = fake(**{"chapters/1001": {"info": CHAPTERS[0], "pages": pages}})
         saved = collect(Mimi, "https://mimihentai.moe/manga/70982/chapter/1001", ctx=ctx)
-        folder = "1001/chapters/001_First_Chapter/"
+        folder = "70982/chapters/001_First_Chapter/"
         self.assertEqual([item.path for item in saved], [f"{folder}001.webp", f"{folder}004"])
         # The engine names a file whose URL has no extension from its first bytes.
         for content, name in [(b"RIFF\0\0\0\0WEBPVP8 ", "004.webp"),

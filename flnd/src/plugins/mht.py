@@ -75,8 +75,14 @@ class Mimi(Plugin):
         info = body.get("info") if isinstance(body, dict) else None
         if not isinstance(info, dict) or "id" not in info:
             raise NotFound(f"mht: chapter {id} isn't there")
+        manga_id = info.get("manga_id")
+        if manga_id is None:
+            ctx.log("warn", "mht: chapter {id} names no manga; filed under its own number", id=id)
+        # Filed as the manga's `chapters` category files it: the same folder and the same key.
+        owner = None if manga_id is None else str(manga_id)
         yield Post(info["id"], _chapter_pages(body), date=info.get("created_at"),
-                   order=format_order(info.get("order")), title=info.get("title") or "")
+                   order=format_order(info.get("order")), title=info.get("title") or "",
+                   owner=owner, category="chapters" if owner else None)
 
     @route(r"mht:{id:\d+}", r"mimihentai.moe/manga/{id:\d+}", newest_first=False)
     async def manga(self, ctx: Ctx, id: str) -> dict[str, Any]:
